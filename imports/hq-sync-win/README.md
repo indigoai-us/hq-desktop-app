@@ -1,64 +1,81 @@
-# HQ Sync
+# HQ Sync — Windows System Tray Agent (Tauri 2 + Svelte 5)
 
-Menubar sync agent for HQ. Built with Tauri 2 + Svelte.
+Windows 11 system-tray sync agent for HQ. Fork of [`indigoai-us/hq-sync`](https://github.com/indigoai-us/hq-sync) (the macOS menubar app), stripped of macOS-only code and ported to native Windows tray UX, Registry autostart, and Mica/Acrylic vibrancy.
+
+## Status
+
+V1 fork in progress. The bring-up sequence is tracked in the [hq-sync-win PRD](https://github.com/indigoai-us/hq/blob/main/companies/indigo/projects/hq-sync-win/prd.json):
+
+- US-001 — fork + dev setup (this commit)
+- US-002 — strip macOS-only Rust/Svelte code paths
+- US-003 — Windows bundle config (MSI + NSIS)
+- US-004 — Job Object process management
+- US-005 — Tray + popover with Mica/Acrylic
+- US-006 — Registry autostart
+- US-007 — Folder picker via rfd
+- US-008 — Path discovery + hq CLI resolver
+- US-009 — CI + release pipeline (SignTool)
+- US-010 — End-to-end smoke test
+
+Until US-002+ land, `cargo check` will fail on Windows because the verbatim fork still contains macOS-only `nix`/`objc2` imports. This is expected and tracked in the PRD.
+
+## Prerequisites (Windows 11)
+
+| Tool | Version | Notes |
+|------|---------|-------|
+| Rust | stable | Install via [rustup](https://rustup.rs/). See `docs/dev-setup-windows.md` for ARM64 host notes. |
+| Node | 22+ | Install via [nodejs.org](https://nodejs.org/) or [nvm-windows](https://github.com/coreybutler/nvm-windows). |
+| npm | 10+ | Ships with Node 22. |
+| Visual Studio Build Tools 2022 | latest | Workload: **"Desktop development with C++"** (a.k.a. "C++ build tools"). Required for the MSVC linker. |
+| WebView2 Runtime | evergreen | Preinstalled on Windows 11. Required by Tauri for the popover WebView. |
+
+Full step-by-step setup: [`docs/dev-setup-windows.md`](docs/dev-setup-windows.md).
 
 ## Development
 
-```bash
+Open a **Developer PowerShell for VS 2022** (so MSVC `link.exe` is on `PATH`), then:
+
+```powershell
 npm install
 npm run tauri dev
 ```
 
+If you prefer a plain PowerShell, the committed `.cargo/config.toml` invokes `vcvarsall` automatically so `cargo build` works without a Developer prompt.
+
 ## Build
 
-```bash
-npm run tauri build
+```powershell
+npm run tauri build -- --target x86_64-pc-windows-msvc
+npm run tauri build -- --target aarch64-pc-windows-msvc
 ```
+
+Outputs land in `src-tauri/target/<triple>/release/bundle/{msi,nsis}/`.
 
 ## Testing
 
-> **Policy deviation:** V1 uses manual testing + Loom video instead of automated e2e tests. This is a documented exception from [`e2e-backpressure-required.md`](../../.claude/policies/e2e-backpressure-required.md), approved during PRD interview (QUALITY-2). Justification: dogfood-only cohort of 10 internal Indigo users with a direct feedback channel. V2 will add Playwright (for popover WebView) + AppleScript (for tray icon) automated e2e tests before any external customer rollout.
+> **Policy deviation:** V1 uses manual testing + smoke checklist instead of automated e2e tests. Documented exception from [`e2e-backpressure-required.md`](.claude/policies/e2e-backpressure-required.md), same justification as the macOS version: dogfood-only Windows cohort with a direct feedback channel. V2 adds Playwright (popover WebView) + Win32 UI Automation (tray) before any external rollout.
 
 ### Manual Testing
 
-All testing is done via a structured manual checklist covering the 7 user journeys defined in the PRD:
-
-| Journey | Description |
-|---------|-------------|
-| UJ-001  | First install to first sync in <5 min, zero terminal |
-| UJ-002  | Returning user — expired token silent refresh |
-| UJ-003  | Sync conflict — resolve in popover modal, no terminal |
-| UJ-004  | Retether — user changes HQ path via Settings |
-| UJ-005  | Auto-update — new version installed silently |
-| UJ-006  | Auto-provisioning + Personal HQ — first sync auto-creates `person` entity in HQ-Cloud and provisions the `personal` company bucket |
-| UJ-007  | Telemetry opt-in round-trip — toggle in Settings persists to `~/.hq/menubar.json`, vault `/v1/usage/opt-in` reflects the change, next sync respects new state |
-
-Full checklist with step-by-step instructions, expected outcomes, and pass/fail checkboxes: **[`tests/MANUAL_TESTING.md`](tests/MANUAL_TESTING.md)**
+The Windows smoke checklist is at [`tests/MANUAL_TESTING.md`](tests/MANUAL_TESTING.md) (adapted from the macOS version in US-009/US-010). User journeys mirror the macOS app, adjusted for tray/Registry/MSI semantics.
 
 ### Unit Tests
 
-```bash
-# Rust unit tests
-cargo test --manifest-path=src-tauri/Cargo.toml
-
-# Frontend (when added)
-npm test
+```powershell
+cd src-tauri
+cargo test
 ```
 
 ### Release Testing Protocol
 
-Before each release (v1.0.0 and every minor/patch):
+Before each release:
 
-1. Run through the full manual checklist on a **fresh macOS VM**
-2. Record a **Loom video** walking through all test scenarios
-3. Publish the Loom video link in the **GitHub Release notes**
-4. Verify performance budgets pass (see `tests/PERF.md`)
-5. Verify code signing: `spctl -a -vv "HQ Sync.app"`
+1. Run the full Windows manual checklist on a clean Win 11 ARM64 host (`tests/SMOKE_WINDOWS.md`)
+2. Verify MSI installs from a fresh user account (no UAC)
+3. Verify the signed installer surface in `Right-click → Properties → Digital Signatures`
+4. Confirm autostart survives a log-out/log-in cycle
+5. Confirm uninstall removes the `HKCU\…\Run\HQSync` registry value
 
-### V2 Automated E2E (Planned)
+## License
 
-V2 will introduce automated e2e tests before any external rollout:
-
-- **Playwright** — popover WebView interactions (sync button, conflict modal, settings pane)
-- **AppleScript** — tray icon state verification, context menu actions
-- **CI integration** — automated test suite in GitHub Actions on every PR
+Internal. Not for redistribution.
