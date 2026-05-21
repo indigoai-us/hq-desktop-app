@@ -2,19 +2,26 @@
 //!
 //! `spawn_process` — spawns a child, streams stdout as `process://{handle}/stdout`
 //!                    events, emits `process://{handle}/exit` on termination.
-//! `cancel_process` — sends SIGTERM to the process group; after 5 s, SIGKILL.
+//! `cancel_process` — terminates the process tree.
+//!
+//! ## US-002 state
+//!
+//! Stripped: `nix::sys::signal::{self, Signal}`, `nix::unistd::Pid`,
+//! `std::os::unix::process::CommandExt::process_group`,
+//! `std::os::unix::process::ExitStatusExt::signal`. US-004 rewrites
+//! `run_process_impl` + `cancel_process_impl` on top of Job Objects
+//! (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` + `TerminateJobObject`) so child
+//! processes can be killed as a tree without POSIX signal escalation.
+//!
+//! Until US-004 lands, both `run_process_impl` and `cancel_process_impl`
+//! return errors / no-op respectively, and a small wrapper `cargo check`
+//! suite exercises the registry only.
 
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader};
-use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
-use std::process::{Command, Stdio};
-use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 
-use nix::sys::signal::{self, Signal};
-use nix::unistd::Pid;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 use uuid::Uuid;
@@ -47,10 +54,10 @@ pub struct StderrEvent {
 
 /// Payload for the terminal `process://{handle}/exit` event.
 ///
-/// `signal` is `Some(N)` only when the OS killed the process with a Unix
-/// signal — in that case `code` is `None`. Distinguishes "runner crashed
-/// with SIGSEGV" (signal=11) from "runner OOM-killed" (signal=9) from
-/// "runner cancelled" (signal=15) from a normal `exit(code)`.
+/// `signal` is `Some(N)` on POSIX when the OS killed the process with a
+/// signal. On Windows there are no Unix signals, so `signal` is always
+/// `None` and `code` carries the `GetExitCodeProcess` value (cancellation
+/// surfaces as `code = Some(-1)` set by `cancel_process_impl`).
 #[derive(Debug, Serialize, Clone)]
 pub struct ExitEvent {
     pub code: Option<i32>,
@@ -161,154 +168,29 @@ pub enum ProcessEvent {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Pure impl
+// Pure impl (US-004 fills in)
 // ─────────────────────────────────────────────────────────────────────────────
 
-pub fn run_process_impl<F>(handle: &str, spawn: &SpawnArgs, on_event: F) -> Result<(), String>
+pub fn run_process_impl<F>(_handle: &str, _spawn: &SpawnArgs, _on_event: F) -> Result<(), String>
 where
     F: FnMut(ProcessEvent),
 {
-    let mut cmd = Command::new(&spawn.cmd);
-    cmd.args(&spawn.args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .process_group(0);
-
-    if let Some(cwd) = &spawn.cwd {
-        cmd.current_dir(cwd);
-    }
-    if let Some(env) = &spawn.env {
-        for (k, v) in env {
-            cmd.env(k, v);
-        }
-    }
-
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("spawn '{}': {}", spawn.cmd, e))?;
-
-    let pid = child.id();
-    register_process(handle, pid);
-
-    let stdout = child.stdout.take().expect("stdout pipe");
-    let stderr = child.stderr.take().expect("stderr pipe");
-
-    enum ReaderMsg {
-        Event(ProcessEvent),
-        Done { stream: &'static str, err: Option<String> },
-    }
-
-    let (tx, rx) = mpsc::channel::<ReaderMsg>();
-
-    let tx_stdout = tx.clone();
-    thread::spawn(move || {
-        let mut err: Option<String> = None;
-        for line_result in BufReader::new(stdout).lines() {
-            match line_result {
-                Ok(line) => {
-                    if tx_stdout.send(ReaderMsg::Event(ProcessEvent::Stdout(line))).is_err() {
-                        return;
-                    }
-                }
-                Err(e) => {
-                    err = Some(e.to_string());
-                    break;
-                }
-            }
-        }
-        let _ = tx_stdout.send(ReaderMsg::Done { stream: "stdout", err });
-    });
-
-    let tx_stderr = tx.clone();
-    thread::spawn(move || {
-        let mut err: Option<String> = None;
-        for line_result in BufReader::new(stderr).lines() {
-            match line_result {
-                Ok(line) => {
-                    if tx_stderr.send(ReaderMsg::Event(ProcessEvent::Stderr(line))).is_err() {
-                        return;
-                    }
-                }
-                Err(e) => {
-                    err = Some(e.to_string());
-                    break;
-                }
-            }
-        }
-        let _ = tx_stderr.send(ReaderMsg::Done { stream: "stderr", err });
-    });
-
-    drop(tx);
-
-    let mut on_event_mut = on_event;
-    let mut first_stream_err: Option<String> = None;
-    let mut done_count = 0;
-
-    for msg in rx {
-        match msg {
-            ReaderMsg::Event(ev) => on_event_mut(ev),
-            ReaderMsg::Done { stream, err } => {
-                if let Some(e) = err {
-                    if first_stream_err.is_none() {
-                        first_stream_err = Some(format!("{}: {}", stream, e));
-                    }
-                }
-                done_count += 1;
-                if done_count == 2 {
-                    break;
-                }
-            }
-        }
-    }
-
-    let wait_result = child.wait().map_err(|e| e.to_string());
-    deregister_process(handle);
-
-    if let Some(err) = first_stream_err {
-        on_event_mut(ProcessEvent::Exit {
-            code: None,
-            signal: None,
-            success: false,
-        });
-        return Err(err);
-    }
-
-    let status = wait_result?;
-    on_event_mut(ProcessEvent::Exit {
-        code: status.code(),
-        signal: status.signal(),
-        success: status.success(),
-    });
-
-    Ok(())
+    Err("process: run_process_impl not implemented yet (US-004 wires Job Objects)".to_string())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Cancellation
+// Cancellation (US-004 fills in)
 // ─────────────────────────────────────────────────────────────────────────────
 
-pub fn cancel_process_impl(handle: &str, sigkill_delay: Duration) -> bool {
+pub fn cancel_process_impl(handle: &str, _sigkill_delay: Duration) -> bool {
+    // Mark the registry entry cancelled so a slow-start spawn sees the
+    // cancellation. The actual TerminateJobObject call lands in US-004.
     if !mark_cancelled(handle) {
         return false;
     }
-
-    let pid = match lookup_pid(handle) {
-        Some(p) => p,
-        None => return true,
-    };
-
-    let pgid = Pid::from_raw(-(pid as i32));
-    let _ = signal::kill(pgid, Signal::SIGTERM);
-
-    let handle_owned = handle.to_string();
-    thread::spawn(move || {
-        thread::sleep(sigkill_delay);
-        if is_registered(&handle_owned) {
-            let _ = signal::kill(Pid::from_raw(-(pid as i32)), Signal::SIGKILL);
-            deregister_process(&handle_owned);
-        }
-    });
-
+    if lookup_pid(handle).is_none() {
+        return true;
+    }
     true
 }
 

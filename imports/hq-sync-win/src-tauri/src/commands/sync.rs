@@ -1137,12 +1137,17 @@ mod tests {
     }
 
     #[test]
-    fn test_build_sync_spawn_args_env_sets_path_with_homebrew() {
-        let args = build_sync_spawn_args("/tmp");
+    fn test_build_sync_spawn_args_env_sets_path() {
+        // US-002: was test_build_sync_spawn_args_env_sets_path_with_homebrew.
+        // US-008 wires the full managed-toolchain PATH; for now `paths::child_path`
+        // just forwards the parent PATH. Assert PATH is set and non-empty —
+        // US-008 strengthens this to a managed-toolchain containment check.
+        let args = build_sync_spawn_args("C:\\tmp");
         let env = args.env.unwrap();
-        let path = env.get("PATH").expect("PATH must be set so shebang can find node");
-        // Must include homebrew so `#!/usr/bin/env node` resolves on Dock launches.
-        assert!(path.contains("/opt/homebrew/bin"), "PATH missing /opt/homebrew/bin: {}", path);
+        let path = env
+            .get("PATH")
+            .expect("PATH must be set so the runner can find node/npx");
+        assert!(!path.is_empty(), "PATH should not be empty");
     }
 
     #[test]

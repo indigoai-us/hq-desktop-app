@@ -177,16 +177,16 @@ pub fn build_watch_runner_args(hq_folder_path: &str) -> SpawnArgs {
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Check if a PID is alive using kill(0).
+/// Check if a PID is alive.
 ///
-/// Note: kill(0) checks if the calling user has permission to signal the PID.
-/// If the original process died and a different process reused the PID, this
-/// may return a false positive. Acceptable for V2 prep — daemon.json cross-check
-/// can be added in V2 if PID reuse becomes an issue.
-fn is_pid_alive(pid: u32) -> bool {
-    use nix::sys::signal;
-    use nix::unistd::Pid;
-    signal::kill(Pid::from_raw(pid as i32), None).is_ok()
+/// US-004 wires this on top of OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)
+/// + GetExitCodeProcess (STILL_ACTIVE check). For now returns false so the
+/// rest of the module compiles — the practical effect is that "is the daemon
+/// from a previous app session still running?" always answers no, which
+/// causes a fresh spawn rather than an orphan-detection error. Acceptable
+/// degradation until US-004 lands.
+fn is_pid_alive(_pid: u32) -> bool {
+    false
 }
 
 /// Read .hq-sync.pid file from the HQ folder.
@@ -399,13 +399,12 @@ pub fn stop_daemon() -> Result<bool, String> {
     }
 
     // Daemon from a previous app session — registry has no handle, but the
-    // pid-file may point at a still-alive runner. SIGTERM directly so the
-    // user can re-toggle Auto-sync without a process zombie.
+    // pid-file may point at a still-alive runner. US-004 wires TerminateProcess
+    // directly (Job Objects own the spawn-time tree). Until then, treat as
+    // "no orphan to kill" since is_pid_alive returns false.
     if let Some(pid) = read_pid_file(&hq_folder_path) {
         if is_pid_alive(pid) {
-            use nix::sys::signal::{self, Signal};
-            use nix::unistd::Pid;
-            let _ = signal::kill(Pid::from_raw(pid as i32), Signal::SIGTERM);
+            // US-004: TerminateProcess(OpenProcess(PROCESS_TERMINATE, false, pid))
             return Ok(true);
         }
     }

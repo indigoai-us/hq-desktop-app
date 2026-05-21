@@ -62,9 +62,9 @@ const builders: Record<IssueKind, (i: Issue) => string> = {
     const company = val(i, 'company');
     const countLine = count > 0 ? `${count} file conflict${count === 1 ? '' : 's'}` : 'sync conflicts';
     return [
-      `I'm seeing ${countLine} in my HQ Sync menubar app${company ? ` (company: ${company})` : ''}.`,
+      `I'm seeing ${countLine} in my HQ Sync tray app${company ? ` (company: ${company})` : ''}.`,
       '',
-      'Please run `/resolve-conflicts` to walk me through each one. Use the local file as the source of truth unless the remote is clearly newer + intentional. After resolving, run `hq sync` once to confirm the menubar shows zero conflicts.',
+      'Please run `/resolve-conflicts` to walk me through each one. Use the local file as the source of truth unless the remote is clearly newer + intentional. After resolving, run `hq sync` once to confirm the tray shows zero conflicts.',
     ].join('\n');
   },
 
@@ -83,7 +83,7 @@ const builders: Record<IssueKind, (i: Issue) => string> = {
   'auth-expired': (i) => {
     const msg = val(i, 'message');
     return [
-      'My HQ Sync session expired and the menubar app is asking me to sign in again.',
+      'My HQ Sync session expired and the tray app is asking me to sign in again.',
       msg ? `\nError: ${msg}` : '',
       '',
       'Please run `/hq-login` to refresh my Cognito tokens. If a silent refresh fails, fall back to the browser sign-in flow. Confirm with `/hq-whoami` that the session is healthy before doing anything else.',
@@ -93,7 +93,7 @@ const builders: Record<IssueKind, (i: Issue) => string> = {
   'app-update-available': (i) => {
     const version = val(i, 'version');
     return [
-      `My HQ Sync menubar app has an update available${version ? ` (v${version})` : ''}.`,
+      `My HQ Sync tray app has an update available${version ? ` (v${version})` : ''}.`,
       '',
       "Please apply it. The in-app Install button calls Tauri's `install_update` and restarts the app — that's usually the right path. If it fails, fetch the latest DMG from the GitHub releases page of `indigoai-us/hq-sync` and install manually. After updating, open the popover and confirm the new version in the About / Settings.",
     ].join('\n');
@@ -112,7 +112,7 @@ const builders: Record<IssueKind, (i: Issue) => string> = {
   'hq-cli-update-failed': (i) => {
     const error = val(i, 'error');
     return [
-      'My HQ Sync menubar tried to upgrade the `hq` CLI for me and the install failed.',
+      'My HQ Sync tray tried to upgrade the `hq` CLI for me and the install failed.',
       '',
       error ? `Error from npm: ${error}` : 'No error detail was surfaced.',
       '',
@@ -123,7 +123,7 @@ const builders: Record<IssueKind, (i: Issue) => string> = {
   'cloud-unreachable': (i) => {
     const error = val(i, 'error');
     return [
-      'My HQ Sync menubar says the cloud is unreachable — it\'s showing local-only workspaces.',
+      'My HQ Sync tray says the cloud is unreachable — it\'s showing local-only workspaces.',
       '',
       error ? `Last error: ${error}` : '',
       '',
@@ -134,18 +134,18 @@ const builders: Record<IssueKind, (i: Issue) => string> = {
   'manifest-error': (i) => {
     const error = val(i, 'error');
     return [
-      "My HQ Sync menubar can't read `companies/manifest.yaml` — it fell back to folder enumeration.",
+      "My HQ Sync tray can't read `companies/manifest.yaml` — it fell back to folder enumeration.",
       '',
       error ? `Parser error: ${error}` : '',
       '',
-      'Please open `~/HQ/companies/manifest.yaml` (or wherever my HQ folder is — check `~/.hq/menubar.json` → `hqPath`) and find the parse error. Likely a trailing tab, an unquoted value with a colon, or a stray BOM. After fixing, validate with `yamllint` if available. Do not regenerate the manifest from scratch — preserve the existing companies + their cloud_uid fields.',
+      'Please open `~/HQ/companies/manifest.yaml` (or wherever my HQ folder is — check `~/.hq/tray.json` → `hqPath`) and find the parse error. Likely a trailing tab, an unquoted value with a colon, or a stray BOM. After fixing, validate with `yamllint` if available. Do not regenerate the manifest from scratch — preserve the existing companies + their cloud_uid fields.',
     ].filter(Boolean).join('\n');
   },
 
   'workspace-needs-connect': (i) => {
     const slug = val(i, 'slug');
     return [
-      `My HQ Sync menubar shows a local-only workspace${slug ? ` (\`${slug}\`)` : ''} that needs to be connected to a cloud vault.`,
+      `My HQ Sync tray shows a local-only workspace${slug ? ` (\`${slug}\`)` : ''} that needs to be connected to a cloud vault.`,
       '',
       "The in-app Connect button calls `connect_workspace_to_cloud` — that's usually all I need. If it fails (cloud unreachable, name collision, permissions), tell me which and what to do next. Don't try to provision a brand-new bucket out of band — the backend handles bucket creation + manifest update atomically.",
     ].join('\n');
@@ -155,11 +155,11 @@ const builders: Record<IssueKind, (i: Issue) => string> = {
     const slug = val(i, 'slug');
     const reason = val(i, 'reason');
     return [
-      `My HQ Sync menubar shows workspace \`${slug || '<unknown>'}\` as broken.`,
+      `My HQ Sync tray shows workspace \`${slug || '<unknown>'}\` as broken.`,
       '',
       reason ? `Reason: ${reason}` : 'The manifest cloud_uid does not match cloud reality.',
       '',
-      'Please run `/repair-company` if it exists, otherwise: (1) compare `companies/manifest.yaml` cloud_uid vs. the actual cloud entity for this slug via the hq CLI, (2) update the manifest to match cloud truth, (3) commit the manifest change inside the HQ root, (4) re-open the menubar to verify the row flips back to synced.',
+      'Please run `/repair-company` if it exists, otherwise: (1) compare `companies/manifest.yaml` cloud_uid vs. the actual cloud entity for this slug via the hq CLI, (2) update the manifest to match cloud truth, (3) commit the manifest change inside the HQ root, (4) re-open the tray to verify the row flips back to synced.',
     ].join('\n');
   },
 
@@ -180,7 +180,7 @@ const builders: Record<IssueKind, (i: Issue) => string> = {
     const kind = val(i, 'kind');
     const detail = val(i, 'detail');
     const slug = val(i, 'slug');
-    const header = `My HQ Sync menubar just failed to provision \`${slug || '<workspace>'}\` because of a local-environment problem (\`${kind}\`).`;
+    const header = `My HQ Sync tray just failed to provision \`${slug || '<workspace>'}\` because of a local-environment problem (\`${kind}\`).`;
     const detailLine = detail ? `\nError detail from the CLI: ${detail}` : '';
 
     switch (kind as LocalEnvKind) {
@@ -194,7 +194,7 @@ const builders: Record<IssueKind, (i: Issue) => string> = {
           "Please attempt the fix:",
           "1. Confirm with me, then run `sudo chown -R $(id -u):$(id -g) ~/.npm` so the cache is user-owned again.",
           "2. Verify with `ls -ld ~/.npm` that the owner is no longer root.",
-          "3. Re-trigger Connect from my menubar (or run `npx -y --package=@indigoai-us/hq-cli@latest hq --version` to confirm npx works again).",
+          "3. Re-trigger Connect from my tray (or run `npx -y --package=@indigoai-us/hq-cli@latest hq --version` to confirm npx works again).",
           "Do NOT touch any other root-owned directories — only `~/.npm`. If `sudo` is unavailable in this session, walk me through the manual fix instead of skipping the verification.",
         ].filter(Boolean).join('\n');
 
@@ -204,10 +204,10 @@ const builders: Record<IssueKind, (i: Issue) => string> = {
           detailLine,
           '',
           "npm couldn't extract the `@indigoai-us/hq-cli` package because the disk is full. Please attempt the fix:",
-          "1. Run `df -h /` and report the free space.",
-          "2. Run `du -sh ~/.npm ~/Library/Caches/* ~/.Trash` (with my confirmation) so we can see the obvious candidates.",
-          "3. Recommend (don't auto-delete) the biggest reclaimable targets — `~/.npm/_cacache` can be safely wiped with `npm cache clean --force`, Xcode DerivedData / iOS simulators are common offenders.",
-          "4. After freeing space, re-trigger Connect from my menubar.",
+          "1. Run `Get-PSDrive -PSProvider FileSystem | Select Name,Used,Free` in PowerShell and report the free space on C:.",
+          "2. Suggest checking `%LOCALAPPDATA%\\npm-cache`, `%TEMP%`, and the Recycle Bin (with my confirmation) for the obvious candidates.",
+          "3. Recommend (don't auto-delete) the biggest reclaimable targets — `%LOCALAPPDATA%\\npm-cache` can be safely wiped with `npm cache clean --force`; old Windows Update files via Disk Cleanup is another common reclaim.",
+          "4. After freeing space, re-trigger Connect from my tray.",
         ].filter(Boolean).join('\n');
 
       case 'npm-registry-unreachable':
@@ -219,7 +219,7 @@ const builders: Record<IssueKind, (i: Issue) => string> = {
           "1. Run `npm config get registry` and report the value.",
           "2. Run `curl -sS -o /dev/null -w '%{http_code}\\n' https://registry.npmjs.org/` to see if the public registry is reachable.",
           "3. If a non-default registry is configured and unreachable, recommend resetting it with `npm config set registry https://registry.npmjs.org/` (after confirming with me).",
-          "4. After connectivity recovers, re-trigger Connect from my menubar.",
+          "4. After connectivity recovers, re-trigger Connect from my tray.",
         ].filter(Boolean).join('\n');
 
       case 'npm-registry-timeout':
@@ -231,7 +231,7 @@ const builders: Record<IssueKind, (i: Issue) => string> = {
           "1. Check https://status.npmjs.org/ (note: don't fabricate — actually fetch).",
           "2. Run `npm config get proxy` and `npm config get https-proxy`; if either is set, ask me whether it should be unset.",
           "3. Retry `npx -y --package=@indigoai-us/hq-cli@latest hq --version` once and report the result.",
-          "4. If transient, just retry Connect from my menubar. If persistent, walk me through `npm config set fetch-retry-maxtimeout` or a proxy unset.",
+          "4. If transient, just retry Connect from my tray. If persistent, walk me through `npm config set fetch-retry-maxtimeout` or a proxy unset.",
         ].filter(Boolean).join('\n');
 
       default:
@@ -241,7 +241,7 @@ const builders: Record<IssueKind, (i: Issue) => string> = {
           header,
           detailLine,
           '',
-          "I don't have a templated remediation for this kind yet. Please read `~/.hq/logs/hq-sync.log` (last 100 lines) and the `provision-cli` breadcrumbs there to figure out what npm or npx did, then propose a fix. Do not run any `sudo` commands without my explicit confirmation.",
+          "I don't have a templated remediation for this kind yet. Please read `%USERPROFILE%\\.hq\\logs\\hq-sync.log` (last 100 lines) and the `provision-cli` breadcrumbs there to figure out what npm or npx did, then propose a fix. Do not run any commands that require an elevated/admin PowerShell without my explicit confirmation.",
         ].filter(Boolean).join('\n');
     }
   },
@@ -279,7 +279,7 @@ export function parseLocalEnvFailure(
 export function buildPrompt(issue: Issue): string {
   const build = builders[issue.kind];
   if (!build) {
-    return `My HQ Sync menubar surfaced an unknown issue kind (\`${issue.kind}\`). Please diagnose by reading the source at \`src/lib/copy-prompts.ts\` and the relevant component, then propose a fix.`;
+    return `My HQ Sync tray surfaced an unknown issue kind (\`${issue.kind}\`). Please diagnose by reading the source at \`src/lib/copy-prompts.ts\` and the relevant component, then propose a fix.`;
   }
   return build(issue);
 }

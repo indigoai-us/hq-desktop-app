@@ -255,24 +255,34 @@ mod tests {
         assert_eq!(args[3], "hq");
     }
 
-    /// The Local invocation must use the absolute path verbatim (no
-    /// extra args). Caller appends sync/push/--creds-from-stdin/etc.
-    #[test]
-    fn local_invocation_uses_path_directly() {
-        let invocation = HqInvocation::Local("/usr/local/bin/hq".to_string());
-        let cmd = invocation.command();
-        let std_cmd = cmd.as_std();
-        assert_eq!(std_cmd.get_program(), "/usr/local/bin/hq");
-        assert_eq!(std_cmd.get_args().count(), 0);
-    }
-
     /// Labels must be human-readable for the logfile breadcrumb.
     #[test]
     fn label_contains_useful_info() {
-        let local = HqInvocation::Local("/opt/homebrew/bin/hq".to_string());
-        assert!(local.label().contains("/opt/homebrew/bin/hq"));
+        // Windows-shaped path: US-008 fully wires the resolver to look in
+        // %LOCALAPPDATA%\Indigo HQ\toolchain\bin first. The label format
+        // is just `local:{path}` regardless of platform.
+        let local = HqInvocation::Local(
+            "C:\\Users\\test\\AppData\\Local\\Indigo HQ\\toolchain\\bin\\hq.exe".to_string(),
+        );
+        assert!(local.label().contains("hq.exe"));
         let npx = HqInvocation::Npx;
         assert!(npx.label().contains("npx"));
         assert!(npx.label().contains("@indigoai-us/hq-cli"));
+    }
+
+    /// `local_invocation_uses_path_directly` mirror for Windows-shaped paths —
+    /// the absolute exe path passes through unchanged, no args added.
+    #[test]
+    fn local_invocation_uses_windows_path_directly() {
+        let invocation = HqInvocation::Local(
+            "C:\\Users\\test\\AppData\\Local\\Indigo HQ\\toolchain\\bin\\hq.exe".to_string(),
+        );
+        let cmd = invocation.command();
+        let std_cmd = cmd.as_std();
+        assert_eq!(
+            std_cmd.get_program(),
+            "C:\\Users\\test\\AppData\\Local\\Indigo HQ\\toolchain\\bin\\hq.exe"
+        );
+        assert_eq!(std_cmd.get_args().count(), 0);
     }
 }

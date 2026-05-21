@@ -1,16 +1,21 @@
-use std::path::{Path, PathBuf};
-use std::process::Command;
+//! HQ filesystem path helpers.
+//!
+//! ## US-002 state
+//!
+//! Stripped: Homebrew (`/opt/homebrew/bin`, `/usr/local/bin`) candidates,
+//! `~/Library/Application Support/Indigo HQ/toolchain/` managed toolchain
+//! dir, the `zsh -lc command -v` login-shell fallback. US-008 wires the
+//! Windows equivalents: `%LOCALAPPDATA%\Indigo HQ\toolchain\bin`,
+//! `%LOCALAPPDATA%\Microsoft\WindowsApps` (winget shim dir), Scoop shim
+//! dir, and PowerShell-based PATH lookup. Cross-platform helpers
+//! (`hq_config_dir`, `menubar_json_path`, `resolve_hq_folder`, etc.) stay
+//! as-is — `dirs::home_dir()` returns the right value on both platforms.
 
-/// Returns the managed HQ toolchain directory installed by hq-installer.
-/// Path mirrors `managed_toolchain_dir_in()` in hq-installer's `deps.rs`.
-fn managed_toolchain_dir(home: &Path) -> PathBuf {
-    home.join("Library")
-        .join("Application Support")
-        .join("Indigo HQ")
-        .join("toolchain")
-}
+use std::path::{Path, PathBuf};
 
 /// Returns the ~/.hq/ directory path.
+///
+/// On Windows this resolves to `%USERPROFILE%\.hq\` via `dirs::home_dir()`.
 pub fn hq_config_dir() -> Result<PathBuf, String> {
     let home = dirs::home_dir().ok_or_else(|| "Cannot determine home directory".to_string())?;
     Ok(home.join(".hq"))
@@ -19,137 +24,29 @@ pub fn hq_config_dir() -> Result<PathBuf, String> {
 /// Resolve a node-backed CLI binary (e.g. `hq-sync-runner`, `hq`) to an
 /// absolute path.
 ///
-/// **Why this exists:** Tauri apps launched from Dock/Finder inherit a
-/// minimal launchd PATH (roughly `/usr/bin:/bin:/usr/sbin:/sbin`) — they do
-/// NOT see `/opt/homebrew/bin` or the user's `.zshrc` additions. A bare
-/// `Command::new("hq-sync-runner")` then fails with "No such file or
-/// directory (os error 2)" even though `which hq-sync-runner` works in
-/// Terminal.
+/// US-008 wires the Windows resolution order:
+///   1. `%LOCALAPPDATA%\Indigo HQ\toolchain\bin\{name}.exe`
+///   2. `%USERPROFILE%\.hq\bin\{name}.exe`
+///   3. winget shim dir `%LOCALAPPDATA%\Microsoft\WindowsApps\{name}.exe`
+///   4. Scoop shim dir `%USERPROFILE%\scoop\shims\{name}.exe`
+///   5. `where.exe {name}` fallback
 ///
-/// Resolution order:
-/// 1. `$HOME/.npm-global/bin/{name}` — user-level npm prefix (no-sudo installs)
-/// 2. Managed HQ toolchain (`~/Library/Application Support/Indigo HQ/toolchain/`)
-///    — node/bin and npm-global/bin directories installed by hq-installer
-/// 3. `/opt/homebrew/bin/{name}` — Apple Silicon homebrew
-/// 4. `/usr/local/bin/{name}` — Intel homebrew / system-wide installs
-/// 5. Ask a login shell via `zsh -lc 'command -v {name}'` — respects the
-///    user's actual shell config (picks up nvm, volta, asdf, etc.).
-///
-/// Returns the bare name as a last-ditch fallback — the caller's
-/// `Command::new` will then error with the original "os error 2", which
-/// surfaces as a sync error the UI can show. We don't invent a path that
-/// doesn't exist.
+/// Until US-008 lands this returns the bare name unchanged — `Command::new`
+/// then does its own PATH lookup, which is correct for `node`/`npx` if they
+/// happen to be on the system PATH already.
 pub fn resolve_bin(name: &str) -> String {
-    if let Some(home) = dirs::home_dir() {
-        // 1. User npm prefix
-        let candidate = home.join(".npm-global").join("bin").join(name);
-        if candidate.exists() {
-            return candidate.to_string_lossy().to_string();
-        }
-
-        // 2. Managed HQ toolchain (installed by hq-installer)
-        let toolchain = managed_toolchain_dir(&home);
-        for subdir in ["npm-global/bin", "node/bin"] {
-            let candidate = toolchain.join(subdir).join(name);
-            if candidate.exists() {
-                return candidate.to_string_lossy().to_string();
-            }
-        }
-    }
-
-    // 3 + 4. Standard install locations
-    for prefix in ["/opt/homebrew/bin", "/usr/local/bin"] {
-        let candidate = Path::new(prefix).join(name);
-        if candidate.exists() {
-            return candidate.to_string_lossy().to_string();
-        }
-    }
-
-    // 5. Login-shell PATH lookup — catches nvm/volta/asdf + any custom prefix
-    //    the user configured in .zshrc. `-l` makes zsh a login shell so it
-    //    sources the full startup chain. `command -v` prints the resolved
-    //    path on success, nothing on miss.
-    if let Ok(output) = Command::new("zsh").args(["-lc", &format!("command -v {}", name)]).output() {
-        if output.status.success() {
-            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !path.is_empty() && Path::new(&path).exists() {
-                return path;
-            }
-        }
-    }
-
-    // Fall back to bare name — Command::new will then produce os error 2
-    // with the binary name still recognizable in the error message.
     name.to_string()
 }
 
 /// Build a PATH value suitable for handing to a spawned child process.
 ///
-/// **Why this exists:** even after we resolve a launcher binary to an absolute
-/// path via `resolve_bin`, the *child itself* still inherits the parent's
-/// PATH. Node-backed CLIs use `#!/usr/bin/env node` shebangs — `env` does a
-/// PATH lookup for `node`. Under the minimal launchd PATH a Dock-launched
-/// Tauri app inherits, that lookup fails and the child exits with 127
-/// ("command not found"). Same applies to anything the script itself spawns.
-///
-/// We prepend likely interpreter locations (nvm versions, npm-global,
-/// homebrew) to whatever PATH we have so shebangs resolve cleanly.
-///
-/// Order: managed HQ toolchain → nvm node dirs → `~/.npm-global/bin` →
-/// `/opt/homebrew/bin` → `/usr/local/bin` → system defaults → parent PATH.
+/// US-008 wires a Windows-appropriate PATH (semicolon-delimited) that
+/// prepends the managed HQ toolchain, winget shims, and Scoop shims.
+/// Until then we forward the parent process PATH verbatim — Tauri apps
+/// launched via Start menu / Explorer inherit the user's PATH by default
+/// on Windows, so this works for typical dev setups.
 pub fn child_path() -> String {
-    let mut parts: Vec<String> = Vec::new();
-
-    if let Some(home) = dirs::home_dir() {
-        // Managed HQ toolchain (installed by hq-installer) — checked first
-        // so users who only have Node via the installer can resolve `npx`
-        // and node shebangs.
-        let toolchain = managed_toolchain_dir(&home);
-        for subdir in ["npm-global/bin", "node/bin"] {
-            let bin = toolchain.join(subdir);
-            if bin.exists() {
-                parts.push(bin.to_string_lossy().to_string());
-            }
-        }
-
-        // nvm: prepend every installed node version's bin dir. Order doesn't
-        // matter for correctness (any working `node` resolves `env node`).
-        let nvm_versions = home.join(".nvm").join("versions").join("node");
-        if let Ok(entries) = std::fs::read_dir(&nvm_versions) {
-            for entry in entries.flatten() {
-                let bin = entry.path().join("bin");
-                if bin.exists() {
-                    parts.push(bin.to_string_lossy().to_string());
-                }
-            }
-        }
-        // User-level npm prefix (no-sudo installs).
-        let npm_global = home.join(".npm-global").join("bin");
-        if npm_global.exists() {
-            parts.push(npm_global.to_string_lossy().to_string());
-        }
-    }
-
-    for p in [
-        "/opt/homebrew/bin",
-        "/usr/local/bin",
-        "/usr/bin",
-        "/bin",
-        "/usr/sbin",
-        "/sbin",
-    ] {
-        parts.push(p.to_string());
-    }
-
-    if let Ok(existing) = std::env::var("PATH") {
-        for p in existing.split(':') {
-            if !p.is_empty() && !parts.iter().any(|x| x == p) {
-                parts.push(p.to_string());
-            }
-        }
-    }
-
-    parts.join(":")
+    std::env::var("PATH").unwrap_or_default()
 }
 
 /// Returns the path to ~/.hq/config.json.
@@ -207,7 +104,7 @@ pub fn resolve_hq_folder(
 
     // Priority 4: ~/HQ default
     dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("/"))
+        .unwrap_or_else(|| PathBuf::from("C:\\"))
         .join("HQ")
 }
 
@@ -302,16 +199,16 @@ mod tests {
     #[test]
     fn test_resolve_menubar_override_wins() {
         let result = resolve_hq_folder(
-            Some("/from/config"),
-            Some("/from/menubar"),
+            Some("C:\\from\\config"),
+            Some("C:\\from\\menubar"),
         );
-        assert_eq!(result, PathBuf::from("/from/menubar"));
+        assert_eq!(result, PathBuf::from("C:\\from\\menubar"));
     }
 
     #[test]
     fn test_resolve_config_path() {
-        let result = resolve_hq_folder(Some("/from/config"), None);
-        assert_eq!(result, PathBuf::from("/from/config"));
+        let result = resolve_hq_folder(Some("C:\\from\\config"), None);
+        assert_eq!(result, PathBuf::from("C:\\from\\config"));
     }
 
     #[test]
@@ -322,8 +219,8 @@ mod tests {
 
     #[test]
     fn test_resolve_empty_menubar_falls_through() {
-        let result = resolve_hq_folder(Some("/from/config"), Some(""));
-        assert_eq!(result, PathBuf::from("/from/config"));
+        let result = resolve_hq_folder(Some("C:\\from\\config"), Some(""));
+        assert_eq!(result, PathBuf::from("C:\\from\\config"));
     }
 
     #[test]
@@ -333,54 +230,9 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_bin_returns_name_when_missing() {
-        // A name that almost certainly doesn't exist anywhere
+    fn test_resolve_bin_returns_name_when_not_resolved() {
+        // US-008 fills in Windows resolution. Stub returns bare name.
         let result = resolve_bin("hq-sync-nonexistent-xyz-123");
         assert_eq!(result, "hq-sync-nonexistent-xyz-123");
-    }
-
-    #[test]
-    fn test_child_path_includes_homebrew() {
-        let path = child_path();
-        assert!(path.contains("/opt/homebrew/bin"));
-        assert!(path.contains("/usr/local/bin"));
-        assert!(path.contains("/usr/bin"));
-    }
-
-    #[test]
-    fn test_child_path_preserves_existing() {
-        // Whatever PATH the test runner has, child_path should include its entries.
-        if let Ok(existing) = std::env::var("PATH") {
-            if let Some(first) = existing.split(':').next() {
-                if !first.is_empty() {
-                    let path = child_path();
-                    assert!(path.contains(first), "child_path dropped existing entry {}", first);
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn test_managed_toolchain_path_matches_installer() {
-        let home = PathBuf::from("/Users/testuser");
-        let toolchain = managed_toolchain_dir(&home);
-        assert_eq!(
-            toolchain,
-            PathBuf::from("/Users/testuser/Library/Application Support/Indigo HQ/toolchain"),
-            "must match hq-installer's managed_toolchain_dir_in()"
-        );
-    }
-
-    #[test]
-    fn test_resolve_bin_finds_system_binary() {
-        // `ls` lives at /bin/ls on all macOS/Linux — the /usr/local/bin
-        // branch won't match, but the zsh fallback should on any dev box.
-        // On minimal CI containers without zsh this may return "ls", which
-        // is still correct behavior (Command::new will then find /bin/ls
-        // via its own PATH lookup).
-        let result = resolve_bin("ls");
-        // Either we resolved to an absolute path, or we fell back to the
-        // bare name — both are valid.
-        assert!(result == "ls" || std::path::Path::new(&result).exists());
     }
 }

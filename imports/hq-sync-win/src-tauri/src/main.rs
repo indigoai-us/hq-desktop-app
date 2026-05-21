@@ -1,8 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-#[cfg(target_os = "macos")]
-use tauri::Manager;
 use std::sync::Mutex;
+use tauri::Manager;
 
 mod commands;
 mod events;
@@ -11,79 +10,11 @@ mod tray;
 mod updater;
 mod util;
 
-#[cfg(target_os = "macos")]
-fn apply_liquid_glass(window: &tauri::WebviewWindow) {
-    use util::logfile::log;
-    use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial, NSVisualEffectState};
-
-    // window-vibrancy's apply_vibrancy returns Result<(), Error>. Earlier we
-    // swallowed the error with `let _ =`, which made silent failures
-    // indistinguishable from "vibrancy applied but visually subtle." Log on
-    // both success and failure so the persistent diagnostic log can answer
-    // "is vibrancy actually being applied?" without a debugger attached.
-    match apply_vibrancy(
-        window,
-        NSVisualEffectMaterial::Popover,
-        Some(NSVisualEffectState::Active),
-        Some(18.0),
-    ) {
-        Ok(()) => log("ui", "apply_vibrancy: success (Popover material, blur 18, active)"),
-        Err(e) => log("ui", &format!("apply_vibrancy FAILED: {e}")),
-    }
-}
-
-/// Set the macOS application icon image at runtime.
-///
-/// We need this because the app's activation policy is `Accessory` (no Dock
-/// icon, tray-only). When a detached window like the Meetings window is
-/// open, macOS still shows the app in Mission Control and the window
-/// switcher — but with NO bundled `.app` icon registered at runtime, the
-/// representation is a generic folder/document. Setting
-/// `NSApp.applicationIconImage` programmatically gives those surfaces an
-/// HQ icon to render even though there's no Dock badge.
-///
-/// `cargo tauri dev` doesn't build a proper `.app` bundle either, so this
-/// is the same fix in both dev and production.
-///
-/// Uses raw objc2 messaging so we don't pull in objc2-app-kit /
-/// objc2-foundation just for one call. The image is leaked intentionally
-/// — it's set once at startup and held by NSApplication for the lifetime
-/// of the process, so manual release would be a use-after-free.
-#[cfg(target_os = "macos")]
-fn set_app_icon_from_bytes(bytes: &'static [u8]) {
-    use objc2::{class, msg_send, runtime::AnyObject};
-    use util::logfile::log;
-
-    unsafe {
-        let data_cls = class!(NSData);
-        let data: *mut AnyObject = msg_send![
-            data_cls,
-            dataWithBytes: bytes.as_ptr() as *const std::ffi::c_void,
-            length: bytes.len()
-        ];
-        if data.is_null() {
-            log("ui", "set_app_icon: NSData::dataWithBytes returned nil");
-            return;
-        }
-
-        let image_cls = class!(NSImage);
-        let image_alloc: *mut AnyObject = msg_send![image_cls, alloc];
-        let image: *mut AnyObject = msg_send![image_alloc, initWithData: data];
-        if image.is_null() {
-            log("ui", "set_app_icon: NSImage::initWithData returned nil");
-            return;
-        }
-
-        let app_cls = class!(NSApplication);
-        let app: *mut AnyObject = msg_send![app_cls, sharedApplication];
-        if app.is_null() {
-            log("ui", "set_app_icon: NSApplication::sharedApplication returned nil");
-            return;
-        }
-        let _: () = msg_send![app, setApplicationIconImage: image];
-        log("ui", "set_app_icon: applied HQ icon to NSApp");
-    }
-}
+// US-005 adds Windows vibrancy (Mica on Win 11, Acrylic fallback on Win 10)
+// via window_vibrancy. The macOS NSVisualEffectMaterial::Popover path was
+// stripped in US-002 along with the objc2 NSApp.applicationIconImage reach
+// (the Accessory activation policy + .app icon image were macOS-only
+// surfaces — Windows ships a real .exe + .ico via the MSI/NSIS bundle).
 
 fn main() {
     use sentry::ClientOptions;
@@ -103,7 +34,7 @@ fn main() {
     };
     let _guard = sentry::init(ClientOptions {
         dsn,
-        release: Some(format!("hq-sync@{}", env!("CARGO_PKG_VERSION")).into()),
+        release: Some(format!("hq-sync-win@{}", env!("CARGO_PKG_VERSION")).into()),
         environment: Some(
             option_env!("SENTRY_ENVIRONMENT")
                 .unwrap_or("production")
@@ -117,15 +48,16 @@ fn main() {
         ..Default::default()
     });
     sentry::configure_scope(|scope| {
-        scope.set_tag("repo", "hq-sync");
+        scope.set_tag("repo", "hq-sync-win");
     });
 
     use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};
 
-    // Cmd+Shift+H — global hotkey to summon the popover from anywhere.
-    // Defined up front so the plugin builder and the setup-time `register`
-    // call agree on the exact key combo.
-    let show_shortcut = Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyH);
+    // Ctrl+Shift+H — global hotkey to summon the popover from anywhere.
+    // SUPER on Windows maps to the Win key, which conflicts with system
+    // shortcuts (Win+H opens Voice Typing). CONTROL+SHIFT+H is the
+    // Windows-conventional equivalent of the macOS Cmd+Shift+H chord.
+    let show_shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyH);
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -143,11 +75,11 @@ fn main() {
         )
         .manage(updater::PendingUpdate(Mutex::new(None)))
         .manage(commands::new_files::PendingNewFiles(Mutex::new(Vec::new())))
-        // Menubar-app close behaviour: intercept window-close (traffic-light
-        // red button, Cmd-W, File→Close) and hide the window instead of
-        // terminating the process. The app only truly exits via the tray
-        // context menu's "Quit" item (see tray.rs MENU_QUIT). This matches
-        // native Cocoa NSStatusItem apps like Bartender, Rectangle, Raycast.
+        // Tray-app close behaviour: intercept window-close (system menu Close,
+        // Alt-F4, frame X) and hide the popover instead of terminating the
+        // process. The app only truly exits via the tray context menu's
+        // "Quit" item (see tray.rs MENU_QUIT). Matches Windows tray-utility
+        // norms (PowerToys, ShareX, Everything).
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 // Only hide the main popover window — let other windows
@@ -213,43 +145,27 @@ fn main() {
             // diagnostic file and don't abort launch.
             commands::config::migrate_legacy_config_stub();
 
-            // Default-on autostart: ensure the LaunchAgent plist matches the
-            // effective `startAtLogin` pref (default true) so a fresh install
-            // opens HQ Sync at login without the user opening Settings first.
-            // Honours an explicit `"startAtLogin": false` opt-out. Best-effort
-            // and idempotent — never aborts launch.
-            #[cfg(target_os = "macos")]
+            // Default-on autostart: ensure the Registry Run entry matches
+            // the effective `startAtLogin` pref (default true) so a fresh
+            // install opens HQ Sync at login without the user opening
+            // Settings first. Honours an explicit `"startAtLogin": false`
+            // opt-out. Best-effort and idempotent — never aborts launch.
+            // US-006 wires the HKCU Registry Run key implementation.
             commands::autostart::ensure_autostart_on_launch();
 
-            // macOS menubar-app activation policy. `Accessory` = no Dock
-            // icon, no entry in CMD-Tab, no top-of-screen app menu bar.
-            // The tray icon is the only surface. Without this the app
-            // appears in the Dock whenever the window is shown.
-            #[cfg(target_os = "macos")]
-            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
-
-            // Brand the app's runtime icon image. With Accessory activation
-            // policy there's no Dock icon, but the meetings window (and any
-            // future detached windows) still show up in Mission Control /
-            // Cmd-Tab — by default with a generic folder icon because no
-            // .app bundle icon is registered at runtime. Setting
-            // NSApp.applicationIconImage gives those surfaces the HQ mark
-            // to render even though the Dock stays empty.
-            #[cfg(target_os = "macos")]
-            {
-                const HQ_ICON_PNG: &[u8] = include_bytes!("../icons/128x128@2x.png");
-                set_app_icon_from_bytes(HQ_ICON_PNG);
-            }
-
-            #[cfg(target_os = "macos")]
-            if let Some(window) = app.get_webview_window("main") {
-                apply_liquid_glass(&window);
+            // US-005 wires Windows vibrancy here:
+            //   apply_mica(window, Some(true))  on Win 11
+            //   apply_acrylic(window, Some((18, 18, 18, 180)))  on Win 10 fallback
+            // For now the popover renders without blur; the Svelte UI ships
+            // a solid background fallback so this is visually acceptable.
+            if let Some(_window) = app.get_webview_window("main") {
+                // intentionally empty until US-005
             }
 
             tray::setup_tray(app.handle())?;
             updater::setup_update_checker(app.handle());
 
-            // Register Cmd+Shift+H globally so the popover can be summoned
+            // Register Ctrl+Shift+H globally so the popover can be summoned
             // from any app. The handler (configured on the plugin builder
             // above) calls `tray::show_window_at_tray`. Registration can
             // fail if another app already holds the chord — log and
@@ -257,11 +173,11 @@ fn main() {
             {
                 use tauri_plugin_global_shortcut::GlobalShortcutExt;
                 let shortcut =
-                    Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyH);
+                    Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyH);
                 if let Err(e) = app.global_shortcut().register(shortcut) {
                     util::logfile::log(
                         "ui",
-                        &format!("global shortcut Cmd+Shift+H register FAILED: {e}"),
+                        &format!("global shortcut Ctrl+Shift+H register FAILED: {e}"),
                     );
                 }
             }
