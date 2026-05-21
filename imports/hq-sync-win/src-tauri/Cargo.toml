@@ -1,0 +1,75 @@
+[package]
+name = "hq-sync-menubar"
+version = "0.1.39"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["macos-private-api", "tray-icon", "image-png"] }
+tauri-plugin-shell = "2"
+tauri-plugin-http = "2"
+tauri-plugin-fs = "2"
+tauri-plugin-updater = "2"
+tauri-plugin-global-shortcut = "2"
+window-vibrancy = "0.6"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+uuid = { version = "1", features = ["v4"] }
+tokio = { version = "1", features = ["full"] }
+nix = { version = "0.29", features = ["signal"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+dirs = "6"
+rfd = "0.15"
+sha2 = "0.10"
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+sentry = "^0.35"
+glob = "0.3"
+ignore = "0.4"
+walkdir = "2"
+# `behavior-version-latest` opts into the AWS SDK's modern defaults at compile
+# time. Without it, constructing an S3 client panics with
+#   "A behavior major version must be set when sending a request or
+#    constructing a client"
+# because aws-sdk-s3 1.x requires you to pin a BehaviorVersion either in code
+# (per call site) or at the dep level via this feature. We pin at the dep
+# level so first_push.rs / personal.rs don't each need to remember it.
+aws-sdk-s3 = { version = "1", features = ["behavior-version-latest"] }
+aws-sdk-sts = { version = "1", features = ["behavior-version-latest"] }
+aws-config = "1"
+aws-smithy-types = "1"
+aws-credential-types = "1"
+ulid = "1"
+bytes = "1"
+
+[profile.release]
+split-debuginfo = "packed"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Used by commands::folder_picker to enumerate NSApp.windows and close
+# any stale NSOpenPanel/NSSavePanel before opening a new picker. rfd
+# doesn't expose the panel handle, so we reach into AppKit directly.
+objc2 = "0.6"
+
+[features]
+journal-cli = []
+
+# Lives in examples/ (auto-discovered) rather than src/bin/. Cargo's auto-bin
+# detection registers any src/bin/*.rs as kind= ["bin"] regardless of
+# required-features; Tauri's bundler then walks all bins and tries to copy
+# each, which broke v0.1.16 (file never built because of the feature gate, but
+# bundler still tried). Examples are auto-discovered from examples/, never
+# walked by Tauri's bundler. Run with:
+#   cargo run --example emit-sample-journal --features journal-cli
+[[example]]
+name = "emit-sample-journal"
+path = "examples/emit-sample-journal.rs"
+required-features = ["journal-cli"]
+
+[dev-dependencies]
+tempfile = "3"
+wiremock = "0.6"
+tauri = { version = "2", features = ["test"] }

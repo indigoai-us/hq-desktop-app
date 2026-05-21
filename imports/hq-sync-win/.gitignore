@@ -1,0 +1,13 @@
+node_modules/
+dist/
+target/
+.DS_Store
+*.log
+.env
+.env.*
+.env*backup*
+*.p12
+*.pem
+*.key
+*.cer
+*.p8
