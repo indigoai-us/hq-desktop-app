@@ -1,65 +1,66 @@
-//! HQ filesystem path helpers.
+//! HQ filesystem path helpers (Windows).
 //!
-//! ## US-002 state
+//! Windows resolution order for child-process PATH and binary discovery:
+//!   1. `%LOCALAPPDATA%\Indigo HQ\toolchain\bin`        (managed toolchain — installed by hq-installer-win)
+//!   2. `%LOCALAPPDATA%\Indigo HQ\toolchain\node`       (node.exe + npx.cmd from the same install)
+//!   3. `%USERPROFILE%\.hq\bin`                          (user-side per-project overrides)
+//!   4. `%LOCALAPPDATA%\Microsoft\WindowsApps`           (winget shim dir)
+//!   5. `%USERPROFILE%\scoop\shims`                      (scoop shim dir)
+//!   6. system PATH (`%PATH%`)
 //!
-//! Stripped: Homebrew (`/opt/homebrew/bin`, `/usr/local/bin`) candidates,
-//! `~/Library/Application Support/Indigo HQ/toolchain/` managed toolchain
-//! dir, the `zsh -lc command -v` login-shell fallback. US-008 wires the
-//! Windows equivalents: `%LOCALAPPDATA%\Indigo HQ\toolchain\bin`,
-//! `%LOCALAPPDATA%\Microsoft\WindowsApps` (winget shim dir), Scoop shim
-//! dir, and PowerShell-based PATH lookup. Cross-platform helpers
-//! (`hq_config_dir`, `menubar_json_path`, `resolve_hq_folder`, etc.) stay
-//! as-is — `dirs::home_dir()` returns the right value on both platforms.
+//! The managed toolchain dir (1+2) is the canonical Windows install
+//! location and mirrors hq-installer-win's `managed_toolchain_dir_in()`.
+//! Putting it first means `hq`/`node`/`npx` resolved by hq-installer-win
+//! always win over whatever the user has on their system PATH — which is
+//! exactly what we want for reproducibility.
 
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
-/// Returns the ~/.hq/ directory path.
-///
+/// Path-separator character on this platform. Windows uses `;`, POSIX uses `:`.
+#[cfg(target_os = "windows")]
+const PATH_SEP: char = ';';
+#[cfg(not(target_os = "windows"))]
+const PATH_SEP: char = ':';
+
+/// Executable extension on this platform. Empty on POSIX; `.exe` on Windows.
+#[cfg(target_os = "windows")]
+const EXE_EXT: &str = ".exe";
+#[cfg(not(target_os = "windows"))]
+const EXE_EXT: &str = "";
+
+/// Returns the managed HQ toolchain directory installed by hq-installer-win.
+/// Path mirrors `managed_toolchain_dir_in()` in hq-installer-win's `deps.rs`:
+///   `%LOCALAPPDATA%\Indigo HQ\toolchain\`
+#[cfg(target_os = "windows")]
+fn managed_toolchain_dir() -> Option<PathBuf> {
+    let local_app = std::env::var_os("LOCALAPPDATA")?;
+    Some(PathBuf::from(local_app).join("Indigo HQ").join("toolchain"))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn managed_toolchain_dir() -> Option<PathBuf> {
+    None
+}
+
+/// Returns the `~/.hq/` directory path.
 /// On Windows this resolves to `%USERPROFILE%\.hq\` via `dirs::home_dir()`.
 pub fn hq_config_dir() -> Result<PathBuf, String> {
     let home = dirs::home_dir().ok_or_else(|| "Cannot determine home directory".to_string())?;
     Ok(home.join(".hq"))
 }
 
-/// Resolve a node-backed CLI binary (e.g. `hq-sync-runner`, `hq`) to an
-/// absolute path.
-///
-/// US-008 wires the Windows resolution order:
-///   1. `%LOCALAPPDATA%\Indigo HQ\toolchain\bin\{name}.exe`
-///   2. `%USERPROFILE%\.hq\bin\{name}.exe`
-///   3. winget shim dir `%LOCALAPPDATA%\Microsoft\WindowsApps\{name}.exe`
-///   4. Scoop shim dir `%USERPROFILE%\scoop\shims\{name}.exe`
-///   5. `where.exe {name}` fallback
-///
-/// Until US-008 lands this returns the bare name unchanged — `Command::new`
-/// then does its own PATH lookup, which is correct for `node`/`npx` if they
-/// happen to be on the system PATH already.
-pub fn resolve_bin(name: &str) -> String {
-    name.to_string()
-}
-
-/// Build a PATH value suitable for handing to a spawned child process.
-///
-/// US-008 wires a Windows-appropriate PATH (semicolon-delimited) that
-/// prepends the managed HQ toolchain, winget shims, and Scoop shims.
-/// Until then we forward the parent process PATH verbatim — Tauri apps
-/// launched via Start menu / Explorer inherit the user's PATH by default
-/// on Windows, so this works for typical dev setups.
-pub fn child_path() -> String {
-    std::env::var("PATH").unwrap_or_default()
-}
-
-/// Returns the path to ~/.hq/config.json.
+/// Returns the path to `~/.hq/config.json`.
 pub fn config_json_path() -> Result<PathBuf, String> {
     Ok(hq_config_dir()?.join("config.json"))
 }
 
-/// Returns the path to ~/.hq/menubar.json.
+/// Returns the path to `~/.hq/menubar.json`.
 pub fn menubar_json_path() -> Result<PathBuf, String> {
     Ok(hq_config_dir()?.join("menubar.json"))
 }
 
-/// Returns the path to ~/.hq/deploy-prefs.json.
+/// Returns the path to `~/.hq/deploy-prefs.json`.
 ///
 /// This file is owned exclusively by hq-core's `/deploy` skill — it persists
 /// `defaultOrg` and `deploy.preference`. hq-sync only touches it during the
@@ -69,48 +70,179 @@ pub fn deploy_prefs_json_path() -> Result<PathBuf, String> {
     Ok(hq_config_dir()?.join("deploy-prefs.json"))
 }
 
+/// Compute the ordered set of directories to prepend to a child process'
+/// PATH. Splits the priorities documented at the top of this module into
+/// a Vec so `child_path` can deduplicate against the parent PATH and so
+/// `resolve_bin` can walk the same set.
+fn extended_search_dirs() -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+
+    if let Some(toolchain) = managed_toolchain_dir() {
+        // bin and node first — hq + node + npx live under one of these.
+        dirs.push(toolchain.join("bin"));
+        dirs.push(toolchain.join("node"));
+    }
+
+    if let Some(home) = dirs::home_dir() {
+        dirs.push(home.join(".hq").join("bin"));
+        // Scoop default install dir; harmless on systems without Scoop.
+        dirs.push(home.join("scoop").join("shims"));
+    }
+
+    if cfg!(target_os = "windows") {
+        if let Ok(local_app) = std::env::var("LOCALAPPDATA") {
+            // winget shim dir — `winget install <pkg>` typically drops a
+            // .exe shim here that's on the user's PATH but doesn't show
+            // in standard tool lists. Worth checking.
+            dirs.push(
+                PathBuf::from(local_app)
+                    .join("Microsoft")
+                    .join("WindowsApps"),
+            );
+        }
+    }
+
+    dirs
+}
+
+/// Resolve a node-backed CLI binary (e.g. `hq-sync-runner`, `hq`, `npx`)
+/// to an absolute path.
+///
+/// Tries each `extended_search_dirs()` entry in order, looking for both
+/// `{name}` and `{name}.exe`. Falls back to a `where.exe` lookup on
+/// Windows (system PATH-aware) before returning the bare name.
+///
+/// Returns the bare name as the last-ditch fallback so the caller's
+/// `Command::new` will then error with the original "os error 2", which
+/// surfaces as a sync error the UI can show. We don't invent a path
+/// that doesn't exist.
+pub fn resolve_bin(name: &str) -> String {
+    let candidates = candidate_filenames(name);
+
+    for dir in extended_search_dirs() {
+        for candidate in &candidates {
+            let full = dir.join(candidate);
+            if full.exists() {
+                return full.to_string_lossy().to_string();
+            }
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(output) = Command::new("where.exe").arg(name).output() {
+            if output.status.success() {
+                // where.exe prints every match newline-delimited;
+                // take the first.
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                if let Some(first) = stdout.lines().next() {
+                    let trimmed = first.trim();
+                    if !trimmed.is_empty() && Path::new(trimmed).exists() {
+                        return trimmed.to_string();
+                    }
+                }
+            }
+        }
+    }
+
+    name.to_string()
+}
+
+/// Compute the filename candidates for a binary lookup. On Windows we
+/// try both `{name}` (already-extensioned, e.g. `npx.cmd`) and
+/// `{name}.exe` (the common case). On POSIX we only try the bare name.
+fn candidate_filenames(name: &str) -> Vec<String> {
+    if EXE_EXT.is_empty() {
+        vec![name.to_string()]
+    } else if name.ends_with(EXE_EXT) || name.ends_with(".cmd") || name.ends_with(".bat") {
+        vec![name.to_string()]
+    } else {
+        vec![format!("{name}{EXE_EXT}"), name.to_string()]
+    }
+}
+
+/// Build a PATH value suitable for handing to a spawned child process.
+///
+/// Prepends the extended search dirs (managed HQ toolchain, ~/.hq/bin,
+/// scoop, winget shims) to the parent PATH so node-shebanged scripts +
+/// nested `Command::new('node')` lookups resolve to the managed
+/// toolchain first. Deduplicates so a dir that's already on the parent
+/// PATH doesn't appear twice.
+pub fn child_path() -> String {
+    let mut parts: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for dir in extended_search_dirs() {
+        let s = dir.to_string_lossy().to_string();
+        if !s.is_empty() && seen.insert(s.to_lowercase()) {
+            parts.push(s);
+        }
+    }
+
+    // Append standard Windows system dirs as a safety net for builds where
+    // %PATH% is unusually trimmed (some Tauri-launched contexts inherit
+    // only the minimal SYSTEM env). Harmless duplication is prevented by
+    // the `seen` dedup.
+    if cfg!(target_os = "windows") {
+        if let Ok(windir) = std::env::var("SystemRoot") {
+            for sub in ["system32", "System32\\WindowsPowerShell\\v1.0", ""] {
+                let candidate = if sub.is_empty() {
+                    PathBuf::from(&windir)
+                } else {
+                    PathBuf::from(&windir).join(sub)
+                };
+                let s = candidate.to_string_lossy().to_string();
+                if !s.is_empty() && seen.insert(s.to_lowercase()) {
+                    parts.push(s);
+                }
+            }
+        }
+    }
+
+    if let Ok(existing) = std::env::var("PATH") {
+        for p in existing.split(PATH_SEP) {
+            if p.is_empty() {
+                continue;
+            }
+            if seen.insert(p.to_lowercase()) {
+                parts.push(p.to_string());
+            }
+        }
+    }
+
+    parts.join(&PATH_SEP.to_string())
+}
+
 /// Resolve the HQ folder path with priority:
 /// 1. menubar_override (from menubar.json hqPath)
 /// 2. config_path (from config.json hqFolderPath)
 /// 3. Discovery: scan likely locations for a folder containing a valid
 ///    `core.yaml` (the canonical hq-core marker — version + hqVersion fields).
 ///    Both v14+ (`core/core.yaml`) and legacy (`core.yaml` at root) layouts
-///    are accepted; see `is_valid_hq_root`. First match wins. This is the
-///    safety net for installs that didn't write the path back to menubar.json
-///    (older installer flows).
-/// 4. ~/HQ default
+///    are accepted; see `is_valid_hq_root`. First match wins.
+/// 4. `%USERPROFILE%\HQ` default
 pub fn resolve_hq_folder(
     config_path: Option<&str>,
     menubar_override: Option<&str>,
 ) -> PathBuf {
-    // Priority 1: menubar.json override
     if let Some(path) = menubar_override {
         if !path.is_empty() {
             return PathBuf::from(path);
         }
     }
-
-    // Priority 2: config.json hqFolderPath
     if let Some(path) = config_path {
         if !path.is_empty() {
             return PathBuf::from(path);
         }
     }
-
-    // Priority 3: discover via core.yaml signature.
     if let Some(found) = discover_hq_folder_via_core_yaml() {
         return found;
     }
-
-    // Priority 4: ~/HQ default
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("C:\\"))
         .join("HQ")
 }
 
-/// Candidate parent paths the installer wizard typically uses (or that users
-/// commonly choose). First entry that contains a valid `core.yaml` wins.
-/// Order matters — most-likely first to avoid scanning the entire home dir.
 fn hq_discovery_candidates() -> Vec<PathBuf> {
     let home = match dirs::home_dir() {
         Some(h) => h,
@@ -128,18 +260,7 @@ fn hq_discovery_candidates() -> Vec<PathBuf> {
 
 /// True iff the candidate folder contains a `core.yaml` (canonical or
 /// legacy location) that parses as YAML and has the canonical hq-core
-/// schema fields (`version` + `hqVersion`). Validates beyond mere presence
-/// so a random folder named `core.yaml` (config file from another tool,
-/// abandoned scratch) won't false-match.
-///
-/// File location is layout-aware:
-///   * **canonical (v14+):** `<path>/core/core.yaml`
-///   * **legacy (pre-v14):** `<path>/core.yaml`
-///
-/// The v14 hq-core release moved `core.yaml` one level deeper (see
-/// `apps/hq-core/MIGRATION.md` — "Root core.yaml; canonical location is
-/// core/core.yaml"). Before that fix, Priority 3 discovery silently
-/// rejected every v14+ HQ folder and fell through to the `~/HQ` default.
+/// schema fields (`version` + `hqVersion`).
 pub fn is_valid_hq_root(path: &Path) -> bool {
     let canonical = path.join("core").join("core.yaml");
     let legacy = path.join("core.yaml");
@@ -158,15 +279,9 @@ pub fn is_valid_hq_root(path: &Path) -> bool {
         Ok(v) => v,
         Err(_) => return false,
     };
-    // Both fields must be present per the hq-core schema (see
-    // indigoai-us/hq-core core/core.yaml). `version` is the schema version,
-    // `hqVersion` is the template version. Random YAML files won't have both.
     parsed.get("version").is_some() && parsed.get("hqVersion").is_some()
 }
 
-/// Scan the well-known candidate locations for an HQ folder. Returns the
-/// first valid root found, or None. Cheap — a few `stat` calls plus one
-/// small YAML parse on a hit; no fs walk.
 pub fn discover_hq_folder_via_core_yaml() -> Option<PathBuf> {
     hq_discovery_candidates()
         .into_iter()
@@ -231,8 +346,62 @@ mod tests {
 
     #[test]
     fn test_resolve_bin_returns_name_when_not_resolved() {
-        // US-008 fills in Windows resolution. Stub returns bare name.
         let result = resolve_bin("hq-sync-nonexistent-xyz-123");
         assert_eq!(result, "hq-sync-nonexistent-xyz-123");
+    }
+
+    #[test]
+    fn test_candidate_filenames_appends_exe_on_windows() {
+        let cands = candidate_filenames("hq");
+        if cfg!(target_os = "windows") {
+            assert!(cands.contains(&"hq.exe".to_string()));
+            assert!(cands.contains(&"hq".to_string()));
+        } else {
+            assert_eq!(cands, vec!["hq".to_string()]);
+        }
+    }
+
+    #[test]
+    fn test_candidate_filenames_preserves_existing_extension() {
+        // .cmd / .bat / .exe should NOT get .exe appended.
+        let cands = candidate_filenames("npx.cmd");
+        assert_eq!(cands, vec!["npx.cmd".to_string()]);
+        let cands = candidate_filenames("hq.exe");
+        assert_eq!(cands, vec!["hq.exe".to_string()]);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_child_path_includes_managed_toolchain_first() {
+        // Override LOCALAPPDATA so the test is deterministic regardless
+        // of the real %LOCALAPPDATA%.
+        let prev = std::env::var_os("LOCALAPPDATA");
+        std::env::set_var("LOCALAPPDATA", "C:\\TEST_LOCALAPPDATA");
+
+        let path = child_path();
+
+        // The managed toolchain bin dir must come before any system dir.
+        let managed = "C:\\TEST_LOCALAPPDATA\\Indigo HQ\\toolchain\\bin";
+        let managed_pos = path
+            .to_lowercase()
+            .find(&managed.to_lowercase())
+            .expect("managed toolchain dir must be in child_path");
+        let system32_pos = path
+            .to_lowercase()
+            .find("system32")
+            .map(|p| p as i64)
+            .unwrap_or(-1);
+        if system32_pos >= 0 {
+            assert!(
+                (managed_pos as i64) < system32_pos,
+                "managed toolchain ({managed_pos}) must come before system32 ({system32_pos})"
+            );
+        }
+
+        // Restore.
+        match prev {
+            Some(v) => std::env::set_var("LOCALAPPDATA", v),
+            None => std::env::remove_var("LOCALAPPDATA"),
+        }
     }
 }

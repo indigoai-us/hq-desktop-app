@@ -135,7 +135,11 @@ fn probe() -> HqInvocation {
     // binary anywhere — that's our signal to skip the probe entirely
     // and fall straight to npx. Avoids spawning a process that's
     // guaranteed to ENOENT.
-    if local == "hq" {
+    //
+    // On Windows the resolve_bin call also tries "hq.exe" via the
+    // candidate_filenames helper, so the bare "hq" sentinel still
+    // catches both shapes.
+    if local == "hq" || local == "hq.exe" {
         log(
             "hq-resolver",
             "local `hq` not found by resolve_bin; falling back to npx",
