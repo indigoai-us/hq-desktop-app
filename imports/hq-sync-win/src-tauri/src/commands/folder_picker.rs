@@ -36,11 +36,27 @@ pub async fn pick_folder(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
     fn test_dialog_builder_compiles() {
         // Verify rfd API is available and the builder pattern works.
         // We can't actually open a dialog in tests, but we can confirm
         // the builder chain compiles correctly.
         let _builder = rfd::AsyncFileDialog::new().set_title("Choose HQ Folder");
+    }
+
+    /// pick_folder is `async fn(AppHandle) -> Result<Option<String>, String>`.
+    /// `None` is the user-cancelled path (rfd default — `pick_folder()`
+    /// returns None when the IFileOpenDialog Cancel button fires).
+    /// Compile-time witness that the signature is preserved across the
+    /// Windows port — no breakage for the Svelte command-invoke layer.
+    #[allow(dead_code)]
+    fn pick_folder_signature_witness() -> fn(
+        tauri::AppHandle,
+    )
+        -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<String>, String>> + Send>>
+    {
+        |app| Box::pin(pick_folder(app))
     }
 }
