@@ -54,8 +54,13 @@ bytes = "1"
 [target.'cfg(target_os = "windows")'.dependencies]
 # US-004: Win32 Job Object + process-handle APIs for spawn/cancel tree kill.
 # US-006: HKCU Registry Run key for autostart (winreg).
+#
+# Win32_Security: required transitively by CreateJobObjectW
+#   (takes Option<*const SECURITY_ATTRIBUTES>) — without it the call is
+#   feature-gated out and the import resolves to nothing.
 windows = { version = "0.58", features = [
     "Win32_Foundation",
+    "Win32_Security",
     "Win32_System_JobObjects",
     "Win32_System_Threading",
     "Win32_System_Diagnostics_ToolHelp",

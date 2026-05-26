@@ -177,7 +177,13 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         .build()?;
 
     // Build tray icon
-    let tray = TrayIconBuilder::with_id(TRAY_ID)
+    // `tray` binding is unused after US-002 stripped the
+    // tray.set_visible(false)/set_visible(true) re-registration toggle
+    // (a macOS Tahoe/Sequoia SystemUIServer workaround). The builder
+    // result is held by Tauri's TrayIcon manager — we don't need to
+    // address the icon directly here. Underscore-prefix to silence the
+    // warning without losing the symbol for future US-005 work.
+    let _tray = TrayIconBuilder::with_id(TRAY_ID)
         .icon(icon_for_state(TrayState::Idle))
         // icon_as_template is a macOS template-icon flag (monochrome
         // recolouring by AppKit). Windows tray icons are full-color
