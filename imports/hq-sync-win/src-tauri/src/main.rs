@@ -10,11 +10,46 @@ mod tray;
 mod updater;
 mod util;
 
-// US-005 adds Windows vibrancy (Mica on Win 11, Acrylic fallback on Win 10)
-// via window_vibrancy. The macOS NSVisualEffectMaterial::Popover path was
-// stripped in US-002 along with the objc2 NSApp.applicationIconImage reach
-// (the Accessory activation policy + .app icon image were macOS-only
-// surfaces — Windows ships a real .exe + .ico via the MSI/NSIS bundle).
+/// Apply Mica (Win 11) or Acrylic (Win 10 fallback) blur to the popover window.
+///
+/// Mica is the preferred Win 11 material — it's the system-tinted backdrop
+/// the OS uses for Settings, Files, etc. On Win 10 Mica isn't available;
+/// Acrylic is the closest analogue (translucent panel with a custom RGBA
+/// tint). Either way the Svelte popover renders on top of the system blur.
+///
+/// Both calls are best-effort: a failure logs and returns. The Svelte UI
+/// ships a solid-background fallback so the popover remains readable even
+/// when no vibrancy is applied (third-party theme tools, custom shell
+/// replacements, Windows Server SKUs).
+fn apply_windows_vibrancy(window: &tauri::WebviewWindow) {
+    use util::logfile::log;
+    use window_vibrancy::{apply_acrylic, apply_mica};
+
+    // Try Mica first (Win 11+). `Some(true)` enables the dark variant —
+    // matches the popover's dark Svelte theme. Returns Err on Win 10 and
+    // any system where DwmExtendFrameIntoClientArea isn't honored.
+    match apply_mica(window, Some(true)) {
+        Ok(()) => {
+            log("ui", "apply_mica: success (dark variant)");
+            return;
+        }
+        Err(e) => {
+            log("ui", &format!("apply_mica failed: {e}; trying Acrylic fallback"));
+        }
+    }
+
+    // Acrylic fallback. RGBA tint (18, 18, 18, 180) ≈ dark with ~70% opacity —
+    // close enough to the macOS Popover material the mac version used.
+    match apply_acrylic(window, Some((18, 18, 18, 180))) {
+        Ok(()) => log("ui", "apply_acrylic: success (Win 10 fallback)"),
+        Err(e) => log(
+            "ui",
+            &format!(
+                "apply_acrylic failed: {e}; popover will render with the Svelte solid-background fallback"
+            ),
+        ),
+    }
+}
 
 fn main() {
     use sentry::ClientOptions;
@@ -153,13 +188,11 @@ fn main() {
             // US-006 wires the HKCU Registry Run key implementation.
             commands::autostart::ensure_autostart_on_launch();
 
-            // US-005 wires Windows vibrancy here:
-            //   apply_mica(window, Some(true))  on Win 11
-            //   apply_acrylic(window, Some((18, 18, 18, 180)))  on Win 10 fallback
-            // For now the popover renders without blur; the Svelte UI ships
-            // a solid background fallback so this is visually acceptable.
-            if let Some(_window) = app.get_webview_window("main") {
-                // intentionally empty until US-005
+            // Apply Mica (Win 11) / Acrylic (Win 10) backdrop to the popover.
+            // Best-effort — the Svelte UI ships a solid-background fallback
+            // for systems where neither material is available.
+            if let Some(window) = app.get_webview_window("main") {
+                apply_windows_vibrancy(&window);
             }
 
             tray::setup_tray(app.handle())?;

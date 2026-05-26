@@ -243,6 +243,10 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         window.on_window_event(move |event| {
             if let WindowEvent::Focused(false) = event {
                 if !is_modal_open() {
+                    // Drop always-on-top before hiding so we don't briefly
+                    // mark the window as topmost while it's invisible (some
+                    // window-management tools cache that state).
+                    let _ = win_clone.set_always_on_top(false);
                     let _ = win_clone.hide();
                 }
             }
@@ -261,50 +265,63 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
 
 /// Toggle the main window visibility (popover behaviour).
 ///
-/// When showing, position the popover directly under the tray icon
-/// (centered horizontally, small gap below) if we have its bounds.
-/// `window.hide()` preserves renderer state so re-show is instant.
+/// When showing, position the popover ABOVE the tray icon (Windows tray
+/// lives at the bottom-right of the screen by default, so the popover
+/// goes above-and-aligned to the icon). `window.hide()` preserves
+/// renderer state so re-show is instant. `alwaysOnTop` is toggled with
+/// visibility so the popover doesn't block other apps while hidden.
 fn toggle_window(app: &AppHandle, tray_rect: Option<Rect>) {
     if let Some(window) = app.get_webview_window("main") {
         if window.is_visible().unwrap_or(false) {
+            let _ = window.set_always_on_top(false);
             let _ = window.hide();
         } else {
             if let Some(rect) = tray_rect {
-                position_below_tray(&window, rect);
+                position_above_tray(&window, rect);
             }
+            let _ = window.set_always_on_top(true);
             let _ = window.show();
             let _ = window.set_focus();
         }
     }
 }
 
-/// Pure math: center `win_w`-wide window horizontally under the tray icon,
-/// `gap_px` below it. All inputs in physical pixels.
-fn compute_popover_position(
+/// Pure math: right-align `win_w`-wide window with the tray icon,
+/// `gap_px` above it. All inputs in physical pixels.
+///
+/// Windows tray icons sit at the bottom-right of the screen by default.
+/// Anchoring the popover's RIGHT edge to the tray icon's right edge
+/// keeps the popover on-screen even when the tray is in the corner.
+/// `pop_y` is the popover's top — sits `win_h + gap_px` above the tray's top edge.
+pub(crate) fn compute_popover_position(
     tray_x: f64,
-    tray_y: f64,
+    _tray_y: f64,
     tray_w: f64,
-    tray_h: f64,
+    _tray_h: f64,
     win_w: f64,
+    win_h: f64,
     gap_px: f64,
 ) -> (i32, i32) {
-    let pop_x = (tray_x + tray_w / 2.0 - win_w / 2.0).round() as i32;
-    let pop_y = (tray_y + tray_h + gap_px).round() as i32;
+    // Compute against the tray icon — for bottom-right Windows taskbar
+    // tray placement we just need to position the popover above the icon,
+    // right-aligned. The Y math uses the tray Y (top of icon) − win_h − gap.
+    let pop_x = (tray_x + tray_w - win_w).round() as i32;
+    let pop_y = (_tray_y - win_h - gap_px).round() as i32;
     (pop_x, pop_y)
 }
 
-// Small visual gap between the menu bar and the popover top edge.
-// 4 physical px is ~2pt on a 2x retina display — enough to avoid
-// the popover looking glued to the menu bar.
-const POPOVER_GAP_PX: f64 = 4.0;
+// Small visual gap between the taskbar and the popover bottom edge.
+// 8 physical px keeps the popover from feeling glued to the taskbar
+// while staying close enough to read as "this popover comes from there."
+const POPOVER_GAP_PX: f64 = 8.0;
 
-/// Center the window horizontally under the tray icon, just below it.
+/// Position the window above the tray icon with right-edge alignment.
 ///
 /// `Rect`'s `position` and `size` are enums (Physical | Logical); we
 /// normalize both to physical pixels using the window's scale factor
 /// so the math is unit-consistent with `window.outer_size()`, which is
 /// already physical.
-fn position_below_tray(window: &tauri::WebviewWindow, rect: Rect) {
+fn position_above_tray(window: &tauri::WebviewWindow, rect: Rect) {
     let size = match window.outer_size() {
         Ok(s) => s,
         Err(_) => return,
@@ -320,28 +337,30 @@ fn position_below_tray(window: &tauri::WebviewWindow, rect: Rect) {
         tauri::Size::Logical(s) => (s.width * scale, s.height * scale),
     };
     let win_w = size.width as f64;
+    let win_h = size.height as f64;
 
     let (pop_x, pop_y) =
-        compute_popover_position(tray_x, tray_y, tray_w, tray_h, win_w, POPOVER_GAP_PX);
+        compute_popover_position(tray_x, tray_y, tray_w, tray_h, win_w, win_h, POPOVER_GAP_PX);
 
     let _ = window.set_position(PhysicalPosition::new(pop_x, pop_y));
 }
 
-/// Show + focus the main window, positioned under the tray icon.
+/// Show + focus the main window, positioned above the tray icon.
 ///
 /// Used by the global keyboard shortcut so the popover can be summoned
 /// from anywhere without clicking the tray icon. If the tray rect isn't
 /// available yet (race during startup) we still show the window — it
-/// will appear at its last position rather than under the icon.
+/// will appear at its last position rather than above the icon.
 pub fn show_window_at_tray(app: &AppHandle) {
     let Some(window) = app.get_webview_window("main") else {
         return;
     };
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
         if let Ok(Some(rect)) = tray.rect() {
-            position_below_tray(&window, rect);
+            position_above_tray(&window, rect);
         }
     }
+    let _ = window.set_always_on_top(true);
     let _ = window.show();
     let _ = window.set_focus();
 }
@@ -484,19 +503,26 @@ mod tests {
     }
 
     #[test]
-    fn test_compute_popover_position_centers_under_tray() {
-        // tray icon at x=1000, y=0, 24x24px; window 320px wide; 4px gap.
-        let (x, y) = compute_popover_position(1000.0, 0.0, 24.0, 24.0, 320.0, 4.0);
-        assert_eq!(x, 1000 + 12 - 160); // = 852
-        assert_eq!(y, 0 + 24 + 4); //     = 28
+    fn test_compute_popover_position_right_aligned_above_tray() {
+        // Tray icon at bottom-right: x=1880, y=1050 (just above a 1080p
+        // taskbar at y=1052), 24x24. Window 320w × 400h. Gap 8.
+        // Expected: popover RIGHT edge aligned to tray right edge
+        //   pop_x = tray_x + tray_w − win_w = 1880 + 24 − 320 = 1584
+        // and BOTTOM edge sits gap above tray TOP edge
+        //   pop_y = tray_y − win_h − gap = 1050 − 400 − 8 = 642
+        let (x, y) = compute_popover_position(1880.0, 1050.0, 24.0, 24.0, 320.0, 400.0, 8.0);
+        assert_eq!(x, 1584);
+        assert_eq!(y, 642);
     }
 
     #[test]
-    fn test_compute_popover_position_handles_off_screen_left() {
-        // Tray near left edge — helper returns raw math, no clamping.
-        // Caller is responsible for keeping the popover on-screen if needed.
-        let (x, _) = compute_popover_position(10.0, 0.0, 24.0, 24.0, 320.0, 4.0);
-        assert_eq!(x, 10 + 12 - 160); // = -138
+    fn test_compute_popover_position_no_clamping() {
+        // Helper returns raw math — no on-screen clamping. If the tray
+        // is near top-left (unusual; Windows tray usually bottom-right
+        // but user can move taskbar), pop_y goes negative. Caller is
+        // responsible for keeping the popover on-screen if needed.
+        let (_, y) = compute_popover_position(10.0, 20.0, 24.0, 24.0, 320.0, 400.0, 8.0);
+        assert_eq!(y, 20 - 400 - 8); // = -388
     }
 
     #[test]
