@@ -51,11 +51,16 @@ bytes = "1"
 # `split-debuginfo = "packed"` is macOS/dSYM-specific. On Windows MSVC the
 # pdb is already a separate sidecar — no profile knob needed.
 
-# US-004 will add: `[target.'cfg(target_os = "windows")'.dependencies]`
-#   windows = { version = "0.58", features = ["Win32_Foundation",
-#                                              "Win32_System_JobObjects",
-#                                              "Win32_System_Threading"] }
-# US-006 will add: winreg = "0.55" under the same target block.
+[target.'cfg(target_os = "windows")'.dependencies]
+# US-004: Win32 Job Object + process-handle APIs for spawn/cancel tree kill.
+# US-006: HKCU Registry Run key for autostart (winreg).
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+    "Win32_System_Diagnostics_ToolHelp",
+] }
+winreg = "0.55"
 
 [features]
 journal-cli = []

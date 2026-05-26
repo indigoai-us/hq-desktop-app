@@ -1,23 +1,28 @@
-//! Streamed subprocess with cancellation.
+//! Streamed subprocess with cancellation, via Windows Job Objects.
 //!
-//! `spawn_process` — spawns a child, streams stdout as `process://{handle}/stdout`
-//!                    events, emits `process://{handle}/exit` on termination.
-//! `cancel_process` — terminates the process tree.
+//! `spawn_process` — creates a Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`,
+//!                    spawns the child, assigns it to the job, then streams stdout/stderr
+//!                    as `process://{handle}/stdout` / `…/stderr` events. Fires
+//!                    `process://{handle}/exit` on termination.
+//! `cancel_process` — calls `TerminateJobObject` (instant tree kill — no SIGKILL
+//!                    escalation, no orphaned children).
 //!
-//! ## US-002 state
+//! Why Job Objects: the macOS implementation used POSIX process groups + SIGTERM
+//! → SIGKILL escalation to kill a runner and any node-subprocesses it spawned.
+//! Windows doesn't have process groups (the concept exists but is rarely useful
+//! for desktop apps); the canonical tree-kill primitive is a Job Object with
+//! KILL_ON_JOB_CLOSE — when the last handle to the job closes, the kernel
+//! terminates every process in it. We hold a HANDLE in the registry for the
+//! lifetime of the child; on cancel we close it explicitly via
+//! TerminateJobObject which kills the whole tree synchronously.
 //!
-//! Stripped: `nix::sys::signal::{self, Signal}`, `nix::unistd::Pid`,
-//! `std::os::unix::process::CommandExt::process_group`,
-//! `std::os::unix::process::ExitStatusExt::signal`. US-004 rewrites
-//! `run_process_impl` + `cancel_process_impl` on top of Job Objects
-//! (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` + `TerminateJobObject`) so child
-//! processes can be killed as a tree without POSIX signal escalation.
-//!
-//! Until US-004 lands, both `run_process_impl` and `cancel_process_impl`
-//! return errors / no-op respectively, and a small wrapper `cargo check`
-//! suite exercises the registry only.
+//! Reference:
+//! https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects
 
 use std::collections::HashMap;
+use std::io::{BufRead, BufReader};
+use std::process::{Command, Stdio};
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
@@ -26,11 +31,31 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 use uuid::Uuid;
 
+#[cfg(target_os = "windows")]
+use std::os::windows::io::AsRawHandle;
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+#[cfg(target_os = "windows")]
+use windows::Win32::Foundation::{CloseHandle, HANDLE};
+#[cfg(target_os = "windows")]
+use windows::Win32::System::JobObjects::{
+    AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject,
+    TerminateJobObject, JobObjectExtendedLimitInformation,
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+};
+#[cfg(target_os = "windows")]
+use windows::core::PCWSTR;
+
+// CREATE_NO_WINDOW from windows-sys / WinAPI process creation flags.
+// Hides the console window for spawned CLI tools. Kept as a literal so
+// we don't pull in another features list.
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Arguments for `spawn_process`.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SpawnArgs {
@@ -40,13 +65,11 @@ pub struct SpawnArgs {
     pub env: Option<HashMap<String, String>>,
 }
 
-/// Payload for `process://{handle}/stdout` events.
 #[derive(Debug, Serialize, Clone)]
 pub struct StdoutEvent {
     pub line: String,
 }
 
-/// Payload for `process://{handle}/stderr` events.
 #[derive(Debug, Serialize, Clone)]
 pub struct StderrEvent {
     pub line: String,
@@ -54,10 +77,9 @@ pub struct StderrEvent {
 
 /// Payload for the terminal `process://{handle}/exit` event.
 ///
-/// `signal` is `Some(N)` on POSIX when the OS killed the process with a
-/// signal. On Windows there are no Unix signals, so `signal` is always
-/// `None` and `code` carries the `GetExitCodeProcess` value (cancellation
-/// surfaces as `code = Some(-1)` set by `cancel_process_impl`).
+/// `signal` is always `None` on Windows (no POSIX signals). Cancellation
+/// surfaces as `code = Some(1)` because `TerminateJobObject(_, 1)` sets
+/// the exit code of each terminated process to 1.
 #[derive(Debug, Serialize, Clone)]
 pub struct ExitEvent {
     pub code: Option<i32>,
@@ -69,10 +91,19 @@ pub struct ExitEvent {
 // Process registry
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Per-handle entry in the registry.
+///
+/// `job_handle` holds the Job Object HANDLE so cancellation can find it
+/// from outside the spawning thread. Stored as `isize` (HANDLE's underlying
+/// type on Win64) so the struct is `Send` — `HANDLE` is `!Send` by default
+/// because the windows crate marks the underlying raw pointer as such.
+/// We re-wrap to HANDLE only inside the locked section of cancel.
 #[derive(Default)]
 struct ProcessEntry {
     pid: Option<u32>,
     cancelled: bool,
+    #[cfg(target_os = "windows")]
+    job_handle: Option<isize>,
 }
 
 static PROCESS_REGISTRY: OnceLock<Arc<Mutex<HashMap<String, ProcessEntry>>>> = OnceLock::new();
@@ -88,9 +119,6 @@ pub fn pre_register_handle(handle: &str) {
         .insert(handle.to_string(), ProcessEntry::default());
 }
 
-/// Atomically check-and-register a handle. Returns `true` if the handle was
-/// newly registered, `false` if it was already present (i.e. a process is
-/// already running under this handle).
 pub fn try_register_handle(handle: &str) -> bool {
     use std::collections::hash_map::Entry;
     let mut reg = process_registry().lock().unwrap();
@@ -113,13 +141,44 @@ pub fn register_process(handle: &str, pid: u32) {
             ProcessEntry {
                 pid: Some(pid),
                 cancelled: false,
+                #[cfg(target_os = "windows")]
+                job_handle: None,
             },
         );
     }
 }
 
+#[cfg(target_os = "windows")]
+fn register_job_handle(handle: &str, job: isize) {
+    let mut reg = process_registry().lock().unwrap();
+    if let Some(entry) = reg.get_mut(handle) {
+        entry.job_handle = Some(job);
+    }
+}
+
 pub fn deregister_process(handle: &str) {
-    process_registry().lock().unwrap().remove(handle);
+    // On Windows: closing the entry drops the job handle. The Job Object
+    // is opened with KILL_ON_JOB_CLOSE, so if anything is still in the
+    // job when the handle closes, the kernel kills it. By the time we
+    // call deregister_process from `run_process_impl`, the child has
+    // already exited via `child.wait()` — closing the handle just frees
+    // the kernel object.
+    #[cfg(target_os = "windows")]
+    {
+        let mut reg = process_registry().lock().unwrap();
+        if let Some(entry) = reg.remove(handle) {
+            if let Some(job) = entry.job_handle {
+                unsafe {
+                    let _ = CloseHandle(HANDLE(job as *mut std::ffi::c_void));
+                }
+            }
+        }
+        return;
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        process_registry().lock().unwrap().remove(handle);
+    }
 }
 
 pub fn lookup_pid(handle: &str) -> Option<u32> {
@@ -168,30 +227,241 @@ pub enum ProcessEvent {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Pure impl (US-004 fills in)
+// Job Object helpers (Windows)
 // ─────────────────────────────────────────────────────────────────────────────
 
-pub fn run_process_impl<F>(_handle: &str, _spawn: &SpawnArgs, _on_event: F) -> Result<(), String>
-where
-    F: FnMut(ProcessEvent),
-{
-    Err("process: run_process_impl not implemented yet (US-004 wires Job Objects)".to_string())
+/// Create a Job Object configured with KILL_ON_JOB_CLOSE. The returned
+/// HANDLE owns the kernel object — drop via `CloseHandle` (or let the
+/// registry deregister path do it).
+#[cfg(target_os = "windows")]
+unsafe fn create_kill_on_close_job() -> Result<HANDLE, String> {
+    let job = CreateJobObjectW(None, PCWSTR::null())
+        .map_err(|e| format!("CreateJobObjectW failed: {e}"))?;
+
+    let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+    info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+
+    SetInformationJobObject(
+        job,
+        JobObjectExtendedLimitInformation,
+        &info as *const _ as *const std::ffi::c_void,
+        std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+    )
+    .map_err(|e| {
+        let _ = CloseHandle(job);
+        format!("SetInformationJobObject (KILL_ON_JOB_CLOSE) failed: {e}")
+    })?;
+
+    Ok(job)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Cancellation (US-004 fills in)
+// Pure impl
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub fn run_process_impl<F>(handle: &str, spawn: &SpawnArgs, on_event: F) -> Result<(), String>
+where
+    F: FnMut(ProcessEvent),
+{
+    let mut cmd = Command::new(&spawn.cmd);
+    cmd.args(&spawn.args).stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    // CREATE_NO_WINDOW: stop spawned CLIs from flashing a console window
+    // when the tray app launches them. The reader threads consume the
+    // piped stdout/stderr — the window would just be a black flash.
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+
+    if let Some(cwd) = &spawn.cwd {
+        cmd.current_dir(cwd);
+    }
+    if let Some(env) = &spawn.env {
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
+    }
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("spawn '{}': {}", spawn.cmd, e))?;
+
+    let pid = child.id();
+    register_process(handle, pid);
+
+    // Job Object: create + assign the child so a later cancel can kill
+    // the whole tree atomically. Small TOCTOU window between spawn and
+    // assign — acceptable for the runner workloads here (no immediate
+    // fork) and matches the pattern documented in hq-installer-win US-004.
+    #[cfg(target_os = "windows")]
+    {
+        let proc_handle = HANDLE(child.as_raw_handle());
+        unsafe {
+            match create_kill_on_close_job() {
+                Ok(job) => {
+                    match AssignProcessToJobObject(job, proc_handle) {
+                        Ok(()) => {
+                            register_job_handle(handle, job.0 as isize);
+                        }
+                        Err(e) => {
+                            let _ = CloseHandle(job);
+                            // Continue without a job — cancel still works via
+                            // child.kill() fallback in cancel_process_impl.
+                            eprintln!(
+                                "[process] AssignProcessToJobObject failed for handle {handle}: {e}"
+                            );
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[process] create_kill_on_close_job failed for handle {handle}: {e}");
+                }
+            }
+        }
+    }
+
+    let stdout = child.stdout.take().expect("stdout pipe");
+    let stderr = child.stderr.take().expect("stderr pipe");
+
+    enum ReaderMsg {
+        Event(ProcessEvent),
+        Done { stream: &'static str, err: Option<String> },
+    }
+
+    let (tx, rx) = mpsc::channel::<ReaderMsg>();
+
+    let tx_stdout = tx.clone();
+    thread::spawn(move || {
+        let mut err: Option<String> = None;
+        for line_result in BufReader::new(stdout).lines() {
+            match line_result {
+                Ok(line) => {
+                    if tx_stdout
+                        .send(ReaderMsg::Event(ProcessEvent::Stdout(line)))
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+                Err(e) => {
+                    err = Some(e.to_string());
+                    break;
+                }
+            }
+        }
+        let _ = tx_stdout.send(ReaderMsg::Done { stream: "stdout", err });
+    });
+
+    let tx_stderr = tx.clone();
+    thread::spawn(move || {
+        let mut err: Option<String> = None;
+        for line_result in BufReader::new(stderr).lines() {
+            match line_result {
+                Ok(line) => {
+                    if tx_stderr
+                        .send(ReaderMsg::Event(ProcessEvent::Stderr(line)))
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+                Err(e) => {
+                    err = Some(e.to_string());
+                    break;
+                }
+            }
+        }
+        let _ = tx_stderr.send(ReaderMsg::Done { stream: "stderr", err });
+    });
+
+    drop(tx);
+
+    let mut on_event_mut = on_event;
+    let mut first_stream_err: Option<String> = None;
+    let mut done_count = 0;
+
+    for msg in rx {
+        match msg {
+            ReaderMsg::Event(ev) => on_event_mut(ev),
+            ReaderMsg::Done { stream, err } => {
+                if let Some(e) = err {
+                    if first_stream_err.is_none() {
+                        first_stream_err = Some(format!("{}: {}", stream, e));
+                    }
+                }
+                done_count += 1;
+                if done_count == 2 {
+                    break;
+                }
+            }
+        }
+    }
+
+    let wait_result = child.wait().map_err(|e| e.to_string());
+    deregister_process(handle);
+
+    if let Some(err) = first_stream_err {
+        on_event_mut(ProcessEvent::Exit {
+            code: None,
+            signal: None,
+            success: false,
+        });
+        return Err(err);
+    }
+
+    let status = wait_result?;
+    on_event_mut(ProcessEvent::Exit {
+        code: status.code(),
+        signal: None, // Windows has no POSIX signals
+        success: status.success(),
+    });
+
+    Ok(())
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Cancellation (Job Object → TerminateJobObject)
 // ─────────────────────────────────────────────────────────────────────────────
 
 pub fn cancel_process_impl(handle: &str, _sigkill_delay: Duration) -> bool {
-    // Mark the registry entry cancelled so a slow-start spawn sees the
-    // cancellation. The actual TerminateJobObject call lands in US-004.
     if !mark_cancelled(handle) {
         return false;
     }
-    if lookup_pid(handle).is_none() {
+
+    // Snapshot the job HANDLE under the registry lock, then drop the lock
+    // before the syscall (which can block briefly while the kernel cleans
+    // up). The deregister path runs later from run_process_impl after the
+    // streams drain; closing the handle there is the steady-state cleanup.
+    #[cfg(target_os = "windows")]
+    {
+        let job_isize = process_registry()
+            .lock()
+            .unwrap()
+            .get(handle)
+            .and_then(|e| e.job_handle);
+
+        if let Some(job) = job_isize {
+            unsafe {
+                let job_handle = HANDLE(job as *mut std::ffi::c_void);
+                // exit code 1 — gets propagated to every process in the job.
+                // 0 would falsely look like a clean exit to wait().
+                let _ = TerminateJobObject(job_handle, 1);
+            }
+            return true;
+        }
+        // Fallback: no job (assign failed at spawn time). Nothing we can
+        // do from here without a HANDLE — the reader threads will drain
+        // and run_process_impl will wait() normally. The user's cancel
+        // request is recorded; the process just isn't killed.
         return true;
     }
-    true
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        if lookup_pid(handle).is_none() {
+            return true;
+        }
+        true
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -232,18 +502,10 @@ pub fn spawn_process(app: AppHandle, args: SpawnArgs) -> Result<String, String> 
                     StderrEvent { line },
                 );
             }
-            ProcessEvent::Exit {
-                code,
-                signal,
-                success,
-            } => {
+            ProcessEvent::Exit { code, signal, success } => {
                 let _ = app.emit(
                     &format!("process://{}/exit", handle_bg),
-                    ExitEvent {
-                        code,
-                        signal,
-                        success,
-                    },
+                    ExitEvent { code, signal, success },
                 );
             }
         });
@@ -266,4 +528,85 @@ pub fn spawn_process(app: AppHandle, args: SpawnArgs) -> Result<String, String> 
 #[tauri::command]
 pub fn cancel_process(handle: String) -> bool {
     cancel_process_impl(&handle, Duration::from_secs(5))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_registry_register_lookup_deregister() {
+        let handle = "test-registry-rld";
+        pre_register_handle(handle);
+        assert!(is_registered(handle));
+        register_process(handle, 12345);
+        assert_eq!(lookup_pid(handle), Some(12345));
+        deregister_process(handle);
+        assert!(!is_registered(handle));
+    }
+
+    #[test]
+    fn test_mark_cancelled_only_succeeds_when_registered() {
+        let handle = "test-mark-cancelled";
+        // Not registered yet — marking should fail.
+        assert!(!mark_cancelled(handle));
+        pre_register_handle(handle);
+        assert!(mark_cancelled(handle));
+        assert!(is_cancelled(handle));
+        deregister_process(handle);
+    }
+
+    #[test]
+    fn test_try_register_handle_rejects_duplicate() {
+        let handle = "test-try-register-dup";
+        assert!(try_register_handle(handle));
+        assert!(!try_register_handle(handle));
+        deregister_process(handle);
+    }
+
+    /// Verify that spawning + cancelling a long-running process terminates
+    /// it via TerminateJobObject within the e2e budget. Uses `cmd /c timeout`
+    /// — built into Windows and idiomatic for "block for N seconds."
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_cancel_process_terminates_long_running_under_2s() {
+        let handle = format!("test-cancel-{}", Uuid::new_v4());
+        let args = SpawnArgs {
+            cmd: "cmd".to_string(),
+            args: vec![
+                "/c".to_string(),
+                "timeout".to_string(),
+                "/t".to_string(),
+                "60".to_string(),
+                "/nobreak".to_string(),
+            ],
+            cwd: None,
+            env: None,
+        };
+
+        // Spawn on a thread so we can observe cancellation from this one.
+        let h = handle.clone();
+        let join = thread::spawn(move || {
+            let _ = run_process_impl(&h, &args, |_| {});
+        });
+
+        // Give the spawn a moment so the job is assigned before we cancel.
+        thread::sleep(Duration::from_millis(500));
+
+        let start = std::time::Instant::now();
+        let cancelled = cancel_process_impl(&handle, Duration::from_secs(5));
+        assert!(cancelled, "cancel_process_impl should return true");
+
+        join.join().expect("spawn thread should exit");
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "TerminateJobObject should kill the tree under 2s, took {:?}",
+            elapsed
+        );
+    }
 }

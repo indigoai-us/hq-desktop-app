@@ -177,14 +177,40 @@ pub fn build_watch_runner_args(hq_folder_path: &str) -> SpawnArgs {
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Check if a PID is alive.
+/// Check if a PID is alive on Windows via
+/// `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` +
+/// `GetExitCodeProcess` (STILL_ACTIVE check).
 ///
-/// US-004 wires this on top of OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)
-/// + GetExitCodeProcess (STILL_ACTIVE check). For now returns false so the
-/// rest of the module compiles — the practical effect is that "is the daemon
-/// from a previous app session still running?" always answers no, which
-/// causes a fresh spawn rather than an orphan-detection error. Acceptable
-/// degradation until US-004 lands.
+/// Returns `false` on any error (missing PID, access denied, exited
+/// process). PID reuse is the same TOCTOU risk as the POSIX kill(0)
+/// version — acceptable for V2-prep daemon detection because the next
+/// step (`read_daemon_json`) cross-checks `startedAt` if present.
+#[cfg(target_os = "windows")]
+fn is_pid_alive(pid: u32) -> bool {
+    use windows::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    if pid == 0 {
+        return false;
+    }
+    unsafe {
+        let handle = match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
+            Ok(h) => h,
+            Err(_) => return false,
+        };
+        let mut exit_code: u32 = 0;
+        let alive = match GetExitCodeProcess(handle, &mut exit_code) {
+            Ok(()) => exit_code == STILL_ACTIVE.0 as u32,
+            Err(_) => false,
+        };
+        let _ = CloseHandle(handle);
+        alive
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
 fn is_pid_alive(_pid: u32) -> bool {
     false
 }
@@ -399,12 +425,27 @@ pub fn stop_daemon() -> Result<bool, String> {
     }
 
     // Daemon from a previous app session — registry has no handle, but the
-    // pid-file may point at a still-alive runner. US-004 wires TerminateProcess
-    // directly (Job Objects own the spawn-time tree). Until then, treat as
-    // "no orphan to kill" since is_pid_alive returns false.
+    // pid-file may point at a still-alive runner. No Job Object to
+    // TerminateJobObject against, so reach for the process directly via
+    // OpenProcess(PROCESS_TERMINATE) + TerminateProcess. Best-effort: an
+    // open-then-terminate race or an access-denied just leaves the orphan
+    // alive (next launch will detect it and the user can kill via Task
+    // Manager).
     if let Some(pid) = read_pid_file(&hq_folder_path) {
         if is_pid_alive(pid) {
-            // US-004: TerminateProcess(OpenProcess(PROCESS_TERMINATE, false, pid))
+            #[cfg(target_os = "windows")]
+            {
+                use windows::Win32::Foundation::CloseHandle;
+                use windows::Win32::System::Threading::{
+                    OpenProcess, TerminateProcess, PROCESS_TERMINATE,
+                };
+                unsafe {
+                    if let Ok(handle) = OpenProcess(PROCESS_TERMINATE, false, pid) {
+                        let _ = TerminateProcess(handle, 1);
+                        let _ = CloseHandle(handle);
+                    }
+                }
+            }
             return Ok(true);
         }
     }
