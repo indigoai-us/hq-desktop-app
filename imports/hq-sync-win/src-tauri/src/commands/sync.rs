@@ -153,7 +153,7 @@ const SIGKILL_DELAY: Duration = Duration::from_secs(5);
 /// first menubar sync ran on a behind machine and would erase legacy/
 /// filtered paths when the local hqRoot's ignore filter rejected them.
 /// See indigoai-us/hq#142 + the 2026-05-14 incident report.
-pub const HQ_CLOUD_VERSION: &str = "~5.19.0";
+pub const HQ_CLOUD_VERSION: &str = "~5.38.0";
 
 /// Package name for the runner. Used by both the spawn site below and the
 /// startup prewarm. Paired with `HQ_CLOUD_VERSION` to form the full
@@ -337,7 +337,7 @@ pub async fn resolve_jwt() -> Result<String, String> {
 ///
 /// The command line we spawn looks like:
 /// ```text
-/// npx -y --package=@indigoai-us/hq-cloud@~5.19.0 hq-sync-runner \
+/// npx -y --package=@indigoai-us/hq-cloud@~5.38.0 hq-sync-runner \
 ///   --companies --direction both --on-conflict keep --hq-root <path>
 /// ```
 ///
