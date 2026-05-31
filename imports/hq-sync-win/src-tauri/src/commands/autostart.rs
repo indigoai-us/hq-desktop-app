@@ -216,6 +216,8 @@ mod tests {
             start_at_login: start,
             autostart_daemon: None,
             realtime_sync: None,
+            personal_sync_enabled: None,
+            instant_sync: None,
         }
     }
 
