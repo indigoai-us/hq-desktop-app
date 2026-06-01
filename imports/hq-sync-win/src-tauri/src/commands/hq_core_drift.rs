@@ -41,7 +41,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::commands::config::{read_hq_config_lenient, MenubarPrefs};
 use crate::commands::hq_core_staging::{self, StagingStatus};
@@ -140,6 +140,11 @@ struct GhTreeEntry {
     #[serde(rename = "type")]
     kind: String,
     sha: String,
+    /// Git file mode. `120000` marks a symlink — those are filtered out
+    /// because the blob is the target-path string, not the target's
+    /// content, so local-vs-upstream SHA comparison is meaningless.
+    #[serde(default)]
+    mode: Option<String>,
     #[serde(default)]
     size: Option<u64>,
 }
@@ -152,7 +157,7 @@ struct GhTreeEntry {
 /// `.claude/CLAUDE.md`, `core/policies/`). Trailing-slash convention
 /// indicates "this directory and everything under it"; leaf paths are
 /// single-file scopes.
-fn read_locked_paths(hq_folder: &Path) -> Vec<String> {
+pub(crate) fn read_locked_paths(hq_folder: &Path) -> Vec<String> {
     let canonical = hq_folder.join("core").join("core.yaml");
     let legacy = hq_folder.join("core.yaml");
     let core_yaml = if canonical.is_file() { canonical } else { legacy };
@@ -173,10 +178,73 @@ fn read_locked_paths(hq_folder: &Path) -> Vec<String> {
         .collect()
 }
 
+/// Paths excluded from drift detection (both release and staging).
+///
+/// Hardcoded in the app rather than read from `core.yaml` so it survives
+/// every staging overlay (which rewrites `core/core.yaml`). The list covers
+/// four categories of false-positive drift:
+///
+///   - master-sync symlinks (target content differs from the staging blob,
+///     which is the symlink-target path string)
+///   - self-stamping meta-files (`core/core.yaml` carries the rescue stamp)
+///   - user-curated trees not sourced from staging (`core/packages` for
+///     hq-packs installs)
+///   - runtime / overwrite-only state (`.claude/state`, `companies/_template`)
+///
+/// Always interpreted as a directory-prefix match (see
+/// `path_in_excluded_scope`), so leaf entries here also cover files under
+/// the same name without needing a trailing slash.
+pub(crate) fn excluded_scope_paths() -> Vec<String> {
+    [
+        ".claude/settings.local.json",
+        ".claude/state",
+        ".claude/audit",     // runtime audit logs; not authored content
+        ".claude/worktrees", // Claude Code per-Agent worktree sandboxes
+        ".claude/commands",  // legacy — consolidated into .claude/skills/
+        ".agents/skills",
+        ".codex/claude",
+        ".codex/output-style.md",
+        "AGENTS.md",
+        "core/core.yaml",
+        "core/packages",
+        "core/workspace", // runtime markers (e.g. .last-archive-run)
+        "companies/_template",
+    ]
+    .iter()
+    .map(|s| (*s).to_string())
+    .collect()
+}
+
+/// True iff the path is an HQ-Sync conflict-resolution artifact
+/// (e.g. `.claude/CLAUDE.md.conflict-2026-05-15T15-11-53Z-unknown.md`).
+/// These are auto-generated when sync detects a local-vs-cloud divergence
+/// and renames the local copy — never authored content, never in staging.
+pub(crate) fn is_conflict_artifact(path: &str) -> bool {
+    // Match `.conflict-` anywhere in the basename (covers both
+    // `file.txt.conflict-...` and `dir.conflict-...` forms).
+    path.rsplit('/')
+        .next()
+        .map(|name| name.contains(".conflict-"))
+        .unwrap_or(false)
+}
+
+/// True iff the path falls under one of the excluded-path entries.
+/// Always does prefix matching (regardless of trailing slash): `core/packages`
+/// and `core/packages/` both exclude files under that directory tree.
+pub(crate) fn path_in_excluded_scope(path: &str, excluded: &[String]) -> bool {
+    for scope in excluded {
+        let prefix = scope.trim_end_matches('/');
+        if path == prefix || path.starts_with(&format!("{}/", prefix)) {
+            return true;
+        }
+    }
+    false
+}
+
 /// True iff the given upstream path (from the GitHub trees response)
 /// falls under one of the locked-path prefixes. Trailing-slash entries
 /// are dir-prefix matches; non-slash entries are exact-path matches.
-fn path_in_locked_scope(path: &str, locked: &[String]) -> bool {
+pub(crate) fn path_in_locked_scope(path: &str, locked: &[String]) -> bool {
     for scope in locked {
         if let Some(prefix) = scope.strip_suffix('/') {
             // Directory scope: prefix-match on the dir + '/' so
@@ -194,7 +262,7 @@ fn path_in_locked_scope(path: &str, locked: &[String]) -> bool {
 /// Compute git's blob SHA-1 for a byte slice. Git's content-addressable
 /// blob hash is `sha1("blob " + content_length_decimal + "\0" + content)`
 /// — matches what the GitHub trees API returns as `sha` for blob entries.
-fn git_blob_sha(content: &[u8]) -> String {
+pub(crate) fn git_blob_sha(content: &[u8]) -> String {
     let mut hasher = Sha1::new();
     hasher.update(format!("blob {}\0", content.len()).as_bytes());
     hasher.update(content);
@@ -210,7 +278,7 @@ fn git_blob_sha(content: &[u8]) -> String {
 /// return a map of relative-path → (sha1, size). Walks files directly
 /// for leaf scopes; uses walkdir for directory scopes. Symlinks are
 /// followed but never escape the HQ root.
-fn walk_local_under_scope(hq_folder: &Path, locked: &[String]) -> BTreeMap<String, (String, u64)> {
+pub(crate) fn walk_local_under_scope(hq_folder: &Path, locked: &[String]) -> BTreeMap<String, (String, u64)> {
     let mut out = BTreeMap::new();
     for scope in locked {
         let (rel, is_dir) = if let Some(prefix) = scope.strip_suffix('/') {
@@ -242,7 +310,19 @@ fn walk_local_under_scope(hq_folder: &Path, locked: &[String]) -> BTreeMap<Strin
                 let rel_str = rel_path.to_string_lossy().replace('\\', "/");
                 out.insert(rel_str, (sha, size));
             }
-        } else if abs.is_file() {
+        } else {
+            // Leaf scope. Use `symlink_metadata` (NOT `is_file`, which
+            // follows symlinks) so master-sync-generated symlinks like
+            // `AGENTS.md → .claude/CLAUDE.md` are skipped instead of
+            // re-hashed against the target's content. Git stores a symlink
+            // as a content blob of its target-path string, not the target's
+            // content, so following the symlink yields a wrong SHA every
+            // time. Symlinks in directory scopes are already skipped by the
+            // walkdir `is_file()` filter above; this is the leaf-scope twin.
+            let Ok(meta) = abs.symlink_metadata() else { continue; };
+            if meta.file_type().is_symlink() || !meta.file_type().is_file() {
+                continue;
+            }
             if let Ok(content) = std::fs::read(&abs) {
                 let size = content.len() as u64;
                 let sha = git_blob_sha(&content);
@@ -284,6 +364,10 @@ async fn fetch_upstream_tree(hq_version: &str) -> Result<BTreeMap<String, (Strin
         if entry.kind != "blob" {
             continue;
         }
+        // Skip symlinks — see field comment on GhTreeEntry.
+        if entry.mode.as_deref() == Some("120000") {
+            continue;
+        }
         out.insert(entry.path, (entry.sha, entry.size.unwrap_or(0)));
     }
     Ok(out)
@@ -313,12 +397,21 @@ pub async fn check_once(app: &AppHandle) -> Result<Option<DriftReport>, String> 
         return Ok(None);
     }
 
+    let excluded = excluded_scope_paths();
+
     let upstream = fetch_upstream_tree(&hq_version).await?;
     let local = walk_local_under_scope(&hq_folder, &locked);
 
     let upstream_in_scope: BTreeMap<String, (String, u64)> = upstream
         .into_iter()
         .filter(|(path, _)| path_in_locked_scope(path, &locked))
+        .filter(|(path, _)| !path_in_excluded_scope(path, &excluded))
+        .collect();
+
+    let local: BTreeMap<String, (String, u64)> = local
+        .into_iter()
+        .filter(|(path, _)| !path_in_excluded_scope(path, &excluded))
+        .filter(|(path, _)| !is_conflict_artifact(path))
         .collect();
 
     let upstream_paths: BTreeSet<&String> = upstream_in_scope.keys().collect();
@@ -405,6 +498,23 @@ pub async fn check_once(app: &AppHandle) -> Result<Option<DriftReport>, String> 
     // which only emits on the unhappy path, drift state can swing in
     // both directions on a re-check.
     let _ = app.emit("hq-core-drift:available", &report);
+
+    // Keep an open detail window (and its PendingDrift stash) in sync with
+    // this scan so a Recheck button — or any background re-check — live-
+    // updates the window in place instead of leaving a stale report on
+    // screen. The detail window listens on `drift:report` (see
+    // drift_detail.rs + DriftDetail.svelte); `emit_to` no-ops harmlessly
+    // when the window isn't open, and the stash means a subsequent open
+    // shows this scan rather than the one that first triggered the pill.
+    if let Some(state) = app.try_state::<crate::commands::drift_detail::PendingDrift>() {
+        *state.0.lock().unwrap() = Some(report.clone());
+    }
+    let _ = app.emit_to(
+        crate::commands::drift_detail::WINDOW_LABEL,
+        "drift:report",
+        &report,
+    );
+
     Ok(Some(report))
 }
 
