@@ -198,11 +198,19 @@ const SIGKILL_DELAY: Duration = Duration::from_secs(5);
 ///
 /// 5.26.0 (2026-05-22) adds the event-driven push watcher (`--event-push`,
 /// gated to @getindigo.ai in the menubar; default poll-only otherwise).
+/// 5.27.0 fixes the watcher never firing for `--companies` edits; 5.28.0
+/// replaces the per-directory chokidar watch with a single recursive watch;
+/// 5.29.0 (2026-05-22) stamps `direction` ("up"/"down") on per-file progress
+/// events so the menubar's Recent Changes activity log can label each file
+/// uploaded vs downloaded. 5.31.0 returns the downloaded object's S3
+/// `created-by` metadata and stamps it as `author` on download `progress`
+/// events, so the Recent Changes activity log can attribute downloaded files
+/// to whoever uploaded them.
 ///
-/// US-004 parity note: the fork pins ~5.38.0 (set in US-001), which is past
-/// the 5.24/5.25/5.26 line above — those fixes (and the `--skip-personal` /
-/// `--event-push` flags the menubar toggles below rely on) are already in the
-/// pinned runner. Only the menubar-side flag plumbing is ported here.
+/// US-004/005 parity note: the fork pins ~5.38.0 (set in US-001), which is past
+/// the 5.24–5.31 line above — those runner fixes (the `direction` stamp and the
+/// `author` metadata the Activity Log below relies on) are already in the pinned
+/// runner. Only the menubar-side plumbing is ported here.
 pub const HQ_CLOUD_VERSION: &str = "~5.38.0";
 
 /// Package name for the runner. Used by both the spawn site below and the
@@ -564,7 +572,12 @@ fn handle_sync_line(app: &AppHandle, hq_folder: &str, totals: &Mutex<RunTotals>,
         // older runner that doesn't emit Plan, this branch is simply never
         // taken — the existing TOTALS-based denominator stays authoritative.
         SyncEvent::Plan(payload) => app.emit(EVENT_SYNC_PLAN, payload.clone()),
-        SyncEvent::Progress(payload) => app.emit(EVENT_SYNC_PROGRESS, payload.clone()),
+        SyncEvent::Progress(payload) => {
+            // Record into the session activity log (uploaded/downloaded with a
+            // timestamp) and live-append to the Recent Changes window if open.
+            crate::commands::activity::record_progress(app, payload);
+            app.emit(EVENT_SYNC_PROGRESS, payload.clone())
+        }
         SyncEvent::Error(payload) => {
             // `classify_error_event` is the test-covered classification boundary;
             // the dispatch logic here (Some → COMPLETE, None → ERROR) is intentionally
@@ -599,7 +612,14 @@ fn handle_sync_line(app: &AppHandle, hq_folder: &str, totals: &Mutex<RunTotals>,
         SyncEvent::DeleteRefusedStaleEtag(payload) => {
             app.emit(EVENT_SYNC_DELETE_REFUSED_STALE_ETAG, payload.clone())
         }
-        SyncEvent::NewFiles(payload) => app.emit(EVENT_SYNC_NEW_FILES, payload.clone()),
+        SyncEvent::NewFiles(payload) => {
+            // Reconcile into the activity log: mark these paths as "added" (vs
+            // the default "updated") and back-fill author from `addedBy` where
+            // the per-file progress event carried none. Lands after the rows'
+            // progress events, so this back-fills + re-emits to the open window.
+            crate::commands::activity::record_new_files(app, payload);
+            app.emit(EVENT_SYNC_NEW_FILES, payload.clone())
+        }
         SyncEvent::AllComplete(payload) => {
             // Persist summary journal before emitting — the frontend's
             // SyncStats refresh reads this file on popover mount.
@@ -1576,6 +1596,9 @@ mod tests {
             path: "y".to_string(),
             bytes: 0,
             message: None,
+            direction: None,
+            deleted: None,
+            author: None,
         }));
         assert_eq!(t.conflicts, 0);
     }
