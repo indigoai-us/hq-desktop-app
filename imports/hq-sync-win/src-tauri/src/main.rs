@@ -243,6 +243,20 @@ fn main() {
                 // (a) Launch poll (5s delay) + independent interval timer.
                 commands::share_notify::setup_share_notify_poller(app.handle().clone());
 
+                // (a') Instant-DM push receiver — MQTT-over-WSS to AWS IoT Core.
+                // Wakes `poll_dm_once` on push so DMs arrive in near-real-time
+                // instead of waiting up to 60s. The interval poll above is the
+                // long-stop, so this is purely additive — any MQTT failure falls
+                // back to it silently.
+                //
+                // US-017 (Windows fork): NOT macOS-gated. The receiver is
+                // platform-neutral (rumqttc + aws-sigv4 over WSS, no AppKit deps),
+                // and instant DM on Windows is the whole point of this story. The
+                // spawned async task rides the Tauri runtime, which the V1 Job
+                // Object daemon supervisor tears down with the process — no orphan
+                // thread. Eligibility was ungated to all users in 70260ae.
+                commands::dm_mqtt::setup_dm_mqtt_receiver(app.handle().clone());
+
                 // (b) Post-sync poll — low-latency top-up after a sync run.
                 let poll_handle = app.handle().clone();
                 app.listen(
