@@ -32,6 +32,9 @@
   // on the Rust side). Re-read on each poll cycle in share_notify.rs so the
   // toggle takes effect immediately without app restart.
   let shareNotifications = $state(true);
+  // DM notifications — same dogfood gate as share notifications. Re-read on
+  // each poll cycle in dm_notify.rs so the toggle takes effect without restart.
+  let dmNotifications = $state(true);
   // Shared @getindigo.ai gate, used by BOTH the share-notify section and
   // the staging-channel toggle below. Populated at mount from
   // `meetings_feature_enabled` (cached process-lifetime on the Rust side).
@@ -112,6 +115,7 @@
           personalSyncEnabled: boolean | null;
           instantSync: boolean | null;
           shareNotifications: boolean | null;
+          dmNotifications: boolean | null;
           stagingChannel: boolean | null;
           releaseChannel: string | null;
         }>('get_settings'),
@@ -134,6 +138,7 @@
       personalSyncEnabled = settings.personalSyncEnabled ?? true;
       instantSync = settings.instantSync ?? true;
       shareNotifications = settings.shareNotifications ?? true;
+      dmNotifications = settings.dmNotifications ?? true;
       stagingChannel = settings.stagingChannel ?? true;
       isIndigoUser = indigoUser;
       availableChannels = (channels.filter(
@@ -170,6 +175,7 @@
           personalSyncEnabled,
           instantSync,
           shareNotifications,
+          dmNotifications,
           stagingChannel,
           // Round-trip the RAW stored value (null when never explicitly
           // chosen). The Rust side serializes `null` -> absent via
@@ -227,6 +233,11 @@
 
   async function handleToggleShareNotifications() {
     shareNotifications = !shareNotifications;
+    await saveAll();
+  }
+
+  async function handleToggleDmNotifications() {
+    dmNotifications = !dmNotifications;
     await saveAll();
   }
 
@@ -590,6 +601,28 @@
             role="switch"
             aria-checked={shareNotifications}
             aria-label="Share notifications"
+          >
+            <span class="toggle-knob"></span>
+          </button>
+        </div>
+
+        <!-- DM notifications — same dogfood gate. Persists dmNotifications in
+             menubar.json; dm_notify.rs re-reads it each poll cycle. Receive-
+             only: the menubar fires a notification per incoming DM. Sending a
+             DM is done by prompting HQ in a session / CLI, not from the app. -->
+        <div class="setting-row">
+          <div class="setting-info">
+            <label class="setting-label" for="toggle-dm-notifications">Direct messages</label>
+            <span class="setting-desc">Show a notification when a teammate sends you a message</span>
+          </div>
+          <button
+            id="toggle-dm-notifications"
+            class="toggle"
+            class:active={dmNotifications}
+            onclick={handleToggleDmNotifications}
+            role="switch"
+            aria-checked={dmNotifications}
+            aria-label="Direct message notifications"
           >
             <span class="toggle-knob"></span>
           </button>

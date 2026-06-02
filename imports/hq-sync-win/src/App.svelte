@@ -930,6 +930,47 @@
         }
       })
     );
+
+    // --- DM-notification action handler (rich DMs, 2026-05-29) ---
+    // DMs are receive-only (no reply/send surface). Plain DMs are fire-and-
+    // forget. A DM that carries agent context (`prompt`) and/or `details`
+    // gets an "Actions" dropdown; on action the Rust thread emits
+    // `notification:dm-action`:
+    //   "copy" → write the sender's agent prompt to the clipboard so the
+    //            recipient can paste it straight into their own agent session.
+    //   "open" → open the DM detail window (full message + details + Copy).
+    unlisteners.push(
+      await listen<{
+        action: 'copy' | 'open';
+        event: {
+          eventId: string;
+          fromPersonUid: string;
+          fromEmail: string;
+          fromDisplayName: string;
+          body: string;
+          details?: string | null;
+          prompt?: string | null;
+          createdAt: string;
+        };
+      }>('notification:dm-action', async (e) => {
+        const { action, event: dm } = e.payload;
+        if (action === 'copy') {
+          const prompt = dm.prompt?.trim();
+          if (!prompt) return;
+          try {
+            await navigator.clipboard.writeText(prompt);
+          } catch (err) {
+            console.error('dm-notify: clipboard write failed', err);
+          }
+        } else if (action === 'open') {
+          try {
+            await invoke('open_dm_detail', { event: dm });
+          } catch (err) {
+            console.error('dm-notify: open_dm_detail failed', err);
+          }
+        }
+      })
+    );
   }
 
   $effect(() => {
