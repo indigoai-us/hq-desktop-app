@@ -23,6 +23,13 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 60
 
+    # Surface the channel classification to the publish job. The value is
+    # identical across matrix targets (it's derived from the tag), so
+    # last-writer-wins is safe.
+    outputs:
+      is_prerelease: ${{ steps.classify.outputs.is_prerelease }}
+      channel: ${{ steps.classify.outputs.channel }}
+
     strategy:
       fail-fast: false
       matrix:
@@ -35,6 +42,45 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      # Tag must be either:
+      #   vX.Y.Z              → Stable channel
+      #   vX.Y.Z-beta.N       → Beta channel (prerelease)
+      #   vX.Y.Z-alpha.N      → Alpha channel (prerelease)
+      #
+      # Other pre-release patterns (`-rc.N`, `-pre`, `-dev`, raw `-beta`
+      # without a number) are REJECTED at validation time so they can't
+      # silently produce releases that the client-side resolver in
+      # `util/release_channel.rs::parse_channel_from_tag` won't classify.
+      # Strict here = typos fail fast in CI rather than producing a
+      # published release that the auto-updater never advertises.
+      #
+      # `is_prerelease` is consumed by the publish job's softprops/action-gh-release
+      # `prerelease:` input. The GitHub /releases/latest/ alias already filters to
+      # non-prereleases, so flipping this is what keeps a stable-channel user's
+      # static-endpoint poll from accidentally picking up a beta. Runs under bash
+      # explicitly because the default shell on windows-latest is PowerShell.
+      - name: Validate tag format + classify channel
+        id: classify
+        shell: bash
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          if [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            CHANNEL="stable"
+            IS_PRE="false"
+          elif [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+$ ]]; then
+            CHANNEL="beta"
+            IS_PRE="true"
+          elif [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-alpha\.[0-9]+$ ]]; then
+            CHANNEL="alpha"
+            IS_PRE="true"
+          else
+            echo "::error::Tag must match vX.Y.Z, vX.Y.Z-beta.N, or vX.Y.Z-alpha.N — got: $TAG"
+            exit 1
+          fi
+          echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
+          echo "is_prerelease=$IS_PRE" >> "$GITHUB_OUTPUT"
+          echo "Tag $TAG classified as channel=$CHANNEL prerelease=$IS_PRE"
 
       - name: Install Node 22
         uses: actions/setup-node@v4
@@ -142,3 +188,9 @@ jobs:
           files: ./release/*
           fail_on_unmatched_files: false
           generate_release_notes: true
+          # Channel-aware (US-012): beta/alpha tags publish as prereleases so
+          # the /releases/latest/ alias skips them and stable-channel users
+          # polling the static updater endpoint never pick them up. The
+          # client-side tag-suffix filter in util/release_channel.rs is the
+          # authoritative gate; this is the second line of defense.
+          prerelease: ${{ needs.build.outputs.is_prerelease == 'true' }}

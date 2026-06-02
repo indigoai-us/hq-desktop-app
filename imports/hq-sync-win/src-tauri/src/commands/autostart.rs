@@ -220,6 +220,7 @@ mod tests {
             instant_sync: None,
             drift_staging_repo: None,
             share_notifications: None,
+            release_channel: None,
         }
     }
 
