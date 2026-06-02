@@ -115,6 +115,7 @@ fn main() {
         .manage(commands::activity::SessionActivity::new())
         .manage(commands::share_notify::PendingShareEvents(Mutex::new(Vec::new())))
         .manage(commands::dm_notify::PendingDmEvents(Mutex::new(Vec::new())))
+        .manage(commands::banner::PendingBanner(Mutex::new(None)))
         // Tray-app close behaviour: intercept window-close (system menu Close,
         // Alt-F4, frame X) and hide the popover instead of terminating the
         // process. The app only truly exits via the tray context menu's
@@ -147,6 +148,8 @@ fn main() {
             commands::sync::cancel_sync,
             commands::workspaces::list_syncable_workspaces,
             commands::workspaces::connect_workspace_to_cloud,
+            commands::sync_mode::get_sync_mode,
+            commands::sync_mode::set_sync_mode,
             commands::conflicts::resolve_conflict,
             commands::conflicts::open_in_editor,
             commands::settings::get_settings,
@@ -194,6 +197,13 @@ fn main() {
             commands::dm_notify::send_dm,
             commands::notifications::notification_permission_state,
             commands::notifications::notification_request_permission,
+            commands::banner::banner_window_ready,
+            commands::banner::banner_action,
+            commands::banner::dismiss_banner,
+            commands::banner::show_main_window,
+            commands::banner::preview_dm_banner,
+            commands::banner::preview_share_banner,
+            commands::banner::preview_update_banner,
         ])
         .setup(|app| {
             // One-shot migration of any legacy `/deploy`-skill stub at
@@ -268,6 +278,31 @@ fn main() {
                         });
                     },
                 );
+            }
+
+            // Env-var trigger to preview the custom notification banner without
+            // devtools / real inbound events. Pops one representative banner per
+            // source — DM (2s), share (10s), update (18s) — spaced past the 6s
+            // auto-dismiss so each is seen in turn. No-op when unset.
+            //   HQ_SYNC_PREVIEW_BANNER=1     → DM only
+            //   HQ_SYNC_PREVIEW_BANNER=all   → DM, then share, then update
+            match std::env::var("HQ_SYNC_PREVIEW_BANNER").as_deref() {
+                Ok("1") | Ok("all") => {
+                    let all = std::env::var("HQ_SYNC_PREVIEW_BANNER").as_deref() == Ok("all");
+                    let h = app.handle().clone();
+                    tauri::async_runtime::spawn(async move {
+                        use std::time::Duration;
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                        let _ = commands::banner::preview_dm_banner(h.clone()).await;
+                        if all {
+                            tokio::time::sleep(Duration::from_secs(8)).await;
+                            let _ = commands::banner::preview_share_banner(h.clone()).await;
+                            tokio::time::sleep(Duration::from_secs(8)).await;
+                            let _ = commands::banner::preview_update_banner(h.clone()).await;
+                        }
+                    });
+                }
+                _ => {}
             }
 
             // Register Ctrl+Shift+H globally so the popover can be summoned
