@@ -107,6 +107,12 @@ pub struct ScheduledBot {
     pub calendar_event_id: Option<String>,
     pub meeting_title: Option<String>,
     pub scheduled_start_time: Option<String>,
+    /// `POST /v1/bot/invite` returns a slimmer body than `GET /v1/bot/list`
+    /// and omits this field — a fresh manual invite is never auto-scheduled,
+    /// so default to `false` rather than failing the whole parse (which would
+    /// surface a spurious "Couldn't invite the bot." toast even though the bot
+    /// was scheduled successfully server-side).
+    #[serde(default)]
     pub auto_scheduled: bool,
     pub error_message: Option<String>,
 }
@@ -444,6 +450,58 @@ pub async fn meetings_invite_bot(
     serde_json::from_str(&text).map_err(|e| format!("bot/invite parse: {e} — body: {text}"))
 }
 
+/// `POST /v1/bot/join-now` — force the Recall.ai bot to join NOW for
+/// `meeting_url`, regardless of any pre-scheduled `join_at`. Backs the
+/// MeetingsWindow row's bot-join-now icon button. Server-side
+/// (`bot.service.ts::joinBotNow`) decides the right path:
+///
+///   - existing `scheduled` bot → PATCH Recall `join_at = now`
+///   - existing `joining`/`recording` bot → no-op, return as-is
+///   - otherwise → flip any `completed` siblings to `failed`, then create
+///     a fresh bot with no `join_at` so Recall joins immediately
+///
+/// Same request shape as `meetings_invite_bot` so the UI handler can
+/// hand off the same `meeting_url` + `calendar_event_id` + `company_id`
+/// triple without re-derivation.
+#[tauri::command]
+pub async fn meetings_join_bot_now(
+    meeting_url: String,
+    calendar_event_id: Option<String>,
+    company_id: Option<String>,
+) -> Result<ScheduledBot, String> {
+    let base = vault_base().await?;
+    let auth = auth_header().await?;
+    let mut url = format!("{base}/v1/bot/join-now");
+    if let Some(cid) = company_id.as_ref() {
+        if !cid.is_empty() {
+            url.push_str(&format!("?companyId={cid}"));
+        }
+    }
+
+    let body = InviteBotBody {
+        meeting_url,
+        calendar_event_id,
+    };
+    let res = build_client()
+        .post(url)
+        .header("authorization", &auth)
+        .header("content-type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("bot/join-now fetch: {e}"))?;
+    let status = res.status();
+    let text = res
+        .text()
+        .await
+        .map_err(|e| format!("bot/join-now read: {e}"))?;
+    if !status.is_success() {
+        return Err(format!("bot/join-now HTTP {status}: {text}"));
+    }
+    serde_json::from_str(&text)
+        .map_err(|e| format!("bot/join-now parse: {e} — body: {text}"))
+}
+
 /// `GET /membership/me` — caller's memberships, enriched with `companyName`.
 /// Used by the modal to render human-readable company badges instead of
 /// raw `cmp_…` UIDs.
@@ -572,6 +630,31 @@ mod tests {
         assert_eq!(bot.calendar_event_id.as_deref(), Some("evt-1"));
         assert!(bot.auto_scheduled);
         assert!(bot.error_message.is_none());
+    }
+
+    /// Regression — `POST /v1/bot/invite` returns a slimmer body than
+    /// `GET /v1/bot/list`, omitting `autoScheduled` (and the Optional
+    /// fields). The invite command deserializes that response into
+    /// `ScheduledBot`; if the struct treats `autoScheduled` as required the
+    /// parse fails and the UI shows a spurious "Couldn't invite the bot."
+    /// toast even though the bot was scheduled successfully. The slim body
+    /// must parse, defaulting `auto_scheduled` to false.
+    #[test]
+    fn scheduled_bot_parses_slim_invite_response_without_auto_scheduled() {
+        let json = r#"{
+            "botId": "bot-abc",
+            "status": "scheduled",
+            "meetingUrl": "https://us06web.zoom.us/j/85906",
+            "platform": "zoom",
+            "createdAt": "2026-05-29T12:00:00Z"
+        }"#;
+        let bot: ScheduledBot = serde_json::from_str(json).expect("slim invite body must parse");
+        assert_eq!(bot.bot_id, "bot-abc");
+        assert_eq!(bot.status, "scheduled");
+        assert_eq!(bot.platform, "zoom");
+        assert!(!bot.auto_scheduled, "manual invite defaults to not auto-scheduled");
+        assert!(bot.calendar_event_id.is_none());
+        assert!(bot.meeting_title.is_none());
     }
 
     #[test]
