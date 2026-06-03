@@ -22,6 +22,7 @@ pub mod meetings;
 pub mod new_files;
 pub mod notifications;
 pub mod oauth;
+pub mod permissions;
 pub mod personal;
 pub mod prewarm;
 pub mod process;

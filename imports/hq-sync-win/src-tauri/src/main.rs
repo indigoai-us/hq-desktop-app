@@ -225,6 +225,10 @@ fn main() {
             commands::recall_sdk::meetings_list_active_detections,
             commands::recall_sdk::start_recording,
             commands::recall_sdk::stop_recording,
+            commands::permissions::meetings_permissions_state,
+            commands::permissions::permissions_force_native_register,
+            commands::permissions::permissions_open_settings,
+            commands::permissions::open_meeting_permissions_window,
         ])
         .setup(|app| {
             // One-shot migration of any legacy `/deploy`-skill stub at

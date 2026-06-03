@@ -39,6 +39,13 @@
   // the staging-channel toggle below. Populated at mount from
   // `meetings_feature_enabled` (cached process-lifetime on the Rust side).
   let isIndigoUser = $state(false);
+  // Meeting-detect permissions rollup (US-003). On Windows there is no per-app
+  // permission system for the Recall SDK's capture, so this is always
+  // all-granted — the row renders an "Enabled" pill and the "Details" button
+  // opens an informational wizard window. Mirrors the macOS at-a-glance pill,
+  // which there collapses five live TCC grants. Re-read on focus so it stays
+  // fresh. Null until first read (row hidden).
+  let meetingPermsGranted = $state<boolean | null>(null);
   // Staging channel — @getindigo.ai-only toggle (visibility gated on
   // `isIndigoUser`). Distinct from the release-channel picker below:
   // this controls which hq-core SOURCE the in-app rescue + drift
@@ -279,6 +286,28 @@
     }
   }
 
+  // Read the meeting-detect permissions rollup. On Windows this always reports
+  // all-granted (no permission system); the row's pill reflects it. Called on
+  // mount + window focus, same cadence as loadNotifPermission.
+  async function loadMeetingPerms() {
+    try {
+      const state = await invoke<{ allRequiredGranted: boolean }>('meetings_permissions_state');
+      meetingPermsGranted = state.allRequiredGranted;
+    } catch (err) {
+      console.error('Failed to read meeting permissions:', err);
+      meetingPermsGranted = null;
+    }
+  }
+
+  // Open the informational meeting-permissions wizard window.
+  async function openMeetingPermissions() {
+    try {
+      await invoke('open_meeting_permissions_window');
+    } catch (err) {
+      console.error('Failed to open meeting permissions window:', err);
+    }
+  }
+
   async function handleToggleRealtimeSync() {
     realtimeSync = !realtimeSync;
     await saveAll();
@@ -352,6 +381,7 @@
   $effect(() => {
     loadSettings();
     loadNotifPermission();
+    loadMeetingPerms();
     getVersion()
       .then((v) => {
         appVersion = v;
@@ -359,7 +389,10 @@
       .catch((err) => console.error('Failed to read app version:', err));
     // Re-read permission whenever the window regains focus — covers the
     // common flow of granting/blocking in System Settings then returning.
-    const onFocus = () => loadNotifPermission();
+    const onFocus = () => {
+      loadNotifPermission();
+      loadMeetingPerms();
+    };
     window.addEventListener('focus', onFocus);
     return () => {
       window.removeEventListener('focus', onFocus);
@@ -594,6 +627,32 @@
                 <span class="toggle-knob"></span>
               </button>
             </div>
+
+            <!-- Meeting permissions (US-003) — at-a-glance row mirroring the
+                 macOS TCC monitor. On Windows the Recall SDK records with the
+                 user's ambient rights (no permission system), so this always
+                 shows "Enabled"; the "Details" button opens an informational
+                 wizard. Hidden until the rollup is read. -->
+            {#if meetingPermsGranted !== null}
+              <div class="setting-row">
+                <div class="setting-info">
+                  <span class="setting-label">Meeting permissions</span>
+                  <span class="setting-desc">
+                    {#if meetingPermsGranted}
+                      Ready to detect &amp; record meetings — nothing to grant on Windows
+                    {:else}
+                      Checking meeting capture capabilities…
+                    {/if}
+                  </span>
+                </div>
+                {#if meetingPermsGranted}
+                  <span class="perm-pill">Enabled</span>
+                {/if}
+                <button class="change-button" onclick={openMeetingPermissions}>
+                  Details
+                </button>
+              </div>
+            {/if}
           {/if}
         </div>
       </section>
