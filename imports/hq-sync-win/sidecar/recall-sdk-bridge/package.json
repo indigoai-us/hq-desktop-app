@@ -7,13 +7,18 @@
   "main": "bridge.mjs",
   "scripts": {
     "start": "node bridge.mjs",
-    "test": "node --test"
+    "test": "node --test",
+    "build": "node build.mjs",
+    "build:force": "node build.mjs --force"
   },
   "engines": {
     "node": ">=18"
   },
   "dependencies": {
     "@recallai/desktop-sdk": "^2.0.15"
+  },
+  "devDependencies": {
+    "postject": "^1.0.0-alpha.6"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
