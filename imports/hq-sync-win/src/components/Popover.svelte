@@ -202,6 +202,12 @@
     /** Click handler for the meeting icon — toggles the modal open state
      *  in App.svelte (where the modal itself is rendered). */
     onmeetingsclick?: () => void;
+    /** Whether the gated desktop-alt "Company OS" entry should render.
+     *  Driven by `desktop_alt_enabled` (@getindigo.ai only). */
+    desktopAltEnabled?: boolean;
+    /** Click handler for the Company OS entry — opens the desktop-alt window
+     *  (App.svelte invokes `open_desktop_alt_window`). */
+    ondesktopaltclick?: () => void;
   }
 
   let {
@@ -251,6 +257,8 @@
     bindStatsRefresh,
     meetingsEnabled = false,
     onmeetingsclick,
+    desktopAltEnabled = false,
+    ondesktopaltclick,
   }: Props = $props();
 
   // Instance ref for SyncStats so parent can trigger refresh
@@ -442,6 +450,22 @@
            @getindigo.ai via `meetings_feature_enabled` (SYNC-1) so this
            branch is dead code for non-Indigo users. -->
       <MeetingIcon onclick={onmeetingsclick} />
+    {/if}
+
+    {#if desktopAltEnabled && ondesktopaltclick}
+      <!-- Gated "Company OS" entry (US-004). Opens the desktop-alt window.
+           Gated to @getindigo.ai via `desktop_alt_enabled`, so this branch is
+           dead code (never rendered) for non-Indigo users — the classic
+           popover surface is unchanged for everyone else. -->
+      <button
+        type="button"
+        class="header-company-os"
+        title="Open Company OS"
+        aria-label="Open Company OS"
+        onclick={ondesktopaltclick}
+      >
+        OS
+      </button>
     {/if}
 
     <!-- Sync button — right-aligned in the header so it's always visible
@@ -1038,6 +1062,31 @@
   .header-sync:disabled {
     opacity: 0.7;
     cursor: not-allowed;
+  }
+
+  /* Gated "Company OS" pill (US-004). Discreet monochrome chip sitting left of
+     Sync — only rendered for @getindigo.ai users via `desktop_alt_enabled`. */
+  .header-company-os {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0.5rem 0.625rem;
+    font-family: inherit;
+    font-size: 0.6875rem;
+    font-weight: 650;
+    letter-spacing: 0.02em;
+    color: var(--popover-text-heading, #ffffff);
+    background: transparent;
+    border: 1px solid var(--popover-border, rgba(255, 255, 255, 0.18));
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background-color 0.15s ease, color 0.15s ease;
+    -webkit-app-region: no-drag;
+  }
+
+  .header-company-os:hover {
+    background: var(--popover-action-hover, rgba(255, 255, 255, 0.1));
   }
 
   .header-sync.syncing {

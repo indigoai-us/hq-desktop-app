@@ -117,6 +117,14 @@
   // earlier modal-on-popover UX was too cramped.
   let meetingsEnabled = $state(false);
 
+  // Desktop-alt "Company OS" feature flag (US-004) — driven by
+  // `desktop_alt_enabled` (Rust delegates to the same @getindigo.ai gate as
+  // `meetings_feature_enabled`; the OnceLock cache is shared). Defaults false
+  // so non-Indigo users never see the alt UX entry even before the gate
+  // resolves. A separate invoke keeps the two flags decoupled. When true, the
+  // popover shows an "Open Company OS" action that opens the desktop-alt window.
+  let desktopAltEnabled = $state(false);
+
   // Workspaces — populated by `list_syncable_workspaces` (Rust). Replaces the
   // legacy "No companies yet" dead-end with a union over Person + memberships
   // + local company folders. `null` = first invocation in flight; non-null
@@ -1067,6 +1075,18 @@
         meetingsEnabled = false;
       });
 
+    // Desktop-alt "Company OS" gate (US-004). Same OnceLock-cached
+    // @getindigo.ai check as `meetings_feature_enabled`; a separate invoke
+    // keeps the flags decoupled. Errors fall back to false so a misfiring gate
+    // command can never accidentally expose the alt UX.
+    invoke<boolean>('desktop_alt_enabled')
+      .then((v) => {
+        desktopAltEnabled = v;
+      })
+      .catch(() => {
+        desktopAltEnabled = false;
+      });
+
     return () => {
       unlisteners.forEach((unlisten) => unlisten());
       unlisteners = [];
@@ -1182,6 +1202,14 @@
         // since they'd be infra-level (Tauri failure) and there's nothing
         // useful to show inline.
         invoke('open_meetings_window').catch(() => {});
+      }}
+      {desktopAltEnabled}
+      ondesktopaltclick={() => {
+        // Open (or focus) the gated desktop-alt "Company OS" window
+        // (label: desktop-alt). The Rust handler re-checks the Indigo gate as
+        // defense-in-depth and builds the window with the fork's standard
+        // decorated frame + vibrancy. Fire-and-forget — errors are infra-level.
+        invoke('open_desktop_alt_window').catch(() => {});
       }}
     />
   {:else}
