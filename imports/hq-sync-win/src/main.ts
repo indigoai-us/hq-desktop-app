@@ -8,6 +8,7 @@ import ShareDetail from './components/ShareDetail.svelte';
 import DmDetail from './components/DmDetail.svelte';
 import BannerNotification from './components/BannerNotification.svelte';
 import MeetingPermissionsWindow from './components/MeetingPermissionsWindow.svelte';
+import NotificationHistory from './components/NotificationHistory.svelte';
 import { mount } from 'svelte';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { beforeSend } from "./sentry-before-send";
@@ -45,6 +46,8 @@ if (windowLabel === 'new-files-detail') {
   Component = BannerNotification as unknown as typeof App;
 } else if (windowLabel === 'meeting-permissions') {
   Component = MeetingPermissionsWindow as unknown as typeof App;
+} else if (windowLabel === 'notification-history') {
+  Component = NotificationHistory as unknown as typeof App;
 } else {
   Component = App;
 }
