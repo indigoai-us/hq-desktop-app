@@ -850,16 +850,20 @@ mod tests {
     /// — built into Windows and idiomatic for "block for N seconds."
     #[cfg(target_os = "windows")]
     #[test]
-    fn test_cancel_process_terminates_long_running_under_2s() {
+    fn test_cancel_process_terminates_long_running() {
         let handle = format!("test-cancel-{}", Uuid::new_v4());
+        // `ping -n 61 127.0.0.1` blocks ~60s WITHOUT needing a console input
+        // handle. `cmd /c timeout /t 60` was used before but `timeout` aborts
+        // immediately ("input redirection is not supported") when stdin is a
+        // pipe — which it always is under run_process_impl — so on CI the child
+        // exited at once and was deregistered before the cancel, making
+        // mark_cancelled (and thus cancel_process_impl) return false.
         let args = SpawnArgs {
-            cmd: "cmd".to_string(),
+            cmd: "ping".to_string(),
             args: vec![
-                "/c".to_string(),
-                "timeout".to_string(),
-                "/t".to_string(),
-                "60".to_string(),
-                "/nobreak".to_string(),
+                "-n".to_string(),
+                "61".to_string(),
+                "127.0.0.1".to_string(),
             ],
             cwd: None,
             env: None,
@@ -892,9 +896,13 @@ mod tests {
 
         join.join().expect("spawn thread should exit");
         let elapsed = start.elapsed();
+        // The child would otherwise run ~60s; assert the Job-Object tree-kill
+        // returns promptly. Bound kept generous (10s) so a loaded CI runner's
+        // scheduling jitter on the stream-drain + wait() doesn't flake it — the
+        // point is "killed in seconds, not 60s", not a tight perf SLA.
         assert!(
-            elapsed < Duration::from_secs(2),
-            "TerminateJobObject should kill the tree under 2s, took {:?}",
+            elapsed < Duration::from_secs(10),
+            "TerminateJobObject should kill the tree promptly, took {:?}",
             elapsed
         );
     }
