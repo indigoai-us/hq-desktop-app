@@ -104,10 +104,16 @@ npm ci --prefix sidecar/recall-sdk-bridge   # installs the SDK runtime + postjec
 node sidecar/recall-sdk-bridge/build.mjs    # produces src-tauri/binaries/recall-desktop-sdk-x86_64-pc-windows-msvc.exe
 ```
 
-`build.mjs` is **idempotent** (skips an existing launcher unless you pass
-`--force`) and is also chained into `tauri.conf.json`'s `beforeBuildCommand`,
-so a plain `npm run tauri build` produces the launcher automatically before
-bundling — the `externalBin` requirement can never fail a clean build. The
+**Config split (important):** the Recall `bundle.externalBin` + `bundle.resources`
+live in a **release-only overlay** `src-tauri/tauri.release.conf.json`, NOT in the
+base `src-tauri/tauri.conf.json`. The Tauri build script validates `externalBin`
+existence at *compile* time (during `cargo check`/`clippy`/`test`), so keeping
+them in the base config would fail the lint/test CI — which never builds the
+80 MB launcher. Release builds merge the overlay via
+`npm run tauri build -- --config src-tauri/tauri.release.conf.json` (see
+`release.yml`); the overlay's `beforeBuildCommand` chains `node build.mjs` so a
+release build produces the launcher before bundling. `build.mjs` is **idempotent**
+(skips an existing launcher unless you pass `--force`). The
 launcher is a ~80 MB build artifact and is **gitignored**
 (`src-tauri/binaries/*.exe`); the runtime payload is gitignored via the
 existing `node_modules/` rule. Neither is committed; both are rebuilt each

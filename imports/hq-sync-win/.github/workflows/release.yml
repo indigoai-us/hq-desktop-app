@@ -179,7 +179,12 @@ jobs:
           # Sentry DSN — release-only secret. PR/CI builds have it empty
           # and the Sentry client no-ops.
           HQ_SYNC_SENTRY_DSN: ${{ secrets.HQ_SYNC_SENTRY_DSN }}
-        run: npm run tauri build -- --target ${{ matrix.target }} --bundles msi nsis updater
+        # --config merges the release-only overlay (tauri.release.conf.json) that
+        # adds the Recall sidecar externalBin + resources. They are NOT in the base
+        # tauri.conf.json so the lint/test CI — which runs cargo clippy/check/test
+        # WITHOUT building the 80MB sidecar launcher — does not trip the tauri
+        # build-script's externalBin existence check.
+        run: npm run tauri build -- --target ${{ matrix.target }} --bundles msi nsis updater --config src-tauri/tauri.release.conf.json
 
       - name: Sign installers (SignTool)
         if: env.PFX_PATH != ''
