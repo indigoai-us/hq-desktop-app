@@ -180,12 +180,14 @@ pub fn prune(ledger: &mut NotifyLedger, now: DateTime<Utc>) {
 ///
 /// The ledger lives in a single JSON file, so the read-modify-write in
 /// [`claim_notify`] / [`record_action`] is only safe if exactly one caller is
-/// inside it at a time. Without this, two concurrent `meeting:detected`
-/// listeners (the popover window and the desktop-alt window — both subscribed
-/// to the global Tauri event) could each `read_ledger → should_suppress` before
-/// either writes, both observe "not suppressed", and both fire a banner for the
-/// SAME meeting. The lock makes the second caller observe the first's just-written
-/// `Notified` entry and suppress.
+/// inside it at a time. Tauri fans the global `meeting:detected` event out to
+/// every webview, so if more than one window ever invoked the notify path
+/// concurrently they could each `read_ledger → should_suppress` before either
+/// writes, both observe "not suppressed", and both fire a banner for the SAME
+/// meeting. The lock makes the second caller observe the first's just-written
+/// `Notified` entry and suppress. (On this fork only the always-present popover
+/// invokes the notify path — the MeetingsWindow keeps just its in-app row — so
+/// the lock is defence-in-depth, but it also guards app-restart re-fires.)
 ///
 /// CRITICAL: the guard must never be held across a `.await`. The file I/O here
 /// is fully synchronous, and the only caller (`meetings_notify_detected`) takes
