@@ -220,6 +220,9 @@ fn main() {
             commands::banner::preview_share_banner,
             commands::banner::preview_update_banner,
             commands::recall_sdk::meeting_detect_feature_enabled,
+            commands::recall_sdk::meetings_list_active_detections,
+            commands::recall_sdk::start_recording,
+            commands::recall_sdk::stop_recording,
         ])
         .setup(|app| {
             // One-shot migration of any legacy `/deploy`-skill stub at
@@ -378,6 +381,18 @@ fn main() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        // Build (not `run`) so we can attach a RunEvent handler for app exit.
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app, event| {
+            // Tear down the Recall SDK bridge sidecar on quit. Without this the
+            // bridge (and any node-subprocesses it spawned) would be orphaned
+            // when the tray app exits — `stop_recall_sdk` issues the Job-Object
+            // tree-kill (`TerminateJobObject`). ExitRequested fires for every
+            // exit path that goes through the Tauri runtime (tray Quit, OS
+            // shutdown). Safe + idempotent when the SDK never started.
+            if let tauri::RunEvent::ExitRequested { .. } = event {
+                commands::recall_sdk::stop_recall_sdk();
+            }
+        });
 }

@@ -229,6 +229,7 @@ mod tests {
             dm_notifications: None,
             staging_channel: None,
             release_channel: None,
+            default_recording_company_uid: None,
         }
     }
 

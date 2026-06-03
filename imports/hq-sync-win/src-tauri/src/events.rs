@@ -421,6 +421,12 @@ pub struct MeetingDetectedEvent {
     pub detection_id: String,
     /// The meeting URL (Zoom, Meet, Teams, etc.) that was detected.
     pub meeting_url: String,
+    /// SDK window id for the detected meeting. Canonical handle for
+    /// `RecallAiSdk.startRecording({ windowId })` and `meeting:closed`
+    /// matching. Optional for back-compat with older bridge versions that
+    /// only emitted `meetingUrl`; the current bridge always populates it.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub window_id: Option<String>,
     /// The video-conferencing platform.
     pub platform: MeetingPlatform,
     /// ISO 8601 timestamp when the detection fired.
@@ -435,6 +441,106 @@ pub struct MeetingDetectedEvent {
 
 /// Tauri event channel name for `MeetingDetectedEvent`.
 pub const EVENT_MEETING_DETECTED: &str = "meeting:detected";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Meeting-closed + recording lifecycle events (US-002)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// The Recall Desktop SDK detection feed is platform-neutral; so is the
+// recording lifecycle the bridge drives over its stdin command channel. The
+// macOS *permission* surface (TCC: screen-capture / microphone / system-audio /
+// accessibility / full-disk-access) is the only macOS-only piece — Windows has
+// no equivalent permission system, so the upstream `permission:status` /
+// `permissions:all-granted` events are intentionally NOT ported here. The
+// bridge reports "all granted" on Windows so the (future) permissions UI
+// collapses to a no-op.
+
+/// Payload for `meeting:closed` — emitted by the SDK when the meeting window
+/// goes away (user quit the app, Zoom call ended, Slack huddle closed, etc.).
+/// Used by the UI to clear an active-meeting row that was never recorded, and
+/// (defense-in-depth) to finalize one that is still recording.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MeetingClosedEvent {
+    pub window_id: String,
+    pub platform: MeetingPlatform,
+    pub closed_at: String,
+}
+
+/// Tauri event channel name for `MeetingClosedEvent`.
+pub const EVENT_MEETING_CLOSED: &str = "meeting:closed";
+
+/// Payload for `recording:started` — emitted by the SDK bridge after
+/// `RecallAiSdk.startRecording({ windowId, uploadToken })` resolves
+/// successfully. The `windowId` keys back to the detection that triggered the
+/// recording so the renderer can flip the matching row to "Recording…".
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordingStartedEvent {
+    /// SDK window id for the recording.
+    pub window_id: String,
+    /// Platform discriminator (`zoom`, `meet`, …). Same enum as detections.
+    pub platform: MeetingPlatform,
+    /// ISO 8601 timestamp when the bridge confirmed the start.
+    pub started_at: String,
+}
+
+/// Payload for `recording:ended` — emitted when the SDK ends the recording.
+/// Normally triggered by an explicit `stopRecording`: either a user Stop, or
+/// the bridge auto-stopping on `meeting:closed` when the call ends. The SDK
+/// does NOT reliably auto-stop on its own when the meeting window closes — its
+/// CHANGELOG documents per-platform auto-stop as unreliable — so the bridge
+/// issues the stop explicitly (see the `meeting-closed` handler in
+/// sidecar/recall-sdk-bridge/bridge.mjs).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordingEndedEvent {
+    /// SDK window id for the recording that ended.
+    pub window_id: String,
+    /// Platform discriminator (`zoom`, `meet`, …).
+    pub platform: MeetingPlatform,
+    /// ISO 8601 timestamp when the bridge confirmed the end.
+    pub ended_at: String,
+}
+
+/// Payload for `recording:media-capture` — emitted by the SDK as it latches
+/// onto audio / video sources after `startRecording`. Useful for
+/// distinguishing "recording started but no audio yet" from "recording fully
+/// live".
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordingMediaCaptureEvent {
+    pub window_id: String,
+    /// One of `audio`, `video`, `screenshare` from the SDK.
+    pub capture_type: String,
+    /// True when the source is actively streaming; false when it stops.
+    pub capturing: bool,
+}
+
+/// Payload for `recording:error` — emitted by the bridge when a start/stop
+/// command throws inside the SDK, or when the SDK process dies mid-recording
+/// (synthesized terminal error so the UI doesn't hang in "Stopping…"). Carries
+/// the command name + windowId + a human-readable message so the UI can
+/// surface a specific failure instead of just spinning.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordingErrorEvent {
+    /// The bridge command that failed (`start-recording`, `stop-recording`,
+    /// or the `sdk-crash` marker for a fatal SDK death).
+    pub cmd: String,
+    pub window_id: String,
+    /// Human-readable error message from the SDK.
+    pub message: String,
+}
+
+/// Tauri event channel name for `RecordingStartedEvent`.
+pub const EVENT_RECORDING_STARTED: &str = "recording:started";
+/// Tauri event channel name for `RecordingEndedEvent`.
+pub const EVENT_RECORDING_ENDED: &str = "recording:ended";
+/// Tauri event channel name for `RecordingMediaCaptureEvent`.
+pub const EVENT_RECORDING_MEDIA_CAPTURE: &str = "recording:media-capture";
+/// Tauri event channel name for `RecordingErrorEvent`.
+pub const EVENT_RECORDING_ERROR: &str = "recording:error";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests
@@ -777,6 +883,7 @@ mod tests {
         let payload = MeetingDetectedEvent {
             detection_id: "det_123".to_string(),
             meeting_url: "https://zoom.us/j/12345".to_string(),
+            window_id: Some("win-abc".to_string()),
             platform: MeetingPlatform::Zoom,
             detected_at: "2026-05-20T10:00:00Z".to_string(),
             source: DetectionSource::SdkCalendar,
@@ -792,6 +899,7 @@ mod tests {
         let payload = MeetingDetectedEvent {
             detection_id: "det_456".to_string(),
             meeting_url: "https://meet.google.com/abc-def-ghi".to_string(),
+            window_id: None,
             platform: MeetingPlatform::Meet,
             detected_at: "2026-05-20T10:00:00Z".to_string(),
             source: DetectionSource::SdkActiveApp,
@@ -799,6 +907,8 @@ mod tests {
         };
         let json = serde_json::to_string(&payload).unwrap();
         assert!(!json.contains("\"sourceEventId\""));
+        // `window_id: None` must be omitted too (skip_serializing_if).
+        assert!(!json.contains("\"windowId\""));
         assert!(json.contains("\"platform\":\"meet\""));
         assert!(json.contains("\"source\":\"sdk-active-app\""));
     }
@@ -818,6 +928,72 @@ mod tests {
         assert_eq!(payload.platform, MeetingPlatform::Teams);
         assert_eq!(payload.source, DetectionSource::SdkCalendar);
         assert_eq!(payload.source_event_id.as_deref(), Some("cal_evt_99"));
+        // window_id absent in this fixture → None (default).
+        assert!(payload.window_id.is_none());
+    }
+
+    #[test]
+    fn test_meeting_detected_event_parses_window_id() {
+        let json = r#"{
+            "detectionId": "det_win",
+            "meetingUrl": "recall-window:w-1",
+            "windowId": "w-1",
+            "platform": "zoom",
+            "detectedAt": "2026-05-20T11:00:00Z",
+            "source": "sdk-active-app"
+        }"#;
+        let payload: MeetingDetectedEvent = serde_json::from_str(json).unwrap();
+        assert_eq!(payload.window_id.as_deref(), Some("w-1"));
+    }
+
+    // ── Recording lifecycle + meeting:closed events (US-002) ──────────────────
+
+    #[test]
+    fn test_meeting_closed_event_round_trips() {
+        let json = r#"{"windowId":"w-1","platform":"meet","closedAt":"2026-05-20T12:00:00Z"}"#;
+        let payload: MeetingClosedEvent = serde_json::from_str(json).unwrap();
+        assert_eq!(payload.window_id, "w-1");
+        assert_eq!(payload.platform, MeetingPlatform::Meet);
+        assert_eq!(payload.closed_at, "2026-05-20T12:00:00Z");
+        let back = serde_json::to_string(&payload).unwrap();
+        let reparsed: MeetingClosedEvent = serde_json::from_str(&back).unwrap();
+        assert_eq!(payload, reparsed);
+    }
+
+    #[test]
+    fn test_recording_started_event_parses() {
+        let json = r#"{"windowId":"w-1","platform":"zoom","startedAt":"2026-05-25T17:00:00Z"}"#;
+        let payload: RecordingStartedEvent = serde_json::from_str(json).unwrap();
+        assert_eq!(payload.window_id, "w-1");
+        assert_eq!(payload.platform, MeetingPlatform::Zoom);
+        assert_eq!(payload.started_at, "2026-05-25T17:00:00Z");
+    }
+
+    #[test]
+    fn test_recording_ended_event_parses() {
+        let json = r#"{"windowId":"w-1","platform":"meet","endedAt":"2026-05-25T17:30:00Z"}"#;
+        let payload: RecordingEndedEvent = serde_json::from_str(json).unwrap();
+        assert_eq!(payload.window_id, "w-1");
+        assert_eq!(payload.ended_at, "2026-05-25T17:30:00Z");
+    }
+
+    #[test]
+    fn test_recording_media_capture_event_parses() {
+        let json = r#"{"windowId":"w-1","captureType":"audio","capturing":true}"#;
+        let payload: RecordingMediaCaptureEvent = serde_json::from_str(json).unwrap();
+        assert_eq!(payload.window_id, "w-1");
+        assert_eq!(payload.capture_type, "audio");
+        assert!(payload.capturing);
+    }
+
+    #[test]
+    fn test_recording_error_event_parses() {
+        let json =
+            r#"{"cmd":"start-recording","windowId":"w-1","message":"upload token rejected"}"#;
+        let payload: RecordingErrorEvent = serde_json::from_str(json).unwrap();
+        assert_eq!(payload.cmd, "start-recording");
+        assert_eq!(payload.window_id, "w-1");
+        assert_eq!(payload.message, "upload token rejected");
     }
 
     #[test]

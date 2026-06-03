@@ -21,7 +21,7 @@
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
@@ -431,6 +431,202 @@ where
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Pure impl — variant with piped stdin
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Like [`run_process_impl`], but also pipes stdin and invokes `on_spawn`
+/// once with the child immediately after spawn (and after the Job Object is
+/// assigned) so the caller can `child.stdin.take()` and stash the handle
+/// wherever it needs to live (typically a module-level `Mutex<Option<
+/// ChildStdin>>` so other Tauri commands can write to it).
+///
+/// Used by the Recall SDK bridge to drive `start-recording` / `stop-recording`
+/// commands without spawning a new SDK process per recording. Other callers
+/// continue to use `run_process_impl`, which keeps the default stdin and avoids
+/// any reads-from-stdin-on-an-unwritable-pipe surprises.
+///
+/// Windows specifics: identical Job-Object tree-kill wiring as
+/// `run_process_impl` — create a `KILL_ON_JOB_CLOSE` job, assign the child,
+/// stash the HANDLE in the registry so a later `cancel_process_impl` /
+/// `stop_recall_sdk` terminates the bridge (and any node-subprocesses it
+/// spawned) atomically. The `on_spawn` callback runs after the assign so the
+/// child is already in the job before the caller writes its first command.
+pub fn run_process_with_stdin_impl<F, S>(
+    handle: &str,
+    spawn: &SpawnArgs,
+    on_event: F,
+    on_spawn: S,
+) -> Result<(), String>
+where
+    F: FnMut(ProcessEvent),
+    S: FnOnce(&mut Child),
+{
+    let mut cmd = Command::new(&spawn.cmd);
+    cmd.args(&spawn.args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    // CREATE_NO_WINDOW: stop spawned CLIs from flashing a console window
+    // when the tray app launches them (see run_process_impl).
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+
+    if let Some(cwd) = &spawn.cwd {
+        cmd.current_dir(cwd);
+    }
+    if let Some(env) = &spawn.env {
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
+    }
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("spawn '{}': {}", spawn.cmd, e))?;
+
+    let pid = child.id();
+    register_process(handle, pid);
+
+    // Job Object: create + assign the child so a later cancel can kill the
+    // whole tree atomically. Same TOCTOU note as run_process_impl.
+    #[cfg(target_os = "windows")]
+    {
+        let proc_handle = HANDLE(child.as_raw_handle());
+        unsafe {
+            match create_kill_on_close_job() {
+                Ok(job) => match AssignProcessToJobObject(job, proc_handle) {
+                    Ok(()) => {
+                        register_job_handle(handle, job.0 as isize);
+                    }
+                    Err(e) => {
+                        let _ = CloseHandle(job);
+                        eprintln!(
+                            "[process] AssignProcessToJobObject failed for handle {handle}: {e}"
+                        );
+                    }
+                },
+                Err(e) => {
+                    eprintln!("[process] create_kill_on_close_job failed for handle {handle}: {e}");
+                }
+            }
+        }
+    }
+
+    // Let the caller take stdin (and stash the handle) before we start reading
+    // stdout/stderr — if the caller's setup writes a startup command it should
+    // land before the bridge has emitted anything.
+    on_spawn(&mut child);
+
+    let stdout = child.stdout.take().expect("stdout pipe");
+    let stderr = child.stderr.take().expect("stderr pipe");
+
+    enum ReaderMsg {
+        Event(ProcessEvent),
+        Done {
+            stream: &'static str,
+            err: Option<String>,
+        },
+    }
+
+    let (tx, rx) = mpsc::channel::<ReaderMsg>();
+
+    let tx_stdout = tx.clone();
+    thread::spawn(move || {
+        let mut err: Option<String> = None;
+        for line_result in BufReader::new(stdout).lines() {
+            match line_result {
+                Ok(line) => {
+                    if tx_stdout
+                        .send(ReaderMsg::Event(ProcessEvent::Stdout(line)))
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+                Err(e) => {
+                    err = Some(e.to_string());
+                    break;
+                }
+            }
+        }
+        let _ = tx_stdout.send(ReaderMsg::Done {
+            stream: "stdout",
+            err,
+        });
+    });
+
+    let tx_stderr = tx.clone();
+    thread::spawn(move || {
+        let mut err: Option<String> = None;
+        for line_result in BufReader::new(stderr).lines() {
+            match line_result {
+                Ok(line) => {
+                    if tx_stderr
+                        .send(ReaderMsg::Event(ProcessEvent::Stderr(line)))
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+                Err(e) => {
+                    err = Some(e.to_string());
+                    break;
+                }
+            }
+        }
+        let _ = tx_stderr.send(ReaderMsg::Done {
+            stream: "stderr",
+            err,
+        });
+    });
+
+    drop(tx);
+
+    let mut on_event_mut = on_event;
+    let mut first_stream_err: Option<String> = None;
+    let mut done_count = 0;
+
+    for msg in rx {
+        match msg {
+            ReaderMsg::Event(ev) => on_event_mut(ev),
+            ReaderMsg::Done { stream, err } => {
+                if let Some(e) = err {
+                    if first_stream_err.is_none() {
+                        first_stream_err = Some(format!("{}: {}", stream, e));
+                    }
+                }
+                done_count += 1;
+                if done_count == 2 {
+                    break;
+                }
+            }
+        }
+    }
+
+    let wait_result = child.wait().map_err(|e| e.to_string());
+    deregister_process(handle);
+
+    if let Some(err) = first_stream_err {
+        on_event_mut(ProcessEvent::Exit {
+            code: None,
+            signal: None,
+            success: false,
+        });
+        return Err(err);
+    }
+
+    let status = wait_result?;
+    on_event_mut(ProcessEvent::Exit {
+        code: status.code(),
+        signal: None, // Windows has no POSIX signals
+        success: status.success(),
+    });
+
+    Ok(())
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Cancellation (Job Object → TerminateJobObject)
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -586,6 +782,67 @@ mod tests {
         assert!(try_register_handle(handle));
         assert!(!try_register_handle(handle));
         deregister_process(handle);
+    }
+
+    /// Verify the stdin-piped variant actually delivers what the caller writes
+    /// to the child's stdin, and that the `on_spawn` callback hands back a
+    /// writable handle. `cmd /c findstr /c:"world"` reads its stdin and exits 0
+    /// iff the literal `world` appears on some line, exit 1 otherwise — a
+    /// dependency-free deterministic probe of "did stdin reach the child?".
+    /// We write `world` then drop stdin (EOF); a `success` exit proves
+    /// delivery. (We avoid asserting echoed stdout: Windows console filters
+    /// line-buffer unpredictably under a pipe, but the exit code is exact.)
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_run_process_with_stdin_delivers_input() {
+        use std::cell::Cell;
+        use std::io::Write;
+        use std::rc::Rc;
+
+        let handle = format!("test-stdin-{}", Uuid::new_v4());
+        let args = SpawnArgs {
+            cmd: "cmd".to_string(),
+            args: vec![
+                "/c".to_string(),
+                "findstr".to_string(),
+                "/c:world".to_string(),
+            ],
+            cwd: None,
+            env: None,
+        };
+
+        let exit_success = Rc::new(Cell::new(None::<bool>));
+        let exit_cb = Rc::clone(&exit_success);
+        let spawn_saw_stdin = Rc::new(Cell::new(false));
+        let spawn_cb = Rc::clone(&spawn_saw_stdin);
+
+        let result = run_process_with_stdin_impl(
+            &handle,
+            &args,
+            move |event| {
+                if let ProcessEvent::Exit { success, .. } = event {
+                    exit_cb.set(Some(success));
+                }
+            },
+            move |child| {
+                // Take stdin, write the search line, then drop it to signal EOF
+                // so findstr finishes and the wait() below can return.
+                let mut stdin = child.stdin.take().expect("stdin pipe");
+                spawn_cb.set(true);
+                writeln!(stdin, "world").unwrap();
+                stdin.flush().unwrap();
+                // `stdin` drops here → child sees EOF.
+            },
+        );
+
+        assert!(result.is_ok(), "run_process_with_stdin_impl: {result:?}");
+        assert!(spawn_saw_stdin.get(), "on_spawn should receive the child");
+        assert_eq!(
+            exit_success.get(),
+            Some(true),
+            "findstr should exit 0 — proving 'world' reached the child via stdin",
+        );
+        assert!(!is_registered(&handle), "handle should be deregistered");
     }
 
     /// Verify that spawning + cancelling a long-running process terminates
