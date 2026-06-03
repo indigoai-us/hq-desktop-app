@@ -222,6 +222,8 @@ fn main() {
             commands::dm_notify::send_dm,
             commands::notifications::notification_permission_state,
             commands::notifications::notification_request_permission,
+            commands::notification_history::fetch_notification_history,
+            commands::notification_history::open_notification_history,
             commands::banner::banner_window_ready,
             commands::banner::banner_action,
             commands::banner::dismiss_banner,

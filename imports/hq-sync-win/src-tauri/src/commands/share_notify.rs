@@ -683,6 +683,11 @@ async fn do_poll(app: &AppHandle) {
                         }
                     } // end else — native firing path (custom banner disabled)
 
+                    // Persist into the unified notification history (US-006) so
+                    // this share survives a dismiss/restart and shows in the
+                    // history window. Idempotent by event_id.
+                    crate::commands::notification_history::record_share_events(&body.events);
+
                     // Badge the tray icon with the unacknowledged event count.
                     crate::tray::set_share_badge(app, body.events.len());
 

@@ -385,6 +385,11 @@ async fn do_poll(app: &AppHandle) {
         ),
     );
 
+    // Persist into the unified notification history (US-006) before either the
+    // custom-banner or native firing path runs, so a dismissed DM survives a
+    // restart and shows in the history window. Idempotent by event_id.
+    crate::commands::notification_history::record_dm_events(&body.events);
+
     // When the custom liquid-glass banner is enabled, route every DM through the
     // in-app banner (commands::banner) — event-driven, no blocking Cocoa run
     // loop, and platform-neutral (the banner window uses Windows Mica/Acrylic on
