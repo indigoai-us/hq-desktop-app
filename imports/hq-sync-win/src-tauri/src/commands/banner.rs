@@ -148,11 +148,11 @@ fn initials(name: &str) -> String {
 }
 
 fn top_right_position(app: &AppHandle) -> tauri::LogicalPosition<f64> {
-    let monitor = app
-        .primary_monitor()
-        .ok()
-        .flatten()
-        .or_else(|| app.available_monitors().ok().and_then(|m| m.into_iter().next()));
+    let monitor = app.primary_monitor().ok().flatten().or_else(|| {
+        app.available_monitors()
+            .ok()
+            .and_then(|m| m.into_iter().next())
+    });
     if let Some(m) = monitor {
         let scale = m.scale_factor();
         let logical_w = m.size().width as f64 / scale;
@@ -171,7 +171,12 @@ fn top_right_position(app: &AppHandle) -> tauri::LogicalPosition<f64> {
 pub async fn show_banner(app: AppHandle, payload: BannerPayload) -> Result<(), String> {
     log(
         LOG_TAG,
-        &format!("show: kind={} title={} body_len={}", payload.kind, payload.title, payload.body.len()),
+        &format!(
+            "show: kind={} title={} body_len={}",
+            payload.kind,
+            payload.title,
+            payload.body.len()
+        ),
     );
 
     if let Some(state) = app.try_state::<PendingBanner>() {
@@ -318,7 +323,11 @@ pub async fn show_dm_banner(
     app: AppHandle,
     event: crate::commands::dm_notify::DmEvent,
 ) -> Result<(), String> {
-    let has_prompt = event.prompt.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false);
+    let has_prompt = event
+        .prompt
+        .as_deref()
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
     let payload = BannerPayload {
         kind: "dm".to_string(),
         title: event.from_display_name.clone(),
@@ -338,7 +347,8 @@ pub async fn show_share_banner(
     event: crate::commands::share_notify::ShareEvent,
 ) -> Result<(), String> {
     let title = crate::commands::share_notify::notification_title(&event.issuer_display_name);
-    let body = crate::commands::share_notify::notification_body(event.note.as_deref(), &event.paths);
+    let body =
+        crate::commands::share_notify::notification_body(event.note.as_deref(), &event.paths);
     let payload = BannerPayload {
         kind: "share".to_string(),
         title,
@@ -402,10 +412,17 @@ pub async fn banner_action(
     action: String,
     payload: BannerPayload,
 ) -> Result<(), String> {
-    log(LOG_TAG, &format!("action kind={} action={}", payload.kind, action));
+    log(
+        LOG_TAG,
+        &format!("action kind={} action={}", payload.kind, action),
+    );
     app.emit(
         EVENT_BANNER_ACTION,
-        BannerActionEvent { kind: payload.kind, action, data: payload.data },
+        BannerActionEvent {
+            kind: payload.kind,
+            action,
+            data: payload.data,
+        },
     )
     .map_err(|e| e.to_string())?;
     dismiss_banner_inner(&app);
@@ -473,5 +490,10 @@ pub async fn preview_share_banner(app: AppHandle) -> Result<(), String> {
 /// Fabricate a new-version event and show its banner.
 #[tauri::command]
 pub async fn preview_update_banner(app: AppHandle) -> Result<(), String> {
-    show_update_banner(app, "0.4.0".to_string(), Some("instant DMs + custom banners".to_string())).await
+    show_update_banner(
+        app,
+        "0.4.0".to_string(),
+        Some("instant DMs + custom banners".to_string()),
+    )
+    .await
 }

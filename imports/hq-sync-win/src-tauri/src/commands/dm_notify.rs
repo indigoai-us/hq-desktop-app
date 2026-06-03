@@ -340,7 +340,10 @@ async fn do_poll(app: &AppHandle) {
         Ok(r) => {
             let status = r.status();
             if status.as_u16() == 401 || status.as_u16() == 403 {
-                log(LOG_TAG, &format!("DM_NOTIFY_POLL_AUTH_FAIL status={status}"));
+                log(
+                    LOG_TAG,
+                    &format!("DM_NOTIFY_POLL_AUTH_FAIL status={status}"),
+                );
                 return;
             }
             if !status.is_success() {
@@ -375,7 +378,11 @@ async fn do_poll(app: &AppHandle) {
 
     log(
         LOG_TAG,
-        &format!("DM_NOTIFY_POLL_OK {} DM(s), cursor→{}", body.events.len(), newest),
+        &format!(
+            "DM_NOTIFY_POLL_OK {} DM(s), cursor→{}",
+            body.events.len(),
+            newest
+        ),
     );
 
     // When the custom liquid-glass banner is enabled, route every DM through the
@@ -383,7 +390,10 @@ async fn do_poll(app: &AppHandle) {
     // loop, and platform-neutral (the banner window uses Windows Mica/Acrylic on
     // the fork) — and skip the native firing path entirely.
     if crate::commands::banner::custom_banner_enabled() {
-        log(LOG_TAG, &format!("DM_NOTIFY_CUSTOM_BANNER {} DM(s)", body.events.len()));
+        log(
+            LOG_TAG,
+            &format!("DM_NOTIFY_CUSTOM_BANNER {} DM(s)", body.events.len()),
+        );
         for dm in &body.events {
             if let Err(e) = crate::commands::banner::show_dm_banner(app.clone(), dm.clone()).await {
                 log(LOG_TAG, &format!("DM_NOTIFY_BANNER_FAIL err={e}"));
@@ -401,118 +411,127 @@ async fn do_poll(app: &AppHandle) {
     // tauri-plugin-notification below (US-015 / mirrors US-009 share-notify).
     #[cfg(target_os = "macos")]
     {
-    // Lazily register the bundle identifier with mac-notification-sys so the
-    // first send doesn't trigger a macOS "Choose Application" picker. Mirrors
-    // the guard in share_notify::do_poll.
-    static NOTIFICATION_APP_INIT: OnceLock<()> = OnceLock::new();
-    NOTIFICATION_APP_INIT.get_or_init(|| {
-        const BUNDLE_ID: &str = "ai.indigo.hq-sync-menubar";
-        match mac_notification_sys::set_application(BUNDLE_ID) {
-            Ok(()) => log(LOG_TAG, &format!("DM_NOTIFY_BUNDLE_SET bundle={BUNDLE_ID}")),
-            Err(e) => log(
-                LOG_TAG,
-                &format!("DM_NOTIFY_BUNDLE_SET_FAILED bundle={BUNDLE_ID} err={e}"),
-            ),
-        }
-    });
-
-    // Fire one macOS notification per DM. Every DM is clickable: a body-click
-    // opens the DM detail window. Rich DMs additionally expose action buttons.
-    //
-    //   * Body-click (any DM) → "open" the detail window.
-    //   * "Copy prompt" button (when `prompt` present) → copy the agent prompt.
-    //   * "Open details" button (when `details` present) → also opens the detail
-    //     window; redundant with body-click but kept as an explicit affordance,
-    //     since a banner body-click is not discoverable on macOS.
-    //
-    // Capturing the click requires the blocking `wait_for_click(true)` path,
-    // which busy-spins a Cocoa run loop while the banner is on screen unactioned
-    // (~1 core; see share_notify::BlockingNotifyGuard + hq-sync-cpu-spin-debug.md).
-    // The shared BlockingNotifyGuard caps that to ~1 process-wide ACROSS the
-    // share and DM surfaces, so the CPU ceiling is unchanged by making every DM
-    // clickable — this only widens which DMs compete for that single capped slot.
-    // Concurrent DMs that can't acquire the slot fall back to fire-and-forget
-    // `.send()` (lose the click surface for that banner, but never leak a spin).
-    for dm in &body.events {
-        let title = dm.from_display_name.clone();
-        let message = dm.body.clone();
-        let has_prompt = dm.prompt.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false);
-        let has_details = dm.details.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false);
-        let app_for_thread = app.clone();
-        let event_clone = dm.clone();
-
-        std::thread::spawn(move || {
-            let mut notification = mac_notification_sys::Notification::default();
-            notification.title(&title).message(&message);
-
-            // Build the dropdown items present for this DM (order = display order).
-            // Plain DMs get no buttons — body-click alone opens the detail window.
-            let mut actions: Vec<&str> = Vec::new();
-            if has_prompt {
-                actions.push("Copy prompt");
-            }
-            if has_details {
-                actions.push("Open details");
-            }
-            if !actions.is_empty() {
-                notification.main_button(mac_notification_sys::MainButton::DropdownActions(
-                    "Actions",
-                    &actions,
-                ));
-            }
-
-            // Blocking send capped to ~1 process-wide; concurrent DMs fall back to
-            // fire-and-forget (lose the click surface for that banner but never
-            // leak a spinning thread).
-            let response =
-                match crate::commands::share_notify::BlockingNotifyGuard::try_acquire() {
-                    Some(guard) => {
-                        let r = notification.wait_for_click(true).send();
-                        drop(guard);
-                        r
-                    }
-                    None => notification.send(),
-                };
-
-            match response {
-                Ok(resp) => {
-                    // Map the response to an action. Body-click ALWAYS opens the
-                    // detail window; copying the prompt is only via the explicit
-                    // "Copy prompt" button.
-                    let action: Option<&'static str> = match resp {
-                        mac_notification_sys::NotificationResponse::ActionButton(name)
-                            if name.eq_ignore_ascii_case("copy prompt") =>
-                        {
-                            Some("copy")
-                        }
-                        mac_notification_sys::NotificationResponse::ActionButton(name)
-                            if name.eq_ignore_ascii_case("open details") =>
-                        {
-                            Some("open")
-                        }
-                        mac_notification_sys::NotificationResponse::Click => Some("open"),
-                        _ => None,
-                    };
-
-                    if let Some(action) = action {
-                        let payload = NotificationDmActionEvent {
-                            action: action.to_string(),
-                            event: event_clone,
-                        };
-                        if let Err(e) =
-                            app_for_thread.emit(EVENT_NOTIFICATION_DM_ACTION, &payload)
-                        {
-                            log(
-                                LOG_TAG,
-                                &format!("DM_NOTIFY_EMIT_ACTION_FAILED action={action} err={e}"),
-                            );
-                        }
-                    }
-                }
-                Err(e) => log(LOG_TAG, &format!("DM_NOTIFY_SEND_FAILED err={e}")),
+        // Lazily register the bundle identifier with mac-notification-sys so the
+        // first send doesn't trigger a macOS "Choose Application" picker. Mirrors
+        // the guard in share_notify::do_poll.
+        static NOTIFICATION_APP_INIT: OnceLock<()> = OnceLock::new();
+        NOTIFICATION_APP_INIT.get_or_init(|| {
+            const BUNDLE_ID: &str = "ai.indigo.hq-sync-menubar";
+            match mac_notification_sys::set_application(BUNDLE_ID) {
+                Ok(()) => log(LOG_TAG, &format!("DM_NOTIFY_BUNDLE_SET bundle={BUNDLE_ID}")),
+                Err(e) => log(
+                    LOG_TAG,
+                    &format!("DM_NOTIFY_BUNDLE_SET_FAILED bundle={BUNDLE_ID} err={e}"),
+                ),
             }
         });
-    }
+
+        // Fire one macOS notification per DM. Every DM is clickable: a body-click
+        // opens the DM detail window. Rich DMs additionally expose action buttons.
+        //
+        //   * Body-click (any DM) → "open" the detail window.
+        //   * "Copy prompt" button (when `prompt` present) → copy the agent prompt.
+        //   * "Open details" button (when `details` present) → also opens the detail
+        //     window; redundant with body-click but kept as an explicit affordance,
+        //     since a banner body-click is not discoverable on macOS.
+        //
+        // Capturing the click requires the blocking `wait_for_click(true)` path,
+        // which busy-spins a Cocoa run loop while the banner is on screen unactioned
+        // (~1 core; see share_notify::BlockingNotifyGuard + hq-sync-cpu-spin-debug.md).
+        // The shared BlockingNotifyGuard caps that to ~1 process-wide ACROSS the
+        // share and DM surfaces, so the CPU ceiling is unchanged by making every DM
+        // clickable — this only widens which DMs compete for that single capped slot.
+        // Concurrent DMs that can't acquire the slot fall back to fire-and-forget
+        // `.send()` (lose the click surface for that banner, but never leak a spin).
+        for dm in &body.events {
+            let title = dm.from_display_name.clone();
+            let message = dm.body.clone();
+            let has_prompt = dm
+                .prompt
+                .as_deref()
+                .map(|s| !s.trim().is_empty())
+                .unwrap_or(false);
+            let has_details = dm
+                .details
+                .as_deref()
+                .map(|s| !s.trim().is_empty())
+                .unwrap_or(false);
+            let app_for_thread = app.clone();
+            let event_clone = dm.clone();
+
+            std::thread::spawn(move || {
+                let mut notification = mac_notification_sys::Notification::default();
+                notification.title(&title).message(&message);
+
+                // Build the dropdown items present for this DM (order = display order).
+                // Plain DMs get no buttons — body-click alone opens the detail window.
+                let mut actions: Vec<&str> = Vec::new();
+                if has_prompt {
+                    actions.push("Copy prompt");
+                }
+                if has_details {
+                    actions.push("Open details");
+                }
+                if !actions.is_empty() {
+                    notification.main_button(mac_notification_sys::MainButton::DropdownActions(
+                        "Actions", &actions,
+                    ));
+                }
+
+                // Blocking send capped to ~1 process-wide; concurrent DMs fall back to
+                // fire-and-forget (lose the click surface for that banner but never
+                // leak a spinning thread).
+                let response =
+                    match crate::commands::share_notify::BlockingNotifyGuard::try_acquire() {
+                        Some(guard) => {
+                            let r = notification.wait_for_click(true).send();
+                            drop(guard);
+                            r
+                        }
+                        None => notification.send(),
+                    };
+
+                match response {
+                    Ok(resp) => {
+                        // Map the response to an action. Body-click ALWAYS opens the
+                        // detail window; copying the prompt is only via the explicit
+                        // "Copy prompt" button.
+                        let action: Option<&'static str> = match resp {
+                            mac_notification_sys::NotificationResponse::ActionButton(name)
+                                if name.eq_ignore_ascii_case("copy prompt") =>
+                            {
+                                Some("copy")
+                            }
+                            mac_notification_sys::NotificationResponse::ActionButton(name)
+                                if name.eq_ignore_ascii_case("open details") =>
+                            {
+                                Some("open")
+                            }
+                            mac_notification_sys::NotificationResponse::Click => Some("open"),
+                            _ => None,
+                        };
+
+                        if let Some(action) = action {
+                            let payload = NotificationDmActionEvent {
+                                action: action.to_string(),
+                                event: event_clone,
+                            };
+                            if let Err(e) =
+                                app_for_thread.emit(EVENT_NOTIFICATION_DM_ACTION, &payload)
+                            {
+                                log(
+                                    LOG_TAG,
+                                    &format!(
+                                        "DM_NOTIFY_EMIT_ACTION_FAILED action={action} err={e}"
+                                    ),
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => log(LOG_TAG, &format!("DM_NOTIFY_SEND_FAILED err={e}")),
+                }
+            });
+        }
     } // end #[cfg(target_os = "macos")] DM notification block
 
     // Windows / non-macOS: fire one native Action-Center toast per DM via
@@ -580,9 +599,15 @@ async fn post_ack(event_ids: Vec<String>) {
         .await
     {
         Ok(r) if r.status().is_success() => {
-            log(LOG_TAG, &format!("DM_NOTIFY_ACK_OK {} DM(s)", event_ids.len()));
+            log(
+                LOG_TAG,
+                &format!("DM_NOTIFY_ACK_OK {} DM(s)", event_ids.len()),
+            );
         }
-        Ok(r) => log(LOG_TAG, &format!("DM_NOTIFY_ACK_ERROR status={}", r.status())),
+        Ok(r) => log(
+            LOG_TAG,
+            &format!("DM_NOTIFY_ACK_ERROR status={}", r.status()),
+        ),
         Err(e) => log(LOG_TAG, &format!("DM_NOTIFY_ACK_ERROR {e}")),
     }
 }

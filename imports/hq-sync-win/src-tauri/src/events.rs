@@ -531,7 +531,8 @@ mod tests {
 
     #[test]
     fn test_parse_error_event_with_company() {
-        let json = r#"{"type":"error","company":"indigo","path":"docs/x.md","message":"Access denied"}"#;
+        let json =
+            r#"{"type":"error","company":"indigo","path":"docs/x.md","message":"Access denied"}"#;
         let event: SyncEvent = serde_json::from_str(json).unwrap();
         assert_eq!(
             event,
@@ -661,7 +662,8 @@ mod tests {
     #[test]
     fn test_parse_new_files_event_without_added_by_key() {
         // addedBy omitted entirely (not just null) — must default to None.
-        let json = r#"{"type":"new-files","company":"indigo","files":[{"path":"a.txt","bytes":100}]}"#;
+        let json =
+            r#"{"type":"new-files","company":"indigo","files":[{"path":"a.txt","bytes":100}]}"#;
         let event: SyncEvent = serde_json::from_str(json).unwrap();
         match event {
             SyncEvent::NewFiles(nf) => {

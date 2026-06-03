@@ -52,8 +52,7 @@ use crate::util::paths;
 /// the latest *non-prerelease* release for the repo — staging tags pushed
 /// to `hq-core-staging` don't surface here, only what's promoted to the
 /// public `hq-core` repo via `/personal:release-hq-core`.
-const RELEASES_URL: &str =
-    "https://api.github.com/repos/indigoai-us/hq-core/releases/latest";
+const RELEASES_URL: &str = "https://api.github.com/repos/indigoai-us/hq-core/releases/latest";
 
 /// HTTP request timeout — keep tight so a flaky network doesn't stall the
 /// `install_hq_core_update` handler.
@@ -109,7 +108,11 @@ pub fn get_local_version() -> Option<String> {
     // a hot loop.
     let canonical = hq_folder.join("core").join("core.yaml");
     let legacy = hq_folder.join("core.yaml");
-    let core_yaml = if canonical.is_file() { canonical } else { legacy };
+    let core_yaml = if canonical.is_file() {
+        canonical
+    } else {
+        legacy
+    };
 
     let bytes = std::fs::read(&core_yaml).ok()?;
     let parsed: serde_yaml::Value = serde_yaml::from_slice(&bytes).ok()?;
@@ -161,7 +164,11 @@ async fn fetch_tag_sha(repo: &str, git_ref: &str) -> Option<String> {
     let sha = parsed.sha.trim();
     // Defensive: GitHub returns a 40-char hex SHA. Validate to match the
     // script's `--floor-sha` regex so we don't pass through garbage.
-    if sha.len() == 40 && sha.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()) {
+    if sha.len() == 40
+        && sha
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+    {
         Some(sha.to_string())
     } else {
         None
@@ -338,7 +345,9 @@ pub async fn install_hq_core_update(
             hq_folder.display(),
             PROD_HQ_CORE_REPO,
             git_ref,
-            floor_sha.as_deref().unwrap_or("(none — head_compare fallback)"),
+            floor_sha
+                .as_deref()
+                .unwrap_or("(none — head_compare fallback)"),
             log_path.display()
         ),
     );

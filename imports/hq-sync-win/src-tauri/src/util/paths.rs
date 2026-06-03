@@ -43,10 +43,31 @@ fn managed_toolchain_dir() -> Option<PathBuf> {
     None
 }
 
+/// Resolve the user's home directory.
+///
+/// In production this is the OS home directory (`dirs::home_dir()` — on
+/// Windows the `FOLDERID_Profile` known folder, on macOS/Linux `$HOME`).
+///
+/// An explicit `HOME` override takes precedence. On macOS/Linux this is a
+/// no-op (`dirs::home_dir()` already reads `$HOME`), but on Windows it is the
+/// only way to redirect the home directory: `dirs::home_dir()` resolves via
+/// the Known Folder API and ignores environment variables, so tests (and any
+/// caller that deliberately sets `HOME`) could not otherwise fake it. A native
+/// Windows app launched normally has no `HOME` set, so production behavior is
+/// unchanged.
+pub fn home_dir() -> Option<PathBuf> {
+    if let Some(home) = std::env::var_os("HOME") {
+        if !home.is_empty() {
+            return Some(PathBuf::from(home));
+        }
+    }
+    dirs::home_dir()
+}
+
 /// Returns the `~/.hq/` directory path.
-/// On Windows this resolves to `%USERPROFILE%\.hq\` via `dirs::home_dir()`.
+/// On Windows this resolves to `%USERPROFILE%\.hq\` via [`home_dir`].
 pub fn hq_config_dir() -> Result<PathBuf, String> {
-    let home = dirs::home_dir().ok_or_else(|| "Cannot determine home directory".to_string())?;
+    let home = home_dir().ok_or_else(|| "Cannot determine home directory".to_string())?;
     Ok(home.join(".hq"))
 }
 
@@ -83,7 +104,7 @@ fn extended_search_dirs() -> Vec<PathBuf> {
         dirs.push(toolchain.join("node"));
     }
 
-    if let Some(home) = dirs::home_dir() {
+    if let Some(home) = home_dir() {
         dirs.push(home.join(".hq").join("bin"));
         // Scoop default install dir; harmless on systems without Scoop.
         dirs.push(home.join("scoop").join("shims"));
@@ -152,9 +173,10 @@ pub fn resolve_bin(name: &str) -> String {
 /// try both `{name}` (already-extensioned, e.g. `npx.cmd`) and
 /// `{name}.exe` (the common case). On POSIX we only try the bare name.
 fn candidate_filenames(name: &str) -> Vec<String> {
-    if EXE_EXT.is_empty() {
-        vec![name.to_string()]
-    } else if name.ends_with(EXE_EXT) || name.ends_with(".cmd") || name.ends_with(".bat") {
+    // On POSIX `EXE_EXT` is empty, so `ends_with(EXE_EXT)` is always true and
+    // we return the bare name. On Windows we skip re-extensioning a name that
+    // already carries an executable suffix.
+    if name.ends_with(EXE_EXT) || name.ends_with(".cmd") || name.ends_with(".bat") {
         vec![name.to_string()]
     } else {
         vec![format!("{name}{EXE_EXT}"), name.to_string()]
@@ -221,10 +243,7 @@ pub fn child_path() -> String {
 ///    Both v14+ (`core/core.yaml`) and legacy (`core.yaml` at root) layouts
 ///    are accepted; see `is_valid_hq_root`. First match wins.
 /// 4. `%USERPROFILE%\HQ` default
-pub fn resolve_hq_folder(
-    config_path: Option<&str>,
-    menubar_override: Option<&str>,
-) -> PathBuf {
+pub fn resolve_hq_folder(config_path: Option<&str>, menubar_override: Option<&str>) -> PathBuf {
     if let Some(path) = menubar_override {
         if !path.is_empty() {
             return PathBuf::from(path);
@@ -238,13 +257,13 @@ pub fn resolve_hq_folder(
     if let Some(found) = discover_hq_folder_via_core_yaml() {
         return found;
     }
-    dirs::home_dir()
+    home_dir()
         .unwrap_or_else(|| PathBuf::from("C:\\"))
         .join("HQ")
 }
 
 fn hq_discovery_candidates() -> Vec<PathBuf> {
-    let home = match dirs::home_dir() {
+    let home = match home_dir() {
         Some(h) => h,
         None => return Vec::new(),
     };
@@ -313,10 +332,7 @@ mod tests {
 
     #[test]
     fn test_resolve_menubar_override_wins() {
-        let result = resolve_hq_folder(
-            Some("C:\\from\\config"),
-            Some("C:\\from\\menubar"),
-        );
+        let result = resolve_hq_folder(Some("C:\\from\\config"), Some("C:\\from\\menubar"));
         assert_eq!(result, PathBuf::from("C:\\from\\menubar"));
     }
 

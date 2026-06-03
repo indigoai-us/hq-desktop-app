@@ -35,9 +35,7 @@ use crate::commands::config::MenubarPrefs;
 use crate::util::feature_gate;
 use crate::util::logfile::log;
 use crate::util::paths;
-use crate::util::release_channel::{
-    effective_channel, resolve_channel_endpoint, ReleaseChannel,
-};
+use crate::util::release_channel::{effective_channel, resolve_channel_endpoint, ReleaseChannel};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct UpdateInfo {
@@ -82,9 +80,7 @@ async fn resolve_endpoint_url() -> String {
 /// invocation. Tauri's `app.updater()` always uses the static endpoint
 /// from `tauri.conf.json`; `app.updater_builder()` lets us override
 /// per-call so the same binary serves three channels without rebuild.
-async fn channel_aware_updater(
-    app: &AppHandle,
-) -> Result<tauri_plugin_updater::Updater, String> {
+async fn channel_aware_updater(app: &AppHandle) -> Result<tauri_plugin_updater::Updater, String> {
     let endpoint_str = resolve_endpoint_url().await;
     let endpoint =
         Url::parse(&endpoint_str).map_err(|e| format!("invalid updater endpoint: {e}"))?;
@@ -197,8 +193,7 @@ pub fn setup_update_checker(app: &AppHandle) {
                             date: update.date.map(|d| d.to_string()),
                         };
                         if let Some(state) = handle.try_state::<PendingUpdate>() {
-                            *state.0.lock().unwrap_or_else(|e| e.into_inner()) =
-                                Some(info.clone());
+                            *state.0.lock().unwrap_or_else(|e| e.into_inner()) = Some(info.clone());
                         }
                         let _ = handle.emit("update:available", &info);
                         if crate::commands::banner::custom_banner_enabled() {

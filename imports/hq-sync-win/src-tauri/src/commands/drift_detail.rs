@@ -120,7 +120,10 @@ pub async fn open_drift_detail(app: AppHandle, report: DriftReport) -> Result<()
         let _ = app.run_on_main_thread(move || {
             use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial, NSVisualEffectState};
             let Some(window) = app_for_main.get_webview_window(WINDOW_LABEL) else {
-                log("drift-detail", "apply_vibrancy: window vanished before main-thread dispatch");
+                log(
+                    "drift-detail",
+                    "apply_vibrancy: window vanished before main-thread dispatch",
+                );
                 return;
             };
             if let Err(e) = apply_vibrancy(
@@ -131,7 +134,10 @@ pub async fn open_drift_detail(app: AppHandle, report: DriftReport) -> Result<()
             ) {
                 log("drift-detail", &format!("apply_vibrancy FAILED: {e}"));
             } else {
-                log("drift-detail", "apply_vibrancy: success (Popover material, blur 18)");
+                log(
+                    "drift-detail",
+                    "apply_vibrancy: success (Popover material, blur 18)",
+                );
             }
         });
     }
@@ -167,7 +173,10 @@ pub async fn drift_window_ready(app: AppHandle) -> Result<(), String> {
         match app.emit_to(WINDOW_LABEL, "drift:report", &report) {
             Ok(_) => log(
                 "drift-detail",
-                &format!("ready: emit_to({}) ok, count={}", WINDOW_LABEL, report.count),
+                &format!(
+                    "ready: emit_to({}) ok, count={}",
+                    WINDOW_LABEL, report.count
+                ),
             ),
             Err(e) => log("drift-detail", &format!("ready: emit_to failed: {e}")),
         }

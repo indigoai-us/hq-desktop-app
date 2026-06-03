@@ -126,7 +126,8 @@ impl StagingIndex {
         {
             return StagingStatus::StagingMain;
         }
-        let mut prs_sorted: Vec<&(u32, BTreeMap<String, BTreeSet<String>>)> = self.prs.iter().collect();
+        let mut prs_sorted: Vec<&(u32, BTreeMap<String, BTreeSet<String>>)> =
+            self.prs.iter().collect();
         prs_sorted.sort_by_key(|(n, _)| *n);
         for (num, files) in prs_sorted {
             if files.get(path).is_some_and(|shas| shas.contains(local_sha)) {
@@ -174,9 +175,7 @@ fn is_staging_channel_enabled() -> bool {
         .filter(|p| p.exists())
         .and_then(|p| std::fs::read_to_string(&p).ok())
         .and_then(|s| serde_json::from_str(&s).ok());
-    prefs
-        .and_then(|p| p.staging_channel)
-        .unwrap_or(true)
+    prefs.and_then(|p| p.staging_channel).unwrap_or(true)
 }
 
 /// True when `~/.hq/menubar.json` carries an explicit non-empty
@@ -245,7 +244,10 @@ pub(crate) fn resolve_gh_token() -> Option<String> {
     // 2. Fallback: parse oauth_token for github.com out of hosts.yml. Covers
     //    setups where `gh` isn't on the Tauri app's minimal PATH but the
     //    config file is present.
-    let hosts = dirs::home_dir()?.join(".config").join("gh").join("hosts.yml");
+    let hosts = crate::util::paths::home_dir()?
+        .join(".config")
+        .join("gh")
+        .join("hosts.yml");
     let bytes = std::fs::read(&hosts).ok()?;
     let parsed: serde_yaml::Value = serde_yaml::from_slice(&bytes).ok()?;
     let tok = parsed
@@ -647,7 +649,8 @@ pub async fn run_replace_from_staging(app: AppHandle) -> Result<RescueRunResult,
         .map_err(|e| format!("spawn rescue script: {e}"))?;
 
     let exit_code = status.code().unwrap_or(-1);
-    let log_tail = tail_log(&log_path, 40).unwrap_or_else(|e| format!("(log tail unavailable: {e})"));
+    let log_tail =
+        tail_log(&log_path, 40).unwrap_or_else(|e| format!("(log tail unavailable: {e})"));
 
     log(
         "hq-core-staging",
@@ -668,8 +671,8 @@ pub async fn run_replace_from_staging(app: AppHandle) -> Result<RescueRunResult,
 /// Crate-public so `hq_core_update::install_hq_core_update` can surface the
 /// same trailing-log feedback chip the staging pill uses.
 pub(crate) fn tail_log(path: &std::path::Path, n_lines: usize) -> Result<String, String> {
-    let content = std::fs::read_to_string(path)
-        .map_err(|e| format!("read {}: {e}", path.display()))?;
+    let content =
+        std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
     let lines: Vec<&str> = content.lines().collect();
     let start = lines.len().saturating_sub(n_lines);
     Ok(lines[start..].join("\n"))
@@ -681,15 +684,30 @@ mod tests {
 
     fn idx() -> StagingIndex {
         let mut main = BTreeMap::new();
-        main.insert("a.md".to_string(), BTreeSet::from(["sha-main-a".to_string()]));
+        main.insert(
+            "a.md".to_string(),
+            BTreeSet::from(["sha-main-a".to_string()]),
+        );
 
         let mut pr182 = BTreeMap::new();
-        pr182.insert("b.md".to_string(), BTreeSet::from(["sha-182-b".to_string()]));
-        pr182.insert("shared.md".to_string(), BTreeSet::from(["sha-shared".to_string()]));
+        pr182.insert(
+            "b.md".to_string(),
+            BTreeSet::from(["sha-182-b".to_string()]),
+        );
+        pr182.insert(
+            "shared.md".to_string(),
+            BTreeSet::from(["sha-shared".to_string()]),
+        );
 
         let mut pr183 = BTreeMap::new();
-        pr183.insert("c.md".to_string(), BTreeSet::from(["sha-183-c".to_string()]));
-        pr183.insert("shared.md".to_string(), BTreeSet::from(["sha-shared".to_string()]));
+        pr183.insert(
+            "c.md".to_string(),
+            BTreeSet::from(["sha-183-c".to_string()]),
+        );
+        pr183.insert(
+            "shared.md".to_string(),
+            BTreeSet::from(["sha-shared".to_string()]),
+        );
 
         StagingIndex {
             main,
@@ -699,13 +717,22 @@ mod tests {
 
     #[test]
     fn classify_main_match() {
-        assert_eq!(idx().classify("a.md", "sha-main-a"), StagingStatus::StagingMain);
+        assert_eq!(
+            idx().classify("a.md", "sha-main-a"),
+            StagingStatus::StagingMain
+        );
     }
 
     #[test]
     fn classify_pr_match() {
-        assert_eq!(idx().classify("b.md", "sha-182-b"), StagingStatus::StagingPr(182));
-        assert_eq!(idx().classify("c.md", "sha-183-c"), StagingStatus::StagingPr(183));
+        assert_eq!(
+            idx().classify("b.md", "sha-182-b"),
+            StagingStatus::StagingPr(182)
+        );
+        assert_eq!(
+            idx().classify("c.md", "sha-183-c"),
+            StagingStatus::StagingPr(183)
+        );
     }
 
     #[test]
@@ -720,8 +747,14 @@ mod tests {
 
     #[test]
     fn classify_unaccounted() {
-        assert_eq!(idx().classify("a.md", "different-sha"), StagingStatus::Unaccounted);
-        assert_eq!(idx().classify("missing.md", "whatever"), StagingStatus::Unaccounted);
+        assert_eq!(
+            idx().classify("a.md", "different-sha"),
+            StagingStatus::Unaccounted
+        );
+        assert_eq!(
+            idx().classify("missing.md", "whatever"),
+            StagingStatus::Unaccounted
+        );
     }
 
     #[test]

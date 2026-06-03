@@ -91,8 +91,7 @@ pub async fn save_settings(prefs: MenubarPrefs) -> Result<(), String> {
     let json = serde_json::to_string_pretty(&prefs)
         .map_err(|e| format!("Failed to serialize settings: {}", e))?;
 
-    std::fs::write(&path, json)
-        .map_err(|e| format!("Failed to write menubar.json: {}", e))?;
+    std::fs::write(&path, json).map_err(|e| format!("Failed to write menubar.json: {}", e))?;
 
     Ok(())
 }

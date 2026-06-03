@@ -54,9 +54,9 @@ mod tests {
     #[allow(dead_code)]
     fn pick_folder_signature_witness() -> fn(
         tauri::AppHandle,
-    )
-        -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<String>, String>> + Send>>
-    {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Option<String>, String>> + Send>,
+    > {
         |app| Box::pin(pick_folder(app))
     }
 }

@@ -1,7 +1,7 @@
 use std::sync::Mutex;
 
-use tauri::{AppHandle, Emitter, Manager};
 use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Emitter, Manager};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -16,10 +16,7 @@ pub struct NewFileEntry {
 pub struct PendingNewFiles(pub Mutex<Vec<NewFileEntry>>);
 
 #[tauri::command]
-pub async fn open_new_files_detail(
-    app: AppHandle,
-    files: Vec<NewFileEntry>,
-) -> Result<(), String> {
+pub async fn open_new_files_detail(app: AppHandle, files: Vec<NewFileEntry>) -> Result<(), String> {
     let label = "new-files-detail";
 
     // Stash the file list in managed state so detail_window_ready can
@@ -39,18 +36,14 @@ pub async fn open_new_files_detail(
     }
 
     // Create new window — starts hidden until the renderer signals ready
-    tauri::WebviewWindowBuilder::new(
-        &app,
-        label,
-        tauri::WebviewUrl::App("index.html".into()),
-    )
-    .title("New Files")
-    .inner_size(500.0, 400.0)
-    .resizable(true)
-    .decorations(true)
-    .visible(false)
-    .build()
-    .map_err(|e| e.to_string())?;
+    tauri::WebviewWindowBuilder::new(&app, label, tauri::WebviewUrl::App("index.html".into()))
+        .title("New Files")
+        .inner_size(500.0, 400.0)
+        .resizable(true)
+        .decorations(true)
+        .visible(false)
+        .build()
+        .map_err(|e| e.to_string())?;
 
     Ok(())
 }

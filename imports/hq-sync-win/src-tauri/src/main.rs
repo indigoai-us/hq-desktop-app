@@ -1,4 +1,14 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// clippy 1.93 introduced stricter doc-comment *style* lints (list-item
+// indentation, lazy continuations, blank line after a doc comment). Upstream
+// hq-sync — the parity target, pinned to an older clippy — does not enforce
+// them, and several module docs deliberately column-align their list items for
+// readability (see version_gate.rs). These are cosmetic, not correctness, so
+// allow the family crate-wide rather than reflow every doc block and diverge
+// from upstream.
+#![allow(clippy::doc_overindented_list_items)]
+#![allow(clippy::doc_lazy_continuation)]
+#![allow(clippy::empty_line_after_doc_comments)]
 
 use std::sync::Mutex;
 use tauri::Manager;
@@ -34,7 +44,10 @@ fn apply_windows_vibrancy(window: &tauri::WebviewWindow) {
             return;
         }
         Err(e) => {
-            log("ui", &format!("apply_mica failed: {e}; trying Acrylic fallback"));
+            log(
+                "ui",
+                &format!("apply_mica failed: {e}; trying Acrylic fallback"),
+            );
         }
     }
 
@@ -113,7 +126,9 @@ fn main() {
         .manage(commands::new_files::PendingNewFiles(Mutex::new(Vec::new())))
         .manage(commands::drift_detail::PendingDrift(Mutex::new(None)))
         .manage(commands::activity::SessionActivity::new())
-        .manage(commands::share_notify::PendingShareEvents(Mutex::new(Vec::new())))
+        .manage(commands::share_notify::PendingShareEvents(Mutex::new(
+            Vec::new(),
+        )))
         .manage(commands::dm_notify::PendingDmEvents(Mutex::new(Vec::new())))
         .manage(commands::banner::PendingBanner(Mutex::new(None)))
         // Tray-app close behaviour: intercept window-close (system menu Close,
@@ -269,15 +284,12 @@ fn main() {
 
                 // (b) Post-sync poll — low-latency top-up after a sync run.
                 let poll_handle = app.handle().clone();
-                app.listen(
-                    crate::events::EVENT_SYNC_ALL_COMPLETE,
-                    move |_event| {
-                        let h = poll_handle.clone();
-                        tauri::async_runtime::spawn(async move {
-                            commands::share_notify::poll_once(h).await;
-                        });
-                    },
-                );
+                app.listen(crate::events::EVENT_SYNC_ALL_COMPLETE, move |_event| {
+                    let h = poll_handle.clone();
+                    tauri::async_runtime::spawn(async move {
+                        commands::share_notify::poll_once(h).await;
+                    });
+                });
             }
 
             // Env-var trigger to preview the custom notification banner without

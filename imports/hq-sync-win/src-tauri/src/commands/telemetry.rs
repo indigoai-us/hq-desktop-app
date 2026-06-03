@@ -11,8 +11,8 @@ use std::io::{Read, Seek, SeekFrom};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::commands::vault_client::{UsageBatch, VaultClient};
 use crate::commands::sync::resolve_vault_api_url;
+use crate::commands::vault_client::{UsageBatch, VaultClient};
 
 // ── Cursor schema ─────────────────────────────────────────────────────────────
 
@@ -38,7 +38,7 @@ impl Default for TelemetryCursor {
 }
 
 fn cursor_path() -> Option<std::path::PathBuf> {
-    dirs::home_dir().map(|h| h.join(".hq/telemetry-cursor.json"))
+    crate::util::paths::home_dir().map(|h| h.join(".hq/telemetry-cursor.json"))
 }
 
 fn load_cursor() -> TelemetryCursor {
@@ -115,11 +115,12 @@ fn sanitize_row(row: &Value) -> Option<Value> {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn read_local_telemetry_enabled() -> bool {
-    let home = dirs::home_dir().unwrap_or_default();
+    let home = crate::util::paths::home_dir().unwrap_or_default();
     let path = home.join(".hq/menubar.json");
     if let Ok(contents) = fs::read_to_string(&path) {
         if let Ok(v) = serde_json::from_str::<Value>(&contents) {
-            return v.get("telemetryEnabled")
+            return v
+                .get("telemetryEnabled")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
         }
@@ -128,7 +129,7 @@ fn read_local_telemetry_enabled() -> bool {
 }
 
 fn read_machine_id() -> String {
-    let home = dirs::home_dir().unwrap_or_default();
+    let home = crate::util::paths::home_dir().unwrap_or_default();
     let path = home.join(".hq/menubar.json");
     if let Ok(contents) = fs::read_to_string(&path) {
         if let Ok(v) = serde_json::from_str::<Value>(&contents) {
@@ -196,7 +197,7 @@ pub async fn send_telemetry_if_opted_in<R: tauri::Runtime>(
     let mut rotation_resets: HashMap<String, CursorEntry> = HashMap::new();
 
     // 4. Enumerate ~/.claude/projects/**/*.jsonl
-    let home = dirs::home_dir().ok_or("home dir unavailable")?;
+    let home = crate::util::paths::home_dir().ok_or("home dir unavailable")?;
     let pattern = format!("{}/.claude/projects/**/*.jsonl", home.display());
     let file_paths: Vec<_> = match glob::glob(&pattern) {
         Ok(g) => g.flatten().filter(|p| p.is_file()).collect(),
@@ -223,14 +224,16 @@ pub async fn send_telemetry_if_opted_in<R: tauri::Runtime>(
         let mut offset = stored.offset;
 
         // File-rotation safety: if file shrank or mtime went backwards
-        let rotated = current_size < offset
-            || (stored.mtime > 0 && current_mtime < stored.mtime);
+        let rotated = current_size < offset || (stored.mtime > 0 && current_mtime < stored.mtime);
         if rotated {
             offset = 0;
             // Mark the reset so we persist it even if there are 0 rows
             rotation_resets.insert(
                 path_str.clone(),
-                CursorEntry { offset: 0, mtime: current_mtime },
+                CursorEntry {
+                    offset: 0,
+                    mtime: current_mtime,
+                },
             );
         }
 
@@ -260,13 +263,17 @@ pub async fn send_telemetry_if_opted_in<R: tauri::Runtime>(
         let segments: Vec<&str> = content.split('\n').collect();
         let n = segments.len();
         let mut cumulative: u64 = 0;
-        let line_end_offsets: Vec<u64> = segments.iter().enumerate().map(|(i, seg)| {
-            cumulative += seg.len() as u64;
-            if i < n - 1 {
-                cumulative += 1; // account for the '\n' separator
-            }
-            offset + cumulative
-        }).collect();
+        let line_end_offsets: Vec<u64> = segments
+            .iter()
+            .enumerate()
+            .map(|(i, seg)| {
+                cumulative += seg.len() as u64;
+                if i < n - 1 {
+                    cumulative += 1; // account for the '\n' separator
+                }
+                offset + cumulative
+            })
+            .collect();
 
         for (i, seg) in segments.iter().enumerate() {
             let trimmed = seg.trim();
@@ -284,7 +291,8 @@ pub async fn send_telemetry_if_opted_in<R: tauri::Runtime>(
 
             // Check if adding this row would exceed 1 MB
             if !batch_events.is_empty() {
-                let candidate = build_wire_payload(&machine_id, &installer_version, &batch_events, &sanitized);
+                let candidate =
+                    build_wire_payload(&machine_id, &installer_version, &batch_events, &sanitized);
                 if candidate.len() > MAX_BATCH_BYTES {
                     // Flush current batch
                     flush_batch(
@@ -294,7 +302,8 @@ pub async fn send_telemetry_if_opted_in<R: tauri::Runtime>(
                         &mut batch_events,
                         &mut batch_sources,
                         &mut newly_committed,
-                    ).await;
+                    )
+                    .await;
                 }
             }
 
@@ -316,7 +325,8 @@ pub async fn send_telemetry_if_opted_in<R: tauri::Runtime>(
             &mut batch_events,
             &mut batch_sources,
             &mut newly_committed,
-        ).await;
+        )
+        .await;
     }
 
     // Build final cursor: loaded < rotation_resets < newly_committed
@@ -410,7 +420,12 @@ mod tests {
     }
 
     /// Write a JSONL file under ~/.claude/projects/<subdir>/<name>.jsonl.
-    fn write_jsonl(home: &std::path::Path, subdir: &str, name: &str, lines: &[&str]) -> std::path::PathBuf {
+    fn write_jsonl(
+        home: &std::path::Path,
+        subdir: &str,
+        name: &str,
+        lines: &[&str],
+    ) -> std::path::PathBuf {
         let dir = home.join(".claude/projects").join(subdir);
         fs::create_dir_all(&dir).unwrap();
         let p = dir.join(name);
@@ -462,7 +477,10 @@ mod tests {
 
         assert!(result.is_ok());
         let reqs = server.received_requests().await.unwrap();
-        let posts: Vec<_> = reqs.iter().filter(|r| r.method == wiremock::http::Method::POST).collect();
+        let posts: Vec<_> = reqs
+            .iter()
+            .filter(|r| r.method == wiremock::http::Method::POST)
+            .collect();
         assert_eq!(posts.len(), 0, "no POST expected when opt-in is false");
     }
 
@@ -502,12 +520,21 @@ mod tests {
         // Cursor file should exist with correct offset
         let cursor = read_cursor(home.path());
         let path_str = jsonl_path.to_string_lossy().to_string();
-        let entry = cursor.files.get(&path_str).expect("cursor should have entry for the file");
-        assert_eq!(entry.offset, file_size, "cursor offset should equal file size");
+        let entry = cursor
+            .files
+            .get(&path_str)
+            .expect("cursor should have entry for the file");
+        assert_eq!(
+            entry.offset, file_size,
+            "cursor offset should equal file size"
+        );
 
         // POST should have been made with 2 events
         let reqs = server.received_requests().await.unwrap();
-        let posts: Vec<_> = reqs.iter().filter(|r| r.method == wiremock::http::Method::POST).collect();
+        let posts: Vec<_> = reqs
+            .iter()
+            .filter(|r| r.method == wiremock::http::Method::POST)
+            .collect();
         assert!(!posts.is_empty(), "at least 1 POST expected");
         let body: Value = serde_json::from_slice(&posts[0].body).unwrap();
         let events = body["events"].as_array().unwrap();
@@ -549,17 +576,30 @@ mod tests {
         assert!(result.is_ok());
 
         let reqs = server.received_requests().await.unwrap();
-        let posts: Vec<_> = reqs.iter().filter(|r| r.method == wiremock::http::Method::POST).collect();
+        let posts: Vec<_> = reqs
+            .iter()
+            .filter(|r| r.method == wiremock::http::Method::POST)
+            .collect();
         assert!(!posts.is_empty());
         let body: Value = serde_json::from_slice(&posts[0].body).unwrap();
         // Server allowlist (KEEP_FIELDS in hq-pro vault-service /v1/usage):
         //   sessionId, timestamp, uuid, cwd, gitBranch, userType, model,
         //   inputTokens, outputTokens, cacheCreationInputTokens, cacheReadInputTokens
         let allowed: std::collections::HashSet<&str> = [
-            "sessionId", "timestamp", "uuid", "cwd", "gitBranch", "userType",
-            "model", "inputTokens", "outputTokens",
-            "cacheCreationInputTokens", "cacheReadInputTokens",
-        ].into_iter().collect();
+            "sessionId",
+            "timestamp",
+            "uuid",
+            "cwd",
+            "gitBranch",
+            "userType",
+            "model",
+            "inputTokens",
+            "outputTokens",
+            "cacheCreationInputTokens",
+            "cacheReadInputTokens",
+        ]
+        .into_iter()
+        .collect();
         for event in body["events"].as_array().unwrap() {
             let obj = event.as_object().unwrap();
             for key in obj.keys() {
@@ -633,13 +673,23 @@ mod tests {
         assert!(result.is_ok());
 
         let reqs = server.received_requests().await.unwrap();
-        let posts: Vec<_> = reqs.iter().filter(|r| r.method == wiremock::http::Method::POST).collect();
-        assert!(posts.len() >= 2, "expected ≥2 POSTs due to 1 MB rollover, got {}", posts.len());
+        let posts: Vec<_> = reqs
+            .iter()
+            .filter(|r| r.method == wiremock::http::Method::POST)
+            .collect();
+        assert!(
+            posts.len() >= 2,
+            "expected ≥2 POSTs due to 1 MB rollover, got {}",
+            posts.len()
+        );
 
         // Last batch must be < 1 MB
         let last_post = posts.last().unwrap();
-        assert!(last_post.body.len() < MAX_BATCH_BYTES,
-            "last batch must be < 1 MB, got {} bytes", last_post.body.len());
+        assert!(
+            last_post.body.len() < MAX_BATCH_BYTES,
+            "last batch must be < 1 MB, got {} bytes",
+            last_post.body.len()
+        );
     }
 
     // ── (e) Non-200 does NOT advance cursor ───────────────────────────────────
@@ -661,7 +711,12 @@ mod tests {
         let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let home = setup_home();
         write_menubar(home.path(), r#"{"machineId":"mid-e"}"#);
-        let jsonl_path = write_jsonl(home.path(), "proj", "s.jsonl", &[USER_ROW, ASST_ROW, USER_ROW]);
+        let jsonl_path = write_jsonl(
+            home.path(),
+            "proj",
+            "s.jsonl",
+            &[USER_ROW, ASST_ROW, USER_ROW],
+        );
 
         std::env::set_var("HOME", home.path());
         std::env::set_var("HQ_VAULT_API_URL", server.uri());
@@ -688,7 +743,10 @@ mod tests {
         if cursor_file.exists() {
             let cursor = read_cursor(home.path());
             let entry_offset = cursor.files.get(&path_str).map(|e| e.offset).unwrap_or(0);
-            assert_eq!(entry_offset, 0, "cursor offset must be 0 (or absent) after failed POST");
+            assert_eq!(
+                entry_offset, 0,
+                "cursor offset must be 0 (or absent) after failed POST"
+            );
         }
     }
 
@@ -723,10 +781,14 @@ mod tests {
         std::env::remove_var("HQ_VAULT_API_URL");
 
         assert!(result.is_ok());
-        assert!(!home.path().join(".hq/telemetry-cursor.json.tmp").exists(),
-            "no .tmp file should remain after atomic write");
-        assert!(home.path().join(".hq/telemetry-cursor.json").exists(),
-            "cursor file must exist after successful run");
+        assert!(
+            !home.path().join(".hq/telemetry-cursor.json.tmp").exists(),
+            "no .tmp file should remain after atomic write"
+        );
+        assert!(
+            home.path().join(".hq/telemetry-cursor.json").exists(),
+            "cursor file must exist after successful run"
+        );
     }
 
     // ── (g) New files discovered between runs start at offset 0 ──────────────
@@ -755,15 +817,24 @@ mod tests {
         std::env::set_var("HQ_VAULT_API_URL", server.uri());
 
         let handle = make_app_handle();
-        send_telemetry_if_opted_in(&handle, "/hq", "tok").await.unwrap();
+        send_telemetry_if_opted_in(&handle, "/hq", "tok")
+            .await
+            .unwrap();
 
-        let posts_run1 = server.received_requests().await.unwrap()
-            .iter().filter(|r| r.method == wiremock::http::Method::POST).count();
+        let posts_run1 = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|r| r.method == wiremock::http::Method::POST)
+            .count();
         assert!(posts_run1 >= 1, "run 1 should POST fixture A");
 
         // Run 2: add fixture B
         let path_b = write_jsonl(home.path(), "proj-b", "b.jsonl", &[ASST_ROW]);
-        send_telemetry_if_opted_in(&handle, "/hq", "tok").await.unwrap();
+        send_telemetry_if_opted_in(&handle, "/hq", "tok")
+            .await
+            .unwrap();
 
         std::env::remove_var("HOME");
         std::env::remove_var("HQ_VAULT_API_URL");
@@ -771,9 +842,14 @@ mod tests {
         let cursor = read_cursor(home.path());
         let path_b_str = path_b.to_string_lossy().to_string();
         let b_size = fs::metadata(&path_b).unwrap().len();
-        let b_entry = cursor.files.get(&path_b_str)
+        let b_entry = cursor
+            .files
+            .get(&path_b_str)
             .expect("cursor should have an entry for fixture B after run 2");
-        assert_eq!(b_entry.offset, b_size, "fixture B should be fully consumed in run 2");
+        assert_eq!(
+            b_entry.offset, b_size,
+            "fixture B should be fully consumed in run 2"
+        );
     }
 
     // ── (h) Truncated/rotated file resets cursor ──────────────────────────────
@@ -797,7 +873,12 @@ mod tests {
         write_menubar(home.path(), r#"{"machineId":"mid-h"}"#);
 
         // Run 1: fixture A with 3 rows
-        let path_a = write_jsonl(home.path(), "proj", "a.jsonl", &[USER_ROW, ASST_ROW, USER_ROW]);
+        let path_a = write_jsonl(
+            home.path(),
+            "proj",
+            "a.jsonl",
+            &[USER_ROW, ASST_ROW, USER_ROW],
+        );
         let original_size = fs::metadata(&path_a).unwrap().len();
         assert!(original_size > 0);
 
@@ -805,7 +886,9 @@ mod tests {
         std::env::set_var("HQ_VAULT_API_URL", server.uri());
 
         let handle = make_app_handle();
-        send_telemetry_if_opted_in(&handle, "/hq", "tok").await.unwrap();
+        send_telemetry_if_opted_in(&handle, "/hq", "tok")
+            .await
+            .unwrap();
 
         // Verify run 1 set cursor to EOF
         let cursor_after_run1 = read_cursor(home.path());
@@ -815,20 +898,33 @@ mod tests {
 
         // Truncate A to 0 bytes (size < stored_offset → rotation trigger)
         {
-            let _f = fs::OpenOptions::new().write(true).truncate(true).open(&path_a).unwrap();
+            let _f = fs::OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .open(&path_a)
+                .unwrap();
         }
         assert_eq!(fs::metadata(&path_a).unwrap().len(), 0);
 
         // Run 2: A is now empty after truncation
-        send_telemetry_if_opted_in(&handle, "/hq", "tok").await.unwrap();
+        send_telemetry_if_opted_in(&handle, "/hq", "tok")
+            .await
+            .unwrap();
 
         std::env::remove_var("HOME");
         std::env::remove_var("HQ_VAULT_API_URL");
 
         // Cursor for A should be reset to 0
         let cursor_after_run2 = read_cursor(home.path());
-        let entry2_offset = cursor_after_run2.files.get(&path_a_str).map(|e| e.offset).unwrap_or(0);
-        assert_eq!(entry2_offset, 0, "cursor must be reset to 0 after file rotation/truncation");
+        let entry2_offset = cursor_after_run2
+            .files
+            .get(&path_a_str)
+            .map(|e| e.offset)
+            .unwrap_or(0);
+        assert_eq!(
+            entry2_offset, 0,
+            "cursor must be reset to 0 after file rotation/truncation"
+        );
     }
 
     // ── (i) GET opt-in HTTP 500 → fallback reads menubar.json ─────────────────
@@ -850,7 +946,10 @@ mod tests {
         let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let home = setup_home();
         // menubar.json has telemetryEnabled: true
-        write_menubar(home.path(), r#"{"machineId":"mid-i1","telemetryEnabled":true}"#);
+        write_menubar(
+            home.path(),
+            r#"{"machineId":"mid-i1","telemetryEnabled":true}"#,
+        );
         write_jsonl(home.path(), "proj", "s.jsonl", &[USER_ROW]);
 
         std::env::set_var("HOME", home.path());
@@ -864,8 +963,14 @@ mod tests {
 
         assert!(result.is_ok());
         let reqs = server.received_requests().await.unwrap();
-        let posts: Vec<_> = reqs.iter().filter(|r| r.method == wiremock::http::Method::POST).collect();
-        assert!(!posts.is_empty(), "telemetryEnabled=true in fallback → should POST ≥1");
+        let posts: Vec<_> = reqs
+            .iter()
+            .filter(|r| r.method == wiremock::http::Method::POST)
+            .collect();
+        assert!(
+            !posts.is_empty(),
+            "telemetryEnabled=true in fallback → should POST ≥1"
+        );
     }
 
     #[tokio::test]
@@ -880,7 +985,10 @@ mod tests {
         let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let home = setup_home();
         // menubar.json has telemetryEnabled: false
-        write_menubar(home.path(), r#"{"machineId":"mid-i2","telemetryEnabled":false}"#);
+        write_menubar(
+            home.path(),
+            r#"{"machineId":"mid-i2","telemetryEnabled":false}"#,
+        );
         write_jsonl(home.path(), "proj", "s.jsonl", &[USER_ROW]);
 
         std::env::set_var("HOME", home.path());
@@ -894,8 +1002,15 @@ mod tests {
 
         assert!(result.is_ok());
         let reqs = server.received_requests().await.unwrap();
-        let posts: Vec<_> = reqs.iter().filter(|r| r.method == wiremock::http::Method::POST).collect();
-        assert_eq!(posts.len(), 0, "telemetryEnabled=false in fallback → no POST");
+        let posts: Vec<_> = reqs
+            .iter()
+            .filter(|r| r.method == wiremock::http::Method::POST)
+            .collect();
+        assert_eq!(
+            posts.len(),
+            0,
+            "telemetryEnabled=false in fallback → no POST"
+        );
     }
 
     // ── test_telemetry_strips_prompt_bodies (fixture-based) ───────────────────
@@ -918,16 +1033,26 @@ mod tests {
                     continue;
                 }
                 let parsed: Value = serde_json::from_str(trimmed).expect("parse fixture line");
-                let sanitized = sanitize_row(&parsed)
-                    .expect("sanitize_row must return Some for valid rows");
+                let sanitized =
+                    sanitize_row(&parsed).expect("sanitize_row must return Some for valid rows");
                 let obj = sanitized.as_object().unwrap();
 
                 // Every sanitized field must be in the server's KEEP allowlist
                 let allowed: std::collections::HashSet<&str> = [
-                    "sessionId", "timestamp", "uuid", "cwd", "gitBranch", "userType",
-                    "model", "inputTokens", "outputTokens",
-                    "cacheCreationInputTokens", "cacheReadInputTokens",
-                ].into_iter().collect();
+                    "sessionId",
+                    "timestamp",
+                    "uuid",
+                    "cwd",
+                    "gitBranch",
+                    "userType",
+                    "model",
+                    "inputTokens",
+                    "outputTokens",
+                    "cacheCreationInputTokens",
+                    "cacheReadInputTokens",
+                ]
+                .into_iter()
+                .collect();
                 for key in obj.keys() {
                     assert!(
                         allowed.contains(key.as_str()),
@@ -946,9 +1071,11 @@ mod tests {
                     );
                 }
                 // `message` must be flattened
-                assert!(!obj.contains_key("message"),
+                assert!(
+                    !obj.contains_key("message"),
                     "fixture {:?}: `message` must be flattened — no sub-object should remain",
-                    entry.path());
+                    entry.path()
+                );
 
                 checked += 1;
             }

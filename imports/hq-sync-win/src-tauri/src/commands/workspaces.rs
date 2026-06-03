@@ -211,10 +211,7 @@ pub(crate) fn read_manifest(hq_root: &Path) -> ManifestLoad {
     let parsed: CompaniesManifest = match serde_yaml::from_slice(&bytes) {
         Ok(p) => p,
         Err(e) => {
-            return ManifestLoad::Failed(format!(
-                "parse {}: {e}",
-                manifest_path.display()
-            ));
+            return ManifestLoad::Failed(format!("parse {}: {e}", manifest_path.display()));
         }
     };
     let entries = parsed
@@ -249,9 +246,7 @@ pub(crate) fn read_manifest(hq_root: &Path) -> ManifestLoad {
 ///
 /// Returns `(entries, manifest_error)` — the error is non-None only when the
 /// manifest exists but couldn't be parsed.
-pub(crate) fn discover_local_companies(
-    hq_root: &Path,
-) -> (Vec<LocalCompanyEntry>, Option<String>) {
+pub(crate) fn discover_local_companies(hq_root: &Path) -> (Vec<LocalCompanyEntry>, Option<String>) {
     let raw = match read_manifest(hq_root) {
         ManifestLoad::Present(entries) => {
             // Manifest is canonical for the entries it lists, but the user can
@@ -272,7 +267,10 @@ pub(crate) fn discover_local_companies(
         }
         ManifestLoad::Absent => (folder_enumeration_fallback(hq_root), None),
         ManifestLoad::Failed(err) => {
-            log("workspaces", &format!("manifest unreadable, using folder fallback: {err}"));
+            log(
+                "workspaces",
+                &format!("manifest unreadable, using folder fallback: {err}"),
+            );
             (folder_enumeration_fallback(hq_root), Some(err))
         }
     };
@@ -386,10 +384,9 @@ pub(crate) fn patch_manifest_with_cloud_info(
     cloud_uid: &str,
     bucket_name: &str,
 ) -> Result<(), String> {
-    let bytes = std::fs::read(manifest_path)
-        .map_err(|e| format!("read manifest: {e}"))?;
-    let mut value: serde_yaml::Value = serde_yaml::from_slice(&bytes)
-        .map_err(|e| format!("parse manifest: {e}"))?;
+    let bytes = std::fs::read(manifest_path).map_err(|e| format!("read manifest: {e}"))?;
+    let mut value: serde_yaml::Value =
+        serde_yaml::from_slice(&bytes).map_err(|e| format!("parse manifest: {e}"))?;
 
     let companies_key = serde_yaml::Value::String("companies".to_string());
     let mapping = value
@@ -415,14 +412,13 @@ pub(crate) fn patch_manifest_with_cloud_info(
         serde_yaml::Value::String(bucket_name.to_string()),
     );
 
-    let serialized = serde_yaml::to_string(&value)
-        .map_err(|e| format!("serialize manifest: {e}"))?;
+    let serialized =
+        serde_yaml::to_string(&value).map_err(|e| format!("serialize manifest: {e}"))?;
 
     // Atomic write: tmp → rename. Any failure leaves the original intact.
     let tmp = manifest_path.with_extension("yaml.tmp");
     std::fs::write(&tmp, &serialized).map_err(|e| format!("write tmp manifest: {e}"))?;
-    std::fs::rename(&tmp, manifest_path)
-        .map_err(|e| format!("rename manifest: {e}"))?;
+    std::fs::rename(&tmp, manifest_path).map_err(|e| format!("rename manifest: {e}"))?;
 
     Ok(())
 }
@@ -459,10 +455,9 @@ pub(crate) fn add_manifest_entry_for_synced_company(
     cloud_uid: Option<&str>,
     bucket_name: Option<&str>,
 ) -> Result<(), String> {
-    let bytes = std::fs::read(manifest_path)
-        .map_err(|e| format!("read manifest: {e}"))?;
-    let mut value: serde_yaml::Value = serde_yaml::from_slice(&bytes)
-        .map_err(|e| format!("parse manifest: {e}"))?;
+    let bytes = std::fs::read(manifest_path).map_err(|e| format!("read manifest: {e}"))?;
+    let mut value: serde_yaml::Value =
+        serde_yaml::from_slice(&bytes).map_err(|e| format!("parse manifest: {e}"))?;
 
     let companies_key = serde_yaml::Value::String("companies".to_string());
     let mapping = value
@@ -504,13 +499,12 @@ pub(crate) fn add_manifest_entry_for_synced_company(
     }
     companies.insert(slug_key, serde_yaml::Value::Mapping(entry));
 
-    let serialized = serde_yaml::to_string(&value)
-        .map_err(|e| format!("serialize manifest: {e}"))?;
+    let serialized =
+        serde_yaml::to_string(&value).map_err(|e| format!("serialize manifest: {e}"))?;
 
     let tmp = manifest_path.with_extension("yaml.tmp");
     std::fs::write(&tmp, &serialized).map_err(|e| format!("write tmp manifest: {e}"))?;
-    std::fs::rename(&tmp, manifest_path)
-        .map_err(|e| format!("rename manifest: {e}"))?;
+    std::fs::rename(&tmp, manifest_path).map_err(|e| format!("rename manifest: {e}"))?;
 
     Ok(())
 }
@@ -523,14 +517,10 @@ pub(crate) fn add_manifest_entry_for_synced_company(
 ///
 /// Idempotent: missing slug entries or already-clean entries are a no-op. No
 /// write is performed if neither key was present.
-pub(crate) fn strip_manifest_cloud_info(
-    manifest_path: &Path,
-    slug: &str,
-) -> Result<(), String> {
-    let bytes = std::fs::read(manifest_path)
-        .map_err(|e| format!("read manifest: {e}"))?;
-    let mut value: serde_yaml::Value = serde_yaml::from_slice(&bytes)
-        .map_err(|e| format!("parse manifest: {e}"))?;
+pub(crate) fn strip_manifest_cloud_info(manifest_path: &Path, slug: &str) -> Result<(), String> {
+    let bytes = std::fs::read(manifest_path).map_err(|e| format!("read manifest: {e}"))?;
+    let mut value: serde_yaml::Value =
+        serde_yaml::from_slice(&bytes).map_err(|e| format!("parse manifest: {e}"))?;
 
     let companies_key = serde_yaml::Value::String("companies".to_string());
     let mapping = value
@@ -561,13 +551,12 @@ pub(crate) fn strip_manifest_cloud_info(
         return Ok(());
     }
 
-    let serialized = serde_yaml::to_string(&value)
-        .map_err(|e| format!("serialize manifest: {e}"))?;
+    let serialized =
+        serde_yaml::to_string(&value).map_err(|e| format!("serialize manifest: {e}"))?;
 
     let tmp = manifest_path.with_extension("yaml.tmp");
     std::fs::write(&tmp, &serialized).map_err(|e| format!("write tmp manifest: {e}"))?;
-    std::fs::rename(&tmp, manifest_path)
-        .map_err(|e| format!("rename manifest: {e}"))?;
+    std::fs::rename(&tmp, manifest_path).map_err(|e| format!("rename manifest: {e}"))?;
 
     Ok(())
 }
@@ -608,9 +597,7 @@ pub(crate) fn prune_dangling_cloud_uids(
         if entry.cloud_uid.is_none() {
             continue;
         }
-        let slug_in_cloud = company_entities
-            .values()
-            .any(|e| e.slug == entry.slug);
+        let slug_in_cloud = company_entities.values().any(|e| e.slug == entry.slug);
         if slug_in_cloud {
             continue;
         }
@@ -697,9 +684,7 @@ pub(crate) async fn reconcile_manifest_after_sync(
             Err(e) => {
                 log(
                     "workspaces",
-                    &format!(
-                        "reconcile: find_by_slug '{slug}' failed: {e} — adding stub entry"
-                    ),
+                    &format!("reconcile: find_by_slug '{slug}' failed: {e} — adding stub entry"),
                 );
                 None
             }
@@ -883,7 +868,11 @@ where
         let display_name = entity
             .name
             .clone()
-            .or_else(|| local_by_slug.get(entity.slug.as_str()).and_then(|e| e.display_name.clone()))
+            .or_else(|| {
+                local_by_slug
+                    .get(entity.slug.as_str())
+                    .and_then(|e| e.display_name.clone())
+            })
             .unwrap_or_else(|| humanize_slug(&entity.slug));
         by_slug.insert(
             entity.slug.clone(),
@@ -937,8 +926,14 @@ where
 /// `(self_person, memberships, company_entities_by_uid)`. Wrapped in `Result`
 /// so a partial vault outage degrades gracefully (the local-disk view still
 /// renders) — see the `Err(_)` branch below.
-type CloudOutcome =
-    Result<(Option<EntityInfo>, Vec<MembershipInfo>, BTreeMap<String, EntityInfo>), String>;
+type CloudOutcome = Result<
+    (
+        Option<EntityInfo>,
+        Vec<MembershipInfo>,
+        BTreeMap<String, EntityInfo>,
+    ),
+    String,
+>;
 
 #[tauri::command]
 pub async fn list_syncable_workspaces() -> Result<WorkspacesResult, String> {
@@ -1110,18 +1105,23 @@ pub async fn connect_workspace_to_cloud(slug: String) -> Result<(), String> {
         return Err(err);
     }
     if slug == "personal" {
-        let err = "the Personal vault is auto-provisioned — no manual connect needed"
-            .to_string();
+        let err = "the Personal vault is auto-provisioned — no manual connect needed".to_string();
         capture_connect_error(&slug, "personal_slug", &err);
         return Err(err);
     }
 
     let hq_root = resolve_hq_folder_path().map_err(|e| {
-        log("workspaces", &format!("connect '{slug}': hq_root resolve failed: {e}"));
+        log(
+            "workspaces",
+            &format!("connect '{slug}': hq_root resolve failed: {e}"),
+        );
         capture_connect_error(&slug, "hq_root_resolve", &e);
         e
     })?;
-    log("workspaces", &format!("connect '{slug}': hq_root={}", hq_root.display()));
+    log(
+        "workspaces",
+        &format!("connect '{slug}': hq_root={}", hq_root.display()),
+    );
 
     // Resolve the folder path. Prefer the manifest's `path` field when set
     // (custom layouts); fall back to `companies/{slug}` for default HQs. We
@@ -1137,7 +1137,10 @@ pub async fn connect_workspace_to_cloud(slug: String) -> Result<(), String> {
             .unwrap_or_else(|| hq_root.join("companies").join(&slug)),
         _ => hq_root.join("companies").join(&slug),
     };
-    log("workspaces", &format!("connect '{slug}': folder={}", folder.display()));
+    log(
+        "workspaces",
+        &format!("connect '{slug}': folder={}", folder.display()),
+    );
 
     if !folder.is_dir() {
         let err = format!(
@@ -1151,8 +1154,8 @@ pub async fn connect_workspace_to_cloud(slug: String) -> Result<(), String> {
 
     // Forward the manifest/yaml-derived display name as `--name` so the CLI
     // creates a friendly entity rather than defaulting to the bare slug.
-    let display_name = read_local_company_name(&hq_root, &slug)
-        .unwrap_or_else(|| humanize_slug(&slug));
+    let display_name =
+        read_local_company_name(&hq_root, &slug).unwrap_or_else(|| humanize_slug(&slug));
     log(
         "workspaces",
         &format!(
@@ -1160,7 +1163,13 @@ pub async fn connect_workspace_to_cloud(slug: String) -> Result<(), String> {
         ),
     );
 
-    match crate::commands::run_cli_provision::run_cli_provision(&slug, Some(&display_name), &hq_root).await {
+    match crate::commands::run_cli_provision::run_cli_provision(
+        &slug,
+        Some(&display_name),
+        &hq_root,
+    )
+    .await
+    {
         Ok(result) => {
             log(
                 "workspaces",
@@ -1295,15 +1304,8 @@ mod tests {
     #[test]
     fn personal_present_without_person_entity() {
         let tmp = TempDir::new().unwrap();
-        let result = assemble_workspaces(
-            tmp.path(),
-            None,
-            &[],
-            &BTreeMap::new(),
-            &[],
-            true,
-            |_| None,
-        );
+        let result =
+            assemble_workspaces(tmp.path(), None, &[], &BTreeMap::new(), &[], true, |_| None);
         assert_eq!(result.len(), 1);
         assert!(result[0].cloud_uid.is_none());
     }
@@ -1314,8 +1316,18 @@ mod tests {
         let p = person("prs_x", None);
         let mem = membership("mem_1", "prs_x", "cmp_a", "active");
         let mut entities = BTreeMap::new();
-        entities.insert("cmp_a".to_string(), company_entity("cmp_a", "acme", Some("Acme")));
-        let entries = vec![local_full("acme", tmp.path(), true, Some("Acme"), Some("cmp_a"), Some("hq-vault-cmp-a"))];
+        entities.insert(
+            "cmp_a".to_string(),
+            company_entity("cmp_a", "acme", Some("Acme")),
+        );
+        let entries = vec![local_full(
+            "acme",
+            tmp.path(),
+            true,
+            Some("Acme"),
+            Some("cmp_a"),
+            Some("hq-vault-cmp-a"),
+        )];
 
         let result = assemble_workspaces(
             tmp.path(),
@@ -1338,8 +1350,18 @@ mod tests {
         let p = person("prs_x", None);
         let mem = membership("mem_1", "prs_x", "cmp_NEW", "active");
         let mut entities = BTreeMap::new();
-        entities.insert("cmp_NEW".to_string(), company_entity("cmp_NEW", "acme", Some("Acme")));
-        let entries = vec![local_full("acme", tmp.path(), true, Some("Acme"), Some("cmp_OLD"), Some("hq-vault-cmp-old"))];
+        entities.insert(
+            "cmp_NEW".to_string(),
+            company_entity("cmp_NEW", "acme", Some("Acme")),
+        );
+        let entries = vec![local_full(
+            "acme",
+            tmp.path(),
+            true,
+            Some("Acme"),
+            Some("cmp_OLD"),
+            Some("hq-vault-cmp-old"),
+        )];
 
         let result = assemble_workspaces(
             tmp.path(),
@@ -1361,7 +1383,14 @@ mod tests {
     fn manifest_uid_with_no_cloud_membership_is_broken() {
         let tmp = TempDir::new().unwrap();
         let p = person("prs_x", None);
-        let entries = vec![local_full("acme", tmp.path(), true, None, Some("cmp_GONE"), Some("hq-vault-cmp-gone"))];
+        let entries = vec![local_full(
+            "acme",
+            tmp.path(),
+            true,
+            None,
+            Some("cmp_GONE"),
+            Some("hq-vault-cmp-gone"),
+        )];
 
         let result = assemble_workspaces(
             tmp.path(),
@@ -1381,7 +1410,14 @@ mod tests {
     fn manifest_uid_with_cloud_unreachable_is_synced_optimistic() {
         let tmp = TempDir::new().unwrap();
         let p = person("prs_x", None);
-        let entries = vec![local_full("acme", tmp.path(), true, None, Some("cmp_a"), Some("hq-vault-cmp-a"))];
+        let entries = vec![local_full(
+            "acme",
+            tmp.path(),
+            true,
+            None,
+            Some("cmp_a"),
+            Some("hq-vault-cmp-a"),
+        )];
 
         let result = assemble_workspaces(
             tmp.path(),
@@ -1402,7 +1438,10 @@ mod tests {
         let p = person("prs_x", None);
         let mem = membership("mem_1", "prs_x", "cmp_a", "active");
         let mut entities = BTreeMap::new();
-        entities.insert("cmp_a".to_string(), company_entity("cmp_a", "acme", Some("Acme")));
+        entities.insert(
+            "cmp_a".to_string(),
+            company_entity("cmp_a", "acme", Some("Acme")),
+        );
         let entries = vec![local("acme", tmp.path(), true, Some("Acme"))];
 
         let result = assemble_workspaces(
@@ -1443,15 +1482,8 @@ mod tests {
         let mem = membership("mem_1", "prs_x", "cmp_b", "pending");
         let mut entities = BTreeMap::new();
         entities.insert("cmp_b".to_string(), company_entity("cmp_b", "newco", None));
-        let result = assemble_workspaces(
-            tmp.path(),
-            Some(&p),
-            &[mem],
-            &entities,
-            &[],
-            true,
-            |_| None,
-        );
+        let result =
+            assemble_workspaces(tmp.path(), Some(&p), &[mem], &entities, &[], true, |_| None);
         assert_eq!(result[1].state, WorkspaceState::CloudOnly);
         assert_eq!(result[1].membership_status.as_deref(), Some("pending"));
     }
@@ -1460,7 +1492,14 @@ mod tests {
     fn manifest_entry_without_folder_is_dropped() {
         let tmp = TempDir::new().unwrap();
         let p = person("prs_x", None);
-        let entries = vec![local_full("phantom", tmp.path(), false, Some("Phantom"), Some("cmp_p"), None)];
+        let entries = vec![local_full(
+            "phantom",
+            tmp.path(),
+            false,
+            Some("Phantom"),
+            Some("cmp_p"),
+            None,
+        )];
         let result = assemble_workspaces(
             tmp.path(),
             Some(&p),
@@ -1508,8 +1547,14 @@ mod tests {
                 _ => None,
             },
         );
-        assert_eq!(result[0].last_synced_at.as_deref(), Some("2026-04-25T00:00:00Z"));
-        assert_eq!(result[1].last_synced_at.as_deref(), Some("2026-04-24T12:00:00Z"));
+        assert_eq!(
+            result[0].last_synced_at.as_deref(),
+            Some("2026-04-25T00:00:00Z")
+        );
+        assert_eq!(
+            result[1].last_synced_at.as_deref(),
+            Some("2026-04-24T12:00:00Z")
+        );
     }
 
     #[test]
@@ -1598,7 +1643,10 @@ companies:
         let (entries, _) = discover_local_companies(tmp.path());
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].cloud_uid.as_deref(), Some("cmp_01ABC"));
-        assert_eq!(entries[0].bucket_name.as_deref(), Some("hq-vault-cmp-01ABC"));
+        assert_eq!(
+            entries[0].bucket_name.as_deref(),
+            Some("hq-vault-cmp-01ABC")
+        );
     }
 
     /// Broken manifest YAML → fall back to dir enumeration AND surface error.
@@ -1608,11 +1656,17 @@ companies:
     #[test]
     fn discover_broken_manifest_falls_back_with_error() {
         let tmp = TempDir::new().unwrap();
-        write_manifest(tmp.path(), "companies:\n  acme:\n    name: 'unclosed scalar\n");
+        write_manifest(
+            tmp.path(),
+            "companies:\n  acme:\n    name: 'unclosed scalar\n",
+        );
         std::fs::create_dir_all(tmp.path().join("companies/foo")).unwrap();
 
         let (entries, err) = discover_local_companies(tmp.path());
-        assert!(err.is_some(), "unclosed quote must fail YAML parse, got entries={entries:?}");
+        assert!(
+            err.is_some(),
+            "unclosed quote must fail YAML parse, got entries={entries:?}"
+        );
         assert!(err.as_ref().unwrap().contains("parse"));
         let slugs: Vec<&str> = entries.iter().map(|e| e.slug.as_str()).collect();
         assert_eq!(slugs, vec!["foo"]);
@@ -1680,13 +1734,8 @@ companies:
         );
         let manifest_path = tmp.path().join("companies").join("manifest.yaml");
 
-        patch_manifest_with_cloud_info(
-            &manifest_path,
-            "alpha",
-            "cmp_NEW",
-            "hq-vault-cmp-NEW",
-        )
-        .unwrap();
+        patch_manifest_with_cloud_info(&manifest_path, "alpha", "cmp_NEW", "hq-vault-cmp-NEW")
+            .unwrap();
 
         let (entries, _) = discover_local_companies(tmp.path());
         let alpha = entries.iter().find(|e| e.slug == "alpha").unwrap();
@@ -1712,13 +1761,8 @@ companies:
         );
         let manifest_path = tmp.path().join("companies").join("manifest.yaml");
 
-        patch_manifest_with_cloud_info(
-            &manifest_path,
-            "alpha",
-            "cmp_NEW",
-            "hq-vault-cmp-NEW",
-        )
-        .unwrap();
+        patch_manifest_with_cloud_info(&manifest_path, "alpha", "cmp_NEW", "hq-vault-cmp-NEW")
+            .unwrap();
 
         let (entries, _) = discover_local_companies(tmp.path());
         let alpha = entries.iter().find(|e| e.slug == "alpha").unwrap();

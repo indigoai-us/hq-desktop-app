@@ -65,6 +65,7 @@ const CHECK_INTERVAL: Duration = Duration::from_secs(21_600);
 /// rather than dropping fields that the server still sends.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct VersionCheckResponse {
     pub client_id: String,
     pub current_version: String,
@@ -178,11 +179,9 @@ async fn force_install(app: &AppHandle) -> Result<(), String> {
             // hq-pro says we're below min, but the Tauri updater can't see
             // any newer release. This means the GitHub `latest.json` hasn't
             // been published yet — surface it loudly so we can debug.
-            return Err(
-                "hq-pro hard-gate fired but tauri-updater sees no release; \
+            return Err("hq-pro hard-gate fired but tauri-updater sees no release; \
                  latest.json may be stale"
-                    .to_string(),
-            );
+                .to_string());
         }
         Err(e) => return Err(e.to_string()),
     }
@@ -294,7 +293,10 @@ mod tests {
         assert!(!decision.update_recommended);
         assert_eq!(decision.min_version, "0.1.100");
         assert_eq!(decision.latest_version, "0.1.110");
-        assert_eq!(decision.download_url.as_deref(), Some("https://example.com/sync/latest"));
+        assert_eq!(
+            decision.download_url.as_deref(),
+            Some("https://example.com/sync/latest")
+        );
     }
 
     #[tokio::test]

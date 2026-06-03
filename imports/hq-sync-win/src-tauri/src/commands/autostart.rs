@@ -172,7 +172,10 @@ pub fn ensure_autostart_on_launch() {
             .open_subkey_with_flags(RUN_KEY_SUBPATH, KEY_READ)
             .ok()
             .and_then(|key| key.get_value::<String, _>(RUN_VALUE_NAME).ok());
-        let currently_set = current.as_ref().map(|s| !s.trim().is_empty()).unwrap_or(false);
+        let currently_set = current
+            .as_ref()
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false);
 
         if want_enabled && !currently_set {
             let value = format_run_value(&resolve_app_path());
@@ -193,7 +196,10 @@ pub fn ensure_autostart_on_launch() {
                         "autostart",
                         &format!("ensure: removed Run\\{RUN_VALUE_NAME} (explicit opt-out)"),
                     ),
-                    Err(e) => log("autostart", &format!("ensure: delete Run value failed: {e}")),
+                    Err(e) => log(
+                        "autostart",
+                        &format!("ensure: delete Run value failed: {e}"),
+                    ),
                 }
             }
         }
@@ -279,20 +285,30 @@ mod tests {
         let original = get_autostart_enabled().await.unwrap_or(false);
 
         // Disable, verify disabled.
-        set_autostart_enabled(false).await.expect("disable should succeed");
+        set_autostart_enabled(false)
+            .await
+            .expect("disable should succeed");
         assert!(!get_autostart_enabled().await.unwrap_or(true));
 
         // Enable, verify enabled.
-        set_autostart_enabled(true).await.expect("enable should succeed");
+        set_autostart_enabled(true)
+            .await
+            .expect("enable should succeed");
         assert!(get_autostart_enabled().await.unwrap_or(false));
 
         // Idempotent re-enable.
-        set_autostart_enabled(true).await.expect("re-enable should be no-op");
+        set_autostart_enabled(true)
+            .await
+            .expect("re-enable should be no-op");
         assert!(get_autostart_enabled().await.unwrap_or(false));
 
         // Disable, verify disabled. Idempotent re-disable.
-        set_autostart_enabled(false).await.expect("disable should succeed");
-        set_autostart_enabled(false).await.expect("re-disable should be no-op");
+        set_autostart_enabled(false)
+            .await
+            .expect("disable should succeed");
+        set_autostart_enabled(false)
+            .await
+            .expect("re-disable should be no-op");
         assert!(!get_autostart_enabled().await.unwrap_or(true));
 
         // Restore original state.

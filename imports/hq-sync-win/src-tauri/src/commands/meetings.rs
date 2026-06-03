@@ -158,26 +158,21 @@ pub async fn open_meetings_window(app: AppHandle) -> Result<(), String> {
     // image-processing step in the build pipeline and (b) the window-
     // switcher icon is rendered very small, so the badge would likely be
     // illegible at that scale anyway.
-    const HQ_ICON_PNG: &[u8] =
-        include_bytes!("../../icons/128x128@2x.png");
+    const HQ_ICON_PNG: &[u8] = include_bytes!("../../icons/128x128@2x.png");
     let icon = tauri::image::Image::from_bytes(HQ_ICON_PNG)
         .map_err(|e| format!("load window icon: {e}"))?;
 
-    tauri::WebviewWindowBuilder::new(
-        &app,
-        LABEL,
-        tauri::WebviewUrl::App("index.html".into()),
-    )
-    .title("Upcoming Meetings")
-    .inner_size(460.0, 600.0)
-    .min_inner_size(380.0, 400.0)
-    .resizable(true)
-    .decorations(true)
-    .icon(icon)
-    .map_err(|e| format!("attach window icon: {e}"))?
-    .visible(true)
-    .build()
-    .map_err(|e| e.to_string())?;
+    tauri::WebviewWindowBuilder::new(&app, LABEL, tauri::WebviewUrl::App("index.html".into()))
+        .title("Upcoming Meetings")
+        .inner_size(460.0, 600.0)
+        .min_inner_size(380.0, 400.0)
+        .resizable(true)
+        .decorations(true)
+        .icon(icon)
+        .map_err(|e| format!("attach window icon: {e}"))?
+        .visible(true)
+        .build()
+        .map_err(|e| e.to_string())?;
 
     Ok(())
 }
@@ -217,8 +212,8 @@ pub async fn meetings_list_upcoming() -> Result<Vec<MeetingEvent>, String> {
     if !status.is_success() {
         return Err(format!("events HTTP {status}: {text}"));
     }
-    let parsed: EventsResponse = serde_json::from_str(&text)
-        .map_err(|e| format!("events parse: {e} — body: {text}"))?;
+    let parsed: EventsResponse =
+        serde_json::from_str(&text).map_err(|e| format!("events parse: {e} — body: {text}"))?;
     Ok(parsed.events)
 }
 
@@ -283,8 +278,8 @@ pub async fn meetings_list_accounts() -> Result<Vec<GoogleAccount>, String> {
     if !status.is_success() {
         return Err(format!("accounts HTTP {status}: {text}"));
     }
-    let parsed: AccountsResponse = serde_json::from_str(&text)
-        .map_err(|e| format!("accounts parse: {e} — body: {text}"))?;
+    let parsed: AccountsResponse =
+        serde_json::from_str(&text).map_err(|e| format!("accounts parse: {e} — body: {text}"))?;
     Ok(parsed.accounts)
 }
 
@@ -346,8 +341,8 @@ pub async fn meetings_list_calendars_for_account(
     if !status.is_success() {
         return Err(format!("calendars HTTP {status}: {text}"));
     }
-    let parsed: CalendarsResponse = serde_json::from_str(&text)
-        .map_err(|e| format!("calendars parse: {e} — body: {text}"))?;
+    let parsed: CalendarsResponse =
+        serde_json::from_str(&text).map_err(|e| format!("calendars parse: {e} — body: {text}"))?;
     Ok(AccountCalendars {
         calendars: parsed.calendars,
         selected_calendar_ids: parsed
@@ -397,12 +392,15 @@ pub async fn meetings_list_scheduled_bots(
         .await
         .map_err(|e| format!("bot/list fetch: {e}"))?;
     let status = res.status();
-    let text = res.text().await.map_err(|e| format!("bot/list read: {e}"))?;
+    let text = res
+        .text()
+        .await
+        .map_err(|e| format!("bot/list read: {e}"))?;
     if !status.is_success() {
         return Err(format!("bot/list HTTP {status}: {text}"));
     }
-    let parsed: BotsResponse = serde_json::from_str(&text)
-        .map_err(|e| format!("bot/list parse: {e} — body: {text}"))?;
+    let parsed: BotsResponse =
+        serde_json::from_str(&text).map_err(|e| format!("bot/list parse: {e} — body: {text}"))?;
     Ok(parsed.bots)
 }
 
@@ -443,7 +441,10 @@ pub async fn meetings_invite_bot(
         .await
         .map_err(|e| format!("bot/invite fetch: {e}"))?;
     let status = res.status();
-    let text = res.text().await.map_err(|e| format!("bot/invite read: {e}"))?;
+    let text = res
+        .text()
+        .await
+        .map_err(|e| format!("bot/invite read: {e}"))?;
     if !status.is_success() {
         return Err(format!("bot/invite HTTP {status}: {text}"));
     }
@@ -498,8 +499,7 @@ pub async fn meetings_join_bot_now(
     if !status.is_success() {
         return Err(format!("bot/join-now HTTP {status}: {text}"));
     }
-    serde_json::from_str(&text)
-        .map_err(|e| format!("bot/join-now parse: {e} — body: {text}"))
+    serde_json::from_str(&text).map_err(|e| format!("bot/join-now parse: {e} — body: {text}"))
 }
 
 /// `GET /membership/me` — caller's memberships, enriched with `companyName`.
@@ -575,9 +575,8 @@ pub async fn meetings_cancel_bot(bot_id: String) -> Result<(), String> {
 /// optional underscores) and avoids the need for percent-encoding.
 fn is_url_safe_id(s: &str) -> bool {
     !s.is_empty()
-        && s.bytes().all(|b| {
-            b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.'
-        })
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.')
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -652,7 +651,10 @@ mod tests {
         assert_eq!(bot.bot_id, "bot-abc");
         assert_eq!(bot.status, "scheduled");
         assert_eq!(bot.platform, "zoom");
-        assert!(!bot.auto_scheduled, "manual invite defaults to not auto-scheduled");
+        assert!(
+            !bot.auto_scheduled,
+            "manual invite defaults to not auto-scheduled"
+        );
         assert!(bot.calendar_event_id.is_none());
         assert!(bot.meeting_title.is_none());
     }

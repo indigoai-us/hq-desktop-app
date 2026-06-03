@@ -118,10 +118,7 @@ fn report_provision_error(
             scope.set_extra("stderr_tail", stderr_blob.into());
         },
         || {
-            sentry::capture_message(
-                &format!("[provision-cli] {err}"),
-                sentry::Level::Error,
-            );
+            sentry::capture_message(&format!("[provision-cli] {err}"), sentry::Level::Error);
         },
     );
 }
@@ -493,10 +490,8 @@ pub async fn run_cli_provision(
 
     let parse_result: Option<Result<CliProvisionResult, serde_json::Error>> =
         last_json_line.map(serde_json::from_str::<CliProvisionResult>);
-    let parsed: Option<CliProvisionResult> = parse_result
-        .as_ref()
-        .and_then(|r| r.as_ref().ok())
-        .cloned();
+    let parsed: Option<CliProvisionResult> =
+        parse_result.as_ref().and_then(|r| r.as_ref().ok()).cloned();
 
     let exit_code = status.code();
     log(
@@ -515,9 +510,9 @@ pub async fn run_cli_provision(
     // `ok` while the CLI emitted `{ skipped: true }`).
     let exit0_err = || -> CliProvisionError {
         match (last_json_line, parse_result.as_ref()) {
-            (None, _) => CliProvisionError::Other(format!(
-                "exit 0 but no output on stdout for slug={slug}"
-            )),
+            (None, _) => {
+                CliProvisionError::Other(format!("exit 0 but no output on stdout for slug={slug}"))
+            }
             (Some(line), Some(Err(e))) => CliProvisionError::Other(format!(
                 "exit 0 but stdout JSON failed to parse for slug={slug}: {e} (last_line={line:?})"
             )),

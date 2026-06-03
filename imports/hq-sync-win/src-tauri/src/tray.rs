@@ -127,10 +127,18 @@ fn icon_for_state(state: TrayState) -> Image<'static> {
     };
 
     match state {
-        TrayState::Idle => ICON_IDLE.get_or_init(|| decode(include_bytes!("../icons/tray-idle@2x.png"))),
-        TrayState::Syncing => ICON_SYNCING.get_or_init(|| decode(include_bytes!("../icons/tray-syncing@2x.png"))),
-        TrayState::Error => ICON_ERROR.get_or_init(|| decode(include_bytes!("../icons/tray-error@2x.png"))),
-        TrayState::Conflict => ICON_CONFLICT.get_or_init(|| decode(include_bytes!("../icons/tray-conflict@2x.png"))),
+        TrayState::Idle => {
+            ICON_IDLE.get_or_init(|| decode(include_bytes!("../icons/tray-idle@2x.png")))
+        }
+        TrayState::Syncing => {
+            ICON_SYNCING.get_or_init(|| decode(include_bytes!("../icons/tray-syncing@2x.png")))
+        }
+        TrayState::Error => {
+            ICON_ERROR.get_or_init(|| decode(include_bytes!("../icons/tray-error@2x.png")))
+        }
+        TrayState::Conflict => {
+            ICON_CONFLICT.get_or_init(|| decode(include_bytes!("../icons/tray-conflict@2x.png")))
+        }
     }
     .clone()
 }
@@ -411,7 +419,10 @@ pub fn update_tray_icon(app: &AppHandle, state: TrayState) {
 /// Get the current tray state.
 #[allow(dead_code)]
 pub fn get_current_state() -> TrayState {
-    current_state().lock().map(|s| *s).unwrap_or(TrayState::Idle)
+    current_state()
+        .lock()
+        .map(|s| *s)
+        .unwrap_or(TrayState::Idle)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -420,7 +431,9 @@ pub fn get_current_state() -> TrayState {
 
 /// Wire sync events to tray icon state changes.
 fn setup_sync_listeners(app: &AppHandle) {
-    use crate::events::{EVENT_SYNC_COMPLETE, EVENT_SYNC_CONFLICT, EVENT_SYNC_ERROR, EVENT_SYNC_PROGRESS};
+    use crate::events::{
+        EVENT_SYNC_COMPLETE, EVENT_SYNC_CONFLICT, EVENT_SYNC_ERROR, EVENT_SYNC_PROGRESS,
+    };
 
     let app1 = app.clone();
     app.listen(EVENT_SYNC_PROGRESS, move |_event| {
@@ -487,8 +500,12 @@ pub fn clear_share_badge(app: &AppHandle) {
 /// Accepts: "idle", "syncing", "error", "conflict" (case-insensitive).
 #[tauri::command]
 pub fn set_tray_state(app: AppHandle, state: String) -> Result<(), String> {
-    let tray_state = TrayState::from_str_loose(&state)
-        .ok_or_else(|| format!("Invalid tray state: '{}'. Expected: idle, syncing, error, conflict", state))?;
+    let tray_state = TrayState::from_str_loose(&state).ok_or_else(|| {
+        format!(
+            "Invalid tray state: '{}'. Expected: idle, syncing, error, conflict",
+            state
+        )
+    })?;
     update_tray_icon(&app, tray_state);
     Ok(())
 }
@@ -504,9 +521,15 @@ mod tests {
     #[test]
     fn test_tray_state_from_str_loose() {
         assert_eq!(TrayState::from_str_loose("idle"), Some(TrayState::Idle));
-        assert_eq!(TrayState::from_str_loose("SYNCING"), Some(TrayState::Syncing));
+        assert_eq!(
+            TrayState::from_str_loose("SYNCING"),
+            Some(TrayState::Syncing)
+        );
         assert_eq!(TrayState::from_str_loose("Error"), Some(TrayState::Error));
-        assert_eq!(TrayState::from_str_loose("conflict"), Some(TrayState::Conflict));
+        assert_eq!(
+            TrayState::from_str_loose("conflict"),
+            Some(TrayState::Conflict)
+        );
         assert_eq!(TrayState::from_str_loose("unknown"), None);
         assert_eq!(TrayState::from_str_loose(""), None);
     }
@@ -524,7 +547,12 @@ mod tests {
         // Verify that each included icon starts with the PNG magic bytes
         let png_magic: [u8; 8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
 
-        for state in &[TrayState::Idle, TrayState::Syncing, TrayState::Error, TrayState::Conflict] {
+        for state in &[
+            TrayState::Idle,
+            TrayState::Syncing,
+            TrayState::Error,
+            TrayState::Conflict,
+        ] {
             let bytes: &[u8] = match state {
                 TrayState::Idle => include_bytes!("../icons/tray-idle@2x.png"),
                 TrayState::Syncing => include_bytes!("../icons/tray-syncing@2x.png"),
@@ -621,7 +649,10 @@ mod tests {
                 start + 1,
                 "guard should increment MODAL_DEPTH"
             );
-            assert!(is_modal_open(), "is_modal_open should be true with guard alive");
+            assert!(
+                is_modal_open(),
+                "is_modal_open should be true with guard alive"
+            );
 
             {
                 let _g2 = ModalGuard::new();
@@ -637,7 +668,10 @@ mod tests {
                 start + 1,
                 "dropping inner guard should decrement once"
             );
-            assert!(is_modal_open(), "outer guard still alive — should still be open");
+            assert!(
+                is_modal_open(),
+                "outer guard still alive — should still be open"
+            );
         }
 
         assert_eq!(

@@ -84,12 +84,8 @@ fn resolve_hq_folder_path() -> Result<String, String> {
     let config = crate::commands::config::read_hq_config_lenient()?;
 
     let hq_folder = paths::resolve_hq_folder(
-        config
-            .as_ref()
-            .and_then(|c| c.hq_folder_path.as_deref()),
-        menubar_prefs
-            .as_ref()
-            .and_then(|p| p.hq_path.as_deref()),
+        config.as_ref().and_then(|c| c.hq_folder_path.as_deref()),
+        menubar_prefs.as_ref().and_then(|p| p.hq_path.as_deref()),
     );
 
     Ok(hq_folder.to_string_lossy().to_string())
@@ -364,8 +360,7 @@ fn handle_watch_stdout_line(
             let t = totals.lock().unwrap_or_else(|e| e.into_inner());
             t.conflicts
         };
-        let now_iso = chrono::Utc::now()
-            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let now_iso = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         let journal = journal_for_sync_complete(&now_iso, conflicts);
         if let Err(e) = write_journal(hq_folder, &journal) {
             log("daemon", &format!("failed to write journal: {e}"));
@@ -413,10 +408,7 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
     if let Some(pid) = read_pid_file(&hq_folder_path) {
         if is_pid_alive(pid) {
             deregister_process(DAEMON_HANDLE);
-            return Err(format!(
-                "Daemon is already running (PID {})",
-                pid
-            ));
+            return Err(format!("Daemon is already running (PID {})", pid));
         }
     }
 
@@ -677,7 +669,7 @@ mod tests {
 
     #[test]
     fn test_double_register_prevented() {
-        use crate::commands::process::{try_register_handle, deregister_process};
+        use crate::commands::process::{deregister_process, try_register_handle};
         let handle = "test-daemon-double-start";
         // First register succeeds
         assert!(try_register_handle(handle));
