@@ -8,6 +8,7 @@
    */
 
   import { invoke } from '@tauri-apps/api/core';
+  import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { open as openExternal } from '@tauri-apps/plugin-shell';
   import {
@@ -15,6 +16,19 @@
     saveMeetingsCache,
   } from '../lib/meetingsCache';
   import { isAlreadyScheduledError } from '../lib/invite-errors';
+  import type { ActiveMeeting } from '../lib/activeMeetings';
+  import {
+    activeMemberships,
+    resolveStartCompany,
+    resolveValidDefault,
+    shouldBackfill,
+    type RecordingMembership,
+  } from '../lib/recordingCompany';
+  import {
+    armStopWatchdog,
+    clearStopWatchdog,
+    resolveStopTimeout,
+  } from '../lib/stopWatchdog';
 
   interface MeetingEvent {
     id: string;
@@ -175,6 +189,312 @@
 
   let rowPending = $state<Set<string>>(new Set());
 
+  // ── Active-meeting recording lifecycle (US-002) ──────────────────────────
+  //
+  // The Recall Desktop SDK detects live meetings (via recall_sdk.rs) and emits
+  // `meeting:detected`. This window renders a "Live now" row per detected
+  // meeting with a Record/Stop control, drives start/stop through the
+  // `start_recording` / `stop_recording` Tauri commands, and reflects the SDK's
+  // `recording:started` / `recording:ended` / `recording:error` confirmations.
+  //
+  // Company attribution: each row presets its company picker to the validated
+  // default-recording-company (settings) and is overridable per-recording until
+  // the recording is in flight (Recall fixes the metadata at upload-token mint
+  // time, so the dropdown locks once starting/recording/stopping).
+  //
+  // TODO(US-003): the "Record from a notification banner" path
+  // (`notification:meeting-action`) is owned by US-003 — when that lands it
+  // should call `startRecording(windowId)` here. The detect-notify dedup ledger
+  // (`meetings_notify_detected`) is also US-003's; this window only owns the
+  // in-app row + recording lifecycle.
+  let activeMeetings = $state<ActiveMeeting[]>([]);
+  let recordingMemberships = $state<RecordingMembership[]>([]);
+  let defaultRecordingCompanyUid: string | null = null;
+
+  /** Upsert a detected/recording row, keyed by SDK windowId. A late
+   *  `detected` event must never clobber a more-advanced state (e.g. a
+   *  re-fired detection while already `recording`). */
+  function upsertActiveMeeting(meeting: ActiveMeeting): void {
+    const idx = activeMeetings.findIndex((row) => row.windowId === meeting.windowId);
+    if (idx < 0) {
+      activeMeetings = [...activeMeetings, meeting];
+      return;
+    }
+    const existing = activeMeetings[idx];
+    const next = activeMeetings.slice();
+    next[idx] =
+      meeting.state === 'detected' && existing.state !== 'detected'
+        ? {
+            ...meeting,
+            state: existing.state,
+            recordingId: existing.recordingId,
+            error: existing.error,
+          }
+        : meeting;
+    activeMeetings = next;
+  }
+
+  function updateActiveMeeting(windowId: string, patch: Partial<ActiveMeeting>): void {
+    activeMeetings = activeMeetings.map((row) =>
+      row.windowId === windowId ? { ...row, ...patch } : row,
+    );
+  }
+
+  function removeActiveMeeting(windowId: string): void {
+    activeMeetings = activeMeetings.filter((row) => row.windowId !== windowId);
+  }
+
+  /** Record an explicit per-meeting company choice from the row picker.
+   *  `companyUserSet: true` marks it deliberate so the resolved-default and the
+   *  focus-time back-fill leave it alone. `null` is a valid choice (Personal). */
+  function setRecordingCompany(windowId: string, companyUid: string | null): void {
+    updateActiveMeeting(windowId, { companyUid, companyUserSet: true });
+  }
+
+  async function startRecordingFor(windowId: string): Promise<void> {
+    updateActiveMeeting(windowId, { state: 'starting', error: undefined });
+    const row = activeMeetings.find((m) => m.windowId === windowId);
+    // Resolve attribution: an explicit user choice wins, else the validated
+    // default, else whatever the row had. Persist the resolved uid back so the
+    // row reflects the company we recorded under.
+    const companyUid = resolveStartCompany(row, defaultRecordingCompanyUid, recordingMemberships);
+    if (row && row.companyUid !== companyUid) {
+      updateActiveMeeting(windowId, { companyUid });
+    }
+    try {
+      const recordingId = await invoke<string>('start_recording', {
+        windowId,
+        companyUid,
+      });
+      updateActiveMeeting(windowId, { recordingId });
+    } catch (err) {
+      console.error('start_recording failed:', err);
+      updateActiveMeeting(windowId, {
+        state: 'error',
+        error: typeof err === 'string' ? err : String(err),
+      });
+    }
+  }
+
+  async function stopRecordingFor(windowId: string): Promise<void> {
+    updateActiveMeeting(windowId, { state: 'stopping' });
+    // Backstop the SDK confirmation: if no recording:ended/recording:error
+    // arrives, force the row out of `stopping` so it can't hang forever.
+    armStopWatchdog(windowId, (id) => {
+      const r = activeMeetings.find((m) => m.windowId === id);
+      const patch = resolveStopTimeout(r?.state);
+      if (patch) updateActiveMeeting(id, patch);
+    });
+    try {
+      await invoke('stop_recording', { windowId });
+    } catch (err) {
+      console.error('stop_recording failed:', err);
+      // The bridge errored before the SDK got the stop — we're still recording,
+      // so cancel the watchdog and roll back rather than letting it fire `error`.
+      clearStopWatchdog(windowId);
+      updateActiveMeeting(windowId, {
+        state: 'recording',
+        error: typeof err === 'string' ? err : String(err),
+      });
+    }
+  }
+
+  /**
+   * Load the recording-company context (active memberships + validated default)
+   * from the backend, then back-fill any already-detected rows that loaded
+   * before this resolved. Both invokes fail soft to a neutral result — the
+   * picker is additive, so a transient hiccup must never blank a live row.
+   */
+  async function loadRecordingCompanyContext(): Promise<void> {
+    const [list, settings] = await Promise.all([
+      invoke<RecordingMembership[]>('meetings_list_memberships').catch(
+        () => [] as RecordingMembership[],
+      ),
+      invoke<{ defaultRecordingCompanyUid?: string | null }>('get_settings').catch(
+        () => ({}) as { defaultRecordingCompanyUid?: string | null },
+      ),
+    ]);
+    const active = activeMemberships(list ?? []);
+    recordingMemberships = active;
+    defaultRecordingCompanyUid = resolveValidDefault(
+      settings?.defaultRecordingCompanyUid ?? null,
+      active,
+    );
+    // Seed the resolved default onto rows detected before this loaded — without
+    // overwriting an explicit user choice (shouldBackfill guards that).
+    for (const m of activeMeetings) {
+      if (shouldBackfill(m, defaultRecordingCompanyUid)) {
+        updateActiveMeeting(m.windowId, { companyUid: defaultRecordingCompanyUid });
+      }
+    }
+  }
+
+  /** Seed `$activeMeetings` from the backend active-detection registry. This
+   *  window is created on-demand, so its JS context misses any
+   *  `meeting:detected` events that fired before it existed. Pull the
+   *  currently-active detections and run each through the same idempotent
+   *  upsert the live listener uses. Fail-soft. */
+  async function seedActiveMeetingsFromBackend(): Promise<void> {
+    interface BackendDetection {
+      windowId?: string;
+      meetingUrl?: string;
+      platform?: string;
+      detectedAt?: string;
+      sourceEventId?: string;
+    }
+    let detections: BackendDetection[];
+    try {
+      detections = await invoke<BackendDetection[]>('meetings_list_active_detections');
+    } catch (err) {
+      console.warn('meetings_list_active_detections failed; skipping seed:', err);
+      return;
+    }
+    for (const d of detections ?? []) {
+      const windowId = resolveDetectionWindowId(d.windowId, d.meetingUrl);
+      if (!windowId) continue;
+      const existing = activeMeetings.find((m) => m.windowId === windowId);
+      upsertActiveMeeting({
+        ...existing,
+        windowId,
+        platform: d.platform ?? existing?.platform ?? 'other',
+        meetingUrl: d.meetingUrl ?? existing?.meetingUrl ?? '',
+        detectedAt: d.detectedAt ?? existing?.detectedAt ?? new Date().toISOString(),
+        state: existing?.state ?? 'detected',
+        companyUid: existing?.companyUserSet
+          ? (existing.companyUid ?? null)
+          : (resolveValidDefault(defaultRecordingCompanyUid, recordingMemberships) ??
+            existing?.companyUid ??
+            null),
+        companyUserSet: existing?.companyUserSet ?? false,
+        summary: existing?.summary,
+        sourceEventId: d.sourceEventId ?? existing?.sourceEventId,
+      });
+    }
+  }
+
+  /** Resolve the SDK windowId from a detection: prefer the explicit field,
+   *  else decode the `recall-window:<id>` synthetic URL the bridge uses for
+   *  URL-less meetings, else fall back to the raw URL string. */
+  function resolveDetectionWindowId(
+    windowId: string | undefined,
+    meetingUrl: string | undefined,
+  ): string {
+    if (windowId) return windowId;
+    if (typeof meetingUrl === 'string' && meetingUrl.startsWith('recall-window:')) {
+      return meetingUrl.slice('recall-window:'.length);
+    }
+    return meetingUrl ?? '';
+  }
+
+  /** Human-readable company label for an active-meeting row (mirrors
+   *  `companyLabel` for calendar events). `null` companyUid = Personal. */
+  function activeMeetingCompanyLabel(companyUid: string | null): string {
+    if (!companyUid) return 'Personal';
+    return companyNamesByUid.get(companyUid) ?? `${companyUid.slice(0, 12)}…`;
+  }
+
+  /** Title shown on a live-now row — the calendar summary if we have one, else
+   *  a platform-derived label, else the meeting URL. */
+  function activeMeetingTitle(m: ActiveMeeting): string {
+    if (m.summary && m.summary.trim()) return m.summary.trim();
+    const platform = (m.platform || '').toLowerCase();
+    const platformName: Record<string, string> = {
+      zoom: 'Zoom meeting',
+      meet: 'Google Meet',
+      teams: 'Teams meeting',
+      slack: 'Slack huddle',
+      webex: 'Webex meeting',
+    };
+    if (platformName[platform]) return platformName[platform];
+    if (m.meetingUrl && !m.meetingUrl.startsWith('recall-window:')) return m.meetingUrl;
+    return 'Live meeting';
+  }
+
+  /** Status caption for a live-now row. */
+  function activeMeetingStatusLabel(state: ActiveMeeting['state']): string {
+    switch (state) {
+      case 'detected':
+        return 'Detected';
+      case 'starting':
+        return 'Starting…';
+      case 'recording':
+        return 'Recording';
+      case 'stopping':
+        return 'Stopping…';
+      case 'error':
+        return 'Error';
+    }
+  }
+
+  /** Install the SDK recording-lifecycle Tauri listeners. Returns a disposer
+   *  that drops them all. Mirrors the upstream activeMeetings store wiring,
+   *  scoped to this window. */
+  async function installActiveMeetingListeners(): Promise<UnlistenFn> {
+    const offs = await Promise.all([
+      listen<{
+        meetingUrl?: string;
+        platform?: string;
+        summary?: string;
+        sourceEventId?: string;
+        windowId?: string;
+      }>('meeting:detected', (event) => {
+        const p = event.payload;
+        const windowId = resolveDetectionWindowId(p.windowId, p.meetingUrl);
+        if (!windowId) return;
+        const existing = activeMeetings.find((m) => m.windowId === windowId);
+        upsertActiveMeeting({
+          ...existing,
+          windowId,
+          platform: p.platform ?? existing?.platform ?? 'other',
+          meetingUrl: p.meetingUrl ?? existing?.meetingUrl ?? '',
+          detectedAt: new Date().toISOString(),
+          state: existing?.state ?? 'detected',
+          companyUid: existing?.companyUserSet
+            ? (existing.companyUid ?? null)
+            : (resolveValidDefault(defaultRecordingCompanyUid, recordingMemberships) ??
+              existing?.companyUid ??
+              null),
+          companyUserSet: existing?.companyUserSet ?? false,
+          summary: p.summary ?? existing?.summary,
+          sourceEventId: p.sourceEventId ?? existing?.sourceEventId,
+        });
+      }),
+      listen<{ windowId: string }>('recording:started', (event) => {
+        clearStopWatchdog(event.payload.windowId);
+        updateActiveMeeting(event.payload.windowId, {
+          state: 'recording',
+          error: undefined,
+        });
+      }),
+      listen<{ windowId: string }>('recording:ended', (event) => {
+        clearStopWatchdog(event.payload.windowId);
+        removeActiveMeeting(event.payload.windowId);
+      }),
+      listen<{ cmd: string; windowId: string; message: string }>('recording:error', (event) => {
+        clearStopWatchdog(event.payload.windowId);
+        updateActiveMeeting(event.payload.windowId, {
+          state: 'error',
+          error: `${event.payload.cmd}: ${event.payload.message}`,
+        });
+      }),
+      listen<{ windowId: string }>('meeting:closed', (event) => {
+        const { windowId } = event.payload;
+        // The call ended — the SDK's only call-ended signal. Defense-in-depth:
+        // if the bridge's auto-stop was missed and this row is still recording
+        // (or mid start/stop), finalize it through the normal stop path rather
+        // than dropping the row and leaking a still-running recording.
+        const row = activeMeetings.find((m) => m.windowId === windowId);
+        if (row && (row.state === 'recording' || row.state === 'starting' || row.state === 'stopping')) {
+          void stopRecordingFor(windowId);
+          return;
+        }
+        clearStopWatchdog(windowId);
+        removeActiveMeeting(windowId);
+      }),
+    ]);
+    return () => offs.forEach((off) => off());
+  }
+
   // Multi-account filter state.
   //   `accounts`           — every connected Google account
   //   `calendarsByAccount` — flat per-account calendar list, used to (a) render
@@ -251,6 +571,19 @@
   $effect(() => {
     void refresh();
 
+    // Recording lifecycle (US-002): load the company-attribution context, seed
+    // any meetings the SDK detected before this window opened, and attach the
+    // live SDK listeners. Order matters — load the context first so the seed
+    // and the live `meeting:detected` handler can preset the validated default
+    // company onto fresh rows; the back-fill inside loadRecordingCompanyContext
+    // also covers rows that race ahead of it.
+    let disposeMeetingListeners: UnlistenFn | null = null;
+    void (async () => {
+      await loadRecordingCompanyContext();
+      await seedActiveMeetingsFromBackend();
+      disposeMeetingListeners = await installActiveMeetingListeners();
+    })();
+
     // Poll every 30s while the window is open. Bots transition states
     // server-side (scheduled → joining → recording → processing) and the
     // auto-schedule cron creates new bots on a 10-min rhythm, so without
@@ -272,7 +605,13 @@
     let unlistenFocus: (() => void) | null = null;
     void getCurrentWindow()
       .onFocusChanged(({ payload: focused }) => {
-        if (focused) void refresh();
+        if (focused) {
+          void refresh();
+          // Re-resolve the recording-company default on focus — the user may
+          // have joined/left a company elsewhere, or changed the default in
+          // Settings, while this window was backgrounded.
+          void loadRecordingCompanyContext();
+        }
       })
       .then((fn) => {
         unlistenFocus = fn;
@@ -291,6 +630,7 @@
       window.clearInterval(pollId);
       window.removeEventListener('keydown', onkeydown);
       unlistenFocus?.();
+      disposeMeetingListeners?.();
     };
   });
 
@@ -1069,6 +1409,84 @@
     </p>
   {/if}
 
+  <!-- Live now — meetings the Recall Desktop SDK has detected on this machine
+       (US-002). Each row offers a Record/Stop control + a per-recording company
+       picker (preset to the default-recording-company, locked once a recording
+       is in flight). Only renders when there's at least one detected meeting,
+       so the idle Meetings window is unchanged for users not in a call. -->
+  {#if activeMeetings.length > 0}
+    <section class="live-now" aria-label="Live meetings">
+      <h2 class="live-now-title">Live now</h2>
+      <ul class="live-now-list">
+        {#each activeMeetings as m (m.windowId)}
+          {@const locked = m.state !== 'detected' && m.state !== 'error'}
+          <li class="live-row" class:live-row-recording={m.state === 'recording'}>
+            <span
+              class="live-dot"
+              class:live-dot-recording={m.state === 'recording'}
+              class:live-dot-error={m.state === 'error'}
+              aria-hidden="true"
+            ></span>
+            <div class="live-meta">
+              <span class="live-row-title" title={m.meetingUrl || activeMeetingTitle(m)}>
+                {activeMeetingTitle(m)}
+              </span>
+              <span class="live-status" class:live-status-error={m.state === 'error'}>
+                {activeMeetingStatusLabel(m.state)}{#if m.state === 'error' && m.error}
+                  — {m.error}{/if}
+              </span>
+            </div>
+
+            <!-- Company picker. Preset to the resolved default; editable until
+                 the recording is in flight (Recall fixes the metadata at
+                 upload-token mint time). `null` = Personal. -->
+            <select
+              class="live-company"
+              aria-label="Record to company"
+              disabled={locked}
+              value={m.companyUid}
+              onchange={(e) =>
+                setRecordingCompany(
+                  m.windowId,
+                  (e.currentTarget as HTMLSelectElement).value || null,
+                )}
+            >
+              <option value={null}>Personal</option>
+              {#each recordingMemberships as rm (rm.companyUid)}
+                <option value={rm.companyUid}>
+                  {rm.companyName ?? activeMeetingCompanyLabel(rm.companyUid)}
+                </option>
+              {/each}
+            </select>
+
+            {#if m.state === 'detected' || m.state === 'error'}
+              <button
+                type="button"
+                class="live-btn live-btn-record"
+                onclick={() => startRecordingFor(m.windowId)}
+              >
+                Record
+              </button>
+            {:else if m.state === 'recording'}
+              <button
+                type="button"
+                class="live-btn live-btn-stop"
+                onclick={() => stopRecordingFor(m.windowId)}
+              >
+                Stop
+              </button>
+            {:else}
+              <!-- starting / stopping — transient, control disabled -->
+              <button type="button" class="live-btn" disabled>
+                {m.state === 'starting' ? 'Starting…' : 'Stopping…'}
+              </button>
+            {/if}
+          </li>
+        {/each}
+      </ul>
+    </section>
+  {/if}
+
   <!-- Controls row — always present below the URL input. Hosts the
        refresh button (right) and, when the user has more than one
        connected account / any enabled calendars, the multi-account
@@ -1513,6 +1931,141 @@
     background: rgba(202, 138, 4, 0.10);
     border-color: rgba(202, 138, 4, 0.40);
     color: #fcd34d;
+  }
+
+  /* Live now — detected/recording meetings (US-002). Sits between the URL
+     invite row and the calendar list; only rendered when a meeting is live. */
+  .live-now {
+    margin: 10px 18px 0;
+    padding: 10px;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.10);
+  }
+  .live-now-title {
+    margin: 0 0 8px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: #a1a1aa;
+  }
+  .live-now-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .live-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 8px;
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+  }
+  .live-row-recording {
+    border-color: rgba(239, 68, 68, 0.35);
+    background: rgba(239, 68, 68, 0.06);
+  }
+  .live-dot {
+    flex: 0 0 auto;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #71717a;
+  }
+  /* Recording — pulsing red so the "we are capturing audio" state is
+     unmistakable, matching the bot "recording" affordance vocabulary. */
+  .live-dot-recording {
+    background: #ef4444;
+    animation: live-pulse 1.6s ease-in-out infinite;
+  }
+  .live-dot-error {
+    background: #f59e0b;
+  }
+  @keyframes live-pulse {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.35;
+    }
+  }
+  /* Honour reduced-motion: drop the pulse to a steady dot. */
+  @media (prefers-reduced-motion: reduce) {
+    .live-dot-recording {
+      animation: none;
+    }
+  }
+  .live-meta {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .live-row-title {
+    font-size: 12px;
+    color: #f4f4f5;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .live-status {
+    font-size: 10px;
+    color: #a1a1aa;
+  }
+  .live-status-error {
+    color: #fcd34d;
+  }
+  .live-company {
+    flex: 0 0 auto;
+    max-width: 120px;
+    background: rgba(255, 255, 255, 0.04);
+    color: #f4f4f5;
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    border-radius: 6px;
+    padding: 5px 7px;
+    font-size: 11px;
+    cursor: pointer;
+  }
+  .live-company:focus {
+    outline: none;
+    border-color: rgba(255, 255, 255, 0.24);
+  }
+  .live-company:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+  .live-btn {
+    flex: 0 0 auto;
+    background: rgba(255, 255, 255, 0.12);
+    color: #f4f4f5;
+    border: 1px solid rgba(255, 255, 255, 0.20);
+    border-radius: 6px;
+    padding: 5px 12px;
+    font-size: 11px;
+    cursor: pointer;
+  }
+  .live-btn:disabled {
+    opacity: 0.5;
+    cursor: wait;
+  }
+  .live-btn-record {
+    background: rgba(239, 68, 68, 0.18);
+    border-color: rgba(239, 68, 68, 0.45);
+    color: #fca5a5;
+  }
+  .live-btn-record:hover {
+    background: rgba(239, 68, 68, 0.28);
+  }
+  .live-btn-stop:hover {
+    background: rgba(255, 255, 255, 0.18);
   }
 
   .meetings-body {
