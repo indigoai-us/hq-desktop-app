@@ -7,7 +7,7 @@
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1421",
     "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "npm run build"
+    "beforeBuildCommand": "npm run build && node ../sidecar/recall-sdk-bridge/build.mjs"
   },
   "app": {
     "windows": [
@@ -52,6 +52,13 @@
       "icons/128x128@2x.png",
       "icons/icon.ico"
     ],
+    "resources": {
+      "../sidecar/recall-sdk-bridge/bridge.mjs": "recall-sdk-bridge/bridge.mjs",
+      "../sidecar/recall-sdk-bridge/recording-tracker.mjs": "recall-sdk-bridge/recording-tracker.mjs",
+      "../sidecar/recall-sdk-bridge/package.json": "recall-sdk-bridge/package.json",
+      "../sidecar/recall-sdk-bridge/node_modules": "recall-sdk-bridge/node_modules"
+    },
+    "externalBin": ["binaries/recall-desktop-sdk"],
     "windows": {
       "webviewInstallMode": {
         "type": "embedBootstrapper",
