@@ -43,17 +43,18 @@ use tauri::{AppHandle, Emitter};
 
 use crate::commands::cognito;
 use crate::commands::config::{ensure_machine_id, HqConfig, MenubarPrefs};
-use crate::commands::vault_client::VaultClient;
 use crate::commands::process::{
     cancel_process_impl, deregister_process, is_registered, run_process_impl, try_register_handle,
     ProcessEvent, SpawnArgs,
 };
 use crate::commands::status::{journal_for_sync_complete, write_journal};
+use crate::commands::vault_client::VaultClient;
 use crate::events::{
     SyncAllCompleteEvent, SyncCompanyProvisionedEvent, SyncCompleteEvent, SyncErrorEvent,
     SyncEvent, EVENT_SYNC_ALL_COMPLETE, EVENT_SYNC_AUTH_ERROR, EVENT_SYNC_COMPANY_PROVISIONED,
-    EVENT_SYNC_COMPLETE, EVENT_SYNC_ERROR, EVENT_SYNC_FANOUT_PLAN, EVENT_SYNC_NEW_FILES,
-    EVENT_SYNC_PLAN, EVENT_SYNC_PROGRESS, EVENT_SYNC_SETUP_NEEDED,
+    EVENT_SYNC_COMPLETE, EVENT_SYNC_DELETE_REFUSED_STALE_ETAG, EVENT_SYNC_ERROR,
+    EVENT_SYNC_FANOUT_PLAN, EVENT_SYNC_NEW_FILES, EVENT_SYNC_PLAN, EVENT_SYNC_PROGRESS,
+    EVENT_SYNC_SETUP_NEEDED,
 };
 use crate::util::logfile::log;
 use crate::util::paths;
@@ -153,7 +154,64 @@ const SIGKILL_DELAY: Duration = Duration::from_secs(5);
 /// first menubar sync ran on a behind machine and would erase legacy/
 /// filtered paths when the local hqRoot's ignore filter rejected them.
 /// See indigoai-us/hq#142 + the 2026-05-14 incident report.
-pub const HQ_CLOUD_VERSION: &str = "~5.19.0";
+///
+/// 5.24.0 (2026-05-21) ships two related fixes, both motivated by a
+/// real incident where a user's personal vault accumulated ~2,600 zombie
+/// objects (~1,700 from old HQ layouts + ~900 from conflict-mirror
+/// pollution + 196 cross-scope `companies/{slug}/**` leaks).
+///   - Conflict-mirror exclusion in the push walker AND delete plan:
+///     `*.conflict-<ISO>-<hash>.<ext>` files never round-trip to S3.
+///     Active for ALL policies, not just the new default. Stops new
+///     litter accretion immediately.
+///   - `currency-gated` delete-propagation policy (opt-in in 5.24,
+///     scheduled default in 5.25). Per-file HEAD + ETag verification
+///     before any local-delete propagates. Strictly safer than
+///     `owned-only` because it lets files arriving via `/update-hq`
+///     (direction:"down") be cleanly deleted by the device that wrote
+///     them, as long as no other device touched them since.
+///   - Plus: new `filesTombstoned` / `filesRefusedStale` counters on
+///     ShareResult, a `delete-refused-stale-etag` event variant, and
+///     the `HQ_SYNC_DELETE_POLICY=currency-gated|owned-only|all` env
+///     override honored by `sync-runner`.
+/// See indigoai-us/hq-cloud#14 + 2026-05-21 reconcile incident report.
+///
+/// 5.25.0 (2026-05-21) ships two more fixes building on 5.24:
+///   - PERSONAL_VAULT_DEFAULT_EXCLUSIONS — a hard exclusion list applied
+///     when personalMode is true, complementing the existing top-level
+///     filter (PERSONAL_VAULT_EXCLUDED_TOP_LEVEL) and the ephemeral
+///     conflict-mirror filter (EPHEMERAL_PATH_PATTERN). Categories:
+///     secrets (.env, .env.*, .mcp.json), machine-local state (.beads/,
+///     .obsidian/, .vercel/, .cache_*), update-flow scratch (output/,
+///     _legacy-*), pre-5.24 conflict mirror dir (.hq-conflicts/), OS /
+///     build cruft (.DS_Store, node_modules/, dist/, .next/, build/).
+///     Wired into both the upload walk and the delete-plan walk so
+///     existing journaled entries matching a new exclusion get orphaned
+///     (no DELETE issued). Emits a single `personal-vault-out-of-policy`
+///     event per share() call when count > 0.
+///   - Default delete policy flipped owned-only -> currency-gated (the
+///     5.24-promised flip after the soak window). Rollback knob:
+///     HQ_SYNC_DELETE_POLICY=owned-only.
+///   - New CLI flag `--skip-personal` + env `HQ_SYNC_SKIP_PERSONAL=1`
+///     drops the personal target from the --companies fanout. Used by
+///     the menubar's "Sync personal vault" Settings toggle.
+/// See indigoai-us/hq-cloud#15.
+///
+/// 5.26.0 (2026-05-22) adds the event-driven push watcher (`--event-push`,
+/// gated to @getindigo.ai in the menubar; default poll-only otherwise).
+/// 5.27.0 fixes the watcher never firing for `--companies` edits; 5.28.0
+/// replaces the per-directory chokidar watch with a single recursive watch;
+/// 5.29.0 (2026-05-22) stamps `direction` ("up"/"down") on per-file progress
+/// events so the menubar's Recent Changes activity log can label each file
+/// uploaded vs downloaded. 5.31.0 returns the downloaded object's S3
+/// `created-by` metadata and stamps it as `author` on download `progress`
+/// events, so the Recent Changes activity log can attribute downloaded files
+/// to whoever uploaded them.
+///
+/// US-004/005 parity note: the fork pins ~5.38.0 (set in US-001), which is past
+/// the 5.24–5.31 line above — those runner fixes (the `direction` stamp and the
+/// `author` metadata the Activity Log below relies on) are already in the pinned
+/// runner. Only the menubar-side plumbing is ported here.
+pub const HQ_CLOUD_VERSION: &str = "~5.38.0";
 
 /// Package name for the runner. Used by both the spawn site below and the
 /// startup prewarm. Paired with `HQ_CLOUD_VERSION` to form the full
@@ -221,10 +279,7 @@ fn report_sync_error(app: &AppHandle, payload: SyncErrorEvent) -> tauri::Result<
             scope.set_tag("path", &payload.path);
         },
         || {
-            sentry::capture_message(
-                &format!("[sync] {}", payload.message),
-                sentry::Level::Error,
-            );
+            sentry::capture_message(&format!("[sync] {}", payload.message), sentry::Level::Error);
         },
     );
     app.emit(EVENT_SYNC_ERROR, payload)
@@ -252,12 +307,8 @@ fn resolve_hq_folder_path() -> Result<String, String> {
     let config = crate::commands::config::read_hq_config_lenient()?;
 
     let hq_folder = paths::resolve_hq_folder(
-        config
-            .as_ref()
-            .and_then(|c| c.hq_folder_path.as_deref()),
-        menubar_prefs
-            .as_ref()
-            .and_then(|p| p.hq_path.as_deref()),
+        config.as_ref().and_then(|c| c.hq_folder_path.as_deref()),
+        menubar_prefs.as_ref().and_then(|p| p.hq_path.as_deref()),
     );
 
     Ok(hq_folder.to_string_lossy().to_string())
@@ -311,8 +362,8 @@ where
     F: FnOnce(String) -> Fut,
     Fut: std::future::Future<Output = Result<cognito::CognitoTokens, String>>,
 {
-    let mut tokens = tokens_result?
-        .ok_or_else(|| "Not signed in — please complete setup first".to_string())?;
+    let mut tokens =
+        tokens_result?.ok_or_else(|| "Not signed in — please complete setup first".to_string())?;
     if cognito::is_expired(&tokens) {
         let refreshed = refresh_fn(tokens.refresh_token).await?;
         tokens = refreshed;
@@ -337,7 +388,7 @@ pub async fn resolve_jwt() -> Result<String, String> {
 ///
 /// The command line we spawn looks like:
 /// ```text
-/// npx -y --package=@indigoai-us/hq-cloud@~5.19.0 hq-sync-runner \
+/// npx -y --package=@indigoai-us/hq-cloud@~5.38.0 hq-sync-runner \
 ///   --companies --direction both --on-conflict keep --hq-root <path>
 /// ```
 ///
@@ -364,7 +415,12 @@ pub async fn resolve_jwt() -> Result<String, String> {
 ///
 /// `HQ_ROOT` is also set in the child env as defense-in-depth (matches the
 /// pre-Phase-7 pattern).
-pub fn build_sync_spawn_args(hq_folder_path: &str) -> SpawnArgs {
+///
+/// `personal_sync_enabled` toggles the personal-vault target in the fanout.
+/// When false, `--skip-personal` is appended so the spawned runner's
+/// `resolveSkipPersonal()` drops the personal slot. Sourced from
+/// `MenubarPrefs.personal_sync_enabled` (defaults to true in get_settings).
+pub fn build_sync_spawn_args(hq_folder_path: &str, personal_sync_enabled: bool) -> SpawnArgs {
     let mut env = HashMap::new();
     env.insert("HQ_ROOT".to_string(), hq_folder_path.to_string());
     // The runner is a Node script with `#!/usr/bin/env node`, and npx itself
@@ -373,6 +429,25 @@ pub fn build_sync_spawn_args(hq_folder_path: &str) -> SpawnArgs {
     // `paths::child_path`.
     env.insert("PATH".to_string(), paths::child_path());
 
+    let mut args = vec![
+        "-y".to_string(),
+        format!("--package={}@{}", HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION),
+        RUNNER_BIN.to_string(),
+        "--companies".to_string(),
+        "--direction".to_string(),
+        "both".to_string(),
+        "--on-conflict".to_string(),
+        "keep".to_string(),
+        "--hq-root".to_string(),
+        hq_folder_path.to_string(),
+    ];
+    if !personal_sync_enabled {
+        // Append rather than insert mid-args so reading the joined command
+        // line in logs / Sentry tags is predictable (toggle state shows at
+        // the end, after the canonical args).
+        args.push("--skip-personal".to_string());
+    }
+
     SpawnArgs {
         // Resolve npx via known install prefixes + login-shell PATH fallback.
         // See `paths::resolve_bin` — GUI-launched Tauri apps get a minimal
@@ -380,18 +455,7 @@ pub fn build_sync_spawn_args(hq_folder_path: &str) -> SpawnArgs {
         // (which lives in /opt/homebrew/bin or ~/.npm-global/bin, not in
         // /usr/bin). npx is part of npm, which is a listed installer prereq.
         cmd: paths::resolve_bin("npx"),
-        args: vec![
-            "-y".to_string(),
-            format!("--package={}@{}", HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION),
-            RUNNER_BIN.to_string(),
-            "--companies".to_string(),
-            "--direction".to_string(),
-            "both".to_string(),
-            "--on-conflict".to_string(),
-            "keep".to_string(),
-            "--hq-root".to_string(),
-            hq_folder_path.to_string(),
-        ],
+        args,
         cwd: None,
         env: Some(env),
     }
@@ -417,8 +481,7 @@ fn is_entity_not_yet_provisioned(err: &SyncErrorEvent) -> bool {
         return false;
     }
     let msg = err.message.to_lowercase();
-    msg.contains("no bucket provisioned")
-        || (msg.contains("entity") && msg.contains("not found"))
+    msg.contains("no bucket provisioned") || (msg.contains("entity") && msg.contains("not found"))
 }
 
 /// Classifies a per-company error event. Returns `Some(SyncCompleteEvent)` when
@@ -443,6 +506,14 @@ fn classify_error_event(payload: &SyncErrorEvent) -> Option<SyncCompleteEvent> {
         files_skipped: 0,
         conflicts: 0,
         aborted: false,
+        // Synthetic complete for a not-yet-provisioned company: nothing was
+        // ever on remote, nothing was journaled, so tombstone + refused-
+        // stale counts are zero by construction. Use None (Option<u32>)
+        // rather than Some(0) so the wire shape matches what a pre-5.24
+        // runner would emit — keeps the renderer's "is this field
+        // populated?" branch the cleaner one.
+        files_tombstoned: None,
+        files_refused_stale: None,
     })
 }
 
@@ -453,7 +524,13 @@ fn classify_error_event(payload: &SyncErrorEvent) -> Option<SyncCompleteEvent> {
 /// `all-complete`, the aggregated totals are persisted to
 /// `{hq_folder}/.hq-sync-journal.json` so `get_sync_status` surfaces a real
 /// `lastSyncAt` and conflict count instead of "never" / zero.
-fn handle_sync_line(app: &AppHandle, hq_folder: &str, totals: &Mutex<RunTotals>, jwt: &str, line: &str) {
+fn handle_sync_line(
+    app: &AppHandle,
+    hq_folder: &str,
+    totals: &Mutex<RunTotals>,
+    jwt: &str,
+    line: &str,
+) {
     // The runner can emit blank lines at process teardown. Skip those cheaply
     // rather than logging a parse error.
     let trimmed = line.trim();
@@ -465,7 +542,10 @@ fn handle_sync_line(app: &AppHandle, hq_folder: &str, totals: &Mutex<RunTotals>,
         Ok(e) => e,
         Err(_e) => {
             #[cfg(debug_assertions)]
-            eprintln!("[sync] skipping unparseable line: {} | line: {}", _e, trimmed);
+            eprintln!(
+                "[sync] skipping unparseable line: {} | line: {}",
+                _e, trimmed
+            );
             return;
         }
     };
@@ -493,7 +573,12 @@ fn handle_sync_line(app: &AppHandle, hq_folder: &str, totals: &Mutex<RunTotals>,
         // older runner that doesn't emit Plan, this branch is simply never
         // taken — the existing TOTALS-based denominator stays authoritative.
         SyncEvent::Plan(payload) => app.emit(EVENT_SYNC_PLAN, payload.clone()),
-        SyncEvent::Progress(payload) => app.emit(EVENT_SYNC_PROGRESS, payload.clone()),
+        SyncEvent::Progress(payload) => {
+            // Record into the session activity log (uploaded/downloaded with a
+            // timestamp) and live-append to the Recent Changes window if open.
+            crate::commands::activity::record_progress(app, payload);
+            app.emit(EVENT_SYNC_PROGRESS, payload.clone())
+        }
         SyncEvent::Error(payload) => {
             // `classify_error_event` is the test-covered classification boundary;
             // the dispatch logic here (Some → COMPLETE, None → ERROR) is intentionally
@@ -520,7 +605,22 @@ fn handle_sync_line(app: &AppHandle, hq_folder: &str, totals: &Mutex<RunTotals>,
             }
         }
         SyncEvent::Complete(payload) => app.emit(EVENT_SYNC_COMPLETE, payload.clone()),
-        SyncEvent::NewFiles(payload) => app.emit(EVENT_SYNC_NEW_FILES, payload.clone()),
+        // hq-cloud ≥5.24.0. Emitted only by the `currency-gated` policy;
+        // pre-5.24 runners silently never emit this and the branch is dead.
+        // Forward to the renderer as a warning row — the file was kept on
+        // remote because peer drift or a missing journal etag made the
+        // delete unsafe to propagate.
+        SyncEvent::DeleteRefusedStaleEtag(payload) => {
+            app.emit(EVENT_SYNC_DELETE_REFUSED_STALE_ETAG, payload.clone())
+        }
+        SyncEvent::NewFiles(payload) => {
+            // Reconcile into the activity log: mark these paths as "added" (vs
+            // the default "updated") and back-fill author from `addedBy` where
+            // the per-file progress event carried none. Lands after the rows'
+            // progress events, so this back-fills + re-emits to the open window.
+            crate::commands::activity::record_new_files(app, payload);
+            app.emit(EVENT_SYNC_NEW_FILES, payload.clone())
+        }
         SyncEvent::AllComplete(payload) => {
             // Persist summary journal before emitting — the frontend's
             // SyncStats refresh reads this file on popover mount.
@@ -544,7 +644,8 @@ fn handle_sync_line(app: &AppHandle, hq_folder: &str, totals: &Mutex<RunTotals>,
             tauri::async_runtime::spawn(async move {
                 let _ = crate::commands::telemetry::send_telemetry_if_opted_in(
                     &app_clone, &hq, &jwt_owned,
-                ).await;
+                )
+                .await;
             });
             // Reconcile manifest with on-disk reality. The runner downloads
             // cloud-only companies into `companies/{slug}/` as a side effect of
@@ -561,16 +662,19 @@ fn handle_sync_line(app: &AppHandle, hq_folder: &str, totals: &Mutex<RunTotals>,
                         return;
                     }
                 };
-                let vault = crate::commands::vault_client::VaultClient::new(
-                    &vault_url,
-                    &jwt_for_reconcile,
-                );
+                let vault =
+                    crate::commands::vault_client::VaultClient::new(&vault_url, &jwt_for_reconcile);
                 match crate::commands::workspaces::reconcile_manifest_after_sync(
                     std::path::Path::new(&hq_for_reconcile),
                     &vault,
-                ).await {
+                )
+                .await
+                {
                     Ok(0) => {} // nothing new — common case, stay quiet
-                    Ok(n) => log("sync", &format!("reconcile: added {n} new manifest entries")),
+                    Ok(n) => log(
+                        "sync",
+                        &format!("reconcile: added {n} new manifest entries"),
+                    ),
                     Err(e) => log("sync", &format!("reconcile failed (non-fatal): {e}")),
                 }
             });
@@ -631,6 +735,28 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
         }
     };
 
+    // Resolve the personal-sync toggle ONCE for the duration of this sync
+    // run — same flag drives (a) whether we run the personal first-push pass
+    // and (b) whether `--skip-personal` gets appended to the spawned runner.
+    // Defaults to true (preserve pre-5.25 behavior) when get_settings fails,
+    // since a stale-prefs read shouldn't accidentally disable a feature the
+    // user expects to be on. The setting can be flipped at any time from
+    // Settings; next sync picks it up on the next read here.
+    let personal_sync_enabled: bool = match crate::commands::settings::get_settings().await {
+        Ok(prefs) => prefs.personal_sync_enabled.unwrap_or(true),
+        Err(e) => {
+            log(
+                "sync",
+                &format!("get_settings failed; assuming personal_sync_enabled=true: {e}"),
+            );
+            true
+        }
+    };
+    log(
+        "sync",
+        &format!("personal_sync_enabled={}", personal_sync_enabled),
+    );
+
     // Resolve vault URL from ~/.hq/config.json
     let vault_api_url = match resolve_vault_api_url() {
         Ok(u) => {
@@ -673,10 +799,12 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
             crate::commands::workspaces::discover_local_companies(&prep_root);
         let slugs: Vec<String> = local_companies.iter().map(|e| e.slug.clone()).collect();
         let prep_start = std::time::Instant::now();
-        let to_transfer =
-            crate::commands::personal::count_files_to_transfer(&prep_root, &slugs);
+        let to_transfer = crate::commands::personal::count_files_to_transfer(&prep_root, &slugs);
         let elapsed = prep_start.elapsed().as_millis();
-        log("sync", &format!("preparing: {to_transfer} files to transfer ({elapsed}ms)"));
+        log(
+            "sync",
+            &format!("preparing: {to_transfer} files to transfer ({elapsed}ms)"),
+        );
         let _ = app.emit(
             crate::events::EVENT_SYNC_TOTALS,
             serde_json::json!({ "totalFiles": to_transfer }),
@@ -705,7 +833,10 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
             c
         }
         Err(e) => {
-            log("sync", &format!("BAIL: provision_missing_companies failed: {e}"));
+            log(
+                "sync",
+                &format!("BAIL: provision_missing_companies failed: {e}"),
+            );
             deregister_process(SYNC_HANDLE);
             return Err(e);
         }
@@ -733,7 +864,10 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
         )
         .await
         {
-            log("sync", &format!("first_push failed for {}: {e}", company.slug));
+            log(
+                "sync",
+                &format!("first_push failed for {}: {e}", company.slug),
+            );
             #[cfg(debug_assertions)]
             eprintln!("[sync] first_push failed for {}: {}", company.slug, e);
             let _ = app.emit(
@@ -748,33 +882,44 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
     }
 
     // Personal first-push: provision + upload personal HQ files via /sts/vend-self.
-    log("sync", "phase: personal first-push");
-    if let Err(e) = crate::commands::personal::ensure_personal_bucket_and_first_push(
-        &app,
-        &vault,
-        &std::path::PathBuf::from(&hq_folder_path),
-    )
-    .await
-    {
-        log("sync", &format!("personal first-push failed: {e}"));
-        #[cfg(debug_assertions)]
-        eprintln!("[sync] personal first-push failed: {}", e);
-        // NOT captured to Sentry: personal first-push happens before the
-        // runner spawns, so it has no stderr breadcrumb context, and the
-        // exit-time `report_sync_error` capture below won't fire because we
-        // continue past this and let the runner take over. If this path ever
-        // becomes a recurring silent failure, add an explicit capture here.
-        let _ = app.emit(
-            EVENT_SYNC_ERROR,
-            SyncErrorEvent {
-                company: None,
-                path: "personal".to_string(),
-                message: format!("personal first-push failed: {e}"),
-            },
+    // Skipped entirely when the user has flipped off "Sync personal vault" —
+    // running it anyway would auto-provision a bucket the user explicitly
+    // doesn't want populated, then upload everything just for the runner to
+    // immediately re-walk the same tree with `--skip-personal`.
+    if personal_sync_enabled {
+        log("sync", "phase: personal first-push");
+        if let Err(e) = crate::commands::personal::ensure_personal_bucket_and_first_push(
+            &app,
+            &vault,
+            &std::path::PathBuf::from(&hq_folder_path),
+        )
+        .await
+        {
+            log("sync", &format!("personal first-push failed: {e}"));
+            #[cfg(debug_assertions)]
+            eprintln!("[sync] personal first-push failed: {}", e);
+            // NOT captured to Sentry: personal first-push happens before the
+            // runner spawns, so it has no stderr breadcrumb context, and the
+            // exit-time `report_sync_error` capture below won't fire because we
+            // continue past this and let the runner take over. If this path ever
+            // becomes a recurring silent failure, add an explicit capture here.
+            let _ = app.emit(
+                EVENT_SYNC_ERROR,
+                SyncErrorEvent {
+                    company: None,
+                    path: "personal".to_string(),
+                    message: format!("personal first-push failed: {e}"),
+                },
+            );
+        }
+    } else {
+        log(
+            "sync",
+            "phase: personal first-push skipped (personal_sync_enabled=false)",
         );
     }
 
-    let spawn_args = build_sync_spawn_args(&hq_folder_path);
+    let spawn_args = build_sync_spawn_args(&hq_folder_path, personal_sync_enabled);
     log(
         "sync",
         &format!(
@@ -820,7 +965,13 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
                 log("runner.stdout", &line);
                 #[cfg(debug_assertions)]
                 eprintln!("[sync stdout] {}", line);
-                handle_sync_line(&app_bg, &hq_folder_for_handler, &totals, &jwt_for_handler, &line);
+                handle_sync_line(
+                    &app_bg,
+                    &hq_folder_for_handler,
+                    &totals,
+                    &jwt_for_handler,
+                    &line,
+                );
             }
             ProcessEvent::Stderr(line) => {
                 // Always log runner stderr — when sync gets stuck this is the
@@ -857,7 +1008,10 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
                 success,
             } => {
                 let exit_desc = describe_exit(code, signal);
-                log("sync", &format!("runner exited: success={} {}", success, exit_desc));
+                log(
+                    "sync",
+                    &format!("runner exited: success={} {}", success, exit_desc),
+                );
                 // The runner exits 0 for recoverable conditions (setup-needed,
                 // auth-error) — those surface as ndjson events before exit, so
                 // the frontend already knows. A non-zero exit means the runner
@@ -880,10 +1034,7 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
                     // sits in "syncing" forever and the top SyncStats card
                     // shows "never" while the personal first-push (which DID
                     // run) updated everything else.
-                    let saw = totals
-                        .lock()
-                        .map(|t| t.all_complete_seen)
-                        .unwrap_or(false);
+                    let saw = totals.lock().map(|t| t.all_complete_seen).unwrap_or(false);
                     if !saw {
                         log("sync", "runner exited without AllComplete — synthesizing");
                         let synthetic = SyncEvent::AllComplete(SyncAllCompleteEvent {
@@ -892,8 +1043,8 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
                             bytes_downloaded: 0,
                             errors: Vec::new(),
                         });
-                        let line = serde_json::to_string(&synthetic)
-                            .unwrap_or_else(|_| "{}".to_string());
+                        let line =
+                            serde_json::to_string(&synthetic).unwrap_or_else(|_| "{}".to_string());
                         handle_sync_line(
                             &app_bg,
                             &hq_folder_for_handler,
@@ -1040,21 +1191,28 @@ mod tests {
 
     #[test]
     fn test_build_sync_spawn_args_cmd() {
-        let args = build_sync_spawn_args("/Users/test/HQ");
+        let args = build_sync_spawn_args("/Users/test/HQ", true);
         // `resolve_bin` may return an absolute path (e.g.
-        // `/opt/homebrew/bin/npx`) on a dev box with npm installed, or the
-        // bare name on a CI box without it. Either way, the trailing file
-        // component must be `npx`.
-        assert!(
-            args.cmd == "npx" || args.cmd.ends_with("/npx"),
-            "expected cmd to be `npx` or `*/npx`, got `{}`",
+        // `/opt/homebrew/bin/npx` or `C:\...\bin\npx.cmd`) on a dev box with
+        // npm installed, or the bare name on a CI box without it. Compare the
+        // trailing file-name component so the OS path separator and the
+        // Windows `.cmd`/`.exe` suffix don't matter.
+        let file_name = std::path::Path::new(&args.cmd)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or(args.cmd.as_str());
+        let stem = file_name.strip_suffix(".cmd").unwrap_or(file_name);
+        let stem = stem.strip_suffix(".exe").unwrap_or(stem);
+        assert_eq!(
+            stem, "npx",
+            "expected cmd's file name to be `npx` (any extension), got `{}`",
             args.cmd
         );
     }
 
     #[test]
     fn test_build_sync_spawn_args_flags() {
-        let args = build_sync_spawn_args("/Users/test/HQ");
+        let args = build_sync_spawn_args("/Users/test/HQ", true);
         assert_eq!(
             args.args,
             vec![
@@ -1072,13 +1230,46 @@ mod tests {
         );
     }
 
+    /// Personal-sync toggle ON (default) must NOT include `--skip-personal`.
+    /// Pinning the negative explicitly so a future regression that toggles
+    /// the flag in the wrong direction (e.g. inverted check) surfaces here.
+    #[test]
+    fn test_build_sync_spawn_args_omits_skip_personal_when_enabled() {
+        let args = build_sync_spawn_args("/Users/test/HQ", true);
+        assert!(
+            !args.args.iter().any(|a| a == "--skip-personal"),
+            "expected NO `--skip-personal` when personal_sync_enabled=true, got: {:?}",
+            args.args
+        );
+    }
+
+    /// Personal-sync toggle OFF appends `--skip-personal` at the end so the
+    /// spawned hq-sync-runner drops the personal slot from its fanout plan
+    /// (resolveSkipPersonal in sync-runner.ts treats the flag as truthy via
+    /// the parsed-args path, equivalent to HQ_SYNC_SKIP_PERSONAL=1).
+    #[test]
+    fn test_build_sync_spawn_args_appends_skip_personal_when_disabled() {
+        let args = build_sync_spawn_args("/Users/test/HQ", false);
+        assert_eq!(
+            args.args.last().map(String::as_str),
+            Some("--skip-personal"),
+            "expected `--skip-personal` as last arg when personal_sync_enabled=false, got: {:?}",
+            args.args
+        );
+        // The canonical args must still be present in the same order — the
+        // toggle should ONLY append, not reorder or omit anything.
+        assert!(args.args.contains(&"--companies".to_string()));
+        assert!(args.args.contains(&"--direction".to_string()));
+        assert!(args.args.contains(&"both".to_string()));
+    }
+
     /// Sync Now must use `--on-conflict keep` so a divergent local file
     /// preserves the user's edits instead of aborting the company-wide sync.
     /// Regressing to `abort` would cause a single conflicting file to halt
     /// every other file's progress on the affected company.
     #[test]
     fn test_build_sync_spawn_args_on_conflict_is_keep() {
-        let args = build_sync_spawn_args("/tmp");
+        let args = build_sync_spawn_args("/tmp", true);
         let joined = args.args.join(" ");
         assert!(
             joined.contains("--on-conflict keep"),
@@ -1091,7 +1282,7 @@ mod tests {
     /// Guards against a future refactor silently dropping back to pull-only.
     #[test]
     fn test_build_sync_spawn_args_opts_into_direction_both() {
-        let args = build_sync_spawn_args("/tmp");
+        let args = build_sync_spawn_args("/tmp", true);
         let joined = args.args.join(" ");
         assert!(
             joined.contains("--direction both"),
@@ -1107,7 +1298,7 @@ mod tests {
     /// obvious in CI, not at runtime on users' machines.
     #[test]
     fn test_build_sync_spawn_args_pins_hq_cloud_package() {
-        let args = build_sync_spawn_args("/tmp");
+        let args = build_sync_spawn_args("/tmp", true);
         let expected_pin = format!("--package={}@{}", HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION);
         assert!(
             args.args.contains(&expected_pin),
@@ -1130,7 +1321,7 @@ mod tests {
 
     #[test]
     fn test_build_sync_spawn_args_env_sets_hq_root() {
-        let args = build_sync_spawn_args("/Users/test/HQ");
+        let args = build_sync_spawn_args("/Users/test/HQ", true);
         let env = args.env.unwrap();
         assert_eq!(env.get("HQ_ROOT"), Some(&"/Users/test/HQ".to_string()));
         assert_eq!(env.len(), 2);
@@ -1142,7 +1333,7 @@ mod tests {
         // US-008 wires the full managed-toolchain PATH; for now `paths::child_path`
         // just forwards the parent PATH. Assert PATH is set and non-empty —
         // US-008 strengthens this to a managed-toolchain containment check.
-        let args = build_sync_spawn_args("C:\\tmp");
+        let args = build_sync_spawn_args("C:\\tmp", true);
         let env = args.env.unwrap();
         let path = env
             .get("PATH")
@@ -1152,7 +1343,7 @@ mod tests {
 
     #[test]
     fn test_build_sync_spawn_args_no_cwd() {
-        let args = build_sync_spawn_args("/any/path");
+        let args = build_sync_spawn_args("/any/path", true);
         assert!(args.cwd.is_none());
     }
 
@@ -1239,7 +1430,8 @@ mod tests {
 
     #[test]
     fn test_parse_error_ndjson() {
-        let line = r#"{"type":"error","company":"indigo","path":"docs/x.md","message":"Access denied"}"#;
+        let line =
+            r#"{"type":"error","company":"indigo","path":"docs/x.md","message":"Access denied"}"#;
         let event: SyncEvent = serde_json::from_str(line).unwrap();
         match event {
             SyncEvent::Error(e) => {
@@ -1414,6 +1606,8 @@ mod tests {
             files_skipped: 0,
             conflicts,
             aborted,
+            files_tombstoned: None,
+            files_refused_stale: None,
         })
     }
 
@@ -1438,6 +1632,9 @@ mod tests {
             path: "y".to_string(),
             bytes: 0,
             message: None,
+            direction: None,
+            deleted: None,
+            author: None,
         }));
         assert_eq!(t.conflicts, 0);
     }
@@ -1534,11 +1731,7 @@ mod tests {
     #[test]
     fn test_not_provisioned_file_level_error_excluded() {
         // File-level errors on real paths must not be swallowed.
-        let err = make_company_error(
-            Some("acme"),
-            "docs/secret.md",
-            "not found",
-        );
+        let err = make_company_error(Some("acme"), "docs/secret.md", "not found");
         assert!(!is_entity_not_yet_provisioned(&err));
     }
 

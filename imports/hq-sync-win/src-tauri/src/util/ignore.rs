@@ -1,15 +1,33 @@
 // companies/indigo/repos/hq-sync/src-tauri/src/util/ignore.rs
 // Items here are unused in this step but consumed by later sync/upload steps.
 #![allow(dead_code)]
-use std::path::{Path, PathBuf};
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
+use std::path::{Path, PathBuf};
 
 pub const DEFAULT_IGNORES: &[&str] = &[
     // VCS + OS
-    ".git/", ".git", ".DS_Store", "Thumbs.db",
+    ".git/",
+    ".git",
+    ".DS_Store",
+    "Thumbs.db",
+    // Claude Code per-Agent worktree sandboxes. Each `agent-<id>/` is a
+    // git worktree snapshot of the HQ root containing thousands of files
+    // (companies/, core/, conflict artifacts) — purely local, never
+    // authored content, never useful in the cloud. Drift exclusion lives
+    // alongside in hq_core_drift::excluded_scope_paths().
+    ".claude/worktrees/",
+    ".claude/worktrees",
     // Node / JS
-    "node_modules/", "dist/", "build/", ".next/", ".nuxt/",
-    ".svelte-kit/", ".turbo/", ".parcel-cache/", ".vite/", "coverage/",
+    "node_modules/",
+    "dist/",
+    "build/",
+    ".next/",
+    ".nuxt/",
+    ".svelte-kit/",
+    ".turbo/",
+    ".parcel-cache/",
+    ".vite/",
+    "coverage/",
     // Company-local: secrets/config, datasets, prompt libraries — all stay
     // on-disk and never round-trip through the company vault bucket. Anchored
     // to /companies/*/ so hq-root data/, settings/, workers/ remain in-scope
@@ -24,18 +42,28 @@ pub const DEFAULT_IGNORES: &[&str] = &[
     // Rust / Tauri
     "target/",
     // Python
-    "__pycache__/", "*.pyc", ".pytest_cache/", ".mypy_cache/",
-    ".ruff_cache/", ".venv/", "venv/",
+    "__pycache__/",
+    "*.pyc",
+    ".pytest_cache/",
+    ".mypy_cache/",
+    ".ruff_cache/",
+    ".venv/",
+    "venv/",
     // Go / JVM / other
-    "vendor/", "out/", "*.class",
+    "vendor/",
+    "out/",
+    "*.class",
     // Generic caches / temp
-    ".cache/", "tmp/", ".tmp/",
+    ".cache/",
+    "tmp/",
+    ".tmp/",
     // HQ sync internal state (never round-trip these). The `.hq-*` wildcard
     // covers `.hq-sync.pid`, `.hq-sync-journal.json`, `.hq-sync-state.json`,
     // `.hq-embeddings-pending.json`, and any future internal-state file. The
     // `.hqignore` / `.hqsyncignore` / `.hqinclude` config files don't match
     // (no hyphen) and the `.hq/` directory is unaffected.
-    "*.pid", ".hq-*",
+    "*.pid",
+    ".hq-*",
     "modules.lock",
     // hq-root identity marker — discovered locally per-machine, never synced.
     "core.yaml",
@@ -49,7 +77,8 @@ pub const DEFAULT_IGNORES: &[&str] = &[
     // HQ repos directory (managed separately, not synced)
     "repos/",
     // Secrets / env
-    ".env", ".env.*",
+    ".env",
+    ".env.*",
     // Re-include .gitkeep placeholders anywhere — even inside the
     // `/companies/*/{settings,data,workers}/**` exclusions above. Without
     // this, a freshly-provisioned company's empty scaffold dirs never reach
@@ -96,7 +125,10 @@ impl IgnoreFilter {
             Ok(r) => r,
             Err(_) => return true, // outside root — matches TS behavior
         };
-        !self.matcher.matched_path_or_any_parents(rel, /*is_dir*/ false).is_ignore()
+        !self
+            .matcher
+            .matched_path_or_any_parents(rel, /*is_dir*/ false)
+            .is_ignore()
     }
 
     pub fn within_size_limit(abs_path: &Path) -> bool {

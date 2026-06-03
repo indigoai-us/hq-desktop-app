@@ -36,15 +36,15 @@ use std::os::windows::io::AsRawHandle;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 #[cfg(target_os = "windows")]
+use windows::core::PCWSTR;
+#[cfg(target_os = "windows")]
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 #[cfg(target_os = "windows")]
 use windows::Win32::System::JobObjects::{
-    AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject,
-    TerminateJobObject, JobObjectExtendedLimitInformation,
-    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+    SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
-#[cfg(target_os = "windows")]
-use windows::core::PCWSTR;
 
 // CREATE_NO_WINDOW from windows-sys / WinAPI process creation flags.
 // Hides the console window for spawned CLI tools. Kept as a literal so
@@ -173,7 +173,6 @@ pub fn deregister_process(handle: &str) {
                 }
             }
         }
-        return;
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -181,6 +180,8 @@ pub fn deregister_process(handle: &str) {
     }
 }
 
+// Retained for parity with upstream; not yet wired on the Windows fork.
+#[allow(dead_code)]
 pub fn lookup_pid(handle: &str) -> Option<u32> {
     process_registry()
         .lock()
@@ -264,7 +265,9 @@ where
     F: FnMut(ProcessEvent),
 {
     let mut cmd = Command::new(&spawn.cmd);
-    cmd.args(&spawn.args).stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.args(&spawn.args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
 
     // CREATE_NO_WINDOW: stop spawned CLIs from flashing a console window
     // when the tray app launches them. The reader threads consume the
@@ -324,7 +327,10 @@ where
 
     enum ReaderMsg {
         Event(ProcessEvent),
-        Done { stream: &'static str, err: Option<String> },
+        Done {
+            stream: &'static str,
+            err: Option<String>,
+        },
     }
 
     let (tx, rx) = mpsc::channel::<ReaderMsg>();
@@ -348,7 +354,10 @@ where
                 }
             }
         }
-        let _ = tx_stdout.send(ReaderMsg::Done { stream: "stdout", err });
+        let _ = tx_stdout.send(ReaderMsg::Done {
+            stream: "stdout",
+            err,
+        });
     });
 
     let tx_stderr = tx.clone();
@@ -370,7 +379,10 @@ where
                 }
             }
         }
-        let _ = tx_stderr.send(ReaderMsg::Done { stream: "stderr", err });
+        let _ = tx_stderr.send(ReaderMsg::Done {
+            stream: "stderr",
+            err,
+        });
     });
 
     drop(tx);
@@ -452,7 +464,7 @@ pub fn cancel_process_impl(handle: &str, _sigkill_delay: Duration) -> bool {
         // do from here without a HANDLE — the reader threads will drain
         // and run_process_impl will wait() normally. The user's cancel
         // request is recorded; the process just isn't killed.
-        return true;
+        true
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -502,10 +514,18 @@ pub fn spawn_process(app: AppHandle, args: SpawnArgs) -> Result<String, String> 
                     StderrEvent { line },
                 );
             }
-            ProcessEvent::Exit { code, signal, success } => {
+            ProcessEvent::Exit {
+                code,
+                signal,
+                success,
+            } => {
                 let _ = app.emit(
                     &format!("process://{}/exit", handle_bg),
-                    ExitEvent { code, signal, success },
+                    ExitEvent {
+                        code,
+                        signal,
+                        success,
+                    },
                 );
             }
         });
@@ -594,8 +614,20 @@ mod tests {
             let _ = run_process_impl(&h, &args, |_| {});
         });
 
-        // Give the spawn a moment so the job is assigned before we cancel.
-        thread::sleep(Duration::from_millis(500));
+        // Wait until run_process_impl has registered the handle (and, right
+        // after, assigned the job) rather than guessing with a fixed sleep —
+        // a blind delay races on a loaded CI box and makes mark_cancelled miss.
+        let reg_deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !is_registered(&handle) {
+            assert!(
+                std::time::Instant::now() < reg_deadline,
+                "process never registered within 10s"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+        // register_job_handle runs synchronously right after register_process
+        // on the spawn thread; a short beat lets that land before we cancel.
+        thread::sleep(Duration::from_millis(50));
 
         let start = std::time::Instant::now();
         let cancelled = cancel_process_impl(&handle, Duration::from_secs(5));

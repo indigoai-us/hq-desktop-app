@@ -185,8 +185,8 @@ pub async fn first_push_company(
         },
         expires_at: vend_result.expires_at,
     };
-    let payload_json = serde_json::to_string(&payload)
-        .map_err(|e| format!("serialize EntityContext: {e}"))?;
+    let payload_json =
+        serde_json::to_string(&payload).map_err(|e| format!("serialize EntityContext: {e}"))?;
 
     // Step 3: Spawn `hq sync push --creds-from-stdin --json ...`.
     //
@@ -359,19 +359,13 @@ pub async fn first_push_company(
             // is per-file (already resolved). Neither kills the run — log
             // for forensics and let the loop continue.
             other => {
-                log(
-                    "first-push-cli",
-                    &format!("event type={other}: {trimmed}"),
-                );
+                log("first-push-cli", &format!("event type={other}: {trimmed}"));
             }
         }
     }
 
     // Step 6: Wait for exit and reconcile.
-    let status = child
-        .wait()
-        .await
-        .map_err(|e| format!("wait child: {e}"))?;
+    let status = child.wait().await.map_err(|e| format!("wait child: {e}"))?;
 
     log(
         "first-push-cli",
@@ -496,9 +490,18 @@ mod tests {
         .to_string();
         let event: CliEvent = serde_json::from_str(&line).unwrap();
         assert_eq!(event.event_type, "complete");
-        assert_eq!(event.rest.get("filesUploaded").and_then(|v| v.as_u64()), Some(42));
-        assert_eq!(event.rest.get("filesSkipped").and_then(|v| v.as_u64()), Some(7));
-        assert_eq!(event.rest.get("aborted").and_then(|v| v.as_bool()), Some(false));
+        assert_eq!(
+            event.rest.get("filesUploaded").and_then(|v| v.as_u64()),
+            Some(42)
+        );
+        assert_eq!(
+            event.rest.get("filesSkipped").and_then(|v| v.as_u64()),
+            Some(7)
+        );
+        assert_eq!(
+            event.rest.get("aborted").and_then(|v| v.as_bool()),
+            Some(false)
+        );
     }
 
     /// `progress` event carries the `path` we surface to the UI as

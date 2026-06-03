@@ -21,8 +21,6 @@
 //!   POST   /v1/bot/invite                            — schedule a new bot
 //!   POST   /v1/bot/{botId}/cancel                    — cancel scheduled bot
 
-use std::sync::OnceLock;
-
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
@@ -32,54 +30,15 @@ use crate::util::client_info::build_client;
 
 // ── Feature flag ─────────────────────────────────────────────────────────────
 
-/// `@getindigo.ai` only for v1. Mirrors the hq-console gate. Lifted to a
-/// shared allowlist once the rollout widens.
-const ALLOWED_DOMAIN: &str = "@getindigo.ai";
-
-/// Cached per-session decision so we don't re-decode the id_token on every
-/// popover open. The token is rotated on refresh but the email claim is
-/// stable across rotations (Cognito sub stays the same), so a process-
-/// lifetime cache is safe.
-static CACHED_FLAG: OnceLock<bool> = OnceLock::new();
-
 /// Returns true iff the signed-in user's email ends in `@getindigo.ai`.
-/// Quiet on missing/malformed tokens (returns false rather than erroring) so
-/// the popover never breaks just because the user is signed out.
+///
+/// Delegates to `feature_gate::is_indigo_user()`, which caches the result for
+/// the process lifetime (the Cognito email claim is stable across token
+/// rotations). Quiet on missing/malformed tokens (returns false) so the
+/// popover never breaks because the user is signed out.
 #[tauri::command]
 pub async fn meetings_feature_enabled() -> Result<bool, String> {
-    if let Some(v) = CACHED_FLAG.get() {
-        return Ok(*v);
-    }
-    let enabled = compute_enabled().await;
-    let _ = CACHED_FLAG.set(enabled);
-    Ok(enabled)
-}
-
-async fn compute_enabled() -> bool {
-    let tokens = match cognito::get_tokens().await {
-        Ok(Some(t)) => t,
-        _ => return false,
-    };
-    let id_token = match tokens.id_token.as_deref() {
-        Some(t) if !t.is_empty() => t,
-        _ => return false,
-    };
-    let claims = match cognito::decode_id_token_claims(id_token) {
-        Ok(c) => c,
-        Err(_) => return false,
-    };
-    is_allowed_email(claims.email.as_deref())
-}
-
-/// Pure helper — public for unit testing. Same logic as the hq-console
-/// `isCalendarFeatureEnabled`. Case-insensitive suffix match on the
-/// `@getindigo.ai` domain (the leading `@` prevents look-alike domains
-/// like `forgetindigo.ai` from matching).
-pub fn is_allowed_email(email: Option<&str>) -> bool {
-    match email {
-        Some(s) if !s.is_empty() => s.to_ascii_lowercase().ends_with(ALLOWED_DOMAIN),
-        _ => false,
-    }
+    Ok(crate::util::feature_gate::is_indigo_user().await)
 }
 
 // ── Data types (mirror hq-pro response shapes) ────────────────────────────────
@@ -148,6 +107,12 @@ pub struct ScheduledBot {
     pub calendar_event_id: Option<String>,
     pub meeting_title: Option<String>,
     pub scheduled_start_time: Option<String>,
+    /// `POST /v1/bot/invite` returns a slimmer body than `GET /v1/bot/list`
+    /// and omits this field — a fresh manual invite is never auto-scheduled,
+    /// so default to `false` rather than failing the whole parse (which would
+    /// surface a spurious "Couldn't invite the bot." toast even though the bot
+    /// was scheduled successfully server-side).
+    #[serde(default)]
     pub auto_scheduled: bool,
     pub error_message: Option<String>,
 }
@@ -193,26 +158,21 @@ pub async fn open_meetings_window(app: AppHandle) -> Result<(), String> {
     // image-processing step in the build pipeline and (b) the window-
     // switcher icon is rendered very small, so the badge would likely be
     // illegible at that scale anyway.
-    const HQ_ICON_PNG: &[u8] =
-        include_bytes!("../../icons/128x128@2x.png");
+    const HQ_ICON_PNG: &[u8] = include_bytes!("../../icons/128x128@2x.png");
     let icon = tauri::image::Image::from_bytes(HQ_ICON_PNG)
         .map_err(|e| format!("load window icon: {e}"))?;
 
-    tauri::WebviewWindowBuilder::new(
-        &app,
-        LABEL,
-        tauri::WebviewUrl::App("index.html".into()),
-    )
-    .title("Upcoming Meetings")
-    .inner_size(460.0, 600.0)
-    .min_inner_size(380.0, 400.0)
-    .resizable(true)
-    .decorations(true)
-    .icon(icon)
-    .map_err(|e| format!("attach window icon: {e}"))?
-    .visible(true)
-    .build()
-    .map_err(|e| e.to_string())?;
+    tauri::WebviewWindowBuilder::new(&app, LABEL, tauri::WebviewUrl::App("index.html".into()))
+        .title("Upcoming Meetings")
+        .inner_size(460.0, 600.0)
+        .min_inner_size(380.0, 400.0)
+        .resizable(true)
+        .decorations(true)
+        .icon(icon)
+        .map_err(|e| format!("attach window icon: {e}"))?
+        .visible(true)
+        .build()
+        .map_err(|e| e.to_string())?;
 
     Ok(())
 }
@@ -252,8 +212,8 @@ pub async fn meetings_list_upcoming() -> Result<Vec<MeetingEvent>, String> {
     if !status.is_success() {
         return Err(format!("events HTTP {status}: {text}"));
     }
-    let parsed: EventsResponse = serde_json::from_str(&text)
-        .map_err(|e| format!("events parse: {e} — body: {text}"))?;
+    let parsed: EventsResponse =
+        serde_json::from_str(&text).map_err(|e| format!("events parse: {e} — body: {text}"))?;
     Ok(parsed.events)
 }
 
@@ -318,8 +278,8 @@ pub async fn meetings_list_accounts() -> Result<Vec<GoogleAccount>, String> {
     if !status.is_success() {
         return Err(format!("accounts HTTP {status}: {text}"));
     }
-    let parsed: AccountsResponse = serde_json::from_str(&text)
-        .map_err(|e| format!("accounts parse: {e} — body: {text}"))?;
+    let parsed: AccountsResponse =
+        serde_json::from_str(&text).map_err(|e| format!("accounts parse: {e} — body: {text}"))?;
     Ok(parsed.accounts)
 }
 
@@ -381,8 +341,8 @@ pub async fn meetings_list_calendars_for_account(
     if !status.is_success() {
         return Err(format!("calendars HTTP {status}: {text}"));
     }
-    let parsed: CalendarsResponse = serde_json::from_str(&text)
-        .map_err(|e| format!("calendars parse: {e} — body: {text}"))?;
+    let parsed: CalendarsResponse =
+        serde_json::from_str(&text).map_err(|e| format!("calendars parse: {e} — body: {text}"))?;
     Ok(AccountCalendars {
         calendars: parsed.calendars,
         selected_calendar_ids: parsed
@@ -432,12 +392,15 @@ pub async fn meetings_list_scheduled_bots(
         .await
         .map_err(|e| format!("bot/list fetch: {e}"))?;
     let status = res.status();
-    let text = res.text().await.map_err(|e| format!("bot/list read: {e}"))?;
+    let text = res
+        .text()
+        .await
+        .map_err(|e| format!("bot/list read: {e}"))?;
     if !status.is_success() {
         return Err(format!("bot/list HTTP {status}: {text}"));
     }
-    let parsed: BotsResponse = serde_json::from_str(&text)
-        .map_err(|e| format!("bot/list parse: {e} — body: {text}"))?;
+    let parsed: BotsResponse =
+        serde_json::from_str(&text).map_err(|e| format!("bot/list parse: {e} — body: {text}"))?;
     Ok(parsed.bots)
 }
 
@@ -478,11 +441,65 @@ pub async fn meetings_invite_bot(
         .await
         .map_err(|e| format!("bot/invite fetch: {e}"))?;
     let status = res.status();
-    let text = res.text().await.map_err(|e| format!("bot/invite read: {e}"))?;
+    let text = res
+        .text()
+        .await
+        .map_err(|e| format!("bot/invite read: {e}"))?;
     if !status.is_success() {
         return Err(format!("bot/invite HTTP {status}: {text}"));
     }
     serde_json::from_str(&text).map_err(|e| format!("bot/invite parse: {e} — body: {text}"))
+}
+
+/// `POST /v1/bot/join-now` — force the Recall.ai bot to join NOW for
+/// `meeting_url`, regardless of any pre-scheduled `join_at`. Backs the
+/// MeetingsWindow row's bot-join-now icon button. Server-side
+/// (`bot.service.ts::joinBotNow`) decides the right path:
+///
+///   - existing `scheduled` bot → PATCH Recall `join_at = now`
+///   - existing `joining`/`recording` bot → no-op, return as-is
+///   - otherwise → flip any `completed` siblings to `failed`, then create
+///     a fresh bot with no `join_at` so Recall joins immediately
+///
+/// Same request shape as `meetings_invite_bot` so the UI handler can
+/// hand off the same `meeting_url` + `calendar_event_id` + `company_id`
+/// triple without re-derivation.
+#[tauri::command]
+pub async fn meetings_join_bot_now(
+    meeting_url: String,
+    calendar_event_id: Option<String>,
+    company_id: Option<String>,
+) -> Result<ScheduledBot, String> {
+    let base = vault_base().await?;
+    let auth = auth_header().await?;
+    let mut url = format!("{base}/v1/bot/join-now");
+    if let Some(cid) = company_id.as_ref() {
+        if !cid.is_empty() {
+            url.push_str(&format!("?companyId={cid}"));
+        }
+    }
+
+    let body = InviteBotBody {
+        meeting_url,
+        calendar_event_id,
+    };
+    let res = build_client()
+        .post(url)
+        .header("authorization", &auth)
+        .header("content-type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("bot/join-now fetch: {e}"))?;
+    let status = res.status();
+    let text = res
+        .text()
+        .await
+        .map_err(|e| format!("bot/join-now read: {e}"))?;
+    if !status.is_success() {
+        return Err(format!("bot/join-now HTTP {status}: {text}"));
+    }
+    serde_json::from_str(&text).map_err(|e| format!("bot/join-now parse: {e} — body: {text}"))
 }
 
 /// `GET /membership/me` — caller's memberships, enriched with `companyName`.
@@ -558,9 +575,8 @@ pub async fn meetings_cancel_bot(bot_id: String) -> Result<(), String> {
 /// optional underscores) and avoids the need for percent-encoding.
 fn is_url_safe_id(s: &str) -> bool {
     !s.is_empty()
-        && s.bytes().all(|b| {
-            b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.'
-        })
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.')
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -571,12 +587,14 @@ mod tests {
 
     #[test]
     fn allowlist_matches_indigo_ai() {
+        use crate::util::feature_gate::is_allowed_email;
         assert!(is_allowed_email(Some("stefan@getindigo.ai")));
         assert!(is_allowed_email(Some("STEFAN@GetIndigo.AI")));
     }
 
     #[test]
     fn allowlist_rejects_other_domains() {
+        use crate::util::feature_gate::is_allowed_email;
         assert!(!is_allowed_email(Some("someone@gmail.com")));
         assert!(!is_allowed_email(Some("admin@notindigo.ai")));
         // Look-alike domain — the leading `@` in ALLOWED_DOMAIN prevents
@@ -586,6 +604,7 @@ mod tests {
 
     #[test]
     fn allowlist_rejects_missing_email() {
+        use crate::util::feature_gate::is_allowed_email;
         assert!(!is_allowed_email(None));
         assert!(!is_allowed_email(Some("")));
     }
@@ -610,6 +629,34 @@ mod tests {
         assert_eq!(bot.calendar_event_id.as_deref(), Some("evt-1"));
         assert!(bot.auto_scheduled);
         assert!(bot.error_message.is_none());
+    }
+
+    /// Regression — `POST /v1/bot/invite` returns a slimmer body than
+    /// `GET /v1/bot/list`, omitting `autoScheduled` (and the Optional
+    /// fields). The invite command deserializes that response into
+    /// `ScheduledBot`; if the struct treats `autoScheduled` as required the
+    /// parse fails and the UI shows a spurious "Couldn't invite the bot."
+    /// toast even though the bot was scheduled successfully. The slim body
+    /// must parse, defaulting `auto_scheduled` to false.
+    #[test]
+    fn scheduled_bot_parses_slim_invite_response_without_auto_scheduled() {
+        let json = r#"{
+            "botId": "bot-abc",
+            "status": "scheduled",
+            "meetingUrl": "https://us06web.zoom.us/j/85906",
+            "platform": "zoom",
+            "createdAt": "2026-05-29T12:00:00Z"
+        }"#;
+        let bot: ScheduledBot = serde_json::from_str(json).expect("slim invite body must parse");
+        assert_eq!(bot.bot_id, "bot-abc");
+        assert_eq!(bot.status, "scheduled");
+        assert_eq!(bot.platform, "zoom");
+        assert!(
+            !bot.auto_scheduled,
+            "manual invite defaults to not auto-scheduled"
+        );
+        assert!(bot.calendar_event_id.is_none());
+        assert!(bot.meeting_title.is_none());
     }
 
     #[test]

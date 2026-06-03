@@ -1,4 +1,14 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// clippy 1.93 introduced stricter doc-comment *style* lints (list-item
+// indentation, lazy continuations, blank line after a doc comment). Upstream
+// hq-sync — the parity target, pinned to an older clippy — does not enforce
+// them, and several module docs deliberately column-align their list items for
+// readability (see version_gate.rs). These are cosmetic, not correctness, so
+// allow the family crate-wide rather than reflow every doc block and diverge
+// from upstream.
+#![allow(clippy::doc_overindented_list_items)]
+#![allow(clippy::doc_lazy_continuation)]
+#![allow(clippy::empty_line_after_doc_comments)]
 
 use std::sync::Mutex;
 use tauri::Manager;
@@ -34,7 +44,10 @@ fn apply_windows_vibrancy(window: &tauri::WebviewWindow) {
             return;
         }
         Err(e) => {
-            log("ui", &format!("apply_mica failed: {e}; trying Acrylic fallback"));
+            log(
+                "ui",
+                &format!("apply_mica failed: {e}; trying Acrylic fallback"),
+            );
         }
     }
 
@@ -99,6 +112,7 @@ fn main() {
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_notification::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(move |app, shortcut, event| {
@@ -110,6 +124,13 @@ fn main() {
         )
         .manage(updater::PendingUpdate(Mutex::new(None)))
         .manage(commands::new_files::PendingNewFiles(Mutex::new(Vec::new())))
+        .manage(commands::drift_detail::PendingDrift(Mutex::new(None)))
+        .manage(commands::activity::SessionActivity::new())
+        .manage(commands::share_notify::PendingShareEvents(Mutex::new(
+            Vec::new(),
+        )))
+        .manage(commands::dm_notify::PendingDmEvents(Mutex::new(Vec::new())))
+        .manage(commands::banner::PendingBanner(Mutex::new(None)))
         // Tray-app close behaviour: intercept window-close (system menu Close,
         // Alt-F4, frame X) and hide the popover instead of terminating the
         // process. The app only truly exits via the tray context menu's
@@ -142,6 +163,8 @@ fn main() {
             commands::sync::cancel_sync,
             commands::workspaces::list_syncable_workspaces,
             commands::workspaces::connect_workspace_to_cloud,
+            commands::sync_mode::get_sync_mode,
+            commands::sync_mode::set_sync_mode,
             commands::conflicts::resolve_conflict,
             commands::conflicts::open_in_editor,
             commands::settings::get_settings,
@@ -155,11 +178,21 @@ fn main() {
             tray::set_tray_state,
             updater::check_for_updates,
             updater::install_update,
+            updater::available_channels,
             commands::hq_cli_update::check_hq_cli_update,
             commands::hq_cli_update::install_hq_cli_update,
-            commands::hq_core_update::check_hq_core_update,
+            commands::hq_core_update::get_hq_version,
+            commands::hq_core_update::install_hq_core_update,
+            commands::hq_core_drift::restore_from_upstream,
+            commands::hq_core_staging::run_replace_from_staging,
+            commands::hq_core_state::check_core_state,
+            commands::drift_detail::open_drift_detail,
+            commands::drift_detail::drift_window_ready,
             commands::new_files::open_new_files_detail,
             commands::new_files::detail_window_ready,
+            commands::activity::open_activity_log,
+            commands::activity::activity_window_ready,
+            commands::activity::get_activity_log,
             commands::meetings::meetings_feature_enabled,
             commands::meetings::meetings_list_upcoming,
             commands::meetings::meetings_list_scheduled_bots,
@@ -167,8 +200,25 @@ fn main() {
             commands::meetings::meetings_list_accounts,
             commands::meetings::meetings_list_calendars_for_account,
             commands::meetings::meetings_invite_bot,
+            commands::meetings::meetings_join_bot_now,
             commands::meetings::meetings_cancel_bot,
             commands::meetings::open_meetings_window,
+            commands::share_notify::poll_shared_with_me,
+            commands::share_notify::open_share_detail,
+            commands::share_notify::share_detail_window_ready,
+            commands::dm_notify::poll_dm_inbox,
+            commands::dm_notify::open_dm_detail,
+            commands::dm_notify::dm_detail_window_ready,
+            commands::dm_notify::send_dm,
+            commands::notifications::notification_permission_state,
+            commands::notifications::notification_request_permission,
+            commands::banner::banner_window_ready,
+            commands::banner::banner_action,
+            commands::banner::dismiss_banner,
+            commands::banner::show_main_window,
+            commands::banner::preview_dm_banner,
+            commands::banner::preview_share_banner,
+            commands::banner::preview_update_banner,
         ])
         .setup(|app| {
             // One-shot migration of any legacy `/deploy`-skill stub at
@@ -196,7 +246,76 @@ fn main() {
             }
 
             tray::setup_tray(app.handle())?;
+            // Hard version-gate against hq-pro fires at 5s (BEFORE the soft
+            // updater at 10s) so a known-bad release can be yanked before the
+            // user touches anything sensitive. Server-side source of truth is
+            // `apps/hq-pro/src/vault-service/handlers/client-version-check.ts`.
+            // See `commands::version_gate` for the rationale.
+            commands::version_gate::setup_version_gate(app.handle());
             updater::setup_update_checker(app.handle());
+
+            // Share-notification poller. Gated solely on the shareNotifications
+            // menubar preference (the @getindigo.ai dogfood gate was removed
+            // 2026-05-26 — see share_notify::should_poll). Gate is checked
+            // inside share_notify, not here, so it is never scattered.
+            //
+            // Delivery runs on an independent timer (launch poll + interval),
+            // so notifications no longer depend on a sync completing — see the
+            // 2026-05-28 incident report. The post-sync poll below is a
+            // latency optimization layered on top, not the sole trigger.
+            {
+                use tauri::Listener;
+                // (a) Launch poll (5s delay) + independent interval timer.
+                commands::share_notify::setup_share_notify_poller(app.handle().clone());
+
+                // (a') Instant-DM push receiver — MQTT-over-WSS to AWS IoT Core.
+                // Wakes `poll_dm_once` on push so DMs arrive in near-real-time
+                // instead of waiting up to 60s. The interval poll above is the
+                // long-stop, so this is purely additive — any MQTT failure falls
+                // back to it silently.
+                //
+                // US-017 (Windows fork): NOT macOS-gated. The receiver is
+                // platform-neutral (rumqttc + aws-sigv4 over WSS, no AppKit deps),
+                // and instant DM on Windows is the whole point of this story. The
+                // spawned async task rides the Tauri runtime, which the V1 Job
+                // Object daemon supervisor tears down with the process — no orphan
+                // thread. Eligibility was ungated to all users in 70260ae.
+                commands::dm_mqtt::setup_dm_mqtt_receiver(app.handle().clone());
+
+                // (b) Post-sync poll — low-latency top-up after a sync run.
+                let poll_handle = app.handle().clone();
+                app.listen(crate::events::EVENT_SYNC_ALL_COMPLETE, move |_event| {
+                    let h = poll_handle.clone();
+                    tauri::async_runtime::spawn(async move {
+                        commands::share_notify::poll_once(h).await;
+                    });
+                });
+            }
+
+            // Env-var trigger to preview the custom notification banner without
+            // devtools / real inbound events. Pops one representative banner per
+            // source — DM (2s), share (10s), update (18s) — spaced past the 6s
+            // auto-dismiss so each is seen in turn. No-op when unset.
+            //   HQ_SYNC_PREVIEW_BANNER=1     → DM only
+            //   HQ_SYNC_PREVIEW_BANNER=all   → DM, then share, then update
+            match std::env::var("HQ_SYNC_PREVIEW_BANNER").as_deref() {
+                Ok("1") | Ok("all") => {
+                    let all = std::env::var("HQ_SYNC_PREVIEW_BANNER").as_deref() == Ok("all");
+                    let h = app.handle().clone();
+                    tauri::async_runtime::spawn(async move {
+                        use std::time::Duration;
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                        let _ = commands::banner::preview_dm_banner(h.clone()).await;
+                        if all {
+                            tokio::time::sleep(Duration::from_secs(8)).await;
+                            let _ = commands::banner::preview_share_banner(h.clone()).await;
+                            tokio::time::sleep(Duration::from_secs(8)).await;
+                            let _ = commands::banner::preview_update_banner(h.clone()).await;
+                        }
+                    });
+                }
+                _ => {}
+            }
 
             // Register Ctrl+Shift+H globally so the popover can be summoned
             // from any app. The handler (configured on the plugin builder
@@ -216,7 +335,7 @@ fn main() {
             }
 
             commands::hq_cli_update::setup_hq_cli_update_checker(app.handle());
-            commands::hq_core_update::setup_hq_core_update_checker(app.handle());
+            commands::hq_core_state::setup_core_state_checker(app.handle());
 
             // Fire-and-forget: warm the npx cache for
             // `@indigoai-us/hq-cloud@<HQ_CLOUD_VERSION>` so the user's

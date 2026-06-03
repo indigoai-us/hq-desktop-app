@@ -114,14 +114,63 @@
      *  the captured stderr pre-filled (typical case: EACCES on a
      *  system-prefix npm that needs sudo). */
     hqCliUpdateError?: string | null;
-    /** Non-null when the user's local hq-core (read from core.yaml's
-     *  `hqVersion`) is behind the latest GitHub release of
-     *  indigoai-us/hq-core. The banner CTA launches Claude Code at the
-     *  HQ folder with `/update-hq` pre-filled in the prompt — same
-     *  `claude://code/new` deep-link mechanism as `fixHqCliUpdateInHq`. */
-    hqCoreUpdateAvailable?: {
-      local: string | null;
-      latest: string;
+    /** Locally-detected hq-core `hqVersion` (cheap on-disk read from
+     *  `core.yaml`). Drives the "HQ vX.Y.Z" footer row, independent of
+     *  the unified state check below. Null → render the row with a
+     *  "version unknown" label + CopyPromptButton so a broken install
+     *  becomes visible rather than silently hidden. */
+    hqVersion?: string | null;
+    /** Unified HQ-core state. Replaces the pre-refactor quad
+     *  (hqCoreUpdateAvailable + hqCoreDrift + stagingDrift +
+     *  stagingReplace). Drives both the state badge ("N drifted" / "in
+     *  sync") and the action pill ("Update to v…" / "Update to Staging")
+     *  on the HQ-version footer row.
+     *
+     *  Pill visibility logic:
+     *    state badge → render when `coreState != null` (showing either
+     *                  "N drifted" or "in sync" depending on drift count)
+     *    action pill → render when `coreState.versionBehind ||
+     *                  coreState.driftReport.count > 0`
+     *
+     *  Null = checker hasn't run yet (≠ "in sync"). The bg checker fires
+     *  30s after launch, so a freshly opened popover may briefly show no
+     *  pills. */
+    coreState?: {
+      channel: 'release' | 'staging';
+      targetRepo: string;
+      targetVersion: string;
+      targetRef: string;
+      localVersion: string | null;
+      floorSha: string | null;
+      isEligible: boolean;
+      versionBehind: boolean;
+      driftReport: {
+        count: number;
+        modified: Array<{ path: string; size: number; gitShaLocal: string | null; gitShaUpstream: string | null }>;
+        missing: Array<{ path: string; size: number; gitShaLocal: string | null; gitShaUpstream: string | null }>;
+        added: Array<{ path: string; size: number; gitShaLocal: string | null; gitShaUpstream: string | null }>;
+        scannedAt: string;
+        hqVersion: string;
+        targetRepo: string;
+        targetRef: string;
+      };
+      unchangedCount: number;
+      userOnlyCount: number;
+      scannedAt: string;
+    } | null;
+    /** True while the unified "Update" rescue script is running (either
+     *  release `install_hq_core_update` or staging `run_replace_from_staging`;
+     *  App.svelte dispatches based on `coreState.channel`). Disables the
+     *  pill + swaps its label to "Updating…". */
+    coreInstalling?: boolean;
+    /** Last rescue-run result. Surfaced next to the pill so the user gets
+     *  immediate feedback (✓ done / ✗ failed) without opening the log file.
+     *  Cleared at start of a new run. */
+    coreInstallLastResult?: {
+      kind: 'ok' | 'err';
+      exitCode: number;
+      logTail: string;
+      logPath: string;
     } | null;
     onsync: () => void;
     /** Cancel the in-flight sync (kills the runner subprocess). The same
@@ -137,6 +186,12 @@
     /** Run `npm install -g @indigoai-us/hq-cli@latest` via the Rust
      *  backend. App.svelte owns the in-flight + error state. */
     oninstallhqcliupdate?: () => void;
+    /** Click handler for the unified Update pill. App.svelte dispatches
+     *  to either `install_hq_core_update` (release) or
+     *  `run_replace_from_staging` (staging) based on `coreState.channel`.
+     *  Optional so the prop is omittable; the pill stays interactive but
+     *  no-ops without a handler. */
+    oninstallcore?: () => void;
     // Parent can call the returned fn to refresh SyncStats (bound to
     // the child's exported refresh()). We pass a setter down rather
     // than using bind:this because App.svelte holds the ref.
@@ -179,7 +234,10 @@
     hqCliUpdateAvailable = null,
     hqCliUpdateInstalling = false,
     hqCliUpdateError = null,
-    hqCoreUpdateAvailable = null,
+    hqVersion = null,
+    coreState = null,
+    coreInstalling = false,
+    coreInstallLastResult = null,
     onsync,
     oncancel,
     onsettings,
@@ -189,6 +247,7 @@
     ondismissconflicts,
     oninstallupdate,
     oninstallhqcliupdate,
+    oninstallcore,
     bindStatsRefresh,
     meetingsEnabled = false,
     onmeetingsclick,
@@ -201,6 +260,7 @@
       bindStatsRefresh(() => statsEl?.refresh());
     }
   });
+
 
   // Human-readable formatters
   function formatBytes(n: number): string {
@@ -317,15 +377,24 @@
   // the scheme and shells out to `open`). Same mechanism as
   // `fixHqCliUpdateInHq` above — different prompt, different intent
   // (here it's the success path, not an error-recovery fallback).
-  async function updateHqCoreInClaudeCode() {
-    const params = new URLSearchParams({ q: '/update-hq' });
-    if (config?.hqFolderPath) params.set('folder', config.hqFolderPath);
-    const url = `claude://code/new?${params.toString()}`;
-
+  // Open the drift detail window with the current report. Passed
+  // verbatim from the prop so the window receives exactly what the pill
+  // count was computed from (no re-fetch, no rate-limit double-spend, no
+  // pill-vs-window count drift). The Rust side mirrors `new_files.rs`:
+  // managed-state stash → window creation → `drift_window_ready`
+  // handshake → emit. Errors are logged but not surfaced — the worst
+  // case is a click that does nothing, much better than a Sentry-level
+  // exception in the user's face for an opt-in diagnostic surface.
+  async function openDriftDetail() {
+    // Single source of truth — the report inside coreState. Channel is
+    // baked into the report's metadata so the detail window doesn't need
+    // to branch on staging vs release.
+    const report = coreState?.driftReport;
+    if (!report) return;
     try {
-      await invoke('open_claude_code_link', { url });
+      await invoke('open_drift_detail', { report });
     } catch (e) {
-      console.error('open_claude_code_link failed:', e);
+      console.error('open_drift_detail failed:', e);
     }
   }
 
@@ -462,14 +531,12 @@
             >
               {updateInstalling ? 'Installing…' : 'Install'}
             </button>
-            <CopyPromptButton
-              variant="inline"
-              label="Copy prompt"
-              issue={{
-                kind: 'app-update-available',
-                payload: { version: updateAvailable.version },
-              }}
-            />
+            <!-- No Copy prompt here: the Install button calls Tauri's
+                 `install_update` + restart, which is self-sufficient.
+                 Unlike conflict/sign-in/hq-cli-update banners, there's
+                 no failure mode where handing a prompt to Claude is
+                 the next step — the auto-updater either works or the
+                 user grabs the installer from GitHub. Keep this banner quiet. -->
           </div>
         </div>
       {/if}
@@ -521,43 +588,10 @@
         </div>
       {/if}
 
-      <!-- hq-core release banner. Updating hq-core (the user's HQ folder
-           scaffold) means running the /update-hq Claude-Code skill — a
-           heavier interactive flow than the CLI nag's one-shot
-           `npm install -g`, so we can't run it in-process. The Update
-           button instead opens a Claude Code session at the HQ folder
-           with `/update-hq` pre-filled in the prompt (same
-           `claude://code/new` deep-link mechanism as
-           `fixHqCliUpdateInHq`); the user just hits Enter and the skill
-           runs. The banner clears naturally on the next 6h background
-           check once core.yaml's hqVersion has advanced. -->
-
-      {#if hqCoreUpdateAvailable}
-        <div class="banner banner-info banner-update">
-          <div class="banner-update-text">
-            <p class="banner-title">
-              hq-core update available: v{hqCoreUpdateAvailable.latest}
-            </p>
-            {#if hqCoreUpdateAvailable.local}
-              <p class="banner-body">
-                You're on v{hqCoreUpdateAvailable.local}. Click Update to run <code>/update-hq</code> in Claude Code.
-              </p>
-            {:else}
-              <p class="banner-body">
-                Click Update to run <code>/update-hq</code> in Claude Code.
-              </p>
-            {/if}
-          </div>
-          <div class="banner-actions">
-            <button
-              class="banner-update-button"
-              onclick={updateHqCoreInClaudeCode}
-            >
-              Update
-            </button>
-          </div>
-        </div>
-      {/if}
+      <!-- hq-core "Update available" used to live here as a top-of-popover
+           banner. Moved to the footer HQ-version row in v0.1.85 (right-side
+           pill next to the version string it's about) — see footer below.
+           Less visual noise at the top, action sits next to its context. -->
 
       <!-- Runner state banners — auth and runtime errors only. The previous
            `setup-needed` "No companies yet" dead-end is gone: the WorkspaceList
@@ -651,7 +685,7 @@
           {/if}
         </div>
       {:else}
-        <SyncStats bind:this={statsEl} />
+        <SyncStats bind:this={statsEl} onhistory={() => invoke('open_activity_log')} />
         {#if newFilesCount > 0}
           <NewFilesBadge count={newFilesCount} files={newFilesList} onclick={() => invoke('open_new_files_detail', { files: newFilesList })} />
         {/if}
@@ -682,6 +716,175 @@
 
   <!-- Footer -->
   <footer class="popover-footer">
+    <!-- HQ-version row. Always rendered above Settings (sits below the
+         divider) so the user always knows which HQ they're synced to.
+         Three states:
+           1. hqVersion present + hqCoreUpdateAvailable null → "HQ vX.Y.Z" only
+           2. hqVersion present + hqCoreUpdateAvailable non-null → version
+              text + right-aligned "Update to vX.Y.Z" pill. Click invokes
+              `install_hq_core_update` (spawns the rescue script against
+              indigoai-us/hq-core at the release tag — same engine the
+              staging pill uses). While running the pill is disabled and
+              relabelled "Updating…". On success a muted "✓ update done"
+              chip appears next to it; on FAILURE we never show a raw
+              "exit N" chip — instead a "Update failed — copy fix"
+              CopyPromptButton hands the user a guided-`/update-hq` prompt
+              for their HQ agent (the usual cause is an install too old for
+              the in-app rescue to bridge).
+           3. hqVersion null → "HQ version unknown" + right-aligned
+              CopyPromptButton so the user can hand a triage prompt to an
+              agent in-session (the install is broken in a way we can't
+              self-repair from the menubar). -->
+    <div class="footer-hq-version">
+      <div class="footer-hq-version-label">
+        <!-- Stack / layers icon -->
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <path d="M8 1.5L1.5 4.5L8 7.5L14.5 4.5L8 1.5Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />
+          <path d="M1.5 8L8 11L14.5 8" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />
+          <path d="M1.5 11.5L8 14.5L14.5 11.5" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />
+        </svg>
+        {#if hqVersion}
+          <span>HQ v{hqVersion}</span>
+        {:else}
+          <span>HQ version unknown</span>
+        {/if}
+      </div>
+      {#if hqVersion === null}
+        <CopyPromptButton
+          variant="compact"
+          label="Copy prompt"
+          issue={{ kind: 'hq-version-undetectable', payload: { hqFolderPath: config?.hqFolderPath ?? '' } }}
+        />
+      {:else}
+        <!-- `.footer-hq-version-actions` wrapper (from main) makes the
+             pill group wrap to a second line on narrow widths instead of
+             overlapping the "HQ vX.Y.Z" label. Inner rendering is the
+             unified `coreState` block (this branch). -->
+        <div class="footer-hq-version-actions">
+        <!-- Unified state badge + action pill. Both derive entirely from
+             `coreState` (see commands/hq_core_state.rs). Channel selection
+             (release vs staging) is a parameter on the Rust side; this
+             render block is identical for every user.
+
+             State badge: "N drifted" when user_edit > 0, "in sync"
+             otherwise. Always clickable so the detail window is one click
+             away even on clean installs.
+
+             Action pill: shown when `versionBehind || hasDrift` — i.e.
+             whenever the rescue would do something. Label flips to
+             "Update to Staging" / "Update to v…" by channel. -->
+        {#if coreState}
+          {@const hasDrift = coreState.driftReport.count > 0}
+          {@const needsUpdate = coreState.versionBehind || hasDrift}
+          {@const updateLabel =
+            coreState.channel === 'staging'
+              ? coreState.versionBehind
+                ? 'Update to Staging'
+                : 'Restore Staging'
+              : coreState.versionBehind
+                ? `Update to v${coreState.targetVersion}`
+                : `Restore v${coreState.targetVersion}`}
+          <!-- State badge gating:
+               * Eligible (@getindigo.ai) — full diagnostic surface. "N
+                 drifted" with the real count when there's drift, "in
+                 sync" otherwise. Both clickable → opens the per-file
+                 detail window.
+               * Non-eligible — static "in sync" label only. Drift count
+                 is suppressed (no per-file surface offered) and the
+                 badge is non-clickable. The Update pill still respects
+                 the actual `needsUpdate`, so the user still has an
+                 action if drift exists. -->
+          {#if coreState.isEligible}
+            <button
+              class="footer-hq-version-pill {hasDrift ? 'footer-hq-version-pill-notice footer-hq-version-pill-count' : ''}"
+              onclick={openDriftDetail}
+              aria-label={hasDrift
+                ? `${coreState.driftReport.count} drifted core file${coreState.driftReport.count === 1 ? '' : 's'}. Click for details.`
+                : 'Locked core in sync. Click for details.'}
+              title={hasDrift
+                ? `${coreState.driftReport.count} locked core file${coreState.driftReport.count === 1 ? '' : 's'} edited since last sync vs ${coreState.targetRepo}@${coreState.targetVersion}. Click for details.`
+                : `Locked core matches ${coreState.targetRepo}@${coreState.targetVersion}. Click to open the drift detail window.`}
+            >
+              {hasDrift ? `${coreState.driftReport.count}` : 'in sync'}
+            </button>
+          {:else}
+            <span
+              class="footer-hq-version-pill footer-hq-version-pill-static"
+              title={`Locked core matches ${coreState.targetRepo}@${coreState.targetVersion}.`}
+            >
+              in sync
+            </span>
+          {/if}
+          {#if needsUpdate && oninstallcore}
+            <!-- {#key coreInstalling}: remount the button when in-flight
+                 flips so WebKit's GPU compositor can't leave residue from the
+                 wider "Restore v14.2.1" / "Update to v14.2.1" label after it
+                 shrinks to "Updating…". The popover runs in a transparent
+                 NSWindow (decorations:false, transparent:true in tauri.conf),
+                 which exposes a known WKWebView quirk where in-place text
+                 swaps that change the pill's intrinsic width can leave a
+                 ghost rect of the old pill in the compositor cache. -->
+            {#key coreInstalling}
+              <button
+                class="footer-hq-version-pill"
+                onclick={oninstallcore}
+                disabled={coreInstalling}
+                title={coreInstalling
+                  ? `Running rescue against ${coreState.targetRepo}@${coreState.targetVersion} — see /tmp/hq-sync-*.log`
+                  : `Replace HQ with ${coreState.targetRepo}@${coreState.targetVersion}. Local drifts move to personal/; the upstream tree overlays on top.`}
+              >
+                {#if coreInstalling}
+                  Updating…
+                {:else}
+                  {updateLabel}
+                {/if}
+              </button>
+            {/key}
+          {/if}
+        {/if}
+        {#if coreInstallLastResult}
+          {#if coreInstallLastResult.kind === 'ok'}
+            <!-- Success stays a muted inline chip — nothing for the user to
+                 act on. -->
+            <span
+              class="footer-hq-version-result footer-hq-version-result-ok"
+              title={coreInstallLastResult.logTail || coreInstallLastResult.logPath}
+            >
+              ✓ update done
+            </span>
+          {:else}
+            <!-- Failure NEVER surfaces a raw "exit N" chip — an exit code is
+                 not something the user can act on. Instead hand them a
+                 one-click prompt for their HQ agent to run a guided
+                 `/update-hq` (the usual cause is an install too old for the
+                 in-app rescue to bridge). The payload carries the exit code +
+                 log tail + target so the agent can triage without guessing. -->
+            <CopyPromptButton
+              variant="inline"
+              label="Update failed — copy fix"
+              issue={{
+                kind: 'hq-core-update-failed',
+                payload: {
+                  exitCode: coreInstallLastResult.exitCode,
+                  logTail: coreInstallLastResult.logTail,
+                  logPath: coreInstallLastResult.logPath,
+                  channel: coreState?.channel ?? '',
+                  targetVersion: coreState?.targetVersion ?? '',
+                  targetRepo: coreState?.targetRepo ?? '',
+                  hqVersion: hqVersion ?? '',
+                },
+              }}
+            />
+          {/if}
+        {/if}
+        </div>
+      {/if}
+    </div>
+
+    <!-- Primary navigation. "Recent Changes" now lives on the "Last synced"
+         row in SyncStats (the history affordance sits with the status it
+         describes), so the footer holds just Settings + the demoted
+         destructive row. -->
     <button class="footer-action" onclick={onsettings}>
       <!-- Settings gear icon -->
       <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -691,24 +894,31 @@
       Settings
     </button>
 
-    <button class="footer-action" onclick={onsignout}>
-      <!-- Log out icon -->
-      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-        <path d="M6 14H3a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1h3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-        <path d="M10.5 11.5L14 8l-3.5-3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-        <path d="M14 8H6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-      </svg>
-      Sign out
-    </button>
+    <!-- Destructive actions — demoted beneath a divider and compacted onto a
+         single muted row so Quit / Sign out can't be hit by reflex while
+         reaching for Settings. -->
+    <div class="footer-divider"></div>
 
-    <button class="footer-action footer-quit" onclick={handleQuit}>
-      <!-- X / power icon -->
-      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-        <circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.5" />
-        <path d="M8 3v5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-      </svg>
-      Quit
-    </button>
+    <div class="footer-destructive">
+      <button class="footer-mini" onclick={onsignout}>
+        <!-- Log out icon -->
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <path d="M6 14H3a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1h3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+          <path d="M10.5 11.5L14 8l-3.5-3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+          <path d="M14 8H6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+        Sign out
+      </button>
+
+      <button class="footer-mini footer-quit" onclick={handleQuit}>
+        <!-- Power icon -->
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.5" />
+          <path d="M8 3v5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+        </svg>
+        Quit
+      </button>
+    </div>
   </footer>
 </div>
 
@@ -749,7 +959,10 @@
     display: flex;
     align-items: center;
     gap: 0.625rem;
-    padding: 0.875rem 1rem;
+    /* Tightened from 0.875rem (v0.1.85) to give the body more vertical
+       room for the workspace list. Horizontal padding stays at 1rem so
+       the brand icon doesn't crowd the window edge. */
+    padding: 0.625rem 1rem;
   }
 
   .header-icon {
@@ -866,11 +1079,14 @@
 
   /* Body */
   .popover-body {
-    padding: 0.75rem 1rem;
+    /* Tightened from 0.75rem 1rem (v0.1.85): vertical padding + inter-card
+       gap collapsed from 12px to 8px. Horizontal padding to 0.75rem so
+       workspace rows get +8px of name room before truncation kicks in. */
+    padding: 0.5rem 0.75rem;
     flex: 1;
     display: flex;
     flex-direction: column;
-    gap: 0.75rem;
+    gap: 0.5rem;
     overflow-y: auto;
     /* Firefox scrollbar styling */
     scrollbar-width: thin;
@@ -910,13 +1126,13 @@
     align-items: center;
     gap: 0.5rem;
     width: 100%;
-    padding: 0.4375rem 0.5rem;
-    font-size: 0.8125rem;
+    padding: 0.4375rem var(--space-2);
+    font-size: var(--text-base);
     font-family: inherit;
     color: var(--popover-text-muted, #a0a0b0);
     background: none;
     border: none;
-    border-radius: 9px;
+    border-radius: var(--radius-md);
     cursor: pointer;
     transition: background-color 0.1s ease, color 0.1s ease;
     text-align: left;
@@ -931,12 +1147,200 @@
     color: var(--popover-danger, #ef4444);
   }
 
+  /* Hairline separating primary nav from the demoted destructive row.
+     Inset to match the footer's horizontal padding rhythm. */
+  .footer-divider {
+    height: 1px;
+    background: var(--popover-divider, rgba(255, 255, 255, 0.06));
+    margin: var(--space-1) var(--space-2);
+  }
+
+  /* Destructive actions share one compact, muted row. Each button is
+     center-aligned and lighter than a nav row, so the pair reads as
+     secondary and sits clearly apart from Settings above the divider. */
+  .footer-destructive {
+    display: flex;
+    gap: var(--space-1);
+  }
+
+  .footer-mini {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-2);
+    padding: var(--space-2);
+    font-size: var(--text-sm);
+    font-family: inherit;
+    color: var(--popover-text-muted, #a0a0b0);
+    background: none;
+    border: none;
+    border-radius: var(--radius-md);
+    cursor: pointer;
+    transition: background-color 0.1s ease, color 0.1s ease;
+  }
+
+  .footer-mini:hover {
+    background: var(--popover-action-hover, rgba(255, 255, 255, 0.05));
+    color: var(--popover-text, #e0e0e0);
+  }
+
+  /* Higher specificity than `.footer-mini:hover` so Quit's hover stays
+     the danger tone rather than the neutral text color. */
+  .footer-mini.footer-quit:hover {
+    color: var(--popover-danger, #ef4444);
+  }
+
+  /* HQ-version footer row. Same padding rhythm as `.footer-action` so it
+     reads as part of the same column, but it's a div (not a button) — the
+     row itself isn't clickable; the optional right-aligned pill /
+     CopyPromptButton is the affordance. */
+  .footer-hq-version {
+    display: flex;
+    align-items: center;
+    /* Wrap the action group to a second line when the version label + pills
+       can't share one line, instead of overflowing the 320px popover and
+       overlapping the "HQ vX.Y.Z" label (the count badge + "Restore vX.Y.Z"
+       pill + "✓ update done" chip together exceed one row). The actions group
+       keeps `margin-left:auto` so it stays right-aligned whether it sits beside
+       the label or drops below it. */
+    flex-wrap: wrap;
+    gap: 0.375rem 0.5rem;
+    padding: 0.4375rem 0.5rem;
+    font-size: 0.8125rem;
+    color: var(--popover-text-muted, #a0a0b0);
+  }
+
+  .footer-hq-version-label {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-width: 0;
+    /* Keep "HQ vX.Y.Z" on a single line — without this the label wraps
+       ("HQ" / "vX.Y.Z") when the action pills crowd the row, and the
+       wrapped text collided with the drifted pill. The pills now live in
+       a wrapping `.footer-hq-version-actions` group that drops to a
+       second line instead, so the label can stay intact. */
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+
+  /* Right-side action group (drift count chip + Update/Update-to-Staging
+     pill + rescue-result chip). Stays on a single line: the drift badge is
+     now a bare count ("14") rather than "N drifted", so the group is narrow
+     enough to sit beside the version label without wrapping. */
+  .footer-hq-version-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    /* Wrap internally too, so an unusually wide combination (e.g.
+       "Update to vX.Y.Z" + the "Update failed — copy fix" prompt button)
+       stacks right-aligned rather than overflowing. `margin-left:auto` keeps
+       the group pinned right on whichever row it lands. */
+    flex-wrap: wrap;
+    gap: 0.375rem;
+    min-width: 0;
+    margin-left: auto;
+  }
+
+  /* Right-aligned "Update to vX.Y.Z" pill. Same visual weight as
+     `.banner-update-button` (white background, dark text — the popover's
+     primary action treatment) but pill-shaped + smaller, since it lives
+     inline next to the version label rather than as a banner-level CTA. */
+  .footer-hq-version-pill {
+    font-size: 0.6875rem;
+    font-family: inherit;
+    font-weight: 600;
+    padding: 0.1875rem 0.5rem;
+    background: var(--popover-primary, #ffffff);
+    color: var(--popover-primary-text, #111113);
+    border: none;
+    border-radius: 999px;
+    cursor: pointer;
+    white-space: nowrap;
+    flex-shrink: 0;
+    transition: background-color 0.1s ease, opacity 0.1s ease;
+  }
+
+  .footer-hq-version-pill:hover {
+    background: var(--popover-primary-hover, rgba(255, 255, 255, 0.9));
+  }
+
+  /* Disabled state — used by the "Update to Staging" pill while the
+     rescue script is in flight (multi-minute clone + scan). Keeps the
+     button visually present so the user can see what's happening, but
+     non-interactive (opacity drop + default cursor + suppress hover). */
+  .footer-hq-version-pill:disabled {
+    cursor: default;
+    opacity: 0.7;
+  }
+
+  .footer-hq-version-pill:disabled:hover {
+    background: var(--popover-primary, #ffffff);
+  }
+
+  /* Notice variant — used by the drift "N drifted" pill so it reads as
+     diagnostic rather than action. Sits next to (and visually beneath)
+     the primary white Update pill so the eye still lands on the action.
+     Calm grey surface — no severity colour, consistent with the rest of
+     the menubar's notice-tone language. */
+  .footer-hq-version-pill-notice {
+    background: var(--popover-surface-strong, rgba(255, 255, 255, 0.16));
+    color: var(--popover-text, rgba(255, 255, 255, 0.86));
+  }
+
+  .footer-hq-version-pill-notice:hover {
+    background: var(--popover-action-hover, rgba(255, 255, 255, 0.1));
+    color: var(--popover-text-heading, #ffffff);
+  }
+
+  /* Count variant — the drift badge renders as a bare count ("14") instead
+     of "N drifted" so the whole version row stays on one line. Tighter and
+     smaller than the base pill: a compact numeric chip beside the white
+     Update pill. `tabular-nums` keeps 1- and 2-digit counts from jiggling. */
+  .footer-hq-version-pill-count {
+    font-size: 0.625rem;
+    padding: 0.125rem 0.375rem;
+    min-width: 1.25rem;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Static variant — non-clickable "in sync" label shown to non-eligible
+     users (no @getindigo.ai email). Drift count is suppressed for them
+     and there's no per-file detail surface to open, so the badge renders
+     as a plain `<span>` with the same shape as the notice pill but no
+     cursor/hover/click affordances. Calm-grey background so it reads as
+     informational rather than actionable. */
+  .footer-hq-version-pill-static {
+    background: var(--popover-surface-strong, rgba(255, 255, 255, 0.16));
+    color: var(--popover-text, rgba(255, 255, 255, 0.86));
+    cursor: default;
+  }
+
+  /* Inline result chip rendered next to the pill after a rescue run. Small,
+     non-clickable, hover surfaces the log tail via the parent's `title=`. */
+  .footer-hq-version-result {
+    font-size: 0.6875rem;
+    font-family: inherit;
+    white-space: nowrap;
+    flex-shrink: 0;
+    padding: 0.1875rem 0.375rem;
+    border-radius: 4px;
+  }
+
+  .footer-hq-version-result-ok {
+    color: var(--popover-success, #6ad59c);
+  }
+
   /* Banners — actionable state callouts (setup / auth / error) */
   .banner {
     display: flex;
     flex-direction: column;
     gap: 0.1875rem;
-    padding: 0.625rem 0.75rem;
+    /* Tightened from 0.625rem 0.75rem (v0.1.85) — 8px / 10px reads as
+       calmer when the body stacks several at once (update + cli + error). */
+    padding: 0.5rem 0.625rem;
     border-radius: 10px;
     border: 1px solid transparent;
   }

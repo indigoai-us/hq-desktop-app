@@ -82,15 +82,11 @@ fn write_company_config(config_path: &Path, config: &CompanyConfig) -> Result<()
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("create_dir_all {}: {e}", parent.display()))?;
     }
-    let body = serde_json::to_string_pretty(config)
-        .map_err(|e| format!("serialize config: {e}"))?;
-    let tmp = config_path.with_file_name(format!(
-        ".config.json.tmp.{}",
-        std::process::id()
-    ));
+    let body =
+        serde_json::to_string_pretty(config).map_err(|e| format!("serialize config: {e}"))?;
+    let tmp = config_path.with_file_name(format!(".config.json.tmp.{}", std::process::id()));
     std::fs::write(&tmp, &body).map_err(|e| format!("write tmp config: {e}"))?;
-    std::fs::rename(&tmp, config_path)
-        .map_err(|e| format!("rename config: {e}"))?;
+    std::fs::rename(&tmp, config_path).map_err(|e| format!("rename config: {e}"))?;
     Ok(())
 }
 
@@ -168,8 +164,8 @@ where
         }
 
         // Read YAML read-only — bytes preserved so SHA256 can be validated by callers
-        let yaml_bytes = std::fs::read(&yaml_path)
-            .map_err(|e| format!("read {}: {e}", yaml_path.display()))?;
+        let yaml_bytes =
+            std::fs::read(&yaml_path).map_err(|e| format!("read {}: {e}", yaml_path.display()))?;
         let company_yaml: CompanyYaml = serde_yaml::from_slice(&yaml_bytes)
             .map_err(|e| format!("parse {}: {e}", yaml_path.display()))?;
 
@@ -188,10 +184,7 @@ where
                     let _ = std::fs::remove_file(&hq_config_path);
                 }
                 Err(e) => {
-                    return Err(format!(
-                        "vault lookup for '{}': {e}",
-                        folder_name
-                    ));
+                    return Err(format!("vault lookup for '{}': {e}", folder_name));
                 }
             }
         }
@@ -203,11 +196,18 @@ where
                     // If the entity has no bucket yet, provision it now — same contract as Path C.
                     let bucket_name = match info.bucket_name {
                         Some(b) => b,
-                        None => vault
-                            .provision_bucket(legacy_uid)
-                            .await
-                            .map_err(|e| format!("provision_bucket legacy '{}' uid={legacy_uid}: {e}", folder_name))?
-                            .bucket_name,
+                        None => {
+                            vault
+                                .provision_bucket(legacy_uid)
+                                .await
+                                .map_err(|e| {
+                                    format!(
+                                        "provision_bucket legacy '{}' uid={legacy_uid}: {e}",
+                                        folder_name
+                                    )
+                                })?
+                                .bucket_name
+                        }
                     };
                     let cfg = CompanyConfig {
                         company_uid: legacy_uid.clone(),
@@ -227,10 +227,7 @@ where
                     // Legacy UID in YAML but entity not found — fall through to full provision
                 }
                 Err(e) => {
-                    return Err(format!(
-                        "vault legacy lookup for '{}': {e}",
-                        folder_name
-                    ));
+                    return Err(format!("vault legacy lookup for '{}': {e}", folder_name));
                 }
             }
         }
@@ -282,14 +279,10 @@ where
                         bucket_name: p.bucket_name,
                     });
                 }
-                return Err(format!(
-                    "provision '{folder_name}' via hq CLI: {message}"
-                ));
+                return Err(format!("provision '{folder_name}' via hq CLI: {message}"));
             }
             Err(e) => {
-                return Err(format!(
-                    "provision '{folder_name}' via hq CLI: {e}"
-                ));
+                return Err(format!("provision '{folder_name}' via hq CLI: {e}"));
             }
         }
     }
@@ -426,17 +419,21 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path(format!("/entity/by-slug/company/{slug}")))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(&entity_json("cmp_existing", slug, Some("hq-vault-cmp-existing"))),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_json(&entity_json(
+                "cmp_existing",
+                slug,
+                Some("hq-vault-cmp-existing"),
+            )))
             .mount(&server)
             .await;
 
         let result = provision_missing_companies(tmp.path(), &vault(&server), VAULT_URL)
             .await
             .unwrap();
-        assert!(result.is_empty(), "already-provisioned company must be skipped");
+        assert!(
+            result.is_empty(),
+            "already-provisioned company must be skipped"
+        );
         // Only find_by_slug was called — no create_entity, no provision_bucket
         let reqs = server.received_requests().await.unwrap();
         assert!(
@@ -458,13 +455,11 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path(format!("/entity/by-slug/company/{slug}")))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(&entity_json(
-                    "cmp_legacy",
-                    slug,
-                    Some("hq-vault-cmp-legacy"),
-                )),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_json(&entity_json(
+                "cmp_legacy",
+                slug,
+                Some("hq-vault-cmp-legacy"),
+            )))
             .mount(&server)
             .await;
 
@@ -506,18 +501,18 @@ mod tests {
         // find_by_slug returns entity with NO bucket
         Mock::given(method("GET"))
             .and(path(format!("/entity/by-slug/company/{slug}")))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(&entity_json("cmp_legacy", slug, None)),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_json(&entity_json(
+                "cmp_legacy",
+                slug,
+                None,
+            )))
             .mount(&server)
             .await;
         // provision_bucket called because bucket was absent
         Mock::given(method("POST"))
             .and(path("/provision/bucket"))
             .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(&bucket_json("hq-vault-cmp-legacy")),
+                ResponseTemplate::new(200).set_body_json(&bucket_json("hq-vault-cmp-legacy")),
             )
             .mount(&server)
             .await;
@@ -536,7 +531,11 @@ mod tests {
             .iter()
             .filter(|r| r.url.path() == "/provision/bucket")
             .collect();
-        assert_eq!(bucket_calls.len(), 1, "provision_bucket must be called exactly once");
+        assert_eq!(
+            bucket_calls.len(),
+            1,
+            "provision_bucket must be called exactly once"
+        );
         let body: serde_json::Value = serde_json::from_slice(&bucket_calls[0].body).unwrap();
         assert_eq!(body["companyUid"], "cmp_legacy");
 
@@ -550,7 +549,10 @@ mod tests {
         let written: CompanyConfig =
             serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
         assert_eq!(written.bucket_name, "hq-vault-cmp-legacy");
-        assert!(!written.bucket_name.is_empty(), "bucket_name must not be empty");
+        assert!(
+            !written.bucket_name.is_empty(),
+            "bucket_name must not be empty"
+        );
     }
 
     // (e) new folder + no legacy uid → Path C dispatches to provisioner; result

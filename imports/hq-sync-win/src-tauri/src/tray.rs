@@ -73,6 +73,11 @@ fn current_state() -> &'static Arc<Mutex<TrayState>> {
 /// new call's flag to false while its own panel is still opening.
 static MODAL_DEPTH: AtomicUsize = AtomicUsize::new(0);
 
+/// Count of unacknowledged share events. When > 0, the tray tooltip
+/// gains a " · N new share(s)" suffix as a lightweight visual badge
+/// (avoids needing a new tray icon PNG for the share-notify feature).
+static SHARE_BADGE_COUNT: AtomicUsize = AtomicUsize::new(0);
+
 /// Whether at least one native modal is currently open.
 pub fn is_modal_open() -> bool {
     MODAL_DEPTH.load(Ordering::SeqCst) > 0
@@ -122,10 +127,18 @@ fn icon_for_state(state: TrayState) -> Image<'static> {
     };
 
     match state {
-        TrayState::Idle => ICON_IDLE.get_or_init(|| decode(include_bytes!("../icons/tray-idle@2x.png"))),
-        TrayState::Syncing => ICON_SYNCING.get_or_init(|| decode(include_bytes!("../icons/tray-syncing@2x.png"))),
-        TrayState::Error => ICON_ERROR.get_or_init(|| decode(include_bytes!("../icons/tray-error@2x.png"))),
-        TrayState::Conflict => ICON_CONFLICT.get_or_init(|| decode(include_bytes!("../icons/tray-conflict@2x.png"))),
+        TrayState::Idle => {
+            ICON_IDLE.get_or_init(|| decode(include_bytes!("../icons/tray-idle@2x.png")))
+        }
+        TrayState::Syncing => {
+            ICON_SYNCING.get_or_init(|| decode(include_bytes!("../icons/tray-syncing@2x.png")))
+        }
+        TrayState::Error => {
+            ICON_ERROR.get_or_init(|| decode(include_bytes!("../icons/tray-error@2x.png")))
+        }
+        TrayState::Conflict => {
+            ICON_CONFLICT.get_or_init(|| decode(include_bytes!("../icons/tray-conflict@2x.png")))
+        }
     }
     .clone()
 }
@@ -240,9 +253,10 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     // while a picker is in flight; we check it and skip the hide.
     if let Some(window) = app.get_webview_window("main") {
         let win_clone = window.clone();
+        let disable_blur_hide = std::env::var("HQ_DISABLE_BLUR_HIDE").ok().as_deref() == Some("1");
         window.on_window_event(move |event| {
             if let WindowEvent::Focused(false) = event {
-                if !is_modal_open() {
+                if !is_modal_open() && !disable_blur_hide {
                     // Drop always-on-top before hiding so we don't briefly
                     // mark the window as topmost while it's invisible (some
                     // window-management tools cache that state).
@@ -255,6 +269,25 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
 
     // Listen for sync events to auto-update tray state
     setup_sync_listeners(app);
+
+    // Dev helper: open popover at launch when HQ_DEV_SHOW_ON_LAUNCH=1
+    if std::env::var("HQ_DEV_SHOW_ON_LAUNCH").ok().as_deref() == Some("1") {
+        let app_handle = app.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            if let Some(window) = app_handle.get_webview_window("main") {
+                eprintln!("[dev-show] showing main window");
+                let _ = window.center();
+                let _ = window.set_always_on_top(true);
+                let _ = window.show();
+                let _ = window.set_focus();
+                let visible = window.is_visible().unwrap_or(false);
+                eprintln!("[dev-show] is_visible={}", visible);
+            } else {
+                eprintln!("[dev-show] main window not found");
+            }
+        });
+    }
 
     Ok(())
 }
@@ -376,17 +409,20 @@ pub fn update_tray_icon(app: &AppHandle, state: TrayState) {
         *current = state;
     }
 
-    // Update the actual tray icon
+    // Update icon + badge-aware tooltip
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
         let _ = tray.set_icon(Some(icon_for_state(state)));
-        let _ = tray.set_tooltip(Some(state.tooltip()));
     }
+    refresh_tray_tooltip(app);
 }
 
 /// Get the current tray state.
 #[allow(dead_code)]
 pub fn get_current_state() -> TrayState {
-    current_state().lock().map(|s| *s).unwrap_or(TrayState::Idle)
+    current_state()
+        .lock()
+        .map(|s| *s)
+        .unwrap_or(TrayState::Idle)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -395,7 +431,9 @@ pub fn get_current_state() -> TrayState {
 
 /// Wire sync events to tray icon state changes.
 fn setup_sync_listeners(app: &AppHandle) {
-    use crate::events::{EVENT_SYNC_COMPLETE, EVENT_SYNC_CONFLICT, EVENT_SYNC_ERROR, EVENT_SYNC_PROGRESS};
+    use crate::events::{
+        EVENT_SYNC_COMPLETE, EVENT_SYNC_CONFLICT, EVENT_SYNC_ERROR, EVENT_SYNC_PROGRESS,
+    };
 
     let app1 = app.clone();
     app.listen(EVENT_SYNC_PROGRESS, move |_event| {
@@ -419,6 +457,41 @@ fn setup_sync_listeners(app: &AppHandle) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Share-notification badge
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Compose the current tray tooltip from global state + badge count and
+/// apply it to the tray icon. Called by `update_tray_icon`,
+/// `set_share_badge`, and `clear_share_badge` so the tooltip is always
+/// consistent with both the tray state and the share badge.
+fn refresh_tray_tooltip(app: &AppHandle) {
+    let state = get_current_state();
+    let count = SHARE_BADGE_COUNT.load(Ordering::SeqCst);
+    let tooltip = if count > 0 {
+        format!("{} · {} new share(s)", state.tooltip(), count)
+    } else {
+        state.tooltip().to_string()
+    };
+    if let Some(tray) = app.tray_by_id(TRAY_ID) {
+        let _ = tray.set_tooltip(Some(tooltip.as_str()));
+    }
+}
+
+/// Mark N unacknowledged share events. Updates the tray tooltip suffix.
+/// Call from `share_notify::do_poll` after emitting new events.
+pub fn set_share_badge(app: &AppHandle, count: usize) {
+    SHARE_BADGE_COUNT.store(count, Ordering::SeqCst);
+    refresh_tray_tooltip(app);
+}
+
+/// Clear the share badge. Call from `share_notify::share_detail_window_ready`
+/// after the ack POST fires (best-effort).
+pub fn clear_share_badge(app: &AppHandle) {
+    SHARE_BADGE_COUNT.store(0, Ordering::SeqCst);
+    refresh_tray_tooltip(app);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Tauri command
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -427,8 +500,12 @@ fn setup_sync_listeners(app: &AppHandle) {
 /// Accepts: "idle", "syncing", "error", "conflict" (case-insensitive).
 #[tauri::command]
 pub fn set_tray_state(app: AppHandle, state: String) -> Result<(), String> {
-    let tray_state = TrayState::from_str_loose(&state)
-        .ok_or_else(|| format!("Invalid tray state: '{}'. Expected: idle, syncing, error, conflict", state))?;
+    let tray_state = TrayState::from_str_loose(&state).ok_or_else(|| {
+        format!(
+            "Invalid tray state: '{}'. Expected: idle, syncing, error, conflict",
+            state
+        )
+    })?;
     update_tray_icon(&app, tray_state);
     Ok(())
 }
@@ -444,9 +521,15 @@ mod tests {
     #[test]
     fn test_tray_state_from_str_loose() {
         assert_eq!(TrayState::from_str_loose("idle"), Some(TrayState::Idle));
-        assert_eq!(TrayState::from_str_loose("SYNCING"), Some(TrayState::Syncing));
+        assert_eq!(
+            TrayState::from_str_loose("SYNCING"),
+            Some(TrayState::Syncing)
+        );
         assert_eq!(TrayState::from_str_loose("Error"), Some(TrayState::Error));
-        assert_eq!(TrayState::from_str_loose("conflict"), Some(TrayState::Conflict));
+        assert_eq!(
+            TrayState::from_str_loose("conflict"),
+            Some(TrayState::Conflict)
+        );
         assert_eq!(TrayState::from_str_loose("unknown"), None);
         assert_eq!(TrayState::from_str_loose(""), None);
     }
@@ -464,7 +547,12 @@ mod tests {
         // Verify that each included icon starts with the PNG magic bytes
         let png_magic: [u8; 8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
 
-        for state in &[TrayState::Idle, TrayState::Syncing, TrayState::Error, TrayState::Conflict] {
+        for state in &[
+            TrayState::Idle,
+            TrayState::Syncing,
+            TrayState::Error,
+            TrayState::Conflict,
+        ] {
             let bytes: &[u8] = match state {
                 TrayState::Idle => include_bytes!("../icons/tray-idle@2x.png"),
                 TrayState::Syncing => include_bytes!("../icons/tray-syncing@2x.png"),
@@ -526,6 +614,21 @@ mod tests {
     }
 
     #[test]
+    fn test_share_badge_count_atomic() {
+        // AppHandle isn't constructible in unit tests, but we can verify
+        // the AtomicUsize counter itself. `refresh_tray_tooltip` / `set_share_badge`
+        // / `clear_share_badge` wrap this counter; the tray interaction is
+        // exercised in integration/e2e contexts.
+        let before = SHARE_BADGE_COUNT.load(Ordering::SeqCst);
+        SHARE_BADGE_COUNT.store(5, Ordering::SeqCst);
+        assert_eq!(SHARE_BADGE_COUNT.load(Ordering::SeqCst), 5);
+        SHARE_BADGE_COUNT.store(0, Ordering::SeqCst);
+        assert_eq!(SHARE_BADGE_COUNT.load(Ordering::SeqCst), 0);
+        // Restore — best-effort in parallel test runs.
+        SHARE_BADGE_COUNT.store(before, Ordering::SeqCst);
+    }
+
+    #[test]
     fn test_modal_guard_scoping() {
         // ModalGuard is RAII — increment on construction, decrement on
         // drop. This guard is the mechanism that keeps the popover
@@ -546,7 +649,10 @@ mod tests {
                 start + 1,
                 "guard should increment MODAL_DEPTH"
             );
-            assert!(is_modal_open(), "is_modal_open should be true with guard alive");
+            assert!(
+                is_modal_open(),
+                "is_modal_open should be true with guard alive"
+            );
 
             {
                 let _g2 = ModalGuard::new();
@@ -562,7 +668,10 @@ mod tests {
                 start + 1,
                 "dropping inner guard should decrement once"
             );
-            assert!(is_modal_open(), "outer guard still alive — should still be open");
+            assert!(
+                is_modal_open(),
+                "outer guard still alive — should still be open"
+            );
         }
 
         assert_eq!(

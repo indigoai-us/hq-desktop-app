@@ -5,7 +5,7 @@
 //! is never included in release app builds).
 
 // Pull the journal module directly from the crate source tree.
-#[path = "../util/journal.rs"]
+#[path = "../src/util/journal.rs"]
 mod journal;
 
 use journal::{write_journal, Direction, JournalEntry, SyncJournal};
@@ -16,8 +16,7 @@ fn main() {
     files.insert(
         "README.md".to_string(),
         JournalEntry {
-            hash: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-                .to_string(),
+            hash: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_string(),
             size: 0,
             synced_at: "2026-01-01T00:00:00Z".to_string(),
             direction: Direction::Up,

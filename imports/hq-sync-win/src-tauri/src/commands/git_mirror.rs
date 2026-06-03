@@ -93,10 +93,7 @@ fn run_mirror(hq_folder: &str) -> Result<(), String> {
         run_git(hq_folder, &["push"])?;
         log(LOG_TAG, &format!("{hq_folder}: push ok"));
     } else {
-        log(
-            LOG_TAG,
-            &format!("{hq_folder}: no upstream, skipping push"),
-        );
+        log(LOG_TAG, &format!("{hq_folder}: no upstream, skipping push"));
     }
 
     Ok(())
@@ -294,10 +291,8 @@ mod tests {
         run_mirror(work.path().to_str().unwrap()).expect("mirror ok");
 
         // Remote (bare repo) should now have the same HEAD as local.
-        let local_head = String::from_utf8(
-            git(work.path(), &["rev-parse", "HEAD"]).stdout,
-        )
-        .unwrap();
+        let local_head =
+            String::from_utf8(git(work.path(), &["rev-parse", "HEAD"]).stdout).unwrap();
         let remote_head = String::from_utf8(
             Command::new("git")
                 .arg("-C")

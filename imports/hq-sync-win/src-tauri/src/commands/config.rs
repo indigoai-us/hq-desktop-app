@@ -39,6 +39,104 @@ pub struct MenubarPrefs {
     /// (see `is_realtime_sync_enabled` and `get_settings`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub realtime_sync: Option<bool>,
+    /// Sync personal vault: when true (default), the `--companies` fanout
+    /// includes the user's personal target (every top-level entry under
+    /// hq_root minus PERSONAL_VAULT_EXCLUDED_TOP_LEVEL, see hq-cloud
+    /// `personal-vault.ts`). When false, the menubar passes `--no-personal`
+    /// to `hq sync` so the spawned sync-runner drops the personal slot
+    /// from its fanout plan — only cloud-enabled company memberships sync.
+    ///
+    /// Useful for devices that joined HQ for company collaboration only,
+    /// privacy-by-default postures, or soak/recovery scenarios while we're
+    /// cleaning up an already-leaked personal vault. Defaults to true so
+    /// existing users see zero behavior change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub personal_sync_enabled: Option<bool>,
+    /// Instant sync (event-driven): when true (default), an *eligible* user
+    /// (@getindigo.ai during Phase 1 rollout) gets event-driven push — the
+    /// menubar appends `--event-push` to the watch runner so local edits
+    /// upload within seconds of the filesystem event rather than waiting for
+    /// the next 10-minute poll. When false, the runner stays poll-only.
+    ///
+    /// This is an ADDITIONAL opt-in layered on top of `event_push_eligible()`:
+    /// ineligible users never get `--event-push` regardless of this flag.
+    /// Defaults to true (matching the `realtime_sync` default-on convention)
+    /// so eligible users get instant push without discovering the toggle; an
+    /// explicit `false` written by `save_settings` still wins. Absent in
+    /// pre-5.27 menubar.json files → treated as the default at the boundary
+    /// (see `is_instant_sync_enabled` in daemon.rs and `get_settings`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instant_sync: Option<bool>,
+    /// Staging repo (`owner/name`) for Core-Drift staging classification.
+    /// When set, drifted locked-scope files are cross-referenced against this
+    /// repo's `main` tree + open PRs and tagged (`staging main` / `PR #n` /
+    /// `unaccounted`) in the Core Drift window. Any team adopting a
+    /// stage-then-release HQ workflow can point this at their own staging
+    /// repo. When absent, classification only runs for `@getindigo.ai` users
+    /// (defaulting to `indigoai-us/hq-core-staging`); everyone else sees the
+    /// unchanged drift panel. See `commands/hq_core_staging.rs`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drift_staging_repo: Option<String>,
+    /// Share notifications: when true (default), HQ Sync polls
+    /// `/v1/files/shared-with-me` on launch and after each sync, fires a
+    /// macOS notification per new share event, and opens a ShareDetail window
+    /// on click (US-004 / US-005). Only ever active for `@getindigo.ai` users
+    /// (dogfood gate in `commands/share_notify.rs`). Absent in pre-share-notify
+    /// menubar.json files → treated as true (see `get_settings`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub share_notifications: Option<bool>,
+    /// DM notifications: when true (default), HQ Sync polls `/v1/notify/inbox`
+    /// on the same independent timer as share-notify, fires a plain
+    /// fire-and-forget macOS notification per new direct message, and acks
+    /// delivered DMs. RECEIVE-ONLY: there is no in-app reply or send surface —
+    /// sending a DM is done by prompting HQ in a session / CLI. Read directly
+    /// from menubar.json in `commands/dm_notify.rs::dm_notifications_enabled`
+    /// (untyped) so the DM channel never blocks on a typed round-trip; this
+    /// typed field exists so the Settings toggle round-trips cleanly through
+    /// get/save_settings and isn't wiped on the next save. Absent in pre-DM
+    /// menubar.json files → treated as true (see `get_settings`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dm_notifications: Option<bool>,
+    /// Rescue-source channel for @getindigo.ai builders. When `true`
+    /// (default), the Settings toggle is ON → the popover's `CoreState`
+    /// runs against `indigoai-us/hq-core-staging` (drift vs staging main,
+    /// rescue spawned against staging main). When `false`, the toggle is
+    /// OFF → the staging code paths short-circuit (feature dark) and the
+    /// popover falls through to the prod release channel, comparing
+    /// against `indigoai-us/hq-core@v{latest}` like every non-@indigo
+    /// user sees.
+    ///
+    /// Distinct from `release_channel` below: that field controls which
+    /// hq-sync release the auto-updater pulls (stable/beta/alpha);
+    /// `staging_channel` controls which hq-core source tree the in-app
+    /// rescue + drift classifier targets. The two are orthogonal — a
+    /// @indigo user can be on the beta hq-sync channel while keeping the
+    /// rescue pointed at the prod hq-core release.
+    ///
+    /// Setting visibility is gated by `staging_channel_setting_visible`
+    /// (returns true only for `@getindigo.ai` emails). Non-@indigo users
+    /// never see the toggle and always get the prod release channel; their
+    /// menubar.json `stagingChannel` field, if set, is read but has no
+    /// effect (the staging eligibility gate dominates).
+    ///
+    /// Defaults to true so existing @indigo builders see no behaviour change
+    /// across upgrade — explicit `false` flips them to the prod channel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub staging_channel: Option<bool>,
+    /// Auto-updater release channel: `"stable"`, `"beta"`, or `"alpha"`.
+    /// Mapped to a GitHub-tag-suffix filter by
+    /// `util::release_channel::ReleaseChannel::from_pref` and gated by
+    /// `util::feature_gate::is_indigo_user()` — non-`@getindigo.ai` users
+    /// are coerced to `"stable"` at the resolver in `updater.rs`
+    /// regardless of what's stored here, so a hand-edited menubar.json
+    /// cannot escape stable.
+    ///
+    /// Absent in pre-channel-rollout menubar.json files → defaulted in
+    /// `get_settings` to `"beta"` for indigo users (auto-opt-in to
+    /// dogfood the freshest build) and `"stable"` for everyone else.
+    /// See `util::release_channel::effective_channel`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release_channel: Option<String>,
 }
 
 /// Read ~/.hq/menubar.json as an untyped Value map, insert a new v4 UUID under
@@ -49,7 +147,7 @@ pub struct MenubarPrefs {
 /// unknown keys. This mirrors the hq-installer write_menubar_telemetry_pref
 /// algorithm so both sides share one canonical merge shape.
 pub fn ensure_machine_id() -> Result<String, String> {
-    let path: std::path::PathBuf = dirs::home_dir()
+    let path: std::path::PathBuf = crate::util::paths::home_dir()
         .ok_or("home dir unavailable")?
         .join(".hq/menubar.json");
 
@@ -80,8 +178,7 @@ pub fn ensure_machine_id() -> Result<String, String> {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     let tmp = path.with_extension("json.tmp");
-    let body = serde_json::to_string_pretty(&Value::Object(obj))
-        .map_err(|e| e.to_string())?;
+    let body = serde_json::to_string_pretty(&Value::Object(obj)).map_err(|e| e.to_string())?;
     let mut f = fs::File::create(&tmp).map_err(|e| e.to_string())?;
     f.write_all(body.as_bytes()).map_err(|e| e.to_string())?;
     f.sync_all().ok();
@@ -193,10 +290,11 @@ pub fn migrate_legacy_config_stub() {
         return;
     }
 
-    if let Err(e) =
-        write_deploy_prefs(lifted_default_org.as_deref(), lifted_pref.as_deref())
-    {
-        log("config-migration", &format!("write deploy-prefs failed: {e}"));
+    if let Err(e) = write_deploy_prefs(lifted_default_org.as_deref(), lifted_pref.as_deref()) {
+        log(
+            "config-migration",
+            &format!("write deploy-prefs failed: {e}"),
+        );
         // Don't strip from config.json if we couldn't persist forward —
         // leave the file as-is so /deploy's own backwards-compat read
         // still finds the slug.
@@ -285,7 +383,7 @@ fn write_deploy_prefs(default_org: Option<&str>, preference: Option<&str>) -> Re
 /// `~/.hq/person-entity.json` + `~/.hq/menubar.json`. Returns `None` if the
 /// person-entity cache isn't present or doesn't deserialize.
 fn reconstruct_personal_hq_config() -> Option<HqConfig> {
-    let home = dirs::home_dir()?;
+    let home = crate::util::paths::home_dir()?;
     let entity_path = home.join(".hq").join("person-entity.json");
     let entity_contents = std::fs::read_to_string(&entity_path).ok()?;
     let entity: serde_json::Value = serde_json::from_str(&entity_contents).ok()?;
@@ -299,10 +397,7 @@ fn reconstruct_personal_hq_config() -> Option<HqConfig> {
     let hq_folder_path = std::fs::read_to_string(&menubar_path)
         .ok()
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-        .and_then(|v| {
-            v.get("hqPath")
-                .and_then(|p| p.as_str().map(str::to_string))
-        });
+        .and_then(|v| v.get("hqPath").and_then(|p| p.as_str().map(str::to_string)));
 
     Some(HqConfig {
         company_uid: person_uid.clone(),
@@ -576,6 +671,40 @@ mod tests {
     }
 
     #[test]
+    fn test_menubar_prefs_instant_sync_round_trip_true() {
+        // `instant_sync` serializes to camelCase `instantSync` so the
+        // Instant-sync (event-driven) setting persists across restarts.
+        let json = r#"{"instantSync": true}"#;
+        let prefs: MenubarPrefs = serde_json::from_str(json).unwrap();
+        assert_eq!(prefs.instant_sync, Some(true));
+        let out = serde_json::to_string(&prefs).unwrap();
+        assert!(
+            out.contains("\"instantSync\":true"),
+            "expected camelCase key 'instantSync' in serialized output, got: {out}"
+        );
+        assert!(!out.contains("instant_sync"));
+    }
+
+    #[test]
+    fn test_menubar_prefs_instant_sync_absent_deserializes_none() {
+        // Backwards compatibility: pre-5.27 menubar.json predates the field
+        // and must continue to load. None is the absent-marker; the daemon /
+        // settings boundary applies the default-on at read time.
+        let json = r#"{"hqPath": "/custom/HQ"}"#;
+        let prefs: MenubarPrefs = serde_json::from_str(json).unwrap();
+        assert_eq!(prefs.instant_sync, None);
+    }
+
+    #[test]
+    fn test_menubar_prefs_instant_sync_false_round_trip() {
+        let json = r#"{"instantSync": false}"#;
+        let prefs: MenubarPrefs = serde_json::from_str(json).unwrap();
+        assert_eq!(prefs.instant_sync, Some(false));
+        let out = serde_json::to_string(&prefs).unwrap();
+        assert!(out.contains("\"instantSync\":false"));
+    }
+
+    #[test]
     fn test_config_state_unconfigured() {
         let state = ConfigState {
             configured: false,
@@ -631,11 +760,7 @@ mod ensure_machine_id_tests {
         let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = fixture();
         std::env::set_var("HOME", tmp.path());
-        fs::write(
-            tmp.path().join(".hq/menubar.json"),
-            r#"{"hqPath":"/foo"}"#,
-        )
-        .unwrap();
+        fs::write(tmp.path().join(".hq/menubar.json"), r#"{"hqPath":"/foo"}"#).unwrap();
         let id = ensure_machine_id().unwrap();
         assert!(uuid::Uuid::parse_str(&id).is_ok());
         let v = read_menubar_value(tmp.path());
@@ -733,7 +858,8 @@ mod lenient_reader_and_migration_tests {
             "bucketName": "bkt",
             "vaultApiUrl": "https://example.invalid",
             "hqFolderPath": "/tmp/HQ"
-        })).unwrap()
+        }))
+        .unwrap()
     }
 
     // (a) lenient reader: file missing → Ok(None), never Err.
@@ -766,10 +892,7 @@ mod lenient_reader_and_migration_tests {
         let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = fresh_home();
         std::env::set_var("HOME", tmp.path());
-        write(
-            tmp.path().join(".hq/config.json"),
-            "not even json {{{",
-        );
+        write(tmp.path().join(".hq/config.json"), "not even json {{{");
         let got = read_hq_config_lenient().unwrap();
         assert!(got.is_none());
     }
@@ -911,7 +1034,10 @@ mod lenient_reader_and_migration_tests {
         migrate_legacy_config_stub();
 
         let after = fs::read_to_string(tmp.path().join(".hq/config.json")).unwrap();
-        assert_eq!(after, foreign, "foreign config.json must NOT be overwritten when no deploy keys are present");
+        assert_eq!(
+            after, foreign,
+            "foreign config.json must NOT be overwritten when no deploy keys are present"
+        );
         assert!(
             !tmp.path().join(".hq/deploy-prefs.json").exists(),
             "deploy-prefs.json must NOT be created from a non-stub file"

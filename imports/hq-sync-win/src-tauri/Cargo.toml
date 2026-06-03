@@ -1,6 +1,6 @@
 [package]
 name = "hq-sync-menubar"
-version = "0.1.39"
+version = "0.4.0"
 edition = "2021"
 
 [build-dependencies]
@@ -13,6 +13,11 @@ tauri-plugin-http = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-global-shortcut = "2"
+# US-009: tauri-plugin-notification is cross-platform — on Windows it fires
+# native Action-Center toasts (respecting Focus Assist), which is the
+# share-notify firing path for the fork. The macOS action-button dropdown
+# (mac-notification-sys) stays a macOS-only dep below.
+tauri-plugin-notification = "2"
 # window-vibrancy 0.6 supports both Win 11 Mica and Win 10 Acrylic
 # (and macOS NSVisualEffectMaterial, but the Windows fork doesn't use
 # that path). Required by US-005's apply_windows_vibrancy.
@@ -26,6 +31,10 @@ reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
 dirs = "6"
 rfd = "0.15"
 sha2 = "0.10"
+# Git blob hashing uses SHA-1: blob_sha = sha1("blob {len}\0{content}").
+# GitHub Trees API returns these per file; computing the same locally lets
+# us diff without downloading file contents. (Used by hq_core_drift.rs)
+sha1 = "0.10"
 base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 sentry = "^0.35"
@@ -44,8 +53,42 @@ aws-sdk-sts = { version = "1", features = ["behavior-version-latest"] }
 aws-config = "1"
 aws-smithy-types = "1"
 aws-credential-types = "1"
+# Provides `Identity` (the `aws-sigv4` SigningParams builder takes `&Identity`,
+# constructed from `aws_credential_types::Credentials` via `Into`). Already in
+# the graph transitively via the aws-sdk crates; pinned direct so dm_mqtt.rs can
+# name the type without leaning on a transitive re-export.
+aws-smithy-runtime-api = { version = "1", features = ["client"] }
+# SigV4 query-presigning for the AWS IoT MQTT-over-WSS connection
+# (commands/dm_mqtt.rs). The `http1` feature pulls the `http_request`
+# presigning surface (SignableRequest / SigningSettings / SignatureLocation)
+# which signs a GET and emits the X-Amz-* query string we hand to rumqttc.
+# Already in the dep graph transitively via the aws-sdk crates; pinned direct
+# so dm_mqtt.rs can use it without a transitive re-export moving.
+aws-sigv4 = { version = "1", features = ["http1"] }
+# MQTT-over-WebSockets client for AWS IoT Core push delivery. `websocket`
+# enables the wss transport, but the `Transport::Wss` connect path in rumqttc
+# is gated on `use-rustls` too (it builds a tokio-rustls TLS layer), so both
+# are required. We set the full presigned `wss://{host}/mqtt?X-Amz-...` string
+# as the broker address (path + SigV4 query preserved) rather than via
+# `parse_url`, because rumqttc's url parser treats unknown query keys as errors
+# and would reject the X-Amz-* params.
+rumqttc = { version = "0.24", default-features = false, features = ["websocket", "use-rustls"] }
 ulid = "1"
 bytes = "1"
+# Strict SemVer comparison for the release-channel resolver in
+# `util/release_channel.rs`. We need correct pre-release ordering
+# (`1.0.0-alpha.1 < 1.0.0-beta.1 < 1.0.0`) when picking the newest
+# applicable release per channel — the loose `cmp_semver` in
+# `commands/hq_cli_update.rs` drops pre-release suffixes and would
+# rank `v0.1.109-beta.1` as equal to `v0.1.109`, which would let a
+# stable-channel user pick up a beta. Tiny dep, well-maintained.
+semver = "1"
+# `url::Url` is required by `tauri_plugin_updater::UpdaterBuilder::endpoints`
+# (the plugin re-exports `url::Url` but builds against this exact crate).
+# Already in the dep graph via reqwest + tauri-plugin-updater; declaring it
+# directly so updater.rs can `use url::Url;` without leaning on a
+# transitive re-export that could move.
+url = "2"
 
 [profile.release]
 # `split-debuginfo = "packed"` is macOS/dSYM-specific. On Windows MSVC the
@@ -66,6 +109,26 @@ windows = { version = "0.58", features = [
     "Win32_System_Diagnostics_ToolHelp",
 ] }
 winreg = "0.55"
+
+# US-009: share-notify on Windows fires via tauri-plugin-notification (the
+# cross-platform workspace dep above) — native Action-Center toasts that
+# respect Focus Assist. The macOS-only action-button dropdown deps below are
+# NOT compiled on Windows; the firing block in commands/share_notify.rs is
+# cfg-gated so this target builds without mac-notification-sys / objc2.
+[target.'cfg(target_os = "macos")'.dependencies]
+# Used by commands::folder_picker to enumerate NSApp.windows and close
+# any stale NSOpenPanel/NSSavePanel before opening a new picker. rfd
+# doesn't expose the panel handle, so we reach into AppKit directly.
+objc2 = "0.6"
+# Direct dep on mac-notification-sys for action-button notifications.
+# tauri-plugin-notification (2.3.3) on macOS uses notify-rust which
+# wraps NSUserNotification but DOES NOT expose action buttons —
+# `register_action_types` is mobile-only and there's no on_action
+# callback for desktop. mac-notification-sys (a transitive dep already)
+# does support MainButton::DropdownActions + wait_for_click for the
+# canonical macOS Sonoma/Sequoia hover-to-reveal action UX.
+# Pattern proven in commands/meetings.rs notification flow.
+mac-notification-sys = "0.6"
 
 [features]
 journal-cli = []

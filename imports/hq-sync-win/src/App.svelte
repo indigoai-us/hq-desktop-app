@@ -9,6 +9,7 @@
   import { conflictStore, type ConflictFile } from './stores/conflicts';
   import { shouldSkipSignIn } from './lib/auth';
   import type { Workspace, WorkspacesResult } from './lib/workspaces';
+  import { buildClaudeCodeUrl } from './lib/claude-code-link';
   import './styles/popover.css';
 
   interface Config {
@@ -151,16 +152,72 @@
   // (typical failure: EACCES against a system-prefix npm that needs sudo).
   let hqCliUpdateError = $state<string | null>(null);
 
-  // hq-core release notifier state — populated by `hq-core-update:available`
-  // from the Rust background checker (launch+20s, then every 6h). Non-null
-  // means the user's `core.yaml` `hqVersion` lags the latest GitHub release
-  // of indigoai-us/hq-core. The banner CTA opens Claude Code at the HQ
-  // folder with `/update-hq` pre-filled in the prompt (same
-  // `claude://code/new` deep-link mechanism as `fixHqCliUpdateInHq`).
-  let hqCoreUpdateAvailable = $state<{
-    local: string | null;
-    latest: string;
+  // Unified HQ-core state — replaces the pre-refactor quad
+  // (hqCoreUpdateAvailable + hqCoreDrift + stagingDrift + stagingReplace)
+  // with one struct emitted on `core-state:changed` from the Rust
+  // background checker (see commands/hq_core_state.rs). The pill labels +
+  // visibility derive entirely from this one source of truth.
+  //
+  // `channel` chooses the comparison target:
+  //   * "release" → drift vs latest tag on indigoai-us/hq-core
+  //   * "staging" → drift vs main HEAD on hq-core-staging
+  //
+  // `driftReport.count` is THE drift count (USER-EDIT files only); MISSING +
+  // USER-ONLY are listed in modified/missing/added but don't add to count.
+  // `versionBehind` is true when the user is on an older release/SHA than
+  // the target. `needsUpdate = versionBehind || driftReport.count > 0` —
+  // i.e. the Update pill shows whenever the rescue would do something.
+  type DriftEntry = {
+    path: string;
+    size: number;
+    gitShaLocal: string | null;
+    gitShaUpstream: string | null;
+  };
+  type DriftReport = {
+    count: number;
+    modified: DriftEntry[];
+    missing: DriftEntry[];
+    added: DriftEntry[];
+    scannedAt: string;
+    hqVersion: string;
+    targetRepo: string;
+    targetRef: string;
+  };
+  type CoreState = {
+    channel: 'release' | 'staging';
+    targetRepo: string;
+    targetVersion: string;
+    targetRef: string;
+    localVersion: string | null;
+    floorSha: string | null;
+    isEligible: boolean;
+    versionBehind: boolean;
+    driftReport: DriftReport;
+    unchangedCount: number;
+    userOnlyCount: number;
+    scannedAt: string;
+  };
+  let coreState = $state<CoreState | null>(null);
+  // Spinner / disable flag for the Update pill while the rescue script
+  // (release `install_hq_core_update` or staging `run_replace_from_staging`)
+  // is running.
+  let coreInstalling = $state<boolean>(false);
+  // Last install-run summary (success or error). Surfaced via Popover so
+  // the user sees ✓ / ✗ in the same row the pill lives in. Cleared at the
+  // start of a new run.
+  let coreInstallLastResult = $state<{
+    kind: 'ok' | 'err';
+    exitCode: number;
+    logTail: string;
+    logPath: string;
   } | null>(null);
+
+  // Locally-installed hq-core `hqVersion` (or null when core.yaml is
+  // missing/unparseable). Always populated by a cheap on-disk read at app
+  // mount — independent of the unified state's 6h cadence. Drives the
+  // "HQ v14.2.1" footer row in Popover; null surfaces the repair affordance
+  // instead of silently hiding the row.
+  let hqVersion = $state<string | null>(null);
 
   // Collected unlisten handles for cleanup
   let unlisteners: UnlistenFn[] = [];
@@ -170,6 +227,85 @@
       config = await invoke<Config>('get_config');
     } catch (err) {
       console.error('Failed to load config:', err);
+    }
+  }
+
+  // Cheap on-disk read of hq-core's `hqVersion` from `core.yaml`. Null when
+  // unreadable — see `hqVersion` state declaration for why null is surfaced
+  // rather than swallowed. Errors are logged but treated as null so a
+  // transient Rust failure doesn't blank the row mid-session.
+  async function loadHqVersion() {
+    try {
+      hqVersion = await invoke<string | null>('get_hq_version');
+    } catch (err) {
+      console.error('Failed to load hq version:', err);
+      hqVersion = null;
+    }
+  }
+
+  // Refresh the unified core state on demand (mount, post-settings,
+  // post-rescue). Errors swallowed — the background listener will
+  // repopulate on the next 6h tick. Maps snake_case Rust → camelCase JS.
+  async function loadCoreState() {
+    try {
+      const s = await invoke<CoreState | null>('check_core_state');
+      coreState = s;
+    } catch (err) {
+      console.error('check_core_state failed:', err);
+    }
+  }
+
+  // Unified "Update" action — dispatches to the right rescue command based
+  // on the active channel. Release channel runs `install_hq_core_update`
+  // (overlays the latest hq-core release tag); staging channel runs
+  // `run_replace_from_staging` (overlays staging main). Both return the
+  // same RescueRunResult shape so the surface is identical.
+  //
+  // Long-running (30-90s on first run because of the full-history clone +
+  // scan). The pill is disabled while the promise is pending; the result
+  // lands in `coreInstallLastResult` for Popover to surface. On success we
+  // refresh `hqVersion` + re-run the state check so drift + version pills
+  // both swing to the post-rescue truth without waiting for the 6h tick.
+  async function handleInstallCore() {
+    if (coreInstalling) return;
+    if (!coreState) return;
+    coreInstalling = true;
+    coreInstallLastResult = null;
+    const command =
+      coreState.channel === 'staging'
+        ? 'run_replace_from_staging'
+        : 'install_hq_core_update';
+    try {
+      const result = await invoke<{
+        exit_code: number;
+        log_tail: string;
+        log_path: string;
+      }>(command);
+      coreInstallLastResult = {
+        kind: result.exit_code === 0 ? 'ok' : 'err',
+        exitCode: result.exit_code,
+        logTail: result.log_tail,
+        logPath: result.log_path,
+      };
+      await loadHqVersion();
+      if (result.exit_code === 0) {
+        // Re-run unified state so version_behind + drift both swing to
+        // post-rescue truth. Fire-and-forget — failure leaves the prior
+        // state until the next background tick.
+        invoke('check_core_state').catch((e) =>
+          console.error('post-install core-state refresh failed:', e)
+        );
+      }
+    } catch (err) {
+      console.error(`${command} failed:`, err);
+      coreInstallLastResult = {
+        kind: 'err',
+        exitCode: -1,
+        logTail: String(err),
+        logPath: '',
+      };
+    } finally {
+      coreInstalling = false;
     }
   }
 
@@ -250,9 +386,16 @@
     // Popover renders from `config.hqFolderPath`, which was snapshotted at
     // mount. Re-read menubar.json so the change is visible without a quit.
     // Workspaces depend on hq_root too — local folder enumeration would point
-    // at the wrong tree otherwise.
+    // at the wrong tree otherwise. hqVersion also follows the HQ root —
+    // re-tethering to a different folder may surface a different (or now-
+    // readable) `core.yaml`.
     loadConfig();
     loadWorkspaces();
+    loadHqVersion();
+    // User may have just flipped the staging-channel toggle — re-run the
+    // unified state check so channel + target + drift all swing without
+    // waiting for the 6h background tick.
+    loadCoreState();
   }
 
   function handleSignOut() {
@@ -643,22 +786,15 @@
       )
     );
 
-    // --- hq-core release notifier event listener ---
-    // Protocol (see src-tauri/src/commands/hq_core_update.rs):
-    //   hq-core-update:available — payload { local: string | null, latest: string }
-    //     `local` is null when core.yaml is missing/unparseable; the
-    //     checker doesn't emit in that case, but we type it permissively.
-    //   No `:cleared` event — clicking Update launches Claude Code
-    //     out-of-process (via `claude://code/new`), so we have no way
-    //     to know in-app when the user finishes /update-hq. The banner
-    //     clears naturally on the next background check after
-    //     core.yaml's hqVersion has advanced.
+    // --- unified hq-core state listener ---
+    // Protocol (see src-tauri/src/commands/hq_core_state.rs):
+    //   core-state:changed — full CoreState payload. Emitted on every
+    //   background tick + every on-demand `check_core_state` invoke,
+    //   including the "no drift, on latest" case so the pill can swing
+    //   back to "in sync" after the user resolves.
     unlisteners.push(
-      await listen<{
-        local: string | null;
-        latest: string;
-      }>('hq-core-update:available', (event) => {
-        hqCoreUpdateAvailable = event.payload;
+      await listen<CoreState>('core-state:changed', (event) => {
+        coreState = event.payload;
       })
     );
 
@@ -686,6 +822,196 @@
         }
       )
     );
+
+    // --- Share-notification event listener (US-005) ---
+    // Rust emits `share:new-events` after each poll when new events are found.
+    // The Rust side has already fired one macOS notification per event AND
+    // primed the pending-events state for the detail-window ready-handshake.
+    //
+    // We deliberately do NOT open the ShareDetail window here. The window
+    // opens only via user-initiated paths:
+    //   1. notification click → `share-notify:detail-requested` listener
+    //   2. notification action button "Open details" → same path
+    //   3. tray click on the share-notify badge
+    //
+    // Auto-opening on every poll was a UX bug discovered during dogfood
+    // (2026-05-26): combined with the cursor re-fire bug, the ShareDetail
+    // window re-appeared every ~20s. Even with the cursor bug fixed, eager
+    // open is wrong UX — the notification is the lightweight surface and
+    // the detail window is opt-in.
+    unlisteners.push(
+      await listen<Array<{
+        eventId: string;
+        issuerEmail: string;
+        issuerDisplayName: string;
+        paths: string[];
+        note: string | null;
+        permission: string;
+        createdAt: string;
+      }>>('share:new-events', async (_event) => {
+        // No-op for now — the notification handler in Rust owns the side
+        // effects (notification.show(), pending-events state, tray badge).
+        // This listener stays subscribed so a future in-popover share-
+        // events list can hook here without needing a second registration.
+      })
+    );
+
+    // --- Share-notification action handler (Fix D, 2026-05-26) ---
+    // Rust spawns a thread per macOS notification that blocks on
+    // mac-notification-sys `wait_for_click(true).send()`. When the user
+    // hovers the notification and picks "Copy prompt" / "Open details"
+    // from the Actions dropdown (or body-clicks for the open path), the
+    // thread emits `notification:share-action` with the full event payload.
+    //
+    // "copy" → write the templated prompt to the system clipboard.
+    // "open" → invoke open_share_detail with this single event so the
+    //          ShareDetail window focuses or opens with the right context.
+    unlisteners.push(
+      await listen<{
+        action: 'claude' | 'copy' | 'open';
+        eventId: string;
+        event: {
+          eventId: string;
+          issuerEmail: string;
+          issuerDisplayName: string;
+          paths: string[];
+          note: string | null;
+          permission: string;
+          createdAt: string;
+        };
+      }>('notification:share-action', async (e) => {
+        const { action, event: evt } = e.payload;
+
+        // Shared prompt-template helper. Kept in sync with
+        // ShareDetail.svelte::buildPrompt (which still owns the in-window
+        // "Copy prompt" button). Moving to a shared module is a TODO once
+        // a third consumer appears.
+        const buildPrompt = () => {
+          const pathList = evt.paths.join(', ');
+          const note = evt.note?.trim() || '(no note)';
+          return `${evt.issuerDisplayName} shared these files with me: ${pathList}\n\nTheir note: ${note}.`;
+        };
+
+        if (action === 'claude') {
+          // Body-click → open Claude Code with the templated prompt
+          // pre-filled in the input. Mirrors the pattern used by:
+          //   * OpenInClaudeCodeButton (`lib/claude-code-link.ts`)
+          //   * hq-installer's launch_claude_code_link flow
+          //   * Popover.svelte fixHqCliUpdateInHq CTA
+          //
+          // User feedback 2026-05-26: prefer opening Claude Code over a
+          // bare clipboard copy — the recipient almost always wants to
+          // continue the share in an LLM session, so save them the
+          // paste step.
+          const folder = config?.hqFolderPath ?? '';
+          try {
+            const url = buildClaudeCodeUrl({ folder, prompt: buildPrompt() });
+            await invoke('open_claude_code_link', { url });
+          } catch (err) {
+            console.error('share-notify: open_claude_code_link failed', err);
+          }
+        } else if (action === 'copy') {
+          // Dropdown "Copy prompt" → clipboard write (no app launch).
+          // Intentionally redundant with the body-click → Claude path for
+          // users who already have a Claude session running, are pasting
+          // into a different app, or want the literal text without any
+          // side effects (user direction 2026-05-26).
+          try {
+            await navigator.clipboard.writeText(buildPrompt());
+          } catch (err) {
+            console.error('share-notify: clipboard write failed', err);
+          }
+        } else if (action === 'open') {
+          try {
+            await invoke('open_share_detail', { events: [evt] });
+          } catch (err) {
+            console.error('share-notify: open_share_detail failed', err);
+          }
+        }
+      })
+    );
+
+    // --- DM-notification action handler (rich DMs, 2026-05-29) ---
+    // DMs are receive-only (no reply/send surface). Plain DMs are fire-and-
+    // forget. A DM that carries agent context (`prompt`) and/or `details`
+    // gets an "Actions" dropdown; on action the Rust thread emits
+    // `notification:dm-action`:
+    //   "copy" → write the sender's agent prompt to the clipboard so the
+    //            recipient can paste it straight into their own agent session.
+    //   "open" → open the DM detail window (full message + details + Copy).
+    unlisteners.push(
+      await listen<{
+        action: 'copy' | 'open';
+        event: {
+          eventId: string;
+          fromPersonUid: string;
+          fromEmail: string;
+          fromDisplayName: string;
+          body: string;
+          details?: string | null;
+          prompt?: string | null;
+          createdAt: string;
+        };
+      }>('notification:dm-action', async (e) => {
+        const { action, event: dm } = e.payload;
+        if (action === 'copy') {
+          const prompt = dm.prompt?.trim();
+          if (!prompt) return;
+          try {
+            await navigator.clipboard.writeText(prompt);
+          } catch (err) {
+            console.error('dm-notify: clipboard write failed', err);
+          }
+        } else if (action === 'open') {
+          try {
+            await invoke('open_dm_detail', { event: dm });
+          } catch (err) {
+            console.error('dm-notify: open_dm_detail failed', err);
+          }
+        }
+      })
+    );
+
+    // --- Unified custom-banner action listener ---
+    // The custom in-app banner (commands/banner.rs) fires ONE event for every
+    // source; we route by `kind`. This is the action path for the custom
+    // banner surface — the native `notification:dm-action` /
+    // `notification:share-action` handlers above still serve the native path
+    // (when `customBanner` is off). `data` is the original source event,
+    // serialized camelCase, so it slots straight into the open_* commands.
+    unlisteners.push(
+      await listen<{ kind: string; action: string; data: any }>(
+        'notification:banner-action',
+        async (e) => {
+          const { kind, action, data } = e.payload;
+          try {
+            if (kind === 'dm') {
+              if (action === 'copy') {
+                const prompt = (data?.prompt ?? '').trim();
+                if (prompt) await navigator.clipboard.writeText(prompt);
+              } else if (action === 'open') {
+                await invoke('open_dm_detail', { event: data });
+              }
+            } else if (kind === 'share') {
+              if (action === 'open') {
+                await invoke('open_share_detail', { events: [data] });
+              } else if (action === 'copy') {
+                const paths = Array.isArray(data?.paths) ? data.paths.join(', ') : '';
+                if (paths) await navigator.clipboard.writeText(paths);
+              }
+            } else if (kind === 'update') {
+              if (action === 'update') {
+                await invoke('install_update');
+              } else if (action === 'open') {
+                await invoke('show_main_window');
+              }
+            }
+          } catch (err) {
+            console.error('banner-action failed', kind, action, err);
+          }
+        }
+      )
+    );
   }
 
   $effect(() => {
@@ -695,7 +1021,17 @@
     checkAuth();
     loadConfig();
     loadWorkspaces();
+    loadHqVersion();
+    // Fire-and-forget — background listener will overwrite on the next
+    // tick. Calling here gives the popover a populated state on first
+    // open instead of waiting 30s for the bg checker.
+    loadCoreState();
     setupTrayListeners();
+    // One-time OS notification permission prompt. macOS only shows the system
+    // dialog while status is `prompt` (not determined); once granted/denied it
+    // returns silently, so calling this every launch never re-nags. Fire-and-
+    // forget — errors are non-fatal (the Settings monitor lets the user retry).
+    requestNotificationPermissionOnce();
     // Fire-and-forget: gate is a process-lifetime cache on the Rust side,
     // so subsequent reads are O(1). Errors silently treated as not-enabled.
     invoke<boolean>('meetings_feature_enabled')
@@ -711,6 +1047,22 @@
       unlisteners = [];
     };
   });
+
+  // Ask macOS for notification authorization once. The Rust command wraps
+  // tauri-plugin-notification's request_permission(); macOS shows the system
+  // dialog only when the status is `prompt`, so this is safe to call on every
+  // launch (no re-nag). We skip the request entirely when already determined
+  // to avoid a needless IPC round-trip.
+  async function requestNotificationPermissionOnce() {
+    try {
+      const state = await invoke<string>('notification_permission_state');
+      if (state === 'prompt') {
+        await invoke<string>('notification_request_permission');
+      }
+    } catch (err) {
+      console.error('notification permission request failed', err);
+    }
+  }
 
   async function checkAuth() {
     try {
@@ -782,7 +1134,10 @@
       {hqCliUpdateAvailable}
       {hqCliUpdateInstalling}
       {hqCliUpdateError}
-      {hqCoreUpdateAvailable}
+      {coreState}
+      {coreInstalling}
+      {coreInstallLastResult}
+      {hqVersion}
       onsync={handleSyncNow}
       oncancel={handleCancel}
       onsettings={handleSettings}
@@ -792,6 +1147,7 @@
       ondismissconflicts={handleDismissConflicts}
       oninstallupdate={handleInstallUpdate}
       oninstallhqcliupdate={handleInstallHqCliUpdate}
+      oninstallcore={handleInstallCore}
       bindStatsRefresh={(fn) => (syncStatsRefresh = fn)}
       {meetingsEnabled}
       onmeetingsclick={() => {

@@ -332,9 +332,7 @@ pub async fn oauth_exchange_code(code: String) -> Result<AuthState, String> {
             .text()
             .await
             .unwrap_or_else(|_| "unknown".to_string());
-        return Err(format!(
-            "Token exchange failed ({status}): {body_text}"
-        ));
+        return Err(format!("Token exchange failed ({status}): {body_text}"));
     }
 
     let token_resp: TokenResponse = response
@@ -372,14 +370,13 @@ pub async fn oauth_listen_for_code(state: String) -> Result<OAuthResult, String>
     let state_copy = state.clone();
 
     tokio::task::spawn_blocking(move || -> Result<OAuthResult, String> {
-        let listener =
-            TcpListener::bind((LOOPBACK_HOST, LOOPBACK_PORT)).map_err(|e| {
-                format!(
-                    "Failed to bind OAuth loopback listener on {}:{} — {}. \
+        let listener = TcpListener::bind((LOOPBACK_HOST, LOOPBACK_PORT)).map_err(|e| {
+            format!(
+                "Failed to bind OAuth loopback listener on {}:{} — {}. \
                      Another instance may already be waiting for sign-in.",
-                    LOOPBACK_HOST, LOOPBACK_PORT, e
-                )
-            })?;
+                LOOPBACK_HOST, LOOPBACK_PORT, e
+            )
+        })?;
 
         listener
             .set_nonblocking(false)
@@ -405,14 +402,8 @@ pub async fn oauth_listen_for_code(state: String) -> Result<OAuthResult, String>
                         Some((_code, _state, Some(error))) => {
                             let reason = format!("Provider error: {error}");
                             eprintln!("[oauth] callback rejected — {reason}");
-                            write_response(
-                                &mut stream,
-                                "400 Bad Request",
-                                &error_html(&reason),
-                            );
-                            return Err(format!(
-                                "OAuth provider returned error: {error}"
-                            ));
+                            write_response(&mut stream, "400 Bad Request", &error_html(&reason));
+                            return Err(format!("OAuth provider returned error: {error}"));
                         }
                         Some((code, state, None)) => {
                             if state != state_copy {
@@ -427,14 +418,10 @@ pub async fn oauth_listen_for_code(state: String) -> Result<OAuthResult, String>
                                     &error_html(&reason),
                                 );
                                 return Err(
-                                    "OAuth state mismatch — possible CSRF, aborting."
-                                        .into(),
+                                    "OAuth state mismatch — possible CSRF, aborting.".into()
                                 );
                             }
-                            eprintln!(
-                                "[oauth] callback accepted — code length {}",
-                                code.len()
-                            );
+                            eprintln!("[oauth] callback accepted — code length {}", code.len());
                             write_response(&mut stream, "200 OK", SUCCESS_HTML);
                             return Ok(OAuthResult { code });
                         }
@@ -562,7 +549,10 @@ mod tests {
         assert!(url.starts_with(&format!("{}?", cognito_authorize_url())));
         assert!(url.contains("response_type=code"));
         assert!(url.contains("client_id=7acei2c8v870enheptb1j5foln"));
-        assert!(url.contains("redirect_uri=http%3A%2F%2Flocalhost%3A53682%2Fcallback") || url.contains("redirect_uri=http://localhost:53682/callback"));
+        assert!(
+            url.contains("redirect_uri=http%3A%2F%2Flocalhost%3A53682%2Fcallback")
+                || url.contains("redirect_uri=http://localhost:53682/callback")
+        );
         assert!(url.contains("scope=openid+email+profile"));
         // identity_provider=Google is what makes Cognito skip its Hosted UI
         // login form and route straight to Google OAuth — matches hq-installer.

@@ -415,6 +415,137 @@ jq -r 'to_entries[0].value.offset' ~/.hq/telemetry-cursor.json
 - [ ] Click tray icon -> popover opens
 - [ ] Right-click tray icon -> context menu shows: Sync Now, Settings, Quit
 
+### US-004 / US-005 / US-006 / US-007 (Share Notifications): End-to-End Walkthrough
+
+> **Prerequisite:** Logged-in user must have an `@getindigo.ai` email (dogfood gate). All steps
+> assume HQ Sync is built from the `feature/hq-sync-share-notify` branch. A second
+> Indigo account (the "sharer") is needed to trigger share events from hq-console.
+
+#### SN-001: Poll fires 5 seconds after app launch
+
+- [ ] 1. With `~/.hq/share-notify-cursor.json` deleted (fresh cursor), launch HQ Sync.app
+- [ ] 2. Inspect `~/.hq/logs/hq-sync.log` after 10 seconds
+- [ ] 3. Verify a `SHARE_NOTIFY_POLL_START` log line appears (confirms launch-time poll fired)
+
+#### SN-002: Poll fires after sync:complete
+
+- [ ] 1. Click "Sync Now" in the menubar popover and wait for completion
+- [ ] 2. Inspect `~/.hq/logs/hq-sync.log`
+- [ ] 3. Verify a second `SHARE_NOTIFY_POLL_START` line appears after the sync-complete log entry
+
+#### SN-003: macOS notification displayed for a new share event
+
+- [ ] 1. From the sharer's hq-console, create a new share-session targeting the test user's account with a short note (e.g., "Please review before Friday")
+- [ ] 2. Wait up to 60 seconds for the next poll cycle (or click "Sync Now" to trigger immediately)
+- [ ] 3. Verify a macOS notification appears:
+  - Title: `<SharerDisplayName> shared files with you`
+  - Body: the first ~100 characters of the note (or comma-joined filenames if no note)
+- [ ] 4. Verify no crash or error in `~/.hq/logs/hq-sync.log`
+
+#### SN-004: Clicking the notification (or the tray badge) opens the ShareDetail window
+
+- [ ] 1. With a pending share:new-events notification visible, click it (or click the tray icon)
+- [ ] 2. Verify the **ShareDetail** window opens with:
+  - Sharer name + email
+  - Full list of shared paths
+  - Full note text
+  - "Copy prompt" button
+  - "Open in HQ Console" link
+- [ ] 3. Verify window is focused and the app is brought to the foreground
+
+#### SN-005: Copy prompt button puts correct template on clipboard
+
+- [ ] 1. In the ShareDetail window, click **Copy prompt**
+- [ ] 2. Paste into a text editor
+- [ ] 3. Verify clipboard contains:
+  ```
+  <SharerDisplayName> shared these files with me:
+  <path 1>
+  <path 2>
+  ...
+
+  Their note: <note text or "(no note)">
+  ```
+  (No action verb — recipient supplies their own framing)
+- [ ] 4. Verify no error toast or console error when clicking the button
+
+#### SN-006: Post-ack fires and suppresses duplicate email
+
+- [ ] 1. Within 5 minutes of receiving the share event (before the SQS delayed worker fires), open the ShareDetail window
+- [ ] 2. Inspect `~/.hq/logs/hq-sync.log` — verify `SHARE_NOTIFY_ACK_OK` log line appears
+- [ ] 3. After 5+ minutes, check the recipient email inbox — verify **no share-notification email** arrived (first-surface-wins suppression)
+
+#### SN-007: Tray badge dot appears and clears
+
+- [ ] 1. Before opening the ShareDetail window, hover over the tray icon
+- [ ] 2. Verify the tooltip includes "· N new share(s)" (badge suffix, e.g., "HQ Sync · 1 new share(s)")
+- [ ] 3. Open and close the ShareDetail window
+- [ ] 4. Hover over the tray icon again — verify the badge suffix is **gone** (tooltip back to plain "HQ Sync")
+
+#### SN-008: Dogfood gate prevents poll for non-Indigo users
+
+- [ ] 1. Log out and log in with a non-`@getindigo.ai` account (e.g., a personal Gmail)
+- [ ] 2. Trigger a sync
+- [ ] 3. Inspect `~/.hq/logs/hq-sync.log` — verify `SHARE_NOTIFY_POLL_SKIP` appears and **no** `SHARE_NOTIFY_POLL_START` line follows
+
+#### SN-009: Settings toggle disables notifications without restart
+
+- [ ] 1. Open Settings (right-click tray → Settings)
+- [ ] 2. Verify "Share notifications" toggle is present and ON (visible only for `@getindigo.ai` accounts)
+- [ ] 3. Toggle it **OFF** and close Settings
+- [ ] 4. Trigger a sync — verify `SHARE_NOTIFY_POLL_SKIP` in logs (no poll fired)
+- [ ] 5. Toggle it **ON** again — trigger a sync — verify `SHARE_NOTIFY_POLL_START` reappears
+
+#### SN-010: Notification permission denial is handled gracefully
+
+- [ ] 1. In macOS System Settings → Notifications, find "HQ Sync" and set to "Off"
+- [ ] 2. Trigger a poll that returns at least one share event (repeat SN-003 setup)
+- [ ] 3. Verify **no crash** — app continues running
+- [ ] 4. Inspect `~/.hq/logs/hq-sync.log` — verify `NOTIFY_PERMISSION_DENIED` log line appears
+- [ ] 5. Verify the ShareDetail window still opens (tray event path unaffected by notification denial)
+
+---
+
+### DM Notifications (click → DmDetail, reply)
+
+> Send test DMs with `hq dm <recipient> <body>` (plain), `--prompt`, and/or `--details`
+> to exercise each payload shape. Reply (DM-103/104) requires the hq-pro
+> `POST /v1/notify/dm` endpoint to be deployed.
+
+#### DM-101: Every DM type opens the DmDetail window on body-click
+
+- [ ] 1. Send the test user a **plain** DM (no prompt, no details) and click the banner body
+- [ ] 2. Verify the **DmDetail** window ("Direct Message") opens showing sender name/email + body
+- [ ] 3. Repeat with a **prompt-only** DM, a **details-only** DM, and a **prompt+details** DM
+- [ ] 4. Verify the body-click opens DmDetail in **all four** cases (previously plain DMs did nothing and prompt DMs copied instead of opening)
+
+#### DM-102: "Copy prompt" action button still copies (rich DM)
+
+- [ ] 1. Send a DM with a `prompt`; on the banner, choose the **Copy prompt** action (not body-click)
+- [ ] 2. Paste into a text editor — verify the prompt text is on the clipboard
+- [ ] 3. Verify body-clicking the same banner type opens DmDetail (does NOT copy)
+
+#### DM-103: CPU stays bounded with multiple unactioned DMs
+
+- [ ] 1. Send 5+ DMs in quick succession; do **not** click them
+- [ ] 2. In Activity Monitor, verify `hq-sync` CPU stays near a single capped spin slot (~1 core max), not one core per banner
+- [ ] 3. Dismiss the banners — verify CPU returns to idle
+
+#### DM-104: Reply from DmDetail (requires deployed `POST /v1/notify/dm`)
+
+- [ ] 1. Open a DM in DmDetail, type a reply, click **Send** (or ⌘↵)
+- [ ] 2. Verify the textarea clears and "Sent ✓" appears briefly
+- [ ] 3. On the original **sender's** machine, verify the reply arrives as a DM notification
+- [ ] 4. Inspect `~/.hq/logs/hq-sync.log` — verify `DM_NOTIFY_SEND_OK`
+
+#### DM-105: Reply error is surfaced (no silent failure)
+
+- [ ] 1. With the send endpoint unavailable (or signed out), attempt a reply
+- [ ] 2. Verify an inline error message appears in DmDetail (not a silent no-op)
+- [ ] 3. Inspect `~/.hq/logs/hq-sync.log` — verify a `DM_NOTIFY_SEND_FAIL` line
+
+---
+
 ### US-015: Code Signing + Notarization CI
 
 - [ ] Push a git tag `v0.x.x` -> GitHub Actions workflow triggers
