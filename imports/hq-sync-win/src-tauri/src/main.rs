@@ -231,6 +231,7 @@ fn main() {
             commands::banner::preview_dm_banner,
             commands::banner::preview_share_banner,
             commands::banner::preview_update_banner,
+            commands::banner::preview_meeting_banner,
             commands::recall_sdk::meeting_detect_feature_enabled,
             commands::recall_sdk::meetings_list_active_detections,
             commands::recall_sdk::start_recording,

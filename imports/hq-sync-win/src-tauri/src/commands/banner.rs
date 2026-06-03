@@ -119,14 +119,19 @@ struct BannerActionEvent {
 /// additive and picked up live on the next poll (no restart). Shared by
 /// `dm_notify`, `share_notify`, and `updater`.
 pub(crate) fn custom_banner_enabled() -> bool {
-    let Ok(dir) = crate::util::paths::hq_config_dir() else {
-        return true;
-    };
-    let Ok(contents) = std::fs::read_to_string(dir.join("menubar.json")) else {
-        return true;
-    };
-    serde_json::from_str::<serde_json::Value>(&contents)
+    let contents = crate::util::paths::hq_config_dir()
         .ok()
+        .and_then(|dir| std::fs::read_to_string(dir.join("menubar.json")).ok());
+    custom_banner_enabled_from(contents.as_deref())
+}
+
+/// Pure gate decision from `menubar.json` contents — ON unless `customBanner` is
+/// explicitly `false`. Missing file, unreadable, malformed JSON, or absent key
+/// all default ON. Split out so the routing rule (shared by DM / share / meeting
+/// / update) is unit-testable without the filesystem.
+pub(crate) fn custom_banner_enabled_from(contents: Option<&str>) -> bool {
+    contents
+        .and_then(|c| serde_json::from_str::<serde_json::Value>(c).ok())
         .and_then(|j| j.get("customBanner").and_then(|v| v.as_bool()))
         .unwrap_or(true)
 }
@@ -536,4 +541,53 @@ pub async fn preview_update_banner(app: AppHandle) -> Result<(), String> {
         Some("instant DMs + custom banners".to_string()),
     )
     .await
+}
+
+/// Fabricate a meeting-detected event and show its banner (manual QA).
+#[tauri::command]
+pub async fn preview_meeting_banner(app: AppHandle) -> Result<(), String> {
+    show_meeting_banner(
+        app,
+        "Zoom meeting detected".to_string(),
+        "Zoom: Weekly sync".to_string(),
+        "preview-window-1".to_string(),
+        "zoom".to_string(),
+    )
+    .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gate_defaults_on_when_absent_or_unreadable() {
+        assert!(custom_banner_enabled_from(None));
+        assert!(custom_banner_enabled_from(Some("not json")));
+        assert!(custom_banner_enabled_from(Some("{}")));
+        assert!(custom_banner_enabled_from(Some(r#"{"other":true}"#)));
+    }
+
+    #[test]
+    fn gate_on_when_explicitly_true() {
+        assert!(custom_banner_enabled_from(Some(r#"{"customBanner":true}"#)));
+    }
+
+    #[test]
+    fn gate_off_only_when_explicitly_false() {
+        assert!(!custom_banner_enabled_from(Some(
+            r#"{"customBanner":false}"#
+        )));
+        // Non-bool values are ignored → default ON.
+        assert!(custom_banner_enabled_from(Some(
+            r#"{"customBanner":"false"}"#
+        )));
+    }
+
+    #[test]
+    fn initials_handles_names() {
+        assert_eq!(initials("Corey Epstein"), "CE");
+        assert_eq!(initials("Alice"), "AL");
+        assert_eq!(initials(""), "?");
+    }
 }
