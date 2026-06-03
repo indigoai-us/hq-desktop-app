@@ -211,7 +211,17 @@ pub async fn send_telemetry_if_opted_in<R: tauri::Runtime>(
     let mut batch_sources: Vec<RowSource> = Vec::new();
 
     for file_path in &file_paths {
-        let path_str = file_path.to_string_lossy().to_string();
+        // Normalize to native separators. `glob` builds matches off the
+        // pattern, which on Windows mixes `\` (the `home.display()` prefix)
+        // and `/` (the literal `/.claude/projects/...` tail). Collecting the
+        // components yields a stable, native-separator key so the persisted
+        // cursor stays consistent across runs and matches a freshly joined
+        // path.
+        let path_str = file_path
+            .components()
+            .collect::<std::path::PathBuf>()
+            .to_string_lossy()
+            .to_string();
 
         let metadata = match fs::metadata(file_path) {
             Ok(m) => m,
@@ -426,7 +436,9 @@ mod tests {
         name: &str,
         lines: &[&str],
     ) -> std::path::PathBuf {
-        let dir = home.join(".claude/projects").join(subdir);
+        // Build with native joins (no embedded `/`) so the returned path uses
+        // the platform separator and matches the normalized cursor key.
+        let dir = home.join(".claude").join("projects").join(subdir);
         fs::create_dir_all(&dir).unwrap();
         let p = dir.join(name);
         let content: String = lines.iter().map(|l| format!("{}\n", l)).collect();

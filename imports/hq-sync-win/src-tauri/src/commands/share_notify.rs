@@ -862,15 +862,25 @@ async fn post_ack(_app: &AppHandle, event_ids: Vec<String>) {
 mod tests {
     use super::*;
 
+    // `POLL_IN_FLIGHT` is a process-global singleton; cargo runs tests in
+    // parallel, so the two tests that read/mutate it must not overlap or the
+    // "starts false" assertion races against `try_set_in_flight`. Serialize
+    // them on a shared guard.
+    static SINGLETON_GUARD: Mutex<()> = Mutex::new(());
+
     #[test]
     fn test_singleton_lock_starts_false() {
-        // The OnceLock starts unset; initialised to false on first access.
+        let _serial = SINGLETON_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+        // With the serialization guard held no sibling test runs concurrently:
+        // either this runs first (OnceLock initialises to false) or after
+        // `test_try_set_and_clear_in_flight`, which always clears to false.
         let guard = poll_lock().lock().unwrap();
         assert!(!*guard);
     }
 
     #[test]
     fn test_try_set_and_clear_in_flight() {
+        let _serial = SINGLETON_GUARD.lock().unwrap_or_else(|p| p.into_inner());
         // Force the lock to false first (may already be set from another test
         // calling try_set_in_flight).
         {
