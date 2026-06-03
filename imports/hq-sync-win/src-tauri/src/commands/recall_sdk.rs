@@ -76,6 +76,9 @@ const SDK_HANDLE: &str = "recall-sdk";
 const SDK_BIN: &str = "recall-desktop-sdk";
 
 /// SIGKILL grace period after SIGTERM on app shutdown.
+/// Used by `stop_recall_sdk`, which is wired into the app-exit teardown by the
+/// recording lifecycle (US-002); allow until that hook lands.
+#[allow(dead_code)]
 const SIGKILL_DELAY: Duration = Duration::from_secs(5);
 
 /// Log tag used by all `log()` calls in this module.
@@ -134,8 +137,8 @@ async fn fetch_recall_credentials() -> Result<Option<String>, String> {
         .await
         .map_err(|e| format!("recall/credentials read: {e}"))?;
 
-    let creds: RecallCredentials = serde_json::from_str(&text)
-        .map_err(|e| format!("recall/credentials parse: {e}"))?;
+    let creds: RecallCredentials =
+        serde_json::from_str(&text).map_err(|e| format!("recall/credentials parse: {e}"))?;
 
     if creds.api_key.is_empty() {
         return Ok(None);
@@ -339,10 +342,7 @@ pub async fn start_recall_sdk(app: AppHandle) -> Result<(), String> {
                         ),
                     );
                     if let Err(e) = app_bg.emit(EVENT_MEETING_DETECTED, &payload) {
-                        log(
-                            LOG_TAG,
-                            &format!("emit meeting:detected failed: {e}"),
-                        );
+                        log(LOG_TAG, &format!("emit meeting:detected failed: {e}"));
                     }
                 }
             }
@@ -375,10 +375,13 @@ pub async fn start_recall_sdk(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// Send SIGTERM (then SIGKILL after grace) to the running SDK process.
+/// Tear down the running SDK process (Windows: `TerminateJobObject` via the
+/// Job Object supervisor; the "SIGTERM/SIGKILL" wording is macOS legacy).
 ///
-/// Called from the Tauri cleanup hook or the quit command. Safe to call when
-/// the SDK is not running — `cancel_process_impl` is a no-op in that case.
+/// Wired into the app-exit cleanup hook by the recording lifecycle (US-002);
+/// `allow(dead_code)` until then. Safe to call when the SDK is not running —
+/// `cancel_process_impl` is a no-op in that case.
+#[allow(dead_code)]
 pub fn stop_recall_sdk() {
     cancel_process_impl(SDK_HANDLE, SIGKILL_DELAY);
 }
