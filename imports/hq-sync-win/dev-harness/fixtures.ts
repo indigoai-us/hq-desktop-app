@@ -98,6 +98,10 @@ export const popoverProps = {
   coreInstalling: false,
   coreInstallLastResult: null,
   meetingsEnabled: true,
+  // Indigo-gated header extras, on by default in the harness so the full
+  // header (notification-history bell + meeting + Company OS + Sync) is
+  // previewable in one go.
+  desktopAltEnabled: true,
   onsync: () => console.debug('[harness] sync'),
   oncancel: () => console.debug('[harness] cancel'),
   onsettings: () => (window.location.search = '?view=settings'),
@@ -111,4 +115,5 @@ export const popoverProps = {
   onworkspacesrefresh: () => {},
   bindStatsRefresh: () => {},
   onmeetingsclick: () => {},
+  ondesktopaltclick: () => console.debug('[harness] open Company OS'),
 };
