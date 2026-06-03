@@ -369,7 +369,7 @@ pub fn fetch_notification_history() -> Result<Vec<HistoryEntry>, String> {
     let _guard = STORE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut entries = read_store().entries;
     // Window renders newest-first; the file is stored oldest-first.
-    entries.sort_by(|a, b| b.ts.cmp(&a.ts));
+    entries.sort_by_key(|b| std::cmp::Reverse(b.ts));
     log(LOG_TAG, &format!("HISTORY_FETCH count={}", entries.len()));
     Ok(entries)
 }
