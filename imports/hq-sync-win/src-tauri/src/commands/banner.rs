@@ -60,14 +60,19 @@ const EVENT_BANNER: &str = "banner:event";
 /// for the CUSTOM banner path (the native paths still emit their own events).
 const EVENT_BANNER_ACTION: &str = "notification:banner-action";
 
-/// Banner geometry (logical px). `BANNER_H` is sized tight to the card content
-/// (avatar + title + two-line body + action row) so the vibrancy backdrop and
-/// the rounded card coincide with no dead padding. We do NOT resize the window
-/// from the webview: resizing an NSWindow leaves the NSVisualEffectView's
-/// rounded-corner mask at the old geometry, exposing square corners behind the
-/// card. Fixed size keeps the corners clean.
+/// Banner geometry (logical px). `BANNER_H` is the INITIAL height the window is
+/// created at; the frontend measures its rendered content on mount and calls
+/// `resize_banner` to shrink/grow the window to fit (so a one-line DM isn't
+/// padded out to a three-line share). On Windows this resize is safe with no
+/// corner re-clip: the Mica/Acrylic backdrop (DWM) fills the client area at any
+/// size, and the rounded corners are CSS `border-radius` on the card plus the
+/// Win11 system window rounding — neither is tied to a fixed geometry (contrast
+/// the macOS NSVisualEffectView mask, which would need a re-clip).
 const BANNER_W: f64 = 366.0;
 const BANNER_H: f64 = 104.0;
+/// Clamp bounds for the content-driven resize.
+const BANNER_H_MIN: f64 = 56.0;
+const BANNER_H_MAX: f64 = 260.0;
 const MARGIN_RIGHT: f64 = 14.0;
 const MARGIN_TOP: f64 = 40.0;
 
@@ -478,6 +483,28 @@ pub async fn banner_action(
 #[tauri::command]
 pub async fn dismiss_banner(app: AppHandle) -> Result<(), String> {
     dismiss_banner_inner(&app);
+    Ok(())
+}
+
+/// Resize the banner window to fit its rendered content. `BannerNotification`
+/// measures its card height after each payload and calls this so the window
+/// hugs the content instead of a fixed 104px (which over-pads short banners).
+/// Keeps the top-right anchor (a content-size change can shift the origin) and
+/// clamps to [`BANNER_H_MIN`]..[`BANNER_H_MAX`].
+///
+/// Windows: no corner re-clip is needed after the resize — the Mica/Acrylic
+/// backdrop tracks the client area automatically and the rounded corners are
+/// CSS + the Win11 system rounding, not a fixed-geometry mask (the macOS
+/// NSVisualEffectView path needed an explicit re-clip here).
+#[tauri::command]
+pub async fn resize_banner(app: AppHandle, height: f64) -> Result<(), String> {
+    let h = height.clamp(BANNER_H_MIN, BANNER_H_MAX);
+    if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
+        window
+            .set_size(tauri::LogicalSize::new(BANNER_W, h))
+            .map_err(|e| e.to_string())?;
+        let _ = window.set_position(top_right_position(&app));
+    }
     Ok(())
 }
 
