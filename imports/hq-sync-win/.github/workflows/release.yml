@@ -106,6 +106,32 @@ jobs:
       - name: npm ci
         run: npm ci
 
+      # Recall Desktop SDK sidecar (US-012). This installs the @recallai/desktop-sdk
+      # Windows runtime (agent-windows.exe + FFmpeg/GStreamer DLLs, fetched by the
+      # package's setup.js for process.platform==='win32') AND builds the
+      # `recall-desktop-sdk-<triple>.exe` launcher — a self-contained Node SEA that
+      # tauri.conf.json references via `bundle.externalBin`. Declaring externalBin
+      # makes `tauri build` REQUIRE this binary to exist, so it MUST be produced
+      # before the Tauri build step below. (tauri.conf.json's beforeBuildCommand
+      # also calls build.mjs as a safety net; build.mjs is idempotent, so once this
+      # step produces the launcher that later call is a no-op and won't re-strip the
+      # Authenticode signature applied in "Sign Recall sidecar launcher".)
+      #
+      # RECALL_SIDECAR_TARGET tells build.mjs how to name the launcher to match the
+      # Tauri externalBin target triple. NOTE: build.mjs copies the *host* node.exe
+      # (x64 on windows-latest runners), so the aarch64 leg currently emits an x64
+      # launcher under an aarch64 name — see docs/RELEASE.md "arm64 caveat".
+      - name: Build Recall SDK sidecar (${{ matrix.target }})
+        shell: pwsh
+        env:
+          RECALL_SIDECAR_TARGET: ${{ matrix.target }}
+        run: |
+          npm ci --prefix sidecar/recall-sdk-bridge
+          node sidecar/recall-sdk-bridge/build.mjs
+          if (-not (Test-Path "src-tauri/binaries/recall-desktop-sdk-${{ matrix.target }}.exe")) {
+            throw "sidecar launcher was not produced for ${{ matrix.target }}"
+          }
+
       - name: Decode signing certificate
         if: env.WINDOWS_SIGNING_CERT != ''
         shell: pwsh
@@ -116,6 +142,31 @@ jobs:
           $pfxPath = Join-Path $env:RUNNER_TEMP "hq-sync-win.pfx"
           [IO.File]::WriteAllBytes($pfxPath, $bytes)
           echo "PFX_PATH=$pfxPath" >> $env:GITHUB_ENV
+
+      # Sign the sidecar launcher BEFORE `tauri build` embeds it into the MSI/NSIS
+      # installer, so the copy that ships inside the installer is Authenticode-signed.
+      # build.mjs is idempotent (it won't rebuild an existing launcher without
+      # --force), so the beforeBuildCommand hook in the next step does not overwrite
+      # this signature. Skipped cleanly on unsigned dogfood builds (PFX_PATH unset).
+      - name: Sign Recall sidecar launcher (SignTool)
+        if: env.PFX_PATH != ''
+        shell: pwsh
+        env:
+          SIGNING_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERT_PASSWORD }}
+        run: |
+          $signtool = (Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" |
+                       Sort-Object FullName -Descending |
+                       Select-Object -First 1).FullName
+          if (-not $signtool) {
+            throw "signtool.exe not found under Windows Kits"
+          }
+          $launcher = "src-tauri\binaries\recall-desktop-sdk-${{ matrix.target }}.exe"
+          if (-not (Test-Path $launcher)) {
+            throw "sidecar launcher missing — cannot sign: $launcher"
+          }
+          & $signtool sign /f $env:PFX_PATH /p $env:SIGNING_PASSWORD `
+            /tr "http://timestamp.digicert.com" /td sha256 /fd sha256 `
+            $launcher
 
       - name: Tauri build (${{ matrix.target }})
         env:
@@ -144,6 +195,14 @@ jobs:
           if (-not $signtool) {
             throw "signtool.exe not found under Windows Kits"
           }
+          # Sign the produced installers (.msi / NSIS .exe). The sidecar launcher
+          # was already signed pre-build (see "Sign Recall sidecar launcher"); the
+          # recursive *.exe glob below also re-signs it and the Recall runtime
+          # agent-windows.exe if Tauri staged resources as loose files under the
+          # bundle dir. The Recall FFmpeg/GStreamer DLLs ship inside the runtime
+          # as-is (Recall's own redistributables — not re-signed here; they carry
+          # their own provenance, and on Windows there is no notary requiring a
+          # per-Mach-O signature the way macOS does — see docs/RELEASE.md).
           $artifacts = Get-ChildItem -Recurse `
             -Path "src-tauri\target\${{ matrix.target }}\release\bundle" `
             -Include "*.msi","*.exe"
