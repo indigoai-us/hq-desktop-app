@@ -2,11 +2,12 @@
   "name": "recall-sdk-bridge",
   "version": "0.1.0",
   "private": true,
-  "description": "Node.js bridge that wraps @recallai/desktop-sdk and emits its meeting-detected events as ndjson on stdout for consumption by recall_sdk.rs in hq-sync.",
+  "description": "Node.js bridge that wraps @recallai/desktop-sdk: emits meeting-detected / meeting-closed / recording-lifecycle events as ndjson on stdout and accepts start/stop-recording commands on stdin, for consumption by recall_sdk.rs in hq-sync.",
   "type": "module",
   "main": "bridge.mjs",
   "scripts": {
-    "start": "node bridge.mjs"
+    "start": "node bridge.mjs",
+    "test": "node --test"
   },
   "engines": {
     "node": ">=18"
