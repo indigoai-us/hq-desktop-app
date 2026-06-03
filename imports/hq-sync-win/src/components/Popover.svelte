@@ -10,6 +10,7 @@
   import MeetingIcon from './MeetingIcon.svelte';
   import type { Workspace } from '../lib/workspaces';
   import { liveProgressCaption } from '../lib/live-progress-caption';
+  import { isCorePath, CORE_SETUP_LABEL } from '../lib/progressLabel';
   import type { ConflictFile } from '../stores/conflicts';
 
   interface Config {
@@ -334,6 +335,17 @@
     }
     if (personalFilesTotal != null || personalFirstPushDone) return 'personal';
     return progress?.company ?? '…';
+  });
+
+  // Calm first-sync framing: while the file currently being transferred lives
+  // under `core/` (the release-shipped scaffold, identical for everyone and
+  // not the user's own content), show one steady "Setting up HQ core files…"
+  // line instead of a churn of unfamiliar core paths / company names. Reads as
+  // one-time setup rather than "all my stuff is uploading". See
+  // `../lib/progressLabel.ts`. The honest file counter (caption) is unchanged.
+  const liveWorkspaceLine = $derived.by(() => {
+    if (progress && isCorePath(progress.path)) return CORE_SETUP_LABEL;
+    return currentLabel === '…' ? 'Preparing sync…' : `Syncing ${currentLabel}`;
   });
 
   // Performance timing — log mount latency
@@ -724,7 +736,7 @@
              label stays correct even when a workspace skips silently. -->
         <div class="live-progress">
           <p class="live-line live-workspace">
-            {currentLabel === '…' ? 'Preparing sync…' : `Syncing ${currentLabel}`}
+            {liveWorkspaceLine}
           </p>
           <div class="live-bar">
             <div class="live-bar-fill" style="width: {barPct}%"></div>
