@@ -219,6 +219,7 @@ fn main() {
             commands::banner::preview_dm_banner,
             commands::banner::preview_share_banner,
             commands::banner::preview_update_banner,
+            commands::recall_sdk::meeting_detect_feature_enabled,
         ])
         .setup(|app| {
             // One-shot migration of any legacy `/deploy`-skill stub at
