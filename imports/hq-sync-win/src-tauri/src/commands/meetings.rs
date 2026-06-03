@@ -579,6 +579,219 @@ fn is_url_safe_id(s: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.')
 }
 
+// ── Detected-meeting notification (US-003) ───────────────────────────────────
+//
+// When the Recall Desktop SDK detects a live meeting (`meeting:detected`), the
+// always-present popover window invokes `meetings_notify_detected` to surface a
+// clickable HQ-branded banner: body-click opens the popover (where the "Live
+// now" recording row lives), the "Record" chip starts a local SDK recording for
+// that meeting's window. This is the Windows-fork analog of the upstream macOS
+// `mac-notification-sys` "Meeting detected" notification — it reuses the fork's
+// liquid-glass banner stack (`commands::banner`, the same surface as DM / share
+// / update) rather than any macOS UN/NSUserNotification path.
+
+/// Payload for [`meetings_notify_detected`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotifyDetectedPayload {
+    /// The detected meeting URL (primary stable key for dedup).
+    pub meeting_url: Option<String>,
+    /// SDK window id for the detection — echoed into the banner's `data` so the
+    /// "Record" chip routes back to `start_recording(windowId)` with the real
+    /// SDK handle (not a URL that happens to match). Caller passes
+    /// `event.payload.windowId` straight through; absent only for very old
+    /// bridge versions.
+    pub window_id: Option<String>,
+    /// Platform string from the SDK (e.g. "zoom", "meet").
+    pub platform: Option<String>,
+    /// Meeting title or calendar event summary, if known.
+    pub summary: Option<String>,
+    /// SDK source event id — fallback stable key when `meeting_url` is absent.
+    pub source_event_id: Option<String>,
+}
+
+/// Check whether an active bot already exists for the given meeting URL.
+///
+/// Returns `Some(bot)` when a bot with an active status (`scheduled`,
+/// `joining_call`, `in_call_recording`, `in_call_not_recording`) is found.
+/// The Svelte handler calls this before `meetings_notify_detected`; a bot
+/// already in the room means we should skip the notification.
+///
+/// Query: `GET /v1/bot/list?meetingUrl=<url>[&eventId=<id>]`
+#[tauri::command]
+pub async fn meetings_check_bot_for_url(
+    meeting_url: String,
+    event_id: Option<String>,
+) -> Result<Option<ScheduledBot>, String> {
+    let base = vault_base().await?;
+    let auth = auth_header().await?;
+    let mut req = build_client()
+        .get(format!("{base}/v1/bot/list"))
+        .header("authorization", &auth)
+        .query(&[("meetingUrl", meeting_url.as_str())]);
+    if let Some(id) = event_id.as_deref().filter(|s| !s.is_empty()) {
+        req = req.query(&[("eventId", id)]);
+    }
+    let res = req
+        .send()
+        .await
+        .map_err(|e| format!("bot/list check: {e}"))?;
+    let status = res.status();
+    let text = res
+        .text()
+        .await
+        .map_err(|e| format!("bot/list check read: {e}"))?;
+    if !status.is_success() {
+        return Err(format!("bot/list check HTTP {status}: {text}"));
+    }
+    let parsed: BotsResponse = serde_json::from_str(&text)
+        .map_err(|e| format!("bot/list check parse: {e} — body: {text}"))?;
+    let active = parsed.bots.into_iter().find(|b| {
+        matches!(
+            b.status.as_str(),
+            "scheduled" | "joining_call" | "in_call_recording" | "in_call_not_recording"
+        )
+    });
+    Ok(active)
+}
+
+/// Fire an HQ-branded banner for a detected meeting, gated on:
+///
+/// 1. `notifications` pref in `~/.hq/menubar.json` (read fresh on each call so
+///    pref changes take effect without restart)
+/// 2. Meeting-notify ledger dedup (suppress if already notified/recorded within
+///    the 6 h window) — an atomic single-flight `claim_notify` so a concurrent
+///    second caller for the same meeting can't double-fire.
+///
+/// Returns `true` when the banner was fired, `false` if suppressed.
+///
+/// Windows-fork notes vs. the upstream macOS build:
+/// - No `meetingDetectNotify` per-platform sub-pref (the fork has no such
+///   settings surface yet — a separate upstream story), so only the top-level
+///   `notifications` pref gates here.
+/// - No `mac-notification-sys` fallback — detection always routes through the
+///   liquid-glass banner (the fork's only notification surface).
+/// - No tray "Prompt" badge bump — the fork's tray badge counter is share-only
+///   (`set_share_badge`); the banner itself is the meeting-detected signal.
+#[tauri::command]
+pub async fn meetings_notify_detected(
+    app: AppHandle,
+    payload: NotifyDetectedPayload,
+) -> Result<bool, String> {
+    use crate::commands::settings::get_settings;
+    use crate::util::meeting_ledger::{claim_notify, stable_key};
+    use chrono::Utc;
+
+    // 1. Top-level notifications pref.
+    let settings = get_settings().await?;
+    if !settings.notifications.unwrap_or(true) {
+        return Ok(false);
+    }
+
+    let platform_lc = payload
+        .platform
+        .as_deref()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+
+    // 2. Dedup via ledger — atomic single-flight claim.
+    //
+    // The SDK emits `meeting:detected` once but Tauri fans it out to EVERY
+    // webview. `claim_notify` takes a process-wide lock and performs
+    // read→should_suppress→mark(Notified)→write as one indivisible step, so a
+    // second concurrent caller for the same meeting observes the first's
+    // just-written entry and loses the race — the authoritative guard against
+    // double-notifying.
+    //
+    // The claim runs synchronously and BEFORE any `.await` below — the ledger
+    // lock guard must never be held across an await point (it is dropped here,
+    // before the async banner dispatch).
+    let key = match stable_key(
+        payload.meeting_url.as_deref(),
+        payload.source_event_id.as_deref(),
+    ) {
+        Some(k) => k,
+        None => return Ok(false),
+    };
+    let now = Utc::now();
+    if !claim_notify(&key, now) {
+        // Already notified/recorded within the suppression window, or a
+        // concurrent caller won the claim. Do not fire a second banner.
+        return Ok(false);
+    }
+
+    // 3. Build the banner title + body and dispatch the liquid-glass banner.
+    let title = build_notification_title(&platform_lc);
+    let body = build_notification_body(
+        &platform_lc,
+        payload.summary.as_deref(),
+        payload.meeting_url.as_deref(),
+    );
+    let window_id = payload.window_id.clone().unwrap_or_default();
+    if let Err(e) =
+        crate::commands::banner::show_meeting_banner(app, title, body, window_id, platform_lc).await
+    {
+        crate::util::logfile::log("meetings", &format!("meeting banner failed: {e}"));
+    }
+
+    // The ledger was already marked Notified atomically by `claim_notify` above
+    // (the claim is what authorised this fire).
+    Ok(true)
+}
+
+/// Build the notification *body* for a detected meeting.
+///
+/// Format: `"<Platform>: <summary or join URL>"`, falling back to
+/// `"<Platform> meeting"` when neither is available. Synthetic
+/// `recall-window:<id>` URLs (emitted by the bridge when the SDK detects a
+/// window but can't scrape a real join URL) are hidden — they would leak an
+/// opaque window id into the user-facing banner.
+fn build_notification_body(
+    platform_lc: &str,
+    summary: Option<&str>,
+    meeting_url: Option<&str>,
+) -> String {
+    let display = {
+        let mut p = if platform_lc.is_empty() {
+            "Meeting".to_string()
+        } else {
+            platform_lc.to_string()
+        };
+        if let Some(c) = p.get_mut(0..1) {
+            c.make_ascii_uppercase();
+        }
+        p
+    };
+    let is_synthetic_url = |u: &str| u.starts_with("recall-window:");
+    match summary.filter(|s| !s.is_empty()) {
+        Some(s) => format!("{display}: {s}"),
+        None => match meeting_url.filter(|s| !s.is_empty()) {
+            Some(u) if !is_synthetic_url(u) => format!("{display}: {u}"),
+            _ => format!("{display} meeting"),
+        },
+    }
+}
+
+/// Build the notification *title* for a detected meeting.
+///
+/// Format:
+/// - Known platform: `"<Platform> meeting detected"` (e.g. `"Zoom meeting
+///   detected"`) — names the app that triggered the detection.
+/// - Empty platform: `"Meeting detected"` (graceful fallback; avoids the
+///   awkward `" meeting detected"` / doubled-word shapes).
+///
+/// `platform_lc` is the lowercased platform discriminator (e.g. `"zoom"`).
+fn build_notification_title(platform_lc: &str) -> String {
+    if platform_lc.is_empty() {
+        return "Meeting detected".to_string();
+    }
+    let mut display = platform_lc.to_string();
+    if let Some(c) = display.get_mut(0..1) {
+        c.make_ascii_uppercase();
+    }
+    format!("{display} meeting detected")
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -718,5 +931,103 @@ mod tests {
             evt.hangout_link.as_deref(),
             Some("https://meet.google.com/abc-defg-hij"),
         );
+    }
+
+    // ── build_notification_body / _title (US-003 detect-notify) ──────────────
+
+    #[test]
+    fn build_notification_body_uses_summary_when_present() {
+        let body = build_notification_body(
+            "zoom",
+            Some("Weekly standup"),
+            Some("https://zoom.us/j/123"),
+        );
+        assert_eq!(body, "Zoom: Weekly standup");
+    }
+
+    #[test]
+    fn build_notification_body_uses_url_when_no_summary() {
+        let body =
+            build_notification_body("meet", None, Some("https://meet.google.com/abc-defg-hij"));
+        assert_eq!(body, "Meet: https://meet.google.com/abc-defg-hij");
+    }
+
+    #[test]
+    fn build_notification_body_hides_synthetic_recall_window_url() {
+        // The bridge emits this shape when the SDK detects a meeting window
+        // but can't scrape a real join URL.
+        let body = build_notification_body(
+            "zoom",
+            None,
+            Some("recall-window:43F5EBF4-8949-4DD4-B075-2E8EF68AAA30"),
+        );
+        assert_eq!(body, "Zoom meeting");
+        // Hard check: no part of the synthetic key leaks.
+        assert!(
+            !body.contains("recall-window"),
+            "synthetic key leaked: {body}"
+        );
+        assert!(!body.contains("43F5EBF4"), "windowId leaked: {body}");
+    }
+
+    #[test]
+    fn build_notification_body_summary_wins_over_synthetic_url() {
+        // If for some reason the SDK gave us both, summary should still win.
+        let body = build_notification_body("zoom", Some("Quick chat"), Some("recall-window:abc"));
+        assert_eq!(body, "Zoom: Quick chat");
+    }
+
+    #[test]
+    fn build_notification_body_falls_back_when_url_and_summary_missing() {
+        let body = build_notification_body("teams", None, None);
+        assert_eq!(body, "Teams meeting");
+    }
+
+    #[test]
+    fn build_notification_body_handles_unknown_platform() {
+        // Both platform AND url AND summary missing — keeps the function total.
+        let body = build_notification_body("", None, None);
+        assert_eq!(body, "Meeting meeting");
+    }
+
+    #[test]
+    fn build_notification_body_treats_empty_strings_as_missing() {
+        // The Svelte handler can forward `meetingUrl: ""` / `summary: ""`.
+        let body = build_notification_body("zoom", Some(""), Some(""));
+        assert_eq!(body, "Zoom meeting");
+    }
+
+    #[test]
+    fn build_notification_title_names_known_platform() {
+        assert_eq!(build_notification_title("zoom"), "Zoom meeting detected");
+        assert_eq!(build_notification_title("meet"), "Meet meeting detected");
+        assert_eq!(build_notification_title("teams"), "Teams meeting detected");
+    }
+
+    #[test]
+    fn build_notification_title_falls_back_on_empty_platform() {
+        // Must not produce " meeting detected" or "Meeting meeting detected".
+        let title = build_notification_title("");
+        assert_eq!(title, "Meeting detected");
+        assert!(!title.starts_with(' '), "leading space leaked: {title:?}");
+    }
+
+    /// Serde lock-in for the notify payload — the frontend forwards
+    /// `event.payload` (camelCase) straight into `meetings_notify_detected`.
+    #[test]
+    fn notify_detected_payload_round_trips_camel_case() {
+        let json = r#"{
+            "meetingUrl": "https://zoom.us/j/9",
+            "windowId": "win-7",
+            "platform": "zoom",
+            "summary": "Sync",
+            "sourceEventId": "evt-9"
+        }"#;
+        let p: NotifyDetectedPayload = serde_json::from_str(json).expect("parse");
+        assert_eq!(p.meeting_url.as_deref(), Some("https://zoom.us/j/9"));
+        assert_eq!(p.window_id.as_deref(), Some("win-7"));
+        assert_eq!(p.platform.as_deref(), Some("zoom"));
+        assert_eq!(p.summary.as_deref(), Some("Sync"));
+        assert_eq!(p.source_event_id.as_deref(), Some("evt-9"));
     }
 }

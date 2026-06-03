@@ -209,6 +209,10 @@
     background: linear-gradient(135deg, rgba(255, 196, 120, 0.45), rgba(255, 140, 120, 0.4));
     font-size: 1.05rem;
   }
+  .banner[data-kind="meeting"] .avatar {
+    background: linear-gradient(135deg, rgba(120, 200, 255, 0.45), rgba(150, 130, 255, 0.4));
+    font-size: 1.05rem;
+  }
 
   .content { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.25rem; }
   .top { display: flex; align-items: center; gap: 0.375rem; font-size: 0.75rem; }

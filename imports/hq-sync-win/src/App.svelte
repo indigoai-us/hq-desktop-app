@@ -10,6 +10,7 @@
   import { shouldSkipSignIn } from './lib/auth';
   import type { Workspace, WorkspacesResult } from './lib/workspaces';
   import { buildClaudeCodeUrl } from './lib/claude-code-link';
+  import { handleMeetingDetected, type MeetingDetectedPayload } from './lib/meetingDetection';
   import './styles/popover.css';
 
   interface Config {
@@ -493,6 +494,17 @@
         if (focused) {
           loadWorkspaces();
         }
+      })
+    );
+
+    // Detected-meeting notification (US-003). The popover is the always-present
+    // window that owns the OS-facing banner; MeetingsWindow (opened on demand)
+    // only maintains its in-app "Live now" row. `handleMeetingDetected` runs the
+    // bot-already-scheduled check + fires `meetings_notify_detected`, which
+    // applies the notify-pref gate and the atomic dedup-ledger claim.
+    unlisteners.push(
+      await listen<MeetingDetectedPayload>('meeting:detected', (event) => {
+        void handleMeetingDetected(event.payload);
       })
     );
 
@@ -1004,6 +1016,19 @@
                 await invoke('install_update');
               } else if (action === 'open') {
                 await invoke('show_main_window');
+              }
+            } else if (kind === 'meeting') {
+              // Detected-meeting banner (US-003). `open` summons the popover so
+              // the "Live now" recording row is visible; `record` starts a local
+              // SDK recording for this meeting's window directly (Personal
+              // attribution — the popover row lets the user re-attribute before
+              // the upload-token mints). `windowId` is the SDK handle the
+              // detection carried.
+              const windowId = (data?.windowId ?? '').trim();
+              if (action === 'open') {
+                await invoke('show_main_window');
+              } else if (action === 'record' && windowId) {
+                await invoke('start_recording', { windowId, companyUid: null });
               }
             }
           } catch (err) {

@@ -202,6 +202,8 @@ fn main() {
             commands::meetings::meetings_invite_bot,
             commands::meetings::meetings_join_bot_now,
             commands::meetings::meetings_cancel_bot,
+            commands::meetings::meetings_check_bot_for_url,
+            commands::meetings::meetings_notify_detected,
             commands::meetings::open_meetings_window,
             commands::share_notify::poll_shared_with_me,
             commands::share_notify::open_share_detail,
@@ -361,6 +363,11 @@ fn main() {
                     let _ = commands::daemon::start_daemon(handle);
                 });
             }
+
+            // Bound the meeting-detect notify ledger on launch: drop entries
+            // older than 14 days (the `util::meeting_ledger` doc contract). Cheap
+            // synchronous file op, best-effort — a failure here never blocks setup.
+            util::meeting_ledger::prune_on_launch(chrono::Utc::now());
 
             // Start the Recall Desktop SDK sidecar for meeting detection.
             // Fire-and-forget: if the SDK binary is absent or credentials are

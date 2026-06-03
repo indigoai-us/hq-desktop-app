@@ -386,6 +386,46 @@ pub async fn show_update_banner(
     show_banner(app, payload).await
 }
 
+/// Detected meeting → banner. Body-click opens the popover (where the "Live
+/// now" recording row lives); the "Record" chip starts a local SDK recording
+/// for this meeting's window directly.
+///
+/// This is the Windows-fork analog of the upstream macOS `mac-notification-sys`
+/// "Meeting detected" notification with a `MainButton::SingleAction("Record")`.
+/// The action buttons there (Click / ActionButton) map onto our unified banner
+/// action shape: body-click → `click_action_id: "open"`, chip → `action_id:
+/// "record"`. `App.svelte`'s `notification:banner-action` listener routes the
+/// `kind: "meeting"` actions to `show_main_window` / `start_recording`.
+///
+/// `title` / `body` are pre-built by the caller (`meetings::
+/// build_notification_title` / `_body`) so the banner heading matches the
+/// detected platform. `window_id` is the SDK window handle (the canonical input
+/// to `start_recording`); it is echoed back in `data.windowId` so the record
+/// path has the real handle, not a URL that happens to match. `platform` is the
+/// lowercase platform discriminator, echoed in `data.platform`.
+pub async fn show_meeting_banner(
+    app: AppHandle,
+    title: String,
+    body: String,
+    window_id: String,
+    platform: String,
+) -> Result<(), String> {
+    let payload = BannerPayload {
+        kind: "meeting".to_string(),
+        title,
+        body,
+        icon_text: Some("🎥".to_string()),
+        action_label: Some("Record".to_string()),
+        action_id: Some("record".to_string()),
+        click_action_id: "open".to_string(),
+        data: serde_json::json!({
+            "windowId": window_id,
+            "platform": platform,
+        }),
+    };
+    show_banner(app, payload).await
+}
+
 // ── Commands ─────────────────────────────────────────────────────────────────────
 
 /// Called by `BannerNotification.svelte` once its `listen` handler is mounted.
