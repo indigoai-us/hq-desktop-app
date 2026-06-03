@@ -310,6 +310,14 @@
     }
   }
 
+  async function handleManagePackages() {
+    try {
+      await invoke('open_packages_window');
+    } catch (err) {
+      console.error('open_packages_window failed:', err);
+    }
+  }
+
   async function handleToggleRealtimeSync() {
     realtimeSync = !realtimeSync;
     await saveAll();
@@ -772,6 +780,15 @@
             >
               <span class="toggle-knob"></span>
             </button>
+          </div>
+
+          <!-- Manage packages — opens the dedicated Packages window -->
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-label">Packages</span>
+              <span class="setting-desc">Install, update, or remove HQ packs</span>
+            </div>
+            <button class="change-button" onclick={handleManagePackages}>Manage...</button>
           </div>
 
           <!-- Version — read-only; sourced from tauri.conf.json via getVersion() -->

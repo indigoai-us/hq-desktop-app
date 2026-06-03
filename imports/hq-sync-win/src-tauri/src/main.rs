@@ -131,6 +131,7 @@ fn main() {
         )))
         .manage(commands::dm_notify::PendingDmEvents(Mutex::new(Vec::new())))
         .manage(commands::banner::PendingBanner(Mutex::new(None)))
+        .manage(commands::packages::PendingPackages(Mutex::new(None)))
         // Tray-app close behaviour: intercept window-close (system menu Close,
         // Alt-F4, frame X) and hide the popover instead of terminating the
         // process. The app only truly exits via the tray context menu's
@@ -242,6 +243,13 @@ fn main() {
             commands::permissions::permissions_force_native_register,
             commands::permissions::permissions_open_settings,
             commands::permissions::open_meeting_permissions_window,
+            commands::packages::list_packages,
+            commands::packages::check_package_updates,
+            commands::packages::install_package,
+            commands::packages::update_package,
+            commands::packages::uninstall_package,
+            commands::packages::open_packages_window,
+            commands::packages::packages_window_ready,
         ])
         .setup(|app| {
             // One-shot migration of any legacy `/deploy`-skill stub at

@@ -24,6 +24,7 @@ pub mod new_files;
 pub mod notification_history;
 pub mod notifications;
 pub mod oauth;
+pub mod packages;
 pub mod permissions;
 pub mod personal;
 pub mod prewarm;

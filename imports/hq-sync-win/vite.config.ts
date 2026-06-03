@@ -38,6 +38,7 @@ export default defineConfig({
       input: {
         main: resolve(root, "index.html"),
         "desktop-alt": resolve(root, "desktop-alt.html"),
+        packages: resolve(root, "packages.html"),
       },
     },
   },
