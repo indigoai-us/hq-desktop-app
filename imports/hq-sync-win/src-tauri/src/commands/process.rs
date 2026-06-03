@@ -860,11 +860,7 @@ mod tests {
         // mark_cancelled (and thus cancel_process_impl) return false.
         let args = SpawnArgs {
             cmd: "ping".to_string(),
-            args: vec![
-                "-n".to_string(),
-                "61".to_string(),
-                "127.0.0.1".to_string(),
-            ],
+            args: vec!["-n".to_string(), "61".to_string(), "127.0.0.1".to_string()],
             cwd: None,
             env: None,
         };
