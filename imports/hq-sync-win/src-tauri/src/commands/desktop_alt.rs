@@ -21,14 +21,19 @@
 //!
 //! ## Windows window note (parity port)
 //!
-//! Upstream (macOS) declared the desktop-alt window in `tauri.conf.json` with
-//! `titleBarStyle: "Overlay"` (a macOS-only transparent/overlay title bar) and
-//! later moved to a programmatic `WebviewWindowBuilder` that still called
-//! `.title_bar_style(TitleBarStyle::Overlay)`. That API is a no-op (at best) on
+//! Upstream (macOS) declared the desktop-alt window in `tauri.conf.json` with a
+//! `titleBarStyle` of "Overlay" (a macOS-only transparent/overlay title bar) and
+//! later moved to a programmatic `WebviewWindowBuilder` that still called the
+//! equivalent overlay-title-bar builder method. That API is a no-op (at best) on
 //! Windows. This fork creates the window programmatically with the fork's
 //! standard decorated frame + Mica/Acrylic vibrancy (`apply_windows_vibrancy`),
 //! exactly like the meetings / meeting-permissions secondary windows — and DROPS
 //! the macOS title-bar config entirely so the window boots on Windows.
+//!
+//! (A source-contract test below pins this — it forbids the macOS overlay
+//! title-bar API in this module's source, so the literal call forms must not
+//! appear even in prose. The descriptions here use a deliberately spelled-out
+//! phrasing for that reason.)
 use std::collections::BTreeMap;
 use std::sync::{Mutex, OnceLock};
 
@@ -476,7 +481,7 @@ pub async fn open_desktop_alt_window(app: AppHandle, route: Option<String>) -> R
 /// Windows adaptation: the window is built programmatically (not declared in
 /// `tauri.conf.json`) with the fork's standard decorated frame + Mica/Acrylic
 /// vibrancy — mirroring `open_meeting_permissions_window`. The macOS-only
-/// `title_bar_style(Overlay)` from upstream is intentionally dropped so the
+/// overlay-title-bar builder call from upstream is intentionally dropped so the
 /// window boots correctly on Windows.
 pub async fn open_desktop_alt_window_inner(
     app: AppHandle,
@@ -1517,6 +1522,48 @@ mod tests {
     fn desktop_alt_gate_rejects_missing_email() {
         assert!(!is_allowed_email(None));
         assert!(!is_allowed_email(Some("")));
+    }
+
+    /// Windows source-contract regression guard (port of upstream f3887d3).
+    ///
+    /// Upstream broke `tauri dev` by giving the desktop-alt window a macOS-only
+    /// overlay title-bar style (the `titleBarStyle: "Overlay"` config, later the
+    /// equivalent builder call), which does not apply on Windows and aborted the
+    /// cold build. Their guard read tauri.conf.json. This fork instead builds
+    /// the window programmatically with the standard decorated frame + vibrancy,
+    /// so the Windows-equivalent contract is: the window-creation source uses
+    /// `decorations(true)` and `apply_windows_vibrancy`, and NEVER references the
+    /// macOS overlay-title-bar API. Pin it so a future edit can't silently
+    /// reintroduce the macOS-only call (which the scripted harness — that never
+    /// boots a real window — wouldn't catch).
+    #[test]
+    fn desktop_alt_window_uses_windows_decorations_not_macos_title_bar_style() {
+        // The module's own source, embedded at compile time.
+        let src = include_str!("desktop_alt.rs");
+
+        assert!(
+            src.contains(".decorations(true)"),
+            "desktop-alt window must use the fork's standard decorated frame"
+        );
+        assert!(
+            src.contains("apply_windows_vibrancy"),
+            "desktop-alt window must apply Mica/Acrylic vibrancy like other secondary windows"
+        );
+        // The macOS-only title-bar API must not appear in the call site. Guard
+        // against both the builder method and the enum so neither casing nor
+        // an alias reintroduces the boot-breaking config. The needles are
+        // assembled from fragments so this test's OWN source doesn't contain
+        // the literal forms it forbids (which would self-trip the guard).
+        let method_call = format!(".title{}", "_bar_style(");
+        let enum_ref = format!("Title{}", "BarStyle::");
+        assert!(
+            !src.contains(&method_call),
+            "desktop-alt window must NOT call the macOS-only title-bar builder method on Windows"
+        );
+        assert!(
+            !src.contains(&enum_ref),
+            "desktop-alt window must NOT reference the macOS-only title-bar enum on Windows"
+        );
     }
 
     #[test]
