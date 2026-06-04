@@ -10,6 +10,7 @@
   import MeetingIcon from './MeetingIcon.svelte';
   import type { Workspace } from '../lib/workspaces';
   import { liveProgressCaption } from '../lib/live-progress-caption';
+  import { isCorePath, CORE_SETUP_LABEL } from '../lib/progressLabel';
   import type { ConflictFile } from '../stores/conflicts';
 
   interface Config {
@@ -202,6 +203,12 @@
     /** Click handler for the meeting icon — toggles the modal open state
      *  in App.svelte (where the modal itself is rendered). */
     onmeetingsclick?: () => void;
+    /** Whether the gated desktop-alt "Company OS" entry should render.
+     *  Driven by `desktop_alt_enabled` (@getindigo.ai only). */
+    desktopAltEnabled?: boolean;
+    /** Click handler for the Company OS entry — opens the desktop-alt window
+     *  (App.svelte invokes `open_desktop_alt_window`). */
+    ondesktopaltclick?: () => void;
   }
 
   let {
@@ -251,6 +258,8 @@
     bindStatsRefresh,
     meetingsEnabled = false,
     onmeetingsclick,
+    desktopAltEnabled = false,
+    ondesktopaltclick,
   }: Props = $props();
 
   // Instance ref for SyncStats so parent can trigger refresh
@@ -328,6 +337,17 @@
     return progress?.company ?? '…';
   });
 
+  // Calm first-sync framing: while the file currently being transferred lives
+  // under `core/` (the release-shipped scaffold, identical for everyone and
+  // not the user's own content), show one steady "Setting up HQ core files…"
+  // line instead of a churn of unfamiliar core paths / company names. Reads as
+  // one-time setup rather than "all my stuff is uploading". See
+  // `../lib/progressLabel.ts`. The honest file counter (caption) is unchanged.
+  const liveWorkspaceLine = $derived.by(() => {
+    if (progress && isCorePath(progress.path)) return CORE_SETUP_LABEL;
+    return currentLabel === '…' ? 'Preparing sync…' : `Syncing ${currentLabel}`;
+  });
+
   // Performance timing — log mount latency
   $effect(() => {
     const mountTime = performance.now();
@@ -398,6 +418,17 @@
     }
   }
 
+  // Open the unified notification-history window (US-006): a persistent,
+  // re-readable timeline of past DMs, shares, and new files. Always available
+  // (not identity-gated) — a dismissed toast is otherwise lost.
+  async function openNotificationHistory() {
+    try {
+      await invoke('open_notification_history');
+    } catch (e) {
+      console.error('open_notification_history failed:', e);
+    }
+  }
+
   async function handleQuit() {
     try {
       // Mirror the tray's Quit menu item: terminate the process via the
@@ -437,11 +468,64 @@
       <p class="header-path">{folderDisplay}</p>
     </div>
 
+    <!-- Notification history (US-006) → opens a window listing past DMs,
+         shares, and new files. Always available (not identity-gated). A bell
+         glyph reads as "things that pinged me". Sits left of the meeting /
+         Company OS / Sync controls. -->
+    <button
+      type="button"
+      class="header-notif-history"
+      title="Notification history"
+      aria-label="Notification history"
+      data-testid="notif-history-toggle"
+      onclick={openNotificationHistory}
+    >
+      <svg
+        width="15"
+        height="15"
+        viewBox="0 0 16 16"
+        fill="none"
+        xmlns="http://www.w3.org/2000/svg"
+        aria-hidden="true"
+      >
+        <path
+          d="M8 1.75a3.5 3.5 0 0 0-3.5 3.5c0 3-1.25 4-1.25 4h9.5s-1.25-1-1.25-4A3.5 3.5 0 0 0 8 1.75Z"
+          stroke="currentColor"
+          stroke-width="1.4"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        />
+        <path
+          d="M6.75 12.25a1.25 1.25 0 0 0 2.5 0"
+          stroke="currentColor"
+          stroke-width="1.4"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        />
+      </svg>
+    </button>
+
     {#if meetingsEnabled && onmeetingsclick}
       <!-- Discreet meeting-invite icon, sits just left of Sync. Gated to
            @getindigo.ai via `meetings_feature_enabled` (SYNC-1) so this
            branch is dead code for non-Indigo users. -->
       <MeetingIcon onclick={onmeetingsclick} />
+    {/if}
+
+    {#if desktopAltEnabled && ondesktopaltclick}
+      <!-- Gated "Company OS" entry (US-004). Opens the desktop-alt window.
+           Gated to @getindigo.ai via `desktop_alt_enabled`, so this branch is
+           dead code (never rendered) for non-Indigo users — the classic
+           popover surface is unchanged for everyone else. -->
+      <button
+        type="button"
+        class="header-company-os"
+        title="Open Company OS"
+        aria-label="Open Company OS"
+        onclick={ondesktopaltclick}
+      >
+        OS
+      </button>
     {/if}
 
     <!-- Sync button — right-aligned in the header so it's always visible
@@ -652,7 +736,7 @@
              label stays correct even when a workspace skips silently. -->
         <div class="live-progress">
           <p class="live-line live-workspace">
-            {currentLabel === '…' ? 'Preparing sync…' : `Syncing ${currentLabel}`}
+            {liveWorkspaceLine}
           </p>
           <div class="live-bar">
             <div class="live-bar-fill" style="width: {barPct}%"></div>
@@ -1038,6 +1122,54 @@
   .header-sync:disabled {
     opacity: 0.7;
     cursor: not-allowed;
+  }
+
+  /* Gated "Company OS" pill (US-004). Discreet monochrome chip sitting left of
+     Sync — only rendered for @getindigo.ai users via `desktop_alt_enabled`. */
+  .header-company-os {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0.5rem 0.625rem;
+    font-family: inherit;
+    font-size: 0.6875rem;
+    font-weight: 650;
+    letter-spacing: 0.02em;
+    color: var(--popover-text-heading, #ffffff);
+    background: transparent;
+    border: 1px solid var(--popover-border, rgba(255, 255, 255, 0.18));
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background-color 0.15s ease, color 0.15s ease;
+    -webkit-app-region: no-drag;
+  }
+
+  .header-company-os:hover {
+    background: var(--popover-action-hover, rgba(255, 255, 255, 0.1));
+  }
+
+  /* Notification-history bell (US-006). Same outlined-icon-button look as
+     .header-company-os, sized square for the glyph. */
+  .header-notif-history {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.875rem;
+    height: 1.875rem;
+    margin-right: 0.375rem;
+    color: var(--popover-text-heading, #ffffff);
+    background: transparent;
+    border: 1px solid var(--popover-border, rgba(255, 255, 255, 0.18));
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background-color 0.15s ease, color 0.15s ease;
+    -webkit-app-region: no-drag;
+  }
+
+  .header-notif-history:hover {
+    background: var(--popover-action-hover, rgba(255, 255, 255, 0.1));
   }
 
   .header-sync.syncing {

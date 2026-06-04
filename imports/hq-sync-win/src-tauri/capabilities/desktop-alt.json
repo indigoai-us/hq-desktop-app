@@ -1,0 +1,13 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "desktop-alt",
+  "description": "Capability set for the gated desktop-alt 'Company OS' window (@getindigo.ai only). Self-fetches via desktop_alt_* and get_company_* commands on mount, consumes a pending route, and listens for desktop:navigate events. No main-window handshake. Mirrors meetings-window.json.",
+  "windows": ["desktop-alt"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:window:allow-close",
+    "core:window:allow-set-focus",
+    "shell:allow-open"
+  ]
+}

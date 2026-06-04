@@ -60,14 +60,19 @@ const EVENT_BANNER: &str = "banner:event";
 /// for the CUSTOM banner path (the native paths still emit their own events).
 const EVENT_BANNER_ACTION: &str = "notification:banner-action";
 
-/// Banner geometry (logical px). `BANNER_H` is sized tight to the card content
-/// (avatar + title + two-line body + action row) so the vibrancy backdrop and
-/// the rounded card coincide with no dead padding. We do NOT resize the window
-/// from the webview: resizing an NSWindow leaves the NSVisualEffectView's
-/// rounded-corner mask at the old geometry, exposing square corners behind the
-/// card. Fixed size keeps the corners clean.
+/// Banner geometry (logical px). `BANNER_H` is the INITIAL height the window is
+/// created at; the frontend measures its rendered content on mount and calls
+/// `resize_banner` to shrink/grow the window to fit (so a one-line DM isn't
+/// padded out to a three-line share). On Windows this resize is safe with no
+/// corner re-clip: the Mica/Acrylic backdrop (DWM) fills the client area at any
+/// size, and the rounded corners are CSS `border-radius` on the card plus the
+/// Win11 system window rounding — neither is tied to a fixed geometry (contrast
+/// the macOS NSVisualEffectView mask, which would need a re-clip).
 const BANNER_W: f64 = 366.0;
 const BANNER_H: f64 = 104.0;
+/// Clamp bounds for the content-driven resize.
+const BANNER_H_MIN: f64 = 56.0;
+const BANNER_H_MAX: f64 = 260.0;
 const MARGIN_RIGHT: f64 = 14.0;
 const MARGIN_TOP: f64 = 40.0;
 
@@ -119,14 +124,19 @@ struct BannerActionEvent {
 /// additive and picked up live on the next poll (no restart). Shared by
 /// `dm_notify`, `share_notify`, and `updater`.
 pub(crate) fn custom_banner_enabled() -> bool {
-    let Ok(dir) = crate::util::paths::hq_config_dir() else {
-        return true;
-    };
-    let Ok(contents) = std::fs::read_to_string(dir.join("menubar.json")) else {
-        return true;
-    };
-    serde_json::from_str::<serde_json::Value>(&contents)
+    let contents = crate::util::paths::hq_config_dir()
         .ok()
+        .and_then(|dir| std::fs::read_to_string(dir.join("menubar.json")).ok());
+    custom_banner_enabled_from(contents.as_deref())
+}
+
+/// Pure gate decision from `menubar.json` contents — ON unless `customBanner` is
+/// explicitly `false`. Missing file, unreadable, malformed JSON, or absent key
+/// all default ON. Split out so the routing rule (shared by DM / share / meeting
+/// / update) is unit-testable without the filesystem.
+pub(crate) fn custom_banner_enabled_from(contents: Option<&str>) -> bool {
+    contents
+        .and_then(|c| serde_json::from_str::<serde_json::Value>(c).ok())
         .and_then(|j| j.get("customBanner").and_then(|v| v.as_bool()))
         .unwrap_or(true)
 }
@@ -386,6 +396,46 @@ pub async fn show_update_banner(
     show_banner(app, payload).await
 }
 
+/// Detected meeting → banner. Body-click opens the popover (where the "Live
+/// now" recording row lives); the "Record" chip starts a local SDK recording
+/// for this meeting's window directly.
+///
+/// This is the Windows-fork analog of the upstream macOS `mac-notification-sys`
+/// "Meeting detected" notification with a `MainButton::SingleAction("Record")`.
+/// The action buttons there (Click / ActionButton) map onto our unified banner
+/// action shape: body-click → `click_action_id: "open"`, chip → `action_id:
+/// "record"`. `App.svelte`'s `notification:banner-action` listener routes the
+/// `kind: "meeting"` actions to `show_main_window` / `start_recording`.
+///
+/// `title` / `body` are pre-built by the caller (`meetings::
+/// build_notification_title` / `_body`) so the banner heading matches the
+/// detected platform. `window_id` is the SDK window handle (the canonical input
+/// to `start_recording`); it is echoed back in `data.windowId` so the record
+/// path has the real handle, not a URL that happens to match. `platform` is the
+/// lowercase platform discriminator, echoed in `data.platform`.
+pub async fn show_meeting_banner(
+    app: AppHandle,
+    title: String,
+    body: String,
+    window_id: String,
+    platform: String,
+) -> Result<(), String> {
+    let payload = BannerPayload {
+        kind: "meeting".to_string(),
+        title,
+        body,
+        icon_text: Some("🎥".to_string()),
+        action_label: Some("Record".to_string()),
+        action_id: Some("record".to_string()),
+        click_action_id: "open".to_string(),
+        data: serde_json::json!({
+            "windowId": window_id,
+            "platform": platform,
+        }),
+    };
+    show_banner(app, payload).await
+}
+
 // ── Commands ─────────────────────────────────────────────────────────────────────
 
 /// Called by `BannerNotification.svelte` once its `listen` handler is mounted.
@@ -433,6 +483,28 @@ pub async fn banner_action(
 #[tauri::command]
 pub async fn dismiss_banner(app: AppHandle) -> Result<(), String> {
     dismiss_banner_inner(&app);
+    Ok(())
+}
+
+/// Resize the banner window to fit its rendered content. `BannerNotification`
+/// measures its card height after each payload and calls this so the window
+/// hugs the content instead of a fixed 104px (which over-pads short banners).
+/// Keeps the top-right anchor (a content-size change can shift the origin) and
+/// clamps to [`BANNER_H_MIN`]..[`BANNER_H_MAX`].
+///
+/// Windows: no corner re-clip is needed after the resize — the Mica/Acrylic
+/// backdrop tracks the client area automatically and the rounded corners are
+/// CSS + the Win11 system rounding, not a fixed-geometry mask (the macOS
+/// NSVisualEffectView path needed an explicit re-clip here).
+#[tauri::command]
+pub async fn resize_banner(app: AppHandle, height: f64) -> Result<(), String> {
+    let h = height.clamp(BANNER_H_MIN, BANNER_H_MAX);
+    if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
+        window
+            .set_size(tauri::LogicalSize::new(BANNER_W, h))
+            .map_err(|e| e.to_string())?;
+        let _ = window.set_position(top_right_position(&app));
+    }
     Ok(())
 }
 
@@ -496,4 +568,53 @@ pub async fn preview_update_banner(app: AppHandle) -> Result<(), String> {
         Some("instant DMs + custom banners".to_string()),
     )
     .await
+}
+
+/// Fabricate a meeting-detected event and show its banner (manual QA).
+#[tauri::command]
+pub async fn preview_meeting_banner(app: AppHandle) -> Result<(), String> {
+    show_meeting_banner(
+        app,
+        "Zoom meeting detected".to_string(),
+        "Zoom: Weekly sync".to_string(),
+        "preview-window-1".to_string(),
+        "zoom".to_string(),
+    )
+    .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gate_defaults_on_when_absent_or_unreadable() {
+        assert!(custom_banner_enabled_from(None));
+        assert!(custom_banner_enabled_from(Some("not json")));
+        assert!(custom_banner_enabled_from(Some("{}")));
+        assert!(custom_banner_enabled_from(Some(r#"{"other":true}"#)));
+    }
+
+    #[test]
+    fn gate_on_when_explicitly_true() {
+        assert!(custom_banner_enabled_from(Some(r#"{"customBanner":true}"#)));
+    }
+
+    #[test]
+    fn gate_off_only_when_explicitly_false() {
+        assert!(!custom_banner_enabled_from(Some(
+            r#"{"customBanner":false}"#
+        )));
+        // Non-bool values are ignored → default ON.
+        assert!(custom_banner_enabled_from(Some(
+            r#"{"customBanner":"false"}"#
+        )));
+    }
+
+    #[test]
+    fn initials_handles_names() {
+        assert_eq!(initials("Corey Epstein"), "CE");
+        assert_eq!(initials("Alice"), "AL");
+        assert_eq!(initials(""), "?");
+    }
 }

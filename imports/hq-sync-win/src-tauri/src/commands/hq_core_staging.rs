@@ -514,16 +514,35 @@ pub(crate) fn resolve_hq_folder() -> std::path::PathBuf {
     )
 }
 
-/// Resolve the bundled rescue script via Tauri's resource API. In dev
-/// (`cargo run` / `tauri dev`) the script ships at `_up_/scripts/...` under
-/// the resource dir (Tauri rewrites `../scripts/...` to `_up_/scripts/...`
-/// during resource staging). In packaged builds the bundler places it in
-/// the .app's `Resources/` directory under the same relative path.
+/// Resolve the rescue script. Tries (in order):
+///   1. Bundled `Resources/_up_/scripts/` — the happy path for any
+///      packaged install whose Tauri auto-update refreshed the resource
+///      dir along with the executable.
+///   2. Dev-fallback `scripts/...` relative to cwd — covers `cargo run`
+///      and `tauri dev` from a repo checkout.
+///   3. **Live-fetch fallback** — download `scripts/replace-rescue.sh`
+///      from `indigoai-us/hq-sync` at the matching version tag (with
+///      `main` as a secondary fallback) into
+///      `~/.hq/cache/hq-sync/scripts/replace-rescue-v{app_version}.sh`
+///      and return the cached path. Closes the gap where the Tauri
+///      updater bumped the executable but left a pre-rename copy in
+///      `Resources/_up_/scripts/` (observed between v0.1.106 and
+///      v0.1.107 around the `replace-from-staging-rescue.sh` →
+///      `replace-rescue.sh` rename in commit cebf307).
+///
+/// Async because of step 3 — the network fetch can't run on the UI thread
+/// without blocking it for the request duration.
+///
+/// Windows note: every consumer of the returned path drives it through Git
+/// Bash via `paths::resolve_bin("bash") <script>` (see
+/// `run_replace_from_staging` and `hq_core_update::install_hq_core_update`),
+/// so a live-fetched cache copy under `~/.hq/cache/...` runs identically to
+/// the bundled one — there is no exec-bit dependency on Windows.
 ///
 /// Crate-public: `hq_core_update::install_hq_core_update` reuses this to
 /// spawn the same rescue script against the released hq-core repo (replaces
 /// the old "open Claude Code with /update-hq" CTA for prod users).
-pub(crate) fn resolve_rescue_script(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+pub(crate) async fn resolve_rescue_script(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     // New name first (v0.1.104+), old name as fallback so a stale resource
     // dir mid-rebuild (or any pre-rename hq-sync.app still on disk that
     // somehow re-invokes this code path) still resolves cleanly. Both
@@ -541,9 +560,8 @@ pub(crate) fn resolve_rescue_script(app: &AppHandle) -> Result<std::path::PathBu
             }
         }
     }
-    // Last-resort dev fallback: the cwd may be the repo root when
-    // running `cargo run` directly without going through `tauri dev`.
-    // Try the new name first here too.
+    // Dev fallback: the cwd may be the repo root when running `cargo run`
+    // directly without going through `tauri dev`. Try the new name first.
     let cwd = std::env::current_dir().ok();
     for filename in ["replace-rescue.sh", "replace-from-staging-rescue.sh"] {
         if let Some(p) = cwd.as_ref().map(|c| c.join("scripts").join(filename)) {
@@ -552,10 +570,67 @@ pub(crate) fn resolve_rescue_script(app: &AppHandle) -> Result<std::path::PathBu
             }
         }
     }
-    Err(format!(
-        "replace-rescue.sh not found in resource dir (looked at: {:?})",
-        candidates
-    ))
+    // Live-fetch fallback — the bundle was stale. Download the matching
+    // version from GitHub into the per-user cache and return that.
+    //
+    // The fetcher classifies the response into the three variants
+    // `ensure_cached_rescue_script` requires (see rescue_script_cache::
+    // FetchOutcome): only a definitive 404 authorises a fallback from
+    // the tagged URL to `main`. Any other HTTP status (5xx, 403, etc.)
+    // or transport-layer failure (DNS, TLS, timeout) returns
+    // TransientError, which the caller surfaces verbatim instead of
+    // silently caching `main` content under the running version key.
+    //
+    // The client is the fork's shared `client_info::build_client()` —
+    // same client-attribution headers + 15s request / 5s connect budget
+    // every other outbound menubar request uses. `indigoai-us/hq-sync`
+    // is public, so no auth header is needed. The cache home resolves via
+    // `paths::home_dir()` (the HOME-aware wrapper that also works on a
+    // native Windows app where only `%USERPROFILE%` is set).
+    let app_version = app.package_info().version.to_string();
+    let home = paths::home_dir();
+    let fetcher = |url: String| async move {
+        use crate::commands::rescue_script_cache::FetchOutcome;
+        let client = crate::util::client_info::build_client();
+        let resp = match client.get(&url).send().await {
+            Ok(r) => r,
+            Err(e) => return FetchOutcome::TransientError(format!("GET {url}: {e}")),
+        };
+        let status = resp.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return FetchOutcome::NotFound;
+        }
+        if !status.is_success() {
+            return FetchOutcome::TransientError(format!("GET {url}: HTTP {status}"));
+        }
+        match resp.bytes().await {
+            Ok(b) => FetchOutcome::Body(b.to_vec()),
+            Err(e) => FetchOutcome::TransientError(format!("read body for {url}: {e}")),
+        }
+    };
+    match crate::commands::rescue_script_cache::ensure_cached_rescue_script(
+        home.as_deref(),
+        &app_version,
+        fetcher,
+    )
+    .await
+    {
+        Ok((path, source)) => {
+            log(
+                "hq-core-staging",
+                &format!(
+                    "rescue script resolved via {source:?} at {}",
+                    path.display()
+                ),
+            );
+            Ok(path)
+        }
+        Err(e) => Err(format!(
+            "replace-rescue.sh not found in resource dir (looked at: {:?}); \
+             live-fetch fallback also failed: {e}",
+            candidates
+        )),
+    }
 }
 
 /// Tauri command — run the rescue script against the resolved HQ folder.
@@ -603,7 +678,7 @@ pub async fn run_replace_from_staging(app: AppHandle) -> Result<RescueRunResult,
             hq_folder.display()
         ));
     }
-    let script = resolve_rescue_script(&app)?;
+    let script = resolve_rescue_script(&app).await?;
 
     // Stream the combined output to a per-invocation log file so the user
     // can `tail -f` it during the multi-minute scan and so we have a

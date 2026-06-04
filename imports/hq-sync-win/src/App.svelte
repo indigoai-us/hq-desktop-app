@@ -6,10 +6,13 @@
   import SignInPrompt from './components/SignInPrompt.svelte';
   import Popover from './components/Popover.svelte';
   import Settings from './components/Settings.svelte';
+  import FirstRunWelcome from './components/FirstRunWelcome.svelte';
+  import AutoSyncNotice from './components/AutoSyncNotice.svelte';
   import { conflictStore, type ConflictFile } from './stores/conflicts';
   import { shouldSkipSignIn } from './lib/auth';
   import type { Workspace, WorkspacesResult } from './lib/workspaces';
   import { buildClaudeCodeUrl } from './lib/claude-code-link';
+  import { handleMeetingDetected, type MeetingDetectedPayload } from './lib/meetingDetection';
   import './styles/popover.css';
 
   interface Config {
@@ -109,12 +112,30 @@
   let showSettings = $state(false);
   let syncStatsRefresh = $state<(() => void) | null>(null);
 
+  // First-run / first-update onboarding. `showWelcome` renders the carousel
+  // over the popover on a brand-new install; `showAutoSyncNotice` renders the
+  // one-time auto-sync heads-up for a user who just updated. `onboardingHandled`
+  // guards `runOnboarding` so it fires at most once per session even though it's
+  // reachable from both checkAuth (already-authed at mount) and handleAuthSuccess
+  // (fresh sign-in).
+  let showWelcome = $state(false);
+  let showAutoSyncNotice = $state(false);
+  let onboardingHandled = false;
+
   // Meetings feature flag — driven by `meetings_feature_enabled` (Rust side
   // decodes the cached Cognito id_token and checks @getindigo.ai). The icon
   // doesn't render at all when this is false. Click opens the standalone
   // `meetings-window` (mirrors the `new-files-detail` window pattern) — the
   // earlier modal-on-popover UX was too cramped.
   let meetingsEnabled = $state(false);
+
+  // Desktop-alt "Company OS" feature flag (US-004) — driven by
+  // `desktop_alt_enabled` (Rust delegates to the same @getindigo.ai gate as
+  // `meetings_feature_enabled`; the OnceLock cache is shared). Defaults false
+  // so non-Indigo users never see the alt UX entry even before the gate
+  // resolves. A separate invoke keeps the two flags decoupled. When true, the
+  // popover shows an "Open Company OS" action that opens the desktop-alt window.
+  let desktopAltEnabled = $state(false);
 
   // Workspaces — populated by `list_syncable_workspaces` (Rust). Replaces the
   // legacy "No companies yet" dead-end with a union over Person + memberships
@@ -493,6 +514,17 @@
         if (focused) {
           loadWorkspaces();
         }
+      })
+    );
+
+    // Detected-meeting notification (US-003). The popover is the always-present
+    // window that owns the OS-facing banner; MeetingsWindow (opened on demand)
+    // only maintains its in-app "Live now" row. `handleMeetingDetected` runs the
+    // bot-already-scheduled check + fires `meetings_notify_detected`, which
+    // applies the notify-pref gate and the atomic dedup-ledger claim.
+    unlisteners.push(
+      await listen<MeetingDetectedPayload>('meeting:detected', (event) => {
+        void handleMeetingDetected(event.payload);
       })
     );
 
@@ -1005,6 +1037,19 @@
               } else if (action === 'open') {
                 await invoke('show_main_window');
               }
+            } else if (kind === 'meeting') {
+              // Detected-meeting banner (US-003). `open` summons the popover so
+              // the "Live now" recording row is visible; `record` starts a local
+              // SDK recording for this meeting's window directly (Personal
+              // attribution — the popover row lets the user re-attribute before
+              // the upload-token mints). `windowId` is the SDK handle the
+              // detection carried.
+              const windowId = (data?.windowId ?? '').trim();
+              if (action === 'open') {
+                await invoke('show_main_window');
+              } else if (action === 'record' && windowId) {
+                await invoke('start_recording', { windowId, companyUid: null });
+              }
             }
           } catch (err) {
             console.error('banner-action failed', kind, action, err);
@@ -1040,6 +1085,18 @@
       })
       .catch(() => {
         meetingsEnabled = false;
+      });
+
+    // Desktop-alt "Company OS" gate (US-004). Same OnceLock-cached
+    // @getindigo.ai check as `meetings_feature_enabled`; a separate invoke
+    // keeps the flags decoupled. Errors fall back to false so a misfiring gate
+    // command can never accidentally expose the alt UX.
+    invoke<boolean>('desktop_alt_enabled')
+      .then((v) => {
+        desktopAltEnabled = v;
+      })
+      .catch(() => {
+        desktopAltEnabled = false;
       });
 
     return () => {
@@ -1083,6 +1140,9 @@
 
       authenticated = shouldSkipSignIn(hasToken, state);
       expiresAt = state.expiresAt ?? '';
+      // Already-authed at mount (installer tokens on a fresh install, or a
+      // returning user) reaches the onboarding paths here.
+      if (authenticated) void runOnboarding();
     } catch {
       authenticated = false;
     } finally {
@@ -1093,6 +1153,68 @@
   function handleAuthSuccess(auth: { authenticated: boolean; expiresAt: string }) {
     authenticated = auth.authenticated;
     expiresAt = auth.expiresAt;
+    // A user who just signed in (no usable token at mount) reaches the
+    // onboarding paths here rather than via checkAuth.
+    if (auth.authenticated) void runOnboarding();
+  }
+
+  /**
+   * Resolve the launch kind (set on the Rust side at .setup()) and run the
+   * matching onboarding path. Requires `authenticated` — a fresh install is
+   * authed by the installer's tokens, but if not we no-op and re-run from
+   * handleAuthSuccess after sign-in.
+   *
+   *   - FirstRun     → pop the popover open, start the first sync, show the
+   *                    welcome carousel. Marked complete when the carousel is
+   *                    dismissed.
+   *   - ExistingUpdate (with auto-sync on, notice unseen) → show the one-time
+   *                    auto-sync notice in-app (no forced window).
+   */
+  async function runOnboarding() {
+    if (onboardingHandled || !authenticated) return;
+    onboardingHandled = true;
+    try {
+      const firstRun = await invoke<boolean>('is_first_run');
+      if (firstRun) {
+        // Pop the hidden tray window open so the user actually sees the
+        // welcome + live sync. Best-effort — never block onboarding.
+        await invoke('show_main_window').catch((err) => {
+          console.warn('show_main_window failed:', err);
+        });
+        showWelcome = true;
+        // Kick off the first full cloud sync immediately; it runs live under
+        // the carousel. handleSyncNow owns the proper state reset.
+        void handleSyncNow();
+        return;
+      }
+      const showNotice = await invoke<boolean>('should_show_auto_sync_notice');
+      if (showNotice) {
+        // In-app only — render when the user next opens the popover. No forced
+        // show_main_window.
+        showAutoSyncNotice = true;
+      }
+    } catch (err) {
+      console.warn('runOnboarding failed:', err);
+    }
+  }
+
+  function handleWelcomeDone() {
+    showWelcome = false;
+    invoke('mark_first_run_complete').catch((err) => {
+      console.warn('mark_first_run_complete failed:', err);
+    });
+  }
+
+  function handleAutoSyncNoticeDismiss() {
+    showAutoSyncNotice = false;
+    invoke('mark_auto_sync_notice_shown').catch((err) => {
+      console.warn('mark_auto_sync_notice_shown failed:', err);
+    });
+  }
+
+  function handleAutoSyncNoticeOpenSettings() {
+    handleAutoSyncNoticeDismiss();
+    handleSettings();
   }
 </script>
 
@@ -1158,7 +1280,27 @@
         // useful to show inline.
         invoke('open_meetings_window').catch(() => {});
       }}
+      {desktopAltEnabled}
+      ondesktopaltclick={() => {
+        // Open (or focus) the gated desktop-alt "Company OS" window
+        // (label: desktop-alt). The Rust handler re-checks the Indigo gate as
+        // defense-in-depth and builds the window with the fork's standard
+        // decorated frame + vibrancy. Fire-and-forget — errors are infra-level.
+        invoke('open_desktop_alt_window').catch(() => {});
+      }}
     />
+    <!-- First-run / first-update onboarding overlays. Fixed-position, so they
+         layer over the popover (the live first sync keeps running underneath).
+         Mutually exclusive in practice: a brand-new install gets the carousel;
+         an updating user gets the notice. -->
+    {#if showWelcome}
+      <FirstRunWelcome ondone={handleWelcomeDone} />
+    {:else if showAutoSyncNotice}
+      <AutoSyncNotice
+        ondismiss={handleAutoSyncNoticeDismiss}
+        onopensettings={handleAutoSyncNoticeOpenSettings}
+      />
+    {/if}
   {:else}
     <SignInPrompt onsuccess={handleAuthSuccess} />
   {/if}

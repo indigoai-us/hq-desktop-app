@@ -32,6 +32,7 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
             dm_notifications: Some(true),
             staging_channel: Some(true),
             release_channel: None,
+            default_recording_company_uid: None,
         });
     }
 
@@ -74,6 +75,10 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
         staging_channel: Some(prefs.staging_channel.unwrap_or(true)),
         // Pass-through (NOT resolved) — see fn-level comment.
         release_channel: prefs.release_channel,
+        // Pass-through — `None` means Personal; the Settings dropdown surfaces
+        // this as the "Personal" option (same shape as the URL-invite picker
+        // in MeetingsWindow).
+        default_recording_company_uid: prefs.default_recording_company_uid,
     })
 }
 
@@ -120,6 +125,7 @@ mod tests {
             dm_notifications: None,
             staging_channel: None,
             release_channel: None,
+            default_recording_company_uid: None,
         }
     }
 
@@ -143,6 +149,7 @@ mod tests {
             dm_notifications: Some(prefs.dm_notifications.unwrap_or(true)),
             staging_channel: Some(prefs.staging_channel.unwrap_or(true)),
             release_channel: prefs.release_channel,
+            default_recording_company_uid: prefs.default_recording_company_uid,
         }
     }
 
@@ -199,6 +206,7 @@ mod tests {
             dm_notifications: Some(false),
             staging_channel: Some(false),
             release_channel: Some("alpha".to_string()),
+            default_recording_company_uid: Some("co_xyz".to_string()),
         };
 
         let result = apply_defaults(prefs);
@@ -216,6 +224,12 @@ mod tests {
         // indigo-gating coercion is verified separately in
         // `util::release_channel::tests::non_indigo_always_coerced_to_stable`.
         assert_eq!(result.release_channel, Some("alpha".to_string()));
+        // default_recording_company_uid passes through untouched (Personal vs
+        // a company UID is the user's choice; no server-side default applied).
+        assert_eq!(
+            result.default_recording_company_uid,
+            Some("co_xyz".to_string())
+        );
     }
 
     #[test]
@@ -234,6 +248,7 @@ mod tests {
             dm_notifications: Some(true),
             staging_channel: Some(true),
             release_channel: Some("beta".to_string()),
+            default_recording_company_uid: Some("co_round".to_string()),
         };
 
         let json = serde_json::to_string_pretty(&prefs).unwrap();
@@ -251,6 +266,15 @@ mod tests {
         assert!(
             json.contains("\"releaseChannel\":"),
             "expected camelCase key 'releaseChannel' in serialized output, got: {json}"
+        );
+        // default_recording_company_uid round-trips as a camelCase string.
+        assert_eq!(
+            parsed.default_recording_company_uid,
+            Some("co_round".to_string())
+        );
+        assert!(
+            json.contains("\"defaultRecordingCompanyUid\":"),
+            "expected camelCase key 'defaultRecordingCompanyUid', got: {json}"
         );
     }
 

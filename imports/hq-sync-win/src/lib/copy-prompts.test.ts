@@ -215,10 +215,11 @@ describe('buildPrompt', () => {
         kind: 'local-env-failure',
         payload: { slug: 'x', kind: 'some-future-kind', detail: 'whatever' },
       });
-      // Must still be useful — points at the diagnostic log + no `sudo`
-      // without confirmation. Don't crash, don't silent-fall-through.
+      // Must still be useful — points at the diagnostic log + no elevated/admin
+      // PowerShell without confirmation (Windows has no `sudo`; US-002 ported the
+      // fallback). Don't crash, don't silent-fall-through.
       expect(out).toMatch(/~\/.hq\/logs|hq-sync\.log/);
-      expect(out).toMatch(/sudo.*confirm|don.?t.*sudo/i);
+      expect(out).toMatch(/elevated.*confirm|admin.*confirm/i);
     });
   });
 });

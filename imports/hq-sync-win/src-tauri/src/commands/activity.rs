@@ -156,6 +156,12 @@ pub fn record_progress(app: &AppHandle, p: &SyncProgressEvent) {
 /// fresh `activity:list` snapshot to the window (if open) so the verb updates
 /// live. Entries the event doesn't name stay `None` → rendered as "updated".
 pub fn record_new_files(app: &AppHandle, e: &crate::events::SyncNewFilesEvent) {
+    // Persist new files into the unified notification history (US-006, Phase 3)
+    // FIRST — before the session-log reconciliation below — so cross-session
+    // new-file history survives a restart even if the in-memory SessionActivity
+    // state is unavailable. Idempotent by company+path.
+    crate::commands::notification_history::record_new_files(&e.company, &e.files);
+
     let Some(state) = app.try_state::<SessionActivity>() else {
         return;
     };

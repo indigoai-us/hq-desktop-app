@@ -1,0 +1,304 @@
+/* Desktop-alt "Company OS" window theme — plain global stylesheet.
+ *
+ * IMPORTANT (port of upstream ed5ed00): this is a PLAIN CSS file imported via
+ * `import './styles/desktop-alt.css'` from a Svelte component. Its theme/root
+ * rules must therefore be valid plain CSS — they must NOT be wrapped in
+ * Svelte's `:global(...)`, which is only meaningful inside a `<style>` block.
+ * A plain `.css` file with `:global(html[...])` selectors is INVALID CSS and
+ * browsers drop those rules, so the dark background, font, and every
+ * --bg/--fg/--border variable silently never apply (window renders white +
+ * serif). Keep these selectors as bare `html[data-window='desktop-alt'] …`.
+ *
+ * Tokens are scoped to `html[data-window='desktop-alt']` (set in
+ * src/desktop-alt/main.ts) so they never bleed into the popover / other
+ * windows that share the bundle. Monochrome-glass: no brand accent hue. */
+
+html[data-window='desktop-alt'],
+html[data-window='desktop-alt'] body,
+html[data-window='desktop-alt'] #desktop-alt {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+}
+
+html[data-window='desktop-alt'] {
+  /* Window backgrounds (monochrome neutrals). */
+  --bg: #0a0a0a; /* shell / sidebar / main background */
+  --bg-subtle: #050505; /* status bar */
+  --bg-body: #131316; /* document body behind the window surface */
+
+  /* Text tiers. */
+  --fg: #fafafa; /* primary text / headings */
+  --muted: #71717a; /* secondary / label text */
+  --muted-2: #a1a1aa; /* slightly brighter secondary */
+  --muted-3: #52525b; /* faintest tier (sidebar idle) */
+
+  /* Borders + hover/active surfaces. */
+  --border: rgba(255, 255, 255, 0.1);
+  --border-strong: rgba(255, 255, 255, 0.14);
+  --row-hover: rgba(255, 255, 255, 0.035);
+  --row-active: rgba(255, 255, 255, 0.06);
+  --scrollbar-thumb: rgba(255, 255, 255, 0.08);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.18);
+
+  /* Status marker (workspace warnings). Not brand accent. */
+  --amber: #f59e0b;
+
+  color-scheme: light dark;
+  background: var(--bg);
+  color: var(--fg);
+  font-family:
+    'Geist', ui-sans-serif, -apple-system, system-ui, 'SF Pro Text', sans-serif;
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-variant-numeric: tabular-nums lining-nums;
+}
+
+html[data-window='desktop-alt'] body {
+  overflow: hidden;
+  /* App body sits behind the window surface. The Rust window applies Mica/
+     Acrylic vibrancy; this solid neutral is the fallback when no material is
+     available (matches the popover's solid-background fallback strategy). */
+  background: var(--bg-body);
+}
+
+/* ---- Light mode — neutral inversion, no hue introduced. */
+@media (prefers-color-scheme: light) {
+  html[data-window='desktop-alt'] {
+    --bg: #f6f6f8;
+    --bg-subtle: #ececef;
+    --bg-body: #e7e7ea;
+
+    --fg: #111113;
+    --muted: rgba(0, 0, 0, 0.5);
+    --muted-2: rgba(0, 0, 0, 0.62);
+    --muted-3: rgba(0, 0, 0, 0.38);
+
+    --border: rgba(0, 0, 0, 0.1);
+    --border-strong: rgba(0, 0, 0, 0.14);
+    --row-hover: rgba(0, 0, 0, 0.035);
+    --row-active: rgba(0, 0, 0, 0.06);
+    --scrollbar-thumb: rgba(0, 0, 0, 0.16);
+    --scrollbar-thumb-hover: rgba(0, 0, 0, 0.28);
+
+    --amber: #b45309;
+  }
+}
+
+/* ---- Reduced transparency — promote alpha surfaces to solid neutrals. */
+@media (prefers-reduced-transparency: reduce) {
+  html[data-window='desktop-alt'] {
+    --border: rgba(255, 255, 255, 0.16);
+    --border-strong: rgba(255, 255, 255, 0.22);
+    --row-hover: #18181b;
+    --row-active: #1f1f23;
+  }
+}
+
+@media (prefers-color-scheme: light) and (prefers-reduced-transparency: reduce) {
+  html[data-window='desktop-alt'] {
+    --border: rgba(0, 0, 0, 0.16);
+    --border-strong: rgba(0, 0, 0, 0.22);
+    --row-hover: #ededf0;
+    --row-active: #e4e4e8;
+  }
+}
+
+html[data-window='desktop-alt'] * {
+  box-sizing: border-box;
+}
+
+/* Subtle scrollbars, scoped to the desktop-alt window. */
+html[data-window='desktop-alt'] ::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+html[data-window='desktop-alt'] ::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+html[data-window='desktop-alt'] ::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 3px;
+}
+
+html[data-window='desktop-alt'] ::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+
+/* ── Shell layout ─────────────────────────────────────────────────────────── */
+
+.desktop-shell {
+  display: grid;
+  grid-template-columns: 216px minmax(0, 1fr);
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  /* Single-scroll guarantee: only leaf scrollers may scroll; ancestors clip. */
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.desktop-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  width: 216px;
+  min-width: 216px;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  /* Windows uses the standard decorated title bar (no macOS traffic lights),
+     so the sidebar needs only ordinary top padding — not the macOS overlay
+     traffic-light inset the upstream build reserved. */
+  padding: 14px 10px 10px;
+  border-right: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--muted-3);
+}
+
+.sidebar-title {
+  height: 24px;
+  padding: 0 8px;
+  color: var(--fg);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 24px;
+}
+
+.sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sidebar-nav button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  height: 28px;
+  min-width: 0;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  text-align: left;
+  cursor: default;
+}
+
+.sidebar-nav button:hover {
+  background: var(--row-hover);
+  color: var(--fg);
+}
+
+.sidebar-nav button.active {
+  background: var(--row-active);
+  color: var(--fg);
+}
+
+.sidebar-nav span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.company-section {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.section-label {
+  padding: 0 8px 6px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 16px;
+  text-transform: uppercase;
+}
+
+.company-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.empty-row {
+  height: 28px;
+  padding: 0 8px;
+  color: var(--muted-2);
+  font-size: 12px;
+  line-height: 28px;
+}
+
+.desktop-main {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) 26px;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.desktop-main-scroll {
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.page {
+  padding: 28px 32px;
+}
+
+.page-header {
+  margin-bottom: 18px;
+}
+
+.page-header h1 {
+  margin: 0;
+  color: var(--fg);
+  font-size: 18px;
+  font-weight: 650;
+  line-height: 24px;
+}
+
+.placeholder-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(520px, 100%);
+  color: var(--muted);
+}
+
+.placeholder-panel p {
+  margin: 0;
+  color: var(--muted-2);
+}
+
+.workspace-error {
+  color: var(--amber);
+  font-size: 12px;
+}
+
+.desktop-status-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 26px;
+  padding: 0 10px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-subtle);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 26px;
+}

@@ -131,6 +131,7 @@ fn main() {
         )))
         .manage(commands::dm_notify::PendingDmEvents(Mutex::new(Vec::new())))
         .manage(commands::banner::PendingBanner(Mutex::new(None)))
+        .manage(commands::packages::PendingPackages(Mutex::new(None)))
         // Tray-app close behaviour: intercept window-close (system menu Close,
         // Alt-F4, frame X) and hide the popover instead of terminating the
         // process. The app only truly exits via the tray context menu's
@@ -161,6 +162,10 @@ fn main() {
             commands::status::get_sync_status,
             commands::sync::start_sync,
             commands::sync::cancel_sync,
+            commands::first_run::is_first_run,
+            commands::first_run::should_show_auto_sync_notice,
+            commands::first_run::mark_first_run_complete,
+            commands::first_run::mark_auto_sync_notice_shown,
             commands::workspaces::list_syncable_workspaces,
             commands::workspaces::connect_workspace_to_cloud,
             commands::sync_mode::get_sync_mode,
@@ -202,7 +207,17 @@ fn main() {
             commands::meetings::meetings_invite_bot,
             commands::meetings::meetings_join_bot_now,
             commands::meetings::meetings_cancel_bot,
+            commands::meetings::meetings_check_bot_for_url,
+            commands::meetings::meetings_notify_detected,
             commands::meetings::open_meetings_window,
+            commands::desktop_alt::desktop_alt_enabled,
+            commands::desktop_alt::desktop_alt_consume_pending_route,
+            commands::desktop_alt::open_desktop_alt_window,
+            commands::desktop_alt::get_company_summary,
+            commands::desktop_alt::get_company_board,
+            commands::desktop_alt::get_company_activity,
+            commands::desktop_alt::get_company_deployments,
+            commands::desktop_alt::get_company_secrets,
             commands::share_notify::poll_shared_with_me,
             commands::share_notify::open_share_detail,
             commands::share_notify::share_detail_window_ready,
@@ -210,17 +225,45 @@ fn main() {
             commands::dm_notify::open_dm_detail,
             commands::dm_notify::dm_detail_window_ready,
             commands::dm_notify::send_dm,
+            commands::dm_notify::fetch_dm_thread,
             commands::notifications::notification_permission_state,
             commands::notifications::notification_request_permission,
+            commands::notification_history::fetch_notification_history,
+            commands::notification_history::open_notification_history,
             commands::banner::banner_window_ready,
             commands::banner::banner_action,
             commands::banner::dismiss_banner,
+            commands::banner::resize_banner,
             commands::banner::show_main_window,
             commands::banner::preview_dm_banner,
             commands::banner::preview_share_banner,
             commands::banner::preview_update_banner,
+            commands::banner::preview_meeting_banner,
+            commands::recall_sdk::meeting_detect_feature_enabled,
+            commands::recall_sdk::meetings_list_active_detections,
+            commands::recall_sdk::start_recording,
+            commands::recall_sdk::stop_recording,
+            commands::permissions::meetings_permissions_state,
+            commands::permissions::permissions_force_native_register,
+            commands::permissions::permissions_open_settings,
+            commands::permissions::open_meeting_permissions_window,
+            commands::packages::list_packages,
+            commands::packages::check_package_updates,
+            commands::packages::install_package,
+            commands::packages::update_package,
+            commands::packages::uninstall_package,
+            commands::packages::open_packages_window,
+            commands::packages::packages_window_ready,
         ])
         .setup(|app| {
+            // Classify this launch (FirstRun / ExistingUpdate / Normal) and
+            // cache it in managed state. MUST run before anything that can
+            // write `machineId` to menubar.json (the migration below, sync,
+            // telemetry, the share/dm pollers) — `machineId` is the tiebreaker
+            // that distinguishes a brand-new install from a legacy user
+            // updating. See commands/first_run.rs for the full rationale.
+            commands::first_run::classify_launch(app.handle());
+
             // One-shot migration of any legacy `/deploy`-skill stub at
             // ~/.hq/config.json. Runs first so subsequent prewarm /
             // daemon / sync calls see a clean HqConfig (when a personal
@@ -358,8 +401,42 @@ fn main() {
                 });
             }
 
+            // Bound the meeting-detect notify ledger on launch: drop entries
+            // older than 14 days (the `util::meeting_ledger` doc contract). Cheap
+            // synchronous file op, best-effort — a failure here never blocks setup.
+            util::meeting_ledger::prune_on_launch(chrono::Utc::now());
+
+            // Start the Recall Desktop SDK sidecar for meeting detection.
+            // Fire-and-forget: if the SDK binary is absent or credentials are
+            // unavailable, `start_recall_sdk` logs RECALL_SDK_UNAVAILABLE and
+            // returns without affecting the rest of the app. See
+            // `commands::recall_sdk` for the graceful-degradation contract.
+            {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(e) = commands::recall_sdk::start_recall_sdk(handle).await {
+                        util::logfile::log(
+                            "recall-sdk",
+                            &format!("start_recall_sdk error (app continues): {e}"),
+                        );
+                    }
+                });
+            }
+
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        // Build (not `run`) so we can attach a RunEvent handler for app exit.
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app, event| {
+            // Tear down the Recall SDK bridge sidecar on quit. Without this the
+            // bridge (and any node-subprocesses it spawned) would be orphaned
+            // when the tray app exits — `stop_recall_sdk` issues the Job-Object
+            // tree-kill (`TerminateJobObject`). ExitRequested fires for every
+            // exit path that goes through the Tauri runtime (tray Quit, OS
+            // shutdown). Safe + idempotent when the SDK never started.
+            if let tauri::RunEvent::ExitRequested { .. } = event {
+                commands::recall_sdk::stop_recall_sdk();
+            }
+        });
 }

@@ -1,0 +1,13 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "meeting-permissions",
+  "description": "Capability set for the meeting-permissions wizard window. Self-fetches via meetings_permissions_state on mount/focus and may invoke permissions_force_native_register / permissions_open_settings (all no-ops on Windows). No main-window handshake. Mirrors meetings-window.json.",
+  "windows": ["meeting-permissions"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:window:allow-close",
+    "core:window:allow-set-focus",
+    "shell:allow-open"
+  ]
+}

@@ -415,11 +415,95 @@ jq -r 'to_entries[0].value.offset' ~/.hq/telemetry-cursor.json
 - [ ] Click tray icon -> popover opens
 - [ ] Right-click tray icon -> context menu shows: Sync Now, Settings, Quit
 
+### MeetingsWindow: list refresh resilience
+
+> Regression coverage for the 2026-04 hq-pro KMS-IAM outage where
+> `/v1/calendar/events` and `/v1/google/accounts` 500'd for hours.
+> MeetingsWindow used to (a) show a raw `events HTTP 500: {"message":"…"}`
+> blob and (b) require close + reopen to recover after the server fix
+> deployed. Two changes were shipped: a 15s/5s request+connect timeout on
+> the shared reqwest client (`util/client_info.rs`), and per-call `.catch()`
+> wrappers on `meetings_list_upcoming` / `meetings_list_scheduled_bots`
+> piped through `friendlyError()`.
+
+#### MWR-001: 500 from a list call surfaces a friendly one-liner
+
+- [ ] 1. Open MeetingsWindow against healthy prod — verify event rows render
+- [ ] 2. Open the MeetingsWindow's devtools (right-click → Inspect Element on
+   any row; the window is a separate webview from the popover)
+- [ ] 3. In the devtools console, monkey-patch `invoke` to reject
+   `meetings_list_upcoming` with the exact shape hq-pro returns on a 500:
+   ```js
+   const __orig = window.__TAURI__.core.invoke;
+   window.__TAURI__.core.invoke = (cmd, args) =>
+     cmd === 'meetings_list_upcoming'
+       ? Promise.reject('events HTTP 500: {"message":"Internal Server Error"}')
+       : __orig(cmd, args);
+   ```
+- [ ] 4. Click the refresh button (top-right of the window)
+- [ ] 5. Verify the body now shows a single readable sentence —
+   **"Server hiccup — try again in a moment."** — and **does NOT** contain
+   the literal substring `HTTP 500`, `{"message"`, or `Internal Server Error`
+- [ ] 6. Repeat steps 3–5 stubbing `meetings_list_scheduled_bots` instead.
+   Verify the same friendly sentence renders (same upstream-error vocabulary
+   for both calls)
+
+#### MWR-002: Failed refresh recovers on next poll without close + reopen
+
+- [ ] 1. Continuing from MWR-001 step 5 (stubbed invoke, error banner showing)
+- [ ] 2. Restore the original invoke in the devtools console:
+   ```js
+   window.__TAURI__.core.invoke = __orig;
+   ```
+- [ ] 3. **Without closing or reopening the window**, wait up to 30 seconds
+   for the next poll cycle (or click the refresh button to force it)
+- [ ] 4. Verify the friendly error banner disappears and the event list
+   re-renders with fresh rows
+- [ ] 5. Verify the row-level bot affordances (Invite / In Call / Done etc.)
+   render correctly — proves both list calls re-engaged, not just the
+   upcoming-events one
+
+#### MWR-003: Hung upstream times out within the request budget
+
+> Verifies `util/client_info.rs::build_client()`'s 15s request timeout.
+> Without it, a network partition or hung load balancer would leave the
+> Tauri command awaiting forever and the `if (loading) return` guard in
+> `refresh()` would block every subsequent 30s poll attempt. Covered by the
+> automated `build_client_times_out_on_slow_endpoint` test; this manual
+> check confirms the same budget end-to-end in the real app.
+
+- [ ] 1. With MeetingsWindow open, simulate a hung upstream by pointing the
+   vault URL at a blackhole. Easiest: in `%USERPROFILE%\.hq\menubar.json`, set
+   `"vaultApiUrlOverride"` to a TCP-accepting-but-non-responding endpoint
+   (e.g. a PowerShell listener `$l=[System.Net.Sockets.TcpListener]9999;$l.Start()`,
+   then `http://127.0.0.1:9999`)
+- [ ] 2. Restart HQ Sync so the new vault URL is picked up
+- [ ] 3. Open MeetingsWindow and click refresh
+- [ ] 4. Verify the friendly error banner appears within ~16 seconds
+   (15s request budget + a beat of slack), **not** after a multi-minute
+   OS-level keepalive timeout
+- [ ] 5. Stop the listener and remove the override; verify the next
+   poll cycle (≤30s) restores the event list
+
+### NOTIF-GA: Notification toggles are visible to ALL users
+
+> The **Share notifications** and **Direct messages** toggles in Settings are no
+> longer behind the `@getindigo.ai` dogfood gate — every signed-in user can see
+> and control them. (Backend delivery was already universal; this exposes the
+> on/off switch.) The Meeting permissions row stays Indigo-gated.
+
+- [ ] 1. Sign in with a **non-`@getindigo.ai`** account and open Settings
+- [ ] 2. Under **Notifications**, verify the **Share notifications** toggle is visible
+- [ ] 3. Verify the **Direct messages** toggle is visible
+- [ ] 4. Verify there is exactly **one** "Notifications" section header (no duplicate)
+- [ ] 5. Toggle **Direct messages** off → send the account a DM via `hq dm` → verify no banner fires; toggle back on → verify the next DM banners
+- [ ] 6. Sign in with an `@getindigo.ai` account and confirm the same single Notifications section renders identically (no regression), plus the Indigo-only Meeting permissions row
+
 ### US-004 / US-005 / US-006 / US-007 (Share Notifications): End-to-End Walkthrough
 
-> **Prerequisite:** Logged-in user must have an `@getindigo.ai` email (dogfood gate). All steps
-> assume HQ Sync is built from the `feature/hq-sync-share-notify` branch. A second
-> Indigo account (the "sharer") is needed to trigger share events from hq-console.
+> **Prerequisite:** Share notifications are available to all signed-in users
+> (the former `@getindigo.ai` dogfood gate was removed). A second account (the
+> "sharer") is still needed to trigger share events from hq-console.
 
 #### SN-001: Poll fires 5 seconds after app launch
 
@@ -482,16 +566,21 @@ jq -r 'to_entries[0].value.offset' ~/.hq/telemetry-cursor.json
 - [ ] 3. Open and close the ShareDetail window
 - [ ] 4. Hover over the tray icon again — verify the badge suffix is **gone** (tooltip back to plain "HQ Sync")
 
-#### SN-008: Dogfood gate prevents poll for non-Indigo users
+#### SN-008: Non-Indigo users DO poll (dogfood gate removed)
+
+> Regression guard for the gate removal: a non-`@getindigo.ai` account must now
+> poll (gated only by the `shareNotifications` pref, default ON), not be silently
+> skipped.
 
 - [ ] 1. Log out and log in with a non-`@getindigo.ai` account (e.g., a personal Gmail)
-- [ ] 2. Trigger a sync
-- [ ] 3. Inspect `~/.hq/logs/hq-sync.log` — verify `SHARE_NOTIFY_POLL_SKIP` appears and **no** `SHARE_NOTIFY_POLL_START` line follows
+- [ ] 2. Ensure the **Share notifications** toggle in Settings is ON (the default)
+- [ ] 3. Trigger a sync
+- [ ] 4. Inspect `~/.hq/logs/hq-sync.log` — verify `SHARE_NOTIFY_POLL_START` fires (NOT skipped); a delivered share produces a banner
 
 #### SN-009: Settings toggle disables notifications without restart
 
 - [ ] 1. Open Settings (right-click tray → Settings)
-- [ ] 2. Verify "Share notifications" toggle is present and ON (visible only for `@getindigo.ai` accounts)
+- [ ] 2. Verify "Share notifications" toggle is present and ON (visible to all signed-in users)
 - [ ] 3. Toggle it **OFF** and close Settings
 - [ ] 4. Trigger a sync — verify `SHARE_NOTIFY_POLL_SKIP` in logs (no poll fired)
 - [ ] 5. Toggle it **ON** again — trigger a sync — verify `SHARE_NOTIFY_POLL_START` reappears
@@ -554,6 +643,265 @@ jq -r 'to_entries[0].value.offset' ~/.hq/telemetry-cursor.json
 - [ ] Verify signature: `spctl -a -vv "HQ Sync.app"` -> accepted
 - [ ] Verify universal binary: `file "HQ Sync.app/Contents/MacOS/HQ Sync"` -> shows x86_64 + arm64
 - [ ] Launch on clean macOS 13+ machine -> **no Gatekeeper warnings**
+
+---
+
+## v0.6.3 — Windows parity surfaces (US-001..US-013)
+
+> **Platform note:** The sections above are the original **macOS** manual checklist (paths use
+> `~/.hq/`, NSOpenPanel, `spctl`, etc.). The sections below cover the surfaces added between
+> **v0.4.0 and v0.6.3** as they were **content-ported to the Windows fork** (`hq-sync-win`).
+> Windows specifics: per-user state under `%USERPROFILE%\.hq\`, the Windows **system tray**,
+> **Mica/Acrylic** vibrancy (not NSVisualEffectView), **Focus Assist**-respecting toasts, and
+> **PowerShell** commands. macOS-only behaviors (TCC permissions, AVFoundation, Mach-O signing,
+> Entitlements.plist) are **N/A** on Windows and are cfg-gated out — see
+> [`specs/hq-sync-win-parity-v0.6-as-built.md`](../specs/hq-sync-win-parity-v0.6-as-built.md).
+> The fast pre-release sweep of the same surfaces is [`docs/SMOKE_TESTS.md`](../docs/SMOKE_TESTS.md).
+
+### Reset procedure (Windows, between runs)
+
+```powershell
+# Back up existing state if needed
+Copy-Item "$env:USERPROFILE\.hq" "$env:USERPROFILE\.hq.backup.$([int](Get-Date -UFormat %s))" -Recurse
+
+# Remove menubar/app preferences (forces first-run + clears toggles)
+Remove-Item "$env:USERPROFILE\.hq\menubar.json" -ErrorAction SilentlyContinue
+
+# Kill any running instances
+Get-Process | Where-Object { $_.ProcessName -like "*HQ Sync*" -or $_.ProcessName -like "*hq-sync*" } | Stop-Process -Force -ErrorAction SilentlyContinue
+```
+
+---
+
+### WIN-RECALL: Meeting detection + recording — Recall SDK sidecar (US-001, US-002)
+
+**Stories involved:** US-001, US-002, US-012
+
+> The Recall Desktop SDK is a **sidecar process** (`recall-desktop-sdk-x86_64-pc-windows-msvc.exe`),
+> supervised by the Job Object daemon (no macOS FFI — the macOS TCC/AVFoundation/GStreamer-signing
+> commits are N/A here). Live detection/recording needs Recall credentials
+> (`GET /v1/recall/credentials`, server-side) and the `@getindigo.ai` eligibility gate.
+
+#### WIN-RECALL-01: Graceful degradation when the SDK is unavailable (always runnable)
+
+- [ ] 1. Launch HQ Sync on a host **without** Recall credentials (404/network-error on the
+      credential handshake), or with the sidecar binary absent from the bundle.
+- [ ] 2. Inspect the log:
+  ```powershell
+  Select-String -Path "$env:USERPROFILE\.hq\logs\hq-sync.log" -Pattern 'RECALL_SDK_UNAVAILABLE'
+  ```
+- [ ] 3. Verify `RECALL_SDK_UNAVAILABLE` is logged and the app **continues normally** — tray,
+      popover, and sync all function; no crash, no error dialog (the command returns `Ok(())`).
+
+#### WIN-RECALL-02: Sidecar teardown leaves no orphan (always runnable)
+
+- [ ] 1. With the sidecar present, launch HQ Sync, then quit via tray → **Quit**.
+- [ ] 2. Verify no orphaned sidecar process:
+  ```powershell
+  Get-Process | Where-Object { $_.ProcessName -like "*recall-desktop-sdk*" }
+  # Expected: empty result (Job Object KILL_ON_JOB_CLOSE tore it down with the parent)
+  ```
+
+#### WIN-RECALL-03: meeting:detected → Tauri event → banner (gated, needs creds)
+
+- [ ] 1. As an `@getindigo.ai` user with Recall creds, start a Zoom/Teams/Meet call.
+- [ ] 2. Verify a `meeting:detected` line appears on the sidecar stdout and a
+      `meeting:detected` Tauri event reaches the renderer (the meeting-detected banner appears
+      within ~1s; the meeting shows in the Meetings window).
+- [ ] 3. (URL-less meetings) For a detected meeting with no URL, verify it is still forwarded
+      with a synthetic key and de-duplicated (atomic notify-ledger claim — no double banner).
+
+#### WIN-RECALL-04: Record start/stop, auto-stop, attribution, watchdog (gated)
+
+- [ ] 1. Click **Record** on the banner (or in the Meetings window). Verify recording starts and
+      the row reflects recording state.
+- [ ] 2. Verify the **default recording company** is applied on notification-Record and the
+      per-recording **company dropdown** ("Manage" label) is editable during recording.
+- [ ] 3. End the call. Verify the recording **auto-stops** (meeting-closed → stopRecording).
+- [ ] 4. (Watchdog) Force a recording to hang in `Stopping…`; verify it is **force-stopped**
+      after the watchdog timeout (Windows-equivalent of the macOS JIT-entitlement watchdog —
+      watchdog kept, macOS entitlement bits dropped).
+
+---
+
+### WIN-PERMS: Permissions wizard — Windows granted/not-required (US-003)
+
+**Stories involved:** US-003
+
+> Windows has **no** screen/mic permission system. The macOS objc2 AVFoundation/TCC path is
+> cfg-gated out; `permissions.rs` reports **granted / not-required** on Windows.
+
+- [ ] 1. Open **Settings**. Verify the **Meeting permissions** row (Indigo-gated) renders a
+      **granted / not-required** state — no CTA that would call a macOS permission API.
+- [ ] 2. Open the **Meeting permissions wizard** window. Verify it shows a Windows-appropriate
+      informational state (screen + microphone = granted/not-required), invokes **no** macOS
+      APIs, and produces **no** error.
+- [ ] 3. Verify the wizard window has **Mica/Acrylic** vibrancy and its CSS is **scoped to its
+      window label** (no style bleed into the popover).
+- [ ] 4. (Eligibility) Confirm the permissions surface is exposed to `@getindigo.ai` users
+      (gate widened) and hidden for non-eligible users.
+
+---
+
+### WIN-DALT: desktop-alt "Company OS" board — flag-gated (US-004, US-005)
+
+**Stories involved:** US-004, US-005
+
+> Gated behind `desktop_alt_enabled` (Indigo eligibility). **Scope:** only the Windows-bootable
+> **Company OS core + classic-surface parity** landed. The full upstream desktop-alt frontend
+> tree (projects kanban, command palette, `projects_local.rs`, the desktop-alt sync/meetings
+> PAGE tree — ~11.7k LOC) was **DEFERRED**. See the as-built spec.
+
+#### WIN-DALT-01: Gate OFF falls back to the classic surface (always runnable)
+
+- [ ] 1. As a **non-eligible** user (or with `desktop_alt_enabled` off), open the app.
+- [ ] 2. Verify desktop-alt is **gated off** and the **classic** surface (workspace list / sync /
+      meetings) renders — no empty/black Company-OS window.
+
+#### WIN-DALT-02: Gate ON renders the Company OS board (gated)
+
+- [ ] 1. As an eligible `@getindigo.ai` user with `desktop_alt_enabled` true, open the app.
+- [ ] 2. Verify the **Company OS Board** renders with company-scoped **goals / projects /
+      in-flight**, and the desktop-alt **theme actually applies** on Windows (the `:global()`
+      CSS fix — not unstyled).
+- [ ] 3. Verify the Company summary **counts reflect real data** and do **not** stay stuck at zero
+      (no zero-stuck re-render loop).
+- [ ] 4. Verify the window **boots** on Windows — the `titleBarStyle` casing is correct/adapted so
+      it does not fail on the macOS-only title-bar enum.
+
+#### WIN-DALT-03: Sync-screen parity preserves Windows controls
+
+- [ ] 1. In the desktop-alt sync screen, verify workspaces use **classic ordering**, the personal
+      workspace shows the **"Personal"** tag, and the **hover sync-mode toggle** (Windows control
+      from v0.4.0 US-018) is preserved alongside the personal/instant/share toggles.
+
+---
+
+### WIN-NOTIFHIST: Notification-history window (US-006)
+
+**Stories involved:** US-006
+
+> Unified, **persistent** history of DM / share / update / new-file entries that survives
+> restart (cross-session new-file history, Phase 3). Window uses Windows vibrancy.
+
+- [ ] 1. Open the **notification-history** window (bell in the popover header).
+- [ ] 2. Verify it lists prior DM / share / update / **new-file** entries.
+- [ ] 3. With it open, trigger a new share/DM/new-file — verify the new entry appears live.
+- [ ] 4. **Quit and relaunch** HQ Sync; reopen the history window — verify prior-session entries
+      **persist**.
+- [ ] 5. Verify the window has Mica/Acrylic vibrancy and the `notification-history` capability is
+      registered (the window opens without a capability/permission error).
+
+---
+
+### WIN-PKGS: Packages window (US-009)
+
+**Stories involved:** US-009
+
+> Manage installed/available HQ packs. Shelling out to `hq` requires the **child PATH** so
+> node's shebang resolves on Windows (the v0.5.1 fix via `paths::child_path` / Git Bash).
+
+- [ ] 1. Open the **Packages** window (Settings → Packages entry).
+- [ ] 2. Verify installed HQ packs list and the window has Mica/Acrylic vibrancy.
+- [ ] 3. Trigger a package action that shells out to `hq` (e.g. list/refresh). Verify the node
+      shebang resolves on Windows (no `'node' is not recognized` / shebang failure) and the
+      command runs.
+- [ ] 4. Inspect the log for the package operation:
+  ```powershell
+  Select-String -Path "$env:USERPROFILE\.hq\logs\hq-sync.log" -Pattern 'packages'
+  ```
+
+---
+
+### WIN-RESCUE: Rescue hardening on Windows (US-010)
+
+**Stories involved:** US-010
+
+> Rescue/replace-from-staging hardening. Rescue is still invoked via **Git Bash**
+> (`resolve_bin('bash')`) on Windows — the v0.4.0 US-007 pattern preserved.
+
+- [ ] 1. (Live-fetch fallback) With a **stale** bundled rescue script, run rescue. Verify it
+      **live-fetches** the current script as a fallback (and logs the fetch).
+- [ ] 2. (settings.local protection) With `settings.local.json` present, run rescue. Verify it is
+      **protected** (not wiped).
+- [ ] 3. (Drift quarantine) With `.agents` / `.codex` / `.obsidian` / `MIGRATION.md` drift
+      present, run rescue. Verify those paths are **quarantined** rather than conflicted, and
+      master-sync symlinks are dropped.
+- [ ] 4. (Overwrite-safe) Verify `AGENTS.md` / `USER-GUIDE.md` / `_digest.md` are silently
+      overwritten (no rescue bucket, no conflict).
+- [ ] 5. (--cloud-update) Run rescue with `--cloud-update`; verify hq-symlink / symlink flatten
+      reconciliation runs.
+
+---
+
+### WIN-FIRSTRUN: First-run onboarding (US-011)
+
+**Stories involved:** US-011
+
+> First-run welcome + calmer first sync + one-time auto-sync notice; first-run state persisted.
+
+- [ ] 1. Reset first-run state (fresh install, or clear the first-run marker under
+      `%USERPROFILE%\.hq\`) and launch HQ Sync.
+- [ ] 2. Verify the **first-run welcome** carousel shows.
+- [ ] 3. Verify the **first sync is calmer** (reduced per-file noise) and the **auto-sync notice**
+      is presented once.
+- [ ] 4. **Relaunch** the app — verify the welcome does **not** show again (first-run state
+      persisted).
+
+---
+
+### WIN-BANNER-GA: Banner refinements + notifications GA + header declutter (US-007)
+
+**Stories involved:** US-007
+
+> HQ-branded **glass** banners via the Windows Mica/Acrylic path (not NSVisualEffectView),
+> content-fit height, no draining lifebar, decluttered monochrome popover header, and DM/Share
+> toggles opened to **all** users (no `@getindigo.ai` gate).
+
+- [ ] 1. Trigger a share or meeting event. Verify the banner uses **Windows glass vibrancy**,
+      **fits its content height** (no fixed 104px padding gap), and has **no draining lifebar**.
+- [ ] 2. On a share banner, verify the **share cursor is not stuck** (pointer resets correctly).
+- [ ] 3. Inspect the **popover header**: a **single** settings entry, **monochrome** icons (incl.
+      the monochrome meeting icon), no clutter.
+- [ ] 4. (Notifications GA) Sign in with a **non-`@getindigo.ai`** account → Settings →
+      **Notifications**. Verify **Share notifications** and **Direct messages** toggles are
+      **visible** and functional, with exactly **one** Notifications section header. Toggle
+      **Direct messages** off → send a DM → verify no banner; toggle on → next DM banners.
+
+---
+
+### WIN-DMTHREAD: DM conversation thread (US-008)
+
+**Stories involved:** US-008
+
+> The DM window (DmDetail) shows the **full conversation thread**, not just the triggering DM.
+
+- [ ] 1. Receive a DM from a sender with prior messages; click the banner body to open the **DM**
+      window.
+- [ ] 2. Verify the **full thread** renders in order (not just the latest message).
+- [ ] 3. Type a reply and **Send** (or `Ctrl+Enter`). Verify the message sends, the textarea
+      clears, "Sent ✓" appears briefly, and the reply joins the thread.
+- [ ] 4. Confirm:
+  ```powershell
+  Select-String -Path "$env:USERPROFILE\.hq\logs\hq-sync.log" -Pattern 'DM_NOTIFY_SEND_OK'
+  ```
+
+---
+
+### WIN-VERSION: v0.6.3 version gate (US-013)
+
+**Stories involved:** US-013
+
+- [ ] 1. Open **Settings** → verify the **app version reads `0.6.3`** (from `getVersion()` →
+      Tauri/Cargo version).
+- [ ] 2. Right-click the tray icon → verify the dimmed header reads `HQ Sync v0.6.3`.
+- [ ] 3. Verify the three version files agree:
+  ```powershell
+  Select-String -Path package.json -Pattern '"version"'
+  Select-String -Path src-tauri\Cargo.toml -Pattern '^version'
+  Select-String -Path src-tauri\tauri.conf.json -Pattern '"version"'
+  # Expected: all three read 0.6.3
+  ```
 
 ---
 
