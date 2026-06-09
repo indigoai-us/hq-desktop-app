@@ -180,6 +180,18 @@
     oncancel?: () => void;
     onsettings: () => void;
     onsignout: () => void;
+    /** Push the App view to the in-popover NotificationHistory screen.
+     *  Falls back to invoking `open_notification_history` (spawns a
+     *  standalone window) when not provided — keeps backwards-compat
+     *  with any caller that hasn't been migrated yet. */
+    onnotifications?: () => void;
+    /** Activity / New-files / Drift inline view hand-offs. Same
+     *  fallback semantics as `onnotifications` — when wired, App.svelte
+     *  routes to the in-popover sibling screen instead of spawning
+     *  a standalone window. */
+    onactivity?: () => void;
+    onnewfiles?: (files: { path: string; bytes: number; addedBy: string | null }[]) => void;
+    ondrift?: (report: unknown) => void;
     onresolve?: (path: string, strategy: 'keep-local' | 'keep-remote') => void;
     onopen?: (path: string) => void;
     ondismissconflicts?: () => void;
@@ -249,6 +261,10 @@
     oncancel,
     onsettings,
     onsignout,
+    onnotifications,
+    onactivity,
+    onnewfiles,
+    ondrift,
     onresolve,
     onopen,
     ondismissconflicts,
@@ -411,6 +427,12 @@
     // to branch on staging vs release.
     const report = coreState?.driftReport;
     if (!report) return;
+    // Prefer in-popover view; fall back to standalone window only when
+    // App.svelte hasn't migrated to the inline path.
+    if (ondrift) {
+      ondrift(report);
+      return;
+    }
     try {
       await invoke('open_drift_detail', { report });
     } catch (e) {
@@ -418,10 +440,18 @@
     }
   }
 
-  // Open the unified notification-history window (US-006): a persistent,
-  // re-readable timeline of past DMs, shares, and new files. Always available
-  // (not identity-gated) — a dismissed toast is otherwise lost.
+  // Bell → notification history. The preferred surface on Windows is an
+  // in-popover view (Win11 tray-utility convention; opening a full
+  // secondary window for a timeline feels app-sized). When App.svelte
+  // supplies `onnotifications`, we hand control off and stay in the
+  // popover; otherwise we fall back to invoking the standalone window
+  // command (preserves the legacy behaviour for unmigrated entry points
+  // like an OS notification action).
   async function openNotificationHistory() {
+    if (onnotifications) {
+      onnotifications();
+      return;
+    }
     try {
       await invoke('open_notification_history');
     } catch (e) {
@@ -769,9 +799,9 @@
           {/if}
         </div>
       {:else}
-        <SyncStats bind:this={statsEl} onhistory={() => invoke('open_activity_log')} />
+        <SyncStats bind:this={statsEl} onhistory={() => (onactivity ? onactivity() : invoke('open_activity_log'))} />
         {#if newFilesCount > 0}
-          <NewFilesBadge count={newFilesCount} files={newFilesList} onclick={() => invoke('open_new_files_detail', { files: newFilesList })} />
+          <NewFilesBadge count={newFilesCount} files={newFilesList} onclick={() => (onnewfiles ? onnewfiles(newFilesList) : invoke('open_new_files_detail', { files: newFilesList }))} />
         {/if}
       {/if}
 
@@ -1028,7 +1058,19 @@
        tauri.conf.json `shadow: true`; CSS box-shadow here would be
        clipped at the window edge and is pointless. */
     border-radius: 18px;
+    /* macOS uses a CSS `border` here (NSWindow has no chrome edge → single
+       visible outline). Windows overrides below — see [data-os="windows"]. */
     border: 1px solid var(--popover-border, rgba(255, 255, 255, 0.18));
+    box-shadow: inset 0 1px 0 var(--popover-highlight, rgba(255, 255, 255, 0.34));
+  }
+
+  :global(html[data-os="windows"]) .popover {
+    /* DWM is set to DWMWCP_ROUNDSMALL (~4 px) in main.rs. Match the CSS
+       radius exactly so Mica clipping (OS-level) and the dark content
+       fill (CSS) coincide at the corners — no Mica bleed, no concentric
+       outlines, no inset frame. */
+    border-radius: 4px;
+    border: none;
     box-shadow: inset 0 1px 0 var(--popover-highlight, rgba(255, 255, 255, 0.34));
   }
 

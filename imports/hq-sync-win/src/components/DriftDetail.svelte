@@ -33,7 +33,16 @@
     targetRef: string;  // e.g. "v14.2.1" (release) or a 40-char SHA (staging)
   }
 
-  let report = $state<DriftReport | null>(null);
+  // Inline-popover mode: App.svelte hands in `initialReport` so we skip
+  // the Rust handshake. Without `onback` the back arrow is hidden and
+  // the standalone-window event-listen path runs (legacy fallback).
+  interface Props {
+    initialReport?: DriftReport | null;
+    onback?: () => void;
+  }
+  let { initialReport = null, onback }: Props = $props();
+
+  let report = $state<DriftReport | null>(initialReport);
   // Per-row in-flight + result state for the Restore button. Keyed by
   // `${kind}:${path}` because Modified and Added cases use the same path
   // for different intents in principle (Added never restores, but the
@@ -203,17 +212,17 @@
   }
 
   $effect(() => {
+    // Inline mode: prop-driven, no handshake.
+    if (initialReport) return;
+
     let unlisten: (() => void) | undefined;
     listen<DriftReport>('drift:report', (event) => {
       report = event.payload;
-      // Reset per-row state on a fresh report (e.g. after a Refresh
-      // button or background re-check) so done/error flags don't bleed
-      // across scans.
+      // Reset per-row state on a fresh report so done/error flags don't
+      // bleed across scans.
       restoreState = {};
     }).then((fn) => {
       unlisten = fn;
-      // Race-free handshake: Rust waits for this invoke before emitting
-      // the report + showing the window. Same pattern as new-files.
       invoke('drift_window_ready');
     });
     return () => {
@@ -345,6 +354,19 @@
        grouping, and a hard line under the title clashes with the
        continuous backdrop blur. -->
   <header class="drift-header">
+    {#if onback}
+      <button
+        type="button"
+        class="drift-back"
+        title="Back"
+        aria-label="Back"
+        onclick={() => onback?.()}
+      >
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <path d="M10 3.5 5.5 8l4.5 4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+      </button>
+    {/if}
     <div class="drift-title-block">
       <h1>Core Drift</h1>
       {#if report}
@@ -477,10 +499,31 @@
     width: 100vw;
     height: 100vh;
     box-sizing: border-box;
+    border-radius: 4px;
     background: var(--popover-bg, rgba(18, 18, 20, 0.68));
+    backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
+    -webkit-backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
     color: var(--popover-text, #e0e0e0);
     font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
     overflow: hidden;
+  }
+
+  .drift-back {
+    background: transparent;
+    border: 1px solid var(--popover-border, rgba(255, 255, 255, 0.18));
+    color: var(--popover-text-heading, #ffffff);
+    border-radius: 7px;
+    width: 26px;
+    height: 26px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    -webkit-app-region: no-drag;
+  }
+  .drift-back:hover {
+    background: var(--popover-action-hover, rgba(255, 255, 255, 0.1));
     /* Three-step type scale — every text element below picks one of these
        so sizes stay consistent: 13px headings, 12px body/paths, 11px meta. */
     --fs-lg: 0.8125rem;
@@ -493,16 +536,11 @@
     align-items: center;
     justify-content: space-between;
     gap: 0.75rem;
-    /* Left padding reserves space for the macOS traffic-light buttons
-       (overlaid title bar — see drift_detail.rs WebviewWindowBuilder).
-       The buttons live at ~12px x 12px starting at ~7px from the left,
-       spanning to ~70px total. Padding pushes the title block clear
-       with a 12px gutter. */
-    padding: 0 1rem 0 5.25rem;
-    /* Native macOS title-bar height. Heading sits vertically centered
-       with the traffic lights so the chrome reads as one row, not two
-       stacked. */
-    height: 38px;
+    /* Win11 fork: no macOS traffic-light gutter. The optional back arrow
+       lives where the lights used to be when this is rendered inline. */
+    padding: 0 1rem;
+    height: 44px;
+    border-bottom: 1px solid var(--popover-divider, rgba(255, 255, 255, 0.06));
     flex-shrink: 0;
     /* Header is draggable so users can move the window by grabbing the
        title-bar zone — matches native macOS behaviour. */

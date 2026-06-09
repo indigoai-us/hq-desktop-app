@@ -14,15 +14,15 @@
       {
         "label": "main",
         "title": "HQ Sync",
-        "width": 320,
-        "height": 480,
+        "width": 352,
+        "height": 528,
         "resizable": false,
         "visible": false,
         "decorations": false,
         "alwaysOnTop": false,
         "skipTaskbar": true,
         "transparent": true,
-        "shadow": true,
+        "shadow": false,
         "visibleOnAllWorkspaces": true
       }
     ],

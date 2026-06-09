@@ -303,20 +303,49 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
 /// goes above-and-aligned to the icon). `window.hide()` preserves
 /// renderer state so re-show is instant. `alwaysOnTop` is toggled with
 /// visibility so the popover doesn't block other apps while hidden.
-fn toggle_window(app: &AppHandle, tray_rect: Option<Rect>) {
+fn toggle_window(app: &AppHandle, _tray_rect: Option<Rect>) {
     if let Some(window) = app.get_webview_window("main") {
         if window.is_visible().unwrap_or(false) {
             let _ = window.set_always_on_top(false);
             let _ = window.hide();
         } else {
-            if let Some(rect) = tray_rect {
-                position_above_tray(&window, rect);
-            }
+            // Always anchor against the monitor work area. We previously
+            // tried to honour `TrayIconEvent::Click.rect` first, but Tauri 2
+            // on Win11 hands us a position that often lands the popover
+            // visibly inboard of the corner (see fix-up 2026-06-09). The
+            // work-area anchor is correct for every desktop the user can
+            // configure — bottom, left, right, or top-docked taskbars all
+            // honoured via `GetMonitorInfoW`'s `rcWork`.
+            position_above_tray_fallback(&window);
             let _ = window.set_always_on_top(true);
             let _ = window.show();
             let _ = window.set_focus();
         }
     }
+}
+
+/// True if `rect` carries a usable position+size. Tauri 2's
+/// `TrayIconEvent::Click.rect` is occasionally `Rect::default()` (zero
+/// position, zero size) on Win11 — treating that as "valid" anchors the
+/// popover at the screen origin (top-left), which the user reads as
+/// "center-ish, definitely wrong."
+///
+/// Currently unused at runtime — `toggle_window` / `show_window_at_tray`
+/// always anchor against the work area instead. Kept (with test coverage)
+/// so we can switch back if Tauri/Win11 ever ship a reliable tray rect.
+#[allow(dead_code)]
+fn rect_is_meaningful(rect: Rect) -> bool {
+    let (w, h) = match rect.size {
+        tauri::Size::Physical(s) => (s.width as i32, s.height as i32),
+        tauri::Size::Logical(s) => (s.width.round() as i32, s.height.round() as i32),
+    };
+    let (x, y) = match rect.position {
+        tauri::Position::Physical(p) => (p.x, p.y),
+        tauri::Position::Logical(p) => (p.x.round() as i32, p.y.round() as i32),
+    };
+    // Width/height must be positive AND position must not be origin
+    // (a real tray click never lands at (0,0) on a Win11 desktop).
+    w > 0 && h > 0 && (x != 0 || y != 0)
 }
 
 /// Pure math: right-align `win_w`-wide window with the tray icon,
@@ -326,6 +355,7 @@ fn toggle_window(app: &AppHandle, tray_rect: Option<Rect>) {
 /// Anchoring the popover's RIGHT edge to the tray icon's right edge
 /// keeps the popover on-screen even when the tray is in the corner.
 /// `pop_y` is the popover's top — sits `win_h + gap_px` above the tray's top edge.
+#[allow(dead_code)]
 pub(crate) fn compute_popover_position(
     tray_x: f64,
     _tray_y: f64,
@@ -343,10 +373,19 @@ pub(crate) fn compute_popover_position(
     (pop_x, pop_y)
 }
 
-// Small visual gap between the taskbar and the popover bottom edge.
-// 8 physical px keeps the popover from feeling glued to the taskbar
-// while staying close enough to read as "this popover comes from there."
-const POPOVER_GAP_PX: f64 = 8.0;
+// Inset from the work-area edges. The work area excludes the taskbar
+// itself, but Win11's tray flyouts (Action Center, quick settings) sit
+// a little inboard of the absolute corner so they don't clip against
+// DPI rounding or off-by-one window-frame math. 12 px on each side
+// matches that visual rhythm and gives the popover's rounded corners
+// room to breathe.
+const POPOVER_GAP_PX: f64 = 12.0;
+// Right-edge inset is wider than the bottom gap because Win11's tray icons
+// already sit ~16 px inboard of the screen edge — anchoring the popover's
+// right edge to the work-area right (which equals the screen edge on a
+// bottom-docked taskbar) made it look like the popover was sliding off
+// the screen even when it wasn't.
+const POPOVER_RIGHT_INSET_PX: i32 = 20;
 
 /// Position the window above the tray icon with right-edge alignment.
 ///
@@ -354,6 +393,7 @@ const POPOVER_GAP_PX: f64 = 8.0;
 /// normalize both to physical pixels using the window's scale factor
 /// so the math is unit-consistent with `window.outer_size()`, which is
 /// already physical.
+#[allow(dead_code)]
 fn position_above_tray(window: &tauri::WebviewWindow, rect: Rect) {
     let size = match window.outer_size() {
         Ok(s) => s,
@@ -381,21 +421,106 @@ fn position_above_tray(window: &tauri::WebviewWindow, rect: Rect) {
 /// Show + focus the main window, positioned above the tray icon.
 ///
 /// Used by the global keyboard shortcut so the popover can be summoned
-/// from anywhere without clicking the tray icon. If the tray rect isn't
-/// available yet (race during startup) we still show the window — it
-/// will appear at its last position rather than above the icon.
+/// from anywhere without clicking the tray icon. Prefers the tray's
+/// real rect; falls back to a work-area corner anchor if the rect is
+/// missing or zero (e.g. early startup race, or the user invoked the
+/// global shortcut before the tray icon has been clicked even once).
 pub fn show_window_at_tray(app: &AppHandle) {
     let Some(window) = app.get_webview_window("main") else {
         return;
     };
-    if let Some(tray) = app.tray_by_id(TRAY_ID) {
-        if let Ok(Some(rect)) = tray.rect() {
-            position_above_tray(&window, rect);
-        }
-    }
+    // Same rationale as toggle_window: always use the monitor work area.
+    position_above_tray_fallback(&window);
     let _ = window.set_always_on_top(true);
     let _ = window.show();
     let _ = window.set_focus();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Work-area fallback positioning
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Anchor the popover to the bottom-right of the monitor's work area
+/// (the desktop region not occupied by the taskbar). Used when the
+/// tray icon's own rect is unavailable.
+///
+/// `GetMonitorInfoW`'s `rcWork` already excludes the taskbar regardless
+/// of which screen edge it's docked on, so this respects user taskbar
+/// placement (bottom is the Win11 default but the user can move it).
+fn position_above_tray_fallback(window: &tauri::WebviewWindow) {
+    let outer = match window.outer_size() {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let Some((work_l, work_t, work_r, work_b)) = monitor_work_area(window) else {
+        // Last-resort: just let Tauri keep the window at its last
+        // remembered position. Better than putting it at the origin.
+        return;
+    };
+    // Hug the work-area corner: flush against bottom + right, matching
+    // Win11's own system tray flyout placement. Clamping inside the
+    // helper keeps unusual taskbar geometries (left-docked, tiny monitors)
+    // from rendering the popover off-screen.
+    let (pop_x, pop_y) = compute_popover_position_from_work_area(
+        work_l,
+        work_t,
+        work_r,
+        work_b,
+        outer.width as i32,
+        outer.height as i32,
+        POPOVER_GAP_PX as i32,
+        POPOVER_RIGHT_INSET_PX,
+    );
+    let _ = window.set_position(PhysicalPosition::new(pop_x, pop_y));
+}
+
+/// Monitor work-area rectangle in physical pixels: `(left, top, right, bottom)`.
+/// Wraps Win32 `MonitorFromWindow` + `GetMonitorInfoW` so we can honour the
+/// real taskbar edge instead of guessing a fixed offset.
+#[cfg(target_os = "windows")]
+fn monitor_work_area(window: &tauri::WebviewWindow) -> Option<(i32, i32, i32, i32)> {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+    };
+
+    let hwnd = window.hwnd().ok()?;
+    let hwnd = HWND(hwnd.0 as *mut _);
+    let mut info: MONITORINFO = unsafe { std::mem::zeroed() };
+    info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+    let ok = unsafe {
+        let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        GetMonitorInfoW(monitor, &mut info)
+    };
+    if !ok.as_bool() {
+        return None;
+    }
+    let r = info.rcWork;
+    Some((r.left, r.top, r.right, r.bottom))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn monitor_work_area(_window: &tauri::WebviewWindow) -> Option<(i32, i32, i32, i32)> {
+    None
+}
+
+/// Pure math for the work-area fallback: right-aligned + bottom-anchored
+/// inside the work-area rectangle, with an 8 px gap. Mirrors
+/// `compute_popover_position` but takes monitor extents instead of a
+/// tray rect. Split out so unit tests don't need a window handle.
+pub(crate) fn compute_popover_position_from_work_area(
+    work_l: i32,
+    work_t: i32,
+    work_r: i32,
+    work_b: i32,
+    win_w: i32,
+    win_h: i32,
+    gap_px: i32,
+    right_inset_px: i32,
+) -> (i32, i32) {
+    let pop_x = (work_r - win_w - right_inset_px).max(work_l);
+    let pop_y = (work_b - win_h - gap_px).max(work_t);
+    (pop_x, pop_y)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -601,6 +726,81 @@ mod tests {
         let (x, y) = compute_popover_position(1880.0, 1050.0, 24.0, 24.0, 320.0, 400.0, 8.0);
         assert_eq!(x, 1584);
         assert_eq!(y, 642);
+    }
+
+    #[test]
+    fn test_compute_popover_position_from_work_area_bottom_taskbar() {
+        // 1920×1080 monitor, 48 px Win11 taskbar at bottom → work_b = 1032.
+        // Window 380×520, gap 8, right inset 12.
+        // pop_x = 1920 − 380 − 12 = 1528
+        // pop_y = 1032 − 520 − 8  = 504
+        let (x, y) = compute_popover_position_from_work_area(
+            0, 0, 1920, 1032, 380, 520, 8, 12,
+        );
+        assert_eq!(x, 1528);
+        assert_eq!(y, 504);
+    }
+
+    #[test]
+    fn test_compute_popover_position_from_work_area_left_taskbar() {
+        // Left-docked taskbar: work_l = 48, work_r = 1920, full height.
+        // Popover still right-aligned against work_r but x stays right of work_l.
+        let (x, y) = compute_popover_position_from_work_area(
+            48, 0, 1920, 1080, 380, 520, 8, 12,
+        );
+        assert_eq!(x, 1528);
+        assert_eq!(y, 552);
+    }
+
+    #[test]
+    fn test_compute_popover_position_from_work_area_clamps_to_work_origin() {
+        // Pathological tiny monitor where the popover doesn't fit. Should
+        // clamp to (work_l, work_t) rather than render off-screen at a
+        // negative coordinate.
+        let (x, y) = compute_popover_position_from_work_area(
+            100, 200, 300, 400, 800, 600, 8, 12,
+        );
+        assert_eq!(x, 100, "x clamps to work_l when window wider than work area");
+        assert_eq!(y, 200, "y clamps to work_t when window taller than work area");
+    }
+
+    #[test]
+    fn test_rect_is_meaningful() {
+        use tauri::{LogicalPosition, LogicalSize, Position, Size};
+
+        // Default rect → not meaningful (a Win11 race symptom).
+        assert!(
+            !rect_is_meaningful(Rect::default()),
+            "Rect::default() must be rejected"
+        );
+
+        // Position (0,0) with real size — still rejected; tray icon
+        // never lives at origin on a real Win11 desktop.
+        let zero_pos = Rect {
+            position: Position::Logical(LogicalPosition::new(0.0, 0.0)),
+            size: Size::Logical(LogicalSize::new(24.0, 24.0)),
+        };
+        assert!(
+            !rect_is_meaningful(zero_pos),
+            "rect at origin must be rejected"
+        );
+
+        // Zero size — rejected even with a real position.
+        let zero_size = Rect {
+            position: Position::Logical(LogicalPosition::new(1880.0, 1050.0)),
+            size: Size::Logical(LogicalSize::new(0.0, 0.0)),
+        };
+        assert!(
+            !rect_is_meaningful(zero_size),
+            "rect with zero size must be rejected"
+        );
+
+        // Real tray rect — accepted.
+        let real = Rect {
+            position: Position::Logical(LogicalPosition::new(1880.0, 1050.0)),
+            size: Size::Logical(LogicalSize::new(24.0, 24.0)),
+        };
+        assert!(rect_is_meaningful(real), "real rect must be accepted");
     }
 
     #[test]

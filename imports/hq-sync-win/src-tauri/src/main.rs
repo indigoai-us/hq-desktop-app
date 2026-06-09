@@ -31,6 +31,41 @@ mod util;
 /// ships a solid-background fallback so the popover remains readable even
 /// when no vibrancy is applied (third-party theme tools, custom shell
 /// replacements, Windows Server SKUs).
+/// Force the Win11 small-radius window corner (~4 px) on the popover
+/// window. Without this hint DWM uses its default radius (~8 px on
+/// Win11 22H2) — and we have to match it in CSS exactly or the user
+/// sees either:
+///   - Mica bleeding past the CSS content corners (CSS radius > DWM
+///     radius), which reads as a faint frame outside the content;
+///   - A double rounded outline (CSS radius < DWM radius).
+/// `DWMWCP_ROUNDSMALL` matches Win11 tray-utility flyouts (Action
+/// Center, quick settings) and we set the CSS radius to the same
+/// 4 px on the popover + inline screens to keep them flush.
+fn set_dwm_small_corner(window: &tauri::WebviewWindow) {
+    use util::logfile::log;
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::Graphics::Dwm::{
+        DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUNDSMALL,
+    };
+
+    let Ok(hwnd) = window.hwnd() else { return };
+    let hwnd = HWND(hwnd.0 as *mut _);
+    let pref: u32 = DWMWCP_ROUNDSMALL.0 as u32;
+    let pref_ptr = &pref as *const u32 as *const std::ffi::c_void;
+    let size = std::mem::size_of::<u32>() as u32;
+    let result = unsafe {
+        DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, pref_ptr, size)
+    };
+    if let Err(e) = result {
+        log(
+            "ui",
+            &format!("DwmSetWindowAttribute(DWMWCP_ROUNDSMALL) failed: {e}"),
+        );
+    } else {
+        log("ui", "DWMWCP_ROUNDSMALL applied — small corner radius");
+    }
+}
+
 fn apply_windows_vibrancy(window: &tauri::WebviewWindow) {
     use util::logfile::log;
     use window_vibrancy::{apply_acrylic, apply_mica};
@@ -285,6 +320,13 @@ fn main() {
             // Best-effort — the Svelte UI ships a solid-background fallback
             // for systems where neither material is available.
             if let Some(window) = app.get_webview_window("main") {
+                // Order: corner pref before vibrancy. Mica/Acrylic is
+                // applied at the OS-window level, so it inherits the
+                // corner mask set here. CSS radius on the popover
+                // content matches this radius (4 px) so the content
+                // edge and OS frame coincide — no Mica bleed past the
+                // corners, no concentric outlines.
+                set_dwm_small_corner(&window);
                 apply_windows_vibrancy(&window);
             }
 

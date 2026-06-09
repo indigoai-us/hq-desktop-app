@@ -11,6 +11,15 @@
     type PackagesDone,
   } from '../lib/packages';
 
+  // Inline-popover mode: App.svelte hands in an `onback` callback and the
+  // PackagesApp renders inside the main popover instead of a standalone
+  // window. Without `onback` the component still works as a standalone
+  // window root (the legacy mount path under packages/main.ts).
+  interface Props {
+    onback?: () => void;
+  }
+  let { onback }: Props = $props();
+
   let view = $state<PackagesView | null>(null);
   let loading = $state(true);
   let busy = $state<{ op: string; name: string } | null>(null);
@@ -134,11 +143,50 @@
 
 <main>
   <header data-tauri-drag-region>
+    {#if onback}
+      <button
+        type="button"
+        class="back"
+        title="Back"
+        aria-label="Back"
+        onclick={() => onback?.()}
+      >
+        <svg
+          width="14"
+          height="14"
+          viewBox="0 0 16 16"
+          fill="none"
+          xmlns="http://www.w3.org/2000/svg"
+          aria-hidden="true"
+        >
+          <path
+            d="M10 3.5 5.5 8l4.5 4.5"
+            stroke="currentColor"
+            stroke-width="1.6"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+        </svg>
+      </button>
+    {/if}
     <h1>Packages</h1>
     {#if updatesCount > 0}
       <span class="badge">{updatesCount} update{updatesCount === 1 ? '' : 's'}</span>
     {/if}
     <button class="ghost" onclick={refresh} disabled={!!busy}>Refresh</button>
+    {#if !onback}
+      <!-- Chrome-less standalone window: in-content close affordance.
+           Hidden when inline (App.svelte's back arrow handles return). -->
+      <button
+        type="button"
+        class="close"
+        title="Close"
+        aria-label="Close"
+        onclick={() => import('@tauri-apps/api/window').then(m => m.getCurrentWindow().close())}
+      >
+        &times;
+      </button>
+    {/if}
   </header>
 
   {#if loading}
@@ -253,13 +301,20 @@
     display: flex;
     flex-direction: column;
     height: 100vh;
+    /* Match the OS DWMWCP_ROUNDSMALL (~4 px) set in main.rs. */
+    border-radius: 4px;
+    overflow-x: hidden;
     overflow-y: auto;
-    color: #e8e8ea;
+    color: var(--popover-text, #e8e8ea);
     font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
     font-size: 13px;
-    /* Translucent fallback (~82% opacity) so text stays legible when Mica is
-       not applied; when Mica IS applied this tints over the desktop blur. */
-    background: rgba(12, 12, 13, 0.82);
+    /* Use the popover background token so Mica shows through consistently
+       across all inline screens (Settings, NotificationHistory, DmDetail,
+       Packages). The `prefers-reduced-transparency` media query already
+       swaps this for an opaque fallback when Mica is unavailable. */
+    background: var(--popover-bg, rgba(18, 18, 20, 0.68));
+    backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
+    -webkit-backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
   }
   header {
     position: sticky;
@@ -267,7 +322,11 @@
     display: flex;
     align-items: center;
     gap: 10px;
-    padding: 28px 16px 12px;
+    /* Matches Settings.svelte / NotificationHistory header padding so
+       the three in-popover sibling screens read at the same height.
+       The original 28 px top was room for a standalone-window drag
+       region — unnecessary inline. */
+    padding: 10px 16px;
     background: rgba(12, 12, 13, 0.6);
     border-bottom: 1px solid rgba(255, 255, 255, 0.08);
     backdrop-filter: blur(8px);
@@ -333,6 +392,24 @@
   button.primary { background: #e8e8ea; color: #0c0c0d; border-color: #e8e8ea; }
   button.danger { color: #e08c8c; border-color: #4a2424; }
   button.ghost { background: transparent; }
+  /* In-content close — chrome-less window provides no system X.
+     Square 22px hit target, Win11-style hover-emphasis (rgba red on hover). */
+  button.close {
+    background: transparent; border-color: transparent; color: #c9c9cf;
+    width: 22px; height: 22px; padding: 0; font-size: 16px; line-height: 1;
+    -webkit-app-region: no-drag;
+  }
+  button.close:hover { background: rgba(232, 17, 35, 0.85); color: #ffffff; }
+  /* Back chevron — same outlined-icon-button look as the sibling
+     in-popover screens (NotificationHistory, Settings, DmDetail). Only
+     rendered when `onback` is wired (inline mode). */
+  button.back {
+    background: transparent; border: 1px solid rgba(255, 255, 255, 0.16);
+    color: #c9c9cf; border-radius: 7px; width: 26px; height: 26px;
+    padding: 0; display: inline-flex; align-items: center; justify-content: center;
+    -webkit-app-region: no-drag;
+  }
+  button.back:hover { background: rgba(255, 255, 255, 0.08); color: #ffffff; }
   .spinner {
     width: 12px; height: 12px; border-radius: 50%;
     border: 2px solid rgba(255, 255, 255, 0.2); border-top-color: #e8e8ea;

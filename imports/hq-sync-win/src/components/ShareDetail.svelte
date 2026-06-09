@@ -20,7 +20,16 @@
     createdAt: string;
   }
 
-  let events = $state<ShareEvent[]>([]);
+  // Inline-popover mode: App.svelte hands in `initialEvents` so the
+  // component skips the Rust ready-handshake. Without `onback` the back
+  // arrow is hidden (standalone-window fallback path).
+  interface Props {
+    initialEvents?: ShareEvent[];
+    onback?: () => void;
+  }
+  let { initialEvents = [], onback }: Props = $props();
+
+  let events = $state<ShareEvent[]>(initialEvents ?? []);
   let copyFeedback = $state<string | null>(null);
 
   function basename(p: string): string {
@@ -88,15 +97,14 @@
   }
 
   $effect(() => {
-    let unlisten: (() => void) | undefined;
+    // Inline mode: prop-driven, no handshake.
+    if (initialEvents && initialEvents.length > 0) return;
 
+    let unlisten: (() => void) | undefined;
     listen<ShareEvent[]>('share:events-list', (event) => {
       events = event.payload;
     }).then((fn) => {
       unlisten = fn;
-      // Signal to Rust that our listener is registered — Rust emits the
-      // pending events + shows the window. Mirrors the new-files-detail
-      // ready-handshake (races with WebviewWindowBuilder otherwise).
       invoke('share_detail_window_ready');
     });
 
@@ -108,6 +116,19 @@
 
 <div class="detail-window">
   <header class="detail-header">
+    {#if onback}
+      <button
+        type="button"
+        class="detail-back"
+        title="Back"
+        aria-label="Back"
+        onclick={() => onback?.()}
+      >
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <path d="M10 3.5 5.5 8l4.5 4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+      </button>
+    {/if}
     <h1>Shared with Me</h1>
     <span class="detail-count">{events.length} share{events.length === 1 ? '' : 's'}</span>
   </header>
@@ -184,10 +205,7 @@
     width: 100vw;
     height: 100vh;
     box-sizing: border-box;
-    /* Opaque base (no alpha) so the window is fully painted even without
-       macOS vibrancy. Vibrancy can be opted in later from the Rust side
-       via apply_vibrancy on the share-detail window if we want true
-       desktop-tinted glass. */
+    border-radius: 4px;
     background: var(--popover-bg, #14141a);
     backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
     -webkit-backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
@@ -198,14 +216,33 @@
 
   .detail-header {
     display: flex;
-    align-items: baseline;
+    align-items: center;
     gap: 0.5rem;
-    padding: 1rem 1.25rem 0.75rem;
+    padding: 0.75rem 1rem;
     border-bottom: 1px solid var(--popover-divider, rgba(255, 255, 255, 0.06));
     flex-shrink: 0;
   }
 
+  .detail-back {
+    background: transparent;
+    border: 1px solid var(--popover-border, rgba(255, 255, 255, 0.18));
+    color: var(--popover-text-heading, #ffffff);
+    border-radius: 7px;
+    width: 26px;
+    height: 26px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    -webkit-app-region: no-drag;
+  }
+  .detail-back:hover {
+    background: var(--popover-action-hover, rgba(255, 255, 255, 0.1));
+  }
+
   .detail-header h1 {
+    flex: 1;
     margin: 0;
     font-size: 1rem;
     font-weight: 600;

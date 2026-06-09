@@ -38,7 +38,18 @@
     nextCursor?: string | null;
   }
 
-  let event = $state<DmEvent | null>(null);
+  // Props: when used inline inside the main popover (the Windows-fork
+  // default), App.svelte passes the live DM as `initialEvent` and a
+  // back callback so the user returns to the home view. When mounted
+  // as a standalone window (legacy/fallback path), neither is wired
+  // and the window listens for `dm:detail-event` from Rust as before.
+  interface Props {
+    initialEvent?: DmEvent | null;
+    onback?: () => void;
+  }
+  let { initialEvent = null, onback }: Props = $props();
+
+  let event = $state<DmEvent | null>(initialEvent);
   let messages = $state<ThreadMessage[]>([]);
   let loadingThread = $state(false);
   let threadError = $state<string | null>(null);
@@ -164,15 +175,21 @@
   }
 
   $effect(() => {
-    let unlisten: (() => void) | undefined;
+    // Inline path: an event was handed in via props. Skip the Rust
+    // ready-handshake (there's no window to show) and load directly.
+    if (initialEvent) {
+      void loadThread(initialEvent);
+      return;
+    }
 
+    // Standalone-window path: wait for Rust to emit `dm:detail-event`,
+    // then ack via `dm_detail_window_ready` so it shows the window.
+    let unlisten: (() => void) | undefined;
     listen<DmEvent>('dm:detail-event', (e) => {
       event = e.payload;
       void loadThread(e.payload);
     }).then((fn) => {
       unlisten = fn;
-      // Ready-handshake: tell Rust the listener is mounted so it emits the
-      // pending event + shows the window (mirrors ShareDetail).
       invoke('dm_detail_window_ready');
     });
 
@@ -184,6 +201,34 @@
 
 <div class="detail-window">
   <header class="detail-header">
+    {#if onback}
+      <!-- Back-arrow renders only in inline-popover mode; in the
+           standalone-window path the system X / Esc dismisses. -->
+      <button
+        type="button"
+        class="detail-back"
+        title="Back"
+        aria-label="Back"
+        onclick={() => onback?.()}
+      >
+        <svg
+          width="14"
+          height="14"
+          viewBox="0 0 16 16"
+          fill="none"
+          xmlns="http://www.w3.org/2000/svg"
+          aria-hidden="true"
+        >
+          <path
+            d="M10 3.5 5.5 8l4.5 4.5"
+            stroke="currentColor"
+            stroke-width="1.6"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+        </svg>
+      </button>
+    {/if}
     <h1>{event ? event.fromDisplayName : 'Direct Message'}</h1>
     {#if event?.fromEmail}
       <span class="detail-count">{event.fromEmail}</span>
@@ -268,6 +313,8 @@
     width: 100vw;
     height: 100vh;
     box-sizing: border-box;
+    /* Match the OS DWMWCP_ROUNDSMALL (~4 px) set in main.rs. */
+    border-radius: 4px;
     background: var(--popover-bg, #14141a);
     backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
     -webkit-backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
@@ -278,11 +325,33 @@
 
   .detail-header {
     display: flex;
-    align-items: baseline;
+    align-items: center;
     gap: 0.5rem;
-    padding: 1rem 1.25rem 0.75rem;
+    padding: 0.75rem 1rem;
     border-bottom: 1px solid var(--popover-divider, rgba(255, 255, 255, 0.06));
     flex-shrink: 0;
+  }
+
+  /* In-popover back chevron — same outlined-icon-button look as the
+     NotificationHistory and Settings back affordances so the three
+     sibling screens read symmetrically. */
+  .detail-back {
+    background: transparent;
+    border: 1px solid var(--popover-border, rgba(255, 255, 255, 0.18));
+    color: var(--popover-text-heading, #ffffff);
+    border-radius: 7px;
+    width: 26px;
+    height: 26px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    -webkit-app-region: no-drag;
+  }
+
+  .detail-back:hover {
+    background: var(--popover-action-hover, rgba(255, 255, 255, 0.1));
   }
 
   .detail-header h1 {

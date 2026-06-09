@@ -23,6 +23,10 @@ for %%I in (
   "%ProgramFiles%\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat"
   "%ProgramFiles%\Microsoft Visual Studio\2022\Professional\VC\Auxiliary\Build\vcvarsall.bat"
   "%ProgramFiles%\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat"
+  "%ProgramFiles(x86)%\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsall.bat"
+  "%ProgramFiles(x86)%\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat"
+  "%ProgramFiles(x86)%\Microsoft Visual Studio\2022\Professional\VC\Auxiliary\Build\vcvarsall.bat"
+  "%ProgramFiles(x86)%\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat"
 ) do (
   if exist %%~I (
     set "VCVARS=%%~I"
@@ -30,7 +34,7 @@ for %%I in (
   )
 )
 
-echo [link-msvc] ERROR: could not find vcvarsall.bat under "%ProgramFiles%\Microsoft Visual Studio\2022\*". 1>&2
+echo [link-msvc] ERROR: could not find vcvarsall.bat under "%ProgramFiles%\Microsoft Visual Studio\2022\*" or "%ProgramFiles(x86)%\Microsoft Visual Studio\2022\*". 1>&2
 echo [link-msvc] Install Visual Studio Build Tools 2022 with the "Desktop development with C++" workload. 1>&2
 exit /b 1
 

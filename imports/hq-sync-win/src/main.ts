@@ -1,4 +1,11 @@
 import * as Sentry from "@sentry/svelte";
+// Shared design tokens + Fluent thin scrollbars + `html, body { background:
+// transparent }` (required by window-vibrancy). Hoisted here so EVERY
+// secondary window — NotificationHistory, NewFilesDetail, MeetingsWindow,
+// etc. — picks them up automatically. Previously imported only by
+// App.svelte, which meant secondary windows fell back to the native Win11
+// chunky scrollbar and a solid black backing.
+import './styles/popover.css';
 import App from './App.svelte';
 import NewFilesDetail from './components/NewFilesDetail.svelte';
 import MeetingsWindow from './components/MeetingsWindow.svelte';
@@ -28,6 +35,18 @@ const windowLabel = getCurrentWindow().label;
 // a solid black rectangle when MeetingsWindow's #18181b body bg
 // overrode App.svelte's `background: transparent`.
 document.documentElement.dataset.window = windowLabel;
+
+// Tag the host OS so platform-specific CSS (e.g. the popover edge — Win11's
+// DWM frame vs macOS NSWindow's chrome-less edge) can branch via
+// `:global(html[data-os="windows"])` rules without invoking Tauri.
+{
+  const ua = navigator.userAgent.toLowerCase();
+  document.documentElement.dataset.os = ua.includes('windows')
+    ? 'windows'
+    : ua.includes('mac')
+      ? 'macos'
+      : 'other';
+}
 
 let Component: typeof App;
 if (windowLabel === 'new-files-detail') {

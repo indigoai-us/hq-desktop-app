@@ -227,14 +227,6 @@
         <div class="row-main">
           <div class="row-name-line">
             <span class="row-name" title={w.displayName}>{w.displayName}</span>
-            {#if w.state === 'personal'}
-              <!-- "Personal" pill — sync-screen parity with the upstream
-                   desktop-alt sources list. The person badge icon at the row
-                   end already signals this, but the inline indigo tag names it
-                   explicitly so the personal vault reads as personal at a
-                   glance (matches the badge-personal palette). -->
-              <span class="row-personal-tag">Personal</span>
-            {/if}
             {#if w.slug !== w.displayName.toLowerCase().replace(/\s+/g, '-')}
               <span class="row-slug">{w.slug}</span>
             {/if}
@@ -539,23 +531,6 @@
     border-radius: 999px;
     background: var(--popover-surface, rgba(255, 255, 255, 0.08));
     color: var(--popover-text-muted, #a0a0b0);
-    flex-shrink: 0;
-  }
-
-  /* "Personal" tag — same indigo palette as .badge-personal so the inline
-     name-line pill and the row-end badge read as one identity. Sits between
-     the name and any slug pill; never shrinks so it stays a readable pill. */
-  .row-personal-tag {
-    font-family: inherit;
-    font-size: 0.6875rem;
-    font-weight: 650;
-    line-height: 1;
-    letter-spacing: 0.02em;
-    padding: 0.1875rem 0.4375rem;
-    border-radius: 999px;
-    border: 1px solid rgba(99, 102, 241, 0.32);
-    background: rgba(99, 102, 241, 0.14);
-    color: #a5a8ff;
     flex-shrink: 0;
   }
 
