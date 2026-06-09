@@ -116,12 +116,10 @@ fn run_git(cwd: &str, args: &[&str]) -> Result<(), String> {
 }
 
 fn git_output(cwd: &str, args: &[&str]) -> Result<Output, String> {
-    Command::new("git")
-        .arg("-C")
-        .arg(cwd)
-        .args(args)
-        .output()
-        .map_err(|e| format!("spawn git: {e}"))
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(cwd).args(args);
+    crate::util::paths::no_window(&mut cmd);
+    cmd.output().map_err(|e| format!("spawn git: {e}"))
 }
 
 #[cfg(test)]

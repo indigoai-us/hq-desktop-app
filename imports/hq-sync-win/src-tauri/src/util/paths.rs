@@ -25,6 +25,30 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// `CREATE_NO_WINDOW` process-creation flag. Spawning a CLI without it
+/// flashes a console window for the lifetime of the child — visible as a
+/// black/cmd flicker when the tray app shells out (npx, where.exe, git,
+/// node, hq, npm). 0x0800_0000 from the Win32 process-creation flags.
+#[cfg(target_os = "windows")]
+pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// Apply `CREATE_NO_WINDOW` to a `Command` so its spawn doesn't flash a
+/// console window. No-op off Windows. Call on EVERY subprocess the tray
+/// app spawns — there is no legitimate case where we want a console
+/// window to appear. `spawn_command` applies this automatically; direct
+/// `Command::new(...).output()/.spawn()` sites must call it themselves.
+pub fn no_window(cmd: &mut Command) {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = cmd;
+    }
+}
+
 /// Path-separator character on this platform. Windows uses `;`, POSIX uses `:`.
 #[cfg(target_os = "windows")]
 const PATH_SEP: char = ';';
@@ -181,7 +205,10 @@ pub fn resolve_bin(name: &str) -> String {
 
     #[cfg(target_os = "windows")]
     {
-        if let Ok(output) = Command::new("where.exe").arg(name).output() {
+        let mut where_cmd = Command::new("where.exe");
+        where_cmd.arg(name);
+        no_window(&mut where_cmd);
+        if let Ok(output) = where_cmd.output() {
             if output.status.success() {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 let matches: Vec<&str> = stdout
@@ -291,15 +318,18 @@ pub fn is_windows_shell_script(path: &str) -> bool {
 /// resolved via [`resolve_bin`]. Use it from any callsite that might
 /// spawn `npx`, `npm`, `hq` (when it's a `.cmd`), etc.
 pub fn spawn_command(path: &str, args: &[&str]) -> std::process::Command {
-    if is_windows_shell_script(path) {
-        let mut cmd = std::process::Command::new("cmd.exe");
-        cmd.arg("/c").arg(path).args(args);
-        cmd
+    let mut cmd = if is_windows_shell_script(path) {
+        let mut c = std::process::Command::new("cmd.exe");
+        c.arg("/c").arg(path).args(args);
+        c
     } else {
-        let mut cmd = std::process::Command::new(path);
-        cmd.args(args);
-        cmd
-    }
+        let mut c = std::process::Command::new(path);
+        c.args(args);
+        c
+    };
+    // Every tray-spawned CLI runs windowless — no console flash.
+    no_window(&mut cmd);
+    cmd
 }
 
 /// Build a PATH value suitable for handing to a spawned child process.

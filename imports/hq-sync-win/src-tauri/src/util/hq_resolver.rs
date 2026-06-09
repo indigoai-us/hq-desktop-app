@@ -76,8 +76,16 @@ impl HqInvocation {
     /// Build a `tokio::process::Command` for `hq <args>` according to the
     /// chosen invocation strategy. Caller appends args via `cmd.arg(...)`
     /// after this returns.
+    ///
+    /// TODO(hq-resolver-cmd-shim): on Windows, `Local(path)` where `path`
+    /// ends in `.cmd`/`.bat`, and the bare `Npx` arm, can hit os error 193
+    /// (CreateProcess rejects shell shims). The main sync-runner path routes
+    /// through `paths::spawn_command` which wraps shims via `cmd.exe /c`;
+    /// this builder does not. It only bites first-push for a brand-new
+    /// company (the only caller), so it hasn't surfaced yet — but it should
+    /// be wrapped the same way. Tracked separately from the flicker fix.
     pub fn command(&self) -> tokio::process::Command {
-        match self {
+        let mut cmd = match self {
             HqInvocation::Local(path) => tokio::process::Command::new(path),
             HqInvocation::Npx => {
                 let mut cmd = tokio::process::Command::new("npx");
@@ -89,7 +97,12 @@ impl HqInvocation {
                 ]);
                 cmd
             }
-        }
+        };
+        // Run windowless — no console flash when first-push shells out.
+        // tokio's Command exposes `creation_flags` inherently on Windows.
+        #[cfg(target_os = "windows")]
+        cmd.creation_flags(paths::CREATE_NO_WINDOW);
+        cmd
     }
 
     /// Human-readable label for log lines and diagnostic output.

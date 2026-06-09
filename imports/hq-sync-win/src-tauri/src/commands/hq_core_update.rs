@@ -373,6 +373,8 @@ pub async fn install_hq_core_update(
     if let Some(token) = crate::commands::hq_core_staging::resolve_gh_token() {
         cmd.env("GH_TOKEN", &token);
     }
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(crate::util::paths::CREATE_NO_WINDOW);
 
     let status = cmd
         .status()
