@@ -53,9 +53,8 @@ fn set_dwm_small_corner(window: &tauri::WebviewWindow) {
     let pref: u32 = DWMWCP_ROUNDSMALL.0 as u32;
     let pref_ptr = &pref as *const u32 as *const std::ffi::c_void;
     let size = std::mem::size_of::<u32>() as u32;
-    let result = unsafe {
-        DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, pref_ptr, size)
-    };
+    let result =
+        unsafe { DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, pref_ptr, size) };
     if let Err(e) = result {
         log(
             "ui",
@@ -152,7 +151,10 @@ fn main() {
         // a tray app, not a URL-handling app.
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             use util::logfile::log;
-            log("single-instance", "duplicate launch — focusing existing popover");
+            log(
+                "single-instance",
+                "duplicate launch — focusing existing popover",
+            );
             tray::show_window_at_tray(app);
         }))
         .plugin(tauri_plugin_shell::init())

@@ -452,7 +452,7 @@ fn position_above_tray_fallback(window: &tauri::WebviewWindow) {
         Ok(s) => s,
         Err(_) => return,
     };
-    let Some((work_l, work_t, work_r, work_b)) = monitor_work_area(window) else {
+    let Some(work) = monitor_work_area(window) else {
         // Last-resort: just let Tauri keep the window at its last
         // remembered position. Better than putting it at the origin.
         return;
@@ -462,10 +462,7 @@ fn position_above_tray_fallback(window: &tauri::WebviewWindow) {
     // helper keeps unusual taskbar geometries (left-docked, tiny monitors)
     // from rendering the popover off-screen.
     let (pop_x, pop_y) = compute_popover_position_from_work_area(
-        work_l,
-        work_t,
-        work_r,
-        work_b,
+        work,
         outer.width as i32,
         outer.height as i32,
         POPOVER_GAP_PX as i32,
@@ -508,16 +505,18 @@ fn monitor_work_area(_window: &tauri::WebviewWindow) -> Option<(i32, i32, i32, i
 /// inside the work-area rectangle, with an 8 px gap. Mirrors
 /// `compute_popover_position` but takes monitor extents instead of a
 /// tray rect. Split out so unit tests don't need a window handle.
+///
+/// `work` is `(left, top, right, bottom)` in physical pixels — the exact
+/// tuple `monitor_work_area` returns, so the call site doesn't have to
+/// destructure it.
 pub(crate) fn compute_popover_position_from_work_area(
-    work_l: i32,
-    work_t: i32,
-    work_r: i32,
-    work_b: i32,
+    work: (i32, i32, i32, i32),
     win_w: i32,
     win_h: i32,
     gap_px: i32,
     right_inset_px: i32,
 ) -> (i32, i32) {
+    let (work_l, work_t, work_r, work_b) = work;
     let pop_x = (work_r - win_w - right_inset_px).max(work_l);
     let pop_y = (work_b - win_h - gap_px).max(work_t);
     (pop_x, pop_y)
@@ -734,9 +733,7 @@ mod tests {
         // Window 380×520, gap 8, right inset 12.
         // pop_x = 1920 − 380 − 12 = 1528
         // pop_y = 1032 − 520 − 8  = 504
-        let (x, y) = compute_popover_position_from_work_area(
-            0, 0, 1920, 1032, 380, 520, 8, 12,
-        );
+        let (x, y) = compute_popover_position_from_work_area((0, 0, 1920, 1032), 380, 520, 8, 12);
         assert_eq!(x, 1528);
         assert_eq!(y, 504);
     }
@@ -745,9 +742,7 @@ mod tests {
     fn test_compute_popover_position_from_work_area_left_taskbar() {
         // Left-docked taskbar: work_l = 48, work_r = 1920, full height.
         // Popover still right-aligned against work_r but x stays right of work_l.
-        let (x, y) = compute_popover_position_from_work_area(
-            48, 0, 1920, 1080, 380, 520, 8, 12,
-        );
+        let (x, y) = compute_popover_position_from_work_area((48, 0, 1920, 1080), 380, 520, 8, 12);
         assert_eq!(x, 1528);
         assert_eq!(y, 552);
     }
@@ -757,11 +752,15 @@ mod tests {
         // Pathological tiny monitor where the popover doesn't fit. Should
         // clamp to (work_l, work_t) rather than render off-screen at a
         // negative coordinate.
-        let (x, y) = compute_popover_position_from_work_area(
-            100, 200, 300, 400, 800, 600, 8, 12,
+        let (x, y) = compute_popover_position_from_work_area((100, 200, 300, 400), 800, 600, 8, 12);
+        assert_eq!(
+            x, 100,
+            "x clamps to work_l when window wider than work area"
         );
-        assert_eq!(x, 100, "x clamps to work_l when window wider than work area");
-        assert_eq!(y, 200, "y clamps to work_t when window taller than work area");
+        assert_eq!(
+            y, 200,
+            "y clamps to work_t when window taller than work area"
+        );
     }
 
     #[test]

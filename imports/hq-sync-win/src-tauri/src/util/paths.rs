@@ -214,14 +214,16 @@ fn candidate_filenames(name: &str) -> Vec<String> {
         return vec![name.to_string()];
     }
 
+    // On Windows the `#[cfg(not)]` block below is compiled out, so this
+    // block is the function's tail expression — no `return` needed.
     #[cfg(target_os = "windows")]
     {
-        return vec![
+        vec![
             format!("{name}.exe"),
             format!("{name}.cmd"),
             format!("{name}.bat"),
             name.to_string(),
-        ];
+        ]
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -234,10 +236,17 @@ fn candidate_filenames(name: &str) -> Vec<String> {
 /// Rust's `std::process::Command` rejects direct spawning of these
 /// (CVE-2024-24576 / BatBadBut hardening landed in Rust 1.77 — bare
 /// `.cmd` / `.bat` paths fail). Callers should wrap such paths via
-/// [`spawn_via_shell`].
+/// [`spawn_command`].
+///
+/// Uses `Path::extension()` + `eq_ignore_ascii_case` rather than a
+/// `.ends_with(".cmd")` string check — the latter trips clippy's
+/// `case_sensitive_file_extension_comparisons` lint and mishandles
+/// dotfiles / trailing-dot edge cases.
 pub fn is_windows_shell_script(path: &str) -> bool {
-    let lower = path.to_lowercase();
-    lower.ends_with(".cmd") || lower.ends_with(".bat")
+    Path::new(path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("cmd") || ext.eq_ignore_ascii_case("bat"))
 }
 
 /// Build a `std::process::Command` that handles both real `.exe` and

@@ -274,8 +274,7 @@ where
     // installed (i.e. every install) failed sync with that error.
     let args_ref: Vec<&str> = spawn.args.iter().map(String::as_str).collect();
     let mut cmd = paths::spawn_command(&spawn.cmd, &args_ref);
-    cmd.stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
     // CREATE_NO_WINDOW: stop spawned CLIs from flashing a console window
     // when the tray app launches them. The reader threads consume the
