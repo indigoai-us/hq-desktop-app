@@ -74,7 +74,7 @@ The current values drift (7, 9, 10, 18). Consolidate to a scale:
 
 ## Elevation
 
-The window carries the only real shadow (native NSWindow shadow). Inside the popover, elevation is expressed by surface layering (translucent white/black alphas), never by drop shadows on inner elements. Section groups sit on a slightly stronger surface than the popover background.
+The window carries the only real shadow (the OS-applied DWM shadow on Win11 — Mica-tinted, clipped to the `DWMWCP_ROUNDSMALL` corner mask we set in `main.rs`). Inside the popover, elevation is expressed by surface layering (translucent white/black alphas), never by drop shadows on inner elements. Section groups sit on a slightly stronger surface than the popover background.
 
 ## Motion
 

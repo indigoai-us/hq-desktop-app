@@ -1,18 +1,26 @@
 //! HQ filesystem path helpers (Windows).
 //!
 //! Windows resolution order for child-process PATH and binary discovery:
-//!   1. `%LOCALAPPDATA%\Indigo HQ\toolchain\bin`        (managed toolchain — installed by hq-installer-win)
-//!   2. `%LOCALAPPDATA%\Indigo HQ\toolchain\node`       (node.exe + npx.cmd from the same install)
-//!   3. `%USERPROFILE%\.hq\bin`                          (user-side per-project overrides)
-//!   4. `%LOCALAPPDATA%\Microsoft\WindowsApps`           (winget shim dir)
-//!   5. `%USERPROFILE%\scoop\shims`                      (scoop shim dir)
-//!   6. system PATH (`%PATH%`)
+//!   1. `%LOCALAPPDATA%\IndigoHQ\toolchain\bin`         (managed toolchain — installed by hq-installer-win)
+//!   2. `%LOCALAPPDATA%\IndigoHQ\toolchain\node`        (node.exe + npx.cmd from the same install)
+//!   3. `%LOCALAPPDATA%\Indigo HQ\toolchain\bin`         (legacy install dir — pre-installer-fix)
+//!   4. `%LOCALAPPDATA%\Indigo HQ\toolchain\node`        (legacy install dir — pre-installer-fix)
+//!   5. `%USERPROFILE%\.hq\bin`                          (user-side per-project overrides)
+//!   6. `%LOCALAPPDATA%\Microsoft\WindowsApps`           (winget shim dir)
+//!   7. `%USERPROFILE%\scoop\shims`                      (scoop shim dir)
+//!   8. system PATH (`%PATH%`)
 //!
-//! The managed toolchain dir (1+2) is the canonical Windows install
-//! location and mirrors hq-installer-win's `managed_toolchain_dir_in()`.
-//! Putting it first means `hq`/`node`/`npx` resolved by hq-installer-win
-//! always win over whatever the user has on their system PATH — which is
-//! exactly what we want for reproducibility.
+//! The managed toolchain dir is the canonical Windows install location and
+//! mirrors hq-installer-win's `managed_toolchain_dir_in()`. Putting it
+//! first means `hq`/`node`/`npx` resolved by hq-installer-win always win
+//! over whatever the user has on their system PATH — exactly what we want
+//! for reproducibility.
+//!
+//! `IndigoHQ` (no space) is the canonical form — Windows path-with-space
+//! quoting bugs in child shell invocations were the reason the installer
+//! moved off `Indigo HQ`. The legacy spaced dir is still searched so that
+//! users with pre-fix installs don't lose their managed toolchain until
+//! they re-install.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -29,17 +37,33 @@ const EXE_EXT: &str = ".exe";
 #[cfg(not(target_os = "windows"))]
 const EXE_EXT: &str = "";
 
-/// Returns the managed HQ toolchain directory installed by hq-installer-win.
-/// Path mirrors `managed_toolchain_dir_in()` in hq-installer-win's `deps.rs`:
-///   `%LOCALAPPDATA%\Indigo HQ\toolchain\`
+/// Returns the canonical managed HQ toolchain directory installed by
+/// hq-installer-win: `%LOCALAPPDATA%\IndigoHQ\toolchain\`. Mirrors
+/// `managed_toolchain_dir()` in hq-installer-win's `deps.rs`.
 #[cfg(target_os = "windows")]
 fn managed_toolchain_dir() -> Option<PathBuf> {
+    let local_app = std::env::var_os("LOCALAPPDATA")?;
+    Some(PathBuf::from(local_app).join("IndigoHQ").join("toolchain"))
+}
+
+/// Legacy managed toolchain dir from before the installer dropped the
+/// space in `Indigo HQ`. Some existing dogfood installs still have their
+/// toolchain here; we search it as a lower-priority fallback so those
+/// users don't lose binary resolution between installer + sync upgrades.
+/// Drop this once the dogfood cohort is confirmed migrated.
+#[cfg(target_os = "windows")]
+fn legacy_managed_toolchain_dir() -> Option<PathBuf> {
     let local_app = std::env::var_os("LOCALAPPDATA")?;
     Some(PathBuf::from(local_app).join("Indigo HQ").join("toolchain"))
 }
 
 #[cfg(not(target_os = "windows"))]
 fn managed_toolchain_dir() -> Option<PathBuf> {
+    None
+}
+
+#[cfg(not(target_os = "windows"))]
+fn legacy_managed_toolchain_dir() -> Option<PathBuf> {
     None
 }
 
@@ -102,6 +126,12 @@ fn extended_search_dirs() -> Vec<PathBuf> {
         // bin and node first — hq + node + npx live under one of these.
         dirs.push(toolchain.join("bin"));
         dirs.push(toolchain.join("node"));
+    }
+    // Legacy `Indigo HQ\toolchain` for pre-fix installs. Lower priority
+    // so a side-by-side install prefers the canonical no-space dir.
+    if let Some(legacy) = legacy_managed_toolchain_dir() {
+        dirs.push(legacy.join("bin"));
+        dirs.push(legacy.join("node"));
     }
 
     if let Some(home) = home_dir() {
@@ -397,7 +427,7 @@ mod tests {
         let path = child_path();
 
         // The managed toolchain bin dir must come before any system dir.
-        let managed = "C:\\TEST_LOCALAPPDATA\\Indigo HQ\\toolchain\\bin";
+        let managed = "C:\\TEST_LOCALAPPDATA\\IndigoHQ\\toolchain\\bin";
         let managed_pos = path
             .to_lowercase()
             .find(&managed.to_lowercase())
@@ -415,6 +445,37 @@ mod tests {
         }
 
         // Restore.
+        match prev {
+            Some(v) => std::env::set_var("LOCALAPPDATA", v),
+            None => std::env::remove_var("LOCALAPPDATA"),
+        }
+    }
+
+    /// The canonical `IndigoHQ` (no space) dir must rank higher than the
+    /// legacy `Indigo HQ` (with space) dir. A user who has both — e.g.
+    /// upgraded across the installer rename — should resolve to the new
+    /// canonical install first.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_canonical_managed_toolchain_outranks_legacy() {
+        let prev = std::env::var_os("LOCALAPPDATA");
+        std::env::set_var("LOCALAPPDATA", "C:\\TEST_LOCALAPPDATA");
+
+        let path = child_path().to_lowercase();
+        let canonical = "c:\\test_localappdata\\indigohq\\toolchain\\bin";
+        let legacy = "c:\\test_localappdata\\indigo hq\\toolchain\\bin";
+
+        let canonical_pos = path
+            .find(canonical)
+            .expect("canonical IndigoHQ dir must be in child_path");
+        let legacy_pos = path
+            .find(legacy)
+            .expect("legacy Indigo HQ dir must be in child_path");
+        assert!(
+            canonical_pos < legacy_pos,
+            "canonical ({canonical_pos}) must outrank legacy ({legacy_pos})"
+        );
+
         match prev {
             Some(v) => std::env::set_var("LOCALAPPDATA", v),
             None => std::env::remove_var("LOCALAPPDATA"),

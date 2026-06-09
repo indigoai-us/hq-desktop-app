@@ -57,7 +57,7 @@ Outputs land in `src-tauri/target/<triple>/release/bundle/{msi,nsis}/`.
 
 ### Manual Testing
 
-The Windows smoke checklist is at [`tests/MANUAL_TESTING.md`](tests/MANUAL_TESTING.md) (adapted from the macOS version in US-009/US-010). User journeys mirror the macOS app, adjusted for tray/Registry/MSI semantics.
+The Windows smoke checklist is [`tests/SMOKE_WINDOWS.md`](tests/SMOKE_WINDOWS.md) — the fast pre-release sweep. The broader manual test list at [`tests/MANUAL_TESTING.md`](tests/MANUAL_TESTING.md) carries the original macOS sections plus a Windows-parity addendum (see the `v0.6.3 — Windows parity surfaces` heading inside that file); user journeys mirror the macOS app, adjusted for tray/Registry/MSI semantics.
 
 ### Unit Tests
 
