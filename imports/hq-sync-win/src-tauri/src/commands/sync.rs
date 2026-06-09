@@ -1059,6 +1059,13 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
 
         if let Err(e) = result {
             log("sync", &format!("run_process_impl error: {e}"));
+            // Release the singleton handle on spawn failure. `run_process_impl`
+            // already deregisters internally on every return (incl. its
+            // spawn-failure early-return), so this is defensive/idempotent —
+            // `deregister_process` is a no-op on an absent key. It keeps this
+            // branch symmetric with every other bail in `start_sync`, so a
+            // failed sync never wedges the next one as "already running".
+            deregister_process(SYNC_HANDLE);
             // NOT captured to Sentry: spawn failures happen before the runner
             // produces any stderr/stdout, so there's nothing for the catch-all
             // breadcrumb listener to attach. If `npx` repeatedly fails to

@@ -183,20 +183,52 @@ pub fn resolve_bin(name: &str) -> String {
     {
         if let Ok(output) = Command::new("where.exe").arg(name).output() {
             if output.status.success() {
-                // where.exe prints every match newline-delimited;
-                // take the first.
                 let stdout = String::from_utf8_lossy(&output.stdout);
-                if let Some(first) = stdout.lines().next() {
-                    let trimmed = first.trim();
-                    if !trimmed.is_empty() && Path::new(trimmed).exists() {
-                        return trimmed.to_string();
-                    }
+                let matches: Vec<&str> = stdout
+                    .lines()
+                    .map(|l| l.trim())
+                    .filter(|l| !l.is_empty() && Path::new(l).exists())
+                    .collect();
+
+                // `where.exe npx` on a standard Node install lists BOTH the
+                // extensionless POSIX script AND `npx.cmd`, with the bare
+                // `npx` first. Spawning the extensionless script fails with
+                // os error 193 ("%1 is not a valid Win32 application"), so
+                // we must NOT just take the first line. `pick_spawnable_path`
+                // prefers a match whose extension is spawnable (.exe directly,
+                // .cmd/.bat via the cmd.exe wrapper in `spawn_command`). This
+                // path hits whenever Node lives in `C:\Program Files\nodejs`
+                // rather than the managed toolchain — i.e. most machines.
+                if let Some(best) = pick_spawnable_path(&matches) {
+                    return best.to_string();
                 }
             }
         }
     }
 
     name.to_string()
+}
+
+/// From a list of resolved paths (e.g. `where.exe` output), pick the one
+/// that `Command::spawn` can actually launch on Windows. Prefers a
+/// spawnable extension (`.exe` directly; `.cmd`/`.bat` via the cmd.exe
+/// wrapper in [`spawn_command`]) over an extensionless POSIX script,
+/// which CreateProcess rejects with os error 193. Falls back to the first
+/// entry when nothing has a spawnable extension. Returns `None` for an
+/// empty list.
+#[cfg(target_os = "windows")]
+fn pick_spawnable_path<'a>(paths: &[&'a str]) -> Option<&'a str> {
+    paths
+        .iter()
+        .find(|p| {
+            let ext = Path::new(p)
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.to_ascii_lowercase());
+            matches!(ext.as_deref(), Some("exe") | Some("cmd") | Some("bat"))
+        })
+        .or_else(|| paths.first())
+        .copied()
 }
 
 /// Compute the filename candidates for a binary lookup, in priority order.
@@ -462,6 +494,35 @@ mod tests {
         } else {
             assert_eq!(cands, vec!["hq".to_string()]);
         }
+    }
+
+    // REGRESSION (2026-06-09): `where.exe npx` on a standard Node install
+    // lists the extensionless POSIX script FIRST, then `npx.cmd`. Taking
+    // the first line returned the unspawnable `npx` (os error 193) and
+    // every sync failed. `pick_spawnable_path` must skip it for `.cmd`.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_pick_spawnable_path_prefers_cmd_over_extensionless() {
+        let matches = vec![
+            "C:\\Program Files\\nodejs\\npx",
+            "C:\\Program Files\\nodejs\\npx.cmd",
+        ];
+        assert_eq!(
+            pick_spawnable_path(&matches),
+            Some("C:\\Program Files\\nodejs\\npx.cmd")
+        );
+
+        // .exe wins too, and order among spawnable extensions is "first found".
+        let exe = vec!["C:\\tools\\foo", "C:\\tools\\foo.exe"];
+        assert_eq!(pick_spawnable_path(&exe), Some("C:\\tools\\foo.exe"));
+
+        // No spawnable extension → fall back to the first entry.
+        let none = vec!["C:\\tools\\foo", "C:\\tools\\foo.ps1"];
+        assert_eq!(pick_spawnable_path(&none), Some("C:\\tools\\foo"));
+
+        // Empty list → None.
+        let empty: Vec<&str> = vec![];
+        assert_eq!(pick_spawnable_path(&empty), None);
     }
 
     #[test]
