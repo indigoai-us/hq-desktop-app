@@ -188,12 +188,12 @@ fn probe() -> HqInvocation {
 /// returns stdout on success, `None` on spawn-error or non-zero exit.
 /// Shared between the probes so a future probe addition is one helper call.
 fn run_help(bin: &str, args: &[&str]) -> Option<String> {
-    let output = Command::new(bin)
-        .args(args)
+    let mut cmd = Command::new(bin);
+    cmd.args(args)
         // Inherit PATH from parent so node-shebanged `hq` can find `node`.
-        .env("PATH", paths::child_path())
-        .output()
-        .ok()?;
+        .env("PATH", paths::child_path());
+    paths::no_window(&mut cmd); // no console flash for the capability probe
+    let output = cmd.output().ok()?;
     if !output.status.success() {
         return None;
     }

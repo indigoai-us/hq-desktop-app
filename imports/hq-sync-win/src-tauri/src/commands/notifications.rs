@@ -93,10 +93,10 @@ mod platform {
     /// then report the (current) state. `explorer.exe` resolves `ms-settings:`
     /// URIs.
     pub fn request_permission(app: &AppHandle) -> Result<String, String> {
-        match std::process::Command::new("explorer.exe")
-            .arg("ms-settings:notifications")
-            .spawn()
-        {
+        let mut cmd = std::process::Command::new("explorer.exe");
+        cmd.arg("ms-settings:notifications");
+        crate::util::paths::no_window(&mut cmd);
+        match cmd.spawn() {
             Ok(_) => log("notifications", "opened ms-settings:notifications"),
             Err(e) => log(
                 "notifications",

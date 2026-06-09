@@ -57,31 +57,26 @@ use serde::Deserialize;
 
 use crate::util::client_info::build_client;
 
-/// Public GitHub Releases API endpoint for hq-sync. 30 results is enough
-/// to span several release cycles without paginating — at the current
+/// Public GitHub Releases API endpoint for the Windows fork. 30 results is
+/// enough to span several release cycles without paginating — at the current
 /// ~weekly cadence that's roughly half a year of history, far more than
 /// any user could miss between launches.
-// TODO(windows-fork-updater): wrong repo — should be `hq-sync-win`. See the
-// module-header TODO; queries macOS releases (darwin-only latest.json).
 const GH_RELEASES_URL: &str =
-    "https://api.github.com/repos/indigoai-us/hq-sync/releases?per_page=30";
+    "https://api.github.com/repos/indigoai-us/hq-sync-win/releases?per_page=30";
 
 /// Per-release `latest.json` URL pattern. `{tag}` is substituted with the
 /// matched release's `tag_name` (e.g. `v0.1.109-beta.1`).
-// TODO(windows-fork-updater): wrong repo — should be `hq-sync-win`. See the
-// module-header TODO.
 const PER_RELEASE_MANIFEST_PATTERN: &str =
-    "https://github.com/indigoai-us/hq-sync/releases/download/{tag}/latest.json";
+    "https://github.com/indigoai-us/hq-sync-win/releases/download/{tag}/latest.json";
 
 /// Static stable fallback. GitHub's `/releases/latest/download/` alias is
 /// guaranteed to point at the newest non-prerelease — exactly the right
 /// behavior for stable users, and a safe fallback for prerelease users
-/// when the API is unreachable.
-// TODO(windows-fork-updater): wrong repo — should be `hq-sync-win`. See the
-// module-header TODO; this fallback serves the macOS darwin-only latest.json
-// to Windows users, producing the "no windows-x86_64 platform" updater error.
+/// when the API is unreachable. Matches the static endpoint in
+/// `tauri.conf.json` (both target the `hq-sync-win` fork's releases, whose
+/// `latest.json` carries `windows-x86_64` / `windows-aarch64` platforms).
 pub const STABLE_FALLBACK_ENDPOINT: &str =
-    "https://github.com/indigoai-us/hq-sync/releases/latest/download/latest.json";
+    "https://github.com/indigoai-us/hq-sync-win/releases/latest/download/latest.json";
 
 /// HTTP timeout for the GitHub API call. Tight on purpose — the updater
 /// runs on a 6h background loop and a slow API must not stall it.
