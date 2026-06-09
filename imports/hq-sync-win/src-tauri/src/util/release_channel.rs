@@ -28,6 +28,22 @@
 //! blocks api.github.com still gets stable updates rather than an empty
 //! response.
 //!
+//! TODO(windows-fork-updater): the three endpoint constants below
+//! (`GH_RELEASES_URL`, `PER_RELEASE_MANIFEST_PATTERN`,
+//! `STABLE_FALLBACK_ENDPOINT`) and the doc URLs in this header still point
+//! at `indigoai-us/hq-sync` (the macOS repo). They were copied verbatim
+//! from upstream and never re-pointed at this fork (`indigoai-us/hq-sync-win`).
+//! Effect: the channel-aware updater — which Settings → "Check for Updates"
+//! and the 6h background loop both use — polls the macOS releases, whose
+//! `latest.json` only carries `darwin-*` platforms. So the Windows updater
+//! finds no `windows-x86_64`/`windows-aarch64` entry and logs
+//! `None of the fallback platforms ["windows-x86_64"] were found`.
+//! The STATIC endpoint in `tauri.conf.json` (used by `app.updater()` for the
+//! version-gate hard-yank) is already correct (`hq-sync-win`), so the two
+//! update paths disagree. Fix: re-point all three constants + the doc URLs
+//! to `indigoai-us/hq-sync-win` to match `tauri.conf.json`. Gated on the
+//! fork's release pipeline publishing a Windows `latest.json` first.
+//!
 //! Rationale for tag-suffix as the channel signal (vs. GitHub's
 //! `prerelease` flag on the release object): the CI workflow controls the
 //! `prerelease` flag, and earlier releases all carry `prerelease: false`.
@@ -45,11 +61,15 @@ use crate::util::client_info::build_client;
 /// to span several release cycles without paginating — at the current
 /// ~weekly cadence that's roughly half a year of history, far more than
 /// any user could miss between launches.
+// TODO(windows-fork-updater): wrong repo — should be `hq-sync-win`. See the
+// module-header TODO; queries macOS releases (darwin-only latest.json).
 const GH_RELEASES_URL: &str =
     "https://api.github.com/repos/indigoai-us/hq-sync/releases?per_page=30";
 
 /// Per-release `latest.json` URL pattern. `{tag}` is substituted with the
 /// matched release's `tag_name` (e.g. `v0.1.109-beta.1`).
+// TODO(windows-fork-updater): wrong repo — should be `hq-sync-win`. See the
+// module-header TODO.
 const PER_RELEASE_MANIFEST_PATTERN: &str =
     "https://github.com/indigoai-us/hq-sync/releases/download/{tag}/latest.json";
 
@@ -57,6 +77,9 @@ const PER_RELEASE_MANIFEST_PATTERN: &str =
 /// guaranteed to point at the newest non-prerelease — exactly the right
 /// behavior for stable users, and a safe fallback for prerelease users
 /// when the API is unreachable.
+// TODO(windows-fork-updater): wrong repo — should be `hq-sync-win`. See the
+// module-header TODO; this fallback serves the macOS darwin-only latest.json
+// to Windows users, producing the "no windows-x86_64 platform" updater error.
 pub const STABLE_FALLBACK_ENDPOINT: &str =
     "https://github.com/indigoai-us/hq-sync/releases/latest/download/latest.json";
 
