@@ -42,6 +42,11 @@
   }
   let { initialReport = null, onback }: Props = $props();
 
+  // Inline path: the parent (App.svelte) never re-binds `initialReport`
+  // on an existing component instance — it remounts on view switch — so
+  // capturing the prop's initial value is intentional. The
+  // standalone-window path doesn't pass `initialReport` at all.
+  // svelte-ignore state_referenced_locally
   let report = $state<DriftReport | null>(initialReport);
   // Per-row in-flight + result state for the Restore button. Keyed by
   // `${kind}:${path}` because Modified and Added cases use the same path

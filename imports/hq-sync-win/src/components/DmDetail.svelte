@@ -49,6 +49,10 @@
   }
   let { initialEvent = null, onback }: Props = $props();
 
+  // App.svelte remounts on view switch rather than re-binding props on an
+  // existing instance, so capturing the prop's initial value is
+  // intentional. Standalone-window path doesn't pass initialEvent.
+  // svelte-ignore state_referenced_locally
   let event = $state<DmEvent | null>(initialEvent);
   let messages = $state<ThreadMessage[]>([]);
   let loadingThread = $state(false);

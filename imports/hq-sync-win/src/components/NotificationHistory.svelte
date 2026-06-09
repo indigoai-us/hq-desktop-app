@@ -243,6 +243,12 @@
         <div class="notif-day">
           <div class="notif-day-label">{group.label}</div>
           {#each group.items as it (it.id)}
+            <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+            <!-- The lint can't tell `tabindex={0}` only applies when
+                 `role="button"` is also set — both are gated on the
+                 same `clickable(it)` predicate. The keyboard handler
+                 above covers Enter + Space; the role + tabindex are
+                 added together when the row is actionable. -->
             <div
               class="notif-row notif-{it.kind}"
               class:clickable={clickable(it)}

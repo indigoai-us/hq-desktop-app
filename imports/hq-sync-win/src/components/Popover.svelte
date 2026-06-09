@@ -1228,22 +1228,6 @@
     border-color: var(--popover-border, rgba(255, 255, 255, 0.18));
   }
 
-  .header-sync-spinner {
-    display: inline-block;
-    width: 14px;
-    height: 14px;
-    border: 2px solid rgba(17, 17, 19, 0.25);
-    border-top-color: var(--popover-primary-text, #111113);
-    border-radius: 50%;
-    animation: header-sync-spin 0.6s linear infinite;
-  }
-
-  @keyframes header-sync-spin {
-    to {
-      transform: rotate(360deg);
-    }
-  }
-
   /* Divider */
   .popover-divider {
     height: 1px;
@@ -1591,20 +1575,6 @@
     cursor: default;
   }
 
-  /* Secondary variant of the banner button — used for "Copy command" in the
-     hq CLI update-failed state. Same shape, calm grey tone instead of
-     primary white, so the primary Update / Install affordance is preserved
-     when both buttons sit side-by-side. */
-  .banner-update-button-secondary {
-    background: var(--popover-surface-strong, rgba(255, 255, 255, 0.16));
-    color: var(--popover-text, rgba(255, 255, 255, 0.86));
-  }
-
-  .banner-update-button-secondary:hover:not(:disabled) {
-    background: var(--popover-action-hover, rgba(255, 255, 255, 0.1));
-    color: var(--popover-text-heading, #ffffff);
-  }
-
   /* Action buttons row — sits beneath banner text in column-stacked banners.
      justify-content: flex-end keeps the buttons hugging the right edge so
      the eye lands on them as the next action. flex-wrap lets the two-button
@@ -1682,11 +1652,4 @@
     transition: width 0.25s ease-out;
   }
 
-  /* Summary line — "Last sync · X files · Y MB" */
-  .summary-line {
-    margin: 0;
-    font-size: 0.6875rem;
-    color: var(--popover-text-muted, #a0a0b0);
-    line-height: 1.4;
-  }
 </style>

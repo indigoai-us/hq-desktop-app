@@ -199,17 +199,65 @@ pub fn resolve_bin(name: &str) -> String {
     name.to_string()
 }
 
-/// Compute the filename candidates for a binary lookup. On Windows we
-/// try both `{name}` (already-extensioned, e.g. `npx.cmd`) and
-/// `{name}.exe` (the common case). On POSIX we only try the bare name.
+/// Compute the filename candidates for a binary lookup, in priority order.
+///
+/// On Windows the npm/node install ships both a `.cmd` shim AND a
+/// no-extension POSIX-style script for tools like `npx`. CreateProcess
+/// can spawn `.exe` and `.cmd` (via cmd.exe) but rejects the
+/// no-extension script with `os error 193 (%1 is not a valid Win32
+/// application)`. So we MUST prefer the extensioned variants, otherwise
+/// `Command::new(resolve_bin("npx"))` blows up on every machine with a
+/// real Node install.
 fn candidate_filenames(name: &str) -> Vec<String> {
-    // On POSIX `EXE_EXT` is empty, so `ends_with(EXE_EXT)` is always true and
-    // we return the bare name. On Windows we skip re-extensioning a name that
-    // already carries an executable suffix.
+    // Already-extensioned name: pass through.
     if name.ends_with(EXE_EXT) || name.ends_with(".cmd") || name.ends_with(".bat") {
-        vec![name.to_string()]
-    } else {
+        return vec![name.to_string()];
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        return vec![
+            format!("{name}.exe"),
+            format!("{name}.cmd"),
+            format!("{name}.bat"),
+            name.to_string(),
+        ];
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
         vec![format!("{name}{EXE_EXT}"), name.to_string()]
+    }
+}
+
+/// True if the resolved binary path is a Windows `.cmd` or `.bat` shim.
+/// Rust's `std::process::Command` rejects direct spawning of these
+/// (CVE-2024-24576 / BatBadBut hardening landed in Rust 1.77 — bare
+/// `.cmd` / `.bat` paths fail). Callers should wrap such paths via
+/// [`spawn_via_shell`].
+pub fn is_windows_shell_script(path: &str) -> bool {
+    let lower = path.to_lowercase();
+    lower.ends_with(".cmd") || lower.ends_with(".bat")
+}
+
+/// Build a `std::process::Command` that handles both real `.exe` and
+/// Windows `.cmd`/`.bat` shims. For `.cmd`/`.bat`, spawns through
+/// `cmd.exe /c "<shim>" <args>` so CreateProcess doesn't reject the
+/// shell script. For everything else it's `Command::new(path)` +
+/// `args(args)` unchanged.
+///
+/// This is the single canonical spawn helper for node-backed tools
+/// resolved via [`resolve_bin`]. Use it from any callsite that might
+/// spawn `npx`, `npm`, `hq` (when it's a `.cmd`), etc.
+pub fn spawn_command(path: &str, args: &[&str]) -> std::process::Command {
+    if is_windows_shell_script(path) {
+        let mut cmd = std::process::Command::new("cmd.exe");
+        cmd.arg("/c").arg(path).args(args);
+        cmd
+    } else {
+        let mut cmd = std::process::Command::new(path);
+        cmd.args(args);
+        cmd
     }
 }
 

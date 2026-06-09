@@ -21,7 +21,9 @@
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
+
+use crate::util::paths;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
@@ -264,9 +266,15 @@ pub fn run_process_impl<F>(handle: &str, spawn: &SpawnArgs, on_event: F) -> Resu
 where
     F: FnMut(ProcessEvent),
 {
-    let mut cmd = Command::new(&spawn.cmd);
-    cmd.args(&spawn.args)
-        .stdout(Stdio::piped())
+    // `paths::spawn_command` wraps Windows `.cmd`/`.bat` shims through
+    // `cmd.exe /c "<shim>" <args>` — required since Rust 1.77's
+    // CVE-2024-24576 hardening rejects direct spawning of shell shims
+    // with `os error 193`. The canonical sync runner spawn (npx) hits
+    // this path; before this wrapper, every Windows install with Node
+    // installed (i.e. every install) failed sync with that error.
+    let args_ref: Vec<&str> = spawn.args.iter().map(String::as_str).collect();
+    let mut cmd = paths::spawn_command(&spawn.cmd, &args_ref);
+    cmd.stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
     // CREATE_NO_WINDOW: stop spawned CLIs from flashing a console window
@@ -461,9 +469,12 @@ where
     F: FnMut(ProcessEvent),
     S: FnOnce(&mut Child),
 {
-    let mut cmd = Command::new(&spawn.cmd);
-    cmd.args(&spawn.args)
-        .stdin(Stdio::piped())
+    // See `run_process_impl` for the `paths::spawn_command` rationale —
+    // wraps `.cmd`/`.bat` shims via `cmd.exe /c` to dodge the Rust 1.77
+    // CreateProcess hardening that breaks `npx`/`npm` direct spawns.
+    let args_ref: Vec<&str> = spawn.args.iter().map(String::as_str).collect();
+    let mut cmd = paths::spawn_command(&spawn.cmd, &args_ref);
+    cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 

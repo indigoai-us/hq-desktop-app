@@ -143,6 +143,18 @@ fn main() {
     let show_shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyH);
 
     tauri::Builder::default()
+        // Single-instance dedup. Must be the FIRST plugin so the
+        // duplicate-launch callback fires before any other plugin or
+        // setup hook touches state. The handler raises the existing
+        // popover above the tray and focuses it — mirrors a Win11 tray
+        // utility (e.g. clicking the icon when the popover is already
+        // visible). `argv` and `cwd` are intentionally unused — this is
+        // a tray app, not a URL-handling app.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            use util::logfile::log;
+            log("single-instance", "duplicate launch — focusing existing popover");
+            tray::show_window_at_tray(app);
+        }))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_fs::init())

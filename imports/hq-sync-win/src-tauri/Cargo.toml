@@ -18,6 +18,12 @@ tauri-plugin-global-shortcut = "2"
 # share-notify firing path for the fork. The macOS action-button dropdown
 # (mac-notification-sys) stays a macOS-only dep below.
 tauri-plugin-notification = "2"
+# Single-instance dedup — collapses duplicate launches (the user
+# double-clicking the .exe again, OS shell re-launching us, etc.) onto
+# the existing tray process by emitting a Tauri event into the running
+# instance instead of spawning a second one. Without this, every extra
+# launch produced a second tray icon and orphaned the autostart path.
+tauri-plugin-single-instance = "2"
 # window-vibrancy 0.6 supports both Win 11 Mica and Win 10 Acrylic
 # (and macOS NSVisualEffectMaterial, but the Windows fork doesn't use
 # that path). Required by US-005's apply_windows_vibrancy.
