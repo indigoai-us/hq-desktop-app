@@ -246,11 +246,17 @@ jobs:
           find ./artifacts -type f -print0 | xargs -0 -I {} cp {} ./release/
           ls -la ./release
 
-      # Build the auto-updater manifest. Without this, the endpoint the client
-      # polls (util/release_channel.rs → …/releases/<tag>/download/latest.json and
-      # the /releases/latest/ alias) 404s and Check-for-Updates silently no-ops.
-      # The per-arch (signature, url) pairs point at the Tauri MSI updater bundle
-      # (*.msi.zip) — the only updater artifact the build job uploads.
+      # Build the auto-updater manifest. When a signed release ships, this is what
+      # the client polls (util/release_channel.rs → …/releases/<tag>/download/
+      # latest.json and the /releases/latest/ alias); without it that endpoint
+      # 404s and Check-for-Updates no-ops. The per-arch (signature, url) pairs
+      # point at the Tauri MSI updater bundle (*.msi.zip) — the only updater
+      # artifact the build job uploads.
+      #
+      # UNSIGNED DOGFOOD FALLBACK: with no TAURI_SIGNING_PRIVATE_KEY secret set,
+      # Tauri emits no *.msi.zip and this step skips cleanly (exit 0) — the
+      # release still publishes the raw MSI/NSIS installers for manual install,
+      # auto-update just stays off until a signed release ships.
       - name: Generate latest.json (auto-updater manifest)
         shell: bash
         run: |
@@ -259,23 +265,18 @@ jobs:
           VERSION="${TAG#v}"
           BASE="https://github.com/${{ github.repository }}/releases/download/${TAG}"
 
-          # Locate the per-arch updater zips + detached signatures produced by
-          # Tauri's bundler (TAURI_SIGNING_PRIVATE_KEY signs the zip CONTENTS).
-          find_one() {
-            local match
-            match=$(find ./release -maxdepth 1 -type f -name "$1" | head -n1)
-            if [[ -z "$match" ]]; then
-              echo "::error::No file matching '$1' in ./release — cannot build latest.json (was the updater bundle produced + uploaded?)" >&2
-              exit 1
-            fi
-            printf '%s' "$match"
-          }
-
+          # Locate the per-arch updater zips produced by Tauri's bundler
+          # (TAURI_SIGNING_PRIVATE_KEY signs the zip CONTENTS into a sibling .sig).
+          find_one() { find ./release -maxdepth 1 -type f -name "$1" | head -n1; }
           X64_ZIP=$(find_one "*x64*.msi.zip")
           ARM64_ZIP=$(find_one "*arm64*.msi.zip")
-          for sig in "${X64_ZIP}.sig" "${ARM64_ZIP}.sig"; do
-            [[ -f "$sig" ]] || { echo "::error::missing signature $sig" >&2; exit 1; }
-          done
+
+          # No signing key → no updater bundle → nothing to advertise. Skip rather
+          # than fail so dogfood releases need zero secrets.
+          if [[ -z "$X64_ZIP" || -z "$ARM64_ZIP" || ! -f "${X64_ZIP}.sig" || ! -f "${ARM64_ZIP}.sig" ]]; then
+            echo "::notice::No signed updater bundle (*.msi.zip + .sig) for one or both arches — skipping latest.json. This is an UNSIGNED dogfood release; auto-update stays disabled until TAURI_SIGNING_PRIVATE_KEY is set."
+            exit 0
+          fi
 
           # Rename the updater zips (+ sigs) to space-free, deterministic names so
           # the download URLs in latest.json are predictable. The updater verifies
