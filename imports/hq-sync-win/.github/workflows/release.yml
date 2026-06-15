@@ -246,6 +246,57 @@ jobs:
           find ./artifacts -type f -print0 | xargs -0 -I {} cp {} ./release/
           ls -la ./release
 
+      # Build the auto-updater manifest. Without this, the endpoint the client
+      # polls (util/release_channel.rs → …/releases/<tag>/download/latest.json and
+      # the /releases/latest/ alias) 404s and Check-for-Updates silently no-ops.
+      # The per-arch (signature, url) pairs point at the Tauri MSI updater bundle
+      # (*.msi.zip) — the only updater artifact the build job uploads.
+      - name: Generate latest.json (auto-updater manifest)
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          VERSION="${TAG#v}"
+          BASE="https://github.com/${{ github.repository }}/releases/download/${TAG}"
+
+          # Locate the per-arch updater zips + detached signatures produced by
+          # Tauri's bundler (TAURI_SIGNING_PRIVATE_KEY signs the zip CONTENTS).
+          find_one() {
+            local match
+            match=$(find ./release -maxdepth 1 -type f -name "$1" | head -n1)
+            if [[ -z "$match" ]]; then
+              echo "::error::No file matching '$1' in ./release — cannot build latest.json (was the updater bundle produced + uploaded?)" >&2
+              exit 1
+            fi
+            printf '%s' "$match"
+          }
+
+          X64_ZIP=$(find_one "*x64*.msi.zip")
+          ARM64_ZIP=$(find_one "*arm64*.msi.zip")
+          for sig in "${X64_ZIP}.sig" "${ARM64_ZIP}.sig"; do
+            [[ -f "$sig" ]] || { echo "::error::missing signature $sig" >&2; exit 1; }
+          done
+
+          # Rename the updater zips (+ sigs) to space-free, deterministic names so
+          # the download URLs in latest.json are predictable. The updater verifies
+          # the detached signature against the zip CONTENTS, not its filename, so
+          # renaming is safe — and it sidesteps GitHub's spaces→dots asset rewrite.
+          X64_NAME="HQ-Sync_${VERSION}_x64.msi.zip"
+          ARM64_NAME="HQ-Sync_${VERSION}_arm64.msi.zip"
+          mv "$X64_ZIP"        "./release/${X64_NAME}"
+          mv "${X64_ZIP}.sig"  "./release/${X64_NAME}.sig"
+          mv "$ARM64_ZIP"      "./release/${ARM64_NAME}"
+          mv "${ARM64_ZIP}.sig" "./release/${ARM64_NAME}.sig"
+
+          ./scripts/generate-latest-json.sh \
+            "$VERSION" \
+            "$(cat "./release/${X64_NAME}.sig")"   "${BASE}/${X64_NAME}" \
+            "$(cat "./release/${ARM64_NAME}.sig")" "${BASE}/${ARM64_NAME}" \
+            ./release/latest.json
+
+          echo "----- latest.json -----"
+          cat ./release/latest.json
+
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:

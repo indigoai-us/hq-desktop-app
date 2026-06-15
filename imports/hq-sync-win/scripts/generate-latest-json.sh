@@ -7,15 +7,15 @@
 #       <arm64-signature> <arm64-url> \
 #       [output-path]
 #
-# Each per-arch (signature, url) pair points at the NSIS installer that
-# tauri-plugin-updater downloads + executes. The signature is the
-# contents of `<installer>.sig` produced by Tauri's bundler when
-# `TAURI_SIGNING_PRIVATE_KEY` is set — strict per-platform, no shared
-# signature across bundles.
+# Each per-arch (signature, url) pair points at the Tauri MSI updater
+# bundle (`*.msi.zip`) that tauri-plugin-updater downloads + executes.
+# The signature is the contents of `<bundle>.sig` produced by Tauri's
+# bundler when `TAURI_SIGNING_PRIVATE_KEY` is set — strict per-platform,
+# no shared signature across bundles.
 #
-# This script is for local testing. In CI, latest.json is generated
-# automatically by .github/workflows/release.yml from the matrix
-# artefacts (x64 + arm64), so the args are wired from job outputs there.
+# In CI, the "Generate latest.json" step in .github/workflows/release.yml
+# invokes this script from the matrix artefacts (x64 + arm64) and attaches
+# the result to the GitHub release. Run it by hand only for local testing.
 
 set -euo pipefail
 
