@@ -39,6 +39,21 @@ jobs:
 
     env:
       RUST_BACKTRACE: 1
+      # ── Build-time app config. Vite INLINES `VITE_*` at build time, so an
+      #    empty Cognito value silently ships an app that cannot sign in.
+      #    REQUIRED for any usable release (signed or unsigned). `.env.local`
+      #    is gitignored and never reaches CI — these come from repo secrets.
+      VITE_COGNITO_USER_POOL_ID: ${{ secrets.VITE_COGNITO_USER_POOL_ID }}
+      VITE_COGNITO_CLIENT_ID: ${{ secrets.VITE_COGNITO_CLIENT_ID }}
+      VITE_COGNITO_DOMAIN: ${{ secrets.VITE_COGNITO_DOMAIN }}
+      VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
+      # ── Updater signing. Present → signed build + updater artifacts +
+      #    latest.json. Absent → unsigned dogfood (installers only). Defined at
+      #    job scope so the build-step `if:` guards below can branch on it.
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      # ── Sentry DSN (optional; client no-ops when empty).
+      HQ_SYNC_SENTRY_DSN: ${{ secrets.HQ_SYNC_SENTRY_DSN }}
 
     steps:
       - uses: actions/checkout@v4
@@ -168,24 +183,44 @@ jobs:
             /tr "http://timestamp.digicert.com" /td sha256 /fd sha256 `
             $launcher
 
-      - name: Tauri build (${{ matrix.target }})
-        env:
-          # Updater signing — separate from the SignTool PFX.
-          # TAURI_SIGNING_PRIVATE_KEY pairs with the pubkey in
-          # tauri.conf.json plugins.updater.pubkey (see
-          # scripts/generate-updater-keypair.ps1).
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # Sentry DSN — release-only secret. PR/CI builds have it empty
-          # and the Sentry client no-ops.
-          HQ_SYNC_SENTRY_DSN: ${{ secrets.HQ_SYNC_SENTRY_DSN }}
-        # --config merges the release-only overlay (tauri.release.conf.json) that
-        # adds the Recall sidecar externalBin + resources. They are NOT in the base
-        # tauri.conf.json so the lint/test CI — which runs cargo clippy/check/test
-        # WITHOUT building the 80MB sidecar launcher — does not trip the tauri
-        # build-script's externalBin existence check.
+      # Fail fast if the Cognito build-time config is missing. Vite inlines these
+      # at build, so an empty value compiles a release that cannot sign in — far
+      # worse than a loud failure here. Required for signed AND unsigned releases.
+      - name: Verify build-time app config present
+        shell: bash
+        run: |
+          : "${VITE_COGNITO_USER_POOL_ID:?missing repo secret VITE_COGNITO_USER_POOL_ID — sign-in breaks without it}"
+          : "${VITE_COGNITO_CLIENT_ID:?missing repo secret VITE_COGNITO_CLIENT_ID}"
+          : "${VITE_COGNITO_DOMAIN:?missing repo secret VITE_COGNITO_DOMAIN}"
+
+      # --config merges the release-only overlay (tauri.release.conf.json) that
+      # adds the Recall sidecar externalBin + resources. They are NOT in the base
+      # tauri.conf.json so the lint/test CI — which runs cargo clippy/check/test
+      # WITHOUT building the 80MB sidecar launcher — does not trip the tauri
+      # build-script's externalBin existence check.
+      #
+      # Signed path: the key is present, so emit updater artifacts. Tauri 2.10
+      # produces the installer + a sibling detached signature
+      # (`*-setup.exe` + `*-setup.exe.sig`) — NOT the old `.nsis.zip`/`.msi.zip`.
+      - name: Tauri build — signed updater (${{ matrix.target }})
+        if: env.TAURI_SIGNING_PRIVATE_KEY != ''
         run: npm run tauri build -- --target ${{ matrix.target }} --bundles msi nsis updater --config src-tauri/tauri.release.conf.json
 
+      # Unsigned dogfood path: `createUpdaterArtifacts: true` + the `updater`
+      # bundle HARD-FAIL the build when no signing key is set (it's an error, not
+      # a skip). tauri.dogfood.conf.json overlays `createUpdaterArtifacts: false`
+      # and we drop the `updater` bundle, so the build produces installers only.
+      - name: Tauri build — unsigned dogfood (${{ matrix.target }})
+        if: env.TAURI_SIGNING_PRIVATE_KEY == ''
+        run: npm run tauri build -- --target ${{ matrix.target }} --bundles msi nsis --config src-tauri/tauri.release.conf.json --config src-tauri/tauri.dogfood.conf.json
+
+      # ⚠️ ORDERING BUG TO FIX BEFORE ENABLING AUTHENTICODE: this step re-signs
+      # `*-setup.exe` AFTER the build already produced `*-setup.exe.sig`. SignTool
+      # mutates the installer bytes, so the Tauri updater signature no longer
+      # matches and clients reject the update at install time. When a cert is
+      # added, regenerate the updater sig on the SIGNED installer afterwards
+      # (`tauri signer sign <signed-installer>`) and feed THAT into latest.json.
+      # Harmless while Authenticode is off (PFX_PATH empty → this step skips).
       - name: Sign installers (SignTool)
         if: env.PFX_PATH != ''
         shell: pwsh
@@ -221,11 +256,14 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: hq-sync-win-${{ matrix.target }}
+          # Tauri 2.10 updater artifact is the NSIS installer + a sibling detached
+          # signature (`*-setup.exe` + `*-setup.exe.sig`), not a `.zip`. The `.sig`
+          # is absent on unsigned dogfood builds (if-no-files-found defaults to
+          # warn, so that's fine). `.msi` is kept as a manual-install asset.
           path: |
             src-tauri/target/${{ matrix.target }}/release/bundle/msi/*.msi
-            src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*.exe
-            src-tauri/target/${{ matrix.target }}/release/bundle/msi/*.zip
-            src-tauri/target/${{ matrix.target }}/release/bundle/msi/*.sig
+            src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe
+            src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe.sig
 
   release:
     name: Publish GitHub release
@@ -250,13 +288,13 @@ jobs:
       # the client polls (util/release_channel.rs → …/releases/<tag>/download/
       # latest.json and the /releases/latest/ alias); without it that endpoint
       # 404s and Check-for-Updates no-ops. The per-arch (signature, url) pairs
-      # point at the Tauri MSI updater bundle (*.msi.zip) — the only updater
-      # artifact the build job uploads.
+      # point at the Tauri 2.10 NSIS updater artifact (`*-setup.exe`) and its
+      # sibling detached signature (`*-setup.exe.sig`).
       #
       # UNSIGNED DOGFOOD FALLBACK: with no TAURI_SIGNING_PRIVATE_KEY secret set,
-      # Tauri emits no *.msi.zip and this step skips cleanly (exit 0) — the
-      # release still publishes the raw MSI/NSIS installers for manual install,
-      # auto-update just stays off until a signed release ships.
+      # Tauri emits no `*-setup.exe.sig` and this step skips cleanly (exit 0) —
+      # the release still publishes the installers for manual install; auto-update
+      # stays off until a signed release ships.
       - name: Generate latest.json (auto-updater manifest)
         shell: bash
         run: |
@@ -265,29 +303,30 @@ jobs:
           VERSION="${TAG#v}"
           BASE="https://github.com/${{ github.repository }}/releases/download/${TAG}"
 
-          # Locate the per-arch updater zips produced by Tauri's bundler
-          # (TAURI_SIGNING_PRIVATE_KEY signs the zip CONTENTS into a sibling .sig).
+          # Locate the per-arch NSIS installers produced by Tauri's bundler.
+          # With a signing key, each has a sibling `<installer>.sig` (the updater
+          # signs the installer BYTES; on 2.10 there is no intermediate `.zip`).
           find_one() { find ./release -maxdepth 1 -type f -name "$1" | head -n1; }
-          X64_ZIP=$(find_one "*x64*.msi.zip")
-          ARM64_ZIP=$(find_one "*arm64*.msi.zip")
+          X64_EXE=$(find_one "*x64*-setup.exe")
+          ARM64_EXE=$(find_one "*arm64*-setup.exe")
 
-          # No signing key → no updater bundle → nothing to advertise. Skip rather
-          # than fail so dogfood releases need zero secrets.
-          if [[ -z "$X64_ZIP" || -z "$ARM64_ZIP" || ! -f "${X64_ZIP}.sig" || ! -f "${ARM64_ZIP}.sig" ]]; then
-            echo "::notice::No signed updater bundle (*.msi.zip + .sig) for one or both arches — skipping latest.json. This is an UNSIGNED dogfood release; auto-update stays disabled until TAURI_SIGNING_PRIVATE_KEY is set."
+          # No signing key → no `.sig` → nothing to advertise. Skip rather than
+          # fail so dogfood releases need no updater secret.
+          if [[ -z "$X64_EXE" || -z "$ARM64_EXE" || ! -f "${X64_EXE}.sig" || ! -f "${ARM64_EXE}.sig" ]]; then
+            echo "::notice::No signed updater artifact (*-setup.exe + .sig) for one or both arches — skipping latest.json. This is an UNSIGNED dogfood release; auto-update stays disabled until TAURI_SIGNING_PRIVATE_KEY is set."
             exit 0
           fi
 
-          # Rename the updater zips (+ sigs) to space-free, deterministic names so
-          # the download URLs in latest.json are predictable. The updater verifies
-          # the detached signature against the zip CONTENTS, not its filename, so
-          # renaming is safe — and it sidesteps GitHub's spaces→dots asset rewrite.
-          X64_NAME="HQ-Sync_${VERSION}_x64.msi.zip"
-          ARM64_NAME="HQ-Sync_${VERSION}_arm64.msi.zip"
-          mv "$X64_ZIP"        "./release/${X64_NAME}"
-          mv "${X64_ZIP}.sig"  "./release/${X64_NAME}.sig"
-          mv "$ARM64_ZIP"      "./release/${ARM64_NAME}"
-          mv "${ARM64_ZIP}.sig" "./release/${ARM64_NAME}.sig"
+          # Rename installers (+ sigs) to space-free, deterministic names so the
+          # download URLs are predictable. The updater verifies the signature
+          # against the installer BYTES, not its filename, so renaming is safe —
+          # and it sidesteps GitHub's spaces→dots asset rewrite.
+          X64_NAME="HQ-Sync_${VERSION}_x64-setup.exe"
+          ARM64_NAME="HQ-Sync_${VERSION}_arm64-setup.exe"
+          mv "$X64_EXE"         "./release/${X64_NAME}"
+          mv "${X64_EXE}.sig"   "./release/${X64_NAME}.sig"
+          mv "$ARM64_EXE"       "./release/${ARM64_NAME}"
+          mv "${ARM64_EXE}.sig" "./release/${ARM64_NAME}.sig"
 
           ./scripts/generate-latest-json.sh \
             "$VERSION" \

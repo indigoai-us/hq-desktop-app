@@ -7,11 +7,12 @@
 #       <arm64-signature> <arm64-url> \
 #       [output-path]
 #
-# Each per-arch (signature, url) pair points at the Tauri MSI updater
-# bundle (`*.msi.zip`) that tauri-plugin-updater downloads + executes.
-# The signature is the contents of `<bundle>.sig` produced by Tauri's
-# bundler when `TAURI_SIGNING_PRIVATE_KEY` is set — strict per-platform,
-# no shared signature across bundles.
+# Each per-arch (signature, url) pair points at the Tauri 2.10 NSIS
+# updater artifact (`*-setup.exe`) that tauri-plugin-updater downloads +
+# executes. The signature is the contents of `<installer>.sig` produced
+# by Tauri's bundler when `TAURI_SIGNING_PRIVATE_KEY` is set — strict
+# per-platform, no shared signature across bundles. (2.10 dropped the old
+# `.nsis.zip`/`.msi.zip` wrapper; it signs the installer bytes directly.)
 #
 # In CI, the "Generate latest.json" step in .github/workflows/release.yml
 # invokes this script from the matrix artefacts (x64 + arm64) and attaches
