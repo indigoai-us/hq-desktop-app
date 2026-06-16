@@ -6,7 +6,7 @@ Goal: a Win 11 user with no terminal can download a signed MSI, install, autosta
 
 **Pre-flight:**
 
-- [ ] `hq-installer-win` V1 already shipped + dogfood cohort has it installed (i.e. `%LOCALAPPDATA%\Indigo HQ\toolchain\bin\hq.exe` exists). If the installer hasn't shipped, this smoke test pre-stages `hq.exe` by manual copy.
+- [ ] `hq-installer-win` V1 already shipped + dogfood cohort has it installed (i.e. `%LOCALAPPDATA%\IndigoHQ\toolchain\bin\hq.exe` exists; legacy `%LOCALAPPDATA%\Indigo HQ\toolchain\bin\hq.exe` is also resolved for backward compat). If the installer hasn't shipped, this smoke test pre-stages `hq.exe` by manual copy.
 - [ ] User has Cognito credentials (HQ account at `getindigo.ai`).
 - [ ] User has a valid HQ folder somewhere on disk (or accepts the auto-create at `%USERPROFILE%\HQ`).
 

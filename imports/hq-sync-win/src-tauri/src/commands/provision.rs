@@ -2,10 +2,17 @@
 //!
 //! `provision_missing_companies` walks `$HQ/companies/*/company.yaml`, keeps
 //! entries where `cloud: true`, and handles three cases:
-//!   A. `.hq/config.json` present → verify entity still exists via find_by_slug;
-//!      if not found, remove stale config and re-provision via CLI.
+//!   A. `.hq/config.json` present → verify the entity still exists via a
+//!      by-UID lookup (`GET /entity/{uid}` using config.json's `companyUid`);
+//!      if not found / tombstoned, remove stale config and re-provision via CLI.
 //!   B. `.hq/config.json` absent but YAML has `cloudCompanyUid` → migration:
-//!      look up entity, write config.json using the legacy UID, do NOT touch YAML.
+//!      look up the entity by that UID, write config.json using the legacy UID,
+//!      do NOT touch YAML.
+//!
+//! Both A and B resolve by UID rather than slug: a by-slug lookup returns
+//! HTTP 409 when two live companies share a slug (a duplicate-provision data
+//! bug in HQ-Cloud), which previously bailed the entire sync. The local UID
+//! is the exact entity, so the lookup can't be ambiguous.
 //!   C. Otherwise → delegate to `hq cloud provision company <slug>` (the
 //!      canonical CLI subcommand from `@indigoai-us/hq-cli`), which performs
 //!      GET-then-POST idempotency, atomic manifest patch, atomic
@@ -177,9 +184,35 @@ where
 
         // ── Path A: config.json already present ────────────────────────────────
         if hq_config_path.exists() {
-            match vault.find_entity_by_slug("company", &folder_name).await {
-                Ok(Some(_)) => continue, // provisioned and verified
-                Ok(None) => {
+            // Resolve by the UID pinned in config.json, not by slug. A
+            // by-slug lookup returns HTTP 409 when two live companies
+            // share a slug (a duplicate-provision data bug in HQ-Cloud),
+            // which bailed the entire sync. The config's `companyUid` is
+            // the exact entity, so `GET /entity/{uid}` is unambiguous.
+            // A tombstoned (soft-deleted) entity is treated as "gone",
+            // matching the prior by-slug semantics. If config.json can't
+            // be read/parsed we fall back to the by-slug lookup so a
+            // corrupt config doesn't wedge the company entirely.
+            let cfg_uid = std::fs::read_to_string(&hq_config_path)
+                .ok()
+                .and_then(|s| serde_json::from_str::<CompanyConfig>(&s).ok())
+                .map(|c| c.company_uid);
+
+            let verified = match cfg_uid {
+                Some(uid) => match vault.find_entity_by_uid(&uid).await {
+                    Ok(Some(info)) => Ok(!info.deleted), // live → verified
+                    Ok(None) => Ok(false),               // 404 → gone
+                    Err(e) => Err(e),
+                },
+                None => vault
+                    .find_entity_by_slug("company", &folder_name)
+                    .await
+                    .map(|opt| opt.is_some()),
+            };
+
+            match verified {
+                Ok(true) => continue, // provisioned and verified
+                Ok(false) => {
                     // Stale config — entity gone; remove and fall through to re-provision
                     let _ = std::fs::remove_file(&hq_config_path);
                 }
@@ -191,7 +224,23 @@ where
 
         // ── Path B: legacy cloudCompanyUid migration ───────────────────────────
         if let Some(ref legacy_uid) = company_yaml.cloud_company_uid {
-            match vault.find_entity_by_slug("company", &folder_name).await {
+            // Resolve by UID, not slug. The local `company.yaml` already
+            // pins the exact cloud entity (`cloudCompanyUid`), so a
+            // slug lookup is both unnecessary and fragile: if two live
+            // companies ever share a slug (a duplicate-provision data
+            // bug in HQ-Cloud), `GET /entity/by-slug/...` returns HTTP
+            // 409 "matches N live entities — disambiguate by uid", which
+            // bailed the whole sync. `GET /entity/{uid}` is unambiguous.
+            // We treat a soft-deleted (tombstoned) entity the same as
+            // "not found" so it falls through to a fresh provision,
+            // matching the old by-slug semantics (which only returned
+            // live entities).
+            let resolved = match vault.find_entity_by_uid(legacy_uid).await {
+                Ok(Some(info)) if !info.deleted => Ok(Some(info)),
+                Ok(_) => Ok(None), // missing or tombstoned → re-provision
+                Err(e) => Err(e),
+            };
+            match resolved {
                 Ok(Some(info)) => {
                     // If the entity has no bucket yet, provision it now — same contract as Path C.
                     let bucket_name = match info.bucket_name {
@@ -416,9 +465,11 @@ mod tests {
         )
         .unwrap();
 
+        // Path A resolves by the config's `companyUid` (cmp_existing), not by
+        // slug — see the provision.rs Path A comment for the 409 rationale.
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path(format!("/entity/by-slug/company/{slug}")))
+            .and(path("/entity/cmp_existing"))
             .respond_with(ResponseTemplate::new(200).set_body_json(&entity_json(
                 "cmp_existing",
                 slug,
@@ -434,11 +485,11 @@ mod tests {
             result.is_empty(),
             "already-provisioned company must be skipped"
         );
-        // Only find_by_slug was called — no create_entity, no provision_bucket
+        // Only the by-uid verify was called — no create_entity, no provision_bucket
         let reqs = server.received_requests().await.unwrap();
         assert!(
-            reqs.iter().all(|r| r.url.path().contains("by-slug")),
-            "only by-slug calls expected; got: {:?}",
+            reqs.iter().all(|r| r.url.path() == "/entity/cmp_existing"),
+            "only by-uid verify expected; got: {:?}",
             reqs.iter().map(|r| r.url.path()).collect::<Vec<_>>()
         );
     }
@@ -452,9 +503,11 @@ mod tests {
         let yaml_path = setup_company(tmp.path(), slug, Some(yaml_content));
         let sha_before = sha256_file(&yaml_path);
 
+        // Path B resolves by the YAML's `cloudCompanyUid` (cmp_legacy), not by
+        // slug — avoids the duplicate-slug 409.
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path(format!("/entity/by-slug/company/{slug}")))
+            .and(path("/entity/cmp_legacy"))
             .respond_with(ResponseTemplate::new(200).set_body_json(&entity_json(
                 "cmp_legacy",
                 slug,
@@ -498,9 +551,9 @@ mod tests {
         setup_company(tmp.path(), slug, Some(yaml_content));
 
         let server = MockServer::start().await;
-        // find_by_slug returns entity with NO bucket
+        // by-uid verify returns entity with NO bucket
         Mock::given(method("GET"))
-            .and(path(format!("/entity/by-slug/company/{slug}")))
+            .and(path("/entity/cmp_legacy"))
             .respond_with(ResponseTemplate::new(200).set_body_json(&entity_json(
                 "cmp_legacy",
                 slug,
@@ -552,6 +605,61 @@ mod tests {
         assert!(
             !written.bucket_name.is_empty(),
             "bucket_name must not be empty"
+        );
+    }
+
+    // (d3) REGRESSION: duplicate-slug 409. Two live companies share a slug in
+    // HQ-Cloud, so `GET /entity/by-slug/company/{slug}` returns HTTP 409
+    // "matches 2 live entities". Before the by-uid fix this bailed the entire
+    // sync (BAIL: provision_missing_companies failed). With the fix, Path B
+    // resolves by the YAML's `cloudCompanyUid` and never touches by-slug, so
+    // the 409 can't happen. We mount the by-slug endpoint to 409 so the test
+    // FAILS loudly if anyone reintroduces a by-slug call here.
+    #[tokio::test]
+    async fn test_legacy_uid_ignores_ambiguous_slug() {
+        let tmp = TempDir::new().unwrap();
+        let slug = "liverecover";
+        let yaml_content = "cloud: true\nname: Liverecover\ncloudCompanyUid: cmp_keep\n";
+        setup_company(tmp.path(), slug, Some(yaml_content));
+
+        let server = MockServer::start().await;
+        // by-uid resolves the exact entity — unambiguous.
+        Mock::given(method("GET"))
+            .and(path("/entity/cmp_keep"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&entity_json(
+                "cmp_keep",
+                slug,
+                Some("hq-vault-cmp-keep"),
+            )))
+            .mount(&server)
+            .await;
+        // by-slug would 409 — if anyone calls it, the sync would bail.
+        Mock::given(method("GET"))
+            .and(path(format!("/entity/by-slug/company/{slug}")))
+            .respond_with(
+                ResponseTemplate::new(409).set_body_json(&serde_json::json!({
+                    "error": "Slug \"liverecover\" of type \"company\" matches 2 live entities",
+                    "type": "company",
+                    "slug": slug,
+                    "uids": ["cmp_keep", "cmp_dupe"],
+                })),
+            )
+            .mount(&server)
+            .await;
+
+        let result = provision_missing_companies(tmp.path(), &vault(&server), VAULT_URL)
+            .await
+            .expect("duplicate slug must not break provisioning");
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].uid, "cmp_keep");
+
+        // The ambiguous by-slug endpoint must never have been hit.
+        let reqs = server.received_requests().await.unwrap();
+        assert!(
+            reqs.iter().all(|r| !r.url.path().contains("by-slug")),
+            "by-slug must not be called (would 409); got: {:?}",
+            reqs.iter().map(|r| r.url.path()).collect::<Vec<_>>()
         );
     }
 

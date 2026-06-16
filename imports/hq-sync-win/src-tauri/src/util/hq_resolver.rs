@@ -76,8 +76,16 @@ impl HqInvocation {
     /// Build a `tokio::process::Command` for `hq <args>` according to the
     /// chosen invocation strategy. Caller appends args via `cmd.arg(...)`
     /// after this returns.
+    ///
+    /// TODO(hq-resolver-cmd-shim): on Windows, `Local(path)` where `path`
+    /// ends in `.cmd`/`.bat`, and the bare `Npx` arm, can hit os error 193
+    /// (CreateProcess rejects shell shims). The main sync-runner path routes
+    /// through `paths::spawn_command` which wraps shims via `cmd.exe /c`;
+    /// this builder does not. It only bites first-push for a brand-new
+    /// company (the only caller), so it hasn't surfaced yet — but it should
+    /// be wrapped the same way. Tracked separately from the flicker fix.
     pub fn command(&self) -> tokio::process::Command {
-        match self {
+        let mut cmd = match self {
             HqInvocation::Local(path) => tokio::process::Command::new(path),
             HqInvocation::Npx => {
                 let mut cmd = tokio::process::Command::new("npx");
@@ -89,7 +97,12 @@ impl HqInvocation {
                 ]);
                 cmd
             }
-        }
+        };
+        // Run windowless — no console flash when first-push shells out.
+        // tokio's Command exposes `creation_flags` inherently on Windows.
+        #[cfg(target_os = "windows")]
+        cmd.creation_flags(paths::CREATE_NO_WINDOW);
+        cmd
     }
 
     /// Human-readable label for log lines and diagnostic output.
@@ -175,12 +188,12 @@ fn probe() -> HqInvocation {
 /// returns stdout on success, `None` on spawn-error or non-zero exit.
 /// Shared between the probes so a future probe addition is one helper call.
 fn run_help(bin: &str, args: &[&str]) -> Option<String> {
-    let output = Command::new(bin)
-        .args(args)
+    let mut cmd = Command::new(bin);
+    cmd.args(args)
         // Inherit PATH from parent so node-shebanged `hq` can find `node`.
-        .env("PATH", paths::child_path())
-        .output()
-        .ok()?;
+        .env("PATH", paths::child_path());
+    paths::no_window(&mut cmd); // no console flash for the capability probe
+    let output = cmd.output().ok()?;
     if !output.status.success() {
         return None;
     }
@@ -263,10 +276,10 @@ mod tests {
     #[test]
     fn label_contains_useful_info() {
         // Windows-shaped path: US-008 fully wires the resolver to look in
-        // %LOCALAPPDATA%\Indigo HQ\toolchain\bin first. The label format
+        // %LOCALAPPDATA%\IndigoHQ\toolchain\bin first. The label format
         // is just `local:{path}` regardless of platform.
         let local = HqInvocation::Local(
-            "C:\\Users\\test\\AppData\\Local\\Indigo HQ\\toolchain\\bin\\hq.exe".to_string(),
+            "C:\\Users\\test\\AppData\\Local\\IndigoHQ\\toolchain\\bin\\hq.exe".to_string(),
         );
         assert!(local.label().contains("hq.exe"));
         let npx = HqInvocation::Npx;
@@ -279,13 +292,13 @@ mod tests {
     #[test]
     fn local_invocation_uses_windows_path_directly() {
         let invocation = HqInvocation::Local(
-            "C:\\Users\\test\\AppData\\Local\\Indigo HQ\\toolchain\\bin\\hq.exe".to_string(),
+            "C:\\Users\\test\\AppData\\Local\\IndigoHQ\\toolchain\\bin\\hq.exe".to_string(),
         );
         let cmd = invocation.command();
         let std_cmd = cmd.as_std();
         assert_eq!(
             std_cmd.get_program(),
-            "C:\\Users\\test\\AppData\\Local\\Indigo HQ\\toolchain\\bin\\hq.exe"
+            "C:\\Users\\test\\AppData\\Local\\IndigoHQ\\toolchain\\bin\\hq.exe"
         );
         assert_eq!(std_cmd.get_args().count(), 0);
     }

@@ -5,9 +5,13 @@
 
   interface Props {
     onback: () => void;
+    /** When provided, the "Manage packages" affordance pushes the App
+     *  view to the in-popover PackagesApp screen instead of spawning a
+     *  standalone window. Optional for back-compat. */
+    onpackages?: () => void;
   }
 
-  let { onback }: Props = $props();
+  let { onback, onpackages }: Props = $props();
 
   let hqPath = $state<string | null>(null);
   let syncOnLaunch = $state(false);
@@ -311,6 +315,10 @@
   }
 
   async function handleManagePackages() {
+    if (onpackages) {
+      onpackages();
+      return;
+    }
     try {
       await invoke('open_packages_window');
     } catch (err) {
@@ -808,16 +816,32 @@
   .settings {
     display: flex;
     flex-direction: column;
-    width: 320px;
-    max-height: 480px;
+    /* Fill the popover window. Previously locked to 320×480 — a hold-
+       over from the original window dimensions before we bumped to
+       352×528. Fixed sizes would leave a 32×48 px transparent gap on
+       the right + bottom when the window resized. */
+    width: 100vw;
+    height: 100vh;
     background: var(--popover-bg, rgba(18, 18, 20, 0.68));
     backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
     -webkit-backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
     color: var(--popover-text, #e0e0e0);
     overflow-y: auto;
     border-radius: 18px;
+    /* Same Win11 inset-shadow trick as Popover.svelte — the DWM frame
+       is gone (shadow: false in tauri.conf.json + decorations: false),
+       so a CSS `border` here would render as the sole edge. On macOS
+       NSWindow has no chrome edge so the border reads fine; on Windows
+       inset shadow avoids any doubling and lets Mica show through. */
     border: 1px solid var(--popover-border, rgba(255, 255, 255, 0.18));
     box-sizing: border-box;
+  }
+
+  :global(html[data-os="windows"]) .settings {
+    /* Match the OS DWMWCP_ROUNDSMALL radius set in main.rs so the CSS
+       content edge and the OS-clipped Mica edge coincide. */
+    border-radius: 4px;
+    border: none;
   }
 
   /* Header */

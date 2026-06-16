@@ -233,7 +233,10 @@ fn resolve_staging_repo(eligible: bool) -> Option<String> {
 pub(crate) fn resolve_gh_token() -> Option<String> {
     // 1. `gh auth token` — the canonical, always-fresh source.
     let gh = paths::resolve_bin("gh");
-    if let Ok(output) = Command::new(&gh).args(["auth", "token"]).output() {
+    let mut gh_cmd = Command::new(&gh);
+    gh_cmd.args(["auth", "token"]);
+    paths::no_window(&mut gh_cmd);
+    if let Ok(output) = gh_cmd.output() {
         if output.status.success() {
             let tok = String::from_utf8_lossy(&output.stdout).trim().to_string();
             if !tok.is_empty() {
@@ -717,6 +720,8 @@ pub async fn run_replace_from_staging(app: AppHandle) -> Result<RescueRunResult,
         .env("GH_TOKEN", &token)
         .stdout(std::process::Stdio::from(log_file_for_stdout))
         .stderr(std::process::Stdio::from(log_file_for_stderr));
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(paths::CREATE_NO_WINDOW);
 
     let status = cmd
         .status()

@@ -1,5 +1,10 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
+  // Share the popover's design tokens + Fluent thin-scrollbar rules with
+  // every secondary window. Without this import the standalone
+  // notification-history webview falls back to the Win11 native 16 px
+  // chunky scrollbar and a solid black backing colour.
+  import '../styles/popover.css';
 
   // ── Wire types (mirror the Rust structs in notification_history.rs) ──────────
   // The Windows fork persists a flat, self-describing history locally and returns
@@ -39,6 +44,22 @@
     dm?: DmEvent | null;
     share?: ShareEvent | null;
   }
+
+  // When mounted inline inside the main popover (the Windows-fork
+  // default), App.svelte passes `onback` so the user can return to the
+  // home view without dismissing the popover. When mounted as a
+  // standalone window (notification-history label), no `onback` is
+  // wired and the header back-arrow is hidden — the window's own X /
+  // Esc close it.
+  interface Props {
+    onback?: () => void;
+    /** Inline-popover handlers. When wired, row clicks dispatch to
+     *  App.svelte instead of spawning standalone DmDetail / ShareDetail
+     *  windows. Same fallback semantics as the bell button → `onback`. */
+    ondmopen?: (dm: DmEvent) => void;
+    onshareopen?: (events: ShareEvent[]) => void;
+  }
+  let { onback, ondmopen, onshareopen }: Props = $props();
 
   let loading = $state(true);
   let error = $state<string | null>(null);
@@ -143,9 +164,20 @@
   async function openItem(it: HistoryEntry): Promise<void> {
     try {
       if (it.kind === 'dm' && it.dm) {
-        await invoke('open_dm_detail', { event: it.dm });
+        // Prefer the in-popover view when App.svelte has wired ondmopen
+        // (standard Win11 tray-utility path). Fall back to the standalone
+        // DmDetail window if not — preserves the legacy entry path.
+        if (ondmopen) {
+          ondmopen(it.dm);
+        } else {
+          await invoke('open_dm_detail', { event: it.dm });
+        }
       } else if (it.kind === 'share' && it.share) {
-        await invoke('open_share_detail', { events: [it.share] });
+        if (onshareopen) {
+          onshareopen([it.share]);
+        } else {
+          await invoke('open_share_detail', { events: [it.share] });
+        }
       }
       // new-file / update rows have no detail window — the file is already in
       // the synced folder; the row is informational.
@@ -164,6 +196,35 @@
 
 <div class="notif-root">
   <header class="notif-header" data-tauri-drag-region>
+    {#if onback}
+      <!-- Back-arrow mirrors the Settings view's affordance so the
+           in-popover NotificationHistory feels like a sibling screen,
+           not a modal. Hidden in the standalone-window fallback path. -->
+      <button
+        type="button"
+        class="notif-back"
+        title="Back"
+        aria-label="Back"
+        onclick={() => onback?.()}
+      >
+        <svg
+          width="14"
+          height="14"
+          viewBox="0 0 16 16"
+          fill="none"
+          xmlns="http://www.w3.org/2000/svg"
+          aria-hidden="true"
+        >
+          <path
+            d="M10 3.5 5.5 8l4.5 4.5"
+            stroke="currentColor"
+            stroke-width="1.6"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+        </svg>
+      </button>
+    {/if}
     <h1>Notifications</h1>
     <button class="notif-refresh" onclick={() => load()} disabled={loading} title="Refresh">
       &#8635;
@@ -182,6 +243,12 @@
         <div class="notif-day">
           <div class="notif-day-label">{group.label}</div>
           {#each group.items as it (it.id)}
+            <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+            <!-- The lint can't tell `tabindex={0}` only applies when
+                 `role="button"` is also set — both are gated on the
+                 same `clickable(it)` predicate. The keyboard handler
+                 above covers Enter + Space; the role + tabindex are
+                 added together when the row is actionable. -->
             <div
               class="notif-row notif-{it.kind}"
               class:clickable={clickable(it)}
@@ -225,25 +292,54 @@
     display: flex;
     flex-direction: column;
     height: 100vh;
-    color: #e7e7ea;
+    /* Match the OS DWMWCP_ROUNDSMALL (~4 px) set in main.rs so the
+       content edge and the OS Mica clip coincide. */
+    border-radius: 4px;
+    overflow: hidden;
+    color: var(--popover-text, #e7e7ea);
     font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
-    /* Translucent fallback (~72% opacity) so text stays legible when Mica is
-       not applied; when Mica IS applied this tints over the desktop blur. */
-    background: rgba(11, 11, 13, 0.72);
+    /* Share the popover background token so Mica blur is consistent across
+       all inline sibling screens. `prefers-reduced-transparency` already
+       provides an opaque fallback when Mica is off. */
+    background: var(--popover-bg, rgba(18, 18, 20, 0.68));
+    backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
+    -webkit-backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
   }
 
   .notif-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
+    gap: 8px;
     padding: 10px 16px;
     border-bottom: 1px solid rgba(255, 255, 255, 0.08);
   }
   .notif-header h1 {
     margin: 0;
+    flex: 1;
     font-size: 15px;
     font-weight: 600;
     letter-spacing: 0.01em;
+  }
+  /* Back chevron, same outlined-icon-button look + sizing as
+     .notif-refresh so the header reads symmetrically. Only rendered
+     when `onback` is wired (inline-popover mode). */
+  .notif-back {
+    background: transparent;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    color: #c9c9cf;
+    border-radius: 7px;
+    width: 26px;
+    height: 26px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    -webkit-app-region: no-drag;
+  }
+  .notif-back:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: #ffffff;
   }
   .notif-refresh {
     background: transparent;

@@ -47,16 +47,20 @@ Get-Content $publicPath -Raw
 
 Write-Host ""
 Write-Host "================ PRIVATE KEY (set as GH secret TAURI_SIGNING_PRIVATE_KEY) ================" -ForegroundColor Yellow
-$privateContent = Get-Content $privatePath -Raw
-$privateB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($privateContent))
-Write-Host $privateB64
+# Tauri expects TAURI_SIGNING_PRIVATE_KEY to be the RAW .key file content
+# ("String of your private key") — already a single base64 blob beginning
+# `dW50cnVzdGVk…`. Do NOT re-base64-encode it: Tauri base64-decodes the value
+# exactly once, so a double-encoded secret fails signature verification.
+$privateContent = (Get-Content $privatePath -Raw).Trim()
+Write-Host $privateContent
 
 Write-Host ""
 Write-Host "Next steps:" -ForegroundColor Cyan
 Write-Host "  1. Copy the public key (the dW50cnVzdGVkIGNvbW1lbnQ6 ... blob) into"
-Write-Host "     src-tauri/tauri.conf.json -> plugins.updater.pubkey"
-Write-Host "  2. Set the GitHub secret TAURI_SIGNING_PRIVATE_KEY to the base64 blob"
-Write-Host "     above:  gh secret set TAURI_SIGNING_PRIVATE_KEY"
+Write-Host "     src-tauri/tauri.conf.json -> plugins.updater.pubkey (single base64)."
+Write-Host "  2. Set the GitHub secret TAURI_SIGNING_PRIVATE_KEY to the .key file"
+Write-Host "     content. Pipe it so it never hits the terminal/history:"
+Write-Host "       gh secret set TAURI_SIGNING_PRIVATE_KEY -R <owner/repo> < `"$privatePath`""
 Write-Host "  3. Set TAURI_SIGNING_PRIVATE_KEY_PASSWORD to the passphrase you entered"
-Write-Host "     during key generation (use an empty value if you skipped it)."
+Write-Host "     during key generation (empty string if the key is passwordless)."
 Write-Host "  4. Commit the tauri.conf.json change. Do NOT commit the .key file."

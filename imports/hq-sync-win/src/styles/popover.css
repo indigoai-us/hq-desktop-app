@@ -116,3 +116,56 @@ textarea {
     --popover-surface-strong: rgba(0, 0, 0, 0.07);
   }
 }
+
+/* ─── Global window transparency ────────────────────────────────────────
+   window-vibrancy (Mica/Acrylic) requires `html, body { background:
+   transparent }`. Without this, WebView2 paints a solid backdrop and
+   the system material never shows through — the popover would look
+   like a flat dark rectangle even with Mica applied. Same rule covers
+   every Tauri window in this app: main popover and every secondary
+   webview share this stylesheet. */
+html,
+body {
+  background: transparent;
+}
+
+/* ─── Fluent thin scrollbars (document scope) ───────────────────────────
+   Component-scoped `::-webkit-scrollbar` rules (in Popover.svelte,
+   NewFilesDetail.svelte, etc.) only style scrollbars that appear
+   inside those components' shadow-DOM-ish CSS scope. Secondary windows
+   (NotificationHistory, Packages) open as separate webviews whose
+   document-scope scrollbars inherit the native Win11 16 px chunky bar
+   instead. Apply the Fluent 6 px overlay treatment at document scope
+   so every window — main and secondary — picks it up. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--popover-border) transparent;
+}
+
+/* Intentionally NO `scrollbar-gutter: stable` here. The popover body
+   itself never scrolls (its child container does), so reserving a gutter
+   at document scope leaves a permanent 6 px empty strip on the right
+   edge that reads as a frame artifact. Scrollable children apply their
+   own `scrollbar-gutter` when they need it. */
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--popover-border);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--popover-highlight);
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}

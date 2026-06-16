@@ -635,14 +635,14 @@ jq -r 'to_entries[0].value.offset' ~/.hq/telemetry-cursor.json
 
 ---
 
-### US-015: Code Signing + Notarization CI
+### US-015: Code Signing CI (macOS — superseded on Windows, see US-009 in `tests/SMOKE_WINDOWS.md`)
 
 - [ ] Push a git tag `v0.x.x` -> GitHub Actions workflow triggers
 - [ ] Workflow completes successfully
-- [ ] Signed + notarized DMG appears in GitHub Releases
-- [ ] Verify signature: `spctl -a -vv "HQ Sync.app"` -> accepted
-- [ ] Verify universal binary: `file "HQ Sync.app/Contents/MacOS/HQ Sync"` -> shows x86_64 + arm64
-- [ ] Launch on clean macOS 13+ machine -> **no Gatekeeper warnings**
+- [ ] Signed MSI + NSIS bundles appear in GitHub Releases (Windows fork — no DMG / no Apple notarization)
+- [ ] Verify Authenticode signature: `Get-AuthenticodeSignature "HQ Sync_0.x.x_x64-setup.exe"` -> `Valid`
+- [ ] Verify per-arch builds: separate `_x64_` and `_arm64_` artifacts present
+- [ ] Launch on clean Win 11 -> **no SmartScreen "Unrecognized app" warning** (EV cert) or "More info -> Run anyway" works (standard cert pre-reputation)
 
 ---
 

@@ -8,7 +8,16 @@
     addedBy: string | null;
   }
 
-  let files = $state<NewFile[]>([]);
+  // Inline-popover mode: App.svelte hands in `initialFiles` so we skip the
+  // Rust ready-handshake. Without `onback` the back arrow is hidden and
+  // the component renders the legacy standalone-window UI.
+  interface Props {
+    initialFiles?: NewFile[];
+    onback?: () => void;
+  }
+  let { initialFiles = [], onback }: Props = $props();
+
+  let files = $state<NewFile[]>(initialFiles ?? []);
 
   function formatBytes(n: number): string {
     if (n < 1024) return `${n} B`;
@@ -18,15 +27,16 @@
   }
 
   $effect(() => {
-    let unlisten: (() => void) | undefined;
+    // Inline mode: data came in as a prop, no Rust handshake needed.
+    if (initialFiles && initialFiles.length > 0) {
+      return;
+    }
 
+    let unlisten: (() => void) | undefined;
     listen<NewFile[]>('new-files:list', (event) => {
       files = event.payload;
     }).then((fn) => {
       unlisten = fn;
-      // Signal to Rust that the listener is registered — Rust will
-      // emit the pending file list and show/focus the window. This
-      // handshake avoids a race between webview load and data emit.
       invoke('detail_window_ready');
     });
 
@@ -38,6 +48,19 @@
 
 <div class="detail-window">
   <header class="detail-header">
+    {#if onback}
+      <button
+        type="button"
+        class="detail-back"
+        title="Back"
+        aria-label="Back"
+        onclick={() => onback?.()}
+      >
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <path d="M10 3.5 5.5 8l4.5 4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+      </button>
+    {/if}
     <h1>New Files</h1>
     <span class="detail-count">{files.length} file{files.length === 1 ? '' : 's'}</span>
   </header>
@@ -77,6 +100,7 @@
     width: 100vw;
     height: 100vh;
     box-sizing: border-box;
+    border-radius: 4px;
     background: var(--popover-bg, rgba(18, 18, 20, 0.68));
     backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
     -webkit-backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
@@ -87,14 +111,33 @@
 
   .detail-header {
     display: flex;
-    align-items: baseline;
+    align-items: center;
     gap: 0.5rem;
-    padding: 1rem 1.25rem 0.75rem;
+    padding: 0.75rem 1rem;
     border-bottom: 1px solid var(--popover-divider, rgba(255, 255, 255, 0.06));
     flex-shrink: 0;
   }
 
+  .detail-back {
+    background: transparent;
+    border: 1px solid var(--popover-border, rgba(255, 255, 255, 0.18));
+    color: var(--popover-text-heading, #ffffff);
+    border-radius: 7px;
+    width: 26px;
+    height: 26px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    -webkit-app-region: no-drag;
+  }
+  .detail-back:hover {
+    background: var(--popover-action-hover, rgba(255, 255, 255, 0.1));
+  }
+
   .detail-header h1 {
+    flex: 1;
     margin: 0;
     font-size: 1rem;
     font-weight: 600;

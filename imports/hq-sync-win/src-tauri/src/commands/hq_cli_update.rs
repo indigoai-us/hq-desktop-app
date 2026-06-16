@@ -123,7 +123,10 @@ pub fn get_local_version() -> Option<String> {
     if bin == "hq" {
         return None;
     }
-    let out = Command::new(&bin).arg("--version").output().ok()?;
+    let mut cmd = Command::new(&bin);
+    cmd.arg("--version");
+    paths::no_window(&mut cmd);
+    let out = cmd.output().ok()?;
     if !out.status.success() {
         return None;
     }
@@ -210,11 +213,10 @@ pub(crate) fn install_argv() -> [&'static str; 3] {
 /// read the package.json from the *same* prefix `install -g` just wrote
 /// to. Asking a different `npm` on PATH would read a different prefix.
 fn read_installed_version(npm_bin: &str, path: &str) -> Option<String> {
-    let out = Command::new(npm_bin)
-        .args(["root", "-g"])
-        .env("PATH", path)
-        .output()
-        .ok()?;
+    let mut cmd = Command::new(npm_bin);
+    cmd.args(["root", "-g"]).env("PATH", path);
+    paths::no_window(&mut cmd);
+    let out = cmd.output().ok()?;
     if !out.status.success() {
         return None;
     }
@@ -259,10 +261,10 @@ pub async fn install_hq_cli_update(app: AppHandle) -> Result<HqCliUpdateInfo, St
     let npm_for_install = npm.clone();
     let path_for_install = path.clone();
     let output = tauri::async_runtime::spawn_blocking(move || {
-        Command::new(&npm_for_install)
-            .args(args)
-            .env("PATH", path_for_install)
-            .output()
+        let mut cmd = Command::new(&npm_for_install);
+        cmd.args(args).env("PATH", path_for_install);
+        paths::no_window(&mut cmd);
+        cmd.output()
     })
     .await
     .map_err(|e| format!("join blocking task: {e}"))?

@@ -398,22 +398,32 @@ pub async fn open_notification_history(app: AppHandle) -> Result<(), String> {
     // `permissions` / `drift_detail` / `activity` so Mica/Acrylic lands before
     // the first paint. `transparent(true)` + `decorations(true)` is the
     // Windows-vibrancy contract (NOT macOS NSVisualEffectView).
-    let window = tauri::WebviewWindowBuilder::new(
+    // Tray-utility footprint for the fallback path (the popover normally
+    // hosts this view inline; this window only opens when the popover is
+    // dismissed — e.g. dispatched from an OS notification action). 380×520
+    // matches the popover's compact width; chrome-less, no taskbar entry,
+    // parented to main for z-stacking so it dismisses with the popover.
+    let parent = app.get_webview_window("main");
+    let mut builder = tauri::WebviewWindowBuilder::new(
         &app,
         WINDOW_LABEL,
         tauri::WebviewUrl::App("index.html".into()),
     )
     .title("Notifications")
-    .inner_size(640.0, 680.0)
-    .min_inner_size(460.0, 420.0)
-    .resizable(true)
-    .decorations(true)
+    .inner_size(380.0, 520.0)
+    .resizable(false)
+    .decorations(false)
     .transparent(true)
+    .skip_taskbar(true)
     .icon(icon)
     .map_err(|e| format!("attach window icon: {e}"))?
-    .visible(false)
-    .build()
-    .map_err(|e| e.to_string())?;
+    .visible(false);
+    if let Some(parent_win) = parent.as_ref() {
+        builder = builder
+            .parent(parent_win)
+            .map_err(|e| format!("attach parent window: {e}"))?;
+    }
+    let window = builder.build().map_err(|e| e.to_string())?;
 
     // Mica (Win 11) / Acrylic (Win 10) liquid-glass, matching the popover and
     // the other secondary windows. Best-effort — the Svelte view ships a solid

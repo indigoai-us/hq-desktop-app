@@ -70,15 +70,18 @@ fn resolve_hq_folder() -> PathBuf {
 async fn run_hq_json(args: &[&str]) -> Result<Value, String> {
     let hq = paths::resolve_bin("hq");
     let folder = resolve_hq_folder();
-    let output = Command::new(&hq)
-        .args(args)
+    let mut cmd = Command::new(&hq);
+    cmd.args(args)
         // node-shebang PATH fix (#146): a GUI-launched app gets a minimal PATH
         // where `#!/usr/bin/env node` can't find node (exit 127). Hand it the
         // same enriched PATH the sync runner uses. See `util::paths::child_path`.
         .env("PATH", paths::child_path())
         .current_dir(&folder)
         .env("HQ_NO_UPDATE_CHECK", "1")
-        .env("HQ_ROOT", &folder)
+        .env("HQ_ROOT", &folder);
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(paths::CREATE_NO_WINDOW);
+    let output = cmd
         .output()
         .await
         .map_err(|e| format!("spawn `hq {}`: {e}", args.join(" ")))?;
@@ -156,15 +159,18 @@ async fn stream_hq(app: &AppHandle, op: &str, name: &str, args: Vec<String>) -> 
         "packages",
         &format!("stream `hq {}` (op={op}, name={name})", args.join(" ")),
     );
-    let mut child = Command::new(&hq)
-        .args(&args)
+    let mut cmd = Command::new(&hq);
+    cmd.args(&args)
         // node-shebang PATH fix (#146) — see `run_hq_json`.
         .env("PATH", paths::child_path())
         .current_dir(&folder)
         .env("HQ_NO_UPDATE_CHECK", "1")
         .env("HQ_ROOT", &folder)
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(paths::CREATE_NO_WINDOW);
+    let mut child = cmd
         .spawn()
         .map_err(|e| format!("spawn `hq {}`: {e}", args.join(" ")))?;
 
@@ -300,22 +306,33 @@ pub async fn open_packages_window(app: AppHandle) -> Result<(), String> {
     let icon = tauri::image::Image::from_bytes(HQ_ICON_PNG)
         .map_err(|e| format!("load window icon: {e}"))?;
 
-    let window = tauri::WebviewWindowBuilder::new(
+    // Tray-utility footprint, Win11 Fluent compact. Packages is a Windows-
+    // only feature (no macOS parity), so this is fresh design: 420×560
+    // (popover-adjacent width, vertical list), no chrome, no taskbar entry,
+    // parented to main for z-stacking so dismissing the popover also tears
+    // down Packages. The Svelte view ships its own in-content back / close
+    // affordance since the system chrome is gone.
+    let parent = app.get_webview_window("main");
+    let mut builder = tauri::WebviewWindowBuilder::new(
         &app,
         WINDOW_LABEL,
         tauri::WebviewUrl::App("packages.html".into()),
     )
     .title("HQ Packages")
-    .inner_size(720.0, 600.0)
-    .min_inner_size(520.0, 420.0)
-    .resizable(true)
-    .decorations(true)
+    .inner_size(420.0, 560.0)
+    .resizable(false)
+    .decorations(false)
     .transparent(true)
+    .skip_taskbar(true)
     .icon(icon)
     .map_err(|e| format!("attach window icon: {e}"))?
-    .visible(false)
-    .build()
-    .map_err(|e| e.to_string())?;
+    .visible(false);
+    if let Some(parent_win) = parent.as_ref() {
+        builder = builder
+            .parent(parent_win)
+            .map_err(|e| format!("attach parent window: {e}"))?;
+    }
+    let window = builder.build().map_err(|e| e.to_string())?;
 
     // Mica (Win 11) / Acrylic (Win 10) liquid-glass, matching the popover and
     // the other secondary windows. Best-effort — the Svelte view ships a solid

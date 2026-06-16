@@ -180,6 +180,18 @@
     oncancel?: () => void;
     onsettings: () => void;
     onsignout: () => void;
+    /** Push the App view to the in-popover NotificationHistory screen.
+     *  Falls back to invoking `open_notification_history` (spawns a
+     *  standalone window) when not provided — keeps backwards-compat
+     *  with any caller that hasn't been migrated yet. */
+    onnotifications?: () => void;
+    /** Activity / New-files / Drift inline view hand-offs. Same
+     *  fallback semantics as `onnotifications` — when wired, App.svelte
+     *  routes to the in-popover sibling screen instead of spawning
+     *  a standalone window. */
+    onactivity?: () => void;
+    onnewfiles?: (files: { path: string; bytes: number; addedBy: string | null }[]) => void;
+    ondrift?: (report: unknown) => void;
     onresolve?: (path: string, strategy: 'keep-local' | 'keep-remote') => void;
     onopen?: (path: string) => void;
     ondismissconflicts?: () => void;
@@ -249,6 +261,10 @@
     oncancel,
     onsettings,
     onsignout,
+    onnotifications,
+    onactivity,
+    onnewfiles,
+    ondrift,
     onresolve,
     onopen,
     ondismissconflicts,
@@ -411,6 +427,12 @@
     // to branch on staging vs release.
     const report = coreState?.driftReport;
     if (!report) return;
+    // Prefer in-popover view; fall back to standalone window only when
+    // App.svelte hasn't migrated to the inline path.
+    if (ondrift) {
+      ondrift(report);
+      return;
+    }
     try {
       await invoke('open_drift_detail', { report });
     } catch (e) {
@@ -418,10 +440,18 @@
     }
   }
 
-  // Open the unified notification-history window (US-006): a persistent,
-  // re-readable timeline of past DMs, shares, and new files. Always available
-  // (not identity-gated) — a dismissed toast is otherwise lost.
+  // Bell → notification history. The preferred surface on Windows is an
+  // in-popover view (Win11 tray-utility convention; opening a full
+  // secondary window for a timeline feels app-sized). When App.svelte
+  // supplies `onnotifications`, we hand control off and stay in the
+  // popover; otherwise we fall back to invoking the standalone window
+  // command (preserves the legacy behaviour for unmigrated entry points
+  // like an OS notification action).
   async function openNotificationHistory() {
+    if (onnotifications) {
+      onnotifications();
+      return;
+    }
     try {
       await invoke('open_notification_history');
     } catch (e) {
@@ -769,9 +799,9 @@
           {/if}
         </div>
       {:else}
-        <SyncStats bind:this={statsEl} onhistory={() => invoke('open_activity_log')} />
+        <SyncStats bind:this={statsEl} onhistory={() => (onactivity ? onactivity() : invoke('open_activity_log'))} />
         {#if newFilesCount > 0}
-          <NewFilesBadge count={newFilesCount} files={newFilesList} onclick={() => invoke('open_new_files_detail', { files: newFilesList })} />
+          <NewFilesBadge count={newFilesCount} files={newFilesList} onclick={() => (onnewfiles ? onnewfiles(newFilesList) : invoke('open_new_files_detail', { files: newFilesList }))} />
         {/if}
       {/if}
 
@@ -1028,7 +1058,19 @@
        tauri.conf.json `shadow: true`; CSS box-shadow here would be
        clipped at the window edge and is pointless. */
     border-radius: 18px;
+    /* macOS uses a CSS `border` here (NSWindow has no chrome edge → single
+       visible outline). Windows overrides below — see [data-os="windows"]. */
     border: 1px solid var(--popover-border, rgba(255, 255, 255, 0.18));
+    box-shadow: inset 0 1px 0 var(--popover-highlight, rgba(255, 255, 255, 0.34));
+  }
+
+  :global(html[data-os="windows"]) .popover {
+    /* DWM is set to DWMWCP_ROUNDSMALL (~4 px) in main.rs. Match the CSS
+       radius exactly so Mica clipping (OS-level) and the dark content
+       fill (CSS) coincide at the corners — no Mica bleed, no concentric
+       outlines, no inset frame. */
+    border-radius: 4px;
+    border: none;
     box-shadow: inset 0 1px 0 var(--popover-highlight, rgba(255, 255, 255, 0.34));
   }
 
@@ -1184,22 +1226,6 @@
     background: var(--popover-primary, #ffffff);
     color: var(--popover-primary-text, #111113);
     border-color: var(--popover-border, rgba(255, 255, 255, 0.18));
-  }
-
-  .header-sync-spinner {
-    display: inline-block;
-    width: 14px;
-    height: 14px;
-    border: 2px solid rgba(17, 17, 19, 0.25);
-    border-top-color: var(--popover-primary-text, #111113);
-    border-radius: 50%;
-    animation: header-sync-spin 0.6s linear infinite;
-  }
-
-  @keyframes header-sync-spin {
-    to {
-      transform: rotate(360deg);
-    }
   }
 
   /* Divider */
@@ -1549,20 +1575,6 @@
     cursor: default;
   }
 
-  /* Secondary variant of the banner button — used for "Copy command" in the
-     hq CLI update-failed state. Same shape, calm grey tone instead of
-     primary white, so the primary Update / Install affordance is preserved
-     when both buttons sit side-by-side. */
-  .banner-update-button-secondary {
-    background: var(--popover-surface-strong, rgba(255, 255, 255, 0.16));
-    color: var(--popover-text, rgba(255, 255, 255, 0.86));
-  }
-
-  .banner-update-button-secondary:hover:not(:disabled) {
-    background: var(--popover-action-hover, rgba(255, 255, 255, 0.1));
-    color: var(--popover-text-heading, #ffffff);
-  }
-
   /* Action buttons row — sits beneath banner text in column-stacked banners.
      justify-content: flex-end keeps the buttons hugging the right edge so
      the eye lands on them as the next action. flex-wrap lets the two-button
@@ -1640,11 +1652,4 @@
     transition: width 0.25s ease-out;
   }
 
-  /* Summary line — "Last sync · X files · Y MB" */
-  .summary-line {
-    margin: 0;
-    font-size: 0.6875rem;
-    color: var(--popover-text-muted, #a0a0b0);
-    line-height: 1.4;
-  }
 </style>

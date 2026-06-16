@@ -14,15 +14,15 @@
       {
         "label": "main",
         "title": "HQ Sync",
-        "width": 320,
-        "height": 480,
+        "width": 352,
+        "height": 528,
         "resizable": false,
         "visible": false,
         "decorations": false,
         "alwaysOnTop": false,
         "skipTaskbar": true,
         "transparent": true,
-        "shadow": true,
+        "shadow": false,
         "visibleOnAllWorkspaces": true
       }
     ],
@@ -32,7 +32,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "ZFc1MGNuVnpkR1ZrSUdOdmJXMWxiblE2SUcxcGJtbHphV2R1SUhCMVlteHBZeUJyWlhrNklFVkNPRFk0T0RReVJUTkJSRUZFTmpVS1VsZFNiSEpoTTJwUmIybEhOalZTUTNOb1NXRmxNVVV5TTJadWREYzVSbXBZUldjMlIxVkpXV0kyYlRCblQyaDNSMjh4WkVOeVV6a0s=",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IERBQzcxMzFGQzQ5MjRBQkYKUldTL1NwTEVIeFBIMmlqNzlDNFpiMFZhdW1aN2JQdDhIR0FTUDMyaEVzOW5ZUW1JQkc3QjFOWHgK",
       "endpoints": [
         "https://github.com/indigoai-us/hq-sync-win/releases/latest/download/latest.json"
       ]

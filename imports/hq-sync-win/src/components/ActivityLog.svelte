@@ -17,6 +17,14 @@
     at: number;
   }
 
+  // Inline-popover mode: App.svelte passes `onback` so the user can
+  // return to the home view. Without it, the component still works as
+  // a standalone window root (legacy/fallback path).
+  interface Props {
+    onback?: () => void;
+  }
+  let { onback }: Props = $props();
+
   let entries = $state<ActivityEntry[]>([]);
 
   /** Only the most recent N changes are shown; older ones scroll off. */
@@ -134,6 +142,32 @@
 
 <div class="detail-window">
   <header class="detail-header" data-tauri-drag-region>
+    {#if onback}
+      <button
+        type="button"
+        class="detail-back"
+        title="Back"
+        aria-label="Back"
+        onclick={() => onback?.()}
+      >
+        <svg
+          width="14"
+          height="14"
+          viewBox="0 0 16 16"
+          fill="none"
+          xmlns="http://www.w3.org/2000/svg"
+          aria-hidden="true"
+        >
+          <path
+            d="M10 3.5 5.5 8l4.5 4.5"
+            stroke="currentColor"
+            stroke-width="1.6"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+        </svg>
+      </button>
+    {/if}
     <h1>Recent Changes</h1>
     <span class="detail-count">
       {#if entries.length > MAX_VISIBLE}
@@ -196,14 +230,13 @@
     width: 100vw;
     height: 100vh;
     box-sizing: border-box;
-    /* Sit a mostly-opaque dark layer over the NSVisualEffect vibrancy so the
-       glass reads as a consistent dark surface — just a hint of translucency —
-       rather than letting the busy content behind the window bleed through as
-       colored blotches. Higher alpha than the popover (0.68) because this
-       window is large and often sits over a terminal/editor. */
-    background: rgba(20, 20, 24, 0.88);
-    backdrop-filter: blur(30px) saturate(1.2);
-    -webkit-backdrop-filter: blur(30px) saturate(1.2);
+    /* Round corners + share the popover background token so the inline
+       view matches its sibling screens (Settings, NotificationHistory,
+       etc.) and Mica bleeds through consistently. */
+    border-radius: 18px;
+    background: var(--popover-bg, rgba(18, 18, 20, 0.68));
+    backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
+    -webkit-backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
     color: var(--popover-text, #e0e0e0);
     font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     overflow: hidden;
@@ -211,16 +244,33 @@
 
   .detail-header {
     display: flex;
-    align-items: baseline;
+    align-items: center;
     gap: 0.5rem;
-    /* Extra top padding clears the macOS traffic-light buttons that the
-       Overlay title-bar style floats over the body's top-left. */
-    padding: 2.25rem 1.25rem 0.75rem;
+    padding: 0.75rem 1rem;
     border-bottom: 1px solid var(--popover-divider, rgba(255, 255, 255, 0.06));
     flex-shrink: 0;
   }
 
+  .detail-back {
+    background: transparent;
+    border: 1px solid var(--popover-border, rgba(255, 255, 255, 0.18));
+    color: var(--popover-text-heading, #ffffff);
+    border-radius: 7px;
+    width: 26px;
+    height: 26px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    -webkit-app-region: no-drag;
+  }
+  .detail-back:hover {
+    background: var(--popover-action-hover, rgba(255, 255, 255, 0.1));
+  }
+
   .detail-header h1 {
+    flex: 1;
     margin: 0;
     font-size: 1rem;
     font-weight: 600;

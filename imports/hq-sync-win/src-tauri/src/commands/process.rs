@@ -21,7 +21,9 @@
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
+
+use crate::util::paths;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
@@ -264,10 +266,15 @@ pub fn run_process_impl<F>(handle: &str, spawn: &SpawnArgs, on_event: F) -> Resu
 where
     F: FnMut(ProcessEvent),
 {
-    let mut cmd = Command::new(&spawn.cmd);
-    cmd.args(&spawn.args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    // `paths::spawn_command` wraps Windows `.cmd`/`.bat` shims through
+    // `cmd.exe /c "<shim>" <args>` — required since Rust 1.77's
+    // CVE-2024-24576 hardening rejects direct spawning of shell shims
+    // with `os error 193`. The canonical sync runner spawn (npx) hits
+    // this path; before this wrapper, every Windows install with Node
+    // installed (i.e. every install) failed sync with that error.
+    let args_ref: Vec<&str> = spawn.args.iter().map(String::as_str).collect();
+    let mut cmd = paths::spawn_command(&spawn.cmd, &args_ref);
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
     // CREATE_NO_WINDOW: stop spawned CLIs from flashing a console window
     // when the tray app launches them. The reader threads consume the
@@ -284,9 +291,21 @@ where
         }
     }
 
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("spawn '{}': {}", spawn.cmd, e))?;
+    // On spawn failure, deregister the handle before returning. The
+    // caller registered it via `try_register_handle` *before* calling us,
+    // and `run_process_impl`'s contract is "I always release the handle
+    // when I return" (the normal-exit path deregisters below). An early
+    // `?` here would skip that, leaving the singleton handle stuck and
+    // every subsequent sync rejected with "already running" until the app
+    // restarts. (Observed 2026-06-09 when `npx` spawn failed with os
+    // error 193: the failed spawn wedged sync permanently.)
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            deregister_process(handle);
+            return Err(format!("spawn '{}': {}", spawn.cmd, e));
+        }
+    };
 
     let pid = child.id();
     register_process(handle, pid);
@@ -461,9 +480,12 @@ where
     F: FnMut(ProcessEvent),
     S: FnOnce(&mut Child),
 {
-    let mut cmd = Command::new(&spawn.cmd);
-    cmd.args(&spawn.args)
-        .stdin(Stdio::piped())
+    // See `run_process_impl` for the `paths::spawn_command` rationale —
+    // wraps `.cmd`/`.bat` shims via `cmd.exe /c` to dodge the Rust 1.77
+    // CreateProcess hardening that breaks `npx`/`npm` direct spawns.
+    let args_ref: Vec<&str> = spawn.args.iter().map(String::as_str).collect();
+    let mut cmd = paths::spawn_command(&spawn.cmd, &args_ref);
+    cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
@@ -481,9 +503,16 @@ where
         }
     }
 
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("spawn '{}': {}", spawn.cmd, e))?;
+    // See run_process_impl: deregister on spawn failure so the singleton
+    // handle isn't leaked (would wedge every subsequent run as "already
+    // running" until restart).
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            deregister_process(handle);
+            return Err(format!("spawn '{}': {}", spawn.cmd, e));
+        }
+    };
 
     let pid = child.id();
     register_process(handle, pid);
@@ -763,6 +792,35 @@ mod tests {
         assert_eq!(lookup_pid(handle), Some(12345));
         deregister_process(handle);
         assert!(!is_registered(handle));
+    }
+
+    // REGRESSION (2026-06-09): a spawn failure must release the singleton
+    // handle. Before the fix, `run_process_impl`'s `cmd.spawn()?` returned
+    // early — skipping the deregister — so a failed spawn (e.g. npx os
+    // error 193) wedged sync permanently with "already running" until the
+    // app restarted. We spawn a guaranteed-nonexistent binary and assert
+    // the handle is NOT registered afterwards.
+    #[test]
+    fn test_spawn_failure_deregisters_handle() {
+        let handle = "test-spawn-failure-dereg";
+        assert!(
+            try_register_handle(handle),
+            "precondition: handle registers"
+        );
+        assert!(is_registered(handle));
+
+        let spawn = SpawnArgs {
+            cmd: "this-binary-does-not-exist-anywhere-xyz".to_string(),
+            args: vec![],
+            cwd: None,
+            env: None,
+        };
+        let result = run_process_impl(handle, &spawn, |_| {});
+        assert!(result.is_err(), "spawn of a missing binary must fail");
+        assert!(
+            !is_registered(handle),
+            "spawn failure must deregister the handle (else sync wedges as 'already running')"
+        );
     }
 
     #[test]

@@ -6,6 +6,13 @@
   import SignInPrompt from './components/SignInPrompt.svelte';
   import Popover from './components/Popover.svelte';
   import Settings from './components/Settings.svelte';
+  import NotificationHistory from './components/NotificationHistory.svelte';
+  import PackagesApp from './packages/PackagesApp.svelte';
+  import DmDetail from './components/DmDetail.svelte';
+  import ActivityLog from './components/ActivityLog.svelte';
+  import NewFilesDetail from './components/NewFilesDetail.svelte';
+  import DriftDetail from './components/DriftDetail.svelte';
+  import ShareDetail from './components/ShareDetail.svelte';
   import FirstRunWelcome from './components/FirstRunWelcome.svelte';
   import AutoSyncNotice from './components/AutoSyncNotice.svelte';
   import { conflictStore, type ConflictFile } from './stores/conflicts';
@@ -110,6 +117,24 @@
   let showConflictModal = $state(false);
   let conflicts = $state<ConflictFile[]>([]);
   let showSettings = $state(false);
+  // Win11 tray-utility convention: every secondary surface lives inside
+  // the popover, not a standalone window. The standalone-window Rust
+  // commands remain as fallback paths for cases where the popover is
+  // dismissed (e.g. OS notification action) — see open_dm_detail,
+  // open_packages_window, open_notification_history.
+  let showNotifications = $state(false);
+  let showPackages = $state(false);
+  let showActivity = $state(false);
+  // Detail views that require payload data — `null` means "not active".
+  // Non-null means render the inline view with this payload.
+  type DmEventLike = unknown;
+  type ShareEventLike = unknown;
+  type DriftReportLike = unknown;
+  type NewFileLike = { path: string; bytes: number; addedBy: string | null };
+  let activeDm = $state<DmEventLike | null>(null);
+  let activeShareEvents = $state<ShareEventLike[] | null>(null);
+  let activeDrift = $state<DriftReportLike | null>(null);
+  let activeNewFiles = $state<NewFileLike[] | null>(null);
   let syncStatsRefresh = $state<(() => void) | null>(null);
 
   // First-run / first-update onboarding. `showWelcome` renders the carousel
@@ -399,6 +424,62 @@
 
   function handleSettings() {
     showSettings = true;
+  }
+
+  function handleOpenNotifications() {
+    showNotifications = true;
+  }
+
+  function handleBackFromNotifications() {
+    showNotifications = false;
+  }
+
+  function handleOpenPackages() {
+    showPackages = true;
+  }
+
+  function handleBackFromPackages() {
+    showPackages = false;
+  }
+
+  function handleOpenDm(dm: DmEventLike) {
+    activeDm = dm;
+  }
+
+  function handleBackFromDm() {
+    activeDm = null;
+  }
+
+  function handleOpenActivity() {
+    showActivity = true;
+  }
+
+  function handleBackFromActivity() {
+    showActivity = false;
+  }
+
+  function handleOpenNewFiles(files: NewFileLike[]) {
+    activeNewFiles = files;
+  }
+
+  function handleBackFromNewFiles() {
+    activeNewFiles = null;
+  }
+
+  function handleOpenDrift(report: DriftReportLike) {
+    activeDrift = report;
+  }
+
+  function handleBackFromDrift() {
+    activeDrift = null;
+  }
+
+  function handleOpenShare(events: ShareEventLike[]) {
+    activeShareEvents = events;
+  }
+
+  function handleBackFromShare() {
+    activeShareEvents = null;
   }
 
   function handleBackFromSettings() {
@@ -954,10 +1035,17 @@
             console.error('share-notify: clipboard write failed', err);
           }
         } else if (action === 'open') {
+          // Prefer in-popover view: surface main window then push.
           try {
-            await invoke('open_share_detail', { events: [evt] });
+            await invoke('show_main_window');
+            handleOpenShare([evt]);
           } catch (err) {
-            console.error('share-notify: open_share_detail failed', err);
+            console.error('share-notify: show_main_window failed', err);
+            try {
+              await invoke('open_share_detail', { events: [evt] });
+            } catch (err2) {
+              console.error('share-notify: open_share_detail fallback failed', err2);
+            }
           }
         }
       })
@@ -995,10 +1083,19 @@
             console.error('dm-notify: clipboard write failed', err);
           }
         } else if (action === 'open') {
+          // Prefer in-popover: surface the popover then push the DmDetail
+          // view. Falls back to spawning the standalone window only if
+          // showing the main window fails (e.g. mid-shutdown).
           try {
-            await invoke('open_dm_detail', { event: dm });
+            await invoke('show_main_window');
+            handleOpenDm(dm);
           } catch (err) {
-            console.error('dm-notify: open_dm_detail failed', err);
+            console.error('dm-notify: show_main_window failed', err);
+            try {
+              await invoke('open_dm_detail', { event: dm });
+            } catch (err2) {
+              console.error('dm-notify: open_dm_detail fallback failed', err2);
+            }
           }
         }
       })
@@ -1022,11 +1119,22 @@
                 const prompt = (data?.prompt ?? '').trim();
                 if (prompt) await navigator.clipboard.writeText(prompt);
               } else if (action === 'open') {
-                await invoke('open_dm_detail', { event: data });
+                // Surface the popover then show DmDetail inline.
+                try {
+                  await invoke('show_main_window');
+                  handleOpenDm(data);
+                } catch {
+                  await invoke('open_dm_detail', { event: data });
+                }
               }
             } else if (kind === 'share') {
               if (action === 'open') {
-                await invoke('open_share_detail', { events: [data] });
+                try {
+                  await invoke('show_main_window');
+                  handleOpenShare([data]);
+                } catch {
+                  await invoke('open_share_detail', { events: [data] });
+                }
               } else if (action === 'copy') {
                 const paths = Array.isArray(data?.paths) ? data.paths.join(', ') : '';
                 if (paths) await navigator.clipboard.writeText(paths);
@@ -1223,8 +1331,22 @@
     <div class="loading">
       <span class="dot-spinner"></span>
     </div>
+  {:else if authenticated && activeDm}
+    <DmDetail initialEvent={activeDm as never} onback={handleBackFromDm} />
+  {:else if authenticated && activeShareEvents}
+    <ShareDetail initialEvents={activeShareEvents as never} onback={handleBackFromShare} />
+  {:else if authenticated && activeDrift}
+    <DriftDetail initialReport={activeDrift as never} onback={handleBackFromDrift} />
+  {:else if authenticated && activeNewFiles}
+    <NewFilesDetail initialFiles={activeNewFiles} onback={handleBackFromNewFiles} />
+  {:else if authenticated && showActivity}
+    <ActivityLog onback={handleBackFromActivity} />
+  {:else if authenticated && showPackages}
+    <PackagesApp onback={handleBackFromPackages} />
   {:else if authenticated && showSettings}
-    <Settings onback={handleBackFromSettings} />
+    <Settings onback={handleBackFromSettings} onpackages={handleOpenPackages} />
+  {:else if authenticated && showNotifications}
+    <NotificationHistory onback={handleBackFromNotifications} ondmopen={handleOpenDm as never} onshareopen={handleOpenShare as never} />
   {:else if authenticated}
     <Popover
       {syncState}
@@ -1263,6 +1385,10 @@
       onsync={handleSyncNow}
       oncancel={handleCancel}
       onsettings={handleSettings}
+      onnotifications={handleOpenNotifications}
+      onactivity={handleOpenActivity}
+      onnewfiles={handleOpenNewFiles}
+      ondrift={handleOpenDrift}
       onsignout={handleSignOut}
       onresolve={handleResolveConflict}
       onopen={handleOpenInEditor}

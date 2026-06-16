@@ -1,10 +1,10 @@
 //! Sync status polling — invokes `hq sync status --json` or falls back to journal file.
 //!
-//! This is a one-shot synchronous query (not a streaming subprocess), so it uses
-//! `std::process::Command` directly rather than the process registry.
+//! This is a one-shot synchronous query (not a streaming subprocess), so it
+//! builds its command via `paths::spawn_command` rather than the process
+//! registry — that wraps `.cmd` shims (avoids os 193) and runs windowless.
 
 use std::path::PathBuf;
-use std::process::Command;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -82,12 +82,18 @@ fn resolve_hq_folder_path() -> Result<String, String> {
 /// subcommand.
 #[allow(dead_code)]
 fn try_cli_status(hq_folder_path: &str) -> Result<SyncStatus, String> {
-    let mut child = Command::new(paths::resolve_bin("hq"))
-        .args(["sync", "status", "--json", "--hq-path", hq_folder_path])
-        .env("HQ_ROOT", hq_folder_path)
+    // Route through spawn_command so a `hq.cmd` shim is cmd.exe-wrapped
+    // (avoids os 193) and the spawn runs windowless (no console flash).
+    let hq_bin = paths::resolve_bin("hq");
+    let mut cmd = paths::spawn_command(
+        &hq_bin,
+        &["sync", "status", "--json", "--hq-path", hq_folder_path],
+    );
+    cmd.env("HQ_ROOT", hq_folder_path)
         .env("PATH", paths::child_path())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = cmd
         .spawn()
         .map_err(|e| format!("Failed to spawn hq CLI: {}", e))?;
 

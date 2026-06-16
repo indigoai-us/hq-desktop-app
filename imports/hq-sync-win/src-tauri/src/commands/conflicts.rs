@@ -117,12 +117,17 @@ pub fn resolve_conflict(path: String, strategy: String) -> Result<(), String> {
     #[cfg(debug_assertions)]
     eprintln!("[conflicts] resolving {} with strategy {}", path, strategy);
 
-    let mut child = Command::new(paths::resolve_bin("hq"))
-        .args(&args)
-        .env("HQ_ROOT", &hq_folder)
+    // Route through `spawn_command` so a `.cmd`/`.bat` shim for `hq` is
+    // wrapped via cmd.exe (avoids os error 193) and the spawn runs
+    // windowless (no console flash). It also applies `no_window` for us.
+    let hq_bin = paths::resolve_bin("hq");
+    let args_ref: Vec<&str> = args.iter().map(String::as_str).collect();
+    let mut cmd = paths::spawn_command(&hq_bin, &args_ref);
+    cmd.env("HQ_ROOT", &hq_folder)
         .env("PATH", paths::child_path())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = cmd
         .spawn()
         .map_err(|e| format!("Failed to spawn hq CLI: {}", e))?;
 

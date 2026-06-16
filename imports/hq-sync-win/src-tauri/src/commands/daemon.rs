@@ -708,11 +708,19 @@ mod tests {
     #[test]
     fn test_build_watch_runner_args_uses_npx_runner() {
         let args = build_watch_runner_args("/Users/test/HQ");
-        // Resolved npx path; varies by machine. Asserting it ends with "npx"
-        // avoids hard-coding /opt/homebrew/bin vs ~/.npm-global/bin.
-        assert!(
-            args.cmd.ends_with("npx"),
-            "expected resolved npx path, got: {}",
+        // Resolved npx path; varies by machine. On Windows `resolve_bin`
+        // prefers the `npx.cmd` / `npx.exe` shim (a bare `npx` path can't
+        // be spawned by CreateProcess — see util::paths::candidate_filenames),
+        // so the basename may carry a `.cmd`/`.exe`/`.bat` suffix. Match the
+        // stem to avoid hard-coding /opt/homebrew/bin vs a Windows shim dir.
+        let file = std::path::Path::new(&args.cmd)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or(&args.cmd);
+        let stem = file.split('.').next().unwrap_or(file);
+        assert_eq!(
+            stem, "npx",
+            "expected resolved npx path (stem 'npx'), got: {}",
             args.cmd
         );
     }
