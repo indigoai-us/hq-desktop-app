@@ -46,14 +46,35 @@ const COGNITO_CLIENT_ID: &str = "7acei2c8v870enheptb1j5foln";
 const DEFAULT_COGNITO_DOMAIN_PREFIX: &str = "vault-indigo-hq-prod";
 const REDIRECT_URI: &str = "http://localhost:53682/callback";
 
+/// Strip a leading UTF-8 BOM and surrounding whitespace from an env value.
+///
+/// A dirty override (a BOM or stray CR/whitespace from a hand-edited env file
+/// or a secret set with the wrong encoding) would otherwise be interpolated
+/// straight into the OAuth URL and silently produce a malformed host —
+/// failing late and opaquely instead of clearly. Mirrors the hq-installer-win
+/// `normalizeDomain` hardening. Cheap insurance on the one env→URL path here.
+fn sanitize_env(raw: &str) -> String {
+    raw.trim_start_matches('\u{feff}').trim().to_string()
+}
+
 /// Cognito hosted-UI domain prefix.
 ///
-/// Resolves to `$HQ_COGNITO_DOMAIN` if set, else the canonical
-/// `vault-indigo-hq-prod` prefix shared with `@indigoai-us/hq-cli` and
-/// `hq-installer`. Always in the
+/// Resolves to `$HQ_COGNITO_DOMAIN` if set (sanitized; a blank/whitespace-only
+/// value falls through), else the canonical `vault-indigo-hq-prod` prefix
+/// shared with `@indigoai-us/hq-cli` and `hq-installer`. Always in the
 /// `us-east-1.amazoncognito.com` namespace — custom domains not yet supported.
 fn cognito_domain_prefix() -> String {
-    std::env::var("HQ_COGNITO_DOMAIN").unwrap_or_else(|_| DEFAULT_COGNITO_DOMAIN_PREFIX.to_string())
+    match std::env::var("HQ_COGNITO_DOMAIN") {
+        Ok(raw) => {
+            let cleaned = sanitize_env(&raw);
+            if cleaned.is_empty() {
+                DEFAULT_COGNITO_DOMAIN_PREFIX.to_string()
+            } else {
+                cleaned
+            }
+        }
+        Err(_) => DEFAULT_COGNITO_DOMAIN_PREFIX.to_string(),
+    }
 }
 
 fn cognito_authorize_url() -> String {
@@ -458,6 +479,28 @@ mod tests {
         assert_eq!(code, "abc123");
         assert_eq!(state, "xyz");
         assert!(err.is_none());
+    }
+
+    #[test]
+    fn sanitize_env_strips_bom_and_whitespace() {
+        // A leading UTF-8 BOM, stray CRLF, and surrounding spaces are all
+        // stripped so a dirty HQ_COGNITO_DOMAIN can't reach the OAuth URL.
+        assert_eq!(
+            sanitize_env("\u{feff}vault-indigo-hq-prod"),
+            "vault-indigo-hq-prod"
+        );
+        assert_eq!(
+            sanitize_env("  vault-indigo-hq-prod\r\n"),
+            "vault-indigo-hq-prod"
+        );
+        assert_eq!(
+            sanitize_env("\u{feff}  vault-indigo-hq-prod  "),
+            "vault-indigo-hq-prod"
+        );
+        // Clean value unchanged; BOM/whitespace-only collapses to empty so
+        // cognito_domain_prefix() falls through to the default.
+        assert_eq!(sanitize_env("vault-indigo-hq-prod"), "vault-indigo-hq-prod");
+        assert_eq!(sanitize_env("\u{feff}   "), "");
     }
 
     #[test]

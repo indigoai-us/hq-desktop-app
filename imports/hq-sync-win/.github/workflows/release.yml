@@ -39,13 +39,12 @@ jobs:
 
     env:
       RUST_BACKTRACE: 1
-      # ── Build-time app config. Vite INLINES `VITE_*` at build time, so an
-      #    empty Cognito value silently ships an app that cannot sign in.
-      #    REQUIRED for any usable release (signed or unsigned). `.env.local`
-      #    is gitignored and never reaches CI — these come from repo secrets.
-      VITE_COGNITO_USER_POOL_ID: ${{ secrets.VITE_COGNITO_USER_POOL_ID }}
-      VITE_COGNITO_CLIENT_ID: ${{ secrets.VITE_COGNITO_CLIENT_ID }}
-      VITE_COGNITO_DOMAIN: ${{ secrets.VITE_COGNITO_DOMAIN }}
+      # ── Build-time frontend config. Unlike hq-installer-win, ALL Cognito/OAuth
+      #    config is baked into the Rust binary (commands/oauth.rs: hardcoded
+      #    client id + prod domain `vault-indigo-hq-prod`, overridable only at
+      #    RUNTIME via HQ_COGNITO_DOMAIN). The webview reads no VITE_COGNITO_*,
+      #    so none are needed here. The only build-inlined frontend var is the
+      #    Sentry DSN — optional; the client no-ops when empty.
       VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
       # ── Updater signing. Present → signed build + updater artifacts +
       #    latest.json. Absent → unsigned dogfood (installers only). Defined at
@@ -182,16 +181,6 @@ jobs:
           & $signtool sign /f $env:PFX_PATH /p $env:SIGNING_PASSWORD `
             /tr "http://timestamp.digicert.com" /td sha256 /fd sha256 `
             $launcher
-
-      # Fail fast if the Cognito build-time config is missing. Vite inlines these
-      # at build, so an empty value compiles a release that cannot sign in — far
-      # worse than a loud failure here. Required for signed AND unsigned releases.
-      - name: Verify build-time app config present
-        shell: bash
-        run: |
-          : "${VITE_COGNITO_USER_POOL_ID:?missing repo secret VITE_COGNITO_USER_POOL_ID — sign-in breaks without it}"
-          : "${VITE_COGNITO_CLIENT_ID:?missing repo secret VITE_COGNITO_CLIENT_ID}"
-          : "${VITE_COGNITO_DOMAIN:?missing repo secret VITE_COGNITO_DOMAIN}"
 
       # --config merges the release-only overlay (tauri.release.conf.json) that
       # adds the Recall sidecar externalBin + resources. They are NOT in the base
