@@ -320,7 +320,9 @@ jobs:
           mv "${X64_EXE}.sig" "./release/${X64_NAME}.sig"
 
           # Empty arm64 args → generator emits a windows-x86_64-only manifest.
-          ./scripts/generate-latest-json.sh \
+          # Invoke via `bash` (not ./) so it doesn't depend on the executable
+          # bit — the repo is authored on Windows, which doesn't track +x.
+          bash scripts/generate-latest-json.sh \
             "$VERSION" \
             "$(cat "./release/${X64_NAME}.sig")" "${BASE}/${X64_NAME}" \
             "" "" \
