@@ -35,7 +35,12 @@ jobs:
       matrix:
         target:
           - x86_64-pc-windows-msvc
-          - aarch64-pc-windows-msvc
+          # aarch64-pc-windows-msvc intentionally omitted for now: the Recall
+          # sidecar build.mjs copies the host x64 node.exe, so the arm64 leg
+          # would ship an x64 launcher (see docs/RELEASE.md "arm64 caveat"), and
+          # the arm64 cross-link is unvalidated. Re-add once the sidecar
+          # cross-build is fixed — and restore windows-aarch64 in the latest.json
+          # step below at the same time.
 
     env:
       RUST_BACKTRACE: 1
@@ -292,35 +297,33 @@ jobs:
           VERSION="${TAG#v}"
           BASE="https://github.com/${{ github.repository }}/releases/download/${TAG}"
 
-          # Locate the per-arch NSIS installers produced by Tauri's bundler.
-          # With a signing key, each has a sibling `<installer>.sig` (the updater
-          # signs the installer BYTES; on 2.10 there is no intermediate `.zip`).
+          # Locate the x64 NSIS installer produced by Tauri's bundler. With a
+          # signing key it has a sibling `<installer>.sig` (the updater signs the
+          # installer BYTES; on 2.10 there is no intermediate `.zip`). x64-only
+          # for now — see the matrix comment re: the omitted arm64 leg.
           find_one() { find ./release -maxdepth 1 -type f -name "$1" | head -n1; }
           X64_EXE=$(find_one "*x64*-setup.exe")
-          ARM64_EXE=$(find_one "*arm64*-setup.exe")
 
           # No signing key → no `.sig` → nothing to advertise. Skip rather than
           # fail so dogfood releases need no updater secret.
-          if [[ -z "$X64_EXE" || -z "$ARM64_EXE" || ! -f "${X64_EXE}.sig" || ! -f "${ARM64_EXE}.sig" ]]; then
-            echo "::notice::No signed updater artifact (*-setup.exe + .sig) for one or both arches — skipping latest.json. This is an UNSIGNED dogfood release; auto-update stays disabled until TAURI_SIGNING_PRIVATE_KEY is set."
+          if [[ -z "$X64_EXE" || ! -f "${X64_EXE}.sig" ]]; then
+            echo "::notice::No signed updater artifact (*-setup.exe + .sig) — skipping latest.json. This is an UNSIGNED dogfood release; auto-update stays disabled until TAURI_SIGNING_PRIVATE_KEY is set."
             exit 0
           fi
 
-          # Rename installers (+ sigs) to space-free, deterministic names so the
-          # download URLs are predictable. The updater verifies the signature
+          # Rename installer (+ sig) to a space-free, deterministic name so the
+          # download URL is predictable. The updater verifies the signature
           # against the installer BYTES, not its filename, so renaming is safe —
           # and it sidesteps GitHub's spaces→dots asset rewrite.
           X64_NAME="HQ-Sync_${VERSION}_x64-setup.exe"
-          ARM64_NAME="HQ-Sync_${VERSION}_arm64-setup.exe"
-          mv "$X64_EXE"         "./release/${X64_NAME}"
-          mv "${X64_EXE}.sig"   "./release/${X64_NAME}.sig"
-          mv "$ARM64_EXE"       "./release/${ARM64_NAME}"
-          mv "${ARM64_EXE}.sig" "./release/${ARM64_NAME}.sig"
+          mv "$X64_EXE"       "./release/${X64_NAME}"
+          mv "${X64_EXE}.sig" "./release/${X64_NAME}.sig"
 
+          # Empty arm64 args → generator emits a windows-x86_64-only manifest.
           ./scripts/generate-latest-json.sh \
             "$VERSION" \
-            "$(cat "./release/${X64_NAME}.sig")"   "${BASE}/${X64_NAME}" \
-            "$(cat "./release/${ARM64_NAME}.sig")" "${BASE}/${ARM64_NAME}" \
+            "$(cat "./release/${X64_NAME}.sig")" "${BASE}/${X64_NAME}" \
+            "" "" \
             ./release/latest.json
 
           echo "----- latest.json -----"
