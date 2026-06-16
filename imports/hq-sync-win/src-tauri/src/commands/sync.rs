@@ -207,13 +207,28 @@ const SIGKILL_DELAY: Duration = Duration::from_secs(5);
 /// events, so the Recent Changes activity log can attribute downloaded files
 /// to whoever uploaded them.
 ///
-/// Pinned to `~6.0.3` to match the macOS `hq-sync` app's
+/// Pinned to `~6.10.0` to match the macOS `hq-sync` app's
 /// `HQ_CLOUD_VERSION` exactly — both apps share this runner protocol
 /// (the `events.rs` discriminated union is identical between the two
 /// repos), so they must track the same engine line. Bumped here from
-/// `~5.38.0` (US-001) via `~5.47.0`.
+/// `~5.38.0` (US-001) via `~5.47.0` → `~6.0.3` → `~6.10.0`.
 ///
-/// Why the engine MUST be ≥ the `toPosixKey` fix: hq-cloud's upload
+/// Why ≥6.1, not just the `toPosixKey` line: a `~MAJOR.MINOR.PATCH` range
+/// is locked to that minor, and `~6.0.3` froze the runner at exactly
+/// 6.0.3 (6.0.x dead-ends there; next published is 6.1.0). That stranded
+/// Windows ~10 minors behind macOS (then on 6.10.x) on the pre-fix side
+/// of a cross-device phantom-conflict bug: byte-identical files synced
+/// from another machine were flagged as conflicts on every run —
+/// consistent with the runner's no-baseline reconcile comparing a local
+/// SHA-256 content hash (what the journal persists; see
+/// `util/journal.rs::JournalEntry`) against the remote S3 ETag (MD5 for
+/// single-part objects), two algorithms that can never compare equal.
+/// Matching macOS's `~6.10.0` picks up the reconcile fix. (Already-
+/// corrupted backslash S3 keys from the old 5.38.0 era are a separate
+/// server-side cleanup owned by the HQ team — the engine bump only fixes
+/// detection going forward.)
+///
+/// Why the engine MUST also be ≥ the `toPosixKey` fix: hq-cloud's upload
 /// key-builder normalization (`toPosixKey`) + boundary guardrail in
 /// `uploadFile`/`uploadSymlink` landed on both the 5.x backport (5.47.2)
 /// and the 6.x mainline (≥6.0.x). Without it, a Windows sync leaks
@@ -221,11 +236,11 @@ const SIGKILL_DELAY: Duration = Duration::from_secs(5);
 /// (`companies\indigo\board.json` instead of `companies/indigo/board.json`),
 /// corrupting the remote layout and breaking cross-platform pulls. The
 /// old `~5.38.0` pin resolved to `5.38.x`, which predates the fix — every
-/// Windows runner sync on that pin wrote corrupt keys. `~6.0.3` resolves
-/// to the newest `6.0.x`, which carries the fix and matches macOS.
+/// Windows runner sync on that pin wrote corrupt keys. `~6.10.0` carries
+/// both fixes and matches the macOS app.
 /// (5.47.2 was the 5.x hotfix line; mainline — and the macOS app — moved
 /// to 6.x. See indigoai-us/hq-cloud#44.)
-pub const HQ_CLOUD_VERSION: &str = "~6.0.3";
+pub const HQ_CLOUD_VERSION: &str = "~6.10.0";
 
 /// Package name for the runner. Used by both the spawn site below and the
 /// startup prewarm. Paired with `HQ_CLOUD_VERSION` to form the full
@@ -402,7 +417,7 @@ pub async fn resolve_jwt() -> Result<String, String> {
 ///
 /// The command line we spawn looks like:
 /// ```text
-/// npx -y --package=@indigoai-us/hq-cloud@~6.0.3 hq-sync-runner \
+/// npx -y --package=@indigoai-us/hq-cloud@~6.10.0 hq-sync-runner \
 ///   --companies --direction both --on-conflict keep --hq-root <path>
 /// ```
 ///
