@@ -11,8 +11,11 @@ on:
         required: false
         type: string
 
+# `id-token: write` is required for the GitHub -> Azure OIDC handshake that
+# azure/login performs (Trusted/Artifact Signing, no stored cloud secret).
 permissions:
   contents: write
+  id-token: write
 
 env:
   CARGO_TERM_COLOR: always
@@ -22,6 +25,11 @@ jobs:
     name: Build ${{ matrix.target }}
     runs-on: windows-latest
     timeout-minutes: 60
+    # Bind the job to the `release` environment so the GitHub OIDC token's
+    # subject is `repo:indigoai-us/hq-sync-win:environment:release` — exactly
+    # what the Azure federated credential on the `hq-installer-win-signing`
+    # app trusts. Stable across tag pushes AND workflow_dispatch.
+    environment: release
 
     # Surface the channel classification to the publish job. The value is
     # identical across matrix targets (it's derived from the tag), so
@@ -151,41 +159,33 @@ jobs:
             throw "sidecar launcher was not produced for ${{ matrix.target }}"
           }
 
-      - name: Decode signing certificate
-        if: env.WINDOWS_SIGNING_CERT != ''
-        shell: pwsh
-        env:
-          WINDOWS_SIGNING_CERT: ${{ secrets.WINDOWS_SIGNING_CERT }}
-        run: |
-          $bytes = [Convert]::FromBase64String($env:WINDOWS_SIGNING_CERT)
-          $pfxPath = Join-Path $env:RUNNER_TEMP "hq-sync-win.pfx"
-          [IO.File]::WriteAllBytes($pfxPath, $bytes)
-          echo "PFX_PATH=$pfxPath" >> $env:GITHUB_ENV
+      # ── Azure Trusted Signing: sidecar launcher (pre-build) ───────────────
+      # Sign the Recall SDK sidecar launcher BEFORE `tauri build` embeds it into
+      # the MSI/NSIS installer, so the copy that ships inside the installer
+      # carries the Indigo AI Authenticode signature. build.mjs is idempotent,
+      # so the beforeBuildCommand hook won't overwrite it. Gated on the
+      # AZURE_CLIENT_ID repo variable so an unconfigured fork/dispatch still
+      # produces an (unsigned) build. OIDC login happens right before signing so
+      # the az-CLI access token (federated logins have no refresh token) is fresh.
+      - name: Azure login (OIDC) — sidecar
+        if: vars.AZURE_CLIENT_ID != ''
+        uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
-      # Sign the sidecar launcher BEFORE `tauri build` embeds it into the MSI/NSIS
-      # installer, so the copy that ships inside the installer is Authenticode-signed.
-      # build.mjs is idempotent (it won't rebuild an existing launcher without
-      # --force), so the beforeBuildCommand hook in the next step does not overwrite
-      # this signature. Skipped cleanly on unsigned dogfood builds (PFX_PATH unset).
-      - name: Sign Recall sidecar launcher (SignTool)
-        if: env.PFX_PATH != ''
-        shell: pwsh
-        env:
-          SIGNING_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERT_PASSWORD }}
-        run: |
-          $signtool = (Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" |
-                       Sort-Object FullName -Descending |
-                       Select-Object -First 1).FullName
-          if (-not $signtool) {
-            throw "signtool.exe not found under Windows Kits"
-          }
-          $launcher = "src-tauri\binaries\recall-desktop-sdk-${{ matrix.target }}.exe"
-          if (-not (Test-Path $launcher)) {
-            throw "sidecar launcher missing — cannot sign: $launcher"
-          }
-          & $signtool sign /f $env:PFX_PATH /p $env:SIGNING_PASSWORD `
-            /tr "http://timestamp.digicert.com" /td sha256 /fd sha256 `
-            $launcher
+      - name: Sign Recall sidecar launcher (Azure Trusted Signing)
+        if: vars.AZURE_CLIENT_ID != ''
+        uses: azure/trusted-signing-action@v2.0.0
+        with:
+          endpoint: https://eus.codesigning.azure.net/
+          signing-account-name: indigosigning
+          certificate-profile-name: indigo-codesign
+          files: ${{ github.workspace }}\src-tauri\binaries\recall-desktop-sdk-${{ matrix.target }}.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
 
       # --config merges the release-only overlay (tauri.release.conf.json) that
       # adds the Recall sidecar externalBin + resources. They are NOT in the base
@@ -208,42 +208,70 @@ jobs:
         if: env.TAURI_SIGNING_PRIVATE_KEY == ''
         run: npm run tauri build -- --target ${{ matrix.target }} --bundles msi nsis --config src-tauri/tauri.release.conf.json --config src-tauri/tauri.dogfood.conf.json
 
-      # ⚠️ ORDERING BUG TO FIX BEFORE ENABLING AUTHENTICODE: this step re-signs
-      # `*-setup.exe` AFTER the build already produced `*-setup.exe.sig`. SignTool
-      # mutates the installer bytes, so the Tauri updater signature no longer
-      # matches and clients reject the update at install time. When a cert is
-      # added, regenerate the updater sig on the SIGNED installer afterwards
-      # (`tauri signer sign <signed-installer>`) and feed THAT into latest.json.
-      # Harmless while Authenticode is off (PFX_PATH empty → this step skips).
-      - name: Sign installers (SignTool)
-        if: env.PFX_PATH != ''
+      # ── Azure Trusted Signing: installers (post-build) ────────────────────
+      # FIXES the ordering bug the old SignTool step only warned about:
+      # Authenticode signing mutates the installer bytes, so we ALWAYS regenerate
+      # the Tauri updater .sig over the SIGNED installer afterwards (see the
+      # "Regenerate updater signatures" step) before it is uploaded and fed into
+      # latest.json. Two SCOPED, non-recursive passes (one per bundle subdir) so
+      # we never re-sign the embedded MicrosoftEdgeWebview2Setup.exe that
+      # `embedBootstrapper` packs in. Re-auth here because the long Tauri build
+      # can outlast the ~1h federated az-CLI token minted for the sidecar step.
+      - name: Azure login (OIDC) — installers
+        if: vars.AZURE_CLIENT_ID != ''
+        uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Sign MSI (Azure Trusted Signing)
+        if: vars.AZURE_CLIENT_ID != ''
+        uses: azure/trusted-signing-action@v2.0.0
+        with:
+          endpoint: https://eus.codesigning.azure.net/
+          signing-account-name: indigosigning
+          certificate-profile-name: indigo-codesign
+          files-folder: ${{ github.workspace }}\src-tauri\target\${{ matrix.target }}\release\bundle\msi
+          files-folder-filter: msi
+          files-folder-recurse: false
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Sign NSIS setup (Azure Trusted Signing)
+        if: vars.AZURE_CLIENT_ID != ''
+        uses: azure/trusted-signing-action@v2.0.0
+        with:
+          endpoint: https://eus.codesigning.azure.net/
+          signing-account-name: indigosigning
+          certificate-profile-name: indigo-codesign
+          files-folder: ${{ github.workspace }}\src-tauri\target\${{ matrix.target }}\release\bundle\nsis
+          files-folder-filter: exe
+          files-folder-recurse: false
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      # Regenerate the minisign updater .sig over the now-Authenticode-signed
+      # installer so the auto-updater's signature check passes against the bytes
+      # we actually distribute. `tauri signer sign` reads the key + password from
+      # the job-scope TAURI_SIGNING_* env. No-op (warns) on unsigned dogfood
+      # builds, which produce no .sig.
+      - name: Regenerate updater signatures (post-Authenticode)
+        if: vars.AZURE_CLIENT_ID != ''
         shell: pwsh
-        env:
-          SIGNING_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERT_PASSWORD }}
         run: |
-          # Find the newest installed signtool.exe under the Windows SDK
-          # bin dir on the runner.
-          $signtool = (Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" |
-                       Sort-Object FullName -Descending |
-                       Select-Object -First 1).FullName
-          if (-not $signtool) {
-            throw "signtool.exe not found under Windows Kits"
-          }
-          # Sign the produced installers (.msi / NSIS .exe). The sidecar launcher
-          # was already signed pre-build (see "Sign Recall sidecar launcher"); the
-          # recursive *.exe glob below also re-signs it and the Recall runtime
-          # agent-windows.exe if Tauri staged resources as loose files under the
-          # bundle dir. The Recall FFmpeg/GStreamer DLLs ship inside the runtime
-          # as-is (Recall's own redistributables — not re-signed here; they carry
-          # their own provenance, and on Windows there is no notary requiring a
-          # per-Mach-O signature the way macOS does — see docs/RELEASE.md).
-          $artifacts = Get-ChildItem -Recurse `
-            -Path "src-tauri\target\${{ matrix.target }}\release\bundle" `
-            -Include "*.msi","*.exe"
-          foreach ($artifact in $artifacts) {
-            & $signtool sign /f $env:PFX_PATH /p $env:SIGNING_PASSWORD `
-              /tr "http://timestamp.digicert.com" /td sha256 /fd sha256 `
-              $artifact.FullName
+          $bundleDir = "src-tauri\target\${{ matrix.target }}\release\bundle"
+          $targets = @()
+          $targets += Get-ChildItem -Path "$bundleDir\nsis" -Filter '*-setup.exe' -ErrorAction SilentlyContinue
+          $targets += Get-ChildItem -Path "$bundleDir\msi"  -Filter '*.msi'        -ErrorAction SilentlyContinue
+          $targets = $targets | Where-Object { Test-Path "$($_.FullName).sig" }
+          if (-not $targets) { Write-Warning "No updater .sig artifacts to regenerate (unsigned dogfood build?)" }
+          foreach ($t in $targets) {
+            Write-Host "Re-signing updater signature for $($t.Name)"
+            & "node_modules\.bin\tauri.cmd" signer sign "$($t.FullName)"
+            if ($LASTEXITCODE -ne 0) { Write-Error "tauri signer sign failed on $($t.Name)"; exit 1 }
           }
 
       - name: Upload bundle artifacts
