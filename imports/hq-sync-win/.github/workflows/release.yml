@@ -159,33 +159,17 @@ jobs:
             throw "sidecar launcher was not produced for ${{ matrix.target }}"
           }
 
-      # ── Azure Trusted Signing: sidecar launcher (pre-build) ───────────────
-      # Sign the Recall SDK sidecar launcher BEFORE `tauri build` embeds it into
-      # the MSI/NSIS installer, so the copy that ships inside the installer
-      # carries the Indigo AI Authenticode signature. build.mjs is idempotent,
-      # so the beforeBuildCommand hook won't overwrite it. Gated on the
-      # AZURE_CLIENT_ID repo variable so an unconfigured fork/dispatch still
-      # produces an (unsigned) build. OIDC login happens right before signing so
-      # the az-CLI access token (federated logins have no refresh token) is fresh.
-      - name: Azure login (OIDC) — sidecar
-        if: vars.AZURE_CLIENT_ID != ''
-        uses: azure/login@v3
-        with:
-          client-id: ${{ vars.AZURE_CLIENT_ID }}
-          tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-
-      - name: Sign Recall sidecar launcher (Azure Trusted Signing)
-        if: vars.AZURE_CLIENT_ID != ''
-        uses: azure/trusted-signing-action@v2.0.0
-        with:
-          endpoint: https://eus.codesigning.azure.net/
-          signing-account-name: indigosigning
-          certificate-profile-name: indigo-codesign
-          files: ${{ github.workspace }}\src-tauri\binaries\recall-desktop-sdk-${{ matrix.target }}.exe
-          file-digest: SHA256
-          timestamp-rfc3161: http://timestamp.acs.microsoft.com
-          timestamp-digest: SHA256
+      # NOTE: the Recall SDK sidecar launcher is intentionally NOT Authenticode-
+      # signed. It is a Node SEA (the host node.exe with an injected blob) that
+      # SignTool rejects with 0x800700C1 / ERROR_BAD_EXE_FORMAT
+      # (https://aka.ms/badexeformat). It ships *embedded inside* the signed
+      # MSI/NSIS installer, and on Windows an unsigned helper inside a signed,
+      # SmartScreen-trusted installer is fine at runtime — there is no per-binary
+      # notary requirement like macOS. Only the installers are Authenticode-signed
+      # (post-build, below). To sign the sidecar too, the SEA build
+      # (sidecar/recall-sdk-bridge/build.mjs) must first emit a SignTool-
+      # compatible PE. (The previous SignTool step was gated on a cert that was
+      # never set, so the sidecar was never actually signed before this either.)
 
       # --config merges the release-only overlay (tauri.release.conf.json) that
       # adds the Recall sidecar externalBin + resources. They are NOT in the base
