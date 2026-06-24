@@ -1,0 +1,38 @@
+# Single source of truth for hq-desktop-app versions and release identity.
+#
+# Owner decision (2026-06-24): one product, one version. Going forward the installer
+# and sync apps share a single version number. This supersedes the pre-merge versions
+# (hq-installer 0.13.0, hq-sync/macOS crate 0.8.0 / npm 0.8.30, hq-sync-win 0.6.4).
+#
+# `tooling/scripts/version-app.ts` (to be implemented — Phase 1/7) is the writer:
+# it stamps each app's package.json, Tauri config, and Cargo.toml from this file, and
+# release CI refuses to build on any mismatch.
+
+[product]
+version = "0.13.0"
+
+[updater]
+# Owner decision (2026-06-24): production updater manifests live under this domain.
+manifest_base = "https://downloads.getindigo.ai/hq-desktop-app"
+# Per-app, per-channel manifests, e.g.:
+#   https://downloads.getindigo.ai/hq-desktop-app/sync/stable/latest.json
+#   https://downloads.getindigo.ai/hq-desktop-app/installer/stable/latest.json
+
+[apps.installer]
+crate = "hq-installer"
+identifier = "ai.indigo.hq-installer"
+
+[apps.sync]
+crate = "hq-sync-menubar"
+# macOS identifier is PRESERVED so existing macOS sync users update in place.
+identifier_macos = "ai.indigo.hq-sync-menubar"
+# Windows identifier is PRESERVED for the first unified release so existing Windows
+# users keep their in-place updates. Owner decision (2026-06-24) is to migrate Windows
+# to the unified `ai.indigo.hq` namespace at a DELIBERATE later cutover. Changing the
+# bundle identifier breaks silent in-place updates, so that cutover needs a one-time
+# bridge build for existing Windows users — tracked as an open item in MIGRATION.md.
+identifier_windows = "ai.indigo.hq-sync-win"
+identifier_windows_target = "ai.indigo.hq"
+# Owner decision (2026-06-24): show the operator surfaces (library_local, marketplace,
+# messages, projects_local) on Windows as well, not macOS-only.
+windows_shows_operator_surfaces = true
