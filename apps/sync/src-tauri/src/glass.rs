@@ -34,7 +34,10 @@ pub fn apply_liquid_glass_window(window: &tauri::WebviewWindow) {
     let ns_win = match window.ns_window() {
         Ok(ptr) => ptr as *mut AnyObject,
         Err(e) => {
-            log(LOG_TAG, &format!("liquid-glass: ns_window() unavailable: {e}"));
+            log(
+                LOG_TAG,
+                &format!("liquid-glass: ns_window() unavailable: {e}"),
+            );
             return;
         }
     };
@@ -78,7 +81,10 @@ pub fn apply_liquid_glass_window(window: &tauri::WebviewWindow) {
                 positioned: below,
                 relativeTo: null_view
             ];
-            log(LOG_TAG, "liquid-glass: NSGlassEffectView applied (macOS 26+)");
+            log(
+                LOG_TAG,
+                "liquid-glass: NSGlassEffectView applied (macOS 26+)",
+            );
             return;
         }
     }
@@ -97,6 +103,9 @@ pub fn apply_liquid_glass_window(window: &tauri::WebviewWindow) {
             LOG_TAG,
             "liquid-glass: vibrancy fallback applied (UnderWindowBackground)",
         ),
-        Err(e) => log(LOG_TAG, &format!("liquid-glass: vibrancy fallback FAILED: {e}")),
+        Err(e) => log(
+            LOG_TAG,
+            &format!("liquid-glass: vibrancy fallback FAILED: {e}"),
+        ),
     }
 }

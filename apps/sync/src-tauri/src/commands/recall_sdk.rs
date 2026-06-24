@@ -79,7 +79,7 @@ use crate::events::{
 use crate::util::client_info::build_client;
 use crate::util::logfile::log;
 use crate::util::paths;
-use crate::util::recordings_ledger::{self, RecordingStatus, ReconcileOutcome};
+use crate::util::recordings_ledger::{self, ReconcileOutcome, RecordingStatus};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
@@ -136,8 +136,8 @@ fn write_bridge_command(value: &serde_json::Value) -> Result<(), String> {
     let stdin = guard
         .as_mut()
         .ok_or_else(|| "bridge not running".to_string())?;
-    let line = serde_json::to_string(value)
-        .map_err(|e| format!("command serialise failed: {e}"))?;
+    let line =
+        serde_json::to_string(value).map_err(|e| format!("command serialise failed: {e}"))?;
     writeln!(stdin, "{line}").map_err(|e| format!("bridge stdin write failed: {e}"))?;
     stdin
         .flush()
@@ -267,10 +267,10 @@ pub async fn meetings_list_active_recordings() -> Result<Vec<ActiveRecording>, S
 /// open window (keyed by the same window id), so we can recover the URL/event-id
 /// here and derive the identical key the notify path used.
 fn detection_url_and_event(window_id: &str) -> Option<(String, Option<String>)> {
-    active_detections_cell()
-        .lock()
-        .ok()
-        .and_then(|map| map.get(window_id).map(|e| (e.meeting_url.clone(), e.source_event_id.clone())))
+    active_detections_cell().lock().ok().and_then(|map| {
+        map.get(window_id)
+            .map(|e| (e.meeting_url.clone(), e.source_event_id.clone()))
+    })
 }
 
 /// Authoritatively mark the meeting behind `window_id` as `Recorded` in the
@@ -600,9 +600,7 @@ pub async fn start_recall_sdk(app: AppHandle) -> Result<(), String> {
                                 LOG_TAG,
                                 &format!(
                                     "meeting:detected — id={} platform={:?} url={}",
-                                    payload.detection_id,
-                                    payload.platform,
-                                    payload.meeting_url
+                                    payload.detection_id, payload.platform, payload.meeting_url
                                 ),
                             );
                             // Record into the active-detection registry so an
@@ -611,10 +609,7 @@ pub async fn start_recall_sdk(app: AppHandle) -> Result<(), String> {
                             // `meetings_list_active_detections`.
                             record_active_detection(&payload);
                             if let Err(e) = app_bg.emit(EVENT_MEETING_DETECTED, &payload) {
-                                log(
-                                    LOG_TAG,
-                                    &format!("emit meeting:detected failed: {e}"),
-                                );
+                                log(LOG_TAG, &format!("emit meeting:detected failed: {e}"));
                             }
                         }
                         Some(RecallSdkEvent::MeetingClosed(payload)) => {
@@ -630,10 +625,7 @@ pub async fn start_recall_sdk(app: AppHandle) -> Result<(), String> {
                             // meeting that has already ended.
                             remove_active_detection(&payload.window_id);
                             if let Err(e) = app_bg.emit(EVENT_MEETING_CLOSED, &payload) {
-                                log(
-                                    LOG_TAG,
-                                    &format!("emit meeting:closed failed: {e}"),
-                                );
+                                log(LOG_TAG, &format!("emit meeting:closed failed: {e}"));
                             }
                         }
                         Some(RecallSdkEvent::PermissionStatus(payload)) => {
@@ -645,22 +637,15 @@ pub async fn start_recall_sdk(app: AppHandle) -> Result<(), String> {
                                 ),
                             );
                             if let Err(e) = app_bg.emit(EVENT_PERMISSION_STATUS, &payload) {
-                                log(
-                                    LOG_TAG,
-                                    &format!("emit permission:status failed: {e}"),
-                                );
+                                log(LOG_TAG, &format!("emit permission:status failed: {e}"));
                             }
                         }
                         Some(RecallSdkEvent::PermissionsAllGranted {}) => {
                             log(LOG_TAG, "permissions:all-granted");
-                            if let Err(e) =
-                                app_bg.emit(EVENT_PERMISSIONS_ALL_GRANTED, &())
-                            {
+                            if let Err(e) = app_bg.emit(EVENT_PERMISSIONS_ALL_GRANTED, &()) {
                                 log(
                                     LOG_TAG,
-                                    &format!(
-                                        "emit permissions:all-granted failed: {e}"
-                                    ),
+                                    &format!("emit permissions:all-granted failed: {e}"),
                                 );
                             }
                         }
@@ -673,10 +658,7 @@ pub async fn start_recall_sdk(app: AppHandle) -> Result<(), String> {
                                 ),
                             );
                             if let Err(e) = app_bg.emit(EVENT_RECORDING_STARTED, &payload) {
-                                log(
-                                    LOG_TAG,
-                                    &format!("emit recording:started failed: {e}"),
-                                );
+                                log(LOG_TAG, &format!("emit recording:started failed: {e}"));
                             }
                         }
                         Some(RecallSdkEvent::RecordingEnded(payload)) => {
@@ -692,9 +674,7 @@ pub async fn start_recall_sdk(app: AppHandle) -> Result<(), String> {
                             // for this window. This is the canonical clear path
                             // (covers both explicit Stop and the SDK
                             // auto-stopping when the meeting window closes).
-                            if let Err(e) =
-                                recordings_ledger::record_ended(&payload.window_id)
-                            {
+                            if let Err(e) = recordings_ledger::record_ended(&payload.window_id) {
                                 log(
                                     LOG_TAG,
                                     &format!(
@@ -704,10 +684,7 @@ pub async fn start_recall_sdk(app: AppHandle) -> Result<(), String> {
                                 );
                             }
                             if let Err(e) = app_bg.emit(EVENT_RECORDING_ENDED, &payload) {
-                                log(
-                                    LOG_TAG,
-                                    &format!("emit recording:ended failed: {e}"),
-                                );
+                                log(LOG_TAG, &format!("emit recording:ended failed: {e}"));
                             }
                         }
                         Some(RecallSdkEvent::RecordingMediaCapture(payload)) => {
@@ -719,19 +696,13 @@ pub async fn start_recall_sdk(app: AppHandle) -> Result<(), String> {
                                 LOG_TAG,
                                 &format!(
                                     "recording:media-capture — windowId={} type={} capturing={}",
-                                    payload.window_id,
-                                    payload.capture_type,
-                                    payload.capturing
+                                    payload.window_id, payload.capture_type, payload.capturing
                                 ),
                             );
-                            if let Err(e) =
-                                app_bg.emit(EVENT_RECORDING_MEDIA_CAPTURE, &payload)
-                            {
+                            if let Err(e) = app_bg.emit(EVENT_RECORDING_MEDIA_CAPTURE, &payload) {
                                 log(
                                     LOG_TAG,
-                                    &format!(
-                                        "emit recording:media-capture failed: {e}"
-                                    ),
+                                    &format!("emit recording:media-capture failed: {e}"),
                                 );
                             }
                         }
@@ -744,10 +715,7 @@ pub async fn start_recall_sdk(app: AppHandle) -> Result<(), String> {
                                 ),
                             );
                             if let Err(e) = app_bg.emit(EVENT_RECORDING_ERROR, &payload) {
-                                log(
-                                    LOG_TAG,
-                                    &format!("emit recording:error failed: {e}"),
-                                );
+                                log(LOG_TAG, &format!("emit recording:error failed: {e}"));
                             }
                         }
                         None => {}
@@ -792,8 +760,7 @@ pub async fn start_recall_sdk(app: AppHandle) -> Result<(), String> {
                     // genuinely in-flight recording is recovered by the launch
                     // reconcile instead. `success` covers a clean exit(0); the
                     // cancelled flag covers a SIGTERM'd one (non-zero/​signalled).
-                    let cancelled =
-                        crate::commands::process::is_cancelled(SDK_HANDLE);
+                    let cancelled = crate::commands::process::is_cancelled(SDK_HANDLE);
                     if success || cancelled {
                         log(
                             LOG_TAG,
@@ -981,9 +948,7 @@ struct SdkUploadTokenResponse {
 /// Returns `(recordingId, uploadToken)` on success. Errors when hq-pro
 /// rejects (`recall-not-provisioned`, upstream Recall failure, network) —
 /// caller surfaces the message to the UI.
-async fn fetch_sdk_upload_token(
-    company_uid: Option<&str>,
-) -> Result<(String, String), String> {
+async fn fetch_sdk_upload_token(company_uid: Option<&str>) -> Result<(String, String), String> {
     let base = resolve_vault_api_url()
         .map(|u| u.trim_end_matches('/').to_string())
         .map_err(|e| format!("vault url: {e}"))?;
@@ -1049,8 +1014,7 @@ async fn fetch_sdk_upload_token(
         .filter(|s| !s.is_empty())
         .is_some();
 
-    let recording_id = match pick_recording_handle(parsed.recording_id.as_deref(), &parsed.id)
-    {
+    let recording_id = match pick_recording_handle(parsed.recording_id.as_deref(), &parsed.id) {
         Some(rid) => rid,
         None => {
             return Err(format!(
@@ -1134,24 +1098,23 @@ pub async fn start_recording(
         ),
     );
 
-    let (recording_id, upload_token) =
-        match fetch_sdk_upload_token(company_uid.as_deref()).await {
-            Ok(v) => v,
-            Err(e) => {
-                // Without this log line the Rust-side failure was opaque to
-                // debugging — the user saw an "Error" badge but no visible
-                // reason. Surface the upstream HTTP status + body verbatim so
-                // post-deploy issues (route 404, auth 401, Recall 5xx) are
-                // diagnosable from `~/.hq/logs/hq-sync.log` alone.
-                log(
-                    LOG_TAG,
-                    &format!(
-                        "start_recording: upload-token fetch failed for windowId={window_id}: {e}"
-                    ),
-                );
-                return Err(e);
-            }
-        };
+    let (recording_id, upload_token) = match fetch_sdk_upload_token(company_uid.as_deref()).await {
+        Ok(v) => v,
+        Err(e) => {
+            // Without this log line the Rust-side failure was opaque to
+            // debugging — the user saw an "Error" badge but no visible
+            // reason. Surface the upstream HTTP status + body verbatim so
+            // post-deploy issues (route 404, auth 401, Recall 5xx) are
+            // diagnosable from `~/.hq/logs/hq-sync.log` alone.
+            log(
+                LOG_TAG,
+                &format!(
+                    "start_recording: upload-token fetch failed for windowId={window_id}: {e}"
+                ),
+            );
+            return Err(e);
+        }
+    };
     log(
         LOG_TAG,
         &format!(
@@ -1282,10 +1245,7 @@ async fn fetch_recording_status(
         });
     }
 
-    let text = res
-        .text()
-        .await
-        .map_err(|e| format!("status read: {e}"))?;
+    let text = res.text().await.map_err(|e| format!("status read: {e}"))?;
     if !http.is_success() {
         return Err(format!("status HTTP {http}: {text}"));
     }
@@ -1369,7 +1329,11 @@ pub async fn reconcile_recordings_on_launch(app: AppHandle) {
     // ledger and not shown to the user (they retry on a later launch).
     for outcome in &outcomes {
         match outcome {
-            ReconcileOutcome::Unknown { recording_id, reason, .. } => {
+            ReconcileOutcome::Unknown {
+                recording_id,
+                reason,
+                ..
+            } => {
                 log(
                     LOG_TAG,
                     &format!(
@@ -1464,7 +1428,8 @@ mod tests {
 
     #[test]
     fn parse_sdk_line_parses_permission_status() {
-        let line = r#"{"type":"permission:status","permission":"screen-capture","status":"denied"}"#;
+        let line =
+            r#"{"type":"permission:status","permission":"screen-capture","status":"denied"}"#;
         let payload = permission(line);
         assert_eq!(payload.permission, RecallPermission::ScreenCapture);
         assert_eq!(payload.status, "denied");
@@ -1586,7 +1551,9 @@ mod tests {
     #[test]
     fn meeting_detect_admits_any_getindigo_user() {
         assert!(is_meeting_detect_allowed_email(Some("stefan@getindigo.ai")));
-        assert!(is_meeting_detect_allowed_email(Some("teammate@getindigo.ai")));
+        assert!(is_meeting_detect_allowed_email(Some(
+            "teammate@getindigo.ai"
+        )));
         assert!(is_meeting_detect_allowed_email(Some("anyone@getindigo.ai")));
     }
 
@@ -1597,14 +1564,22 @@ mod tests {
         assert!(is_meeting_detect_allowed_email(Some("stefan@gmail.com")));
         assert!(is_meeting_detect_allowed_email(Some("admin@indigo.ai")));
         // Former dogfood look-alikes — now admitted, GA only checks presence.
-        assert!(is_meeting_detect_allowed_email(Some("stefan@forgetindigo.ai")));
-        assert!(is_meeting_detect_allowed_email(Some("stefan@notgetindigo.ai")));
-        assert!(is_meeting_detect_allowed_email(Some("stefan@evil-getindigo.ai")));
+        assert!(is_meeting_detect_allowed_email(Some(
+            "stefan@forgetindigo.ai"
+        )));
+        assert!(is_meeting_detect_allowed_email(Some(
+            "stefan@notgetindigo.ai"
+        )));
+        assert!(is_meeting_detect_allowed_email(Some(
+            "stefan@evil-getindigo.ai"
+        )));
     }
 
     #[test]
     fn meeting_detect_admits_plus_addressing() {
-        assert!(is_meeting_detect_allowed_email(Some("stefan+test@getindigo.ai")));
+        assert!(is_meeting_detect_allowed_email(Some(
+            "stefan+test@getindigo.ai"
+        )));
         assert!(is_meeting_detect_allowed_email(Some("qa+tag@example.com")));
     }
 
@@ -1637,10 +1612,7 @@ mod tests {
                 "gate disagreement for {email}",
             );
         }
-        assert_eq!(
-            is_meeting_detect_allowed_email(None),
-            email_present(None),
-        );
+        assert_eq!(is_meeting_detect_allowed_email(None), email_present(None),);
     }
 
     // ── Recording event parsing ────────────────────────────────────────────

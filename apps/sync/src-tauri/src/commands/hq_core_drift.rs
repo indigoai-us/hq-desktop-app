@@ -149,7 +149,11 @@ pub struct DriftReport {
 pub(crate) fn read_locked_paths(hq_folder: &Path) -> Vec<String> {
     let canonical = hq_folder.join("core").join("core.yaml");
     let legacy = hq_folder.join("core.yaml");
-    let core_yaml = if canonical.is_file() { canonical } else { legacy };
+    let core_yaml = if canonical.is_file() {
+        canonical
+    } else {
+        legacy
+    };
     let Ok(bytes) = std::fs::read(&core_yaml) else {
         return Vec::new();
     };
@@ -281,7 +285,10 @@ pub(crate) fn git_blob_sha(content: &[u8]) -> String {
 /// return a map of relative-path → (sha1, size). Walks files directly
 /// for leaf scopes; uses walkdir for directory scopes. Symlinks are
 /// followed but never escape the HQ root.
-pub(crate) fn walk_local_under_scope(hq_folder: &Path, locked: &[String]) -> BTreeMap<String, (String, u64)> {
+pub(crate) fn walk_local_under_scope(
+    hq_folder: &Path,
+    locked: &[String],
+) -> BTreeMap<String, (String, u64)> {
     let mut out = BTreeMap::new();
     for scope in locked {
         let (rel, is_dir) = if let Some(prefix) = scope.strip_suffix('/') {
@@ -322,7 +329,9 @@ pub(crate) fn walk_local_under_scope(hq_folder: &Path, locked: &[String]) -> BTr
             // content, so following the symlink yields a wrong SHA every
             // time. Symlinks in directory scopes are already skipped by the
             // walkdir `is_file()` filter above; this is the leaf-scope twin.
-            let Ok(meta) = abs.symlink_metadata() else { continue; };
+            let Ok(meta) = abs.symlink_metadata() else {
+                continue;
+            };
             if meta.file_type().is_symlink() || !meta.file_type().is_file() {
                 continue;
             }
@@ -405,7 +414,11 @@ pub async fn restore_from_upstream(
 
     // Guard against absolute paths, ".." traversal, or weird shapes.
     let normalised = Path::new(&path);
-    if normalised.is_absolute() || normalised.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+    if normalised.is_absolute()
+        || normalised
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
         return Err(format!("path {path:?} is not a safe relative path"));
     }
 
@@ -492,14 +505,20 @@ mod tests {
         // even carries a foreign sessionId/pid after a sync), never authored and
         // never shipped upstream — so they must not surface as "Added" drift.
         let excluded = excluded_scope_paths();
-        assert!(path_in_excluded_scope(".claude/scheduled_tasks.lock", &excluded));
+        assert!(path_in_excluded_scope(
+            ".claude/scheduled_tasks.lock",
+            &excluded
+        ));
         assert!(path_in_excluded_scope(".claude/scheduled-tasks", &excluded));
         assert!(path_in_excluded_scope(
             ".claude/scheduled-tasks/job-123.json",
             &excluded
         ));
         // Existing exclusions still hold (guards against list churn).
-        assert!(path_in_excluded_scope(".claude/settings.local.json", &excluded));
+        assert!(path_in_excluded_scope(
+            ".claude/settings.local.json",
+            &excluded
+        ));
         // A genuinely-authored locked file is NOT excluded.
         assert!(!path_in_excluded_scope(".claude/CLAUDE.md", &excluded));
     }

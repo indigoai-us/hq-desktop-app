@@ -62,12 +62,8 @@ fn resolve_hq_folder_path() -> Result<String, String> {
     let config = crate::commands::config::read_hq_config_lenient()?;
 
     let hq_folder = paths::resolve_hq_folder(
-        config
-            .as_ref()
-            .and_then(|c| c.hq_folder_path.as_deref()),
-        menubar_prefs
-            .as_ref()
-            .and_then(|p| p.hq_path.as_deref()),
+        config.as_ref().and_then(|c| c.hq_folder_path.as_deref()),
+        menubar_prefs.as_ref().and_then(|p| p.hq_path.as_deref()),
     );
 
     Ok(hq_folder.to_string_lossy().to_string())
@@ -308,7 +304,10 @@ mod tests {
             "daemonRunning": true
         }"#;
         let journal: SyncJournal = serde_json::from_str(json).unwrap();
-        assert_eq!(journal.last_sync_at, Some("2026-04-18T10:30:00Z".to_string()));
+        assert_eq!(
+            journal.last_sync_at,
+            Some("2026-04-18T10:30:00Z".to_string())
+        );
         assert_eq!(journal.pending_files, Some(7));
         assert_eq!(journal.conflicts, Some(2));
         assert_eq!(journal.daemon_running, Some(true));
@@ -328,7 +327,10 @@ mod tests {
     fn test_journal_deserialize_partial() {
         let json = r#"{"lastSyncAt": "2026-04-18T10:30:00Z", "daemonRunning": false}"#;
         let journal: SyncJournal = serde_json::from_str(json).unwrap();
-        assert_eq!(journal.last_sync_at, Some("2026-04-18T10:30:00Z".to_string()));
+        assert_eq!(
+            journal.last_sync_at,
+            Some("2026-04-18T10:30:00Z".to_string())
+        );
         assert_eq!(journal.pending_files, None);
         assert_eq!(journal.conflicts, None);
         assert_eq!(journal.daemon_running, Some(false));
@@ -345,7 +347,10 @@ mod tests {
             daemon_running: Some(true),
         };
         let status = journal_to_status(journal);
-        assert_eq!(status.last_sync_at, Some("2026-04-18T10:30:00Z".to_string()));
+        assert_eq!(
+            status.last_sync_at,
+            Some("2026-04-18T10:30:00Z".to_string())
+        );
         assert_eq!(status.pending_files, 3);
         assert_eq!(status.conflicts, 1);
         assert!(status.daemon_running);
@@ -412,7 +417,10 @@ mod tests {
             "source": "ignored"
         }"#;
         let status = parse_cli_output(stdout).unwrap();
-        assert_eq!(status.last_sync_at, Some("2026-04-18T12:00:00Z".to_string()));
+        assert_eq!(
+            status.last_sync_at,
+            Some("2026-04-18T12:00:00Z".to_string())
+        );
         assert_eq!(status.pending_files, 10);
         assert_eq!(status.conflicts, 3);
         assert!(status.daemon_running);
@@ -424,7 +432,9 @@ mod tests {
     fn test_parse_cli_output_invalid() {
         let result = parse_cli_output("garbage output");
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Failed to parse CLI JSON output"));
+        assert!(result
+            .unwrap_err()
+            .contains("Failed to parse CLI JSON output"));
     }
 
     #[test]
@@ -498,8 +508,7 @@ mod tests {
             daemon_running: Some(true),
         };
         write_journal(hq_folder, &journal).unwrap();
-        let contents =
-            std::fs::read_to_string(tmp.path().join(".hq-sync-journal.json")).unwrap();
+        let contents = std::fs::read_to_string(tmp.path().join(".hq-sync-journal.json")).unwrap();
         assert!(contents.contains("\"lastSyncAt\""));
         assert!(contents.contains("\"pendingFiles\""));
         assert!(contents.contains("\"conflicts\""));

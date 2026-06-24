@@ -26,11 +26,9 @@ mod expires_at_flexible {
 
         match FlexibleExpiresAt::deserialize(deserializer)? {
             FlexibleExpiresAt::Number(n) => Ok(n),
-            FlexibleExpiresAt::Text(s) => {
-                chrono::DateTime::parse_from_rfc3339(&s)
-                    .map(|dt| dt.timestamp_millis())
-                    .map_err(serde::de::Error::custom)
-            }
+            FlexibleExpiresAt::Text(s) => chrono::DateTime::parse_from_rfc3339(&s)
+                .map(|dt| dt.timestamp_millis())
+                .map_err(serde::de::Error::custom),
         }
     }
 }
@@ -94,8 +92,7 @@ fn read_tokens_from_path(path: &Path) -> Result<Option<CognitoTokens>, TokenRead
         return Ok(None);
     }
     let contents = std::fs::read_to_string(path).map_err(TokenReadError::Io)?;
-    let tokens: CognitoTokens =
-        serde_json::from_str(&contents).map_err(TokenReadError::Parse)?;
+    let tokens: CognitoTokens = serde_json::from_str(&contents).map_err(TokenReadError::Parse)?;
     Ok(Some(tokens))
 }
 
@@ -159,10 +156,7 @@ pub fn write_tokens_to_file(tokens: &CognitoTokens) -> Result<(), String> {
     let contents = serde_json::to_string_pretty(tokens)
         .map_err(|e| format!("Failed to serialize tokens: {}", e))?;
 
-    let tmp_path = path.with_file_name(format!(
-        ".cognito-tokens.json.tmp.{}",
-        std::process::id()
-    ));
+    let tmp_path = path.with_file_name(format!(".cognito-tokens.json.tmp.{}", std::process::id()));
     std::fs::write(&tmp_path, &contents)
         .map_err(|e| format!("Failed to write temp token file: {}", e))?;
 
@@ -354,8 +348,7 @@ pub fn decode_id_token_claims(id_token: &str) -> Result<IdTokenClaims, String> {
     let bytes = URL_SAFE_NO_PAD
         .decode(payload)
         .map_err(|e| format!("id_token: base64 decode failed: {e}"))?;
-    serde_json::from_slice(&bytes)
-        .map_err(|e| format!("id_token: claims json parse failed: {e}"))
+    serde_json::from_slice(&bytes).map_err(|e| format!("id_token: claims json parse failed: {e}"))
 }
 
 fn format_unix_ms_as_iso(ms: i64) -> String {
@@ -729,10 +722,8 @@ mod tests {
         };
         let contents = serde_json::to_string_pretty(&tokens).unwrap();
 
-        let tmp_path = path.with_file_name(format!(
-            ".cognito-tokens.json.tmp.{}",
-            std::process::id()
-        ));
+        let tmp_path =
+            path.with_file_name(format!(".cognito-tokens.json.tmp.{}", std::process::id()));
         std::fs::write(&tmp_path, &contents).unwrap();
         std::fs::rename(&tmp_path, &path).unwrap();
 

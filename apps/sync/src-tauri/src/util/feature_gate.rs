@@ -209,7 +209,10 @@ mod tests {
         // gates genuinely diverge for a signed-in non-Indigo user: present to
         // the GA gate, rejected by the Indigo gate.
         let non_indigo = Some("user@gmail.com");
-        assert!(email_present(non_indigo), "GA gate admits any signed-in user");
+        assert!(
+            email_present(non_indigo),
+            "GA gate admits any signed-in user"
+        );
         assert!(
             !is_allowed_email(non_indigo),
             "Indigo gate must reject non-@getindigo.ai emails"

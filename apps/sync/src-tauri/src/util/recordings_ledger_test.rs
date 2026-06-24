@@ -89,8 +89,20 @@ fn upsert_normalises_empty_company_to_none() {
 #[test]
 fn upsert_replaces_existing_window() {
     let mut ledger = RecordingsLedger::new();
-    upsert(&mut ledger, "win-1".to_string(), "rec_old".to_string(), None, ts("2026-06-03T10:00:00Z"));
-    upsert(&mut ledger, "win-1".to_string(), "rec_new".to_string(), None, ts("2026-06-03T11:00:00Z"));
+    upsert(
+        &mut ledger,
+        "win-1".to_string(),
+        "rec_old".to_string(),
+        None,
+        ts("2026-06-03T10:00:00Z"),
+    );
+    upsert(
+        &mut ledger,
+        "win-1".to_string(),
+        "rec_new".to_string(),
+        None,
+        ts("2026-06-03T11:00:00Z"),
+    );
     assert_eq!(ledger.len(), 1);
     assert_eq!(ledger.get("win-1").unwrap().recording_id, "rec_new");
 }
@@ -98,7 +110,13 @@ fn upsert_replaces_existing_window() {
 #[test]
 fn clear_removes_entry_and_reports_hit() {
     let mut ledger = RecordingsLedger::new();
-    upsert(&mut ledger, "win-1".to_string(), "rec_abc".to_string(), None, ts("2026-06-03T10:00:00Z"));
+    upsert(
+        &mut ledger,
+        "win-1".to_string(),
+        "rec_abc".to_string(),
+        None,
+        ts("2026-06-03T10:00:00Z"),
+    );
     assert!(clear(&mut ledger, "win-1"));
     assert!(ledger.is_empty());
 }
@@ -139,8 +157,20 @@ fn record_started_then_started_again_keeps_both_windows() {
     let _g = lock();
     let _tmp = with_test_ledger();
 
-    record_started("win-1".to_string(), "rec_1".to_string(), None, ts("2026-06-03T10:00:00Z")).unwrap();
-    record_started("win-2".to_string(), "rec_2".to_string(), None, ts("2026-06-03T10:05:00Z")).unwrap();
+    record_started(
+        "win-1".to_string(),
+        "rec_1".to_string(),
+        None,
+        ts("2026-06-03T10:00:00Z"),
+    )
+    .unwrap();
+    record_started(
+        "win-2".to_string(),
+        "rec_2".to_string(),
+        None,
+        ts("2026-06-03T10:05:00Z"),
+    )
+    .unwrap();
 
     let loaded = read_ledger().unwrap();
     assert_eq!(loaded.len(), 2);
@@ -157,7 +187,13 @@ fn record_ended_clears_entry_on_disk() {
     let _g = lock();
     let _tmp = with_test_ledger();
 
-    record_started("win-1".to_string(), "rec_abc".to_string(), None, ts("2026-06-03T10:00:00Z")).unwrap();
+    record_started(
+        "win-1".to_string(),
+        "rec_abc".to_string(),
+        None,
+        ts("2026-06-03T10:00:00Z"),
+    )
+    .unwrap();
     record_ended("win-1").unwrap();
 
     let loaded = read_ledger().unwrap();
@@ -174,13 +210,28 @@ fn record_ended_only_clears_the_named_window() {
     let _g = lock();
     let _tmp = with_test_ledger();
 
-    record_started("win-1".to_string(), "rec_1".to_string(), None, ts("2026-06-03T10:00:00Z")).unwrap();
-    record_started("win-2".to_string(), "rec_2".to_string(), None, ts("2026-06-03T10:05:00Z")).unwrap();
+    record_started(
+        "win-1".to_string(),
+        "rec_1".to_string(),
+        None,
+        ts("2026-06-03T10:00:00Z"),
+    )
+    .unwrap();
+    record_started(
+        "win-2".to_string(),
+        "rec_2".to_string(),
+        None,
+        ts("2026-06-03T10:05:00Z"),
+    )
+    .unwrap();
     record_ended("win-1").unwrap();
 
     let loaded = read_ledger().unwrap();
     assert!(loaded.get("win-1").is_none());
-    assert!(loaded.get("win-2").is_some(), "the other in-flight recording is untouched");
+    assert!(
+        loaded.get("win-2").is_some(),
+        "the other in-flight recording is untouched"
+    );
 
     clear_override();
 }
@@ -205,8 +256,20 @@ fn open_window_ids_lists_every_in_flight_window() {
     let _g = lock();
     let _tmp = with_test_ledger();
 
-    record_started("win-1".to_string(), "rec_1".to_string(), None, ts("2026-06-03T10:00:00Z")).unwrap();
-    record_started("win-2".to_string(), "rec_2".to_string(), Some("cmp_x".to_string()), ts("2026-06-03T10:05:00Z")).unwrap();
+    record_started(
+        "win-1".to_string(),
+        "rec_1".to_string(),
+        None,
+        ts("2026-06-03T10:00:00Z"),
+    )
+    .unwrap();
+    record_started(
+        "win-2".to_string(),
+        "rec_2".to_string(),
+        Some("cmp_x".to_string()),
+        ts("2026-06-03T10:05:00Z"),
+    )
+    .unwrap();
 
     let mut ids = open_window_ids().unwrap();
     ids.sort();
@@ -228,8 +291,20 @@ fn record_bridge_died_clears_all_entries_and_returns_them() {
     let _g = lock();
     let _tmp = with_test_ledger();
 
-    record_started("win-1".to_string(), "rec_1".to_string(), None, ts("2026-06-03T10:00:00Z")).unwrap();
-    record_started("win-2".to_string(), "rec_2".to_string(), None, ts("2026-06-03T10:05:00Z")).unwrap();
+    record_started(
+        "win-1".to_string(),
+        "rec_1".to_string(),
+        None,
+        ts("2026-06-03T10:00:00Z"),
+    )
+    .unwrap();
+    record_started(
+        "win-2".to_string(),
+        "rec_2".to_string(),
+        None,
+        ts("2026-06-03T10:05:00Z"),
+    )
+    .unwrap();
 
     let mut cleared = record_bridge_died().unwrap();
     cleared.sort();
@@ -365,7 +440,10 @@ fn classify_fetch_error_is_unknown_and_retained() {
         ReconcileOutcome::Unknown { reason, .. } => assert_eq!(reason, "network down"),
         other => panic!("expected Unknown, got {other:?}"),
     }
-    assert!(!out.clears_entry(), "transient fetch failure must retain the entry");
+    assert!(
+        !out.clears_entry(),
+        "transient fetch failure must retain the entry"
+    );
 }
 
 // ── reconcile (AC: reconcile open-on-launch) ─────────────────────────────────────
@@ -377,7 +455,13 @@ fn reconcile_open_entry_still_processing_is_retained() {
     // entry must survive (a later launch reconciles it again) and the UI gets
     // a StillProcessing thread instead of losing the recording.
     let mut ledger = RecordingsLedger::new();
-    upsert(&mut ledger, "win-1".to_string(), "rec_abc".to_string(), Some("co_indigo".to_string()), ts("2026-06-03T10:00:00Z"));
+    upsert(
+        &mut ledger,
+        "win-1".to_string(),
+        "rec_abc".to_string(),
+        Some("co_indigo".to_string()),
+        ts("2026-06-03T10:00:00Z"),
+    );
 
     let now = ts("2026-06-03T10:30:00Z"); // 30 min later — well within MAX_AGE_DAYS
     let mut seen: Vec<(String, Option<String>)> = vec![];
@@ -387,41 +471,82 @@ fn reconcile_open_entry_still_processing_is_retained() {
     });
 
     // The fetcher was asked about the right recording, scoped to its company.
-    assert_eq!(seen, vec![("rec_abc".to_string(), Some("co_indigo".to_string()))]);
+    assert_eq!(
+        seen,
+        vec![("rec_abc".to_string(), Some("co_indigo".to_string()))]
+    );
     assert_eq!(outcomes.len(), 1);
-    assert!(matches!(outcomes[0], ReconcileOutcome::StillProcessing { .. }));
-    assert!(ledger.contains_key("win-1"), "still-processing entry is retained");
+    assert!(matches!(
+        outcomes[0],
+        ReconcileOutcome::StillProcessing { .. }
+    ));
+    assert!(
+        ledger.contains_key("win-1"),
+        "still-processing entry is retained"
+    );
 }
 
 #[test]
 fn reconcile_saved_entry_is_cleared() {
     let mut ledger = RecordingsLedger::new();
-    upsert(&mut ledger, "win-1".to_string(), "rec_abc".to_string(), None, ts("2026-06-03T10:00:00Z"));
+    upsert(
+        &mut ledger,
+        "win-1".to_string(),
+        "rec_abc".to_string(),
+        None,
+        ts("2026-06-03T10:00:00Z"),
+    );
 
-    let outcomes = reconcile(&mut ledger, ts("2026-06-03T10:30:00Z"), |_, _| Ok(status("completed", true)));
+    let outcomes = reconcile(&mut ledger, ts("2026-06-03T10:30:00Z"), |_, _| {
+        Ok(status("completed", true))
+    });
 
     assert!(matches!(outcomes[0], ReconcileOutcome::Saved { .. }));
-    assert!(ledger.is_empty(), "a landed recording is cleared from the ledger");
+    assert!(
+        ledger.is_empty(),
+        "a landed recording is cleared from the ledger"
+    );
 }
 
 #[test]
 fn reconcile_failed_entry_is_cleared_and_surfaced() {
     let mut ledger = RecordingsLedger::new();
-    upsert(&mut ledger, "win-1".to_string(), "rec_abc".to_string(), None, ts("2026-06-03T10:00:00Z"));
+    upsert(
+        &mut ledger,
+        "win-1".to_string(),
+        "rec_abc".to_string(),
+        None,
+        ts("2026-06-03T10:00:00Z"),
+    );
 
-    let outcomes = reconcile(&mut ledger, ts("2026-06-03T10:30:00Z"), |_, _| Ok(status("failed", false)));
+    let outcomes = reconcile(&mut ledger, ts("2026-06-03T10:30:00Z"), |_, _| {
+        Ok(status("failed", false))
+    });
 
     assert!(matches!(outcomes[0], ReconcileOutcome::IngestFailed { .. }));
-    assert!(ledger.is_empty(), "a failed recording is cleared once surfaced");
+    assert!(
+        ledger.is_empty(),
+        "a failed recording is cleared once surfaced"
+    );
 }
 
 #[test]
 fn reconcile_not_found_entry_is_ingest_failed_and_cleared() {
     let mut ledger = RecordingsLedger::new();
-    upsert(&mut ledger, "win-1".to_string(), "rec_gone".to_string(), None, ts("2026-06-03T10:00:00Z"));
+    upsert(
+        &mut ledger,
+        "win-1".to_string(),
+        "rec_gone".to_string(),
+        None,
+        ts("2026-06-03T10:00:00Z"),
+    );
 
     let outcomes = reconcile(&mut ledger, ts("2026-06-03T10:30:00Z"), |_, _| {
-        Ok(RecordingStatus { status: "".to_string(), source_landed: false, not_found: true })
+        Ok(RecordingStatus {
+            status: "".to_string(),
+            source_landed: false,
+            not_found: true,
+        })
     });
 
     assert!(matches!(outcomes[0], ReconcileOutcome::IngestFailed { .. }));
@@ -431,9 +556,17 @@ fn reconcile_not_found_entry_is_ingest_failed_and_cleared() {
 #[test]
 fn reconcile_fetch_error_retains_entry_for_next_launch() {
     let mut ledger = RecordingsLedger::new();
-    upsert(&mut ledger, "win-1".to_string(), "rec_abc".to_string(), None, ts("2026-06-03T10:00:00Z"));
+    upsert(
+        &mut ledger,
+        "win-1".to_string(),
+        "rec_abc".to_string(),
+        None,
+        ts("2026-06-03T10:00:00Z"),
+    );
 
-    let outcomes = reconcile(&mut ledger, ts("2026-06-03T10:30:00Z"), |_, _| Err("offline".to_string()));
+    let outcomes = reconcile(&mut ledger, ts("2026-06-03T10:30:00Z"), |_, _| {
+        Err("offline".to_string())
+    });
 
     assert!(matches!(outcomes[0], ReconcileOutcome::Unknown { .. }));
     assert!(
@@ -447,7 +580,13 @@ fn reconcile_aged_out_entry_is_dropped_without_fetch() {
     // An entry older than MAX_AGE_DAYS is given up on (reported IngestFailed)
     // and never fetched — it can't pin the ledger forever.
     let mut ledger = RecordingsLedger::new();
-    upsert(&mut ledger, "win-old".to_string(), "rec_old".to_string(), None, ts("2026-05-20T10:00:00Z"));
+    upsert(
+        &mut ledger,
+        "win-old".to_string(),
+        "rec_old".to_string(),
+        None,
+        ts("2026-05-20T10:00:00Z"),
+    );
 
     let now = ts("2026-06-03T10:00:00Z"); // 14 days later — past the 7-day bound
     let mut fetched_any = false;
@@ -469,11 +608,20 @@ fn reconcile_corrupt_started_at_ages_out() {
     let mut ledger = RecordingsLedger::new();
     ledger.insert(
         "win-bad".to_string(),
-        RecordingEntry { recording_id: "rec_bad".to_string(), company_uid: None, started_at: "not-a-date".to_string() },
+        RecordingEntry {
+            recording_id: "rec_bad".to_string(),
+            company_uid: None,
+            started_at: "not-a-date".to_string(),
+        },
     );
-    let outcomes = reconcile(&mut ledger, ts("2026-06-03T10:00:00Z"), |_, _| Ok(status("processing", false)));
+    let outcomes = reconcile(&mut ledger, ts("2026-06-03T10:00:00Z"), |_, _| {
+        Ok(status("processing", false))
+    });
     assert!(matches!(outcomes[0], ReconcileOutcome::IngestFailed { .. }));
-    assert!(ledger.is_empty(), "a corrupt timestamp fails closed (dropped)");
+    assert!(
+        ledger.is_empty(),
+        "a corrupt timestamp fails closed (dropped)"
+    );
 }
 
 #[test]
@@ -482,10 +630,34 @@ fn reconcile_mixed_ledger_partitions_correctly() {
     // the ledger ends up holding exactly the two that should be retained.
     let mut ledger = RecordingsLedger::new();
     let t = ts("2026-06-03T10:00:00Z");
-    upsert(&mut ledger, "win-saved".to_string(), "rec_saved".to_string(), None, t);
-    upsert(&mut ledger, "win-proc".to_string(), "rec_proc".to_string(), None, t);
-    upsert(&mut ledger, "win-failed".to_string(), "rec_failed".to_string(), None, t);
-    upsert(&mut ledger, "win-err".to_string(), "rec_err".to_string(), None, t);
+    upsert(
+        &mut ledger,
+        "win-saved".to_string(),
+        "rec_saved".to_string(),
+        None,
+        t,
+    );
+    upsert(
+        &mut ledger,
+        "win-proc".to_string(),
+        "rec_proc".to_string(),
+        None,
+        t,
+    );
+    upsert(
+        &mut ledger,
+        "win-failed".to_string(),
+        "rec_failed".to_string(),
+        None,
+        t,
+    );
+    upsert(
+        &mut ledger,
+        "win-err".to_string(),
+        "rec_err".to_string(),
+        None,
+        t,
+    );
 
     let now = ts("2026-06-03T10:30:00Z");
     let outcomes = reconcile(&mut ledger, now, |recording_id, _| match recording_id {

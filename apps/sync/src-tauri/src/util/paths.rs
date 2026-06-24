@@ -210,10 +210,7 @@ pub fn deploy_prefs_json_path() -> Result<PathBuf, String> {
 ///    safety net for installs that didn't write the path back to menubar.json
 ///    (older installer flows).
 /// 4. ~/HQ default
-pub fn resolve_hq_folder(
-    config_path: Option<&str>,
-    menubar_override: Option<&str>,
-) -> PathBuf {
+pub fn resolve_hq_folder(config_path: Option<&str>, menubar_override: Option<&str>) -> PathBuf {
     // Priority 1: menubar.json override
     if let Some(path) = menubar_override {
         if !path.is_empty() {
@@ -329,10 +326,7 @@ mod tests {
 
     #[test]
     fn test_resolve_menubar_override_wins() {
-        let result = resolve_hq_folder(
-            Some("/from/config"),
-            Some("/from/menubar"),
-        );
+        let result = resolve_hq_folder(Some("/from/config"), Some("/from/menubar"));
         assert_eq!(result, PathBuf::from("/from/menubar"));
     }
 
@@ -400,7 +394,11 @@ mod tests {
             if let Some(first) = existing.split(':').next() {
                 if !first.is_empty() {
                     let path = child_path();
-                    assert!(path.contains(first), "child_path dropped existing entry {}", first);
+                    assert!(
+                        path.contains(first),
+                        "child_path dropped existing entry {}",
+                        first
+                    );
                 }
             }
         }

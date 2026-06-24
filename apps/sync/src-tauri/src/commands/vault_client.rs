@@ -8,7 +8,10 @@ use crate::util::client_info::build_client;
 #[derive(Debug)]
 pub enum VaultClientError {
     Request(reqwest::Error),
-    Http { status: u16, body: String },
+    Http {
+        status: u16,
+        body: String,
+    },
     Json(String),
     /// 403 with body `{"code":"SELF_OWNERSHIP_MISMATCH"}` from POST /sts/vend-self.
     SelfOwnershipMismatch,
@@ -375,9 +378,7 @@ impl VaultClient {
     /// own, enriched server-side with `companyName` + `companySlug`. Use this
     /// when you need human-readable company names; `list_memberships` (above)
     /// returns the same data without the enrichment.
-    pub async fn list_my_memberships(
-        &self,
-    ) -> Result<Vec<MembershipInfo>, VaultClientError> {
+    pub async fn list_my_memberships(&self) -> Result<Vec<MembershipInfo>, VaultClientError> {
         let resp = self
             .client
             .get(format!("{}/membership/me", self.base_url))
@@ -665,7 +666,10 @@ mod tests {
             .mount(&server)
             .await;
 
-        let result = client(&server.uri()).provision_bucket("cmp_x").await.unwrap();
+        let result = client(&server.uri())
+            .provision_bucket("cmp_x")
+            .await
+            .unwrap();
         assert_eq!(result.bucket_name, "hq-vault-cmp-x");
         assert_eq!(result.kms_key_id, "key-123");
     }
@@ -907,7 +911,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result.len(), 1);
-        assert!(result[0].uid.is_empty(), "missing uid in API → empty string per serde(default)");
+        assert!(
+            result[0].uid.is_empty(),
+            "missing uid in API → empty string per serde(default)"
+        );
         assert_eq!(result[0].membership_key.as_deref(), Some("prs_x#cmp_a"));
         assert_eq!(result[0].company_uid, "cmp_a");
         // display_id() falls back to membership_key when uid is empty.
@@ -929,7 +936,10 @@ mod tests {
             .list_memberships("prs_lonely")
             .await
             .unwrap();
-        assert!(result.is_empty(), "empty memberships are a valid signal, not an error");
+        assert!(
+            result.is_empty(),
+            "empty memberships are a valid signal, not an error"
+        );
     }
 
     #[tokio::test]
@@ -983,7 +993,10 @@ mod tests {
         // it isn't parsed as a URL fragment delimiter.
         assert_eq!(encode_path_segment("prs_a#cmp_b"), "prs_a%23cmp_b");
         // unreserved chars pass through untouched.
-        assert_eq!(encode_path_segment("knowledge_v1.2-x~y"), "knowledge_v1.2-x~y");
+        assert_eq!(
+            encode_path_segment("knowledge_v1.2-x~y"),
+            "knowledge_v1.2-x~y"
+        );
         // a stray slash would also be encoded (can't split the path).
         assert_eq!(encode_path_segment("a/b"), "a%2Fb");
     }

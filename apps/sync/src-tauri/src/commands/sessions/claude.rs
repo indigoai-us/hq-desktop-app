@@ -162,7 +162,11 @@ struct SessionMeta {
 pub async fn list_local_claude_sessions() -> Result<Vec<AgentSession>, String> {
     let projects_dir = claude_projects_dir();
     let hq_root = resolve_hq_folder();
-    Ok(scan_claude_sessions(&projects_dir, hq_root.as_deref(), SystemTime::now()))
+    Ok(scan_claude_sessions(
+        &projects_dir,
+        hq_root.as_deref(),
+        SystemTime::now(),
+    ))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -277,7 +281,10 @@ fn read_one_transcript(
 
     // last-activity: prefer a real tail timestamp; else the mtime.
     let mtime_iso = system_time_to_iso(mtime);
-    let last_activity_at = tail.last_timestamp.clone().unwrap_or_else(|| mtime_iso.clone());
+    let last_activity_at = tail
+        .last_timestamp
+        .clone()
+        .unwrap_or_else(|| mtime_iso.clone());
 
     // HQ enrichment from workspace/sessions/<id>/meta.yaml.
     let meta = hq_root.and_then(|root| read_session_meta(root, &id));
@@ -744,7 +751,13 @@ mod tests {
             proj.join(format!("{id}.jsonl")),
             format!(
                 "{}\n",
-                assistant_line(id, "/tmp/x", "main", "claude-opus-4-8", "2026-06-15T18:00:00.000Z")
+                assistant_line(
+                    id,
+                    "/tmp/x",
+                    "main",
+                    "claude-opus-4-8",
+                    "2026-06-15T18:00:00.000Z"
+                )
             ),
         )
         .unwrap();
@@ -824,14 +837,24 @@ mod tests {
             proj.join(format!("{id}.jsonl")),
             format!(
                 "{}\n",
-                assistant_line(id, "/tmp/x", "main", "claude-opus-4-8", "2026-06-15T18:00:00.000Z")
+                assistant_line(
+                    id,
+                    "/tmp/x",
+                    "main",
+                    "claude-opus-4-8",
+                    "2026-06-15T18:00:00.000Z"
+                )
             ),
         )
         .unwrap();
         // Garbage meta.yaml — must be ignored, record still produced.
         let meta_dir = hq.join("workspace").join("sessions").join(id);
         fs::create_dir_all(&meta_dir).unwrap();
-        fs::write(meta_dir.join("meta.yaml"), "this: : : not valid yaml\n\t- broken").unwrap();
+        fs::write(
+            meta_dir.join("meta.yaml"),
+            "this: : : not valid yaml\n\t- broken",
+        )
+        .unwrap();
 
         let sessions = scan_claude_sessions(&projects, Some(&hq), SystemTime::now());
         assert_eq!(sessions.len(), 1);

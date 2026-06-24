@@ -153,8 +153,7 @@ pub async fn save_settings(prefs: MenubarPrefs) -> Result<(), String> {
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, json.as_bytes())
         .map_err(|e| format!("Failed to write menubar.json: {}", e))?;
-    std::fs::rename(&tmp, &path)
-        .map_err(|e| format!("Failed to write menubar.json: {}", e))?;
+    std::fs::rename(&tmp, &path).map_err(|e| format!("Failed to write menubar.json: {}", e))?;
 
     Ok(())
 }
@@ -172,8 +171,8 @@ fn merge_prefs_over_existing(
     prefs: &MenubarPrefs,
     existing_json: Option<&str>,
 ) -> Result<String, String> {
-    let incoming = serde_json::to_value(prefs)
-        .map_err(|e| format!("Failed to serialize settings: {}", e))?;
+    let incoming =
+        serde_json::to_value(prefs).map_err(|e| format!("Failed to serialize settings: {}", e))?;
     let mut obj = incoming.as_object().cloned().unwrap_or_default();
     if let Some(existing) = existing_json
         .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
@@ -465,11 +464,17 @@ mod tests {
         };
         let json = serde_json::to_string_pretty(&prefs).unwrap();
         // Key should appear in camelCase
-        assert!(json.contains("meetingDetectNotify"), "expected camelCase key");
+        assert!(
+            json.contains("meetingDetectNotify"),
+            "expected camelCase key"
+        );
         let parsed: MenubarPrefs = serde_json::from_str(&json).unwrap();
         let mdn = parsed.meeting_detect_notify.unwrap();
         assert_eq!(mdn.enabled, Some(false));
-        assert_eq!(mdn.platforms, Some(vec!["zoom".to_string(), "meet".to_string()]));
+        assert_eq!(
+            mdn.platforms,
+            Some(vec!["zoom".to_string(), "meet".to_string()])
+        );
     }
 
     #[test]

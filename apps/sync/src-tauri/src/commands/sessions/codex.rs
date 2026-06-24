@@ -609,7 +609,9 @@ mod tests {
     /// A non-meta rollout record that carries none of the fields we extract — must
     /// be skipped without breaking the head scan.
     fn event_line(ts: &str) -> String {
-        format!(r#"{{"timestamp":"{ts}","type":"event_msg","payload":{{"kind":"agent_message","text":"working"}}}}"#)
+        format!(
+            r#"{{"timestamp":"{ts}","type":"event_msg","payload":{{"kind":"agent_message","text":"working"}}}}"#
+        )
     }
 
     fn index_line(id: &str, thread_name: &str, updated_at: &str) -> String {
@@ -617,7 +619,13 @@ mod tests {
     }
 
     /// Write a rollout file at `sessions/YYYY/MM/DD/rollout-<ts>-<id>.jsonl`.
-    fn write_session_rollout(root: &Path, date: &str, ts: &str, id: &str, contents: &str) -> PathBuf {
+    fn write_session_rollout(
+        root: &Path,
+        date: &str,
+        ts: &str,
+        id: &str,
+        contents: &str,
+    ) -> PathBuf {
         // date = "YYYY/MM/DD"
         let dir = root.join("sessions").join(date);
         fs::create_dir_all(&dir).unwrap();
@@ -646,16 +654,28 @@ mod tests {
 
         let rollout_a = format!(
             "{}\n{}\n{}\n",
-            session_meta_line(id_a, "/Users/corey/Documents/HQ", "2026-06-15T18:00:00.000Z"),
+            session_meta_line(
+                id_a,
+                "/Users/corey/Documents/HQ",
+                "2026-06-15T18:00:00.000Z"
+            ),
             event_line("2026-06-15T18:00:01.000Z"),
-            turn_context_line("/Users/corey/Documents/HQ", "gpt-5.5", "2026-06-15T18:00:02.000Z"),
+            turn_context_line(
+                "/Users/corey/Documents/HQ",
+                "gpt-5.5",
+                "2026-06-15T18:00:02.000Z"
+            ),
         );
         write_session_rollout(&root, "2026/06/15", "2026-06-15T18-00-00", id_a, &rollout_a);
 
         let rollout_b = format!(
             "{}\n{}\n",
             session_meta_line(id_b, "/Users/corey/code/widget", "2026-06-14T10:00:00.000Z"),
-            turn_context_line("/Users/corey/code/widget", "gpt-5.1-codex", "2026-06-14T10:00:05.000Z"),
+            turn_context_line(
+                "/Users/corey/code/widget",
+                "gpt-5.1-codex",
+                "2026-06-14T10:00:05.000Z"
+            ),
         );
         write_archived_rollout(&root, "2026-06-14T10-00-00", id_b, &rollout_b);
 
@@ -815,7 +835,11 @@ mod tests {
         fs::write(root.join("session_index.jsonl"), index).unwrap();
 
         let sessions = scan_codex_sessions(&root, SystemTime::now());
-        assert_eq!(sessions.len(), 1, "garbage index lines don't blank the scan");
+        assert_eq!(
+            sessions.len(),
+            1,
+            "garbage index lines don't blank the scan"
+        );
         assert_eq!(sessions[0].last_activity_at, "2026-06-15T18:05:00.000Z");
     }
 
@@ -885,7 +909,10 @@ mod tests {
         // Not a rollout → None.
         assert_eq!(rollout_id_from_filename("README.md"), None);
         // Missing a valid UUID tail → None.
-        assert_eq!(rollout_id_from_filename("rollout-2026-04-30-foo.jsonl"), None);
+        assert_eq!(
+            rollout_id_from_filename("rollout-2026-04-30-foo.jsonl"),
+            None
+        );
     }
 
     #[test]

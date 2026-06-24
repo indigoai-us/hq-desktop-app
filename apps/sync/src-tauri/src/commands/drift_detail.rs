@@ -69,7 +69,8 @@ pub async fn open_drift_detail(app: AppHandle, report: DriftReport) -> Result<()
     // `get_webview_window` (it has to, since it runs in a different
     // closure on the main thread and can't capture the builder's value
     // across the thread boundary cleanly).
-    let _window = tauri::WebviewWindowBuilder::new(
+    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+    let mut builder = tauri::WebviewWindowBuilder::new(
         &app,
         WINDOW_LABEL,
         tauri::WebviewUrl::App("index.html".into()),
@@ -78,17 +79,19 @@ pub async fn open_drift_detail(app: AppHandle, report: DriftReport) -> Result<()
     .inner_size(560.0, 480.0)
     .resizable(true)
     .decorations(true)
-    .title_bar_style(tauri::TitleBarStyle::Overlay)
-    .hidden_title(true)
-    // Native macOS inset for the traffic-light buttons. With
-    // TitleBarStyle::Overlay + hidden_title, Tauri otherwise places
-    // them at (0, 0) flush against the top-left corner. (20, 14)
-    // mirrors what AppKit picks for a standard window title bar.
-    .traffic_light_position(tauri::LogicalPosition::new(20.0, 14.0))
     .transparent(true)
-    .visible(false)
-    .build()
-    .map_err(|e| e.to_string())?;
+    .visible(false);
+
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder
+            .title_bar_style(tauri::TitleBarStyle::Overlay)
+            .hidden_title(true)
+            // Native macOS inset for the traffic-light buttons.
+            .traffic_light_position(tauri::LogicalPosition::new(20.0, 14.0));
+    }
+
+    let _window = builder.build().map_err(|e| e.to_string())?;
 
     // macOS-only: apply the same NSVisualEffectView material the popover
     // uses so the drift window inherits the system's backdrop-blur look.
@@ -107,7 +110,10 @@ pub async fn open_drift_detail(app: AppHandle, report: DriftReport) -> Result<()
         let _ = app.run_on_main_thread(move || {
             use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial, NSVisualEffectState};
             let Some(window) = app_for_main.get_webview_window(WINDOW_LABEL) else {
-                log("drift-detail", "apply_vibrancy: window vanished before main-thread dispatch");
+                log(
+                    "drift-detail",
+                    "apply_vibrancy: window vanished before main-thread dispatch",
+                );
                 return;
             };
             if let Err(e) = apply_vibrancy(
@@ -118,9 +124,17 @@ pub async fn open_drift_detail(app: AppHandle, report: DriftReport) -> Result<()
             ) {
                 log("drift-detail", &format!("apply_vibrancy FAILED: {e}"));
             } else {
-                log("drift-detail", "apply_vibrancy: success (Popover material, blur 18)");
+                log(
+                    "drift-detail",
+                    "apply_vibrancy: success (Popover material, blur 18)",
+                );
             }
         });
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        crate::apply_windows_vibrancy(&_window);
     }
 
     Ok(())
@@ -144,7 +158,10 @@ pub async fn drift_window_ready(app: AppHandle) -> Result<(), String> {
         match app.emit_to(WINDOW_LABEL, "drift:report", &report) {
             Ok(_) => log(
                 "drift-detail",
-                &format!("ready: emit_to({}) ok, count={}", WINDOW_LABEL, report.count),
+                &format!(
+                    "ready: emit_to({}) ok, count={}",
+                    WINDOW_LABEL, report.count
+                ),
             ),
             Err(e) => log("drift-detail", &format!("ready: emit_to failed: {e}")),
         }

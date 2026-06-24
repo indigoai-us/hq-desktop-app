@@ -39,7 +39,10 @@ pub fn spawn_and_poll(app: &AppHandle) {
     let pid = std::process::id();
     match helper_path() {
         Some(hp) => match std::process::Command::new(&hp).arg(pid.to_string()).spawn() {
-            Ok(_) => log("tray", &format!("native menu-bar helper spawned: {}", hp.display())),
+            Ok(_) => log(
+                "tray",
+                &format!("native menu-bar helper spawned: {}", hp.display()),
+            ),
             Err(e) => log("tray", &format!("native helper spawn failed: {e}")),
         },
         None => log("tray", "native helper binary not found in bundle"),
@@ -72,8 +75,8 @@ pub fn spawn_and_poll(app: &AppHandle) {
                 // the main thread — calling them from this poll thread deadlocks
                 // AppKit and wedges the poller after the first click. Marshal it.
                 let app_main = app.clone();
-                let _ = app
-                    .run_on_main_thread(move || crate::tray::toggle_popover_window(&app_main));
+                let _ =
+                    app.run_on_main_thread(move || crate::tray::toggle_popover_window(&app_main));
             } else {
                 match cmd {
                     "sync" => {

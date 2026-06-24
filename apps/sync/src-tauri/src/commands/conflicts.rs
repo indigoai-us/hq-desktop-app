@@ -34,12 +34,8 @@ fn resolve_hq_folder_path() -> Result<String, String> {
     let config = crate::commands::config::read_hq_config_lenient()?;
 
     let hq_folder = paths::resolve_hq_folder(
-        config
-            .as_ref()
-            .and_then(|c| c.hq_folder_path.as_deref()),
-        menubar_prefs
-            .as_ref()
-            .and_then(|p| p.hq_path.as_deref()),
+        config.as_ref().and_then(|c| c.hq_folder_path.as_deref()),
+        menubar_prefs.as_ref().and_then(|p| p.hq_path.as_deref()),
     );
 
     Ok(hq_folder.to_string_lossy().to_string())
@@ -96,10 +92,7 @@ pub fn build_full_path(hq_folder: &str, relative_path: &str) -> Result<String, S
         .map_err(|e| format!("Invalid path '{}': {}", full_str, e))?;
 
     if !full_canon.starts_with(&hq_canon) {
-        return Err(format!(
-            "Path '{}' escapes HQ folder",
-            relative_path
-        ));
+        return Err(format!("Path '{}' escapes HQ folder", relative_path));
     }
 
     Ok(full_canon.to_string_lossy().to_string())

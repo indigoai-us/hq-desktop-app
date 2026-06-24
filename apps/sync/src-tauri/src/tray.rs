@@ -133,7 +133,10 @@ static TRAY_ANCHOR_X_POINTS: AtomicI64 = AtomicI64::new(i64::MIN);
 /// window) is treated as "unknown".
 pub fn set_tray_anchor_x(points: f64) {
     let rounded = points.round() as i64;
-    TRAY_ANCHOR_X_POINTS.store(if rounded < 0 { i64::MIN } else { rounded }, Ordering::SeqCst);
+    TRAY_ANCHOR_X_POINTS.store(
+        if rounded < 0 { i64::MIN } else { rounded },
+        Ordering::SeqCst,
+    );
 }
 
 fn tray_anchor_x_points() -> Option<f64> {
@@ -291,9 +294,7 @@ const TRAY_ID: &str = "hq-sync-tray";
 /// Belt-and-suspenders: the builder also sets a text `title("HQ")`. The title
 /// renders through the status button's `title` (not its `image`), so even if the
 /// template glyph is swallowed the user still sees a clickable "HQ".
-fn build_tray_icon(
-    app: &AppHandle,
-) -> Result<tauri::tray::TrayIcon, Box<dyn std::error::Error>> {
+fn build_tray_icon(app: &AppHandle) -> Result<tauri::tray::TrayIcon, Box<dyn std::error::Error>> {
     let version = app.package_info().version.to_string();
     let version_item = MenuItemBuilder::with_id(MENU_VERSION, format!("HQ Sync v{}", version))
         .enabled(false)
@@ -386,7 +387,10 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     #[cfg(target_os = "macos")]
-    log("tray", "macOS: menu-bar item provided by native helper (tao tray skipped)");
+    log(
+        "tray",
+        "macOS: menu-bar item provided by native helper (tao tray skipped)",
+    );
 
     // Hide the popover when the user clicks away. `window.hide()` preserves
     // the renderer state (DOM, Svelte stores, listeners), so re-showing is
@@ -417,7 +421,11 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                     .webview_windows()
                     .iter()
                     .any(|(label, w)| label != "main" && w.is_visible().unwrap_or(false));
-                if !is_modal_open() && !secondary_open && !disable_blur_hide && !blur_hide_suppressed() {
+                if !is_modal_open()
+                    && !secondary_open
+                    && !disable_blur_hide
+                    && !blur_hide_suppressed()
+                {
                     let _ = win_clone.hide();
                 }
             }
@@ -1108,11 +1116,21 @@ mod tests {
     // top inset), arranged side-by-side: primary 1440x900pt @ origin, secondary
     // 1920x1080pt to its right. All math is the pure positioner — no live AppKit.
     fn primary_box() -> MonitorBox {
-        MonitorBox { work_x: 0.0, work_y: 50.0, work_w: 2880.0, scale: 2.0 }
+        MonitorBox {
+            work_x: 0.0,
+            work_y: 50.0,
+            work_w: 2880.0,
+            scale: 2.0,
+        }
     }
     fn secondary_box() -> MonitorBox {
         // Cocoa points span [1440, 3360]; physical px span [2880, 6720].
-        MonitorBox { work_x: 2880.0, work_y: 50.0, work_w: 3840.0, scale: 2.0 }
+        MonitorBox {
+            work_x: 2880.0,
+            work_y: 50.0,
+            work_w: 3840.0,
+            scale: 2.0,
+        }
     }
 
     #[test]
@@ -1123,7 +1141,7 @@ mod tests {
         // center_px = 2000*2 = 4000; minus win_w/2 (180) = 3820; in [2880, 6360].
         assert_eq!(x, 3820);
         assert_eq!(y, 54); // work_y (50) + gap (4)
-        // The whole point of the fix: it lands on the secondary, not the primary.
+                           // The whole point of the fix: it lands on the secondary, not the primary.
         assert!(x as f64 >= secondary_box().work_x);
     }
 
@@ -1169,8 +1187,18 @@ mod tests {
         // at x=1440pt, but tao's physical grid places it at x=2880px. Selecting
         // by each monitor's own scale (not a single global factor) is what keeps
         // a secondary-display click off the primary.
-        let primary = MonitorBox { work_x: 0.0, work_y: 50.0, work_w: 2880.0, scale: 2.0 };
-        let secondary = MonitorBox { work_x: 2880.0, work_y: 25.0, work_w: 1920.0, scale: 1.0 };
+        let primary = MonitorBox {
+            work_x: 0.0,
+            work_y: 50.0,
+            work_w: 2880.0,
+            scale: 2.0,
+        };
+        let secondary = MonitorBox {
+            work_x: 2880.0,
+            work_y: 25.0,
+            work_w: 1920.0,
+            scale: 1.0,
+        };
         let mons = [primary, secondary];
         // Each monitor's span uses its OWN scale: primary points span [0, 1440],
         // secondary points span [2880, 4800]. 2000 points falls in the gap → None.

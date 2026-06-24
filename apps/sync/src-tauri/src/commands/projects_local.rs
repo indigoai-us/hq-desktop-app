@@ -406,8 +406,8 @@ impl From<PrdFile> for LocalProjectPrd {
 /// `(total, complete)` story counts for a parsed prd.
 fn story_counts(prd: &PrdFile) -> (u32, u32) {
     let total = u32::try_from(prd.user_stories.len()).unwrap_or(u32::MAX);
-    let complete = u32::try_from(prd.user_stories.iter().filter(|s| s.passes).count())
-        .unwrap_or(u32::MAX);
+    let complete =
+        u32::try_from(prd.user_stories.iter().filter(|s| s.passes).count()).unwrap_or(u32::MAX);
     (total, complete)
 }
 
@@ -752,9 +752,7 @@ fn read_company_goals(hq_root: &Path, company_slug: &str) -> Result<CompanyGoals
 /// surface uses). The only hard errors are a `company_slug` that escapes the HQ
 /// folder (path-traversal guard) or the gate rejecting a signed-out caller.
 #[tauri::command]
-pub async fn get_company_crm_projection(
-    company_slug: String,
-) -> Result<serde_json::Value, String> {
+pub async fn get_company_crm_projection(company_slug: String) -> Result<serde_json::Value, String> {
     if !crate::util::feature_gate::desktop_features_enabled().await {
         return Err("CRM projection reader requires a signed-in user".to_string());
     }
@@ -768,10 +766,7 @@ pub async fn get_company_crm_projection(
 /// traversal, no nested path, no absolute escape), then leniently reads the
 /// company's `crm-projection.json`. Missing/garbage projection → JSON `null`
 /// (the "fall back to the vault" signal), never an error.
-fn read_crm_projection(
-    hq_root: &Path,
-    company_slug: &str,
-) -> Result<serde_json::Value, String> {
+fn read_crm_projection(hq_root: &Path, company_slug: &str) -> Result<serde_json::Value, String> {
     let slug = company_slug.trim();
     if slug.is_empty() {
         return Err("company_slug is required".to_string());
@@ -923,8 +918,8 @@ fn write_story_passes(
         return Err("prd_path must point at a prd.json file".to_string());
     }
 
-    let bytes = std::fs::read(&abs)
-        .map_err(|e| format!("could not read prd.json at {prd_path:?}: {e}"))?;
+    let bytes =
+        std::fs::read(&abs).map_err(|e| format!("could not read prd.json at {prd_path:?}: {e}"))?;
     let mut tree: serde_json::Value = serde_json::from_slice(&bytes)
         .map_err(|e| format!("prd.json at {prd_path:?} is not valid JSON: {e}"))?;
 
@@ -1187,7 +1182,9 @@ mod tests {
         let root = make_fixture_tree();
         let mut projects = scan_local_projects(&root);
         // Deterministic order for assertions.
-        projects.sort_by(|a, b| (a.company.clone(), a.id.clone()).cmp(&(b.company.clone(), b.id.clone())));
+        projects.sort_by(|a, b| {
+            (a.company.clone(), a.id.clone()).cmp(&(b.company.clone(), b.id.clone()))
+        });
 
         // acme: one valid unlinked prd ("widget"), junk skipped.
         let acme: Vec<_> = projects.iter().filter(|p| p.company == "acme").collect();
@@ -1237,10 +1234,8 @@ mod tests {
 
     #[test]
     fn missing_companies_dir_returns_empty() {
-        let root = std::env::temp_dir().join(format!(
-            "hq-projects-local-empty-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("hq-projects-local-empty-{}", std::process::id()));
         // Root exists but has no companies/ subdir.
         let _ = fs::create_dir_all(&root);
         assert!(scan_local_projects(&root).is_empty());
@@ -1522,7 +1517,10 @@ mod tests {
                 "slug {evil:?} must be rejected"
             );
         }
-        assert!(read_company_goals(&root, "   ").is_err(), "empty slug rejected");
+        assert!(
+            read_company_goals(&root, "   ").is_err(),
+            "empty slug rejected"
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -1595,7 +1593,10 @@ mod tests {
                 "slug {evil:?} must be rejected"
             );
         }
-        assert!(read_crm_projection(&root, "   ").is_err(), "empty slug rejected");
+        assert!(
+            read_crm_projection(&root, "   ").is_err(),
+            "empty slug rejected"
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -1621,7 +1622,8 @@ mod tests {
             .expect("status write succeeds");
 
         let after_bytes = fs::read(root.join(board_rel)).unwrap();
-        let after: serde_json::Value = serde_json::from_slice(&after_bytes).expect("still valid JSON");
+        let after: serde_json::Value =
+            serde_json::from_slice(&after_bytes).expect("still valid JSON");
         let proj = after["projects"]
             .as_array()
             .unwrap()
@@ -1631,7 +1633,10 @@ mod tests {
         assert_eq!(proj["status"], "completed");
         // updated_at was refreshed to an ISO-8601 Z timestamp.
         let updated = proj["updated_at"].as_str().expect("updated_at written");
-        assert!(updated.ends_with('Z') && updated.contains('T'), "got: {updated}");
+        assert!(
+            updated.ends_with('Z') && updated.contains('T'),
+            "got: {updated}"
+        );
 
         // Untouched sibling project keeps its original status (no clobber).
         let other = after["projects"]

@@ -102,7 +102,11 @@ fn crc_table() -> [u32; 256] {
         let mut c = (i as u32) << 24;
         let mut k = 0;
         while k < 8 {
-            c = if c & 0x8000_0000 != 0 { (c << 1) ^ 0x04C1_1DB7 } else { c << 1 };
+            c = if c & 0x8000_0000 != 0 {
+                (c << 1) ^ 0x04C1_1DB7
+            } else {
+                c << 1
+            };
             k += 1;
         }
         t[i] = c;
@@ -194,7 +198,11 @@ fn classify_message(inbox_owner: &str, line: &serde_json::Value) -> AgencyMessag
         from,
         kind,
         text,
-        ts: line.get("ts").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        ts: line
+            .get("ts")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
         inbox: inbox_owner.to_string(),
     }
 }
@@ -325,7 +333,11 @@ pub async fn list_agency_teams() -> Result<Vec<AgencyTeam>, String> {
                     });
                 }
             }
-            teams.push(AgencyTeam { company: company.clone(), team, workers });
+            teams.push(AgencyTeam {
+                company: company.clone(),
+                team,
+                workers,
+            });
         }
     }
     Ok(teams)
@@ -362,7 +374,11 @@ pub async fn list_agency_questions() -> Result<Vec<AgencyQuestion>, String> {
                                 team: team.clone(),
                                 id,
                                 question: q.to_string(),
-                                ts: o.get("ts").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                                ts: o
+                                    .get("ts")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string(),
                                 options: parse_options(&o),
                             });
                         }
@@ -418,8 +434,12 @@ pub async fn answer_agency_question(
         .append(true)
         .open(&manager)
         .map_err(|e| e.to_string())?;
-    writeln!(f, "{}", serde_json::to_string(&line).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())?;
+    writeln!(
+        f,
+        "{}",
+        serde_json::to_string(&line).map_err(|e| e.to_string())?
+    )
+    .map_err(|e| e.to_string())?;
     Ok("delivered".to_string())
 }
 
@@ -494,8 +514,12 @@ pub async fn send_agency_message(
         .append(true)
         .open(&manager)
         .map_err(|e| e.to_string())?;
-    writeln!(f, "{}", serde_json::to_string(&line).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())?;
+    writeln!(
+        f,
+        "{}",
+        serde_json::to_string(&line).map_err(|e| e.to_string())?
+    )
+    .map_err(|e| e.to_string())?;
     Ok("sent".to_string())
 }
 
@@ -511,7 +535,10 @@ mod tests {
         assert_eq!(cksum(b"Ship it?"), 780_494_884);
         assert_eq!(cksum(b"test"), 3_076_352_578);
         assert_eq!(cksum(b"Approve deploy to prod?"), 1_221_633_456);
-        assert_eq!(cksum(b"Deploy nick to prod & resolve #1234?"), 2_811_623_944);
+        assert_eq!(
+            cksum(b"Deploy nick to prod & resolve #1234?"),
+            2_811_623_944
+        );
     }
 
     #[test]
@@ -521,7 +548,10 @@ mod tests {
             "text": "ASK: Deploy?",
             "options": ["Ship it", "  Hold  ", "", "   ", 42, true]
         });
-        assert_eq!(parse_options(&line), vec!["Ship it".to_string(), "Hold".to_string()]);
+        assert_eq!(
+            parse_options(&line),
+            vec!["Ship it".to_string(), "Hold".to_string()]
+        );
     }
 
     #[test]
@@ -539,14 +569,20 @@ mod tests {
             "team-liaison",
             &serde_json::json!({"role":"user","from":"manager","text":"ASK: Deploy?","ts":"t1"}),
         );
-        assert_eq!((ask.from.as_str(), ask.kind.as_str(), ask.text.as_str()), ("manager", "ask", "Deploy?"));
+        assert_eq!(
+            (ask.from.as_str(), ask.kind.as_str(), ask.text.as_str()),
+            ("manager", "ask", "Deploy?")
+        );
 
         // liaison's ANSWER lives in the manager inbox; prefix + [ans:] tag stripped.
         let ans = classify_message(
             "team-manager",
             &serde_json::json!({"role":"user","from":"liaison","text":"ANSWER: Ship it [ans:123]","ts":"t2"}),
         );
-        assert_eq!((ans.from.as_str(), ans.kind.as_str(), ans.text.as_str()), ("liaison", "answer", "Ship it"));
+        assert_eq!(
+            (ans.from.as_str(), ans.kind.as_str(), ans.text.as_str()),
+            ("liaison", "answer", "Ship it")
+        );
 
         // user line with no `from` is an operator-posted message.
         let op = classify_message(

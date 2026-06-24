@@ -61,10 +61,7 @@ async fn vault_client() -> Result<VaultClient, String> {
 /// `list_my_memberships` (company UID → membership). Falls back to synthesizing
 /// the key from `person_uid#company_uid` when the live API omits
 /// `membership_key` (older vault builds / test fixtures).
-async fn resolve_membership_key(
-    vault: &VaultClient,
-    company_slug: &str,
-) -> Result<String, String> {
+async fn resolve_membership_key(vault: &VaultClient, company_slug: &str) -> Result<String, String> {
     let entity = vault
         .find_entity_by_slug("company", company_slug)
         .await
@@ -154,7 +151,10 @@ mod tests {
     #[test]
     fn validate_toggle_mode_rejects_garbage() {
         let err = validate_toggle_mode("everything").unwrap_err();
-        assert!(err.contains("unsupported sync mode 'everything'"), "got: {err}");
+        assert!(
+            err.contains("unsupported sync mode 'everything'"),
+            "got: {err}"
+        );
     }
 
     #[tokio::test]
@@ -231,7 +231,10 @@ mod tests {
         let err = resolve_membership_key(&client(&server.uri()), "ghost")
             .await
             .unwrap_err();
-        assert!(err.contains("no cloud company found for 'ghost'"), "got: {err}");
+        assert!(
+            err.contains("no cloud company found for 'ghost'"),
+            "got: {err}"
+        );
     }
 
     #[tokio::test]

@@ -358,12 +358,27 @@ mod tests {
 
     #[test]
     fn from_pref_recognises_known_values() {
-        assert_eq!(ReleaseChannel::from_pref(Some("stable")), ReleaseChannel::Stable);
-        assert_eq!(ReleaseChannel::from_pref(Some("beta")), ReleaseChannel::Beta);
-        assert_eq!(ReleaseChannel::from_pref(Some("alpha")), ReleaseChannel::Alpha);
+        assert_eq!(
+            ReleaseChannel::from_pref(Some("stable")),
+            ReleaseChannel::Stable
+        );
+        assert_eq!(
+            ReleaseChannel::from_pref(Some("beta")),
+            ReleaseChannel::Beta
+        );
+        assert_eq!(
+            ReleaseChannel::from_pref(Some("alpha")),
+            ReleaseChannel::Alpha
+        );
         // Case-insensitive: a hand-edited config with TitleCase still works.
-        assert_eq!(ReleaseChannel::from_pref(Some("Beta")), ReleaseChannel::Beta);
-        assert_eq!(ReleaseChannel::from_pref(Some("ALPHA")), ReleaseChannel::Alpha);
+        assert_eq!(
+            ReleaseChannel::from_pref(Some("Beta")),
+            ReleaseChannel::Beta
+        );
+        assert_eq!(
+            ReleaseChannel::from_pref(Some("ALPHA")),
+            ReleaseChannel::Alpha
+        );
     }
 
     #[test]
@@ -372,8 +387,14 @@ mod tests {
         // surface a parse error to the user.
         assert_eq!(ReleaseChannel::from_pref(None), ReleaseChannel::Stable);
         assert_eq!(ReleaseChannel::from_pref(Some("")), ReleaseChannel::Stable);
-        assert_eq!(ReleaseChannel::from_pref(Some("nightly")), ReleaseChannel::Stable);
-        assert_eq!(ReleaseChannel::from_pref(Some("rc")), ReleaseChannel::Stable);
+        assert_eq!(
+            ReleaseChannel::from_pref(Some("nightly")),
+            ReleaseChannel::Stable
+        );
+        assert_eq!(
+            ReleaseChannel::from_pref(Some("rc")),
+            ReleaseChannel::Stable
+        );
     }
 
     // --- effective_channel: the security-critical gate ------------------
@@ -382,12 +403,24 @@ mod tests {
     fn non_indigo_always_coerced_to_stable() {
         // The whole point of the gate: even if the menubar.json has been
         // edited to "beta" or "alpha", a non-indigo user gets Stable.
-        assert_eq!(effective_channel(Some("beta"), false), ReleaseChannel::Stable);
-        assert_eq!(effective_channel(Some("alpha"), false), ReleaseChannel::Stable);
-        assert_eq!(effective_channel(Some("stable"), false), ReleaseChannel::Stable);
+        assert_eq!(
+            effective_channel(Some("beta"), false),
+            ReleaseChannel::Stable
+        );
+        assert_eq!(
+            effective_channel(Some("alpha"), false),
+            ReleaseChannel::Stable
+        );
+        assert_eq!(
+            effective_channel(Some("stable"), false),
+            ReleaseChannel::Stable
+        );
         assert_eq!(effective_channel(None, false), ReleaseChannel::Stable);
         // Junk preference for non-indigo also coerces to Stable.
-        assert_eq!(effective_channel(Some("garbage"), false), ReleaseChannel::Stable);
+        assert_eq!(
+            effective_channel(Some("garbage"), false),
+            ReleaseChannel::Stable
+        );
     }
 
     #[test]
@@ -399,16 +432,25 @@ mod tests {
     #[test]
     fn indigo_with_explicit_pref_honored() {
         // Indigo users can downgrade to Stable or upgrade to Alpha.
-        assert_eq!(effective_channel(Some("stable"), true), ReleaseChannel::Stable);
+        assert_eq!(
+            effective_channel(Some("stable"), true),
+            ReleaseChannel::Stable
+        );
         assert_eq!(effective_channel(Some("beta"), true), ReleaseChannel::Beta);
-        assert_eq!(effective_channel(Some("alpha"), true), ReleaseChannel::Alpha);
+        assert_eq!(
+            effective_channel(Some("alpha"), true),
+            ReleaseChannel::Alpha
+        );
     }
 
     #[test]
     fn indigo_with_garbage_pref_falls_back_to_stable() {
         // An explicit-but-unknown value still goes through from_pref,
         // which coerces to Stable. The auto-opt-in only fires on None.
-        assert_eq!(effective_channel(Some("nightly"), true), ReleaseChannel::Stable);
+        assert_eq!(
+            effective_channel(Some("nightly"), true),
+            ReleaseChannel::Stable
+        );
         assert_eq!(effective_channel(Some(""), true), ReleaseChannel::Stable);
     }
 
@@ -509,7 +551,10 @@ mod tests {
             "v0.1.109-beta.1".to_string(),
             "v0.1.110-alpha.2".to_string(),
         ];
-        assert_eq!(pick_release_for_channel(ReleaseChannel::Stable, &tags), None);
+        assert_eq!(
+            pick_release_for_channel(ReleaseChannel::Stable, &tags),
+            None
+        );
     }
 
     #[test]
@@ -531,7 +576,11 @@ mod tests {
 
     #[test]
     fn as_str_roundtrips_with_from_pref() {
-        for ch in [ReleaseChannel::Stable, ReleaseChannel::Beta, ReleaseChannel::Alpha] {
+        for ch in [
+            ReleaseChannel::Stable,
+            ReleaseChannel::Beta,
+            ReleaseChannel::Alpha,
+        ] {
             let s = ch.as_str();
             assert_eq!(ReleaseChannel::from_pref(Some(s)), ch);
         }

@@ -163,9 +163,7 @@ fn poll_lock() -> &'static Mutex<bool> {
 /// took the lock (caller must `clear_in_flight()` when done), `false` if
 /// another poll is already running.
 fn try_set_in_flight() -> bool {
-    let mut guard = poll_lock()
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
+    let mut guard = poll_lock().lock().unwrap_or_else(|p| p.into_inner());
     if *guard {
         return false;
     }
@@ -175,9 +173,7 @@ fn try_set_in_flight() -> bool {
 }
 
 fn clear_in_flight() {
-    let mut guard = poll_lock()
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
+    let mut guard = poll_lock().lock().unwrap_or_else(|p| p.into_inner());
     *guard = false;
 }
 
@@ -303,8 +299,7 @@ fn partition_unnotified(
     events: &[ShareEvent],
     notified: &[String],
 ) -> (Vec<ShareEvent>, Vec<String>) {
-    let seen: std::collections::HashSet<&str> =
-        notified.iter().map(String::as_str).collect();
+    let seen: std::collections::HashSet<&str> = notified.iter().map(String::as_str).collect();
     let fresh: Vec<ShareEvent> = events
         .iter()
         .filter(|e| !seen.contains(e.event_id.as_str()))
@@ -412,7 +407,10 @@ pub async fn poll_shared_with_me(app: AppHandle) -> Result<(), String> {
 
 async fn do_poll(app: &AppHandle) {
     if !should_poll().await {
-        log(LOG_TAG, "SHARE_NOTIFY_POLL_SKIP feature gate or setting disabled");
+        log(
+            LOG_TAG,
+            "SHARE_NOTIFY_POLL_SKIP feature gate or setting disabled",
+        );
         return;
     }
 
@@ -454,10 +452,7 @@ async fn do_poll(app: &AppHandle) {
     let entry = read_cursor_entry(&machine_id);
     let since = entry.cursor.clone();
     let url = match since.as_deref() {
-        Some(s) => format!(
-            "{}/v1/files/shared-with-me?since={}&limit=50",
-            base_url, s
-        ),
+        Some(s) => format!("{}/v1/files/shared-with-me?since={}&limit=50", base_url, s),
         None => format!("{}/v1/files/shared-with-me?limit=50", base_url),
     };
 
@@ -486,10 +481,7 @@ async fn do_poll(app: &AppHandle) {
                 return;
             }
             if !status.is_success() {
-                log(
-                    LOG_TAG,
-                    &format!("SHARE_NOTIFY_POLL_ERROR status={status}"),
-                );
+                log(LOG_TAG, &format!("SHARE_NOTIFY_POLL_ERROR status={status}"));
                 return;
             }
             match r.json::<SharedWithMeResponse>().await {
@@ -509,8 +501,7 @@ async fn do_poll(app: &AppHandle) {
                     // is inclusive, so the boundary event(s) come back every poll.
                     // `fresh` is the never-notified subset; `notified` is the
                     // updated ring we persist below.
-                    let (fresh, notified) =
-                        partition_unnotified(&body.events, &entry.notified);
+                    let (fresh, notified) = partition_unnotified(&body.events, &entry.notified);
 
                     // Advance the timestamp cursor to the newest event seen this
                     // poll (across ALL returned events, not just fresh) so the
@@ -552,132 +543,139 @@ async fn do_poll(app: &AppHandle) {
                         ),
                     );
 
-                    // Lazily register the bundle identifier with mac-notification-sys
-                    // on the first send per process. Without this, the library calls
-                    // `get_bundle_identifier_or_default("use_default")` internally,
-                    // which triggers a macOS "Choose Application" picker because
-                    // Launch Services can't resolve the literal "use_default" to an
-                    // installed app. Mirrors the fix in commands/meetings.rs.
-                    //
-                    // `set_application` itself is guarded by an internal Once, so
-                    // calling it on every send would be safe — wrapping in our own
-                    // OnceLock keeps the log line at one-per-process.
-                    static NOTIFICATION_APP_INIT: OnceLock<()> = OnceLock::new();
-                    NOTIFICATION_APP_INIT.get_or_init(|| {
-                        const BUNDLE_ID: &str = "ai.indigo.hq-sync-menubar";
-                        match mac_notification_sys::set_application(BUNDLE_ID) {
-                            Ok(()) => log(
-                                LOG_TAG,
-                                &format!("SHARE_NOTIFY_BUNDLE_SET bundle={BUNDLE_ID}"),
-                            ),
-                            Err(e) => log(
-                                LOG_TAG,
-                                &format!("SHARE_NOTIFY_BUNDLE_SET_FAILED bundle={BUNDLE_ID} err={e}"),
-                            ),
-                        }
-                    });
-
-                    // Fire one macOS notification per share event (US-005).
-                    //
-                    // We use mac-notification-sys directly (NOT tauri-plugin-
-                    // notification) so we can attach a `DropdownActions` button
-                    // labelled "Actions" with two options ("Copy prompt", "Open
-                    // details") that reveal on hover. The spawned thread blocks
-                    // on `wait_for_click(true).send()` until the user interacts
-                    // (or macOS auto-dismisses) and emits a Tauri event for the
-                    // frontend listener to handle.
-                    //
-                    // Custom-banner path: when `customBanner` is enabled, route
-                    // each share through the in-app banner (event-driven, no
-                    // busy-spinning Cocoa run loop) and skip the native firing
-                    // loop below entirely. The tray badge + `share:new-events`
-                    // emit after the branch run for both paths.
-                    if crate::commands::banner::custom_banner_enabled() {
-                        log(
-                            LOG_TAG,
-                            &format!("SHARE_NOTIFY_CUSTOM_BANNER {} event(s)", fresh.len()),
-                        );
-                        for evt in &fresh {
-                            if let Err(e) = crate::commands::banner::show_share_banner(
-                                app.clone(),
-                                evt.clone(),
-                            )
-                            .await
-                            {
-                                log(LOG_TAG, &format!("SHARE_NOTIFY_BANNER_FAIL err={e}"));
+                    #[cfg(target_os = "macos")]
+                    {
+                        // Lazily register the bundle identifier with mac-notification-sys
+                        // on the first send per process. Without this, the library calls
+                        // `get_bundle_identifier_or_default("use_default")` internally,
+                        // which triggers a macOS "Choose Application" picker because
+                        // Launch Services can't resolve the literal "use_default" to an
+                        // installed app. Mirrors the fix in commands/meetings.rs.
+                        //
+                        // `set_application` itself is guarded by an internal Once, so
+                        // calling it on every send would be safe — wrapping in our own
+                        // OnceLock keeps the log line at one-per-process.
+                        static NOTIFICATION_APP_INIT: OnceLock<()> = OnceLock::new();
+                        NOTIFICATION_APP_INIT.get_or_init(|| {
+                            const BUNDLE_ID: &str = "ai.indigo.hq-sync-menubar";
+                            match mac_notification_sys::set_application(BUNDLE_ID) {
+                                Ok(()) => log(
+                                    LOG_TAG,
+                                    &format!("SHARE_NOTIFY_BUNDLE_SET bundle={BUNDLE_ID}"),
+                                ),
+                                Err(e) => log(
+                                    LOG_TAG,
+                                    &format!(
+                                        "SHARE_NOTIFY_BUNDLE_SET_FAILED bundle={BUNDLE_ID} err={e}"
+                                    ),
+                                ),
                             }
-                        }
-                    } else {
-                    for evt in &fresh {
-                        let body_text = notification_body(evt.note.as_deref(), &evt.paths);
-                        let title = notification_title(&evt.issuer_display_name);
-                        let app_for_thread = app.clone();
-                        let event_clone = evt.clone();
+                        });
 
-                        std::thread::spawn(move || {
-                            let mut notification = mac_notification_sys::Notification::default();
-                            // The dropdown title appears as the visible button
-                            // label; the slice elements are the dropdown items.
-                            // Order = display order.
-                            notification
-                                .title(&title)
-                                .message(&body_text)
-                                // Body-click = primary action (open Claude Code
-                                // with the templated prompt prefilled, see the
-                                // Body-click = primary action: open Claude
-                                // Code with the templated prompt prefilled
-                                // (see "claude" branch in App.svelte).
-                                // Dropdown surfaces two explicit alternatives:
-                                //   * Copy prompt   — clipboard only (no app
-                                //     open) for users who already have a
-                                //     session running or want to paste
-                                //     elsewhere.
-                                //   * Open details  — ShareDetail window with
-                                //     full path list + Open in HQ Console.
-                                // Copy is intentionally redundant w/ body-
-                                // click for the LLM-session case; explicit
-                                // discoverability beats minimalism here
-                                // (user direction 2026-05-26).
-                                .main_button(mac_notification_sys::MainButton::DropdownActions(
-                                    "Actions",
-                                    &["Copy prompt", "Open details"],
-                                ));
-
-                            // CPU cap (Option 1): only the holder of the single
-                            // blocking-send slot may use `wait_for_click(true)`
-                            // (which busy-spins until the user acts — see
-                            // BlockingNotifyGuard docs). Any concurrent send
-                            // falls back to fire-and-forget so we never
-                            // accumulate spinning threads. The guard is dropped
-                            // the instant the blocking send returns.
-                            let response = match BlockingNotifyGuard::try_acquire() {
-                                Some(guard) => {
-                                    let r = notification.wait_for_click(true).send();
-                                    drop(guard);
-                                    r
+                        // Fire one macOS notification per share event (US-005).
+                        //
+                        // We use mac-notification-sys directly (NOT tauri-plugin-
+                        // notification) so we can attach a `DropdownActions` button
+                        // labelled "Actions" with two options ("Copy prompt", "Open
+                        // details") that reveal on hover. The spawned thread blocks
+                        // on `wait_for_click(true).send()` until the user interacts
+                        // (or macOS auto-dismisses) and emits a Tauri event for the
+                        // frontend listener to handle.
+                        //
+                        // Custom-banner path: when `customBanner` is enabled, route
+                        // each share through the in-app banner (event-driven, no
+                        // busy-spinning Cocoa run loop) and skip the native firing
+                        // loop below entirely. The tray badge + `share:new-events`
+                        // emit after the branch run for both paths.
+                        if crate::commands::banner::custom_banner_enabled() {
+                            log(
+                                LOG_TAG,
+                                &format!("SHARE_NOTIFY_CUSTOM_BANNER {} event(s)", fresh.len()),
+                            );
+                            for evt in &fresh {
+                                if let Err(e) = crate::commands::banner::show_share_banner(
+                                    app.clone(),
+                                    evt.clone(),
+                                )
+                                .await
+                                {
+                                    log(LOG_TAG, &format!("SHARE_NOTIFY_BANNER_FAIL err={e}"));
                                 }
-                                None => notification.send(),
-                            };
+                            }
+                        } else {
+                            for evt in &fresh {
+                                let body_text = notification_body(evt.note.as_deref(), &evt.paths);
+                                let title = notification_title(&evt.issuer_display_name);
+                                let app_for_thread = app.clone();
+                                let event_clone = evt.clone();
 
-                            match response {
-                                Ok(resp) => {
-                                    // Body-click → "claude": opens Claude
-                                    // Code (`claude://code/new?q=…&folder=…`)
-                                    // with the templated prompt pre-filled
-                                    // and cwd at the user's HQ folder. The
-                                    // recipient lands in an LLM session
-                                    // ready to act on the shared files
-                                    // without a paste step.
-                                    //
-                                    // Dropdown "Open details" → open the
-                                    // ShareDetail window for a UI surface
-                                    // (path list + Copy prompt fallback +
-                                    // Open in HQ Console link).
-                                    //
-                                    // The frontend listener in App.svelte
-                                    // owns the URL build + Tauri-command
-                                    // dispatch.
-                                    let action: Option<&'static str> = match resp {
+                                std::thread::spawn(move || {
+                                    let mut notification =
+                                        mac_notification_sys::Notification::default();
+                                    // The dropdown title appears as the visible button
+                                    // label; the slice elements are the dropdown items.
+                                    // Order = display order.
+                                    notification
+                                        .title(&title)
+                                        .message(&body_text)
+                                        // Body-click = primary action (open Claude Code
+                                        // with the templated prompt prefilled, see the
+                                        // Body-click = primary action: open Claude
+                                        // Code with the templated prompt prefilled
+                                        // (see "claude" branch in App.svelte).
+                                        // Dropdown surfaces two explicit alternatives:
+                                        //   * Copy prompt   — clipboard only (no app
+                                        //     open) for users who already have a
+                                        //     session running or want to paste
+                                        //     elsewhere.
+                                        //   * Open details  — ShareDetail window with
+                                        //     full path list + Open in HQ Console.
+                                        // Copy is intentionally redundant w/ body-
+                                        // click for the LLM-session case; explicit
+                                        // discoverability beats minimalism here
+                                        // (user direction 2026-05-26).
+                                        .main_button(
+                                            mac_notification_sys::MainButton::DropdownActions(
+                                                "Actions",
+                                                &["Copy prompt", "Open details"],
+                                            ),
+                                        );
+
+                                    // CPU cap (Option 1): only the holder of the single
+                                    // blocking-send slot may use `wait_for_click(true)`
+                                    // (which busy-spins until the user acts — see
+                                    // BlockingNotifyGuard docs). Any concurrent send
+                                    // falls back to fire-and-forget so we never
+                                    // accumulate spinning threads. The guard is dropped
+                                    // the instant the blocking send returns.
+                                    let response = match BlockingNotifyGuard::try_acquire() {
+                                        Some(guard) => {
+                                            let r = notification.wait_for_click(true).send();
+                                            drop(guard);
+                                            r
+                                        }
+                                        None => notification.send(),
+                                    };
+
+                                    match response {
+                                        Ok(resp) => {
+                                            // Body-click → "claude": opens Claude
+                                            // Code (`claude://code/new?q=…&folder=…`)
+                                            // with the templated prompt pre-filled
+                                            // and cwd at the user's HQ folder. The
+                                            // recipient lands in an LLM session
+                                            // ready to act on the shared files
+                                            // without a paste step.
+                                            //
+                                            // Dropdown "Open details" → open the
+                                            // ShareDetail window for a UI surface
+                                            // (path list + Copy prompt fallback +
+                                            // Open in HQ Console link).
+                                            //
+                                            // The frontend listener in App.svelte
+                                            // owns the URL build + Tauri-command
+                                            // dispatch.
+                                            let action: Option<&'static str> = match resp {
                                         mac_notification_sys::NotificationResponse::ActionButton(name)
                                             if name.eq_ignore_ascii_case("copy prompt") =>
                                         {
@@ -693,32 +691,56 @@ async fn do_poll(app: &AppHandle) {
                                         _ => None,
                                     };
 
-                                    if let Some(action) = action {
-                                        let payload = NotificationShareActionEvent {
-                                            action: action.to_string(),
-                                            event_id: event_clone.event_id.clone(),
-                                            event: event_clone,
-                                        };
-                                        if let Err(e) = app_for_thread
-                                            .emit(EVENT_NOTIFICATION_SHARE_ACTION, &payload)
-                                        {
-                                            log(
+                                            if let Some(action) = action {
+                                                let payload = NotificationShareActionEvent {
+                                                    action: action.to_string(),
+                                                    event_id: event_clone.event_id.clone(),
+                                                    event: event_clone,
+                                                };
+                                                if let Err(e) = app_for_thread
+                                                    .emit(EVENT_NOTIFICATION_SHARE_ACTION, &payload)
+                                                {
+                                                    log(
                                                 LOG_TAG,
                                                 &format!(
                                                     "SHARE_NOTIFY_EMIT_ACTION_FAILED action={action} err={e}"
                                                 ),
                                             );
+                                                }
+                                            }
                                         }
+                                        Err(e) => log(
+                                            LOG_TAG,
+                                            &format!("SHARE_NOTIFY_SEND_FAILED err={e}"),
+                                        ),
                                     }
-                                }
-                                Err(e) => log(
-                                    LOG_TAG,
-                                    &format!("SHARE_NOTIFY_SEND_FAILED err={e}"),
-                                ),
+                                });
                             }
-                        });
+                        } // end else — native firing path
                     }
-                    } // end else — native firing path
+
+                    #[cfg(not(target_os = "macos"))]
+                    {
+                        use tauri_plugin_notification::NotificationExt;
+                        for evt in &fresh {
+                            let body_text = notification_body(evt.note.as_deref(), &evt.paths);
+                            let title = notification_title(&evt.issuer_display_name);
+                            match app
+                                .notification()
+                                .builder()
+                                .title(&title)
+                                .body(&body_text)
+                                .show()
+                            {
+                                Ok(()) => {
+                                    log(LOG_TAG, &format!("SHARE_NOTIFY_TOAST_SHOWN title={title}"))
+                                }
+                                Err(e) => {
+                                    log(LOG_TAG, &format!("SHARE_NOTIFY_SEND_FAILED err={e}"))
+                                }
+                            }
+                        }
+                    }
 
                     // Badge the tray icon with the count of newly-notified events.
                     crate::tray::set_share_badge(app, fresh.len());
@@ -749,10 +771,8 @@ pub(crate) fn notification_title(issuer_display_name: &str) -> String {
 /// file shares keep their filename. Mirrors `shareTitle` in
 /// `src/lib/share-path.ts`.
 pub(crate) fn share_path_title(path: &str) -> String {
-    let is_wildcard_dir = path.ends_with("/*")
-        || path.ends_with("/**")
-        || path == "*"
-        || path == "**";
+    let is_wildcard_dir =
+        path.ends_with("/*") || path.ends_with("/**") || path == "*" || path == "**";
     let cleaned = path
         .trim_end_matches("/**")
         .trim_end_matches("/*")
@@ -807,10 +827,7 @@ const SHARE_DETAIL_LABEL: &str = "share-detail";
 /// 2. If window exists, show + focus it and re-emit the list directly.
 /// 3. Otherwise create it hidden; `share_detail_window_ready` will show it.
 #[tauri::command]
-pub async fn open_share_detail(
-    app: AppHandle,
-    events: Vec<ShareEvent>,
-) -> Result<(), String> {
+pub async fn open_share_detail(app: AppHandle, events: Vec<ShareEvent>) -> Result<(), String> {
     // Stash so the ready-handshake can retrieve them.
     if let Some(state) = app.try_state::<PendingShareEvents>() {
         *state.0.lock().unwrap_or_else(|p| p.into_inner()) = events.clone();
@@ -884,7 +901,10 @@ async fn post_ack(_app: &AppHandle, event_ids: Vec<String>) {
     let base_url = match resolve_vault_api_url() {
         Ok(u) => u.trim_end_matches('/').to_string(),
         Err(e) => {
-            log(LOG_TAG, &format!("SHARE_NOTIFY_ACK_ERROR cannot resolve vault URL: {e}"));
+            log(
+                LOG_TAG,
+                &format!("SHARE_NOTIFY_ACK_ERROR cannot resolve vault URL: {e}"),
+            );
             return;
         }
     };
@@ -905,7 +925,10 @@ async fn post_ack(_app: &AppHandle, event_ids: Vec<String>) {
             );
         }
         Ok(r) => {
-            log(LOG_TAG, &format!("SHARE_NOTIFY_ACK_ERROR status={}", r.status()));
+            log(
+                LOG_TAG,
+                &format!("SHARE_NOTIFY_ACK_ERROR status={}", r.status()),
+            );
         }
         Err(e) => {
             log(LOG_TAG, &format!("SHARE_NOTIFY_ACK_NETWORK_FAIL {e}"));
@@ -958,7 +981,10 @@ mod tests {
             *g = false;
         }
         assert!(try_set_in_flight(), "first attempt should succeed");
-        assert!(!try_set_in_flight(), "second attempt while in-flight should fail");
+        assert!(
+            !try_set_in_flight(),
+            "second attempt while in-flight should fail"
+        );
         clear_in_flight();
         assert!(try_set_in_flight(), "after clear, should succeed again");
         clear_in_flight();
@@ -975,8 +1001,7 @@ mod tests {
             },
         );
         let json = serde_json::to_string(&store).unwrap();
-        let parsed: HashMap<String, CursorEntryCompat> =
-            serde_json::from_str(&json).unwrap();
+        let parsed: HashMap<String, CursorEntryCompat> = serde_json::from_str(&json).unwrap();
         let entry: CursorEntry = parsed.into_iter().next().unwrap().1.into();
         assert_eq!(entry.cursor.as_deref(), Some("2026-05-25T12:00:00.000Z"));
         assert_eq!(entry.notified, vec!["e1", "e2"]);
@@ -987,8 +1012,7 @@ mod tests {
         // Pre-0.4.4 format: bare ISO string per machine. Must upgrade cleanly to
         // the object form without losing the cursor or re-notifying history.
         let legacy = r#"{"machine-abc":"2026-05-25T12:00:00.000Z"}"#;
-        let parsed: HashMap<String, CursorEntryCompat> =
-            serde_json::from_str(legacy).unwrap();
+        let parsed: HashMap<String, CursorEntryCompat> = serde_json::from_str(legacy).unwrap();
         let entry: CursorEntry = parsed.into_iter().next().unwrap().1.into();
         assert_eq!(entry.cursor.as_deref(), Some("2026-05-25T12:00:00.000Z"));
         assert!(entry.notified.is_empty());
@@ -1258,7 +1282,10 @@ mod tests {
 
         // After the in-flight send returns (guard dropped), the slot is reusable.
         let third = BlockingNotifyGuard::try_acquire();
-        assert!(third.is_some(), "slot must be reusable after the guard drops");
+        assert!(
+            third.is_some(),
+            "slot must be reusable after the guard drops"
+        );
         drop(third);
     }
 }

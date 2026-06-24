@@ -1,9 +1,9 @@
 // companies/indigo/repos/hq-sync/src-tauri/src/util/journal.rs
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
-use serde::{Deserialize, Serialize};
 
 /// Mirrors packages/hq-cloud/src/types.ts `JournalEntry`.
 ///
@@ -17,16 +17,20 @@ use serde::{Deserialize, Serialize};
 /// engine adds in the future so this can never silently strip data again.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct JournalEntry {
-    pub hash: String,                // hex sha256 of file contents
+    pub hash: String, // hex sha256 of file contents
     pub size: u64,
     #[serde(rename = "syncedAt")]
-    pub synced_at: String,           // ISO-8601
-    pub direction: Direction,        // "up" | "down"
+    pub synced_at: String, // ISO-8601
+    pub direction: Direction, // "up" | "down"
     /// S3 ETag of the remote object. The pull side compares it to the LIST
     /// ETag to skip unchanged downloads; absent ⇒ forced re-download. Mirror
     /// of TS `remoteEtag?`. Rust never authors it — it only preserves what the
     /// engine wrote.
-    #[serde(rename = "remoteEtag", skip_serializing_if = "Option::is_none", default)]
+    #[serde(
+        rename = "remoteEtag",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
     pub remote_etag: Option<String>,
     /// Local mtime (ms) captured by the engine at sync time. The push side
     /// skips re-hashing when `size + mtimeMs` match. Mirror of TS `mtimeMs?`.
@@ -42,20 +46,27 @@ pub struct JournalEntry {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
-pub enum Direction { Up, Down }
+pub enum Direction {
+    Up,
+    Down,
+}
 
 /// Mirrors packages/hq-cloud/src/types.ts `SyncJournal`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SyncJournal {
-    pub version: String,             // "1"
+    pub version: String, // "1"
     #[serde(rename = "lastSync")]
-    pub last_sync: String,           // ISO-8601 (empty string if never)
+    pub last_sync: String, // ISO-8601 (empty string if never)
     pub files: BTreeMap<String, JournalEntry>,
 }
 
 impl Default for SyncJournal {
     fn default() -> Self {
-        Self { version: "1".into(), last_sync: String::new(), files: BTreeMap::new() }
+        Self {
+            version: "1".into(),
+            last_sync: String::new(),
+            files: BTreeMap::new(),
+        }
     }
 }
 
@@ -77,10 +88,18 @@ pub fn sanitize_slug(slug: &str) -> Result<String, String> {
     }
     let cleaned: String = slug
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     if cleaned.is_empty() || cleaned.chars().all(|c| c == '_' || c == '-') {
-        return Err(format!("journal: slug \"{slug}\" sanitizes to an empty identifier"));
+        return Err(format!(
+            "journal: slug \"{slug}\" sanitizes to an empty identifier"
+        ));
     }
     Ok(cleaned)
 }
@@ -92,7 +111,9 @@ pub fn journal_path(slug: &str) -> Result<PathBuf, String> {
 
 pub fn read_journal(slug: &str) -> Result<SyncJournal, String> {
     let p = journal_path(slug)?;
-    if !p.exists() { return Ok(SyncJournal::default()); }
+    if !p.exists() {
+        return Ok(SyncJournal::default());
+    }
     let s = fs::read_to_string(&p).map_err(|e| format!("{}: {e}", p.display()))?;
     serde_json::from_str(&s).map_err(|e| format!("{}: {e}", p.display()))
 }
@@ -100,7 +121,9 @@ pub fn read_journal(slug: &str) -> Result<SyncJournal, String> {
 /// Atomic write via temp file + rename.
 pub fn write_journal(slug: &str, journal: &SyncJournal) -> Result<(), String> {
     let p = journal_path(slug)?;
-    if let Some(parent) = p.parent() { fs::create_dir_all(parent).map_err(|e| e.to_string())?; }
+    if let Some(parent) = p.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
     let tmp = p.with_extension("json.tmp");
     let body = serde_json::to_string_pretty(journal).map_err(|e| e.to_string())?;
     let mut f = fs::File::create(&tmp).map_err(|e| e.to_string())?;
@@ -176,7 +199,10 @@ mod tests {
     #[test]
     fn sanitize_slug_all_underscores_err() {
         let err = sanitize_slug("__").unwrap_err();
-        assert!(err.contains("sanitizes to an empty identifier"), "got: {err}");
+        assert!(
+            err.contains("sanitizes to an empty identifier"),
+            "got: {err}"
+        );
     }
 
     // (d) sanitize_slug("bad/slug?") → Ok("bad_slug_")

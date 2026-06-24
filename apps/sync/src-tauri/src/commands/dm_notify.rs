@@ -613,7 +613,10 @@ pub async fn send_dm_to_email(
         return Err("Message body must not be empty".to_string());
     }
 
-    let person_uid = to_person_uid.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let person_uid = to_person_uid
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
     let email = to_email.as_deref().map(str::trim).filter(|s| !s.is_empty());
     if person_uid.is_none() && email.is_none() {
         return Err("A recipient (email or personUid) is required".to_string());
@@ -657,13 +660,16 @@ pub async fn send_dm_to_email(
             &format!("DM_NOTIFY_COMPOSE_FAIL status={status} msg={server_msg:?}"),
         );
         return Err(
-            server_msg.unwrap_or_else(|| format!("Send failed (status {})", status.as_u16())),
+            server_msg.unwrap_or_else(|| format!("Send failed (status {})", status.as_u16()))
         );
     }
 
     let status_code = status.as_u16();
     // The body is optional (a bare 200 with no JSON is treated as delivered).
-    let parsed = resp.json::<serde_json::Value>().await.unwrap_or(serde_json::Value::Null);
+    let parsed = resp
+        .json::<serde_json::Value>()
+        .await
+        .unwrap_or(serde_json::Value::Null);
     let outcome = classify_send_response(status_code, &parsed);
     log(
         LOG_TAG,
@@ -781,9 +787,8 @@ pub async fn fetch_dm_thread(
             LOG_TAG,
             &format!("DM_NOTIFY_THREAD_FAIL status={status} msg={server_msg:?}"),
         );
-        return Err(
-            server_msg.unwrap_or_else(|| format!("Failed to load thread (status {})", status.as_u16()))
-        );
+        return Err(server_msg
+            .unwrap_or_else(|| format!("Failed to load thread (status {})", status.as_u16())));
     }
 
     let thread = resp.json::<ThreadResponse>().await.map_err(|e| {
@@ -793,7 +798,10 @@ pub async fn fetch_dm_thread(
 
     log(
         LOG_TAG,
-        &format!("DM_NOTIFY_THREAD_OK with={target} count={}", thread.messages.len()),
+        &format!(
+            "DM_NOTIFY_THREAD_OK with={target} count={}",
+            thread.messages.len()
+        ),
     );
     Ok(thread)
 }
@@ -903,8 +911,8 @@ pub async fn respond_dm_request(
     if key.is_empty() {
         return Err("pairKey must not be empty".to_string());
     }
-    let path = respond_action_path(&action)
-        .ok_or_else(|| format!("Unsupported action: {action}"))?;
+    let path =
+        respond_action_path(&action).ok_or_else(|| format!("Unsupported action: {action}"))?;
 
     let access_token = cognito::get_valid_access_token().await.map_err(|e| {
         log(LOG_TAG, &format!("DM_NOTIFY_RESPOND_FAIL auth: {e}"));
@@ -943,8 +951,9 @@ pub async fn respond_dm_request(
             LOG_TAG,
             &format!("DM_NOTIFY_RESPOND_FAIL status={status} action={path} msg={server_msg:?}"),
         );
-        return Err(server_msg
-            .unwrap_or_else(|| format!("Action failed (status {})", status.as_u16())));
+        return Err(
+            server_msg.unwrap_or_else(|| format!("Action failed (status {})", status.as_u16()))
+        );
     }
 
     // The request has left the pending set — drop it from the seen-set so a later
@@ -972,10 +981,7 @@ pub async fn respond_dm_request(
 ///   * `removed_pair_keys` — pairKeys seen before but absent now (fire
 ///     `dm:request-update`; the connection left the pending set).
 /// Pure (operates on the provided set + slice) so the diff is unit-testable.
-fn diff_requests(
-    seen: &HashSet<String>,
-    current: &[DmRequest],
-) -> (Vec<DmRequest>, Vec<String>) {
+fn diff_requests(seen: &HashSet<String>, current: &[DmRequest]) -> (Vec<DmRequest>, Vec<String>) {
     let current_keys: HashSet<&str> = current.iter().map(|r| r.pair_key.as_str()).collect();
     let new_requests: Vec<DmRequest> = current
         .iter()
@@ -1010,7 +1016,10 @@ async fn poll_requests(app: &AppHandle, base_url: &str, access_token: &str) {
         Ok(r) => {
             let status = r.status();
             if !status.is_success() {
-                log(LOG_TAG, &format!("DM_NOTIFY_REQ_POLL_ERROR status={status}"));
+                log(
+                    LOG_TAG,
+                    &format!("DM_NOTIFY_REQ_POLL_ERROR status={status}"),
+                );
                 return;
             }
             match r.json::<RequestsListResponse>().await {
@@ -1049,7 +1058,10 @@ async fn poll_requests(app: &AppHandle, base_url: &str, access_token: &str) {
     for req in &new_requests {
         log(
             LOG_TAG,
-            &format!("DM_NOTIFY_REQ_NEW from={} pair={}", req.from_email, req.pair_key),
+            &format!(
+                "DM_NOTIFY_REQ_NEW from={} pair={}",
+                req.from_email, req.pair_key
+            ),
         );
         let _ = app.emit(EVENT_DM_REQUEST_NEW, req);
     }
@@ -1258,19 +1270,31 @@ async fn poll_reactions(app: &AppHandle, base_url: &str, access_token: &str) {
 
         let reactions = match resp {
             Err(e) => {
-                log(LOG_TAG, &format!("DM_NOTIFY_REACTION_POLL_NETWORK_FAIL {e}"));
+                log(
+                    LOG_TAG,
+                    &format!("DM_NOTIFY_REACTION_POLL_NETWORK_FAIL {e}"),
+                );
                 continue;
             }
             Ok(r) => {
                 let status = r.status();
                 if !status.is_success() {
-                    log(LOG_TAG, &format!("DM_NOTIFY_REACTION_POLL_ERROR status={status}"));
+                    log(
+                        LOG_TAG,
+                        &format!("DM_NOTIFY_REACTION_POLL_ERROR status={status}"),
+                    );
                     continue;
                 }
-                match r.json::<Vec<crate::commands::messages::ReactionAggregate>>().await {
+                match r
+                    .json::<Vec<crate::commands::messages::ReactionAggregate>>()
+                    .await
+                {
                     Ok(v) => v,
                     Err(e) => {
-                        log(LOG_TAG, &format!("DM_NOTIFY_REACTION_POLL_ERROR parse: {e}"));
+                        log(
+                            LOG_TAG,
+                            &format!("DM_NOTIFY_REACTION_POLL_ERROR parse: {e}"),
+                        );
                         continue;
                     }
                 }
@@ -1394,7 +1418,10 @@ pub async fn fetch_thread(
     let base_url = resolve_vault_api_url()
         .map(|u| u.trim_end_matches('/').to_string())
         .map_err(|e| {
-            log(LOG_TAG, &format!("DM_NOTIFY_THREAD_FETCH_FAIL vault url: {e}"));
+            log(
+                LOG_TAG,
+                &format!("DM_NOTIFY_THREAD_FETCH_FAIL vault url: {e}"),
+            );
             format!("Could not resolve server URL: {e}")
         })?;
 
@@ -1412,7 +1439,10 @@ pub async fn fetch_thread(
         .send()
         .await
         .map_err(|e| {
-            log(LOG_TAG, &format!("DM_NOTIFY_THREAD_FETCH_FAIL network: {e}"));
+            log(
+                LOG_TAG,
+                &format!("DM_NOTIFY_THREAD_FETCH_FAIL network: {e}"),
+            );
             format!("Network error: {e}")
         })?;
 
@@ -1486,8 +1516,14 @@ pub async fn send_thread_reply(
     }
     let scope_norm = normalize_scope(&scope);
 
-    let person_uid = to_person_uid.as_deref().map(str::trim).filter(|s| !s.is_empty());
-    let channel = channel_id.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let person_uid = to_person_uid
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let channel = channel_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
     if scope_norm == "channel" && channel.is_none() {
         return Err("A channel thread reply requires a channelId".to_string());
     }
@@ -1503,7 +1539,10 @@ pub async fn send_thread_reply(
     let base_url = resolve_vault_api_url()
         .map(|u| u.trim_end_matches('/').to_string())
         .map_err(|e| {
-            log(LOG_TAG, &format!("DM_NOTIFY_THREAD_REPLY_FAIL vault url: {e}"));
+            log(
+                LOG_TAG,
+                &format!("DM_NOTIFY_THREAD_REPLY_FAIL vault url: {e}"),
+            );
             format!("Could not resolve server URL: {e}")
         })?;
 
@@ -1525,7 +1564,10 @@ pub async fn send_thread_reply(
         .send()
         .await
         .map_err(|e| {
-            log(LOG_TAG, &format!("DM_NOTIFY_THREAD_REPLY_FAIL network: {e}"));
+            log(
+                LOG_TAG,
+                &format!("DM_NOTIFY_THREAD_REPLY_FAIL network: {e}"),
+            );
             format!("Network error: {e}")
         })?;
 
@@ -1568,13 +1610,20 @@ pub fn set_active_thread(
         return Ok(());
     };
     let mut guard = state.0.lock().unwrap_or_else(|p| p.into_inner());
-    match root_event_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    match root_event_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         Some(root) => {
             guard.root_event_id = Some(root.to_string());
             guard.scope = normalize_scope(scope.as_deref().unwrap_or("dm"));
-            guard.channel_id = channel_id.map(|c| c.trim().to_string()).filter(|s| !s.is_empty());
-            guard.with_person_uid =
-                with_person_uid.map(|c| c.trim().to_string()).filter(|s| !s.is_empty());
+            guard.channel_id = channel_id
+                .map(|c| c.trim().to_string())
+                .filter(|s| !s.is_empty());
+            guard.with_person_uid = with_person_uid
+                .map(|c| c.trim().to_string())
+                .filter(|s| !s.is_empty());
             guard.seen_reply_ids = seen_reply_ids.unwrap_or_default().into_iter().collect();
             log(LOG_TAG, &format!("DM_NOTIFY_ACTIVE_THREAD_SET root={root}"));
         }
@@ -1632,7 +1681,10 @@ async fn poll_active_thread(app: &AppHandle, base_url: &str, access_token: &str)
         Ok(r) => {
             let status = r.status();
             if !status.is_success() {
-                log(LOG_TAG, &format!("DM_NOTIFY_THREAD_POLL_ERROR status={status}"));
+                log(
+                    LOG_TAG,
+                    &format!("DM_NOTIFY_THREAD_POLL_ERROR status={status}"),
+                );
                 return;
             }
             match r.json::<ThreadView>().await {
@@ -1682,7 +1734,10 @@ async fn poll_active_thread(app: &AppHandle, base_url: &str, access_token: &str)
         });
         log(
             LOG_TAG,
-            &format!("DM_NOTIFY_THREAD_NEW_REPLY root={root} reply={}", reply.event_id),
+            &format!(
+                "DM_NOTIFY_THREAD_NEW_REPLY root={root} reply={}",
+                reply.event_id
+            ),
         );
         let _ = app.emit(EVENT_THREAD_NEW_REPLY, &payload);
     }
@@ -1760,10 +1815,16 @@ async fn poll_channels(app: &AppHandle, base_url: &str, access_token: &str) {
         Ok(r) => {
             let status = r.status();
             if !status.is_success() {
-                log(LOG_TAG, &format!("DM_NOTIFY_CHAN_POLL_ERROR status={status}"));
+                log(
+                    LOG_TAG,
+                    &format!("DM_NOTIFY_CHAN_POLL_ERROR status={status}"),
+                );
                 return;
             }
-            match r.json::<crate::commands::messages::ChannelsResponse>().await {
+            match r
+                .json::<crate::commands::messages::ChannelsResponse>()
+                .await
+            {
                 Ok(b) => b,
                 Err(e) => {
                     log(LOG_TAG, &format!("DM_NOTIFY_CHAN_POLL_ERROR parse: {e}"));
@@ -1792,7 +1853,10 @@ async fn poll_channels(app: &AppHandle, base_url: &str, access_token: &str) {
     };
 
     if first_run {
-        log(LOG_TAG, &format!("DM_NOTIFY_CHAN_POLL_SEED count={}", channels.len()));
+        log(
+            LOG_TAG,
+            &format!("DM_NOTIFY_CHAN_POLL_SEED count={}", channels.len()),
+        );
         return;
     }
 
@@ -1895,7 +1959,10 @@ async fn do_poll(app: &AppHandle) {
         Ok(r) => {
             let status = r.status();
             if status.as_u16() == 401 || status.as_u16() == 403 {
-                log(LOG_TAG, &format!("DM_NOTIFY_POLL_AUTH_FAIL status={status}"));
+                log(
+                    LOG_TAG,
+                    &format!("DM_NOTIFY_POLL_AUTH_FAIL status={status}"),
+                );
                 return;
             }
             if !status.is_success() {
@@ -1970,7 +2037,10 @@ async fn do_poll(app: &AppHandle) {
     // in-app banner (commands::banner) — event-driven, no blocking Cocoa run
     // loop — and skip the native firing path entirely.
     if crate::commands::banner::custom_banner_enabled() {
-        log(LOG_TAG, &format!("DM_NOTIFY_CUSTOM_BANNER {} DM(s)", fresh.len()));
+        log(
+            LOG_TAG,
+            &format!("DM_NOTIFY_CUSTOM_BANNER {} DM(s)", fresh.len()),
+        );
         for dm in &fresh {
             if let Err(e) = crate::commands::banner::show_dm_banner(app.clone(), dm.clone()).await {
                 log(LOG_TAG, &format!("DM_NOTIFY_BANNER_FAIL err={e}"));
@@ -1987,117 +2057,123 @@ async fn do_poll(app: &AppHandle) {
         return;
     }
 
-    // Lazily register the bundle identifier with mac-notification-sys so the
-    // first send doesn't trigger a macOS "Choose Application" picker. Mirrors
-    // the guard in share_notify::do_poll.
-    static NOTIFICATION_APP_INIT: OnceLock<()> = OnceLock::new();
-    NOTIFICATION_APP_INIT.get_or_init(|| {
-        const BUNDLE_ID: &str = "ai.indigo.hq-sync-menubar";
-        match mac_notification_sys::set_application(BUNDLE_ID) {
-            Ok(()) => log(LOG_TAG, &format!("DM_NOTIFY_BUNDLE_SET bundle={BUNDLE_ID}")),
-            Err(e) => log(
-                LOG_TAG,
-                &format!("DM_NOTIFY_BUNDLE_SET_FAILED bundle={BUNDLE_ID} err={e}"),
-            ),
-        }
-    });
-
-    // Fire one macOS notification per DM. Every DM is clickable: a body-click
-    // opens the DM detail window. Rich DMs additionally expose action buttons.
-    //
-    //   * Body-click (any DM) → "open" the detail window.
-    //   * "Copy prompt" button (when `prompt` present) → copy the agent prompt.
-    //   * "Open details" button (when `details` present) → also opens the detail
-    //     window; redundant with body-click but kept as an explicit affordance,
-    //     since a banner body-click is not discoverable on macOS.
-    //
-    // Capturing the click requires the blocking `wait_for_click(true)` path,
-    // which busy-spins a Cocoa run loop while the banner is on screen unactioned
-    // (~1 core; see share_notify::BlockingNotifyGuard + hq-sync-cpu-spin-debug.md).
-    // The shared BlockingNotifyGuard caps that to ~1 process-wide ACROSS the
-    // share and DM surfaces, so the CPU ceiling is unchanged by making every DM
-    // clickable — this only widens which DMs compete for that single capped slot.
-    // Concurrent DMs that can't acquire the slot fall back to fire-and-forget
-    // `.send()` (lose the click surface for that banner, but never leak a spin).
-    for dm in &fresh {
-        let title = dm.from_display_name.clone();
-        let message = dm.body.clone();
-        let has_prompt = dm.prompt.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false);
-        let has_details = dm.details.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false);
-        let app_for_thread = app.clone();
-        let event_clone = dm.clone();
-
-        std::thread::spawn(move || {
-            let mut notification = mac_notification_sys::Notification::default();
-            notification.title(&title).message(&message);
-
-            // Build the dropdown items present for this DM (order = display order).
-            // Plain DMs get no buttons — body-click alone opens the detail window.
-            let mut actions: Vec<&str> = Vec::new();
-            if has_prompt {
-                actions.push("Copy prompt");
-            }
-            if has_details {
-                actions.push("Open details");
-            }
-            if !actions.is_empty() {
-                notification.main_button(mac_notification_sys::MainButton::DropdownActions(
-                    "Actions",
-                    &actions,
-                ));
-            }
-
-            // Blocking send capped to ~1 process-wide; concurrent DMs fall back to
-            // fire-and-forget (lose the click surface for that banner but never
-            // leak a spinning thread).
-            let response =
-                match crate::commands::share_notify::BlockingNotifyGuard::try_acquire() {
-                    Some(guard) => {
-                        let r = notification.wait_for_click(true).send();
-                        drop(guard);
-                        r
-                    }
-                    None => notification.send(),
-                };
-
-            match response {
-                Ok(resp) => {
-                    // Map the response to an action. Body-click ALWAYS opens the
-                    // detail window; copying the prompt is only via the explicit
-                    // "Copy prompt" button.
-                    let action: Option<&'static str> = match resp {
-                        mac_notification_sys::NotificationResponse::ActionButton(name)
-                            if name.eq_ignore_ascii_case("copy prompt") =>
-                        {
-                            Some("copy")
-                        }
-                        mac_notification_sys::NotificationResponse::ActionButton(name)
-                            if name.eq_ignore_ascii_case("open details") =>
-                        {
-                            Some("open")
-                        }
-                        mac_notification_sys::NotificationResponse::Click => Some("open"),
-                        _ => None,
-                    };
-
-                    if let Some(action) = action {
-                        let payload = NotificationDmActionEvent {
-                            action: action.to_string(),
-                            event: event_clone,
-                        };
-                        if let Err(e) =
-                            app_for_thread.emit(EVENT_NOTIFICATION_DM_ACTION, &payload)
-                        {
-                            log(
-                                LOG_TAG,
-                                &format!("DM_NOTIFY_EMIT_ACTION_FAILED action={action} err={e}"),
-                            );
-                        }
-                    }
-                }
-                Err(e) => log(LOG_TAG, &format!("DM_NOTIFY_SEND_FAILED err={e}")),
+    #[cfg(target_os = "macos")]
+    {
+        // Lazily register the bundle identifier with mac-notification-sys so the
+        // first send doesn't trigger a macOS "Choose Application" picker. Mirrors
+        // the guard in share_notify::do_poll.
+        static NOTIFICATION_APP_INIT: OnceLock<()> = OnceLock::new();
+        NOTIFICATION_APP_INIT.get_or_init(|| {
+            const BUNDLE_ID: &str = "ai.indigo.hq-sync-menubar";
+            match mac_notification_sys::set_application(BUNDLE_ID) {
+                Ok(()) => log(LOG_TAG, &format!("DM_NOTIFY_BUNDLE_SET bundle={BUNDLE_ID}")),
+                Err(e) => log(
+                    LOG_TAG,
+                    &format!("DM_NOTIFY_BUNDLE_SET_FAILED bundle={BUNDLE_ID} err={e}"),
+                ),
             }
         });
+
+        for dm in &fresh {
+            let title = dm.from_display_name.clone();
+            let message = dm.body.clone();
+            let has_prompt = dm
+                .prompt
+                .as_deref()
+                .map(|s| !s.trim().is_empty())
+                .unwrap_or(false);
+            let has_details = dm
+                .details
+                .as_deref()
+                .map(|s| !s.trim().is_empty())
+                .unwrap_or(false);
+            let app_for_thread = app.clone();
+            let event_clone = dm.clone();
+
+            std::thread::spawn(move || {
+                let mut notification = mac_notification_sys::Notification::default();
+                notification.title(&title).message(&message);
+
+                let mut actions: Vec<&str> = Vec::new();
+                if has_prompt {
+                    actions.push("Copy prompt");
+                }
+                if has_details {
+                    actions.push("Open details");
+                }
+                if !actions.is_empty() {
+                    notification.main_button(mac_notification_sys::MainButton::DropdownActions(
+                        "Actions", &actions,
+                    ));
+                }
+
+                let response =
+                    match crate::commands::share_notify::BlockingNotifyGuard::try_acquire() {
+                        Some(guard) => {
+                            let r = notification.wait_for_click(true).send();
+                            drop(guard);
+                            r
+                        }
+                        None => notification.send(),
+                    };
+
+                match response {
+                    Ok(resp) => {
+                        let action: Option<&'static str> = match resp {
+                            mac_notification_sys::NotificationResponse::ActionButton(name)
+                                if name.eq_ignore_ascii_case("copy prompt") =>
+                            {
+                                Some("copy")
+                            }
+                            mac_notification_sys::NotificationResponse::ActionButton(name)
+                                if name.eq_ignore_ascii_case("open details") =>
+                            {
+                                Some("open")
+                            }
+                            mac_notification_sys::NotificationResponse::Click => Some("open"),
+                            _ => None,
+                        };
+
+                        if let Some(action) = action {
+                            let payload = NotificationDmActionEvent {
+                                action: action.to_string(),
+                                event: event_clone,
+                            };
+                            if let Err(e) =
+                                app_for_thread.emit(EVENT_NOTIFICATION_DM_ACTION, &payload)
+                            {
+                                log(
+                                    LOG_TAG,
+                                    &format!(
+                                        "DM_NOTIFY_EMIT_ACTION_FAILED action={action} err={e}"
+                                    ),
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => log(LOG_TAG, &format!("DM_NOTIFY_SEND_FAILED err={e}")),
+                }
+            });
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        use tauri_plugin_notification::NotificationExt;
+        for dm in &fresh {
+            let title = dm.from_display_name.clone();
+            let message = dm.body.clone();
+            match app
+                .notification()
+                .builder()
+                .title(&title)
+                .body(&message)
+                .show()
+            {
+                Ok(()) => log(LOG_TAG, &format!("DM_NOTIFY_TOAST_SHOWN from={title}")),
+                Err(e) => log(LOG_TAG, &format!("DM_NOTIFY_SEND_FAILED err={e}")),
+            }
+        }
     }
 
     // Ack only the fresh DMs — boundary dupes were acked on the poll where they
@@ -2137,9 +2213,15 @@ async fn post_ack(event_ids: Vec<String>) {
         .await
     {
         Ok(r) if r.status().is_success() => {
-            log(LOG_TAG, &format!("DM_NOTIFY_ACK_OK {} DM(s)", event_ids.len()));
+            log(
+                LOG_TAG,
+                &format!("DM_NOTIFY_ACK_OK {} DM(s)", event_ids.len()),
+            );
         }
-        Ok(r) => log(LOG_TAG, &format!("DM_NOTIFY_ACK_ERROR status={}", r.status())),
+        Ok(r) => log(
+            LOG_TAG,
+            &format!("DM_NOTIFY_ACK_ERROR status={}", r.status()),
+        ),
         Err(e) => log(LOG_TAG, &format!("DM_NOTIFY_ACK_ERROR {e}")),
     }
 }
@@ -2258,10 +2340,7 @@ mod tests {
     fn classify_send_response_maps_status_and_body() {
         let null = serde_json::Value::Null;
         // 200 → delivered.
-        assert_eq!(
-            classify_send_response(200, &null),
-            SendDmOutcome::Delivered
-        );
+        assert_eq!(classify_send_response(200, &null), SendDmOutcome::Delivered);
         // 202 → connection requested even with an empty body.
         assert_eq!(
             classify_send_response(202, &null),
@@ -2327,9 +2406,18 @@ mod tests {
         // The inbox treats `?since=` as inclusive, so the boundary DM (e1) comes
         // back on the next poll. With e1 already in the ring, only e2 is fresh —
         // no duplicate banner. The ring grows to include the newly-fired e2.
-        let events = vec![mk_dm("e1", "2026-06-05T00:00:00Z"), mk_dm("e2", "2026-06-05T00:01:00Z")];
+        let events = vec![
+            mk_dm("e1", "2026-06-05T00:00:00Z"),
+            mk_dm("e2", "2026-06-05T00:01:00Z"),
+        ];
         let (fresh, updated) = partition_unnotified(&events, &["e1".to_string()]);
-        assert_eq!(fresh.iter().map(|e| e.event_id.as_str()).collect::<Vec<_>>(), ["e2"]);
+        assert_eq!(
+            fresh
+                .iter()
+                .map(|e| e.event_id.as_str())
+                .collect::<Vec<_>>(),
+            ["e2"]
+        );
         assert_eq!(updated, ["e1", "e2"]);
     }
 
@@ -2426,8 +2514,7 @@ mod tests {
     #[test]
     fn diff_requests_detects_new_and_removed() {
         // Seen had {a, b}; current has {b, c}. → new = [c], removed = [a].
-        let seen: HashSet<String> =
-            ["a", "b"].iter().map(|s| s.to_string()).collect();
+        let seen: HashSet<String> = ["a", "b"].iter().map(|s| s.to_string()).collect();
         let current = vec![mk_request("b"), mk_request("c")];
         let (new_requests, removed) = diff_requests(&seen, &current);
         assert_eq!(new_requests.len(), 1);
@@ -2450,8 +2537,7 @@ mod tests {
     #[test]
     fn diff_requests_stable_set_no_events() {
         // Unchanged pending set → no new, no removed (no spurious events/banners).
-        let seen: HashSet<String> =
-            ["a", "b"].iter().map(|s| s.to_string()).collect();
+        let seen: HashSet<String> = ["a", "b"].iter().map(|s| s.to_string()).collect();
         let current = vec![mk_request("a"), mk_request("b")];
         let (new_requests, removed) = diff_requests(&seen, &current);
         assert!(new_requests.is_empty());
@@ -2618,8 +2704,7 @@ mod tests {
                 }
             ]
         }"#;
-        let thread: ThreadResponse =
-            serde_json::from_str(json).expect("ThreadResponse parses");
+        let thread: ThreadResponse = serde_json::from_str(json).expect("ThreadResponse parses");
         assert_eq!(thread.messages.len(), 2);
         assert_eq!(thread.messages[0].direction, "out");
         assert_eq!(thread.messages[0].from_person_uid, "prs_me");

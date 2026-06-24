@@ -84,12 +84,8 @@ fn resolve_hq_folder_path() -> Result<String, String> {
     let config = crate::commands::config::read_hq_config_lenient()?;
 
     let hq_folder = paths::resolve_hq_folder(
-        config
-            .as_ref()
-            .and_then(|c| c.hq_folder_path.as_deref()),
-        menubar_prefs
-            .as_ref()
-            .and_then(|p| p.hq_path.as_deref()),
+        config.as_ref().and_then(|c| c.hq_folder_path.as_deref()),
+        menubar_prefs.as_ref().and_then(|p| p.hq_path.as_deref()),
     );
 
     Ok(hq_folder.to_string_lossy().to_string())
@@ -228,10 +224,41 @@ pub fn build_watch_runner_args(hq_folder_path: &str) -> SpawnArgs {
 /// If the original process died and a different process reused the PID, this
 /// may return a false positive. Acceptable for V2 prep — daemon.json cross-check
 /// can be added in V2 if PID reuse becomes an issue.
+#[cfg(unix)]
 fn is_pid_alive(pid: u32) -> bool {
     use nix::sys::signal;
     use nix::unistd::Pid;
     signal::kill(Pid::from_raw(pid as i32), None).is_ok()
+}
+
+#[cfg(target_os = "windows")]
+fn is_pid_alive(pid: u32) -> bool {
+    use windows::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    if pid == 0 {
+        return false;
+    }
+    unsafe {
+        let handle = match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
+            Ok(h) => h,
+            Err(_) => return false,
+        };
+        let mut exit_code: u32 = 0;
+        let alive = match GetExitCodeProcess(handle, &mut exit_code) {
+            Ok(()) => exit_code == STILL_ACTIVE.0 as u32,
+            Err(_) => false,
+        };
+        let _ = CloseHandle(handle);
+        alive
+    }
+}
+
+#[cfg(not(any(unix, target_os = "windows")))]
+fn is_pid_alive(_pid: u32) -> bool {
+    false
 }
 
 /// Read .hq-sync.pid file from the HQ folder.
@@ -341,8 +368,7 @@ fn handle_watch_stdout_line(
             let t = totals.lock().unwrap_or_else(|e| e.into_inner());
             t.conflicts
         };
-        let now_iso = chrono::Utc::now()
-            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let now_iso = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         let journal = journal_for_sync_complete(&now_iso, conflicts);
         if let Err(e) = write_journal(hq_folder, &journal) {
             log("daemon", &format!("failed to write journal: {e}"));
@@ -390,10 +416,7 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
     if let Some(pid) = read_pid_file(&hq_folder_path) {
         if is_pid_alive(pid) {
             deregister_process(DAEMON_HANDLE);
-            return Err(format!(
-                "Daemon is already running (PID {})",
-                pid
-            ));
+            return Err(format!("Daemon is already running (PID {})", pid));
         }
     }
 
@@ -544,9 +567,29 @@ pub fn stop_daemon() -> Result<bool, String> {
     // user can re-toggle Auto-sync without a process zombie.
     if let Some(pid) = read_pid_file(&hq_folder_path) {
         if is_pid_alive(pid) {
-            use nix::sys::signal::{self, Signal};
-            use nix::unistd::Pid;
-            let _ = signal::kill(Pid::from_raw(pid as i32), Signal::SIGTERM);
+            #[cfg(unix)]
+            {
+                use nix::sys::signal::{self, Signal};
+                use nix::unistd::Pid;
+                let _ = signal::kill(Pid::from_raw(pid as i32), Signal::SIGTERM);
+            }
+            #[cfg(target_os = "windows")]
+            {
+                use windows::Win32::Foundation::CloseHandle;
+                use windows::Win32::System::Threading::{
+                    OpenProcess, TerminateProcess, PROCESS_TERMINATE,
+                };
+                unsafe {
+                    if let Ok(handle) = OpenProcess(PROCESS_TERMINATE, false, pid) {
+                        let _ = TerminateProcess(handle, 1);
+                        let _ = CloseHandle(handle);
+                    }
+                }
+            }
+            #[cfg(not(any(unix, target_os = "windows")))]
+            {
+                let _ = pid;
+            }
             return Ok(true);
         }
     }
@@ -734,7 +777,7 @@ mod tests {
 
     #[test]
     fn test_double_register_prevented() {
-        use crate::commands::process::{try_register_handle, deregister_process};
+        use crate::commands::process::{deregister_process, try_register_handle};
         let handle = "test-daemon-double-start";
         // First register succeeds
         assert!(try_register_handle(handle));

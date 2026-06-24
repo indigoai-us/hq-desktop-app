@@ -26,14 +26,8 @@ fn resolve_app_path() -> String {
             if let Some(name) = current.file_name() {
                 if name.to_string_lossy().ends_with(".app") {
                     // Found the .app bundle — derive the executable path inside it
-                    let app_name = name
-                        .to_string_lossy()
-                        .trim_end_matches(".app")
-                        .to_string();
-                    let bin_path = current
-                        .join("Contents")
-                        .join("MacOS")
-                        .join(&app_name);
+                    let app_name = name.to_string_lossy().trim_end_matches(".app").to_string();
+                    let bin_path = current.join("Contents").join("MacOS").join(&app_name);
                     return bin_path.to_string_lossy().to_string();
                 }
             }
@@ -137,7 +131,10 @@ pub fn ensure_autostart_on_launch() {
     let path = match plist_path() {
         Ok(p) => p,
         Err(e) => {
-            log("autostart", &format!("ensure: cannot resolve plist path: {e}"));
+            log(
+                "autostart",
+                &format!("ensure: cannot resolve plist path: {e}"),
+            );
             return;
         }
     };
@@ -146,18 +143,27 @@ pub fn ensure_autostart_on_launch() {
     if enabled && !exists {
         if let Some(parent) = path.parent() {
             if let Err(e) = std::fs::create_dir_all(parent) {
-                log("autostart", &format!("ensure: mkdir LaunchAgents failed: {e}"));
+                log(
+                    "autostart",
+                    &format!("ensure: mkdir LaunchAgents failed: {e}"),
+                );
                 return;
             }
         }
         let plist = generate_plist(&resolve_app_path());
         match std::fs::write(&path, plist) {
-            Ok(()) => log("autostart", "ensure: created LaunchAgent plist (default-on)"),
+            Ok(()) => log(
+                "autostart",
+                "ensure: created LaunchAgent plist (default-on)",
+            ),
             Err(e) => log("autostart", &format!("ensure: write plist failed: {e}")),
         }
     } else if !enabled && exists {
         match std::fs::remove_file(&path) {
-            Ok(()) => log("autostart", "ensure: removed LaunchAgent plist (explicit opt-out)"),
+            Ok(()) => log(
+                "autostart",
+                "ensure: removed LaunchAgent plist (explicit opt-out)",
+            ),
             Err(e) => log("autostart", &format!("ensure: remove plist failed: {e}")),
         }
     }
@@ -233,9 +239,7 @@ mod tests {
         assert!(plist.contains("<key>Label</key>"));
         assert!(plist.contains(&format!("<string>{}</string>", BUNDLE_ID)));
         assert!(plist.contains("<key>ProgramArguments</key>"));
-        assert!(plist.contains(
-            "<string>/Applications/HQ Sync.app/Contents/MacOS/HQ Sync</string>"
-        ));
+        assert!(plist.contains("<string>/Applications/HQ Sync.app/Contents/MacOS/HQ Sync</string>"));
         assert!(plist.contains("<key>RunAtLoad</key>"));
         assert!(plist.contains("<true/>"));
     }
