@@ -1,0 +1,81 @@
+{
+  "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/crates/tauri-cli/schema.json",
+  "productName": "HQ Sync",
+  "version": "0.8.30",
+  "identifier": "ai.indigo.hq-sync-menubar",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1421",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "macOSPrivateApi": true,
+    "windows": [
+      {
+        "title": "HQ Sync",
+        "width": 320,
+        "height": 480,
+        "resizable": false,
+        "visible": false,
+        "decorations": false,
+        "alwaysOnTop": false,
+        "skipTaskbar": true,
+        "transparent": true,
+        "shadow": true,
+        "visibleOnAllWorkspaces": true
+      },
+      {
+        "label": "desktop-alt",
+        "title": "HQ",
+        "width": 1180,
+        "height": 760,
+        "minWidth": 960,
+        "minHeight": 600,
+        "decorations": true,
+        "transparent": true,
+        "titleBarStyle": "Overlay",
+        "url": "desktop-alt.html",
+        "visible": false,
+        "create": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDlERTE2OTVCQUZDREVCRTgKUldUbzY4MnZXMm5obmNMa2RXRXlXUDBKd1ZySVJENDJDVnQrYmh1Ym9hTzhqczJnRExtKzh5RlYK",
+      "endpoints": [
+        "https://github.com/indigoai-us/hq-sync/releases/latest/download/latest.json"
+      ]
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "createUpdaterArtifacts": true,
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": {
+      "../sidecar/recall-sdk-bridge/bridge.mjs": "recall-sdk-bridge/bridge.mjs",
+      "../sidecar/recall-sdk-bridge/recording-tracker.mjs": "recall-sdk-bridge/recording-tracker.mjs",
+      "../sidecar/recall-sdk-bridge/package.json": "recall-sdk-bridge/package.json",
+      "../sidecar/recall-sdk-bridge/node_modules": "recall-sdk-bridge/node_modules",
+      "helper/hq-tray-helper": "hq-tray-helper"
+    },
+    "macOS": {
+      "minimumSystemVersion": "13.0",
+      "infoPlist": "Info.plist"
+    },
+    "externalBin": [
+      "binaries/recall-desktop-sdk"
+    ]
+  }
+}

@@ -1,0 +1,432 @@
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+/// Returns the managed HQ toolchain directory installed by hq-installer.
+/// Path mirrors `managed_toolchain_dir_in()` in hq-installer's `deps.rs`.
+fn managed_toolchain_dir(home: &Path) -> PathBuf {
+    home.join("Library")
+        .join("Application Support")
+        .join("Indigo HQ")
+        .join("toolchain")
+}
+
+/// Returns the ~/.hq/ directory path.
+pub fn hq_config_dir() -> Result<PathBuf, String> {
+    let home = dirs::home_dir().ok_or_else(|| "Cannot determine home directory".to_string())?;
+    Ok(home.join(".hq"))
+}
+
+/// Resolve a node-backed CLI binary (e.g. `hq-sync-runner`, `hq`) to an
+/// absolute path.
+///
+/// **Why this exists:** Tauri apps launched from Dock/Finder inherit a
+/// minimal launchd PATH (roughly `/usr/bin:/bin:/usr/sbin:/sbin`) — they do
+/// NOT see `/opt/homebrew/bin` or the user's `.zshrc` additions. A bare
+/// `Command::new("hq-sync-runner")` then fails with "No such file or
+/// directory (os error 2)" even though `which hq-sync-runner` works in
+/// Terminal.
+///
+/// Resolution order:
+/// 1. Managed HQ toolchain (`~/Library/Application Support/Indigo HQ/toolchain/`)
+///    — npm-global/bin and node/bin directories installed by hq-installer
+/// 2. `$HOME/.npm-global/bin/{name}` — user-level npm prefix (no-sudo installs)
+/// 3. `/opt/homebrew/bin/{name}` — Apple Silicon homebrew
+/// 4. `/usr/local/bin/{name}` — Intel homebrew / system-wide installs
+/// 5. Ask a login shell via `zsh -lc 'command -v {name}'` — respects the
+///    user's actual shell config (picks up nvm, volta, asdf, etc.).
+///
+/// Returns the bare name as a last-ditch fallback — the caller's
+/// `Command::new` will then error with the original "os error 2", which
+/// surfaces as a sync error the UI can show. We don't invent a path that
+/// doesn't exist.
+pub fn resolve_bin(name: &str) -> String {
+    if let Some(path) = resolve_bin_in_dirs(dirs::home_dir().as_deref(), name) {
+        return path;
+    }
+
+    // 5. Login-shell PATH lookup — catches nvm/volta/asdf + any custom prefix
+    //    the user configured in .zshrc. `-l` makes zsh a login shell so it
+    //    sources the full startup chain. `command -v` prints the resolved
+    //    path on success, nothing on miss.
+    if let Ok(output) = Command::new("zsh")
+        .args(["-lc", &format!("command -v {}", name)])
+        .output()
+    {
+        if output.status.success() {
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path.is_empty() && Path::new(&path).exists() {
+                return path;
+            }
+        }
+    }
+
+    // Fall back to bare name — Command::new will then produce os error 2
+    // with the binary name still recognizable in the error message.
+    name.to_string()
+}
+
+/// Resolve a binary from deterministic home-relative and system-prefix
+/// locations. Kept separate from the login-shell fallback so tests can assert
+/// precedence without depending on the developer machine's actual HOME or
+/// shell configuration.
+fn resolve_bin_in_dirs(home: Option<&Path>, name: &str) -> Option<String> {
+    if let Some(home) = home {
+        // Managed HQ toolchain (installed by hq-installer). Match
+        // `child_path()` and hq-installer's login PATH order so a stale
+        // foreign `~/.npm-global/bin/hq` cannot shadow the managed CLI the
+        // app's runtime PATH would execute.
+        let toolchain = managed_toolchain_dir(home);
+        for subdir in ["npm-global/bin", "node/bin"] {
+            let candidate = toolchain.join(subdir).join(name);
+            if candidate.exists() {
+                return Some(candidate.to_string_lossy().to_string());
+            }
+        }
+
+        // User npm prefix after the managed toolchain.
+        let candidate = home.join(".npm-global").join("bin").join(name);
+        if candidate.exists() {
+            return Some(candidate.to_string_lossy().to_string());
+        }
+    }
+
+    // Standard install locations.
+    for prefix in ["/opt/homebrew/bin", "/usr/local/bin"] {
+        let candidate = Path::new(prefix).join(name);
+        if candidate.exists() {
+            return Some(candidate.to_string_lossy().to_string());
+        }
+    }
+
+    None
+}
+
+/// Build a PATH value suitable for handing to a spawned child process.
+///
+/// **Why this exists:** even after we resolve a launcher binary to an absolute
+/// path via `resolve_bin`, the *child itself* still inherits the parent's
+/// PATH. Node-backed CLIs use `#!/usr/bin/env node` shebangs — `env` does a
+/// PATH lookup for `node`. Under the minimal launchd PATH a Dock-launched
+/// Tauri app inherits, that lookup fails and the child exits with 127
+/// ("command not found"). Same applies to anything the script itself spawns.
+///
+/// We prepend likely interpreter locations (nvm versions, npm-global,
+/// homebrew) to whatever PATH we have so shebangs resolve cleanly.
+///
+/// Order: managed HQ toolchain → nvm node dirs → `~/.npm-global/bin` →
+/// `/opt/homebrew/bin` → `/usr/local/bin` → system defaults → parent PATH.
+pub fn child_path() -> String {
+    let mut parts: Vec<String> = Vec::new();
+
+    if let Some(home) = dirs::home_dir() {
+        // Managed HQ toolchain (installed by hq-installer) — checked first
+        // so users who only have Node via the installer can resolve `npx`
+        // and node shebangs.
+        let toolchain = managed_toolchain_dir(&home);
+        for subdir in ["npm-global/bin", "node/bin"] {
+            let bin = toolchain.join(subdir);
+            if bin.exists() {
+                parts.push(bin.to_string_lossy().to_string());
+            }
+        }
+
+        // nvm: prepend every installed node version's bin dir. Order doesn't
+        // matter for correctness (any working `node` resolves `env node`).
+        let nvm_versions = home.join(".nvm").join("versions").join("node");
+        if let Ok(entries) = std::fs::read_dir(&nvm_versions) {
+            for entry in entries.flatten() {
+                let bin = entry.path().join("bin");
+                if bin.exists() {
+                    parts.push(bin.to_string_lossy().to_string());
+                }
+            }
+        }
+        // User-level npm prefix (no-sudo installs).
+        let npm_global = home.join(".npm-global").join("bin");
+        if npm_global.exists() {
+            parts.push(npm_global.to_string_lossy().to_string());
+        }
+    }
+
+    for p in [
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "/usr/bin",
+        "/bin",
+        "/usr/sbin",
+        "/sbin",
+    ] {
+        parts.push(p.to_string());
+    }
+
+    if let Ok(existing) = std::env::var("PATH") {
+        for p in existing.split(':') {
+            if !p.is_empty() && !parts.iter().any(|x| x == p) {
+                parts.push(p.to_string());
+            }
+        }
+    }
+
+    parts.join(":")
+}
+
+/// Returns the path to ~/.hq/config.json.
+pub fn config_json_path() -> Result<PathBuf, String> {
+    Ok(hq_config_dir()?.join("config.json"))
+}
+
+/// Returns the path to ~/.hq/menubar.json.
+pub fn menubar_json_path() -> Result<PathBuf, String> {
+    Ok(hq_config_dir()?.join("menubar.json"))
+}
+
+/// Returns the path to ~/.hq/sync-version.json.
+///
+/// This app records its own version here on launch so the hq-cli can attach
+/// the installed hq-sync version to feedback submissions — the CLI has no
+/// other way to learn the running menubar app version. Owned exclusively by
+/// this app; the CLI only reads it (best-effort, absent => "not installed").
+pub fn sync_version_json_path() -> Result<PathBuf, String> {
+    Ok(hq_config_dir()?.join("sync-version.json"))
+}
+
+/// Returns the path to ~/.hq/deploy-prefs.json.
+///
+/// This file is owned exclusively by hq-core's `/deploy` skill — it persists
+/// `defaultOrg` and `deploy.preference`. hq-sync only touches it during the
+/// one-shot legacy stub migration (see
+/// `commands::config::migrate_legacy_config_stub`).
+pub fn deploy_prefs_json_path() -> Result<PathBuf, String> {
+    Ok(hq_config_dir()?.join("deploy-prefs.json"))
+}
+
+/// Resolve the HQ folder path with priority:
+/// 1. menubar_override (from menubar.json hqPath)
+/// 2. config_path (from config.json hqFolderPath)
+/// 3. Discovery: scan likely locations for a folder containing a valid
+///    `core.yaml` (the canonical hq-core marker — version + hqVersion fields).
+///    Both v14+ (`core/core.yaml`) and legacy (`core.yaml` at root) layouts
+///    are accepted; see `is_valid_hq_root`. First match wins. This is the
+///    safety net for installs that didn't write the path back to menubar.json
+///    (older installer flows).
+/// 4. ~/HQ default
+pub fn resolve_hq_folder(
+    config_path: Option<&str>,
+    menubar_override: Option<&str>,
+) -> PathBuf {
+    // Priority 1: menubar.json override
+    if let Some(path) = menubar_override {
+        if !path.is_empty() {
+            return PathBuf::from(path);
+        }
+    }
+
+    // Priority 2: config.json hqFolderPath
+    if let Some(path) = config_path {
+        if !path.is_empty() {
+            return PathBuf::from(path);
+        }
+    }
+
+    // Priority 3: discover via core.yaml signature.
+    if let Some(found) = discover_hq_folder_via_core_yaml() {
+        return found;
+    }
+
+    // Priority 4: ~/HQ default
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("/"))
+        .join("HQ")
+}
+
+/// Candidate parent paths the installer wizard typically uses (or that users
+/// commonly choose). First entry that contains a valid `core.yaml` wins.
+/// Order matters — most-likely first to avoid scanning the entire home dir.
+fn hq_discovery_candidates() -> Vec<PathBuf> {
+    let home = match dirs::home_dir() {
+        Some(h) => h,
+        None => return Vec::new(),
+    };
+    vec![
+        home.join("HQ"),
+        home.join("hq"),
+        home.join("Documents").join("HQ"),
+        home.join("Documents").join("hq"),
+        home.join("Desktop").join("HQ"),
+        home.join("Desktop").join("hq"),
+    ]
+}
+
+/// True iff the candidate folder contains a `core.yaml` (canonical or
+/// legacy location) that parses as YAML and has the canonical hq-core
+/// schema fields (`version` + `hqVersion`). Validates beyond mere presence
+/// so a random folder named `core.yaml` (config file from another tool,
+/// abandoned scratch) won't false-match.
+///
+/// File location is layout-aware:
+///   * **canonical (v14+):** `<path>/core/core.yaml`
+///   * **legacy (pre-v14):** `<path>/core.yaml`
+///
+/// The v14 hq-core release moved `core.yaml` one level deeper (see
+/// `apps/hq-core/MIGRATION.md` — "Root core.yaml; canonical location is
+/// core/core.yaml"). Before that fix, Priority 3 discovery silently
+/// rejected every v14+ HQ folder and fell through to the `~/HQ` default.
+pub fn is_valid_hq_root(path: &Path) -> bool {
+    let canonical = path.join("core").join("core.yaml");
+    let legacy = path.join("core.yaml");
+    let core_yaml = if canonical.is_file() {
+        canonical
+    } else if legacy.is_file() {
+        legacy
+    } else {
+        return false;
+    };
+    let bytes = match std::fs::read(&core_yaml) {
+        Ok(b) => b,
+        Err(_) => return false,
+    };
+    let parsed: serde_yaml::Value = match serde_yaml::from_slice(&bytes) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    // Both fields must be present per the hq-core schema (see
+    // indigoai-us/hq-core core/core.yaml). `version` is the schema version,
+    // `hqVersion` is the template version. Random YAML files won't have both.
+    parsed.get("version").is_some() && parsed.get("hqVersion").is_some()
+}
+
+/// Scan the well-known candidate locations for an HQ folder. Returns the
+/// first valid root found, or None. Cheap — a few `stat` calls plus one
+/// small YAML parse on a hit; no fs walk.
+pub fn discover_hq_folder_via_core_yaml() -> Option<PathBuf> {
+    hq_discovery_candidates()
+        .into_iter()
+        .find(|p| is_valid_hq_root(p))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_hq_config_dir() {
+        let dir = hq_config_dir().unwrap();
+        assert!(dir.ends_with(".hq"));
+    }
+
+    #[test]
+    fn test_config_json_path() {
+        let path = config_json_path().unwrap();
+        assert!(path.ends_with("config.json"));
+        assert!(path.parent().unwrap().ends_with(".hq"));
+    }
+
+    #[test]
+    fn test_menubar_json_path() {
+        let path = menubar_json_path().unwrap();
+        assert!(path.ends_with("menubar.json"));
+    }
+
+    #[test]
+    fn test_resolve_menubar_override_wins() {
+        let result = resolve_hq_folder(
+            Some("/from/config"),
+            Some("/from/menubar"),
+        );
+        assert_eq!(result, PathBuf::from("/from/menubar"));
+    }
+
+    #[test]
+    fn test_resolve_config_path() {
+        let result = resolve_hq_folder(Some("/from/config"), None);
+        assert_eq!(result, PathBuf::from("/from/config"));
+    }
+
+    #[test]
+    fn test_resolve_default() {
+        let result = resolve_hq_folder(None, None);
+        assert!(result.ends_with("HQ"));
+    }
+
+    #[test]
+    fn test_resolve_empty_menubar_falls_through() {
+        let result = resolve_hq_folder(Some("/from/config"), Some(""));
+        assert_eq!(result, PathBuf::from("/from/config"));
+    }
+
+    #[test]
+    fn test_resolve_empty_both_falls_to_default() {
+        let result = resolve_hq_folder(Some(""), Some(""));
+        assert!(result.ends_with("HQ"));
+    }
+
+    #[test]
+    fn test_resolve_bin_returns_name_when_missing() {
+        // A name that almost certainly doesn't exist anywhere
+        let result = resolve_bin("hq-sync-nonexistent-xyz-123");
+        assert_eq!(result, "hq-sync-nonexistent-xyz-123");
+    }
+
+    #[test]
+    fn test_resolve_bin_in_dirs_prefers_managed_toolchain_over_user_npm_global() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let name = "hq-test-bin";
+        let user_bin = tmp.path().join(".npm-global/bin");
+        let toolchain_bin = managed_toolchain_dir(tmp.path()).join("npm-global/bin");
+        std::fs::create_dir_all(&user_bin).unwrap();
+        std::fs::create_dir_all(&toolchain_bin).unwrap();
+        std::fs::write(user_bin.join(name), b"#!/bin/sh\n").unwrap();
+        let expected = toolchain_bin.join(name);
+        std::fs::write(&expected, b"#!/bin/sh\n").unwrap();
+
+        assert_eq!(
+            resolve_bin_in_dirs(Some(tmp.path()), name),
+            Some(expected.to_string_lossy().to_string())
+        );
+    }
+
+    #[test]
+    fn test_child_path_includes_homebrew() {
+        let path = child_path();
+        assert!(path.contains("/opt/homebrew/bin"));
+        assert!(path.contains("/usr/local/bin"));
+        assert!(path.contains("/usr/bin"));
+    }
+
+    #[test]
+    fn test_child_path_preserves_existing() {
+        // Whatever PATH the test runner has, child_path should include its entries.
+        if let Ok(existing) = std::env::var("PATH") {
+            if let Some(first) = existing.split(':').next() {
+                if !first.is_empty() {
+                    let path = child_path();
+                    assert!(path.contains(first), "child_path dropped existing entry {}", first);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_managed_toolchain_path_matches_installer() {
+        let home = PathBuf::from("/Users/testuser");
+        let toolchain = managed_toolchain_dir(&home);
+        assert_eq!(
+            toolchain,
+            PathBuf::from("/Users/testuser/Library/Application Support/Indigo HQ/toolchain"),
+            "must match hq-installer's managed_toolchain_dir_in()"
+        );
+    }
+
+    #[test]
+    fn test_resolve_bin_finds_system_binary() {
+        // `ls` lives at /bin/ls on all macOS/Linux — the /usr/local/bin
+        // branch won't match, but the zsh fallback should on any dev box.
+        // On minimal CI containers without zsh this may return "ls", which
+        // is still correct behavior (Command::new will then find /bin/ls
+        // via its own PATH lookup).
+        let result = resolve_bin("ls");
+        // Either we resolved to an absolute path, or we fell back to the
+        // bare name — both are valid.
+        assert!(result == "ls" || std::path::Path::new(&result).exists());
+    }
+}

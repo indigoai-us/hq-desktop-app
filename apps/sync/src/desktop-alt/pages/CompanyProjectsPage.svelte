@@ -1,0 +1,936 @@
+<script lang="ts">
+  import { invoke } from '@tauri-apps/api/core';
+  import { buildClaudeCodeUrl } from '../../lib/claude-code-link';
+  import {
+    loadCompanyGoals,
+    loadLocalProjects,
+    loadLocalProjectStories,
+    type Objective,
+  } from '../lib/local-projects';
+  import {
+    compareProjectsByRecency,
+    projectDisplayName,
+    projectListStatus,
+    projectProgress,
+    type Project,
+    type ProjectListStatus,
+    type Story,
+  } from '../lib/projects-model';
+  import ProjectDetailView from './ProjectDetailView.svelte';
+  import StoryPanel from '../v4/StoryPanel.svelte';
+  import '../v4/tokens.css';
+
+  interface Props {
+    slug: string;
+    onnewproject?: () => void | Promise<void>;
+  }
+
+  type DotTone = 'ok' | 'warn' | 'error' | 'idle';
+  type ProjectFilter = 'all' | 'active' | 'needs-link';
+
+  interface ProjectGroup {
+    key: string;
+    label: string;
+    tone: DotTone;
+    projects: Project[];
+    noGoal: boolean;
+  }
+
+  let { slug, onnewproject }: Props = $props();
+
+  let objectives = $state<Objective[]>([]);
+  let projects = $state<Project[]>([]);
+  let loading = $state(true);
+  let error = $state<string | null>(null);
+  let projectFilter = $state<ProjectFilter>('all');
+  let actionBusy = $state<string | null>(null);
+  let actionMessage = $state<string | null>(null);
+  let selected = $state<Project | null>(null);
+  let stories = $state<Story[]>([]);
+  let storiesLoading = $state(false);
+  let storiesError = $state<string | null>(null);
+  let selectedStoryId = $state<string | null>(null);
+  // project board-id / prdPath → creator (display name). Best-effort, from the
+  // cloud board; empty when unavailable so Lead falls back to "Unassigned".
+  let creatorByKey = $state<Record<string, string>>({});
+
+  const companyProjects = $derived(
+    projects
+      .filter((project) => project.company === slug)
+      .sort(compareProjectsByRecency),
+  );
+  const filteredCompanyProjects = $derived(
+    companyProjects.filter((project) => matchesProjectFilter(project, projectFilter)),
+  );
+  const groups = $derived.by(() => groupProjectsByGoal(objectives, filteredCompanyProjects));
+
+  // ── Column sorting (within each goal group; group order is preserved) ───────
+  type SortKey = 'project' | 'lead' | 'progress' | 'status';
+  let sortKey = $state<SortKey>('project');
+  let sortDir = $state<'asc' | 'desc'>('asc');
+
+  function toggleSort(key: SortKey): void {
+    if (sortKey === key) {
+      sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+    } else {
+      sortKey = key;
+      sortDir = 'asc';
+    }
+  }
+
+  const STATUS_RANK: Record<string, number> = {
+    live: 0,
+    'in-progress': 1,
+    complete: 2,
+    archived: 3,
+  };
+
+  function compareProjects(a: Project, b: Project): number {
+    let cmp = 0;
+    if (sortKey === 'project') {
+      cmp = projectDisplayName(a).localeCompare(projectDisplayName(b));
+    } else if (sortKey === 'lead') {
+      cmp = leadLabel(a).localeCompare(leadLabel(b));
+    } else if (sortKey === 'progress') {
+      cmp =
+        projectProgress(a.storiesComplete, a.storiesTotal).percent -
+        projectProgress(b.storiesComplete, b.storiesTotal).percent;
+    } else {
+      cmp =
+        (STATUS_RANK[projectListStatus(a)] ?? 99) - (STATUS_RANK[projectListStatus(b)] ?? 99);
+    }
+    // Stable tiebreak on name so equal keys keep a deterministic order.
+    if (cmp === 0) cmp = projectDisplayName(a).localeCompare(projectDisplayName(b));
+    return sortDir === 'asc' ? cmp : -cmp;
+  }
+
+  const sortedGroups = $derived(
+    groups.map((group) => ({
+      ...group,
+      projects: [...group.projects].sort(compareProjects),
+    })),
+  );
+
+  const sortArrow = (key: SortKey): string =>
+    sortKey !== key ? '' : sortDir === 'asc' ? ' ↑' : ' ↓';
+  const selectedStory = $derived(
+    selectedStoryId === null
+      ? null
+      : (stories.find((story) => story.id === selectedStoryId) ?? null),
+  );
+
+  $effect(() => {
+    const activeSlug = slug;
+    objectives = [];
+    projects = [];
+    error = null;
+    selected = null;
+    stories = [];
+    storiesError = null;
+    selectedStoryId = null;
+    creatorByKey = {};
+
+    if (!activeSlug) {
+      loading = false;
+      return;
+    }
+
+    loading = true;
+    let cancelled = false;
+
+    // Best-effort, decoupled from the gating load below: a creators fetch must
+    // never error the Projects page or block it — the Lead column simply stays
+    // "Unassigned" if it fails or the board isn't reachable.
+    void invoke<Array<{ id: string; prdPath?: string | null; creator: string }>>(
+      'get_company_project_creators',
+      { slug: activeSlug },
+    )
+      .then((rows) => {
+        if (cancelled) return;
+        const map: Record<string, string> = {};
+        for (const row of rows ?? []) {
+          if (!row?.creator) continue;
+          if (row.id) map[row.id] = row.creator;
+          if (row.prdPath) map[row.prdPath] = row.creator;
+        }
+        creatorByKey = map;
+      })
+      .catch((err) => {
+        console.warn(`get_company_project_creators(${activeSlug}) failed:`, err);
+      });
+
+    void (async () => {
+      try {
+        const [goals, allProjects] = await Promise.all([
+          loadCompanyGoals(activeSlug),
+          loadLocalProjects(),
+        ]);
+        if (cancelled) return;
+        objectives = goals.objectives;
+        projects = allProjects;
+      } catch (err) {
+        console.error('CompanyProjectsPage load failed:', err);
+        if (!cancelled) {
+          error = 'Projects unavailable. Try again after a sync.';
+          objectives = [];
+          projects = [];
+        }
+      } finally {
+        if (!cancelled) loading = false;
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  });
+
+  function normalizeId(value: string | null | undefined): string {
+    return (value ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+  }
+
+  function objectiveIds(objective: Objective): Set<string> {
+    const ids = new Set<string>();
+    for (const id of objective.initiativeIds ?? []) {
+      const normalized = normalizeId(id);
+      if (normalized) ids.add(normalized);
+    }
+    const linearId = normalizeId(objective.linearInitiativeId);
+    if (linearId) ids.add(linearId);
+    const ownId = normalizeId(objective.id);
+    if (ownId) ids.add(ownId);
+    return ids;
+  }
+
+  function projectTokens(project: Project): string[] {
+    return [
+      project.id,
+      project.name,
+      project.title,
+      project.prdPath.split('/').filter(Boolean).at(-2),
+    ]
+      .map(normalizeId)
+      .filter(Boolean);
+  }
+
+  function projectMatchesObjective(project: Project, objective: Objective): boolean {
+    const ids = objectiveIds(objective);
+    if (ids.size === 0) return false;
+    return projectTokens(project).some((token) => ids.has(token));
+  }
+
+  function projectLinkedToAnyGoal(project: Project): boolean {
+    return objectives.some((objective) => projectMatchesObjective(project, objective));
+  }
+
+  function matchesProjectFilter(project: Project, filter: ProjectFilter): boolean {
+    if (filter === 'needs-link') return !projectLinkedToAnyGoal(project);
+    if (filter === 'active') {
+      const status = projectListStatus(project);
+      return status === 'live' || status === 'in-progress';
+    }
+    return true;
+  }
+
+  function filterLabel(filter: ProjectFilter): string {
+    if (filter === 'active') return 'Active';
+    if (filter === 'needs-link') return 'Needs link';
+    return 'All';
+  }
+
+  function cycleFilter() {
+    projectFilter =
+      projectFilter === 'all' ? 'active' : projectFilter === 'active' ? 'needs-link' : 'all';
+  }
+
+  async function requestLinkProject(project: Project) {
+    if (actionBusy) return;
+    const prompt = [
+      `/goals ${slug}`,
+      '',
+      `Link project "${projectDisplayName(project)}" to the right company goal.`,
+      `Project id: ${project.id}`,
+      project.prdPath ? `PRD: ${project.prdPath}` : null,
+      objectives.length > 0
+        ? ['Available goals:', ...objectives.map((goal) => `- ${goal.title || goal.id}`)].join('\n')
+        : 'No goals are currently synced; create the right goal first if needed.',
+      '',
+      'Update the local goal/project metadata so this project appears under the correct goal in HQ Sync.',
+    ]
+      .filter((line): line is string => Boolean(line))
+      .join('\n');
+    actionBusy = `link-${project.id}`;
+    actionMessage = null;
+    try {
+      const config: { hqFolderPath?: string } = await invoke<{ hqFolderPath?: string }>(
+        'get_config',
+      ).catch(() => ({}));
+      const url = buildClaudeCodeUrl({ folder: config.hqFolderPath ?? '', prompt });
+      await invoke('open_claude_code_link', { url });
+      actionMessage = 'Opened in Claude Code.';
+    } catch (err) {
+      console.error('open_claude_code_link failed:', err);
+      try {
+        await navigator.clipboard.writeText(prompt);
+        actionMessage = 'Prompt copied.';
+      } catch {
+        actionMessage = 'Could not open Claude Code.';
+      }
+    } finally {
+      actionBusy = null;
+    }
+  }
+
+  function goalTone(objective: Objective): DotTone {
+    const status = objective.status.toLowerCase().replace(/[_\s]+/g, '-');
+    if (status === 'on-track' || status === 'active' || status === 'running') return 'ok';
+    if (status === 'at-risk' || status === 'review') return 'warn';
+    if (status === 'off-track' || status === 'blocked') return 'error';
+    return 'idle';
+  }
+
+  function groupProjectsByGoal(goals: Objective[], list: Project[]): ProjectGroup[] {
+    const assigned = new Set<string>();
+    const sections: ProjectGroup[] = [];
+
+    for (const goal of goals) {
+      const linked = list.filter((project) => projectMatchesObjective(project, goal));
+      for (const project of linked) assigned.add(project.id);
+      if (linked.length > 0) {
+        sections.push({
+          key: goal.id || goal.title,
+          label: goal.title || 'Untitled goal',
+          tone: goalTone(goal),
+          projects: linked,
+          noGoal: false,
+        });
+      }
+    }
+
+    const unlinked = list.filter((project) => !assigned.has(project.id));
+    if (unlinked.length > 0) {
+      sections.push({
+        key: 'no-goal',
+        label: 'NO GOAL',
+        tone: 'idle',
+        projects: unlinked,
+        noGoal: true,
+      });
+    }
+
+    return sections;
+  }
+
+  // Lead = the project's CREATOR, joined from the cloud board's S3 `created-by`
+  // author metadata (resolved honestly server-side — never fabricated). Keyed by
+  // both board id and prdPath so either matches a local project. A project with
+  // no recorded creator (e.g. a prd uploaded before author metadata, or a
+  // local-only company) stays honestly "Unassigned".
+  function leadLabel(project: Project): string {
+    const byId = creatorByKey[project.id];
+    if (byId) return byId;
+    const byPath = project.prdPath ? creatorByKey[project.prdPath] : undefined;
+    return byPath ?? 'Unassigned';
+  }
+
+  function startedLabel(project: Project): string {
+    const total = project.storiesTotal === 1 ? '1 story' : `${project.storiesTotal} stories`;
+    const started = formatProjectDate(project.createdAt);
+    return started ? `started ${started} · ${total}` : total;
+  }
+
+  // Real project start = its createdAt timestamp (when known), formatted as a
+  // short calendar date — not a weekday hashed from the project id.
+  function formatProjectDate(iso: string | null | undefined): string | null {
+    if (!iso) return null;
+    const time = Date.parse(iso);
+    if (!Number.isFinite(time)) return null;
+    return new Date(time).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  }
+
+  // prd.json has no target/due date, so there is nothing real to show here. An
+  // em dash reads as "no target set" instead of a date hashed from the id.
+  function targetLabel(): string {
+    return '—';
+  }
+
+  function statusLabel(status: ProjectListStatus): string {
+    switch (status) {
+      case 'live':
+        return 'Running';
+      case 'in-progress':
+        return 'Review';
+      case 'complete':
+        return 'Done';
+      case 'archived':
+        return 'Archived';
+      default:
+        return 'Gated';
+    }
+  }
+
+  function statusTone(status: ProjectListStatus): DotTone {
+    if (status === 'live') return 'ok';
+    if (status === 'in-progress') return 'warn';
+    if (status === 'complete') return 'ok';
+    if (status === 'archived') return 'idle';
+    return 'idle';
+  }
+
+  function selectStoryById(storyId: string): void {
+    if (stories.some((story) => story.id === storyId)) {
+      selectedStoryId = storyId;
+    }
+  }
+
+  function openStory(story: Story): void {
+    selectedStoryId = story.id;
+  }
+
+  function closeStory(): void {
+    selectedStoryId = null;
+  }
+
+  async function openProject(project: Project): Promise<void> {
+    selected = project;
+    stories = [];
+    storiesError = null;
+    selectedStoryId = null;
+
+    if (!project.prdPath) {
+      storiesLoading = false;
+      return;
+    }
+
+    storiesLoading = true;
+    try {
+      stories = await loadLocalProjectStories(project.prdPath);
+    } catch (err) {
+      console.error('get_local_project_prd failed:', err);
+      const detail = err instanceof Error ? err.message : String(err);
+      storiesError = `Could not load this project’s stories — ${detail}`;
+      stories = [];
+    } finally {
+      storiesLoading = false;
+    }
+  }
+
+  function openProjectFromKey(event: KeyboardEvent, project: Project): void {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    void openProject(project);
+  }
+
+  function backToProjects(): void {
+    selected = null;
+    stories = [];
+    storiesError = null;
+    selectedStoryId = null;
+  }
+
+  function onProjectStatusChange(projectId: string, status: string): void {
+    if (selected && selected.id === projectId) {
+      selected = { ...selected, status };
+    }
+    projects = projects.map((project) =>
+      project.id === projectId ? { ...project, status } : project,
+    );
+  }
+
+  function onStoryPassesChange(storyId: string, passes: boolean): void {
+    stories = stories.map((story) =>
+      story.id === storyId ? { ...story, passes } : story,
+    );
+    if (selected) {
+      const nextComplete = stories.filter((story) =>
+        story.id === storyId ? passes : story.passes,
+      ).length;
+      selected = { ...selected, storiesComplete: nextComplete };
+      projects = projects.map((project) =>
+        project.id === selected?.id ? { ...project, storiesComplete: nextComplete } : project,
+      );
+    }
+  }
+</script>
+
+<section class="company-projects" aria-labelledby="company-projects-title" data-testid="company-projects-page">
+  {#if selected}
+    <ProjectDetailView
+      project={selected}
+      {stories}
+      {storiesLoading}
+      {storiesError}
+      objectives={objectives}
+      onback={backToProjects}
+      onselectStory={openStory}
+      onStatusChange={onProjectStatusChange}
+    />
+
+    <StoryPanel
+      story={selectedStory}
+      project={selected}
+      prdPath={selected.prdPath}
+      onclose={closeStory}
+      onselectDependency={selectStoryById}
+      {onStoryPassesChange}
+    />
+  {:else}
+    <header class="projects-header">
+      <div class="projects-heading">
+        <h2 id="company-projects-title">Projects</h2>
+        <span>
+          {filteredCompanyProjects.length} of {companyProjects.length} {companyProjects.length === 1 ? 'project' : 'projects'} · grouped by goal
+        </span>
+      </div>
+      <div class="project-actions" aria-label="Project actions">
+        {#if actionMessage}
+          <span class="action-status" role="status">{actionMessage}</span>
+        {/if}
+        <button type="button" onclick={cycleFilter}>Filter: {filterLabel(projectFilter)}</button>
+        <button type="button" onclick={() => void onnewproject?.()}>New project</button>
+      </div>
+    </header>
+
+    {#if error}
+      <div class="projects-error" role="alert">{error}</div>
+    {/if}
+
+    <div class="project-table" aria-busy={loading}>
+      <div class="project-table-head">
+        <button type="button" class="th" class:sorted={sortKey === 'project'} onclick={() => toggleSort('project')} aria-label="Sort by project">PROJECT{sortArrow('project')}</button>
+        <button type="button" class="th" class:sorted={sortKey === 'lead'} onclick={() => toggleSort('lead')} aria-label="Sort by lead">LEAD{sortArrow('lead')}</button>
+        <button type="button" class="th" class:sorted={sortKey === 'progress'} onclick={() => toggleSort('progress')} aria-label="Sort by progress">PROGRESS{sortArrow('progress')}</button>
+        <span class="th-static">TARGET</span>
+        <button type="button" class="th" class:sorted={sortKey === 'status'} onclick={() => toggleSort('status')} aria-label="Sort by status">STATUS{sortArrow('status')}</button>
+      </div>
+
+      {#if loading}
+        {#each [0, 1, 2, 3] as row (row)}
+          <div class="project-skeleton"></div>
+        {/each}
+      {:else if companyProjects.length === 0}
+        <div class="empty-state" data-testid="empty-projects-state">
+          <span>No projects yet</span>
+          <p>Projects will appear here after they sync into the local workspace.</p>
+        </div>
+      {:else if filteredCompanyProjects.length === 0}
+        <div class="empty-state" data-testid="filtered-projects-empty-state">
+          <span>No projects match {filterLabel(projectFilter).toLowerCase()}</span>
+          <p>Change the filter to see the rest of this company’s projects.</p>
+        </div>
+      {:else}
+        {#each sortedGroups as group (group.key)}
+          <section class="project-group" aria-labelledby={`project-group-${group.key}`}>
+            <h3 id={`project-group-${group.key}`} class="project-group-title">
+              <span class={`status-dot ${group.tone}`} aria-hidden="true"></span>
+              <span>{group.label}</span>
+            </h3>
+
+            {#each group.projects as project, index (project.id)}
+              {@const progress = projectProgress(project.storiesComplete, project.storiesTotal)}
+              {@const status = projectListStatus(project)}
+              {@const lead = leadLabel(project)}
+              <div
+                class="project-row"
+                data-testid="project-row"
+                role="button"
+                tabindex="0"
+                onclick={() => void openProject(project)}
+                onkeydown={(event) => openProjectFromKey(event, project)}
+              >
+                <div class="project-main">
+                  <strong>{projectDisplayName(project)}</strong>
+                  <span>
+                    {startedLabel(project)}
+                    {#if group.noGoal && index === group.projects.length - 1}
+                      <button
+                        type="button"
+                        class="link-nudge"
+                        onclick={(event) => {
+                          event.stopPropagation();
+                          void requestLinkProject(project);
+                        }}
+                        disabled={actionBusy !== null}
+                      >
+                        {actionBusy === `link-${project.id}` ? 'Opening…' : 'Link'}
+                      </button>
+                    {/if}
+                  </span>
+                </div>
+                <div class="lead-cell"><span>{lead}</span></div>
+                <div class="progress-cell" aria-label={`${progress.percent}% complete`}>
+                  <span class="progress-track" aria-hidden="true">
+                    <span class="progress-fill" style={`width: ${progress.percent}%`}></span>
+                  </span>
+                  <span>{progress.complete}/{progress.total}</span>
+                </div>
+                <div class="target-cell">{targetLabel()}</div>
+                <div class="status-cell">
+                  <span class={`status-dot ${statusTone(status)}`} aria-hidden="true"></span>
+                  <span>{statusLabel(status)}</span>
+                </div>
+              </div>
+            {/each}
+          </section>
+        {/each}
+      {/if}
+    </div>
+  {/if}
+</section>
+
+<style>
+  .company-projects {
+    container: company-projects / inline-size;
+    display: flex;
+    flex-direction: column;
+    gap: 22px;
+    min-width: 0;
+    height: 100%;
+    color: var(--v4-text-1);
+    font-family:
+      'Inter Variable',
+      Inter,
+      -apple-system,
+      'SF Pro Text',
+      sans-serif;
+  }
+
+  .projects-header,
+  .projects-heading,
+  .project-actions,
+  .project-row,
+  .progress-cell,
+  .status-cell,
+  .project-group-title {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+  }
+
+  .projects-header {
+    justify-content: space-between;
+    gap: 18px;
+  }
+
+  .projects-heading {
+    align-items: baseline;
+    gap: 9px;
+  }
+
+  .projects-heading h2 {
+    margin: 0;
+    color: var(--v4-text-1);
+    font-size: var(--text-base);
+    font-weight: 500;
+    line-height: 1.2;
+  }
+
+  .projects-heading span {
+    color: var(--v4-text-3);
+    font-size: var(--text-base);
+    line-height: 1.25;
+  }
+
+  .project-actions {
+    flex: 0 0 auto;
+    gap: 12px;
+  }
+
+  .action-status {
+    max-width: 150px;
+    overflow: hidden;
+    color: var(--v4-text-3);
+    font-size: var(--text-base);
+    line-height: 1.25;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .project-actions button {
+    height: 28px;
+    padding: 0 12px;
+    border: 1px solid var(--v4-hairline);
+    border-radius: 6px;
+    background: var(--v4-control-bg);
+    color: var(--v4-text-2);
+    font: inherit;
+    font-size: var(--text-base);
+    cursor: default;
+  }
+
+  .project-actions button:disabled,
+  .link-nudge:disabled {
+    opacity: 0.52;
+  }
+
+  .project-table {
+    min-width: 0;
+  }
+
+  .project-table-head,
+  .project-row {
+    display: grid;
+    grid-template-columns: minmax(260px, 1fr) 88px 148px 82px 110px;
+    column-gap: 18px;
+    min-width: 720px;
+  }
+
+  .project-table-head {
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--v4-rowline);
+    color: var(--v4-text-3);
+    font-size: var(--text-base);
+    line-height: 1.2;
+    letter-spacing: 0;
+  }
+
+  /* Sortable header cells — reset the button to read as a header label, but
+     stay clickable with a hover + active-sort affordance and the ↑/↓ arrow. */
+  .project-table-head .th {
+    display: inline-flex;
+    align-items: center;
+    justify-self: start;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    font-size: var(--text-base);
+    letter-spacing: inherit;
+    text-align: left;
+    text-transform: inherit;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+
+  .project-table-head .th:hover {
+    color: var(--v4-text-2);
+  }
+
+  .project-table-head .th.sorted {
+    color: var(--v4-text-1);
+  }
+
+  .project-table-head .th:focus-visible {
+    outline: 1px solid var(--v4-control-border);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  .project-group {
+    min-width: 720px;
+  }
+
+  .project-group-title {
+    gap: 8px;
+    height: 38px;
+    margin: 0;
+    color: var(--v4-text-3);
+    font-size: var(--text-base);
+    font-weight: 400;
+    line-height: 1.2;
+    text-transform: uppercase;
+  }
+
+  .project-row {
+    min-height: 54px;
+    border-bottom: 1px solid var(--v4-rowline);
+    color: var(--v4-text-2);
+    font-size: var(--text-base);
+  }
+
+  .project-main {
+    min-width: 0;
+  }
+
+  .project-main strong {
+    display: block;
+    overflow: hidden;
+    color: var(--v4-text-1);
+    font-size: var(--text-base);
+    font-weight: 400;
+    line-height: 1.3;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .project-main span {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    margin-top: 2px;
+    overflow: hidden;
+    color: var(--v4-text-3);
+    font-size: var(--text-base);
+    line-height: 1.25;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .link-nudge {
+    height: 18px;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--v4-text-2);
+    font: inherit;
+    font-size: var(--text-base);
+    cursor: default;
+  }
+
+  .lead-cell,
+  .target-cell,
+  .status-cell {
+    align-self: center;
+    color: var(--v4-text-2);
+  }
+
+  .progress-cell {
+    gap: 10px;
+    align-self: center;
+    color: var(--v4-text-3);
+    font-size: var(--text-base);
+  }
+
+  .progress-track {
+    display: block;
+    width: 76px;
+    height: 3px;
+    overflow: hidden;
+    background: var(--v4-control-faint);
+  }
+
+  .progress-fill {
+    display: block;
+    height: 100%;
+    background: var(--v4-text-2);
+  }
+
+  .status-cell {
+    gap: 8px;
+  }
+
+  .status-dot {
+    width: 6px;
+    height: 6px;
+    flex: 0 0 auto;
+    border-radius: 50%;
+  }
+
+  .status-dot.ok {
+    background: var(--v4-ok);
+  }
+
+  .status-dot.warn {
+    background: var(--v4-warn);
+  }
+
+  .status-dot.error {
+    background: var(--v4-error);
+  }
+
+  .status-dot.idle {
+    background: var(--v4-idle);
+  }
+
+  .projects-error,
+  .empty-state {
+    padding: 12px;
+    border: 1px solid var(--v4-hairline);
+    border-radius: 6px;
+    background: var(--v4-inset);
+    color: var(--v4-text-2);
+    font-size: var(--text-base);
+  }
+
+  .empty-state span {
+    display: block;
+    color: var(--v4-text-1);
+  }
+
+  .empty-state p {
+    margin: 4px 0 0;
+    color: var(--v4-text-3);
+  }
+
+  .project-skeleton {
+    height: 54px;
+    min-width: 720px;
+    border-bottom: 1px solid var(--v4-rowline);
+    background: linear-gradient(90deg, transparent, var(--v4-control-faint), transparent);
+    opacity: 0.48;
+  }
+
+  @container company-projects (max-width: 560px) {
+    .projects-header {
+      flex-direction: column;
+      align-items: stretch;
+      gap: 10px;
+    }
+
+    .projects-heading {
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 4px;
+    }
+
+    .project-actions {
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .action-status {
+      flex: 1 1 100%;
+      max-width: 100%;
+      white-space: normal;
+    }
+
+    .project-table-head {
+      display: none;
+    }
+
+    .project-group,
+    .project-row,
+    .project-skeleton {
+      min-width: 0;
+    }
+
+    .project-group-title {
+      height: auto;
+      min-height: 30px;
+      padding: 8px 0;
+    }
+
+    .project-row {
+      grid-template-columns: minmax(0, 1fr);
+      row-gap: 7px;
+      min-height: 0;
+      padding: 12px 0;
+    }
+
+    .project-main strong,
+    .project-main span {
+      overflow: visible;
+      text-overflow: initial;
+      white-space: normal;
+    }
+
+    .lead-cell,
+    .target-cell,
+    .status-cell,
+    .progress-cell {
+      align-self: start;
+    }
+
+    .progress-cell,
+    .status-cell {
+      min-width: 0;
+    }
+
+    .progress-track {
+      flex: 1 1 auto;
+      min-width: 64px;
+      max-width: 128px;
+    }
+  }
+</style>

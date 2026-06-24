@@ -1,0 +1,148 @@
+[package]
+name = "hq-sync-menubar"
+version = "0.8.0"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["macos-private-api", "tray-icon", "image-png"] }
+tauri-plugin-shell = "2"
+tauri-plugin-http = "2"
+tauri-plugin-fs = "2"
+tauri-plugin-updater = "2"
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-single-instance = "2"
+window-vibrancy = "0.6"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+uuid = { version = "1", features = ["v4"] }
+tokio = { version = "1", features = ["full"] }
+nix = { version = "0.29", features = ["signal"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+dirs = "6"
+rfd = "0.15"
+sha2 = "0.10"
+# Git blob hashing uses SHA-1: blob_sha = sha1("blob {len}\0{content}").
+# GitHub Trees API returns these per file; computing the same locally lets
+# us diff without downloading file contents. (Used by hq_core_drift.rs)
+sha1 = "0.10"
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+sentry = "^0.35"
+glob = "0.3"
+ignore = "0.4"
+walkdir = "2"
+# `behavior-version-latest` opts into the AWS SDK's modern defaults at compile
+# time. Without it, constructing an S3 client panics with
+#   "A behavior major version must be set when sending a request or
+#    constructing a client"
+# because aws-sdk-s3 1.x requires you to pin a BehaviorVersion either in code
+# (per call site) or at the dep level via this feature. We pin at the dep
+# level so first_push.rs / personal.rs don't each need to remember it.
+aws-sdk-s3 = { version = "1", features = ["behavior-version-latest"] }
+aws-sdk-sts = { version = "1", features = ["behavior-version-latest"] }
+aws-config = "1"
+aws-smithy-types = "1"
+aws-credential-types = "1"
+# Provides `Identity` (the `aws-sigv4` SigningParams builder takes `&Identity`,
+# constructed from `aws_credential_types::Credentials` via `Into`). Already in
+# the graph transitively via the aws-sdk crates; pinned direct so dm_mqtt.rs can
+# name the type without leaning on a transitive re-export.
+aws-smithy-runtime-api = { version = "1", features = ["client"] }
+# SigV4 query-presigning for the AWS IoT MQTT-over-WSS connection
+# (commands/dm_mqtt.rs). The `http1` feature pulls the `http_request`
+# presigning surface (SignableRequest / SigningSettings / SignatureLocation)
+# which signs a GET and emits the X-Amz-* query string we hand to rumqttc.
+# Already in the dep graph transitively via the aws-sdk crates; pinned direct
+# so dm_mqtt.rs can use it without a transitive re-export moving.
+aws-sigv4 = { version = "1", features = ["http1"] }
+# MQTT-over-WebSockets client for AWS IoT Core push delivery. `websocket`
+# enables the wss transport, but the `Transport::Wss` connect path in rumqttc
+# is gated on `use-rustls` too (it builds a tokio-rustls TLS layer), so both
+# are required. We set the full presigned `wss://{host}/mqtt?X-Amz-...` string
+# as the broker address (path + SigV4 query preserved) rather than via
+# `parse_url`, because rumqttc's url parser treats unknown query keys as errors
+# and would reject the X-Amz-* params.
+rumqttc = { version = "0.24", default-features = false, features = ["websocket", "use-rustls"] }
+ulid = "1"
+bytes = "1"
+# Strict SemVer comparison for the release-channel resolver in
+# `util/release_channel.rs`. We need correct pre-release ordering
+# (`1.0.0-alpha.1 < 1.0.0-beta.1 < 1.0.0`) when picking the newest
+# applicable release per channel — the loose `cmp_semver` in
+# `commands/hq_cli_update.rs` drops pre-release suffixes and would
+# rank `v0.1.109-beta.1` as equal to `v0.1.109`, which would let a
+# stable-channel user pick up a beta. Tiny dep, well-maintained.
+semver = "1"
+# `url::Url` is required by `tauri_plugin_updater::UpdaterBuilder::endpoints`
+# (the plugin re-exports `url::Url` but builds against this exact crate).
+# Already in the dep graph via reqwest + tauri-plugin-updater; declaring it
+# directly so updater.rs can `use url::Url;` without leaning on a
+# transitive re-export that could move.
+url = "2"
+
+[profile.release]
+split-debuginfo = "packed"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Used by commands::folder_picker to enumerate NSApp.windows and close
+# any stale NSOpenPanel/NSSavePanel before opening a new picker. rfd
+# doesn't expose the panel handle, so we reach into AppKit directly.
+objc2 = "0.6"
+# block2 has two callers in the menubar app, both needing ObjC completion
+# blocks for Apple APIs whose contract requires a non-nil block:
+#
+# 1. commands/notifications.rs — UNUserNotificationCenter
+#    getNotificationSettings / requestAuthorization, so we can read the
+#    *real* OS authorization state instead of the hardcoded
+#    PermissionState::Granted that tauri-plugin-notification's desktop
+#    impl returns. RcBlock (heap, refcounted) outlives our stack frame so
+#    a late completion callback after a recv timeout can't use-after-free.
+#
+# 2. commands/permissions.rs — AVCaptureDevice
+#    requestAccessForMediaType: for TCC microphone registration from HQ
+#    Sync's main process. Passing nil for the completion handler crashes
+#    per Apple's contract, so block2 constructs a valid one.
+block2 = "0.6"
+# Direct dep on mac-notification-sys for action-button notifications.
+# tauri-plugin-notification (2.3.3) on macOS uses notify-rust which wraps
+# NSUserNotification but DOES NOT expose action buttons —
+# `register_action_types` is mobile-only and there's no on_action callback
+# for desktop. Going one layer down to mac-notification-sys (already a
+# transitive dep via notify-rust) gives us MainButton::SingleAction for a
+# "Record" button on the meeting-detect notification, MainButton::DropdownActions
+# for the share-notify dropdown UX, AND a blocking wait_for_click that
+# returns the response (Click / ActionButton(name) / Reply / Dismiss). We
+# spawn one thread per notification to await the response so the async
+# Tauri command itself never blocks. Pattern shared between
+# commands/meetings.rs and commands/share_notify.rs.
+mac-notification-sys = "0.6"
+# CGRect/CGPoint/CGSize for the Liquid Glass window backing (src/glass.rs):
+# `[contentView bounds]` returns an NSRect by value, which msg_send! needs an
+# Encode-able type for. Already in the lock tree (transitive via objc2-app-kit);
+# pinned as a direct dep so the glass bridge can name the geometry type.
+objc2-core-foundation = "0.3"
+
+[features]
+journal-cli = []
+
+# Lives in examples/ (auto-discovered) rather than src/bin/. Cargo's auto-bin
+# detection registers any src/bin/*.rs as kind= ["bin"] regardless of
+# required-features; Tauri's bundler then walks all bins and tries to copy
+# each, which broke v0.1.16 (file never built because of the feature gate, but
+# bundler still tried). Examples are auto-discovered from examples/, never
+# walked by Tauri's bundler. Run with:
+#   cargo run --example emit-sample-journal --features journal-cli
+[[example]]
+name = "emit-sample-journal"
+path = "examples/emit-sample-journal.rs"
+required-features = ["journal-cli"]
+
+[dev-dependencies]
+tempfile = "3"
+wiremock = "0.6"
+tauri = { version = "2", features = ["test"] }

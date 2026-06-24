@@ -1,0 +1,836 @@
+//! Staging-aware drift classification (@getindigo.ai builders only).
+//!
+//! The base drift check (`hq_core_drift.rs`) compares locked-scope local
+//! files against hq-core at the *released* `v{hqVersion}` tag. For an HQ
+//! builder that's noisy: most "drift" is just work already promoted into
+//! the `hq-core-staging` pipeline (merged to `main`, or sitting in an open
+//! PR) that simply hasn't been cut into a release + pulled back via
+//! `/update-hq` yet. Those files diff against the old release but are fully
+//! accounted for.
+//!
+//! This module cross-references each drifted file's local git-blob SHA
+//! against the staging repo and tags it:
+//!   * `staging-main`  — byte-identical to the file on staging `main`
+//!   * `pr:{n}`        — byte-identical to the file at the head of open PR #n
+//!   * `unaccounted`   — not present anywhere in the pipeline (the real
+//!                        action item)
+//!
+//! Scope + safety:
+//!   * Gated to `@getindigo.ai` (same email-claim gate as `meetings.rs` /
+//!     `daemon.rs`). Ineligible users trigger zero staging API calls — the
+//!     feature is completely dark and the public binary carries no private-
+//!     repo reference (the repo is read from config, defaulting only for
+//!     eligible users).
+//!   * The private staging repo requires auth; we resolve a token from the
+//!     local `gh` CLI (`gh auth token`, falling back to `~/.config/gh/
+//!     hosts.yml`). No token / no access → feature dark.
+//!   * Every failure path returns `None` (fail-quiet) so the base drift
+//!     report always renders even when staging is unreachable.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::process::Command;
+
+use serde::{Deserialize, Serialize};
+
+use crate::commands::config::{read_hq_config_lenient, MenubarPrefs};
+use crate::util::client_info::client_headers;
+use crate::util::logfile::log;
+use crate::util::paths;
+
+/// Phase-1 eligibility domain. Mirrors `meetings::ALLOWED_DOMAIN` and the
+/// `daemon.rs` event-push gate — the leading `@` blocks look-alikes like
+/// `forgetindigo.ai`.
+const ALLOWED_DOMAIN: &str = "@getindigo.ai";
+
+/// Default staging repo for eligible users. Never baked into config or the
+/// public payload — only resolved at runtime once the email gate passes.
+const DEFAULT_STAGING_REPO: &str = "indigoai-us/hq-core-staging";
+
+const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Where a drifted file's content was found in the promotion pipeline.
+/// Serialized to a flat wire string so the Svelte side can render it without
+/// a tagged-union switch: `"staging-main"`, `"pr:182"`, `"unaccounted"`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(into = "String", try_from = "String")]
+pub enum StagingStatus {
+    /// Local content matches the file on staging `main`.
+    StagingMain,
+    /// Local content matches the file at the head of this open PR.
+    StagingPr(u32),
+    /// Local content matches nothing in the staging pipeline.
+    Unaccounted,
+}
+
+impl StagingStatus {
+    pub fn to_wire(&self) -> String {
+        match self {
+            StagingStatus::StagingMain => "staging-main".to_string(),
+            StagingStatus::StagingPr(n) => format!("pr:{n}"),
+            StagingStatus::Unaccounted => "unaccounted".to_string(),
+        }
+    }
+
+    pub fn from_wire(s: &str) -> Result<Self, String> {
+        match s {
+            "staging-main" => Ok(StagingStatus::StagingMain),
+            "unaccounted" => Ok(StagingStatus::Unaccounted),
+            other => {
+                if let Some(num) = other.strip_prefix("pr:") {
+                    num.parse::<u32>()
+                        .map(StagingStatus::StagingPr)
+                        .map_err(|_| format!("bad PR number in staging status: {other:?}"))
+                } else {
+                    Err(format!("unrecognized staging status: {other:?}"))
+                }
+            }
+        }
+    }
+}
+
+impl From<StagingStatus> for String {
+    fn from(s: StagingStatus) -> String {
+        s.to_wire()
+    }
+}
+
+impl TryFrom<String> for StagingStatus {
+    type Error = String;
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        StagingStatus::from_wire(&s)
+    }
+}
+
+/// In-memory index of every blob SHA each path carries across the staging
+/// pipeline. Built once per drift scan, queried per drifted file.
+#[derive(Debug, Default)]
+pub struct StagingIndex {
+    /// path -> set of blob SHAs present on staging `main`.
+    main: BTreeMap<String, BTreeSet<String>>,
+    /// (PR number, path -> set of blob SHAs at PR head), kept sorted by
+    /// number so classification picks the lowest matching PR deterministically.
+    prs: Vec<(u32, BTreeMap<String, BTreeSet<String>>)>,
+}
+
+impl StagingIndex {
+    /// Classify one drifted file. `main` wins over any PR (already merged →
+    /// most "settled"); otherwise the lowest-numbered open PR that carries a
+    /// byte-identical copy wins.
+    pub fn classify(&self, path: &str, local_sha: &str) -> StagingStatus {
+        if self
+            .main
+            .get(path)
+            .is_some_and(|shas| shas.contains(local_sha))
+        {
+            return StagingStatus::StagingMain;
+        }
+        let mut prs_sorted: Vec<&(u32, BTreeMap<String, BTreeSet<String>>)> =
+            self.prs.iter().collect();
+        prs_sorted.sort_by_key(|(n, _)| *n);
+        for (num, files) in prs_sorted {
+            if files.get(path).is_some_and(|shas| shas.contains(local_sha)) {
+                return StagingStatus::StagingPr(*num);
+            }
+        }
+        StagingStatus::Unaccounted
+    }
+}
+
+// ── Eligibility + token resolution ────────────────────────────────────────────
+
+/// Pure email gate — public for unit testing. Case-insensitive suffix match.
+pub fn is_eligible_email(email: Option<&str>) -> bool {
+    match email {
+        Some(s) if !s.is_empty() => s.trim().to_ascii_lowercase().ends_with(ALLOWED_DOMAIN),
+        _ => false,
+    }
+}
+
+/// Read the signed-in email from the locally-cached Cognito id_token. Same
+/// reader the sync path + `event_push_eligible` use; any failure → None.
+fn signed_in_email() -> Option<String> {
+    crate::commands::cognito::read_tokens_from_file()
+        .ok()
+        .flatten()
+        .and_then(|t| t.id_token)
+        .and_then(|tok| crate::commands::cognito::decode_id_token_claims(&tok).ok())
+        .and_then(|c| c.email)
+}
+
+/// Read `stagingChannel` from `~/.hq/menubar.json`. Returns `true` (channel
+/// ON) when the field is missing or null — preserves the pre-toggle
+/// behaviour for @indigo builders who haven't touched Settings. Explicit
+/// `false` flips them to the prod release channel.
+///
+/// Non-@indigo users' value is read but has no effect: `is_eligible_email`
+/// gates them out before `is_staging_channel_enabled` is consulted. The
+/// field is only writable for @indigo users via the Settings toggle (which
+/// is hidden behind the shared `meetings_feature_enabled` gate — same
+/// @getindigo.ai predicate the share-notify section uses).
+fn is_staging_channel_enabled() -> bool {
+    let prefs: Option<MenubarPrefs> = paths::menubar_json_path()
+        .ok()
+        .filter(|p| p.exists())
+        .and_then(|p| std::fs::read_to_string(&p).ok())
+        .and_then(|s| serde_json::from_str(&s).ok());
+    prefs.and_then(|p| p.staging_channel).unwrap_or(true)
+}
+
+/// True when `~/.hq/menubar.json` carries an explicit non-empty
+/// `driftStagingRepo`. The toggle's intent is "indigo opt-out of the
+/// DEFAULT staging channel"; a user who manually configured a custom
+/// staging repo has already made an explicit choice that takes
+/// precedence (Codex P2 review on PR #110). `resolve_channel` in
+/// `hq_core_state.rs` already shortcircuits to Staging on this path
+/// before reading the toggle, so the spawn-side gate needs the same
+/// carve-out to stay consistent with what the popover renders.
+fn has_explicit_staging_repo() -> bool {
+    let prefs: Option<MenubarPrefs> = paths::menubar_json_path()
+        .ok()
+        .filter(|p| p.exists())
+        .and_then(|p| std::fs::read_to_string(&p).ok())
+        .and_then(|s| serde_json::from_str(&s).ok());
+    prefs
+        .and_then(|p| p.drift_staging_repo)
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false)
+}
+
+/// Resolve the staging repo (`owner/name`) to classify against:
+///   1. explicit `driftStagingRepo` in `~/.hq/menubar.json` (any team can
+///      point this at their own staging repo), else
+///   2. the Indigo default — but only for an eligible (`@getindigo.ai`) user.
+/// Returns `None` for ineligible users with no explicit config (feature dark).
+fn resolve_staging_repo(eligible: bool) -> Option<String> {
+    let prefs: Option<MenubarPrefs> = paths::menubar_json_path()
+        .ok()
+        .filter(|p| p.exists())
+        .and_then(|p| std::fs::read_to_string(&p).ok())
+        .and_then(|s| serde_json::from_str(&s).ok());
+    if let Some(repo) = prefs.and_then(|p| p.drift_staging_repo) {
+        let trimmed = repo.trim().to_string();
+        if !trimmed.is_empty() {
+            return Some(trimmed);
+        }
+    }
+    if eligible {
+        Some(DEFAULT_STAGING_REPO.to_string())
+    } else {
+        None
+    }
+}
+
+/// Resolve a GitHub token via the local `gh` CLI, falling back to parsing
+/// `~/.config/gh/hosts.yml`. Returns `None` (feature dark) on any failure.
+///
+/// Crate-public: `hq_core_update::install_hq_core_update` reuses this to
+/// pass `GH_TOKEN` through to the rescue script when available. The public
+/// hq-core repo doesn't strictly require a token, but threading one through
+/// dodges the anonymous-clone rate limit (60/h) for users who already have
+/// `gh` configured locally.
+pub(crate) fn resolve_gh_token() -> Option<String> {
+    // 1. `gh auth token` — the canonical, always-fresh source.
+    let gh = paths::resolve_bin("gh");
+    if let Ok(output) = Command::new(&gh).args(["auth", "token"]).output() {
+        if output.status.success() {
+            let tok = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !tok.is_empty() {
+                return Some(tok);
+            }
+        }
+    }
+    // 2. Fallback: parse oauth_token for github.com out of hosts.yml. Covers
+    //    setups where `gh` isn't on the Tauri app's minimal PATH but the
+    //    config file is present.
+    let hosts = dirs::home_dir()?
+        .join(".config")
+        .join("gh")
+        .join("hosts.yml");
+    let bytes = std::fs::read(&hosts).ok()?;
+    let parsed: serde_yaml::Value = serde_yaml::from_slice(&bytes).ok()?;
+    let tok = parsed
+        .get("github.com")
+        .and_then(|h| h.get("oauth_token"))
+        .and_then(|t| t.as_str())
+        .map(|s| s.to_string())?;
+    if tok.is_empty() {
+        None
+    } else {
+        Some(tok)
+    }
+}
+
+// ── GitHub API shapes ──────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct GhTreesResponse {
+    #[serde(default)]
+    tree: Vec<GhTreeEntry>,
+    #[serde(default)]
+    truncated: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct GhTreeEntry {
+    path: String,
+    #[serde(rename = "type")]
+    kind: String,
+    sha: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GhPull {
+    number: u32,
+}
+
+#[derive(Debug, Deserialize)]
+struct GhPullFile {
+    filename: String,
+    sha: String,
+}
+
+// ── Fetch ────────────────────────────────────────────────────────────────────
+
+fn authed_client(token: &str) -> Result<reqwest::Client, String> {
+    let mut headers = client_headers();
+    let bearer = format!("Bearer {token}");
+    if let Ok(v) = reqwest::header::HeaderValue::from_str(&bearer) {
+        headers.insert(reqwest::header::AUTHORIZATION, v);
+    }
+    headers.insert(
+        reqwest::header::ACCEPT,
+        reqwest::header::HeaderValue::from_static("application/vnd.github+json"),
+    );
+    reqwest::Client::builder()
+        .default_headers(headers)
+        .timeout(REQUEST_TIMEOUT)
+        .build()
+        .map_err(|e| format!("build staging client: {e}"))
+}
+
+/// Fetch the staging `main` tree as path -> {sha}.
+async fn fetch_main_tree(
+    client: &reqwest::Client,
+    repo: &str,
+) -> Result<BTreeMap<String, BTreeSet<String>>, String> {
+    let url = format!("https://api.github.com/repos/{repo}/git/trees/main?recursive=1");
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("GET {url}: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("staging main tree HTTP {}", resp.status()));
+    }
+    let parsed: GhTreesResponse = resp
+        .json()
+        .await
+        .map_err(|e| format!("parse staging tree JSON: {e}"))?;
+    if parsed.truncated {
+        log(
+            "hq-core-staging",
+            "WARNING: staging main tree truncated — classification is a lower bound",
+        );
+    }
+    let mut out: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for entry in parsed.tree {
+        if entry.kind == "blob" {
+            out.entry(entry.path).or_default().insert(entry.sha);
+        }
+    }
+    Ok(out)
+}
+
+/// List open PR numbers (paginated).
+async fn fetch_open_pr_numbers(client: &reqwest::Client, repo: &str) -> Result<Vec<u32>, String> {
+    let mut numbers = Vec::new();
+    let mut page = 1u32;
+    loop {
+        let url = format!(
+            "https://api.github.com/repos/{repo}/pulls?state=open&per_page=100&page={page}"
+        );
+        let resp = client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| format!("GET {url}: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("staging pulls list HTTP {}", resp.status()));
+        }
+        let pulls: Vec<GhPull> = resp
+            .json()
+            .await
+            .map_err(|e| format!("parse pulls JSON: {e}"))?;
+        let n = pulls.len();
+        numbers.extend(pulls.into_iter().map(|p| p.number));
+        if n < 100 {
+            break;
+        }
+        page += 1;
+    }
+    Ok(numbers)
+}
+
+/// Fetch one PR's changed files as path -> {sha} (paginated).
+async fn fetch_pr_files(
+    client: &reqwest::Client,
+    repo: &str,
+    pr: u32,
+) -> Result<BTreeMap<String, BTreeSet<String>>, String> {
+    let mut out: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut page = 1u32;
+    loop {
+        let url = format!(
+            "https://api.github.com/repos/{repo}/pulls/{pr}/files?per_page=100&page={page}"
+        );
+        let resp = client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| format!("GET {url}: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("staging PR #{pr} files HTTP {}", resp.status()));
+        }
+        let files: Vec<GhPullFile> = resp
+            .json()
+            .await
+            .map_err(|e| format!("parse PR #{pr} files JSON: {e}"))?;
+        let n = files.len();
+        for f in files {
+            out.entry(f.filename).or_default().insert(f.sha);
+        }
+        if n < 100 {
+            break;
+        }
+        page += 1;
+    }
+    Ok(out)
+}
+
+/// Build the full staging index if and only if the current user is eligible
+/// and a token + repo resolve. Returns `None` (feature dark / fail-quiet) on
+/// any miss — callers treat that as "no classification available".
+pub async fn build_index_if_eligible() -> Option<StagingIndex> {
+    let eligible = is_eligible_email(signed_in_email().as_deref());
+    let repo = resolve_staging_repo(eligible)?;
+    // An explicit non-Indigo repo is honoured even for non-@getindigo.ai
+    // users (any team can adopt the workflow); the Indigo default is gated.
+    if !eligible && repo == DEFAULT_STAGING_REPO {
+        return None;
+    }
+    let token = resolve_gh_token()?;
+    let client = match authed_client(&token) {
+        Ok(c) => c,
+        Err(e) => {
+            log("hq-core-staging", &format!("client build failed: {e}"));
+            return None;
+        }
+    };
+
+    let main = match fetch_main_tree(&client, &repo).await {
+        Ok(m) => m,
+        Err(e) => {
+            log("hq-core-staging", &format!("main tree fetch failed: {e}"));
+            return None;
+        }
+    };
+
+    let mut prs = Vec::new();
+    match fetch_open_pr_numbers(&client, &repo).await {
+        Ok(numbers) => {
+            for pr in numbers {
+                match fetch_pr_files(&client, &repo, pr).await {
+                    Ok(files) => prs.push((pr, files)),
+                    Err(e) => log(
+                        "hq-core-staging",
+                        &format!("PR #{pr} files fetch failed (skipping): {e}"),
+                    ),
+                }
+            }
+        }
+        Err(e) => log(
+            "hq-core-staging",
+            &format!("open-PR list fetch failed (main-only classification): {e}"),
+        ),
+    }
+
+    log(
+        "hq-core-staging",
+        &format!(
+            "index built: repo={repo} main_paths={} open_prs={}",
+            main.len(),
+            prs.len()
+        ),
+    );
+    Some(StagingIndex { main, prs })
+}
+
+// ── Sync-point provenance & full replace-rescue ──────────────────────────────
+//
+// The scripts/replace-rescue.sh rescue script (renamed from
+// `replace-from-staging-rescue.sh` in v0.1.104) stamps
+// `replaced_from_source.last_sync_sha` into `core/core.yaml` after every
+// successful default-mode run. The menubar surfaces an "Update from staging"
+// pill (only for `@getindigo.ai` users) when:
+//   * the stamp is missing entirely (never synced), OR
+//   * the stamped SHA is older than staging `main`'s HEAD SHA.
+//
+// Clicking the pill invokes `run_replace_from_staging`, which runs
+// hq-cloud's `hq-rescue` bin via npx (pinned to `HQ_CLOUD_VERSION`, the
+// same mechanism `commands::sync` uses for the runner) against the resolved
+// HQ folder. The script handles drift rescue, history-aware skip gate,
+// carve-outs, and the post-overlay stamp write — see hq-cloud's
+// scripts/replace-rescue.sh for the full algorithm.
+
+/// Output from spawning the rescue script. Wired to the frontend so the
+/// popover can show success / failure + the last few lines of script output
+/// without dumping the whole 700-line scan log into the popover.
+#[derive(Debug, Clone, Serialize)]
+pub struct RescueRunResult {
+    /// Process exit code. `0` is success; non-zero is a script-side error.
+    pub exit_code: i32,
+    /// Last ~40 lines of combined stdout+stderr — enough for the trailing
+    /// summary block without flooding the IPC bridge.
+    pub log_tail: String,
+    /// Full log file path on disk for `Open in Finder` / debug.
+    pub log_path: String,
+}
+
+/// Resolve the user's HQ folder using the same 4-tier resolver the rest of
+/// the app uses (menubar.json → config.json → discovery → ~/HQ).
+///
+/// Crate-public: shared with `hq_core_update::install_hq_core_update` so the
+/// prod-update spawn path doesn't re-implement the resolver tree.
+pub(crate) fn resolve_hq_folder() -> std::path::PathBuf {
+    let menubar_prefs: Option<MenubarPrefs> = paths::menubar_json_path()
+        .ok()
+        .filter(|p| p.exists())
+        .and_then(|p| std::fs::read_to_string(&p).ok())
+        .and_then(|s| serde_json::from_str(&s).ok());
+    let config = read_hq_config_lenient().ok().flatten();
+    paths::resolve_hq_folder(
+        config.as_ref().and_then(|c| c.hq_folder_path.as_deref()),
+        menubar_prefs.as_ref().and_then(|p| p.hq_path.as_deref()),
+    )
+}
+
+/// True when `folder` looks like a real HQ root, guarding the rescue/update
+/// paths against operating on an unrelated directory.
+///
+/// Anchors on `companies/` (present and preserved on every HQ install) plus at
+/// least one core scaffold marker — ANY of `.claude/`, `core/`, or `personal/`.
+/// We accept any one because the layout drifted across releases: a faithful
+/// v14.0.0 install ships NEITHER `personal/` (introduced in v15) NOR `core/`
+/// (the v15 scaffold home) — only `.claude/`. The old check required
+/// `companies/` AND `personal/`, which aborted every v14.0.0 user before the
+/// rescue could run, leaving them with no upgrade path to v15 (DEV-1741).
+/// `.claude/` exists on every release from v14 through v15, so this admits the
+/// full upgrade range while still rejecting a directory that is not an HQ root.
+pub(crate) fn looks_like_hq_root(folder: &std::path::Path) -> bool {
+    folder.join("companies").is_dir()
+        && (folder.join(".claude").is_dir()
+            || folder.join("core").is_dir()
+            || folder.join("personal").is_dir())
+}
+
+/// Build the base command that runs the drift-preserving rescue via
+/// hq-cloud's `hq-rescue` bin, pinned to `HQ_CLOUD_VERSION` — the same
+/// npx-package mechanism the sync runner uses (see `commands::sync`). This
+/// is why hq-sync no longer bundles a private copy of `replace-rescue.sh`:
+/// it invokes hq-cloud directly at runtime, exactly like `hq-sync-runner`.
+///
+/// Callers append the rescue flags (`--hq-root`, `--source`, `--ref`,
+/// `--floor-sha`, `--yes`, …), the `GH_TOKEN` env, and stdio redirection.
+///
+/// Crate-public: shared by `hq_core_update::install_hq_core_update` so the
+/// prod-update and staging paths build the invocation identically.
+pub(crate) fn rescue_command() -> tokio::process::Command {
+    let npx = paths::resolve_bin("npx");
+    let mut cmd = tokio::process::Command::new(&npx);
+    cmd.arg("-y")
+        .arg(format!(
+            "--package={}@{}",
+            crate::commands::sync::HQ_CLOUD_PACKAGE,
+            crate::commands::sync::HQ_CLOUD_VERSION
+        ))
+        .arg("hq-rescue")
+        // GUI-launched apps inherit a minimal PATH; `child_path()` adds the
+        // node/npx install dirs so npx can resolve `node`. Mirrors the
+        // runner spawn in `commands::sync`.
+        .env("PATH", paths::child_path());
+    cmd
+}
+
+/// Tauri command — run the rescue script against the resolved HQ folder.
+/// Eligibility is enforced by `resolve_staging_repo`: ineligible users with
+/// no `driftStagingRepo` override resolve to `None` and get rejected here.
+/// Ineligible users WITH an explicit override are allowed through — they
+/// opted in by configuring the menubar pref, and the same path lets the
+/// pill render for them in `check_staging_replace_available`. Keeping the
+/// two entry points consistent avoids the "visible action that always
+/// errors" pattern Codex flagged.
+///
+/// Long-running (~30-90s on first run because of the full-history clone +
+/// scan). The frontend should show a spinner and disable the pill while
+/// the future is pending.
+#[tauri::command]
+pub async fn run_replace_from_staging() -> Result<RescueRunResult, String> {
+    // Settings toggle: @indigo user opted out of the DEFAULT staging
+    // channel. The pill should already be hidden when the toggle is
+    // off, so reaching this command means the frontend is stale or a
+    // custom caller is invoking us — refuse the spawn unless the user
+    // also carved out an explicit `driftStagingRepo` override.
+    //
+    // The carve-out matters because `resolve_channel` treats an
+    // explicit repo as Staging *regardless* of the toggle. Without
+    // this guard a user with a custom staging repo would see the
+    // popover render Staging + click the pill + hit "staging channel
+    // disabled" — exactly the inconsistency Codex flagged in the
+    // round-5 review on PR #110.
+    if !is_staging_channel_enabled() && !has_explicit_staging_repo() {
+        return Err(
+            "staging channel disabled in Settings — re-enable to run replace-from-staging"
+                .to_string(),
+        );
+    }
+    let eligible = is_eligible_email(signed_in_email().as_deref());
+    let repo = resolve_staging_repo(eligible).ok_or_else(|| {
+        "no staging repo resolved (set driftStagingRepo in ~/.hq/menubar.json, or sign in with an @getindigo.ai account)".to_string()
+    })?;
+    let token = resolve_gh_token()
+        .ok_or_else(|| "no GitHub token available (gh auth token failed)".to_string())?;
+    let hq_folder = resolve_hq_folder();
+    if !looks_like_hq_root(&hq_folder) {
+        return Err(format!(
+            "HQ folder at {} is not a valid HQ root (need companies/ plus one of .claude/, core/, or personal/)",
+            hq_folder.display()
+        ));
+    }
+    // Stream the combined output to a per-invocation log file so the user
+    // can `tail -f` it during the multi-minute scan and so we have a
+    // post-mortem on failures. The popover gets a 40-line tail.
+    let log_path = std::env::temp_dir().join(format!(
+        "hq-sync-replace-from-staging-{}.log",
+        std::process::id()
+    ));
+    let log_file_for_stdout = std::fs::File::create(&log_path)
+        .map_err(|e| format!("create log file {}: {e}", log_path.display()))?;
+    let log_file_for_stderr = log_file_for_stdout
+        .try_clone()
+        .map_err(|e| format!("dup log file fd: {e}"))?;
+
+    log(
+        "hq-core-staging",
+        &format!(
+            "spawning rescue: hq-cloud@{} hq_root={} repo={} log={}",
+            crate::commands::sync::HQ_CLOUD_VERSION,
+            hq_folder.display(),
+            repo,
+            log_path.display()
+        ),
+    );
+
+    // npx -y --package=@indigoai-us/hq-cloud@<pin> hq-rescue
+    //     --hq-root <folder> --source <repo> --yes
+    // Token is passed via env (never in argv — argv shows up in `ps`).
+    let mut cmd = rescue_command();
+    cmd.arg("--hq-root")
+        .arg(hq_folder.as_os_str())
+        .arg("--source")
+        .arg(&repo)
+        .arg("--yes")
+        .env("GH_TOKEN", &token)
+        .stdout(std::process::Stdio::from(log_file_for_stdout))
+        .stderr(std::process::Stdio::from(log_file_for_stderr));
+
+    let status = cmd
+        .status()
+        .await
+        .map_err(|e| format!("spawn rescue script: {e}"))?;
+
+    let exit_code = status.code().unwrap_or(-1);
+    let log_tail =
+        tail_log(&log_path, 40).unwrap_or_else(|e| format!("(log tail unavailable: {e})"));
+
+    log(
+        "hq-core-staging",
+        &format!("rescue exit={} log={}", exit_code, log_path.display()),
+    );
+
+    Ok(RescueRunResult {
+        exit_code,
+        log_tail,
+        log_path: log_path.display().to_string(),
+    })
+}
+
+/// Read the last N lines of a log file. Pure stdlib so we don't pull in
+/// another dep just for tailing. Reads the whole file into memory — fine
+/// for our use (rescue logs are < 100 KB even in the worst case).
+///
+/// Crate-public so `hq_core_update::install_hq_core_update` can surface the
+/// same trailing-log feedback chip the staging pill uses.
+pub(crate) fn tail_log(path: &std::path::Path, n_lines: usize) -> Result<String, String> {
+    let content =
+        std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    let lines: Vec<&str> = content.lines().collect();
+    let start = lines.len().saturating_sub(n_lines);
+    Ok(lines[start..].join("\n"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression for DEV-1741: the HQ-root gate must admit a faithful v14.0.0
+    /// install — `companies/` + `.claude/` but NO `personal/` and NO `core/` —
+    /// while still rejecting a directory that is not an HQ root.
+    #[test]
+    fn looks_like_hq_root_admits_v14_and_rejects_non_hq() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mk = |name: &str, dirs: &[&str]| {
+            let root = tmp.path().join(name);
+            for d in dirs {
+                std::fs::create_dir_all(root.join(d)).unwrap();
+            }
+            root
+        };
+
+        // Faithful v14.0.0: companies/ + .claude/, no personal/, no core/.
+        let v14 = mk("v14", &["companies", ".claude", "repos", "workspace"]);
+        assert!(!v14.join("personal").is_dir());
+        assert!(!v14.join("core").is_dir());
+        assert!(looks_like_hq_root(&v14), "v14.0.0 root must be admitted");
+
+        // v15: companies/ + core/ + personal/.
+        let v15 = mk("v15", &["companies", ".claude", "core", "personal"]);
+        assert!(looks_like_hq_root(&v15));
+
+        // core-only marker is enough alongside companies/.
+        let core_only = mk("coreonly", &["companies", "core"]);
+        assert!(looks_like_hq_root(&core_only));
+
+        // companies/ with no scaffold marker -> not an HQ root.
+        let bare = mk("bare", &["companies"]);
+        assert!(!looks_like_hq_root(&bare));
+
+        // marker but no companies/ -> not an HQ root.
+        let no_co = mk("nocompanies", &[".claude", "core", "personal"]);
+        assert!(!looks_like_hq_root(&no_co));
+    }
+
+    fn idx() -> StagingIndex {
+        let mut main = BTreeMap::new();
+        main.insert(
+            "a.md".to_string(),
+            BTreeSet::from(["sha-main-a".to_string()]),
+        );
+
+        let mut pr182 = BTreeMap::new();
+        pr182.insert(
+            "b.md".to_string(),
+            BTreeSet::from(["sha-182-b".to_string()]),
+        );
+        pr182.insert(
+            "shared.md".to_string(),
+            BTreeSet::from(["sha-shared".to_string()]),
+        );
+
+        let mut pr183 = BTreeMap::new();
+        pr183.insert(
+            "c.md".to_string(),
+            BTreeSet::from(["sha-183-c".to_string()]),
+        );
+        pr183.insert(
+            "shared.md".to_string(),
+            BTreeSet::from(["sha-shared".to_string()]),
+        );
+
+        StagingIndex {
+            main,
+            prs: vec![(183, pr183), (182, pr182)],
+        }
+    }
+
+    #[test]
+    fn classify_main_match() {
+        assert_eq!(
+            idx().classify("a.md", "sha-main-a"),
+            StagingStatus::StagingMain
+        );
+    }
+
+    #[test]
+    fn classify_pr_match() {
+        assert_eq!(
+            idx().classify("b.md", "sha-182-b"),
+            StagingStatus::StagingPr(182)
+        );
+        assert_eq!(
+            idx().classify("c.md", "sha-183-c"),
+            StagingStatus::StagingPr(183)
+        );
+    }
+
+    #[test]
+    fn classify_lowest_pr_when_multiple() {
+        // `shared.md` with `sha-shared` exists in both 182 and 183 (inserted
+        // 183-first) — the lower number must win deterministically.
+        assert_eq!(
+            idx().classify("shared.md", "sha-shared"),
+            StagingStatus::StagingPr(182)
+        );
+    }
+
+    #[test]
+    fn classify_unaccounted() {
+        assert_eq!(
+            idx().classify("a.md", "different-sha"),
+            StagingStatus::Unaccounted
+        );
+        assert_eq!(
+            idx().classify("missing.md", "whatever"),
+            StagingStatus::Unaccounted
+        );
+    }
+
+    #[test]
+    fn email_gate_allows_indigo() {
+        assert!(is_eligible_email(Some("corey@getindigo.ai")));
+        assert!(is_eligible_email(Some("Corey@GetIndigo.ai")));
+    }
+
+    #[test]
+    fn email_gate_blocks_lookalike_and_empty() {
+        assert!(!is_eligible_email(Some("attacker@forgetindigo.ai")));
+        assert!(!is_eligible_email(Some("someone@example.com")));
+        assert!(!is_eligible_email(Some("")));
+        assert!(!is_eligible_email(None));
+    }
+
+    #[test]
+    fn staging_status_wire_round_trip() {
+        for s in [
+            StagingStatus::StagingMain,
+            StagingStatus::StagingPr(182),
+            StagingStatus::Unaccounted,
+        ] {
+            let wire = s.to_wire();
+            assert_eq!(StagingStatus::from_wire(&wire).unwrap(), s);
+        }
+        assert_eq!(StagingStatus::StagingMain.to_wire(), "staging-main");
+        assert_eq!(StagingStatus::StagingPr(182).to_wire(), "pr:182");
+        assert_eq!(StagingStatus::Unaccounted.to_wire(), "unaccounted");
+        assert!(StagingStatus::from_wire("garbage").is_err());
+        assert!(StagingStatus::from_wire("pr:notanum").is_err());
+    }
+
+    #[test]
+    fn serde_round_trip_through_json() {
+        let s = StagingStatus::StagingPr(182);
+        let json = serde_json::to_string(&s).unwrap();
+        assert_eq!(json, "\"pr:182\"");
+        let back: StagingStatus = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, s);
+    }
+}
