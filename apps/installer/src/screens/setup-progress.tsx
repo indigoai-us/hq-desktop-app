@@ -1,0 +1,1307 @@
+// setup-progress.tsx — US-004
+// Unified post-login orchestrator. Sequences eight stages behind a single
+// progress bar with one explanatory line and no intermediate input:
+//
+//   1. deps         — runDepsInstall() (core deps; optionals skipped)
+//   2. initial-sync — provision the personal vault bucket + spawn the
+//                     hq-cloud-sync runner in the background (best-effort)
+//   3. packages     — install the default HQ content packs (no picker)
+//   4. git-init     — invoke("git_init") with identity from Google idToken
+//   5. personalize  — detect cloud company (non-fatal) + personalize()
+//   6. import       — apply Codex parity + defer Claude adoption handoff
+//   7. indexing     — qmd collection add (writes embeddings-pending marker)
+//   8. menubar      — install_menubar_app (HQ Sync tray app)
+//
+// The initial cloud sync is kicked off HERE, as early as the flow allows
+// (login already happened; deps just put node/npx on disk), and deliberately
+// before packages per product direction — the runner syncs concurrently while
+// the remaining stages run. It is fire-and-forget: the stage only provisions
+// the personal bucket and launches the runner, then moves on. The HQ Sync
+// menu-bar app (last stage) still owns continuous sync and re-reconciles on
+// first launch, which also covers anything written after the runner's pass
+// (packages, personalization, company detection).
+//
+// Each stage outcome is journaled to the install-manifest so a later /setup
+// can resume any failed stage. Stage failures are non-fatal: the dispatcher
+// records the failure and continues so the wizard can always reach Done.
+
+import { useCallback, useEffect, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import {
+  BaseDirectory,
+  mkdir,
+  writeTextFile,
+} from "@tauri-apps/plugin-fs";
+import { runDepsInstall, type DepInstallResult } from "@/lib/deps-install";
+import { personalize, type CompanySeed } from "@/lib/personalize-writer";
+import { getCurrentUser } from "@/lib/cognito";
+import {
+  claimPendingInvitesForUser,
+  listUserCompanies,
+} from "@/lib/vault-handoff";
+import { startInitialCloudSync } from "@/lib/initial-sync";
+import {
+  setGitIdentity,
+  setIsPersonal,
+  setPersonalized,
+  setTeam,
+} from "@/lib/wizard-state";
+import {
+  getInstallerVersion,
+  recordDependencies,
+  recordImport,
+  recordPacks,
+  recordStepFailure,
+  recordStepOk,
+  recordStepStart,
+  type ItemStatus,
+} from "@/lib/install-manifest";
+import { getDefaultPacks, type DefaultPack } from "@/lib/default-packs";
+import { runExistingImport } from "@/lib/import-existing";
+import { writeInstallTextFile } from "@/lib/install-fs";
+import { markSetupStepCompleted } from "@/lib/wizard-router";
+import { invokeWithTimeout } from "@/lib/invoke-timeout";
+import {
+  SETUP_IPC_TIMEOUT_MS,
+  SETUP_STAGE_SKIP_MS,
+  SETUP_STAGE_SKIP_LONG_MS,
+} from "@/lib/timeouts";
+
+// ---------------------------------------------------------------------------
+// Stage model
+// ---------------------------------------------------------------------------
+
+export type StageId =
+  | "deps"
+  | "initial-sync"
+  | "packages"
+  | "git-init"
+  | "personalize"
+  | "import"
+  | "indexing"
+  | "menubar";
+
+type StageStatus = "pending" | "running" | "ok" | "failed";
+
+interface StageState {
+  id: StageId;
+  label: string;
+  status: StageStatus;
+  error: string | null;
+  logLines: string[];
+}
+
+interface ActiveStageControl {
+  runId: number;
+  stageId: StageId;
+  skip: () => void;
+  skipped: boolean;
+}
+
+const STAGE_LABELS: Record<StageId, string> = {
+  deps: "Installing dependencies",
+  "initial-sync": "Starting initial cloud sync",
+  packages: "Installing packages",
+  "git-init": "Initialising workspace",
+  personalize: "Personalizing",
+  import: "Importing existing setup",
+  indexing: "Registering for search",
+  menubar: "Installing HQ Sync",
+};
+
+// Order is part of the contract — the progress bar maps directly to indices.
+// initial-sync sits right after deps (the earliest point node/npx exist) and
+// before packages, so the cloud sync runs concurrently with the rest of setup.
+const STAGE_ORDER: readonly StageId[] = [
+  "deps",
+  "initial-sync",
+  "packages",
+  "git-init",
+  "personalize",
+  "import",
+  "indexing",
+  "menubar",
+] as const;
+
+function buildInitialStages(): StageState[] {
+  return STAGE_ORDER.map((id) => ({
+    id,
+    label: STAGE_LABELS[id],
+    status: "pending",
+    error: null,
+    logLines: [],
+  }));
+}
+
+const SETUP_PROCESS_EXIT_TIMEOUT_MS = 5 * 60 * 1000;
+
+type SetupSessionStatus = "idle" | "running" | "completed" | "cancelled";
+type CancelCommand = "cancel_process" | "cancel_install";
+
+interface SetupSession {
+  installPath: string | null;
+  runId: number;
+  status: SetupSessionStatus;
+  activeHandles: Map<string, CancelCommand>;
+  cancelListeners: Map<number, Set<() => void>>;
+}
+
+const setupSession: SetupSession = {
+  installPath: null,
+  runId: 0,
+  status: "idle",
+  activeHandles: new Map(),
+  cancelListeners: new Map(),
+};
+
+function beginSetupSession(installPath: string): {
+  runId: number;
+  started: boolean;
+  completed: boolean;
+} {
+  if (
+    setupSession.status === "completed" &&
+    setupSession.installPath === installPath
+  ) {
+    return { runId: setupSession.runId, started: false, completed: true };
+  }
+  if (
+    setupSession.status === "running" &&
+    setupSession.installPath === installPath
+  ) {
+    return { runId: setupSession.runId, started: false, completed: false };
+  }
+
+  setupSession.runId += 1;
+  setupSession.installPath = installPath;
+  setupSession.status = "running";
+  setupSession.activeHandles.clear();
+  setupSession.cancelListeners.delete(setupSession.runId);
+  return { runId: setupSession.runId, started: true, completed: false };
+}
+
+function isCurrentSetupRun(runId: number): boolean {
+  return setupSession.runId === runId;
+}
+
+function isSetupRunCancelled(runId: number): boolean {
+  return (
+    !isCurrentSetupRun(runId) ||
+    setupSession.status === "cancelled"
+  );
+}
+
+function completeSetupSession(runId: number): void {
+  if (!isCurrentSetupRun(runId)) return;
+  setupSession.status = "completed";
+  setupSession.activeHandles.clear();
+  setupSession.cancelListeners.delete(runId);
+  markSetupStepCompleted();
+}
+
+function registerForegroundHandle(
+  runId: number,
+  handle: string,
+  cancelCommand: CancelCommand = "cancel_process",
+): void {
+  if (!isCurrentSetupRun(runId) || setupSession.status !== "running") return;
+  setupSession.activeHandles.set(handle, cancelCommand);
+}
+
+function unregisterForegroundHandle(runId: number, handle: string): void {
+  if (!isCurrentSetupRun(runId)) return;
+  setupSession.activeHandles.delete(handle);
+}
+
+function cancelForegroundWork(runId: number): void {
+  if (!isCurrentSetupRun(runId)) return;
+  const handles = Array.from(setupSession.activeHandles.entries());
+  setupSession.activeHandles.clear();
+  const listeners = Array.from(setupSession.cancelListeners.get(runId) ?? []);
+
+  for (const listener of listeners) {
+    listener();
+  }
+  for (const [handle, command] of handles) {
+    invoke(command, { handle }).catch((err) => {
+      console.warn(`[setup] could not cancel ${command} handle=${handle}:`, err);
+    });
+  }
+}
+
+function onSetupRunCancelled(runId: number, listener: () => void): () => void {
+  if (!setupSession.cancelListeners.has(runId)) {
+    setupSession.cancelListeners.set(runId, new Set());
+  }
+  setupSession.cancelListeners.get(runId)!.add(listener);
+  return () => {
+    setupSession.cancelListeners.get(runId)?.delete(listener);
+  };
+}
+
+function cancelSetupSession(runId: number): void {
+  if (!isCurrentSetupRun(runId) || setupSession.status !== "running") return;
+  setupSession.status = "cancelled";
+  cancelForegroundWork(runId);
+  setupSession.cancelListeners.delete(runId);
+}
+
+// eslint-disable-next-line react-refresh/only-export-components
+export function __resetSetupProgressSessionForTests(): void {
+  setupSession.installPath = null;
+  setupSession.runId = 0;
+  setupSession.status = "idle";
+  setupSession.activeHandles.clear();
+  setupSession.cancelListeners.clear();
+}
+
+// ---------------------------------------------------------------------------
+// Props
+// ---------------------------------------------------------------------------
+
+export interface SetupProgressProps {
+  installPath: string;
+  onNext?: () => void;
+}
+
+// ---------------------------------------------------------------------------
+// Component
+// ---------------------------------------------------------------------------
+
+export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
+  const [stages, setStages] = useState<StageState[]>(buildInitialStages);
+  const [, setRunning] = useState(false);
+  const [allDone, setAllDone] = useState(false);
+  const [skipReadyStage, setSkipReadyStage] = useState<StageId | null>(null);
+  const mountedRef = useRef(true);
+  const activeRunRef = useRef<number | null>(null);
+  const activeStageControlRef = useRef<ActiveStageControl | null>(null);
+  const stageErrorsRef = useRef<Record<StageId, string | null>>(
+    Object.fromEntries(STAGE_ORDER.map((id) => [id, null])) as Record<
+      StageId,
+      string | null
+    >,
+  );
+
+  // React strict-mode double-mount guard — without it the orchestrator would
+  // run twice and double-install everything.
+  const startedRef = useRef(false);
+
+  // ── Stage state helpers ────────────────────────────────────────────────
+
+  const patchStage = useCallback((id: StageId, patch: Partial<StageState>) => {
+    if ("error" in patch) {
+      stageErrorsRef.current[id] = patch.error ?? null;
+    }
+    if (!mountedRef.current) return;
+    setStages((prev) => prev.map((s) => (s.id === id ? { ...s, ...patch } : s)));
+  }, []);
+
+  const appendLog = useCallback((id: StageId, line: string) => {
+    if (!mountedRef.current) return;
+    setStages((prev) =>
+      prev.map((s) =>
+        s.id === id ? { ...s, logLines: [...s.logLines, line] } : s,
+      ),
+    );
+  }, []);
+
+  // ── Manifest helpers (best-effort — never throw) ───────────────────────
+
+  async function journalStart(stage: StageId) {
+    try {
+      const ver = await getInstallerVersion();
+      await recordStepStart(installPath, ver, stage);
+    } catch {
+      /* non-fatal */
+    }
+  }
+
+  async function journalOk(stage: StageId) {
+    try {
+      const ver = await getInstallerVersion();
+      await recordStepOk(installPath, ver, stage);
+    } catch {
+      /* non-fatal */
+    }
+  }
+
+  async function journalFail(stage: StageId, msg: string) {
+    try {
+      const ver = await getInstallerVersion();
+      await recordStepFailure(installPath, ver, stage, msg);
+    } catch {
+      /* non-fatal */
+    }
+  }
+
+  // ── Stage 1: deps ──────────────────────────────────────────────────────
+
+  async function runDeps(runId: number): Promise<boolean> {
+    const installHandles = new Set<string>();
+    const summary = await runDepsInstall(
+      (_id, line) => appendLog("deps", line),
+      (_id, handle) => {
+        installHandles.add(handle);
+        registerForegroundHandle(runId, handle, "cancel_install");
+      },
+    ).finally(() => {
+      for (const handle of installHandles) {
+        unregisterForegroundHandle(runId, handle);
+      }
+    });
+
+    try {
+      const ver = await getInstallerVersion();
+      const snapshot: Record<
+        string,
+        { status: ItemStatus; version?: string; error?: string }
+      > = {};
+      for (const r of summary.results as DepInstallResult[]) {
+        snapshot[r.id] = {
+          status: r.status === "ok" ? "ok" : r.status === "skipped" ? "skipped" : "failed",
+          error: r.error,
+        };
+      }
+      await recordDependencies(installPath, ver, snapshot);
+    } catch {
+      /* non-fatal */
+    }
+
+    if (!summary.allRequiredOk) {
+      const failed = summary.results.filter(
+        (r) => !r.optional && r.status === "failed",
+      );
+      const msg =
+        failed.length === 1
+          ? `${failed[0].label} failed to install: ${failed[0].error ?? "unknown error"}`
+          : `${failed.length} required tools failed to install`;
+      patchStage("deps", { error: msg });
+      return false;
+    }
+    return true;
+  }
+
+  // ── Stage 2: initial-sync (provision personal vault + spawn the runner) ─
+  //
+  // The earliest point the first cloud sync can start: the user is signed in
+  // (pre-this-screen) and deps just put node/npx on disk. We guarantee the
+  // personal vault bucket exists (the runner 422s on a missing bucket — the
+  // signup-time auto-provision is fire-and-forget and can silently miss),
+  // then spawn the same hq-cloud-sync runner HQ Sync uses and move on
+  // without waiting. ALWAYS returns true: a kickoff failure is journaled to
+  // the manifest's failure ledger but never blocks the install — the HQ Sync
+  // menu-bar app re-runs the same sync on first launch regardless.
+
+  async function runInitialSync(): Promise<boolean> {
+    try {
+      const user = await getCurrentUser();
+      if (!user) {
+        appendLog(
+          "initial-sync",
+          "[warn] No signed-in user — skipping; HQ Sync will sync on first launch.",
+        );
+        return true;
+      }
+      const name =
+        user.name ??
+        [user.givenName, user.familyName].filter(Boolean).join(" ").trim();
+      const { personUid, handle } = await startInitialCloudSync(
+        installPath,
+        user.tokens.accessToken,
+        { ownerSub: user.sub, displayName: name || user.email },
+      );
+      appendLog(
+        "initial-sync",
+        `Personal vault ready (${personUid}); sync running in the background (${handle}).`,
+      );
+      return true;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      appendLog("initial-sync", `[warn] Initial cloud sync did not start: ${msg}`);
+      // Leave a failure-ledger row for a later /setup; the dispatcher's
+      // journalOk then marks the STEP ok (accurate — the install isn't
+      // blocked), while the failures[] entry preserves what went wrong.
+      try {
+        const ver = await getInstallerVersion();
+        await recordStepFailure(installPath, ver, "initial-sync", msg);
+      } catch {
+        /* non-fatal */
+      }
+      return true;
+    }
+  }
+
+  // ── Stage 3: packages (default HQ content packs) ───────────────────────
+  //
+  // Installs HQ's default content packs right after login, with NO selection
+  // UI — the v4.x wizard let you pick from a catalog; the streamlined flow
+  // just installs the default set. We shell the deps-installed `hq` directly
+  // (mirroring how HQ Sync installs packs: `hq install <source> --allow-hooks`)
+  // rather than npx — `hq` is on the managed-toolchain PATH the spawner uses
+  // (the same one that resolves `qmd` for indexing), and `--allow-hooks` skips
+  // the interactive hooks prompt that would otherwise hang a headless run. The
+  // sources are npm scope specs so no git is required (a fresh consumer Mac has
+  // none, which is exactly what broke the old `github:` transport). Runs before
+  // git-init so install operates on the plain scaffold.
+  //
+  // Per-pack failures are NON-FATAL: each outcome is journaled to the
+  // install-manifest (so a later /setup can finish the job) and the stage
+  // still succeeds — one flaky pack fetch never blocks the whole install.
+
+  async function runPackages(runId: number): Promise<boolean> {
+    const packs: DefaultPack[] = getDefaultPacks();
+    if (packs.length === 0) return true;
+
+    const outcomes: Record<string, { status: ItemStatus; error?: string }> = {};
+    for (const pack of packs) {
+      appendLog("packages", `Installing ${pack.name}…`);
+      const ok = await spawnAndWait(
+        runId,
+        "packages",
+        "hq",
+        ["install", pack.source, "--allow-hooks"],
+        installPath,
+      );
+      if (ok) {
+        outcomes[pack.name] = { status: "ok" };
+      } else {
+        outcomes[pack.name] = {
+          status: "failed",
+          error: `hq install ${pack.name} failed`,
+        };
+        appendLog(
+          "packages",
+          `[warn] ${pack.name} did not install — add it later with: hq install ${pack.source}`,
+        );
+        // Pack failures are non-fatal — clear the error spawnAndWait recorded
+        // so a single pack doesn't freeze the stage.
+        patchStage("packages", { error: null });
+      }
+    }
+
+    // Journal per-pack outcomes (best-effort — never blocks).
+    try {
+      const ver = await getInstallerVersion();
+      await recordPacks(installPath, ver, outcomes);
+    } catch {
+      /* non-fatal */
+    }
+
+    return true;
+  }
+
+  // ── Stage 4: git-init ──────────────────────────────────────────────────
+
+  async function runGitInit(): Promise<boolean> {
+    try {
+      const user = await getCurrentUser();
+      const name = user
+        ? (user.name ??
+            [user.givenName, user.familyName].filter(Boolean).join(" ").trim())
+        : "";
+      const email = user?.email ?? "";
+
+      if (!name || !email) {
+        patchStage("git-init", {
+          error: "Cannot initialise git without a signed-in user identity.",
+        });
+        return false;
+      }
+
+      const sha = await invokeWithTimeout<string>(
+        "git_init",
+        {
+          path: installPath,
+          name,
+          email,
+        },
+        SETUP_IPC_TIMEOUT_MS,
+      );
+      appendLog("git-init", `Initialised repository (${sha.slice(0, 7)})`);
+      setGitIdentity(name, email);
+      return true;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      patchStage("git-init", { error: msg });
+      return false;
+    }
+  }
+
+  // ── Stage 5: personalize (with non-fatal company detection) ────────────
+  //
+  // We detect which cloud company the user belongs to so the Done screen and
+  // the personalized HQ reflect it, then personalize from the Google name.
+  // We do NOT pull the company's files here — that's HQ Sync's job. Company
+  // detection is best-effort: a lookup failure falls back to Personal HQ so
+  // the install always completes.
+
+  async function runPersonalize(): Promise<boolean> {
+    try {
+      const user = await getCurrentUser();
+      const name = user
+        ? (user.name ??
+            [user.givenName, user.familyName].filter(Boolean).join(" ").trim())
+        : "";
+
+      let companies: CompanySeed[] | undefined;
+      if (user) {
+        // Claim any email-keyed pending invites FIRST. A freshly-invited user
+        // (e.g. a reinstall on a new machine) has an invite keyed by their
+        // email, not yet an active personUid-keyed membership — so the company
+        // lookup below would return nothing and the install would silently fall
+        // back to "Personal HQ", leaving them unattached. This rewrites the
+        // invite to an active membership so detection can see it. Best-effort:
+        // a failure here is logged, never fatal (the lookup just finds nothing,
+        // exactly as before).
+        try {
+          await claimPendingInvitesForUser(user.tokens.accessToken, {
+            ownerSub: user.sub,
+            displayName:
+              name || user.name || user.email || user.sub,
+          });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          appendLog("personalize", `[warn] Invite claim failed: ${msg}`);
+        }
+
+        let cloud: Awaited<ReturnType<typeof listUserCompanies>> = [];
+        try {
+          cloud = await listUserCompanies(user.tokens.accessToken);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          appendLog("personalize", `[warn] Company lookup failed: ${msg}`);
+        }
+
+        if (cloud.length > 0) {
+          const first = cloud[0];
+          setTeam({
+            teamId: first.companyUid,
+            companyId: first.companyUid,
+            slug: first.companySlug,
+            name: first.companyName,
+            joinedViaInvite: false,
+            bucketName: first.bucketName,
+            role: first.role,
+          });
+          companies = [
+            {
+              name: first.companyName,
+              cloud: true,
+              cloudCompanyUid: first.companyUid,
+            },
+          ];
+          appendLog(
+            "personalize",
+            `Detected company ${first.companyName} — HQ Sync will sync its files.`,
+          );
+        } else {
+          setIsPersonal(true);
+        }
+      }
+
+      await personalize({ name, companies }, installPath);
+      setPersonalized(true);
+      return true;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      patchStage("personalize", { error: msg });
+      return false;
+    }
+  }
+
+  // ── Stage 6: import (best-effort Codex parity + deferred Claude handoff) ─
+  //
+  // The HQ scaffold is already on disk by now, so we can safely shell the
+  // source-of-truth import scripts from this install root. Deterministic,
+  // additive Codex parity is auto-applied here; Claude adoption is limited to
+  // a redacted scan + breadcrumb so the Summary screen can offer a one-click
+  // `/import-claude` handoff after install. ALWAYS returns true: missing
+  // scripts, scan failures, or parse problems are journaled, never blocking.
+
+  async function runImport(runId: number): Promise<boolean> {
+    appendLog("import", "Checking for an existing Claude or Codex setup…");
+
+    try {
+      const summary = await runExistingImport({
+        installPath,
+        onLog: (line) => appendLog("import", line),
+        spawn: (program, args, cwd) =>
+          spawnAndCapture(runId, "import", program as "bash", args, cwd),
+      });
+
+      if (
+        summary.discoveryOk &&
+        typeof summary.totalClaudeArtifacts === "number" &&
+        summary.totalClaudeArtifacts > 0
+      ) {
+        appendLog(
+          "import",
+          `Deferred ${summary.totalClaudeArtifacts} Claude artifact${summary.totalClaudeArtifacts === 1 ? "" : "s"} for /import-claude after install.`,
+        );
+      } else if (!summary.discoveryOk) {
+        appendLog(
+          "import",
+          "[warn] Claude discovery was incomplete — you can still run /import-claude later.",
+        );
+      }
+
+      try {
+        const ver = await getInstallerVersion();
+        await recordImport(installPath, ver, {
+          codexApplied: summary.codexApplied,
+          discoveryOk: summary.discoveryOk,
+          claudeCounts: summary.claudeCounts,
+          totalClaudeArtifacts: summary.totalClaudeArtifacts,
+        });
+        if (summary.issues.length > 0) {
+          await recordStepFailure(
+            installPath,
+            ver,
+            "import",
+            "Existing setup import completed with warnings.",
+            {
+              issues: summary.issues,
+              codexApplied: summary.codexApplied,
+              discoveryOk: summary.discoveryOk,
+              totalClaudeArtifacts: summary.totalClaudeArtifacts,
+            },
+          );
+        }
+      } catch {
+        /* non-fatal */
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      appendLog("import", `[warn] Existing setup import did not complete: ${msg}`);
+      try {
+        const ver = await getInstallerVersion();
+        await recordStepFailure(
+          installPath,
+          ver,
+          "import",
+          `Existing setup import did not complete: ${msg}`,
+        );
+        await recordImport(installPath, ver, {
+          codexApplied: false,
+          discoveryOk: false,
+          claudeCounts: null,
+          totalClaudeArtifacts: null,
+        });
+      } catch {
+        /* non-fatal */
+      }
+    }
+
+    return true;
+  }
+
+  // ── Stage 7: indexing ──────────────────────────────────────────────────
+  //
+  // qmd collection add . --name <slug>, falling back to `qmd update` if the
+  // collection already exists. Writes a pending-embeddings marker so HQ Sync
+  // picks up indexing on next launch.
+
+  function qmdCollectionNameFromPath(path: string): string {
+    const trimmed = path.trim().replace(/[\\/]+$/g, "");
+    const basename = trimmed.split(/[\\/]+/).filter(Boolean).pop() ?? "hq";
+    const sanitized = basename
+      .replace(/[^A-Za-z0-9_-]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+    return sanitized || "hq";
+  }
+
+  async function spawnAndCapture(
+    runId: number,
+    stage: StageId,
+    program: "npx" | "bash" | "hq" | "qmd",
+    args: string[],
+    cwd: string,
+  ): Promise<{ ok: boolean; stdout: string; stderr: string[] }> {
+    if (isSetupRunCancelled(runId)) {
+      return { ok: false, stdout: "", stderr: ["Setup run cancelled."] };
+    }
+
+    let handle: string;
+    try {
+      handle = await invoke<string>("spawn_process", {
+        args: { program, args, cwd, installRoot: installPath },
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      patchStage(stage, { error: msg });
+      return { ok: false, stdout: "", stderr: [msg] };
+    }
+    registerForegroundHandle(runId, handle);
+
+    const stdoutLines: string[] = [];
+    const stderrLines: string[] = [];
+    let stdoutUnlisten: (() => void) | null = null;
+    let stderrUnlisten: (() => void) | null = null;
+    let exitUnlisten: (() => void) | null = null;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    let cancelUnsubscribe: (() => void) | null = null;
+    let settled = false;
+    let resolveExit:
+      | ((value: { ok: boolean; stdout: string; stderr: string[] }) => void)
+      | null = null;
+    const exitResult = new Promise<{
+      ok: boolean;
+      stdout: string;
+      stderr: string[];
+    }>((resolve) => {
+      resolveExit = resolve;
+    });
+
+    const cleanup = () => {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+        timeoutId = null;
+      }
+      cancelUnsubscribe?.();
+      cancelUnsubscribe = null;
+      stdoutUnlisten?.();
+      stdoutUnlisten = null;
+      stderrUnlisten?.();
+      stderrUnlisten = null;
+      exitUnlisten?.();
+      exitUnlisten = null;
+      unregisterForegroundHandle(runId, handle);
+    };
+
+    const finish = (value: { ok: boolean; stdout: string; stderr: string[] }) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolveExit?.(value);
+    };
+
+    try {
+      cancelUnsubscribe = onSetupRunCancelled(runId, () => {
+        finish({
+          ok: false,
+          stdout: stdoutLines.join("\n"),
+          stderr: [...stderrLines, "Setup run cancelled."],
+        });
+      });
+      timeoutId = setTimeout(() => {
+        const msg = `${program} did not report completion within ${Math.round(
+          SETUP_PROCESS_EXIT_TIMEOUT_MS / 1000,
+        )} seconds.`;
+        appendLog(stage, `[error] ${msg}`);
+        patchStage(stage, { error: msg });
+        invoke("cancel_process", { handle }).catch((err) => {
+          console.warn(`[setup] could not cancel timed-out process ${handle}:`, err);
+        });
+        finish({
+          ok: false,
+          stdout: stdoutLines.join("\n"),
+          stderr: [...stderrLines, msg],
+        });
+      }, SETUP_PROCESS_EXIT_TIMEOUT_MS);
+
+      // Attach the EXIT listener first. A short-lived process can emit its
+      // terminal event almost immediately after spawn_process returns, and the
+      // event is not buffered — subscribing to stdout/stderr first widened that
+      // window enough to drop the exit event entirely (the stage then hung
+      // until the safety timeout below). The timeout remains the last-resort net
+      // for a genuinely lost exit.
+      exitUnlisten = await listen(
+        `process://${handle}/exit`,
+        (event: { payload: unknown }) => {
+          const payload = event.payload as {
+            code: number | null;
+            success: boolean;
+          };
+          if (!payload.success && !isSetupRunCancelled(runId)) {
+            patchStage(stage, {
+              error: `Process exited with code ${payload.code ?? -1}`,
+            });
+          }
+          finish({
+            ok: payload.success,
+            stdout: stdoutLines.join("\n"),
+            stderr: stderrLines,
+          });
+        },
+      );
+      if (settled) return await exitResult;
+
+      stdoutUnlisten = await listen(
+        `process://${handle}/stdout`,
+        (event: { payload: unknown }) => {
+          const payload = event.payload as { line?: string };
+          const line = payload?.line ?? "";
+          stdoutLines.push(line);
+          appendLog(stage, line);
+        },
+      );
+      if (settled) return await exitResult;
+
+      stderrUnlisten = await listen(
+        `process://${handle}/stderr`,
+        (event: { payload: unknown }) => {
+          const payload = event.payload as { line?: string };
+          const line = payload?.line ?? "";
+          stderrLines.push(line);
+          appendLog(stage, `[stderr] ${line}`);
+        },
+      );
+      if (settled) return await exitResult;
+
+      return await exitResult;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      cleanup();
+      invoke("cancel_process", { handle }).catch((cancelErr) => {
+        console.warn(`[setup] could not cancel process ${handle}:`, cancelErr);
+      });
+      patchStage(stage, { error: msg });
+      return { ok: false, stdout: "", stderr: [msg] };
+    }
+  }
+
+  async function spawnAndWait(
+    runId: number,
+    stage: StageId,
+    program: "npx" | "bash" | "hq" | "qmd",
+    args: string[],
+    cwd: string,
+    stderrSink?: string[],
+  ): Promise<boolean> {
+    const result = await spawnAndCapture(runId, stage, program, args, cwd);
+    stderrSink?.push(...result.stderr);
+    return result.ok;
+  }
+
+  async function runIndexing(runId: number): Promise<boolean> {
+    const slug = qmdCollectionNameFromPath(installPath);
+    const stderrBuf: string[] = [];
+    let ok = await spawnAndWait(
+      runId,
+      "indexing",
+      "qmd",
+      ["collection", "add", ".", "--name", slug],
+      installPath,
+      stderrBuf,
+    );
+    if (
+      !ok &&
+      stderrBuf.some((l) => l.toLowerCase().includes("already exists"))
+    ) {
+      // Benign — re-index the existing collection.
+      patchStage("indexing", { error: null });
+      appendLog(
+        "indexing",
+        `[info] Collection "${slug}" already exists — re-indexing.`,
+      );
+      ok = await spawnAndWait(
+        runId,
+        "indexing",
+        "qmd",
+        ["update", "--name", slug],
+        installPath,
+      );
+    }
+    if (!ok) return false;
+
+    // Embeddings-pending marker — best-effort, never fails the stage.
+    const payload = JSON.stringify({
+      requestedAt: new Date().toISOString(),
+      reason: "post-install",
+    });
+    try {
+      await writeInstallTextFile(
+        installPath,
+        `${installPath.replace(/\/+$/, "")}/.hq-embeddings-pending.json`,
+        payload,
+      );
+    } catch {
+      try {
+        await mkdir(".hq", { baseDir: BaseDirectory.Home, recursive: true });
+        await writeTextFile(".hq/embeddings-pending.json", payload, {
+          baseDir: BaseDirectory.Home,
+        });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        appendLog("indexing", `[warn] Could not write embeddings marker: ${msg}`);
+      }
+    }
+    return true;
+  }
+
+  // ── Stage 8: menubar (HQ Sync) ─────────────────────────────────────────
+
+  async function runMenubar(): Promise<boolean> {
+    let unlisten: (() => void) | null = null;
+    const noteSkipped = async (msg: string) => {
+      appendLog("menubar", `[warn] HQ Sync menu bar install skipped: ${msg}`);
+      patchStage("menubar", { error: null });
+      await journalFail("menubar", msg);
+      return true;
+    };
+
+    try {
+      unlisten = await listen<{
+        phase?: string;
+        percent?: number;
+        message?: string;
+        done?: boolean;
+        error?: string;
+      }>("menubar-install://progress", (event) => {
+        const p = event.payload;
+        if (p.error) {
+          appendLog("menubar", `[error] ${p.error}`);
+          return;
+        }
+        const line = [
+          p.phase,
+          typeof p.percent === "number" ? `${p.percent}%` : null,
+          p.message,
+        ]
+          .filter(Boolean)
+          .join(" — ");
+        if (line) appendLog("menubar", line);
+      });
+      const result = await invoke<{
+        success: boolean;
+        appPath: string | null;
+        error: string | null;
+      }>("install_menubar_app");
+      if (result.success) {
+        if (result.appPath) appendLog("menubar", `Installed at ${result.appPath}`);
+        // Best-effort: launch HQ Sync immediately so the menu bar icon is
+        // visible when the user reaches Done. Failure here never blocks.
+        try {
+          await invoke("launch_menubar_app");
+        } catch {
+          /* non-fatal */
+        }
+        return true;
+      }
+      return await noteSkipped(result.error ?? "Installation failed");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return await noteSkipped(msg);
+    } finally {
+      unlisten?.();
+    }
+  }
+
+  // ── Stage dispatcher ───────────────────────────────────────────────────
+
+  async function runStageWork(id: StageId, runId: number): Promise<boolean> {
+    let ok = false;
+    try {
+      switch (id) {
+        case "deps":
+          ok = await runDeps(runId);
+          break;
+        case "initial-sync":
+          ok = await runInitialSync();
+          break;
+        case "packages":
+          ok = await runPackages(runId);
+          break;
+        case "git-init":
+          ok = await runGitInit();
+          break;
+        case "personalize":
+          ok = await runPersonalize();
+          break;
+        case "import":
+          ok = await runImport(runId);
+          break;
+        case "indexing":
+          ok = await runIndexing(runId);
+          break;
+        case "menubar":
+          ok = await runMenubar();
+          break;
+      }
+    } catch (err) {
+      if (isSetupRunCancelled(runId)) return false;
+      const msg = err instanceof Error ? err.message : String(err);
+      patchStage(id, { error: msg });
+      return false;
+    }
+    if (isSetupRunCancelled(runId)) return false;
+    return ok;
+  }
+
+  async function runStage(id: StageId, runId: number): Promise<boolean> {
+    patchStage(id, { status: "running", error: null });
+    await journalStart(id);
+
+    let skipStage!: () => void;
+    const skipPromise = new Promise<"skipped">((resolve) => {
+      skipStage = () => resolve("skipped");
+    });
+    const control: ActiveStageControl = {
+      runId,
+      stageId: id,
+      skip: skipStage,
+      skipped: false,
+    };
+    activeStageControlRef.current = control;
+
+    const workPromise = runStageWork(id, runId).then((ok) => ({
+      kind: "done" as const,
+      ok,
+    }));
+    const result = await Promise.race([
+      workPromise,
+      skipPromise.then((kind) => ({ kind })),
+    ]);
+
+    if (activeStageControlRef.current === control) {
+      activeStageControlRef.current = null;
+    }
+
+    if (result.kind === "skipped") {
+      const msg = "Skipped after timeout";
+      patchStage(id, { status: "failed", error: msg });
+      await journalFail(id, msg);
+      return false;
+    }
+
+    if (control.skipped) return false;
+    if (isSetupRunCancelled(runId)) return false;
+    if (result.ok) {
+      patchStage(id, { status: "ok" });
+      await journalOk(id);
+    } else {
+      patchStage(id, { status: "failed" });
+      // Capture the error message from the stage state for the manifest.
+      const msg =
+        stageErrorsRef.current[id] ??
+        "Stage failed (no detail recorded).";
+      await journalFail(id, msg);
+    }
+    return result.ok;
+  }
+
+  // ── Orchestrator ───────────────────────────────────────────────────────
+
+  const runFromStage = useCallback(
+    async (startId: StageId) => {
+      const session = beginSetupSession(installPath);
+      activeRunRef.current = session.runId;
+
+      if (session.completed) {
+        if (!mountedRef.current) return;
+        setStages(
+          buildInitialStages().map((stage) => ({
+            ...stage,
+            status: "ok",
+          })),
+        );
+        setRunning(false);
+        setAllDone(true);
+        return;
+      }
+
+      if (!session.started) return;
+
+      if (!mountedRef.current) return;
+      setRunning(true);
+      setAllDone(false);
+      setSkipReadyStage(null);
+
+      // Reset the failing stage onward; keep earlier stages' final status.
+      const startIdx = STAGE_ORDER.indexOf(startId);
+      for (let i = startIdx; i < STAGE_ORDER.length; i += 1) {
+        stageErrorsRef.current[STAGE_ORDER[i]] = null;
+      }
+      setStages((prev) =>
+        prev.map((s, i) =>
+          i >= startIdx
+            ? {
+                ...s,
+                status: "pending",
+                error: null,
+                logLines: [],
+              }
+            : s,
+        ),
+      );
+
+      for (let i = startIdx; i < STAGE_ORDER.length; i += 1) {
+        if (isSetupRunCancelled(session.runId)) {
+          if (mountedRef.current) setRunning(false);
+          return;
+        }
+        const id = STAGE_ORDER[i];
+        await runStage(id, session.runId);
+        if (isSetupRunCancelled(session.runId)) {
+          if (mountedRef.current) setRunning(false);
+          return;
+        }
+      }
+      completeSetupSession(session.runId);
+      if (!mountedRef.current) return;
+      setRunning(false);
+      setAllDone(true);
+      setSkipReadyStage(null);
+      onNext?.();
+    },
+    // We intentionally only depend on installPath — onNext is captured fresh
+    // each render via closure, and the inner helpers read from refs/setters.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [installPath],
+  );
+
+  useEffect(() => {
+    mountedRef.current = true;
+    if (startedRef.current) return;
+    startedRef.current = true;
+    void runFromStage("deps");
+    return () => {
+      mountedRef.current = false;
+      // Reset the per-instance "started" latch so that if this effect is torn
+      // down and immediately re-run (React StrictMode in dev double-invokes
+      // mount effects, and refs persist across that cycle), the remount can
+      // start a fresh run instead of bailing here while the cleanup below has
+      // already cancelled the only in-flight run — which would strand the UI on
+      // the first stage. Real re-entry safety (no duplicate run after a genuine
+      // completion, no re-run on back-nav) is enforced by beginSetupSession,
+      // not by this latch.
+      startedRef.current = false;
+      const runId = activeRunRef.current;
+      if (runId !== null) {
+        cancelSetupSession(runId);
+        activeRunRef.current = null;
+      }
+    };
+  }, [runFromStage]);
+
+  // ── Derived progress + status line ──────────────────────────────────────
+  //
+  // Single progress bar + one explanatory line. The bar counts completed
+  // (ok or failed) stages so non-fatal failures still move the user to Done.
+
+  const settledCount = stages.filter(
+    (s) => s.status === "ok" || s.status === "failed",
+  ).length;
+
+  const activeStage = stages.find((s) => s.status === "running");
+  const activeStageId = activeStage?.id;
+
+  // Creep: while a stage runs, ease the bar a little toward — but never
+  // reaching — the next stage's milestone, so long stages (deps, HQ Sync) still
+  // look like they're moving. It snaps to the milestone when the stage settles
+  // and resets for the next one.
+  const [stageCreep, setStageCreep] = useState(0);
+  useEffect(() => {
+    setStageCreep(0);
+    if (allDone || !activeStageId) return;
+    const id = window.setInterval(() => {
+      setStageCreep((c) => c + (0.92 - c) * 0.14);
+    }, 1200);
+    return () => window.clearInterval(id);
+  }, [activeStageId, allDone]);
+
+  const stageBase = settledCount / STAGE_ORDER.length;
+  const stageNext =
+    !allDone && activeStageId !== undefined
+      ? (settledCount + 1) / STAGE_ORDER.length
+      : stageBase;
+  const percent = allDone
+    ? 100
+    : Math.round((stageBase + (stageNext - stageBase) * stageCreep) * 100);
+
+  const statusText = allDone
+    ? "All set. Continuing…"
+    : activeStage
+        ? `${activeStage.label}…`
+        : "Starting…";
+  const statusStage = activeStage?.id ?? null;
+  const statusKind = allDone ? "done" : "running";
+  const showSkip =
+    !allDone &&
+    activeStage !== undefined &&
+    skipReadyStage === activeStage.id;
+
+  useEffect(() => {
+    setSkipReadyStage(null);
+    if (allDone || !activeStageId) return;
+    const skipMs =
+      activeStageId === "deps" || activeStageId === "menubar"
+        ? SETUP_STAGE_SKIP_LONG_MS
+        : SETUP_STAGE_SKIP_MS;
+    const timeout = window.setTimeout(() => {
+      setSkipReadyStage(activeStageId);
+    }, skipMs);
+    return () => window.clearTimeout(timeout);
+  }, [activeStageId, allDone]);
+
+  function handleSkipCurrentStage() {
+    const control = activeStageControlRef.current;
+    if (!control || control.stageId !== activeStage?.id) return;
+    control.skipped = true;
+    appendLog(control.stageId, "[warn] Skipped after timeout.");
+    cancelForegroundWork(control.runId);
+    control.skip();
+    setSkipReadyStage(null);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Render
+  // ---------------------------------------------------------------------------
+
+  return (
+    <div className="flex flex-col gap-6 max-w-lg" data-testid="setup-progress">
+      <div className="flex flex-col gap-2">
+        <h1 className="text-2xl font-medium text-white">Setting up HQ</h1>
+      </div>
+
+      {/* Single progress bar + one explanatory line — the whole point of US-004. */}
+      <div className="flex flex-col gap-3">
+        <div
+          className="h-1.5 rounded-full bg-white/10 overflow-hidden"
+          role="progressbar"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={percent}
+          data-testid="overall-progress"
+        >
+          <div
+            className="h-full rounded-full bg-white transition-all duration-300 ease-out"
+            style={{ width: `${Math.max(2, percent)}%` }}
+          />
+        </div>
+
+        {/* One line under the bar that explains what's happening right now. */}
+        <p
+          data-testid="status-line"
+          data-stage={statusStage ?? undefined}
+          data-status={statusKind}
+          className={`text-sm break-words ${
+            allDone ? "text-zinc-400" : "text-zinc-400 hq-text-shimmer"
+          }`}
+        >
+          {statusText}
+        </p>
+
+        {showSkip && (
+          <div className="flex flex-col gap-3">
+            <p className="text-sm text-zinc-300">
+              This step is taking longer than expected.
+            </p>
+            <button
+              type="button"
+              onClick={handleSkipCurrentStage}
+              className="self-start px-4 py-2 rounded-full text-sm font-medium bg-white text-black hover:bg-zinc-100 transition-colors"
+            >
+              Skip this step
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Skip appears only after a long-running active stage; failed or skipped
+          stages are journaled and setup keeps moving to Done. */}
+    </div>
+  );
+}

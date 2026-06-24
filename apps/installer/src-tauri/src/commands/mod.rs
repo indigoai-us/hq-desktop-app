@@ -1,0 +1,18 @@
+pub mod ai_tools;
+pub mod deps;
+pub mod device;
+pub mod directory;
+pub mod fs;
+pub mod git;
+pub mod install_menubar;
+pub mod keychain;
+pub mod launch;
+pub mod menubar;
+pub mod oauth;
+pub mod process;
+pub mod staging;
+
+#[cfg(windows)]
+pub mod checksums;
+#[cfg(windows)]
+pub mod long_paths;

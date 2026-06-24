@@ -1,0 +1,91 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "hq-installer",
+  "version": "0.13.0",
+  "identifier": "ai.indigo.hq-installer",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "title": "HQ Installer",
+        "width": 960,
+        "height": 640,
+        "minWidth": 880,
+        "minHeight": 600,
+        "resizable": true,
+        "transparent": false,
+        "decorations": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; connect-src 'self' https://*.execute-api.us-east-1.amazonaws.com https://hqapi.getindigo.ai https://*.auth.us-east-1.amazoncognito.com https://cognito-idp.us-east-1.amazonaws.com https://api.github.com https://codeload.github.com https://*.s3.amazonaws.com https://*.s3.us-east-1.amazonaws.com https://s3.us-east-1.amazonaws.com https://telemetry.getindigo.ai; img-src 'self' data:; style-src 'self' 'unsafe-inline'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "app",
+      "msi",
+      "nsis"
+    ],
+    "createUpdaterArtifacts": false,
+    "publisher": "Indigo AI",
+    "shortDescription": "HQ native Windows installer wizard",
+    "longDescription": "Guided wizard to install HQ on Windows: AWS Cognito auth, dep installation via winget, repository clone, and Claude Code launch \u2014 all from a native MSI/NSIS bundle.",
+    "category": "DeveloperTool",
+    "copyright": "Copyright (c) Indigo AI",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": {
+      "../templates": "templates"
+    },
+    "macOS": {
+      "minimumSystemVersion": "13.0",
+      "hardenedRuntime": true,
+      "entitlements": null
+    },
+    "windows": {
+      "webviewInstallMode": {
+        "type": "embedBootstrapper",
+        "silent": true
+      },
+      "digestAlgorithm": "sha256",
+      "wix": {
+        "language": [
+          "en-US"
+        ],
+        "upgradeCode": "9b1b3a36-4d29-5b5e-9b48-1f9b1f8f4b00",
+        "fragmentPaths": [],
+        "componentGroupRefs": [],
+        "componentRefs": [],
+        "featureGroupRefs": [],
+        "featureRefs": [],
+        "mergeRefs": []
+      },
+      "nsis": {
+        "languages": [
+          "English"
+        ],
+        "installMode": "currentUser",
+        "displayLanguageSelector": false,
+        "compression": "lzma"
+      }
+    }
+  },
+  "plugins": {
+    "fs": {
+      "requireLiteralLeadingDot": true
+    }
+  }
+}

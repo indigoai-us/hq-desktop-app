@@ -1,0 +1,11 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`personalize > golden snapshot: complete output file tree > sorted created-path list matches snapshot 1`] = `
+[
+  "core/knowledge/alice/profile.md",
+  "core/knowledge/alice/voice-style.md",
+  "personal/settings/.gitkeep",
+  "personal/settings/cognito.json",
+  "personal/workers/.gitkeep",
+]
+`;

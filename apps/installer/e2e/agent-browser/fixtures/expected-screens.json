@@ -1,0 +1,21 @@
+{
+  "_comment": "5-step streamlined flow (US-005..US-007): welcome → install → signin → setup → done. The driver clicks Get Started, then Continue with Google after the install step auto-advances; setup auto-advances when every stage settles; done is terminal. Steps with empty cta_text are non-interactive (auto-advance) and only assert the heading.",
+  "screens": [
+    { "id": "01-welcome",  "assert_text": "Set up HQ",     "cta_text": "Get Started",          "advance_timeout_secs": 15 },
+    { "id": "02-install",  "assert_text": "Preparing HQ",  "cta_text": "",                     "advance_timeout_secs": 15 },
+    { "id": "03-signin",   "assert_text": "Sign in",       "cta_text": "Continue with Google", "advance_timeout_secs": 30 },
+    { "id": "04-setup",    "assert_text": "Setting up HQ", "cta_text": "",                     "advance_timeout_secs": 600 },
+    { "id": "05-done",     "assert_text": "HQ is ready",   "cta_text": "",                     "advance_timeout_secs": 10 }
+  ],
+  "must_not_appear": [
+    "Set up GitHub",
+    "Choose template",
+    "Fetching template",
+    "Install dependencies",
+    "Choose install directory",
+    "Personalize your HQ",
+    "Indexing HQ",
+    "Git setup",
+    "Create your account"
+  ]
+}
