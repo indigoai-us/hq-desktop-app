@@ -133,6 +133,47 @@ pub fn before_send(mut event: Event<'static>) -> Option<Event<'static>> {
     Some(event)
 }
 
+/// Initialize Sentry with the HQ scrubber and return the client guard.
+///
+/// The build-time values are read by the BINARY (where `build.rs` sets them via
+/// `cargo:rustc-env=...`) and passed in here, so this crate stays free of
+/// build-env coupling:
+/// - `dsn_str`: `env!("SENTRY_DSN")` — empty string ⇒ Sentry no-ops (dev/PR CI).
+/// - `release_version`: `env!("APP_VERSION")` — the shipped (package.json) version,
+///   so crash reports and source maps line up.
+/// - `environment`: `option_env!("SENTRY_ENVIRONMENT")` — defaults to `production`.
+///
+/// The caller must hold the returned guard for the process lifetime.
+pub fn init(
+    dsn_str: &str,
+    release_version: &str,
+    environment: Option<&str>,
+) -> Option<sentry::ClientInitGuard> {
+    let dsn: Option<sentry::types::Dsn> = if dsn_str.is_empty() {
+        None
+    } else {
+        Some(dsn_str.parse().expect("SENTRY_DSN invalid at build time"))
+    };
+    let guard = sentry::init(sentry::ClientOptions {
+        dsn,
+        release: Some(format!("hq-sync@{release_version}").into()),
+        environment: Some(environment.unwrap_or("production").to_string().into()),
+        sample_rate: std::env::var("SENTRY_SAMPLE_RATE")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1.0),
+        before_send: Some(std::sync::Arc::new(before_send)),
+        // Release health: one session per app run (Application mode = whole process).
+        auto_session_tracking: true,
+        session_mode: sentry::SessionMode::Application,
+        ..Default::default()
+    });
+    sentry::configure_scope(|scope| {
+        scope.set_tag("repo", "hq-sync");
+    });
+    Some(guard)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

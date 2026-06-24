@@ -148,49 +148,16 @@ fn apply_windows_vibrancy(window: &tauri::WebviewWindow) {
 }
 
 fn main() {
-    use hq_telemetry::before_send;
-    use sentry::ClientOptions;
-    use std::sync::Arc;
-    // `SENTRY_DSN` is set at compile time by build.rs, which reads
-    // `HQ_SYNC_SENTRY_DSN` from the CI env. On local `cargo build`
-    // / `cargo tauri dev` / PR CI (where the release-only secret is not
-    // in scope), build.rs emits `cargo:rustc-env=SENTRY_DSN=` (empty),
-    // so `env!("SENTRY_DSN")` evaluates to `""` — gate on emptiness → None
-    // so the Sentry client no-ops cleanly in dev instead of crashing at startup.
-    let dsn_str = env!("SENTRY_DSN");
-    let dsn: Option<sentry::types::Dsn> = if dsn_str.is_empty() {
-        None
-    } else {
-        Some(dsn_str.parse().expect("SENTRY_DSN invalid at build time"))
-    };
-    let _guard = sentry::init(ClientOptions {
-        dsn,
-        // APP_VERSION is the shipped package.json/tauri.conf.json version
-        // (emitted by build.rs). CARGO_PKG_VERSION is the internal crate
-        // version, which drifts from the release — using it made crash reports
-        // report the wrong version AND miss the source maps (uploaded keyed off
-        // the package.json version).
-        release: Some(format!("hq-sync@{}", env!("APP_VERSION")).into()),
-        environment: Some(
-            option_env!("SENTRY_ENVIRONMENT")
-                .unwrap_or("production")
-                .into(),
-        ),
-        sample_rate: std::env::var("SENTRY_SAMPLE_RATE")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(1.0),
-        before_send: Some(Arc::new(before_send)),
-        // Release health: emit one session per app run so Sentry tracks
-        // crash-free sessions/users per release. Application mode = the whole
-        // process is the session (Request mode is for servers).
-        auto_session_tracking: true,
-        session_mode: sentry::SessionMode::Application,
-        ..Default::default()
-    });
-    sentry::configure_scope(|scope| {
-        scope.set_tag("repo", "hq-sync");
-    });
+    // Sentry init + the PII/secret scrubber live in the hq-telemetry crate. The
+    // build-time values (DSN/version/environment, emitted by build.rs) are read
+    // here in the binary and passed in, so the crate carries no build-env coupling.
+    // `env!("SENTRY_DSN")` is "" on dev/PR CI (no release secret) → Sentry no-ops.
+    // Hold the guard for the process lifetime.
+    let _guard = hq_telemetry::init(
+        env!("SENTRY_DSN"),
+        env!("APP_VERSION"),
+        option_env!("SENTRY_ENVIRONMENT"),
+    );
 
     use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};
 
