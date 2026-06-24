@@ -54,6 +54,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
+#[cfg(test)]
 use std::sync::{Mutex, OnceLock};
 
 use chrono::{DateTime, Duration, Utc};
@@ -281,7 +282,13 @@ pub fn record_started(
     started_at: DateTime<Utc>,
 ) -> Result<(), String> {
     let mut ledger = read_ledger()?;
-    upsert(&mut ledger, window_id, recording_id, company_uid, started_at);
+    upsert(
+        &mut ledger,
+        window_id,
+        recording_id,
+        company_uid,
+        started_at,
+    );
     write_ledger(&ledger)
 }
 

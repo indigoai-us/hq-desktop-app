@@ -279,8 +279,11 @@ pub async fn open_meetings_window(
         // listener is mounted — a live emit is delivered immediately. (Global
         // `emit` per the codebase convention; only this window listens for it.)
         if let Some(id) = focus_meeting_id.filter(|s| !s.trim().is_empty()) {
-            app.emit("meetings:focus-meeting", serde_json::json!({ "meetingId": id }))
-                .map_err(|e| e.to_string())?;
+            app.emit(
+                "meetings:focus-meeting",
+                serde_json::json!({ "meetingId": id }),
+            )
+            .map_err(|e| e.to_string())?;
         }
         return Ok(());
     }
@@ -1201,194 +1204,216 @@ pub async fn meetings_notify_detected(
     // command itself never blocks; the thread captures the windowId via
     // closure and lives until the user dismisses the notification (or
     // macOS auto-dismisses it).
-    // Register the bundle identifier with mac-notification-sys once per
-    // process lifetime. Without this, the library calls
-    // `get_bundle_identifier_or_default("use_default")` internally, which
-    // triggers a macOS "Choose Application" picker because Launch
-    // Services can't resolve the literal string "use_default" to an
-    // installed app (observed in field test on 2026-05-25). Calling
-    // `set_application` with our real bundle id makes notifications
-    // attribute correctly to HQ Sync and skips the picker.
-    //
-    // `set_application` itself is guarded by an internal `Once`, so
-    // calling it on every notification send would be safe — but wrapping
-    // in our own OnceLock keeps the log line at one-per-process.
-    static NOTIFICATION_APP_INIT: OnceLock<()> = OnceLock::new();
-    NOTIFICATION_APP_INIT.get_or_init(|| {
-        const BUNDLE_ID: &str = "ai.indigo.hq-sync-menubar";
-        match mac_notification_sys::set_application(BUNDLE_ID) {
-            Ok(()) => {
-                crate::util::logfile::log(
-                    "meetings",
-                    &format!("mac-notification-sys: registered bundle {BUNDLE_ID}"),
-                );
-            }
-            Err(e) => {
-                crate::util::logfile::log(
-                    "meetings",
-                    &format!("mac-notification-sys: set_application({BUNDLE_ID}) failed: {e}"),
-                );
-            }
-        }
-    });
-
-    let window_id_for_thread = payload.window_id.clone().unwrap_or_default();
-    let platform_for_thread = platform_lc.clone();
-    let title_for_thread = build_notification_title(&platform_lc);
-    let body_for_thread = body.clone();
-    let app_for_thread = app.clone();
-    std::thread::spawn(move || {
-        // ── Clickable delivery: UNUserNotificationCenter ────────────────
-        // When notification permission is *granted*, deliver through
-        // UNUserNotificationCenter instead of osascript. A UN banner carries
-        // a click callback (via the delegate installed at launch in
-        // `un_notify.rs`), so clicking the banner opens the desktop-alt
-        // "HQ Meetings" window — even on a *cold* click where no frontend
-        // `notification:meeting-action` listener exists yet (the delegate
-        // opens the window straight from Rust). UN silently DROPS the request
-        // when status != "granted", so we gate strictly on "granted" and fall
-        // through to the always-visible osascript path otherwise — zero
-        // regression for non-granted users. One delivery path per branch, so
-        // there's never a double banner.
-        #[cfg(target_os = "macos")]
-        if crate::commands::notifications::current_authorization_status() == "granted" {
-            crate::commands::un_notify::deliver_clickable(
-                &title_for_thread,
-                &body_for_thread,
-                &window_id_for_thread,
-                &platform_for_thread,
-            );
-            return;
-        }
-
-        // ── Primary delivery: AppleScript ───────────────────────────────
-        // macOS 26 (Sequoia) blocks NSUserNotification from being mixed
-        // with UNUserNotificationCenter in the same process. usernoted
-        // logs:
-        //   Error: Legacy client ai.indigo.hq-sync-menubar connecting to
-        //   modern client. Denying message N from <LegacyConnection>.
-        // Once anything in the process touches UN (the
-        // `notification_permission_state` IPC probe is enough), the
-        // legacy `mac-notification-sys` deliver path is silently denied
-        // forever. `osascript display notification` doesn't go through
-        // the per-process legacy/modern gate — it's NotificationCenter's
-        // own scripting bridge — so it fires reliably regardless.
+    #[cfg(target_os = "macos")]
+    {
+        // Register the bundle identifier with mac-notification-sys once per
+        // process lifetime. Without this, the library calls
+        // `get_bundle_identifier_or_default("use_default")` internally, which
+        // triggers a macOS "Choose Application" picker because Launch
+        // Services can't resolve the literal string "use_default" to an
+        // installed app (observed in field test on 2026-05-25). Calling
+        // `set_application` with our real bundle id makes notifications
+        // attribute correctly to HQ Sync and skips the picker.
         //
-        // Trade-off vs. the legacy library: no action button. We lose
-        // the inline "Record" button on the banner. Mitigation: the
-        // popover's calendar icon now tints yellow on detection (see
-        // MeetingIcon.svelte), so the user has an obvious in-app affordance
-        // to act on the detection. Click on the notification body still
-        // focuses HQ Sync (macOS's default behavior for any app's
-        // notification), and our `notification:meeting-action` event
-        // listener treats that as action="open" via the popover.
-        //
-        // Long-term: migrate to UNUserNotificationCenter via objc2 +
-        // UNNotificationCategory + UNNotificationAction("RECORD") so the
-        // Record button comes back. Tracked as a follow-up.
-        let osa_body = body_for_thread.replace('\\', "\\\\").replace('"', "\\\"");
-        let osa_title = title_for_thread.replace('\\', "\\\\").replace('"', "\\\"");
-        let script = format!("display notification \"{osa_body}\" with title \"{osa_title}\"");
-        match std::process::Command::new("/usr/bin/osascript")
-            .args(["-e", &script])
-            .output()
-        {
-            Ok(out) if out.status.success() => {
-                crate::util::logfile::log("meetings", "osascript notification fired");
-            }
-            Ok(out) => {
-                let stderr = String::from_utf8_lossy(&out.stderr);
-                crate::util::logfile::log(
-                    "meetings",
-                    &format!(
-                        "osascript notification non-zero exit ({}): {}",
-                        out.status, stderr
-                    ),
-                );
-            }
-            Err(e) => {
-                crate::util::logfile::log("meetings", &format!("osascript spawn failed: {e}"));
-            }
-        }
-
-        // ── Secondary delivery: legacy mac-notification-sys ────────────
-        // Still attempted because: (1) some users may be on older macOS
-        // where the legacy path works (Catalina/Big Sur/Monterey/Ventura),
-        // and (2) it carries the Record action button via the response
-        // thread. On Sequoia+ this thread's `send()` is denied by
-        // usernoted and either errors immediately or returns
-        // NotificationResponse::None — both paths are logged below so the
-        // failure mode is visible.
-        let mut notification = mac_notification_sys::Notification::default();
-        notification
-            .title(&title_for_thread)
-            .message(&body_for_thread)
-            // `main_button` attaches a single action button labelled
-            // "Record". On older macOS this surfaces inline (alert
-            // style) or on hover (banner style). Sequoia denies the
-            // whole deliver, so this never reaches the user there.
-            .main_button(mac_notification_sys::MainButton::SingleAction("Record"))
-            // Block the thread until the user interacts (or macOS
-            // auto-dismisses, which surfaces as None).
-            .wait_for_click(true);
-        match notification.send() {
-            Ok(resp) => {
-                // Log the raw response variant so a "user said they got no
-                // notification" report can be cross-referenced against what
-                // mac-notification-sys actually returned. None/timeout reads
-                // identically to "macOS silently dropped the banner due to
-                // missing UNUserNotificationCenter authorization" in the
-                // logs — surfacing the variant makes that distinguishable.
-                let variant = match &resp {
-                    mac_notification_sys::NotificationResponse::ActionButton(n) => {
-                        format!("ActionButton({n})")
-                    }
-                    mac_notification_sys::NotificationResponse::Click => "Click".to_string(),
-                    mac_notification_sys::NotificationResponse::CloseButton(_) => {
-                        "CloseButton".to_string()
-                    }
-                    mac_notification_sys::NotificationResponse::Reply(_) => "Reply".to_string(),
-                    mac_notification_sys::NotificationResponse::None => "None".to_string(),
-                };
-                crate::util::logfile::log(
-                    "meetings",
-                    &format!("mac-notification-sys response: {variant}"),
-                );
-                let action = match resp {
-                    mac_notification_sys::NotificationResponse::ActionButton(name)
-                        if name.eq_ignore_ascii_case("record") =>
-                    {
-                        Some("record")
-                    }
-                    mac_notification_sys::NotificationResponse::Click => Some("open"),
-                    // CloseButton, Reply, None — no actionable signal for us.
-                    _ => None,
-                };
-                if let Some(action) = action {
-                    let payload = crate::events::NotificationMeetingActionEvent {
-                        action: action.to_string(),
-                        window_id: window_id_for_thread,
-                        platform: platform_for_thread,
-                        meeting_id: None,
-                    };
-                    if let Err(e) = app_for_thread
-                        .emit(crate::events::EVENT_NOTIFICATION_MEETING_ACTION, &payload)
-                    {
-                        crate::util::logfile::log(
-                            "meetings",
-                            &format!("emit notification:meeting-action failed: {e}"),
-                        );
-                    }
+        // `set_application` itself is guarded by an internal `Once`, so
+        // calling it on every notification send would be safe — but wrapping
+        // in our own OnceLock keeps the log line at one-per-process.
+        static NOTIFICATION_APP_INIT: OnceLock<()> = OnceLock::new();
+        NOTIFICATION_APP_INIT.get_or_init(|| {
+            const BUNDLE_ID: &str = "ai.indigo.hq-sync-menubar";
+            match mac_notification_sys::set_application(BUNDLE_ID) {
+                Ok(()) => {
+                    crate::util::logfile::log(
+                        "meetings",
+                        &format!("mac-notification-sys: registered bundle {BUNDLE_ID}"),
+                    );
+                }
+                Err(e) => {
+                    crate::util::logfile::log(
+                        "meetings",
+                        &format!("mac-notification-sys: set_application({BUNDLE_ID}) failed: {e}"),
+                    );
                 }
             }
-            Err(e) => {
-                crate::util::logfile::log(
-                    "meetings",
-                    &format!("mac-notification-sys send failed: {e}"),
+        });
+
+        let window_id_for_thread = payload.window_id.clone().unwrap_or_default();
+        let platform_for_thread = platform_lc.clone();
+        let title_for_thread = build_notification_title(&platform_lc);
+        let body_for_thread = body.clone();
+        let app_for_thread = app.clone();
+        std::thread::spawn(move || {
+            // ── Clickable delivery: UNUserNotificationCenter ────────────────
+            // When notification permission is *granted*, deliver through
+            // UNUserNotificationCenter instead of osascript. A UN banner carries
+            // a click callback (via the delegate installed at launch in
+            // `un_notify.rs`), so clicking the banner opens the desktop-alt
+            // "HQ Meetings" window — even on a *cold* click where no frontend
+            // `notification:meeting-action` listener exists yet (the delegate
+            // opens the window straight from Rust). UN silently DROPS the request
+            // when status != "granted", so we gate strictly on "granted" and fall
+            // through to the always-visible osascript path otherwise — zero
+            // regression for non-granted users. One delivery path per branch, so
+            // there's never a double banner.
+            #[cfg(target_os = "macos")]
+            if crate::commands::notifications::current_authorization_status() == "granted" {
+                crate::commands::un_notify::deliver_clickable(
+                    &title_for_thread,
+                    &body_for_thread,
+                    &window_id_for_thread,
+                    &platform_for_thread,
                 );
+                return;
             }
+
+            // ── Primary delivery: AppleScript ───────────────────────────────
+            // macOS 26 (Sequoia) blocks NSUserNotification from being mixed
+            // with UNUserNotificationCenter in the same process. usernoted
+            // logs:
+            //   Error: Legacy client ai.indigo.hq-sync-menubar connecting to
+            //   modern client. Denying message N from <LegacyConnection>.
+            // Once anything in the process touches UN (the
+            // `notification_permission_state` IPC probe is enough), the
+            // legacy `mac-notification-sys` deliver path is silently denied
+            // forever. `osascript display notification` doesn't go through
+            // the per-process legacy/modern gate — it's NotificationCenter's
+            // own scripting bridge — so it fires reliably regardless.
+            //
+            // Trade-off vs. the legacy library: no action button. We lose
+            // the inline "Record" button on the banner. Mitigation: the
+            // popover's calendar icon now tints yellow on detection (see
+            // MeetingIcon.svelte), so the user has an obvious in-app affordance
+            // to act on the detection. Click on the notification body still
+            // focuses HQ Sync (macOS's default behavior for any app's
+            // notification), and our `notification:meeting-action` event
+            // listener treats that as action="open" via the popover.
+            //
+            // Long-term: migrate to UNUserNotificationCenter via objc2 +
+            // UNNotificationCategory + UNNotificationAction("RECORD") so the
+            // Record button comes back. Tracked as a follow-up.
+            let osa_body = body_for_thread.replace('\\', "\\\\").replace('"', "\\\"");
+            let osa_title = title_for_thread.replace('\\', "\\\\").replace('"', "\\\"");
+            let script = format!("display notification \"{osa_body}\" with title \"{osa_title}\"");
+            match std::process::Command::new("/usr/bin/osascript")
+                .args(["-e", &script])
+                .output()
+            {
+                Ok(out) if out.status.success() => {
+                    crate::util::logfile::log("meetings", "osascript notification fired");
+                }
+                Ok(out) => {
+                    let stderr = String::from_utf8_lossy(&out.stderr);
+                    crate::util::logfile::log(
+                        "meetings",
+                        &format!(
+                            "osascript notification non-zero exit ({}): {}",
+                            out.status, stderr
+                        ),
+                    );
+                }
+                Err(e) => {
+                    crate::util::logfile::log("meetings", &format!("osascript spawn failed: {e}"));
+                }
+            }
+
+            // ── Secondary delivery: legacy mac-notification-sys ────────────
+            // Still attempted because: (1) some users may be on older macOS
+            // where the legacy path works (Catalina/Big Sur/Monterey/Ventura),
+            // and (2) it carries the Record action button via the response
+            // thread. On Sequoia+ this thread's `send()` is denied by
+            // usernoted and either errors immediately or returns
+            // NotificationResponse::None — both paths are logged below so the
+            // failure mode is visible.
+            let mut notification = mac_notification_sys::Notification::default();
+            notification
+                .title(&title_for_thread)
+                .message(&body_for_thread)
+                // `main_button` attaches a single action button labelled
+                // "Record". On older macOS this surfaces inline (alert
+                // style) or on hover (banner style). Sequoia denies the
+                // whole deliver, so this never reaches the user there.
+                .main_button(mac_notification_sys::MainButton::SingleAction("Record"))
+                // Block the thread until the user interacts (or macOS
+                // auto-dismisses, which surfaces as None).
+                .wait_for_click(true);
+            match notification.send() {
+                Ok(resp) => {
+                    // Log the raw response variant so a "user said they got no
+                    // notification" report can be cross-referenced against what
+                    // mac-notification-sys actually returned. None/timeout reads
+                    // identically to "macOS silently dropped the banner due to
+                    // missing UNUserNotificationCenter authorization" in the
+                    // logs — surfacing the variant makes that distinguishable.
+                    let variant = match &resp {
+                        mac_notification_sys::NotificationResponse::ActionButton(n) => {
+                            format!("ActionButton({n})")
+                        }
+                        mac_notification_sys::NotificationResponse::Click => "Click".to_string(),
+                        mac_notification_sys::NotificationResponse::CloseButton(_) => {
+                            "CloseButton".to_string()
+                        }
+                        mac_notification_sys::NotificationResponse::Reply(_) => "Reply".to_string(),
+                        mac_notification_sys::NotificationResponse::None => "None".to_string(),
+                    };
+                    crate::util::logfile::log(
+                        "meetings",
+                        &format!("mac-notification-sys response: {variant}"),
+                    );
+                    let action = match resp {
+                        mac_notification_sys::NotificationResponse::ActionButton(name)
+                            if name.eq_ignore_ascii_case("record") =>
+                        {
+                            Some("record")
+                        }
+                        mac_notification_sys::NotificationResponse::Click => Some("open"),
+                        // CloseButton, Reply, None — no actionable signal for us.
+                        _ => None,
+                    };
+                    if let Some(action) = action {
+                        let payload = crate::events::NotificationMeetingActionEvent {
+                            action: action.to_string(),
+                            window_id: window_id_for_thread,
+                            platform: platform_for_thread,
+                            meeting_id: None,
+                        };
+                        if let Err(e) = app_for_thread
+                            .emit(crate::events::EVENT_NOTIFICATION_MEETING_ACTION, &payload)
+                        {
+                            crate::util::logfile::log(
+                                "meetings",
+                                &format!("emit notification:meeting-action failed: {e}"),
+                            );
+                        }
+                    }
+                }
+                Err(e) => {
+                    crate::util::logfile::log(
+                        "meetings",
+                        &format!("mac-notification-sys send failed: {e}"),
+                    );
+                }
+            }
+        });
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        use tauri_plugin_notification::NotificationExt;
+        let title = build_notification_title(&platform_lc);
+        match app
+            .notification()
+            .builder()
+            .title(&title)
+            .body(&body)
+            .show()
+        {
+            Ok(()) => crate::util::logfile::log("meetings", "meeting toast notification fired"),
+            Err(e) => crate::util::logfile::log(
+                "meetings",
+                &format!("meeting toast notification failed: {e}"),
+            ),
         }
-    });
+    }
 
     // 6. Bump tray badge. The ledger was already marked Notified atomically by
     // `claim_notify` above (the claim is what authorised this fire), so there is

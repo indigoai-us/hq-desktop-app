@@ -85,7 +85,12 @@ pub struct NotificationHistory {
     pub files: Vec<FileHistoryItem>,
 }
 
-async fn fetch_dms(client: &reqwest::Client, base_url: &str, token: &str, limit: u32) -> Result<Vec<DmEvent>, String> {
+async fn fetch_dms(
+    client: &reqwest::Client,
+    base_url: &str,
+    token: &str,
+    limit: u32,
+) -> Result<Vec<DmEvent>, String> {
     let url = format!("{}/v1/notify/inbox?limit={}", base_url, limit);
     let resp = client
         .get(&url)
@@ -104,7 +109,12 @@ async fn fetch_dms(client: &reqwest::Client, base_url: &str, token: &str, limit:
     Ok(parsed.events)
 }
 
-async fn fetch_shares(client: &reqwest::Client, base_url: &str, token: &str, limit: u32) -> Result<Vec<ShareEvent>, String> {
+async fn fetch_shares(
+    client: &reqwest::Client,
+    base_url: &str,
+    token: &str,
+    limit: u32,
+) -> Result<Vec<ShareEvent>, String> {
     let url = format!("{}/v1/files/shared-with-me?limit={}", base_url, limit);
     let resp = client
         .get(&url)
@@ -123,7 +133,12 @@ async fn fetch_shares(client: &reqwest::Client, base_url: &str, token: &str, lim
     Ok(parsed.events)
 }
 
-async fn fetch_files(client: &reqwest::Client, base_url: &str, token: &str, limit: u32) -> Result<Vec<FileHistoryItem>, String> {
+async fn fetch_files(
+    client: &reqwest::Client,
+    base_url: &str,
+    token: &str,
+    limit: u32,
+) -> Result<Vec<FileHistoryItem>, String> {
     let url = format!("{}/v1/notify/file-history?limit={}", base_url, limit);
     let resp = client
         .get(&url)
@@ -144,9 +159,7 @@ async fn fetch_files(client: &reqwest::Client, base_url: &str, token: &str, limi
 
 /// Fetch the full (newest-N) DM + share + new-file history for the history window.
 #[tauri::command]
-pub async fn fetch_notification_history(
-    limit: Option<u32>,
-) -> Result<NotificationHistory, String> {
+pub async fn fetch_notification_history(limit: Option<u32>) -> Result<NotificationHistory, String> {
     let lim = limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
 
     let access_token = cognito::get_valid_access_token().await.map_err(|e| {
@@ -198,7 +211,9 @@ pub async fn fetch_notification_history(
     // Only fail hard if BOTH sources errored — a one-source outage still renders
     // the other half of the timeline.
     if let (Some(de), Some(se)) = (&dm_err, &share_err) {
-        return Err(format!("Could not load notifications (dm: {de}; share: {se})"));
+        return Err(format!(
+            "Could not load notifications (dm: {de}; share: {se})"
+        ));
     }
 
     log(

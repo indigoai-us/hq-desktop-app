@@ -91,9 +91,7 @@ mod tests {
     async fn build_client_times_out_on_slow_endpoint() {
         let server = MockServer::start().await;
         Mock::given(any())
-            .respond_with(
-                ResponseTemplate::new(200).set_delay(Duration::from_secs(30)),
-            )
+            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(30)))
             .mount(&server)
             .await;
 

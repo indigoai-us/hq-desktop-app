@@ -146,8 +146,7 @@ pub fn deliver_clickable(title: &str, body: &str, window_id: &str, platform: &st
     }
     let fired = objc2::rc::autoreleasepool(|_pool| unsafe {
         // `new` = owned (+1); everything else here is autoreleased.
-        let content: Retained<AnyObject> =
-            msg_send![class!(UNMutableNotificationContent), new];
+        let content: Retained<AnyObject> = msg_send![class!(UNMutableNotificationContent), new];
         let _: () = msg_send![&*content, setTitle: ns_string(title)];
         let _: () = msg_send![&*content, setBody: ns_string(body)];
         let sound: *mut AnyObject = msg_send![class!(UNNotificationSound), defaultSound];
@@ -157,8 +156,7 @@ pub fn deliver_clickable(title: &str, body: &str, window_id: &str, platform: &st
 
         let user_info: *mut AnyObject = msg_send![class!(NSMutableDictionary), dictionary];
         if !user_info.is_null() {
-            let _: () =
-                msg_send![user_info, setObject: ns_string(window_id), forKey: ns_string("windowId")];
+            let _: () = msg_send![user_info, setObject: ns_string(window_id), forKey: ns_string("windowId")];
             let _: () =
                 msg_send![user_info, setObject: ns_string(platform), forKey: ns_string("platform")];
             let _: () = msg_send![&*content, setUserInfo: user_info];

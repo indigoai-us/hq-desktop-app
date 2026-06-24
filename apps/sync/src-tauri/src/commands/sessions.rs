@@ -266,7 +266,9 @@ fn merge_sessions(
 /// store can't blank the fleet.
 async fn collect_snapshot() -> MissionControlSnapshot {
     let now = SystemTime::now();
-    let claude = claude::list_local_claude_sessions().await.unwrap_or_default();
+    let claude = claude::list_local_claude_sessions()
+        .await
+        .unwrap_or_default();
     let codex = codex::list_local_codex_sessions().await.unwrap_or_default();
     let agents = scan_running_agents();
     let local = merge_sessions(claude, codex, agents, now);
@@ -337,7 +339,8 @@ pub async fn list_agent_sessions() -> Result<MissionControlSnapshot, String> {
 /// (see [`resolve_poll_interval`]); the outpost emitter (US-009) is documented to
 /// match it.
 pub fn setup_sessions_poller<R: Runtime>(app: AppHandle<R>) {
-    let interval = resolve_poll_interval(std::env::var("HQ_SYNC_SESSIONS_POLL_SECS").ok().as_deref());
+    let interval =
+        resolve_poll_interval(std::env::var("HQ_SYNC_SESSIONS_POLL_SECS").ok().as_deref());
     tauri::async_runtime::spawn(async move {
         // Launch delay — give the app a moment to finish setup before the first
         // scan (mirrors the share/updater pollers' settle delay).
@@ -429,9 +432,18 @@ mod tests {
 
     #[test]
     fn tool_and_origin_serialise_to_lowercase() {
-        assert_eq!(serde_json::to_string(&AgentTool::Claude).unwrap(), "\"claude\"");
-        assert_eq!(serde_json::to_string(&AgentTool::Codex).unwrap(), "\"codex\"");
-        assert_eq!(serde_json::to_string(&AgentOrigin::Local).unwrap(), "\"local\"");
+        assert_eq!(
+            serde_json::to_string(&AgentTool::Claude).unwrap(),
+            "\"claude\""
+        );
+        assert_eq!(
+            serde_json::to_string(&AgentTool::Codex).unwrap(),
+            "\"codex\""
+        );
+        assert_eq!(
+            serde_json::to_string(&AgentOrigin::Local).unwrap(),
+            "\"local\""
+        );
         assert_eq!(
             serde_json::to_string(&AgentOrigin::Outpost).unwrap(),
             "\"outpost\""
@@ -476,7 +488,10 @@ mod tests {
     fn poll_interval_honours_a_valid_override() {
         assert_eq!(resolve_poll_interval(Some("15")), Duration::from_secs(15));
         // Whitespace is tolerated.
-        assert_eq!(resolve_poll_interval(Some("  20 ")), Duration::from_secs(20));
+        assert_eq!(
+            resolve_poll_interval(Some("  20 ")),
+            Duration::from_secs(20)
+        );
     }
 
     #[test]
@@ -533,12 +548,18 @@ mod tests {
         let now = SystemTime::now();
         let claude = vec![session("c1", AgentTool::Claude, &iso_ago(now, 10))];
         let codex = vec![session("x1", AgentTool::Codex, &iso_ago(now, 10))];
-        let agents = liveness::RunningAgents { claude: true, codex: true };
+        let agents = liveness::RunningAgents {
+            claude: true,
+            codex: true,
+        };
 
         let merged = merge_sessions(claude, codex, agents, now);
 
         // Claude first, then Codex — readers' order preserved.
-        assert_eq!(merged.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["c1", "x1"]);
+        assert_eq!(
+            merged.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+            ["c1", "x1"]
+        );
         // Fresh activity + live process → re-derived to running (NOT the stale Ended).
         assert!(merged.iter().all(|s| s.status == SessionStatus::Running));
     }
@@ -548,7 +569,10 @@ mod tests {
         let now = SystemTime::now();
         // Fresh activity, but the owning tool has NO live process.
         let claude = vec![session("c1", AgentTool::Claude, &iso_ago(now, 5))];
-        let agents = liveness::RunningAgents { claude: false, codex: false };
+        let agents = liveness::RunningAgents {
+            claude: false,
+            codex: false,
+        };
 
         let merged = merge_sessions(claude, Vec::new(), agents, now);
 
@@ -576,7 +600,10 @@ mod tests {
         let merged = append_outpost_sessions(local, outpost);
 
         // Local first, then outpost — stable order.
-        assert_eq!(merged.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["c1", "o1"]);
+        assert_eq!(
+            merged.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+            ["c1", "o1"]
+        );
         // The local session stays local…
         assert_eq!(merged[0].origin, AgentOrigin::Local);
         // …and the outpost session is forced to origin=outpost (so the UI groups
@@ -605,7 +632,10 @@ mod tests {
         let obj = value.as_object().unwrap();
         assert!(obj.contains_key("sessions"));
         assert!(obj.contains_key("history"));
-        assert!(!obj.contains_key("outpost"), "absent outpost is omitted from the wire");
+        assert!(
+            !obj.contains_key("outpost"),
+            "absent outpost is omitted from the wire"
+        );
     }
 
     #[test]
@@ -624,7 +654,11 @@ mod tests {
             }),
         };
         let value = serde_json::to_value(&snapshot).unwrap();
-        let outpost = value.get("outpost").expect("outpost card present").as_object().unwrap();
+        let outpost = value
+            .get("outpost")
+            .expect("outpost card present")
+            .as_object()
+            .unwrap();
         // camelCase keys on the wire, matching the TS card type.
         assert_eq!(outpost.get("up").unwrap(), true);
         assert_eq!(outpost.get("relayConnected").unwrap(), true);

@@ -251,11 +251,7 @@ pub async fn yank_marketplace_listing(id: String, reason: String) -> Result<Yank
 /// a clear not-authorized message (the server admin-gate rejected the caller);
 /// 409 → a status-conflict message (not yankable / lost optimistic-lock race);
 /// other non-2xx → the raw server error.
-fn parse_yank_response(
-    id: &str,
-    status: StatusCode,
-    text: &str,
-) -> Result<YankResult, String> {
+fn parse_yank_response(id: &str, status: StatusCode, text: &str) -> Result<YankResult, String> {
     if status == StatusCode::FORBIDDEN {
         return Err("not authorized to yank listings (admin only)".to_string());
     }
@@ -487,7 +483,11 @@ pub async fn decide_moderation_listing(
     if let Some(n) = &note {
         body["note"] = serde_json::Value::String(n.clone());
     }
-    if let Some(v) = version_lock.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+    if let Some(v) = version_lock
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
         body["versionLock"] = serde_json::Value::String(v.to_string());
     }
 
@@ -509,7 +509,10 @@ pub async fn decide_moderation_listing(
 
 /// Pure parser for the queue endpoint. 403 → a clear admin-only message (so the
 /// panel locks). Accepts either `{queue:[…]}` or `{listings:[…]}`.
-fn parse_queue_response(status: StatusCode, text: &str) -> Result<Vec<ModerationQueueItem>, String> {
+fn parse_queue_response(
+    status: StatusCode,
+    text: &str,
+) -> Result<Vec<ModerationQueueItem>, String> {
     if status == StatusCode::FORBIDDEN {
         return Err("not authorized to view the moderation queue (admin only)".to_string());
     }
@@ -591,7 +594,10 @@ fn parse_decision_response(
 
 // ---- pure parsers (status + body → typed result) ---------------------------
 
-fn parse_browse_response(status: StatusCode, text: &str) -> Result<Vec<MarketplaceListing>, String> {
+fn parse_browse_response(
+    status: StatusCode,
+    text: &str,
+) -> Result<Vec<MarketplaceListing>, String> {
     if status == StatusCode::NO_CONTENT {
         return Ok(Vec::new());
     }
@@ -889,7 +895,10 @@ pub async fn install_marketplace_pack(
         let company_dir = resolve_company_dir(&hq_root, co)?;
         log(
             "marketplace",
-            &format!("company install target contained at {}", company_dir.display()),
+            &format!(
+                "company install target contained at {}",
+                company_dir.display()
+            ),
         );
         // (b) Admin gate against vault truth — default-deny on any failure.
         assert_company_admin(co).await?;
@@ -1440,8 +1449,12 @@ pub async fn request_creator_access(
     let url = format!("{base}/v1/creators/request-access");
     let jwt = resolve_jwt().await?;
 
-    let reason = reason.map(|r| r.trim().to_string()).filter(|r| !r.is_empty());
-    let handle = handle.map(|h| h.trim().to_string()).filter(|h| !h.is_empty());
+    let reason = reason
+        .map(|r| r.trim().to_string())
+        .filter(|r| !r.is_empty());
+    let handle = handle
+        .map(|h| h.trim().to_string())
+        .filter(|h| !h.is_empty());
     let mut body = match &reason {
         Some(r) => serde_json::json!({ "reason": r }),
         None => serde_json::json!({}),
@@ -1488,8 +1501,8 @@ fn parse_request_access_response(status: StatusCode, text: &str) -> Result<Strin
     if !status.is_success() {
         return Err(format!("request-access HTTP {status}: {text}"));
     }
-    let default = "Your verified-creator request was received. An Indigo admin will review it."
-        .to_string();
+    let default =
+        "Your verified-creator request was received. An Indigo admin will review it.".to_string();
     let body = text.trim();
     if body.is_empty() {
         return Ok(default);
@@ -1706,7 +1719,8 @@ fn parse_application_decision_response(
     }
     if status == StatusCode::NOT_FOUND {
         return Err(
-            "applicant has no entity record to approve (they may need to sign in first)".to_string(),
+            "applicant has no entity record to approve (they may need to sign in first)"
+                .to_string(),
         );
     }
     if status == StatusCode::CONFLICT {
@@ -2396,7 +2410,10 @@ mod tests {
         assert_eq!(detail.listing.id, "lst_1");
         assert_eq!(detail.listing.author, "corey");
         assert_eq!(detail.listing.contributes.as_deref(), Some("1 skill"));
-        assert_eq!(detail.download_url, "https://example.com/pack.tar.gz?sig=abc");
+        assert_eq!(
+            detail.download_url,
+            "https://example.com/pack.tar.gz?sig=abc"
+        );
     }
 
     #[test]
@@ -2429,7 +2446,9 @@ mod tests {
         let res = parse_yank_response("lst_1", StatusCode::OK, body).expect("parsed");
         assert_eq!(res.id, "lst_1");
         assert_eq!(res.status, "yanked");
-        assert!(res.note.contains("Already-installed users are NOT auto-removed"));
+        assert!(res
+            .note
+            .contains("Already-installed users are NOT auto-removed"));
     }
 
     #[test]
@@ -2456,8 +2475,8 @@ mod tests {
 
     #[test]
     fn yank_surfaces_other_http_errors() {
-        let err = parse_yank_response("lst_1", StatusCode::INTERNAL_SERVER_ERROR, "boom")
-            .unwrap_err();
+        let err =
+            parse_yank_response("lst_1", StatusCode::INTERNAL_SERVER_ERROR, "boom").unwrap_err();
         assert!(err.contains("500"));
     }
 
@@ -2506,8 +2525,8 @@ mod tests {
         // A non-2xx maps to an error string. The CALLER treats this best-effort
         // (fire-and-forget), so this error never blocks an install — but the typed
         // outcome lets a test/diagnostic observe that the metrics write failed.
-        let err = parse_install_event_response(StatusCode::INTERNAL_SERVER_ERROR, "boom")
-            .unwrap_err();
+        let err =
+            parse_install_event_response(StatusCode::INTERNAL_SERVER_ERROR, "boom").unwrap_err();
         assert!(err.contains("500"), "got: {err}");
         let unauthorized =
             parse_install_event_response(StatusCode::UNAUTHORIZED, "nope").unwrap_err();
@@ -2541,7 +2560,10 @@ mod tests {
         assert_eq!(first.instructions.len(), 1);
         assert_eq!(first.instructions[0].path, "skills/sketchy/SKILL.md");
         assert_eq!(first.injection_scan.len(), 1);
-        assert_eq!(first.injection_scan[0].reason, "instruction-override phrase");
+        assert_eq!(
+            first.injection_scan[0].reason,
+            "instruction-override phrase"
+        );
         assert_eq!(first.version_lock.as_deref(), Some("v3"));
 
         // Sparse item: optional moderation fields absent → empty, still parses.
@@ -2567,17 +2589,22 @@ mod tests {
         assert!(parse_queue_response(StatusCode::OK, r#"{"queue":[]}"#)
             .unwrap()
             .is_empty());
-        assert!(parse_queue_response(StatusCode::OK, "  ").unwrap().is_empty());
+        assert!(parse_queue_response(StatusCode::OK, "  ")
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
     fn queue_403_maps_to_admin_only_so_panel_locks() {
-        let err = parse_queue_response(StatusCode::FORBIDDEN, r#"{"code":"FORBIDDEN"}"#).unwrap_err();
+        let err =
+            parse_queue_response(StatusCode::FORBIDDEN, r#"{"code":"FORBIDDEN"}"#).unwrap_err();
         assert!(err.contains("admin"), "got: {err}");
         // Other HTTP errors surface the status.
-        assert!(parse_queue_response(StatusCode::INTERNAL_SERVER_ERROR, "boom")
-            .unwrap_err()
-            .contains("500"));
+        assert!(
+            parse_queue_response(StatusCode::INTERNAL_SERVER_ERROR, "boom")
+                .unwrap_err()
+                .contains("500")
+        );
         assert!(parse_queue_response(StatusCode::OK, "{not json").is_err());
     }
 
@@ -2610,8 +2637,8 @@ mod tests {
         assert_eq!(err, "version mismatch: listing already decided");
 
         // 409 with no body still yields a clear already-decided message.
-        let err2 =
-            parse_decision_response("lst_p1", Decision::Reject, StatusCode::CONFLICT, "").unwrap_err();
+        let err2 = parse_decision_response("lst_p1", Decision::Reject, StatusCode::CONFLICT, "")
+            .unwrap_err();
         assert!(err2.contains("already decided"), "got: {err2}");
     }
 
@@ -2673,26 +2700,33 @@ mod tests {
 
     #[test]
     fn applications_handle_empty_and_no_content() {
-        assert!(parse_creator_applications_response(StatusCode::NO_CONTENT, "")
-            .unwrap()
-            .is_empty());
+        assert!(
+            parse_creator_applications_response(StatusCode::NO_CONTENT, "")
+                .unwrap()
+                .is_empty()
+        );
         assert!(parse_creator_applications_response(StatusCode::OK, "  \n ")
             .unwrap()
             .is_empty());
-        assert!(parse_creator_applications_response(StatusCode::OK, r#"{"applications":[]}"#)
-            .unwrap()
-            .is_empty());
+        assert!(
+            parse_creator_applications_response(StatusCode::OK, r#"{"applications":[]}"#)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
     fn applications_403_maps_to_admin_only_so_panel_locks() {
-        let err = parse_creator_applications_response(StatusCode::FORBIDDEN, r#"{"code":"FORBIDDEN"}"#)
-            .unwrap_err();
+        let err =
+            parse_creator_applications_response(StatusCode::FORBIDDEN, r#"{"code":"FORBIDDEN"}"#)
+                .unwrap_err();
         assert!(err.contains("admin"), "got: {err}");
         // 401 → sign-in; other HTTP errors surface the status; bad JSON errors.
-        assert!(parse_creator_applications_response(StatusCode::UNAUTHORIZED, "")
-            .unwrap_err()
-            .contains("sign in"));
+        assert!(
+            parse_creator_applications_response(StatusCode::UNAUTHORIZED, "")
+                .unwrap_err()
+                .contains("sign in")
+        );
         assert!(
             parse_creator_applications_response(StatusCode::INTERNAL_SERVER_ERROR, "boom")
                 .unwrap_err()
@@ -2704,35 +2738,49 @@ mod tests {
     #[test]
     fn application_decision_parses_and_falls_back() {
         let body = r#"{"applicationId":"app_1","status":"approved","reviewedBy":"corey@getindigo.ai","reviewedAt":"2026-06-05T00:00:00Z"}"#;
-        let res =
-            parse_application_decision_response("app_1", ApplicationDecision::Approve, StatusCode::OK, body)
-                .expect("parsed");
+        let res = parse_application_decision_response(
+            "app_1",
+            ApplicationDecision::Approve,
+            StatusCode::OK,
+            body,
+        )
+        .expect("parsed");
         assert_eq!(res.application_id, "app_1");
         assert_eq!(res.status, "approved");
         assert_eq!(res.reviewed_by, "corey@getindigo.ai");
         assert_eq!(res.reviewed_at, "2026-06-05T00:00:00Z");
 
         // No status echoed → derived from the decision.
-        let res2 =
-            parse_application_decision_response("app_1", ApplicationDecision::Deny, StatusCode::OK, "{}")
-                .unwrap();
+        let res2 = parse_application_decision_response(
+            "app_1",
+            ApplicationDecision::Deny,
+            StatusCode::OK,
+            "{}",
+        )
+        .unwrap();
         assert_eq!(res2.status, "denied");
     }
 
     #[test]
     fn application_decision_maps_404_403_409() {
         // 404 (approve with no entity row) → a clear applicant-record message.
-        assert!(
-            parse_application_decision_response("app_1", ApplicationDecision::Approve, StatusCode::NOT_FOUND, "")
-                .unwrap_err()
-                .contains("entity record")
-        );
+        assert!(parse_application_decision_response(
+            "app_1",
+            ApplicationDecision::Approve,
+            StatusCode::NOT_FOUND,
+            ""
+        )
+        .unwrap_err()
+        .contains("entity record"));
         // 403 → admin only.
-        assert!(
-            parse_application_decision_response("app_1", ApplicationDecision::Approve, StatusCode::FORBIDDEN, "{}")
-                .unwrap_err()
-                .contains("admin")
-        );
+        assert!(parse_application_decision_response(
+            "app_1",
+            ApplicationDecision::Approve,
+            StatusCode::FORBIDDEN,
+            "{}"
+        )
+        .unwrap_err()
+        .contains("admin"));
         // 409 (not pending) surfaces the server message.
         let err = parse_application_decision_response(
             "app_1",
@@ -2793,7 +2841,11 @@ mod tests {
             .to_lowercase()
             .contains("pending"));
         // 202 success still surfaces a human confirmation.
-        assert!(parse_request_access_response(StatusCode::ACCEPTED, r#"{"status":"request_received","code":"NOT_VERIFIED_CREATOR","applicationId":"app_1"}"#).is_ok());
+        assert!(parse_request_access_response(
+            StatusCode::ACCEPTED,
+            r#"{"status":"request_received","code":"NOT_VERIFIED_CREATOR","applicationId":"app_1"}"#
+        )
+        .is_ok());
     }
 
     #[test]
@@ -3036,7 +3088,10 @@ mod tests {
             err.message,
             "package.yaml is invalid: missing required field `name`"
         );
-        assert!(!err.not_verified, "validation error must not flag not_verified");
+        assert!(
+            !err.not_verified,
+            "validation error must not flag not_verified"
+        );
     }
 
     #[test]
@@ -3045,7 +3100,10 @@ mod tests {
         // shows the request-access prompt. The CLI 403 message variant:
         let cli = "Error: Not authorized to publish — run `hq login` and ensure your creator account is verified.";
         let err = parse_publish_outcome(false, "", cli).unwrap_err();
-        assert!(err.not_verified, "CLI 403 message must classify as not_verified");
+        assert!(
+            err.not_verified,
+            "CLI 403 message must classify as not_verified"
+        );
 
         // And the raw server code, in case it bubbles through unmapped:
         let raw = parse_publish_outcome(false, "", "NOT_VERIFIED_CREATOR").unwrap_err();
@@ -3098,9 +3156,11 @@ mod tests {
         assert!(parse_request_access_response(StatusCode::UNAUTHORIZED, "")
             .unwrap_err()
             .contains("sign in"));
-        assert!(parse_request_access_response(StatusCode::INTERNAL_SERVER_ERROR, "boom")
-            .unwrap_err()
-            .contains("500"));
+        assert!(
+            parse_request_access_response(StatusCode::INTERNAL_SERVER_ERROR, "boom")
+                .unwrap_err()
+                .contains("500")
+        );
     }
 
     #[test]
@@ -3183,14 +3243,18 @@ mod tests {
         assert_eq!(p.tip_url.as_deref(), Some("https://ko-fi.com/corey"));
         assert_eq!(p.social_links.len(), 1);
         assert_eq!(p.social_links[0].label, "GitHub");
-        assert_eq!(p.avatar_url.as_deref(), Some("https://example.com/a.png?sig=x"));
+        assert_eq!(
+            p.avatar_url.as_deref(),
+            Some("https://example.com/a.png?sig=x")
+        );
     }
 
     #[test]
     fn profile_update_400_surfaces_url_scheme_reason() {
         // The server rejects a javascript: tipUrl with a 400 + reason; the panel
         // must show that reason inline, never a generic 500.
-        let body = r#"{"error":"tipUrl: url scheme must be http or https","code":"INVALID_PROFILE"}"#;
+        let body =
+            r#"{"error":"tipUrl: url scheme must be http or https","code":"INVALID_PROFILE"}"#;
         let err = parse_profile_update_response(StatusCode::BAD_REQUEST, body).unwrap_err();
         assert_eq!(err, "tipUrl: url scheme must be http or https");
     }
@@ -3211,7 +3275,8 @@ mod tests {
 
     #[test]
     fn avatar_upload_400_surfaces_type_or_size_reason() {
-        let too_big = r#"{"error":"Avatar exceeds the 2097152-byte cap","code":"AVATAR_TOO_LARGE"}"#;
+        let too_big =
+            r#"{"error":"Avatar exceeds the 2097152-byte cap","code":"AVATAR_TOO_LARGE"}"#;
         let err = parse_avatar_upload_response(StatusCode::BAD_REQUEST, too_big).unwrap_err();
         assert!(err.contains("2097152") || err.to_lowercase().contains("cap"));
     }
@@ -3291,7 +3356,10 @@ mod tests {
         assert_eq!(me.bio.as_deref(), Some("I build UIs"));
         assert_eq!(me.tip_url.as_deref(), Some("https://ko-fi.com/corey"));
         assert_eq!(me.social_links.len(), 1);
-        assert_eq!(me.avatar_url.as_deref(), Some("https://example.com/a.png?sig=x"));
+        assert_eq!(
+            me.avatar_url.as_deref(),
+            Some("https://example.com/a.png?sig=x")
+        );
     }
 
     #[test]
@@ -3305,9 +3373,11 @@ mod tests {
     fn my_creator_no_creator_code_body_is_none() {
         // A server that answers 200 with a NO_CREATOR code (instead of a 404) is
         // still "not claimed".
-        assert!(parse_my_creator_response(StatusCode::OK, r#"{"code":"NO_CREATOR"}"#)
-            .expect("ok")
-            .is_none());
+        assert!(
+            parse_my_creator_response(StatusCode::OK, r#"{"code":"NO_CREATOR"}"#)
+                .expect("ok")
+                .is_none()
+        );
     }
 
     #[test]
@@ -3335,8 +3405,7 @@ mod tests {
     fn my_creator_other_error_surfaces() {
         // A not-yet-implemented backend (e.g. 501) surfaces as an Err the panel
         // degrades to the claim step on.
-        let err =
-            parse_my_creator_response(StatusCode::NOT_IMPLEMENTED, "nope").unwrap_err();
+        let err = parse_my_creator_response(StatusCode::NOT_IMPLEMENTED, "nope").unwrap_err();
         assert!(err.contains("501"));
     }
 

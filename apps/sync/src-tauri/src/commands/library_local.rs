@@ -1387,10 +1387,7 @@ skills:
 
         let stale_company = scan_company_library(&root, "indigo").expect("indigo library");
         assert!(
-            stale_company
-                .workers
-                .iter()
-                .any(|w| w.id == "glm-5-2"),
+            stale_company.workers.iter().any(|w| w.id == "glm-5-2"),
             "glm-5-2 must appear in the per-company library from worker.yaml"
         );
 
@@ -1408,7 +1405,11 @@ skills:
             .iter()
             .filter(|w| w.path == "companies/indigo/workers/glm-5-2/")
             .collect();
-        assert_eq!(matches.len(), 1, "glm-5-2 listed exactly once, not duplicated");
+        assert_eq!(
+            matches.len(),
+            1,
+            "glm-5-2 listed exactly once, not duplicated"
+        );
         assert_eq!(matches[0].id, "glm-5-2");
         assert_eq!(matches[0].scope, "company");
 

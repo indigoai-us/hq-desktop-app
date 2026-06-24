@@ -683,7 +683,8 @@ pub async fn open_desktop_alt_window_inner(
     // `desktop_alt_consume_pending_route`.
     set_pending_route(route);
 
-    tauri::WebviewWindowBuilder::new(
+    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+    let mut builder = tauri::WebviewWindowBuilder::new(
         &app,
         WINDOW_LABEL,
         tauri::WebviewUrl::App("desktop-alt.html".into()),
@@ -696,15 +697,19 @@ pub async fn open_desktop_alt_window_inner(
     .min_inner_size(960.0, 600.0)
     .resizable(true)
     .decorations(true)
-    .title_bar_style(tauri::TitleBarStyle::Overlay)
     // Transparent so the native Liquid Glass backing view (applied below) shows
     // through. The desktop CSS paints translucent surfaces over it; the
     // reduced-transparency media query restores a solid window for that a11y
     // setting. See src/glass.rs.
     .transparent(true)
-    .visible(true)
-    .build()
-    .map_err(|e| e.to_string())?;
+    .visible(true);
+
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder.title_bar_style(tauri::TitleBarStyle::Overlay);
+    }
+
+    let _window = builder.build().map_err(|e| e.to_string())?;
 
     // Apply the macOS 26 Liquid Glass material (NSGlassEffectView) behind the
     // webview, falling back to NSVisualEffectView vibrancy on older macOS.
@@ -718,6 +723,11 @@ pub async fn open_desktop_alt_window_inner(
                 crate::glass::apply_liquid_glass_window(&win);
             }
         });
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        crate::apply_windows_vibrancy(&_window);
     }
 
     Ok(())
@@ -1981,8 +1991,8 @@ fn list_dir_entries(hq_root: &Path, rel_path: &str) -> Result<Vec<DirEntry>, Str
         return Err(format!("directory not found: {rel_path:?}"));
     }
 
-    let entries =
-        std::fs::read_dir(&abs).map_err(|e| format!("could not read directory {rel_path:?}: {e}"))?;
+    let entries = std::fs::read_dir(&abs)
+        .map_err(|e| format!("could not read directory {rel_path:?}: {e}"))?;
     let mut out: Vec<DirEntry> = Vec::new();
     for entry in entries.flatten() {
         let name = match entry.file_name().into_string() {
@@ -3283,10 +3293,7 @@ mod tests {
             // Nested noise under a real content dir must also be filtered.
             fs::create_dir_all(company.join("projects").join("node_modules")).unwrap();
             fs::write(
-                company
-                    .join("projects")
-                    .join("node_modules")
-                    .join("dep.js"),
+                company.join("projects").join("node_modules").join("dep.js"),
                 "x",
             )
             .unwrap();
@@ -3493,7 +3500,11 @@ mod tests {
 
             // Only immediate children — paths are single-segment at the root.
             for e in &entries {
-                assert!(!e.path.contains('/'), "root entry path not flat: {}", e.path);
+                assert!(
+                    !e.path.contains('/'),
+                    "root entry path not flat: {}",
+                    e.path
+                );
             }
         }
 

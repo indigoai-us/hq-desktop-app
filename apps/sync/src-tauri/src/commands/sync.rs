@@ -43,12 +43,12 @@ use tauri::{AppHandle, Emitter};
 
 use crate::commands::cognito;
 use crate::commands::config::{ensure_machine_id, HqConfig, MenubarPrefs};
-use crate::commands::vault_client::VaultClient;
 use crate::commands::process::{
     cancel_process_impl, deregister_process, is_registered, run_process_impl, try_register_handle,
     ProcessEvent, SpawnArgs,
 };
 use crate::commands::status::{journal_for_sync_complete, write_journal};
+use crate::commands::vault_client::VaultClient;
 use crate::events::{
     SyncAllCompleteEvent, SyncCompanyProvisionedEvent, SyncCompleteEvent, SyncErrorEvent,
     SyncEvent, EVENT_SYNC_ALL_COMPLETE, EVENT_SYNC_AUTH_ERROR, EVENT_SYNC_COMPANY_PROVISIONED,
@@ -509,12 +509,8 @@ fn resolve_hq_folder_path() -> Result<String, String> {
     let config = crate::commands::config::read_hq_config_lenient()?;
 
     let hq_folder = paths::resolve_hq_folder(
-        config
-            .as_ref()
-            .and_then(|c| c.hq_folder_path.as_deref()),
-        menubar_prefs
-            .as_ref()
-            .and_then(|p| p.hq_path.as_deref()),
+        config.as_ref().and_then(|c| c.hq_folder_path.as_deref()),
+        menubar_prefs.as_ref().and_then(|p| p.hq_path.as_deref()),
     );
 
     Ok(hq_folder.to_string_lossy().to_string())
@@ -568,8 +564,8 @@ where
     F: FnOnce(String) -> Fut,
     Fut: std::future::Future<Output = Result<cognito::CognitoTokens, String>>,
 {
-    let mut tokens = tokens_result?
-        .ok_or_else(|| "Not signed in — please complete setup first".to_string())?;
+    let mut tokens =
+        tokens_result?.ok_or_else(|| "Not signed in — please complete setup first".to_string())?;
     if cognito::is_expired(&tokens) {
         let refreshed = refresh_fn(tokens.refresh_token).await?;
         tokens = refreshed;
@@ -687,8 +683,7 @@ fn is_entity_not_yet_provisioned(err: &SyncErrorEvent) -> bool {
         return false;
     }
     let msg = err.message.to_lowercase();
-    msg.contains("no bucket provisioned")
-        || (msg.contains("entity") && msg.contains("not found"))
+    msg.contains("no bucket provisioned") || (msg.contains("entity") && msg.contains("not found"))
 }
 
 /// Returns `true` when a runner error message is a transient, retryable network
@@ -841,7 +836,13 @@ fn classify_error_event(payload: &SyncErrorEvent) -> Option<SyncCompleteEvent> {
 /// `all-complete`, the aggregated totals are persisted to
 /// `{hq_folder}/.hq-sync-journal.json` so `get_sync_status` surfaces a real
 /// `lastSyncAt` and conflict count instead of "never" / zero.
-fn handle_sync_line(app: &AppHandle, hq_folder: &str, totals: &Mutex<RunTotals>, jwt: &str, line: &str) {
+fn handle_sync_line(
+    app: &AppHandle,
+    hq_folder: &str,
+    totals: &Mutex<RunTotals>,
+    jwt: &str,
+    line: &str,
+) {
     // The runner can emit blank lines at process teardown. Skip those cheaply
     // rather than logging a parse error.
     let trimmed = line.trim();
@@ -853,7 +854,10 @@ fn handle_sync_line(app: &AppHandle, hq_folder: &str, totals: &Mutex<RunTotals>,
         Ok(e) => e,
         Err(_e) => {
             #[cfg(debug_assertions)]
-            eprintln!("[sync] skipping unparseable line: {} | line: {}", _e, trimmed);
+            eprintln!(
+                "[sync] skipping unparseable line: {} | line: {}",
+                _e, trimmed
+            );
             return;
         }
     };
@@ -952,7 +956,8 @@ fn handle_sync_line(app: &AppHandle, hq_folder: &str, totals: &Mutex<RunTotals>,
             tauri::async_runtime::spawn(async move {
                 let _ = crate::commands::telemetry::send_telemetry_if_opted_in(
                     &app_clone, &hq, &jwt_owned,
-                ).await;
+                )
+                .await;
             });
             // Reconcile manifest with on-disk reality. The runner downloads
             // cloud-only companies into `companies/{slug}/` as a side effect of
@@ -969,16 +974,19 @@ fn handle_sync_line(app: &AppHandle, hq_folder: &str, totals: &Mutex<RunTotals>,
                         return;
                     }
                 };
-                let vault = crate::commands::vault_client::VaultClient::new(
-                    &vault_url,
-                    &jwt_for_reconcile,
-                );
+                let vault =
+                    crate::commands::vault_client::VaultClient::new(&vault_url, &jwt_for_reconcile);
                 match crate::commands::workspaces::reconcile_manifest_after_sync(
                     std::path::Path::new(&hq_for_reconcile),
                     &vault,
-                ).await {
+                )
+                .await
+                {
                     Ok(0) => {} // nothing new — common case, stay quiet
-                    Ok(n) => log("sync", &format!("reconcile: added {n} new manifest entries")),
+                    Ok(n) => log(
+                        "sync",
+                        &format!("reconcile: added {n} new manifest entries"),
+                    ),
                     Err(e) => log("sync", &format!("reconcile failed (non-fatal): {e}")),
                 }
             });
@@ -1049,11 +1057,17 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
     let personal_sync_enabled: bool = match crate::commands::settings::get_settings().await {
         Ok(prefs) => prefs.personal_sync_enabled.unwrap_or(true),
         Err(e) => {
-            log("sync", &format!("get_settings failed; assuming personal_sync_enabled=true: {e}"));
+            log(
+                "sync",
+                &format!("get_settings failed; assuming personal_sync_enabled=true: {e}"),
+            );
             true
         }
     };
-    log("sync", &format!("personal_sync_enabled={}", personal_sync_enabled));
+    log(
+        "sync",
+        &format!("personal_sync_enabled={}", personal_sync_enabled),
+    );
 
     // Resolve vault URL from ~/.hq/config.json
     let vault_api_url = match resolve_vault_api_url() {
@@ -1097,10 +1111,12 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
             crate::commands::workspaces::discover_local_companies(&prep_root);
         let slugs: Vec<String> = local_companies.iter().map(|e| e.slug.clone()).collect();
         let prep_start = std::time::Instant::now();
-        let to_transfer =
-            crate::commands::personal::count_files_to_transfer(&prep_root, &slugs);
+        let to_transfer = crate::commands::personal::count_files_to_transfer(&prep_root, &slugs);
         let elapsed = prep_start.elapsed().as_millis();
-        log("sync", &format!("preparing: {to_transfer} files to transfer ({elapsed}ms)"));
+        log(
+            "sync",
+            &format!("preparing: {to_transfer} files to transfer ({elapsed}ms)"),
+        );
         let _ = app.emit(
             crate::events::EVENT_SYNC_TOTALS,
             serde_json::json!({ "totalFiles": to_transfer }),
@@ -1129,7 +1145,10 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
             c
         }
         Err(e) => {
-            log("sync", &format!("BAIL: provision_missing_companies failed: {e}"));
+            log(
+                "sync",
+                &format!("BAIL: provision_missing_companies failed: {e}"),
+            );
             deregister_process(SYNC_HANDLE);
             return Err(e);
         }
@@ -1157,7 +1176,10 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
         )
         .await
         {
-            log("sync", &format!("first_push failed for {}: {e}", company.slug));
+            log(
+                "sync",
+                &format!("first_push failed for {}: {e}", company.slug),
+            );
             // Terminal failure for this company's first sync — surface it.
             capture_sync_error(
                 Some(company.slug.as_str()),
@@ -1209,7 +1231,10 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
             );
         }
     } else {
-        log("sync", "phase: personal first-push skipped (personal_sync_enabled=false)");
+        log(
+            "sync",
+            "phase: personal first-push skipped (personal_sync_enabled=false)",
+        );
     }
 
     let spawn_args = build_sync_spawn_args(&hq_folder_path, personal_sync_enabled);
@@ -1258,7 +1283,13 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
                 log("runner.stdout", &line);
                 #[cfg(debug_assertions)]
                 eprintln!("[sync stdout] {}", line);
-                handle_sync_line(&app_bg, &hq_folder_for_handler, &totals, &jwt_for_handler, &line);
+                handle_sync_line(
+                    &app_bg,
+                    &hq_folder_for_handler,
+                    &totals,
+                    &jwt_for_handler,
+                    &line,
+                );
             }
             ProcessEvent::Stderr(line) => {
                 // Always log runner stderr — when sync gets stuck this is the
@@ -1311,7 +1342,10 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
                 success,
             } => {
                 let exit_desc = describe_exit(code, signal);
-                log("sync", &format!("runner exited: success={} {}", success, exit_desc));
+                log(
+                    "sync",
+                    &format!("runner exited: success={} {}", success, exit_desc),
+                );
                 // The runner exits 0 for recoverable conditions (setup-needed,
                 // auth-error) — those surface as ndjson events before exit, so
                 // the frontend already knows. A non-zero exit means the runner
@@ -1363,10 +1397,7 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
                     // sits in "syncing" forever and the top SyncStats card
                     // shows "never" while the personal first-push (which DID
                     // run) updated everything else.
-                    let saw = totals
-                        .lock()
-                        .map(|t| t.all_complete_seen)
-                        .unwrap_or(false);
+                    let saw = totals.lock().map(|t| t.all_complete_seen).unwrap_or(false);
                     if !saw {
                         log("sync", "runner exited without AllComplete — synthesizing");
                         let synthetic = SyncEvent::AllComplete(SyncAllCompleteEvent {
@@ -1375,8 +1406,8 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
                             bytes_downloaded: 0,
                             errors: Vec::new(),
                         });
-                        let line = serde_json::to_string(&synthetic)
-                            .unwrap_or_else(|_| "{}".to_string());
+                        let line =
+                            serde_json::to_string(&synthetic).unwrap_or_else(|_| "{}".to_string());
                         handle_sync_line(
                             &app_bg,
                             &hq_folder_for_handler,
@@ -1658,9 +1689,15 @@ mod tests {
     fn test_build_sync_spawn_args_env_sets_path_with_homebrew() {
         let args = build_sync_spawn_args("/tmp", true);
         let env = args.env.unwrap();
-        let path = env.get("PATH").expect("PATH must be set so shebang can find node");
+        let path = env
+            .get("PATH")
+            .expect("PATH must be set so shebang can find node");
         // Must include homebrew so `#!/usr/bin/env node` resolves on Dock launches.
-        assert!(path.contains("/opt/homebrew/bin"), "PATH missing /opt/homebrew/bin: {}", path);
+        assert!(
+            path.contains("/opt/homebrew/bin"),
+            "PATH missing /opt/homebrew/bin: {}",
+            path
+        );
     }
 
     #[test]
@@ -1752,7 +1789,8 @@ mod tests {
 
     #[test]
     fn test_parse_error_ndjson() {
-        let line = r#"{"type":"error","company":"indigo","path":"docs/x.md","message":"Access denied"}"#;
+        let line =
+            r#"{"type":"error","company":"indigo","path":"docs/x.md","message":"Access denied"}"#;
         let event: SyncEvent = serde_json::from_str(line).unwrap();
         match event {
             SyncEvent::Error(e) => {
@@ -2052,11 +2090,7 @@ mod tests {
     #[test]
     fn test_not_provisioned_file_level_error_excluded() {
         // File-level errors on real paths must not be swallowed.
-        let err = make_company_error(
-            Some("acme"),
-            "docs/secret.md",
-            "not found",
-        );
+        let err = make_company_error(Some("acme"), "docs/secret.md", "not found");
         assert!(!is_entity_not_yet_provisioned(&err));
     }
 
@@ -2093,10 +2127,18 @@ mod tests {
         assert!(is_transient_network_error(
             "TimeoutError code=ECONNRESET read ECONNRESET"
         ));
-        assert!(is_transient_network_error("connect ECONNREFUSED 10.0.0.1:443"));
-        assert!(is_transient_network_error("Client network socket disconnected: socket hang up"));
-        assert!(is_transient_network_error("request to https://vault failed, reason: ETIMEDOUT"));
-        assert!(is_transient_network_error("getaddrinfo EAI_AGAIN hqapi.getindigo.ai"));
+        assert!(is_transient_network_error(
+            "connect ECONNREFUSED 10.0.0.1:443"
+        ));
+        assert!(is_transient_network_error(
+            "Client network socket disconnected: socket hang up"
+        ));
+        assert!(is_transient_network_error(
+            "request to https://vault failed, reason: ETIMEDOUT"
+        ));
+        assert!(is_transient_network_error(
+            "getaddrinfo EAI_AGAIN hqapi.getindigo.ai"
+        ));
         // Case-insensitive.
         assert!(is_transient_network_error("Econnreset"));
     }
@@ -2112,7 +2154,9 @@ mod tests {
         assert!(!is_transient_network_error(
             "Failed to fetch entity cmp_01ABC: 404 {\"error\":\"gone\"}"
         ));
-        assert!(!is_transient_network_error("ScopeShrinkBlockedError code=SCOPE_SHRINK_BLOCKED"));
+        assert!(!is_transient_network_error(
+            "ScopeShrinkBlockedError code=SCOPE_SHRINK_BLOCKED"
+        ));
         assert!(!is_transient_network_error("something unexpected"));
     }
 

@@ -85,7 +85,9 @@ fn close_existing_file_panels() {
 ///   future resolves with `None` (like the user hit Cancel) and the
 ///   new picker opens cleanly.
 #[tauri::command]
-pub async fn pick_folder(#[allow(unused_variables)] app: tauri::AppHandle) -> Result<Option<String>, String> {
+pub async fn pick_folder(
+    #[allow(unused_variables)] app: tauri::AppHandle,
+) -> Result<Option<String>, String> {
     let _guard = crate::tray::ModalGuard::new();
 
     #[cfg(target_os = "macos")]

@@ -324,10 +324,7 @@ mod tests {
         // Past the idle window → ended, even though a process is alive (this
         // session's writes stopped long ago; some *other* agent of the same tool
         // is what's live).
-        assert_eq!(
-            status_for(IDLE_WINDOW_SECS + 1, true),
-            SessionStatus::Ended
-        );
+        assert_eq!(status_for(IDLE_WINDOW_SECS + 1, true), SessionStatus::Ended);
         assert_eq!(status_for(u64::MAX, true), SessionStatus::Ended);
     }
 

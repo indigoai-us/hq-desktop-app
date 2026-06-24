@@ -1,7 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::sync::Mutex;
-#[cfg(target_os = "macos")]
 use tauri::Manager;
 
 mod commands;
@@ -10,6 +9,7 @@ mod events;
 mod glass;
 mod sentry_scrub;
 mod tray;
+#[cfg(target_os = "macos")]
 mod tray_helper;
 mod updater;
 mod util;
@@ -91,6 +91,60 @@ fn set_app_icon_from_bytes(bytes: &'static [u8]) {
         }
         let _: () = msg_send![app, setApplicationIconImage: image];
         log("ui", "set_app_icon: applied HQ icon to NSApp");
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn set_dwm_small_corner(window: &tauri::WebviewWindow) {
+    use util::logfile::log;
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::Graphics::Dwm::{
+        DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUNDSMALL,
+    };
+
+    let Ok(hwnd) = window.hwnd() else { return };
+    let hwnd = HWND(hwnd.0 as *mut _);
+    let pref: u32 = DWMWCP_ROUNDSMALL.0 as u32;
+    let pref_ptr = &pref as *const u32 as *const std::ffi::c_void;
+    let size = std::mem::size_of::<u32>() as u32;
+    let result =
+        unsafe { DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, pref_ptr, size) };
+    if let Err(e) = result {
+        log(
+            "ui",
+            &format!("DwmSetWindowAttribute(DWMWCP_ROUNDSMALL) failed: {e}"),
+        );
+    } else {
+        log("ui", "DWMWCP_ROUNDSMALL applied — small corner radius");
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn apply_windows_vibrancy(window: &tauri::WebviewWindow) {
+    use util::logfile::log;
+    use window_vibrancy::{apply_acrylic, apply_mica};
+
+    match apply_mica(window, Some(true)) {
+        Ok(()) => {
+            log("ui", "apply_mica: success (dark variant)");
+            return;
+        }
+        Err(e) => {
+            log(
+                "ui",
+                &format!("apply_mica failed: {e}; trying Acrylic fallback"),
+            );
+        }
+    }
+
+    match apply_acrylic(window, Some((18, 18, 18, 180))) {
+        Ok(()) => log("ui", "apply_acrylic: success (Win 10 fallback)"),
+        Err(e) => log(
+            "ui",
+            &format!(
+                "apply_acrylic failed: {e}; popover will render with the Svelte solid-background fallback"
+            ),
+        ),
     }
 }
 
@@ -484,7 +538,7 @@ fn main() {
             // opens HQ Sync at login without the user opening Settings first.
             // Honours an explicit `"startAtLogin": false` opt-out. Best-effort
             // and idempotent — never aborts launch.
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
             commands::autostart::ensure_autostart_on_launch();
 
             // macOS menubar-app activation policy. `Accessory` = no Dock
@@ -510,6 +564,12 @@ fn main() {
             #[cfg(target_os = "macos")]
             if let Some(window) = app.get_webview_window("main") {
                 apply_liquid_glass(&window);
+            }
+
+            #[cfg(target_os = "windows")]
+            if let Some(window) = app.get_webview_window("main") {
+                set_dwm_small_corner(&window);
+                apply_windows_vibrancy(&window);
             }
 
             tray::setup_tray(app.handle())?;

@@ -260,7 +260,11 @@ fn client_id() -> String {
     let machine = crate::commands::config::ensure_machine_id().unwrap_or_else(|_| "unknown".into());
     let suffix = uuid::Uuid::new_v4().simple().to_string();
     // Keep it well under IoT's 128-char client-id limit.
-    format!("hqsync-{}-{}", &machine.chars().take(40).collect::<String>(), &suffix[..8])
+    format!(
+        "hqsync-{}-{}",
+        &machine.chars().take(40).collect::<String>(),
+        &suffix[..8]
+    )
 }
 
 /// One connect→subscribe→receive cycle. Returns `Ok(())` on a clean shutdown
@@ -406,7 +410,11 @@ pub fn setup_dm_mqtt_receiver(app: AppHandle) {
                     }
                     // If we stayed connected for a while, reset backoff so the next
                     // transient drop reconnects fast.
-                    if started.elapsed().map(|d| d > Duration::from_secs(30)).unwrap_or(false) {
+                    if started
+                        .elapsed()
+                        .map(|d| d > Duration::from_secs(30))
+                        .unwrap_or(false)
+                    {
                         backoff = BACKOFF_MIN;
                     }
                 }
@@ -417,7 +425,10 @@ pub fn setup_dm_mqtt_receiver(app: AppHandle) {
 
             log(
                 LOG_TAG,
-                &format!("DM_MQTT_FALLBACK reconnect in {}s (poll still active)", backoff.as_secs()),
+                &format!(
+                    "DM_MQTT_FALLBACK reconnect in {}s (poll still active)",
+                    backoff.as_secs()
+                ),
             );
             tokio::time::sleep(backoff).await;
             backoff = (backoff * 2).min(BACKOFF_MAX);
@@ -453,7 +464,10 @@ mod tests {
         );
         // Required SigV4 query-presign params (case-sensitive).
         assert!(url.contains("X-Amz-Algorithm"), "missing algorithm: {url}");
-        assert!(url.contains("X-Amz-Credential"), "missing credential: {url}");
+        assert!(
+            url.contains("X-Amz-Credential"),
+            "missing credential: {url}"
+        );
         assert!(url.contains("X-Amz-Signature"), "missing signature: {url}");
         assert!(
             url.contains("X-Amz-Security-Token"),
@@ -537,7 +551,10 @@ mod tests {
 
         let joined = handle.await;
         let join_err = joined.expect_err("the task panicked, so await must yield Err");
-        assert!(join_err.is_panic(), "must be classified as a panic JoinError");
+        assert!(
+            join_err.is_panic(),
+            "must be classified as a panic JoinError"
+        );
 
         // run_once's recovery turns this into a reconnectable Err carrying the
         // real cause — never a propagated unwind.

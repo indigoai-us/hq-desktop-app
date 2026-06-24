@@ -205,14 +205,8 @@ pub async fn open_activity_log(app: AppHandle) -> Result<(), String> {
     }
     log("activity", "open: building new window");
 
-    // `TitleBarStyle::Overlay` + `transparent(true)` + post-build
-    // `apply_vibrancy` give the same dark "Liquid Glass" backdrop-blur as the
-    // main popover (and the drift-detail window), instead of an opaque white
-    // macOS title bar over a flat gray body. `hidden_title(true)` suppresses
-    // the title text (redundant with the in-body header); the traffic lights
-    // are inset to clear the body's top padding. See drift_detail.rs for the
-    // full rationale on the main-thread vibrancy dispatch.
-    tauri::WebviewWindowBuilder::new(
+    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+    let mut builder = tauri::WebviewWindowBuilder::new(
         &app,
         ACTIVITY_WINDOW_LABEL,
         tauri::WebviewUrl::App("index.html".into()),
@@ -221,13 +215,18 @@ pub async fn open_activity_log(app: AppHandle) -> Result<(), String> {
     .inner_size(560.0, 460.0)
     .resizable(true)
     .decorations(true)
-    .title_bar_style(tauri::TitleBarStyle::Overlay)
-    .hidden_title(true)
-    .traffic_light_position(tauri::LogicalPosition::new(20.0, 18.0))
     .transparent(true)
-    .visible(false)
-    .build()
-    .map_err(|e| e.to_string())?;
+    .visible(false);
+
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder
+            .title_bar_style(tauri::TitleBarStyle::Overlay)
+            .hidden_title(true)
+            .traffic_light_position(tauri::LogicalPosition::new(20.0, 18.0));
+    }
+
+    let _window = builder.build().map_err(|e| e.to_string())?;
 
     // macOS vibrancy must run on the main thread (AppKit) — command handlers
     // run on the async worker pool, so dispatch via run_on_main_thread.
@@ -245,6 +244,11 @@ pub async fn open_activity_log(app: AppHandle) -> Result<(), String> {
                 );
             }
         });
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        crate::apply_windows_vibrancy(&_window);
     }
 
     // Show the window now rather than waiting for a ready-handshake from the
@@ -270,7 +274,10 @@ pub async fn activity_window_ready(app: AppHandle) -> Result<(), String> {
         .try_state::<SessionActivity>()
         .map(|s| s.snapshot())
         .unwrap_or_default();
-    log("activity", &format!("ready: snapshot len={}", entries.len()));
+    log(
+        "activity",
+        &format!("ready: snapshot len={}", entries.len()),
+    );
 
     app.emit_to(ACTIVITY_WINDOW_LABEL, "activity:list", entries)
         .map_err(|e| e.to_string())?;
@@ -359,7 +366,10 @@ mod tests {
         assert_eq!(snap.len(), MAX_ENTRIES);
         // Oldest dropped: first retained entry is f50.md (at=50).
         assert_eq!(snap.first().unwrap().at, 50);
-        assert_eq!(snap.last().unwrap().path, format!("f{}.md", MAX_ENTRIES + 49));
+        assert_eq!(
+            snap.last().unwrap().path,
+            format!("f{}.md", MAX_ENTRIES + 49)
+        );
     }
 
     fn down(company: &str, path: &str, author: Option<&str>) -> ActivityEntry {
@@ -374,7 +384,10 @@ mod tests {
         }
     }
 
-    fn new_files(company: &str, files: &[(&str, Option<&str>)]) -> crate::events::SyncNewFilesEvent {
+    fn new_files(
+        company: &str,
+        files: &[(&str, Option<&str>)],
+    ) -> crate::events::SyncNewFilesEvent {
         crate::events::SyncNewFilesEvent {
             company: company.to_string(),
             files: files
@@ -391,11 +404,17 @@ mod tests {
     #[test]
     fn new_files_marks_added_and_backfills_author() {
         let mut log = vec![
-            down("indigo", "a.md", None),               // named new, no author yet
-            down("indigo", "b.md", Some("x@e.com")),    // named new, already attributed
-            down("indigo", "c.md", None),               // NOT named -> stays an update
+            down("indigo", "a.md", None),            // named new, no author yet
+            down("indigo", "b.md", Some("x@e.com")), // named new, already attributed
+            down("indigo", "c.md", None),            // NOT named -> stays an update
         ];
-        apply_new_files(&mut log, &new_files("indigo", &[("a.md", Some("tom@e.com")), ("b.md", Some("y@e.com"))]));
+        apply_new_files(
+            &mut log,
+            &new_files(
+                "indigo",
+                &[("a.md", Some("tom@e.com")), ("b.md", Some("y@e.com"))],
+            ),
+        );
 
         // a.md: flagged new + author back-filled from addedBy
         assert_eq!(log[0].is_new, Some(true));
@@ -411,11 +430,17 @@ mod tests {
     #[test]
     fn new_files_only_matches_same_company_and_downloads() {
         let mut log = vec![
-            ActivityEntry { direction: "up".to_string(), ..down("indigo", "a.md", None) }, // upload — skip
-            down("acme", "a.md", None),  // other company — skip
-            down("indigo", "a.md", None),// the real match
+            ActivityEntry {
+                direction: "up".to_string(),
+                ..down("indigo", "a.md", None)
+            }, // upload — skip
+            down("acme", "a.md", None),   // other company — skip
+            down("indigo", "a.md", None), // the real match
         ];
-        apply_new_files(&mut log, &new_files("indigo", &[("a.md", Some("tom@e.com"))]));
+        apply_new_files(
+            &mut log,
+            &new_files("indigo", &[("a.md", Some("tom@e.com"))]),
+        );
 
         assert_eq!(log[0].is_new, None, "uploads are never marked new");
         assert_eq!(log[1].is_new, None, "other-company rows are not matched");

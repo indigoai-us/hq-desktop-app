@@ -73,9 +73,13 @@ async fn post_json<T: serde::de::DeserializeOwned>(
             .await
             .ok()
             .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_string));
-        log(LOG_TAG, &format!("{code}_ERROR status={status} msg={server_msg:?}"));
-        return Err(server_msg
-            .unwrap_or_else(|| format!("Request failed (status {})", status.as_u16())));
+        log(
+            LOG_TAG,
+            &format!("{code}_ERROR status={status} msg={server_msg:?}"),
+        );
+        return Err(
+            server_msg.unwrap_or_else(|| format!("Request failed (status {})", status.as_u16()))
+        );
     }
 
     parse_body::<T>(resp, code).await
@@ -245,9 +249,13 @@ async fn get_json<T: serde::de::DeserializeOwned>(
             .await
             .ok()
             .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_string));
-        log(LOG_TAG, &format!("{code}_ERROR status={status} msg={server_msg:?}"));
-        return Err(server_msg
-            .unwrap_or_else(|| format!("Request failed (status {})", status.as_u16())));
+        log(
+            LOG_TAG,
+            &format!("{code}_ERROR status={status} msg={server_msg:?}"),
+        );
+        return Err(
+            server_msg.unwrap_or_else(|| format!("Request failed (status {})", status.as_u16()))
+        );
     }
 
     parse_body::<T>(resp, code).await
@@ -283,9 +291,13 @@ async fn get_json_allow_404<T: serde::de::DeserializeOwned + Default>(
             .await
             .ok()
             .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_string));
-        log(LOG_TAG, &format!("{code}_ERROR status={status} msg={server_msg:?}"));
-        return Err(server_msg
-            .unwrap_or_else(|| format!("Request failed (status {})", status.as_u16())));
+        log(
+            LOG_TAG,
+            &format!("{code}_ERROR status={status} msg={server_msg:?}"),
+        );
+        return Err(
+            server_msg.unwrap_or_else(|| format!("Request failed (status {})", status.as_u16()))
+        );
     }
 
     parse_body::<T>(resp, code).await
@@ -320,7 +332,10 @@ pub async fn list_contacts() -> Result<ContactsResponse, String> {
     let (base, token) = auth_and_base("MESSAGES_CONTACTS").await?;
     let url = format!("{base}/v1/notify/contacts");
     let out: ContactsResponse = get_json(&url, &token, "MESSAGES_CONTACTS").await?;
-    log(LOG_TAG, &format!("MESSAGES_CONTACTS_OK count={}", out.contacts.len()));
+    log(
+        LOG_TAG,
+        &format!("MESSAGES_CONTACTS_OK count={}", out.contacts.len()),
+    );
     Ok(out)
 }
 
@@ -338,7 +353,10 @@ pub async fn list_company_members(company_uid: String) -> Result<ContactsRespons
     let out: ContactsResponse = get_json(&url, &token, "MESSAGES_MEMBERS").await?;
     log(
         LOG_TAG,
-        &format!("MESSAGES_MEMBERS_OK company={target} count={}", out.contacts.len()),
+        &format!(
+            "MESSAGES_MEMBERS_OK company={target} count={}",
+            out.contacts.len()
+        ),
     );
     Ok(out)
 }
@@ -532,7 +550,10 @@ pub async fn list_channels() -> Result<ChannelsResponse, String> {
     let (base, token) = auth_and_base("MESSAGES_CHANNELS").await?;
     let url = format!("{base}/v1/notify/channels");
     let out: ChannelsResponse = get_json(&url, &token, "MESSAGES_CHANNELS").await?;
-    log(LOG_TAG, &format!("MESSAGES_CHANNELS_OK count={}", out.channels.len()));
+    log(
+        LOG_TAG,
+        &format!("MESSAGES_CHANNELS_OK count={}", out.channels.len()),
+    );
     Ok(out)
 }
 
@@ -563,7 +584,10 @@ pub async fn fetch_channel(
     let out: ChannelDetail = get_json(&url, &token, "MESSAGES_CHANNEL_FETCH").await?;
     log(
         LOG_TAG,
-        &format!("MESSAGES_CHANNEL_FETCH_OK id={id} msgs={}", out.messages.len()),
+        &format!(
+            "MESSAGES_CHANNEL_FETCH_OK id={id} msgs={}",
+            out.messages.len()
+        ),
     );
     Ok(out)
 }
@@ -579,16 +603,28 @@ fn build_create_payload(
     invite: &[String],
 ) -> serde_json::Value {
     let mut obj = serde_json::Map::new();
-    obj.insert("name".to_string(), serde_json::Value::String(name.to_string()));
-    obj.insert("scope".to_string(), serde_json::Value::String(scope.to_string()));
+    obj.insert(
+        "name".to_string(),
+        serde_json::Value::String(name.to_string()),
+    );
+    obj.insert(
+        "scope".to_string(),
+        serde_json::Value::String(scope.to_string()),
+    );
     if let Some(uid) = company_uid.map(str::trim).filter(|s| !s.is_empty()) {
-        obj.insert("companyUid".to_string(), serde_json::Value::String(uid.to_string()));
+        obj.insert(
+            "companyUid".to_string(),
+            serde_json::Value::String(uid.to_string()),
+        );
     }
     if !invite.is_empty() {
         obj.insert(
             "invite".to_string(),
             serde_json::Value::Array(
-                invite.iter().map(|u| serde_json::Value::String(u.clone())).collect(),
+                invite
+                    .iter()
+                    .map(|u| serde_json::Value::String(u.clone()))
+                    .collect(),
             ),
         );
     }
@@ -613,7 +649,10 @@ pub async fn create_channel(
     if scope_norm != "personal" && scope_norm != "company" {
         return Err("Channel scope must be 'personal' or 'company'".to_string());
     }
-    let company = company_uid.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let company = company_uid
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
     if scope_norm == "company" && company.is_none() {
         return Err("A company channel requires a companyUid".to_string());
     }
@@ -627,13 +666,17 @@ pub async fn create_channel(
     // though the channel WAS created — so the user saw an error, retried, and hit
     // a 409 "name already taken". Decode the envelope (reuse `ChannelDetail`,
     // whose `channel` is optional and other fields default) and unwrap it.
-    let detail: ChannelDetail = post_json(&url, &token, &payload, "MESSAGES_CHANNEL_CREATE").await?;
+    let detail: ChannelDetail =
+        post_json(&url, &token, &payload, "MESSAGES_CHANNEL_CREATE").await?;
     let out = detail
         .channel
         .ok_or_else(|| "Create response missing channel object".to_string())?;
     log(
         LOG_TAG,
-        &format!("MESSAGES_CHANNEL_CREATE_OK id={} scope={scope_norm}", out.channel_id),
+        &format!(
+            "MESSAGES_CHANNEL_CREATE_OK id={} scope={scope_norm}",
+            out.channel_id
+        ),
     );
     Ok(out)
 }
@@ -642,11 +685,17 @@ pub async fn create_channel(
 /// `{ scope: "group", participants: [...] }` (no name). Pure → unit-testable.
 fn build_group_payload(participants: &[String]) -> serde_json::Value {
     let mut obj = serde_json::Map::new();
-    obj.insert("scope".to_string(), serde_json::Value::String("group".to_string()));
+    obj.insert(
+        "scope".to_string(),
+        serde_json::Value::String("group".to_string()),
+    );
     obj.insert(
         "participants".to_string(),
         serde_json::Value::Array(
-            participants.iter().map(|p| serde_json::Value::String(p.clone())).collect(),
+            participants
+                .iter()
+                .map(|p| serde_json::Value::String(p.clone()))
+                .collect(),
         ),
     );
     serde_json::Value::Object(obj)
@@ -678,7 +727,11 @@ pub async fn create_group_dm(participants: Vec<String>) -> Result<Channel, Strin
         .ok_or_else(|| "Group create response missing channel object".to_string())?;
     log(
         LOG_TAG,
-        &format!("MESSAGES_GROUP_CREATE_OK id={} members={}", out.channel_id, cleaned.len()),
+        &format!(
+            "MESSAGES_GROUP_CREATE_OK id={} members={}",
+            out.channel_id,
+            cleaned.len()
+        ),
     );
     Ok(out)
 }
@@ -751,7 +804,10 @@ pub async fn invite_to_channel(
     let out = latest.ok_or_else(|| "At least one person is required".to_string())?;
     log(
         LOG_TAG,
-        &format!("MESSAGES_CHANNEL_INVITE_OK id={id} members={}", out.members.len()),
+        &format!(
+            "MESSAGES_CHANNEL_INVITE_OK id={id} members={}",
+            out.members.len()
+        ),
     );
     Ok(out)
 }
@@ -772,8 +828,7 @@ pub async fn send_channel_message(channel_id: String, body: String) -> Result<()
     let (base, token) = auth_and_base("MESSAGES_CHANNEL_SEND").await?;
     let url = format!("{base}/v1/notify/channels/{}/messages", esc_seg(id));
     let payload = serde_json::json!({ "body": text });
-    let _: serde_json::Value =
-        post_json(&url, &token, &payload, "MESSAGES_CHANNEL_SEND").await?;
+    let _: serde_json::Value = post_json(&url, &token, &payload, "MESSAGES_CHANNEL_SEND").await?;
     log(LOG_TAG, &format!("MESSAGES_CHANNEL_SEND_OK id={id}"));
     Ok(())
 }
@@ -795,7 +850,10 @@ pub async fn list_channel_members(channel_id: String) -> Result<ChannelMembersRe
         get_json_allow_404(&url, &token, "MESSAGES_CHANNEL_MEMBERS").await?;
     log(
         LOG_TAG,
-        &format!("MESSAGES_CHANNEL_MEMBERS_OK id={id} count={}", out.members.len()),
+        &format!(
+            "MESSAGES_CHANNEL_MEMBERS_OK id={id} count={}",
+            out.members.len()
+        ),
     );
     Ok(out)
 }
@@ -825,7 +883,10 @@ pub async fn remove_channel_member(
         .send()
         .await
         .map_err(|e| {
-            log(LOG_TAG, &format!("MESSAGES_CHANNEL_REMOVE_NETWORK_FAIL {e}"));
+            log(
+                LOG_TAG,
+                &format!("MESSAGES_CHANNEL_REMOVE_NETWORK_FAIL {e}"),
+            );
             format!("Network error: {e}")
         })?;
     let status = resp.status();
@@ -839,16 +900,22 @@ pub async fn remove_channel_member(
             LOG_TAG,
             &format!("MESSAGES_CHANNEL_REMOVE_ERROR status={status} msg={server_msg:?}"),
         );
-        return Err(server_msg
-            .unwrap_or_else(|| format!("Remove failed (status {})", status.as_u16())));
+        return Err(
+            server_msg.unwrap_or_else(|| format!("Remove failed (status {})", status.as_u16()))
+        );
     }
     // The server returns the updated member list; tolerate an empty 204 by
     // re-listing only if the body didn't parse.
-    let out: ChannelMembersResponse = resp
-        .json::<ChannelMembersResponse>()
-        .await
-        .unwrap_or(ChannelMembersResponse { members: Vec::new() });
-    log(LOG_TAG, &format!("MESSAGES_CHANNEL_REMOVE_OK id={id} uid={uid}"));
+    let out: ChannelMembersResponse =
+        resp.json::<ChannelMembersResponse>()
+            .await
+            .unwrap_or(ChannelMembersResponse {
+                members: Vec::new(),
+            });
+    log(
+        LOG_TAG,
+        &format!("MESSAGES_CHANNEL_REMOVE_OK id={id} uid={uid}"),
+    );
     Ok(out)
 }
 
@@ -864,8 +931,7 @@ pub async fn mark_channel_read(channel_id: String) -> Result<(), String> {
     let (base, token) = auth_and_base("MESSAGES_CHANNEL_READ").await?;
     let url = format!("{base}/v1/notify/channels/{}/read", esc_seg(id));
     let payload = serde_json::json!({});
-    let _: serde_json::Value =
-        post_json(&url, &token, &payload, "MESSAGES_CHANNEL_READ").await?;
+    let _: serde_json::Value = post_json(&url, &token, &payload, "MESSAGES_CHANNEL_READ").await?;
     log(LOG_TAG, &format!("MESSAGES_CHANNEL_READ_OK id={id}"));
     Ok(())
 }
@@ -985,8 +1051,9 @@ pub async fn toggle_reaction(
             LOG_TAG,
             &format!("MESSAGES_REACTION_ERROR status={status} add={add} msg={server_msg:?}"),
         );
-        return Err(server_msg
-            .unwrap_or_else(|| format!("Reaction failed (status {})", status.as_u16())));
+        return Err(
+            server_msg.unwrap_or_else(|| format!("Reaction failed (status {})", status.as_u16()))
+        );
     }
 
     log(
@@ -1019,7 +1086,10 @@ pub async fn fetch_reactions(
     let out: MessageReactions = get_json(&url, &token, "MESSAGES_REACTIONS_GET").await?;
     log(
         LOG_TAG,
-        &format!("MESSAGES_REACTIONS_GET_OK scope={scope} id={id} count={}", out.reactions.len()),
+        &format!(
+            "MESSAGES_REACTIONS_GET_OK scope={scope} id={id} count={}",
+            out.reactions.len()
+        ),
     );
     Ok(out.reactions)
 }
@@ -1160,8 +1230,7 @@ mod tests {
             { "personUid": "prs_o", "email": "o@x.com", "displayName": "Owner", "role": "owner" },
             { "personUid": "prs_m", "email": "m@x.com", "displayName": "Member", "role": "member" }
         ] }"#;
-        let m: ChannelMembersResponse =
-            serde_json::from_str(members_json).expect("members parse");
+        let m: ChannelMembersResponse = serde_json::from_str(members_json).expect("members parse");
         assert_eq!(m.members.len(), 2);
         assert_eq!(m.members[0].role, "owner");
 
@@ -1185,7 +1254,8 @@ mod tests {
         // `.channel`. A bare `Channel` decode here was the original bug (the
         // server's `channelId` lives one level down), surfacing as
         // "missing field channelId" even though the channel was created.
-        let json = r#"{ "channel": { "channelId": "chn_1", "name": "general", "scope": "company" } }"#;
+        let json =
+            r#"{ "channel": { "channelId": "chn_1", "name": "general", "scope": "company" } }"#;
         let detail: ChannelDetail = serde_json::from_str(json).expect("envelope parses");
         let channel = detail.channel.expect("channel present in create envelope");
         assert_eq!(channel.channel_id, "chn_1");
@@ -1251,8 +1321,14 @@ mod tests {
         assert_eq!(payload["toPersonUid"], "prs_abc");
         let obj = payload.as_object().expect("object");
         assert_eq!(obj.len(), 1, "exactly one key — no toEmail, no batch array");
-        assert!(!obj.contains_key("personUids"), "the stale batch key must be gone");
-        assert!(!obj.contains_key("toEmail"), "must not send both identity keys");
+        assert!(
+            !obj.contains_key("personUids"),
+            "the stale batch key must be gone"
+        );
+        assert!(
+            !obj.contains_key("toEmail"),
+            "must not send both identity keys"
+        );
     }
 
     #[test]

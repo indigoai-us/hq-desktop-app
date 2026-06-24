@@ -237,8 +237,7 @@ pub fn ensure_machine_id() -> Result<String, String> {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     let tmp = path.with_extension("json.tmp");
-    let body = serde_json::to_string_pretty(&Value::Object(obj))
-        .map_err(|e| e.to_string())?;
+    let body = serde_json::to_string_pretty(&Value::Object(obj)).map_err(|e| e.to_string())?;
     let mut f = fs::File::create(&tmp).map_err(|e| e.to_string())?;
     f.write_all(body.as_bytes()).map_err(|e| e.to_string())?;
     f.sync_all().ok();
@@ -350,10 +349,11 @@ pub fn migrate_legacy_config_stub() {
         return;
     }
 
-    if let Err(e) =
-        write_deploy_prefs(lifted_default_org.as_deref(), lifted_pref.as_deref())
-    {
-        log("config-migration", &format!("write deploy-prefs failed: {e}"));
+    if let Err(e) = write_deploy_prefs(lifted_default_org.as_deref(), lifted_pref.as_deref()) {
+        log(
+            "config-migration",
+            &format!("write deploy-prefs failed: {e}"),
+        );
         // Don't strip from config.json if we couldn't persist forward —
         // leave the file as-is so /deploy's own backwards-compat read
         // still finds the slug.
@@ -456,10 +456,7 @@ fn reconstruct_personal_hq_config() -> Option<HqConfig> {
     let hq_folder_path = std::fs::read_to_string(&menubar_path)
         .ok()
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-        .and_then(|v| {
-            v.get("hqPath")
-                .and_then(|p| p.as_str().map(str::to_string))
-        });
+        .and_then(|v| v.get("hqPath").and_then(|p| p.as_str().map(str::to_string)));
 
     Some(HqConfig {
         company_uid: person_uid.clone(),
@@ -852,11 +849,7 @@ mod ensure_machine_id_tests {
         let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = fixture();
         std::env::set_var("HOME", tmp.path());
-        fs::write(
-            tmp.path().join(".hq/menubar.json"),
-            r#"{"hqPath":"/foo"}"#,
-        )
-        .unwrap();
+        fs::write(tmp.path().join(".hq/menubar.json"), r#"{"hqPath":"/foo"}"#).unwrap();
         let id = ensure_machine_id().unwrap();
         assert!(uuid::Uuid::parse_str(&id).is_ok());
         let v = read_menubar_value(tmp.path());
@@ -954,7 +947,8 @@ mod lenient_reader_and_migration_tests {
             "bucketName": "bkt",
             "vaultApiUrl": "https://example.invalid",
             "hqFolderPath": "/tmp/HQ"
-        })).unwrap()
+        }))
+        .unwrap()
     }
 
     // (a) lenient reader: file missing → Ok(None), never Err.
@@ -987,10 +981,7 @@ mod lenient_reader_and_migration_tests {
         let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = fresh_home();
         std::env::set_var("HOME", tmp.path());
-        write(
-            tmp.path().join(".hq/config.json"),
-            "not even json {{{",
-        );
+        write(tmp.path().join(".hq/config.json"), "not even json {{{");
         let got = read_hq_config_lenient().unwrap();
         assert!(got.is_none());
     }
@@ -1132,7 +1123,10 @@ mod lenient_reader_and_migration_tests {
         migrate_legacy_config_stub();
 
         let after = fs::read_to_string(tmp.path().join(".hq/config.json")).unwrap();
-        assert_eq!(after, foreign, "foreign config.json must NOT be overwritten when no deploy keys are present");
+        assert_eq!(
+            after, foreign,
+            "foreign config.json must NOT be overwritten when no deploy keys are present"
+        );
         assert!(
             !tmp.path().join(".hq/deploy-prefs.json").exists(),
             "deploy-prefs.json must NOT be created from a non-stub file"
@@ -1190,7 +1184,10 @@ mod record_sync_version_tests {
         assert_eq!(v["version"], Value::String("0.8.22-beta.1".into()));
         // updatedAt is an RFC3339 instant (date + 'T' + time).
         let updated = v["updatedAt"].as_str().expect("updatedAt is a string");
-        assert!(updated.contains('T'), "updatedAt should be RFC3339: {updated}");
+        assert!(
+            updated.contains('T'),
+            "updatedAt should be RFC3339: {updated}"
+        );
     }
 
     // The marker is fully overwritten on each launch (idempotent record).

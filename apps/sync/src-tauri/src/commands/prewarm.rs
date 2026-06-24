@@ -72,14 +72,7 @@ pub fn spawn_prewarm() {
         // than a bin from hq-cloud — keeps us immune to future runner
         // argv changes; exits 0 so the success log is always clean.
         let result = Command::new(&npx)
-            .args([
-                "-y",
-                &package_spec,
-                "--",
-                "node",
-                "-e",
-                "process.exit(0)",
-            ])
+            .args(["-y", &package_spec, "--", "node", "-e", "process.exit(0)"])
             .env("PATH", &path)
             .stdout(Stdio::null())
             .stderr(Stdio::null())

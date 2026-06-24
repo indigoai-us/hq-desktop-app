@@ -469,7 +469,14 @@ mod tests {
         root
     }
 
-    fn audit_line(event: &str, ts: &str, company: &str, project: &str, story: &str, action: &str) -> String {
+    fn audit_line(
+        event: &str,
+        ts: &str,
+        company: &str,
+        project: &str,
+        story: &str,
+        action: &str,
+    ) -> String {
         format!(
             r#"{{"timestamp":"{ts}","event":"{event}","company":"{company}","project":"{project}","story_id":"{story}","action":"{action}"}}"#
         )
@@ -553,7 +560,11 @@ mod tests {
 
         // 3 audit events (dispatch/complete/fail) + 2 threads (checkpoint/handoff)
         // = 5. The phase/pipeline noise and the rule thread are excluded.
-        assert_eq!(events.len(), 5, "only session-level events surface: {events:#?}");
+        assert_eq!(
+            events.len(),
+            5,
+            "only session-level events surface: {events:#?}"
+        );
 
         // Newest-first ordering: handoff (12:00) is first, pipeline noise absent.
         assert_eq!(events[0].kind, HistoryEventKind::Handoff);
@@ -561,8 +572,9 @@ mod tests {
 
         // No orchestration-noise events leaked in.
         assert!(
-            events.iter().all(|e| !e.title.contains("Phase 1")
-                && !e.title.contains("Pipeline started")),
+            events
+                .iter()
+                .all(|e| !e.title.contains("Phase 1") && !e.title.contains("Pipeline started")),
             "phase/pipeline events must be excluded"
         );
 
@@ -612,7 +624,11 @@ mod tests {
         let ws = make_workspace();
         // story_dispatched with an empty action → title synthesised from story id.
         let line = r#"{"timestamp":"2026-06-15T10:00:00Z","event":"story_dispatched","story_id":"US-007","project":"mc"}"#;
-        fs::write(ws.join("metrics").join("audit-log.jsonl"), format!("{line}\n")).unwrap();
+        fs::write(
+            ws.join("metrics").join("audit-log.jsonl"),
+            format!("{line}\n"),
+        )
+        .unwrap();
 
         let events = derive_history(&ws);
         assert_eq!(events.len(), 1);
@@ -641,7 +657,9 @@ mod tests {
         assert!(titles.contains(&"old-style summary"));
         assert!(titles.contains(&"Auto: recency"));
         // Both are checkpoint-kind.
-        assert!(events.iter().all(|e| e.kind == HistoryEventKind::Checkpoint));
+        assert!(events
+            .iter()
+            .all(|e| e.kind == HistoryEventKind::Checkpoint));
     }
 
     #[test]

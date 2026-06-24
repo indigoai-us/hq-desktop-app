@@ -111,8 +111,7 @@ pub(crate) fn merge_menubar_flags(path: &Path, updates: &[(&str, Value)]) -> Res
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     let tmp = path.with_extension("json.tmp");
-    let body =
-        serde_json::to_string_pretty(&Value::Object(obj)).map_err(|e| e.to_string())?;
+    let body = serde_json::to_string_pretty(&Value::Object(obj)).map_err(|e| e.to_string())?;
     let mut f = fs::File::create(&tmp).map_err(|e| e.to_string())?;
     f.write_all(body.as_bytes()).map_err(|e| e.to_string())?;
     f.sync_all().ok();
@@ -235,8 +234,12 @@ mod tests {
     #[test]
     fn notice_shown_reads_flag() {
         assert!(!notice_shown_in_map(&Map::new()));
-        assert!(notice_shown_in_map(&map(json!({ "autoSyncNoticeShown": true }))));
-        assert!(!notice_shown_in_map(&map(json!({ "autoSyncNoticeShown": false }))));
+        assert!(notice_shown_in_map(&map(
+            json!({ "autoSyncNoticeShown": true })
+        )));
+        assert!(!notice_shown_in_map(&map(
+            json!({ "autoSyncNoticeShown": false })
+        )));
     }
 
     #[test]
@@ -244,11 +247,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("menubar.json");
         // Seed with a machineId + an unrelated future key.
-        fs::write(
-            &path,
-            r#"{"machineId":"keep-me","futureKey":{"nested":1}}"#,
-        )
-        .unwrap();
+        fs::write(&path, r#"{"machineId":"keep-me","futureKey":{"nested":1}}"#).unwrap();
 
         merge_menubar_flags(
             &path,
@@ -293,6 +292,9 @@ mod tests {
             ],
         )
         .unwrap();
-        assert_eq!(classify_from_map(&read_menubar_obj(&path)), LaunchKind::Normal);
+        assert_eq!(
+            classify_from_map(&read_menubar_obj(&path)),
+            LaunchKind::Normal
+        );
     }
 }

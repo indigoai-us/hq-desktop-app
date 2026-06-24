@@ -62,20 +62,6 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ],
-    "resources": {
-      "../sidecar/recall-sdk-bridge/bridge.mjs": "recall-sdk-bridge/bridge.mjs",
-      "../sidecar/recall-sdk-bridge/recording-tracker.mjs": "recall-sdk-bridge/recording-tracker.mjs",
-      "../sidecar/recall-sdk-bridge/package.json": "recall-sdk-bridge/package.json",
-      "../sidecar/recall-sdk-bridge/node_modules": "recall-sdk-bridge/node_modules",
-      "helper/hq-tray-helper": "hq-tray-helper"
-    },
-    "macOS": {
-      "minimumSystemVersion": "13.0",
-      "infoPlist": "Info.plist"
-    },
-    "externalBin": [
-      "binaries/recall-desktop-sdk"
     ]
   }
 }

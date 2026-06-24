@@ -316,7 +316,12 @@ mod tests {
         let t0 = ts("2026-05-20T10:00:00Z");
         let t1 = ts("2026-05-20T10:10:00Z"); // +10 min
         let mut ledger = NotifyLedger::new();
-        mark(&mut ledger, "https://zoom.us/j/1".to_string(), LedgerAction::Notified, t0);
+        mark(
+            &mut ledger,
+            "https://zoom.us/j/1".to_string(),
+            LedgerAction::Notified,
+            t0,
+        );
         assert!(should_suppress(&ledger, "https://zoom.us/j/1", t1));
     }
 
@@ -325,7 +330,12 @@ mod tests {
         let t0 = ts("2026-05-20T10:00:00Z");
         let t1 = ts("2026-05-20T16:00:00Z"); // +6 h exactly — NOT suppressed
         let mut ledger = NotifyLedger::new();
-        mark(&mut ledger, "https://zoom.us/j/2".to_string(), LedgerAction::Notified, t0);
+        mark(
+            &mut ledger,
+            "https://zoom.us/j/2".to_string(),
+            LedgerAction::Notified,
+            t0,
+        );
         assert!(!should_suppress(&ledger, "https://zoom.us/j/2", t1));
     }
 
@@ -345,7 +355,12 @@ mod tests {
         let t0 = ts("2026-05-20T10:00:00Z");
         let t1 = ts("2026-05-20T22:30:00Z"); // same day, later
         let mut ledger = NotifyLedger::new();
-        mark(&mut ledger, "url_d".to_string(), LedgerAction::Dismissed, t0);
+        mark(
+            &mut ledger,
+            "url_d".to_string(),
+            LedgerAction::Dismissed,
+            t0,
+        );
         assert!(should_suppress(&ledger, "url_d", t1));
     }
 
@@ -354,7 +369,12 @@ mod tests {
         let t0 = ts("2026-05-20T10:00:00Z");
         let t1 = ts("2026-05-21T00:01:00Z"); // next UTC day
         let mut ledger = NotifyLedger::new();
-        mark(&mut ledger, "url_e".to_string(), LedgerAction::Dismissed, t0);
+        mark(
+            &mut ledger,
+            "url_e".to_string(),
+            LedgerAction::Dismissed,
+            t0,
+        );
         assert!(!should_suppress(&ledger, "url_e", t1));
     }
 
@@ -363,7 +383,11 @@ mod tests {
     #[test]
     fn unknown_key_not_suppressed() {
         let ledger = NotifyLedger::new();
-        assert!(!should_suppress(&ledger, "no-such-url", ts("2026-05-20T10:00:00Z")));
+        assert!(!should_suppress(
+            &ledger,
+            "no-such-url",
+            ts("2026-05-20T10:00:00Z")
+        ));
     }
 
     // ── prune ───────────────────────────────────────────────────────────────
@@ -374,8 +398,18 @@ mod tests {
         let old_ts = ts("2026-05-05T12:00:00Z"); // 15 days ago — should be pruned
         let recent_ts = ts("2026-05-15T12:00:00Z"); // 5 days ago — kept
         let mut ledger = NotifyLedger::new();
-        mark(&mut ledger, "old".to_string(), LedgerAction::Notified, old_ts);
-        mark(&mut ledger, "recent".to_string(), LedgerAction::Notified, recent_ts);
+        mark(
+            &mut ledger,
+            "old".to_string(),
+            LedgerAction::Notified,
+            old_ts,
+        );
+        mark(
+            &mut ledger,
+            "recent".to_string(),
+            LedgerAction::Notified,
+            recent_ts,
+        );
         prune(&mut ledger, now);
         assert!(!ledger.contains_key("old"), "old entry should be pruned");
         assert!(ledger.contains_key("recent"), "recent entry should remain");
@@ -386,10 +420,18 @@ mod tests {
         let now = ts("2026-05-20T12:00:00Z");
         let boundary = ts("2026-05-06T12:00:00Z"); // exactly 14 days ago
         let mut ledger = NotifyLedger::new();
-        mark(&mut ledger, "boundary".to_string(), LedgerAction::Notified, boundary);
+        mark(
+            &mut ledger,
+            "boundary".to_string(),
+            LedgerAction::Notified,
+            boundary,
+        );
         prune(&mut ledger, now);
         // boundary is exactly 14 days — `> cutoff` is false (equal), so pruned
-        assert!(!ledger.contains_key("boundary"), "entry at exactly 14d cutoff should be pruned");
+        assert!(
+            !ledger.contains_key("boundary"),
+            "entry at exactly 14d cutoff should be pruned"
+        );
     }
 
     #[test]
@@ -415,8 +457,18 @@ mod tests {
 
         let now = ts("2026-05-20T10:00:00Z");
         let mut ledger = NotifyLedger::new();
-        mark(&mut ledger, "https://zoom.us/j/abc".to_string(), LedgerAction::Notified, now);
-        mark(&mut ledger, "https://meet.google.com/xyz".to_string(), LedgerAction::Dismissed, now);
+        mark(
+            &mut ledger,
+            "https://zoom.us/j/abc".to_string(),
+            LedgerAction::Notified,
+            now,
+        );
+        mark(
+            &mut ledger,
+            "https://meet.google.com/xyz".to_string(),
+            LedgerAction::Dismissed,
+            now,
+        );
 
         write_ledger(&ledger).unwrap();
         let loaded = read_ledger().unwrap();
@@ -506,7 +558,10 @@ mod tests {
         let t1 = ts("2026-05-20T10:30:00Z"); // +30 min, within 6 h
 
         assert!(claim_notify(key, t0), "first claim should win");
-        assert!(!claim_notify(key, t1), "second claim within 6h should be suppressed");
+        assert!(
+            !claim_notify(key, t1),
+            "second claim within 6h should be suppressed"
+        );
         assert_eq!(read_ledger().unwrap().len(), 1);
 
         clear_override();
@@ -525,7 +580,10 @@ mod tests {
         let t1 = ts("2026-05-20T16:00:01Z"); // just past +6 h
 
         assert!(claim_notify(key, t0));
-        assert!(claim_notify(key, t1), "claim past the 6h window should win again");
+        assert!(
+            claim_notify(key, t1),
+            "claim past the 6h window should win again"
+        );
 
         clear_override();
     }
@@ -554,7 +612,10 @@ mod tests {
             "a detection after the user recorded should be suppressed"
         );
         // The claim must NOT have downgraded the Recorded entry to Notified.
-        assert_eq!(read_ledger().unwrap().get(key).unwrap().action, LedgerAction::Recorded);
+        assert_eq!(
+            read_ledger().unwrap().get(key).unwrap().action,
+            LedgerAction::Recorded
+        );
 
         clear_override();
     }
@@ -571,10 +632,16 @@ mod tests {
         let t0 = ts("2026-05-20T10:00:00Z");
 
         assert!(claim_notify(key, t0));
-        assert_eq!(read_ledger().unwrap().get(key).unwrap().action, LedgerAction::Notified);
+        assert_eq!(
+            read_ledger().unwrap().get(key).unwrap().action,
+            LedgerAction::Notified
+        );
 
         record_action(key, LedgerAction::Recorded, t0);
-        assert_eq!(read_ledger().unwrap().get(key).unwrap().action, LedgerAction::Recorded);
+        assert_eq!(
+            read_ledger().unwrap().get(key).unwrap().action,
+            LedgerAction::Recorded
+        );
 
         clear_override();
     }

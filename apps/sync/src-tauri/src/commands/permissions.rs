@@ -88,7 +88,10 @@ mod macos {
     ///   3 = Authorized
     /// Safe to call from any thread; takes no Rust-owned references.
     pub fn authorization_status_for_audio() -> i64 {
-        use objc2::{class, msg_send, runtime::{AnyClass, AnyObject}};
+        use objc2::{
+            class, msg_send,
+            runtime::{AnyClass, AnyObject},
+        };
         unsafe {
             let ns_string_cls: &AnyClass = class!(NSString);
             let audio_type: *mut AnyObject = msg_send![
@@ -304,23 +307,23 @@ pub fn permissions_force_native_register() -> Result<(bool, bool), String> {
 /// the top-level Privacy & Security pane.
 fn settings_url(permission: &str) -> Option<&'static str> {
     match permission {
-        "accessibility" => Some(
-            "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
-        ),
-        "screen-capture" => Some(
-            "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
-        ),
-        "microphone" => Some(
-            "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",
-        ),
+        "accessibility" => {
+            Some("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+        }
+        "screen-capture" => {
+            Some("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
+        }
+        "microphone" => {
+            Some("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
+        }
         // system-audio doesn't have its own pane on modern macOS — the user
         // grants it as part of Screen Recording. Send them there.
-        "system-audio" => Some(
-            "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
-        ),
-        "full-disk-access" => Some(
-            "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles",
-        ),
+        "system-audio" => {
+            Some("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
+        }
+        "full-disk-access" => {
+            Some("x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")
+        }
         _ => None,
     }
 }
@@ -525,25 +528,21 @@ pub async fn open_meeting_permissions_window(app: tauri::AppHandle) -> Result<()
     let icon = tauri::image::Image::from_bytes(HQ_ICON_PNG)
         .map_err(|e| format!("load window icon: {e}"))?;
 
-    tauri::WebviewWindowBuilder::new(
-        &app,
-        LABEL,
-        tauri::WebviewUrl::App("index.html".into()),
-    )
-    .title("Meeting Permissions")
-    // Sized so all four permission rows + footer fit without the inner
-    // scrollbar appearing (`.perm-list` overflow:auto). Width gives the
-    // `.perm-reason` text a 480px column so the SDK rationale doesn't wrap
-    // onto a third line per row, which made the wizard look cramped.
-    .inner_size(640.0, 700.0)
-    .min_inner_size(560.0, 600.0)
-    .resizable(true)
-    .decorations(true)
-    .icon(icon)
-    .map_err(|e| format!("attach window icon: {e}"))?
-    .visible(true)
-    .build()
-    .map_err(|e| e.to_string())?;
+    tauri::WebviewWindowBuilder::new(&app, LABEL, tauri::WebviewUrl::App("index.html".into()))
+        .title("Meeting Permissions")
+        // Sized so all four permission rows + footer fit without the inner
+        // scrollbar appearing (`.perm-list` overflow:auto). Width gives the
+        // `.perm-reason` text a 480px column so the SDK rationale doesn't wrap
+        // onto a third line per row, which made the wizard look cramped.
+        .inner_size(640.0, 700.0)
+        .min_inner_size(560.0, 600.0)
+        .resizable(true)
+        .decorations(true)
+        .icon(icon)
+        .map_err(|e| format!("attach window icon: {e}"))?
+        .visible(true)
+        .build()
+        .map_err(|e| e.to_string())?;
 
     Ok(())
 }
@@ -557,9 +556,8 @@ pub async fn open_meeting_permissions_window(app: tauri::AppHandle) -> Result<()
 /// the pane — the `open` command is fire-and-forget.
 #[tauri::command]
 pub fn permissions_open_settings(permission: String) -> Result<(), String> {
-    let url = settings_url(&permission).unwrap_or(
-        "x-apple.systempreferences:com.apple.preference.security?Privacy",
-    );
+    let url = settings_url(&permission)
+        .unwrap_or("x-apple.systempreferences:com.apple.preference.security?Privacy");
 
     log(
         LOG_TAG,
@@ -602,10 +600,7 @@ mod tests {
         // macOS Sequoia+ ties system-audio capture to the Screen Recording
         // permission — keep them in lock-step so the UI doesn't dead-end
         // the user on a non-existent pane.
-        assert_eq!(
-            settings_url("system-audio"),
-            settings_url("screen-capture"),
-        );
+        assert_eq!(settings_url("system-audio"), settings_url("screen-capture"),);
     }
 
     /// Regression: startup Accessibility registration MUST pass the

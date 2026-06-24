@@ -283,10 +283,18 @@ impl OutpostStore {
     fn view_from(st: &OutpostState, now: SystemTime) -> OutpostView {
         let fresh = st
             .last_heartbeat
-            .map(|t| now.duration_since(t).map(|d| d < HEARTBEAT_STALE_AFTER).unwrap_or(true))
+            .map(|t| {
+                now.duration_since(t)
+                    .map(|d| d < HEARTBEAT_STALE_AFTER)
+                    .unwrap_or(true)
+            })
             .unwrap_or(false);
 
-        let sessions = if fresh { st.sessions.clone() } else { Vec::new() };
+        let sessions = if fresh {
+            st.sessions.clone()
+        } else {
+            Vec::new()
+        };
 
         let last_seen_at = st
             .last_heartbeat
@@ -636,7 +644,11 @@ pub fn setup_outpost_mqtt_receiver(_app: AppHandle) {
                     if let Err(e) = run_once(&creds).await {
                         log(LOG_TAG, &format!("OUTPOST_MQTT_DISCONNECT {e}"));
                     }
-                    if started.elapsed().map(|d| d > Duration::from_secs(30)).unwrap_or(false) {
+                    if started
+                        .elapsed()
+                        .map(|d| d > Duration::from_secs(30))
+                        .unwrap_or(false)
+                    {
                         backoff = BACKOFF_MIN;
                     }
                 }
@@ -645,7 +657,10 @@ pub fn setup_outpost_mqtt_receiver(_app: AppHandle) {
 
             log(
                 LOG_TAG,
-                &format!("OUTPOST_MQTT_FALLBACK reconnect in {}s (S3 poll active)", backoff.as_secs()),
+                &format!(
+                    "OUTPOST_MQTT_FALLBACK reconnect in {}s (S3 poll active)",
+                    backoff.as_secs()
+                ),
             );
             tokio::time::sleep(backoff).await;
             backoff = (backoff * 2).min(BACKOFF_MAX);
@@ -831,7 +846,8 @@ mod tests {
 
     #[test]
     fn parse_heartbeat_accepts_bare_array_and_stamps_outpost() {
-        let payload = serde_json::to_vec(&vec![outpost_session("a"), outpost_session("b")]).unwrap();
+        let payload =
+            serde_json::to_vec(&vec![outpost_session("a"), outpost_session("b")]).unwrap();
         let sessions = parse_heartbeat(&payload).expect("bare array parses");
         assert_eq!(sessions.len(), 2);
         // Wire said local; the parser MUST force origin=outpost.
@@ -858,7 +874,10 @@ mod tests {
     fn sessions_topic_swaps_the_dm_leaf() {
         assert_eq!(sessions_topic_for("hq/prs_abc/dm"), "hq/prs_abc/sessions");
         // Any leaf under the same person prefix lands on /sessions.
-        assert_eq!(sessions_topic_for("hq/prs_abc/share"), "hq/prs_abc/sessions");
+        assert_eq!(
+            sessions_topic_for("hq/prs_abc/share"),
+            "hq/prs_abc/sessions"
+        );
     }
 
     // ── box-status derivation (up/down + relay) ─────────────────────────────
@@ -908,7 +927,10 @@ mod tests {
             codex_state: "awaiting-login".into(),
             ..Default::default()
         };
-        assert!(!derive_relay_connected(&codex_down), "codex relay not connected → disconnected");
+        assert!(
+            !derive_relay_connected(&codex_down),
+            "codex relay not connected → disconnected"
+        );
 
         // Claude box: relay == up.
         let claude_up = RawOutpostStatus {
@@ -976,11 +998,17 @@ mod tests {
         // Read PAST the stale window → sessions dropped, card flips to stale/down.
         let after = now + HEARTBEAT_STALE_AFTER + Duration::from_secs(1);
         let view = OutpostStore::current(after);
-        assert!(view.sessions.is_empty(), "stale heartbeat drops outpost sessions");
+        assert!(
+            view.sessions.is_empty(),
+            "stale heartbeat drops outpost sessions"
+        );
         let status = view.status.expect("card still present (last-seen)");
         assert!(status.stale, "card marked stale past the timeout");
         assert!(!status.up, "stale box reads down");
-        assert!(!status.relay_connected, "stale box relay reads disconnected");
+        assert!(
+            !status.relay_connected,
+            "stale box relay reads disconnected"
+        );
         // last-seen reflects the last heartbeat instant, not 'now'.
         assert!(!status.last_seen_at.is_empty());
         OutpostStore::reset();
@@ -992,7 +1020,10 @@ mod tests {
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(2_000_000_000);
         let view = OutpostStore::current(now);
         assert!(view.sessions.is_empty());
-        assert!(view.status.is_none(), "no heartbeat + no status → no outpost card");
+        assert!(
+            view.status.is_none(),
+            "no heartbeat + no status → no outpost card"
+        );
         OutpostStore::reset();
     }
 
@@ -1015,7 +1046,10 @@ mod tests {
         assert!(view.sessions.is_empty());
         let status = view.status.expect("status card present");
         // No heartbeat ever → stale (we have never seen a per-session beat).
-        assert!(status.stale, "a box with status but no heartbeat reads stale");
+        assert!(
+            status.stale,
+            "a box with status but no heartbeat reads stale"
+        );
         assert!(status.last_seen_at.is_empty());
         OutpostStore::reset();
     }
@@ -1037,8 +1071,14 @@ mod tests {
         assert!(url.starts_with("wss://abc123.iot.us-east-1.amazonaws.com/mqtt?"));
         let sig_at = url.find("X-Amz-Signature").unwrap();
         let tok_at = url.find("X-Amz-Security-Token").unwrap();
-        assert!(tok_at > sig_at, "token must be appended after the signature: {url}");
-        assert!(url.contains("FAKE%2FSESSION%2BTOKEN%3D"), "token must be AWS-encoded: {url}");
+        assert!(
+            tok_at > sig_at,
+            "token must be appended after the signature: {url}"
+        );
+        assert!(
+            url.contains("FAKE%2FSESSION%2BTOKEN%3D"),
+            "token must be AWS-encoded: {url}"
+        );
     }
 
     #[test]

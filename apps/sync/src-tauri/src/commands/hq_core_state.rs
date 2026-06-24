@@ -316,7 +316,11 @@ struct LocalSourceStamp {
 fn local_last_sync_sha(hq_folder: &std::path::Path, expected_source: &str) -> Option<String> {
     let canonical = hq_folder.join("core").join("core.yaml");
     let legacy = hq_folder.join("core.yaml");
-    let core_yaml = if canonical.is_file() { canonical } else { legacy };
+    let core_yaml = if canonical.is_file() {
+        canonical
+    } else {
+        legacy
+    };
 
     let bytes = std::fs::read(&core_yaml).ok()?;
     let parsed: LocalCoreYaml = serde_yaml::from_slice(&bytes).ok()?;
@@ -557,7 +561,10 @@ pub async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, String> {
                 let (sha_local, size_local) = &local[*path];
 
                 let classification_sha = match &floor_in_scope {
-                    Some(floor) => floor.get(*path).cloned().unwrap_or_else(|| sha_target.clone()),
+                    Some(floor) => floor
+                        .get(*path)
+                        .cloned()
+                        .unwrap_or_else(|| sha_target.clone()),
                     None => sha_target.clone(),
                 };
 
@@ -608,9 +615,7 @@ pub async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, String> {
                 //   * floor doesn't know this path → genuinely
                 //     locally-authored under a locked scope. USER-ONLY,
                 //     same as before.
-                let floor_sha_at_path = floor_in_scope
-                    .as_ref()
-                    .and_then(|f| f.get(*path));
+                let floor_sha_at_path = floor_in_scope.as_ref().and_then(|f| f.get(*path));
                 match floor_sha_at_path {
                     Some(fsha) if sha_local == fsha => {
                         unchanged_count += 1;
