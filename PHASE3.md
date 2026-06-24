@@ -1,9 +1,11 @@
 # Phase 3 — Fold the Windows sync fork into `apps/sync`
 
-Status: **in progress.** This document is the working checklist for making the
-(macOS-only, but 691 commits ahead) `apps/sync` base compile and run on Windows,
-using the older but cross-platform `imports/hq-sync-win` fork as the Windows
-reference. It complements the high-level plan in `MIGRATION.md`.
+Status: **core done — `cargo check --target x86_64-pc-windows-msvc` is GREEN** (the
+`Windows check (Phase 3)` CI job passes), and macOS stays green. The (macOS-only, but
+691 commits ahead) `apps/sync` base now compiles for Windows, with mac-only code gated
+behind `cfg` and the fork's Windows implementations ported. Remaining items below are
+follow-ups (stricter CI, frontend wiring, cleanup) — not blockers for the compile.
+This document complements the high-level plan in `MIGRATION.md`.
 
 ## Key finding that shapes the work
 
@@ -46,26 +48,35 @@ build green: `cd apps/sync/src-tauri && cargo check` (≈ 27s warm).
   Windows updater pubkey + `hq-sync-win` endpoint (preserved for in-place updates).
 - [x] `windows-check.yml` CI verification job.
 
-## Remaining: graft Windows code behind `cfg(windows)` (CI-verified)
+## Landed: compile graft (Windows check GREEN) — `cfg`-gated, CI-verified
 
-For each file, take the fork's `cfg(windows)` implementation, integrate it into the
-mac base's newer structure, and gate the existing mac code as `cfg(target_os = "macos")`
-(or `cfg(unix)`) so Windows excludes it.
+These files raised the 40 Windows compile errors and were gated/ported (fork as reference):
 
-- [ ] **`commands/process.rs`** — Windows Job Object + ToolHelp process-tree spawn/cancel
-  (fork) vs `nix` process-group signals (mac). Gate `nix` usage under `cfg(unix)`.
-- [ ] **`commands/autostart.rs`** — HKCU `…\Run` key via `winreg` (fork) vs macOS
-  LaunchAgent. Gate each behind its platform.
-- [ ] **`util/paths.rs`** — Windows path resolution: Git Bash discovery, `%LOCALAPPDATA%\IndigoHQ\toolchain`
-  (with legacy `Indigo HQ` fallback), long-path handling. Gate mac path logic.
-- [ ] **`tray.rs`** — Windows tray anchoring: `GetMonitorInfoW`/`MonitorFromWindow`
-  work-area fallback + `DwmSetWindowAttribute` corner preference (fork) vs macOS
-  NSStatusItem. Gate mac positioning.
-- [ ] **`commands/notifications.rs`** — Windows Action Center toasts via
-  `tauri-plugin-notification` vs macOS `UNUserNotificationCenter` (objc2/block2). Gate mac.
-- [ ] **`commands/daemon.rs`** — reconcile Windows process/daemon handling.
-- [ ] **`main.rs`** — Windows setup (`CREATE_NO_WINDOW`, WebView2, Mica/vibrancy)
-  vs macOS setup (`macos-private-api`, the Swift `hq-tray-helper`). Gate mac setup.
+- [x] **`commands/process.rs`** — `nix`/POSIX gated `cfg(unix)`; Win32 Job Object + ToolHelp
+  tree-kill + `CREATE_NO_WINDOW` ported.
+- [x] **`commands/daemon.rs`** — `nix` signals gated `cfg(unix)`; Windows `OpenProcess`
+  liveness + `TerminateProcess` added.
+- [x] **`commands/dm_notify.rs` / `commands/meetings.rs` / `commands/share_notify.rs`** —
+  `mac_notification_sys` gated `cfg(macos)`; non-mac fires a native toast via `tauri-plugin-notification`.
+- [x] **`commands/activity.rs` / `commands/desktop_alt.rs` / `commands/drift_detail.rs`** —
+  macOS `title_bar_style` gated; Windows vibrancy calls added.
+- [x] **`main.rs`** — `tauri::Manager` ungated; `glass`/`tray_helper` gated `cfg(macos)`;
+  Windows Mica/Acrylic + DWM corner helpers added.
+- [x] **`util/recordings_ledger.rs`** — test-only imports gated `cfg(test)`.
+
+## Remaining: Windows RUNTIME parity (compiles, but behaves mac-only on Windows)
+
+These files **compile on Windows** (so CI is green) but currently run macOS logic on Windows —
+`cargo check` cannot catch this. Port the fork's `cfg(windows)` runtime implementations and gate
+the mac path `cfg(macos)`. The fork has the Windows impls (ref-count in parens):
+
+- [ ] **`commands/autostart.rs`** (fork: 11) — base writes a macOS LaunchAgent plist
+  unconditionally; on Windows it must use the HKCU `…\Run` key via `winreg`.
+- [ ] **`util/paths.rs`** (fork: 13) — Windows Git-Bash discovery, `%LOCALAPPDATA%\IndigoHQ\toolchain`
+  (legacy `Indigo HQ` fallback), long-path handling.
+- [ ] **`tray.rs`** (fork: 3) — Windows tray anchoring: `GetMonitorInfoW` work-area fallback +
+  `DwmSetWindowAttribute` corner preference.
+- [ ] **`commands/notifications.rs`** (fork: 6) — Windows notification permission/Action-Center state.
 
 ## Remaining: gate mac-only code so Windows compiles
 
