@@ -7,7 +7,6 @@ mod commands;
 mod events;
 #[cfg(target_os = "macos")]
 mod glass;
-mod sentry_scrub;
 mod tray;
 #[cfg(target_os = "macos")]
 mod tray_helper;
@@ -149,8 +148,8 @@ fn apply_windows_vibrancy(window: &tauri::WebviewWindow) {
 }
 
 fn main() {
+    use hq_telemetry::before_send;
     use sentry::ClientOptions;
-    use sentry_scrub::before_send;
     use std::sync::Arc;
     // `SENTRY_DSN` is set at compile time by build.rs, which reads
     // `HQ_SYNC_SENTRY_DSN` from the CI env. On local `cargo build`

@@ -7,6 +7,8 @@ edition = "2021"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+# Shared HQ crates (Phase 4 extraction).
+hq-telemetry = { path = "../../../crates/hq-telemetry" }
 tauri = { version = "2", features = ["macos-private-api", "tray-icon", "image-png"] }
 tauri-plugin-shell = "2"
 tauri-plugin-http = "2"
