@@ -1,0 +1,15 @@
+{
+  "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/crates/tauri-cli/schema.json",
+  "build": {
+    "beforeBuildCommand": "npm run build && node sidecar/recall-sdk-bridge/build.mjs"
+  },
+  "bundle": {
+    "resources": {
+      "../sidecar/recall-sdk-bridge/bridge.mjs": "recall-sdk-bridge/bridge.mjs",
+      "../sidecar/recall-sdk-bridge/recording-tracker.mjs": "recall-sdk-bridge/recording-tracker.mjs",
+      "../sidecar/recall-sdk-bridge/package.json": "recall-sdk-bridge/package.json",
+      "../sidecar/recall-sdk-bridge/node_modules": "recall-sdk-bridge/node_modules"
+    },
+    "externalBin": ["binaries/recall-desktop-sdk"]
+  }
+}

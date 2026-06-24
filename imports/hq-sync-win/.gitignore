@@ -1,0 +1,20 @@
+node_modules/
+dist/
+target/
+
+# Recall SDK sidecar launcher — a ~80 MB Node SEA build artifact produced by
+# sidecar/recall-sdk-bridge/build.mjs (run via tauri.conf.json
+# beforeBuildCommand before `tauri build`). Never committed; rebuilt each
+# release. The runtime payload (node_modules/@recallai/desktop-sdk/*) is
+# covered by the node_modules/ rule above.
+src-tauri/binaries/*.exe
+.DS_Store
+*.log
+.env
+.env.*
+.env*backup*
+*.p12
+*.pem
+*.key
+*.cer
+*.p8

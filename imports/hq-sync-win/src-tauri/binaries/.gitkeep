@@ -1,0 +1,10 @@
+Tauri externalBin source directory.
+
+The Recall SDK sidecar launcher `recall-desktop-sdk-<target-triple>.exe`
+(referenced by `bundle.externalBin` in ../tauri.conf.json) is produced here by
+`../../sidecar/recall-sdk-bridge/build.mjs` — a Node Single Executable
+Application (SEA) launcher, ~80 MB. It is a build artifact: gitignored
+(`src-tauri/binaries/*.exe`) and rebuilt on every `tauri build` via
+tauri.conf.json `beforeBuildCommand`. Do not commit it.
+
+See docs/RELEASE.md → "Recall SDK sidecar packaging".

@@ -1,0 +1,632 @@
+//! HQ filesystem path helpers (Windows).
+//!
+//! Windows resolution order for child-process PATH and binary discovery:
+//!   1. `%LOCALAPPDATA%\IndigoHQ\toolchain\bin`         (managed toolchain — installed by hq-installer-win)
+//!   2. `%LOCALAPPDATA%\IndigoHQ\toolchain\node`        (node.exe + npx.cmd from the same install)
+//!   3. `%LOCALAPPDATA%\Indigo HQ\toolchain\bin`         (legacy install dir — pre-installer-fix)
+//!   4. `%LOCALAPPDATA%\Indigo HQ\toolchain\node`        (legacy install dir — pre-installer-fix)
+//!   5. `%USERPROFILE%\.hq\bin`                          (user-side per-project overrides)
+//!   6. `%LOCALAPPDATA%\Microsoft\WindowsApps`           (winget shim dir)
+//!   7. `%USERPROFILE%\scoop\shims`                      (scoop shim dir)
+//!   8. system PATH (`%PATH%`)
+//!
+//! The managed toolchain dir is the canonical Windows install location and
+//! mirrors hq-installer-win's `managed_toolchain_dir_in()`. Putting it
+//! first means `hq`/`node`/`npx` resolved by hq-installer-win always win
+//! over whatever the user has on their system PATH — exactly what we want
+//! for reproducibility.
+//!
+//! `IndigoHQ` (no space) is the canonical form — Windows path-with-space
+//! quoting bugs in child shell invocations were the reason the installer
+//! moved off `Indigo HQ`. The legacy spaced dir is still searched so that
+//! users with pre-fix installs don't lose their managed toolchain until
+//! they re-install.
+
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+/// `CREATE_NO_WINDOW` process-creation flag. Spawning a CLI without it
+/// flashes a console window for the lifetime of the child — visible as a
+/// black/cmd flicker when the tray app shells out (npx, where.exe, git,
+/// node, hq, npm). 0x0800_0000 from the Win32 process-creation flags.
+#[cfg(target_os = "windows")]
+pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// Apply `CREATE_NO_WINDOW` to a `Command` so its spawn doesn't flash a
+/// console window. No-op off Windows. Call on EVERY subprocess the tray
+/// app spawns — there is no legitimate case where we want a console
+/// window to appear. `spawn_command` applies this automatically; direct
+/// `Command::new(...).output()/.spawn()` sites must call it themselves.
+pub fn no_window(cmd: &mut Command) {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = cmd;
+    }
+}
+
+/// Path-separator character on this platform. Windows uses `;`, POSIX uses `:`.
+#[cfg(target_os = "windows")]
+const PATH_SEP: char = ';';
+#[cfg(not(target_os = "windows"))]
+const PATH_SEP: char = ':';
+
+/// Executable extension on this platform. Empty on POSIX; `.exe` on Windows.
+#[cfg(target_os = "windows")]
+const EXE_EXT: &str = ".exe";
+#[cfg(not(target_os = "windows"))]
+const EXE_EXT: &str = "";
+
+/// Returns the canonical managed HQ toolchain directory installed by
+/// hq-installer-win: `%LOCALAPPDATA%\IndigoHQ\toolchain\`. Mirrors
+/// `managed_toolchain_dir()` in hq-installer-win's `deps.rs`.
+#[cfg(target_os = "windows")]
+fn managed_toolchain_dir() -> Option<PathBuf> {
+    let local_app = std::env::var_os("LOCALAPPDATA")?;
+    Some(PathBuf::from(local_app).join("IndigoHQ").join("toolchain"))
+}
+
+/// Legacy managed toolchain dir from before the installer dropped the
+/// space in `Indigo HQ`. Some existing dogfood installs still have their
+/// toolchain here; we search it as a lower-priority fallback so those
+/// users don't lose binary resolution between installer + sync upgrades.
+/// Drop this once the dogfood cohort is confirmed migrated.
+#[cfg(target_os = "windows")]
+fn legacy_managed_toolchain_dir() -> Option<PathBuf> {
+    let local_app = std::env::var_os("LOCALAPPDATA")?;
+    Some(PathBuf::from(local_app).join("Indigo HQ").join("toolchain"))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn managed_toolchain_dir() -> Option<PathBuf> {
+    None
+}
+
+#[cfg(not(target_os = "windows"))]
+fn legacy_managed_toolchain_dir() -> Option<PathBuf> {
+    None
+}
+
+/// Resolve the user's home directory.
+///
+/// In production this is the OS home directory (`dirs::home_dir()` — on
+/// Windows the `FOLDERID_Profile` known folder, on macOS/Linux `$HOME`).
+///
+/// An explicit `HOME` override takes precedence. On macOS/Linux this is a
+/// no-op (`dirs::home_dir()` already reads `$HOME`), but on Windows it is the
+/// only way to redirect the home directory: `dirs::home_dir()` resolves via
+/// the Known Folder API and ignores environment variables, so tests (and any
+/// caller that deliberately sets `HOME`) could not otherwise fake it. A native
+/// Windows app launched normally has no `HOME` set, so production behavior is
+/// unchanged.
+pub fn home_dir() -> Option<PathBuf> {
+    if let Some(home) = std::env::var_os("HOME") {
+        if !home.is_empty() {
+            return Some(PathBuf::from(home));
+        }
+    }
+    dirs::home_dir()
+}
+
+/// Returns the `~/.hq/` directory path.
+/// On Windows this resolves to `%USERPROFILE%\.hq\` via [`home_dir`].
+pub fn hq_config_dir() -> Result<PathBuf, String> {
+    let home = home_dir().ok_or_else(|| "Cannot determine home directory".to_string())?;
+    Ok(home.join(".hq"))
+}
+
+/// Returns the path to `~/.hq/config.json`.
+pub fn config_json_path() -> Result<PathBuf, String> {
+    Ok(hq_config_dir()?.join("config.json"))
+}
+
+/// Returns the path to `~/.hq/menubar.json`.
+pub fn menubar_json_path() -> Result<PathBuf, String> {
+    Ok(hq_config_dir()?.join("menubar.json"))
+}
+
+/// Returns the path to `~/.hq/deploy-prefs.json`.
+///
+/// This file is owned exclusively by hq-core's `/deploy` skill — it persists
+/// `defaultOrg` and `deploy.preference`. hq-sync only touches it during the
+/// one-shot legacy stub migration (see
+/// `commands::config::migrate_legacy_config_stub`).
+pub fn deploy_prefs_json_path() -> Result<PathBuf, String> {
+    Ok(hq_config_dir()?.join("deploy-prefs.json"))
+}
+
+/// Compute the ordered set of directories to prepend to a child process'
+/// PATH. Splits the priorities documented at the top of this module into
+/// a Vec so `child_path` can deduplicate against the parent PATH and so
+/// `resolve_bin` can walk the same set.
+fn extended_search_dirs() -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+
+    if let Some(toolchain) = managed_toolchain_dir() {
+        // bin and node first — hq + node + npx live under one of these.
+        dirs.push(toolchain.join("bin"));
+        dirs.push(toolchain.join("node"));
+    }
+    // Legacy `Indigo HQ\toolchain` for pre-fix installs. Lower priority
+    // so a side-by-side install prefers the canonical no-space dir.
+    if let Some(legacy) = legacy_managed_toolchain_dir() {
+        dirs.push(legacy.join("bin"));
+        dirs.push(legacy.join("node"));
+    }
+
+    if let Some(home) = home_dir() {
+        dirs.push(home.join(".hq").join("bin"));
+        // Scoop default install dir; harmless on systems without Scoop.
+        dirs.push(home.join("scoop").join("shims"));
+    }
+
+    if cfg!(target_os = "windows") {
+        if let Ok(local_app) = std::env::var("LOCALAPPDATA") {
+            // winget shim dir — `winget install <pkg>` typically drops a
+            // .exe shim here that's on the user's PATH but doesn't show
+            // in standard tool lists. Worth checking.
+            dirs.push(
+                PathBuf::from(local_app)
+                    .join("Microsoft")
+                    .join("WindowsApps"),
+            );
+        }
+    }
+
+    dirs
+}
+
+/// Resolve a node-backed CLI binary (e.g. `hq-sync-runner`, `hq`, `npx`)
+/// to an absolute path.
+///
+/// Tries each `extended_search_dirs()` entry in order, looking for both
+/// `{name}` and `{name}.exe`. Falls back to a `where.exe` lookup on
+/// Windows (system PATH-aware) before returning the bare name.
+///
+/// Returns the bare name as the last-ditch fallback so the caller's
+/// `Command::new` will then error with the original "os error 2", which
+/// surfaces as a sync error the UI can show. We don't invent a path
+/// that doesn't exist.
+pub fn resolve_bin(name: &str) -> String {
+    let candidates = candidate_filenames(name);
+
+    for dir in extended_search_dirs() {
+        for candidate in &candidates {
+            let full = dir.join(candidate);
+            if full.exists() {
+                return full.to_string_lossy().to_string();
+            }
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let mut where_cmd = Command::new("where.exe");
+        where_cmd.arg(name);
+        no_window(&mut where_cmd);
+        if let Ok(output) = where_cmd.output() {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let matches: Vec<&str> = stdout
+                    .lines()
+                    .map(|l| l.trim())
+                    .filter(|l| !l.is_empty() && Path::new(l).exists())
+                    .collect();
+
+                // `where.exe npx` on a standard Node install lists BOTH the
+                // extensionless POSIX script AND `npx.cmd`, with the bare
+                // `npx` first. Spawning the extensionless script fails with
+                // os error 193 ("%1 is not a valid Win32 application"), so
+                // we must NOT just take the first line. `pick_spawnable_path`
+                // prefers a match whose extension is spawnable (.exe directly,
+                // .cmd/.bat via the cmd.exe wrapper in `spawn_command`). This
+                // path hits whenever Node lives in `C:\Program Files\nodejs`
+                // rather than the managed toolchain — i.e. most machines.
+                if let Some(best) = pick_spawnable_path(&matches) {
+                    return best.to_string();
+                }
+            }
+        }
+    }
+
+    name.to_string()
+}
+
+/// From a list of resolved paths (e.g. `where.exe` output), pick the one
+/// that `Command::spawn` can actually launch on Windows. Prefers a
+/// spawnable extension (`.exe` directly; `.cmd`/`.bat` via the cmd.exe
+/// wrapper in [`spawn_command`]) over an extensionless POSIX script,
+/// which CreateProcess rejects with os error 193. Falls back to the first
+/// entry when nothing has a spawnable extension. Returns `None` for an
+/// empty list.
+#[cfg(target_os = "windows")]
+fn pick_spawnable_path<'a>(paths: &[&'a str]) -> Option<&'a str> {
+    paths
+        .iter()
+        .find(|p| {
+            let ext = Path::new(p)
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.to_ascii_lowercase());
+            matches!(ext.as_deref(), Some("exe") | Some("cmd") | Some("bat"))
+        })
+        .or_else(|| paths.first())
+        .copied()
+}
+
+/// Compute the filename candidates for a binary lookup, in priority order.
+///
+/// On Windows the npm/node install ships both a `.cmd` shim AND a
+/// no-extension POSIX-style script for tools like `npx`. CreateProcess
+/// can spawn `.exe` and `.cmd` (via cmd.exe) but rejects the
+/// no-extension script with `os error 193 (%1 is not a valid Win32
+/// application)`. So we MUST prefer the extensioned variants, otherwise
+/// `Command::new(resolve_bin("npx"))` blows up on every machine with a
+/// real Node install.
+fn candidate_filenames(name: &str) -> Vec<String> {
+    // Already-extensioned name: pass through.
+    if name.ends_with(EXE_EXT) || name.ends_with(".cmd") || name.ends_with(".bat") {
+        return vec![name.to_string()];
+    }
+
+    // On Windows the `#[cfg(not)]` block below is compiled out, so this
+    // block is the function's tail expression — no `return` needed.
+    #[cfg(target_os = "windows")]
+    {
+        vec![
+            format!("{name}.exe"),
+            format!("{name}.cmd"),
+            format!("{name}.bat"),
+            name.to_string(),
+        ]
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        vec![format!("{name}{EXE_EXT}"), name.to_string()]
+    }
+}
+
+/// True if the resolved binary path is a Windows `.cmd` or `.bat` shim.
+/// Rust's `std::process::Command` rejects direct spawning of these
+/// (CVE-2024-24576 / BatBadBut hardening landed in Rust 1.77 — bare
+/// `.cmd` / `.bat` paths fail). Callers should wrap such paths via
+/// [`spawn_command`].
+///
+/// Uses `Path::extension()` + `eq_ignore_ascii_case` rather than a
+/// `.ends_with(".cmd")` string check — the latter trips clippy's
+/// `case_sensitive_file_extension_comparisons` lint and mishandles
+/// dotfiles / trailing-dot edge cases.
+pub fn is_windows_shell_script(path: &str) -> bool {
+    Path::new(path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("cmd") || ext.eq_ignore_ascii_case("bat"))
+}
+
+/// Build a `std::process::Command` that handles both real `.exe` and
+/// Windows `.cmd`/`.bat` shims. For `.cmd`/`.bat`, spawns through
+/// `cmd.exe /c "<shim>" <args>` so CreateProcess doesn't reject the
+/// shell script. For everything else it's `Command::new(path)` +
+/// `args(args)` unchanged.
+///
+/// This is the single canonical spawn helper for node-backed tools
+/// resolved via [`resolve_bin`]. Use it from any callsite that might
+/// spawn `npx`, `npm`, `hq` (when it's a `.cmd`), etc.
+pub fn spawn_command(path: &str, args: &[&str]) -> std::process::Command {
+    let mut cmd = if is_windows_shell_script(path) {
+        let mut c = std::process::Command::new("cmd.exe");
+        c.arg("/c").arg(path).args(args);
+        c
+    } else {
+        let mut c = std::process::Command::new(path);
+        c.args(args);
+        c
+    };
+    // Every tray-spawned CLI runs windowless — no console flash.
+    no_window(&mut cmd);
+    cmd
+}
+
+/// Build a PATH value suitable for handing to a spawned child process.
+///
+/// Prepends the extended search dirs (managed HQ toolchain, ~/.hq/bin,
+/// scoop, winget shims) to the parent PATH so node-shebanged scripts +
+/// nested `Command::new('node')` lookups resolve to the managed
+/// toolchain first. Deduplicates so a dir that's already on the parent
+/// PATH doesn't appear twice.
+pub fn child_path() -> String {
+    let mut parts: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for dir in extended_search_dirs() {
+        let s = dir.to_string_lossy().to_string();
+        if !s.is_empty() && seen.insert(s.to_lowercase()) {
+            parts.push(s);
+        }
+    }
+
+    // Append standard Windows system dirs as a safety net for builds where
+    // %PATH% is unusually trimmed (some Tauri-launched contexts inherit
+    // only the minimal SYSTEM env). Harmless duplication is prevented by
+    // the `seen` dedup.
+    if cfg!(target_os = "windows") {
+        if let Ok(windir) = std::env::var("SystemRoot") {
+            for sub in ["system32", "System32\\WindowsPowerShell\\v1.0", ""] {
+                let candidate = if sub.is_empty() {
+                    PathBuf::from(&windir)
+                } else {
+                    PathBuf::from(&windir).join(sub)
+                };
+                let s = candidate.to_string_lossy().to_string();
+                if !s.is_empty() && seen.insert(s.to_lowercase()) {
+                    parts.push(s);
+                }
+            }
+        }
+    }
+
+    if let Ok(existing) = std::env::var("PATH") {
+        for p in existing.split(PATH_SEP) {
+            if p.is_empty() {
+                continue;
+            }
+            if seen.insert(p.to_lowercase()) {
+                parts.push(p.to_string());
+            }
+        }
+    }
+
+    parts.join(&PATH_SEP.to_string())
+}
+
+/// Resolve the HQ folder path with priority:
+/// 1. menubar_override (from menubar.json hqPath)
+/// 2. config_path (from config.json hqFolderPath)
+/// 3. Discovery: scan likely locations for a folder containing a valid
+///    `core.yaml` (the canonical hq-core marker — version + hqVersion fields).
+///    Both v14+ (`core/core.yaml`) and legacy (`core.yaml` at root) layouts
+///    are accepted; see `is_valid_hq_root`. First match wins.
+/// 4. `%USERPROFILE%\HQ` default
+pub fn resolve_hq_folder(config_path: Option<&str>, menubar_override: Option<&str>) -> PathBuf {
+    if let Some(path) = menubar_override {
+        if !path.is_empty() {
+            return PathBuf::from(path);
+        }
+    }
+    if let Some(path) = config_path {
+        if !path.is_empty() {
+            return PathBuf::from(path);
+        }
+    }
+    if let Some(found) = discover_hq_folder_via_core_yaml() {
+        return found;
+    }
+    home_dir()
+        .unwrap_or_else(|| PathBuf::from("C:\\"))
+        .join("HQ")
+}
+
+fn hq_discovery_candidates() -> Vec<PathBuf> {
+    let home = match home_dir() {
+        Some(h) => h,
+        None => return Vec::new(),
+    };
+    vec![
+        home.join("HQ"),
+        home.join("hq"),
+        home.join("Documents").join("HQ"),
+        home.join("Documents").join("hq"),
+        home.join("Desktop").join("HQ"),
+        home.join("Desktop").join("hq"),
+    ]
+}
+
+/// True iff the candidate folder contains a `core.yaml` (canonical or
+/// legacy location) that parses as YAML and has the canonical hq-core
+/// schema fields (`version` + `hqVersion`).
+pub fn is_valid_hq_root(path: &Path) -> bool {
+    let canonical = path.join("core").join("core.yaml");
+    let legacy = path.join("core.yaml");
+    let core_yaml = if canonical.is_file() {
+        canonical
+    } else if legacy.is_file() {
+        legacy
+    } else {
+        return false;
+    };
+    let bytes = match std::fs::read(&core_yaml) {
+        Ok(b) => b,
+        Err(_) => return false,
+    };
+    let parsed: serde_yaml::Value = match serde_yaml::from_slice(&bytes) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    parsed.get("version").is_some() && parsed.get("hqVersion").is_some()
+}
+
+pub fn discover_hq_folder_via_core_yaml() -> Option<PathBuf> {
+    hq_discovery_candidates()
+        .into_iter()
+        .find(|p| is_valid_hq_root(p))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_hq_config_dir() {
+        let dir = hq_config_dir().unwrap();
+        assert!(dir.ends_with(".hq"));
+    }
+
+    #[test]
+    fn test_config_json_path() {
+        let path = config_json_path().unwrap();
+        assert!(path.ends_with("config.json"));
+        assert!(path.parent().unwrap().ends_with(".hq"));
+    }
+
+    #[test]
+    fn test_menubar_json_path() {
+        let path = menubar_json_path().unwrap();
+        assert!(path.ends_with("menubar.json"));
+    }
+
+    #[test]
+    fn test_resolve_menubar_override_wins() {
+        let result = resolve_hq_folder(Some("C:\\from\\config"), Some("C:\\from\\menubar"));
+        assert_eq!(result, PathBuf::from("C:\\from\\menubar"));
+    }
+
+    #[test]
+    fn test_resolve_config_path() {
+        let result = resolve_hq_folder(Some("C:\\from\\config"), None);
+        assert_eq!(result, PathBuf::from("C:\\from\\config"));
+    }
+
+    #[test]
+    fn test_resolve_default() {
+        let result = resolve_hq_folder(None, None);
+        assert!(result.ends_with("HQ"));
+    }
+
+    #[test]
+    fn test_resolve_empty_menubar_falls_through() {
+        let result = resolve_hq_folder(Some("C:\\from\\config"), Some(""));
+        assert_eq!(result, PathBuf::from("C:\\from\\config"));
+    }
+
+    #[test]
+    fn test_resolve_empty_both_falls_to_default() {
+        let result = resolve_hq_folder(Some(""), Some(""));
+        assert!(result.ends_with("HQ"));
+    }
+
+    #[test]
+    fn test_resolve_bin_returns_name_when_not_resolved() {
+        let result = resolve_bin("hq-sync-nonexistent-xyz-123");
+        assert_eq!(result, "hq-sync-nonexistent-xyz-123");
+    }
+
+    #[test]
+    fn test_candidate_filenames_appends_exe_on_windows() {
+        let cands = candidate_filenames("hq");
+        if cfg!(target_os = "windows") {
+            assert!(cands.contains(&"hq.exe".to_string()));
+            assert!(cands.contains(&"hq".to_string()));
+        } else {
+            assert_eq!(cands, vec!["hq".to_string()]);
+        }
+    }
+
+    // REGRESSION (2026-06-09): `where.exe npx` on a standard Node install
+    // lists the extensionless POSIX script FIRST, then `npx.cmd`. Taking
+    // the first line returned the unspawnable `npx` (os error 193) and
+    // every sync failed. `pick_spawnable_path` must skip it for `.cmd`.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_pick_spawnable_path_prefers_cmd_over_extensionless() {
+        let matches = vec![
+            "C:\\Program Files\\nodejs\\npx",
+            "C:\\Program Files\\nodejs\\npx.cmd",
+        ];
+        assert_eq!(
+            pick_spawnable_path(&matches),
+            Some("C:\\Program Files\\nodejs\\npx.cmd")
+        );
+
+        // .exe wins too, and order among spawnable extensions is "first found".
+        let exe = vec!["C:\\tools\\foo", "C:\\tools\\foo.exe"];
+        assert_eq!(pick_spawnable_path(&exe), Some("C:\\tools\\foo.exe"));
+
+        // No spawnable extension → fall back to the first entry.
+        let none = vec!["C:\\tools\\foo", "C:\\tools\\foo.ps1"];
+        assert_eq!(pick_spawnable_path(&none), Some("C:\\tools\\foo"));
+
+        // Empty list → None.
+        let empty: Vec<&str> = vec![];
+        assert_eq!(pick_spawnable_path(&empty), None);
+    }
+
+    #[test]
+    fn test_candidate_filenames_preserves_existing_extension() {
+        // .cmd / .bat / .exe should NOT get .exe appended.
+        let cands = candidate_filenames("npx.cmd");
+        assert_eq!(cands, vec!["npx.cmd".to_string()]);
+        let cands = candidate_filenames("hq.exe");
+        assert_eq!(cands, vec!["hq.exe".to_string()]);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_child_path_includes_managed_toolchain_first() {
+        // Override LOCALAPPDATA so the test is deterministic regardless
+        // of the real %LOCALAPPDATA%.
+        let prev = std::env::var_os("LOCALAPPDATA");
+        std::env::set_var("LOCALAPPDATA", "C:\\TEST_LOCALAPPDATA");
+
+        let path = child_path();
+
+        // The managed toolchain bin dir must come before any system dir.
+        let managed = "C:\\TEST_LOCALAPPDATA\\IndigoHQ\\toolchain\\bin";
+        let managed_pos = path
+            .to_lowercase()
+            .find(&managed.to_lowercase())
+            .expect("managed toolchain dir must be in child_path");
+        let system32_pos = path
+            .to_lowercase()
+            .find("system32")
+            .map(|p| p as i64)
+            .unwrap_or(-1);
+        if system32_pos >= 0 {
+            assert!(
+                (managed_pos as i64) < system32_pos,
+                "managed toolchain ({managed_pos}) must come before system32 ({system32_pos})"
+            );
+        }
+
+        // Restore.
+        match prev {
+            Some(v) => std::env::set_var("LOCALAPPDATA", v),
+            None => std::env::remove_var("LOCALAPPDATA"),
+        }
+    }
+
+    /// The canonical `IndigoHQ` (no space) dir must rank higher than the
+    /// legacy `Indigo HQ` (with space) dir. A user who has both — e.g.
+    /// upgraded across the installer rename — should resolve to the new
+    /// canonical install first.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_canonical_managed_toolchain_outranks_legacy() {
+        let prev = std::env::var_os("LOCALAPPDATA");
+        std::env::set_var("LOCALAPPDATA", "C:\\TEST_LOCALAPPDATA");
+
+        let path = child_path().to_lowercase();
+        let canonical = "c:\\test_localappdata\\indigohq\\toolchain\\bin";
+        let legacy = "c:\\test_localappdata\\indigo hq\\toolchain\\bin";
+
+        let canonical_pos = path
+            .find(canonical)
+            .expect("canonical IndigoHQ dir must be in child_path");
+        let legacy_pos = path
+            .find(legacy)
+            .expect("legacy Indigo HQ dir must be in child_path");
+        assert!(
+            canonical_pos < legacy_pos,
+            "canonical ({canonical_pos}) must outrank legacy ({legacy_pos})"
+        );
+
+        match prev {
+            Some(v) => std::env::set_var("LOCALAPPDATA", v),
+            None => std::env::remove_var("LOCALAPPDATA"),
+        }
+    }
+}

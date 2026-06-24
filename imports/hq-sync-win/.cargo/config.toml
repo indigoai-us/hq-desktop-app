@@ -1,0 +1,19 @@
+# Cargo configuration for hq-sync-win.
+#
+# Goal: make `cargo build` work from a plain PowerShell without first
+# launching a "Developer PowerShell for VS 2022". We do that by routing
+# the linker through scripts/link-msvc.bat, which calls vcvarsall.bat to
+# add MSVC's link.exe + libs to PATH/LIB/INCLUDE before invoking the
+# real linker. See docs/dev-setup-windows.md §6 for the full story.
+
+[target.x86_64-pc-windows-msvc]
+linker = "scripts\\link-msvc.bat"
+
+[target.aarch64-pc-windows-msvc]
+linker = "scripts\\link-msvc.bat"
+
+[env]
+# Tells the linker shim which arch slice of vcvarsall to source. The shim
+# reads %VSCMD_ARG_TGT_ARCH% when invoked by cargo and falls back to the
+# value below if cargo didn't set one.
+VSCMD_ARG_TGT_ARCH = { value = "x64", force = false }

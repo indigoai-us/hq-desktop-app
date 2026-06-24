@@ -1,0 +1,357 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (e.g. v0.1.0)."
+        required: false
+        type: string
+
+# `id-token: write` is required for the GitHub -> Azure OIDC handshake that
+# azure/login performs (Trusted/Artifact Signing, no stored cloud secret).
+permissions:
+  contents: write
+  id-token: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: windows-latest
+    timeout-minutes: 60
+    # Bind the job to the `release` environment so the GitHub OIDC token's
+    # subject is `repo:indigoai-us/hq-sync-win:environment:release` — exactly
+    # what the Azure federated credential on the `hq-installer-win-signing`
+    # app trusts. Stable across tag pushes AND workflow_dispatch.
+    environment: release
+
+    # Surface the channel classification to the publish job. The value is
+    # identical across matrix targets (it's derived from the tag), so
+    # last-writer-wins is safe.
+    outputs:
+      is_prerelease: ${{ steps.classify.outputs.is_prerelease }}
+      channel: ${{ steps.classify.outputs.channel }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-pc-windows-msvc
+          # aarch64-pc-windows-msvc intentionally omitted for now: the Recall
+          # sidecar build.mjs copies the host x64 node.exe, so the arm64 leg
+          # would ship an x64 launcher (see docs/RELEASE.md "arm64 caveat"), and
+          # the arm64 cross-link is unvalidated. Re-add once the sidecar
+          # cross-build is fixed — and restore windows-aarch64 in the latest.json
+          # step below at the same time.
+
+    env:
+      RUST_BACKTRACE: 1
+      # ── Build-time frontend config. Unlike hq-installer-win, ALL Cognito/OAuth
+      #    config is baked into the Rust binary (commands/oauth.rs: hardcoded
+      #    client id + prod domain `vault-indigo-hq-prod`, overridable only at
+      #    RUNTIME via HQ_COGNITO_DOMAIN). The webview reads no VITE_COGNITO_*,
+      #    so none are needed here. The only build-inlined frontend var is the
+      #    Sentry DSN — optional; the client no-ops when empty.
+      VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
+      # ── Updater signing. Present → signed build + updater artifacts +
+      #    latest.json. Absent → unsigned dogfood (installers only). Defined at
+      #    job scope so the build-step `if:` guards below can branch on it.
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      # ── Sentry DSN (optional; client no-ops when empty).
+      HQ_SYNC_SENTRY_DSN: ${{ secrets.HQ_SYNC_SENTRY_DSN }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Tag must be either:
+      #   vX.Y.Z              → Stable channel
+      #   vX.Y.Z-beta.N       → Beta channel (prerelease)
+      #   vX.Y.Z-alpha.N      → Alpha channel (prerelease)
+      #
+      # Other pre-release patterns (`-rc.N`, `-pre`, `-dev`, raw `-beta`
+      # without a number) are REJECTED at validation time so they can't
+      # silently produce releases that the client-side resolver in
+      # `util/release_channel.rs::parse_channel_from_tag` won't classify.
+      # Strict here = typos fail fast in CI rather than producing a
+      # published release that the auto-updater never advertises.
+      #
+      # `is_prerelease` is consumed by the publish job's softprops/action-gh-release
+      # `prerelease:` input. The GitHub /releases/latest/ alias already filters to
+      # non-prereleases, so flipping this is what keeps a stable-channel user's
+      # static-endpoint poll from accidentally picking up a beta. Runs under bash
+      # explicitly because the default shell on windows-latest is PowerShell.
+      - name: Validate tag format + classify channel
+        id: classify
+        shell: bash
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          if [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            CHANNEL="stable"
+            IS_PRE="false"
+          elif [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+$ ]]; then
+            CHANNEL="beta"
+            IS_PRE="true"
+          elif [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-alpha\.[0-9]+$ ]]; then
+            CHANNEL="alpha"
+            IS_PRE="true"
+          else
+            echo "::error::Tag must match vX.Y.Z, vX.Y.Z-beta.N, or vX.Y.Z-alpha.N — got: $TAG"
+            exit 1
+          fi
+          echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
+          echo "is_prerelease=$IS_PRE" >> "$GITHUB_OUTPUT"
+          echo "Tag $TAG classified as channel=$CHANNEL prerelease=$IS_PRE"
+
+      - name: Install Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Rust (stable, ${{ matrix.target }})
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: ${{ runner.os }}-cargo-${{ matrix.target }}-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-${{ matrix.target }}-
+
+      - name: npm ci
+        run: npm ci
+
+      # Recall Desktop SDK sidecar (US-012). This installs the @recallai/desktop-sdk
+      # Windows runtime (agent-windows.exe + FFmpeg/GStreamer DLLs, fetched by the
+      # package's setup.js for process.platform==='win32') AND builds the
+      # `recall-desktop-sdk-<triple>.exe` launcher — a self-contained Node SEA that
+      # tauri.conf.json references via `bundle.externalBin`. Declaring externalBin
+      # makes `tauri build` REQUIRE this binary to exist, so it MUST be produced
+      # before the Tauri build step below. (tauri.conf.json's beforeBuildCommand
+      # also calls build.mjs as a safety net; build.mjs is idempotent, so once this
+      # step produces the launcher that later call is a no-op and won't re-strip the
+      # Authenticode signature applied in "Sign Recall sidecar launcher".)
+      #
+      # RECALL_SIDECAR_TARGET tells build.mjs how to name the launcher to match the
+      # Tauri externalBin target triple. NOTE: build.mjs copies the *host* node.exe
+      # (x64 on windows-latest runners), so the aarch64 leg currently emits an x64
+      # launcher under an aarch64 name — see docs/RELEASE.md "arm64 caveat".
+      - name: Build Recall SDK sidecar (${{ matrix.target }})
+        shell: pwsh
+        env:
+          RECALL_SIDECAR_TARGET: ${{ matrix.target }}
+        run: |
+          npm ci --prefix sidecar/recall-sdk-bridge
+          node sidecar/recall-sdk-bridge/build.mjs
+          if (-not (Test-Path "src-tauri/binaries/recall-desktop-sdk-${{ matrix.target }}.exe")) {
+            throw "sidecar launcher was not produced for ${{ matrix.target }}"
+          }
+
+      # NOTE: the Recall SDK sidecar launcher is intentionally NOT Authenticode-
+      # signed. It is a Node SEA (the host node.exe with an injected blob) that
+      # SignTool rejects with 0x800700C1 / ERROR_BAD_EXE_FORMAT
+      # (https://aka.ms/badexeformat). It ships *embedded inside* the signed
+      # MSI/NSIS installer, and on Windows an unsigned helper inside a signed,
+      # SmartScreen-trusted installer is fine at runtime — there is no per-binary
+      # notary requirement like macOS. Only the installers are Authenticode-signed
+      # (post-build, below). To sign the sidecar too, the SEA build
+      # (sidecar/recall-sdk-bridge/build.mjs) must first emit a SignTool-
+      # compatible PE. (The previous SignTool step was gated on a cert that was
+      # never set, so the sidecar was never actually signed before this either.)
+
+      # --config merges the release-only overlay (tauri.release.conf.json) that
+      # adds the Recall sidecar externalBin + resources. They are NOT in the base
+      # tauri.conf.json so the lint/test CI — which runs cargo clippy/check/test
+      # WITHOUT building the 80MB sidecar launcher — does not trip the tauri
+      # build-script's externalBin existence check.
+      #
+      # Signed path: the key is present, so emit updater artifacts. Tauri 2.10
+      # produces the installer + a sibling detached signature
+      # (`*-setup.exe` + `*-setup.exe.sig`) — NOT the old `.nsis.zip`/`.msi.zip`.
+      - name: Tauri build — signed updater (${{ matrix.target }})
+        if: env.TAURI_SIGNING_PRIVATE_KEY != ''
+        run: npm run tauri build -- --target ${{ matrix.target }} --bundles msi nsis updater --config src-tauri/tauri.release.conf.json
+
+      # Unsigned dogfood path: `createUpdaterArtifacts: true` + the `updater`
+      # bundle HARD-FAIL the build when no signing key is set (it's an error, not
+      # a skip). tauri.dogfood.conf.json overlays `createUpdaterArtifacts: false`
+      # and we drop the `updater` bundle, so the build produces installers only.
+      - name: Tauri build — unsigned dogfood (${{ matrix.target }})
+        if: env.TAURI_SIGNING_PRIVATE_KEY == ''
+        run: npm run tauri build -- --target ${{ matrix.target }} --bundles msi nsis --config src-tauri/tauri.release.conf.json --config src-tauri/tauri.dogfood.conf.json
+
+      # ── Azure Trusted Signing: installers (post-build) ────────────────────
+      # FIXES the ordering bug the old SignTool step only warned about:
+      # Authenticode signing mutates the installer bytes, so we ALWAYS regenerate
+      # the Tauri updater .sig over the SIGNED installer afterwards (see the
+      # "Regenerate updater signatures" step) before it is uploaded and fed into
+      # latest.json. Two SCOPED, non-recursive passes (one per bundle subdir) so
+      # we never re-sign the embedded MicrosoftEdgeWebview2Setup.exe that
+      # `embedBootstrapper` packs in. Re-auth here because the long Tauri build
+      # can outlast the ~1h federated az-CLI token minted for the sidecar step.
+      - name: Azure login (OIDC) — installers
+        if: vars.AZURE_CLIENT_ID != ''
+        uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Sign MSI (Azure Trusted Signing)
+        if: vars.AZURE_CLIENT_ID != ''
+        uses: azure/trusted-signing-action@v2.0.0
+        with:
+          endpoint: https://eus.codesigning.azure.net/
+          signing-account-name: indigosigning
+          certificate-profile-name: indigo-codesign
+          files-folder: ${{ github.workspace }}\src-tauri\target\${{ matrix.target }}\release\bundle\msi
+          files-folder-filter: msi
+          files-folder-recurse: false
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Sign NSIS setup (Azure Trusted Signing)
+        if: vars.AZURE_CLIENT_ID != ''
+        uses: azure/trusted-signing-action@v2.0.0
+        with:
+          endpoint: https://eus.codesigning.azure.net/
+          signing-account-name: indigosigning
+          certificate-profile-name: indigo-codesign
+          files-folder: ${{ github.workspace }}\src-tauri\target\${{ matrix.target }}\release\bundle\nsis
+          files-folder-filter: exe
+          files-folder-recurse: false
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      # Regenerate the minisign updater .sig over the now-Authenticode-signed
+      # installer so the auto-updater's signature check passes against the bytes
+      # we actually distribute. `tauri signer sign` reads the key + password from
+      # the job-scope TAURI_SIGNING_* env. No-op (warns) on unsigned dogfood
+      # builds, which produce no .sig.
+      - name: Regenerate updater signatures (post-Authenticode)
+        if: vars.AZURE_CLIENT_ID != ''
+        shell: pwsh
+        run: |
+          $bundleDir = "src-tauri\target\${{ matrix.target }}\release\bundle"
+          $targets = @()
+          $targets += Get-ChildItem -Path "$bundleDir\nsis" -Filter '*-setup.exe' -ErrorAction SilentlyContinue
+          $targets += Get-ChildItem -Path "$bundleDir\msi"  -Filter '*.msi'        -ErrorAction SilentlyContinue
+          $targets = $targets | Where-Object { Test-Path "$($_.FullName).sig" }
+          if (-not $targets) { Write-Warning "No updater .sig artifacts to regenerate (unsigned dogfood build?)" }
+          foreach ($t in $targets) {
+            Write-Host "Re-signing updater signature for $($t.Name)"
+            & "node_modules\.bin\tauri.cmd" signer sign "$($t.FullName)"
+            if ($LASTEXITCODE -ne 0) { Write-Error "tauri signer sign failed on $($t.Name)"; exit 1 }
+          }
+
+      - name: Upload bundle artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: hq-sync-win-${{ matrix.target }}
+          # Tauri 2.10 updater artifact is the NSIS installer + a sibling detached
+          # signature (`*-setup.exe` + `*-setup.exe.sig`), not a `.zip`. The `.sig`
+          # is absent on unsigned dogfood builds (if-no-files-found defaults to
+          # warn, so that's fine). `.msi` is kept as a manual-install asset.
+          path: |
+            src-tauri/target/${{ matrix.target }}/release/bundle/msi/*.msi
+            src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe
+            src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe.sig
+
+  release:
+    name: Publish GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+
+      - name: Flatten artifact tree
+        run: |
+          set -e
+          mkdir -p ./release
+          find ./artifacts -type f -print0 | xargs -0 -I {} cp {} ./release/
+          ls -la ./release
+
+      # Build the auto-updater manifest. When a signed release ships, this is what
+      # the client polls (util/release_channel.rs → …/releases/<tag>/download/
+      # latest.json and the /releases/latest/ alias); without it that endpoint
+      # 404s and Check-for-Updates no-ops. The per-arch (signature, url) pairs
+      # point at the Tauri 2.10 NSIS updater artifact (`*-setup.exe`) and its
+      # sibling detached signature (`*-setup.exe.sig`).
+      #
+      # UNSIGNED DOGFOOD FALLBACK: with no TAURI_SIGNING_PRIVATE_KEY secret set,
+      # Tauri emits no `*-setup.exe.sig` and this step skips cleanly (exit 0) —
+      # the release still publishes the installers for manual install; auto-update
+      # stays off until a signed release ships.
+      - name: Generate latest.json (auto-updater manifest)
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          VERSION="${TAG#v}"
+          BASE="https://github.com/${{ github.repository }}/releases/download/${TAG}"
+
+          # Locate the x64 NSIS installer produced by Tauri's bundler. With a
+          # signing key it has a sibling `<installer>.sig` (the updater signs the
+          # installer BYTES; on 2.10 there is no intermediate `.zip`). x64-only
+          # for now — see the matrix comment re: the omitted arm64 leg.
+          find_one() { find ./release -maxdepth 1 -type f -name "$1" | head -n1; }
+          X64_EXE=$(find_one "*x64*-setup.exe")
+
+          # No signing key → no `.sig` → nothing to advertise. Skip rather than
+          # fail so dogfood releases need no updater secret.
+          if [[ -z "$X64_EXE" || ! -f "${X64_EXE}.sig" ]]; then
+            echo "::notice::No signed updater artifact (*-setup.exe + .sig) — skipping latest.json. This is an UNSIGNED dogfood release; auto-update stays disabled until TAURI_SIGNING_PRIVATE_KEY is set."
+            exit 0
+          fi
+
+          # Rename installer (+ sig) to a space-free, deterministic name so the
+          # download URL is predictable. The updater verifies the signature
+          # against the installer BYTES, not its filename, so renaming is safe —
+          # and it sidesteps GitHub's spaces→dots asset rewrite.
+          X64_NAME="HQ-Sync_${VERSION}_x64-setup.exe"
+          mv "$X64_EXE"       "./release/${X64_NAME}"
+          mv "${X64_EXE}.sig" "./release/${X64_NAME}.sig"
+
+          # Empty arm64 args → generator emits a windows-x86_64-only manifest.
+          # Invoke via `bash` (not ./) so it doesn't depend on the executable
+          # bit — the repo is authored on Windows, which doesn't track +x.
+          bash scripts/generate-latest-json.sh \
+            "$VERSION" \
+            "$(cat "./release/${X64_NAME}.sig")" "${BASE}/${X64_NAME}" \
+            "" "" \
+            ./release/latest.json
+
+          echo "----- latest.json -----"
+          cat ./release/latest.json
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ./release/*
+          fail_on_unmatched_files: false
+          generate_release_notes: true
+          # Channel-aware (US-012): beta/alpha tags publish as prereleases so
+          # the /releases/latest/ alias skips them and stable-channel users
+          # polling the static updater endpoint never pick them up. The
+          # client-side tag-suffix filter in util/release_channel.rs is the
+          # authoritative gate; this is the second line of defense.
+          prerelease: ${{ needs.build.outputs.is_prerelease == 'true' }}

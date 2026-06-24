@@ -1,0 +1,171 @@
+/* Popover shared styles — native-glass custom properties for light/dark mode */
+
+/* Disable text selection app-wide — this is a menubar utility, not a
+   document. Selection drags inside dense rows feel like a bug. Inputs and
+   textareas keep selection so users can still edit/copy from settings. */
+:root,
+:root *:not(input):not(textarea) {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+input,
+textarea {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+:root {
+  /* Colors — dark mode defaults */
+  --popover-bg: rgba(18, 18, 20, 0.68);
+  --popover-surface: rgba(255, 255, 255, 0.08);
+  --popover-surface-strong: rgba(255, 255, 255, 0.16);
+  --popover-border: rgba(255, 255, 255, 0.18);
+  --popover-highlight: rgba(255, 255, 255, 0.34);
+  --popover-text: rgba(255, 255, 255, 0.86);
+  --popover-text-muted: rgba(255, 255, 255, 0.52);
+  --popover-text-heading: #ffffff;
+  --popover-primary: #ffffff;
+  --popover-primary-hover: rgba(255, 255, 255, 0.9);
+  --popover-primary-active: rgba(255, 255, 255, 0.78);
+  --popover-primary-text: #111113;
+  --popover-danger: #ef4444;
+  /* Notice tokens — replace the legacy yellow/red warning + error palette.
+     "Notice" is the unified visual language for everything that used to be
+     a warning or error: same subtle grey surface as info, slightly stronger
+     border, muted text. No severity colour, no alarm — copy + a Copy-prompt
+     button carry the meaning. */
+  --popover-notice: rgba(255, 255, 255, 0.65);
+  --popover-notice-strong: #ffffff;
+  --popover-notice-bg: rgba(255, 255, 255, 0.05);
+  --popover-notice-border: rgba(255, 255, 255, 0.16);
+  /* Kept for back-compat: any straggler that still references --popover-warning
+     now resolves to the muted notice text rather than amber. Remove once
+     consumers are fully migrated. */
+  --popover-warning: var(--popover-notice);
+  --popover-success: #22c55e;
+  --popover-divider: rgba(255, 255, 255, 0.11);
+  --popover-action-hover: rgba(255, 255, 255, 0.1);
+  --popover-progress-track: rgba(255, 255, 255, 0.14);
+  --popover-progress-fill: #ffffff;
+  --popover-blur: blur(28px) saturate(1.45);
+
+  /* ---- Type scale (320px popover, ratio ~1.15) ---------------------- */
+  --text-xs: 0.6875rem; /* 11px — descriptions, paths, pill + section labels */
+  --text-sm: 0.75rem; /* 12px — secondary buttons, version values */
+  --text-base: 0.8125rem; /* 13px — row labels, body */
+  --text-lg: 0.9375rem; /* 15px — screen titles, primary status line */
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+
+  /* ---- Spacing scale (4px base) ------------------------------------ */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+
+  /* ---- Radius scale ------------------------------------------------- */
+  --radius-sm: 8px; /* pills, small buttons, toggles, segments */
+  --radius-md: 10px; /* grouped buttons, larger controls */
+  --radius-lg: 14px; /* section group cards */
+  --radius-xl: 18px; /* the popover window */
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --popover-bg: rgba(246, 246, 248, 0.72);
+    --popover-surface: rgba(255, 255, 255, 0.5);
+    --popover-surface-strong: rgba(255, 255, 255, 0.72);
+    --popover-border: rgba(0, 0, 0, 0.12);
+    --popover-highlight: rgba(255, 255, 255, 0.86);
+    --popover-text: rgba(0, 0, 0, 0.78);
+    --popover-text-muted: rgba(0, 0, 0, 0.48);
+    --popover-text-heading: #111113;
+    --popover-primary: #111113;
+    --popover-primary-hover: rgba(17, 17, 19, 0.9);
+    --popover-primary-active: rgba(17, 17, 19, 0.78);
+    --popover-primary-text: #ffffff;
+    --popover-danger: #dc2626;
+    --popover-notice: rgba(0, 0, 0, 0.6);
+    --popover-notice-strong: #111113;
+    --popover-notice-bg: rgba(0, 0, 0, 0.04);
+    --popover-notice-border: rgba(0, 0, 0, 0.12);
+    --popover-warning: var(--popover-notice);
+    --popover-success: #16a34a;
+    --popover-divider: rgba(0, 0, 0, 0.09);
+    --popover-action-hover: rgba(0, 0, 0, 0.06);
+    --popover-progress-track: rgba(0, 0, 0, 0.1);
+    --popover-progress-fill: #111113;
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  :root {
+    --popover-bg: #18181a;
+    --popover-surface: rgba(255, 255, 255, 0.07);
+    --popover-surface-strong: rgba(255, 255, 255, 0.12);
+    --popover-blur: none;
+  }
+}
+
+@media (prefers-color-scheme: light) and (prefers-reduced-transparency: reduce) {
+  :root {
+    --popover-bg: #f7f7f8;
+    --popover-surface: rgba(0, 0, 0, 0.04);
+    --popover-surface-strong: rgba(0, 0, 0, 0.07);
+  }
+}
+
+/* ─── Global window transparency ────────────────────────────────────────
+   window-vibrancy (Mica/Acrylic) requires `html, body { background:
+   transparent }`. Without this, WebView2 paints a solid backdrop and
+   the system material never shows through — the popover would look
+   like a flat dark rectangle even with Mica applied. Same rule covers
+   every Tauri window in this app: main popover and every secondary
+   webview share this stylesheet. */
+html,
+body {
+  background: transparent;
+}
+
+/* ─── Fluent thin scrollbars (document scope) ───────────────────────────
+   Component-scoped `::-webkit-scrollbar` rules (in Popover.svelte,
+   NewFilesDetail.svelte, etc.) only style scrollbars that appear
+   inside those components' shadow-DOM-ish CSS scope. Secondary windows
+   (NotificationHistory, Packages) open as separate webviews whose
+   document-scope scrollbars inherit the native Win11 16 px chunky bar
+   instead. Apply the Fluent 6 px overlay treatment at document scope
+   so every window — main and secondary — picks it up. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--popover-border) transparent;
+}
+
+/* Intentionally NO `scrollbar-gutter: stable` here. The popover body
+   itself never scrolls (its child container does), so reserving a gutter
+   at document scope leaves a permanent 6 px empty strip on the right
+   edge that reads as a frame artifact. Scrollable children apply their
+   own `scrollbar-gutter` when they need it. */
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--popover-border);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--popover-highlight);
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}

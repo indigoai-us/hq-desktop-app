@@ -1,0 +1,498 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// clippy 1.93 introduced stricter doc-comment *style* lints (list-item
+// indentation, lazy continuations, blank line after a doc comment). Upstream
+// hq-sync — the parity target, pinned to an older clippy — does not enforce
+// them, and several module docs deliberately column-align their list items for
+// readability (see version_gate.rs). These are cosmetic, not correctness, so
+// allow the family crate-wide rather than reflow every doc block and diverge
+// from upstream.
+#![allow(clippy::doc_overindented_list_items)]
+#![allow(clippy::doc_lazy_continuation)]
+#![allow(clippy::empty_line_after_doc_comments)]
+
+use std::sync::Mutex;
+use tauri::Manager;
+
+mod commands;
+mod events;
+mod sentry_scrub;
+mod tray;
+mod updater;
+mod util;
+
+/// Apply Mica (Win 11) or Acrylic (Win 10 fallback) blur to the popover window.
+///
+/// Mica is the preferred Win 11 material — it's the system-tinted backdrop
+/// the OS uses for Settings, Files, etc. On Win 10 Mica isn't available;
+/// Acrylic is the closest analogue (translucent panel with a custom RGBA
+/// tint). Either way the Svelte popover renders on top of the system blur.
+///
+/// Both calls are best-effort: a failure logs and returns. The Svelte UI
+/// ships a solid-background fallback so the popover remains readable even
+/// when no vibrancy is applied (third-party theme tools, custom shell
+/// replacements, Windows Server SKUs).
+/// Force the Win11 small-radius window corner (~4 px) on the popover
+/// window. Without this hint DWM uses its default radius (~8 px on
+/// Win11 22H2) — and we have to match it in CSS exactly or the user
+/// sees either:
+///   - Mica bleeding past the CSS content corners (CSS radius > DWM
+///     radius), which reads as a faint frame outside the content;
+///   - A double rounded outline (CSS radius < DWM radius).
+/// `DWMWCP_ROUNDSMALL` matches Win11 tray-utility flyouts (Action
+/// Center, quick settings) and we set the CSS radius to the same
+/// 4 px on the popover + inline screens to keep them flush.
+fn set_dwm_small_corner(window: &tauri::WebviewWindow) {
+    use util::logfile::log;
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::Graphics::Dwm::{
+        DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUNDSMALL,
+    };
+
+    let Ok(hwnd) = window.hwnd() else { return };
+    let hwnd = HWND(hwnd.0 as *mut _);
+    let pref: u32 = DWMWCP_ROUNDSMALL.0 as u32;
+    let pref_ptr = &pref as *const u32 as *const std::ffi::c_void;
+    let size = std::mem::size_of::<u32>() as u32;
+    let result =
+        unsafe { DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, pref_ptr, size) };
+    if let Err(e) = result {
+        log(
+            "ui",
+            &format!("DwmSetWindowAttribute(DWMWCP_ROUNDSMALL) failed: {e}"),
+        );
+    } else {
+        log("ui", "DWMWCP_ROUNDSMALL applied — small corner radius");
+    }
+}
+
+fn apply_windows_vibrancy(window: &tauri::WebviewWindow) {
+    use util::logfile::log;
+    use window_vibrancy::{apply_acrylic, apply_mica};
+
+    // Try Mica first (Win 11+). `Some(true)` enables the dark variant —
+    // matches the popover's dark Svelte theme. Returns Err on Win 10 and
+    // any system where DwmExtendFrameIntoClientArea isn't honored.
+    match apply_mica(window, Some(true)) {
+        Ok(()) => {
+            log("ui", "apply_mica: success (dark variant)");
+            return;
+        }
+        Err(e) => {
+            log(
+                "ui",
+                &format!("apply_mica failed: {e}; trying Acrylic fallback"),
+            );
+        }
+    }
+
+    // Acrylic fallback. RGBA tint (18, 18, 18, 180) ≈ dark with ~70% opacity —
+    // close enough to the macOS Popover material the mac version used.
+    match apply_acrylic(window, Some((18, 18, 18, 180))) {
+        Ok(()) => log("ui", "apply_acrylic: success (Win 10 fallback)"),
+        Err(e) => log(
+            "ui",
+            &format!(
+                "apply_acrylic failed: {e}; popover will render with the Svelte solid-background fallback"
+            ),
+        ),
+    }
+}
+
+fn main() {
+    use sentry::ClientOptions;
+    use sentry_scrub::before_send;
+    use std::sync::Arc;
+    // `SENTRY_DSN` is set at compile time by build.rs, which reads
+    // `HQ_SYNC_SENTRY_DSN` from the CI env. On local `cargo build`
+    // / `cargo tauri dev` / PR CI (where the release-only secret is not
+    // in scope), build.rs emits `cargo:rustc-env=SENTRY_DSN=` (empty),
+    // so `env!("SENTRY_DSN")` evaluates to `""` — gate on emptiness → None
+    // so the Sentry client no-ops cleanly in dev instead of crashing at startup.
+    let dsn_str = env!("SENTRY_DSN");
+    let dsn: Option<sentry::types::Dsn> = if dsn_str.is_empty() {
+        None
+    } else {
+        Some(dsn_str.parse().expect("SENTRY_DSN invalid at build time"))
+    };
+    let _guard = sentry::init(ClientOptions {
+        dsn,
+        release: Some(format!("hq-sync-win@{}", env!("CARGO_PKG_VERSION")).into()),
+        environment: Some(
+            option_env!("SENTRY_ENVIRONMENT")
+                .unwrap_or("production")
+                .into(),
+        ),
+        sample_rate: std::env::var("SENTRY_SAMPLE_RATE")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1.0),
+        before_send: Some(Arc::new(before_send)),
+        ..Default::default()
+    });
+    sentry::configure_scope(|scope| {
+        scope.set_tag("repo", "hq-sync-win");
+    });
+
+    use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};
+
+    // Ctrl+Shift+H — global hotkey to summon the popover from anywhere.
+    // SUPER on Windows maps to the Win key, which conflicts with system
+    // shortcuts (Win+H opens Voice Typing). CONTROL+SHIFT+H is the
+    // Windows-conventional equivalent of the macOS Cmd+Shift+H chord.
+    let show_shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyH);
+
+    tauri::Builder::default()
+        // Single-instance dedup. Must be the FIRST plugin so the
+        // duplicate-launch callback fires before any other plugin or
+        // setup hook touches state. The handler raises the existing
+        // popover above the tray and focuses it — mirrors a Win11 tray
+        // utility (e.g. clicking the icon when the popover is already
+        // visible). `argv` and `cwd` are intentionally unused — this is
+        // a tray app, not a URL-handling app.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            use util::logfile::log;
+            log(
+                "single-instance",
+                "duplicate launch — focusing existing popover",
+            );
+            tray::show_window_at_tray(app);
+        }))
+        .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_http::init())
+        .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_notification::init())
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(move |app, shortcut, event| {
+                    if shortcut == &show_shortcut && event.state() == ShortcutState::Pressed {
+                        tray::show_window_at_tray(app);
+                    }
+                })
+                .build(),
+        )
+        .manage(updater::PendingUpdate(Mutex::new(None)))
+        .manage(commands::new_files::PendingNewFiles(Mutex::new(Vec::new())))
+        .manage(commands::drift_detail::PendingDrift(Mutex::new(None)))
+        .manage(commands::activity::SessionActivity::new())
+        .manage(commands::share_notify::PendingShareEvents(Mutex::new(
+            Vec::new(),
+        )))
+        .manage(commands::dm_notify::PendingDmEvents(Mutex::new(Vec::new())))
+        .manage(commands::banner::PendingBanner(Mutex::new(None)))
+        .manage(commands::packages::PendingPackages(Mutex::new(None)))
+        // Tray-app close behaviour: intercept window-close (system menu Close,
+        // Alt-F4, frame X) and hide the popover instead of terminating the
+        // process. The app only truly exits via the tray context menu's
+        // "Quit" item (see tray.rs MENU_QUIT). Matches Windows tray-utility
+        // norms (PowerToys, ShareX, Everything).
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                // Only hide the main popover window — let other windows
+                // (e.g. new-files-detail) close normally.
+                if window.label() == "main" {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+        })
+        .invoke_handler(tauri::generate_handler![
+            commands::app::quit_app,
+            commands::app::open_claude_code_link,
+            commands::process::spawn_process,
+            commands::process::cancel_process,
+            commands::oauth::start_oauth_login,
+            commands::oauth::oauth_listen_for_code,
+            commands::oauth::oauth_exchange_code,
+            commands::auth::get_auth_state,
+            commands::auth::has_stored_token,
+            commands::auth::refresh_tokens,
+            commands::config::get_config,
+            commands::status::get_sync_status,
+            commands::sync::start_sync,
+            commands::sync::cancel_sync,
+            commands::first_run::is_first_run,
+            commands::first_run::should_show_auto_sync_notice,
+            commands::first_run::mark_first_run_complete,
+            commands::first_run::mark_auto_sync_notice_shown,
+            commands::workspaces::list_syncable_workspaces,
+            commands::workspaces::connect_workspace_to_cloud,
+            commands::sync_mode::get_sync_mode,
+            commands::sync_mode::set_sync_mode,
+            commands::conflicts::resolve_conflict,
+            commands::conflicts::open_in_editor,
+            commands::settings::get_settings,
+            commands::settings::save_settings,
+            commands::folder_picker::pick_folder,
+            commands::autostart::get_autostart_enabled,
+            commands::autostart::set_autostart_enabled,
+            commands::daemon::start_daemon,
+            commands::daemon::stop_daemon,
+            commands::daemon::daemon_status,
+            tray::set_tray_state,
+            updater::check_for_updates,
+            updater::install_update,
+            updater::available_channels,
+            commands::hq_cli_update::check_hq_cli_update,
+            commands::hq_cli_update::install_hq_cli_update,
+            commands::hq_core_update::get_hq_version,
+            commands::hq_core_update::install_hq_core_update,
+            commands::hq_core_drift::restore_from_upstream,
+            commands::hq_core_staging::run_replace_from_staging,
+            commands::hq_core_state::check_core_state,
+            commands::drift_detail::open_drift_detail,
+            commands::drift_detail::drift_window_ready,
+            commands::new_files::open_new_files_detail,
+            commands::new_files::detail_window_ready,
+            commands::activity::open_activity_log,
+            commands::activity::activity_window_ready,
+            commands::activity::get_activity_log,
+            commands::meetings::meetings_feature_enabled,
+            commands::meetings::meetings_list_upcoming,
+            commands::meetings::meetings_list_scheduled_bots,
+            commands::meetings::meetings_list_memberships,
+            commands::meetings::meetings_list_accounts,
+            commands::meetings::meetings_list_calendars_for_account,
+            commands::meetings::meetings_invite_bot,
+            commands::meetings::meetings_join_bot_now,
+            commands::meetings::meetings_cancel_bot,
+            commands::meetings::meetings_check_bot_for_url,
+            commands::meetings::meetings_notify_detected,
+            commands::meetings::open_meetings_window,
+            commands::desktop_alt::desktop_alt_enabled,
+            commands::desktop_alt::desktop_alt_consume_pending_route,
+            commands::desktop_alt::open_desktop_alt_window,
+            commands::desktop_alt::get_company_summary,
+            commands::desktop_alt::get_company_board,
+            commands::desktop_alt::get_company_activity,
+            commands::desktop_alt::get_company_deployments,
+            commands::desktop_alt::get_company_secrets,
+            commands::share_notify::poll_shared_with_me,
+            commands::share_notify::open_share_detail,
+            commands::share_notify::share_detail_window_ready,
+            commands::dm_notify::poll_dm_inbox,
+            commands::dm_notify::open_dm_detail,
+            commands::dm_notify::dm_detail_window_ready,
+            commands::dm_notify::send_dm,
+            commands::dm_notify::fetch_dm_thread,
+            commands::notifications::notification_permission_state,
+            commands::notifications::notification_request_permission,
+            commands::notification_history::fetch_notification_history,
+            commands::notification_history::open_notification_history,
+            commands::banner::banner_window_ready,
+            commands::banner::banner_action,
+            commands::banner::dismiss_banner,
+            commands::banner::resize_banner,
+            commands::banner::show_main_window,
+            commands::banner::preview_dm_banner,
+            commands::banner::preview_share_banner,
+            commands::banner::preview_update_banner,
+            commands::banner::preview_meeting_banner,
+            commands::recall_sdk::meeting_detect_feature_enabled,
+            commands::recall_sdk::meetings_list_active_detections,
+            commands::recall_sdk::start_recording,
+            commands::recall_sdk::stop_recording,
+            commands::permissions::meetings_permissions_state,
+            commands::permissions::permissions_force_native_register,
+            commands::permissions::permissions_open_settings,
+            commands::permissions::open_meeting_permissions_window,
+            commands::packages::list_packages,
+            commands::packages::check_package_updates,
+            commands::packages::install_package,
+            commands::packages::update_package,
+            commands::packages::uninstall_package,
+            commands::packages::open_packages_window,
+            commands::packages::packages_window_ready,
+        ])
+        .setup(|app| {
+            // Classify this launch (FirstRun / ExistingUpdate / Normal) and
+            // cache it in managed state. MUST run before anything that can
+            // write `machineId` to menubar.json (the migration below, sync,
+            // telemetry, the share/dm pollers) — `machineId` is the tiebreaker
+            // that distinguishes a brand-new install from a legacy user
+            // updating. See commands/first_run.rs for the full rationale.
+            commands::first_run::classify_launch(app.handle());
+
+            // One-shot migration of any legacy `/deploy`-skill stub at
+            // ~/.hq/config.json. Runs first so subsequent prewarm /
+            // daemon / sync calls see a clean HqConfig (when a personal
+            // person-entity.json is on disk) or a missing config that
+            // surfaces SetupNeeded cleanly (when reconstruction isn't
+            // possible). Best-effort and idempotent — failures log to the
+            // diagnostic file and don't abort launch.
+            commands::config::migrate_legacy_config_stub();
+
+            // Default-on autostart: ensure the Registry Run entry matches
+            // the effective `startAtLogin` pref (default true) so a fresh
+            // install opens HQ Sync at login without the user opening
+            // Settings first. Honours an explicit `"startAtLogin": false`
+            // opt-out. Best-effort and idempotent — never aborts launch.
+            // US-006 wires the HKCU Registry Run key implementation.
+            commands::autostart::ensure_autostart_on_launch();
+
+            // Apply Mica (Win 11) / Acrylic (Win 10) backdrop to the popover.
+            // Best-effort — the Svelte UI ships a solid-background fallback
+            // for systems where neither material is available.
+            if let Some(window) = app.get_webview_window("main") {
+                // Order: corner pref before vibrancy. Mica/Acrylic is
+                // applied at the OS-window level, so it inherits the
+                // corner mask set here. CSS radius on the popover
+                // content matches this radius (4 px) so the content
+                // edge and OS frame coincide — no Mica bleed past the
+                // corners, no concentric outlines.
+                set_dwm_small_corner(&window);
+                apply_windows_vibrancy(&window);
+            }
+
+            tray::setup_tray(app.handle())?;
+            // Hard version-gate against hq-pro fires at 5s (BEFORE the soft
+            // updater at 10s) so a known-bad release can be yanked before the
+            // user touches anything sensitive. Server-side source of truth is
+            // `apps/hq-pro/src/vault-service/handlers/client-version-check.ts`.
+            // See `commands::version_gate` for the rationale.
+            commands::version_gate::setup_version_gate(app.handle());
+            updater::setup_update_checker(app.handle());
+
+            // Share-notification poller. Gated solely on the shareNotifications
+            // menubar preference (the @getindigo.ai dogfood gate was removed
+            // 2026-05-26 — see share_notify::should_poll). Gate is checked
+            // inside share_notify, not here, so it is never scattered.
+            //
+            // Delivery runs on an independent timer (launch poll + interval),
+            // so notifications no longer depend on a sync completing — see the
+            // 2026-05-28 incident report. The post-sync poll below is a
+            // latency optimization layered on top, not the sole trigger.
+            {
+                use tauri::Listener;
+                // (a) Launch poll (5s delay) + independent interval timer.
+                commands::share_notify::setup_share_notify_poller(app.handle().clone());
+
+                // (a') Instant-DM push receiver — MQTT-over-WSS to AWS IoT Core.
+                // Wakes `poll_dm_once` on push so DMs arrive in near-real-time
+                // instead of waiting up to 60s. The interval poll above is the
+                // long-stop, so this is purely additive — any MQTT failure falls
+                // back to it silently.
+                //
+                // US-017 (Windows fork): NOT macOS-gated. The receiver is
+                // platform-neutral (rumqttc + aws-sigv4 over WSS, no AppKit deps),
+                // and instant DM on Windows is the whole point of this story. The
+                // spawned async task rides the Tauri runtime, which the V1 Job
+                // Object daemon supervisor tears down with the process — no orphan
+                // thread. Eligibility was ungated to all users in 70260ae.
+                commands::dm_mqtt::setup_dm_mqtt_receiver(app.handle().clone());
+
+                // (b) Post-sync poll — low-latency top-up after a sync run.
+                let poll_handle = app.handle().clone();
+                app.listen(crate::events::EVENT_SYNC_ALL_COMPLETE, move |_event| {
+                    let h = poll_handle.clone();
+                    tauri::async_runtime::spawn(async move {
+                        commands::share_notify::poll_once(h).await;
+                    });
+                });
+            }
+
+            // Env-var trigger to preview the custom notification banner without
+            // devtools / real inbound events. Pops one representative banner per
+            // source — DM (2s), share (10s), update (18s) — spaced past the 6s
+            // auto-dismiss so each is seen in turn. No-op when unset.
+            //   HQ_SYNC_PREVIEW_BANNER=1     → DM only
+            //   HQ_SYNC_PREVIEW_BANNER=all   → DM, then share, then update
+            match std::env::var("HQ_SYNC_PREVIEW_BANNER").as_deref() {
+                Ok("1") | Ok("all") => {
+                    let all = std::env::var("HQ_SYNC_PREVIEW_BANNER").as_deref() == Ok("all");
+                    let h = app.handle().clone();
+                    tauri::async_runtime::spawn(async move {
+                        use std::time::Duration;
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                        let _ = commands::banner::preview_dm_banner(h.clone()).await;
+                        if all {
+                            tokio::time::sleep(Duration::from_secs(8)).await;
+                            let _ = commands::banner::preview_share_banner(h.clone()).await;
+                            tokio::time::sleep(Duration::from_secs(8)).await;
+                            let _ = commands::banner::preview_update_banner(h.clone()).await;
+                        }
+                    });
+                }
+                _ => {}
+            }
+
+            // Register Ctrl+Shift+H globally so the popover can be summoned
+            // from any app. The handler (configured on the plugin builder
+            // above) calls `tray::show_window_at_tray`. Registration can
+            // fail if another app already holds the chord — log and
+            // continue so the rest of the app still launches.
+            {
+                use tauri_plugin_global_shortcut::GlobalShortcutExt;
+                let shortcut =
+                    Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyH);
+                if let Err(e) = app.global_shortcut().register(shortcut) {
+                    util::logfile::log(
+                        "ui",
+                        &format!("global shortcut Ctrl+Shift+H register FAILED: {e}"),
+                    );
+                }
+            }
+
+            commands::hq_cli_update::setup_hq_cli_update_checker(app.handle());
+            commands::hq_core_state::setup_core_state_checker(app.handle());
+
+            // Fire-and-forget: warm the npx cache for
+            // `@indigoai-us/hq-cloud@<HQ_CLOUD_VERSION>` so the user's
+            // first click of "Sync Now" doesn't eat the 3–10s first-time
+            // download. No-ops if the cache is already warm. See
+            // `commands::prewarm` for the rationale.
+            commands::prewarm::spawn_prewarm();
+
+            // Auto-start the watcher when either flag is on:
+            //   - `autostart_daemon` (V2-prep devtools flag, default OFF)
+            //   - `realtime_sync`   (user-facing Auto-sync toggle, default ON)
+            if commands::daemon::is_autostart_enabled()
+                || commands::daemon::is_realtime_sync_enabled()
+            {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    // Small delay to let the app fully initialize
+                    std::thread::sleep(std::time::Duration::from_secs(2));
+                    let _ = commands::daemon::start_daemon(handle);
+                });
+            }
+
+            // Bound the meeting-detect notify ledger on launch: drop entries
+            // older than 14 days (the `util::meeting_ledger` doc contract). Cheap
+            // synchronous file op, best-effort — a failure here never blocks setup.
+            util::meeting_ledger::prune_on_launch(chrono::Utc::now());
+
+            // Start the Recall Desktop SDK sidecar for meeting detection.
+            // Fire-and-forget: if the SDK binary is absent or credentials are
+            // unavailable, `start_recall_sdk` logs RECALL_SDK_UNAVAILABLE and
+            // returns without affecting the rest of the app. See
+            // `commands::recall_sdk` for the graceful-degradation contract.
+            {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(e) = commands::recall_sdk::start_recall_sdk(handle).await {
+                        util::logfile::log(
+                            "recall-sdk",
+                            &format!("start_recall_sdk error (app continues): {e}"),
+                        );
+                    }
+                });
+            }
+
+            Ok(())
+        })
+        // Build (not `run`) so we can attach a RunEvent handler for app exit.
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app, event| {
+            // Tear down the Recall SDK bridge sidecar on quit. Without this the
+            // bridge (and any node-subprocesses it spawned) would be orphaned
+            // when the tray app exits — `stop_recall_sdk` issues the Job-Object
+            // tree-kill (`TerminateJobObject`). ExitRequested fires for every
+            // exit path that goes through the Tauri runtime (tray Quit, OS
+            // shutdown). Safe + idempotent when the SDK never started.
+            if let tauri::RunEvent::ExitRequested { .. } = event {
+                commands::recall_sdk::stop_recall_sdk();
+            }
+        });
+}

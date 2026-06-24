@@ -1,0 +1,13 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "packages",
+  "description": "Capability set for the Packages secondary window. Self-fetches via the app-registered packages_* commands (list_packages, check_package_updates, install_package, update_package, uninstall_package, packages_window_ready) and listens for packages:* events. Without this file the window's invoke() calls silently fail the capability check and the window renders empty. shell:allow-open lets pack descriptions link out. Mirrors notification-history.json / desktop-alt.json.",
+  "windows": ["packages"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:window:allow-close",
+    "core:window:allow-set-focus",
+    "shell:allow-open"
+  ]
+}

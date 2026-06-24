@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  ci:
+    name: Lint + test (windows-latest)
+    runs-on: windows-latest
+
+    env:
+      RUST_BACKTRACE: 1
+      # No release secrets in scope for CI. build.rs sees an empty
+      # SENTRY_DSN and the Sentry client no-ops cleanly in tests.
+      HQ_SYNC_SENTRY_DSN: ""
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Rust (stable, x86_64-pc-windows-msvc)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+          components: rustfmt, clippy
+
+      # Caches keyed on Cargo.lock so the same dep tree reuses artifacts
+      # across runs. Saves ~6-8 minutes per build once warm.
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: npm ci
+        run: npm ci
+
+      - name: npm run build (svelte bundle)
+        run: npm run build
+
+      - name: Rust fmt check
+        working-directory: src-tauri
+        run: cargo fmt --check
+
+      - name: Rust clippy (deny warnings)
+        working-directory: src-tauri
+        run: cargo clippy --target x86_64-pc-windows-msvc -- -D warnings
+
+      - name: Rust tests
+        working-directory: src-tauri
+        run: cargo test --target x86_64-pc-windows-msvc --bins
+
+      - name: Rust check
+        working-directory: src-tauri
+        run: cargo check --target x86_64-pc-windows-msvc

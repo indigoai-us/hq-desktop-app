@@ -1,0 +1,807 @@
+//! Detect and provision unprovisioned `cloud: true` companies.
+//!
+//! `provision_missing_companies` walks `$HQ/companies/*/company.yaml`, keeps
+//! entries where `cloud: true`, and handles three cases:
+//!   A. `.hq/config.json` present → verify the entity still exists via a
+//!      by-UID lookup (`GET /entity/{uid}` using config.json's `companyUid`);
+//!      if not found / tombstoned, remove stale config and re-provision via CLI.
+//!   B. `.hq/config.json` absent but YAML has `cloudCompanyUid` → migration:
+//!      look up the entity by that UID, write config.json using the legacy UID,
+//!      do NOT touch YAML.
+//!
+//! Both A and B resolve by UID rather than slug: a by-slug lookup returns
+//! HTTP 409 when two live companies share a slug (a duplicate-provision data
+//! bug in HQ-Cloud), which previously bailed the entire sync. The local UID
+//! is the exact entity, so the lookup can't be ambiguous.
+//!   C. Otherwise → delegate to `hq cloud provision company <slug>` (the
+//!      canonical CLI subcommand from `@indigoai-us/hq-cli`), which performs
+//!      GET-then-POST idempotency, atomic manifest patch, atomic
+//!      `.hq/config.json` write, AND triggers an initial sync via `share()`.
+//!
+//! `company.yaml` is NEVER written back — the file is read-only from this module.
+//!
+//! ## Why Paths A + B stay inline (not CLI)
+//!
+//! Path A is a pure local-cache fast path: if `.hq/config.json` already exists
+//! and the cloud entity is still alive, there is nothing to do. Spawning the
+//! CLI would re-run idempotency checks the local cache already short-circuits.
+//!
+//! Path B is a one-shot migration from the legacy `cloudCompanyUid` field
+//! that older `hq-installer` versions wrote into `company.yaml`. The CLI has
+//! no equivalent of "promote a known UID into a config.json without touching
+//! the entity"; it would either reuse-by-slug (different UID) or re-create
+//! (also different UID). Keeping the migration inline preserves the legacy
+//! UID exactly as recorded.
+//!
+//! Only Path C goes through the CLI — that is where the GET-then-POST,
+//! manifest patch, config write, and initial sync all happen behind one
+//! canonical implementation.
+
+use std::future::Future;
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+
+use crate::commands::run_cli_provision::{
+    run_cli_provision, CliProvisionError, CliProvisionResult,
+};
+use crate::commands::vault_client::VaultClient;
+
+// ── Public types ──────────────────────────────────────────────────────────────
+
+/// Per-company `.hq/config.json` schema (pinned — plan.md §Step 5).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompanyConfig {
+    pub company_uid: String,
+    pub company_slug: String,
+    pub bucket_name: String,
+    pub vault_api_url: String,
+}
+
+/// Returned by `provision_missing_companies` for each newly-provisioned
+/// (or legacy-migrated) company.
+#[derive(Debug, Clone)]
+pub struct ProvisionedCompany {
+    pub slug: String,
+    pub uid: String,
+    pub bucket_name: String,
+}
+
+// ── Internal YAML shape ───────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct CompanyYaml {
+    cloud: Option<bool>,
+    name: Option<String>,
+    /// Legacy field written by earlier versions of hq-installer.
+    /// Present means the company was provisioned before `.hq/config.json` was
+    /// introduced.  Must not be written back.
+    #[serde(rename = "cloudCompanyUid")]
+    cloud_company_uid: Option<String>,
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Atomic write: serialize `config` → temp file → rename.
+fn write_company_config(config_path: &Path, config: &CompanyConfig) -> Result<(), String> {
+    if let Some(parent) = config_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("create_dir_all {}: {e}", parent.display()))?;
+    }
+    let body =
+        serde_json::to_string_pretty(config).map_err(|e| format!("serialize config: {e}"))?;
+    let tmp = config_path.with_file_name(format!(".config.json.tmp.{}", std::process::id()));
+    std::fs::write(&tmp, &body).map_err(|e| format!("write tmp config: {e}"))?;
+    std::fs::rename(&tmp, config_path).map_err(|e| format!("rename config: {e}"))?;
+    Ok(())
+}
+
+// ── Core logic ────────────────────────────────────────────────────────────────
+
+/// Walk `$hq_root/companies/*/company.yaml`, detect unprovisioned `cloud: true`
+/// companies, provision them, and return the list of newly-provisioned entries.
+///
+/// `vault_api_url` is written verbatim into each company's `.hq/config.json`.
+///
+/// Production wrapper: delegates Path C to the canonical `hq cloud provision`
+/// CLI subprocess via [`run_cli_provision`]. Tests use
+/// [`provision_missing_companies_with_provisioner`] with a mock to exercise the
+/// Rust-level dispatch logic without spawning the real binary.
+pub async fn provision_missing_companies(
+    hq_root: &Path,
+    vault: &VaultClient,
+    vault_api_url: &str,
+) -> Result<Vec<ProvisionedCompany>, String> {
+    provision_missing_companies_with_provisioner(
+        hq_root,
+        vault,
+        vault_api_url,
+        |slug, name, root| async move { run_cli_provision(&slug, name.as_deref(), &root).await },
+    )
+    .await
+}
+
+/// Test seam for [`provision_missing_companies`].
+///
+/// `provisioner` is the Path C dispatch — in production it wraps
+/// [`run_cli_provision`], which shells out to `hq cloud provision company`.
+/// Tests pass closures that return canned [`CliProvisionResult`] values so the
+/// Rust dispatch logic (Path A/B/C selection, error propagation, partial-result
+/// handling on `CliProvisionError::Sync`) can be exercised without spawning the
+/// real CLI binary.
+///
+/// Arguments are owned (`String`, `PathBuf`) so the closure's returned future
+/// can be `'static` — keeps lifetimes simple at the cost of a few cheap clones
+/// per provisioned company (sync is not a hot path).
+pub async fn provision_missing_companies_with_provisioner<F, Fut>(
+    hq_root: &Path,
+    vault: &VaultClient,
+    vault_api_url: &str,
+    provisioner: F,
+) -> Result<Vec<ProvisionedCompany>, String>
+where
+    F: Fn(String, Option<String>, PathBuf) -> Fut,
+    Fut: Future<Output = Result<CliProvisionResult, CliProvisionError>>,
+{
+    let companies_dir = hq_root.join("companies");
+    if !companies_dir.exists() {
+        return Ok(vec![]);
+    }
+
+    let entries = std::fs::read_dir(&companies_dir)
+        .map_err(|e| format!("read companies dir {}: {e}", companies_dir.display()))?;
+
+    let mut result: Vec<ProvisionedCompany> = Vec::new();
+
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("dir entry error: {e}"))?;
+        let folder_path = entry.path();
+        if !folder_path.is_dir() {
+            continue;
+        }
+        let folder_name = match entry.file_name().into_string() {
+            Ok(n) => n,
+            Err(_) => continue, // non-UTF-8 folder names are silently skipped
+        };
+
+        let yaml_path = folder_path.join("company.yaml");
+        if !yaml_path.exists() {
+            continue;
+        }
+
+        // Read YAML read-only — bytes preserved so SHA256 can be validated by callers
+        let yaml_bytes =
+            std::fs::read(&yaml_path).map_err(|e| format!("read {}: {e}", yaml_path.display()))?;
+        let company_yaml: CompanyYaml = serde_yaml::from_slice(&yaml_bytes)
+            .map_err(|e| format!("parse {}: {e}", yaml_path.display()))?;
+
+        if !company_yaml.cloud.unwrap_or(false) {
+            continue;
+        }
+
+        let hq_config_path: PathBuf = folder_path.join(".hq").join("config.json");
+
+        // ── Path A: config.json already present ────────────────────────────────
+        if hq_config_path.exists() {
+            // Resolve by the UID pinned in config.json, not by slug. A
+            // by-slug lookup returns HTTP 409 when two live companies
+            // share a slug (a duplicate-provision data bug in HQ-Cloud),
+            // which bailed the entire sync. The config's `companyUid` is
+            // the exact entity, so `GET /entity/{uid}` is unambiguous.
+            // A tombstoned (soft-deleted) entity is treated as "gone",
+            // matching the prior by-slug semantics. If config.json can't
+            // be read/parsed we fall back to the by-slug lookup so a
+            // corrupt config doesn't wedge the company entirely.
+            let cfg_uid = std::fs::read_to_string(&hq_config_path)
+                .ok()
+                .and_then(|s| serde_json::from_str::<CompanyConfig>(&s).ok())
+                .map(|c| c.company_uid);
+
+            let verified = match cfg_uid {
+                Some(uid) => match vault.find_entity_by_uid(&uid).await {
+                    Ok(Some(info)) => Ok(!info.deleted), // live → verified
+                    Ok(None) => Ok(false),               // 404 → gone
+                    Err(e) => Err(e),
+                },
+                None => vault
+                    .find_entity_by_slug("company", &folder_name)
+                    .await
+                    .map(|opt| opt.is_some()),
+            };
+
+            match verified {
+                Ok(true) => continue, // provisioned and verified
+                Ok(false) => {
+                    // Stale config — entity gone; remove and fall through to re-provision
+                    let _ = std::fs::remove_file(&hq_config_path);
+                }
+                Err(e) => {
+                    return Err(format!("vault lookup for '{}': {e}", folder_name));
+                }
+            }
+        }
+
+        // ── Path B: legacy cloudCompanyUid migration ───────────────────────────
+        if let Some(ref legacy_uid) = company_yaml.cloud_company_uid {
+            // Resolve by UID, not slug. The local `company.yaml` already
+            // pins the exact cloud entity (`cloudCompanyUid`), so a
+            // slug lookup is both unnecessary and fragile: if two live
+            // companies ever share a slug (a duplicate-provision data
+            // bug in HQ-Cloud), `GET /entity/by-slug/...` returns HTTP
+            // 409 "matches N live entities — disambiguate by uid", which
+            // bailed the whole sync. `GET /entity/{uid}` is unambiguous.
+            // We treat a soft-deleted (tombstoned) entity the same as
+            // "not found" so it falls through to a fresh provision,
+            // matching the old by-slug semantics (which only returned
+            // live entities).
+            let resolved = match vault.find_entity_by_uid(legacy_uid).await {
+                Ok(Some(info)) if !info.deleted => Ok(Some(info)),
+                Ok(_) => Ok(None), // missing or tombstoned → re-provision
+                Err(e) => Err(e),
+            };
+            match resolved {
+                Ok(Some(info)) => {
+                    // If the entity has no bucket yet, provision it now — same contract as Path C.
+                    let bucket_name = match info.bucket_name {
+                        Some(b) => b,
+                        None => {
+                            vault
+                                .provision_bucket(legacy_uid)
+                                .await
+                                .map_err(|e| {
+                                    format!(
+                                        "provision_bucket legacy '{}' uid={legacy_uid}: {e}",
+                                        folder_name
+                                    )
+                                })?
+                                .bucket_name
+                        }
+                    };
+                    let cfg = CompanyConfig {
+                        company_uid: legacy_uid.clone(),
+                        company_slug: folder_name.clone(),
+                        bucket_name: bucket_name.clone(),
+                        vault_api_url: vault_api_url.to_string(),
+                    };
+                    write_company_config(&hq_config_path, &cfg)?;
+                    result.push(ProvisionedCompany {
+                        slug: folder_name,
+                        uid: legacy_uid.clone(),
+                        bucket_name,
+                    });
+                    continue;
+                }
+                Ok(None) => {
+                    // Legacy UID in YAML but entity not found — fall through to full provision
+                }
+                Err(e) => {
+                    return Err(format!("vault legacy lookup for '{}': {e}", folder_name));
+                }
+            }
+        }
+
+        // ── Path C: unprovisioned — delegate to `hq cloud provision company` ─
+        //
+        // The CLI subprocess is the canonical source of truth for:
+        //   * GET-then-POST entity idempotency
+        //   * Atomic `companies/manifest.yaml` patch (cloud_uid + bucket_name)
+        //   * Atomic `companies/<slug>/.hq/config.json` write
+        //   * Initial sync via `share()` from `@indigoai-us/hq-cloud`
+        //
+        // We pass through a friendly display `--name` from the YAML when present
+        // (the CLI defaults to slug otherwise). On exit code 3 the CLI still
+        // writes the config + manifest before failing, and the partial result
+        // carries the `cloud_uid` — we record the company so the caller's
+        // "newly provisioned" emit fires for UI feedback, then surface the
+        // sync error so the operator can investigate.
+        //
+        // NB: we deliberately do NOT fall back to the legacy direct-vault
+        // path on CLI failure. Doing so would re-introduce the divergence
+        // this refactor exists to eliminate (see
+        // workspace/reports/cloud-promote-architecture-2026-04-27.md).
+        let display_name = company_yaml.name.as_deref();
+        match provisioner(
+            folder_name.clone(),
+            display_name.map(String::from),
+            hq_root.to_path_buf(),
+        )
+        .await
+        {
+            Ok(cli_result) => {
+                result.push(ProvisionedCompany {
+                    slug: folder_name,
+                    uid: cli_result.cloud_uid,
+                    bucket_name: cli_result.bucket_name,
+                });
+            }
+            Err(CliProvisionError::Sync { partial, message }) => {
+                // Entity + manifest + config all succeeded — only the initial
+                // sync failed. Record the provisioned company (so the UI shows
+                // "ready, sync pending") and propagate the error so callers
+                // surface a notice. Subsequent sync runs will retry uploads
+                // through the normal `first_push` path.
+                if let Some(p) = partial {
+                    result.push(ProvisionedCompany {
+                        slug: folder_name.clone(),
+                        uid: p.cloud_uid,
+                        bucket_name: p.bucket_name,
+                    });
+                }
+                return Err(format!("provision '{folder_name}' via hq CLI: {message}"));
+            }
+            Err(e) => {
+                return Err(format!("provision '{folder_name}' via hq CLI: {e}"));
+            }
+        }
+    }
+
+    Ok(result)
+}
+
+// ── Tests ──────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::run_cli_provision::CliInitialSync;
+    use sha2::{Digest, Sha256};
+    use std::sync::{Arc, Mutex};
+    use tempfile::TempDir;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn vault(server: &MockServer) -> VaultClient {
+        VaultClient::new(server.uri(), "test-jwt")
+    }
+
+    const VAULT_URL: &str = "https://vault.test.getindigo.ai";
+
+    /// Build a mock `CliProvisionResult` that mimics the AppBar happy path —
+    /// always `--skip-initial-sync`, so `initial_sync.ok` is None and `skipped`
+    /// is Some(true). See `CliInitialSync` doc for why every field is Optional.
+    fn mock_cli_result(slug: &str, uid: &str, bucket: &str) -> CliProvisionResult {
+        CliProvisionResult {
+            ok: true,
+            company_slug: slug.to_string(),
+            cloud_uid: uid.to_string(),
+            bucket_name: bucket.to_string(),
+            vault_api_url: VAULT_URL.to_string(),
+            kms_key_id: None,
+            created_entity: true,
+            manifest_patched: true,
+            config_written: true,
+            initial_sync: CliInitialSync {
+                ok: None,
+                files_uploaded: None,
+                bytes_uploaded: None,
+                error: None,
+                skipped: Some(true),
+            },
+        }
+    }
+
+    /// Create a company directory with an optional company.yaml and return the
+    /// yaml path (if created).
+    fn setup_company(root: &Path, slug: &str, yaml: Option<&str>) -> PathBuf {
+        let dir = root.join("companies").join(slug);
+        std::fs::create_dir_all(&dir).unwrap();
+        let yaml_path = dir.join("company.yaml");
+        if let Some(content) = yaml {
+            std::fs::write(&yaml_path, content).unwrap();
+        }
+        yaml_path
+    }
+
+    fn sha256_file(path: &Path) -> String {
+        let bytes = std::fs::read(path).unwrap();
+        format!("{:x}", Sha256::digest(&bytes))
+    }
+
+    fn entity_json(uid: &str, slug: &str, bucket: Option<&str>) -> serde_json::Value {
+        let mut v = serde_json::json!({
+            "entity": {
+                "uid": uid,
+                "slug": slug,
+                "type": "company",
+                "status": "active",
+                "createdAt": "2026-01-01T00:00:00Z"
+            }
+        });
+        if let Some(b) = bucket {
+            v["entity"]["bucketName"] = serde_json::Value::String(b.to_string());
+        }
+        v
+    }
+
+    fn bucket_json(bucket: &str) -> serde_json::Value {
+        serde_json::json!({ "bucketName": bucket, "kmsKeyId": "key-1" })
+    }
+
+    // (a) cloud: false → skipped
+    #[tokio::test]
+    async fn test_cloud_false_skipped() {
+        let tmp = TempDir::new().unwrap();
+        setup_company(tmp.path(), "acme", Some("cloud: false\nname: Acme\n"));
+        let server = MockServer::start().await;
+        let result = provision_missing_companies(tmp.path(), &vault(&server), VAULT_URL)
+            .await
+            .unwrap();
+        assert!(result.is_empty());
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    // (b) no company.yaml → skipped
+    #[tokio::test]
+    async fn test_no_yaml_skipped() {
+        let tmp = TempDir::new().unwrap();
+        setup_company(tmp.path(), "acme", None); // directory but no yaml
+        let server = MockServer::start().await;
+        let result = provision_missing_companies(tmp.path(), &vault(&server), VAULT_URL)
+            .await
+            .unwrap();
+        assert!(result.is_empty());
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    // (c) .hq/config.json present + find_by_slug returns 200 → skipped (no provisioning)
+    #[tokio::test]
+    async fn test_config_json_exists_and_entity_200_skipped() {
+        let tmp = TempDir::new().unwrap();
+        let slug = "acme";
+        setup_company(tmp.path(), slug, Some("cloud: true\nname: Acme\n"));
+        // Write an existing config.json
+        let hq_dir = tmp.path().join("companies").join(slug).join(".hq");
+        std::fs::create_dir_all(&hq_dir).unwrap();
+        let cfg = CompanyConfig {
+            company_uid: "cmp_existing".to_string(),
+            company_slug: slug.to_string(),
+            bucket_name: "hq-vault-cmp-existing".to_string(),
+            vault_api_url: VAULT_URL.to_string(),
+        };
+        std::fs::write(
+            hq_dir.join("config.json"),
+            serde_json::to_string_pretty(&cfg).unwrap(),
+        )
+        .unwrap();
+
+        // Path A resolves by the config's `companyUid` (cmp_existing), not by
+        // slug — see the provision.rs Path A comment for the 409 rationale.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/entity/cmp_existing"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&entity_json(
+                "cmp_existing",
+                slug,
+                Some("hq-vault-cmp-existing"),
+            )))
+            .mount(&server)
+            .await;
+
+        let result = provision_missing_companies(tmp.path(), &vault(&server), VAULT_URL)
+            .await
+            .unwrap();
+        assert!(
+            result.is_empty(),
+            "already-provisioned company must be skipped"
+        );
+        // Only the by-uid verify was called — no create_entity, no provision_bucket
+        let reqs = server.received_requests().await.unwrap();
+        assert!(
+            reqs.iter().all(|r| r.url.path() == "/entity/cmp_existing"),
+            "only by-uid verify expected; got: {:?}",
+            reqs.iter().map(|r| r.url.path()).collect::<Vec<_>>()
+        );
+    }
+
+    // (d) legacy cloudCompanyUid, no .hq/config.json → migration; YAML unchanged
+    #[tokio::test]
+    async fn test_legacy_uid_migration_yaml_unchanged() {
+        let tmp = TempDir::new().unwrap();
+        let slug = "legacy-co";
+        let yaml_content = "cloud: true\nname: Legacy Co\ncloudCompanyUid: cmp_legacy\n";
+        let yaml_path = setup_company(tmp.path(), slug, Some(yaml_content));
+        let sha_before = sha256_file(&yaml_path);
+
+        // Path B resolves by the YAML's `cloudCompanyUid` (cmp_legacy), not by
+        // slug — avoids the duplicate-slug 409.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/entity/cmp_legacy"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&entity_json(
+                "cmp_legacy",
+                slug,
+                Some("hq-vault-cmp-legacy"),
+            )))
+            .mount(&server)
+            .await;
+
+        let result = provision_missing_companies(tmp.path(), &vault(&server), VAULT_URL)
+            .await
+            .unwrap();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].uid, "cmp_legacy");
+        assert_eq!(result[0].bucket_name, "hq-vault-cmp-legacy");
+
+        // config.json must have been written
+        let config_path = tmp
+            .path()
+            .join("companies")
+            .join(slug)
+            .join(".hq")
+            .join("config.json");
+        assert!(config_path.exists());
+        let written: CompanyConfig =
+            serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+        assert_eq!(written.company_uid, "cmp_legacy");
+        assert_eq!(written.bucket_name, "hq-vault-cmp-legacy");
+
+        // YAML must be byte-for-byte unchanged
+        let sha_after = sha256_file(&yaml_path);
+        assert_eq!(sha_before, sha_after, "company.yaml was modified");
+    }
+
+    // (d2) legacy cloudCompanyUid, entity found but bucket_name: None → provision_bucket called
+    #[tokio::test]
+    async fn test_legacy_uid_entity_without_bucket_provisions() {
+        let tmp = TempDir::new().unwrap();
+        let slug = "legacy-no-bucket";
+        let yaml_content = "cloud: true\nname: Legacy No Bucket\ncloudCompanyUid: cmp_legacy\n";
+        setup_company(tmp.path(), slug, Some(yaml_content));
+
+        let server = MockServer::start().await;
+        // by-uid verify returns entity with NO bucket
+        Mock::given(method("GET"))
+            .and(path("/entity/cmp_legacy"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&entity_json(
+                "cmp_legacy",
+                slug,
+                None,
+            )))
+            .mount(&server)
+            .await;
+        // provision_bucket called because bucket was absent
+        Mock::given(method("POST"))
+            .and(path("/provision/bucket"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(&bucket_json("hq-vault-cmp-legacy")),
+            )
+            .mount(&server)
+            .await;
+
+        let result = provision_missing_companies(tmp.path(), &vault(&server), VAULT_URL)
+            .await
+            .unwrap();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].uid, "cmp_legacy");
+        assert_eq!(result[0].bucket_name, "hq-vault-cmp-legacy");
+
+        // provision_bucket must have been called exactly once with companyUid == "cmp_legacy"
+        let reqs = server.received_requests().await.unwrap();
+        let bucket_calls: Vec<_> = reqs
+            .iter()
+            .filter(|r| r.url.path() == "/provision/bucket")
+            .collect();
+        assert_eq!(
+            bucket_calls.len(),
+            1,
+            "provision_bucket must be called exactly once"
+        );
+        let body: serde_json::Value = serde_json::from_slice(&bucket_calls[0].body).unwrap();
+        assert_eq!(body["companyUid"], "cmp_legacy");
+
+        // config.json must have non-empty bucket name
+        let config_path = tmp
+            .path()
+            .join("companies")
+            .join(slug)
+            .join(".hq")
+            .join("config.json");
+        let written: CompanyConfig =
+            serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+        assert_eq!(written.bucket_name, "hq-vault-cmp-legacy");
+        assert!(
+            !written.bucket_name.is_empty(),
+            "bucket_name must not be empty"
+        );
+    }
+
+    // (d3) REGRESSION: duplicate-slug 409. Two live companies share a slug in
+    // HQ-Cloud, so `GET /entity/by-slug/company/{slug}` returns HTTP 409
+    // "matches 2 live entities". Before the by-uid fix this bailed the entire
+    // sync (BAIL: provision_missing_companies failed). With the fix, Path B
+    // resolves by the YAML's `cloudCompanyUid` and never touches by-slug, so
+    // the 409 can't happen. We mount the by-slug endpoint to 409 so the test
+    // FAILS loudly if anyone reintroduces a by-slug call here.
+    #[tokio::test]
+    async fn test_legacy_uid_ignores_ambiguous_slug() {
+        let tmp = TempDir::new().unwrap();
+        let slug = "liverecover";
+        let yaml_content = "cloud: true\nname: Liverecover\ncloudCompanyUid: cmp_keep\n";
+        setup_company(tmp.path(), slug, Some(yaml_content));
+
+        let server = MockServer::start().await;
+        // by-uid resolves the exact entity — unambiguous.
+        Mock::given(method("GET"))
+            .and(path("/entity/cmp_keep"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&entity_json(
+                "cmp_keep",
+                slug,
+                Some("hq-vault-cmp-keep"),
+            )))
+            .mount(&server)
+            .await;
+        // by-slug would 409 — if anyone calls it, the sync would bail.
+        Mock::given(method("GET"))
+            .and(path(format!("/entity/by-slug/company/{slug}")))
+            .respond_with(
+                ResponseTemplate::new(409).set_body_json(&serde_json::json!({
+                    "error": "Slug \"liverecover\" of type \"company\" matches 2 live entities",
+                    "type": "company",
+                    "slug": slug,
+                    "uids": ["cmp_keep", "cmp_dupe"],
+                })),
+            )
+            .mount(&server)
+            .await;
+
+        let result = provision_missing_companies(tmp.path(), &vault(&server), VAULT_URL)
+            .await
+            .expect("duplicate slug must not break provisioning");
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].uid, "cmp_keep");
+
+        // The ambiguous by-slug endpoint must never have been hit.
+        let reqs = server.received_requests().await.unwrap();
+        assert!(
+            reqs.iter().all(|r| !r.url.path().contains("by-slug")),
+            "by-slug must not be called (would 409); got: {:?}",
+            reqs.iter().map(|r| r.url.path()).collect::<Vec<_>>()
+        );
+    }
+
+    // (e) new folder + no legacy uid → Path C dispatches to provisioner; result
+    // recorded verbatim; YAML untouched. (Pre-C3 this test also asserted on the
+    // shape of config.json, but Path C no longer writes config.json from Rust —
+    // that work moved into the `hq cloud provision` CLI subprocess. The mock
+    // provisioner here stands in for that subprocess.)
+    #[tokio::test]
+    async fn test_new_folder_provisioned_yaml_unchanged() {
+        let tmp = TempDir::new().unwrap();
+        let slug = "new-co";
+        let yaml_content = "cloud: true\nname: New Co\n";
+        let yaml_path = setup_company(tmp.path(), slug, Some(yaml_content));
+        let sha_before = sha256_file(&yaml_path);
+
+        let server = MockServer::start().await;
+        let provisioner = |s: String, _name: Option<String>, _root: PathBuf| async move {
+            Ok(mock_cli_result(&s, "cmp_new", "hq-vault-cmp-new"))
+        };
+
+        let result = provision_missing_companies_with_provisioner(
+            tmp.path(),
+            &vault(&server),
+            VAULT_URL,
+            provisioner,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].slug, slug);
+        assert_eq!(result[0].uid, "cmp_new");
+        assert_eq!(result[0].bucket_name, "hq-vault-cmp-new");
+
+        // company.yaml is read-only from this module — see module-level doc
+        let sha_after = sha256_file(&yaml_path);
+        assert_eq!(sha_before, sha_after, "company.yaml was modified");
+
+        // Path C has no Rust-side vault traffic; everything goes through the
+        // CLI subprocess (mocked away here)
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    // (f) provisioner returns a pre-existing uid → Rust trusts it verbatim and
+    // does NOT second-guess by recomputing. Pre-C3 the Rust code itself decided
+    // find-vs-create; post-C3 that decision lives in the CLI and Rust just
+    // forwards whatever uid comes back. This test pins the trust contract.
+    #[tokio::test]
+    async fn test_find_by_slug_reuses_uid_no_create() {
+        let tmp = TempDir::new().unwrap();
+        let slug = "pre-existing";
+        setup_company(tmp.path(), slug, Some("cloud: true\nname: Pre Co\n"));
+
+        let server = MockServer::start().await;
+        let recorded_slugs: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let recorded_slugs_clone = Arc::clone(&recorded_slugs);
+        let provisioner = move |s: String, _name: Option<String>, _root: PathBuf| {
+            let recorded = Arc::clone(&recorded_slugs_clone);
+            async move {
+                recorded.lock().unwrap().push(s.clone());
+                Ok(mock_cli_result(
+                    &s,
+                    "cmp_preexisting",
+                    "hq-vault-cmp-preexisting",
+                ))
+            }
+        };
+
+        let result = provision_missing_companies_with_provisioner(
+            tmp.path(),
+            &vault(&server),
+            VAULT_URL,
+            provisioner,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].uid, "cmp_preexisting");
+        assert_eq!(result[0].bucket_name, "hq-vault-cmp-preexisting");
+
+        // Provisioner invoked exactly once with the folder slug
+        assert_eq!(
+            *recorded_slugs.lock().unwrap(),
+            vec![slug.to_string()],
+            "provisioner must be called exactly once with the folder slug",
+        );
+
+        // No Rust-side vault HTTP — Path C is owned by the CLI subprocess
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    // (g) provisioner returns a freshly created uid → Rust records it once; the
+    // display_name from company.yaml is forwarded so the CLI can stamp the
+    // entity's friendly name. Pre-C3 this test asserted on POST /entity; post-C3
+    // those POSTs happen inside the CLI subprocess and aren't visible from here.
+    #[tokio::test]
+    async fn test_find_by_slug_null_creates_entity_once() {
+        let tmp = TempDir::new().unwrap();
+        let slug = "brand-new";
+        setup_company(tmp.path(), slug, Some("cloud: true\nname: Brand New\n"));
+
+        let server = MockServer::start().await;
+        let call_count: Arc<Mutex<u32>> = Arc::new(Mutex::new(0));
+        let forwarded_name: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let call_count_clone = Arc::clone(&call_count);
+        let forwarded_name_clone = Arc::clone(&forwarded_name);
+        let provisioner = move |s: String, name: Option<String>, _root: PathBuf| {
+            let calls = Arc::clone(&call_count_clone);
+            let name_sink = Arc::clone(&forwarded_name_clone);
+            async move {
+                *calls.lock().unwrap() += 1;
+                *name_sink.lock().unwrap() = name;
+                Ok(mock_cli_result(&s, "cmp_created", "hq-vault-cmp-created"))
+            }
+        };
+
+        let result = provision_missing_companies_with_provisioner(
+            tmp.path(),
+            &vault(&server),
+            VAULT_URL,
+            provisioner,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].uid, "cmp_created");
+
+        assert_eq!(
+            *call_count.lock().unwrap(),
+            1,
+            "provisioner must be called exactly once",
+        );
+        assert_eq!(
+            forwarded_name.lock().unwrap().as_deref(),
+            Some("Brand New"),
+            "display_name from company.yaml must be forwarded to the provisioner",
+        );
+
+        // No Rust-side vault HTTP — Path C is owned by the CLI subprocess
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+}
