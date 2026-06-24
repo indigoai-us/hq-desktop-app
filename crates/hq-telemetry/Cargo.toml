@@ -1,0 +1,13 @@
+# Shared telemetry crate (Phase 4 — first extraction).
+# Currently houses the Sentry before-send scrubber (PII/secret redaction); the
+# Sentry init + telemetry client move here in later extractions.
+[package]
+name = "hq-telemetry"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+sentry = "^0.35"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+url = "2"

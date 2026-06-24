@@ -1,4 +1,5 @@
-// src-tauri/src/sentry_scrub.rs — canonical fleet Rust scrubber.
+//! `hq-telemetry` — canonical HQ Rust Sentry scrubber (PII/secret redaction).
+//! Extracted from `apps/sync/src-tauri/src/sentry_scrub.rs` (Phase 4).
 // Only `Event`, `Context`, and `Value` are referenced inside this module.
 // The `ClientOptions` and `Arc` imports that the wiring needs (see
 // `lib.rs::run()` in this step and `main.rs::main()` in Step 17) live
