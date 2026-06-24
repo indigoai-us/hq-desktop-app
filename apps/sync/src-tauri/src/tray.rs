@@ -12,8 +12,11 @@ use tauri::{
     image::Image,
     menu::{MenuBuilder, MenuItemBuilder},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, Listener, Manager, Monitor, PhysicalPosition, Rect, WindowEvent,
+    AppHandle, Emitter, Listener, Manager, PhysicalPosition, Rect, WindowEvent,
 };
+
+#[cfg(target_os = "macos")]
+use tauri::Monitor;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Tray state enum
@@ -256,10 +259,17 @@ fn icon_for_state(state: TrayState) -> Image<'static> {
 /// The tray assets are white-on-alpha template glyphs; re-applying the flag
 /// after each swap lets macOS recolor them for the current menu-bar appearance.
 fn set_state_icon<R: tauri::Runtime>(tray: &tauri::tray::TrayIcon<R>, _state: TrayState) {
-    // Text-only tray (the template-image path does not render on this OS). Keep a
-    // constant "HQ" label; sync state is conveyed by the tooltip
-    // (refresh_tray_tooltip) and the popover itself, not by swapping the glyph.
-    let _ = tray.set_title(Some("HQ"));
+    #[cfg(target_os = "macos")]
+    {
+        // Text-only tray (the template-image path does not render on this OS). Keep a
+        // constant "HQ" label; sync state is conveyed by the tooltip
+        // (refresh_tray_tooltip) and the popover itself, not by swapping the glyph.
+        let _ = tray.set_title(Some("HQ"));
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = tray.set_icon(Some(icon_for_state(_state)));
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -318,7 +328,15 @@ fn build_tray_icon(app: &AppHandle) -> Result<tauri::tray::TrayIcon, Box<dyn std
     // anything in the bar. A plain text title is the most robust possible status
     // item: it's just a label on the status button, with no image-drawing path
     // to fail. Per the user's explicit call, drop the glyph and show "HQ".
-    let tray_builder = TrayIconBuilder::with_id(TRAY_ID).title("HQ");
+    let tray_builder = TrayIconBuilder::with_id(TRAY_ID);
+
+    #[cfg(target_os = "macos")]
+    let tray_builder = tray_builder.title("HQ");
+
+    #[cfg(not(target_os = "macos"))]
+    let tray_builder = tray_builder
+        .icon(icon_for_state(TrayState::Idle))
+        .icon_as_template(false);
 
     let tray_builder = tray_builder
         .tooltip("HQ Sync — Idle")
@@ -494,8 +512,18 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
 fn toggle_window(app: &AppHandle, tray_rect: Option<Rect>) {
     if let Some(window) = app.get_webview_window("main") {
         if window.is_visible().unwrap_or(false) {
+            #[cfg(target_os = "windows")]
+            let _ = window.set_always_on_top(false);
             let _ = window.hide();
         } else {
+            #[cfg(target_os = "windows")]
+            {
+                let _ = tray_rect;
+                position_above_tray_fallback(&window);
+                set_dwm_small_corner(&window);
+                let _ = window.set_always_on_top(true);
+            }
+            #[cfg(not(target_os = "windows"))]
             if let Some(rect) = tray_rect {
                 position_below_tray(&window, rect);
             }
@@ -507,6 +535,7 @@ fn toggle_window(app: &AppHandle, tray_rect: Option<Rect>) {
 
 /// Pure math: center `win_w`-wide window horizontally under the tray icon,
 /// `gap_px` below it. All inputs in physical pixels.
+#[cfg(not(target_os = "windows"))]
 fn compute_popover_position(
     tray_x: f64,
     tray_y: f64,
@@ -520,6 +549,23 @@ fn compute_popover_position(
     (pop_x, pop_y)
 }
 
+#[cfg(target_os = "windows")]
+#[allow(dead_code)]
+pub(crate) fn compute_popover_position(
+    tray_x: f64,
+    tray_y: f64,
+    tray_w: f64,
+    _tray_h: f64,
+    win_w: f64,
+    win_h: f64,
+    gap_px: f64,
+) -> (i32, i32) {
+    let pop_x = (tray_x + tray_w - win_w).round() as i32;
+    let pop_y = (tray_y - win_h - gap_px).round() as i32;
+    (pop_x, pop_y)
+}
+
+#[cfg(not(target_os = "windows"))]
 fn compute_clamped_popover_position(
     tray_x: f64,
     tray_y: f64,
@@ -546,8 +592,14 @@ fn compute_clamped_popover_position(
 // Small visual gap between the menu bar and the popover top edge.
 // 4 physical px is ~2pt on a 2x retina display — enough to avoid
 // the popover looking glued to the menu bar.
+#[cfg(not(target_os = "windows"))]
 const POPOVER_GAP_PX: f64 = 4.0;
+#[cfg(target_os = "windows")]
+const POPOVER_GAP_PX: f64 = 12.0;
+#[cfg(target_os = "windows")]
+const POPOVER_RIGHT_INSET_PX: i32 = 20;
 
+#[cfg(target_os = "macos")]
 fn tray_anchor_monitor(
     monitors: impl IntoIterator<Item = Monitor>,
     tray_center_x: f64,
@@ -594,6 +646,7 @@ struct MonitorBox {
     scale: f64,
 }
 
+#[cfg(target_os = "macos")]
 /// Build a [`MonitorBox`] from a live `Monitor` (same field access pattern as
 /// `tray_anchor_monitor` / `position_below_tray`).
 fn monitor_box(m: &Monitor) -> MonitorBox {
@@ -606,6 +659,7 @@ fn monitor_box(m: &Monitor) -> MonitorBox {
     }
 }
 
+#[cfg(target_os = "macos")]
 /// Place the popover under the menu-bar icon, on the monitor it was clicked on.
 ///
 /// `anchor_x_points` is the icon's on-screen horizontal centre in Cocoa screen
@@ -650,6 +704,7 @@ fn position_popover_under_anchor(
 /// normalize both to physical pixels using the window's scale factor
 /// so the math is unit-consistent with `window.outer_size()`, which is
 /// already physical.
+#[cfg(not(target_os = "windows"))]
 fn position_below_tray(window: &tauri::WebviewWindow, rect: Rect) {
     let size = match window.outer_size() {
         Ok(s) => s,
@@ -709,6 +764,13 @@ pub fn show_window_at_tray(app: &AppHandle) {
     };
     // One HQ window at a time: summoning the popover hides the desktop view.
     hide_desktop_alt(app);
+    #[cfg(target_os = "windows")]
+    {
+        position_above_tray_fallback(&window);
+        set_dwm_small_corner(&window);
+        let _ = window.set_always_on_top(true);
+    }
+    #[cfg(not(target_os = "windows"))]
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
         if let Ok(Some(rect)) = tray.rect() {
             position_below_tray(&window, rect);
@@ -748,11 +810,19 @@ pub fn hide_desktop_alt(app: &AppHandle) {
 /// click-away hide that fires because the helper process, not HQ, is frontmost
 /// when this is invoked.
 pub fn show_popover_window(app: &AppHandle) {
+    #[cfg(target_os = "macos")]
     suppress_blur_hide_briefly();
     hide_desktop_alt(app);
     let Some(window) = app.get_webview_window("main") else {
         return;
     };
+    #[cfg(target_os = "windows")]
+    {
+        position_above_tray_fallback(&window);
+        set_dwm_small_corner(&window);
+        let _ = window.set_always_on_top(true);
+    }
+    #[cfg(target_os = "macos")]
     if let Ok(size) = window.outer_size() {
         let win_w = size.width as f64;
 
@@ -790,6 +860,84 @@ pub fn show_popover_window(app: &AppHandle) {
     }
     let _ = window.show();
     let _ = window.set_focus();
+}
+
+#[cfg(target_os = "windows")]
+fn position_above_tray_fallback(window: &tauri::WebviewWindow) {
+    let outer = match window.outer_size() {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let Some(work) = monitor_work_area(window) else {
+        return;
+    };
+    let (pop_x, pop_y) = compute_popover_position_from_work_area(
+        work,
+        outer.width as i32,
+        outer.height as i32,
+        POPOVER_GAP_PX as i32,
+        POPOVER_RIGHT_INSET_PX,
+    );
+    let _ = window.set_position(PhysicalPosition::new(pop_x, pop_y));
+}
+
+#[cfg(target_os = "windows")]
+fn monitor_work_area(window: &tauri::WebviewWindow) -> Option<(i32, i32, i32, i32)> {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+    };
+
+    let hwnd = window.hwnd().ok()?;
+    let hwnd = HWND(hwnd.0 as *mut _);
+    let mut info: MONITORINFO = unsafe { std::mem::zeroed() };
+    info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+    let ok = unsafe {
+        let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        GetMonitorInfoW(monitor, &mut info)
+    };
+    if !ok.as_bool() {
+        return None;
+    }
+    let r = info.rcWork;
+    Some((r.left, r.top, r.right, r.bottom))
+}
+
+#[cfg(target_os = "windows")]
+fn set_dwm_small_corner(window: &tauri::WebviewWindow) {
+    use crate::util::logfile::log;
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::Graphics::Dwm::{
+        DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUNDSMALL,
+    };
+
+    let Ok(hwnd) = window.hwnd() else { return };
+    let hwnd = HWND(hwnd.0 as *mut _);
+    let pref: u32 = DWMWCP_ROUNDSMALL.0 as u32;
+    let pref_ptr = &pref as *const u32 as *const std::ffi::c_void;
+    let size = std::mem::size_of::<u32>() as u32;
+    let result =
+        unsafe { DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, pref_ptr, size) };
+    if let Err(e) = result {
+        log(
+            "tray",
+            &format!("DwmSetWindowAttribute(DWMWCP_ROUNDSMALL) failed: {e}"),
+        );
+    }
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn compute_popover_position_from_work_area(
+    work: (i32, i32, i32, i32),
+    win_w: i32,
+    win_h: i32,
+    gap_px: i32,
+    right_inset_px: i32,
+) -> (i32, i32) {
+    let (work_l, work_t, work_r, work_b) = work;
+    let pop_x = (work_r - win_w - right_inset_px).max(work_l);
+    let pop_y = (work_b - win_h - gap_px).max(work_t);
+    (pop_x, pop_y)
 }
 
 /// Toggle the popover: hide it if it's already visible, otherwise show it

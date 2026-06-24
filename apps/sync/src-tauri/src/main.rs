@@ -538,7 +538,7 @@ fn main() {
             // opens HQ Sync at login without the user opening Settings first.
             // Honours an explicit `"startAtLogin": false` opt-out. Best-effort
             // and idempotent — never aborts launch.
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
             commands::autostart::ensure_autostart_on_launch();
 
             // macOS menubar-app activation policy. `Accessory` = no Dock

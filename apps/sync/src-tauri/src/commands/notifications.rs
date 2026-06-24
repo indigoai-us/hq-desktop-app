@@ -37,6 +37,9 @@
 
 use tauri::AppHandle;
 
+#[cfg(target_os = "windows")]
+const NOTIFICATION_AUMID: &str = "ai.indigo.hq-sync-menubar";
+
 /// Stable string contract for the frontend:
 /// `"granted" | "denied" | "prompt" | "unknown"`.
 ///
@@ -62,9 +65,14 @@ fn auth_status_to_str(status: isize) -> &'static str {
 pub async fn notification_permission_state(app: AppHandle) -> Result<String, String> {
     #[cfg(target_os = "macos")]
     {
+        let _ = app;
         Ok(macos::read_authorization_status())
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        windows::permission_state(&app)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         // Non-macOS targets don't ship this UI; report neutral.
         let _ = app;
@@ -81,13 +89,18 @@ pub async fn notification_permission_state(app: AppHandle) -> Result<String, Str
 pub async fn notification_request_permission(app: AppHandle) -> Result<String, String> {
     #[cfg(target_os = "macos")]
     {
+        let _ = app;
         macos::request_authorization();
         // Re-read the real status — more truthful than the request callback's
         // bool (which only reflects the just-made decision, not denials made
         // earlier in System Settings).
         Ok(macos::read_authorization_status())
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        windows::request_permission(&app)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         let _ = app;
         Ok("unknown".to_string())
@@ -106,9 +119,59 @@ pub(crate) fn current_authorization_status() -> String {
     {
         macos::read_authorization_status()
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        windows::permission_state_without_app()
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         "unknown".to_string()
+    }
+}
+
+#[cfg(target_os = "windows")]
+mod windows {
+    use super::NOTIFICATION_AUMID;
+    use crate::util::logfile::log;
+    use tauri::AppHandle;
+    use winreg::enums::HKEY_CURRENT_USER;
+    use winreg::RegKey;
+
+    fn read_permission_state() -> String {
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let subkey = format!(
+            "Software\\Microsoft\\Windows\\CurrentVersion\\Notifications\\Settings\\{NOTIFICATION_AUMID}"
+        );
+        match hkcu.open_subkey(&subkey) {
+            Ok(key) => match key.get_value::<u32, _>("Enabled") {
+                Ok(0) => "denied".to_string(),
+                Ok(_) => "granted".to_string(),
+                Err(_) => "granted".to_string(),
+            },
+            Err(_) => "granted".to_string(),
+        }
+    }
+
+    pub fn permission_state(_app: &AppHandle) -> Result<String, String> {
+        Ok(read_permission_state())
+    }
+
+    pub fn permission_state_without_app() -> String {
+        read_permission_state()
+    }
+
+    pub fn request_permission(app: &AppHandle) -> Result<String, String> {
+        let mut cmd = std::process::Command::new("explorer.exe");
+        cmd.arg("ms-settings:notifications");
+        crate::util::paths::no_window(&mut cmd);
+        match cmd.spawn() {
+            Ok(_) => log("notifications", "opened ms-settings:notifications"),
+            Err(e) => log(
+                "notifications",
+                &format!("failed to open ms-settings:notifications: {e}"),
+            ),
+        }
+        permission_state(app)
     }
 }
 

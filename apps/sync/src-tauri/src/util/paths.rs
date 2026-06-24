@@ -1,8 +1,34 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[cfg(target_os = "windows")]
+pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+pub fn no_window(cmd: &mut Command) {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = cmd;
+    }
+}
+
+#[cfg(target_os = "windows")]
+const PATH_SEP: char = ';';
+#[cfg(not(target_os = "windows"))]
+const PATH_SEP: char = ':';
+
+#[cfg(target_os = "windows")]
+const EXE_EXT: &str = ".exe";
+#[cfg(not(target_os = "windows"))]
+const EXE_EXT: &str = "";
+
 /// Returns the managed HQ toolchain directory installed by hq-installer.
 /// Path mirrors `managed_toolchain_dir_in()` in hq-installer's `deps.rs`.
+#[cfg(not(target_os = "windows"))]
 fn managed_toolchain_dir(home: &Path) -> PathBuf {
     home.join("Library")
         .join("Application Support")
@@ -10,9 +36,32 @@ fn managed_toolchain_dir(home: &Path) -> PathBuf {
         .join("toolchain")
 }
 
+/// Returns the canonical managed HQ toolchain directory installed by
+/// hq-installer-win: `%LOCALAPPDATA%\IndigoHQ\toolchain\`.
+#[cfg(target_os = "windows")]
+fn managed_toolchain_dir() -> Option<PathBuf> {
+    let local_app = std::env::var_os("LOCALAPPDATA")?;
+    Some(PathBuf::from(local_app).join("IndigoHQ").join("toolchain"))
+}
+
+#[cfg(target_os = "windows")]
+fn legacy_managed_toolchain_dir() -> Option<PathBuf> {
+    let local_app = std::env::var_os("LOCALAPPDATA")?;
+    Some(PathBuf::from(local_app).join("Indigo HQ").join("toolchain"))
+}
+
+pub fn home_dir() -> Option<PathBuf> {
+    if let Some(home) = std::env::var_os("HOME") {
+        if !home.is_empty() {
+            return Some(PathBuf::from(home));
+        }
+    }
+    dirs::home_dir()
+}
+
 /// Returns the ~/.hq/ directory path.
 pub fn hq_config_dir() -> Result<PathBuf, String> {
-    let home = dirs::home_dir().ok_or_else(|| "Cannot determine home directory".to_string())?;
+    let home = home_dir().ok_or_else(|| "Cannot determine home directory".to_string())?;
     Ok(home.join(".hq"))
 }
 
@@ -40,35 +89,72 @@ pub fn hq_config_dir() -> Result<PathBuf, String> {
 /// surfaces as a sync error the UI can show. We don't invent a path that
 /// doesn't exist.
 pub fn resolve_bin(name: &str) -> String {
-    if let Some(path) = resolve_bin_in_dirs(dirs::home_dir().as_deref(), name) {
-        return path;
-    }
-
-    // 5. Login-shell PATH lookup — catches nvm/volta/asdf + any custom prefix
-    //    the user configured in .zshrc. `-l` makes zsh a login shell so it
-    //    sources the full startup chain. `command -v` prints the resolved
-    //    path on success, nothing on miss.
-    if let Ok(output) = Command::new("zsh")
-        .args(["-lc", &format!("command -v {}", name)])
-        .output()
+    #[cfg(target_os = "windows")]
     {
-        if output.status.success() {
-            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !path.is_empty() && Path::new(&path).exists() {
-                return path;
+        let candidates = candidate_filenames(name);
+
+        for dir in extended_search_dirs() {
+            for candidate in &candidates {
+                let full = dir.join(candidate);
+                if full.exists() {
+                    return full.to_string_lossy().to_string();
+                }
             }
         }
+
+        let mut where_cmd = Command::new("where.exe");
+        where_cmd.arg(name);
+        no_window(&mut where_cmd);
+        if let Ok(output) = where_cmd.output() {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let matches: Vec<&str> = stdout
+                    .lines()
+                    .map(|l| l.trim())
+                    .filter(|l| !l.is_empty() && Path::new(l).exists())
+                    .collect();
+                if let Some(best) = pick_spawnable_path(&matches) {
+                    return best.to_string();
+                }
+            }
+        }
+
+        name.to_string()
     }
 
-    // Fall back to bare name — Command::new will then produce os error 2
-    // with the binary name still recognizable in the error message.
-    name.to_string()
+    #[cfg(not(target_os = "windows"))]
+    {
+        if let Some(path) = resolve_bin_in_dirs(home_dir().as_deref(), name) {
+            return path;
+        }
+
+        // 5. Login-shell PATH lookup — catches nvm/volta/asdf + any custom prefix
+        //    the user configured in .zshrc. `-l` makes zsh a login shell so it
+        //    sources the full startup chain. `command -v` prints the resolved
+        //    path on success, nothing on miss.
+        if let Ok(output) = Command::new("zsh")
+            .args(["-lc", &format!("command -v {}", name)])
+            .output()
+        {
+            if output.status.success() {
+                let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if !path.is_empty() && Path::new(&path).exists() {
+                    return path;
+                }
+            }
+        }
+
+        // Fall back to bare name — Command::new will then produce os error 2
+        // with the binary name still recognizable in the error message.
+        name.to_string()
+    }
 }
 
 /// Resolve a binary from deterministic home-relative and system-prefix
 /// locations. Kept separate from the login-shell fallback so tests can assert
 /// precedence without depending on the developer machine's actual HOME or
 /// shell configuration.
+#[cfg(not(target_os = "windows"))]
 fn resolve_bin_in_dirs(home: Option<&Path>, name: &str) -> Option<String> {
     if let Some(home) = home {
         // Managed HQ toolchain (installed by hq-installer). Match
@@ -101,6 +187,101 @@ fn resolve_bin_in_dirs(home: Option<&Path>, name: &str) -> Option<String> {
     None
 }
 
+#[cfg(target_os = "windows")]
+fn extended_search_dirs() -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+
+    if let Some(toolchain) = managed_toolchain_dir() {
+        dirs.push(toolchain.join("bin"));
+        dirs.push(toolchain.join("node"));
+    }
+    if let Some(legacy) = legacy_managed_toolchain_dir() {
+        dirs.push(legacy.join("bin"));
+        dirs.push(legacy.join("node"));
+    }
+
+    if let Some(home) = home_dir() {
+        dirs.push(home.join(".hq").join("bin"));
+        dirs.push(home.join("scoop").join("shims"));
+    }
+
+    if let Ok(local_app) = std::env::var("LOCALAPPDATA") {
+        dirs.push(
+            PathBuf::from(local_app)
+                .join("Microsoft")
+                .join("WindowsApps"),
+        );
+    }
+
+    for git_bash in [
+        "C:\\Program Files\\Git\\bin",
+        "C:\\Program Files\\Git\\usr\\bin",
+        "C:\\Program Files (x86)\\Git\\bin",
+        "C:\\Program Files (x86)\\Git\\usr\\bin",
+    ] {
+        dirs.push(PathBuf::from(git_bash));
+    }
+
+    dirs
+}
+
+#[cfg(target_os = "windows")]
+fn pick_spawnable_path<'a>(paths: &[&'a str]) -> Option<&'a str> {
+    paths
+        .iter()
+        .find(|p| {
+            let ext = Path::new(p)
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.to_ascii_lowercase());
+            matches!(ext.as_deref(), Some("exe") | Some("cmd") | Some("bat"))
+        })
+        .or_else(|| paths.first())
+        .copied()
+}
+
+fn candidate_filenames(name: &str) -> Vec<String> {
+    if name.ends_with(EXE_EXT) || name.ends_with(".cmd") || name.ends_with(".bat") {
+        return vec![name.to_string()];
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        vec![
+            format!("{name}.exe"),
+            format!("{name}.cmd"),
+            format!("{name}.bat"),
+            name.to_string(),
+        ]
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        vec![format!("{name}{EXE_EXT}"), name.to_string()]
+    }
+}
+
+pub fn is_windows_shell_script(path: &str) -> bool {
+    Path::new(path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("cmd") || ext.eq_ignore_ascii_case("bat"))
+}
+
+pub fn spawn_command(path: &str, args: &[&str]) -> std::process::Command {
+    let mut cmd = if cfg!(target_os = "windows") && is_windows_shell_script(path) {
+        let mut c = std::process::Command::new("cmd.exe");
+        c.arg("/c").arg(path).args(args);
+        c
+    } else {
+        let mut c = std::process::Command::new(path);
+        c.args(args);
+        c
+    };
+    no_window(&mut cmd);
+    cmd
+}
+
 /// Build a PATH value suitable for handing to a spawned child process.
 ///
 /// **Why this exists:** even after we resolve a launcher binary to an absolute
@@ -116,58 +297,98 @@ fn resolve_bin_in_dirs(home: Option<&Path>, name: &str) -> Option<String> {
 /// Order: managed HQ toolchain → nvm node dirs → `~/.npm-global/bin` →
 /// `/opt/homebrew/bin` → `/usr/local/bin` → system defaults → parent PATH.
 pub fn child_path() -> String {
-    let mut parts: Vec<String> = Vec::new();
+    #[cfg(target_os = "windows")]
+    {
+        let mut parts: Vec<String> = Vec::new();
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-    if let Some(home) = dirs::home_dir() {
-        // Managed HQ toolchain (installed by hq-installer) — checked first
-        // so users who only have Node via the installer can resolve `npx`
-        // and node shebangs.
-        let toolchain = managed_toolchain_dir(&home);
-        for subdir in ["npm-global/bin", "node/bin"] {
-            let bin = toolchain.join(subdir);
-            if bin.exists() {
-                parts.push(bin.to_string_lossy().to_string());
+        for dir in extended_search_dirs() {
+            let s = dir.to_string_lossy().to_string();
+            if !s.is_empty() && seen.insert(s.to_lowercase()) {
+                parts.push(s);
             }
         }
 
-        // nvm: prepend every installed node version's bin dir. Order doesn't
-        // matter for correctness (any working `node` resolves `env node`).
-        let nvm_versions = home.join(".nvm").join("versions").join("node");
-        if let Ok(entries) = std::fs::read_dir(&nvm_versions) {
-            for entry in entries.flatten() {
-                let bin = entry.path().join("bin");
+        if let Ok(windir) = std::env::var("SystemRoot") {
+            for sub in ["system32", "System32\\WindowsPowerShell\\v1.0", ""] {
+                let candidate = if sub.is_empty() {
+                    PathBuf::from(&windir)
+                } else {
+                    PathBuf::from(&windir).join(sub)
+                };
+                let s = candidate.to_string_lossy().to_string();
+                if !s.is_empty() && seen.insert(s.to_lowercase()) {
+                    parts.push(s);
+                }
+            }
+        }
+
+        if let Ok(existing) = std::env::var("PATH") {
+            for p in existing.split(PATH_SEP) {
+                if !p.is_empty() && seen.insert(p.to_lowercase()) {
+                    parts.push(p.to_string());
+                }
+            }
+        }
+
+        return parts.join(&PATH_SEP.to_string());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let mut parts: Vec<String> = Vec::new();
+
+        if let Some(home) = home_dir() {
+            // Managed HQ toolchain (installed by hq-installer) — checked first
+            // so users who only have Node via the installer can resolve `npx`
+            // and node shebangs.
+            let toolchain = managed_toolchain_dir(&home);
+            for subdir in ["npm-global/bin", "node/bin"] {
+                let bin = toolchain.join(subdir);
                 if bin.exists() {
                     parts.push(bin.to_string_lossy().to_string());
                 }
             }
-        }
-        // User-level npm prefix (no-sudo installs).
-        let npm_global = home.join(".npm-global").join("bin");
-        if npm_global.exists() {
-            parts.push(npm_global.to_string_lossy().to_string());
-        }
-    }
 
-    for p in [
-        "/opt/homebrew/bin",
-        "/usr/local/bin",
-        "/usr/bin",
-        "/bin",
-        "/usr/sbin",
-        "/sbin",
-    ] {
-        parts.push(p.to_string());
-    }
-
-    if let Ok(existing) = std::env::var("PATH") {
-        for p in existing.split(':') {
-            if !p.is_empty() && !parts.iter().any(|x| x == p) {
-                parts.push(p.to_string());
+            // nvm: prepend every installed node version's bin dir. Order doesn't
+            // matter for correctness (any working `node` resolves `env node`).
+            let nvm_versions = home.join(".nvm").join("versions").join("node");
+            if let Ok(entries) = std::fs::read_dir(&nvm_versions) {
+                for entry in entries.flatten() {
+                    let bin = entry.path().join("bin");
+                    if bin.exists() {
+                        parts.push(bin.to_string_lossy().to_string());
+                    }
+                }
+            }
+            // User-level npm prefix (no-sudo installs).
+            let npm_global = home.join(".npm-global").join("bin");
+            if npm_global.exists() {
+                parts.push(npm_global.to_string_lossy().to_string());
             }
         }
-    }
 
-    parts.join(":")
+        for p in [
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            "/usr/bin",
+            "/bin",
+            "/usr/sbin",
+            "/sbin",
+        ] {
+            parts.push(p.to_string());
+        }
+
+        if let Ok(existing) = std::env::var("PATH") {
+            for p in existing.split(':') {
+                if !p.is_empty() && !parts.iter().any(|x| x == p) {
+                    parts.push(p.to_string());
+                }
+            }
+        }
+
+        parts.join(&PATH_SEP.to_string())
+    }
 }
 
 /// Returns the path to ~/.hq/config.json.
@@ -231,16 +452,14 @@ pub fn resolve_hq_folder(config_path: Option<&str>, menubar_override: Option<&st
     }
 
     // Priority 4: ~/HQ default
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("/"))
-        .join("HQ")
+    home_dir().unwrap_or_else(|| PathBuf::from("/")).join("HQ")
 }
 
 /// Candidate parent paths the installer wizard typically uses (or that users
 /// commonly choose). First entry that contains a valid `core.yaml` wins.
 /// Order matters — most-likely first to avoid scanning the entire home dir.
 fn hq_discovery_candidates() -> Vec<PathBuf> {
-    let home = match dirs::home_dir() {
+    let home = match home_dir() {
         Some(h) => h,
         None => return Vec::new(),
     };

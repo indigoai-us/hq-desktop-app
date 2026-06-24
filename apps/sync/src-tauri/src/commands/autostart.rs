@@ -1,12 +1,27 @@
 use crate::commands::config::MenubarPrefs;
 use crate::util::logfile::log;
 use crate::util::paths;
+
+#[cfg(target_os = "macos")]
 use std::path::PathBuf;
 
+#[cfg(target_os = "macos")]
 const BUNDLE_ID: &str = "ai.indigo.hq-sync-menubar";
+#[cfg(target_os = "macos")]
 const FALLBACK_APP_PATH: &str = "/Applications/HQ Sync.app/Contents/MacOS/HQ Sync";
 
+#[cfg(target_os = "windows")]
+use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_SET_VALUE};
+#[cfg(target_os = "windows")]
+use winreg::RegKey;
+
+#[cfg(target_os = "windows")]
+const RUN_KEY_SUBPATH: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+#[cfg(target_os = "windows")]
+const RUN_VALUE_NAME: &str = "HQSync";
+
 /// Returns the path to ~/Library/LaunchAgents/{BUNDLE_ID}.plist.
+#[cfg(target_os = "macos")]
 fn plist_path() -> Result<PathBuf, String> {
     let home = dirs::home_dir().ok_or_else(|| "Cannot determine home directory".to_string())?;
     Ok(home
@@ -18,6 +33,7 @@ fn plist_path() -> Result<PathBuf, String> {
 /// Resolve the app executable path by walking up from the current binary
 /// to find the .app bundle, then pointing at Contents/MacOS/<name>.
 /// Falls back to FALLBACK_APP_PATH if resolution fails.
+#[cfg(target_os = "macos")]
 fn resolve_app_path() -> String {
     if let Ok(exe) = std::env::current_exe() {
         // Walk up looking for a directory ending in .app
@@ -38,6 +54,7 @@ fn resolve_app_path() -> String {
 }
 
 /// Generate the LaunchAgent plist XML content for the given app path.
+#[cfg(target_os = "macos")]
 fn generate_plist(app_path: &str) -> String {
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -59,39 +76,116 @@ fn generate_plist(app_path: &str) -> String {
     )
 }
 
-/// Check whether the LaunchAgent plist exists (i.e. autostart is enabled).
-#[tauri::command]
-pub async fn get_autostart_enabled() -> Result<bool, String> {
-    let path = plist_path()?;
-    Ok(path.exists())
+/// Resolve the installed `HQ Sync.exe` path for the HKCU Run value.
+#[cfg(target_os = "windows")]
+fn resolve_app_path() -> String {
+    if let Ok(exe) = std::env::current_exe() {
+        return exe.to_string_lossy().to_string();
+    }
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    if let Ok(install_key) = hkcu.open_subkey("Software\\indigoai\\HQ Sync") {
+        if let Ok(install_path) = install_key.get_value::<String, _>("InstallPath") {
+            return install_path;
+        }
+    }
+    let local_app = std::env::var("LOCALAPPDATA")
+        .unwrap_or_else(|_| String::from("C:\\Users\\Default\\AppData\\Local"));
+    format!("{}\\Programs\\HQ Sync\\HQ Sync.exe", local_app)
 }
 
-/// Enable or disable autostart by creating or removing the LaunchAgent plist.
+#[cfg(target_os = "windows")]
+fn format_run_value(app_path: &str) -> String {
+    format!("\"{}\"", app_path)
+}
+
+/// Check whether autostart is enabled.
+#[tauri::command]
+pub async fn get_autostart_enabled() -> Result<bool, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let path = plist_path()?;
+        Ok(path.exists())
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let run_key = hkcu
+            .open_subkey_with_flags(RUN_KEY_SUBPATH, KEY_READ)
+            .map_err(|e| format!("open HKCU Run key: {e}"))?;
+        match run_key.get_value::<String, _>(RUN_VALUE_NAME) {
+            Ok(value) => Ok(!value.trim().is_empty()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(format!("read Run/{RUN_VALUE_NAME}: {e}")),
+        }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        Ok(false)
+    }
+}
+
+/// Enable or disable autostart.
 #[tauri::command]
 pub async fn set_autostart_enabled(enabled: bool) -> Result<(), String> {
-    let path = plist_path()?;
+    #[cfg(target_os = "macos")]
+    {
+        let path = plist_path()?;
 
-    if enabled {
-        // Ensure ~/Library/LaunchAgents/ exists
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("Failed to create LaunchAgents directory: {}", e))?;
+        if enabled {
+            // Ensure ~/Library/LaunchAgents/ exists
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("Failed to create LaunchAgents directory: {}", e))?;
+            }
+
+            let app_path = resolve_app_path();
+            let plist_content = generate_plist(&app_path);
+
+            std::fs::write(&path, plist_content)
+                .map_err(|e| format!("Failed to write LaunchAgent plist: {}", e))?;
+        } else {
+            // Remove the plist if it exists
+            if path.exists() {
+                std::fs::remove_file(&path)
+                    .map_err(|e| format!("Failed to remove LaunchAgent plist: {}", e))?;
+            }
         }
 
-        let app_path = resolve_app_path();
-        let plist_content = generate_plist(&app_path);
+        Ok(())
+    }
 
-        std::fs::write(&path, plist_content)
-            .map_err(|e| format!("Failed to write LaunchAgent plist: {}", e))?;
-    } else {
-        // Remove the plist if it exists
-        if path.exists() {
-            std::fs::remove_file(&path)
-                .map_err(|e| format!("Failed to remove LaunchAgent plist: {}", e))?;
+    #[cfg(target_os = "windows")]
+    {
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+
+        if enabled {
+            let (run_key, _disp) = hkcu
+                .create_subkey(RUN_KEY_SUBPATH)
+                .map_err(|e| format!("create HKCU Run key: {e}"))?;
+            let value = format_run_value(&resolve_app_path());
+            run_key
+                .set_value(RUN_VALUE_NAME, &value)
+                .map_err(|e| format!("write Run/{RUN_VALUE_NAME}: {e}"))?;
+            Ok(())
+        } else {
+            let run_key = match hkcu.open_subkey_with_flags(RUN_KEY_SUBPATH, KEY_SET_VALUE) {
+                Ok(k) => k,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                Err(e) => return Err(format!("open HKCU Run key for delete: {e}")),
+            };
+            match run_key.delete_value(RUN_VALUE_NAME) {
+                Ok(()) => Ok(()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(e) => Err(format!("delete Run/{RUN_VALUE_NAME}: {e}")),
+            }
         }
     }
 
-    Ok(())
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let _ = enabled;
+        Ok(())
+    }
 }
 
 /// Resolve the effective `startAtLogin` preference.
@@ -127,44 +221,89 @@ fn start_at_login_pref() -> bool {
 /// is removed). Best-effort: every IO error is logged and swallowed so a
 /// failure here can never abort app launch.
 pub fn ensure_autostart_on_launch() {
-    let enabled = start_at_login_pref();
-    let path = match plist_path() {
-        Ok(p) => p,
-        Err(e) => {
-            log(
-                "autostart",
-                &format!("ensure: cannot resolve plist path: {e}"),
-            );
-            return;
-        }
-    };
-    let exists = path.exists();
-
-    if enabled && !exists {
-        if let Some(parent) = path.parent() {
-            if let Err(e) = std::fs::create_dir_all(parent) {
+    #[cfg(target_os = "macos")]
+    {
+        let enabled = start_at_login_pref();
+        let path = match plist_path() {
+            Ok(p) => p,
+            Err(e) => {
                 log(
                     "autostart",
-                    &format!("ensure: mkdir LaunchAgents failed: {e}"),
+                    &format!("ensure: cannot resolve plist path: {e}"),
                 );
                 return;
             }
+        };
+        let exists = path.exists();
+
+        if enabled && !exists {
+            if let Some(parent) = path.parent() {
+                if let Err(e) = std::fs::create_dir_all(parent) {
+                    log(
+                        "autostart",
+                        &format!("ensure: mkdir LaunchAgents failed: {e}"),
+                    );
+                    return;
+                }
+            }
+            let plist = generate_plist(&resolve_app_path());
+            match std::fs::write(&path, plist) {
+                Ok(()) => log(
+                    "autostart",
+                    "ensure: created LaunchAgent plist (default-on)",
+                ),
+                Err(e) => log("autostart", &format!("ensure: write plist failed: {e}")),
+            }
+        } else if !enabled && exists {
+            match std::fs::remove_file(&path) {
+                Ok(()) => log(
+                    "autostart",
+                    "ensure: removed LaunchAgent plist (explicit opt-out)",
+                ),
+                Err(e) => log("autostart", &format!("ensure: remove plist failed: {e}")),
+            }
         }
-        let plist = generate_plist(&resolve_app_path());
-        match std::fs::write(&path, plist) {
-            Ok(()) => log(
-                "autostart",
-                "ensure: created LaunchAgent plist (default-on)",
-            ),
-            Err(e) => log("autostart", &format!("ensure: write plist failed: {e}")),
-        }
-    } else if !enabled && exists {
-        match std::fs::remove_file(&path) {
-            Ok(()) => log(
-                "autostart",
-                "ensure: removed LaunchAgent plist (explicit opt-out)",
-            ),
-            Err(e) => log("autostart", &format!("ensure: remove plist failed: {e}")),
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let want_enabled = start_at_login_pref();
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+
+        let current: Option<String> = hkcu
+            .open_subkey_with_flags(RUN_KEY_SUBPATH, KEY_READ)
+            .ok()
+            .and_then(|key| key.get_value::<String, _>(RUN_VALUE_NAME).ok());
+        let currently_set = current
+            .as_ref()
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false);
+
+        if want_enabled && !currently_set {
+            let value = format_run_value(&resolve_app_path());
+            match hkcu.create_subkey(RUN_KEY_SUBPATH) {
+                Ok((run_key, _)) => match run_key.set_value(RUN_VALUE_NAME, &value) {
+                    Ok(()) => log(
+                        "autostart",
+                        &format!("ensure: created Run\\{RUN_VALUE_NAME}={value} (default-on)"),
+                    ),
+                    Err(e) => log("autostart", &format!("ensure: write Run value failed: {e}")),
+                },
+                Err(e) => log("autostart", &format!("ensure: open Run key failed: {e}")),
+            }
+        } else if !want_enabled && currently_set {
+            if let Ok(run_key) = hkcu.open_subkey_with_flags(RUN_KEY_SUBPATH, KEY_SET_VALUE) {
+                match run_key.delete_value(RUN_VALUE_NAME) {
+                    Ok(()) => log(
+                        "autostart",
+                        &format!("ensure: removed Run\\{RUN_VALUE_NAME} (explicit opt-out)"),
+                    ),
+                    Err(e) => log(
+                        "autostart",
+                        &format!("ensure: delete Run value failed: {e}"),
+                    ),
+                }
+            }
         }
     }
 }
