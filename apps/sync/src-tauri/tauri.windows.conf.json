@@ -1,0 +1,32 @@
+{
+  "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/crates/tauri-cli/schema.json",
+  "identifier": "ai.indigo.hq-sync-win",
+  "bundle": {
+    "targets": ["msi", "nsis"],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "embedBootstrapper",
+        "silent": true
+      },
+      "digestAlgorithm": "sha256",
+      "wix": {
+        "language": "en-US",
+        "upgradeCode": "8E5B6C7F-3A2D-4B1E-9F0C-1D2E3F4A5B6C"
+      },
+      "nsis": {
+        "languages": ["English"],
+        "displayLanguageSelector": false,
+        "installMode": "currentUser",
+        "installerIcon": "icons/icon.ico"
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IERBQzcxMzFGQzQ5MjRBQkYKUldTL1NwTEVIeFBIMmlqNzlDNFpiMFZhdW1aN2JQdDhIR0FTUDMyaEVzOW5ZUW1JQkc3QjFOWHgK",
+      "endpoints": [
+        "https://github.com/indigoai-us/hq-sync-win/releases/latest/download/latest.json"
+      ]
+    }
+  }
+}

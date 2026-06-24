@@ -245,6 +245,8 @@ fn main() {
         .manage(commands::dm_notify::ActiveThreadState::new())
         .manage(commands::dm_notify::ActiveConversationState::new())
         .manage(commands::banner::PendingBanner(Mutex::new(None)))
+        // new-files-detail window handshake state (folded in from hq-sync-win).
+        .manage(commands::new_files::PendingNewFiles(Mutex::new(Vec::new())))
         // Menubar-app close behaviour: intercept window-close (traffic-light
         // red button, Cmd-W, File→Close) and hide the window instead of
         // terminating the process. The app only truly exits via the tray
@@ -264,6 +266,8 @@ fn main() {
             commands::app::quit_app,
             commands::app::open_settings_window,
             commands::app::open_claude_code_link,
+            commands::new_files::open_new_files_detail,
+            commands::new_files::detail_window_ready,
             commands::process::spawn_process,
             commands::process::cancel_process,
             commands::oauth::start_oauth_login,

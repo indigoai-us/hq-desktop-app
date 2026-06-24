@@ -1,0 +1,78 @@
+# Windows compile gate for the unified sync app (Phase 3 of MIGRATION.md).
+#
+# Cross-compiling a Tauri app for Windows cannot be verified on a macOS dev box
+# (the per-target Recall sidecar binary and the MSVC toolchain are absent), so
+# this is the authoritative feedback loop for the `cfg(target_os = "windows")`
+# platform graft. It is EXPECTED TO BE RED until the platform-seam port in
+# PHASE3.md is complete; it becomes a required check once green.
+#
+# Triggers on PRs that touch the app (not push to main) so main is not shown red
+# while the fold is in progress; also manually dispatchable.
+name: Windows check (Phase 3)
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "apps/sync/**"
+      - "Cargo.toml"
+      - ".github/workflows/windows-check.yml"
+
+jobs:
+  windows-check:
+    name: cargo check (x86_64-pc-windows-msvc)
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: apps/sync
+    env:
+      RUST_BACKTRACE: 1
+      HQ_SYNC_SENTRY_DSN: ""
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Install Rust (stable, x86_64-pc-windows-msvc)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            apps/sync/src-tauri/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('apps/sync/src-tauri/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Install JS deps
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Install Recall sidecar deps (build.rs resource)
+        run: pnpm run sidecar:install
+
+      - name: Build Svelte bundle (satisfies tauri frontendDist)
+        run: pnpm run build
+
+      - name: Rust check (Windows target)
+        working-directory: apps/sync/src-tauri
+        run: cargo check --target x86_64-pc-windows-msvc
+
+      # Enabled as the platform graft matures:
+      # - name: Clippy (deny warnings)
+      #   working-directory: apps/sync/src-tauri
+      #   run: cargo clippy --target x86_64-pc-windows-msvc -- -D warnings
+      # - name: Windows tests
+      #   working-directory: apps/sync/src-tauri
+      #   run: cargo test --target x86_64-pc-windows-msvc --bins

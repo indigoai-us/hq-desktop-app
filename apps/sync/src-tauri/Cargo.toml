@@ -21,7 +21,6 @@ serde_json = "1"
 serde_yaml = "0.9"
 uuid = { version = "1", features = ["v4"] }
 tokio = { version = "1", features = ["full"] }
-nix = { version = "0.29", features = ["signal"] }
 reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
 dirs = "6"
 rfd = "0.15"
@@ -86,7 +85,30 @@ semver = "1"
 url = "2"
 
 [profile.release]
+# macOS/dSYM-specific. On Windows MSVC the pdb is already a separate sidecar.
 split-debuginfo = "packed"
+
+# Unix signal handling for the process-group tree-kill in commands/process.rs.
+# Windows uses Win32 Job Objects instead — see the cfg(windows) block below.
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.29", features = ["signal"] }
+
+# Windows platform deps, folded in from hq-sync-win (Phase 3):
+#   - Win32 Job Objects + ToolHelp: process spawn/cancel tree-kill (process.rs)
+#   - winreg: HKCU Run key for autostart (autostart.rs)
+#   - GetMonitorInfoW/MonitorFromWindow: tray popover work-area fallback (tray.rs)
+#   - DwmSetWindowAttribute (corner preference): disable Win11 frame rounding (tray.rs)
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_Graphics_Gdi",
+    "Win32_Graphics_Dwm",
+] }
+winreg = "0.55"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Used by commands::folder_picker to enumerate NSApp.windows and close
