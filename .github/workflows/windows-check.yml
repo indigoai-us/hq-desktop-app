@@ -36,9 +36,9 @@ jobs:
         with:
           node-version: "22"
 
+      # Version comes from the root package.json "packageManager" field;
+      # passing an explicit version here too is rejected as a conflict.
       - uses: pnpm/action-setup@v4
-        with:
-          version: 10
 
       - name: Install Rust (stable, x86_64-pc-windows-msvc)
         uses: dtolnay/rust-toolchain@stable
