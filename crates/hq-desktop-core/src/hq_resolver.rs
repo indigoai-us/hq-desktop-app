@@ -50,8 +50,8 @@
 use std::process::Command;
 use std::sync::OnceLock;
 
-use crate::util::logfile::log;
-use crate::util::paths;
+use crate::logfile::log;
+use crate::paths;
 
 /// npm range used for the auto-fallback. Bump when AppBar starts depending
 /// on a flag introduced in a newer hq-cli version.
