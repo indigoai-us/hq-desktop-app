@@ -1,10 +1,12 @@
 # Phase 3 — Fold the Windows sync fork into `apps/sync`
 
-Status: **core done — `cargo check --target x86_64-pc-windows-msvc` is GREEN** (the
-`Windows check (Phase 3)` CI job passes), and macOS stays green. The (macOS-only, but
-691 commits ahead) `apps/sync` base now compiles for Windows, with mac-only code gated
-behind `cfg` and the fork's Windows implementations ported. Remaining items below are
-follow-ups (stricter CI, frontend wiring, cleanup) — not blockers for the compile.
+Status: **platform fold complete (compile + runtime parity), CI-verified.**
+`cargo check --target x86_64-pc-windows-msvc` is GREEN (the `Windows check (Phase 3)` CI
+job passes) and macOS stays green. The (macOS-only, but 691 commits ahead) `apps/sync`
+base now compiles for Windows with mac-only code gated behind `cfg`, and the fork's
+Windows runtime implementations (process tree-kill, autostart Run-key, paths, tray
+anchoring, notifications) are ported. Remaining items below are follow-ups (real-device
+smoke test, stricter CI, frontend wiring, cleanup) — not blockers for the fold.
 This document complements the high-level plan in `MIGRATION.md`.
 
 ## Key finding that shapes the work
@@ -64,19 +66,24 @@ These files raised the 40 Windows compile errors and were gated/ported (fork as 
   Windows Mica/Acrylic + DWM corner helpers added.
 - [x] **`util/recordings_ledger.rs`** — test-only imports gated `cfg(test)`.
 
-## Remaining: Windows RUNTIME parity (compiles, but behaves mac-only on Windows)
+## Landed: Windows RUNTIME parity (CI-verified compile; mac path gated)
 
-These files **compile on Windows** (so CI is green) but currently run macOS logic on Windows —
-`cargo check` cannot catch this. Port the fork's `cfg(windows)` runtime implementations and gate
-the mac path `cfg(macos)`. The fork has the Windows impls (ref-count in parens):
+The fork's `cfg(windows)` runtime behavior was ported and the mac path gated `cfg(macos)`:
 
-- [ ] **`commands/autostart.rs`** (fork: 11) — base writes a macOS LaunchAgent plist
-  unconditionally; on Windows it must use the HKCU `…\Run` key via `winreg`.
-- [ ] **`util/paths.rs`** (fork: 13) — Windows Git-Bash discovery, `%LOCALAPPDATA%\IndigoHQ\toolchain`
-  (legacy `Indigo HQ` fallback), long-path handling.
-- [ ] **`tray.rs`** (fork: 3) — Windows tray anchoring: `GetMonitorInfoW` work-area fallback +
-  `DwmSetWindowAttribute` corner preference.
-- [ ] **`commands/notifications.rs`** (fork: 6) — Windows notification permission/Action-Center state.
+- [x] **`commands/autostart.rs`** — HKCU `Software\Microsoft\Windows\CurrentVersion\Run`
+  enable/disable/check via `winreg`; LaunchAgent plist gated to macOS; launch-time
+  reconciliation now runs on Windows too.
+- [x] **`util/paths.rs`** — Windows managed toolchain `%LOCALAPPDATA%\IndigoHQ\toolchain`
+  (legacy `Indigo HQ` fallback), Git-Bash / `where.exe` resolution, `.exe/.cmd/.bat`
+  handling, no-console spawn, `HOME`-aware `home_dir()`.
+- [x] **`tray.rs`** — Windows popover anchoring via `MonitorFromWindow`/`GetMonitorInfoW`
+  work area + `DwmSetWindowAttribute` small-corner; macOS NSStatusItem path gated.
+- [x] **`commands/notifications.rs`** — Windows Action-Center registry state +
+  `ms-settings:notifications` permission deep-link; macOS `UNUserNotificationCenter` gated.
+
+> Note: these are CI-verified to **compile** on Windows. Their on-device *behavior* (e.g.
+> the Run-key actually surviving reboot, popover sitting above the taskbar) still needs a
+> real Windows smoke test — see "remaining" below.
 
 ## Remaining: gate mac-only code so Windows compiles
 
