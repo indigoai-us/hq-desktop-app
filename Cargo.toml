@@ -1,18 +1,18 @@
-# Root Cargo workspace for hq-desktop-app.
+# Root Cargo workspace for hq-desktop-app (single app: install-then-sync).
 #
-# The two Tauri app crates and the Windows import are intentionally EXCLUDED for now:
-# both apps/sync and imports/hq-sync-win currently define the SAME crate name
-# (`hq-sync-menubar`), so they cannot share one workspace until the sync fork is
-# reconciled. Establishing the unified workspace (adding the app crates as members,
-# hoisting shared dependency versions into [workspace.dependencies]) is Phase 4–5 of
-# MIGRATION.md. Until then, each app builds standalone from its own src-tauri directory
-# exactly as it did before the import.
+# `apps/sync` is the base of the one shipped app. Its crate and the two port-source
+# imports are intentionally EXCLUDED for now — `apps/sync` and `imports/hq-sync-win`
+# both still define the crate name `hq-sync-menubar`, so they cannot co-exist in one
+# workspace until the Windows fork is folded in. The app builds standalone from its own
+# src-tauri directory exactly as imported. Adding `apps/sync/src-tauri` as a member and
+# hoisting shared dependencies into [workspace.dependencies] happens as the shared
+# crates are extracted (see MIGRATION.md, Phase 4).
 [workspace]
 resolver = "2"
 members = ["crates/*"]
 exclude = [
-  "apps/installer/src-tauri",
   "apps/sync/src-tauri",
+  "imports/hq-installer-react/src-tauri",
   "imports/hq-sync-win/src-tauri",
 ]
 

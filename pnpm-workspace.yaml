@@ -1,9 +1,7 @@
-# pnpm workspace for hq-desktop-app.
+# pnpm workspace for hq-desktop-app (single app: install-then-sync).
 #
-# NOTE: apps/installer and apps/sync were imported with their own pnpm lockfiles.
-# Root lockfile normalization (delete nested lockfiles, generate a single root
-# pnpm-lock.yaml, convert any npm scripts to pnpm) is Phase 3 of MIGRATION.md and
-# has intentionally NOT been run yet, so the apps still build standalone as imported.
+# Only the active app (apps/sync) participates. The port sources under imports/ are
+# intentionally NOT workspace members. apps/sync still carries its own pnpm lockfile
+# from import; root lockfile normalization happens as the app is finalized.
 packages:
-  - "apps/*"
-  - "packages/*"
+  - "apps/sync"

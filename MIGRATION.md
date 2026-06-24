@@ -1,514 +1,402 @@
 # HQ Desktop App — Consolidation Plan
 
-Merging `hq-installer`, `hq-sync`, and `hq-sync-win` into a single monorepo, `indigoai-us/hq-desktop-app`.
+**One application that installs, then syncs.** Merging `hq-installer`, `hq-sync`, and
+`hq-sync-win` into a single Tauri 2 app: it launches as an onboarding installer when HQ
+is not yet set up, then becomes the long-lived HQ Sync menu-bar / tray agent. One binary,
+one download, one version, one updater stream.
 
-- **Status:** Proposed (planning artifact — no code changes made)
+- **Status:** Proposed (planning artifact — repo scaffolded, no port work done yet)
 - **Date:** 2026-06-24
-- **Scope:** Three repos. `hq-installer` (React 19, already cross-platform) co-locates; `hq-sync` (Svelte 5, macOS) and `hq-sync-win` (Svelte 5, Windows) — a drifted fork of the same app — are reunited into one cross-platform sync app. `hq-desktop` and `hq-installer-win` are explicitly out of scope.
-- **Method:** Produced by a multi-stage Codex workflow — independent per-repo maps, then two competing architectures (JS-monorepo-first vs Rust-workspace-first), then a reconciled synthesis — cross-checked against a separate holistic Codex pass and a precise on-disk fork delta. Every version number, bundle identifier, signing-account name, dev port, and the Windows MSI upgrade code below was verified against the actual repository configs before this document was finalized.
+- **Base:** `hq-sync` (Svelte 5). The React installer's wizard is ported into Svelte as
+  first-run onboarding; `hq-sync-win` is folded back in for Windows.
+
+## Locked owner decisions (2026-06-24)
+
+1. **Single app, Svelte-only.** One Tauri binary + one merged Rust backend. The React
+   installer UI is ported into the Svelte sync app as first-run onboarding; no React in
+   the shipped bundle, no second app.
+2. **One product, one version.** A single version string across the whole app.
+3. **Updater domain:** `https://downloads.getindigo.ai/hq-desktop-app/{stable,beta,alpha}/latest.json`.
+   The unified app enables the updater (the installer currently disables it).
+4. **Windows shows the operator surfaces** (`library_local`, `marketplace`, `messages`,
+   `projects_local`) — gated by feature/account, not by OS.
+5. **Windows identifier → `ai.indigo.hq`** at a *deliberate later cutover*. For the first
+   unified release the existing identifiers (`ai.indigo.hq-sync-menubar` on macOS,
+   `ai.indigo.hq-sync-win` on Windows) are preserved so existing users keep in-place
+   updates; the rename needs a one-time bridge build (identifier, AUMID, upgrade code,
+   shortcuts, notification settings, updater key) — tracked below.
+
+## Method
+
+Produced by a Codex planning pass over deep per-repo maps, the precise on-disk fork delta
+between the macOS and Windows sync repos, and the condensed source bundle. Every version
+number, bundle identifier, signing-account name, and the Windows MSI upgrade code was
+verified against the actual repository configs. An earlier two-app monorepo plan was
+superseded by the single-app decision above.
 
 ---
 
-## 1. Executive summary, goals, and non-goals
+## 1. Executive summary, goals and non-goals (single app, install-then-sync lifecycle)
 
-Create `indigoai-us/hq-desktop-app` as a two-app monorepo:
+HQ Desktop is one Tauri 2 app: one binary, one download, one version, one updater stream. The app launches first as an onboarding installer when HQ is not yet installed, then becomes the long-lived HQ Sync tray/menu-bar agent after setup completes. The React installer is not shipped as a second app; its flow and native setup logic are ported into the Svelte 5 sync app.
 
-- `apps/installer`: the existing React 19 + Tauri 2 cross-platform installer.
-- `apps/sync`: one reunified Svelte 5 + Tauri 2 cross-platform sync app replacing both `hq-sync` and `hq-sync-win`.
+**Goals:**
 
-The monorepo uses pnpm workspaces and Turborepo for JavaScript orchestration, plus one root Cargo workspace for Rust app crates and shared crates. `hq-sync-win` is an import and migration source only, not a long-lived third app.
+- Use `apps/sync` as the base product and port installer onboarding into Svelte.
+- Ship one app named `hq-desktop-app` / product-facing `HQ Sync` or `HQ Desktop` as decided by product copy.
+- Preserve macOS bundle identifier `ai.indigo.hq-sync-menubar`.
+- Preserve Windows bundle identifier `ai.indigo.hq-sync-win` for the first unified release.
+- Enable the Tauri updater in the unified app.
+- Publish updater manifests under `https://downloads.getindigo.ai/hq-desktop-app/{stable,beta,alpha}/latest.json`.
+- Fold `hq-sync-win` into the base sync app using the exact fork delta.
+- Make Windows expose `library_local`, `marketplace`, `messages`, and `projects_local`.
 
-The strongest reconciled calls are:
+**Non-goals:**
 
-- Use a root `Cargo.toml`, not a nested `crates/Cargo.toml`, because Tauri app crates and shared crates need one root lockfile, workspace graph, and release validation surface.
-- Use Turborepo for JS tasks despite the Rust-first proposal, because it gives affected React/Svelte caching without replacing Cargo as the Rust build system.
-- Use `git-filter-repo` over raw subtree import, because permanent subdirectory history and tag renaming are cleaner and easier to audit.
-- Keep React and Svelte app-local; share only framework-neutral TypeScript and Rust.
-- Use independent app versions, but one locked sync version across macOS and Windows after reunion.
+- No separate `hq-installer` shipped app.
+- No React frontend in the final bundle.
+- No Linux release path in this migration.
+- No Windows identifier migration to `ai.indigo.hq` in the first unified release.
+- No macOS universal sync payload or Windows ARM64 sync payload until Recall packaging supports it honestly.
 
-Goals:
+## 2. The install-then-sync state machine — how the app decides first-run/install vs installed/steady-state on launch; how it reuses sync's existing first_run; what "installed" means and where that state is persisted; the handoff into the menu-bar/tray; relaunch/login-item behavior
 
-- Reunite sync into one product and one source tree.
-- Preserve installed app identity and updater continuity for existing macOS and Windows sync users.
-- Share CI, signing, release tooling, updater manifest generation, version checks, telemetry conventions, and Rust infrastructure.
-- Keep app command surfaces stable while moving implementation into shared crates.
-- Preserve useful git history from all three repos.
+Classify launch before anything writes `machineId`, preserving the current `first_run.rs` rule. Add one higher-level lifecycle classifier above sync’s existing first-run classifier:
 
-Non-goals for the first migration release:
+| State | Condition | UI | Background behavior |
+|---|---|---|---|
+| `NeedsInstall` | No completed install marker and no valid legacy installed shape | Svelte onboarding window | Do not start sync daemon, pollers, updater install prompts, or tray-only flows |
+| `InstallResume` | Install marker says in-progress or failed step | Svelte setup-progress repair/resume screen | Same as `NeedsInstall` |
+| `NeedsAuthForInstall` | HQ files/config can be prepared but no usable Cognito token | Svelte onboarding sign-in | No steady-state sync yet |
+| `InstalledFirstRun` | Install completed, but sync `firstRunCompleted` is false and no prior `machineId` existed at classification | Finish onboarding, then first sync/welcome behavior | Start tray agent and first sync |
+| `InstalledLegacyUpdate` | Valid existing sync install with `machineId`, but no new onboarding flags | Normal popover plus existing auto-sync notice logic | Preserve user settings |
+| `SteadyState` | Install completed and `firstRunCompleted` true | Hidden menu-bar/tray app | Normal sync agent |
 
-- No Linux support.
-- No long-lived `apps/sync-win`.
-- No shared React/Svelte component library.
-- No updater key rotation.
-- No installer self-updater rollout; the installer joins the shared updater tooling, but runtime self-update stays disabled until the monorepo migration is stable.
+**Installed means all of this is true or recoverably true:**
 
-## 2. Current state of the three repos (a compact table)
+- `~/.hq/menubar.json` has `installCompleted: true` and `hqPath`.
+- `~/.hq/config.json` parses as the sync `HqConfig` shape: company/person/bucket/vault wiring and HQ folder path.
+- The HQ root exists and contains the installed `hq-core` template/manifest shape expected by sync.
+- Auth is not part of “installed.” Missing or expired auth routes to sign-in, not reinstall.
 
-| Repo | App role | Stack | Current version | Current platforms | Identity | Updater | Release/signing notes |
-|---|---|---|---:|---|---|---|---|
-| `hq-installer` | Guided HQ installer and bootstrapper | React 19, Vite 6, Tauri 2, pnpm 9 | `0.12.0` | macOS universal, Windows x64, Windows ARM64 | `ai.indigo.hq-installer` | Disabled in config; docs/scripts are ahead of implementation | macOS uses `tauri-action@v0` with Developer ID notarization; Windows uses Azure Trusted Signing for MSI/NSIS |
-| `hq-sync` | macOS menu bar sync app | Svelte 5, Vite 6, Tauri 2, pnpm 10 in release | `0.7.24` | macOS arm64 in practice because Recall SDK is arm64-only | `ai.indigo.hq-sync-menubar` | Enabled, GitHub `hq-sync` `latest.json`, macOS updater key | Manual inside-out signing, GStreamer symlink repair, notarization, DMG/updater generation |
-| `hq-sync-win` | Windows tray sync fork | Svelte 5, Vite 6, Tauri 2, npm | `0.6.4` | Windows x64 release path; Windows ARM64 blocked by Recall sidecar launcher | `ai.indigo.hq-sync-win` | Enabled, GitHub `hq-sync-win` `latest.json`, Windows updater key | Azure Trusted Signing for MSI/NSIS; updater `.sig` must be regenerated after Authenticode signing |
+Persist lifecycle state in `~/.hq/menubar.json` using the existing untyped merge + atomic rename pattern from `first_run.rs` and `config::ensure_machine_id`. Add keys such as:
 
-## 3. Recommended architecture, with a concrete directory tree
+```json
+{
+  "installCompleted": true,
+  "installVersion": "x.y.z",
+  "installCompletedAt": "2026-...",
+  "hqPath": "/Users/.../hq",
+  "firstRunCompleted": true,
+  "autoSyncNoticeShown": true
+}
+```
 
-The repo has one root JavaScript workspace and one root Cargo workspace. The only shipped desktop apps are installer and sync.
+Keep `~/.hq/config.json` as the authoritative HQ/vault configuration file. Keep detailed setup resumability in an install manifest under `~/.hq/`, but the launch classifier should key off `menubar.json` plus valid config/root checks.
+
+For legacy sync users, if `installCompleted` is absent but `machineId`, valid `config.json`, and an HQ path exist, classify as installed and backfill `installCompleted: true` with a migration marker. Do not force these users through the installer wizard.
+
+Handoff is an internal mode switch. On onboarding completion, the app writes config/tokens/preferences, marks install complete, closes or hides the onboarding window, creates/enables the tray icon, calls the existing first-run completion command, starts realtime sync if enabled, and enters the normal popover route. `install_menubar` no longer downloads or launches a second app.
+
+On login/relaunch, the unified binary starts hidden as the tray app if installed. If setup was interrupted, login launch shows the onboarding resume screen. Autostart is reconciled after install completion only, defaulting to enabled unless `startAtLogin: false` is already persisted.
+
+## 3. Repo structure for ONE app — where the Svelte frontend and the single src-tauri live, crates/, and the temporary port-source imports/ (apps/installer and imports/hq-sync-win)
+
+Target structure:
 
 ```text
 hq-desktop-app/
-  README.md
-  RELEASE.md
-  MIGRATION.md
-  package.json
-  pnpm-lock.yaml
-  pnpm-workspace.yaml
-  turbo.json
-  tsconfig.base.json
-  eslint.config.mjs
-  rust-toolchain.toml
-  Cargo.toml
-  Cargo.lock
-  versions.toml
-  .cargo/
-    config.toml
-  .github/
-    workflows/
-      ci.yml
-      release.yml
-      nightly-regression.yml
-      sync-contract.yml
-      download-page-smoke.yml
-    actions/
-      setup-node-pnpm/
-      setup-rust-tauri/
-      apple-sign-notarize/
-      azure-trusted-signing/
   apps/
-    installer/
+    hq-desktop-app/              # git-moved from apps/sync after absorption
       package.json
-      vite.config.ts
-      tsconfig.json
-      index.html
-      src/
-      templates/
+      src/                       # Svelte 5 frontend: onboarding + tray UI
+      src-tauri/                 # the only shipped Tauri app
+      sidecar/recall-sdk-bridge/
       tests/
-      scripts/
-      src-tauri/
-        Cargo.toml
-        build.rs
-        tauri.conf.json
-        tauri.smoke.conf.json
-        capabilities/
-        icons/
-        src/
-          main.rs
-          lib.rs
-          commands/
-    sync/
-      package.json
-      svelte.config.js
-      vite.config.ts
-      vite.preview.config.ts
-      tsconfig.json
-      index.html
-      desktop-alt.html
-      src/
-      tests/
-      sidecar/
-        recall-sdk-bridge/
-      scripts/
-      src-tauri/
-        Cargo.toml
-        build.rs
-        tauri.conf.json
-        tauri.macos.conf.json
-        tauri.windows.conf.json
-        tauri.release.conf.json
-        tauri.dogfood.conf.json
-        Info.plist
-        Entitlements.plist
-        capabilities/
-        icons/
-        binaries/
-        src/
-          main.rs
-          lib.rs
-          commands/
-          events.rs
-          sentry_scrub.rs
-          tray.rs
-          updater.rs
-          util/
+      e2e/
+
   crates/
     hq-desktop-core/
-    hq-ipc/
     hq-auth-vault/
     hq-cloud/
     hq-process/
     hq-platform/
-    hq-notifications/
-    hq-meetings-recall/
-    hq-cli/
-    hq-content/
     hq-updater/
     hq-telemetry/
+    hq-content/
+    hq-installer-setup/
     hq-sync-core/
-    hq-installer-core/
-  packages/
-    config/
-    tauri-ipc/
-    auth/
-    cloud/
-    telemetry/
-    release/
-    design-tokens/
-    testing/
-    tsconfig/
-    eslint-config/
+
   imports/
-    hq-sync-win/
-      README.md
-  tooling/
-    scripts/
-      version-app.ts
-      assert-versions.ts
-      generate-latest-json.ts
-      publish-updater-manifest.ts
-      verify-downloads.ts
-      diff-sync-forks.ts
-  docs/
-    architecture.md
-    signing.md
-    updater.md
-    release.md
-    sync-fork-reunification.md
+    hq-installer-react/          # temporary port source, git-moved from apps/installer
+    hq-sync-win/                 # temporary port source, current imports/hq-sync-win
+
+  scripts/
+  .github/workflows/
 ```
 
-`imports/hq-sync-win` is temporary. It exists only between history import and fork reconciliation, then is deleted after every accepted Windows delta is represented in `apps/sync`.
+During migration, keep `apps/sync` as the active app until the port is stable, then `git mv apps/sync apps/hq-desktop-app`. Immediately remove `apps/installer` from pnpm/Cargo workspaces and treat it as read-only port source. Delete both port-source trees once their commands, UI, tests, assets, signing details, and Windows fork deltas are absorbed.
 
-## 4. Shared Rust crate boundaries (name each crate and what moves into it)
+## 4. Backend command merge — a concrete table mapping each installer command module to its new home and whether it is an onboarding-phase command or steady-state; explicitly resolve the duplicate oauth and process modules and the install_menubar/menubar/launch/autostart overlaps; note what becomes obsolete (e.g. installer launching a separate menu-bar app is now just an internal mode switch)
 
-| Crate | Boundary and source movement |
+| Installer module | New home | Phase | Decision |
+|---|---|---:|---|
+| `ai_tools` | `hq-installer-setup::ai_tools`, thin `commands::onboarding` wrapper | Onboarding, optional steady action | Keep final “open AI tool” behavior, but reuse sync’s existing app/open-link affordances where possible. |
+| `checksums` | `hq-installer-setup::windows::checksums` plus `hq-content` helpers | Onboarding/repair | Keep Windows checksum rewrite/validation for template extraction and repair. |
+| `deps` | `hq-installer-setup::deps` plus `hq-platform::toolchain` | Onboarding/repair | Own managed toolchain install, `winget`/Node/HQ CLI checks, and path normalization. |
+| `device` | `hq-desktop-core::device` | Both | One device fingerprint implementation for telemetry/auth/setup. |
+| `directory` | `hq-installer-setup::directory` | Onboarding | Own HQ path validation, default `~/hq`, empty/non-empty/import decisions. |
+| `fs` | `hq-installer-setup::fs` | Onboarding/repair | Keep guarded file operations and template writes. |
+| `git` | `hq-content::git_init` / `hq-installer-setup::git` | Onboarding | Keep initial repo/git metadata setup; steady-state git mirror remains sync-owned. |
+| `install_menubar` | Obsolete; replaced by `desktop_lifecycle::enter_sync_mode` | Internal handoff | Delete external app install/download/launch behavior. |
+| `keychain` | `hq-auth-vault::storage` | Both | Merge with sync token/vault storage. First release reads/writes existing `~/.hq/cognito-tokens.json` for compatibility and may mirror to Keychain/Credential Manager. |
+| `launch` | Split between `desktop_lifecycle`, `ai_tools`, and existing sync app commands | Onboarding | Separate-app launch is obsolete; relaunch becomes internal mode switch. |
+| `long_paths` | `hq-platform::windows::long_paths` | Onboarding/repair | Keep Windows long-path awareness checks and remediation guidance. |
+| `menubar` | `hq-sync-core::config` / `desktop_lifecycle` | Both | Merge installer writes to `menubar.json` into sync’s existing untyped merge strategy. |
+| `oauth` | `hq-auth-vault::oauth`, one `commands::oauth` wrapper | Both | Single PKCE loopback/Cognito implementation. No installer-vs-sync OAuth split. |
+| `process` | `hq-process`, one `commands::process` wrapper | Both | Single streamed process API. macOS uses process groups; Windows uses Job Objects. |
+| `staging` | `hq-content::staging` / `hq-installer-setup::templates` | Onboarding/repair | Keep hq-core/template staging, align with sync hq-core staging/update modules. |
+
+Resolve overlaps this way:
+
+- `install_menubar` is deleted as product behavior.
+- `menubar` becomes config/state persistence, not a product boundary.
+- `launch` no longer launches another app; it moves the same app from onboarding to tray mode.
+- `autostart` remains a steady-state platform command and is called after install completes.
+- `daemon` remains sync-runner lifecycle and is disabled until installed.
+- `keychain`, `auth`, `cognito`, `oauth`, and `vault_client` become one auth/vault layer with app-specific command payloads only at the edge.
+
+## 5. Frontend — porting the React installer wizard (Welcome to install to sign-in to setup-progress to done) into Svelte onboarding screens; routing/stores for onboarding vs menu-bar; what Svelte UI is reused from hq-sync; what is genuinely new
+
+Port the React wizard into Svelte under the active sync app:
+
+```text
+src/onboarding/
+  OnboardingApp.svelte
+  Welcome.svelte
+  InstallLocation.svelte
+  SignIn.svelte
+  SetupProgress.svelte
+  Done.svelte
+  AnotherInstanceRunning.svelte
+  onboardingStore.svelte.ts
+  setupProgress.ts
+```
+
+The route/store model should be lifecycle-driven, not URL-driven:
+
+- `desktopLifecycleStore`: `checking | onboarding | installResume | signIn | setupProgress | done | tray`.
+- `authStore`: wraps existing sync `get_auth_state`, `has_stored_token`, and OAuth commands.
+- `setupStore`: streams dependency/template/git/cloud/indexing progress from backend events.
+- `trayStore`: existing sync state for popover, sync progress, conflicts, packages, messages, operator surfaces.
+
+Reuse from hq-sync:
+
+- `SignInPrompt` logic and OAuth command contract, restyled for full-window onboarding.
+- Existing popover, settings, packages, notifications, activity, conflict, sync, update, and operator UI.
+- Existing Sentry setup, before-send scrubber, update banner, release-channel settings, and sync progress event handling.
+
+Genuinely new Svelte work:
+
+- Full-window onboarding shell.
+- Installer setup progress timeline.
+- Directory selection/import-existing UX.
+- Install resume/repair state.
+- Done/handoff screen.
+- E2E mocks for the old React installer walkthrough, rewritten against Svelte.
+
+The old `FirstRunWelcome.svelte` carousel should be folded into the onboarding welcome/done copy or deleted after the new wizard owns first-run education.
+
+## 6. Cross-platform — fold hq-sync-win using the exact fork delta; bring installer Windows handling (long_paths, checksums, junction/symlink fallback) into the unified backend; the cfg(target_os) seam; macOS arm64 / Windows x64 reality from Recall
+
+Use macOS `hq-sync` as the base and apply the precise fork delta:
+
+| Delta | Unified decision |
 |---|---|
-| `hq-desktop-core` | Product-neutral primitives: paths, release channels, feature gates, client info, journals, ignore rules, logfile helpers, common errors. Move sync `util/client_info`, `feature_gate`, `ignore`, `journal`, `logfile`, `paths`, `release_channel`, shared installer device/path helpers where not app-specific. |
-| `hq-ipc` | Shared serde payloads, command result/error types, Tauri event names, generated TypeScript bindings. App crates still own command registration. |
-| `hq-auth-vault` | Cognito Hosted UI, OAuth loopback, token serialization, keychain/Credential Manager storage, auth handoff types. Move installer `oauth`, `keychain`; sync `auth`, `cognito`, `oauth`; token-store portions of `vault_client`. |
-| `hq-cloud` | HQ API, Vault HTTP client, S3/STS helpers, AWS SigV4 MQTT setup. Move sync `vault_client`, `first_push`, `personal`, `provision`, `dm_mqtt`; expose installer-safe subsets. |
-| `hq-process` | Process spawn, streaming output, cancellation, tree kill. Move installer `process`; sync `process`; macOS `nix` signal handling; Windows Job Object and ToolHelp handling from `hq-sync-win`. |
-| `hq-platform` | All `cfg(target_os)` OS seams: autostart, folder picker, tray anchoring, window vibrancy, app icon/AUMID/LoginItem, permission shims, platform paths. Move sync `autostart`, `folder_picker`, tray/window-effect code, mac AppKit/Objective-C code, Windows DWM/Mica/Registry code. |
-| `hq-notifications` | Notification state, native delivery facade, history, banners, share/DM/unread actions. Move sync `notifications`, `notification_history`, `banner`, `share_notify`, `dm_notify`, and mac-only `un_notify`; keep native action behavior in platform backends. |
-| `hq-meetings-recall` | Recall SDK bridge contract, meeting detection, active recordings, ledgers, recording permissions. Move sync `meetings`, `recall_sdk`, `meeting_ledger`, and mac-only `recordings_ledger` plus `recordings_ledger_test`. |
-| `hq-cli` | Locate and run `hq`, provision/status/sync parsing, CLI update checks. Move sync `hq_cli_update`, `run_cli_provision`, `status`, `sync`, `sync_mode`, `conflicts`, relevant `hq_resolver` logic. |
-| `hq-content` | HQ core/package state, staging, drift, git mirror, rescue cache. Move sync `hq_core_state`, `hq_core_update`, `hq_core_staging`, `hq_core_drift`, `git_mirror`, `packages`, Windows `rescue_script_cache`, installer `staging` where reusable. |
-| `hq-updater` | Tauri updater adapter, channel resolution, `latest.json` schema, manifest generation/validation, signature ordering checks. Move sync `updater.rs`, release-channel resolver use, installer updater scripts into one implementation. |
-| `hq-telemetry` | Sentry initialization, scrubbers, telemetry opt-in state, app/platform/channel tags. Move sync `sentry_scrub.rs`, sync `telemetry`, installer telemetry/Sentry setup. |
-| `hq-sync-core` | Sync product domain orchestration: `activity`, `config`, `daemon`, `desktop_alt`, `drift_detail`, `first_run`, `prewarm`, `settings`, `version_gate`, `workspaces`, operator surfaces, and cross-platform command-neutral sync state. |
-| `hq-installer-core` | Installer product domain: `ai_tools`, `deps`, `directory`, `fs`, `git`, `install_menubar`, `launch`, `menubar`, Windows `checksums`, Windows `long_paths`, installer flow orchestration. |
+| mac-only `library_local`, `marketplace`, `messages`, `projects_local` | Keep and make available on Windows. UI gating is by feature/account, not OS. |
+| mac-only `un_notify` | Keep as macOS notification implementation detail. |
+| win-only `new_files` | Port into unified sync. Use on Windows immediately; enable macOS when UI/product behavior is validated. |
+| win-only `rescue_script_cache` | Port if still used by Windows repair/rescue; otherwise replace with shared hq-core rescue cache. |
+| util `recordings_ledger` exists only on mac base | Bring forward with cfg-backed implementation or no-op Windows equivalent as Recall requires. |
+| package scripts/deps differ | Standardize on Svelte 5 + pnpm, restore `svelte-check`, notification plugin, sidecar install, and tests. |
+| Cargo deps differ | `block2`, `objc2`, `nix`, `mac-notification-sys` under macOS cfg; `windows`, `winreg` under Windows cfg. |
+| identifiers differ | Preserve `ai.indigo.hq-sync-menubar` on macOS and `ai.indigo.hq-sync-win` on Windows for first unified release. |
 
-Tauri app crates become thin shells: parse IPC inputs, call shared crates, emit Tauri events, own windows/plugins/capabilities.
+Installer Windows handling moves into the unified backend:
 
-## 5. Reuniting hq-sync + hq-sync-win into one cross-platform sync app - use the exact fork delta; describe the cfg(target_os) seam, which divergent modules move where, and how to preserve updater continuity given the identifier/version divergence
+- Enable/check long paths using `long_paths`.
+- Keep checksum rewrite/validation for extracted templates.
+- Prefer symlink when permitted; fall back to junctions for directories; fall back to copy with explicit telemetry when neither is possible.
+- Keep managed toolchain paths under `%LOCALAPPDATA%\IndigoHQ\toolchain`, with legacy `%LOCALAPPDATA%\Indigo HQ\toolchain` fallback.
+- Hide spawned CLI consoles via `CREATE_NO_WINDOW`.
+- Preserve Job Object process-tree cancellation.
 
-Use `hq-sync` as the base because it is newer and broader: macOS is `0.7.24`; Windows fork is `0.6.4`. Port Windows deltas into `apps/sync`; do not keep a forked app directory.
-
-The fork delta to preserve is exact:
-
-- There are 44 shared command modules.
-- Mac-only command modules are `library_local`, `marketplace`, `messages`, `projects_local`, `un_notify`.
-- Windows-only command modules are `new_files`, `rescue_script_cache`.
-- In `src-tauri/src/util`, mac adds `recordings_ledger` and `recordings_ledger_test`.
-- Cargo platform split is mac `nix`/`block2` versus Windows `windows`/`winreg`.
-- Bundle identifiers and versions diverged: macOS is `ai.indigo.hq-sync-menubar` at `0.7.24`; Windows is `ai.indigo.hq-sync-win` at `0.6.4`.
-
-The seam is `#[cfg(target_os = "...")]` inside shared crates, not separate app trees. Keep one command contract and compile command wrappers on both OSes. Platform-specific behavior lives behind backends such as:
+The cfg seam is internal, not a fork:
 
 ```text
 crates/hq-platform/src/
-  autostart/
-    mod.rs
-    macos.rs
-    windows.rs
-  tray/
-    mod.rs
-    macos.rs
-    windows.rs
-  window_effects/
-    mod.rs
-    macos.rs
-    windows.rs
-  folder_picker/
-    mod.rs
-    macos.rs
-    windows.rs
-  permissions/
-    mod.rs
-    macos.rs
-    windows.rs
+  autostart/{macos,windows}.rs
+  process/{macos,windows}.rs
+  tray/{macos,windows}.rs
+  notifications/{macos,windows}.rs
+  permissions/{macos,windows}.rs
+  window_effects/{macos,windows}.rs
+  setup_windows/{long_paths,links}.rs
 ```
 
-Divergent module decisions:
+Release reality:
 
-| Delta | New home | Decision |
-|---|---|---|
-| `library_local` | `hq-sync-core::operator::library_local` | Keep. Compile shared logic where possible; gate UI by operator eligibility and platform readiness. |
-| `marketplace` | `hq-sync-core::operator::marketplace` | Keep. Treat as product surface, not mac-only architecture. |
-| `messages` | `hq-sync-core::operator::messages` | Keep. Hide on Windows until frontend and backend parity are tested. |
-| `projects_local` | `hq-sync-core::operator::projects_local` | Keep. Move platform file/path details into `hq-platform`. |
-| `un_notify` | `hq-notifications::macos::un_notify` | Keep as macOS native notification action behavior; expose through shared notification facade. |
-| `new_files` | `hq-sync-core::new_files` plus Windows backend | Port from Windows fork. Svelte calls it only on Windows in v1; mac returns typed unsupported or empty state until behavior is defined. |
-| `rescue_script_cache` | `hq-content::rescue_cache` | Port from Windows fork and make it reusable for staged HQ-core rescue flows. |
-| `recordings_ledger` | `hq-meetings-recall::recordings_ledger` | Preserve mac-only ledger and tests; compile behind macOS or Recall feature gates. |
+- macOS sync build is `aarch64-apple-darwin` first because Recall/GStreamer is arm64-only and non-fat.
+- Windows sync build is `x86_64-pc-windows-msvc` first because the Recall sidecar ARM64 path is not proven.
+- Do not label artifacts universal/ARM64 until the payload is actually native.
 
-Tauri config uses one common base plus platform overlays:
+## 7. Shared Rust crates appropriate for ONE app (still worth extracting: auth/vault, cloud, process, platform seam, updater, telemetry, content/hq-core, installer-setup core)
 
-- Common `tauri.conf.json`: product name, shared windows where valid, plugins, capabilities, `createUpdaterArtifacts` default, command permissions.
-- `tauri.macos.conf.json`: `identifier: ai.indigo.hq-sync-menubar`, mac private APIs, `Info.plist`, entitlements, Recall/GStreamer resources, mac updater pubkey/endpoint.
-- `tauri.windows.conf.json`: `identifier: ai.indigo.hq-sync-win`, MSI/NSIS, WebView2 bootstrapper, existing Windows upgrade code `8E5B6C7F-3A2D-4B1E-9F0C-1D2E3F4A5B6C`, Windows AUMID behavior, Windows updater pubkey/endpoint.
+These crates are internal boundaries inside one product, not preparation for multiple shipped apps:
 
-Updater continuity is a release blocker:
-
-1. First unified sync version is `0.8.0`, greater than both `0.7.24` and `0.6.4`.
-2. Preserve macOS bundle identifier `ai.indigo.hq-sync-menubar`.
-3. Preserve Windows identifier `ai.indigo.hq-sync-win` and MSI upgrade code.
-4. Sign first unified updater artifacts with the existing platform-specific updater keys; do not rotate keys.
-5. Publish compatibility `latest.json` at both old endpoints used by installed clients:
-   - `https://github.com/indigoai-us/hq-sync/releases/latest/download/latest.json`
-   - `https://github.com/indigoai-us/hq-sync-win/releases/latest/download/latest.json`
-6. New binaries switch to app/channel-specific manifest URLs under the new release domain.
-7. Keep old endpoints alive for at least two stable sync releases and 90 days.
-
-## 6. Frontend strategy (React installer + Svelte sync coexisting; what TS is shared vs not)
-
-Keep the frontend frameworks separate:
-
-- Installer remains React 19 with Vite, Tailwind 4, shadcn/Base UI, Playwright, and Vitest.
-- Sync remains Svelte 5 with Vite, Svelte Check, Vitest, desktop-alt harness, and Recall sidecar scripts.
-- No shared React/Svelte component package.
-- No attempt to make installer screens and sync popover share UI primitives.
-
-Use pnpm 10 at the repo root. Convert `hq-sync-win` from npm to pnpm during migration. Convert Tauri `beforeDevCommand` and `beforeBuildCommand` from `npm run ...` to `pnpm ...`. Keep dev ports stable: installer `1420`, sync `1421`.
-
-Shared TypeScript is framework-neutral only:
-
-| Package | Shared content |
+| Crate | Owns |
 |---|---|
-| `@indigo/config` | Env parsing, release channels, product constants, endpoint construction. |
-| `@indigo/tauri-ipc` | Typed `invoke` wrappers, generated command/event payload types, shared error normalization. |
-| `@indigo/auth` | Cognito config types, OAuth handoff payloads, token state shapes. |
-| `@indigo/cloud` | API client types, retry policy, request attribution helpers. |
-| `@indigo/telemetry` | Event names, Sentry tags, scrubber fixtures, opt-in payloads. |
-| `@indigo/release` | Version/channel helpers and updater manifest types. |
-| `@indigo/design-tokens` | CSS custom properties and token exports, not components. |
-| `@indigo/testing` | IPC mocks, Cognito mocks, fixture builders, manifest fixtures. |
+| `hq-desktop-core` | Paths, config dirs, machine/device identity, release channel parsing, common errors, file merge helpers. |
+| `hq-auth-vault` | Cognito Hosted UI, PKCE loopback, token exchange/refresh, token file compatibility, Keychain/Credential Manager, vault API auth. |
+| `hq-cloud` | S3/STS clients, first push, personal provisioning, vault/cloud handoff, DM MQTT SigV4 helpers. |
+| `hq-process` | Streamed process spawn/cancel, event payloads, POSIX process groups, Windows Job Objects. |
+| `hq-platform` | `cfg(target_os)` implementations for tray, autostart, folder picker, notifications, permissions, window effects, Windows setup primitives. |
+| `hq-updater` | Tauri updater adapter, version gate, channel endpoint selection, manifest structs, signature validation/generation scripts. |
+| `hq-telemetry` | Sentry init, scrubbers, telemetry endpoint client, lifecycle/setup/sync event taxonomy. |
+| `hq-content` | hq-core extraction/update/staging/drift, git mirror/init, package install/update, checksum-aware content operations. |
+| `hq-installer-setup` | Onboarding orchestration: deps, directory, template extraction, initial sync/setup, personalization, indexing, repair/resume. |
+| `hq-sync-core` | Steady-state sync domain: config, settings, daemon policy, status, conflicts, workspaces, packages, operator surfaces. |
 
-The sync frontend should carry one cross-platform UI with platform tokens for window size, vibrancy assumptions, and tray placement. The Windows fork’s `src/packages` surface is imported into unified sync only if its corresponding backend commands are present and covered.
+Tauri command modules should stay thin in `apps/hq-desktop-app/src-tauri/src/commands`: validate IPC input, call a crate, emit events, serialize errors.
 
-## 7. Unified build, release, signing (macOS notarization + Windows Azure Trusted Signing), updater (.sig regeneration after Authenticode) and versioning (decide independent vs locked, and justify)
+## 8. Build, release, signing (macOS notarization + Windows Azure Trusted Signing), updater and versioning for ONE app — note the installer currently DISABLES the updater while sync ENABLES it, so the unified app must enable the updater; one version; .sig regeneration after Authenticode
 
-Versioning decision: use independent app versions, with one locked sync version across macOS and Windows.
-
-Justification: installer `0.12.0`, mac sync `0.7.24`, and Windows sync `0.6.4` have different release cadences and user impact. Locking installer and sync together creates unnecessary releases. Letting mac sync and Windows sync diverge again recreates the fork.
-
-Use app-scoped tags:
+The unified app has one version across:
 
 ```text
-installer-v0.12.1
-sync-v0.8.0
-sync-v0.8.1-beta.1
-sync-v0.8.1-alpha.1
+apps/hq-desktop-app/package.json
+apps/hq-desktop-app/src-tauri/Cargo.toml
+apps/hq-desktop-app/src-tauri/tauri.conf.json
+apps/hq-desktop-app/src-tauri/tauri.*.conf.json
+Cargo.lock
 ```
 
-`versions.toml` is the source of truth. `tooling/scripts/version-app.ts` writes app `package.json`, Tauri config, app `Cargo.toml`, and validates the root `Cargo.lock` package entry. Release refuses mismatched versions.
+Use tags `vX.Y.Z`, `vX.Y.Z-beta.N`, and `vX.Y.Z-alpha.N`. A release is not stable unless both supported platforms publish the same version.
 
-Build targets:
+The unified app must enable `tauri-plugin-updater` and `bundle.createUpdaterArtifacts = true`. The React installer currently disables updater artifacts; that setting must not survive the merge.
 
-| App | macOS | Windows |
-|---|---|---|
-| Installer | `universal-apple-darwin`, signed/notarized app/zip | `x86_64-pc-windows-msvc` and `aarch64-pc-windows-msvc`, MSI/NSIS |
-| Sync | `aarch64-apple-darwin` initially, because Recall SDK is arm64-only | `x86_64-pc-windows-msvc` initially, because Windows Recall sidecar ARM64 is not valid yet |
-
-macOS signing:
-
-- Installer continues with `tauri-apps/tauri-action@v0`, Developer ID Application signing, notarization, stapling, and `ditto --keepParent --sequesterRsrc` zip creation.
-- Sync keeps the manual release flow: build raw `.app`, repair Recall/GStreamer symlinks, sign inside-out with hardened runtime and entitlements, never use `codesign --deep`, notarize with `notarytool`, staple, then create updater archive and DMG from the signed/stapled app.
-
-Windows signing:
-
-- Use Azure Trusted Signing for both apps.
-- Use GitHub OIDC with `id-token: write` and `environment: release`.
-- Endpoint: `https://eus.codesigning.azure.net/`.
-- Account/profile: `indigosigning` / `indigo-codesign`.
-- Sign MSI and NSIS outputs after Tauri build.
-- Verify every signed artifact with `Get-AuthenticodeSignature`.
-
-Updater:
-
-- Sync emits updater artifacts immediately.
-- Installer uses the shared updater crate and manifest tooling, but runtime updater stays disabled for the first monorepo release.
-- Publish manifests per app and channel, not one global GitHub `latest.json`:
+Updater endpoints:
 
 ```text
-https://downloads.getindigo.ai/hq-desktop-app/sync/stable/latest.json
-https://downloads.getindigo.ai/hq-desktop-app/sync/beta/latest.json
-https://downloads.getindigo.ai/hq-desktop-app/sync/alpha/latest.json
-https://downloads.getindigo.ai/hq-desktop-app/installer/stable/latest.json
+https://downloads.getindigo.ai/hq-desktop-app/stable/latest.json
+https://downloads.getindigo.ai/hq-desktop-app/beta/latest.json
+https://downloads.getindigo.ai/hq-desktop-app/alpha/latest.json
 ```
 
-The Windows updater rule is mandatory: Authenticode signing mutates installer bytes, so Tauri updater `.sig` files must be regenerated after Azure Trusted Signing and verified against the final signed bytes before publishing `latest.json`.
+For the first unified release, platform overlays may keep separate updater public keys to preserve in-place updates:
 
-## 8. Unified CI design (jobs, matrix, gates)
+- macOS: existing `hq-sync` updater key and identifier.
+- Windows: existing `hq-sync-win` updater key and identifier.
 
-Use one required PR workflow plus release/nightly/smoke workflows.
+macOS release:
 
-| Job | Matrix | Required gates |
+- Build raw `aarch64-apple-darwin` `.app`.
+- Repair Recall/GStreamer framework symlinks after Tauri resource copy.
+- Sign inside-out with hardened runtime and required entitlements.
+- Do not use `codesign --deep`.
+- Notarize with Apple notarytool credentials.
+- Staple the app.
+- Build updater archive and DMG from the signed, notarized, stapled app.
+- Sign updater archive after final bytes exist.
+
+Windows release:
+
+- Build `x86_64-pc-windows-msvc` MSI and NSIS plus updater artifacts.
+- Preserve Windows upgrade code and `ai.indigo.hq-sync-win` for first unified release.
+- Sign MSI and NSIS installer exe using Azure Trusted Signing:
+  - endpoint `https://eus.codesigning.azure.net/`
+  - account `indigosigning`
+  - profile `indigo-codesign`
+- Verify `Get-AuthenticodeSignature` is `Valid`.
+- Regenerate Tauri updater `.sig` files after Authenticode signing, because signing mutates bytes.
+- Generate `latest.json` only after signatures match final uploaded artifacts.
+
+## 9. Unified CI for one app (jobs, matrix, gates)
+
+Use one CI workflow for the one shipped app:
+
+| Job | Matrix | Gate |
 |---|---|---|
-| `workspace` | Ubuntu | `pnpm install --frozen-lockfile`, `cargo metadata`, version file consistency, workspace package naming, no nested lockfiles. |
-| `frontend` | `app: installer/sync` on Ubuntu | Turbo affected build, typecheck, lint, unit tests. Installer runs React/Vitest; sync runs Svelte Check/Vitest. |
-| `rust` | `os: macos-latest/windows-latest` | `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace` where target support exists. |
-| `tauri-smoke` | installer macOS, installer Windows x64/ARM64, sync macOS arm64, sync Windows x64 | Unsigned or dogfood builds with signing/updater disabled where needed; verifies bundle creation and resources. |
-| `installer-e2e` | macOS | Playwright full mocked Cognito/OAuth walkthrough and installer parity tests. |
-| `sync-e2e` | macOS plus Windows smoke | Desktop-alt harness, popover smoke, command fixture tests, tray/autostart/platform tests. |
-| `sync-contract` | macOS and Windows | Generate command/event manifest from unified sync and fail if command surfaces drift without an intentional manifest update. |
-| `release-dry-run` | manual dispatch | Build signed/notarized/signed artifacts without publishing; verify updater signatures and artifact manifests. |
+| `frontend` | ubuntu or macOS | pnpm install, Svelte typecheck, lint, unit tests, build. |
+| `rust-macos` | macOS arm64 runner | fmt, check, clippy, tests for workspace/app. |
+| `rust-windows` | `x86_64-pc-windows-msvc` | fmt, check, clippy, tests, Windows cfg compile. |
+| `onboarding-e2e` | macOS plus Windows smoke | Mock Cognito/OAuth, run full Welcome → install → sign-in → setup-progress → done flow. |
+| `installer-regression` | macOS + Windows | Preserve canonical tar/template extraction parity tests. |
+| `sync-e2e` | macOS | Existing desktop-alt/popover scripted tests. |
+| `windows-bundle-smoke` | Windows x64 | Unsigned MSI/NSIS build with updater disabled only for smoke config. |
+| `command-contract` | macOS + Windows | Generate command/event manifest and fail on accidental platform drift. |
+| `release-dry-run` | manual | Signed/notarized macOS and signed Windows artifacts uploaded as workflow artifacts; no publish. |
+| `download-manifest-smoke` | scheduled + release | Fetch public manifests/download URLs, verify signatures/checksums. |
 
-Nightly regression runs:
+CI must prove that Windows compiles the operator surfaces `library_local`, `marketplace`, `messages`, and `projects_local`, even if feature flags hide them for some accounts.
 
-- Installer canonical tar extraction parity on macOS and Windows.
-- Sync path resolution, release-channel selection, conflict payload, notification history, meeting state, and hq-core drift fixtures from both forks.
-- Recall resource layout smoke.
-- Sync performance budgets: idle memory under 50 MB, popover open under 100 ms, bundle under 15 MB.
-- Download page smoke after cutover.
+## 10. Phased migration FROM the already-imported repo (apps/installer React + apps/sync Svelte base + imports/hq-sync-win) TO the single Svelte app — ordered phases, each with explicit verifiable done-criteria; include moving apps/installer to a port source and deleting it once absorbed; include enabling the updater
 
-CI must include path filters for speed, but full matrix runs on `main`, release tags, and any PR touching shared crates, release tooling, Tauri config, signing scripts, or updater code.
+| Phase | Work | Done criteria |
+|---|---|---|
+| 0. Freeze inventory | Record current command lists, identifiers, upgrade codes, updater keys, signing secrets, public URLs, and installer flow. | Inventory committed; release owners confirm identifiers and updater keys. |
+| 1. Declare one active app | Remove `apps/installer` from active workspaces; mark or move it to `imports/hq-installer-react`. Keep `apps/sync` as the only buildable app. | `pnpm install`, Svelte build, and sync Tauri check run without installer package participation. |
+| 2. Add lifecycle classifier | Implement install-state classifier above existing `first_run`; add `installCompleted` persistence and legacy backfill. | Unit tests cover fresh install, interrupted install, legacy sync user, normal user, missing auth. |
+| 3. Fold Windows sync fork | Port exact `hq-sync-win` deltas into base: Windows process/autostart/tray/vibrancy, `new_files`, `rescue_script_cache`, Windows deps/config. | Unified app builds/checks on Windows x64; macOS build still passes; command contract is one union. |
+| 4. Extract core crates | Extract `hq-process`, `hq-platform`, `hq-auth-vault`, `hq-content`, and setup helpers behind thin command wrappers. | No command behavior changes; tests pass before/after each extraction. |
+| 5. Absorb installer Rust commands | Port installer modules into `hq-installer-setup` and unified command wrappers. Delete obsolete external menubar install paths. | Backend can run mocked setup sequence end-to-end from Svelte/Tauri IPC. |
+| 6. Port onboarding UI | Rebuild React wizard screens in Svelte and wire progress events. | Playwright/Vitest walkthrough covers welcome, install location, sign-in, setup progress, done. |
+| 7. Handoff to tray mode | Implement `enter_sync_mode`: write state, enable autostart, create tray, start sync if configured, hide onboarding. | Fresh install ends in working tray app without launching another binary. |
+| 8. Enable updater | Keep sync updater enabled, move endpoints to `downloads.getindigo.ai/hq-desktop-app`, generate manifests per channel. | Release dry-run emits updater artifacts and valid `latest.json`; installer disabled-updater setting is gone. |
+| 9. Unify release CI | One release workflow builds macOS arm64 and Windows x64, signs/notarizes, regenerates Windows `.sig`, publishes manifests. | Dry-run release validates signatures, notarization, updater install, and old endpoint compatibility. |
+| 10. Delete port sources | Remove `imports/hq-installer-react` and `imports/hq-sync-win` after all mapped files have tracked destinations or explicit discard notes. | `rg`/manifest audit shows no unmapped command/UI/release logic; shipped app still passes full CI. |
+| 11. Public cutover | Update install pages and old download links to the unified artifacts. | Public page smoke downloads one app per OS and updater manifests remain live for old clients. |
 
-## 9. Phased migration plan with git-history preservation (git-filter-repo per repo into subdirs), each phase having explicit verifiable done-criteria
+## 11. Cutover of the public download/install page (hqforwork.com/install + getindigo.ai/install) to ONE download that installs then syncs, replacing the separate installer and menu-bar downloads; preserve old updater endpoints during migration
 
-Phase 0: Freeze and inventory.
+Both public install pages should advertise one product and one download per OS:
 
-- Freeze non-critical releases in all three repos.
-- Record source SHAs, current versions, updater pubkeys/private key owners, Apple secrets, Azure signing config, Sentry projects, Cognito vars, old updater endpoints, MSI upgrade codes, and public download URLs.
-- Done criteria: inventory committed to private migration notes; backup tags exist in all source repos; current release status is known.
+- macOS: unified HQ desktop app DMG/zip.
+- Windows: unified HQ desktop app NSIS exe as primary, MSI as admin/managed alternative if needed.
+- No separate “installer” and “menu-bar” downloads.
 
-Phase 1: Create monorepo skeleton.
+The downloaded app always performs the same lifecycle:
 
-- Add root `package.json`, `pnpm-workspace.yaml`, `turbo.json`, `Cargo.toml`, `versions.toml`, `.cargo/config.toml`, initial workflows, and empty app/crate directories.
-- Done criteria: `pnpm install`, `cargo metadata`, and empty CI scaffold pass.
-
-Phase 2: Import histories with `git-filter-repo`.
-
-```bash
-git clone git@github.com:indigoai-us/hq-installer.git /tmp/hq-imports/installer
-cd /tmp/hq-imports/installer
-git filter-repo --to-subdirectory-filter apps/installer --tag-rename '':'installer-'
-
-git clone git@github.com:indigoai-us/hq-sync.git /tmp/hq-imports/sync
-cd /tmp/hq-imports/sync
-git filter-repo --to-subdirectory-filter apps/sync --tag-rename '':'sync-mac-'
-
-git clone git@github.com:indigoai-us/hq-sync-win.git /tmp/hq-imports/sync-win
-cd /tmp/hq-imports/sync-win
-git filter-repo --to-subdirectory-filter imports/hq-sync-win --tag-rename '':'sync-win-'
+```text
+Open app → install HQ if needed → sign in → setup HQ → hand off to tray/menu-bar sync
 ```
 
-Merge all three filtered histories with `--allow-unrelated-histories`.
+Preserve old updater endpoints during migration:
 
-- Done criteria: `git log -- apps/installer`, `git log -- apps/sync`, and `git log -- imports/hq-sync-win` show source histories; namespaced tags are present.
+- Old macOS sync endpoint continues to serve a manifest that can update `ai.indigo.hq-sync-menubar` clients to the unified macOS build.
+- Old Windows sync endpoint continues to serve a manifest that can update `ai.indigo.hq-sync-win` clients to the first unified Windows build.
+- Old installer download URLs should redirect to the unified app only after fresh-install smoke tests pass. Keep pinned legacy artifacts available for rollback during the migration window.
+- Do not move Windows users to `ai.indigo.hq` until a later bridge release explicitly handles identifier, AUMID, upgrade code, shortcuts, notification settings, and updater key migration.
 
-Phase 3: Normalize JS workspace.
-
-- Rename packages to `@indigo/hq-installer` and `@indigo/hq-sync`.
-- Convert npm scripts to pnpm.
-- Delete nested lockfiles after root lockfile is generated.
-- Keep installer port `1420` and sync port `1421`.
-- Done criteria: root `pnpm install --frozen-lockfile`, app typechecks, app tests, and Turbo graph all pass.
-
-Phase 4: Establish root Cargo workspace without behavior changes.
-
-- Add both Tauri app crates as workspace members.
-- Move shared dependency versions to `[workspace.dependencies]`.
-- Keep app commands intact.
-- Done criteria: `cargo check --workspace` passes on macOS and Windows; existing app-specific Rust tests pass.
-
-Phase 5: Reunite sync fork.
-
-- Keep `apps/sync` from macOS sync as the base.
-- Port Windows-only modules `new_files` and `rescue_script_cache`.
-- Port Windows diffs in `Cargo.toml`, `tauri.conf.json`, capabilities, tray, process, autostart, DWM/Mica, sidecar, and release scripts.
-- Add `tauri.macos.conf.json` and `tauri.windows.conf.json`.
-- Delete `imports/hq-sync-win` only after accepted deltas are represented in `apps/sync`.
-- Done criteria: unified sync compiles and smoke-builds on macOS and Windows; 44 shared modules remain shared; exact divergent modules are accounted for; no `apps/sync-win` exists.
-
-Phase 6: Extract shared Rust crates incrementally.
-
-- Extract in order: `hq-desktop-core`, `hq-ipc`, `hq-process`, `hq-platform`, `hq-auth-vault`, `hq-updater`, `hq-notifications`, `hq-meetings-recall`, `hq-cloud`, `hq-cli`, `hq-content`, app cores.
-- Done criteria after each crate: both apps compile, command names and IPC payloads remain compatible, tests pass on macOS and Windows.
-
-Phase 7: Unify release workflows.
-
-- Replace repo-specific release workflows with one app-scoped release workflow.
-- Implement version validation, signing, notarization, Azure signing, updater manifest generation, compatibility manifest publishing, and dry-run dispatch.
-- Done criteria: signed dry-run releases succeed for installer macOS, installer Windows x64/ARM64, sync macOS, sync Windows x64; updater signatures verify over final bytes.
-
-Phase 8: Production cutover.
-
-- Ship `sync-v0.8.0` first as the fork-reunion release.
-- Ship `installer-v0.12.1` from the monorepo after installer artifact parity is verified.
-- Archive old repos only after one successful stable release cycle.
-- Done criteria: existing mac sync updates in place; existing Windows sync updates in place; fresh installs work from public pages; old updater endpoints still serve valid migration manifests.
-
-## 10. Cutover of the public download/install page (hqforwork.com/install + getindigo.ai/install)
-
-Treat the download page as part of release, not marketing.
-
-Cutover plan:
-
-1. Inventory current links and asset names on `hqforwork.com/install` and `getindigo.ai/install`.
-2. Define canonical artifact URLs from `hq-desktop-app` releases and the download CDN.
-3. Keep stable versionless aliases for public pages, backed by immutable versioned artifacts.
-4. Update both pages in the same deployment window so they advertise the same app versions.
-5. Keep old GitHub release URLs and old sync updater endpoints alive during the migration window.
-6. Add visible internal release notes linking legacy repos to `indigoai-us/hq-desktop-app`.
-7. Add `download-page-smoke.yml` that fetches both public pages, extracts every advertised URL, downloads artifacts, and verifies:
-   - macOS notarization/stapling where applicable.
-   - Windows Authenticode validity.
-   - Checksums.
-   - `latest.json` shape.
-   - Tauri updater signatures.
-   - Cache headers and redirect behavior.
-
-The pages should advertise:
-
-| OS | Primary public download | Notes |
-|---|---|---|
-| macOS | signed/notarized installer universal artifact | Sync direct download may remain available for existing sync-only users. |
-| Windows x64 | signed installer MSI/NSIS | Sync direct download uses signed Windows x64 artifact. |
-| Windows ARM64 | signed installer MSI/NSIS | Sync Windows ARM64 stays hidden until Recall sidecar emits a real ARM64 launcher. |
-
-Done criteria for cutover: both pages serve monorepo artifacts, no page points at stale old-repo assets, fresh install works on macOS and Windows, and the smoke workflow is required before public announcement.
-
-## 11. Top risks and mitigations (table)
+## 12. Top risks and mitigations (table) and open questions for the owner
 
 | Risk | Mitigation |
 |---|---|
-| Existing sync users cannot update to unified sync | Preserve platform identifiers, Windows MSI upgrade code, old updater pubkeys, old updater endpoints, and publish `sync-v0.8.0` as greater than both fork versions. |
-| Windows updater signatures become invalid | Regenerate `.sig` after Azure Trusted Signing and verify signatures against final signed installer bytes before publishing manifests. |
-| Sync fork drift reappears | Keep one `apps/sync`, add `sync-contract.yml`, and fail CI when macOS/Windows command manifests diverge unintentionally. |
-| Recall SDK breaks macOS universal or Windows ARM64 | Ship sync macOS arm64 and Windows x64 only until Recall provides valid universal/ARM64 artifacts. Label artifacts honestly. |
-| macOS sync signing fails after migration | Preserve manual inside-out signing, symlink repair, hardened runtime entitlements, notarization, and the no `codesign --deep` rule. |
-| Shared crates become dumping grounds | Enforce crate boundaries and keep Tauri handles/window lifecycle in app crates. Extract incrementally with tests after each move. |
-| React/Svelte tooling conflicts | Root tooling stays minimal; app configs own framework-specific behavior; shared TS packages are framework-neutral. |
-| Version files drift | Use `versions.toml`, `version-app.ts`, and release-time `assert-versions.ts` before any build starts. |
-| CI becomes too slow | Use Turbo affected tasks, Cargo package targeting, path filters, caches, and full matrices only on main/tags/high-risk paths. |
-| Public pages keep serving old assets | Make download-page smoke a release gate and keep old endpoint compatibility for 90 days and two stable sync releases. |
-| Installer updater scope expands during migration | Shared updater tooling is built now; installer runtime self-update remains off until a separate owner-approved release. |
+| Existing sync users get forced through install again | Classify legacy installed state from valid `config.json`, `hqPath`, and `machineId`; backfill `installCompleted`. |
+| Windows in-place updates break | Preserve `ai.indigo.hq-sync-win`, upgrade code, Run key value, AUMID behavior, and updater key for first unified release. |
+| Updater signatures invalid on Windows | Regenerate `.sig` after Azure Trusted Signing and verify manifest signatures against final artifacts. |
+| Auth/token storage diverges | Make `hq-auth-vault` the only writer; preserve token-file compatibility for first release. |
+| Installer setup starts steady-state sync too early | Gate daemon, pollers, sync, and update prompts behind installed state. |
+| React port misses installer behavior | Maintain a command/screen parity checklist and keep installer E2E walkthrough until Svelte equivalent passes. |
+| Recall packaging fails | Keep macOS arm64-only and Windows x64-only initially; preserve symlink repair and inside-out signing. |
+| Windows symlink/junction behavior varies by machine | Implement symlink → junction → copy fallback with telemetry and repair UX. |
+| Command fork drift returns | Add command-contract CI over macOS and Windows generated command/event manifests. |
+| Public cutover leaves stale downloads | Treat install-page smoke and old endpoint manifests as release blockers. |
 
-## 12. Open questions for the owner
+**Open questions for the owner:**
 
-1. What exact CDN/domain should own production updater manifests: `downloads.getindigo.ai`, `releases.getindigo.ai`, or another existing property?
-2. Can the old `hq-sync` and `hq-sync-win` repos publish compatibility `latest.json` releases that point to monorepo artifacts, or do they require one final bridge binary?
-3. Should `ai.indigo.hq-sync-win` remain the Windows identifier indefinitely, or should a later explicit migration move Windows to a unified identifier?
-4. Which mac-only operator surfaces should be visible on Windows in `sync-v0.8.0`: `library_local`, `marketplace`, `messages`, and `projects_local`, or all hidden until parity tests exist?
-5. Who owns the deployment path for `hqforwork.com/install` and `getindigo.ai/install`, and can release CI trigger that deployment?
-6. Should Sentry keep separate historical product names for migration tags, or standardize immediately on `hq-installer` and `hq-sync`?
-7. What is the rollback policy if one legacy sync updater path fails after `sync-v0.8.0` ships?
-8. When should installer self-update be enabled after the monorepo release stabilizes?
+- Final product display name in OS surfaces: `HQ Sync` or `HQ Desktop`.
+- Exact Windows identifier cutover plan and timing for `ai.indigo.hq`.
+- Whether token storage should remain file-primary for one release or move keychain-primary immediately with file fallback.
+- Whether legacy sync users with valid config but no `installCompleted` should see any onboarding copy, or only the existing auto-sync notice.
+- Required rollback window for old installer/menu-bar download URLs and updater endpoints.
