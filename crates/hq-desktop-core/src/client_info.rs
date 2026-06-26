@@ -13,10 +13,30 @@
 
 use reqwest::header::{HeaderMap, HeaderValue};
 use reqwest::Client;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 pub const CLIENT_NAME: &str = "hq-sync";
-pub const CLIENT_VERSION: &str = env!("APP_VERSION");
+
+// The user-facing version is injected at startup by the binary (which reads it
+// from `env!("APP_VERSION")`, emitted by its build.rs from package.json), so this
+// module carries no build-env coupling and can live in a shared crate.
+static CLIENT_VERSION_CELL: OnceLock<String> = OnceLock::new();
+
+/// Register the user-facing client version. Call once at startup with
+/// `env!("APP_VERSION")`. Idempotent; later calls are ignored.
+pub fn set_client_version(v: &str) {
+    let _ = CLIENT_VERSION_CELL.set(v.to_string());
+}
+
+/// The user-facing client version set via [`set_client_version`]; `"0.0.0"` until
+/// the binary registers it at startup.
+pub fn client_version() -> &'static str {
+    CLIENT_VERSION_CELL
+        .get()
+        .map(String::as_str)
+        .unwrap_or("0.0.0")
+}
 
 /// Total per-request budget. Long enough to cover the slowest legitimate
 /// vault endpoint (`/v1/calendar/events` fans out across calendars) but
@@ -38,14 +58,14 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// panicking inside a Tauri command handler.
 pub fn client_headers() -> HeaderMap {
     let mut headers = HeaderMap::new();
-    let user_agent = format!("{}/{}", CLIENT_NAME, CLIENT_VERSION);
+    let user_agent = format!("{}/{}", CLIENT_NAME, client_version());
     if let Ok(v) = HeaderValue::from_str(&user_agent) {
         headers.insert(reqwest::header::USER_AGENT, v);
     }
     if let Ok(v) = HeaderValue::from_str(CLIENT_NAME) {
         headers.insert("x-hq-client-name", v);
     }
-    if let Ok(v) = HeaderValue::from_str(CLIENT_VERSION) {
+    if let Ok(v) = HeaderValue::from_str(client_version()) {
         headers.insert("x-hq-client-version", v);
     }
     headers

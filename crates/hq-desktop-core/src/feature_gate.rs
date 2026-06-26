@@ -7,11 +7,33 @@
 //! is cleared when a new token file is written so a launch that started signed
 //! out can recover after OAuth succeeds in the same process.
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Mutex, OnceLock};
 
-use crate::commands::cognito;
-
 const ALLOWED_DOMAIN: &str = "@getindigo.ai";
+
+/// Future yielding the signed-in user's email claim (None when signed out / on error).
+pub type EmailClaimFuture = Pin<Box<dyn Future<Output = Option<String>> + Send>>;
+type EmailClaimFetcher = Box<dyn Fn() -> EmailClaimFuture + Send + Sync>;
+static EMAIL_FETCHER: OnceLock<EmailClaimFetcher> = OnceLock::new();
+
+/// Register the source of the signed-in user's email claim. The binary wires this
+/// to Cognito at startup (token read + JWT decode); until then the gates resolve
+/// as signed-out (false). This keeps the gate logic free of any auth dependency.
+pub fn set_email_claim_fetcher<F>(f: F)
+where
+    F: Fn() -> EmailClaimFuture + Send + Sync + 'static,
+{
+    let _ = EMAIL_FETCHER.set(Box::new(f));
+}
+
+async fn current_email_claim() -> Option<String> {
+    match EMAIL_FETCHER.get() {
+        Some(f) => f().await,
+        None => None,
+    }
+}
 
 static CACHED_GATE: OnceLock<Mutex<Option<bool>>> = OnceLock::new();
 static CACHED_GA_GATE: OnceLock<Mutex<Option<bool>>> = OnceLock::new();
@@ -94,38 +116,14 @@ pub fn clear_cached_gate() {
 }
 
 async fn compute_gate() -> bool {
-    let tokens = match cognito::get_tokens().await {
-        Ok(Some(t)) => t,
-        _ => return false,
-    };
-    let id_token = match tokens.id_token.as_deref() {
-        Some(t) if !t.is_empty() => t,
-        _ => return false,
-    };
-    let claims = match cognito::decode_id_token_claims(id_token) {
-        Ok(c) => c,
-        Err(_) => return false,
-    };
-    is_allowed_email(claims.email.as_deref())
+    is_allowed_email(current_email_claim().await.as_deref())
 }
 
 /// GA-gate counterpart to [`compute_gate`] — identical token/claims decode,
 /// but the verdict is "is any email claim present" instead of the Indigo
 /// domain check.
 async fn compute_ga_gate() -> bool {
-    let tokens = match cognito::get_tokens().await {
-        Ok(Some(t)) => t,
-        _ => return false,
-    };
-    let id_token = match tokens.id_token.as_deref() {
-        Some(t) if !t.is_empty() => t,
-        _ => return false,
-    };
-    let claims = match cognito::decode_id_token_claims(id_token) {
-        Ok(c) => c,
-        Err(_) => return false,
-    };
-    email_present(claims.email.as_deref())
+    email_present(current_email_claim().await.as_deref())
 }
 
 /// Pure helper. Case-insensitive suffix match on `@getindigo.ai`.

@@ -33,7 +33,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_updater::UpdaterExt;
 
-use crate::util::client_info::{client_headers, CLIENT_VERSION};
+use crate::util::client_info::{client_headers, client_version};
 use crate::util::logfile::log;
 
 /// Client identifier we present to hq-pro. Must match an entry in the server's
@@ -225,7 +225,7 @@ async fn react_to_decision(app: &AppHandle, decision: &VersionCheckResponse) {
 /// future) a Tauri command for an on-demand "Check Now" menu item.
 pub async fn check_once(app: &AppHandle) -> Result<(), String> {
     let base_url = vault_api_url()?;
-    match fetch_decision(&base_url, CLIENT_VERSION).await? {
+    match fetch_decision(&base_url, client_version()).await? {
         Some(decision) => {
             react_to_decision(app, &decision).await;
             Ok(())

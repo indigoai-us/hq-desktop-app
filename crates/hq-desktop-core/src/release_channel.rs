@@ -39,7 +39,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
-use crate::util::client_info::build_client;
+use crate::client_info::build_client;
 
 /// Public GitHub Releases API endpoint for hq-sync. 30 results is enough
 /// to span several release cycles without paginating — at the current
