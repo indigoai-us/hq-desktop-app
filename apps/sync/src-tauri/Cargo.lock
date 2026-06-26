@@ -2650,6 +2650,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "hq-platform"
+version = "0.1.0"
+dependencies = [
+ "dirs",
+ "winreg",
+]
+
+[[package]]
 name = "hq-sync-menubar"
 version = "0.8.0"
 dependencies = [
@@ -2667,6 +2675,7 @@ dependencies = [
  "dirs",
  "glob",
  "hq-desktop-core",
+ "hq-platform",
  "hq-telemetry",
  "ignore",
  "mac-notification-sys",
