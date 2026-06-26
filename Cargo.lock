@@ -568,6 +568,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hq-platform"
+version = "0.1.0"
+dependencies = [
+ "dirs",
+ "tempfile",
+ "winreg",
+]
+
+[[package]]
 name = "hq-telemetry"
 version = "0.1.0"
 dependencies = [
