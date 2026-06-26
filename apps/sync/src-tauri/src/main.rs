@@ -159,6 +159,23 @@ fn main() {
         option_env!("SENTRY_ENVIRONMENT"),
     );
 
+    // Wire the foundation crate's injected dependencies before anything reads them:
+    //  - the user-facing client version (from build-time APP_VERSION), and
+    //  - the feature-gate email-claim source (Cognito token read + JWT decode).
+    util::client_info::set_client_version(env!("APP_VERSION"));
+    util::feature_gate::set_email_claim_fetcher(|| {
+        Box::pin(async {
+            let tokens = commands::cognito::get_tokens().await.ok().flatten()?;
+            let id_token = tokens.id_token?;
+            if id_token.is_empty() {
+                return None;
+            }
+            commands::cognito::decode_id_token_claims(&id_token)
+                .ok()?
+                .email
+        })
+    });
+
     use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};
 
     // Opt+Shift+H — global hotkey to summon the popover from anywhere.
