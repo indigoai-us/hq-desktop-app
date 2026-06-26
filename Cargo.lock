@@ -571,7 +571,10 @@ dependencies = [
 name = "hq-platform"
 version = "0.1.0"
 dependencies = [
+ "block2",
  "dirs",
+ "hq-desktop-core",
+ "objc2",
  "tempfile",
  "winreg",
 ]
