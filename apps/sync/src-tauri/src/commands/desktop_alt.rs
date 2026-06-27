@@ -727,7 +727,7 @@ pub async fn open_desktop_alt_window_inner(
 
     #[cfg(target_os = "windows")]
     {
-        crate::apply_windows_vibrancy(&_window);
+        hq_platform::window_effects::apply_popover_vibrancy(&_window);
     }
 
     Ok(())
