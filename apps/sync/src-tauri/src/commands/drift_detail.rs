@@ -134,7 +134,7 @@ pub async fn open_drift_detail(app: AppHandle, report: DriftReport) -> Result<()
 
     #[cfg(target_os = "windows")]
     {
-        crate::apply_windows_vibrancy(&_window);
+        hq_platform::window_effects::apply_popover_vibrancy(&_window);
     }
 
     Ok(())

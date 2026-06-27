@@ -248,7 +248,7 @@ pub async fn open_activity_log(app: AppHandle) -> Result<(), String> {
 
     #[cfg(target_os = "windows")]
     {
-        crate::apply_windows_vibrancy(&_window);
+        hq_platform::window_effects::apply_popover_vibrancy(&_window);
     }
 
     // Show the window now rather than waiting for a ready-handshake from the

@@ -905,24 +905,8 @@ fn monitor_work_area(window: &tauri::WebviewWindow) -> Option<(i32, i32, i32, i3
 
 #[cfg(target_os = "windows")]
 fn set_dwm_small_corner(window: &tauri::WebviewWindow) {
-    use crate::util::logfile::log;
-    use windows::Win32::Foundation::HWND;
-    use windows::Win32::Graphics::Dwm::{
-        DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUNDSMALL,
-    };
-
-    let Ok(hwnd) = window.hwnd() else { return };
-    let hwnd = HWND(hwnd.0 as *mut _);
-    let pref: u32 = DWMWCP_ROUNDSMALL.0 as u32;
-    let pref_ptr = &pref as *const u32 as *const std::ffi::c_void;
-    let size = std::mem::size_of::<u32>() as u32;
-    let result =
-        unsafe { DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, pref_ptr, size) };
-    if let Err(e) = result {
-        log(
-            "tray",
-            &format!("DwmSetWindowAttribute(DWMWCP_ROUNDSMALL) failed: {e}"),
-        );
+    if let Ok(hwnd) = window.hwnd() {
+        hq_platform::window_effects::set_small_corner(hwnd.0 as isize);
     }
 }
 
