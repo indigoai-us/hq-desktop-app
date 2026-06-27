@@ -1256,7 +1256,7 @@ pub async fn meetings_notify_detected(
             // regression for non-granted users. One delivery path per branch, so
             // there's never a double banner.
             #[cfg(target_os = "macos")]
-            if crate::commands::notifications::current_authorization_status() == "granted" {
+            if hq_platform::notifications::permission_state_without_app() == "granted" {
                 crate::commands::un_notify::deliver_clickable(
                     &title_for_thread,
                     &body_for_thread,
