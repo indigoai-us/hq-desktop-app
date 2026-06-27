@@ -3,4 +3,5 @@
 pub mod autostart;
 pub mod notifications;
 pub mod permissions;
+pub mod tray_geometry;
 pub mod window_effects;
