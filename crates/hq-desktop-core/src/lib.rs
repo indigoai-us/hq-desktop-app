@@ -18,3 +18,4 @@ pub mod paths;
 pub mod recordings_ledger;
 pub mod release_channel;
 pub mod status;
+pub mod sync_progress;
