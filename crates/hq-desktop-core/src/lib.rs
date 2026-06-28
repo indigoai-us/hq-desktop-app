@@ -21,6 +21,7 @@ pub mod paths;
 pub mod prewarm;
 pub mod recordings_ledger;
 pub mod release_channel;
+pub mod staging;
 pub mod status;
 pub mod sync_progress;
 
