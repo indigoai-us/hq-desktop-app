@@ -4,6 +4,7 @@
 
 pub mod client_info;
 pub mod cognito;
+pub mod config;
 pub mod conflicts;
 pub mod drift_scope;
 pub mod feature_gate;
@@ -22,3 +23,6 @@ pub mod recordings_ledger;
 pub mod release_channel;
 pub mod status;
 pub mod sync_progress;
+
+#[cfg(test)]
+pub(crate) mod test_support;
