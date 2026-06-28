@@ -16,6 +16,7 @@ pub mod logfile;
 pub mod meeting_ledger;
 pub mod oauth;
 pub mod paths;
+pub mod prewarm;
 pub mod recordings_ledger;
 pub mod release_channel;
 pub mod status;
