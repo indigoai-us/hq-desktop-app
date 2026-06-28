@@ -6,6 +6,7 @@ pub mod client_info;
 pub mod cognito;
 pub mod conflicts;
 pub mod feature_gate;
+pub mod first_run;
 pub mod git_mirror;
 pub mod hq_resolver;
 pub mod ignore;
