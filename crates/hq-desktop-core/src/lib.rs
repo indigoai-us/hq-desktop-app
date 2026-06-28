@@ -26,6 +26,7 @@ pub mod run_cli_provision;
 pub mod staging;
 pub mod status;
 pub mod sync_progress;
+pub mod workspaces;
 
 #[cfg(test)]
 pub(crate) mod test_support;
