@@ -20,6 +20,7 @@ pub mod meeting_ledger;
 pub mod oauth;
 pub mod paths;
 pub mod prewarm;
+pub mod projects_local;
 pub mod recordings_ledger;
 pub mod release_channel;
 pub mod run_cli_provision;
