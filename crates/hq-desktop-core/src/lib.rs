@@ -3,6 +3,7 @@
 //! no app-specific couplings.
 
 pub mod client_info;
+pub mod conflicts;
 pub mod cognito;
 pub mod feature_gate;
 pub mod hq_resolver;
