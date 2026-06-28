@@ -2645,9 +2645,11 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "sha1 0.10.6",
  "sha2 0.10.9",
  "tokio",
  "uuid",
+ "walkdir",
  "windows 0.58.0",
  "winreg",
 ]
