@@ -138,10 +138,10 @@ pub fn write_journal(slug: &str, journal: &SyncJournal) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     fn with_state_dir<F: FnOnce(&std::path::Path)>(f: F) {
-        let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::TempDir::new().unwrap();
         std::env::set_var("HQ_STATE_DIR", tmp.path().to_str().unwrap());
         f(tmp.path());
