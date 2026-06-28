@@ -8,7 +8,7 @@ pub use hq_desktop_core::{
     recordings_ledger, release_channel,
 };
 
-// Still app-local: journal + its app-only test infrastructure.
+// Journal remains as an app-local facade; test_support stays app-local.
 pub mod journal;
 
 #[cfg(test)]
