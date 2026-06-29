@@ -23,6 +23,7 @@ pub mod logfile;
 pub mod marketplace;
 pub mod meeting_ledger;
 pub mod meetings;
+pub mod messages;
 pub mod oauth;
 pub mod paths;
 pub mod prewarm;
