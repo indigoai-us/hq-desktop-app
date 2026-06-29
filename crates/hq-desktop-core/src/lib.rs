@@ -3,6 +3,7 @@
 //! no app-specific couplings.
 
 pub mod activity;
+pub mod agency;
 pub mod client_info;
 pub mod cognito;
 pub mod config;
