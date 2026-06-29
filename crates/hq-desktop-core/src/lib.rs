@@ -14,6 +14,7 @@ pub mod dm_notify;
 pub mod drift_scope;
 pub mod events;
 pub mod feature_gate;
+pub mod first_push;
 pub mod first_run;
 pub mod git_mirror;
 pub mod hq_cli_update;
