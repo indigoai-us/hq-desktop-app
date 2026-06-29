@@ -30,6 +30,7 @@ pub mod sessions;
 pub mod settings;
 pub mod staging;
 pub mod status;
+pub mod sync_outcome;
 pub mod sync_progress;
 pub mod workspaces;
 
