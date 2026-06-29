@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 pub mod claude;
 pub mod codex;
 pub mod history;
+pub mod outpost;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
