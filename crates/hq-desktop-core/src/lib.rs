@@ -25,6 +25,7 @@ pub mod projects_local;
 pub mod recordings_ledger;
 pub mod release_channel;
 pub mod run_cli_provision;
+pub mod sessions;
 pub mod settings;
 pub mod staging;
 pub mod status;
