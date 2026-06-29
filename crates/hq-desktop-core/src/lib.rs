@@ -7,6 +7,7 @@ pub mod cognito;
 pub mod config;
 pub mod conflicts;
 pub mod drift_scope;
+pub mod events;
 pub mod feature_gate;
 pub mod first_run;
 pub mod git_mirror;
