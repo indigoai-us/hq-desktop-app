@@ -14,12 +14,14 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 
+pub use hq_desktop_core::process_types::{
+    ExitEvent, ProcessEvent, SpawnArgs, StderrEvent, StdoutEvent,
+};
 #[cfg(unix)]
 use nix::{
     sys::signal::{self, Signal},
     unistd::Pid,
 };
-use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 use uuid::Uuid;
 
@@ -38,45 +40,6 @@ use windows::Win32::System::JobObjects::{
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Types
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Arguments for `spawn_process`.
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SpawnArgs {
-    pub cmd: String,
-    pub args: Vec<String>,
-    pub cwd: Option<String>,
-    pub env: Option<HashMap<String, String>>,
-}
-
-/// Payload for `process://{handle}/stdout` events.
-#[derive(Debug, Serialize, Clone)]
-pub struct StdoutEvent {
-    pub line: String,
-}
-
-/// Payload for `process://{handle}/stderr` events.
-#[derive(Debug, Serialize, Clone)]
-pub struct StderrEvent {
-    pub line: String,
-}
-
-/// Payload for the terminal `process://{handle}/exit` event.
-///
-/// `signal` is `Some(N)` only when the OS killed the process with a Unix
-/// signal — in that case `code` is `None`. Distinguishes "runner crashed
-/// with SIGSEGV" (signal=11) from "runner OOM-killed" (signal=9) from
-/// "runner cancelled" (signal=15) from a normal `exit(code)`.
-#[derive(Debug, Serialize, Clone)]
-pub struct ExitEvent {
-    pub code: Option<i32>,
-    pub signal: Option<i32>,
-    pub success: bool,
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Process registry
@@ -199,20 +162,6 @@ fn mark_cancelled(handle: &str) -> bool {
     } else {
         false
     }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Event enum (testable without Tauri)
-// ─────────────────────────────────────────────────────────────────────────────
-
-pub enum ProcessEvent {
-    Stdout(String),
-    Stderr(String),
-    Exit {
-        code: Option<i32>,
-        signal: Option<i32>,
-        success: bool,
-    },
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
