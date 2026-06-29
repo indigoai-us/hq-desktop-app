@@ -2,6 +2,7 @@
 //! app(s). Extracted from `apps/sync/src-tauri/src/util` in Phase 4. No Tauri,
 //! no app-specific couplings.
 
+pub mod activity;
 pub mod client_info;
 pub mod cognito;
 pub mod config;
