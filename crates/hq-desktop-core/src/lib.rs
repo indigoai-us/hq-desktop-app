@@ -15,6 +15,7 @@ pub mod hq_resolver;
 pub mod hq_version;
 pub mod ignore;
 pub mod journal;
+pub mod library_local;
 pub mod logfile;
 pub mod meeting_ledger;
 pub mod oauth;
