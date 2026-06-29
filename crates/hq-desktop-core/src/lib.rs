@@ -28,6 +28,7 @@ pub mod messages;
 pub mod oauth;
 pub mod paths;
 pub mod prewarm;
+pub mod process_types;
 pub mod projects_local;
 pub mod recall_sdk;
 pub mod recordings_ledger;
