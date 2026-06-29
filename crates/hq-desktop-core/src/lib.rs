@@ -7,6 +7,7 @@ pub mod cognito;
 pub mod config;
 pub mod conflicts;
 pub mod desktop_alt;
+pub mod dm_notify;
 pub mod drift_scope;
 pub mod events;
 pub mod feature_gate;
