@@ -4,6 +4,7 @@
 
 pub mod activity;
 pub mod agency;
+pub mod banner;
 pub mod client_info;
 pub mod cognito;
 pub mod config;
