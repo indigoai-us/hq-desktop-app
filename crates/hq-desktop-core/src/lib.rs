@@ -18,6 +18,7 @@ pub mod ignore;
 pub mod journal;
 pub mod library_local;
 pub mod logfile;
+pub mod marketplace;
 pub mod meeting_ledger;
 pub mod oauth;
 pub mod paths;
