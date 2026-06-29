@@ -33,6 +33,7 @@ pub mod release_channel;
 pub mod run_cli_provision;
 pub mod sessions;
 pub mod settings;
+pub mod share_notify;
 pub mod staging;
 pub mod status;
 pub mod sync_outcome;
