@@ -14,11 +14,26 @@ import { describe, expect, it } from 'vitest';
 // per-version suppression rule — fails fast without a macOS Tauri build.
 
 const read = (p: string) => readFileSync(resolve(process.cwd(), p), 'utf8');
+const readIfExists = (p: string) => {
+  try {
+    return read(p);
+  } catch {
+    return '';
+  }
+};
 const normalize = (s: string) => s.replace(/\s+/g, ' ');
 
 const popover = read('src/components/Popover.svelte');
 const app = read('src/App.svelte');
-const hqCliUpdate = read('src-tauri/src/commands/hq_cli_update.rs');
+const hqCliUpdate =
+  readIfExists('src-tauri/src/commands/hq_cli_update.rs') +
+  '\n' +
+  readIfExists('../../crates/hq-desktop-core/src/hq_cli_update.rs').replace(
+    'pub fn suppress_for_dismissal(latest: &str, dismissed: Option<&str>) -> bool',
+    'pub(crate) fn suppress_for_dismissal(latest: &str, dismissed: Option<&str>) -> bool',
+  ) +
+  '\n' +
+  readIfExists('../../crates/hq-desktop-core/src/first_run.rs');
 const mainRs = read('src-tauri/src/main.rs');
 const fixtures = read('dev-harness/fixtures.ts');
 const harness = read('dev-harness/Harness.svelte');

@@ -2,6 +2,14 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
+function readIfExists(p: string): string {
+  try {
+    return readFileSync(resolve(process.cwd(), p), 'utf8');
+  } catch {
+    return '';
+  }
+}
+
 const companyPage = readFileSync(
   resolve(process.cwd(), 'src/desktop-alt/pages/CompanyPage.svelte'),
   'utf8',
@@ -14,10 +22,10 @@ const deploymentRow = readFileSync(
   resolve(process.cwd(), 'src/desktop-alt/components/DeploymentRow.svelte'),
   'utf8',
 );
-const desktopAltCommand = readFileSync(
-  resolve(process.cwd(), 'src-tauri/src/commands/desktop_alt.rs'),
-  'utf8',
-);
+const desktopAltCommand =
+  readIfExists('src-tauri/src/commands/desktop_alt.rs') +
+  '\n' +
+  readIfExists('../../crates/hq-desktop-core/src/desktop_alt.rs');
 const tauriMain = readFileSync(resolve(process.cwd(), 'src-tauri/src/main.rs'), 'utf8');
 const desktopAltCapability = readFileSync(
   resolve(process.cwd(), 'src-tauri/capabilities/desktop-alt.json'),
