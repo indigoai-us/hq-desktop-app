@@ -1726,6 +1726,8 @@ mod tests {
             membership: Some("joined".to_string()),
             unread: Some(unread),
             member_count: None,
+            created_at: None,
+            members: None,
         }
     }
 
@@ -1781,6 +1783,8 @@ mod tests {
             membership: Some("joined".to_string()),
             unread: Some(0),
             member_count: Some(5),
+            created_at: None,
+            members: None,
         }
     }
 
