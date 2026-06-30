@@ -28,16 +28,20 @@ The workflow also supports `workflow_dispatch` with a `tag` input, but productio
 - `APPLE_CERTIFICATE`: base64-encoded Developer ID Application `.p12`.
 - `APPLE_CERTIFICATE_PASSWORD`: password for the `.p12`.
 - `APPLE_SIGNING_IDENTITY`: full identity string, for example `Developer ID Application: NAME (TEAMID)`.
-- `APPLE_API_KEY`: App Store Connect API key ID.
-- `APPLE_API_ISSUER`: App Store Connect issuer UUID.
-- `APPLE_API_KEY_P8`: full contents of the App Store Connect `.p8` key file.
+- `APPLE_ID`: the Apple ID (email) used for notarization.
+- `APPLE_PASSWORD`: an app-specific password for that Apple ID (notarytool).
+- `APPLE_TEAM_ID`: the Apple Developer Team ID.
 
-### Tauri Updater
+Notarization uses the Apple-ID method (`xcrun notarytool --apple-id/--password/--team-id`) — the same credential set as the legacy `hq-sync` / `hq-installer` repos. (The App Store Connect API-key method is **not** used; `scripts/notarize.sh` still implements it for local runs but the workflow inlines the Apple-ID call.)
 
-- `TAURI_SIGNING_PRIVATE_KEY`: private key for Tauri updater signatures.
-- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`: password for the private key.
+### Tauri Updater (per-platform keys)
 
-These keys must correspond to the updater public keys already committed in `apps/sync/src-tauri/tauri.conf.json` and `apps/sync/src-tauri/tauri.windows.conf.json`.
+macOS and Windows ship **separate** updater streams with different public keys, so each platform signs with its own private key:
+
+- `TAURI_SIGNING_PRIVATE_KEY_MACOS` / `TAURI_SIGNING_PRIVATE_KEY_MACOS_PASSWORD`: must correspond to the pubkey in `apps/sync/src-tauri/tauri.conf.json` (the legacy `hq-sync` macOS key, `9DE1695B…`).
+- `TAURI_SIGNING_PRIVATE_KEY_WINDOWS` / `TAURI_SIGNING_PRIVATE_KEY_WINDOWS_PASSWORD`: must correspond to the pubkey in `apps/sync/src-tauri/tauri.windows.conf.json` (the legacy `hq-sync-win` key, `DAC7131F…`).
+
+The macOS job uses the `_MACOS` key; the Windows job uses the `_WINDOWS` key. (To collapse to a single updater key + stream later, regenerate one keypair, set both config pubkeys to it, and use one secret in both jobs — note that breaks auto-update continuity for existing `hq-sync`/`hq-sync-win` installs.)
 
 ### Build-Time Telemetry
 

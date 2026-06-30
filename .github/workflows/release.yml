@@ -175,8 +175,8 @@ jobs:
         env:
           HQ_SYNC_SENTRY_DSN: ${{ secrets.HQ_SYNC_SENTRY_DSN }}
           VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_MACOS }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_MACOS_PASSWORD }}
         run: pnpm tauri build --target universal-apple-darwin --config src-tauri/tauri.macos.conf.json
 
       - name: Fix Recall framework symlinks
@@ -194,23 +194,30 @@ jobs:
 
       - name: Notarize and staple app bundle
         env:
-          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         shell: bash
         run: |
           set -euo pipefail
-          API_KEY_PATH="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY}.p8"
-          umask 077
-          printf '%s' "$APPLE_API_KEY_P8" > "$API_KEY_PATH"
-          APPLE_API_KEY_PATH="$API_KEY_PATH" \
-            bash scripts/notarize.sh "src-tauri/target/universal-apple-darwin/release/bundle/macos/HQ.app"
+          APP_PATH="src-tauri/target/universal-apple-darwin/release/bundle/macos/HQ.app"
+          ZIP_PATH="$RUNNER_TEMP/HQ-notarize.zip"
+          # notarytool needs a zip/dmg; staple the .app after the ticket is issued.
+          /usr/bin/ditto -c -k --keepParent "$APP_PATH" "$ZIP_PATH"
+          xcrun notarytool submit "$ZIP_PATH" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait \
+            --timeout 1800
+          xcrun stapler staple "$APP_PATH"
+          xcrun stapler validate "$APP_PATH"
 
       - name: Regenerate updater archive and signature
         env:
           TAG: ${{ github.event.inputs.tag || github.ref_name }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_MACOS }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_MACOS_PASSWORD }}
         shell: bash
         run: |
           set -euo pipefail
@@ -229,9 +236,9 @@ jobs:
         env:
           TAG: ${{ github.event.inputs.tag || github.ref_name }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         shell: bash
         run: |
           set -euo pipefail
@@ -239,18 +246,15 @@ jobs:
           APP_PATH="src-tauri/target/universal-apple-darwin/release/bundle/macos/HQ.app"
           ARTIFACT_DIR="src-tauri/target/release-artifacts"
           DMG_PATH="$ARTIFACT_DIR/HQ_${VERSION}_universal.dmg"
-          API_KEY_PATH="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY}.p8"
 
           mkdir -p "$ARTIFACT_DIR"
-          umask 077
-          printf '%s' "$APPLE_API_KEY_P8" > "$API_KEY_PATH"
 
           bash scripts/create-dmg.sh "$APP_PATH" "$DMG_PATH"
           codesign --force --sign "$APPLE_SIGNING_IDENTITY" --timestamp "$DMG_PATH"
           xcrun notarytool submit "$DMG_PATH" \
-            --key "$API_KEY_PATH" \
-            --key-id "$APPLE_API_KEY" \
-            --issuer "$APPLE_API_ISSUER" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
             --wait \
             --timeout 1800
           xcrun stapler staple "$DMG_PATH"
@@ -288,8 +292,8 @@ jobs:
       RUST_BACKTRACE: 1
       HQ_SYNC_SENTRY_DSN: ${{ secrets.HQ_SYNC_SENTRY_DSN }}
       VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
-      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_WINDOWS }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_WINDOWS_PASSWORD }}
 
     steps:
       - name: Validate tag format
