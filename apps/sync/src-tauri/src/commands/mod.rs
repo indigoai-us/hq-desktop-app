@@ -22,6 +22,7 @@ pub mod hq_core_staging;
 pub mod hq_core_state;
 pub mod hq_core_update;
 pub mod install_directory;
+pub mod install_deps;
 pub mod install_stages;
 pub mod library_local;
 pub mod lifecycle;
