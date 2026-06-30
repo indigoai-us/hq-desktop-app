@@ -1980,6 +1980,12 @@
     }
   }
 
+  async function handleOnboardingFinish() {
+    lifecycleState = null;
+    await checkAuth();
+    lifecycleState = null;
+  }
+
   function handleAuthSuccess(auth: { authenticated: boolean; expiresAt: string }) {
     authenticated = auth.authenticated;
     expiresAt = auth.expiresAt;
@@ -2031,7 +2037,10 @@
       <span class="dot-spinner"></span>
     </div>
   {:else if isOnboardingState(lifecycleState)}
-    <Onboarding state={(lifecycleState ?? 'NeedsInstall') as LifecycleState} />
+    <Onboarding
+      state={(lifecycleState ?? 'NeedsInstall') as LifecycleState}
+      onfinish={handleOnboardingFinish}
+    />
   {:else if authenticated && showSettings}
     <Settings onback={handleBackFromSettings} />
   {:else if authenticated}

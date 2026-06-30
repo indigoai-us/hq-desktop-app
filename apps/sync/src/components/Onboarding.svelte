@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { invoke } from '@tauri-apps/api/core';
   import {
     createWizardRouter,
     initialStepForLifecycle,
@@ -8,10 +9,16 @@
   import DirectoryScreen from './onboarding/DirectoryScreen.svelte';
   import SetupScreen from './onboarding/SetupScreen.svelte';
   import SignInScreen from './onboarding/SignInScreen.svelte';
+  import SummaryScreen from './onboarding/SummaryScreen.svelte';
   import WelcomeScreen from './onboarding/WelcomeScreen.svelte';
   import WizardShell from './onboarding/WizardShell.svelte';
 
-  const props: { state: string } = $props();
+  interface Props {
+    state: string;
+    onfinish?: () => void;
+  }
+
+  let { state: lifecycleStateProp, onfinish }: Props = $props();
 
   type LocalWizardState = WizardState & {
     telemetryEnabled: boolean;
@@ -25,9 +32,6 @@
     telemetryEnabled: true,
   });
 
-  const currentStepLabel = $derived(
-    WIZARD_STEPS.find((step) => step.index === currentStep)?.label ?? 'Step',
-  );
   const canBack = $derived.by(() => {
     currentStep;
     return router.canGoBack;
@@ -45,11 +49,11 @@
   }
 
   $effect(() => {
-    if (activeLifecycleState === props.state) return;
+    if (activeLifecycleState === lifecycleStateProp) return;
 
-    activeLifecycleState = props.state;
+    activeLifecycleState = lifecycleStateProp;
     router = createWizardRouter({
-      start: initialStepForLifecycle(props.state),
+      start: initialStepForLifecycle(lifecycleStateProp),
     });
     syncCurrentStep();
   });
@@ -78,6 +82,13 @@
     router.next();
     syncCurrentStep();
   }
+
+  async function handleFinish() {
+    if (typeof invoke === 'function') {
+      await invoke('mark_first_run_complete').catch(() => {});
+    }
+    onfinish?.();
+  }
 </script>
 
 <div class="onboarding-wizard" data-testid="onboarding-wizard">
@@ -87,6 +98,7 @@
     canBack={canBack}
     canNext={canNext}
     nextLabel={nextLabel}
+    showFooter={currentStep !== 5}
     onback={handleBack}
     onnext={handleNext}
   >
@@ -107,7 +119,7 @@
     {:else if currentStep === 4}
       <SetupScreen onsetupcomplete={handleSetupComplete} />
     {:else}
-      <div class="wizard-placeholder">{currentStepLabel} - coming soon</div>
+      <SummaryScreen installPath={wizardState.installPath} onfinish={handleFinish} />
     {/if}
   </WizardShell>
 </div>
@@ -129,18 +141,5 @@
     box-shadow: inset 0 1px 0 var(--popover-highlight, rgba(255, 255, 255, 0.34));
     backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
     -webkit-backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
-  }
-
-  .wizard-placeholder {
-    display: grid;
-    place-items: center;
-    width: 100%;
-    min-height: 220px;
-    border: 1px dashed var(--popover-border, rgba(255, 255, 255, 0.18));
-    border-radius: var(--radius-md, 10px);
-    background: var(--popover-surface, rgba(255, 255, 255, 0.08));
-    color: var(--popover-text-muted, rgba(255, 255, 255, 0.52));
-    font-size: var(--text-base, 13px);
-    font-weight: 600;
   }
 </style>
