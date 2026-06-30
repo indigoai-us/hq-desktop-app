@@ -1,4 +1,4 @@
-# HQ Sync Menubar — Performance Budget Verification
+# HQ Menubar — Performance Budget Verification
 
 > **Hard gate:** Any budget miss blocks release. Re-run before every release.
 
@@ -7,7 +7,7 @@
 | # | Metric | Budget | Measurement Method | Tool |
 |---|--------|--------|--------------------|------|
 | 1 | Idle resident memory | < 50 MB | Activity Monitor after 10 min idle, popover closed | Activity Monitor (macOS) |
-| 2 | Bundle size | < 15 MB | `du -sh "HQ Sync.app"` on release build | `scripts/measure-perf.sh` (automated) |
+| 2 | Bundle size | < 15 MB | `du -sh "HQ.app"` on release build | `scripts/measure-perf.sh` (automated) |
 | 3 | Popover open latency | < 100 ms | `performance.now()` delta from tray click to popover `onMount` | Browser DevTools / Svelte instrumentation |
 
 ---
@@ -17,10 +17,10 @@
 ### 1. Idle Resident Memory (< 50 MB)
 
 1. Build a release binary: `cargo tauri build`
-2. Launch **HQ Sync.app** from `src-tauri/target/release/bundle/macos/HQ Sync.app`
+2. Launch **HQ.app** from `src-tauri/target/release/bundle/macos/HQ.app`
 3. Ensure the popover is **closed** (click away from the tray icon)
 4. Wait **10 minutes** with no interaction
-5. Open **Activity Monitor** > filter for `HQ Sync`
+5. Open **Activity Monitor** > filter for `HQ`
 6. Read the **Real Memory** (resident) column
 7. Record the value below — must be < 50 MB to pass
 
@@ -29,7 +29,7 @@
 Automated via `scripts/measure-perf.sh`. To measure manually:
 
 1. Build a release binary: `cargo tauri build`
-2. Run: `du -sh src-tauri/target/release/bundle/macos/"HQ Sync.app"`
+2. Run: `du -sh src-tauri/target/release/bundle/macos/"HQ.app"`
 3. Record the value below — must be < 15 MB to pass
 
 ### 3. Popover Open Latency (< 100 ms)

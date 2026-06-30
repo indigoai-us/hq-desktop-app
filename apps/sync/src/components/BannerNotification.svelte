@@ -128,7 +128,7 @@
 
     <div class="content" bind:this={contentEl}>
       <div class="top">
-        <span class="app">HQ Sync</span>
+        <span class="app">HQ</span>
         <span class="sep">·</span>
         <span class="from">{payload.title}</span>
         <button

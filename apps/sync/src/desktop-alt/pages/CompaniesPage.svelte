@@ -214,7 +214,7 @@
       hqSkillMarkdownLink('accept', config.hqFolderPath),
       '',
       `Help me accept the pending HQ company invite for ${row.name}.`,
-      `Company slug shown in HQ Sync: ${row.slug}.`,
+      `Company slug shown in HQ: ${row.slug}.`,
       `Invite context: ${row.sub}.`,
       'The desktop app does not have the magic-link token. Ask me to paste the invite link or raw token, then complete the HQ accept flow.',
     ].join('\n');

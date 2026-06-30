@@ -54,11 +54,11 @@ impl TrayState {
     /// Tooltip text for this state.
     pub fn tooltip(&self) -> &'static str {
         match self {
-            Self::Idle => "HQ Sync — Idle",
-            Self::Syncing => "HQ Sync — Syncing…",
-            Self::Error => "HQ Sync — Error",
-            Self::Conflict => "HQ Sync — Conflict",
-            Self::Prompt => "HQ Sync — Meeting Detected",
+            Self::Idle => "HQ — Idle",
+            Self::Syncing => "HQ — Syncing…",
+            Self::Error => "HQ — Error",
+            Self::Conflict => "HQ — Conflict",
+            Self::Prompt => "HQ — Meeting Detected",
         }
     }
 }
@@ -308,7 +308,7 @@ const TRAY_ID: &str = "hq-sync-tray";
 /// template glyph is swallowed the user still sees a clickable "HQ".
 fn build_tray_icon(app: &AppHandle) -> Result<tauri::tray::TrayIcon, Box<dyn std::error::Error>> {
     let version = app.package_info().version.to_string();
-    let version_item = MenuItemBuilder::with_id(MENU_VERSION, format!("HQ Sync v{}", version))
+    let version_item = MenuItemBuilder::with_id(MENU_VERSION, format!("HQ v{}", version))
         .enabled(false)
         .build(app)?;
     let sync_now = MenuItemBuilder::with_id(MENU_SYNC_NOW, "Sync Now").build(app)?;
@@ -341,7 +341,7 @@ fn build_tray_icon(app: &AppHandle) -> Result<tauri::tray::TrayIcon, Box<dyn std
         .icon_as_template(false);
 
     let tray_builder = tray_builder
-        .tooltip("HQ Sync — Idle")
+        .tooltip("HQ — Idle")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event({
@@ -1034,11 +1034,11 @@ mod tests {
 
     #[test]
     fn test_tray_state_tooltip() {
-        assert_eq!(TrayState::Idle.tooltip(), "HQ Sync — Idle");
-        assert_eq!(TrayState::Syncing.tooltip(), "HQ Sync — Syncing…");
-        assert_eq!(TrayState::Error.tooltip(), "HQ Sync — Error");
-        assert_eq!(TrayState::Conflict.tooltip(), "HQ Sync — Conflict");
-        assert_eq!(TrayState::Prompt.tooltip(), "HQ Sync — Meeting Detected");
+        assert_eq!(TrayState::Idle.tooltip(), "HQ — Idle");
+        assert_eq!(TrayState::Syncing.tooltip(), "HQ — Syncing…");
+        assert_eq!(TrayState::Error.tooltip(), "HQ — Error");
+        assert_eq!(TrayState::Conflict.tooltip(), "HQ — Conflict");
+        assert_eq!(TrayState::Prompt.tooltip(), "HQ — Meeting Detected");
     }
 
     #[test]

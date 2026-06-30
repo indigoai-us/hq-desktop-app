@@ -26,7 +26,7 @@ esac
 SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd -P)"
 
 # Candidate paths — array, not space-delimited string, so paths with spaces
-# (e.g. "HQ Sync.app/Contents/...") survive correctly.
+# (e.g. "HQ.app/Contents/...") survive correctly.
 CANDIDATES=(
   "$SCRIPT_DIR/bridge.mjs"
   "$SCRIPT_DIR/../Resources/recall-sdk-bridge/bridge.mjs"

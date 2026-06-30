@@ -25,10 +25,10 @@
     <p>
       HQ is installed{#if displayPath} at <span class="path-value">{displayPath}</span>{/if}.
     </p>
-    <p class="muted">HQ Sync runs in your menu bar.</p>
+    <p class="muted">HQ runs in your menu bar.</p>
   </div>
 
-  <button type="button" onclick={() => onfinish?.()}>Open HQ Sync</button>
+  <button type="button" onclick={() => onfinish?.()}>Open HQ</button>
 </div>
 
 <style>

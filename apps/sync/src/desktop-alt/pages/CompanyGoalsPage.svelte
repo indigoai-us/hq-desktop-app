@@ -256,7 +256,7 @@
       `/goals ${slug}`,
       '',
       `Create a new measurable company goal for ${slug}.`,
-      'Interview me for the missing objective, owner, target quarter, and key results, then update the local company goals source so it appears in HQ Sync.',
+      'Interview me for the missing objective, owner, target quarter, and key results, then update the local company goals source so it appears in HQ.',
     ].join('\n');
     void openHqPrompt('new-goal', prompt);
   }

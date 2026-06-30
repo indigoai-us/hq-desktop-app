@@ -65,7 +65,7 @@ const builders: Record<IssueKind, (i: Issue) => string> = {
     const company = val(i, 'company');
     const countLine = count > 0 ? `${count} file conflict${count === 1 ? '' : 's'}` : 'sync conflicts';
     return [
-      `I'm seeing ${countLine} in my HQ Sync menubar app${company ? ` (company: ${company})` : ''}.`,
+      `I'm seeing ${countLine} in my HQ menubar app${company ? ` (company: ${company})` : ''}.`,
       '',
       'Please run `/resolve-conflicts` to walk me through each one. Use the local file as the source of truth unless the remote is clearly newer + intentional. After resolving, run `hq sync` once to confirm the menubar shows zero conflicts.',
     ].join('\n');
@@ -75,7 +75,7 @@ const builders: Record<IssueKind, (i: Issue) => string> = {
     const msg = val(i, 'message');
     const company = val(i, 'company');
     return [
-      `My HQ Sync just failed${company ? ` while syncing "${company}"` : ''}.`,
+      `My HQ just failed${company ? ` while syncing "${company}"` : ''}.`,
       '',
       msg ? `Error: ${msg}` : 'No error message was surfaced in the UI.',
       '',
@@ -86,7 +86,7 @@ const builders: Record<IssueKind, (i: Issue) => string> = {
   'auth-expired': (i) => {
     const msg = val(i, 'message');
     return [
-      'My HQ Sync session expired and the menubar app is asking me to sign in again.',
+      'My HQ session expired and the menubar app is asking me to sign in again.',
       msg ? `\nError: ${msg}` : '',
       '',
       'Please run `/hq-login` to refresh my Cognito tokens. If a silent refresh fails, fall back to the browser sign-in flow. Confirm with `/hq-whoami` that the session is healthy before doing anything else.',
@@ -106,7 +106,7 @@ const builders: Record<IssueKind, (i: Issue) => string> = {
   'hq-cli-update-failed': (i) => {
     const error = val(i, 'error');
     return [
-      'My HQ Sync menubar tried to upgrade the `hq` CLI for me and the install failed.',
+      'My HQ menubar tried to upgrade the `hq` CLI for me and the install failed.',
       '',
       error ? `Error from npm: ${error}` : 'No error detail was surfaced.',
       '',
@@ -117,7 +117,7 @@ const builders: Record<IssueKind, (i: Issue) => string> = {
   'cloud-unreachable': (i) => {
     const error = val(i, 'error');
     return [
-      'My HQ Sync menubar says the cloud is unreachable — it\'s showing local-only workspaces.',
+      'My HQ menubar says the cloud is unreachable — it\'s showing local-only workspaces.',
       '',
       error ? `Last error: ${error}` : '',
       '',
@@ -128,7 +128,7 @@ const builders: Record<IssueKind, (i: Issue) => string> = {
   'manifest-error': (i) => {
     const error = val(i, 'error');
     return [
-      "My HQ Sync menubar can't read `companies/manifest.yaml` — it fell back to folder enumeration.",
+      "My HQ menubar can't read `companies/manifest.yaml` — it fell back to folder enumeration.",
       '',
       error ? `Parser error: ${error}` : '',
       '',
@@ -139,7 +139,7 @@ const builders: Record<IssueKind, (i: Issue) => string> = {
   'workspace-needs-connect': (i) => {
     const slug = val(i, 'slug');
     return [
-      `My HQ Sync menubar shows a local-only workspace${slug ? ` (\`${slug}\`)` : ''} that needs to be connected to a cloud vault.`,
+      `My HQ menubar shows a local-only workspace${slug ? ` (\`${slug}\`)` : ''} that needs to be connected to a cloud vault.`,
       '',
       "The in-app Connect button calls `connect_workspace_to_cloud` — that's usually all I need. If it fails (cloud unreachable, name collision, permissions), tell me which and what to do next. Don't try to provision a brand-new bucket out of band — the backend handles bucket creation + manifest update atomically.",
     ].join('\n');
@@ -149,7 +149,7 @@ const builders: Record<IssueKind, (i: Issue) => string> = {
     const slug = val(i, 'slug');
     const reason = val(i, 'reason');
     return [
-      `My HQ Sync menubar shows workspace \`${slug || '<unknown>'}\` as broken.`,
+      `My HQ menubar shows workspace \`${slug || '<unknown>'}\` as broken.`,
       '',
       reason ? `Reason: ${reason}` : 'The manifest cloud_uid does not match cloud reality.',
       '',
@@ -183,7 +183,7 @@ const builders: Record<IssueKind, (i: Issue) => string> = {
       ? `It exists locally under a locked-path scope but doesn't exist in the upstream tree — I either added it or it's left over from a prior version.`
       : `It exists in both places but the contents differ from upstream.`;
     return [
-      `My HQ Sync menubar detected a drift in a locked hq-core file: \`${path || '<path>'}\`.`,
+      `My HQ menubar detected a drift in a locked hq-core file: \`${path || '<path>'}\`.`,
       '',
       versionLine,
       kindLine,
@@ -224,7 +224,7 @@ const builders: Record<IssueKind, (i: Issue) => string> = {
 
     if (!isBuilder) {
       return [
-        `My HQ Sync menubar's "Core Drift" panel shows ${total} locked hq-core file${plural} that differ from what v${ver} shipped.`,
+        `My HQ menubar's "Core Drift" panel shows ${total} locked hq-core file${plural} that differ from what v${ver} shipped.`,
         '',
         "I'm a regular HQ user — I don't promote changes to hq-core and can't open PRs against `hq-core-staging`. So the right resolution for each file is either to **lift my intentional edit into a `personal/` overlay** (so it survives `/update-hq`) or to **restore the file from upstream**. I should never leave a locked core file edited in place — that just keeps drifting against every release.",
         '',
@@ -262,7 +262,7 @@ const builders: Record<IssueKind, (i: Issue) => string> = {
       .map(([n, paths]) => `- **PR #${n}**: ${paths.map((p) => `\`${p}\``).join(', ')}`);
 
     return [
-      `My HQ Sync menubar's "Core Drift" panel shows ${total} locked hq-core file${plural} that differ from v${ver} (my last released version). I'm an HQ builder — I promote core changes through \`indigoai-us/hq-core-staging\`. The menubar already classified each file against staging:`,
+      `My HQ menubar's "Core Drift" panel shows ${total} locked hq-core file${plural} that differ from v${ver} (my last released version). I'm an HQ builder — I promote core changes through \`indigoai-us/hq-core-staging\`. The menubar already classified each file against staging:`,
       '',
       '**Unaccounted** (NOT in staging main or any open PR — the real action items):',
       bullets(unaccounted),
@@ -314,7 +314,7 @@ const builders: Record<IssueKind, (i: Issue) => string> = {
         ? "The in-app rescue exited before it could run (exit -1) — usually this means my install is too far out of date for the menubar to bridge on its own, so it needs a guided update from you."
         : `The rescue script exited with code ${exitCode}.`;
     return [
-      "My HQ Sync menubar tried to update HQ core for me and it didn't finish.",
+      "My HQ menubar tried to update HQ core for me and it didn't finish.",
       '',
       hqVersion
         ? `I'm currently on hq-core \`v${hqVersion}\`.`
@@ -339,14 +339,14 @@ const builders: Record<IssueKind, (i: Issue) => string> = {
   'hq-version-undetectable': (i) => {
     const hqFolderPath = val(i, 'hqFolderPath');
     return [
-      "My HQ Sync menubar can't detect the version of HQ I'm running.",
+      "My HQ menubar can't detect the version of HQ I'm running.",
       '',
       hqFolderPath
         ? `The resolver picked: \`${hqFolderPath}\``
         : "The resolver couldn't even locate an HQ folder on this machine.",
       '',
       "Please diagnose which of these is true and walk me through fixing it:",
-      "1. **HQ folder missing / wrong** — verify the path above exists (`ls -la`). If wrong, open my HQ Sync app → Settings → re-tether to the correct folder.",
+      "1. **HQ folder missing / wrong** — verify the path above exists (`ls -la`). If wrong, open my HQ app → Settings → re-tether to the correct folder.",
       "2. **`core.yaml` missing** — at the HQ folder, check both canonical (`core/core.yaml`) and legacy (`core.yaml`) locations. If missing, the install is incomplete; run `/setup` to scaffold it, or `/update-hq` to repair from the latest hq-core release.",
       "3. **`core.yaml` unparseable or missing `hqVersion`** — read it and tell me what's there. If corrupted, restore from git or re-run `/update-hq`.",
       '',
@@ -362,7 +362,7 @@ const builders: Record<IssueKind, (i: Issue) => string> = {
     const kind = val(i, 'kind');
     const detail = val(i, 'detail');
     const slug = val(i, 'slug');
-    const header = `My HQ Sync menubar just failed to provision \`${slug || '<workspace>'}\` because of a local-environment problem (\`${kind}\`).`;
+    const header = `My HQ menubar just failed to provision \`${slug || '<workspace>'}\` because of a local-environment problem (\`${kind}\`).`;
     const detailLine = detail ? `\nError detail from the CLI: ${detail}` : '';
 
     switch (kind as LocalEnvKind) {
@@ -371,7 +371,7 @@ const builders: Record<IssueKind, (i: Issue) => string> = {
           header,
           detailLine,
           '',
-          "My `~/.npm` cache has root-owned files (most likely from a previous `sudo npm` run), so `npx`'s npm couldn't open its index. The HQ Sync app routes `hq` provisioning through `npx -y --package=@indigoai-us/hq-cli@<range>`, so every Connect attempt will keep failing until this is fixed.",
+          "My `~/.npm` cache has root-owned files (most likely from a previous `sudo npm` run), so `npx`'s npm couldn't open its index. The HQ app routes `hq` provisioning through `npx -y --package=@indigoai-us/hq-cli@<range>`, so every Connect attempt will keep failing until this is fixed.",
           '',
           "Please attempt the fix:",
           "1. Confirm with me, then run `sudo chown -R $(id -u):$(id -g) ~/.npm` so the cache is user-owned again.",
@@ -461,7 +461,7 @@ export function parseLocalEnvFailure(
 export function buildPrompt(issue: Issue): string {
   const build = builders[issue.kind];
   if (!build) {
-    return `My HQ Sync menubar surfaced an unknown issue kind (\`${issue.kind}\`). Please diagnose by reading the source at \`src/lib/copy-prompts.ts\` and the relevant component, then propose a fix.`;
+    return `My HQ menubar surfaced an unknown issue kind (\`${issue.kind}\`). Please diagnose by reading the source at \`src/lib/copy-prompts.ts\` and the relevant component, then propose a fix.`;
   }
   return build(issue);
 }

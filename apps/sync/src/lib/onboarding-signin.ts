@@ -35,7 +35,7 @@ export function mapSignInError(message: string, provider?: SignInProvider): stri
   }
 
   if (/desktop bridge|invoke|open.*browser|shell/i.test(message)) {
-    return `Could not start ${provider ?? 'provider'} sign-in from this environment. Open HQ Sync as the desktop app and try again.`;
+    return `Could not start ${provider ?? 'provider'} sign-in from this environment. Open HQ as the desktop app and try again.`;
   }
 
   return message || 'Sign-in failed';

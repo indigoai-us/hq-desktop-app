@@ -357,7 +357,7 @@ export function getDesktopSecondarySidebar(
       surface: 'settings',
       header: 'Settings',
       headerTone: null,
-      meta: options.version ? `HQ Sync v${options.version}` : null,
+      meta: options.version ? `HQ v${options.version}` : null,
       items: SETTINGS_SECTIONS.map(({ id, label, note }) => ({ id, label, note: note ?? null })),
       activeId: route.tab ?? DEFAULT_SETTINGS_TAB,
       // The "Sign out" footer ships with the V4 Settings surface (US-013).

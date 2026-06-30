@@ -139,7 +139,7 @@ pub async fn show_banner(app: AppHandle, payload: BannerPayload) -> Result<(), S
         WINDOW_LABEL,
         tauri::WebviewUrl::App("index.html".into()),
     )
-    .title("HQ Sync Notification")
+    .title("HQ Notification")
     .inner_size(BANNER_W, BANNER_H)
     .position(pos.x, pos.y)
     .resizable(false)

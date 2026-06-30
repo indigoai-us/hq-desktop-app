@@ -54,7 +54,7 @@
     {
       id: 'accessibility',
       title: 'Accessibility',
-      reason: 'Lets HQ Sync see which app is currently in the foreground so it can detect when you’ve joined a meeting.',
+      reason: 'Lets HQ see which app is currently in the foreground so it can detect when you’ve joined a meeting.',
       key: 'accessibility' as const,
       required: true,
     },
@@ -191,7 +191,7 @@
   <header>
     <h1>Meeting Permissions</h1>
     <p class="subtitle">
-      These macOS grants power one optional feature — recording your meetings. HQ Sync
+      These macOS grants power one optional feature — recording your meetings. HQ
       only uses them around meetings; it never watches your screen or controls your Mac otherwise.
       {#if allGranted}
         <strong>All set</strong> — you can close this window.
@@ -203,17 +203,17 @@
        Full Disk Access broadly — wording that can read as "full system access." This
        card explains, in plain terms, the narrow purpose of each grant and reassures
        the user that sync itself needs none of them. -->
-  <section class="why-card" aria-label="Why HQ Sync asks for these permissions">
+  <section class="why-card" aria-label="Why HQ asks for these permissions">
     <h2>Why we ask for these</h2>
     <p class="why-lead">
       macOS describes Screen Recording, Accessibility, and Full Disk Access in broad
-      terms — it can look like “full system access.” HQ Sync uses each one narrowly, and
+      terms — it can look like “full system access.” HQ uses each one narrowly, and
       only for recording meetings:
     </p>
     <ul class="why-list">
       <li>
         <span class="why-key">Accessibility</span>
-        <span class="why-val">notices which app is in front, so HQ Sync knows when a meeting starts. It never controls your Mac.</span>
+        <span class="why-val">notices which app is in front, so HQ knows when a meeting starts. It never controls your Mac.</span>
       </li>
       <li>
         <span class="why-key">Screen Recording &amp; System Audio</span>
@@ -239,7 +239,7 @@
     <div class="quick-prompt">
       <div class="quick-text">
         <strong>Try the quick path first.</strong>
-        Click below — HQ Sync will trigger the native macOS prompt for anything still pending.
+        Click below — HQ will trigger the native macOS prompt for anything still pending.
       </div>
       <button class="primary-btn" onclick={handleRunNativeRegister}>
         Trigger prompts

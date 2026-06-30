@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 #
-# create-dmg.sh — Create a styled DMG installer for the HQ Sync app.
+# create-dmg.sh — Create a styled DMG installer for the HQ app.
 #
 # Usage:
 #   ./scripts/create-dmg.sh <path-to.app> <output.dmg>
 #
 # Example:
-#   ./scripts/create-dmg.sh "target/release/bundle/macos/HQ Sync.app" HQ-Sync.dmg
+#   ./scripts/create-dmg.sh "target/release/bundle/macos/HQ.app" HQ.dmg
 
 set -euo pipefail
 
@@ -18,7 +18,7 @@ if [ ! -d "$APP_PATH" ]; then
   exit 1
 fi
 
-VOLUME_NAME="HQ Sync"
+VOLUME_NAME="HQ"
 APP_NAME=$(basename "$APP_PATH")
 STAGING_DIR=$(mktemp -d -t dmg-staging-XXXXXX)
 

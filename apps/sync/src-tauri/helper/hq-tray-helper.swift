@@ -48,7 +48,7 @@ final class TrayController: NSObject {
     override init() {
         super.init()
         item.button?.title = "HQ"
-        item.button?.toolTip = "HQ Sync"
+        item.button?.toolTip = "HQ"
 
         // Right-click context menu (NOT set as item.menu — that would make a
         // plain left-click open the menu instead of the popover).
@@ -56,7 +56,7 @@ final class TrayController: NSObject {
         sync.target = self
         menu.addItem(sync)
         menu.addItem(.separator())
-        let quit = NSMenuItem(title: "Quit HQ Sync", action: #selector(quitHQ), keyEquivalent: "q")
+        let quit = NSMenuItem(title: "Quit HQ", action: #selector(quitHQ), keyEquivalent: "q")
         quit.target = self
         menu.addItem(quit)
 

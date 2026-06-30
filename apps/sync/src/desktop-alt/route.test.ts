@@ -315,7 +315,7 @@ describe('US-002 secondary sidebar — company / library / settings only', () =>
       version: '1.2.3',
     });
     expect(model?.surface).toBe('settings');
-    expect(model?.meta).toBe('HQ Sync v1.2.3');
+    expect(model?.meta).toBe('HQ v1.2.3');
     expect(model?.items.map((item) => item.id)).toEqual(SETTINGS_SECTIONS.map((s) => s.id));
     expect(model?.items.find((item) => item.id === 'meetings')?.note).toBe('gated');
     expect(model?.activeId).toBe('sync');
