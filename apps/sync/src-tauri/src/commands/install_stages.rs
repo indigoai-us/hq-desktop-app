@@ -1,11 +1,16 @@
 use std::ffi::OsString;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use crate::commands::install_directory::resolve_hq_path;
 use crate::commands::sync::{resolve_jwt, resolve_vault_api_url};
 use crate::commands::vault_client::VaultClient;
-use crate::util::paths;
+use crate::util::{hq_resolver, paths};
+
+/// Canonical default-package set is a product decision; empty for now —
+/// populate with slugs to auto-install at onboarding.
+const DEFAULT_PACKAGES: &[&str] = &[];
 
 fn git_command(git: &str, path_env: &str) -> Command {
     let mut cmd = Command::new(git);
@@ -45,6 +50,48 @@ fn run_git(git: &str, path_env: &str, args: Vec<OsString>) -> Result<Output, Str
         Ok(output)
     } else {
         Err(format_git_failure(&args, &output))
+    }
+}
+
+fn format_hq_failure(args: &[&str], output: &Output) -> String {
+    let argv = args.join(" ");
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let mut detail = if !stderr.is_empty() {
+        stderr
+    } else if !stdout.is_empty() {
+        stdout
+    } else {
+        "no output".to_string()
+    };
+    const MAX_DETAIL_CHARS: usize = 2_000;
+    if detail.chars().count() > MAX_DETAIL_CHARS {
+        detail = detail.chars().take(MAX_DETAIL_CHARS).collect();
+        detail.push_str("...");
+    }
+
+    format!(
+        "hq {argv} failed with status {}: {detail}",
+        output.status.code().unwrap_or(-1)
+    )
+}
+
+async fn run_hq(args: &[&str], hq_root: &Path) -> Result<(), String> {
+    let invocation = hq_resolver::resolve_hq();
+    let path_env = paths::child_path();
+    let mut cmd = invocation.command();
+    let output = cmd
+        .args(args)
+        .current_dir(hq_root)
+        .env("PATH", &path_env)
+        .output()
+        .await
+        .map_err(|e| format!("Failed to spawn hq ({}): {e}", invocation.label()))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format_hq_failure(args, &output))
     }
 }
 
@@ -127,6 +174,91 @@ pub fn git_init() -> Result<String, String> {
     git_init_path(Path::new(&hq_root), name.as_deref(), email.as_deref())?;
 
     Ok(format!("initialised {hq_root}"))
+}
+
+/// Build the local search index and refresh CLI-generated registries.
+#[tauri::command]
+pub async fn register_search_index() -> Result<(), String> {
+    let hq_root = PathBuf::from(resolve_hq_path()?);
+
+    run_hq(&["reindex"], &hq_root).await
+}
+
+/// Install configured default HQ packages during onboarding.
+#[tauri::command]
+pub async fn install_default_packages() -> Result<(), String> {
+    let hq_root = PathBuf::from(resolve_hq_path()?);
+
+    let mut failures = Vec::new();
+    for slug in DEFAULT_PACKAGES {
+        if let Err(e) = run_hq(&["packages", "install", slug], &hq_root).await {
+            failures.push(format!("{slug}: {e}"));
+        }
+    }
+
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "default package install failed: {}",
+            failures.join("; ")
+        ))
+    }
+}
+
+/// Scaffold top-level personal state expected by HQ.
+#[tauri::command]
+pub fn personalize_hq() -> Result<(), String> {
+    let hq_root = match resolve_hq_path() {
+        Ok(path) => PathBuf::from(path),
+        Err(e) => {
+            crate::util::logfile::log("personalize", &format!("resolve HQ root failed: {e}"));
+            return Ok(());
+        }
+    };
+    let personal = hq_root.join("personal");
+    let settings = personal.join("settings");
+    let workers = personal.join("workers");
+
+    if let Err(e) = fs::create_dir_all(&settings) {
+        crate::util::logfile::log("personalize", &format!("create personal/settings: {e}"));
+    }
+    if let Err(e) = fs::create_dir_all(&workers) {
+        crate::util::logfile::log("personalize", &format!("create personal/workers: {e}"));
+    }
+
+    let cognito = settings.join("cognito.json");
+    if !cognito.exists() {
+        if let Err(e) = fs::write(&cognito, "{}\n") {
+            crate::util::logfile::log("personalize", &format!("write cognito.json: {e}"));
+        }
+    }
+
+    for path in [settings.join(".gitkeep"), workers.join(".gitkeep")] {
+        if !path.exists() {
+            if let Err(e) = fs::write(&path, "") {
+                crate::util::logfile::log(
+                    "personalize",
+                    &format!("write {}: {e}", path.display()),
+                );
+            }
+        }
+    }
+
+    // TODO: render personal/profile.md once the onboarding wizard collects PersonalizationAnswers.
+    Ok(())
+}
+
+/// Placeholder for importing an existing setup from legacy installer state.
+#[tauri::command]
+pub async fn import_existing_setup() -> Result<(), String> {
+    crate::util::logfile::log(
+        "import",
+        "import stage skipped — existing-setup import not yet wired (see imports/hq-installer-react/src/lib/import-existing.ts)",
+    );
+    // TODO: wire the import mechanism and verification before porting the
+    // installer scan/spawn process from import-existing.ts.
+    Ok(())
 }
 
 /// No-op install-stage handoff for the unified app.
