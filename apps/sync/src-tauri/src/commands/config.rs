@@ -88,7 +88,7 @@ pub async fn get_config() -> Result<ConfigState, String> {
                 hq_folder_path: hq_folder.to_string_lossy().to_string(),
                 error: Some(
                     "~/.hq/config.json is present but doesn't match HqConfig. \
-                     Re-run hq-installer to repair, or restart HQ Sync — the \
+                     Re-run hq-installer to repair, or restart HQ — the \
                      launch-time migration recovers personal-vault installs \
                      automatically when ~/.hq/person-entity.json is present."
                         .to_string(),

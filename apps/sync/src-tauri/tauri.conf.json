@@ -1,6 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/crates/tauri-cli/schema.json",
-  "productName": "HQ Sync",
+  "productName": "HQ",
   "version": "0.8.30",
   "identifier": "ai.indigo.hq-sync-menubar",
   "build": {
@@ -13,7 +13,7 @@
     "macOSPrivateApi": true,
     "windows": [
       {
-        "title": "HQ Sync",
+        "title": "HQ",
         "width": 320,
         "height": 480,
         "resizable": false,

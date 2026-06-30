@@ -1,5 +1,5 @@
 #!/bin/bash
-# Inside-out signing for the HQ Sync .app bundle.
+# Inside-out signing for the HQ .app bundle.
 #
 # `codesign --deep` is deprecated and unreliable — it traverses the bundle
 # in an order that doesn't respect dylib dependency edges, which mangles
@@ -10,7 +10,7 @@
 # then the main binary, then the bundle as a whole. Apple's own docs and
 # Tauri's distribution guide both recommend this order.
 #
-# Usage: ./scripts/sign-bundle.sh <path-to-HQ Sync.app> [identity]
+# Usage: ./scripts/sign-bundle.sh <path-to-HQ.app> [identity]
 #
 # Identity defaults to the "HQ Installer Dev" self-signed cert that lives
 # in the local keychain (sha1: EAAEC4A1A7AF86CE8B54B8D657669D3F54D572D9).
@@ -22,7 +22,7 @@ APP="${1:-}"
 IDENTITY="${2:-HQ Installer Dev}"
 
 if [ -z "$APP" ] || [ ! -d "$APP" ]; then
-  echo "Usage: $0 <path-to-HQ Sync.app> [identity]" >&2
+  echo "Usage: $0 <path-to-HQ.app> [identity]" >&2
   exit 1
 fi
 

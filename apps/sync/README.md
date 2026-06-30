@@ -62,7 +62,7 @@ Before each release (v1.0.0 and every minor/patch):
 2. Record a **Loom video** walking through all test scenarios
 3. Publish the Loom video link in the **GitHub Release notes**
 4. Verify performance budgets pass (see `tests/PERF.md`)
-5. Verify code signing: `spctl -a -vv "HQ Sync.app"`
+5. Verify code signing: `spctl -a -vv "HQ.app"`
 
 ### Desktop-Alt E2E
 

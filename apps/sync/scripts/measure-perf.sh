@@ -13,7 +13,7 @@
 set -euo pipefail
 
 BUDGET_BUNDLE_MB=15
-APP_NAME="HQ Sync.app"
+APP_NAME="HQ.app"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUNDLE_DIR="$REPO_ROOT/src-tauri/target/release/bundle/macos"
 APP_PATH="$BUNDLE_DIR/$APP_NAME"
@@ -31,7 +31,7 @@ for arg in "$@"; do
 done
 
 echo "======================================"
-echo " HQ Sync — Performance Budget Check"
+echo " HQ — Performance Budget Check"
 echo "======================================"
 echo ""
 
@@ -81,7 +81,7 @@ echo "  Steps:"
 echo "    1. Launch: open \"$APP_PATH\""
 echo "    2. Close the popover (click away from tray icon)"
 echo "    3. Wait 10 minutes with no interaction"
-echo "    4. Open Activity Monitor > filter 'HQ Sync'"
+echo "    4. Open Activity Monitor > filter 'HQ'"
 echo "    5. Read 'Real Memory' column — must be < 50 MB"
 echo ""
 

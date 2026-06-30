@@ -255,7 +255,7 @@
         ? ['Available goals:', ...objectives.map((goal) => `- ${goal.title || goal.id}`)].join('\n')
         : 'No goals are currently synced; create the right goal first if needed.',
       '',
-      'Update the local goal/project metadata so this project appears under the correct goal in HQ Sync.',
+      'Update the local goal/project metadata so this project appears under the correct goal in HQ.',
     ]
       .filter((line): line is string => Boolean(line))
       .join('\n');

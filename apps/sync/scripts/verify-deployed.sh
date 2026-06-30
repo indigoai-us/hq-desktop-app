@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Verify the meeting-detect-notify feature is actually live in the
-# deployed /Applications/HQ Sync.app — not just "processes are running"
+# deployed /Applications/HQ.app — not just "processes are running"
 # (which is misleading because macOS keeps detached processes alive on
 # inode handles after their .app is overwritten by an auto-update).
 #
@@ -17,7 +17,7 @@
 
 set -uo pipefail
 
-APP="${1:-/Applications/HQ Sync.app}"
+APP="${1:-/Applications/HQ.app}"
 PASS=()
 FAIL=()
 WARN=()
@@ -155,7 +155,7 @@ echo ""
 echo "Process / bundle alignment:"
 
 if [[ "$APP" == /Applications/* ]]; then
-  MENUBAR_PIDS=$(pgrep -f 'HQ Sync.app/Contents/MacOS/hq-sync-menubar' 2>/dev/null || true)
+  MENUBAR_PIDS=$(pgrep -f 'HQ.app/Contents/MacOS/hq-sync-menubar' 2>/dev/null || true)
   GHOST=0
   if [ -n "$MENUBAR_PIDS" ]; then
     BUNDLE_MTIME=$(stat -f '%m' "$APP")
@@ -172,7 +172,7 @@ if [[ "$APP" == /Applications/* ]]; then
       green "  ✓ Running hq-sync-menubar PIDs match the on-disk bundle"
     fi
   else
-    yellow "  ⚠ HQ Sync is not running. Launch it before testing."
+    yellow "  ⚠ HQ is not running. Launch it before testing."
   fi
 else
   GHOST=0

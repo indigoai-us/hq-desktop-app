@@ -79,7 +79,7 @@ const SUCCESS_HTML: &str = r#"<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<title>Signed in — HQ Sync</title>
+<title>Signed in — HQ</title>
 <style>
   html, body { margin: 0; padding: 0; height: 100%; background: #0a0a0a; color: #fafafa;
     font-family: -apple-system, BlinkMacSystemFont, "Geist", sans-serif; }
@@ -95,7 +95,7 @@ const SUCCESS_HTML: &str = r#"<!doctype html>
 <div class="wrap"><div class="card">
   <div class="check">&check;</div>
   <h1>You are signed in</h1>
-  <p>You can close this tab and return to HQ Sync.</p>
+  <p>You can close this tab and return to HQ.</p>
 </div></div>
 </body>
 </html>"#;
@@ -108,7 +108,7 @@ fn error_html(reason: &str) -> String {
 text-align:center;padding-top:80px}}h1{{font-weight:500}}p{{color:#a1a1aa}}
 code{{color:#f87171;font-size:12px;display:block;margin-top:24px}}</style>
 </head><body><h1>Sign-in error</h1>
-<p>Return to HQ Sync and try again.</p>
+<p>Return to HQ and try again.</p>
 <code>{reason}</code></body></html>"#,
         reason = reason
     )

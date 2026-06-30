@@ -659,7 +659,7 @@
                 <span class="setting-label">System permission</span>
                 <span class="setting-desc">
                   {#if notifPermission === 'granted'}
-                    macOS is allowing notifications from HQ Sync
+                    macOS is allowing notifications from HQ
                   {:else if notifPermission === 'denied'}
                     Blocked in macOS — open System Settings to allow
                   {:else}
@@ -999,7 +999,7 @@
           <div class="setting-row">
             <div class="setting-info">
               <label class="setting-label" for="toggle-start-login">Start at Login</label>
-              <span class="setting-desc">Launch HQ Sync when you log in</span>
+              <span class="setting-desc">Launch HQ when you log in</span>
             </div>
             <button
               id="toggle-start-login"

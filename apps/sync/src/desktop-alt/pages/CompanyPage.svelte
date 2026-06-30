@@ -69,7 +69,7 @@
       '',
       `Start a new HQ project for ${company.displayName}.`,
       `Use company slug: ${company.slug}.`,
-      'Interview me only for the missing product decisions, then create the project PRD under this company and make sure it appears in the HQ Sync desktop Projects screen.',
+      'Interview me only for the missing product decisions, then create the project PRD under this company and make sure it appears in the HQ desktop Projects screen.',
     ].join('\n');
 
     try {

@@ -502,7 +502,7 @@
 
   async function fixHqCliUpdateInHq() {
     const prompt = [
-      'The hq CLI auto-update failed inside the HQ Sync menubar app.',
+      'The hq CLI auto-update failed inside the HQ menubar app.',
       '',
       `Install command: ${HQ_CLI_UPGRADE_CMD}`,
       '',

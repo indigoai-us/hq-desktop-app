@@ -20,7 +20,7 @@ set -euo pipefail
 
 APP="${1:-}"
 if [ -z "$APP" ] || [ ! -d "$APP" ]; then
-  echo "Usage: $0 <path-to-HQ Sync.app>" >&2
+  echo "Usage: $0 <path-to-HQ.app>" >&2
   exit 1
 fi
 

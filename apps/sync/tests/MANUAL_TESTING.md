@@ -1,4 +1,4 @@
-# HQ Sync Menubar — Manual Testing Checklist
+# HQ Menubar — Manual Testing Checklist
 
 > **Policy deviation:** This project uses manual testing + Loom video for V1 instead of automated e2e tests. See [e2e-backpressure-required.md policy deviation](#policy-deviation) at the bottom of this document.
 
@@ -32,10 +32,10 @@ cp -r ~/.hq ~/.hq.backup.$(date +%s)
 rm -f ~/.hq/menubar.json
 
 # Remove app from /Applications (if testing fresh install)
-rm -rf "/Applications/HQ Sync.app"
+rm -rf "/Applications/HQ.app"
 
 # Kill any running menubar instances
-pkill -f "HQ Sync" || true
+pkill -f "hq-sync-menubar" || true
 ```
 
 ---
@@ -55,8 +55,8 @@ pkill -f "HQ Sync" || true
 
 **Steps:**
 
-- [ ] 1. Install HQ Sync.app into /Applications (via installer bundle or DMG)
-- [ ] 2. Launch HQ Sync.app — verify tray icon appears in menu bar within 5 seconds
+- [ ] 1. Install HQ.app into /Applications (via installer bundle or DMG)
+- [ ] 2. Launch HQ.app — verify tray icon appears in menu bar within 5 seconds
 - [ ] 3. Click tray icon — verify popover opens in <100ms
 - [ ] 4. Verify popover shows: company name, HQ folder path, "Sync Now" button
 - [ ] 5. Verify authentication state shows "authenticated" (inherited from `~/.hq/cognito-tokens.json`)
@@ -76,19 +76,19 @@ pkill -f "HQ Sync" || true
 **Stories involved:** US-003, US-008
 
 **Prerequisites:**
-- HQ Sync.app installed and previously authenticated
+- HQ.app installed and previously authenticated
 - Valid refresh token (within 30-day TTL)
 
 **Steps:**
 
-- [ ] 1. Quit HQ Sync.app (`Cmd+Q` or right-click tray -> Quit)
+- [ ] 1. Quit HQ.app (`Cmd+Q` or right-click tray -> Quit)
 - [ ] 2. Manually expire the access token:
   ```bash
   # Edit ~/.hq/cognito-tokens.json
   # Set "expiresAt" to a past timestamp, e.g.:
   # "expiresAt": "2020-01-01T00:00:00.000Z"
   ```
-- [ ] 3. Launch HQ Sync.app
+- [ ] 3. Launch HQ.app
 - [ ] 4. Click tray icon — verify popover opens without any error or "Sign in" prompt
 - [ ] 5. Verify auth state shows "authenticated" with a **new** `expiresAt` in the future
 - [ ] 6. Click "Sync Now" — verify sync completes successfully
@@ -106,7 +106,7 @@ pkill -f "HQ Sync" || true
 **Stories involved:** US-006, US-007, US-011
 
 **Prerequisites:**
-- HQ Sync.app installed and authenticated
+- HQ.app installed and authenticated
 - Two machines (or simulated remote) pointing to the same HQ folder
 - Files to create conflicts with (text file, binary/image file, directory)
 
@@ -157,7 +157,7 @@ pkill -f "HQ Sync" || true
 **Stories involved:** US-005, US-012
 
 **Prerequisites:**
-- HQ Sync.app installed and authenticated
+- HQ.app installed and authenticated
 - Current HQ path is `~/HQ` (or whatever default)
 - A second valid HQ folder exists (e.g., `~/HQ-alt`)
 
@@ -187,16 +187,16 @@ pkill -f "HQ Sync" || true
 **Stories involved:** US-015, US-016
 
 **Prerequisites:**
-- HQ Sync.app v1.0.0 (or test version) installed
+- HQ.app v1.0.0 (or test version) installed
 - Access to publish a new version to GitHub Releases
 - `latest.json` endpoint configured in `tauri.conf.json`
 
 **Steps:**
 
-- [ ] 1. Install v1.0.0 of HQ Sync.app
+- [ ] 1. Install v1.0.0 of HQ.app
 - [ ] 2. Record current state: note contents of `~/.hq/menubar.json`, `~/.hq/cognito-tokens.json`, and sync journal
 - [ ] 3. Publish v1.0.1 to GitHub Releases with updated `latest.json`
-- [ ] 4. Relaunch HQ Sync.app (or wait for periodic check — up to 6 hours)
+- [ ] 4. Relaunch HQ.app (or wait for periodic check — up to 6 hours)
 - [ ] 5. Verify update prompt appears: "Restart to install update" (or similar)
 - [ ] 6. Accept the update — verify app restarts
 - [ ] 7. Verify app is now running v1.0.1 (check About / version display)
@@ -268,7 +268,7 @@ pkill -f "HQ Sync" || true
 **Steps:**
 
 - [ ] 1. Confirm pre-state: `ls "${HQ_FOLDER}/companies/"` shows at least one slug without a `.hq/config.json` inside
-- [ ] 2. Click "Sync Now" in the HQ Sync menubar popover
+- [ ] 2. Click "Sync Now" in the HQ menubar popover
 - [ ] 3. Wait for sync completion (popover shows "Sync complete")
 
 **Expected outcome (a) — Company auto-provisioning:**
@@ -337,7 +337,7 @@ sha256sum "${HQ_FOLDER}/companies/<slug>/company.yaml"
 
 - [ ] 1. Confirm opt-in: `jq -r '.telemetryEnabled' ~/.hq/menubar.json` → `true`
 - [ ] 2. Confirm at least one JSONL exists: `ls ~/.claude/projects/**/*.jsonl | head -3`
-- [ ] 3. Click "Sync Now" in the HQ Sync menubar popover
+- [ ] 3. Click "Sync Now" in the HQ menubar popover
 - [ ] 4. Wait for sync completion (popover shows "Sync complete")
 
 **Expected outcome:**
@@ -434,7 +434,7 @@ jq -r 'to_entries[0].value.offset' ~/.hq/telemetry-cursor.json
 
 - [ ] Click "Sync Now" -> progress events stream to UI in real time
 - [ ] Completion event updates last-synced timestamp
-- [ ] Kill app mid-sync (`kill -9 $(pgrep "HQ Sync")`) -> verify no zombie `hq` process (`ps aux | grep hq`)
+- [ ] Kill app mid-sync (`kill -9 $(pgrep -f "hq-sync-menubar")`) -> verify no zombie `hq` process (`ps aux | grep hq`)
 - [ ] Trigger error (disable network) -> error event reaches UI with readable message
 - [ ] Cancel sync mid-run (if cancel button exists) -> subprocess terminates cleanly
 
@@ -457,7 +457,7 @@ jq -r 'to_entries[0].value.offset' ~/.hq/telemetry-cursor.json
 
 #### MDN-001: Recall SDK sidecar starts on launch
 
-- [ ] Launch HQ Sync.app
+- [ ] Launch HQ.app
 - [ ] Verify `~/.hq/sync-debug.log` does NOT contain `RECALL_SDK_UNAVAILABLE`
 - [ ] With the SDK binary absent: rename it, relaunch → verify `RECALL_SDK_UNAVAILABLE` is written to the log and the app continues running (no crash, tray icon appears)
 - [ ] Restore the binary and relaunch → verify the error disappears
@@ -496,9 +496,9 @@ jq -r 'to_entries[0].value.offset' ~/.hq/telemetry-cursor.json
 #### MDN-005: Ledger deduplication persists across restarts
 
 - [ ] Inject a `meeting:detected` event → notification fires
-- [ ] Quit HQ Sync.app
+- [ ] Quit HQ.app
 - [ ] Verify `~/.hq/meeting-notify-ledger.json` contains an entry for the test URL with `action: "notified"`
-- [ ] Relaunch HQ Sync.app
+- [ ] Relaunch HQ.app
 - [ ] Inject the same `meeting:detected` event within 6 hours of the first
 - [ ] Verify **no** duplicate notification fires (ledger suppressed it)
 - [ ] Manually edit the `notifiedAt` timestamp in the ledger to be >6 hours ago
@@ -523,9 +523,9 @@ jq -r 'to_entries[0].value.offset' ~/.hq/telemetry-cursor.json
 
 #### MDN-008: notifications:false in menubar.json suppresses everything
 
-- [ ] Quit HQ Sync.app
+- [ ] Quit HQ.app
 - [ ] Edit `~/.hq/menubar.json` to set `"notifications": false`
-- [ ] Relaunch HQ Sync.app
+- [ ] Relaunch HQ.app
 - [ ] Inject a `meeting:detected` event with no existing bot
 - [ ] Verify **no** macOS notification fires and **no** tray badge appears
 
@@ -588,7 +588,7 @@ jq -r 'to_entries[0].value.offset' ~/.hq/telemetry-cursor.json
    vault URL at a blackhole. Easiest: in `~/.hq/menubar.json`, set
    `"vaultApiUrlOverride"` to a TCP-accepting-but-non-responding endpoint
    (e.g. `nc -l 9999` in a terminal, then `http://127.0.0.1:9999`)
-- [ ] 2. Restart HQ Sync.app so the new vault URL is picked up
+- [ ] 2. Restart HQ.app so the new vault URL is picked up
 - [ ] 3. Open MeetingsWindow and click refresh
 - [ ] 4. Verify the friendly error banner appears within ~16 seconds
    (15s request budget + a beat of slack), **not** after a multi-minute
@@ -620,7 +620,7 @@ jq -r 'to_entries[0].value.offset' ~/.hq/telemetry-cursor.json
 
 #### SN-001: Poll fires 5 seconds after app launch
 
-- [ ] 1. With `~/.hq/share-notify-cursor.json` deleted (fresh cursor), launch HQ Sync.app
+- [ ] 1. With `~/.hq/share-notify-cursor.json` deleted (fresh cursor), launch HQ.app
 - [ ] 2. Inspect `~/.hq/logs/hq-sync.log` after 10 seconds
 - [ ] 3. Verify a `SHARE_NOTIFY_POLL_START` log line appears (confirms launch-time poll fired)
 
@@ -675,9 +675,9 @@ jq -r 'to_entries[0].value.offset' ~/.hq/telemetry-cursor.json
 #### SN-007: Tray badge dot appears and clears
 
 - [ ] 1. Before opening the ShareDetail window, hover over the tray icon
-- [ ] 2. Verify the tooltip includes "· N new share(s)" (badge suffix, e.g., "HQ Sync · 1 new share(s)")
+- [ ] 2. Verify the tooltip includes "· N new share(s)" (badge suffix, e.g., "HQ · 1 new share(s)")
 - [ ] 3. Open and close the ShareDetail window
-- [ ] 4. Hover over the tray icon again — verify the badge suffix is **gone** (tooltip back to plain "HQ Sync")
+- [ ] 4. Hover over the tray icon again — verify the badge suffix is **gone** (tooltip back to plain "HQ")
 
 #### SN-008: Dogfood gate prevents poll for non-Indigo users
 
@@ -695,7 +695,7 @@ jq -r 'to_entries[0].value.offset' ~/.hq/telemetry-cursor.json
 
 #### SN-010: Notification permission denial is handled gracefully
 
-- [ ] 1. In macOS System Settings → Notifications, find "HQ Sync" and set to "Off"
+- [ ] 1. In macOS System Settings → Notifications, find "HQ" and set to "Off"
 - [ ] 2. Trigger a poll that returns at least one share event (repeat SN-003 setup)
 - [ ] 3. Verify **no crash** — app continues running
 - [ ] 4. Inspect `~/.hq/logs/hq-sync.log` — verify `NOTIFY_PERMISSION_DENIED` log line appears
@@ -748,8 +748,8 @@ jq -r 'to_entries[0].value.offset' ~/.hq/telemetry-cursor.json
 - [ ] Push a git tag `v0.x.x` -> GitHub Actions workflow triggers
 - [ ] Workflow completes successfully
 - [ ] Signed + notarized DMG appears in GitHub Releases
-- [ ] Verify signature: `spctl -a -vv "HQ Sync.app"` -> accepted
-- [ ] Verify universal binary: `file "HQ Sync.app/Contents/MacOS/HQ Sync"` -> shows x86_64 + arm64
+- [ ] Verify signature: `spctl -a -vv "HQ.app"` -> accepted
+- [ ] Verify universal binary: `file "HQ.app/Contents/MacOS/hq-sync-menubar"` -> shows x86_64 + arm64
 - [ ] Launch on clean macOS 13+ machine -> **no Gatekeeper warnings**
 
 ---

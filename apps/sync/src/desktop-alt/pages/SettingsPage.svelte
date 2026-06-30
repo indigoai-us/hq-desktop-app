@@ -348,7 +348,7 @@
     <section id="general" class="settings-section">
       <h2>General</h2>
       <div class="settings-card">
-        <label class="setting-row"><span><strong>Start at login</strong><small>Open HQ Sync when macOS starts.</small></span><input type="checkbox" bind:checked={startAtLogin} onchange={applyStartAtLogin} /></label>
+        <label class="setting-row"><span><strong>Start at login</strong><small>Open HQ when macOS starts.</small></span><input type="checkbox" bind:checked={startAtLogin} onchange={applyStartAtLogin} /></label>
         <label class="setting-row"><span><strong>Usage telemetry</strong><small>Share anonymized usage counts to improve HQ. Off by default.</small></span><input type="checkbox" bind:checked={telemetryEnabled} onchange={saveSettings} /></label>
       </div>
     </section>
