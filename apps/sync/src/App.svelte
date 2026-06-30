@@ -19,6 +19,7 @@
   import { transferCountDelta } from './lib/transfer-count';
   import { effectiveTotalFiles as computeEffectiveTotalFiles } from './lib/effective-total-files';
   import { shouldSkipSignIn } from './lib/auth';
+  import { isOnboardingState, type LifecycleState } from './lib/lifecycle';
   import { friendlyCompanyLabel } from './lib/company-label';
   import type { Workspace, WorkspacesResult } from './lib/workspaces';
   import { loadMeetingDetectEligible } from './lib/permissionState.svelte';
@@ -29,6 +30,7 @@
     handleMeetingDetected,
     type MeetingDetectedPayload,
   } from './lib/meetingDetection';
+  import Onboarding from './components/Onboarding.svelte';
   import {
     armStopWatchdog,
     clearStopWatchdog,
@@ -46,6 +48,7 @@
   let authenticated = $state(false);
   let expiresAt = $state('');
   let checking = $state(true);
+  let lifecycleState = $state<string | null>(null);
   let syncState = $state<'idle' | 'syncing' | 'error' | 'conflict' | 'setup-needed' | 'auth-error'>('idle');
   // True while a manual "Sync Now" owns the progress UI — its richer
   // stdout-driven stream (fanout-aware) drives the card. Gates out the
@@ -1955,6 +1958,7 @@
       // unauthenticated — a stored token that's actually unusable will
       // raise `sync:auth-error` on first sync and route back through
       // sign-in from there.
+      lifecycleState = await invoke<string>('get_lifecycle_state').catch(() => null);
       const [hasToken, state] = await Promise.all([
         invoke<boolean>('has_stored_token'),
         invoke<{
@@ -2026,6 +2030,8 @@
     <div class="loading">
       <span class="dot-spinner"></span>
     </div>
+  {:else if isOnboardingState(lifecycleState)}
+    <Onboarding state={(lifecycleState ?? 'NeedsInstall') as LifecycleState} />
   {:else if authenticated && showSettings}
     <Settings onback={handleBackFromSettings} />
   {:else if authenticated}
