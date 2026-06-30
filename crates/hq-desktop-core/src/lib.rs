@@ -25,6 +25,7 @@ pub mod hq_version;
 pub mod ignore;
 pub mod journal;
 pub mod library_local;
+pub mod lifecycle;
 pub mod logfile;
 pub mod marketplace;
 pub mod meeting_ledger;
