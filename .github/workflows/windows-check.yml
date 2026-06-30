@@ -15,7 +15,9 @@ on:
   pull_request:
     paths:
       - "apps/sync/**"
+      - "crates/**"
       - "Cargo.toml"
+      - "Cargo.lock"
       - ".github/workflows/windows-check.yml"
 
 jobs:
