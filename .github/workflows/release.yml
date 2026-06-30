@@ -175,8 +175,8 @@ jobs:
         env:
           HQ_SYNC_SENTRY_DSN: ${{ secrets.HQ_SYNC_SENTRY_DSN }}
           VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_MACOS }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_MACOS_PASSWORD }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: pnpm tauri build --target universal-apple-darwin --config src-tauri/tauri.macos.conf.json
 
       - name: Fix Recall framework symlinks
@@ -216,8 +216,8 @@ jobs:
       - name: Regenerate updater archive and signature
         env:
           TAG: ${{ github.event.inputs.tag || github.ref_name }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_MACOS }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_MACOS_PASSWORD }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         shell: bash
         run: |
           set -euo pipefail
@@ -292,8 +292,8 @@ jobs:
       RUST_BACKTRACE: 1
       HQ_SYNC_SENTRY_DSN: ${{ secrets.HQ_SYNC_SENTRY_DSN }}
       VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
-      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_WINDOWS }}
-      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_WINDOWS_PASSWORD }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
     steps:
       - name: Validate tag format
@@ -534,6 +534,28 @@ jobs:
           NODE
 
           cat release/latest.json
+
+      # Versionless download aliases — give stable
+      # https://github.com/indigoai-us/hq-desktop-app/releases/latest/download/<name>
+      # URLs (GitHub redirects /releases/latest/download/ to the newest release),
+      # so marketing/download links never need the version. The auto-updater
+      # itself uses latest.json (which carries the versioned asset URLs); these
+      # aliases are for direct human downloads. Mirrors the hq-installer pattern.
+      - name: Create versionless download aliases
+        shell: bash
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          cd release
+          for pair in \
+            "HQ_${VERSION}_universal.dmg:HQ_universal.dmg" \
+            "HQ_${VERSION}_x64-setup.exe:HQ_x64-setup.exe" \
+            "HQ_${VERSION}_arm64-setup.exe:HQ_arm64-setup.exe"; do
+            src="${pair%%:*}"; dst="${pair##*:}"
+            if [ -f "$src" ]; then cp "$src" "$dst"; echo "alias $dst -> $src"; else echo "skip (missing) $src"; fi
+          done
 
       - name: Create or update GitHub release
         uses: softprops/action-gh-release@v2
