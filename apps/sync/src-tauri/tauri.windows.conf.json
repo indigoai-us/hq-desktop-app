@@ -23,9 +23,9 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IERBQzcxMzFGQzQ5MjRBQkYKUldTL1NwTEVIeFBIMmlqNzlDNFpiMFZhdW1aN2JQdDhIR0FTUDMyaEVzOW5ZUW1JQkc3QjFOWHgK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDlERTE2OTVCQUZDREVCRTgKUldUbzY4MnZXMm5obmNMa2RXRXlXUDBKd1ZySVJENDJDVnQrYmh1Ym9hTzhqczJnRExtKzh5RlYK",
       "endpoints": [
-        "https://github.com/indigoai-us/hq-sync-win/releases/latest/download/latest.json"
+        "https://github.com/indigoai-us/hq-desktop-app/releases/latest/download/latest.json"
       ]
     }
   }

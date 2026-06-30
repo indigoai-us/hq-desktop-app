@@ -34,14 +34,25 @@ The workflow also supports `workflow_dispatch` with a `tag` input, but productio
 
 Notarization uses the Apple-ID method (`xcrun notarytool --apple-id/--password/--team-id`) — the same credential set as the legacy `hq-sync` / `hq-installer` repos. (The App Store Connect API-key method is **not** used; `scripts/notarize.sh` still implements it for local runs but the workflow inlines the Apple-ID call.)
 
-### Tauri Updater (per-platform keys)
+### Tauri Updater (single stream)
 
-macOS and Windows ship **separate** updater streams with different public keys, so each platform signs with its own private key:
+HQ ships **one** updater stream for all platforms: a single signing key, one public key, and one endpoint. Both `apps/sync/src-tauri/tauri.conf.json` (macOS) and `apps/sync/src-tauri/tauri.windows.conf.json` (Windows) carry the **same** pubkey (`9DE1695B…`, the existing `hq-sync` key) and point at the same endpoint:
 
-- `TAURI_SIGNING_PRIVATE_KEY_MACOS` / `TAURI_SIGNING_PRIVATE_KEY_MACOS_PASSWORD`: must correspond to the pubkey in `apps/sync/src-tauri/tauri.conf.json` (the legacy `hq-sync` macOS key, `9DE1695B…`).
-- `TAURI_SIGNING_PRIVATE_KEY_WINDOWS` / `TAURI_SIGNING_PRIVATE_KEY_WINDOWS_PASSWORD`: must correspond to the pubkey in `apps/sync/src-tauri/tauri.windows.conf.json` (the legacy `hq-sync-win` key, `DAC7131F…`).
+```
+https://github.com/indigoai-us/hq-desktop-app/releases/latest/download/latest.json
+```
 
-The macOS job uses the `_MACOS` key; the Windows job uses the `_WINDOWS` key. (To collapse to a single updater key + stream later, regenerate one keypair, set both config pubkeys to it, and use one secret in both jobs — note that breaks auto-update continuity for existing `hq-sync`/`hq-sync-win` installs.)
+- `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`: the single private key matching that pubkey (the `hq-sync` macOS updater key — set it once; the macOS and Windows jobs both use it).
+
+Each release publishes one `latest.json` covering `darwin-aarch64`, `darwin-x86_64`, `windows-x86_64`, and `windows-aarch64`, signed with that one key. GitHub's `/releases/latest/download/` redirect makes the endpoint always resolve to the newest release.
+
+### Versionless download aliases
+
+Alongside the version-stamped assets, each release also publishes versionless copies for stable, marketing-friendly download links (the hq-installer pattern):
+
+- `HQ_universal.dmg`, `HQ_x64-setup.exe`, `HQ_arm64-setup.exe` → e.g. `https://github.com/indigoai-us/hq-desktop-app/releases/latest/download/HQ_universal.dmg`
+
+(The auto-updater itself uses `latest.json` with the versioned URLs; these aliases are for direct human downloads.)
 
 ### Build-Time Telemetry
 
