@@ -6,6 +6,7 @@
     type WizardState,
   } from '../lib/onboarding-wizard';
   import DirectoryScreen from './onboarding/DirectoryScreen.svelte';
+  import SignInScreen from './onboarding/SignInScreen.svelte';
   import WelcomeScreen from './onboarding/WelcomeScreen.svelte';
   import WizardShell from './onboarding/WizardShell.svelte';
 
@@ -66,6 +67,11 @@
   function handleTelemetryChange(enabled: boolean) {
     wizardState.telemetryEnabled = enabled;
   }
+
+  function handleSignedIn() {
+    router.next();
+    syncCurrentStep();
+  }
 </script>
 
 <div class="onboarding-wizard" data-testid="onboarding-wizard">
@@ -90,6 +96,8 @@
           wizardState.installPath = path;
         }}
       />
+    {:else if currentStep === 3}
+      <SignInScreen onsignedin={handleSignedIn} />
     {:else}
       <div class="wizard-placeholder">{currentStepLabel} - coming soon</div>
     {/if}
