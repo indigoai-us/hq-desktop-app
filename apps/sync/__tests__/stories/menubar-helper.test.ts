@@ -15,6 +15,13 @@ import { describe, expect, it } from 'vitest';
 // fast in CI instead of shipping a release with no menu-bar icon again.
 
 const read = (p: string) => readFileSync(resolve(process.cwd(), p), 'utf8');
+const readIfExists = (p: string) => {
+  try {
+    return read(p);
+  } catch {
+    return '';
+  }
+};
 
 describe('macOS menu-bar helper process (HQ status item)', () => {
   it('ships a native Swift helper that shows the "HQ" item + relays clicks', () => {
@@ -52,7 +59,10 @@ describe('macOS menu-bar helper process (HQ status item)', () => {
     // The poller parses "show <x>" and records the anchor before toggling.
     expect(helper).toContain('strip_prefix("show")');
     expect(helper).toContain('set_tray_anchor_x');
-    const tray = read('src-tauri/src/tray.rs');
+    const tray =
+      readIfExists('src-tauri/src/tray.rs') +
+      '\n' +
+      readIfExists('../../crates/hq-platform/src/tray_geometry.rs');
     // The positioner uses the anchor (centre − half width) to place the popover
     // on the monitor the icon was clicked on, and only falls back to the primary
     // corner when the icon position is unknown / off every display.
@@ -75,7 +85,10 @@ describe('macOS menu-bar helper process (HQ status item)', () => {
   });
 
   it('bundles the compiled helper into Contents/Resources', () => {
-    const conf = read('src-tauri/tauri.conf.json');
+    const conf =
+      readIfExists('src-tauri/tauri.conf.json') +
+      '\n' +
+      readIfExists('src-tauri/tauri.macos.conf.json');
     expect(conf).toContain('"helper/hq-tray-helper": "hq-tray-helper"');
   });
 

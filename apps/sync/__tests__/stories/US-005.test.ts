@@ -1,6 +1,14 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
+function readIfExists(p: string): string {
+  try {
+    return readFileSync(resolve(process.cwd(), p), 'utf8');
+  } catch {
+    return '';
+  }
+}
+
 // The V4 Home surface (HomePage + home-model + NeedsYouCard + ActivityDigest)
 // superseded the SyncPage/HeroStatus/SourcesList sources-table in US-003 of
 // the V4 redesign — same coverage (real sync state + events, no demo
@@ -17,14 +25,11 @@ const activityDigest = readFileSync(
 );
 const syncModel = readFileSync(resolve(process.cwd(), 'src/desktop-alt/lib/sync-model.ts'), 'utf8');
 const appShell = readFileSync(resolve(process.cwd(), 'src/App.svelte'), 'utf8');
-const cognitoCommands = readFileSync(
-  resolve(process.cwd(), 'src-tauri/src/commands/cognito.rs'),
-  'utf8',
-);
-const featureGate = readFileSync(
-  resolve(process.cwd(), 'src-tauri/src/util/feature_gate.rs'),
-  'utf8',
-);
+const cognitoCommands =
+  readIfExists('src-tauri/src/commands/cognito.rs') +
+  '\n' +
+  readIfExists('../../crates/hq-desktop-core/src/cognito.rs');
+const featureGate = readIfExists('../../crates/hq-desktop-core/src/feature_gate.rs');
 
 function normalize(source: string): string {
   return source.replace(/\s+/g, ' ');

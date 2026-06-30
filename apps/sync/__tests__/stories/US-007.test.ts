@@ -10,6 +10,14 @@ import {
 } from '../../src/desktop-alt/route';
 import { emptyCompanySummary } from '../../src/desktop-alt/lib/company-summary.svelte';
 
+function readIfExists(p: string): string {
+  try {
+    return readFileSync(resolve(process.cwd(), p), 'utf8');
+  } catch {
+    return '';
+  }
+}
+
 const companyPage = readFileSync(
   resolve(process.cwd(), 'src/desktop-alt/pages/CompanyPage.svelte'),
   'utf8',
@@ -20,14 +28,14 @@ const companySummary = readFileSync(
 );
 const desktopApp = readFileSync(resolve(process.cwd(), 'src/desktop-alt/DesktopApp.svelte'), 'utf8');
 const workspaceTypes = readFileSync(resolve(process.cwd(), 'src/lib/workspaces.ts'), 'utf8');
-const workspaceCommand = readFileSync(
-  resolve(process.cwd(), 'src-tauri/src/commands/workspaces.rs'),
-  'utf8',
-);
-const desktopAltCommand = readFileSync(
-  resolve(process.cwd(), 'src-tauri/src/commands/desktop_alt.rs'),
-  'utf8',
-);
+const workspaceCommand =
+  readIfExists('src-tauri/src/commands/workspaces.rs') +
+  '\n' +
+  readIfExists('../../crates/hq-desktop-core/src/workspaces.rs');
+const desktopAltCommand =
+  readIfExists('src-tauri/src/commands/desktop_alt.rs') +
+  '\n' +
+  readIfExists('../../crates/hq-desktop-core/src/desktop_alt.rs');
 const tauriMain = readFileSync(resolve(process.cwd(), 'src-tauri/src/main.rs'), 'utf8');
 
 function normalize(source: string): string {
