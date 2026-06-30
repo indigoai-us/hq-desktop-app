@@ -1,8 +1,10 @@
 use std::ffi::OsString;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use crate::commands::install_directory::resolve_hq_path;
+use crate::commands::sync::{resolve_jwt, resolve_vault_api_url};
+use crate::commands::vault_client::VaultClient;
 use crate::util::paths;
 
 fn git_command(git: &str, path_env: &str) -> Command {
@@ -135,6 +137,29 @@ pub fn git_init() -> Result<String, String> {
 /// first-run state and `App.svelte` switches into the normal tray workflow.
 #[tauri::command]
 pub async fn install_menubar_app() -> Result<(), String> {
+    Ok(())
+}
+
+/// Start the first personal-vault cloud sync in the background.
+///
+/// Setup only needs to provision and kick off the initial push; the long-lived
+/// tray process owns continuous reconciliation after onboarding completes.
+#[tauri::command]
+pub async fn start_initial_cloud_sync(app: tauri::AppHandle) -> Result<(), String> {
+    let jwt = resolve_jwt().await?;
+    let vault_url = resolve_vault_api_url()?;
+    let vault = VaultClient::new(&vault_url, &jwt);
+    let hq_root = PathBuf::from(resolve_hq_path()?);
+
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) =
+            crate::commands::personal::ensure_personal_bucket_and_first_push(&app, &vault, &hq_root)
+                .await
+        {
+            crate::util::logfile::log("initial-sync", &format!("personal first-push failed: {e}"));
+        }
+    });
+
     Ok(())
 }
 

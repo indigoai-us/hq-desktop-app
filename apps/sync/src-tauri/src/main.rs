@@ -260,6 +260,7 @@ fn main() {
             commands::install_directory::detect_hq,
             commands::install_stages::git_init,
             commands::install_stages::install_menubar_app,
+            commands::install_stages::start_initial_cloud_sync,
             commands::autostart::get_autostart_enabled,
             commands::autostart::set_autostart_enabled,
             commands::daemon::start_daemon,
