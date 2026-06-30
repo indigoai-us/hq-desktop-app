@@ -1,23 +1,95 @@
 <script lang="ts">
   import {
-    onboardingHeadline,
-    type LifecycleState,
-  } from '../lib/lifecycle';
+    createWizardRouter,
+    initialStepForLifecycle,
+    WIZARD_STEPS,
+    type WizardState,
+  } from '../lib/onboarding-wizard';
+  import WelcomeScreen from './onboarding/WelcomeScreen.svelte';
+  import WizardShell from './onboarding/WizardShell.svelte';
 
-  let { state }: { state: LifecycleState | string } = $props();
+  const props: { state: string } = $props();
+
+  type LocalWizardState = WizardState & {
+    telemetryEnabled: boolean;
+  };
+
+  let router = $state(createWizardRouter());
+  let currentStep = $state(1);
+  let activeLifecycleState = $state<string | null>(null);
+  let wizardState = $state<LocalWizardState>({
+    installPath: null,
+    telemetryEnabled: true,
+  });
+
+  const currentStepLabel = $derived(
+    WIZARD_STEPS.find((step) => step.index === currentStep)?.label ?? 'Step',
+  );
+  const canBack = $derived.by(() => {
+    currentStep;
+    return router.canGoBack;
+  });
+  const canNext = $derived.by(() => {
+    currentStep;
+    return router.canGoNext({
+      installPath: wizardState.installPath,
+    });
+  });
+  const nextLabel = $derived(currentStep === 1 ? 'Get Started' : 'Continue');
+
+  function syncCurrentStep() {
+    currentStep = router.currentStep;
+  }
+
+  $effect(() => {
+    if (activeLifecycleState === props.state) return;
+
+    activeLifecycleState = props.state;
+    router = createWizardRouter({
+      start: initialStepForLifecycle(props.state),
+    });
+    syncCurrentStep();
+  });
+
+  function handleBack() {
+    router.back();
+    syncCurrentStep();
+  }
+
+  function handleNext() {
+    if (!router.canGoNext({ installPath: wizardState.installPath })) return;
+    router.next();
+    syncCurrentStep();
+  }
+
+  function handleTelemetryChange(enabled: boolean) {
+    wizardState.telemetryEnabled = enabled;
+  }
 </script>
 
-<div class="onboarding-stub" data-testid="onboarding-stub">
-  <section class="onboarding-panel">
-    <div class="onboarding-mark">HQ</div>
-    <h1>{onboardingHeadline(state)}</h1>
-    <p class="subtitle">We are preparing this device for your HQ workspace.</p>
-    <p class="note">Onboarding wizard coming soon.</p>
-  </section>
+<div class="onboarding-wizard" data-testid="onboarding-wizard">
+  <WizardShell
+    currentStep={currentStep}
+    steps={WIZARD_STEPS}
+    canBack={canBack}
+    canNext={canNext}
+    nextLabel={nextLabel}
+    onback={handleBack}
+    onnext={handleNext}
+  >
+    {#if currentStep === 1}
+      <WelcomeScreen
+        telemetryEnabled={wizardState.telemetryEnabled}
+        ontelemetrychange={handleTelemetryChange}
+      />
+    {:else}
+      <div class="wizard-placeholder">{currentStepLabel} - coming soon</div>
+    {/if}
+  </WizardShell>
 </div>
 
 <style>
-  .onboarding-stub {
+  .onboarding-wizard {
     display: flex;
     align-items: center;
     justify-content: center;
@@ -25,58 +97,26 @@
     height: 100vh;
     box-sizing: border-box;
     padding: var(--space-4, 16px);
+    overflow: hidden;
+    border: 1px solid var(--popover-border, rgba(255, 255, 255, 0.18));
+    border-radius: var(--radius-xl, 18px);
     background: var(--popover-bg, rgba(18, 18, 20, 0.68));
+    color: var(--popover-text, rgba(255, 255, 255, 0.86));
+    box-shadow: inset 0 1px 0 var(--popover-highlight, rgba(255, 255, 255, 0.34));
     backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
     -webkit-backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
-    color: var(--popover-text, #e0e0e0);
-    overflow: hidden;
-    border-radius: var(--radius-xl, 18px);
-    border: 1px solid var(--popover-border, rgba(255, 255, 255, 0.18));
-    box-shadow: inset 0 1px 0 var(--popover-highlight, rgba(255, 255, 255, 0.34));
   }
 
-  .onboarding-panel {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    width: 100%;
-    max-width: 300px;
-    text-align: center;
-  }
-
-  .onboarding-mark {
+  .wizard-placeholder {
     display: grid;
     place-items: center;
-    width: 44px;
-    height: 44px;
-    margin-bottom: var(--space-4, 16px);
+    width: 100%;
+    min-height: 220px;
+    border: 1px dashed var(--popover-border, rgba(255, 255, 255, 0.18));
     border-radius: var(--radius-md, 10px);
-    background: var(--popover-surface-strong, rgba(255, 255, 255, 0.16));
-    border: 1px solid var(--popover-border, rgba(255, 255, 255, 0.18));
-    color: var(--popover-text-heading, #ffffff);
-    font-size: var(--text-sm, 13px);
-    font-weight: 700;
-  }
-
-  h1 {
-    margin: 0;
-    color: var(--popover-text-heading, #ffffff);
-    font-size: var(--text-lg, 18px);
-    font-weight: 650;
-    line-height: 1.25;
-  }
-
-  .subtitle {
-    margin: var(--space-2, 8px) 0 0;
-    color: var(--popover-text, rgba(255, 255, 255, 0.86));
-    font-size: var(--text-base, 13px);
-    line-height: 1.45;
-  }
-
-  .note {
-    margin: var(--space-4, 16px) 0 0;
+    background: var(--popover-surface, rgba(255, 255, 255, 0.08));
     color: var(--popover-text-muted, rgba(255, 255, 255, 0.52));
-    font-size: var(--text-sm, 13px);
-    line-height: 1.4;
+    font-size: var(--text-base, 13px);
+    font-weight: 600;
   }
 </style>
