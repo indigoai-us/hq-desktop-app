@@ -25,7 +25,7 @@ serde_json = "1"
 serde_yaml = "0.9"
 uuid = { version = "1", features = ["v4"] }
 tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", features = ["json", "blocking", "rustls-tls"] }
 dirs = "6"
 rfd = "0.15"
 sha2 = "0.10"
@@ -113,6 +113,8 @@ windows = { version = "0.58", features = [
     "Win32_Graphics_Dwm",
 ] }
 winreg = "0.55"
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Used by commands::folder_picker to enumerate NSApp.windows and close
