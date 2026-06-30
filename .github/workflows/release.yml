@@ -1,0 +1,541 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (e.g. v0.8.30)."
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  macos:
+    name: Build macOS universal
+    runs-on: macos-14
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: apps/sync
+
+    steps:
+      - name: Validate tag format
+        working-directory: .
+        shell: bash
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Tag must match vX.Y.Z format, got: $TAG"
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - name: Validate release version files
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import fs from "node:fs";
+
+          const tag = process.env.TAG;
+          const version = tag.startsWith("v") ? tag.slice(1) : tag;
+
+          const packageVersion = JSON.parse(fs.readFileSync("package.json", "utf8")).version;
+          const tauriVersion = JSON.parse(fs.readFileSync("src-tauri/tauri.conf.json", "utf8")).version;
+
+          const cargoToml = fs.readFileSync("src-tauri/Cargo.toml", "utf8");
+          const cargoTomlMatch = cargoToml.match(/^\[package\][\s\S]*?^version\s*=\s*"([^"]+)"/m);
+          if (!cargoTomlMatch) {
+            console.error("::error file=apps/sync/src-tauri/Cargo.toml::Could not find package version");
+            process.exit(1);
+          }
+
+          const cargoLock = fs.readFileSync("src-tauri/Cargo.lock", "utf8");
+          const cargoLockMatch = cargoLock.match(/^\[\[package\]\]\nname = "hq-sync-menubar"\nversion = "([^"]+)"/m);
+          if (!cargoLockMatch) {
+            console.error("::error file=apps/sync/src-tauri/Cargo.lock::Could not find hq-sync-menubar package entry");
+            process.exit(1);
+          }
+
+          const checks = [
+            ["package.json", packageVersion],
+            ["src-tauri/tauri.conf.json", tauriVersion],
+            ["src-tauri/Cargo.toml", cargoTomlMatch[1]],
+            ["src-tauri/Cargo.lock", cargoLockMatch[1]],
+          ];
+          const mismatches = checks.filter(([, actual]) => actual !== version);
+          if (mismatches.length > 0) {
+            for (const [file, actual] of mismatches) {
+              console.error(`::error file=apps/sync/${file}::Release tag ${tag} expects version ${version}, found ${actual}`);
+            }
+            process.exit(1);
+          }
+          console.log(`Release version ${version} matches package.json, tauri.conf.json, Cargo.toml, and Cargo.lock`);
+          NODE
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: apps/sync/pnpm-lock.yaml
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Put rustup-managed cargo first on PATH
+        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Replace any cargo shim with rustup-managed cargo
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup_cargo="$HOME/.cargo/bin/cargo"
+          if [ ! -x "$rustup_cargo" ]; then
+            echo "::error::rustup-managed cargo not found at $rustup_cargo"
+            exit 1
+          fi
+
+          echo "PATH=$PATH"
+          echo "All cargo on PATH:"
+          which -a cargo || true
+
+          replaced=0
+          while IFS= read -r c; do
+            [ -n "$c" ] || continue
+            if [ "$c" = "$rustup_cargo" ]; then
+              continue
+            fi
+            target="$(readlink "$c" 2>/dev/null || true)"
+            if [ "$target" = "$rustup_cargo" ]; then
+              continue
+            fi
+            echo "Replace shim: $c (was -> '${target:-<regular file>}') -> $rustup_cargo"
+            sudo rm -f "$c"
+            sudo ln -sf "$rustup_cargo" "$c"
+            replaced=$((replaced + 1))
+          done < <(which -a cargo 2>/dev/null || true)
+
+          if [ "$replaced" = 0 ]; then
+            echo "No non-rustup cargo entries on PATH."
+          fi
+
+          which cargo
+          cargo --version
+          cargo metadata --no-deps --format-version 1 --manifest-path src-tauri/Cargo.toml >/dev/null
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "apps/sync/src-tauri -> apps/sync/src-tauri/target"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Recall sidecar dependencies
+        run: pnpm run sidecar:install
+
+      - name: Import Developer ID Application certificate
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 32)"
+          CERT_PATH="$RUNNER_TEMP/developer-id-application.p12"
+
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$CERT_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | sed 's/[",]//g')
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+
+      - name: Build unsigned universal app and updater archive
+        env:
+          HQ_SYNC_SENTRY_DSN: ${{ secrets.HQ_SYNC_SENTRY_DSN }}
+          VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: pnpm tauri build --target universal-apple-darwin --config src-tauri/tauri.macos.conf.json
+
+      - name: Fix Recall framework symlinks
+        shell: bash
+        run: bash scripts/fix-recall-framework-symlinks.sh "src-tauri/target/universal-apple-darwin/release/bundle/macos/HQ.app"
+
+      - name: Sign app bundle
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          HARDENED_RUNTIME: "1"
+          TIMESTAMP: "1"
+          HQ_SIGN_ENTITLEMENTS: src-tauri/Entitlements.plist
+        shell: bash
+        run: bash scripts/sign-bundle.sh "src-tauri/target/universal-apple-darwin/release/bundle/macos/HQ.app" "$APPLE_SIGNING_IDENTITY"
+
+      - name: Notarize and staple app bundle
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          API_KEY_PATH="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY}.p8"
+          umask 077
+          printf '%s' "$APPLE_API_KEY_P8" > "$API_KEY_PATH"
+          APPLE_API_KEY_PATH="$API_KEY_PATH" \
+            bash scripts/notarize.sh "src-tauri/target/universal-apple-darwin/release/bundle/macos/HQ.app"
+
+      - name: Regenerate updater archive and signature
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          APP_PATH="src-tauri/target/universal-apple-darwin/release/bundle/macos/HQ.app"
+          ARTIFACT_DIR="src-tauri/target/release-artifacts"
+          TAR_GZ="$ARTIFACT_DIR/HQ_${VERSION}_universal.app.tar.gz"
+
+          mkdir -p "$ARTIFACT_DIR"
+          rm -f "$TAR_GZ" "$TAR_GZ.sig"
+          tar -C "$(dirname "$APP_PATH")" -czf "$TAR_GZ" "$(basename "$APP_PATH")"
+          pnpm tauri signer sign "$TAR_GZ"
+          test -f "$TAR_GZ.sig"
+
+      - name: Create, sign, notarize, and staple DMG
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          APP_PATH="src-tauri/target/universal-apple-darwin/release/bundle/macos/HQ.app"
+          ARTIFACT_DIR="src-tauri/target/release-artifacts"
+          DMG_PATH="$ARTIFACT_DIR/HQ_${VERSION}_universal.dmg"
+          API_KEY_PATH="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY}.p8"
+
+          mkdir -p "$ARTIFACT_DIR"
+          umask 077
+          printf '%s' "$APPLE_API_KEY_P8" > "$API_KEY_PATH"
+
+          bash scripts/create-dmg.sh "$APP_PATH" "$DMG_PATH"
+          codesign --force --sign "$APPLE_SIGNING_IDENTITY" --timestamp "$DMG_PATH"
+          xcrun notarytool submit "$DMG_PATH" \
+            --key "$API_KEY_PATH" \
+            --key-id "$APPLE_API_KEY" \
+            --issuer "$APPLE_API_ISSUER" \
+            --wait \
+            --timeout 1800
+          xcrun stapler staple "$DMG_PATH"
+          spctl -a -t open --context context:primary-signature -v "$DMG_PATH"
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: hq-macos-universal
+          if-no-files-found: error
+          path: |
+            apps/sync/src-tauri/target/release-artifacts/*.dmg
+            apps/sync/src-tauri/target/release-artifacts/*.app.tar.gz
+            apps/sync/src-tauri/target/release-artifacts/*.app.tar.gz.sig
+
+  windows:
+    name: Build Windows ${{ matrix.target }}
+    runs-on: windows-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      id-token: write
+    environment: release
+    defaults:
+      run:
+        working-directory: apps/sync
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-pc-windows-msvc
+          - aarch64-pc-windows-msvc
+
+    env:
+      RUST_BACKTRACE: 1
+      HQ_SYNC_SENTRY_DSN: ${{ secrets.HQ_SYNC_SENTRY_DSN }}
+      VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+    steps:
+      - name: Validate tag format
+        working-directory: .
+        shell: bash
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Tag must match vX.Y.Z format, got: $TAG"
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: apps/sync/pnpm-lock.yaml
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "apps/sync/src-tauri -> apps/sync/src-tauri/target"
+          key: ${{ matrix.target }}
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Recall sidecar dependencies
+        run: pnpm run sidecar:install
+
+      - name: Build Recall SEA sidecar if present
+        shell: pwsh
+        env:
+          RECALL_SIDECAR_TARGET: ${{ matrix.target }}
+        run: |
+          if (Test-Path "sidecar/recall-sdk-bridge/build.mjs") {
+            node sidecar/recall-sdk-bridge/build.mjs
+            if (-not (Test-Path "src-tauri/binaries/recall-desktop-sdk-${{ matrix.target }}.exe")) {
+              throw "Recall sidecar launcher was not produced for ${{ matrix.target }}"
+            }
+          } else {
+            Write-Host "No Recall SEA build script is present in apps/sync; skipping launcher build for the current unified Windows overlay."
+          }
+
+      - name: Tauri build (${{ matrix.target }})
+        run: pnpm tauri build --target ${{ matrix.target }} --bundles msi nsis updater --config src-tauri/tauri.windows.conf.json
+
+      - name: Azure login (OIDC)
+        if: vars.AZURE_CLIENT_ID != ''
+        uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Sign MSI (Azure Trusted Signing)
+        if: vars.AZURE_CLIENT_ID != ''
+        uses: azure/trusted-signing-action@v2.0.0
+        with:
+          endpoint: https://eus.codesigning.azure.net/
+          signing-account-name: indigosigning
+          certificate-profile-name: indigo-codesign
+          files-folder: ${{ github.workspace }}\apps\sync\src-tauri\target\${{ matrix.target }}\release\bundle\msi
+          files-folder-filter: msi
+          files-folder-recurse: false
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Sign NSIS setup (Azure Trusted Signing)
+        if: vars.AZURE_CLIENT_ID != ''
+        uses: azure/trusted-signing-action@v2.0.0
+        with:
+          endpoint: https://eus.codesigning.azure.net/
+          signing-account-name: indigosigning
+          certificate-profile-name: indigo-codesign
+          files-folder: ${{ github.workspace }}\apps\sync\src-tauri\target\${{ matrix.target }}\release\bundle\nsis
+          files-folder-filter: exe
+          files-folder-recurse: false
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Regenerate updater signatures (post-Authenticode)
+        if: vars.AZURE_CLIENT_ID != ''
+        shell: pwsh
+        run: |
+          $bundleDir = "src-tauri\target\${{ matrix.target }}\release\bundle"
+          $targets = @()
+          $targets += Get-ChildItem -Path "$bundleDir\nsis" -Filter '*-setup.exe' -File -ErrorAction SilentlyContinue
+          $targets += Get-ChildItem -Path "$bundleDir\msi" -Filter '*.msi' -File -ErrorAction SilentlyContinue
+          $targets = $targets | Where-Object { Test-Path "$($_.FullName).sig" }
+          if (-not $targets) { Write-Warning "No updater .sig artifacts found to regenerate." }
+          foreach ($target in $targets) {
+            Write-Host "Re-signing updater signature for $($target.Name)"
+            & "node_modules\.bin\tauri.cmd" signer sign "$($target.FullName)"
+            if ($LASTEXITCODE -ne 0) {
+              Write-Error "tauri signer sign failed on $($target.Name)"
+              exit 1
+            }
+          }
+
+      - name: Stage Windows artifacts
+        shell: pwsh
+        run: |
+          $tag = if ("${{ github.event.inputs.tag }}") { "${{ github.event.inputs.tag }}" } else { "${{ github.ref_name }}" }
+          $version = $tag.TrimStart("v")
+          $arch = if ("${{ matrix.target }}" -like "x86_64-*") { "x64" } else { "arm64" }
+          $stage = Join-Path $env:GITHUB_WORKSPACE "release-artifacts-${{ matrix.target }}"
+          $bundleDir = "src-tauri\target\${{ matrix.target }}\release\bundle"
+          New-Item -ItemType Directory -Path $stage -Force | Out-Null
+
+          $nsis = Get-ChildItem -Path "$bundleDir\nsis" -Filter '*-setup.exe' -File -ErrorAction Stop | Select-Object -First 1
+          $msi = Get-ChildItem -Path "$bundleDir\msi" -Filter '*.msi' -File -ErrorAction Stop | Select-Object -First 1
+
+          $nsisName = "HQ_${version}_${arch}-setup.exe"
+          $msiName = "HQ_${version}_${arch}.msi"
+          Copy-Item $nsis.FullName (Join-Path $stage $nsisName)
+          Copy-Item $msi.FullName (Join-Path $stage $msiName)
+
+          foreach ($source in @($nsis, $msi)) {
+            $sig = "$($source.FullName).sig"
+            if (Test-Path $sig) {
+              $destName = if ($source.Extension -eq ".msi") { "$msiName.sig" } else { "$nsisName.sig" }
+              Copy-Item $sig (Join-Path $stage $destName)
+            }
+          }
+
+          Get-ChildItem -Path $stage | ForEach-Object { Write-Host "Staged: $($_.Name)" }
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: hq-windows-${{ matrix.target }}
+          if-no-files-found: error
+          path: release-artifacts-${{ matrix.target }}/
+
+  publish:
+    name: Publish GitHub release
+    needs: [macos, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Flatten artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          find artifacts -type f -print0 | xargs -0 -I {} cp {} release/
+          ls -la release
+
+      - name: Generate latest.json
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          BASE="https://github.com/${REPOSITORY}/releases/download/${TAG}"
+
+          require_file() {
+            local path="$1"
+            if [ ! -f "$path" ]; then
+              echo "::error::Missing required release artifact: $path"
+              exit 1
+            fi
+          }
+
+          require_file "release/HQ_${VERSION}_universal.app.tar.gz"
+          require_file "release/HQ_${VERSION}_universal.app.tar.gz.sig"
+          require_file "release/HQ_${VERSION}_x64-setup.exe"
+          require_file "release/HQ_${VERSION}_x64-setup.exe.sig"
+          require_file "release/HQ_${VERSION}_arm64-setup.exe"
+          require_file "release/HQ_${VERSION}_arm64-setup.exe.sig"
+
+          MAC_SIG_PATH="release/HQ_${VERSION}_universal.app.tar.gz.sig" \
+          WIN_X64_SIG_PATH="release/HQ_${VERSION}_x64-setup.exe.sig" \
+          WIN_ARM64_SIG_PATH="release/HQ_${VERSION}_arm64-setup.exe.sig" \
+          VERSION="$VERSION" \
+          TAG="$TAG" \
+          BASE="$BASE" \
+          node --input-type=module <<'NODE'
+          import fs from "node:fs";
+
+          const readSig = (path) => fs.readFileSync(path, "utf8").trim();
+          const version = process.env.VERSION;
+          const tag = process.env.TAG;
+          const base = process.env.BASE;
+          const macSig = readSig(process.env.MAC_SIG_PATH);
+          const winX64Sig = readSig(process.env.WIN_X64_SIG_PATH);
+          const winArm64Sig = readSig(process.env.WIN_ARM64_SIG_PATH);
+
+          const manifest = {
+            version,
+            notes: `See https://github.com/${process.env.GITHUB_REPOSITORY}/releases/tag/${tag}`,
+            pub_date: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
+            platforms: {
+              "darwin-aarch64": {
+                signature: macSig,
+                url: `${base}/HQ_${version}_universal.app.tar.gz`,
+              },
+              "darwin-x86_64": {
+                signature: macSig,
+                url: `${base}/HQ_${version}_universal.app.tar.gz`,
+              },
+              "windows-x86_64": {
+                signature: winX64Sig,
+                url: `${base}/HQ_${version}_x64-setup.exe`,
+              },
+              "windows-aarch64": {
+                signature: winArm64Sig,
+                url: `${base}/HQ_${version}_arm64-setup.exe`,
+              },
+            },
+          };
+
+          fs.writeFileSync("release/latest.json", `${JSON.stringify(manifest, null, 2)}\n`);
+          NODE
+
+          cat release/latest.json
+
+      - name: Create or update GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          name: HQ ${{ github.event.inputs.tag || github.ref_name }}
+          files: release/*
+          fail_on_unmatched_files: true
+          generate_release_notes: true
