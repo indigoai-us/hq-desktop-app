@@ -6,6 +6,7 @@
     type WizardState,
   } from '../lib/onboarding-wizard';
   import DirectoryScreen from './onboarding/DirectoryScreen.svelte';
+  import SetupScreen from './onboarding/SetupScreen.svelte';
   import SignInScreen from './onboarding/SignInScreen.svelte';
   import WelcomeScreen from './onboarding/WelcomeScreen.svelte';
   import WizardShell from './onboarding/WizardShell.svelte';
@@ -72,6 +73,11 @@
     router.next();
     syncCurrentStep();
   }
+
+  function handleSetupComplete() {
+    router.next();
+    syncCurrentStep();
+  }
 </script>
 
 <div class="onboarding-wizard" data-testid="onboarding-wizard">
@@ -98,6 +104,8 @@
       />
     {:else if currentStep === 3}
       <SignInScreen onsignedin={handleSignedIn} />
+    {:else if currentStep === 4}
+      <SetupScreen onsetupcomplete={handleSetupComplete} />
     {:else}
       <div class="wizard-placeholder">{currentStepLabel} - coming soon</div>
     {/if}
