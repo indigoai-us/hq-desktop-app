@@ -258,6 +258,8 @@ fn main() {
             commands::install_directory::create_directory,
             commands::install_directory::check_writable,
             commands::install_directory::detect_hq,
+            commands::install_stages::git_init,
+            commands::install_stages::install_menubar_app,
             commands::autostart::get_autostart_enabled,
             commands::autostart::set_autostart_enabled,
             commands::daemon::start_daemon,
