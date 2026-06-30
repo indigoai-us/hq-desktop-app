@@ -8,6 +8,7 @@
     canBack: boolean;
     canNext: boolean;
     nextLabel?: string;
+    showFooter?: boolean;
     onback?: () => void;
     onnext?: () => void;
     children?: Snippet;
@@ -19,6 +20,7 @@
     canBack,
     canNext,
     nextLabel = 'Continue',
+    showFooter = true,
     onback,
     onnext,
     children,
@@ -46,24 +48,26 @@
       {@render children?.()}
     </main>
 
-    <footer class="wizard-footer">
-      <button
-        type="button"
-        class="secondary-button"
-        disabled={!canBack}
-        onclick={onback}
-      >
-        Back
-      </button>
-      <button
-        type="button"
-        class="primary-button"
-        disabled={!canNext}
-        onclick={onnext}
-      >
-        {nextLabel}
-      </button>
-    </footer>
+    {#if showFooter}
+      <footer class="wizard-footer">
+        <button
+          type="button"
+          class="secondary-button"
+          disabled={!canBack}
+          onclick={onback}
+        >
+          Back
+        </button>
+        <button
+          type="button"
+          class="primary-button"
+          disabled={!canNext}
+          onclick={onnext}
+        >
+          {nextLabel}
+        </button>
+      </footer>
+    {/if}
   </div>
 </section>
 
