@@ -5,6 +5,7 @@
     WIZARD_STEPS,
     type WizardState,
   } from '../lib/onboarding-wizard';
+  import DirectoryScreen from './onboarding/DirectoryScreen.svelte';
   import WelcomeScreen from './onboarding/WelcomeScreen.svelte';
   import WizardShell from './onboarding/WizardShell.svelte';
 
@@ -81,6 +82,13 @@
       <WelcomeScreen
         telemetryEnabled={wizardState.telemetryEnabled}
         ontelemetrychange={handleTelemetryChange}
+      />
+    {:else if currentStep === 2}
+      <DirectoryScreen
+        installPath={wizardState.installPath}
+        oninstallpathchange={(path) => {
+          wizardState.installPath = path;
+        }}
       />
     {:else}
       <div class="wizard-placeholder">{currentStepLabel} - coming soon</div>
