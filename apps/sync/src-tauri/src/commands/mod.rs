@@ -22,6 +22,7 @@ pub mod hq_core_staging;
 pub mod hq_core_state;
 pub mod hq_core_update;
 pub mod library_local;
+pub mod lifecycle;
 pub mod marketplace;
 pub mod meetings;
 pub mod messages;

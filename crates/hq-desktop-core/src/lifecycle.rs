@@ -3,6 +3,8 @@
 //! a resume/repair screen, a sign-in-for-install screen, or the steady-state
 //! sync tray agent. Pure over its inputs so it is directly unit-testable.
 
+use std::path::Path;
+
 use serde_json::{Map, Value};
 
 /// The six launch lifecycle states (see MIGRATION.md section 2).
@@ -77,6 +79,13 @@ pub fn menubar_flags(obj: &Map<String, Value>) -> (bool, bool, bool) {
     (install_completed, first_run_completed, had_machine_id)
 }
 
+/// True when `root` exists and contains the installed hq-core template shape
+/// (canonical `core/core.yaml`, or legacy top-level `core.yaml`).
+pub fn hq_root_valid(root: &Path) -> bool {
+    root.is_dir()
+        && (root.join("core").join("core.yaml").is_file() || root.join("core.yaml").is_file())
+}
+
 /// The pure classifier.
 pub fn classify_lifecycle(inputs: LifecycleInputs) -> LifecycleVerdict {
     let is_installed = (inputs.install_completed || inputs.had_machine_id)
@@ -110,6 +119,7 @@ pub fn classify_lifecycle(inputs: LifecycleInputs) -> LifecycleVerdict {
 mod tests {
     use super::*;
     use serde_json::json;
+    use tempfile::tempdir;
 
     fn input() -> LifecycleInputs {
         LifecycleInputs {
@@ -339,5 +349,39 @@ mod tests {
         }));
 
         assert_eq!(menubar_flags(&obj), (false, false, false));
+    }
+
+    #[test]
+    fn hq_root_valid_true_for_canonical_layout() {
+        let dir = tempdir().unwrap();
+        let core_dir = dir.path().join("core");
+        std::fs::create_dir(&core_dir).unwrap();
+        std::fs::write(core_dir.join("core.yaml"), "").unwrap();
+
+        assert!(hq_root_valid(dir.path()));
+    }
+
+    #[test]
+    fn hq_root_valid_true_for_legacy_layout() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("core.yaml"), "").unwrap();
+
+        assert!(hq_root_valid(dir.path()));
+    }
+
+    #[test]
+    fn hq_root_valid_false_when_core_yaml_missing() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("core")).unwrap();
+
+        assert!(!hq_root_valid(dir.path()));
+    }
+
+    #[test]
+    fn hq_root_valid_false_for_nonexistent_root() {
+        let dir = tempdir().unwrap();
+        let missing = dir.path().join("missing");
+
+        assert!(!hq_root_valid(&missing));
     }
 }
