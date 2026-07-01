@@ -204,12 +204,26 @@ jobs:
           ZIP_PATH="$RUNNER_TEMP/HQ-notarize.zip"
           # notarytool needs a zip/dmg; staple the .app after the ticket is issued.
           /usr/bin/ditto -c -k --keepParent "$APP_PATH" "$ZIP_PATH"
-          xcrun notarytool submit "$ZIP_PATH" \
+          SUBMIT_JSON="$(xcrun notarytool submit "$ZIP_PATH" \
             --apple-id "$APPLE_ID" \
             --password "$APPLE_PASSWORD" \
             --team-id "$APPLE_TEAM_ID" \
             --wait \
-            --timeout 1800
+            --timeout 1800 \
+            --output-format json)"
+          echo "$SUBMIT_JSON"
+          SUB_ID="$(echo "$SUBMIT_JSON" | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')"
+          STATUS="$(echo "$SUBMIT_JSON" | python3 -c 'import sys,json;print(json.load(sys.stdin)["status"])')"
+          # On anything other than Accepted, dump Apple's per-file notary log
+          # (the only place that names which binary was rejected) and fail.
+          if [ "$STATUS" != "Accepted" ]; then
+            echo "::error::Notarization status: $STATUS — fetching notary log for $SUB_ID"
+            xcrun notarytool log "$SUB_ID" \
+              --apple-id "$APPLE_ID" \
+              --password "$APPLE_PASSWORD" \
+              --team-id "$APPLE_TEAM_ID" || true
+            exit 1
+          fi
           xcrun stapler staple "$APP_PATH"
           xcrun stapler validate "$APP_PATH"
 
