@@ -258,6 +258,7 @@ fn main() {
             commands::install_directory::create_directory,
             commands::install_directory::check_writable,
             commands::install_directory::detect_hq,
+            commands::content::fetch_and_extract_template,
             commands::install_stages::git_init,
             commands::install_stages::register_search_index,
             commands::install_stages::install_default_packages,

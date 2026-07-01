@@ -1,4 +1,5 @@
 export type StageId =
+  | 'content'
   | 'deps'
   | 'initial-sync'
   | 'packages'
@@ -9,6 +10,7 @@ export type StageId =
   | 'menubar';
 
 export const STAGE_ORDER: StageId[] = [
+  'content',
   'deps',
   'initial-sync',
   'packages',
@@ -20,6 +22,7 @@ export const STAGE_ORDER: StageId[] = [
 ];
 
 export const STAGE_LABELS: Record<StageId, string> = {
+  content: 'Downloading HQ template',
   deps: 'Installing dependencies',
   'initial-sync': 'Starting initial cloud sync',
   packages: 'Installing packages',
@@ -74,6 +77,7 @@ export function setStageStatus(
 // Stage-level backend commands are intentionally scaffolded ahead of their Rust
 // implementations. Missing commands fail non-fatally in the dispatcher.
 export const STAGE_COMMAND: Partial<Record<StageId, string>> = {
+  content: 'fetch_and_extract_template',
   deps: 'install_deps',
   'initial-sync': 'start_initial_cloud_sync',
   packages: 'install_default_packages',
