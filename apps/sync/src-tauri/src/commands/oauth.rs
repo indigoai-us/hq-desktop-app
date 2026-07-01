@@ -12,9 +12,13 @@
 // the user to return to HQ Sync, then shuts the listener down.
 //
 // Login flow (Svelte frontend):
-//   1. Call `start_oauth_login` — returns authorize URL + state.
+//   1. Call `start_oauth_login` — binds the loopback listener *and* returns
+//      authorize URL + state. Binding here (not in step 3) closes the race
+//      where a very fast provider redirect could hit the callback port
+//      before anything was listening on it.
 //   2. Call `tauri_plugin_shell::open(authorize_url)` to open the browser.
-//   3. Call `oauth_listen_for_code(state)` to wait for the callback code.
+//   3. Call `oauth_listen_for_code(state)` to block on the listener bound
+//      in step 1 until the callback arrives.
 //   4. Call `oauth_exchange_code(code)` to exchange the code for tokens.
 //
 // Security notes:
@@ -24,6 +28,12 @@
 //   - Single-use: accepts at most one request, closes listener afterwards.
 //   - 5-minute timeout so a stalled/abandoned flow doesn't leak a socket.
 //   - PKCE (S256) prevents authorization code interception.
+//
+// Error contract with the frontend (see `onboarding-signin.ts::mapSignInError`):
+//   Errors that the UI should show a friendly, specific message for are
+//   returned as a JSON string `{"code": "...", "message": "..."}` rather than
+//   a plain string, so the frontend can pattern-match on `code` instead of
+//   sniffing English text. Currently: `OAUTH_PORT_IN_USE`, `OAUTH_PROVIDER_ERROR`.
 
 use super::cognito::{self, AuthState, CognitoTokens};
 use hq_desktop_core::oauth::{
@@ -47,6 +57,25 @@ static PKCE_VERIFIER: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 
 fn pkce_store() -> &'static Mutex<Option<String>> {
     PKCE_VERIFIER.get_or_init(|| Mutex::new(None))
+}
+
+// ── Pre-bound loopback listener storage ─────────────────────────────────
+//
+// Bound eagerly in `start_oauth_login` (before the browser opens) rather
+// than lazily in `oauth_listen_for_code`, so the socket is guaranteed ready
+// before the user could possibly complete the provider redirect.
+
+static PENDING_LISTENER: OnceLock<Mutex<Option<TcpListener>>> = OnceLock::new();
+
+fn listener_store() -> &'static Mutex<Option<TcpListener>> {
+    PENDING_LISTENER.get_or_init(|| Mutex::new(None))
+}
+
+/// JSON-encode a structured error the frontend can pattern-match on `code`
+/// (see `onboarding-signin.ts::mapSignInError`). Falls back to a plain
+/// string in the (unreachable in practice) case serialization itself fails.
+fn structured_error(code: &str, message: &str) -> String {
+    serde_json::json!({ "code": code, "message": message }).to_string()
 }
 
 // ── Public types ───────────────────────────────────────────────────────
@@ -142,14 +171,44 @@ fn write_response(stream: &mut TcpStream, status: &str, body: &str) {
 
 // ── Tauri commands ─────────────────────────────────────────────────────
 
-/// Start the OAuth login flow: generate PKCE verifier/challenge, build the
-/// Cognito authorize URL, store the verifier for later exchange.
+/// Start the OAuth login flow: bind the loopback listener, generate the
+/// PKCE verifier/challenge, build the Cognito authorize URL, and store both
+/// the listener and the verifier for the later steps.
+///
+/// Binding the listener here — before the frontend ever opens a browser —
+/// closes a race where a very fast provider redirect could reach
+/// 127.0.0.1:53682 before `oauth_listen_for_code` got around to binding it.
+/// It also surfaces a port-in-use conflict immediately, instead of after
+/// the user has already been sent to the provider's sign-in page.
 #[tauri::command]
 pub async fn start_oauth_login(provider: String) -> Result<OAuthFlowInit, String> {
     let identity_provider = cognito_identity_provider(&provider)?;
     let state = uuid::Uuid::new_v4().to_string();
     let verifier = generate_code_verifier();
     let challenge = compute_code_challenge(&verifier);
+
+    let listener = TcpListener::bind((LOOPBACK_HOST, LOOPBACK_PORT)).map_err(|e| {
+        structured_error(
+            "OAUTH_PORT_IN_USE",
+            &format!(
+                "Sign-in needs local port {LOOPBACK_PORT}, but another process is already \
+                 using it ({e}). Close the other sign-in window or app using that port, \
+                 then retry."
+            ),
+        )
+    })?;
+
+    // Replace (and drop, closing the socket) any previous pending listener —
+    // e.g. the user clicked a provider button, abandoned that attempt, and
+    // clicked again. The old spawn_blocking task's accept() call unblocks
+    // with an OS error when its listener is dropped out from under it,
+    // which the frontend already ignores via its isCurrentCall() guard.
+    {
+        let mut guard = listener_store()
+            .lock()
+            .map_err(|e| format!("Listener lock poisoned: {e}"))?;
+        *guard = Some(listener);
+    }
 
     // Store verifier for oauth_exchange_code
     {
@@ -237,20 +296,24 @@ pub async fn oauth_exchange_code(code: String) -> Result<AuthState, String> {
     })
 }
 
-/// Listen for the OAuth callback on the loopback port.
+/// Wait on the loopback listener bound by `start_oauth_login` for the OAuth
+/// callback. Does not bind a socket itself — `start_oauth_login` already did
+/// that — so calling this without a preceding, still-pending
+/// `start_oauth_login` is a programmer error, not a runtime race.
 #[tauri::command]
 pub async fn oauth_listen_for_code(state: String) -> Result<OAuthResult, String> {
     let state_copy = state.clone();
 
-    tokio::task::spawn_blocking(move || -> Result<OAuthResult, String> {
-        let listener = TcpListener::bind((LOOPBACK_HOST, LOOPBACK_PORT)).map_err(|e| {
-            format!(
-                "Failed to bind OAuth loopback listener on {}:{} — {}. \
-                     Another instance may already be waiting for sign-in.",
-                LOOPBACK_HOST, LOOPBACK_PORT, e
-            )
-        })?;
+    let listener = {
+        let mut guard = listener_store()
+            .lock()
+            .map_err(|e| format!("Listener lock poisoned: {e}"))?;
+        guard.take().ok_or_else(|| {
+            "No pending sign-in listener — was start_oauth_login called?".to_string()
+        })?
+    };
 
+    tokio::task::spawn_blocking(move || -> Result<OAuthResult, String> {
         listener
             .set_nonblocking(false)
             .map_err(|e| format!("set_nonblocking: {e}"))?;
@@ -276,7 +339,10 @@ pub async fn oauth_listen_for_code(state: String) -> Result<OAuthResult, String>
                             let reason = format!("Provider error: {error}");
                             eprintln!("[oauth] callback rejected — {reason}");
                             write_response(&mut stream, "400 Bad Request", &error_html(&reason));
-                            return Err(format!("OAuth provider returned error: {error}"));
+                            return Err(structured_error(
+                                "OAUTH_PROVIDER_ERROR",
+                                "Sign-in was cancelled or denied. Retry when you are ready.",
+                            ));
                         }
                         Some((code, state, None)) => {
                             if state != state_copy {
@@ -340,5 +406,72 @@ mod tests {
             let guard = pkce_store().lock().unwrap();
             assert!(guard.is_none());
         }
+    }
+
+    #[test]
+    fn structured_error_encodes_code_and_message() {
+        let json = structured_error("OAUTH_PORT_IN_USE", "port busy");
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["code"], "OAUTH_PORT_IN_USE");
+        assert_eq!(parsed["message"], "port busy");
+    }
+
+    #[test]
+    fn structured_error_matches_frontend_contract_shape() {
+        // Mirrors what onboarding-signin.test.ts feeds into mapSignInError —
+        // if this drifts (field names, nesting), the frontend's structured
+        // branch silently stops matching and falls back to raw text.
+        let json = structured_error("OAUTH_PROVIDER_ERROR", "The sign-in was denied.");
+        assert_eq!(
+            json,
+            r#"{"code":"OAUTH_PROVIDER_ERROR","message":"The sign-in was denied."}"#
+        );
+    }
+
+    #[test]
+    fn listener_store_roundtrip() {
+        // Exercises the same take()-then-store pattern start_oauth_login /
+        // oauth_listen_for_code use, on an OS-assigned ephemeral port so this
+        // test can't collide with a real running app on 53682.
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let bound_port = listener.local_addr().unwrap().port();
+
+        {
+            let mut guard = listener_store().lock().unwrap();
+            *guard = Some(listener);
+        }
+        let taken = {
+            let mut guard = listener_store().lock().unwrap();
+            guard.take()
+        };
+        assert_eq!(taken.unwrap().local_addr().unwrap().port(), bound_port);
+        {
+            let guard = listener_store().lock().unwrap();
+            assert!(guard.is_none());
+        }
+    }
+
+    #[test]
+    fn listener_store_replacing_pending_listener_drops_the_old_one() {
+        // Simulates: user clicks a provider button, abandons that attempt,
+        // clicks again. The second start_oauth_login must be able to store a
+        // fresh listener without the mutex or the old socket getting in the way.
+        let first = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let second = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let second_port = second.local_addr().unwrap().port();
+
+        {
+            let mut guard = listener_store().lock().unwrap();
+            *guard = Some(first);
+        }
+        {
+            let mut guard = listener_store().lock().unwrap();
+            *guard = Some(second); // old `first` is dropped here, closing its socket
+        }
+        let guard = listener_store().lock().unwrap();
+        assert_eq!(
+            guard.as_ref().unwrap().local_addr().unwrap().port(),
+            second_port
+        );
     }
 }
