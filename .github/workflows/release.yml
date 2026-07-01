@@ -16,6 +16,16 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # Unverified / beta release mode. When "true" (the default), skip Apple
+  # notarization and Azure Authenticode signing so testable builds ship before
+  # the Developer ID cert + Azure federated credential are in place. The app is
+  # ad-hoc signed (required for Apple Silicon to run) and the Tauri updater
+  # signatures (minisign) are still produced, so auto-update keeps working —
+  # only Gatekeeper/SmartScreen install-time trust is deferred. Flip to a fully
+  # signed + notarized release by setting the repo variable RELEASE_UNVERIFIED
+  # to "false" (Settings → Secrets and variables → Actions → Variables) — no
+  # code change needed.
+  UNVERIFIED_RELEASE: ${{ vars.RELEASE_UNVERIFIED || 'true' }}
 
 jobs:
   macos:
@@ -186,13 +196,21 @@ jobs:
       - name: Sign app bundle
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          HARDENED_RUNTIME: "1"
-          TIMESTAMP: "1"
-          HQ_SIGN_ENTITLEMENTS: src-tauri/Entitlements.plist
         shell: bash
-        run: bash scripts/sign-bundle.sh "src-tauri/target/universal-apple-darwin/release/bundle/macos/HQ.app" "$APPLE_SIGNING_IDENTITY"
+        run: |
+          set -euo pipefail
+          APP="src-tauri/target/universal-apple-darwin/release/bundle/macos/HQ.app"
+          if [ "${UNVERIFIED_RELEASE}" = "true" ]; then
+            echo "UNVERIFIED_RELEASE=true — ad-hoc signing (runnable on Apple Silicon; not notarized)."
+            HARDENED_RUNTIME=0 TIMESTAMP=0 HQ_SIGN_ENTITLEMENTS="" \
+              bash scripts/sign-bundle.sh "$APP" "-"
+          else
+            HARDENED_RUNTIME=1 TIMESTAMP=1 HQ_SIGN_ENTITLEMENTS="src-tauri/Entitlements.plist" \
+              bash scripts/sign-bundle.sh "$APP" "$APPLE_SIGNING_IDENTITY"
+          fi
 
       - name: Notarize and staple app bundle
+        if: ${{ env.UNVERIFIED_RELEASE != 'true' }}
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
@@ -264,15 +282,20 @@ jobs:
           mkdir -p "$ARTIFACT_DIR"
 
           bash scripts/create-dmg.sh "$APP_PATH" "$DMG_PATH"
-          codesign --force --sign "$APPLE_SIGNING_IDENTITY" --timestamp "$DMG_PATH"
-          xcrun notarytool submit "$DMG_PATH" \
-            --apple-id "$APPLE_ID" \
-            --password "$APPLE_PASSWORD" \
-            --team-id "$APPLE_TEAM_ID" \
-            --wait \
-            --timeout 1800
-          xcrun stapler staple "$DMG_PATH"
-          spctl -a -t open --context context:primary-signature -v "$DMG_PATH"
+          if [ "${UNVERIFIED_RELEASE}" = "true" ]; then
+            echo "UNVERIFIED_RELEASE=true — ad-hoc signing DMG, skipping notarization."
+            codesign --force --sign - "$DMG_PATH" || true
+          else
+            codesign --force --sign "$APPLE_SIGNING_IDENTITY" --timestamp "$DMG_PATH"
+            xcrun notarytool submit "$DMG_PATH" \
+              --apple-id "$APPLE_ID" \
+              --password "$APPLE_PASSWORD" \
+              --team-id "$APPLE_TEAM_ID" \
+              --wait \
+              --timeout 1800
+            xcrun stapler staple "$DMG_PATH"
+            spctl -a -t open --context context:primary-signature -v "$DMG_PATH"
+          fi
 
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
@@ -286,10 +309,10 @@ jobs:
 
   windows:
     name: Build Windows ${{ matrix.target }}
-    # TEMP(mac-only): disabled until the Azure federated credential for
-    # subject repo:indigoai-us/hq-desktop-app:environment:release is added.
-    # Revert this commit to re-enable signed Windows builds.
-    if: ${{ false }}
+    # Resilient: a Windows failure won't block the macOS release from
+    # publishing (latest.json includes Windows platforms only if their updater
+    # signatures were produced).
+    continue-on-error: true
     runs-on: windows-latest
     timeout-minutes: 90
     permissions:
@@ -371,7 +394,7 @@ jobs:
         run: pnpm tauri build --target ${{ matrix.target }} --bundles msi nsis updater --config src-tauri/tauri.windows.conf.json
 
       - name: Azure login (OIDC)
-        if: vars.AZURE_CLIENT_ID != ''
+        if: ${{ vars.AZURE_CLIENT_ID != '' && env.UNVERIFIED_RELEASE != 'true' }}
         uses: azure/login@v3
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
@@ -379,7 +402,7 @@ jobs:
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
       - name: Sign MSI (Azure Trusted Signing)
-        if: vars.AZURE_CLIENT_ID != ''
+        if: ${{ vars.AZURE_CLIENT_ID != '' && env.UNVERIFIED_RELEASE != 'true' }}
         uses: azure/trusted-signing-action@v2.0.0
         with:
           endpoint: https://eus.codesigning.azure.net/
@@ -393,7 +416,7 @@ jobs:
           timestamp-digest: SHA256
 
       - name: Sign NSIS setup (Azure Trusted Signing)
-        if: vars.AZURE_CLIENT_ID != ''
+        if: ${{ vars.AZURE_CLIENT_ID != '' && env.UNVERIFIED_RELEASE != 'true' }}
         uses: azure/trusted-signing-action@v2.0.0
         with:
           endpoint: https://eus.codesigning.azure.net/
@@ -407,7 +430,7 @@ jobs:
           timestamp-digest: SHA256
 
       - name: Regenerate updater signatures (post-Authenticode)
-        if: vars.AZURE_CLIENT_ID != ''
+        if: ${{ vars.AZURE_CLIENT_ID != '' && env.UNVERIFIED_RELEASE != 'true' }}
         shell: pwsh
         run: |
           $bundleDir = "src-tauri\target\${{ matrix.target }}\release\bundle"
@@ -462,11 +485,7 @@ jobs:
 
   publish:
     name: Publish GitHub release
-    # TEMP(mac-only): Windows signing blocked on missing Azure federated
-    # credential (subject repo:indigoai-us/hq-desktop-app:environment:release).
-    # Ship macOS-only until that's added, then revert this commit to restore
-    # the mac+win release. See docs/RELEASE.md.
-    needs: [macos]
+    needs: [macos, windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -504,12 +523,15 @@ jobs:
             fi
           }
 
+          # macOS is the baseline (always built); Windows artifacts are optional
+          # so a Windows failure can't block the release. Include a platform in
+          # latest.json only if its updater signature is present.
           require_file "release/HQ_${VERSION}_universal.app.tar.gz"
           require_file "release/HQ_${VERSION}_universal.app.tar.gz.sig"
-          # TEMP(mac-only): Windows artifacts are not produced while the
-          # Windows job is disabled. Revert this commit to re-require them.
 
           MAC_SIG_PATH="release/HQ_${VERSION}_universal.app.tar.gz.sig" \
+          WIN_X64_SIG_PATH="release/HQ_${VERSION}_x64-setup.exe.sig" \
+          WIN_ARM64_SIG_PATH="release/HQ_${VERSION}_arm64-setup.exe.sig" \
           VERSION="$VERSION" \
           TAG="$TAG" \
           BASE="$BASE" \
@@ -517,27 +539,42 @@ jobs:
           import fs from "node:fs";
 
           const readSig = (path) => fs.readFileSync(path, "utf8").trim();
+          const exists = (path) => {
+            try { fs.accessSync(path); return true; } catch { return false; }
+          };
           const version = process.env.VERSION;
           const tag = process.env.TAG;
           const base = process.env.BASE;
           const macSig = readSig(process.env.MAC_SIG_PATH);
 
+          const platforms = {
+            "darwin-aarch64": {
+              signature: macSig,
+              url: `${base}/HQ_${version}_universal.app.tar.gz`,
+            },
+            "darwin-x86_64": {
+              signature: macSig,
+              url: `${base}/HQ_${version}_universal.app.tar.gz`,
+            },
+          };
+          if (exists(process.env.WIN_X64_SIG_PATH)) {
+            platforms["windows-x86_64"] = {
+              signature: readSig(process.env.WIN_X64_SIG_PATH),
+              url: `${base}/HQ_${version}_x64-setup.exe`,
+            };
+          }
+          if (exists(process.env.WIN_ARM64_SIG_PATH)) {
+            platforms["windows-aarch64"] = {
+              signature: readSig(process.env.WIN_ARM64_SIG_PATH),
+              url: `${base}/HQ_${version}_arm64-setup.exe`,
+            };
+          }
+
           const manifest = {
             version,
             notes: `See https://github.com/${process.env.GITHUB_REPOSITORY}/releases/tag/${tag}`,
             pub_date: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
-            platforms: {
-              "darwin-aarch64": {
-                signature: macSig,
-                url: `${base}/HQ_${version}_universal.app.tar.gz`,
-              },
-              "darwin-x86_64": {
-                signature: macSig,
-                url: `${base}/HQ_${version}_universal.app.tar.gz`,
-              },
-              // TEMP(mac-only): windows-x86_64 / windows-aarch64 platforms
-              // omitted while the Windows job is disabled. Revert to restore.
-            },
+            platforms,
           };
 
           fs.writeFileSync("release/latest.json", `${JSON.stringify(manifest, null, 2)}\n`);

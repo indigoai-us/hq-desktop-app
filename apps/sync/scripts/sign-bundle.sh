@@ -26,7 +26,11 @@ if [ -z "$APP" ] || [ ! -d "$APP" ]; then
   exit 1
 fi
 
-if ! security find-identity -v -p codesigning | grep -q "$IDENTITY"; then
+# IDENTITY="-" means ad-hoc signing (no certificate) — used for unverified/beta
+# builds so the app still runs on Apple Silicon (arm64 requires at least an
+# ad-hoc signature to execute) without a Developer ID cert or notarization.
+# Ad-hoc identities are not in the keychain, so skip the find-identity check.
+if [ "$IDENTITY" != "-" ] && ! security find-identity -v -p codesigning | grep -q "$IDENTITY"; then
   echo "ERROR: code-signing identity '$IDENTITY' not found in the login keychain." >&2
   echo "       Available identities:" >&2
   security find-identity -v -p codesigning >&2 || true
