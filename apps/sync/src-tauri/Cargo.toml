@@ -25,9 +25,14 @@ serde_json = "1"
 serde_yaml = "0.9"
 uuid = { version = "1", features = ["v4"] }
 tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.12", features = ["json", "blocking", "rustls-tls"] }
+reqwest = { version = "0.12", features = ["json", "blocking", "rustls-tls", "stream"] }
 dirs = "6"
 rfd = "0.15"
+# Onboarding content stage (commands/content.rs): decompress + parse the
+# hq-core template tarball fetched from GitHub releases.
+flate2 = "1"
+tar = "0.4"
+futures-util = "0.3"
 sha2 = "0.10"
 # Git blob hashing uses SHA-1: blob_sha = sha1("blob {len}\0{content}").
 # GitHub Trees API returns these per file; computing the same locally lets

@@ -7,6 +7,7 @@ pub mod banner;
 pub mod cognito;
 pub mod config;
 pub mod conflicts;
+pub mod content;
 pub mod daemon;
 pub mod desktop_alt;
 pub mod dm_mqtt;

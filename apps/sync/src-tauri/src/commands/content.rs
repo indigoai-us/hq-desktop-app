@@ -1,0 +1,821 @@
+//! Fetch the HQ starter template from GitHub and safely extract it into the
+//! resolved HQ root during onboarding.
+//!
+//! This is the Rust-side port of the old `hq-installer-react` React app's
+//! `src/lib/template-fetcher.ts`, folded into a single Tauri command instead
+//! of a JS-orchestrated per-entry IPC dance. The old installer downloaded and
+//! gunzip/tar-parsed the archive in the renderer, then invoked one Rust
+//! command per file/dir/symlink to perform the actual write (so JS could stay
+//! "root-validated" defense-in-depth without owning raw filesystem access).
+//! Here the whole pipeline — download, decompress, parse, and write — runs in
+//! Rust, which removes the per-file IPC round-trip and keeps the archive
+//! bytes out of the webview process entirely.
+//!
+//! Safety properties ported from the old installer (see `fs.rs` and
+//! `template-fetcher.ts` in `imports/hq-installer-react`):
+//!   * Every archive entry's path is normalized and rejected if it contains
+//!     `..`, a null byte, or an absolute/drive/UNC prefix.
+//!   * The resolved destination must lexically resolve inside the HQ root —
+//!     rejected otherwise ("zip-slip" / path-traversal protection).
+//!   * Symlink targets are validated the same way, walked from the link's
+//!     parent directory, and rejected if they would resolve outside the root.
+//!   * Any entry whose path falls underneath an already-created symlink is
+//!     skipped, so a malicious symlink can't be used to redirect a later
+//!     entry outside the root.
+//!   * The GitHub tarball wrapper directory (`owner-repo-<sha>/`) is stripped
+//!     so the template's own root becomes the HQ root.
+//!
+//! Not yet ported from the old installer (deliberately out of scope for this
+//! pass — tracked as follow-up, not silently dropped):
+//!   * The staging-channel override (`indigoai-us/hq-core-staging` via
+//!     `download_staging_tarball`) and the installer's resumable
+//!     install-manifest bookkeeping (`recordStepStart`/`recordStepOk`).
+//!   * Byte-level download progress events (the onboarding UI currently only
+//!     surfaces stage-level status, not sub-progress within a stage).
+
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use serde::Deserialize;
+use tar::EntryType;
+
+use crate::commands::install_directory::resolve_hq_path;
+use crate::util::client_info::client_headers;
+use crate::util::logfile::log;
+
+const GITHUB_API: &str = "https://api.github.com";
+const DEFAULT_TEMPLATE_REPO: &str = "indigoai-us/hq-core";
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// Per-chunk stall budget while streaming the tarball. Mirrors the old
+/// installer's `DOWNLOAD_HARD_STALL_MS` (25s) — long enough to ride out a
+/// slow link, short enough that a truly dead connection doesn't hang setup
+/// indefinitely.
+const CHUNK_STALL_TIMEOUT: Duration = Duration::from_secs(25);
+
+#[derive(Debug, Deserialize)]
+struct ReleaseInfo {
+    tag_name: String,
+    tarball_url: String,
+    #[serde(default)]
+    prerelease: bool,
+    #[serde(default)]
+    draft: bool,
+}
+
+fn github_client() -> Result<reqwest::Client, String> {
+    let mut headers = client_headers();
+    headers.insert(
+        reqwest::header::ACCEPT,
+        reqwest::header::HeaderValue::from_static("application/vnd.github+json"),
+    );
+    reqwest::Client::builder()
+        .default_headers(headers)
+        .timeout(REQUEST_TIMEOUT)
+        .build()
+        .map_err(|e| format!("build GitHub client: {e}"))
+}
+
+async fn latest_release(client: &reqwest::Client, repo: &str) -> Result<Option<ReleaseInfo>, String> {
+    let url = format!("{GITHUB_API}/repos/{repo}/releases");
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("network error listing releases: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!(
+            "GitHub API error {} listing releases for {repo}",
+            resp.status()
+        ));
+    }
+    let releases: Vec<ReleaseInfo> = resp
+        .json()
+        .await
+        .map_err(|e| format!("failed to parse releases response: {e}"))?;
+    Ok(releases.into_iter().find(|r| !r.prerelease && !r.draft))
+}
+
+async fn download_tarball(client: &reqwest::Client, url: &str) -> Result<Vec<u8>, String> {
+    use futures_util::StreamExt;
+
+    let resp = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("network error downloading template: {e}"))?;
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        return Err(format!("template tarball not found (404): {url}"));
+    }
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {} downloading template tarball", resp.status()));
+    }
+
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut stream = resp.bytes_stream();
+    loop {
+        match tokio::time::timeout(CHUNK_STALL_TIMEOUT, stream.next()).await {
+            Ok(Some(Ok(chunk))) => bytes.extend_from_slice(&chunk),
+            Ok(Some(Err(e))) => return Err(format!("stream error downloading template: {e}")),
+            Ok(None) => break,
+            Err(_) => {
+                return Err(
+                    "Template download stalled before receiving more data.".to_string(),
+                )
+            }
+        }
+    }
+    Ok(bytes)
+}
+
+// ---------------------------------------------------------------------------
+// Path safety (ported from template-fetcher.ts / fs.rs)
+// ---------------------------------------------------------------------------
+
+fn has_unsafe_path_prefix(path: &str) -> bool {
+    path.starts_with('/')
+        || path.starts_with('\\')
+        || path.contains(':')
+        || path.as_bytes().first().map(u8::is_ascii_alphabetic).unwrap_or(false)
+            && path.as_bytes().get(1) == Some(&b':')
+}
+
+/// Normalize an untrusted archive-entry-relative path: reject null bytes,
+/// absolute/drive prefixes, and any `..` segment. Returns the cleaned
+/// forward-slash relative path, or `None` if the entry must be skipped.
+fn normalize_safe_relative_path(relative: &str) -> Option<String> {
+    if relative.is_empty() || relative.contains('\0') {
+        return None;
+    }
+    if has_unsafe_path_prefix(relative) {
+        return None;
+    }
+
+    let normalized = relative.replace('\\', "/");
+    let mut safe: Vec<&str> = Vec::new();
+    for seg in normalized.split('/') {
+        if seg.is_empty() || seg == "." {
+            continue;
+        }
+        if seg == ".." {
+            return None;
+        }
+        safe.push(seg);
+    }
+
+    if safe.is_empty() {
+        None
+    } else {
+        Some(safe.join("/"))
+    }
+}
+
+/// Resolve `relative` (already normalized) against `target_dir`, and confirm
+/// the joined path still lexically resolves inside `target_dir`.
+fn safe_join(target_dir: &Path, relative: &str) -> Option<PathBuf> {
+    let normalized = normalize_safe_relative_path(relative)?;
+    let joined = target_dir.join(&normalized);
+
+    // Lexical containment check — no disk access, mirrors the JS version.
+    // We can't use `canonicalize` here because the destination usually
+    // doesn't exist yet.
+    let mut depth: i32 = 0;
+    for component in normalized.split('/') {
+        match component {
+            "" | "." => {}
+            ".." => depth -= 1,
+            _ => depth += 1,
+        }
+        if depth < 0 {
+            return None;
+        }
+    }
+
+    Some(joined)
+}
+
+/// Validate a symlink's `link_target` (raw tar `linkname`, untrusted) against
+/// the symlink's own already-normalized relative path. Walks a virtual stack
+/// starting at the link's parent directory and rejects any target that would
+/// pop past the HQ root.
+fn is_safe_symlink_target(link_relative: &str, link_target: &str) -> bool {
+    if link_target.is_empty() || link_target.contains('\0') {
+        return false;
+    }
+    if has_unsafe_path_prefix(link_target) {
+        return false;
+    }
+
+    let mut stack: Vec<&str> = link_relative.split('/').collect();
+    stack.pop(); // drop the link's own filename, keep only its parent chain
+
+    for seg in link_target.replace('\\', "/").split('/') {
+        if seg.is_empty() || seg == "." {
+            continue;
+        }
+        if seg == ".." {
+            if stack.pop().is_none() {
+                return false;
+            }
+        } else {
+            stack.push(seg);
+        }
+    }
+
+    true
+}
+
+/// GitHub tarballs wrap everything in a top-level `owner-repo-<sha>/`
+/// directory. hq-core is a standalone template repo (the repo root IS the
+/// template), so we strip only that wrapper and keep everything inside it.
+fn map_entry_to_template_path(entry_name: &str) -> Option<String> {
+    let normalized = entry_name.replace('\\', "/");
+    let (_wrapper, rest) = normalized.split_once('/')?;
+    if rest.is_empty() {
+        None
+    } else {
+        Some(rest.to_string())
+    }
+}
+
+fn is_under_known_symlink(relative: &str, symlink_relatives: &[String]) -> bool {
+    symlink_relatives
+        .iter()
+        .any(|link| relative == link || relative.starts_with(&format!("{link}/")))
+}
+
+// ---------------------------------------------------------------------------
+// Symlink creation (ported from fs.rs — Unix + Windows privilege fallback)
+// ---------------------------------------------------------------------------
+
+#[cfg(unix)]
+fn create_symlink_impl(target: &Path, link_path: &Path) -> Result<(), String> {
+    if let Some(parent) = link_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("failed to create parent dir: {e}"))?;
+    }
+    if std::fs::symlink_metadata(link_path).is_ok() {
+        std::fs::remove_file(link_path)
+            .map_err(|e| format!("failed to replace existing entry at {link_path:?}: {e}"))?;
+    }
+    std::os::unix::fs::symlink(target, link_path)
+        .map_err(|e| format!("failed to create symlink {link_path:?} -> {target:?}: {e}"))
+}
+
+#[cfg(windows)]
+const WINDOWS_CREATE_NO_WINDOW: u32 = 0x0800_0000;
+#[cfg(windows)]
+const WINDOWS_ERROR_PRIVILEGE_NOT_HELD: i32 = 1314;
+
+/// Collapse `.` and `..` segments out of `path` lexically (no disk access),
+/// preserving the Windows prefix/root. `mklink /J` rejects a target argument
+/// that still contains `..` components.
+#[cfg(windows)]
+fn lexical_absolute(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for comp in path.components() {
+        match comp {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::Prefix(p) => out.push(p.as_os_str()),
+            Component::RootDir => out.push(comp.as_os_str()),
+            Component::Normal(s) => out.push(s),
+        }
+    }
+    out
+}
+
+/// Create a directory junction at `link_path` pointing to `target`, via
+/// `cmd /C mklink /J`. Junctions need no privilege, unlike directory
+/// symlinks, so this succeeds for a plain non-admin user with Developer
+/// Mode off.
+#[cfg(windows)]
+fn create_junction(target: &Path, link_path: &Path) -> Result<(), String> {
+    use std::os::windows::process::CommandExt as _;
+    use std::process::Command;
+
+    let abs_target = lexical_absolute(target);
+    let out = Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(link_path)
+        .arg(&abs_target)
+        .creation_flags(WINDOWS_CREATE_NO_WINDOW)
+        .output()
+        .map_err(|e| format!("failed to spawn mklink: {e}"))?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let detail = stderr.trim();
+        let detail = if detail.is_empty() { stdout.trim() } else { detail };
+        return Err(format!(
+            "mklink /J {link_path:?} -> {abs_target:?} failed ({}): {detail}",
+            out.status.code().unwrap_or(-1)
+        ));
+    }
+    Ok(())
+}
+
+/// Copy the bytes of `target` to `link_path` as a privilege-free substitute
+/// for a file symlink. Errors (rather than creating an empty file) when the
+/// target does not resolve to an existing file.
+#[cfg(windows)]
+fn copy_file_fallback(target: &Path, link_path: &Path) -> Result<(), String> {
+    let abs_target = lexical_absolute(target);
+    if !abs_target.is_file() {
+        return Err(format!("target {abs_target:?} is not an existing file (cannot copy)"));
+    }
+    std::fs::copy(&abs_target, link_path)
+        .map(|_| ())
+        .map_err(|e| format!("copy {abs_target:?} -> {link_path:?} failed: {e}"))
+}
+
+/// Remove an entry blocking a symlink create, handling the three Windows
+/// shapes a prior extraction may have left behind (plain dir, dir
+/// symlink/junction, file/file-symlink) and clearing the read-only bit first.
+#[cfg(windows)]
+fn remove_existing_windows_entry(path: &Path, md: &std::fs::Metadata) -> std::io::Result<()> {
+    #[allow(clippy::permissions_set_readonly_false)]
+    {
+        let mut perms = md.permissions();
+        if perms.readonly() {
+            perms.set_readonly(false);
+            let _ = std::fs::set_permissions(path, perms);
+        }
+    }
+    let ft = md.file_type();
+    if ft.is_symlink() {
+        let target_is_dir = std::fs::metadata(path).map(|m| m.is_dir()).unwrap_or(false);
+        if target_is_dir {
+            std::fs::remove_dir(path)
+        } else {
+            std::fs::remove_file(path)
+        }
+    } else if ft.is_dir() {
+        std::fs::remove_dir_all(path)
+    } else {
+        std::fs::remove_file(path)
+    }
+}
+
+#[cfg(windows)]
+fn create_symlink_impl(target: &Path, link_path: &Path) -> Result<(), String> {
+    if let Some(parent) = link_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("failed to create parent dir: {e}"))?;
+    }
+    if let Ok(md) = std::fs::symlink_metadata(link_path) {
+        remove_existing_windows_entry(link_path, &md)
+            .map_err(|e| format!("failed to replace existing entry at {link_path:?}: {e}"))?;
+    }
+
+    // Tar stores POSIX targets; Windows reparse points need backslashes or
+    // every read fails with a syntax error even though the link "looks" valid.
+    let win_target: PathBuf = target.to_string_lossy().replace('/', "\\").into();
+    let resolved_target = link_path
+        .parent()
+        .map(|p| p.join(&win_target))
+        .unwrap_or_else(|| win_target.clone());
+    let target_is_dir = std::fs::metadata(&resolved_target)
+        .map(|m| m.is_dir())
+        .unwrap_or(false);
+
+    let result = if target_is_dir {
+        std::os::windows::fs::symlink_dir(&win_target, link_path)
+    } else {
+        std::os::windows::fs::symlink_file(&win_target, link_path)
+    };
+
+    match result {
+        Ok(()) => Ok(()),
+        Err(e) if e.raw_os_error() == Some(WINDOWS_ERROR_PRIVILEGE_NOT_HELD) => {
+            // No Developer Mode / elevation: fall back to a privilege-free
+            // junction for dir targets, or a byte copy for file targets.
+            let fallback = if target_is_dir {
+                create_junction(&resolved_target, link_path)
+            } else {
+                copy_file_fallback(&resolved_target, link_path)
+            };
+            fallback.map_err(|fallback_err| {
+                format!(
+                    "HQ_SYMLINK_PRIVILEGE: cannot link {link_path:?} -> {win_target:?} without \
+                     Developer Mode or administrator rights (fallback failed: {fallback_err})"
+                )
+            })
+        }
+        Err(e) => Err(format!("failed to create symlink {link_path:?} -> {win_target:?}: {e}")),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Extraction
+// ---------------------------------------------------------------------------
+
+#[cfg(unix)]
+fn set_entry_mode(path: &Path, mode: u32) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode & 0o7777))
+        .map_err(|e| format!("failed to set permissions on {path:?}: {e}"))
+}
+
+#[cfg(windows)]
+fn set_entry_mode(_path: &Path, _mode: u32) -> Result<(), String> {
+    Ok(())
+}
+
+fn extract_tarball(compressed: &[u8], target_dir: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(target_dir)
+        .map_err(|e| format!("failed to create HQ root {target_dir:?}: {e}"))?;
+
+    let gz = flate2::read::GzDecoder::new(compressed);
+    let mut archive = tar::Archive::new(gz);
+    let entries = archive
+        .entries()
+        .map_err(|e| format!("failed to read template archive: {e}"))?;
+
+    let mut symlink_relatives: Vec<String> = Vec::new();
+
+    for entry in entries {
+        let mut entry = entry.map_err(|e| format!("failed to read template archive entry: {e}"))?;
+        let raw_path = entry
+            .path()
+            .map_err(|e| format!("failed to read template archive entry path: {e}"))?
+            .to_string_lossy()
+            .into_owned();
+
+        let relative = match map_entry_to_template_path(&raw_path) {
+            Some(r) => r,
+            None => continue, // the wrapper dir entry itself
+        };
+        let trimmed = relative.trim_end_matches(['/', '\\']);
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let normalized = match normalize_safe_relative_path(trimmed) {
+            Some(n) => n,
+            None => {
+                log(
+                    "content",
+                    &format!("skipping unsafe template archive path: {relative}"),
+                );
+                continue;
+            }
+        };
+
+        if is_under_known_symlink(&normalized, &symlink_relatives) {
+            log(
+                "content",
+                &format!("skipping template archive entry through symlink parent: {relative}"),
+            );
+            continue;
+        }
+
+        let entry_type = entry.header().entry_type();
+        let dest = match safe_join(target_dir, &normalized) {
+            Some(d) => d,
+            None => {
+                log(
+                    "content",
+                    &format!("skipping template archive path outside install root: {relative}"),
+                );
+                continue;
+            }
+        };
+
+        match entry_type {
+            EntryType::Directory => {
+                std::fs::create_dir_all(&dest)
+                    .map_err(|e| format!("failed to create {dest:?}: {e}"))?;
+            }
+            EntryType::Symlink => {
+                let link_target = entry
+                    .link_name()
+                    .ok()
+                    .flatten()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                if link_target.is_empty() {
+                    log(
+                        "content",
+                        &format!("skipping malformed template symlink without target: {relative}"),
+                    );
+                    continue;
+                }
+                if !is_safe_symlink_target(&normalized, &link_target) {
+                    log(
+                        "content",
+                        &format!(
+                            "skipping unsafe template symlink target for {relative}: {link_target}"
+                        ),
+                    );
+                    continue;
+                }
+                create_symlink_impl(Path::new(&link_target), &dest)?;
+                symlink_relatives.push(normalized);
+            }
+            EntryType::Regular | EntryType::Continuous => {
+                if let Some(parent) = dest.parent() {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|e| format!("failed to create {parent:?}: {e}"))?;
+                }
+                let mode = entry.header().mode().unwrap_or(0o644);
+                let mut buf = Vec::with_capacity(entry.size() as usize);
+                entry
+                    .read_to_end(&mut buf)
+                    .map_err(|e| format!("failed to read {relative} from archive: {e}"))?;
+                std::fs::write(&dest, &buf).map_err(|e| format!("failed to write {dest:?}: {e}"))?;
+                set_entry_mode(&dest, mode)?;
+            }
+            _ => {
+                // Hard links / device nodes / fifos etc. are not part of the
+                // template and are silently skipped, matching the old
+                // installer (which only ever handled '0' regular, '2'
+                // symlink, and '5' directory typeflags).
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Fetch the latest stable `indigoai-us/hq-core` release and extract it into
+/// the resolved HQ root. Called as the first onboarding setup stage, before
+/// `git_init` — the git repo is initialised over the already-placed content
+/// so the template ships tracked from the first commit.
+#[tauri::command]
+pub async fn fetch_and_extract_template() -> Result<String, String> {
+    let hq_root = resolve_hq_path()?;
+    let client = github_client()?;
+
+    let release = latest_release(&client, DEFAULT_TEMPLATE_REPO).await?;
+    let release = release.ok_or_else(|| {
+        format!("no stable release found for {DEFAULT_TEMPLATE_REPO}; cannot install HQ template")
+    })?;
+
+    let compressed = download_tarball(&client, &release.tarball_url).await?;
+    extract_tarball(&compressed, Path::new(&hq_root))?;
+
+    Ok(release.tag_name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write as _;
+    use tempfile::tempdir;
+
+    #[test]
+    fn normalize_rejects_parent_traversal() {
+        // Any ".." segment anywhere rejects the whole path outright — no
+        // lexical backtracking/resolution, matching the old installer's
+        // `normalizeSafeRelativePath` (an archive entry has no business
+        // containing ".." at all, resolved or not).
+        assert_eq!(normalize_safe_relative_path("../evil"), None);
+        assert_eq!(normalize_safe_relative_path("a/../../evil"), None);
+        assert_eq!(normalize_safe_relative_path("a/../b"), None);
+    }
+
+    #[test]
+    fn normalize_rejects_absolute_and_drive_prefixes() {
+        assert_eq!(normalize_safe_relative_path("/etc/passwd"), None);
+        assert_eq!(normalize_safe_relative_path(r"C:\evil"), None);
+        assert_eq!(normalize_safe_relative_path(r"\\server\share"), None);
+    }
+
+    #[test]
+    fn normalize_rejects_null_bytes_and_empty() {
+        assert_eq!(normalize_safe_relative_path(""), None);
+        assert_eq!(normalize_safe_relative_path("a\0b"), None);
+    }
+
+    #[test]
+    fn normalize_accepts_nested_relative_paths() {
+        assert_eq!(
+            normalize_safe_relative_path("core/docs/hq/MIGRATION.md"),
+            Some("core/docs/hq/MIGRATION.md".to_string())
+        );
+    }
+
+    #[test]
+    fn safe_join_rejects_traversal_and_accepts_in_root() {
+        let root = Path::new("/tmp/hq");
+        assert_eq!(safe_join(root, "../../evil"), None);
+        assert_eq!(
+            safe_join(root, "core/core.yaml"),
+            Some(PathBuf::from("/tmp/hq/core/core.yaml"))
+        );
+    }
+
+    #[test]
+    fn symlink_target_allows_template_parent_links_within_root() {
+        assert!(is_safe_symlink_target(
+            ".codex/output-style.md",
+            "../.claude/output-style.md"
+        ));
+        assert!(is_safe_symlink_target(
+            "companies/_template/.obsidian",
+            "../../.obsidian"
+        ));
+    }
+
+    #[test]
+    fn symlink_target_rejects_root_escape() {
+        assert!(!is_safe_symlink_target(".ssh", "../.ssh"));
+        assert!(!is_safe_symlink_target("link", "/etc/passwd"));
+        assert!(!is_safe_symlink_target("link", r"C:\evil"));
+    }
+
+    #[test]
+    fn map_entry_strips_github_wrapper_dir() {
+        assert_eq!(
+            map_entry_to_template_path("indigoai-us-hq-core-abc123/core.yaml"),
+            Some("core.yaml".to_string())
+        );
+        assert_eq!(
+            map_entry_to_template_path("indigoai-us-hq-core-abc123/.claude/CLAUDE.md"),
+            Some(".claude/CLAUDE.md".to_string())
+        );
+        assert_eq!(
+            map_entry_to_template_path("indigoai-us-hq-core-abc123/"),
+            None
+        );
+        assert_eq!(map_entry_to_template_path("indigoai-us-hq-core-abc123"), None);
+    }
+
+    /// Write a raw tar entry name directly into the header's 100-byte name
+    /// field, bypassing `Header::set_path`'s own `..`-rejection. A real
+    /// hand-crafted malicious archive would never go through that safe
+    /// writer either — this is what lets the malicious-entry tests actually
+    /// exercise our own validation instead of tar-rs's.
+    fn set_raw_name(header: &mut tar::Header, name: &str) {
+        let bytes = header.as_mut_bytes();
+        for b in bytes[0..100].iter_mut() {
+            *b = 0;
+        }
+        let name_bytes = name.as_bytes();
+        let len = name_bytes.len().min(100);
+        bytes[0..len].copy_from_slice(&name_bytes[0..len]);
+    }
+
+    fn build_test_tarball(entries: &[(&str, tar::Header, Option<Vec<u8>>)]) -> Vec<u8> {
+        let mut builder = tar::Builder::new(Vec::new());
+        for (path, header, data) in entries {
+            let mut header = header.clone();
+            set_raw_name(&mut header, path);
+            header.set_cksum();
+            let bytes = data.clone().unwrap_or_default();
+            builder.append(&header, bytes.as_slice()).unwrap();
+        }
+        let tar_bytes = builder.into_inner().unwrap();
+
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gz.write_all(&tar_bytes).unwrap();
+        gz.finish().unwrap()
+    }
+
+    fn file_header(size: u64, mode: u32) -> tar::Header {
+        let mut h = tar::Header::new_gnu();
+        h.set_entry_type(EntryType::Regular);
+        h.set_size(size);
+        h.set_mode(mode);
+        h
+    }
+
+    fn dir_header() -> tar::Header {
+        let mut h = tar::Header::new_gnu();
+        h.set_entry_type(EntryType::Directory);
+        h.set_size(0);
+        h.set_mode(0o755);
+        h
+    }
+
+    fn symlink_header(link_name: &str) -> tar::Header {
+        let mut h = tar::Header::new_gnu();
+        h.set_entry_type(EntryType::Symlink);
+        h.set_size(0);
+        h.set_link_name(link_name).unwrap();
+        h
+    }
+
+    #[test]
+    fn extract_writes_safe_entries_and_skips_malicious_ones() {
+        let dir = tempdir().unwrap();
+        let wrapper = "indigoai-us-hq-core-deadbeef";
+
+        let good_file = format!("{wrapper}/core.yaml");
+        let good_dir = format!("{wrapper}/companies/_template");
+        let good_symlink = format!("{wrapper}/AGENTS.md");
+        let traversal_file = format!("{wrapper}/../../evil.txt");
+        let evil_symlink = format!("{wrapper}/evil-link");
+
+        let content = b"name: hq-core\n".to_vec();
+        let entries = vec![
+            (good_dir.as_str(), dir_header(), None),
+            (
+                good_file.as_str(),
+                file_header(content.len() as u64, 0o644),
+                Some(content.clone()),
+            ),
+            (
+                good_symlink.as_str(),
+                symlink_header(".claude/CLAUDE.md"),
+                None,
+            ),
+            (
+                traversal_file.as_str(),
+                file_header(4, 0o644),
+                Some(b"evil".to_vec()),
+            ),
+            (
+                evil_symlink.as_str(),
+                symlink_header("/etc/passwd"),
+                None,
+            ),
+        ];
+        let archive = build_test_tarball(&entries);
+
+        extract_tarball(&archive, dir.path()).expect("extraction should succeed");
+
+        assert_eq!(
+            std::fs::read(dir.path().join("core.yaml")).unwrap(),
+            content
+        );
+        assert!(dir.path().join("companies/_template").is_dir());
+        let link_meta = std::fs::symlink_metadata(dir.path().join("AGENTS.md")).unwrap();
+        assert!(link_meta.file_type().is_symlink());
+
+        // Malicious entries must not land anywhere near or inside the root.
+        assert!(!dir.path().join("evil-link").exists());
+        assert!(!dir.path().parent().unwrap().join("evil.txt").exists());
+    }
+
+    #[test]
+    fn extract_skips_entries_under_a_symlink_parent() {
+        let dir = tempdir().unwrap();
+        let wrapper = "indigoai-us-hq-core-deadbeef";
+
+        // A symlink pointing outside the extraction... no, pointing inside is
+        // "safe" per the target check, but a later entry nested *under* that
+        // symlink path must still be skipped defensively.
+        let link_path = format!("{wrapper}/link-dir");
+        let nested_through_link = format!("{wrapper}/link-dir/nested.txt");
+
+        let entries = vec![
+            (link_path.as_str(), symlink_header("real-dir"), None),
+            (
+                nested_through_link.as_str(),
+                file_header(4, 0o644),
+                Some(b"data".to_vec()),
+            ),
+        ];
+        let archive = build_test_tarball(&entries);
+
+        extract_tarball(&archive, dir.path()).expect("extraction should succeed");
+
+        assert!(std::fs::symlink_metadata(dir.path().join("link-dir")).is_ok());
+        // Nothing should have been written through the symlink.
+        assert!(!dir.path().join("link-dir/nested.txt").exists());
+    }
+
+    /// End-to-end proof against the REAL `indigoai-us/hq-core` release: hits
+    /// live GitHub, downloads the latest stable tarball, and runs the full
+    /// download → gunzip → tar-parse → extract pipeline into a tempdir. Marked
+    /// `#[ignore]` so it stays out of the offline/CI default run; invoke with
+    /// `cargo test -- --ignored real_hq_core_tarball`.
+    #[tokio::test]
+    #[ignore]
+    async fn real_hq_core_tarball_downloads_and_extracts() {
+        let client = github_client().expect("client");
+        let release = latest_release(&client, DEFAULT_TEMPLATE_REPO)
+            .await
+            .expect("release lookup")
+            .expect("a stable hq-core release must exist");
+        eprintln!("resolved latest stable hq-core release: {}", release.tag_name);
+
+        let bytes = download_tarball(&client, &release.tarball_url)
+            .await
+            .expect("tarball download");
+        assert!(bytes.len() > 10_000, "tarball suspiciously small: {} bytes", bytes.len());
+
+        let dir = tempdir().unwrap();
+        extract_tarball(&bytes, dir.path()).expect("real tarball must extract cleanly");
+
+        // Spot-check the real HQ template landed with its signature files and
+        // that at least one of its git symlinks (e.g. AGENTS.md -> .claude/
+        // CLAUDE.md) came through as a real symlink, not a broken/empty file.
+        assert!(dir.path().join(".claude").is_dir(), ".claude/ missing from extracted template");
+        let agents = dir.path().join("AGENTS.md");
+        if agents.exists() {
+            let meta = std::fs::symlink_metadata(&agents).unwrap();
+            eprintln!("AGENTS.md is_symlink={}", meta.file_type().is_symlink());
+        }
+        // Nothing must have escaped the extraction root.
+        assert!(!dir.path().parent().unwrap().join("evil.txt").exists());
+        eprintln!(
+            "extracted {} top-level entries into {}",
+            std::fs::read_dir(dir.path()).unwrap().count(),
+            dir.path().display()
+        );
+    }
+}
