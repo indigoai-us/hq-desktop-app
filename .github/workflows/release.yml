@@ -272,6 +272,10 @@ jobs:
 
   windows:
     name: Build Windows ${{ matrix.target }}
+    # TEMP(mac-only): disabled until the Azure federated credential for
+    # subject repo:indigoai-us/hq-desktop-app:environment:release is added.
+    # Revert this commit to re-enable signed Windows builds.
+    if: ${{ false }}
     runs-on: windows-latest
     timeout-minutes: 90
     permissions:
@@ -444,7 +448,11 @@ jobs:
 
   publish:
     name: Publish GitHub release
-    needs: [macos, windows]
+    # TEMP(mac-only): Windows signing blocked on missing Azure federated
+    # credential (subject repo:indigoai-us/hq-desktop-app:environment:release).
+    # Ship macOS-only until that's added, then revert this commit to restore
+    # the mac+win release. See docs/RELEASE.md.
+    needs: [macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -484,14 +492,10 @@ jobs:
 
           require_file "release/HQ_${VERSION}_universal.app.tar.gz"
           require_file "release/HQ_${VERSION}_universal.app.tar.gz.sig"
-          require_file "release/HQ_${VERSION}_x64-setup.exe"
-          require_file "release/HQ_${VERSION}_x64-setup.exe.sig"
-          require_file "release/HQ_${VERSION}_arm64-setup.exe"
-          require_file "release/HQ_${VERSION}_arm64-setup.exe.sig"
+          # TEMP(mac-only): Windows artifacts are not produced while the
+          # Windows job is disabled. Revert this commit to re-require them.
 
           MAC_SIG_PATH="release/HQ_${VERSION}_universal.app.tar.gz.sig" \
-          WIN_X64_SIG_PATH="release/HQ_${VERSION}_x64-setup.exe.sig" \
-          WIN_ARM64_SIG_PATH="release/HQ_${VERSION}_arm64-setup.exe.sig" \
           VERSION="$VERSION" \
           TAG="$TAG" \
           BASE="$BASE" \
@@ -503,8 +507,6 @@ jobs:
           const tag = process.env.TAG;
           const base = process.env.BASE;
           const macSig = readSig(process.env.MAC_SIG_PATH);
-          const winX64Sig = readSig(process.env.WIN_X64_SIG_PATH);
-          const winArm64Sig = readSig(process.env.WIN_ARM64_SIG_PATH);
 
           const manifest = {
             version,
@@ -519,14 +521,8 @@ jobs:
                 signature: macSig,
                 url: `${base}/HQ_${version}_universal.app.tar.gz`,
               },
-              "windows-x86_64": {
-                signature: winX64Sig,
-                url: `${base}/HQ_${version}_x64-setup.exe`,
-              },
-              "windows-aarch64": {
-                signature: winArm64Sig,
-                url: `${base}/HQ_${version}_arm64-setup.exe`,
-              },
+              // TEMP(mac-only): windows-x86_64 / windows-aarch64 platforms
+              // omitted while the Windows job is disabled. Revert to restore.
             },
           };
 
