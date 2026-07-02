@@ -93,13 +93,18 @@ describe('desktop-alt status write — registration + capability (US-010)', () =
 
   it('the Rust write command guards path + GA gate + atomic write', () => {
     const rust = readRepoFile('src-tauri/src/commands/projects_local.rs');
+    const core = readRepoFile('../../crates/hq-desktop-core/src/projects_local.rs');
+    // The command wrapper enforces the signed-in GA gate and delegates the
+    // write to the core library.
     expect(rust).toContain('pub async fn set_local_project_status');
     expect(rust).toContain('desktop_features_enabled().await');
-    // Path-traversal guard + board.json-only target.
-    expect(rust).toContain('is_within(hq_root, &abs)');
-    expect(rust).toContain('Some("board.json")');
-    // Atomic write: serialize → temp → rename.
-    expect(rust).toContain('fn atomic_write_json');
-    expect(rust).toContain('std::fs::rename(&tmp_path, target)');
+    expect(rust).toContain('write_project_status(&hq, &board_path, &project_id, &status)');
+    // Path-traversal guard + board.json-only target + atomic write (serialize →
+    // temp → rename) live in the core library and are unit-tested there
+    // (write_project_status_persists_and_round_trips / _rejects_*).
+    expect(core).toContain('is_within(hq_root, &abs)');
+    expect(core).toContain('Some("board.json")');
+    expect(core).toContain('fn atomic_write_json');
+    expect(core).toContain('std::fs::rename(&tmp_path, target)');
   });
 });

@@ -278,10 +278,16 @@ export class DesktopAltHarness implements DesktopAltTestHarness {
 
   private assertSecretsSourceContracts(): void {
     const rust = readRepoFile('src-tauri/src/commands/desktop_alt.rs');
+    const core = readRepoFile('../../crates/hq-desktop-core/src/desktop_alt.rs');
     const panel = readRepoFile('src/desktop-alt/panels/SecretsPanel.svelte');
 
-    expect(rust).toContain('pub struct SecretItem');
-    const secretItemStruct = rust.match(/pub struct SecretItem\s*\{[\s\S]*?\n\}/)?.[0] ?? '';
+    // The command wrapper returns ONLY the metadata-only projection type — never
+    // a value-bearing shape. The type itself is defined + tested in the shared
+    // core library (the command binary depends on it, so it lives there).
+    expect(rust).toContain('pub async fn get_company_secrets(');
+    expect(rust).toContain('Result<Vec<SecretEnv>, String>');
+    expect(core).toContain('pub struct SecretItem');
+    const secretItemStruct = core.match(/pub struct SecretItem\s*\{[\s\S]*?\n\}/)?.[0] ?? '';
     expect(secretItemStruct).toContain('pub key: String');
     expect(secretItemStruct).toContain('pub upd: String');
     expect(secretItemStruct).toContain('pub rot: String');
