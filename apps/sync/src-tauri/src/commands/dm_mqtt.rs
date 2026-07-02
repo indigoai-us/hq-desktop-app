@@ -274,7 +274,7 @@ fn client_id() -> String {
 /// Calls `poll_dm_once(app)` once right after a successful connect (offline
 /// catch-up, US-006) and once per inbound Publish (the wake signal).
 async fn run_once(app: &AppHandle, creds: &RealtimeCredsResponse) -> Result<(), String> {
-    use rumqttc::{AsyncClient, MqttOptions, Transport};
+    use rumqttc::{AsyncClient, MqttOptions};
 
     let now = SystemTime::now();
     let url = build_signed_wss_url(
@@ -296,7 +296,9 @@ async fn run_once(app: &AppHandle, creds: &RealtimeCredsResponse) -> Result<(), 
     // SigV4 query rides through to the upgrade request. We deliberately do NOT use
     // `MqttOptions::parse_url`, which rejects the X-Amz-* query keys as unknown.
     let mut opts = MqttOptions::new(client_id(), url, 443);
-    opts.set_transport(Transport::wss_with_default_config());
+    // Bundled webpki roots, not the macOS keychain — avoids the fatal
+    // `load_native_certs().expect(...)` panic (Sentry HQ-SYNC-D). See util/mqtt_tls.rs.
+    opts.set_transport(crate::util::mqtt_tls::wss_transport_with_bundled_roots());
     opts.set_keep_alive(Duration::from_secs(30));
     // AWS IoT requires a clean session for SigV4-WSS connections.
     opts.set_clean_session(true);

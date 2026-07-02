@@ -76,6 +76,14 @@ aws-sigv4 = { version = "1", features = ["http1"] }
 # `parse_url`, because rumqttc's url parser treats unknown query keys as errors
 # and would reject the X-Amz-* params.
 rumqttc = { version = "0.24", default-features = false, features = ["websocket", "use-rustls"] }
+# Bundled Mozilla/webpki root certificates for the AWS IoT Core MQTT-over-WSS
+# connections. Building the rustls trust store from these (see
+# `util/mqtt_tls.rs`) avoids `TlsConfiguration::default()`'s
+# `rustls_native_certs::load_native_certs().expect(...)`, which panics on a
+# transient macOS keychain I/O error (Sentry HQ-SYNC-D). Already in the graph
+# transitively; pinned direct so `util/mqtt_tls.rs` can name
+# `webpki_roots::TLS_SERVER_ROOTS`.
+webpki-roots = "1"
 ulid = "1"
 bytes = "1"
 # Strict SemVer comparison for the release-channel resolver in
