@@ -4,9 +4,11 @@
 // callback as http://localhost:53682/callback, which matches the
 // `http://localhost:*/callback` wildcard registered on Cognito app client
 // 7acei2c8v870enheptb1j5foln (hq-prod stack, canonical post-2026-04-25 cutover).
-// Binding to 127.0.0.1 (not 0.0.0.0) keeps the
-// listener off the LAN; `localhost` in the redirect URI is required because
-// Cognito matches the host segment literally — `127.0.0.1` fails.
+// Binding the loopback addresses 127.0.0.1 and ::1 (never 0.0.0.0/::) keeps the
+// listener off the LAN. `localhost` in the redirect URI is required because
+// Cognito matches the host segment literally — `127.0.0.1` fails — and because
+// macOS commonly resolves `localhost` to ::1 first, we bind both families so
+// the callback lands no matter which one the browser picks.
 // and waits for the browser to redirect back to /callback?code=...&state=...
 // with the authorization code. Responds with a friendly HTML page that tells
 // the user to return to HQ Sync, then shuts the listener down.
@@ -22,7 +24,7 @@
 //   4. Call `oauth_exchange_code(code)` to exchange the code for tokens.
 //
 // Security notes:
-//   - Binds to 127.0.0.1 only — never 0.0.0.0.
+//   - Binds loopback only (127.0.0.1 and ::1) — never 0.0.0.0/::.
 //   - Enforces `state` match between what the listener was started with and
 //     what comes back on the callback, defending against CSRF/code injection.
 //   - Single-use: accepts at most one request, closes listener afterwards.
@@ -48,6 +50,7 @@ use std::time::Duration;
 
 const LOOPBACK_PORT: u16 = 53682;
 const LOOPBACK_HOST: &str = "127.0.0.1";
+const IPV6_LOOPBACK_HOST: &str = "::1";
 const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -64,11 +67,56 @@ fn pkce_store() -> &'static Mutex<Option<String>> {
 // Bound eagerly in `start_oauth_login` (before the browser opens) rather
 // than lazily in `oauth_listen_for_code`, so the socket is guaranteed ready
 // before the user could possibly complete the provider redirect.
+//
+// We keep a *set* of listeners — one on 127.0.0.1 and one on `::1` — because
+// the redirect URI uses `localhost`, and macOS commonly resolves `localhost`
+// to IPv6 (`::1`) first. Binding IPv4 only would let the browser's callback
+// hit `[::1]:53682` with nothing listening, hanging sign-in until the timeout.
 
-static PENDING_LISTENER: OnceLock<Mutex<Option<TcpListener>>> = OnceLock::new();
+static PENDING_LISTENER: OnceLock<Mutex<Option<Vec<TcpListener>>>> = OnceLock::new();
 
-fn listener_store() -> &'static Mutex<Option<TcpListener>> {
+fn listener_store() -> &'static Mutex<Option<Vec<TcpListener>>> {
     PENDING_LISTENER.get_or_init(|| Mutex::new(None))
+}
+
+/// Bind loopback listeners for the callback on both IPv4 (`127.0.0.1`) and,
+/// when available, IPv6 (`::1`) on the *same* port. Returns whatever bound;
+/// only errors if neither family could bind (e.g. the port is truly in use).
+/// Never binds `0.0.0.0`/`::` — the listener stays off the LAN.
+fn bind_loopback_listeners(port: u16) -> std::io::Result<Vec<TcpListener>> {
+    let mut listeners = Vec::with_capacity(2);
+    let mut first_error = None;
+    let mut bind_port = port;
+
+    match TcpListener::bind((LOOPBACK_HOST, port)) {
+        Ok(listener) => {
+            if port == 0 {
+                bind_port = listener.local_addr()?.port();
+            }
+            listeners.push(listener);
+        }
+        Err(e) => first_error = Some(e),
+    }
+
+    match TcpListener::bind((IPV6_LOOPBACK_HOST, bind_port)) {
+        Ok(listener) => listeners.push(listener),
+        Err(e) => {
+            if first_error.is_none() {
+                first_error = Some(e);
+            }
+        }
+    }
+
+    if listeners.is_empty() {
+        Err(first_error.unwrap_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::AddrNotAvailable,
+                "no loopback listeners bound",
+            )
+        }))
+    } else {
+        Ok(listeners)
+    }
 }
 
 /// JSON-encode a structured error the frontend can pattern-match on `code`
@@ -187,7 +235,7 @@ pub async fn start_oauth_login(provider: String) -> Result<OAuthFlowInit, String
     let verifier = generate_code_verifier();
     let challenge = compute_code_challenge(&verifier);
 
-    let listener = TcpListener::bind((LOOPBACK_HOST, LOOPBACK_PORT)).map_err(|e| {
+    let listeners = bind_loopback_listeners(LOOPBACK_PORT).map_err(|e| {
         structured_error(
             "OAUTH_PORT_IN_USE",
             &format!(
@@ -198,7 +246,7 @@ pub async fn start_oauth_login(provider: String) -> Result<OAuthFlowInit, String
         )
     })?;
 
-    // Replace (and drop, closing the socket) any previous pending listener —
+    // Replace (and drop, closing the sockets) any previous pending listeners —
     // e.g. the user clicked a provider button, abandoned that attempt, and
     // clicked again. The old spawn_blocking task's accept() call unblocks
     // with an OS error when its listener is dropped out from under it,
@@ -207,7 +255,7 @@ pub async fn start_oauth_login(provider: String) -> Result<OAuthFlowInit, String
         let mut guard = listener_store()
             .lock()
             .map_err(|e| format!("Listener lock poisoned: {e}"))?;
-        *guard = Some(listener);
+        *guard = Some(listeners);
     }
 
     // Store verifier for oauth_exchange_code
@@ -304,7 +352,7 @@ pub async fn oauth_exchange_code(code: String) -> Result<AuthState, String> {
 pub async fn oauth_listen_for_code(state: String) -> Result<OAuthResult, String> {
     let state_copy = state.clone();
 
-    let listener = {
+    let listeners = {
         let mut guard = listener_store()
             .lock()
             .map_err(|e| format!("Listener lock poisoned: {e}"))?;
@@ -314,9 +362,16 @@ pub async fn oauth_listen_for_code(state: String) -> Result<OAuthResult, String>
     };
 
     tokio::task::spawn_blocking(move || -> Result<OAuthResult, String> {
-        listener
-            .set_nonblocking(false)
-            .map_err(|e| format!("set_nonblocking: {e}"))?;
+        // Non-blocking accept on every bound listener (IPv4 + IPv6) so the
+        // deadline check below actually runs. A blocking accept() on a single
+        // socket would sit forever ignoring the 5-minute timeout — and on
+        // macOS could be parked on the wrong loopback family while the browser
+        // delivered the callback to the other one.
+        for listener in &listeners {
+            listener
+                .set_nonblocking(true)
+                .map_err(|e| format!("set_nonblocking: {e}"))?;
+        }
 
         let deadline = std::time::Instant::now() + IDLE_TIMEOUT;
 
@@ -325,59 +380,75 @@ pub async fn oauth_listen_for_code(state: String) -> Result<OAuthResult, String>
                 return Err("Timed out waiting for sign-in (5 minutes).".into());
             }
 
-            match listener.accept() {
-                Ok((mut stream, _addr)) => {
-                    let request = match read_request_line(&mut stream) {
-                        Ok(r) => r,
-                        Err(_) => {
-                            continue;
-                        }
-                    };
+            for listener in &listeners {
+                match listener.accept() {
+                    Ok((mut stream, _addr)) => {
+                        let request = match read_request_line(&mut stream) {
+                            Ok(r) => r,
+                            Err(_) => {
+                                continue;
+                            }
+                        };
 
-                    match parse_callback(&request) {
-                        Some((_code, _state, Some(error))) => {
-                            let reason = format!("Provider error: {error}");
-                            eprintln!("[oauth] callback rejected — {reason}");
-                            write_response(&mut stream, "400 Bad Request", &error_html(&reason));
-                            return Err(structured_error(
-                                "OAUTH_PROVIDER_ERROR",
-                                "Sign-in was cancelled or denied. Retry when you are ready.",
-                            ));
-                        }
-                        Some((code, state, None)) => {
-                            if state != state_copy {
-                                let reason = format!(
-                                    "State mismatch: expected {} got {}",
-                                    state_copy, state
-                                );
+                        match parse_callback(&request) {
+                            Some((_code, _state, Some(error))) => {
+                                let reason = format!("Provider error: {error}");
                                 eprintln!("[oauth] callback rejected — {reason}");
                                 write_response(
                                     &mut stream,
                                     "400 Bad Request",
                                     &error_html(&reason),
                                 );
-                                return Err(
-                                    "OAuth state mismatch — possible CSRF, aborting.".into()
-                                );
+                                return Err(structured_error(
+                                    "OAUTH_PROVIDER_ERROR",
+                                    "Sign-in was cancelled or denied. Retry when you are ready.",
+                                ));
                             }
-                            eprintln!("[oauth] callback accepted — code length {}", code.len());
-                            write_response(&mut stream, "200 OK", SUCCESS_HTML);
-                            return Ok(OAuthResult { code });
-                        }
-                        None => {
-                            write_response(
-                                &mut stream,
-                                "404 Not Found",
-                                "<!doctype html><title>404</title>",
-                            );
-                            continue;
+                            Some((code, state, None)) => {
+                                if state != state_copy {
+                                    let reason = format!(
+                                        "State mismatch: expected {} got {}",
+                                        state_copy, state
+                                    );
+                                    eprintln!("[oauth] callback rejected — {reason}");
+                                    write_response(
+                                        &mut stream,
+                                        "400 Bad Request",
+                                        &error_html(&reason),
+                                    );
+                                    return Err(
+                                        "OAuth state mismatch — possible CSRF, aborting.".into(),
+                                    );
+                                }
+                                eprintln!(
+                                    "[oauth] callback accepted — code length {}",
+                                    code.len()
+                                );
+                                write_response(&mut stream, "200 OK", SUCCESS_HTML);
+                                return Ok(OAuthResult { code });
+                            }
+                            None => {
+                                write_response(
+                                    &mut stream,
+                                    "404 Not Found",
+                                    "<!doctype html><title>404</title>",
+                                );
+                                continue;
+                            }
                         }
                     }
-                }
-                Err(e) => {
-                    return Err(format!("accept failed: {e}"));
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        continue;
+                    }
+                    Err(e) => {
+                        return Err(format!("accept failed: {e}"));
+                    }
                 }
             }
+
+            // Nothing ready on any listener this pass — yield briefly so the
+            // loop doesn't busy-spin between deadline checks.
+            std::thread::sleep(Duration::from_millis(50));
         }
     })
     .await
@@ -389,6 +460,11 @@ pub async fn oauth_listen_for_code(state: String) -> Result<OAuthResult, String>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The listener_store tests mutate a process-global singleton, so cargo's
+    // parallel runner can otherwise let them observe each other's writes.
+    // Serialize them behind this lock and each leaves the store empty.
+    static STORE_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn pkce_store_roundtrip() {
@@ -430,6 +506,7 @@ mod tests {
 
     #[test]
     fn listener_store_roundtrip() {
+        let _serialize = STORE_TEST_LOCK.lock().unwrap();
         // Exercises the same take()-then-store pattern start_oauth_login /
         // oauth_listen_for_code use, on an OS-assigned ephemeral port so this
         // test can't collide with a real running app on 53682.
@@ -438,13 +515,13 @@ mod tests {
 
         {
             let mut guard = listener_store().lock().unwrap();
-            *guard = Some(listener);
+            *guard = Some(vec![listener]);
         }
         let taken = {
             let mut guard = listener_store().lock().unwrap();
             guard.take()
         };
-        assert_eq!(taken.unwrap().local_addr().unwrap().port(), bound_port);
+        assert_eq!(taken.unwrap()[0].local_addr().unwrap().port(), bound_port);
         {
             let guard = listener_store().lock().unwrap();
             assert!(guard.is_none());
@@ -453,6 +530,7 @@ mod tests {
 
     #[test]
     fn listener_store_replacing_pending_listener_drops_the_old_one() {
+        let _serialize = STORE_TEST_LOCK.lock().unwrap();
         // Simulates: user clicks a provider button, abandons that attempt,
         // clicks again. The second start_oauth_login must be able to store a
         // fresh listener without the mutex or the old socket getting in the way.
@@ -462,16 +540,50 @@ mod tests {
 
         {
             let mut guard = listener_store().lock().unwrap();
-            *guard = Some(first);
+            *guard = Some(vec![first]);
         }
         {
             let mut guard = listener_store().lock().unwrap();
-            *guard = Some(second); // old `first` is dropped here, closing its socket
+            *guard = Some(vec![second]); // old `first` is dropped here, closing its socket
         }
-        let guard = listener_store().lock().unwrap();
-        assert_eq!(
-            guard.as_ref().unwrap().local_addr().unwrap().port(),
-            second_port
-        );
+        {
+            let guard = listener_store().lock().unwrap();
+            assert_eq!(
+                guard.as_ref().unwrap()[0].local_addr().unwrap().port(),
+                second_port
+            );
+        }
+        // Leave the process-global store empty for any other test.
+        *listener_store().lock().unwrap() = None;
+    }
+
+    #[test]
+    fn bind_loopback_listeners_binds_ipv4_and_when_available_ipv6_same_port() {
+        // The regression this guards: binding IPv4 only lets a `localhost`
+        // callback that resolves to `::1` (common on macOS) hit a dead port.
+        let ipv6_loopback_available = TcpListener::bind((IPV6_LOOPBACK_HOST, 0)).is_ok();
+        let listeners = bind_loopback_listeners(0).expect("bind loopback listeners");
+        assert!(!listeners.is_empty());
+
+        let port = listeners
+            .iter()
+            .find_map(|listener| {
+                let addr = listener.local_addr().ok()?;
+                addr.ip().is_ipv4().then_some(addr.port())
+            })
+            .expect("IPv4 loopback listener should always bind");
+        TcpStream::connect((LOOPBACK_HOST, port)).expect("connect to IPv4 loopback listener");
+
+        if ipv6_loopback_available {
+            assert!(
+                listeners
+                    .iter()
+                    .filter_map(|listener| listener.local_addr().ok())
+                    .any(|addr| addr.ip().is_ipv6() && addr.port() == port),
+                "IPv6 loopback listener should bind on the same port as IPv4"
+            );
+            TcpStream::connect((IPV6_LOOPBACK_HOST, port))
+                .expect("connect to IPv6 loopback listener");
+        }
     }
 }
