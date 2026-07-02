@@ -63,6 +63,8 @@ export const PACK_DISPLAY_NAMES: Readonly<Record<string, string>> = {
   'pocock-skills': 'Matt Pocock Skills',
   impeccable: 'Impeccable Design',
   'magicpath-agent-skills': 'MagicPath',
+  // Acronym — the generic prettifier would title-case this to "Crm".
+  crm: 'CRM',
 };
 
 /** Words we keep lowercased when title-casing a derived name (unless leading). */
