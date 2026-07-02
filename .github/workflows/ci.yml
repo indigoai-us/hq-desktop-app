@@ -10,12 +10,13 @@ name: CI
 #     build, and vitest-with-coverage.
 #   - rust-macos: Rust unit tests for the app crate AND the workspace crates
 #     (macOS = the shipping platform).
+# Also blocking:
+#   - e2e-desktop-alt: the desktop-alt source-contract suite (mirrors hq-sync's
+#     desktop-alt-e2e.yml). Windows compile stays in windows-check.yml.
 # Non-blocking (continue-on-error) informational steps, flipping to required
 # after a dedicated cleanup pass:
 #   - cargo fmt --check + cargo clippy -D warnings (the app carries ~110
 #     pre-existing clippy warnings, incl. several await-holding-lock sites).
-#   - desktop-alt E2E: the suite currently surfaces real parity gaps (see the
-#     e2e job comment). Windows compile stays in windows-check.yml.
 
 on:
   pull_request:
@@ -142,14 +143,14 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --no-frozen-lockfile
-      # NON-BLOCKING for now: this source-contract suite currently surfaces real
-      # parity gaps the fork introduced — a missing `list_dir_entries` Files-mode
-      # command, the project-status-write path guard (`is_within`), the
-      # `SecretItem` metadata struct, and (a shipped-app crasher) the
-      # recording-tracker.mjs omission from tauri.conf.json bundle.resources,
-      # which would ERR_MODULE_NOT_FOUND at runtime. Flips to required once those
-      # are fixed.
-      - name: Desktop-alt E2E (non-blocking)
-        continue-on-error: true
+      # BLOCKING: the desktop-alt source-contract suite (42 files / 221 tests) is
+      # green. The parity items it once flagged are resolved — the recall
+      # recording-tracker.mjs is bundled on every platform (#91), and the
+      # Files-mode lister (list_dir_entries + DirEntry), the project-status path
+      # guard + atomic write, and the metadata-only SecretItem projection are all
+      # implemented AND unit-tested in the hq-desktop-core library, with the
+      # specs asserting that shared-crate location (the command binary can't own
+      # those definitions — the library it depends on does).
+      - name: Desktop-alt E2E
         working-directory: apps/sync
         run: pnpm test:e2e:desktop-alt

@@ -154,6 +154,7 @@ describe('desktop-alt Files mode — exit + root-default + company filter (US-01
   const desktopApp = readRepoFile('src/desktop-alt/DesktopApp.svelte');
   const lib = readRepoFile('src/desktop-alt/lib/file-tree.ts');
   const rust = readRepoFile('src-tauri/src/commands/desktop_alt.rs');
+  const core = readRepoFile('../../crates/hq-desktop-core/src/desktop_alt.rs');
   const mainRs = readRepoFile('src-tauri/src/main.rs');
 
   // -------------------------------------------------------------------------
@@ -228,12 +229,18 @@ describe('desktop-alt Files mode — exit + root-default + company filter (US-01
   });
 
   it('the lazy list command is implemented + registered (path-guarded, noise-filtered)', () => {
-    // Backend command exists and reuses the shared guard + noise filter.
+    // The command wrapper exposes list_hq_dir and delegates to the shared core
+    // helper. Pure logic + DTOs live in hq-desktop-core: the command binary
+    // depends on that library, so the definitions can only live there (a binary
+    // crate can't be a dependency of the library that already uses these types).
     expect(rust).toContain('pub async fn list_hq_dir(');
-    expect(rust).toContain('fn list_dir_entries(');
-    expect(rust).toContain('is_within(hq_root, &abs)');
-    expect(rust).toContain('is_dev_noise(&name, is_dir)');
-    expect(rust).toContain('pub struct DirEntry');
+    expect(rust).toContain('list_dir_entries(&hq, &rel_path)');
+    // The guarded, noise-filtered lister + its DTO are defined AND unit-tested
+    // in the core library (list_dir_entries_rejects_traversal_and_missing).
+    expect(core).toContain('pub fn list_dir_entries(');
+    expect(core).toContain('is_within(hq_root, &abs)');
+    expect(core).toContain('is_dev_noise(&name, is_dir)');
+    expect(core).toContain('pub struct DirEntry');
     // Registered in main.rs (authorized by core:default — no new token).
     expect(mainRs).toContain('commands::desktop_alt::list_hq_dir');
   });
