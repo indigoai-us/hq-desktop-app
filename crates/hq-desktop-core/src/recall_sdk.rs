@@ -158,19 +158,27 @@ pub fn is_meeting_detect_allowed_email(email: Option<&str>) -> bool {
     crate::feature_gate::email_present(email)
 }
 
+/// Tauri sidecar target triples for the current OS (arch-tagged bundle names).
+/// Windows binaries also carry an `.exe` suffix (`std::env::consts::EXE_SUFFIX`).
+#[cfg(target_os = "windows")]
+const SDK_ARCH_TRIPLES: &[&str] = &["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"];
+#[cfg(not(target_os = "windows"))]
+const SDK_ARCH_TRIPLES: &[&str] = &["aarch64-apple-darwin", "x86_64-apple-darwin"];
+
 /// Try to find the Recall Desktop SDK binary.
 pub fn find_sdk_binary() -> Option<String> {
+    let exe_suffix = std::env::consts::EXE_SUFFIX; // "" on unix, ".exe" on windows
     // 1. Check next to the running executable (release bundle).
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            // Plain name.
-            let plain = dir.join(SDK_BIN);
+            // Plain name (+ platform exe suffix on Windows).
+            let plain = dir.join(format!("{SDK_BIN}{exe_suffix}"));
             if plain.exists() {
                 return Some(plain.to_string_lossy().into_owned());
             }
-            // Tauri arch-tagged names for macOS universal builds.
-            for arch in &["aarch64-apple-darwin", "x86_64-apple-darwin"] {
-                let tagged = dir.join(format!("{}-{}", SDK_BIN, arch));
+            // Tauri arch-tagged sidecar names for this platform's triples.
+            for arch in SDK_ARCH_TRIPLES {
+                let tagged = dir.join(format!("{SDK_BIN}-{arch}{exe_suffix}"));
                 if tagged.exists() {
                     return Some(tagged.to_string_lossy().into_owned());
                 }
@@ -384,6 +392,20 @@ mod tests {
         // We can't assert None always (a dev may have installed the SDK), but we
         // can assert the function doesn't panic.
         let _ = find_sdk_binary(); // must not panic
+    }
+
+    #[test]
+    fn sdk_arch_triples_and_suffix_match_platform() {
+        // Regression: the Windows bundle's sidecar is arch-tagged with the
+        // windows-msvc triples and carries a .exe suffix. A macOS-only triple
+        // list (the fork's bug) means find_sdk_binary never resolves it.
+        if cfg!(target_os = "windows") {
+            assert!(SDK_ARCH_TRIPLES.iter().all(|t| t.contains("pc-windows-msvc")));
+            assert_eq!(std::env::consts::EXE_SUFFIX, ".exe");
+        } else {
+            assert!(SDK_ARCH_TRIPLES.iter().all(|t| t.contains("apple-darwin")));
+            assert_eq!(std::env::consts::EXE_SUFFIX, "");
+        }
     }
 
     #[test]
