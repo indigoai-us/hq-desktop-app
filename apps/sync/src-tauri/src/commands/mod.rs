@@ -4,6 +4,7 @@ pub mod app;
 pub mod auth;
 pub mod autostart;
 pub mod banner;
+pub mod checksums;
 pub mod cognito;
 pub mod config;
 pub mod conflicts;
