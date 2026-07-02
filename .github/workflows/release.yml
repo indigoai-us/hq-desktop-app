@@ -597,7 +597,7 @@ jobs:
           VERSION="${TAG#v}"
           cd release
           for pair in \
-            "HQ_${VERSION}_universal.dmg:HQ_universal.dmg" \
+            "HQ_${VERSION}_universal.dmg:HQ.dmg" \
             "HQ_${VERSION}_x64-setup.exe:HQ_x64-setup.exe" \
             "HQ_${VERSION}_arm64-setup.exe:HQ_arm64-setup.exe"; do
             src="${pair%%:*}"; dst="${pair##*:}"

@@ -50,7 +50,7 @@ Each release publishes one `latest.json` covering `darwin-aarch64`, `darwin-x86_
 
 Alongside the version-stamped assets, each release also publishes versionless copies for stable, marketing-friendly download links (the hq-installer pattern):
 
-- `HQ_universal.dmg`, `HQ_x64-setup.exe`, `HQ_arm64-setup.exe` → e.g. `https://github.com/indigoai-us/hq-desktop-app/releases/latest/download/HQ_universal.dmg`
+- `HQ.dmg`, `HQ_x64-setup.exe`, `HQ_arm64-setup.exe` → e.g. `https://github.com/indigoai-us/hq-desktop-app/releases/latest/download/HQ.dmg`
 
 (The auto-updater itself uses `latest.json` with the versioned URLs; these aliases are for direct human downloads.)
 
