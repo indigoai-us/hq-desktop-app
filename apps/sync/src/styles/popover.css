@@ -2,15 +2,22 @@
 
 /* Disable text selection app-wide — this is a menubar utility, not a
    document. Selection drags inside dense rows feel like a bug. Inputs and
-   textareas keep selection so users can still edit/copy from settings. */
+   textareas keep selection so users can still edit/copy from settings, and
+   anything explicitly marked `.selectable-text` (e.g. conversation message
+   bodies + block-formatted details) stays selectable so users can manually
+   highlight and copy it (feedback DEV-1835). The `:not()` exclusions are
+   required because these elements DO match `:root *` — without them the
+   blanket rule wins and re-enabling selection below would have no effect. */
 :root,
-:root *:not(input):not(textarea) {
+:root *:not(input):not(textarea):not(.selectable-text):not(.selectable-text *) {
   user-select: none;
   -webkit-user-select: none;
 }
 
 input,
-textarea {
+textarea,
+.selectable-text,
+.selectable-text * {
   user-select: text;
   -webkit-user-select: text;
 }
