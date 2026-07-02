@@ -87,3 +87,57 @@ export const STAGE_COMMAND: Partial<Record<StageId, string>> = {
   indexing: 'register_search_index',
   menubar: 'install_menubar_app',
 };
+
+// Per-stage timeout so a hung backend stage can never wedge the whole wizard.
+// Without this, `await invoke(command)` on a stage whose CLI never exits (e.g.
+// `hq reindex` blocked on a lock held by the freshly-started sync daemon)
+// leaves the user stuck on "Setting up HQ..." forever. On timeout the stage is
+// marked failed and setup moves on — every stage is non-fatal (the tray agent
+// re-runs sync/index/packages in steady state). Values mirror the old
+// installer's skip thresholds: most stages 90s, network/toolchain-heavy ones
+// longer.
+export const DEFAULT_STAGE_TIMEOUT_MS = 90_000;
+
+export const STAGE_TIMEOUT_MS: Partial<Record<StageId, number>> = {
+  content: 240_000, // GitHub tarball download + extract
+  deps: 240_000, // managed-toolchain / npm installs
+  indexing: 180_000, // full-corpus reindex can be slow on first run
+};
+
+export function stageTimeoutMs(id: StageId): number {
+  return STAGE_TIMEOUT_MS[id] ?? DEFAULT_STAGE_TIMEOUT_MS;
+}
+
+export class StageTimeoutError extends Error {
+  constructor(public readonly stageId: StageId, public readonly ms: number) {
+    super(`This step took too long (over ${Math.round(ms / 1000)}s) and was skipped.`);
+    this.name = 'StageTimeoutError';
+  }
+}
+
+/**
+ * Resolve/reject with `promise`, but reject with `onTimeout()` if it hasn't
+ * settled within `ms`. The underlying work is not cancelled — a slow stage's
+ * process keeps running in the background; we just stop blocking the wizard on
+ * it. A non-positive `ms` disables the timeout.
+ */
+export function withTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  onTimeout: () => Error,
+): Promise<T> {
+  if (!(ms > 0)) return promise;
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(onTimeout()), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+}

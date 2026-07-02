@@ -5,8 +5,11 @@
     allSettled,
     buildInitialStages,
     setStageStatus,
+    stageTimeoutMs,
+    StageTimeoutError,
     STAGE_COMMAND,
     STAGE_ORDER,
+    withTimeout,
     type StageId,
     type StageState,
   } from '../../lib/onboarding-setup';
@@ -41,10 +44,16 @@
       throw new Error('The desktop bridge is not available in this environment.');
     }
 
-    // The per-stage Rust backends (deps installers, provision, git_init,
-    // personalize, import, indexing, install_menubar_app) are pending and will
-    // be wired/verified on the clean VM.
-    await invoke(command);
+    // Bound every stage so a hung backend (e.g. `hq reindex` blocked on a lock)
+    // can't wedge the wizard forever. On timeout the stage is marked failed and
+    // runSetup moves on — all stages are non-fatal and the tray agent re-runs
+    // them in steady state.
+    const ms = stageTimeoutMs(id);
+    await withTimeout(
+      Promise.resolve(invoke(command)),
+      ms,
+      () => new StageTimeoutError(id, ms),
+    );
   }
 
   async function runSetup() {
