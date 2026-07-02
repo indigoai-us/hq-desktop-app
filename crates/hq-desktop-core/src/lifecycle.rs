@@ -88,9 +88,22 @@ pub fn hq_root_valid(root: &Path) -> bool {
 
 /// The pure classifier.
 pub fn classify_lifecycle(inputs: LifecycleInputs) -> LifecycleVerdict {
-    let is_installed = (inputs.install_completed || inputs.had_machine_id)
-        && inputs.config_valid
-        && inputs.hq_root_valid;
+    // An install is recognized from what is actually on disk: a valid HQ root
+    // plus evidence the machine has been set up before — an explicit
+    // completion marker, a prior machineId, a valid config.json, OR usable
+    // Cognito auth tokens.
+    //
+    // `config.json` is deliberately NOT required. The onboarding flow does not
+    // reliably write `~/.hq/config.json` (the personal-vault first-push
+    // short-circuits when the vault already exists), so gating on it sent a
+    // fully set-up user back through the entire onboarding wizard on the next
+    // launch/restart. The rule is now "valid HQ folder + (prior setup OR auth
+    // on disk) => installed, show the menu bar".
+    let has_prior_setup = inputs.install_completed
+        || inputs.first_run_completed
+        || inputs.had_machine_id
+        || inputs.config_valid;
+    let is_installed = inputs.hq_root_valid && (has_prior_setup || inputs.has_auth);
     let needs_install_backfill = is_installed && !inputs.install_completed;
 
     let state = if inputs.install_in_progress {
@@ -241,7 +254,10 @@ mod tests {
     }
 
     #[test]
-    fn explicit_install_completed_without_valid_config_is_not_installed() {
+    fn completed_install_without_valid_config_is_still_installed() {
+        // Regression for the "restart re-runs onboarding" bug: a set-up
+        // machine (valid HQ root + an install marker) must NOT be gated on
+        // config.json, which onboarding doesn't reliably write.
         let authenticated = classify_lifecycle(LifecycleInputs {
             install_completed: true,
             config_valid: false,
@@ -257,10 +273,56 @@ mod tests {
             ..input()
         });
 
-        assert_eq!(authenticated.state, LifecycleState::NeedsInstall);
-        assert_eq!(unauthenticated.state, LifecycleState::NeedsAuthForInstall);
+        assert_eq!(authenticated.state, LifecycleState::InstalledFirstRun);
+        assert_eq!(unauthenticated.state, LifecycleState::InstalledFirstRun);
         assert!(!authenticated.needs_install_backfill);
         assert!(!unauthenticated.needs_install_backfill);
+    }
+
+    #[test]
+    fn relaunch_after_onboarding_without_config_reaches_steady_state() {
+        // Exact real-world relaunch: onboarding completed (firstRunCompleted +
+        // machineId written, HQ folder populated, auth on disk) but config.json
+        // was never written. Must go straight to the menu bar, not onboarding.
+        let verdict = classify_lifecycle(LifecycleInputs {
+            install_completed: false,
+            first_run_completed: true,
+            had_machine_id: true,
+            config_valid: false,
+            hq_root_valid: true,
+            has_auth: true,
+            install_in_progress: false,
+        });
+
+        assert_eq!(verdict.state, LifecycleState::SteadyState);
+        // No installCompleted marker yet, so the caller should backfill it.
+        assert!(verdict.needs_install_backfill);
+    }
+
+    #[test]
+    fn valid_hq_root_plus_auth_alone_is_installed() {
+        // "hq path + cognito login on disk => show the menu bar": a valid HQ
+        // root plus usable auth is enough, even with no menubar markers.
+        let verdict = classify_lifecycle(LifecycleInputs {
+            hq_root_valid: true,
+            has_auth: true,
+            ..input()
+        });
+
+        assert_eq!(verdict.state, LifecycleState::InstalledFirstRun);
+    }
+
+    #[test]
+    fn valid_hq_root_without_auth_or_markers_needs_auth() {
+        // A populated HQ folder with neither auth nor any prior-setup marker
+        // still routes to sign-in, not straight into the menu bar.
+        let verdict = classify_lifecycle(LifecycleInputs {
+            hq_root_valid: true,
+            has_auth: false,
+            ..input()
+        });
+
+        assert_eq!(verdict.state, LifecycleState::NeedsAuthForInstall);
     }
 
     #[test]

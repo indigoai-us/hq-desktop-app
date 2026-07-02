@@ -69,6 +69,12 @@
     homeDir = homeDir ?? homeDirFromDefaultHqPath(path);
     notice = null;
     oninstallpathchange?.(path);
+    // Persist the chosen location so every setup stage installs here rather
+    // than silently defaulting to ~/hq. Best-effort — a failure to persist
+    // just falls back to the default and must not block onboarding.
+    if (typeof invoke === 'function') {
+      void invoke('set_hq_install_path', { path }).catch(() => {});
+    }
   }
 
   function rejectPath(text: string, tone: Notice['tone'] = 'error') {

@@ -35,6 +35,12 @@ pub struct DetectHqResult {
     pub exists: bool,
     #[serde(rename = "isHq")]
     pub is_hq: bool,
+    /// True when the path exists, is a directory, and already contains at
+    /// least one entry. The onboarding Directory screen uses this (together
+    /// with `is_hq`) to warn before installing on top of a non-empty folder
+    /// that isn't already an HQ. Absent-or-false for missing paths.
+    #[serde(rename = "nonEmpty")]
+    pub non_empty: bool,
 }
 
 #[derive(Serialize, Debug)]
@@ -102,23 +108,66 @@ pub fn create_directory(parent: String, name: String) -> Result<CreateDirectoryR
     })
 }
 
-/// Expand `~/hq`, create it if absent, and return its absolute path.
+/// Read the user's chosen HQ install path from `~/.hq/menubar.json` (`hqPath`),
+/// if one was persisted during onboarding. Returns `None` when unset/empty or
+/// the file can't be read, so callers fall back to the `~/hq` default.
+fn persisted_install_path() -> Option<PathBuf> {
+    let menubar_path = crate::util::paths::menubar_json_path().ok()?;
+    let obj = hq_desktop_core::first_run::read_menubar_obj(&menubar_path);
+    obj.get("hqPath")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| expand_tilde(s))
+}
+
+/// Resolve the HQ install directory, create it if absent, and return its
+/// absolute path.
 ///
-/// Auto-grafts when an existing HQ tree is found — no prompt needed.
-/// This is the single entry point for US-001's silent local install.
+/// Honors the folder the user chose on the Directory screen (persisted to
+/// `menubar.json` `hqPath` via [`set_hq_install_path`]); falls back to `~/hq`
+/// when nothing has been chosen yet. Every onboarding setup stage (template
+/// extraction, git init, personalize, sync) resolves through here, so the
+/// chosen location is honored everywhere rather than silently defaulting to
+/// `~/hq`.
 #[tauri::command]
 pub fn resolve_hq_path() -> Result<String, String> {
-    let hq_path = expand_tilde("~/hq");
+    let hq_path = persisted_install_path().unwrap_or_else(|| expand_tilde("~/hq"));
     if hq_path.exists() && !hq_path.is_dir() {
-        return Err("~/hq exists but is a file, not a folder".to_string());
+        return Err(format!(
+            "{} exists but is a file, not a folder",
+            hq_path.display()
+        ));
     }
     if !hq_path.exists() {
-        std::fs::create_dir_all(&hq_path).map_err(|e| format!("Failed to create ~/hq: {e}"))?;
+        std::fs::create_dir_all(&hq_path)
+            .map_err(|e| format!("Failed to create {}: {e}", hq_path.display()))?;
     }
     // Canonicalize to get an absolute, symlink-resolved path.
     // Fall back to the unresolved path if canonicalize fails (e.g. race).
     let canonical = hq_path.canonicalize().unwrap_or_else(|_| hq_path.clone());
     Ok(canonical.to_string_lossy().into_owned())
+}
+
+/// Persist the user's chosen HQ install directory to `~/.hq/menubar.json`
+/// (`hqPath`) so the setup stages — and the long-lived sync agent — all target
+/// the same folder. Called from the Directory screen whenever a path is
+/// accepted (default or custom). Idempotent; safe to call repeatedly.
+#[tauri::command]
+pub fn set_hq_install_path(path: String) -> Result<(), String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("Install path cannot be empty".to_string());
+    }
+    let expanded = expand_tilde(trimmed);
+    let menubar_path = crate::util::paths::menubar_json_path()?;
+    hq_desktop_core::first_run::merge_menubar_flags(
+        &menubar_path,
+        &[(
+            "hqPath",
+            serde_json::Value::String(expanded.to_string_lossy().into_owned()),
+        )],
+    )
 }
 
 #[tauri::command]
@@ -154,20 +203,29 @@ pub fn check_writable(path: String) -> Result<bool, String> {
 
 #[tauri::command]
 pub fn detect_hq(path: String) -> DetectHqResult {
-    let p = PathBuf::from(&path);
+    let p = PathBuf::from(&expand_tilde(&path));
     if !p.exists() {
         return DetectHqResult {
             exists: false,
             is_hq: false,
+            non_empty: false,
         };
     }
     // Either marker is sufficient. `companies/manifest.yaml` is the strongest
     // signal (HQ-specific); `.claude/CLAUDE.md` covers older HQ trees that
     // didn't yet ship a manifest.
     let is_hq = p.join("companies/manifest.yaml").exists() || p.join(".claude/CLAUDE.md").exists();
+    // Report whether the directory already holds any entries so the Directory
+    // screen can warn before installing on top of an unrelated non-empty
+    // folder. Mirrors the `non_empty` computation in `create_directory`.
+    let non_empty = p.is_dir()
+        && std::fs::read_dir(&p)
+            .map(|mut entries| entries.next().is_some())
+            .unwrap_or(false);
     DetectHqResult {
         exists: true,
         is_hq,
+        non_empty,
     }
 }
 
@@ -182,14 +240,29 @@ mod tests {
         let r = detect_hq("/definitely/does/not/exist/9f8a7b6c".to_string());
         assert!(!r.exists);
         assert!(!r.is_hq);
+        assert!(!r.non_empty);
     }
 
     #[test]
-    fn detect_hq_existing_non_hq_dir() {
+    fn detect_hq_existing_empty_non_hq_dir() {
         let dir = tempdir().unwrap();
         let r = detect_hq(dir.path().to_string_lossy().into_owned());
         assert!(r.exists);
         assert!(!r.is_hq);
+        assert!(!r.non_empty);
+    }
+
+    #[test]
+    fn detect_hq_non_empty_foreign_dir_reports_non_empty() {
+        // The case the Directory-screen warning must catch: a folder that has
+        // files but is NOT an HQ. detect_hq must report non_empty so the
+        // frontend guard fires.
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("notes.txt"), "junk").unwrap();
+        let r = detect_hq(dir.path().to_string_lossy().into_owned());
+        assert!(r.exists);
+        assert!(!r.is_hq);
+        assert!(r.non_empty);
     }
 
     #[test]
