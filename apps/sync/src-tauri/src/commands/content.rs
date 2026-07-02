@@ -556,6 +556,22 @@ pub async fn fetch_and_extract_template() -> Result<String, String> {
     let compressed = download_tarball(&client, &release.tarball_url).await?;
     extract_tarball(&compressed, Path::new(&hq_root))?;
 
+    // Refresh core/core.yaml checksums right after the template lands, so the
+    // integrity block reflects the freshly-installed content before git-init +
+    // sync (the hq-installer hardening — native SHA-256, no per-file forks).
+    // Advisory: a checksum failure must never fail an otherwise-good install,
+    // and the tray agent recomputes them in steady state.
+    let checksum_root = hq_root.clone();
+    if let Err(e) = tokio::task::spawn_blocking(move || {
+        crate::commands::checksums::compute_checksums_at(Path::new(&checksum_root))
+    })
+    .await
+    .map_err(|e| format!("checksum task join: {e}"))
+    .and_then(|r| r)
+    {
+        eprintln!("[content] checksum refresh after extract (non-fatal): {e}");
+    }
+
     Ok(release.tag_name)
 }
 
