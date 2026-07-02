@@ -237,8 +237,9 @@
     appearance: none;
     min-width: 88px;
     min-height: 34px;
+    padding: 0 18px;
     border: 1px solid var(--popover-border, rgba(255, 255, 255, 0.18));
-    border-radius: var(--radius-sm, 8px);
+    border-radius: 999px;
     background: transparent;
     color: var(--popover-text, rgba(255, 255, 255, 0.86));
     font: inherit;

@@ -28,151 +28,195 @@
 </script>
 
 <section class="wizard-shell" aria-label="HQ onboarding">
-  <nav class="wizard-steps" aria-label="Onboarding progress">
-    {#each steps as step}
-      <div
-        class="wizard-step"
-        class:done={step.index < currentStep}
-        class:current={step.index === currentStep}
-        class:upcoming={step.index > currentStep}
-        aria-current={step.index === currentStep ? 'step' : undefined}
-      >
-        <span class="step-index">{step.index}</span>
-        <span class="step-label">{step.label}</span>
-      </div>
-    {/each}
-  </nav>
+  <!-- Titlebar drag strip — the only draggable region on the frameless window. -->
+  <div class="wizard-titlebar" data-tauri-drag-region></div>
 
   <div class="wizard-body">
-    <main class="wizard-content">
-      {@render children?.()}
-    </main>
+    <!-- Left rail — vertical numbered step nav, mirroring the hq-installer
+         ProgressIndicator sidebar. -->
+    <nav class="wizard-rail" aria-label="Onboarding progress">
+      <ol class="rail-steps">
+        {#each steps as step}
+          <li
+            class="rail-step"
+            class:done={step.index < currentStep}
+            class:current={step.index === currentStep}
+            class:upcoming={step.index > currentStep}
+            aria-current={step.index === currentStep ? 'step' : undefined}
+          >
+            <span class="rail-index">{step.index}</span>
+            <span class="rail-label">{step.label}</span>
+            {#if step.index < currentStep}
+              <svg class="rail-check" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <polyline points="2.5,6.5 5,9 9.5,3.5" />
+              </svg>
+            {/if}
+          </li>
+        {/each}
+      </ol>
+    </nav>
 
-    {#if showFooter}
-      <footer class="wizard-footer">
-        <button
-          type="button"
-          class="secondary-button"
-          disabled={!canBack}
-          onclick={onback}
-        >
-          Back
-        </button>
-        <button
-          type="button"
-          class="primary-button"
-          disabled={!canNext}
-          onclick={onnext}
-        >
-          {nextLabel}
-        </button>
-      </footer>
-    {/if}
+    <!-- Content + glass footer -->
+    <main class="wizard-main">
+      <div class="wizard-content">
+        <div class="wizard-content-inner">
+          {@render children?.()}
+        </div>
+      </div>
+
+      {#if showFooter}
+        <footer class="wizard-footer">
+          <button
+            type="button"
+            class="pill-button secondary"
+            disabled={!canBack}
+            onclick={onback}
+          >
+            Back
+          </button>
+          <button
+            type="button"
+            class="pill-button primary"
+            disabled={!canNext}
+            onclick={onnext}
+          >
+            {nextLabel}
+          </button>
+        </footer>
+      {/if}
+    </main>
   </div>
 </section>
 
 <style>
   .wizard-shell {
-    display: grid;
-    grid-template-columns: 132px minmax(0, 1fr);
-    width: min(720px, calc(100vw - var(--space-8, 32px)));
-    min-height: 420px;
-    overflow: hidden;
-    border: 1px solid var(--popover-border, rgba(255, 255, 255, 0.18));
-    border-radius: var(--radius-xl, 18px);
-    background: var(--popover-surface, rgba(255, 255, 255, 0.08));
-    box-shadow:
-      inset 0 1px 0 var(--popover-highlight, rgba(255, 255, 255, 0.34)),
-      0 24px 70px rgba(0, 0, 0, 0.28);
-  }
-
-  .wizard-steps {
     display: flex;
     flex-direction: column;
-    gap: var(--space-2, 8px);
-    padding: var(--space-5, 20px) var(--space-4, 16px);
-    border-right: 1px solid var(--popover-divider, rgba(255, 255, 255, 0.11));
-    background: rgba(255, 255, 255, 0.04);
-  }
-
-  .wizard-step {
-    display: grid;
-    grid-template-columns: 24px minmax(0, 1fr);
-    align-items: center;
-    gap: var(--space-2, 8px);
-    min-height: 32px;
-    color: var(--popover-text-muted, rgba(255, 255, 255, 0.52));
-    font-size: var(--text-sm, 13px);
-    line-height: 1.2;
-  }
-
-  .step-index {
-    display: grid;
-    place-items: center;
-    width: 22px;
-    height: 22px;
-    border: 1px solid var(--popover-border, rgba(255, 255, 255, 0.18));
-    border-radius: 999px;
-    background: transparent;
-    font-size: var(--text-xs, 13px);
-    font-weight: 650;
-  }
-
-  .step-label {
+    width: 100%;
+    height: 100%;
     min-width: 0;
-    overflow-wrap: anywhere;
-    font-weight: 550;
+    min-height: 0;
+    overflow: hidden;
   }
 
-  .wizard-step.done,
-  .wizard-step.current {
-    color: var(--popover-text-heading, #ffffff);
-  }
-
-  .wizard-step.done .step-index {
-    background: var(--popover-surface-strong, rgba(255, 255, 255, 0.16));
-  }
-
-  .wizard-step.current .step-index {
-    background: var(--popover-primary, #ffffff);
-    border-color: var(--popover-primary, #ffffff);
-    color: var(--popover-primary-text, #111113);
-  }
-
-  .wizard-step.upcoming {
-    opacity: 0.72;
+  .wizard-titlebar {
+    flex: 0 0 auto;
+    height: 34px;
+    width: 100%;
   }
 
   .wizard-body {
-    display: grid;
-    grid-template-rows: minmax(0, 1fr) auto;
+    flex: 1 1 auto;
+    display: flex;
     min-width: 0;
     min-height: 0;
   }
 
-  .wizard-content {
+  /* ── Left step rail ─────────────────────────────────────────────────── */
+  .wizard-rail {
+    flex: 0 0 216px;
+    box-sizing: border-box;
+    padding: 8px 20px 24px;
+    border-right: 1px solid var(--popover-divider);
+    background: rgba(0, 0, 0, 0.28);
+  }
+
+  .rail-steps {
     display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .rail-step {
+    display: grid;
+    grid-template-columns: 18px minmax(0, 1fr) 14px;
     align-items: center;
+    gap: 10px;
+    min-height: 30px;
+    padding: 4px 8px 4px 6px;
+    border-left: 2px solid transparent;
+    color: rgba(255, 255, 255, 0.34);
+    font-size: 12px;
+    font-weight: 300;
+    line-height: 1.2;
+  }
+
+  .rail-index {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .rail-label {
     min-width: 0;
-    padding: var(--space-6, 24px);
+    overflow-wrap: anywhere;
+  }
+
+  .rail-check {
+    width: 12px;
+    height: 12px;
+    opacity: 0.7;
+  }
+
+  .rail-step.done {
+    color: rgba(255, 255, 255, 0.75);
+  }
+
+  .rail-step.current {
+    border-left-color: #ffffff;
+    color: #ffffff;
+    font-weight: 500;
+  }
+
+  /* ── Content + footer ──────────────────────────────────────────────── */
+  .wizard-main {
+    position: relative;
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    background: rgba(255, 255, 255, 0.015);
+  }
+
+  .wizard-content {
+    flex: 1 1 auto;
+    overflow: auto;
+    padding: 40px 44px 104px;
+  }
+
+  .wizard-content-inner {
+    width: 100%;
+    max-width: 560px;
   }
 
   .wizard-footer {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
     display: flex;
     justify-content: flex-end;
-    gap: var(--space-2, 8px);
-    padding: var(--space-4, 16px) var(--space-6, 24px);
-    border-top: 1px solid var(--popover-divider, rgba(255, 255, 255, 0.11));
+    gap: 10px;
+    padding: 18px 44px;
+    background: rgba(255, 255, 255, 0.04);
+    border-top: 1px solid var(--popover-divider);
+    backdrop-filter: blur(20px) saturate(1.4);
+    -webkit-backdrop-filter: blur(20px) saturate(1.4);
   }
 
-  button {
+  /* ── Pill buttons (hq-installer style) ─────────────────────────────── */
+  .pill-button {
     appearance: none;
-    min-width: 84px;
-    min-height: 34px;
-    border-radius: var(--radius-sm, 8px);
+    min-width: 92px;
+    min-height: 36px;
+    padding: 0 20px;
+    border-radius: 999px;
     font: inherit;
-    font-size: var(--text-sm, 13px);
-    font-weight: 650;
+    font-size: 13px;
+    font-weight: 550;
     cursor: pointer;
     transition:
       background-color 0.12s ease,
@@ -181,57 +225,43 @@
       opacity 0.12s ease;
   }
 
-  button:disabled {
+  .pill-button:disabled {
     cursor: not-allowed;
-    opacity: 0.45;
+    opacity: 0.4;
   }
 
-  .secondary-button {
-    border: 1px solid var(--popover-border, rgba(255, 255, 255, 0.18));
-    background: transparent;
-    color: var(--popover-text, rgba(255, 255, 255, 0.86));
+  .pill-button.secondary {
+    border: 1px solid var(--popover-border);
+    background: rgba(255, 255, 255, 0.06);
+    color: rgba(255, 255, 255, 0.86);
   }
 
-  .secondary-button:hover:not(:disabled) {
-    background: var(--popover-action-hover, rgba(255, 255, 255, 0.1));
+  .pill-button.secondary:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.12);
   }
 
-  .primary-button {
-    border: 1px solid var(--popover-primary, #ffffff);
-    background: var(--popover-primary, #ffffff);
-    color: var(--popover-primary-text, #111113);
+  .pill-button.primary {
+    border: 1px solid #ffffff;
+    background: #ffffff;
+    color: #09090b;
   }
 
-  .primary-button:hover:not(:disabled) {
-    background: var(--popover-primary-hover, rgba(255, 255, 255, 0.9));
+  .pill-button.primary:hover:not(:disabled) {
+    background: #f4f4f5;
   }
 
-  @media (max-width: 640px) {
-    .wizard-shell {
-      grid-template-columns: 1fr;
-      width: 100%;
-      min-height: min(560px, calc(100vh - var(--space-8, 32px)));
-    }
-
-    .wizard-steps {
-      flex-direction: row;
-      overflow-x: auto;
-      padding: var(--space-4, 16px);
-      border-right: 0;
-      border-bottom: 1px solid var(--popover-divider, rgba(255, 255, 255, 0.11));
-    }
-
-    .wizard-step {
-      grid-template-columns: 22px auto;
-      flex: 0 0 auto;
+  @media (max-width: 720px) {
+    .wizard-rail {
+      flex-basis: 168px;
+      padding: 8px 12px 20px;
     }
 
     .wizard-content {
-      padding: var(--space-5, 20px);
+      padding: 28px 24px 96px;
     }
 
     .wizard-footer {
-      padding: var(--space-4, 16px) var(--space-5, 20px);
+      padding: 16px 24px;
     }
   }
 </style>

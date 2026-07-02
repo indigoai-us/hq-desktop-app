@@ -9,6 +9,8 @@
     "core:window:allow-minimize",
     "core:window:allow-set-focus",
     "core:window:allow-start-dragging",
+    "core:window:allow-set-size",
+    "core:window:allow-center",
     "core:path:default",
     "core:event:default",
     "core:app:default",

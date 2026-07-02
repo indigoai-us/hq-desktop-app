@@ -1,5 +1,7 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
+  import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
+  import { onDestroy, onMount } from 'svelte';
   import {
     createWizardRouter,
     initialStepForLifecycle,
@@ -48,6 +50,42 @@
     currentStep = router.currentStep;
   }
 
+  // Onboarding runs as a full-page installer wizard, not the compact tray
+  // popover. Grow + centre the window on entry so the left step rail and wide
+  // content have room (matching the hq-installer look); the tray handoff
+  // (handleFinish) restores the popover size.
+  const ONBOARDING_SIZE = new LogicalSize(940, 600);
+  const POPOVER_SIZE = new LogicalSize(320, 480);
+
+  async function sizeForOnboarding() {
+    try {
+      const win = getCurrentWindow();
+      await win.setSize(ONBOARDING_SIZE);
+      await win.center();
+    } catch {
+      // Non-Tauri / test environment — nothing to size.
+    }
+  }
+
+  async function restorePopoverSize() {
+    try {
+      await getCurrentWindow().setSize(POPOVER_SIZE);
+    } catch {
+      // Non-Tauri / test environment.
+    }
+  }
+
+  onMount(() => {
+    void sizeForOnboarding();
+  });
+
+  // Safety net: whatever exit path unmounts onboarding (finish, or a
+  // lifecycle change from underneath us), always restore the popover size so
+  // the tray window never stays stuck at the large installer size.
+  onDestroy(() => {
+    void restorePopoverSize();
+  });
+
   $effect(() => {
     if (activeLifecycleState === lifecycleStateProp) return;
 
@@ -87,6 +125,7 @@
     if (typeof invoke === 'function') {
       await invoke('mark_first_run_complete').catch(() => {});
     }
+    await restorePopoverSize();
     onfinish?.();
   }
 </script>
@@ -125,21 +164,45 @@
 </div>
 
 <style>
+  /* Onboarding is a full-page installer wizard with the hq-installer look:
+     always the dark zinc theme regardless of OS appearance. We pin every
+     --popover-* token to its dark value here so the light-mode media query in
+     popover.css can't flip the wizard to a white surface. */
   .onboarding-wizard {
+    --popover-bg: #0b0b0e;
+    --popover-surface: rgba(255, 255, 255, 0.06);
+    --popover-surface-strong: rgba(255, 255, 255, 0.12);
+    --popover-border: rgba(255, 255, 255, 0.12);
+    --popover-highlight: rgba(255, 255, 255, 0.16);
+    --popover-text: rgba(255, 255, 255, 0.86);
+    --popover-text-muted: rgba(255, 255, 255, 0.5);
+    --popover-text-heading: #ffffff;
+    --popover-primary: #ffffff;
+    --popover-primary-hover: #f4f4f5;
+    --popover-primary-active: rgba(255, 255, 255, 0.82);
+    --popover-primary-text: #09090b;
+    --popover-danger: #f2a6a6;
+    --popover-notice: rgba(255, 255, 255, 0.62);
+    --popover-notice-strong: #ffffff;
+    --popover-notice-bg: rgba(255, 255, 255, 0.05);
+    --popover-notice-border: rgba(255, 255, 255, 0.14);
+    --popover-divider: rgba(255, 255, 255, 0.08);
+    --popover-action-hover: rgba(255, 255, 255, 0.08);
+    --popover-progress-track: rgba(255, 255, 255, 0.12);
+    --popover-progress-fill: #ffffff;
+
     display: flex;
-    align-items: center;
-    justify-content: center;
     width: 100vw;
     height: 100vh;
     box-sizing: border-box;
-    padding: var(--space-4, 16px);
     overflow: hidden;
-    border: 1px solid var(--popover-border, rgba(255, 255, 255, 0.18));
-    border-radius: var(--radius-xl, 18px);
-    background: var(--popover-bg, rgba(18, 18, 20, 0.68));
-    color: var(--popover-text, rgba(255, 255, 255, 0.86));
-    box-shadow: inset 0 1px 0 var(--popover-highlight, rgba(255, 255, 255, 0.34));
-    backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
-    -webkit-backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
+    /* zinc-950 base with a subtle top glow, matching the installer's
+       black/70 backdrop over a zinc field. */
+    background:
+      radial-gradient(120% 80% at 50% -20%, rgba(255, 255, 255, 0.05), transparent 60%),
+      #09090b;
+    color: var(--popover-text);
+    font-family:
+      -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
   }
 </style>
