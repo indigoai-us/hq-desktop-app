@@ -561,6 +561,14 @@ where
 
         let contents = match std::fs::read(&abs) {
             Ok(c) => c,
+            // A single file that vanished between the walk and this read (temp
+            // files, editor swaps, a concurrent delete) must NOT abort the whole
+            // first push — skip it and keep going. Other read errors still abort.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                on_skip(rel_key.clone(), "file vanished before read".into());
+                skipped += 1;
+                continue;
+            }
             Err(e) => {
                 upload_err = Some(format!("{}: {e}", abs.display()));
                 break 'scan;
@@ -591,6 +599,13 @@ where
 
             let contents = match std::fs::read(&abs) {
                 Ok(c) => Bytes::from(c),
+                // Same vanished-file tolerance as the scan phase: a planned file
+                // that disappeared between phases is skipped, not fatal.
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    on_skip(rel_key.clone(), "file vanished before read".into());
+                    skipped += 1;
+                    continue;
+                }
                 Err(e) => {
                     upload_err = Some(format!("{}: {e}", abs.display()));
                     break 'upload;
@@ -1811,6 +1826,63 @@ mod tests {
                 scans.lock().unwrap().iter().all(|(_, total)| *total == 3),
                 "scan events carry the walk total; got {:?}",
                 scans.lock().unwrap(),
+            );
+        }
+    }
+
+    // Regression (HQ-SYNC-WEB-1A): a file that vanishes between the walk and
+    // the upload read (temp file, editor swap, concurrent delete) must be
+    // SKIPPED, not abort the whole first push. Pre-fix, the read error set
+    // upload_err and returned Err, so one transient file killed the entire push.
+    #[tokio::test]
+    async fn test_vanished_file_is_skipped_not_fatal() {
+        let tmp_state = TempDir::new().unwrap();
+        let tmp_hq = TempDir::new().unwrap();
+        let root = tmp_hq.path();
+
+        write_file(&root.join("knowledge/stays.md"), b"i remain");
+        write_file(&root.join("knowledge/vanishes.md"), b"delete me mid-push");
+
+        {
+            let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+            std::env::set_var("HQ_STATE_DIR", tmp_state.path());
+
+            let uploaded_keys: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(vec![]));
+            let skips: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(vec![]));
+            let skips_c = skips.clone();
+
+            // Delete the target the instant the upload phase reaches it (on_progress
+            // fires just before each planned file's read) so its read hits
+            // ErrorKind::NotFound — a deterministic stand-in for the real race.
+            let vanish_abs = root.join("knowledge/vanishes.md");
+            let result = run_personal_first_push(
+                root,
+                make_uploader(uploaded_keys.clone()),
+                |_, _, _| {},
+                move |_, _, file| {
+                    if file.as_deref() == Some("knowledge/vanishes.md") {
+                        let _ = std::fs::remove_file(&vanish_abs);
+                    }
+                },
+                move |key, reason| skips_c.lock().unwrap().push((key, reason)),
+            )
+            .await;
+
+            std::env::remove_var("HQ_STATE_DIR");
+
+            // The push completes instead of aborting on the vanished file.
+            let (uploaded, _skipped) = result.expect("a vanished file must not fail the push");
+            assert_eq!(uploaded, 1, "the surviving file must still upload");
+            let up = uploaded_keys.lock().unwrap();
+            assert!(
+                up.iter().any(|k| k == "knowledge/stays.md"),
+                "surviving file must be uploaded; got {up:?}"
+            );
+            let sk = skips.lock().unwrap();
+            assert!(
+                sk.iter()
+                    .any(|(k, r)| k == "knowledge/vanishes.md" && r == "file vanished before read"),
+                "vanished file must be skipped with the vanished reason; got {sk:?}"
             );
         }
     }
