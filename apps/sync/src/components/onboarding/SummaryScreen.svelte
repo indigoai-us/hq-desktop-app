@@ -102,8 +102,9 @@
     appearance: none;
     min-width: 116px;
     min-height: 36px;
+    padding: 0 22px;
     border: 1px solid var(--popover-primary, #ffffff);
-    border-radius: var(--radius-sm, 8px);
+    border-radius: 999px;
     background: var(--popover-primary, #ffffff);
     color: var(--popover-primary-text, #111113);
     font: inherit;

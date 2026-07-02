@@ -223,10 +223,10 @@
     justify-content: center;
     gap: var(--space-3, 12px);
     width: 100%;
-    min-height: 40px;
+    min-height: 44px;
     padding: 0 var(--space-4, 16px);
     border: 1px solid var(--popover-primary, #ffffff);
-    border-radius: var(--radius-sm, 8px);
+    border-radius: 999px;
     background: var(--popover-primary, #ffffff);
     color: var(--popover-primary-text, #111113);
     font: inherit;
