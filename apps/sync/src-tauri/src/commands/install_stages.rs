@@ -79,6 +79,9 @@ fn format_hq_failure(args: &[&str], output: &Output) -> String {
 async fn run_hq(args: &[&str], hq_root: &Path) -> Result<(), String> {
     let invocation = hq_resolver::resolve_hq();
     let path_env = paths::child_path();
+    // Serialize concurrent npx self-heal installs against the shared
+    // ~/.npm/_npx cache (HQ-SYNC-6); no-op on the resolved-local fast path.
+    let _npx_guard = invocation.npx_serial_guard().await;
     let mut cmd = invocation.command();
     let output = cmd
         .args(args)

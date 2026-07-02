@@ -63,6 +63,17 @@ pub const HQ_CLI_NPM_RANGE: &str = "^5.10.0";
 /// Cached invocation decision for the current process.
 static HQ_INVOCATION: OnceLock<HqInvocation> = OnceLock::new();
 
+/// Serializes concurrent `npx --package=…` self-heal runs. Two npx installs
+/// racing the shared `~/.npm/_npx/<hash>/` install dir stomp each other's
+/// half-written package — surfacing as EEXIST / ENOTEMPTY rename failures or a
+/// cacache integrity error. Only the Npx path takes it; the resolved-local
+/// fast-path needs no serialization (HQ-SYNC-6).
+static NPX_SERIAL_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+
+fn npx_serial_lock() -> &'static tokio::sync::Mutex<()> {
+    NPX_SERIAL_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
 /// How to spawn `hq` for the current AppBar process.
 #[derive(Debug, Clone)]
 pub enum HqInvocation {
@@ -97,6 +108,19 @@ impl HqInvocation {
         match self {
             HqInvocation::Local(path) => format!("local:{path}"),
             HqInvocation::Npx => format!("npx:@indigoai-us/hq-cli@{HQ_CLI_NPM_RANGE}"),
+        }
+    }
+
+    /// Acquire the process-wide npx serial lock for the duration of an npx
+    /// self-heal run, so concurrent `npx --package=…` installs can't race the
+    /// shared `~/.npm/_npx/` cache (HQ-SYNC-6). Returns `Some(guard)` for the
+    /// Npx path and `None` for a resolved local binary (which needs no
+    /// serialization — many can run in parallel). Hold the returned guard in
+    /// scope until the spawned subprocess has completed.
+    pub async fn npx_serial_guard(&self) -> Option<tokio::sync::MutexGuard<'static, ()>> {
+        match self {
+            HqInvocation::Npx => Some(npx_serial_lock().lock().await),
+            HqInvocation::Local(_) => None,
         }
     }
 }
@@ -274,5 +298,32 @@ mod tests {
         let npx = HqInvocation::Npx;
         assert!(npx.label().contains("npx"));
         assert!(npx.label().contains("@indigoai-us/hq-cli"));
+    }
+
+    // HQ-SYNC-6: npx self-heal runs must serialize (they share the ~/.npm/_npx
+    // cache); resolved-local runs must NOT (they can run in parallel).
+    #[tokio::test]
+    async fn npx_serializes_but_local_does_not() {
+        // Local never takes the lock.
+        let local = HqInvocation::Local("/usr/local/bin/hq".to_string());
+        assert!(local.npx_serial_guard().await.is_none());
+
+        // Npx takes the lock, and while it's held the lock is contended.
+        let guard = HqInvocation::Npx.npx_serial_guard().await;
+        assert!(guard.is_some(), "Npx must take the serial lock");
+        assert!(
+            npx_serial_lock().try_lock().is_err(),
+            "the npx lock must be held while a guard is alive"
+        );
+
+        // A concurrent Local acquire is unaffected by the held npx lock.
+        assert!(local.npx_serial_guard().await.is_none());
+
+        // Once the guard drops, the next npx run can acquire it.
+        drop(guard);
+        assert!(
+            npx_serial_lock().try_lock().is_ok(),
+            "the npx lock must be free after the guard drops"
+        );
     }
 }
