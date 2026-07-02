@@ -190,39 +190,80 @@ pub fn set_hq_cli_update_dismissed(version: String) -> Result<(), String> {
 /// '/usr/local/lib/node_modules/@indigoai-us'` — means the user's npm
 /// prefix needs sudo. The UI falls back to the previous copy-the-command
 /// path for that case rather than prompting for a password.
+/// Extract the most useful text from an npm run — stderr if present, else stdout.
+fn npm_output_detail(output: &std::process::Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if !stderr.is_empty() {
+        return stderr;
+    }
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+/// An EEXIST bin collision: an existing `<prefix>/bin/hq` that npm did not
+/// create blocks the bin-link, so npm bails rather than clobber it. npm's own
+/// documented remedy is a `--force` retry (HQ-SYNC-B).
+fn is_bin_exists_failure(detail: &str) -> bool {
+    detail.contains("EEXIST")
+}
+
+/// Spawn `npm <args>` on the blocking pool with the beefed-up child PATH and
+/// collect its Output. Errors map to a String (join / spawn failures only —
+/// a non-zero npm exit is a successful run that returns a failing status).
+async fn run_npm_install(
+    npm: &str,
+    path: &str,
+    args: Vec<String>,
+) -> Result<std::process::Output, String> {
+    let npm = npm.to_string();
+    let path = path.to_string();
+    log("hq-cli-update", &format!("install: spawning {} {}", npm, args.join(" ")));
+    tauri::async_runtime::spawn_blocking(move || {
+        Command::new(&npm).args(&args).env("PATH", path).output()
+    })
+    .await
+    .map_err(|e| format!("join blocking task: {e}"))?
+    .map_err(|e| format!("spawn npm: {e}"))
+}
+
 #[tauri::command]
 pub async fn install_hq_cli_update(app: AppHandle) -> Result<HqCliUpdateInfo, String> {
     let npm = paths::resolve_bin("npm");
     let path = paths::child_path();
     let hq = paths::resolve_bin("hq");
     let prefix = npm_prefix_from_hq_bin(&hq);
-    let args = install_argv(prefix.as_deref());
+    let base_args = install_argv(prefix.as_deref());
     log(
         "hq-cli-update",
         &format!(
-            "install: spawning {} {} (prefix={})",
-            npm,
-            args.join(" "),
+            "install: {} (prefix={})",
+            base_args.join(" "),
             prefix.as_deref().unwrap_or("npm default prefix")
         ),
     );
 
-    let npm_for_install = npm.clone();
-    let path_for_install = path.clone();
-    let output = tauri::async_runtime::spawn_blocking(move || {
-        Command::new(&npm_for_install)
-            .args(&args)
-            .env("PATH", path_for_install)
-            .output()
-    })
-    .await
-    .map_err(|e| format!("join blocking task: {e}"))?
-    .map_err(|e| format!("spawn npm: {e}"))?;
+    // First attempt: a plain (non-forced) global install.
+    let mut output = run_npm_install(&npm, &path, base_args.clone()).await?;
+
+    // EEXIST bin collision: an existing `<prefix>/bin/hq` npm didn't create
+    // blocks the bin-link, so npm bails rather than clobber it. Retry ONCE with
+    // --force to overwrite the stale CLI the user is updating (HQ-SYNC-B) —
+    // npm's own documented remedy. Only this specific failure arms the forced
+    // retry; every other failure falls straight through to the error below.
+    if !output.status.success() {
+        let detail = npm_output_detail(&output);
+        if is_bin_exists_failure(&detail) {
+            log(
+                "hq-cli-update",
+                &format!("install hit EEXIST bin collision; retrying with --force: {detail}"),
+            );
+            let mut forced = base_args.clone();
+            forced.push("--force".to_string());
+            output = run_npm_install(&npm, &path, forced).await?;
+        }
+    }
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let detail = if stderr.is_empty() { stdout } else { stderr };
+        let detail = npm_output_detail(&output);
         log(
             "hq-cli-update",
             &format!("install failed (exit {:?}): {detail}", output.status.code()),
@@ -294,4 +335,35 @@ pub fn setup_hq_cli_update_checker(app: &AppHandle) {
             tokio::time::sleep(CHECK_INTERVAL).await;
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // HQ-SYNC-B: an EEXIST bin collision (a stale `<prefix>/bin/hq` npm didn't
+    // create) must be the ONLY failure that arms the forced retry. Other npm
+    // failures (EACCES, network, empty) must fall straight through.
+    #[test]
+    fn eexist_is_the_only_failure_that_arms_the_forced_retry() {
+        assert!(is_bin_exists_failure(
+            "npm ERR! code EEXIST\nnpm ERR! path /usr/local/bin/hq"
+        ));
+        assert!(!is_bin_exists_failure(
+            "npm ERR! code EACCES: permission denied, mkdir '/usr/local/lib/node_modules'"
+        ));
+        assert!(!is_bin_exists_failure("npm ERR! network timeout"));
+        assert!(!is_bin_exists_failure(""));
+    }
+
+    // The forced retry reuses the base args plus `--force`, still targeting the
+    // global hq-cli install — it just overwrites the stale bin link.
+    #[test]
+    fn forced_retry_args_add_force_to_a_global_install() {
+        let mut forced = install_argv(None);
+        forced.push("--force".to_string());
+        assert!(forced.iter().any(|a| a == "--force"), "retry must carry --force");
+        assert_eq!(forced[0], "install");
+        assert!(forced.iter().any(|a| a == "-g"), "must stay a global install");
+    }
 }
