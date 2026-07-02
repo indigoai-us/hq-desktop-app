@@ -1,18 +1,21 @@
 name: CI
 
 # Test + lint gate for the unified app, restoring the coverage the three source
-# repos ran on every PR (hq-installer / hq-sync / hq-sync-win). Before this the
-# only PR check was `windows-check.yml` (a Windows *compile* check) — so neither
-# the Rust test suite nor the frontend vitest suite ran in CI, and a broken test
-# could merge unnoticed.
+# repos ran on every PR (hq-installer / hq-sync / hq-sync-win). Mirrors
+# hq-sync's ci.yml (typecheck + lint + build + coverage on the frontend, Rust
+# unit tests on macOS) and its desktop-alt-e2e.yml.
 #
-# Blocking gates: frontend vitest, Rust unit tests (macOS — the shipping
-# platform) for both the app crate and the workspace crates. `cargo fmt` and
-# `cargo clippy` run as non-blocking (continue-on-error) informational steps for
-# now; the app carries ~110 pre-existing clippy warnings (incl. several
-# await-holding-lock sites that need care) and some unformatted files. They flip
-# to required after a dedicated cleanup pass. Windows compile stays in
-# `windows-check.yml`.
+# Blocking gates:
+#   - frontend: typecheck (svelte-check), lint (svelte-check --threshold error),
+#     build, and vitest-with-coverage.
+#   - rust-macos: Rust unit tests for the app crate AND the workspace crates
+#     (macOS = the shipping platform).
+# Non-blocking (continue-on-error) informational steps, flipping to required
+# after a dedicated cleanup pass:
+#   - cargo fmt --check + cargo clippy -D warnings (the app carries ~110
+#     pre-existing clippy warnings, incl. several await-holding-lock sites).
+#   - desktop-alt E2E: the suite currently surfaces real parity gaps (see the
+#     e2e job comment). Windows compile stays in windows-check.yml.
 
 on:
   pull_request:
@@ -32,7 +35,7 @@ env:
 
 jobs:
   frontend:
-    name: Frontend (vitest)
+    name: Frontend (typecheck + lint + coverage)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -45,14 +48,33 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --no-frozen-lockfile
-      - name: Vitest (apps/sync)
-        working-directory: apps/sync
-        run: pnpm test
-      # Informational until the type surface is clean; not a merge gate yet.
-      - name: Typecheck (non-blocking)
-        continue-on-error: true
+      - name: Typecheck (svelte-check)
         working-directory: apps/sync
         run: pnpm typecheck
+      - name: Lint (svelte-check --threshold error)
+        working-directory: apps/sync
+        run: pnpm lint
+      - name: Build
+        working-directory: apps/sync
+        env:
+          SENTRY_AUTH_TOKEN: ""
+          VITE_SENTRY_DSN: ""
+        run: pnpm build
+      - name: Vitest + coverage
+        working-directory: apps/sync
+        run: pnpm coverage
+      - name: Coverage summary
+        if: always()
+        working-directory: apps/sync
+        run: |
+          {
+            echo "## Coverage"
+            if [ -f coverage/coverage-summary.json ]; then
+              node -e "const c=require('./coverage/coverage-summary.json').total; for (const k of ['lines','statements','functions','branches']) console.log('- '+k+': '+c[k].pct+'%')"
+            else
+              echo "_(no coverage/coverage-summary.json produced)_"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
   rust-macos:
     name: Rust tests (macOS)
@@ -107,3 +129,27 @@ jobs:
         continue-on-error: true
         working-directory: apps/sync/src-tauri
         run: cargo clippy --all-targets -- -D warnings
+
+  e2e-desktop-alt:
+    name: Desktop-alt E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --no-frozen-lockfile
+      # NON-BLOCKING for now: this source-contract suite currently surfaces real
+      # parity gaps the fork introduced — a missing `list_dir_entries` Files-mode
+      # command, the project-status-write path guard (`is_within`), the
+      # `SecretItem` metadata struct, and (a shipped-app crasher) the
+      # recording-tracker.mjs omission from tauri.conf.json bundle.resources,
+      # which would ERR_MODULE_NOT_FOUND at runtime. Flips to required once those
+      # are fixed.
+      - name: Desktop-alt E2E (non-blocking)
+        continue-on-error: true
+        working-directory: apps/sync
+        run: pnpm test:e2e:desktop-alt
