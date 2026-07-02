@@ -476,6 +476,102 @@ fn handle_sync_line(
 // Tauri commands
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ── Runner preflights (HQ-SYNC-2 / HQ-SYNC-E) ───────────────────────────────
+//
+// Proactive, best-effort checks run just before spawning the runner so a
+// known-doomed spawn is turned into one clear, user-actionable message instead
+// of a silent crash (a Node too old to start the runner, or node/npx not
+// resolvable at all — which falls through to a bare shell and exits 127,
+// crash-looping the watcher). Both are expected *environment* faults, never an
+// hq-sync/hq-cloud defect, so they are NOT captured to Sentry. Every probe
+// fails OPEN: one we couldn't run (missing binary, non-zero exit, unparseable
+// output) returns `None`, so the preflight can only ever prevent a doomed
+// spawn, never block a sync that would have worked.
+
+/// Node major-version floor the sync runner requires — its deps use APIs added
+/// in Node 20 and it crashes at startup on anything older.
+const MIN_NODE_MAJOR: u32 = 20;
+
+/// Parse the major from `node --version` output (`v20.11.1` → `20`).
+fn parse_node_major(version_output: &str) -> Option<u32> {
+    let s = version_output.trim();
+    let s = s.strip_prefix('v').unwrap_or(s);
+    s.split('.').next()?.parse::<u32>().ok()
+}
+
+fn is_node_too_old(major: u32) -> bool {
+    major < MIN_NODE_MAJOR
+}
+
+/// Clear, non-technical message when the user's Node is too old to run the
+/// runner — names the floor, their current major, and the single fix.
+fn node_too_old_message(current_major: u32) -> String {
+    format!(
+        "HQ Sync needs Node {MIN_NODE_MAJOR} or newer to sync — this Mac is running Node {current_major}. \
+         Please update Node (https://nodejs.org), then try Sync again."
+    )
+}
+
+/// Best-effort Node-version preflight. Returns `Some(major)` only when the Node
+/// the runner would use is *positively* too old, else `None` (fails OPEN).
+/// Resolves Node exactly as the runner's `#!/usr/bin/env node` shebang does
+/// (`env node` against the same `child_path()` we hand the spawned `npx`), which
+/// matters under nvm where that can differ from `resolve_bin("node")`.
+fn preflight_node_too_old() -> Option<u32> {
+    let output = std::process::Command::new("/usr/bin/env")
+        .args(["node", "--version"])
+        .env("PATH", paths::child_path())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let major = parse_node_major(&stdout)?;
+    is_node_too_old(major).then_some(major)
+}
+
+/// Message when the runner's interpreter (node/npx) isn't resolvable at all —
+/// the HQ-SYNC-E exit-127 `sh: hq-sync-runner: command not found` crash-loop.
+fn runner_unresolvable_message() -> String {
+    "HQ Sync can't start the sync engine — Node.js wasn't found on this Mac. \
+     Install Node 20 or newer (https://nodejs.org), then reopen HQ Sync."
+        .to_string()
+}
+
+/// Pure policy for the runner-resolution preflight, extracted so it's
+/// unit-testable without spawning: bail with a message unless BOTH node and npx
+/// resolve on the child PATH the runner would use.
+fn runner_unresolvable_reason(node_resolves: bool, npx_resolves: bool) -> Option<String> {
+    if node_resolves && npx_resolves {
+        None
+    } else {
+        Some(runner_unresolvable_message())
+    }
+}
+
+/// Best-effort runner-resolution preflight. Returns `Some(message)` only when
+/// the runner's interpreter is *positively* unresolvable (probed and missing);
+/// fails OPEN otherwise. `pub(crate)` so the daemon watcher path can reuse it.
+pub(crate) fn preflight_runner_unresolvable() -> Option<String> {
+    let node_resolves = std::process::Command::new("/usr/bin/env")
+        .args(["node", "--version"])
+        .env("PATH", paths::child_path())
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    let npx_bin = paths::resolve_bin("npx");
+    let npx_resolves = std::process::Command::new(&npx_bin)
+        .arg("--version")
+        .env("PATH", paths::child_path())
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    runner_unresolvable_reason(node_resolves, npx_resolves)
+}
+
 /// Spawn `hq-sync-runner --companies` as a child process.
 ///
 /// - Only one sync can run at a time (singleton handle).
@@ -502,6 +598,26 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
     if let Err(e) = ensure_machine_id() {
         log("sync", &format!("ensure_machine_id failed: {e}"));
         eprintln!("ensure_machine_id failed: {e}");
+    }
+
+    // Runner preflights (HQ-SYNC-2 / HQ-SYNC-E): bail up front with one clear,
+    // user-actionable message — surfaced via the command error the popover shows
+    // — instead of a doomed spawn (crash-loop). Both fail OPEN and are expected
+    // environment faults, so they are never captured to Sentry. Deregister the
+    // handle we just took so a later, fixed-environment sync isn't blocked.
+    if let Some(current_major) = preflight_node_too_old() {
+        log("sync", &format!("BAIL: node too old (v{current_major})"));
+        #[cfg(debug_assertions)]
+        eprintln!("[sync] BAIL: node too old (v{current_major})");
+        deregister_process(SYNC_HANDLE);
+        return Err(node_too_old_message(current_major));
+    }
+    if let Some(msg) = preflight_runner_unresolvable() {
+        log("sync", &format!("BAIL: runner unresolvable: {msg}"));
+        #[cfg(debug_assertions)]
+        eprintln!("[sync] BAIL: runner unresolvable: {msg}");
+        deregister_process(SYNC_HANDLE);
+        return Err(msg);
     }
 
     // Resolve HQ folder — deregister on failure so future syncs aren't blocked
@@ -1387,5 +1503,36 @@ mod tests {
              need an exact pin, also update this test.",
             HQ_CLOUD_VERSION
         );
+    }
+
+    // ── Runner preflights (HQ-SYNC-2 / HQ-SYNC-E) ────────────────────────
+
+    #[test]
+    fn parse_node_major_reads_versions() {
+        assert_eq!(parse_node_major("v20.11.1\n"), Some(20));
+        assert_eq!(parse_node_major("18.19.0"), Some(18));
+        assert_eq!(parse_node_major("v22"), Some(22));
+        assert_eq!(parse_node_major(""), None);
+        assert_eq!(parse_node_major("not-a-version"), None);
+    }
+
+    #[test]
+    fn node_floor_is_20_and_message_names_both_majors() {
+        assert!(is_node_too_old(18));
+        assert!(is_node_too_old(MIN_NODE_MAJOR - 1));
+        assert!(!is_node_too_old(MIN_NODE_MAJOR));
+        assert!(!is_node_too_old(22));
+        let msg = node_too_old_message(18);
+        assert!(msg.contains("Node 20"), "message must name the floor: {msg}");
+        assert!(msg.contains("Node 18"), "message must name the current major: {msg}");
+    }
+
+    #[test]
+    fn runner_unresolvable_only_when_an_interpreter_is_missing() {
+        // Both present → proceed; any missing → one actionable bail message.
+        assert!(runner_unresolvable_reason(true, true).is_none());
+        assert!(runner_unresolvable_reason(false, true).is_some());
+        assert!(runner_unresolvable_reason(true, false).is_some());
+        assert!(runner_unresolvable_reason(false, false).is_some());
     }
 }
