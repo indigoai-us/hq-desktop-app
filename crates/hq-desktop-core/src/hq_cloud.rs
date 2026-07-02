@@ -242,7 +242,11 @@
 /// bump the tilde pin stayed on the 6.11 line and the menubar runner never
 /// pulled local companies down. Cloud-backed companies are still excluded and
 /// their stale personal-vault copies decommissioned via the membership path.
-pub const HQ_CLOUD_VERSION: &str = "~6.12.0";
+///
+/// `~6.12.0` -> `~6.12.1`: floor the tilde pin at the hq-cloud release carrying
+/// the S3 presign fix (atop the cert-panic fix). Without this the pin could
+/// resolve back to 6.12.0 and miss the presign correction.
+pub const HQ_CLOUD_VERSION: &str = "~6.12.1";
 
 /// Package name for the runner. Used by both the spawn site below and the
 /// startup prewarm. Paired with `HQ_CLOUD_VERSION` to form the full
