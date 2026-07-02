@@ -27,4 +27,33 @@ describe('copyableText', () => {
     expect(copyableText(msg, 'body')).toBe('kick off the run');
     expect(copyableText(msg, 'prompt')).toBe('/execute-task US-001');
   });
+
+  // DEV-1835 regression: a "Copy message" on a block-formatted message must
+  // include the details block, not just the top-level body line.
+  it('includes block-formatted details in a body copy, joined by a blank line', () => {
+    const msg = {
+      body: 'Deploy finished',
+      details: 'Workspace: /Users/x/HQ\nCompany: indigo\nFiles: 42',
+    };
+    expect(copyableText(msg, 'body')).toBe(
+      'Deploy finished\n\nWorkspace: /Users/x/HQ\nCompany: indigo\nFiles: 42',
+    );
+  });
+
+  it('trims body and details independently before joining', () => {
+    expect(
+      copyableText({ body: '  headline  ', details: '  the block  ' }, 'body'),
+    ).toBe('headline\n\nthe block');
+  });
+
+  it('falls back to body alone when details is absent, null, or empty', () => {
+    expect(copyableText({ body: 'just body' }, 'body')).toBe('just body');
+    expect(copyableText({ body: 'just body', details: null }, 'body')).toBe('just body');
+    expect(copyableText({ body: 'just body', details: '   ' }, 'body')).toBe('just body');
+  });
+
+  it('does not fold details into a prompt copy', () => {
+    const msg = { body: 'b', details: 'the block', prompt: '/run it' };
+    expect(copyableText(msg, 'prompt')).toBe('/run it');
+  });
 });

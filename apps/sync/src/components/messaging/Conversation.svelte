@@ -263,9 +263,9 @@
             {/if}
           </button>
         </div>
-        <p class="dm-bubble-body">{msg.body}</p>
+        <p class="dm-bubble-body selectable-text">{msg.body}</p>
         {#if msg.details}
-          <div class="dm-bubble-details">{msg.details}</div>
+          <div class="dm-bubble-details selectable-text">{msg.details}</div>
         {/if}
         {#if msg.prompt}
           <button
