@@ -11,5 +11,9 @@ pub use hq_desktop_core::{
 // Journal remains as an app-local facade; test_support stays app-local.
 pub mod journal;
 
+// TLS transport builder for the MQTT-over-WSS connections (dm_mqtt, outpost).
+// App-local because it's specific to this app's rumqttc usage.
+pub mod mqtt_tls;
+
 #[cfg(test)]
 pub(crate) mod test_support;
