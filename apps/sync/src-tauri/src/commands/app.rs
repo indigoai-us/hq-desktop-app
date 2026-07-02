@@ -31,11 +31,13 @@ pub fn open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
 /// can't call `@tauri-apps/plugin-shell` `open()` for non-http(s) schemes
 /// without widening `shell:allow-open` to the world; this command keeps
 /// the surface tight by only forwarding `claude://` URLs to macOS `open`.
+///
+/// The URL is byte-validated by `launch::validate_claude_deep_link` before it
+/// reaches `open` — a scheme check alone would let whitespace, quotes, or shell
+/// metacharacters through to the OS URL dispatcher (the hq-installer hardening).
 #[tauri::command]
 pub fn open_claude_code_link(url: String) -> Result<(), String> {
-    if !url.starts_with("claude://") {
-        return Err(format!("refusing to open non-claude scheme: {}", url));
-    }
+    crate::commands::launch::validate_claude_deep_link(&url)?;
 
     let output = std::process::Command::new("open")
         .arg(&url)
