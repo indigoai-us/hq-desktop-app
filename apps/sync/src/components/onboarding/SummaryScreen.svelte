@@ -23,7 +23,7 @@
   <div class="summary-copy">
     <h1>You're all set</h1>
     <p>
-      HQ is installed{#if displayPath} at <span class="path-value">{displayPath}</span>{/if}.
+      {#if displayPath}HQ is installed at <span class="path-value">{displayPath}</span>.{:else}HQ is installed.{/if}
     </p>
     <p class="muted">HQ runs in your menu bar.</p>
   </div>
