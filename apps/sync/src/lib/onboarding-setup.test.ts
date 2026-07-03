@@ -1,4 +1,7 @@
+// @vitest-environment happy-dom
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mount, unmount } from 'svelte';
 import {
   allSettled,
   buildInitialStages,
@@ -11,6 +14,53 @@ import {
   withTimeout,
   type StageState,
 } from './onboarding-setup';
+import SetupScreen from '../components/onboarding/SetupScreen.svelte';
+
+const invokeMock = vi.fn();
+type TauriHandler = (event: { payload: unknown }) => void;
+const eventHandlers = new Map<string, TauriHandler>();
+const unlistenMock = vi.fn();
+
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: (...args: unknown[]) => invokeMock(...args),
+}));
+
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: vi.fn((name: string, handler: TauriHandler) => {
+    eventHandlers.set(name, handler);
+    return Promise.resolve(() => {
+      unlistenMock(name);
+      eventHandlers.delete(name);
+    });
+  }),
+}));
+
+vi.mock('svelte', async () => {
+  // Vitest resolves Svelte's public entry with the default/server condition in
+  // this repo's node test config, even for per-file happy-dom tests.
+  // @ts-expect-error client entry has no public type export.
+  return await import('../../node_modules/svelte/src/index-client.js');
+});
+
+async function flushMicrotasks(): Promise<void> {
+  for (let i = 0; i < 5; i += 1) {
+    await Promise.resolve();
+  }
+}
+
+async function waitForInvoke(command: string): Promise<void> {
+  for (let i = 0; i < 20; i += 1) {
+    await flushMicrotasks();
+    if (invokeMock.mock.calls.some(([cmd]) => cmd === command)) return;
+  }
+  throw new Error(`invoke(${command}) was not called`);
+}
+
+function emitInstallProgress(payload: unknown): void {
+  const handler = eventHandlers.get('install:progress');
+  if (!handler) throw new Error('install:progress listener was not registered');
+  handler({ payload });
+}
 
 describe('onboarding setup stages', () => {
   it('builds the initial stage list in order with all stages pending', () => {
@@ -108,5 +158,91 @@ describe('stage timeouts', () => {
     await expect(
       withTimeout(Promise.resolve('ok'), 0, () => new Error('nope')),
     ).resolves.toBe('ok');
+  });
+
+  it('runs the timeout cancellation hook before rejecting', async () => {
+    const hung = new Promise<void>(() => {});
+    const onTimeoutCancel = vi.fn();
+    const guarded = withTimeout(
+      hung,
+      90_000,
+      () => new StageTimeoutError('deps', 90_000),
+      onTimeoutCancel,
+    );
+    const assertion = expect(guarded).rejects.toBeInstanceOf(StageTimeoutError);
+    await vi.advanceTimersByTimeAsync(90_000);
+    await assertion;
+    expect(onTimeoutCancel).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('SetupScreen install cancellation', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '';
+    invokeMock.mockReset();
+    eventHandlers.clear();
+    unlistenMock.mockReset();
+  });
+
+  afterEach(async () => {
+    document.body.innerHTML = '';
+    eventHandlers.clear();
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
+
+  it('cancels captured install handles when unmounted', async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'install_deps') return new Promise<void>(() => {});
+      if (command === 'cancel_install') return Promise.resolve(true);
+      return Promise.resolve(undefined);
+    });
+
+    const component = mount(SetupScreen, {
+      target: document.body,
+      props: { onsetupcomplete: vi.fn() },
+    });
+    await waitForInvoke('install_deps');
+
+    emitInstallProgress({
+      handle: 'install-handle-unmount',
+      line: 'Installing Node',
+      finished: false,
+    });
+    await unmount(component);
+    await flushMicrotasks();
+
+    expect(invokeMock).toHaveBeenCalledWith('cancel_install', {
+      handle: 'install-handle-unmount',
+    });
+    expect(unlistenMock).toHaveBeenCalledWith('install:progress');
+  });
+
+  it('cancels captured install handles when the deps stage times out', async () => {
+    vi.useFakeTimers();
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'install_deps') return new Promise<void>(() => {});
+      if (command === 'cancel_install') return Promise.resolve(true);
+      return Promise.resolve(undefined);
+    });
+
+    const component = mount(SetupScreen, {
+      target: document.body,
+      props: { onsetupcomplete: vi.fn() },
+    });
+    await waitForInvoke('install_deps');
+
+    emitInstallProgress({
+      handle: 'install-handle-timeout',
+      line: 'Installing Node',
+      finished: false,
+    });
+    await vi.advanceTimersByTimeAsync(stageTimeoutMs('deps'));
+    await flushMicrotasks();
+
+    expect(invokeMock).toHaveBeenCalledWith('cancel_install', {
+      handle: 'install-handle-timeout',
+    });
+    await unmount(component);
   });
 });

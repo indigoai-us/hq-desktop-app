@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
-  import { onMount } from 'svelte';
+  import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+  import { onDestroy, onMount } from 'svelte';
   import {
     allSettled,
     buildInitialStages,
@@ -18,6 +19,10 @@
 
   let stages = $state<StageState[]>(buildInitialStages());
   let completed = $state(false);
+  let currentRunId = 0;
+  let setupCancelled = false;
+  let unlistenInstallProgress: UnlistenFn | null = null;
+  const activeInstallHandles = new Set<string>();
 
   const settledCount = $derived(
     stages.filter((stage) => stage.status === 'ok' || stage.status === 'failed')
@@ -37,7 +42,56 @@
     }
   }
 
-  async function invokeStageCommand(id: StageId): Promise<void> {
+  type InstallProgressPayload = {
+    handle?: string;
+    finished?: boolean;
+  };
+
+  function beginSetupRun(): number {
+    currentRunId += 1;
+    setupCancelled = false;
+    activeInstallHandles.clear();
+    return currentRunId;
+  }
+
+  function isCurrentRun(runId: number): boolean {
+    return runId === currentRunId && !setupCancelled;
+  }
+
+  async function cancelActiveInstallHandles(runId: number): Promise<void> {
+    if (runId !== currentRunId) return;
+    const handles = [...activeInstallHandles];
+    activeInstallHandles.clear();
+    await Promise.allSettled(
+      handles.map((handle) => invoke('cancel_install', { handle })),
+    );
+  }
+
+  function trackInstallProgress(runId: number, payload: InstallProgressPayload): void {
+    if (!isCurrentRun(runId)) return;
+    const handle = payload.handle;
+    if (!handle || handle === 'preflight') return;
+
+    if (payload.finished) {
+      activeInstallHandles.delete(handle);
+      return;
+    }
+    activeInstallHandles.add(handle);
+  }
+
+  async function listenForInstallProgress(runId: number): Promise<void> {
+    const unlisten = await listen<InstallProgressPayload>(
+      'install:progress',
+      (event) => trackInstallProgress(runId, event.payload),
+    );
+    if (!isCurrentRun(runId)) {
+      unlisten();
+      return;
+    }
+    unlistenInstallProgress = unlisten;
+  }
+
+  async function invokeStageCommand(id: StageId, runId: number): Promise<void> {
     const command = STAGE_COMMAND[id];
     if (!command) return;
     if (typeof invoke !== 'function') {
@@ -53,29 +107,53 @@
       Promise.resolve(invoke(command)),
       ms,
       () => new StageTimeoutError(id, ms),
+      () => {
+        void cancelActiveInstallHandles(runId);
+      },
     );
   }
 
-  async function runSetup() {
+  async function runSetup(runId: number) {
     for (const id of STAGE_ORDER) {
+      if (!isCurrentRun(runId)) return;
       stages = setStageStatus(stages, id, 'running');
 
       try {
-        await invokeStageCommand(id);
+        await invokeStageCommand(id, runId);
+        if (!isCurrentRun(runId)) return;
         stages = setStageStatus(stages, id, 'ok');
       } catch (err) {
+        if (!isCurrentRun(runId)) return;
         stages = setStageStatus(stages, id, 'failed', errorMessage(err));
       }
     }
 
-    if (!completed && allSettled(stages)) {
+    if (isCurrentRun(runId) && !completed && allSettled(stages)) {
       completed = true;
       onsetupcomplete?.();
     }
   }
 
+  async function startSetupRun() {
+    const runId = beginSetupRun();
+    await listenForInstallProgress(runId);
+    if (!isCurrentRun(runId)) return;
+    await runSetup(runId);
+  }
+
+  function cancelSetupRun() {
+    setupCancelled = true;
+    unlistenInstallProgress?.();
+    unlistenInstallProgress = null;
+    void cancelActiveInstallHandles(currentRunId);
+  }
+
   onMount(() => {
-    void runSetup();
+    void startSetupRun();
+  });
+
+  onDestroy(() => {
+    cancelSetupRun();
   });
 </script>
 
