@@ -1,5 +1,6 @@
 pub mod activity;
 pub mod agency;
+pub mod ai_tools;
 pub mod app;
 pub mod auth;
 pub mod autostart;

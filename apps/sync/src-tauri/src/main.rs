@@ -225,6 +225,7 @@ fn main() {
             commands::app::quit_app,
             commands::app::open_settings_window,
             commands::app::open_claude_code_link,
+            commands::ai_tools::detect_ai_tools,
             commands::launch::launch_claude_code,
             commands::launch::launch_cli_in_terminal,
             commands::launch::reveal_folder,
