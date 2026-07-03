@@ -32,7 +32,8 @@ use tauri::{AppHandle, Manager, State};
 use crate::util::paths;
 
 pub use hq_desktop_core::first_run::{
-    classify_from_map, merge_menubar_flags, notice_shown_in_map, read_menubar_obj, LaunchKind,
+    classify_from_map, merge_menubar_flags, notice_shown_in_map, read_menubar_obj,
+    should_autoshow_on_launch, LaunchKind,
 };
 
 /// Managed-state wrapper so the launch verdict survives the rest of the
@@ -42,7 +43,7 @@ pub struct LaunchKindState(pub LaunchKind);
 /// Classify this launch and stash the verdict in managed state. MUST be called
 /// at the top of `.setup()`, before `config::ensure_machine_id` populates
 /// `machineId`.
-pub fn classify_launch(app: &AppHandle) {
+pub fn classify_launch(app: &AppHandle) -> LaunchKind {
     let kind = match paths::menubar_json_path() {
         Ok(path) => classify_from_map(&read_menubar_obj(&path)),
         // No resolvable home dir → treat as a fresh, safe default. A
@@ -50,6 +51,7 @@ pub fn classify_launch(app: &AppHandle) {
         Err(_) => LaunchKind::FirstRun,
     };
     app.manage(LaunchKindState(kind));
+    kind
 }
 
 /// True only on a brand-new install's first launch.

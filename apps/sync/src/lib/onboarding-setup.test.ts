@@ -6,6 +6,7 @@ import {
   allSettled,
   buildInitialStages,
   setStageStatus,
+  setupProgressPercent,
   stageCommandInvocations,
   stageTimeoutMs,
   StageTimeoutError,
@@ -107,6 +108,42 @@ describe('onboarding setup stages', () => {
       error: 'missing command',
     });
     expect(failed.find((stage) => stage.id === 'deps')?.status).toBe('pending');
+  });
+});
+
+describe('setup progress percent', () => {
+  it('creeps toward the next stage while a stage is running', () => {
+    expect(
+      setupProgressPercent({
+        settledCount: 2,
+        totalStages: 10,
+        hasRunningStage: true,
+        stageCreep: 0.5,
+      }),
+    ).toBe(25);
+  });
+
+  it('does not creep without an active running stage', () => {
+    expect(
+      setupProgressPercent({
+        settledCount: 2,
+        totalStages: 10,
+        hasRunningStage: false,
+        stageCreep: 0.5,
+      }),
+    ).toBe(20);
+  });
+
+  it('returns 100 once all stages are settled', () => {
+    expect(
+      setupProgressPercent({
+        settledCount: STAGE_ORDER.length,
+        totalStages: STAGE_ORDER.length,
+        hasRunningStage: false,
+        stageCreep: 0,
+        allDone: true,
+      }),
+    ).toBe(100);
   });
 });
 

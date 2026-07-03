@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { open } from '@tauri-apps/plugin-shell';
+  import { getCurrentWindow } from '@tauri-apps/api/window';
   import { onDestroy } from 'svelte';
   import {
     mapSignInError,
@@ -55,6 +56,16 @@
     await open(url);
   }
 
+  async function refocusWindow(): Promise<void> {
+    try {
+      const win = getCurrentWindow();
+      await win.show();
+      await win.setFocus();
+    } catch (err) {
+      console.warn('[onboarding-signin] failed to refocus window:', err);
+    }
+  }
+
   function isCurrentCall(call: number): boolean {
     return mounted && call === currentCall;
   }
@@ -87,6 +98,8 @@
       if (!isCurrentCall(call)) return;
 
       if (result.authenticated) {
+        await refocusWindow();
+        if (!isCurrentCall(call)) return;
         onsignedin?.();
       } else {
         error = 'Authentication failed. Please try again.';

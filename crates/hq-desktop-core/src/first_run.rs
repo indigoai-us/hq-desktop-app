@@ -65,6 +65,14 @@ pub fn classify_from_map(obj: &Map<String, Value>) -> LaunchKind {
     }
 }
 
+/// Whether the launch should surface the main window automatically.
+///
+/// Fresh installs need the installer/onboarding window immediately; existing
+/// users keep the tray-only launch behavior.
+pub fn should_autoshow_on_launch(kind: LaunchKind) -> bool {
+    kind == LaunchKind::FirstRun
+}
+
 /// True when `autoSyncNoticeShown` is explicitly `true`.
 pub fn notice_shown_in_map(obj: &Map<String, Value>) -> bool {
     obj.get("autoSyncNoticeShown")
@@ -151,6 +159,13 @@ mod tests {
         assert_eq!(classify_from_map(&obj), LaunchKind::Normal);
         let obj2 = map(json!({ "firstRunCompleted": true }));
         assert_eq!(classify_from_map(&obj2), LaunchKind::Normal);
+    }
+
+    #[test]
+    fn autoshow_only_on_first_run_launches() {
+        assert!(should_autoshow_on_launch(LaunchKind::FirstRun));
+        assert!(!should_autoshow_on_launch(LaunchKind::ExistingUpdate));
+        assert!(!should_autoshow_on_launch(LaunchKind::Normal));
     }
 
     #[test]

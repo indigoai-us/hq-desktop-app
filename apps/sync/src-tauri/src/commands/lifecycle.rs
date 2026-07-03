@@ -122,6 +122,15 @@ pub fn get_lifecycle_state(state: State<'_, LifecycleStateHandle>) -> String {
     lifecycle_state_str(state.0).to_string()
 }
 
+pub fn lifecycle_keeps_main_window_visible(state: LifecycleState) -> bool {
+    matches!(
+        state,
+        LifecycleState::NeedsInstall
+            | LifecycleState::InstallResume
+            | LifecycleState::NeedsAuthForInstall
+    )
+}
+
 fn lifecycle_state_str(state: LifecycleState) -> &'static str {
     match state {
         LifecycleState::NeedsInstall => "NeedsInstall",
