@@ -2271,6 +2271,19 @@ const WINDOWS_YQ_SHA256_ARM64: &str =
 const RSYNC_BUNDLE_SHA256: &str =
     "0e1d90ab60c2fd6c24debe6b59bd4b23ea65009a408976f94b916dcad8332f1d";
 
+// Portable Git (MinGit) — the fallback when neither winget nor scoop is present.
+// MinGit ships a single 64-bit build; on arm64 Windows it runs under x64
+// emulation, so the same asset serves every supported arch. git is a REQUIRED
+// dep (autocommit, repos, agents, pack-install), so this keeps it installable
+// without a system package manager rather than hard-failing.
+#[cfg(windows)]
+const WINDOWS_MINGIT_VERSION: &str = "2.54.0";
+#[cfg(windows)]
+const WINDOWS_MINGIT_URL: &str = "https://github.com/git-for-windows/git/releases/download/v2.54.0.windows.1/MinGit-2.54.0-64-bit.zip";
+#[cfg(windows)]
+const WINDOWS_MINGIT_SHA256: &str =
+    "04f937e1f0918b17b9be6f2294cb2bb66e96e1d9832d1c298e2de088a1d0e668";
+
 #[cfg(windows)]
 fn debug_log(msg: &str) {
     if is_deps_debug_enabled() {
@@ -2394,6 +2407,23 @@ fn managed_node_bin() -> PathBuf {
 }
 
 #[cfg(windows)]
+fn managed_git_dir() -> PathBuf {
+    managed_toolchain_dir().join("git")
+}
+
+/// Directory holding the MinGit `git.exe` wrapper — what goes on PATH.
+#[cfg(windows)]
+fn managed_git_cmd() -> PathBuf {
+    managed_git_dir().join("cmd")
+}
+
+/// MinGit's core libexec/bin (the real git + helpers it shells out to).
+#[cfg(windows)]
+fn managed_git_mingw_bin() -> PathBuf {
+    managed_git_dir().join("mingw64").join("bin")
+}
+
+#[cfg(windows)]
 fn managed_npm_prefix() -> PathBuf {
     managed_toolchain_dir().join("npm-prefix")
 }
@@ -2431,6 +2461,27 @@ pub fn extended_search_path() -> String {
         managed_npm_bin().to_string_lossy().into_owned(),
         managed_toolchain_dir()
             .join("bin")
+            .to_string_lossy()
+            .into_owned(),
+        // Portable Git (MinGit) installed by the managed fallback when no
+        // package manager is present. `cmd` holds the git.exe wrapper;
+        // `mingw64/bin` holds the helpers it shells out to.
+        managed_git_cmd().to_string_lossy().into_owned(),
+        managed_git_mingw_bin().to_string_lossy().into_owned(),
+        // Node.js as installed by winget's `OpenJS.NodeJS.LTS` package. The MSI
+        // lands `node.exe`/`npm.cmd` in `C:\Program Files\nodejs` (machine
+        // scope) or `%LOCALAPPDATA%\Programs\nodejs` (winget `--scope user`).
+        // Without these, a Node installed via winget earlier in THIS setup run
+        // is invisible to the in-session `npm` lookup — the persistent HKCU PATH
+        // update only reaches NEW shells via WM_SETTINGCHANGE — so the npm-based
+        // deps (qmd, hq-cli) fail with "'npm' not found on PATH".
+        program_files()
+            .join("nodejs")
+            .to_string_lossy()
+            .into_owned(),
+        local_app_data()
+            .join("Programs")
+            .join("nodejs")
             .to_string_lossy()
             .into_owned(),
         program_files()
@@ -3284,6 +3335,124 @@ async fn install_managed_node(app: &AppHandle) -> Result<String, String> {
 }
 
 #[cfg(windows)]
+fn validate_managed_git_dir(git_dir: &Path) -> Result<(), String> {
+    for path in [
+        git_dir.join("cmd").join("git.exe"),
+        git_dir.join("mingw64").join("bin").join("git.exe"),
+    ] {
+        if !path.is_file() {
+            return Err(format!(
+                "managed Git missing required file {}",
+                path.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Extract a MinGit zip. Unlike the Node archive, MinGit has no single top-level
+/// root dir — entries are `cmd/...`, `mingw64/...`, etc. at the archive root — so
+/// we extract relative paths directly into the staging dir.
+#[cfg(windows)]
+fn extract_mingit_zip(bytes: &[u8], staged_git_dir: &Path) -> Result<(), String> {
+    let cursor = std::io::Cursor::new(bytes);
+    let mut archive =
+        zip::ZipArchive::new(cursor).map_err(|e| format!("Failed to open Git zip: {e}"))?;
+
+    std::fs::create_dir_all(staged_git_dir)
+        .map_err(|e| format!("mkdir {}: {e}", staged_git_dir.display()))?;
+
+    for i in 0..archive.len() {
+        let mut entry = archive
+            .by_index(i)
+            .map_err(|e| format!("git zip entry {i}: {e}"))?;
+        let raw_name = entry.name().to_string();
+        if zip_raw_name_has_unsafe_component(&raw_name) {
+            return Err(format!("git zip entry has unsafe path: {raw_name}"));
+        }
+        let rel = entry
+            .enclosed_name()
+            .ok_or_else(|| format!("git zip entry has unsafe path: {raw_name}"))?
+            .to_path_buf();
+        if rel.as_os_str().is_empty() {
+            continue;
+        }
+        let out_path = staged_git_dir.join(&rel);
+        if !out_path.starts_with(staged_git_dir) {
+            return Err(format!("git zip entry escapes staging dir: {raw_name}"));
+        }
+        if entry.is_dir() {
+            std::fs::create_dir_all(&out_path)
+                .map_err(|e| format!("mkdir {}: {e}", out_path.display()))?;
+            continue;
+        }
+        if let Some(parent) = out_path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("mkdir parent {}: {e}", parent.display()))?;
+        }
+        let mut out =
+            std::fs::File::create(&out_path).map_err(|e| format!("create {out_path:?}: {e}"))?;
+        std::io::copy(&mut entry, &mut out).map_err(|e| format!("extract {out_path:?}: {e}"))?;
+    }
+
+    validate_managed_git_dir(staged_git_dir)
+}
+
+#[cfg(windows)]
+fn ensure_git_runs(git_exe: &Path, expected_version: &str) -> Result<(), String> {
+    let output = Command::new(git_exe)
+        .arg("--version")
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map_err(|e| format!("failed to run {} --version: {e}", git_exe.display()))?;
+    // `git --version` prints e.g. "git version 2.54.0.windows.1".
+    let combined = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if output.status.success() && combined.contains(expected_version) {
+        Ok(())
+    } else {
+        Err(format!(
+            "managed Git version check failed: expected {expected_version}, got '{combined}'"
+        ))
+    }
+}
+
+#[cfg(windows)]
+async fn install_managed_git(app: &AppHandle) -> Result<String, String> {
+    let url = WINDOWS_MINGIT_URL.to_string();
+    emit_progress(app, &format!("Downloading {url}"));
+    let url_for_dl = url.clone();
+    let bytes = tokio::task::spawn_blocking(move || download_bytes_checked(&url_for_dl, "Git zip"))
+        .await
+        .map_err(|e| format!("git download task join failed: {e}"))??;
+    emit_progress(app, &format!("Downloaded {} bytes", bytes.len()));
+    verify_sha256_bytes("Git zip", &bytes, WINDOWS_MINGIT_SHA256)?;
+
+    let target = managed_toolchain_dir();
+    std::fs::create_dir_all(&target).map_err(|e| format!("Failed to mkdir {target:?}: {e}"))?;
+
+    let git_dir = managed_git_dir();
+    let staged_git_dir = target.join(format!(".git-install-{}", Uuid::new_v4()));
+    emit_progress(app, &format!("Extracting Git into {staged_git_dir:?}..."));
+    if let Err(e) = extract_mingit_zip(&bytes, &staged_git_dir) {
+        let _ = std::fs::remove_dir_all(&staged_git_dir);
+        return Err(e);
+    }
+    if let Err(e) = ensure_git_runs(
+        &staged_git_dir.join("cmd").join("git.exe"),
+        WINDOWS_MINGIT_VERSION,
+    ) {
+        let _ = std::fs::remove_dir_all(&staged_git_dir);
+        return Err(e);
+    }
+    atomic_replace_dir(&staged_git_dir, &git_dir)?;
+
+    append_user_path(&managed_git_cmd())?;
+    append_user_path(&managed_git_mingw_bin())?;
+
+    Ok(format!("Managed Git installed at {git_dir:?}"))
+}
+
+#[cfg(windows)]
 fn managed_node_arch() -> Option<&'static str> {
     match std::env::consts::ARCH {
         "x86_64" => Some("x64"),
@@ -3331,10 +3500,13 @@ async fn install_git_windows(app: AppHandle) -> Result<String, String> {
             append_user_path(&user_profile().join("scoop").join("shims"))?;
             Ok("git installed via scoop".to_string())
         }
-        PackageManager::Managed => Err(
-            "Git is optional. No package manager available - install Git for Windows from https://git-scm.com to enable HQ git features."
-                .to_string(),
-        ),
+        PackageManager::Managed => {
+            emit_progress(
+                &app,
+                "No package manager found - downloading portable Git (MinGit)...",
+            );
+            install_managed_git(&app).await
+        }
     }
 }
 
@@ -3491,6 +3663,10 @@ fn write_qmd_bash_shim() -> Result<(), String> {
 
 #[cfg(windows)]
 fn write_qmd_bash_shim_in(prefix: &Path) -> Result<(), String> {
+    if qmd_resolves_in_prefix(prefix) {
+        return Ok(());
+    }
+
     let bin_candidates = [
         prefix
             .join("node_modules")
@@ -3518,6 +3694,12 @@ fn write_qmd_bash_shim_in(prefix: &Path) -> Result<(), String> {
     );
     std::fs::write(&cmd_path, body).map_err(|e| format!("write {cmd_path:?}: {e}"))?;
     Ok(())
+}
+
+#[cfg(windows)]
+fn qmd_resolves_in_prefix(prefix: &Path) -> bool {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    which::which_in("qmd", Some(prefix.to_string_lossy().as_ref()), cwd).is_ok()
 }
 
 #[cfg(windows)]
@@ -4116,6 +4298,21 @@ mod windows_tests {
         writer.finish().unwrap().into_inner()
     }
 
+    fn path_entries_lower() -> Vec<String> {
+        extended_search_path()
+            .split(';')
+            .map(|e| e.to_lowercase())
+            .collect()
+    }
+
+    fn path_entry_position(entries: &[String], path: PathBuf) -> usize {
+        let needle = path.to_string_lossy().to_lowercase();
+        entries
+            .iter()
+            .position(|e| e == &needle)
+            .unwrap_or_else(|| panic!("PATH should contain {needle}"))
+    }
+
     #[test]
     fn managed_node_zip_extracts_expected_root() {
         let tmp = tempfile::tempdir().unwrap();
@@ -4195,6 +4392,61 @@ mod windows_tests {
     }
 
     #[test]
+    fn mingit_zip_extracts_flat_layout() {
+        let tmp = tempfile::tempdir().unwrap();
+        // MinGit has no top-level root dir — entries sit at the archive root.
+        let bytes = zip_fixture(&[
+            ("cmd/git.exe", b"git"),
+            ("mingw64/bin/git.exe", b"git-core"),
+            ("etc/gitconfig", b"[core]\n"),
+            ("LICENSE.txt", b"license"),
+        ]);
+
+        extract_mingit_zip(&bytes, tmp.path()).expect("mingit zip should extract");
+
+        assert_eq!(
+            std::fs::read(tmp.path().join("cmd").join("git.exe")).unwrap(),
+            b"git"
+        );
+        assert_eq!(
+            std::fs::read(tmp.path().join("mingw64").join("bin").join("git.exe")).unwrap(),
+            b"git-core"
+        );
+        assert_eq!(
+            std::fs::read(tmp.path().join("LICENSE.txt")).unwrap(),
+            b"license"
+        );
+    }
+
+    #[test]
+    fn mingit_zip_rejects_unsafe_entries_and_missing_git() {
+        let tmp = tempfile::tempdir().unwrap();
+        let unsafe_zip = zip_fixture(&[("cmd/../evil.exe", b"evil")]);
+        let err = extract_mingit_zip(&unsafe_zip, tmp.path()).unwrap_err();
+        assert!(err.contains("unsafe path"), "{err}");
+
+        let tmp2 = tempfile::tempdir().unwrap();
+        let incomplete = zip_fixture(&[("LICENSE.txt", b"license")]);
+        let err = extract_mingit_zip(&incomplete, tmp2.path()).unwrap_err();
+        assert!(err.contains("missing required file"), "{err}");
+    }
+
+    #[test]
+    fn mingit_pin_matches_expected_asset_and_sha_shape() {
+        assert_eq!(WINDOWS_MINGIT_VERSION, "2.54.0");
+        assert_eq!(
+            WINDOWS_MINGIT_URL,
+            "https://github.com/git-for-windows/git/releases/download/v2.54.0.windows.1/MinGit-2.54.0-64-bit.zip"
+        );
+        assert_eq!(
+            WINDOWS_MINGIT_SHA256,
+            "04f937e1f0918b17b9be6f2294cb2bb66e96e1d9832d1c298e2de088a1d0e668"
+        );
+        assert_eq!(WINDOWS_MINGIT_SHA256.len(), 64);
+        assert!(WINDOWS_MINGIT_SHA256.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
     fn rsync_zip_extracts_bin_and_rejects_bad_archives() {
         let tmp = tempfile::tempdir().unwrap();
         let bytes = zip_fixture(&[
@@ -4247,6 +4499,22 @@ mod windows_tests {
     }
 
     #[test]
+    fn qmd_postinstall_accepts_cmd_shim_from_npm() {
+        let tmp = tempfile::tempdir().unwrap();
+        let qmd_prefix = tmp.path().join("npm-prefix");
+        std::fs::create_dir_all(&qmd_prefix).unwrap();
+        let npm_shim = "@echo off\r\necho qmd\r\n";
+        std::fs::write(qmd_prefix.join("qmd.cmd"), npm_shim).unwrap();
+
+        assert!(qmd_resolves_in_prefix(&qmd_prefix));
+        write_qmd_bash_shim_in(&qmd_prefix).expect("qmd.cmd should count as installed");
+        assert_eq!(
+            std::fs::read_to_string(qmd_prefix.join("qmd.cmd")).unwrap(),
+            npm_shim
+        );
+    }
+
+    #[test]
     fn hq_cli_pack_install_patch_rewrites_rsync_once() {
         let tmp = tempfile::tempdir().unwrap();
         let target = tmp.path().join("pack-install.js");
@@ -4295,6 +4563,93 @@ mod windows_tests {
             lower.contains("indigohq") && lower.contains("toolchain"),
             "PATH should include the managed toolchain dir"
         );
+    }
+
+    #[test]
+    fn extended_search_path_contains_winget_node_dirs() {
+        // Regression: a Node installed via winget (OpenJS.NodeJS.LTS) lands in
+        // `C:\Program Files\nodejs` (machine) or `%LOCALAPPDATA%\Programs\nodejs`
+        // (user scope). Both must be on the in-session search path or the
+        // npm-based deps (qmd, hq-cli) fail with "'npm' not found on PATH" right
+        // after Node installs in the same setup run.
+        let entries = path_entries_lower();
+        let machine = program_files()
+            .join("nodejs")
+            .to_string_lossy()
+            .to_lowercase();
+        let user = local_app_data()
+            .join("Programs")
+            .join("nodejs")
+            .to_string_lossy()
+            .to_lowercase();
+        assert!(
+            entries.iter().any(|e| e == &machine),
+            "PATH should include the machine-scope winget Node dir (Program Files\\nodejs)"
+        );
+        assert!(
+            entries.iter().any(|e| e == &user),
+            "PATH should include the user-scope winget Node dir (LOCALAPPDATA\\Programs\\nodejs)"
+        );
+    }
+
+    #[test]
+    fn extended_search_path_orders_managed_and_winget_before_system_git() {
+        let entries = path_entries_lower();
+        let managed_node = path_entry_position(&entries, managed_node_bin());
+        let managed_npm = path_entry_position(&entries, managed_npm_bin());
+        let managed_tool_bin = path_entry_position(&entries, managed_toolchain_dir().join("bin"));
+        let managed_git_cmd_pos = path_entry_position(&entries, managed_git_cmd());
+        let managed_git_mingw = path_entry_position(&entries, managed_git_mingw_bin());
+        let winget_node_machine = path_entry_position(&entries, program_files().join("nodejs"));
+        let winget_node_user =
+            path_entry_position(&entries, local_app_data().join("Programs").join("nodejs"));
+        let system_git_bin = path_entry_position(&entries, program_files().join("Git").join("bin"));
+        let system_git_usr = path_entry_position(
+            &entries,
+            program_files().join("Git").join("usr").join("bin"),
+        );
+        let system_git_cmd = path_entry_position(&entries, program_files().join("Git").join("cmd"));
+
+        assert!(
+            managed_node < managed_npm
+                && managed_npm < managed_tool_bin
+                && managed_tool_bin < managed_git_cmd_pos
+                && managed_git_cmd_pos < managed_git_mingw
+                && managed_git_mingw < winget_node_machine
+                && winget_node_machine < winget_node_user
+                && winget_node_user < system_git_bin
+                && system_git_bin < system_git_usr
+                && system_git_usr < system_git_cmd,
+            "managed Git and winget Node dirs should precede system Git dirs: {entries:?}"
+        );
+    }
+
+    #[test]
+    fn extended_search_path_contains_managed_git_dirs() {
+        let entries = path_entries_lower();
+        let cmd = managed_git_cmd().to_string_lossy().to_lowercase();
+        let mingw = managed_git_mingw_bin().to_string_lossy().to_lowercase();
+        assert!(
+            entries.iter().any(|e| e == &cmd),
+            "PATH should include the managed Git cmd dir"
+        );
+        assert!(
+            entries.iter().any(|e| e == &mingw),
+            "PATH should include the managed Git mingw64\\bin dir"
+        );
+    }
+
+    #[test]
+    fn managed_git_dirs_under_toolchain() {
+        for dir in [
+            managed_git_dir(),
+            managed_git_cmd(),
+            managed_git_mingw_bin(),
+        ] {
+            let p = dir.to_string_lossy().to_lowercase();
+            assert!(p.contains("indigohq") && p.contains("toolchain"), "{p}");
+            assert!(p.contains("git"), "{p}");
+        }
     }
 
     #[test]
