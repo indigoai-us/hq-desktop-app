@@ -2,19 +2,20 @@
 #
 # This is ONE app (install-then-sync), so there is one version and one updater stream.
 # Owner decisions (2026-06-24):
-#   - One product, one version. Supersedes hq-installer 0.13.0, hq-sync 0.8.x, hq-sync-win 0.6.4.
+#   - One product, one version. Tracks the shipping hq-sync 0.9.x line.
+#   - Supersedes hq-installer, hq-sync 0.8.x, hq-sync-win 0.6.4.
 #   - Updater manifests under https://downloads.getindigo.ai/hq-desktop-app.
 #   - Windows exposes the operator surfaces (library_local, marketplace, messages, projects_local).
 #   - Windows bundle identifier migrates to ai.indigo.hq at a DELIBERATE later cutover
 #     (needs a one-time bridge for existing Windows users); the macOS and Windows
 #     identifiers below are PRESERVED for the first unified release so in-place updates work.
 #
-# `scripts/version-app.ts` (to be implemented) stamps the app's package.json, Tauri
-# config, and Cargo.toml from this file; release CI refuses to build on any mismatch.
+# `scripts/version-app.ts` stamps the app's package.json, Tauri config, Cargo.toml,
+# and Cargo.lock from this file; release CI refuses to build on any mismatch.
 
 [product]
 name = "HQ Sync"          # OS-facing display name — open question (HQ Sync vs HQ Desktop)
-version = "0.13.0"
+version = "0.9.2"
 base_crate = "hq-sync-menubar"
 
 [updater]

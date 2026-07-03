@@ -1,13 +1,15 @@
 # scripts
 
 Repository-wide tooling for the single hq-desktop-app. Referenced by `MIGRATION.md`;
-implemented across the migration phases. Placeholder for the scaffold — no executable
-scripts yet.
+implemented across the migration phases.
+
+Implemented:
+
+- `version-app.ts` — stamp the app's `package.json`, Tauri config, `Cargo.toml`, and
+  `Cargo.lock` from `versions.toml`; `--check` fails on any mismatch.
 
 Planned:
 
-- `version-app.ts` — stamp the app's `package.json`, Tauri config, and `Cargo.toml` from
-  `versions.toml`.
 - `assert-versions.ts` — release-time gate; fail if any version file disagrees.
 - `generate-latest-json.ts` — build per-channel updater manifests.
 - `publish-updater-manifest.ts` — publish manifests to `downloads.getindigo.ai/hq-desktop-app`.
