@@ -44,6 +44,9 @@ describe('hq-console URLs', () => {
     expect(companySettingsUrl('a b')).toBe(
       `${HQ_CONSOLE_BASE}/companies/a%20b/settings`,
     );
+    expect(companyInviteUrl('a/b c')).toBe(
+      `${HQ_CONSOLE_BASE}/companies/a%2Fb%20c/team/invites`,
+    );
   });
 
   it('non-company console links are unchanged', () => {
