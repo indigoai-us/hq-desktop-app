@@ -225,6 +225,8 @@ fn main() {
             commands::app::quit_app,
             commands::app::open_settings_window,
             commands::app::open_claude_code_link,
+            commands::launch::launch_claude_code,
+            commands::launch::launch_cli_in_terminal,
             commands::launch::reveal_folder,
             commands::new_files::open_new_files_detail,
             commands::new_files::detail_window_ready,
@@ -547,12 +549,12 @@ fn main() {
                 commands::meetings::setup_unattributed_meeting_poller(app.handle().clone());
 
                 // (a') Instant-DM push receiver — MQTT-over-WSS to AWS IoT Core.
-                // Gated on @getindigo.ai inside setup_dm_mqtt_receiver; wakes
-                // `poll_dm_once` on push so DMs arrive in near-real-time instead
-                // of waiting up to 60s. The interval poll above is the long-stop,
-                // so this is purely additive — any MQTT failure falls back to it
-                // silently. macOS-gated like the rest of the notification surface.
-                #[cfg(target_os = "macos")]
+                // Wakes `poll_dm_once` on push so DMs arrive in near-real-time
+                // instead of waiting up to 60s. The interval poll above is the
+                // long-stop, so this is purely additive — any MQTT failure falls
+                // back to it silently. The receiver is platform-neutral (rumqttc
+                // + aws-sigv4 over WSS) and GA for macOS and Windows.
+                #[cfg(any(target_os = "macos", target_os = "windows"))]
                 commands::dm_mqtt::setup_dm_mqtt_receiver(app.handle().clone());
 
                 // (a'') Clickable meeting-detected notifications. Installs a
