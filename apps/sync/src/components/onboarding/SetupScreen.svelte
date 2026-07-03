@@ -5,20 +5,24 @@
   import {
     allSettled,
     buildInitialStages,
+    isStageSkipEligible,
     setStageStatus,
+    setupCompletionResult,
     setupProgressPercent,
     stageCommandInvocations,
+    stageSkipThresholdMs,
     stageTimeoutMs,
     StageTimeoutError,
     STAGE_ORDER,
     withTimeout,
     type StageId,
     type StageState,
+    type SetupCompletionResult,
   } from '../../lib/onboarding-setup';
 
   interface Props {
     installPath: string | null;
-    onsetupcomplete?: () => void;
+    onsetupcomplete?: (result: SetupCompletionResult) => void;
   }
 
   let { installPath, onsetupcomplete }: Props = $props();
@@ -29,7 +33,12 @@
   let currentRunId = 0;
   let setupCancelled = false;
   let unlistenInstallProgress: UnlistenFn | null = null;
+  let unlistenContentProgress: UnlistenFn | null = null;
+  let skipReadyStage = $state<StageId | null>(null);
+  let activeStageControl: ActiveStageControl | null = null;
+  let contentProgress = $state<ContentProgressPayload | null>(null);
   const activeInstallHandles = new Set<string>();
+  const activeContentHandles = new Set<string>();
 
   const settledCount = $derived(
     stages.filter((stage) => stage.status === 'ok' || stage.status === 'failed')
@@ -67,10 +76,32 @@
     finished?: boolean;
   };
 
+  type ContentProgressPayload = {
+    handle?: string;
+    phase?: 'download' | 'extract' | 'complete';
+    receivedBytes?: number | null;
+    totalBytes?: number | null;
+    percent?: number | null;
+    slow?: boolean;
+    stalled?: boolean;
+    message?: string;
+  };
+
+  type ActiveStageControl = {
+    runId: number;
+    stageId: StageId;
+    skip: () => void;
+    skipped: boolean;
+  };
+
   function beginSetupRun(): number {
     currentRunId += 1;
     setupCancelled = false;
     activeInstallHandles.clear();
+    activeContentHandles.clear();
+    activeStageControl = null;
+    skipReadyStage = null;
+    contentProgress = null;
     return currentRunId;
   }
 
@@ -87,6 +118,22 @@
     );
   }
 
+  async function cancelActiveContentHandles(runId: number): Promise<void> {
+    if (runId !== currentRunId) return;
+    const handles = [...activeContentHandles];
+    activeContentHandles.clear();
+    await Promise.allSettled(
+      handles.map((handle) => invoke('cancel_content_download', { handle })),
+    );
+  }
+
+  async function cancelForegroundWork(runId: number): Promise<void> {
+    await Promise.allSettled([
+      cancelActiveInstallHandles(runId),
+      cancelActiveContentHandles(runId),
+    ]);
+  }
+
   function trackInstallProgress(runId: number, payload: InstallProgressPayload): void {
     if (!isCurrentRun(runId)) return;
     const handle = payload.handle;
@@ -99,7 +146,44 @@
     activeInstallHandles.add(handle);
   }
 
-  async function listenForInstallProgress(runId: number): Promise<void> {
+  function normalizeContentProgress(
+    payload: ContentProgressPayload,
+  ): ContentProgressPayload {
+    const total = payload.totalBytes ?? null;
+    const received = payload.receivedBytes ?? null;
+    const percent =
+      typeof payload.percent === 'number'
+        ? Math.max(0, Math.min(100, Math.round(payload.percent)))
+        : total && total > 0 && typeof received === 'number'
+          ? Math.max(0, Math.min(100, Math.round((received / total) * 100)))
+          : null;
+    return {
+      ...payload,
+      receivedBytes: received,
+      totalBytes: total,
+      percent,
+    };
+  }
+
+  function trackContentProgress(runId: number, payload: ContentProgressPayload): void {
+    if (!isCurrentRun(runId)) return;
+    const handle = payload.handle;
+    if (
+      handle &&
+      activeContentHandles.size > 0 &&
+      !activeContentHandles.has(handle)
+    ) {
+      return;
+    }
+
+    contentProgress = normalizeContentProgress(payload);
+
+    if (handle && payload.phase === 'complete') {
+      activeContentHandles.delete(handle);
+    }
+  }
+
+  async function listenForProgress(runId: number): Promise<void> {
     const unlisten = await listen<InstallProgressPayload>(
       'install:progress',
       (event) => trackInstallProgress(runId, event.payload),
@@ -109,10 +193,24 @@
       return;
     }
     unlistenInstallProgress = unlisten;
+
+    const unlistenContent = await listen<ContentProgressPayload>(
+      'content:progress',
+      (event) => trackContentProgress(runId, event.payload),
+    );
+    if (!isCurrentRun(runId)) {
+      unlistenContent();
+      return;
+    }
+    unlistenContentProgress = unlistenContent;
   }
 
   function invokeDesktopCommand(command: string, args?: Record<string, unknown>) {
     return args === undefined ? invoke(command) : invoke(command, args);
+  }
+
+  function contentHandle(runId: number): string {
+    return `content-${runId}-${Date.now().toString(36)}`;
   }
 
   async function invokeStageCommand(id: StageId, runId: number): Promise<void> {
@@ -128,47 +226,95 @@
     // them in steady state.
     const ms = stageTimeoutMs(id);
     for (const invocation of invocations) {
+      let args = invocation.args;
+      let handle: string | null = null;
+      if (invocation.command === 'fetch_and_extract_template') {
+        handle = contentHandle(runId);
+        activeContentHandles.add(handle);
+        args = { ...args, handle };
+      }
       try {
         await withTimeout(
-          Promise.resolve(
-            invokeDesktopCommand(invocation.command, invocation.args),
-          ),
+          Promise.resolve(invokeDesktopCommand(invocation.command, args)),
           ms,
           () => new StageTimeoutError(id, ms),
           () => {
-            void cancelActiveInstallHandles(runId);
+            void cancelForegroundWork(runId);
           },
         );
       } catch (err) {
         if (invocation.required) throw err;
+      } finally {
+        if (handle) {
+          activeContentHandles.delete(handle);
+        }
       }
+    }
+  }
+
+  async function runStage(id: StageId, runId: number): Promise<void> {
+    if (!isCurrentRun(runId)) return;
+    stages = setStageStatus(stages, id, 'running');
+    if (id === 'content') contentProgress = null;
+
+    let skipStage!: () => void;
+    const skipPromise = new Promise<'skipped'>((resolve) => {
+      skipStage = () => resolve('skipped');
+    });
+    const control: ActiveStageControl = {
+      runId,
+      stageId: id,
+      skip: skipStage,
+      skipped: false,
+    };
+    activeStageControl = control;
+
+    const workPromise = invokeStageCommand(id, runId).then(
+      () => ({ kind: 'done' as const }),
+      (err) => ({ kind: 'failed' as const, err }),
+    );
+    const result = await Promise.race([
+      workPromise,
+      skipPromise.then((kind) => ({ kind })),
+    ]);
+
+    if (activeStageControl === control) {
+      activeStageControl = null;
+    }
+
+    if (!isCurrentRun(runId)) return;
+
+    if (result.kind === 'skipped') {
+      stages = setStageStatus(stages, id, 'failed', 'Skipped after timeout');
+      return;
+    }
+
+    if (control.skipped) return;
+    if (result.kind === 'done') {
+      stages = setStageStatus(stages, id, 'ok');
+    } else {
+      stages = setStageStatus(stages, id, 'failed', errorMessage(result.err));
     }
   }
 
   async function runSetup(runId: number) {
     for (const id of STAGE_ORDER) {
       if (!isCurrentRun(runId)) return;
-      stages = setStageStatus(stages, id, 'running');
-
-      try {
-        await invokeStageCommand(id, runId);
-        if (!isCurrentRun(runId)) return;
-        stages = setStageStatus(stages, id, 'ok');
-      } catch (err) {
-        if (!isCurrentRun(runId)) return;
-        stages = setStageStatus(stages, id, 'failed', errorMessage(err));
+      await runStage(id, runId);
+      if (isCurrentRun(runId)) {
+        skipReadyStage = null;
       }
     }
 
     if (isCurrentRun(runId) && !completed && allSettled(stages)) {
       completed = true;
-      onsetupcomplete?.();
+      onsetupcomplete?.(setupCompletionResult(stages));
     }
   }
 
   async function startSetupRun() {
     const runId = beginSetupRun();
-    await listenForInstallProgress(runId);
+    await listenForProgress(runId);
     if (!isCurrentRun(runId)) return;
     await runSetup(runId);
   }
@@ -177,7 +323,52 @@
     setupCancelled = true;
     unlistenInstallProgress?.();
     unlistenInstallProgress = null;
-    void cancelActiveInstallHandles(currentRunId);
+    unlistenContentProgress?.();
+    unlistenContentProgress = null;
+    void cancelForegroundWork(currentRunId);
+  }
+
+  function handleSkipCurrentStage(stageId: StageId) {
+    const control = activeStageControl;
+    if (!control || control.stageId !== stageId || stageId !== currentStageId) {
+      return;
+    }
+    control.skipped = true;
+    skipReadyStage = null;
+    void cancelForegroundWork(control.runId);
+    control.skip();
+  }
+
+  function formatBytes(bytes: number | null | undefined): string {
+    if (typeof bytes !== 'number' || !Number.isFinite(bytes) || bytes < 0) {
+      return '';
+    }
+    if (bytes < 1024) return `${Math.round(bytes)} B`;
+    const units = ['KB', 'MB', 'GB'];
+    let value = bytes / 1024;
+    let unit = units[0];
+    for (let i = 1; i < units.length && value >= 1024; i += 1) {
+      value /= 1024;
+      unit = units[i];
+    }
+    return `${value >= 10 ? value.toFixed(0) : value.toFixed(1)} ${unit}`;
+  }
+
+  function contentProgressText(): string | null {
+    if (!contentProgress) return null;
+    if (contentProgress.message) {
+      if (typeof contentProgress.percent === 'number') {
+        return `${contentProgress.message} (${contentProgress.percent}%)`;
+      }
+      return contentProgress.message;
+    }
+    const prefix =
+      contentProgress.phase === 'extract' ? 'Extracting template' : 'Downloading template';
+    if (typeof contentProgress.percent === 'number') {
+      return `${prefix} (${contentProgress.percent}%)`;
+    }
+    const received = formatBytes(contentProgress.receivedBytes);
+    return received ? `${prefix} (${received})` : prefix;
   }
 
   onMount(() => {
@@ -199,6 +390,33 @@
 
     return () => {
       window.clearInterval(interval);
+    };
+  });
+
+  $effect(() => {
+    const activeId = currentStageId;
+    const done = setupDone;
+    skipReadyStage = null;
+
+    if (done || activeId === null) return;
+
+    const startedAt = Date.now();
+    const threshold = stageSkipThresholdMs(activeId);
+    const timeout = window.setTimeout(() => {
+      if (
+        isStageSkipEligible({
+          activeStageId: currentStageId,
+          stageId: activeId,
+          elapsedMs: Date.now() - startedAt,
+          setupDone,
+        })
+      ) {
+        skipReadyStage = activeId;
+      }
+    }, threshold);
+
+    return () => {
+      window.clearTimeout(timeout);
     };
   });
 
@@ -244,7 +462,31 @@
         <span class="stage-main">
           <span class="stage-label">{stage.label}</span>
           {#if stage.status === 'running'}
-            <span class="stage-progress" aria-hidden="true"><span></span></span>
+            {@const contentPercent =
+              stage.id === 'content' && typeof contentProgress?.percent === 'number'
+                ? contentProgress.percent
+                : null}
+            <span
+              class="stage-progress"
+              class:determinate={contentPercent !== null}
+              class:indeterminate={contentPercent === null}
+              aria-hidden="true"
+            >
+              <span style={contentPercent !== null ? `width: ${contentPercent}%` : undefined}></span>
+            </span>
+            {#if stage.id === 'content' && contentProgressText()}
+              <span class="stage-detail" class:slow={contentProgress?.slow || contentProgress?.stalled}>
+                {contentProgressText()}
+              </span>
+            {/if}
+            {#if skipReadyStage === stage.id}
+              <span class="skip-affordance">
+                <span>This step is taking longer than expected.</span>
+                <button type="button" onclick={() => handleSkipCurrentStage(stage.id)}>
+                  Skip this step
+                </button>
+              </span>
+            {/if}
           {/if}
           {#if stage.error}
             <span class="stage-error">{stage.error}</span>
@@ -409,6 +651,18 @@
     line-height: 1.35;
   }
 
+  .stage-detail {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    color: var(--popover-text-muted, rgba(255, 255, 255, 0.52));
+    font-size: var(--text-xs, 12px);
+    line-height: 1.35;
+  }
+
+  .stage-detail.slow {
+    color: rgba(255, 226, 166, 0.82);
+  }
+
   .stage-progress {
     position: relative;
     display: block;
@@ -422,8 +676,11 @@
   .stage-progress span {
     position: absolute;
     inset: 0 auto 0 0;
-    width: 46%;
     border-radius: inherit;
+  }
+
+  .stage-progress.indeterminate span {
+    width: 46%;
     background: linear-gradient(
       90deg,
       transparent,
@@ -431,6 +688,44 @@
       transparent
     );
     animation: setup-stage-sweep 1.05s ease-in-out infinite;
+  }
+
+  .stage-progress.determinate span {
+    background: var(--popover-primary, #ffffff);
+    transition: width 0.18s ease;
+  }
+
+  .skip-affordance {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2, 8px);
+    padding-top: 2px;
+    color: rgba(255, 226, 166, 0.88);
+    font-size: var(--text-xs, 12px);
+    line-height: 1.35;
+  }
+
+  .skip-affordance button {
+    appearance: none;
+    min-height: 28px;
+    padding: 0 12px;
+    border: 1px solid rgba(255, 255, 255, 0.72);
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.92);
+    color: #111113;
+    font: inherit;
+    font-weight: 700;
+    cursor: pointer;
+  }
+
+  .skip-affordance button:hover {
+    background: #ffffff;
+  }
+
+  .skip-affordance button:focus-visible {
+    outline: 2px solid var(--popover-highlight, rgba(255, 255, 255, 0.34));
+    outline-offset: 2px;
   }
 
   .stage-status {
@@ -506,7 +801,7 @@
 
   @media (prefers-reduced-motion: reduce) {
     .progress-track.running::after,
-    .stage-progress span,
+    .stage-progress.indeterminate span,
     .stage-spinner,
     li.running .stage-status,
     li.running .stage-label {

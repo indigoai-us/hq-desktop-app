@@ -2,6 +2,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
   import { onDestroy, onMount } from 'svelte';
+  import type { FailedStageDetail, SetupCompletionResult } from '../lib/onboarding-setup';
   import {
     createWizardRouter,
     initialStepForLifecycle,
@@ -24,6 +25,7 @@
 
   type LocalWizardState = WizardState & {
     telemetryEnabled: boolean;
+    setupFailures: FailedStageDetail[];
   };
 
   let router = $state(createWizardRouter());
@@ -32,6 +34,7 @@
   let wizardState = $state<LocalWizardState>({
     installPath: null,
     telemetryEnabled: true,
+    setupFailures: [],
   });
 
   const canBack = $derived.by(() => {
@@ -116,7 +119,8 @@
     syncCurrentStep();
   }
 
-  function handleSetupComplete() {
+  function handleSetupComplete(result: SetupCompletionResult) {
+    wizardState.setupFailures = result.failedStages;
     router.next();
     syncCurrentStep();
   }
@@ -161,7 +165,11 @@
         onsetupcomplete={handleSetupComplete}
       />
     {:else}
-      <SummaryScreen installPath={wizardState.installPath} onfinish={handleFinish} />
+      <SummaryScreen
+        installPath={wizardState.installPath}
+        failedStages={wizardState.setupFailures}
+        onfinish={handleFinish}
+      />
     {/if}
   </WizardShell>
 </div>

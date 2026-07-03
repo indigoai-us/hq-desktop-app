@@ -5,13 +5,19 @@ import { mount, unmount } from 'svelte';
 import {
   allSettled,
   buildInitialStages,
+  failedRequiredStages,
+  isStageSkipEligible,
   setStageStatus,
+  setupCompletionResult,
+  setupNeedsAttention,
   setupProgressPercent,
   stageCommandInvocations,
+  stageSkipThresholdMs,
   stageTimeoutMs,
   StageTimeoutError,
   STAGE_LABELS,
   STAGE_ORDER,
+  DEFAULT_STAGE_SKIP_THRESHOLD_MS,
   DEFAULT_STAGE_TIMEOUT_MS,
   withTimeout,
   type StageState,
@@ -64,6 +70,12 @@ function emitInstallProgress(payload: unknown): void {
   handler({ payload });
 }
 
+function emitContentProgress(payload: unknown): void {
+  const handler = eventHandlers.get('content:progress');
+  if (!handler) throw new Error('content:progress listener was not registered');
+  handler({ payload });
+}
+
 describe('onboarding setup stages', () => {
   it('builds the initial stage list in order with all stages pending', () => {
     const stages = buildInitialStages();
@@ -111,6 +123,58 @@ describe('onboarding setup stages', () => {
   });
 });
 
+describe('setup attention summary', () => {
+  it('does not ask for attention when required stages all succeed', () => {
+    const stages: StageState[] = buildInitialStages().map((stage) => ({
+      ...stage,
+      status: 'ok',
+    }));
+
+    expect(setupNeedsAttention(stages)).toBe(false);
+    expect(failedRequiredStages(stages)).toEqual([]);
+  });
+
+  it('reports failed required stages with their labels and messages', () => {
+    const stages = setStageStatus(
+      buildInitialStages().map((stage) => ({ ...stage, status: 'ok' })),
+      'content',
+      'failed',
+      'template download failed',
+    );
+
+    expect(setupNeedsAttention(stages)).toBe(true);
+    expect(failedRequiredStages(stages)).toEqual([
+      {
+        id: 'content',
+        label: STAGE_LABELS.content,
+        message: 'template download failed',
+      },
+    ]);
+    expect(setupCompletionResult(stages)).toMatchObject({
+      needsAttention: true,
+      failedStages: [
+        {
+          id: 'content',
+          label: STAGE_LABELS.content,
+          message: 'template download failed',
+        },
+      ],
+    });
+  });
+
+  it('uses an honest fallback message when a required failure has no detail', () => {
+    const stages = setStageStatus(buildInitialStages(), 'deps', 'failed', null);
+
+    expect(failedRequiredStages(stages)).toEqual([
+      {
+        id: 'deps',
+        label: STAGE_LABELS.deps,
+        message: 'Stage failed with no detail recorded.',
+      },
+    ]);
+  });
+});
+
 describe('setup progress percent', () => {
   it('creeps toward the next stage while a stage is running', () => {
     expect(
@@ -144,6 +208,54 @@ describe('setup progress percent', () => {
         allDone: true,
       }),
     ).toBe(100);
+  });
+});
+
+describe('stage skip affordance', () => {
+  it('uses legacy-length thresholds for skip eligibility', () => {
+    expect(stageSkipThresholdMs('git-init')).toBe(
+      DEFAULT_STAGE_SKIP_THRESHOLD_MS,
+    );
+    expect(stageSkipThresholdMs('content')).toBeGreaterThan(
+      DEFAULT_STAGE_SKIP_THRESHOLD_MS,
+    );
+    expect(stageSkipThresholdMs('deps')).toBeGreaterThan(
+      DEFAULT_STAGE_SKIP_THRESHOLD_MS,
+    );
+  });
+
+  it('only enables skip for the active stage after its threshold', () => {
+    const threshold = stageSkipThresholdMs('deps');
+
+    expect(
+      isStageSkipEligible({
+        activeStageId: 'deps',
+        stageId: 'deps',
+        elapsedMs: threshold - 1,
+      }),
+    ).toBe(false);
+    expect(
+      isStageSkipEligible({
+        activeStageId: 'content',
+        stageId: 'deps',
+        elapsedMs: threshold,
+      }),
+    ).toBe(false);
+    expect(
+      isStageSkipEligible({
+        activeStageId: 'deps',
+        stageId: 'deps',
+        elapsedMs: threshold,
+        setupDone: true,
+      }),
+    ).toBe(false);
+    expect(
+      isStageSkipEligible({
+        activeStageId: 'deps',
+        stageId: 'deps',
+        elapsedMs: threshold,
+      }),
+    ).toBe(true);
   });
 });
 
@@ -277,6 +389,40 @@ describe('SetupScreen install cancellation', () => {
     expect(unlistenMock).toHaveBeenCalledWith('install:progress');
   });
 
+  it('shows byte-level content progress while the template downloads', async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'fetch_and_extract_template') {
+        return new Promise<void>(() => {});
+      }
+      if (command === 'cancel_content_download') return Promise.resolve(true);
+      return Promise.resolve(undefined);
+    });
+
+    const component = mount(SetupScreen, {
+      target: document.body,
+      props: { installPath: '/tmp/hq', onsetupcomplete: vi.fn() },
+    });
+    await waitForInvoke('fetch_and_extract_template');
+
+    emitContentProgress({
+      phase: 'download',
+      receivedBytes: 50,
+      totalBytes: 100,
+      percent: 50,
+      message: 'Downloading HQ template',
+    });
+    await flushMicrotasks();
+
+    expect(document.body.textContent).toContain('Downloading HQ template');
+    expect(document.body.textContent).toContain('50%');
+    const fill = document.querySelector<HTMLElement>(
+      'li.current .stage-progress.determinate span',
+    );
+    expect(fill?.getAttribute('style')).toContain('width: 50%');
+
+    await unmount(component);
+  });
+
   it('cancels captured install handles when the deps stage times out', async () => {
     vi.useFakeTimers();
     invokeMock.mockImplementation((command: string) => {
@@ -302,6 +448,56 @@ describe('SetupScreen install cancellation', () => {
     expect(invokeMock).toHaveBeenCalledWith('cancel_install', {
       handle: 'install-handle-timeout',
     });
+    await unmount(component);
+  });
+
+  it('lets the user skip a long-running stage after the threshold', async () => {
+    vi.useFakeTimers();
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'install_deps') return new Promise<void>(() => {});
+      if (command === 'cancel_install') return Promise.resolve(true);
+      return Promise.resolve(undefined);
+    });
+
+    const onsetupcomplete = vi.fn();
+    const component = mount(SetupScreen, {
+      target: document.body,
+      props: { installPath: '/tmp/hq', onsetupcomplete },
+    });
+    await waitForInvoke('install_deps');
+
+    emitInstallProgress({
+      handle: 'install-handle-skip',
+      line: 'Installing Node',
+      finished: false,
+    });
+    await vi.advanceTimersByTimeAsync(stageSkipThresholdMs('deps'));
+    await flushMicrotasks();
+
+    const button = Array.from(document.querySelectorAll('button')).find(
+      (candidate) => candidate.textContent === 'Skip this step',
+    ) as HTMLButtonElement | undefined;
+    expect(button).toBeTruthy();
+    button?.click();
+    await flushMicrotasks();
+
+    expect(invokeMock).toHaveBeenCalledWith('cancel_install', {
+      handle: 'install-handle-skip',
+    });
+    for (let i = 0; i < 20 && onsetupcomplete.mock.calls.length === 0; i += 1) {
+      await flushMicrotasks();
+    }
+    expect(onsetupcomplete).toHaveBeenCalledWith(
+      expect.objectContaining({
+        needsAttention: true,
+        failedStages: expect.arrayContaining([
+          expect.objectContaining({
+            id: 'deps',
+            message: 'Skipped after timeout',
+          }),
+        ]),
+      }),
+    );
     await unmount(component);
   });
 
