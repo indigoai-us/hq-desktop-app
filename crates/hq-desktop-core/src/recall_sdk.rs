@@ -165,22 +165,26 @@ const SDK_ARCH_TRIPLES: &[&str] = &["x86_64-pc-windows-msvc", "aarch64-pc-window
 #[cfg(not(target_os = "windows"))]
 const SDK_ARCH_TRIPLES: &[&str] = &["aarch64-apple-darwin", "x86_64-apple-darwin"];
 
+fn sdk_binary_candidate_names() -> Vec<String> {
+    let exe_suffix = std::env::consts::EXE_SUFFIX; // "" on unix, ".exe" on windows
+    std::iter::once(format!("{SDK_BIN}{exe_suffix}"))
+        .chain(
+            SDK_ARCH_TRIPLES
+                .iter()
+                .map(|arch| format!("{SDK_BIN}-{arch}{exe_suffix}")),
+        )
+        .collect()
+}
+
 /// Try to find the Recall Desktop SDK binary.
 pub fn find_sdk_binary() -> Option<String> {
-    let exe_suffix = std::env::consts::EXE_SUFFIX; // "" on unix, ".exe" on windows
     // 1. Check next to the running executable (release bundle).
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            // Plain name (+ platform exe suffix on Windows).
-            let plain = dir.join(format!("{SDK_BIN}{exe_suffix}"));
-            if plain.exists() {
-                return Some(plain.to_string_lossy().into_owned());
-            }
-            // Tauri arch-tagged sidecar names for this platform's triples.
-            for arch in SDK_ARCH_TRIPLES {
-                let tagged = dir.join(format!("{SDK_BIN}-{arch}{exe_suffix}"));
-                if tagged.exists() {
-                    return Some(tagged.to_string_lossy().into_owned());
+            for candidate_name in sdk_binary_candidate_names() {
+                let candidate = dir.join(candidate_name);
+                if candidate.exists() {
+                    return Some(candidate.to_string_lossy().into_owned());
                 }
             }
         }
@@ -193,6 +197,23 @@ pub fn find_sdk_binary() -> Option<String> {
     }
 
     None
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod windows_tests {
+    use super::sdk_binary_candidate_names;
+
+    #[test]
+    fn sdk_binary_candidate_names_are_windows_exes() {
+        assert_eq!(
+            sdk_binary_candidate_names(),
+            vec![
+                "recall-desktop-sdk.exe",
+                "recall-desktop-sdk-x86_64-pc-windows-msvc.exe",
+                "recall-desktop-sdk-aarch64-pc-windows-msvc.exe",
+            ]
+        );
+    }
 }
 
 /// ndjson event shape emitted by the SDK bridge on stdout.

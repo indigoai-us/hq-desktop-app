@@ -23,7 +23,7 @@
 //! helpers return `"unknown"` when unbundled instead of crashing.
 
 #[cfg(target_os = "windows")]
-const NOTIFICATION_AUMID: &str = "ai.indigo.hq-sync-menubar";
+const NOTIFICATION_AUMID: &str = "ai.indigo.hq-sync-win";
 
 /// Stable string contract for the frontend:
 /// `"granted" | "denied" | "prompt" | "unknown"`.
@@ -228,6 +228,16 @@ mod macos {
         // Block until the user dismisses the dialog (or a generous timeout):
         // the dialog is modal-ish, so allow longer than the read path.
         let _ = rx.recv_timeout(Duration::from_secs(60));
+    }
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod windows_tests {
+    use super::NOTIFICATION_AUMID;
+
+    #[test]
+    fn notification_aumid_matches_windows_app_identity() {
+        assert_eq!(NOTIFICATION_AUMID, "ai.indigo.hq-sync-win");
     }
 }
 
