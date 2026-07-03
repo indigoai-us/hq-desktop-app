@@ -134,7 +134,9 @@ fn resolve_staging_repo(eligible: bool) -> Option<String> {
 pub(crate) fn resolve_gh_token() -> Option<String> {
     // 1. `gh auth token` — the canonical, always-fresh source.
     let gh = paths::resolve_bin("gh");
-    if let Ok(output) = Command::new(&gh).args(["auth", "token"]).output() {
+    let mut cmd = Command::new(&gh);
+    paths::no_window(&mut cmd);
+    if let Ok(output) = cmd.args(["auth", "token"]).output() {
         if output.status.success() {
             let tok = String::from_utf8_lossy(&output.stdout).trim().to_string();
             if !tok.is_empty() {
@@ -431,6 +433,7 @@ pub(crate) fn resolve_hq_folder() -> std::path::PathBuf {
 pub(crate) fn rescue_command() -> tokio::process::Command {
     let npx = paths::resolve_bin("npx");
     let mut cmd = tokio::process::Command::new(&npx);
+    paths::no_window_tokio(&mut cmd);
     cmd.arg("-y")
         .arg(format!(
             "--package={}@{}",

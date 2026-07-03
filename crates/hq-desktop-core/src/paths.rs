@@ -1,13 +1,23 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-#[cfg(target_os = "windows")]
 pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 pub fn no_window(cmd: &mut Command) {
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = cmd;
+    }
+}
+
+pub fn no_window_tokio(cmd: &mut tokio::process::Command) {
+    #[cfg(target_os = "windows")]
+    {
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
     #[cfg(not(target_os = "windows"))]
@@ -578,6 +588,18 @@ mod tests {
         // A name that almost certainly doesn't exist anywhere
         let result = resolve_bin("hq-sync-nonexistent-xyz-123");
         assert_eq!(result, "hq-sync-nonexistent-xyz-123");
+    }
+
+    #[test]
+    fn test_create_no_window_constant_matches_windows_api() {
+        assert_eq!(CREATE_NO_WINDOW, 0x0800_0000);
+    }
+
+    #[cfg(all(test, target_os = "windows"))]
+    #[test]
+    fn test_no_window_tokio_does_not_panic() {
+        let mut cmd = tokio::process::Command::new("cmd.exe");
+        no_window_tokio(&mut cmd);
     }
 
     #[test]

@@ -89,9 +89,14 @@ impl HqInvocation {
     /// after this returns.
     pub fn command(&self) -> tokio::process::Command {
         match self {
-            HqInvocation::Local(path) => tokio::process::Command::new(path),
+            HqInvocation::Local(path) => {
+                let mut cmd = tokio::process::Command::new(path);
+                paths::no_window_tokio(&mut cmd);
+                cmd
+            }
             HqInvocation::Npx => {
                 let mut cmd = tokio::process::Command::new("npx");
+                paths::no_window_tokio(&mut cmd);
                 cmd.args([
                     "-y",
                     "--package",
@@ -195,7 +200,9 @@ fn probe() -> HqInvocation {
 /// returns stdout on success, `None` on spawn-error or non-zero exit.
 /// Shared between the probes so a future probe addition is one helper call.
 fn run_help(bin: &str, args: &[&str]) -> Option<String> {
-    let output = Command::new(bin)
+    let mut cmd = Command::new(bin);
+    paths::no_window(&mut cmd);
+    let output = cmd
         .args(args)
         // Inherit PATH from parent so node-shebanged `hq` can find `node`.
         .env("PATH", paths::child_path())

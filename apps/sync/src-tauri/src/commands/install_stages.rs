@@ -14,6 +14,7 @@ const DEFAULT_PACKAGES: &[&str] = &[];
 
 fn git_command(git: &str, path_env: &str) -> Command {
     let mut cmd = Command::new(git);
+    paths::no_window(&mut cmd);
     cmd.env("PATH", path_env);
     cmd
 }

@@ -17,6 +17,7 @@ use crate::commands::status::{journal_for_sync_complete, write_journal};
 use crate::commands::sync::RunTotals;
 use crate::events::{SyncEvent, EVENT_SYNC_ALL_COMPLETE};
 use crate::util::logfile::log;
+use crate::util::paths;
 
 #[allow(unused_imports)]
 pub use hq_desktop_core::daemon::{
@@ -396,7 +397,9 @@ fn reset_crash_state_if_recovered() {
 /// Best-effort RSS (KB) of `pid` via `ps -o rss= -p <pid>`. Both macOS and Linux
 /// report RSS here in 1-KB units. Returns `None` on any failure. Diagnostic only.
 fn sample_pid_rss_kb(pid: u32) -> Option<u64> {
-    let out = std::process::Command::new("ps")
+    let mut cmd = std::process::Command::new("ps");
+    paths::no_window(&mut cmd);
+    let out = cmd
         .args(["-o", "rss=", "-p", &pid.to_string()])
         .output()
         .ok()?;

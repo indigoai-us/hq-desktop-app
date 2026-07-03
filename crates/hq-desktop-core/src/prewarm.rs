@@ -71,7 +71,9 @@ pub fn spawn_prewarm() {
         // regardless of what the command does. Using `node` here — rather
         // than a bin from hq-cloud — keeps us immune to future runner
         // argv changes; exits 0 so the success log is always clean.
-        let result = Command::new(&npx)
+        let mut cmd = Command::new(&npx);
+        paths::no_window(&mut cmd);
+        let result = cmd
             .args(["-y", &package_spec, "--", "node", "-e", "process.exit(0)"])
             .env("PATH", &path)
             .stdout(Stdio::null())
