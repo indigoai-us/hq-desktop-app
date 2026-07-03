@@ -42,6 +42,22 @@ export interface StageState {
   error?: string | null;
 }
 
+export type ManifestItemStatus =
+  | 'pending'
+  | 'running'
+  | 'ok'
+  | 'failed'
+  | 'skipped';
+
+export interface InstallManifest {
+  schemaVersion: number;
+  installerVersion: string;
+  installPath: string;
+  startedAt: string;
+  completedAt: string | null;
+  steps: Partial<Record<StageId | string, { status: ManifestItemStatus; error?: string | null }>>;
+}
+
 export function buildInitialStages(): StageState[] {
   return STAGE_ORDER.map((id) => ({
     id,
@@ -49,6 +65,33 @@ export function buildInitialStages(): StageState[] {
     status: 'pending',
     error: null,
   }));
+}
+
+export function resumeStartStageFromManifest(
+  manifest: InstallManifest | null | undefined,
+): StageId {
+  if (!manifest || manifest.completedAt) return STAGE_ORDER[0];
+  for (const id of STAGE_ORDER) {
+    if (manifest.steps?.[id]?.status !== 'ok') return id;
+  }
+  return STAGE_ORDER[0];
+}
+
+export function buildStagesFromManifest(
+  manifest: InstallManifest | null | undefined,
+  startStage: StageId = resumeStartStageFromManifest(manifest),
+): StageState[] {
+  const startIndex = STAGE_ORDER.indexOf(startStage);
+  return STAGE_ORDER.map((id, index) => {
+    const step = manifest?.steps?.[id];
+    const beforeStart = startIndex > 0 && index < startIndex;
+    return {
+      id,
+      label: STAGE_LABELS[id],
+      status: beforeStart && step?.status === 'ok' ? 'ok' : 'pending',
+      error: null,
+    };
+  });
 }
 
 export interface FailedStageDetail {
@@ -230,6 +273,30 @@ export function isStageSkipEligible(input: StageSkipEligibilityInput): boolean {
     !input.setupDone &&
     input.activeStageId === input.stageId &&
     input.elapsedMs >= stageSkipThresholdMs(input.stageId)
+  );
+}
+
+export interface ContentRetryProgress {
+  stalled?: boolean | null;
+}
+
+export interface ContentRetryEligibilityInput {
+  contentStage: StageState | null | undefined;
+  activeStageId: StageId | null;
+  progress?: ContentRetryProgress | null;
+  retrying?: boolean;
+}
+
+export function isContentRetryEligible(
+  input: ContentRetryEligibilityInput,
+): boolean {
+  if (input.retrying || !input.contentStage) return false;
+  if (input.contentStage.id !== 'content') return false;
+  if (input.contentStage.status === 'failed') return true;
+  return (
+    input.contentStage.status === 'running' &&
+    input.activeStageId === 'content' &&
+    input.progress?.stalled === true
   );
 }
 
