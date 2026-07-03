@@ -263,6 +263,7 @@ fn main() {
             commands::install_directory::check_writable,
             commands::install_directory::detect_hq,
             commands::content::fetch_and_extract_template,
+            commands::content::cancel_content_download,
             commands::checksums::compute_checksums,
             commands::install_stages::git_init,
             commands::install_stages::register_search_index,

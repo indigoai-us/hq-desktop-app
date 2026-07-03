@@ -30,15 +30,18 @@
 //!   * The staging-channel override (`indigoai-us/hq-core-staging` via
 //!     `download_staging_tarball`) and the installer's resumable
 //!     install-manifest bookkeeping (`recordStepStart`/`recordStepOk`).
-//!   * Byte-level download progress events (the onboarding UI currently only
-//!     surfaces stage-level status, not sub-progress within a stage).
 
-use std::io::Read;
+use std::collections::HashMap;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
+use std::time::Instant;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tar::EntryType;
+use tauri::{AppHandle, Emitter};
 
 use crate::commands::install_directory::resolve_hq_path;
 use crate::util::client_info::client_headers;
@@ -52,6 +55,12 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// slow link, short enough that a truly dead connection doesn't hang setup
 /// indefinitely.
 const CHUNK_STALL_TIMEOUT: Duration = Duration::from_secs(25);
+const DOWNLOAD_SLOW_NOTICE_TIMEOUT: Duration = Duration::from_secs(20);
+const PROGRESS_EMIT_INTERVAL: Duration = Duration::from_millis(120);
+const EXTRACT_READ_CHUNK_BYTES: usize = 64 * 1024;
+
+static CONTENT_CANCEL_REGISTRY: OnceLock<Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>> =
+    OnceLock::new();
 
 #[derive(Debug, Deserialize)]
 struct ReleaseInfo {
@@ -61,6 +70,127 @@ struct ReleaseInfo {
     prerelease: bool,
     #[serde(default)]
     draft: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ContentProgressPayload {
+    handle: String,
+    phase: &'static str,
+    received_bytes: Option<u64>,
+    total_bytes: Option<u64>,
+    percent: Option<f64>,
+    slow: bool,
+    stalled: bool,
+    message: String,
+}
+
+#[derive(Clone)]
+struct ContentProgressEmitter {
+    app: AppHandle,
+    handle: String,
+}
+
+impl ContentProgressEmitter {
+    fn emit(
+        &self,
+        phase: &'static str,
+        received_bytes: Option<u64>,
+        total_bytes: Option<u64>,
+        slow: bool,
+        stalled: bool,
+        message: impl Into<String>,
+    ) {
+        let percent = match (received_bytes, total_bytes) {
+            (Some(received), Some(total)) if total > 0 => {
+                Some(((received as f64 / total as f64) * 100.0).clamp(0.0, 100.0))
+            }
+            _ => None,
+        };
+        let _ = self.app.emit(
+            "content:progress",
+            ContentProgressPayload {
+                handle: self.handle.clone(),
+                phase,
+                received_bytes,
+                total_bytes,
+                percent,
+                slow,
+                stalled,
+                message: message.into(),
+            },
+        );
+    }
+}
+
+struct ProgressThrottle {
+    last_emit: Instant,
+}
+
+impl ProgressThrottle {
+    fn new() -> Self {
+        Self {
+            last_emit: Instant::now() - PROGRESS_EMIT_INTERVAL,
+        }
+    }
+
+    fn should_emit(&mut self) -> bool {
+        if self.last_emit.elapsed() < PROGRESS_EMIT_INTERVAL {
+            return false;
+        }
+        self.last_emit = Instant::now();
+        true
+    }
+}
+
+struct ContentCancelRegistration {
+    handle: String,
+}
+
+impl Drop for ContentCancelRegistration {
+    fn drop(&mut self) {
+        content_cancel_registry()
+            .lock()
+            .unwrap()
+            .remove(&self.handle);
+    }
+}
+
+fn content_cancel_registry() -> &'static Arc<Mutex<HashMap<String, Arc<AtomicBool>>>> {
+    CONTENT_CANCEL_REGISTRY.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
+}
+
+fn register_content_cancel_handle(handle: String) -> (Arc<AtomicBool>, ContentCancelRegistration) {
+    let flag = Arc::new(AtomicBool::new(false));
+    content_cancel_registry()
+        .lock()
+        .unwrap()
+        .insert(handle.clone(), flag.clone());
+    (flag, ContentCancelRegistration { handle })
+}
+
+fn is_content_cancelled(cancel: Option<&AtomicBool>) -> bool {
+    cancel
+        .map(|flag| flag.load(Ordering::SeqCst))
+        .unwrap_or(false)
+}
+
+fn content_cancelled_error() -> String {
+    "Template setup was cancelled.".to_string()
+}
+
+#[tauri::command]
+pub fn cancel_content_download(handle: String) -> Result<bool, String> {
+    let Some(flag) = content_cancel_registry()
+        .lock()
+        .unwrap()
+        .get(&handle)
+        .cloned()
+    else {
+        return Ok(false);
+    };
+    flag.store(true, Ordering::SeqCst);
+    Ok(true)
 }
 
 fn github_client() -> Result<reqwest::Client, String> {
@@ -99,8 +229,22 @@ async fn latest_release(
     Ok(releases.into_iter().find(|r| !r.prerelease && !r.draft))
 }
 
+#[cfg(test)]
 async fn download_tarball(client: &reqwest::Client, url: &str) -> Result<Vec<u8>, String> {
+    download_tarball_with_progress(client, url, None, None).await
+}
+
+async fn download_tarball_with_progress(
+    client: &reqwest::Client,
+    url: &str,
+    progress: Option<&ContentProgressEmitter>,
+    cancel: Option<&AtomicBool>,
+) -> Result<Vec<u8>, String> {
     use futures_util::StreamExt;
+
+    if is_content_cancelled(cancel) {
+        return Err(content_cancelled_error());
+    }
 
     let resp = client
         .get(url)
@@ -117,17 +261,101 @@ async fn download_tarball(client: &reqwest::Client, url: &str) -> Result<Vec<u8>
         ));
     }
 
+    let total_bytes = resp.content_length();
     let mut bytes: Vec<u8> = Vec::new();
     let mut stream = resp.bytes_stream();
+
+    if let Some(progress) = progress {
+        progress.emit(
+            "download",
+            Some(0),
+            total_bytes,
+            false,
+            false,
+            "Downloading HQ template",
+        );
+    }
+
     loop {
-        match tokio::time::timeout(CHUNK_STALL_TIMEOUT, stream.next()).await {
-            Ok(Some(Ok(chunk))) => bytes.extend_from_slice(&chunk),
+        if is_content_cancelled(cancel) {
+            return Err(content_cancelled_error());
+        }
+
+        match tokio::time::timeout(DOWNLOAD_SLOW_NOTICE_TIMEOUT, stream.next()).await {
+            Ok(Some(Ok(chunk))) => {
+                bytes.extend_from_slice(&chunk);
+                if let Some(progress) = progress {
+                    progress.emit(
+                        "download",
+                        Some(bytes.len() as u64),
+                        total_bytes,
+                        false,
+                        false,
+                        "Downloading HQ template",
+                    );
+                }
+            }
             Ok(Some(Err(e))) => return Err(format!("stream error downloading template: {e}")),
             Ok(None) => break,
             Err(_) => {
-                return Err("Template download stalled before receiving more data.".to_string())
+                if let Some(progress) = progress {
+                    progress.emit(
+                        "download",
+                        Some(bytes.len() as u64),
+                        total_bytes,
+                        true,
+                        false,
+                        "Template download is slower than expected",
+                    );
+                }
+                let remaining_timeout =
+                    CHUNK_STALL_TIMEOUT.saturating_sub(DOWNLOAD_SLOW_NOTICE_TIMEOUT);
+                match tokio::time::timeout(remaining_timeout, stream.next()).await {
+                    Ok(Some(Ok(chunk))) => {
+                        bytes.extend_from_slice(&chunk);
+                        if let Some(progress) = progress {
+                            progress.emit(
+                                "download",
+                                Some(bytes.len() as u64),
+                                total_bytes,
+                                false,
+                                false,
+                                "Downloading HQ template",
+                            );
+                        }
+                    }
+                    Ok(Some(Err(e))) => {
+                        return Err(format!("stream error downloading template: {e}"))
+                    }
+                    Ok(None) => break,
+                    Err(_) => {
+                        if let Some(progress) = progress {
+                            progress.emit(
+                                "download",
+                                Some(bytes.len() as u64),
+                                total_bytes,
+                                true,
+                                true,
+                                "Template download stalled",
+                            );
+                        }
+                        return Err(
+                            "Template download stalled before receiving more data.".to_string()
+                        );
+                    }
+                }
             }
         }
+    }
+    if let Some(progress) = progress {
+        progress.emit(
+            "download",
+            Some(bytes.len() as u64),
+            total_bytes.or(Some(bytes.len() as u64)),
+            false,
+            false,
+            "Downloaded HQ template",
+        );
     }
     Ok(bytes)
 }
@@ -449,9 +677,57 @@ fn set_entry_mode(_path: &Path, _mode: u32) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(test)]
 fn extract_tarball(compressed: &[u8], target_dir: &Path) -> Result<(), String> {
+    extract_tarball_with_progress(compressed, target_dir, None, None)
+}
+
+fn archive_extract_total_bytes(compressed: &[u8]) -> Result<u64, String> {
+    let gz = flate2::read::GzDecoder::new(compressed);
+    let mut archive = tar::Archive::new(gz);
+    let entries = archive
+        .entries()
+        .map_err(|e| format!("failed to read template archive: {e}"))?;
+
+    let mut total = 0_u64;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("failed to read template archive entry: {e}"))?;
+        let entry_type = entry.header().entry_type();
+        if matches!(entry_type, EntryType::Regular | EntryType::Continuous) {
+            total = total.saturating_add(entry.size());
+        }
+    }
+    Ok(total)
+}
+
+fn extract_tarball_with_progress(
+    compressed: &[u8],
+    target_dir: &Path,
+    progress: Option<&ContentProgressEmitter>,
+    cancel: Option<&AtomicBool>,
+) -> Result<(), String> {
     std::fs::create_dir_all(target_dir)
         .map_err(|e| format!("failed to create HQ root {target_dir:?}: {e}"))?;
+
+    if is_content_cancelled(cancel) {
+        return Err(content_cancelled_error());
+    }
+
+    let total_bytes = archive_extract_total_bytes(compressed)?;
+    let total_bytes = (total_bytes > 0).then_some(total_bytes);
+    let mut extracted_bytes = 0_u64;
+    let mut progress_throttle = ProgressThrottle::new();
+
+    if let Some(progress) = progress {
+        progress.emit(
+            "extract",
+            Some(0),
+            total_bytes,
+            false,
+            false,
+            "Extracting HQ template",
+        );
+    }
 
     let gz = flate2::read::GzDecoder::new(compressed);
     let mut archive = tar::Archive::new(gz);
@@ -462,6 +738,10 @@ fn extract_tarball(compressed: &[u8], target_dir: &Path) -> Result<(), String> {
     let mut symlink_relatives: Vec<String> = Vec::new();
 
     for entry in entries {
+        if is_content_cancelled(cancel) {
+            return Err(content_cancelled_error());
+        }
+
         let mut entry = entry.map_err(|e| format!("failed to read template archive entry: {e}"))?;
         let raw_path = entry
             .path()
@@ -546,12 +826,35 @@ fn extract_tarball(compressed: &[u8], target_dir: &Path) -> Result<(), String> {
                         .map_err(|e| format!("failed to create {parent:?}: {e}"))?;
                 }
                 let mode = entry.header().mode().unwrap_or(0o644);
-                let mut buf = Vec::with_capacity(entry.size() as usize);
-                entry
-                    .read_to_end(&mut buf)
-                    .map_err(|e| format!("failed to read {relative} from archive: {e}"))?;
-                std::fs::write(&dest, &buf)
+                let mut file = std::fs::File::create(&dest)
                     .map_err(|e| format!("failed to write {dest:?}: {e}"))?;
+                let mut buf = [0_u8; EXTRACT_READ_CHUNK_BYTES];
+                loop {
+                    if is_content_cancelled(cancel) {
+                        return Err(content_cancelled_error());
+                    }
+                    let n = entry
+                        .read(&mut buf)
+                        .map_err(|e| format!("failed to read {relative} from archive: {e}"))?;
+                    if n == 0 {
+                        break;
+                    }
+                    file.write_all(&buf[..n])
+                        .map_err(|e| format!("failed to write {dest:?}: {e}"))?;
+                    extracted_bytes = extracted_bytes.saturating_add(n as u64);
+                    if progress_throttle.should_emit() {
+                        if let Some(progress) = progress {
+                            progress.emit(
+                                "extract",
+                                Some(extracted_bytes),
+                                total_bytes,
+                                false,
+                                false,
+                                format!("Extracting {normalized}"),
+                            );
+                        }
+                    }
+                }
                 set_entry_mode(&dest, mode)?;
             }
             _ => {
@@ -563,6 +866,17 @@ fn extract_tarball(compressed: &[u8], target_dir: &Path) -> Result<(), String> {
         }
     }
 
+    if let Some(progress) = progress {
+        progress.emit(
+            "extract",
+            Some(extracted_bytes),
+            total_bytes.or(Some(extracted_bytes)),
+            false,
+            false,
+            "Extracted HQ template",
+        );
+    }
+
     Ok(())
 }
 
@@ -571,17 +885,37 @@ fn extract_tarball(compressed: &[u8], target_dir: &Path) -> Result<(), String> {
 /// `git_init` — the git repo is initialised over the already-placed content
 /// so the template ships tracked from the first commit.
 #[tauri::command]
-pub async fn fetch_and_extract_template() -> Result<String, String> {
+pub async fn fetch_and_extract_template(
+    app: AppHandle,
+    handle: Option<String>,
+) -> Result<String, String> {
     let hq_root = resolve_hq_path()?;
     let client = github_client()?;
+    let handle = handle.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let (cancel_flag, _cancel_registration) = register_content_cancel_handle(handle.clone());
+    let progress = ContentProgressEmitter {
+        app,
+        handle: handle.clone(),
+    };
 
     let release = latest_release(&client, DEFAULT_TEMPLATE_REPO).await?;
     let release = release.ok_or_else(|| {
         format!("no stable release found for {DEFAULT_TEMPLATE_REPO}; cannot install HQ template")
     })?;
 
-    let compressed = download_tarball(&client, &release.tarball_url).await?;
-    extract_tarball(&compressed, Path::new(&hq_root))?;
+    let compressed = download_tarball_with_progress(
+        &client,
+        &release.tarball_url,
+        Some(&progress),
+        Some(cancel_flag.as_ref()),
+    )
+    .await?;
+    extract_tarball_with_progress(
+        &compressed,
+        Path::new(&hq_root),
+        Some(&progress),
+        Some(cancel_flag.as_ref()),
+    )?;
 
     // Refresh core/core.yaml checksums right after the template lands, so the
     // integrity block reflects the freshly-installed content before git-init +
@@ -599,13 +933,14 @@ pub async fn fetch_and_extract_template() -> Result<String, String> {
         eprintln!("[content] checksum refresh after extract (non-fatal): {e}");
     }
 
+    progress.emit("complete", None, None, false, false, "HQ template ready");
+
     Ok(release.tag_name)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write as _;
     use tempfile::tempdir;
 
     #[test]

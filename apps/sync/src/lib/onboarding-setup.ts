@@ -51,6 +51,48 @@ export function buildInitialStages(): StageState[] {
   }));
 }
 
+export interface FailedStageDetail {
+  id: StageId;
+  label: string;
+  message: string;
+}
+
+export interface SetupCompletionResult {
+  stages: StageState[];
+  failedStages: FailedStageDetail[];
+  needsAttention: boolean;
+}
+
+const REQUIRED_STAGE_IDS = new Set<StageId>(STAGE_ORDER);
+
+export function failedRequiredStages(
+  stages: StageState[],
+): FailedStageDetail[] {
+  return stages
+    .filter((stage) => stage.status === 'failed' && REQUIRED_STAGE_IDS.has(stage.id))
+    .map((stage) => ({
+      id: stage.id,
+      label: stage.label,
+      message: stage.error?.trim() || 'Stage failed with no detail recorded.',
+    }));
+}
+
+export function setupNeedsAttention(stages: StageState[]): boolean {
+  return failedRequiredStages(stages).length > 0;
+}
+
+export function setupCompletionResult(
+  stages: StageState[],
+): SetupCompletionResult {
+  const snapshot = stages.map((stage) => ({ ...stage }));
+  const failedStages = failedRequiredStages(snapshot);
+  return {
+    stages: snapshot,
+    failedStages,
+    needsAttention: failedStages.length > 0,
+  };
+}
+
 export function allSettled(stages: StageState[]): boolean {
   return stages.every(
     (stage) => stage.status === 'ok' || stage.status === 'failed',
@@ -144,24 +186,51 @@ export function stageCommandInvocations(
   return invocations;
 }
 
-// Per-stage timeout so a hung backend stage can never wedge the whole wizard.
-// Without this, `await invoke(command)` on a stage whose CLI never exits (e.g.
-// `hq reindex` blocked on a lock held by the freshly-started sync daemon)
-// leaves the user stuck on "Setting up HQ..." forever. On timeout the stage is
-// marked failed and setup moves on — every stage is non-fatal (the tray agent
-// re-runs sync/index/packages in steady state). Values mirror the old
-// installer's skip thresholds: most stages 90s, network/toolchain-heavy ones
-// longer.
-export const DEFAULT_STAGE_TIMEOUT_MS = 90_000;
+// The old installer revealed a manual skip affordance after these thresholds:
+// most stages after 90s, network/toolchain-heavy ones later. A separate hard
+// timeout keeps setup from wedging if the user ignores the affordance.
+export const DEFAULT_STAGE_SKIP_THRESHOLD_MS = 90_000;
 
-export const STAGE_TIMEOUT_MS: Partial<Record<StageId, number>> = {
+export const STAGE_SKIP_THRESHOLD_MS: Partial<Record<StageId, number>> = {
   content: 240_000, // GitHub tarball download + extract
   deps: 240_000, // managed-toolchain / npm installs
   indexing: 180_000, // full-corpus reindex can be slow on first run
 };
 
+export const STAGE_TIMEOUT_GRACE_MS = 300_000;
+export const DEFAULT_STAGE_TIMEOUT_MS =
+  DEFAULT_STAGE_SKIP_THRESHOLD_MS + STAGE_TIMEOUT_GRACE_MS;
+
+export const STAGE_TIMEOUT_MS: Partial<Record<StageId, number>> =
+  Object.fromEntries(
+    STAGE_ORDER.map((id) => [
+      id,
+      (STAGE_SKIP_THRESHOLD_MS[id] ?? DEFAULT_STAGE_SKIP_THRESHOLD_MS) +
+        STAGE_TIMEOUT_GRACE_MS,
+    ]),
+  ) as Partial<Record<StageId, number>>;
+
+export function stageSkipThresholdMs(id: StageId): number {
+  return STAGE_SKIP_THRESHOLD_MS[id] ?? DEFAULT_STAGE_SKIP_THRESHOLD_MS;
+}
+
 export function stageTimeoutMs(id: StageId): number {
   return STAGE_TIMEOUT_MS[id] ?? DEFAULT_STAGE_TIMEOUT_MS;
+}
+
+export interface StageSkipEligibilityInput {
+  activeStageId: StageId | null;
+  stageId: StageId;
+  elapsedMs: number;
+  setupDone?: boolean;
+}
+
+export function isStageSkipEligible(input: StageSkipEligibilityInput): boolean {
+  return (
+    !input.setupDone &&
+    input.activeStageId === input.stageId &&
+    input.elapsedMs >= stageSkipThresholdMs(input.stageId)
+  );
 }
 
 export class StageTimeoutError extends Error {
