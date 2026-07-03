@@ -15,6 +15,7 @@
     loadMeetingsCache,
     saveMeetingsCache,
   } from '../lib/meetingsCache';
+  import { shouldShowMeetingsLoadingPlaceholder } from '../lib/meetingsLoadingGate';
   import { isAlreadyScheduledError } from '../lib/invite-errors';
   import {
     botForEvent,
@@ -178,6 +179,7 @@
   );
   let memberships = $state<CompanyMembership[]>([]);
   let loading = $state(false);
+  let primaryLoaded = $state(false);
   let listError = $state<string | null>(null);
   let toast = $state<{ kind: 'info' | 'warn'; text: string } | null>(null);
 
@@ -541,6 +543,22 @@
           () => [] as GoogleAccount[],
         ),
       ]);
+
+      // Primary content is now ready. Update the render-driving state before
+      // the secondary bot/calendar fan-outs so the detached window can move
+      // past the cold Loading placeholder under degraded network conditions.
+      if (evts !== null) events = evts;
+      memberships = membershipRows ?? [];
+      companyNamesByUid = buildCompanyNameMap(membershipRows ?? []);
+      accounts = accts ?? [];
+      accountEmailById = new Map(
+        (accts ?? []).map((a) => [a.accountId, a.email ?? '']),
+      );
+      if (upcomingErr !== null) {
+        listError = friendlyError(upcomingErr, 'Could not load meetings.');
+      }
+      primaryLoaded = true;
+
       const botEventIds = calendarEventIdsForBotLookup(evts ?? events);
       let eventBotsErr: unknown = null;
       let fullBotsErr: unknown = null;
@@ -567,17 +585,10 @@
       // snapshot in memory until recovery. The error banner still wins in
       // the render branch order, but the cached state is correct for the
       // next successful refresh.
-      if (evts !== null) events = evts;
       if (bots !== null) {
         botsByEventId = buildBotMap(bots);
         allBots = bots;
       }
-      memberships = membershipRows ?? [];
-      companyNamesByUid = buildCompanyNameMap(membershipRows ?? []);
-      accounts = accts ?? [];
-      accountEmailById = new Map(
-        (accts ?? []).map((a) => [a.accountId, a.email ?? '']),
-      );
 
       // Calendars per account — second-pass fan-out so the events render
       // doesn't block on calendar metadata. Failures per-account are
@@ -591,9 +602,8 @@
       // `events HTTP 500: {"message":"Internal Server Error"}` blob.
       // listError gets cleared at the top of the next refresh(), so the
       // 30s poll drops this banner the moment hq-pro recovers.
-      const firstErr = upcomingErr ?? botsErr;
-      if (firstErr !== null) {
-        listError = friendlyError(firstErr, 'Could not load meetings.');
+      if (upcomingErr === null && botsErr !== null) {
+        listError = friendlyError(botsErr, 'Could not load meetings.');
       }
 
       // Persist after EVERYTHING (events + calendars) so the next open
@@ -609,6 +619,7 @@
       // a programming bug doesn't dump a stack trace into the UI either.
       listError = friendlyError(err, 'Could not load meetings.');
     } finally {
+      primaryLoaded = true;
       loading = false;
     }
   }
@@ -1638,7 +1649,7 @@
       </div>
     {/snippet}
 
-    {#if loading && events.length === 0 && recordedBots.length === 0}
+    {#if shouldShowMeetingsLoadingPlaceholder(loading, primaryLoaded, events.length, recordedBots.length)}
       <p class="meetings-placeholder">Loading…</p>
     {:else if listError}
       <p class="meetings-error">{listError}</p>
