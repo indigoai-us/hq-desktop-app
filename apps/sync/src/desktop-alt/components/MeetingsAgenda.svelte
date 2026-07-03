@@ -1,8 +1,10 @@
 <script lang="ts">
   import {
+    botForEvent,
     companyLabel,
     durationMinutes,
     eventMeetingUrl,
+    isRecurringMeeting,
     meetingState,
     rowButtonKind,
     signalCounts,
@@ -26,6 +28,8 @@
     liveEventId?: string | null;
     /** calendarEventId -> active scheduled bot, drives the per-row action state. */
     botsByEventId?: Map<string, ScheduledBot>;
+    /** Full active scheduled-bot list for recurring-series row resolution. */
+    scheduledBots?: ScheduledBot[];
     /** event ids with an in-flight bot action — disables + spins that row. */
     pendingEventIds?: Set<string>;
     /** Bot-action callbacks. The store owns the network call; this stays presentational. */
@@ -43,6 +47,7 @@
     companyNames = new Map(),
     liveEventId = null,
     botsByEventId = new Map(),
+    scheduledBots = [],
     pendingEventIds = new Set(),
     onInvite = () => {},
     onUninvite = () => {},
@@ -66,10 +71,11 @@
         {@const state = meetingState(event, { liveEventId, upNextId })}
         {@const dur = durationMinutes(event)}
         {@const sig = signalSummary(signalCounts(event))}
-        {@const bot = botsByEventId.get(event.id)}
+        {@const bot = botForEvent(event, botsByEventId, scheduledBots)}
         {@const pending = pendingEventIds.has(event.id)}
         {@const kind = rowButtonKind(bot)}
         {@const url = eventMeetingUrl(event)}
+        {@const recurring = isRecurringMeeting(event)}
         <div class="meeting-row" class:past={state === 'past'}>
           <div class="mtime">
             {timeLabel(event)}{#if dur}<span class="mdur"> &middot; {dur}m</span>{/if}
@@ -79,7 +85,18 @@
               {#if state === 'live'}<span class="dot-live" aria-hidden="true">&#9679;</span>{:else if state === 'next'}<span
                   class="arrow-next"
                   aria-hidden="true">&#8593;</span
-                >{/if}{event.summary ?? '(no title)'}
+                >{/if}
+              <span class="meeting-title">{event.summary ?? '(no title)'}</span>
+              {#if recurring}
+                <span class="series-chip" title="series" aria-label="series" role="img">
+                  <svg width="12" height="12" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                    <path d="M3.5 4.5h5.8c.95 0 1.7.76 1.7 1.7v.3" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" />
+                    <path d="M8.8 2.8 11 4.5 8.8 6.2" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" />
+                    <path d="M10.5 9.5H4.7C3.76 9.5 3 8.74 3 7.8v-.3" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" />
+                    <path d="M5.2 11.2 3 9.5l2.2-1.7" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" />
+                  </svg>
+                </span>
+              {/if}
             </div>
             <div class="mcompany">{companyLabel(event, companyNames)}</div>
           </div>
@@ -120,7 +137,7 @@
                 type="button"
                 class="row-icon-btn row-icon-invite"
                 disabled={pending}
-                title={pending ? 'Inviting…' : 'Invite bot to this meeting'}
+                title={pending ? 'Inviting…' : recurring ? 'Invite bot to this series' : 'Invite bot to this meeting'}
                 aria-label="Invite bot"
                 onclick={() => onInvite(event)}
               >
@@ -137,8 +154,8 @@
                 type="button"
                 class="row-icon-btn row-icon-invited"
                 disabled={pending}
-                title={pending ? 'Cancelling…' : 'Bot scheduled — click to uninvite'}
-                aria-label="Uninvite bot"
+                title={pending ? 'Cancelling…' : recurring ? 'Bot scheduled for series — click to uninvite series' : 'Bot scheduled — click to uninvite'}
+                aria-label={recurring ? 'Uninvite bot from series' : 'Uninvite bot'}
                 onclick={() => onUninvite(event)}
               >
                 {#if pending}
@@ -154,8 +171,8 @@
                 type="button"
                 class="row-icon-btn row-icon-incall"
                 disabled={pending}
-                title={pending ? 'Removing bot…' : 'Bot is in the meeting — click to remove'}
-                aria-label="Remove bot from meeting"
+                title={pending ? 'Removing bot…' : recurring ? 'Bot is in this series — click to remove from series' : 'Bot is in the meeting — click to remove'}
+                aria-label={recurring ? 'Remove bot from series' : 'Remove bot from meeting'}
                 onclick={() => onUninvite(event)}
               >
                 {#if pending}
@@ -169,8 +186,8 @@
                 type="button"
                 class="row-icon-btn row-icon-joining"
                 disabled={pending}
-                title={pending ? 'Cancelling…' : 'Bot is joining — click to cancel'}
-                aria-label="Cancel bot join"
+                title={pending ? 'Cancelling…' : recurring ? 'Bot is joining this series — click to cancel series' : 'Bot is joining — click to cancel'}
+                aria-label={recurring ? 'Cancel bot series join' : 'Cancel bot join'}
                 onclick={() => onUninvite(event)}
               >
                 <span class="row-icon-spinner row-icon-spinner-amber" aria-hidden="true"></span>
@@ -313,12 +330,44 @@
   }
 
   .mname {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
     overflow: hidden;
     color: var(--fg);
     font-size: var(--text-base);
     line-height: 18px;
-    text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .meeting-title {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .series-chip {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
+    color: var(--muted-3);
+    line-height: 1;
+    opacity: 0.76;
+  }
+
+  .series-chip svg {
+    display: block;
+    width: 12px;
+    height: 12px;
+  }
+
+  .series-chip:hover {
+    color: var(--muted);
+    opacity: 1;
   }
 
   .dot-live {

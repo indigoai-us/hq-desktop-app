@@ -5,7 +5,14 @@ import {
   seedActiveMeetingsFromBackend,
 } from '../../lib/activeMeetings';
 import { loadMeetingsCache, saveMeetingsCache } from '../../lib/meetingsCache';
-import { eventMeetingUrl, friendlyError } from './meetings-model';
+import {
+  botForEvent,
+  calendarEventIdsForBotLookup,
+  eventMeetingUrl,
+  friendlyError,
+  mergeScheduledBotLookups,
+  recurringSeriesId,
+} from './meetings-model';
 import type {
   CompanyMembership,
   GoogleAccount,
@@ -30,6 +37,13 @@ export interface ToastDescriptor {
 interface AccountCalendars {
   calendars: GoogleCalendar[];
   selectedCalendarIds: string[];
+}
+
+interface CancelBotResult {
+  scope?: string | null;
+  cancelledCount?: number | null;
+  failedCount?: number | null;
+  recurringMeeting?: boolean;
 }
 
 // Poll cadence for the background refresh. Long enough to be cheap, short
@@ -57,6 +71,7 @@ let enabledCalIdsByAccount = $state<Map<string, Set<string>>>(new Map());
 // calendar snapshot (distinct from the live `meeting:detected` channel,
 // which is owned by ensureActiveMeetingListeners and left untouched).
 let botsByEventId = $state<Map<string, ScheduledBot>>(new Map());
+let allBots = $state<ScheduledBot[]>([]);
 // Persisted alongside the rest of the snapshot so the classic window and
 // the alt window stay in lockstep on the shared meetingsCache key.
 let companyNamesByUid = $state<Map<string, string>>(new Map());
@@ -85,6 +100,7 @@ function hydrateFromCache() {
   if (!snapshot) return;
   events = snapshot.events ?? [];
   botsByEventId = new Map(snapshot.botsByEventId ?? []);
+  allBots = snapshot.scheduledBots ?? (snapshot.botsByEventId ?? []).map(([, bot]) => bot);
   companyNamesByUid = new Map(snapshot.companyNamesByUid ?? []);
   accounts = snapshot.accounts ?? [];
   accountEmailById = new Map(snapshot.accountEmailById ?? []);
@@ -102,8 +118,9 @@ function hydrateFromCache() {
  * Live fetch — mirrors MeetingsWindow.svelte's mount `refresh()`. The alt
  * window must fetch calendar data itself: it can't piggyback on the classic
  * window's cache because localStorage is per-WebviewWindow. Fetches
- * events + bots + memberships + connected accounts in parallel, fans out to
- * per-account calendars, populates the model, and persists the snapshot.
+ * events + memberships + connected accounts, then fetches authoritative
+ * per-event bot state for the visible agenda before fanning out to calendars,
+ * populating the model, and persisting the snapshot.
  *
  * Errors are NOT swallowed to a blank state: on failure we keep whatever the
  * cache already painted, log the error, and surface a message (auth failures
@@ -115,11 +132,8 @@ async function refresh() {
   fetchError = '';
   membershipsError = '';
   try {
-    const [evts, bots, members, accts] = await Promise.all([
+    const [evts, members, accts] = await Promise.all([
       invoke<MeetingEvent[]>('meetings_list_upcoming'),
-      invoke<ScheduledBot[]>('meetings_list_scheduled_bots', {
-        calendarEventIds: null,
-      }),
       invoke<CompanyMembership[]>('meetings_list_memberships').catch((err) => {
         console.error('meetings_list_memberships failed:', err);
         membershipsError = 'Could not load calendar routing.';
@@ -130,7 +144,43 @@ async function refresh() {
       ),
     ]);
     events = evts ?? [];
-    botsByEventId = buildBotMap(bots ?? []);
+    const botEventIds = calendarEventIdsForBotLookup(evts ?? []);
+    let eventBotsErr: unknown = null;
+    let fullBotsErr: unknown = null;
+    const [eventBots, fullBots] = await Promise.all([
+      botEventIds.length === 0
+        ? Promise.resolve([] as ScheduledBot[])
+        : invoke<ScheduledBot[]>('meetings_list_scheduled_bots', {
+            calendarEventIds: botEventIds,
+          }).catch((err) => {
+            eventBotsErr = err;
+            console.error('meetings_list_scheduled_bots per-event failed:', err);
+            return null as ScheduledBot[] | null;
+          }),
+      invoke<ScheduledBot[]>('meetings_list_scheduled_bots', {
+        calendarEventIds: null,
+      }).catch((err) => {
+        fullBotsErr = err;
+        console.error('meetings_list_scheduled_bots full-list failed:', err);
+        return null as ScheduledBot[] | null;
+      }),
+    ]);
+    const bots = mergeScheduledBotLookups(botEventIds, eventBots, fullBots);
+    if (botEventIds.length > 0 && eventBots === null) {
+      fetchError = friendlyError(
+        eventBotsErr,
+        'Could not refresh meeting bot status.',
+      );
+    } else if (botEventIds.length === 0 && fullBots === null) {
+      fetchError = friendlyError(
+        fullBotsErr,
+        'Could not refresh meeting bot status.',
+      );
+    }
+    if (bots !== null) {
+      botsByEventId = buildBotMap(bots);
+      allBots = bots;
+    }
     memberships = members ?? [];
     companyNamesByUid = buildCompanyNameMap(members ?? []);
     accounts = accts ?? [];
@@ -188,6 +238,7 @@ async function loadCalendarsForAccounts(accts: GoogleAccount[]) {
 function persistSnapshot(): void {
   saveMeetingsCache<MeetingEvent, ScheduledBot, GoogleAccount, GoogleCalendar>({
     events,
+    scheduledBots: allBots,
     botsByEventId: Array.from(botsByEventId.entries()),
     companyNamesByUid: Array.from(companyNamesByUid.entries()),
     accounts,
@@ -271,6 +322,7 @@ async function inviteBot(evt: MeetingEvent): Promise<ToastDescriptor | null> {
     await invoke<ScheduledBot>('meetings_invite_bot', {
       meetingUrl: url,
       calendarEventId: evt.id,
+      calendarSeriesId: recurringSeriesId(evt),
       companyId: evt.sourceCompanyUid ?? null,
     });
     await refresh();
@@ -290,13 +342,16 @@ async function inviteBot(evt: MeetingEvent): Promise<ToastDescriptor | null> {
 /** Cancel the event's scheduled bot. No-op (returns null) when there's no bot
  *  on the row. No 409 special-case — a cancel conflict is a real failure. */
 async function cancelBot(evt: MeetingEvent): Promise<ToastDescriptor | null> {
-  const bot = botsByEventId.get(evt.id);
+  const bot = botForEvent(evt, botsByEventId, allBots);
   if (!bot) return null;
   const key = evt.id;
   if (!lockRow(key)) return null;
   try {
-    await invoke('meetings_cancel_bot', { botId: bot.botId });
+    const result = await invoke<CancelBotResult>('meetings_cancel_bot', { botId: bot.botId });
     await refresh();
+    if (result.scope === 'series' || result.recurringMeeting || (result.cancelledCount ?? 0) > 1) {
+      return { kind: 'info', text: 'Bot uninvited from series.' };
+    }
     return { kind: 'info', text: 'Bot uninvited.' };
   } catch (err) {
     return { kind: 'warn', text: friendlyError(err, "Couldn't remove the bot.") };
@@ -317,6 +372,7 @@ async function joinBotNow(evt: MeetingEvent): Promise<ToastDescriptor | null> {
     await invoke<ScheduledBot>('meetings_join_bot_now', {
       meetingUrl: url,
       calendarEventId: evt.id,
+      calendarSeriesId: recurringSeriesId(evt),
       companyId: evt.sourceCompanyUid ?? null,
     });
     await refresh();
@@ -401,6 +457,9 @@ export const meetingsStore = {
   },
   get botsByEventId() {
     return botsByEventId;
+  },
+  get scheduledBots() {
+    return allBots;
   },
   get companyNamesByUid() {
     return companyNamesByUid;
