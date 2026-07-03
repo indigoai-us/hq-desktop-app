@@ -76,7 +76,10 @@ fn github_client() -> Result<reqwest::Client, String> {
         .map_err(|e| format!("build GitHub client: {e}"))
 }
 
-async fn latest_release(client: &reqwest::Client, repo: &str) -> Result<Option<ReleaseInfo>, String> {
+async fn latest_release(
+    client: &reqwest::Client,
+    repo: &str,
+) -> Result<Option<ReleaseInfo>, String> {
     let url = format!("{GITHUB_API}/repos/{repo}/releases");
     let resp = client
         .get(&url)
@@ -108,7 +111,10 @@ async fn download_tarball(client: &reqwest::Client, url: &str) -> Result<Vec<u8>
         return Err(format!("template tarball not found (404): {url}"));
     }
     if !resp.status().is_success() {
-        return Err(format!("HTTP {} downloading template tarball", resp.status()));
+        return Err(format!(
+            "HTTP {} downloading template tarball",
+            resp.status()
+        ));
     }
 
     let mut bytes: Vec<u8> = Vec::new();
@@ -119,9 +125,7 @@ async fn download_tarball(client: &reqwest::Client, url: &str) -> Result<Vec<u8>
             Ok(Some(Err(e))) => return Err(format!("stream error downloading template: {e}")),
             Ok(None) => break,
             Err(_) => {
-                return Err(
-                    "Template download stalled before receiving more data.".to_string(),
-                )
+                return Err("Template download stalled before receiving more data.".to_string())
             }
         }
     }
@@ -136,7 +140,11 @@ fn has_unsafe_path_prefix(path: &str) -> bool {
     path.starts_with('/')
         || path.starts_with('\\')
         || path.contains(':')
-        || path.as_bytes().first().map(u8::is_ascii_alphabetic).unwrap_or(false)
+        || path
+            .as_bytes()
+            .first()
+            .map(u8::is_ascii_alphabetic)
+            .unwrap_or(false)
             && path.as_bytes().get(1) == Some(&b':')
 }
 
@@ -297,10 +305,15 @@ fn create_junction(target: &Path, link_path: &Path) -> Result<(), String> {
     use std::process::Command;
 
     let abs_target = lexical_absolute(target);
+    std::fs::create_dir_all(&abs_target)
+        .map_err(|e| format!("failed to create junction target dir {abs_target:?}: {e}"))?;
+
+    let link_arg = link_path.to_string_lossy().replace('/', "\\");
+    let target_arg = abs_target.to_string_lossy().replace('/', "\\");
     let out = Command::new("cmd")
         .args(["/C", "mklink", "/J"])
-        .arg(link_path)
-        .arg(&abs_target)
+        .arg(&link_arg)
+        .arg(&target_arg)
         .creation_flags(WINDOWS_CREATE_NO_WINDOW)
         .output()
         .map_err(|e| format!("failed to spawn mklink: {e}"))?;
@@ -308,13 +321,22 @@ fn create_junction(target: &Path, link_path: &Path) -> Result<(), String> {
         let stderr = String::from_utf8_lossy(&out.stderr);
         let stdout = String::from_utf8_lossy(&out.stdout);
         let detail = stderr.trim();
-        let detail = if detail.is_empty() { stdout.trim() } else { detail };
+        let detail = if detail.is_empty() {
+            stdout.trim()
+        } else {
+            detail
+        };
         return Err(format!(
-            "mklink /J {link_path:?} -> {abs_target:?} failed ({}): {detail}",
+            "mklink /J {link_arg:?} -> {target_arg:?} failed ({}): {detail}",
             out.status.code().unwrap_or(-1)
         ));
     }
     Ok(())
+}
+
+#[cfg(windows)]
+fn fallback_uses_copy(resolved_target: &Path) -> bool {
+    resolved_target.is_file()
 }
 
 /// Copy the bytes of `target` to `link_path` as a privilege-free substitute
@@ -324,7 +346,9 @@ fn create_junction(target: &Path, link_path: &Path) -> Result<(), String> {
 fn copy_file_fallback(target: &Path, link_path: &Path) -> Result<(), String> {
     let abs_target = lexical_absolute(target);
     if !abs_target.is_file() {
-        return Err(format!("target {abs_target:?} is not an existing file (cannot copy)"));
+        return Err(format!(
+            "target {abs_target:?} is not an existing file (cannot copy)"
+        ));
     }
     std::fs::copy(&abs_target, link_path)
         .map(|_| ())
@@ -391,10 +415,10 @@ fn create_symlink_impl(target: &Path, link_path: &Path) -> Result<(), String> {
         Err(e) if e.raw_os_error() == Some(WINDOWS_ERROR_PRIVILEGE_NOT_HELD) => {
             // No Developer Mode / elevation: fall back to a privilege-free
             // junction for dir targets, or a byte copy for file targets.
-            let fallback = if target_is_dir {
-                create_junction(&resolved_target, link_path)
-            } else {
+            let fallback = if fallback_uses_copy(&resolved_target) {
                 copy_file_fallback(&resolved_target, link_path)
+            } else {
+                create_junction(&resolved_target, link_path)
             };
             fallback.map_err(|fallback_err| {
                 format!(
@@ -403,7 +427,9 @@ fn create_symlink_impl(target: &Path, link_path: &Path) -> Result<(), String> {
                 )
             })
         }
-        Err(e) => Err(format!("failed to create symlink {link_path:?} -> {win_target:?}: {e}")),
+        Err(e) => Err(format!(
+            "failed to create symlink {link_path:?} -> {win_target:?}: {e}"
+        )),
     }
 }
 
@@ -524,7 +550,8 @@ fn extract_tarball(compressed: &[u8], target_dir: &Path) -> Result<(), String> {
                 entry
                     .read_to_end(&mut buf)
                     .map_err(|e| format!("failed to read {relative} from archive: {e}"))?;
-                std::fs::write(&dest, &buf).map_err(|e| format!("failed to write {dest:?}: {e}"))?;
+                std::fs::write(&dest, &buf)
+                    .map_err(|e| format!("failed to write {dest:?}: {e}"))?;
                 set_entry_mode(&dest, mode)?;
             }
             _ => {
@@ -656,7 +683,10 @@ mod tests {
             map_entry_to_template_path("indigoai-us-hq-core-abc123/"),
             None
         );
-        assert_eq!(map_entry_to_template_path("indigoai-us-hq-core-abc123"), None);
+        assert_eq!(
+            map_entry_to_template_path("indigoai-us-hq-core-abc123"),
+            None
+        );
     }
 
     /// Write a raw tar entry name directly into the header's 100-byte name
@@ -743,11 +773,7 @@ mod tests {
                 file_header(4, 0o644),
                 Some(b"evil".to_vec()),
             ),
-            (
-                evil_symlink.as_str(),
-                symlink_header("/etc/passwd"),
-                None,
-            ),
+            (evil_symlink.as_str(), symlink_header("/etc/passwd"), None),
         ];
         let archive = build_test_tarball(&entries);
 
@@ -807,12 +833,19 @@ mod tests {
             .await
             .expect("release lookup")
             .expect("a stable hq-core release must exist");
-        eprintln!("resolved latest stable hq-core release: {}", release.tag_name);
+        eprintln!(
+            "resolved latest stable hq-core release: {}",
+            release.tag_name
+        );
 
         let bytes = download_tarball(&client, &release.tarball_url)
             .await
             .expect("tarball download");
-        assert!(bytes.len() > 10_000, "tarball suspiciously small: {} bytes", bytes.len());
+        assert!(
+            bytes.len() > 10_000,
+            "tarball suspiciously small: {} bytes",
+            bytes.len()
+        );
 
         let dir = tempdir().unwrap();
         extract_tarball(&bytes, dir.path()).expect("real tarball must extract cleanly");
@@ -820,7 +853,10 @@ mod tests {
         // Spot-check the real HQ template landed with its signature files and
         // that at least one of its git symlinks (e.g. AGENTS.md -> .claude/
         // CLAUDE.md) came through as a real symlink, not a broken/empty file.
-        assert!(dir.path().join(".claude").is_dir(), ".claude/ missing from extracted template");
+        assert!(
+            dir.path().join(".claude").is_dir(),
+            ".claude/ missing from extracted template"
+        );
         let agents = dir.path().join("AGENTS.md");
         if agents.exists() {
             let meta = std::fs::symlink_metadata(&agents).unwrap();
@@ -833,5 +869,84 @@ mod tests {
             std::fs::read_dir(dir.path()).unwrap().count(),
             dir.path().display()
         );
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_junction_tests {
+    use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+    use tempfile::TempDir;
+
+    fn setup() -> TempDir {
+        tempfile::tempdir().expect("tmpdir")
+    }
+
+    #[test]
+    fn create_junction_creates_missing_target_dir() {
+        // Installer regression: `.agents/skills -> ../.claude/skills` is linked
+        // before `.claude/skills` exists. The no-admin junction fallback must
+        // create the target dir first.
+        let dir = setup();
+        let target = dir.path().join(".claude").join("skills");
+        assert!(!target.exists());
+        let link = dir.path().join(".agents").join("skills");
+        fs::create_dir_all(link.parent().unwrap()).expect("mk link parent");
+
+        create_junction(&target, &link).expect("junction to a not-yet-created target dir");
+
+        assert!(target.is_dir(), "junction target dir should be created");
+        fs::write(link.join("probe.md"), b"x").expect("write through junction");
+        assert!(
+            target.join("probe.md").is_file(),
+            "write through the junction must land in the real target dir"
+        );
+    }
+
+    #[test]
+    fn fallback_routes_missing_or_dir_target_to_junction_not_copy() {
+        // Only an existing file copies; an existing dir or a not-yet-created dir
+        // target must use the junction path.
+        let dir = setup();
+
+        let file_target = dir.path().join("CLAUDE.md");
+        fs::write(&file_target, b"x").expect("seed file");
+        assert!(fallback_uses_copy(&file_target), "existing file -> copy");
+
+        let dir_target = dir.path().join("skills");
+        fs::create_dir(&dir_target).expect("seed dir");
+        assert!(!fallback_uses_copy(&dir_target), "existing dir -> junction");
+
+        let missing = dir.path().join(".claude").join("skills");
+        assert!(
+            !fallback_uses_copy(&missing),
+            "not-yet-created dir target -> junction (not copy)"
+        );
+    }
+
+    #[test]
+    fn create_junction_handles_forward_slash_link_path() {
+        // cmd's mklink builtin parses the first `/segment` in a forward-slash
+        // link path as a switch, so the junction fallback must backslash-normalize.
+        let dir = setup();
+        let target = dir.path().join("realdir");
+        let link_fwd = format!(
+            "{}/linkjunction",
+            dir.path().to_string_lossy().replace('\\', "/")
+        );
+        assert!(
+            link_fwd.contains('/'),
+            "precondition: link path must use forward slashes, got {link_fwd}"
+        );
+        let link = PathBuf::from(&link_fwd);
+
+        create_junction(&target, &link)
+            .expect("junction must be created despite a forward-slash link path");
+
+        let meta = fs::symlink_metadata(&link).expect("stat link");
+        assert!(meta.file_type().is_symlink());
+        fs::write(link.join("probe.txt"), b"ok").expect("write through junction");
+        assert!(target.join("probe.txt").exists());
     }
 }
