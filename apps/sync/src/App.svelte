@@ -19,6 +19,7 @@
   import { transferCountDelta } from './lib/transfer-count';
   import { effectiveTotalFiles as computeEffectiveTotalFiles } from './lib/effective-total-files';
   import { shouldSkipSignIn } from './lib/auth';
+  import { shouldRecheckAuthOnFocus } from './lib/authRecheckGate';
   import { isOnboardingState, type LifecycleState } from './lib/lifecycle';
   import { friendlyCompanyLabel } from './lib/company-label';
   import type { Workspace, WorkspacesResult } from './lib/workspaces';
@@ -929,6 +930,7 @@
           //    (transient core.yaml/folder-resolution race) without a relaunch
           // Set is a typed contract in lib/popover-refresh — see its test.
           refreshOnPopoverOpen({ loadWorkspaces, refreshHqCliUpdate, loadHqVersion });
+          if (shouldRecheckAuthOnFocus(focused, authenticated)) void checkAuth();
         }
       })
     );
