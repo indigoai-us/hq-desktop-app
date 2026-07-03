@@ -3,11 +3,15 @@ import { get } from 'svelte/store';
 import {
   activeRecordingsFromScheduledBots,
   botForEvent,
+  buildRefreshProblemReport,
   buildConnectedCalendarRows,
   calendarEventIdsForBotLookup,
   dayLabel,
   groupByDay,
+  isAuthError,
   isRecurringMeeting,
+  MEETINGS_STALE_NOTICE_FAILURES,
+  meetingsRefreshGate,
   mergeScheduledBotLookups,
   mergeScheduledBots,
   pickLiveMeeting,
@@ -420,6 +424,90 @@ describe('meetings-model', () => {
       expect(mergeScheduledBotLookups([], null, [fullListBot])).toEqual([
         fullListBot,
       ]);
+    });
+  });
+
+  describe('meetings refresh stale gate', () => {
+    it('stays silent until N consecutive failures, then shows a muted stale notice', () => {
+      let failures = 0;
+      for (let i = 1; i < MEETINGS_STALE_NOTICE_FAILURES; i += 1) {
+        const gate = meetingsRefreshGate(
+          failures,
+          'Error: 503 Service Unavailable',
+          MEETINGS_STALE_NOTICE_FAILURES,
+        );
+        failures = gate.consecutiveFailures;
+        expect(gate.notice).toBe('');
+        expect(gate.refreshBlocked).toBe(false);
+      }
+
+      const blocked = meetingsRefreshGate(
+        failures,
+        'Error: 503 Service Unavailable',
+        MEETINGS_STALE_NOTICE_FAILURES,
+      );
+      expect(blocked.consecutiveFailures).toBe(MEETINGS_STALE_NOTICE_FAILURES);
+      expect(blocked.notice).toBe(
+        'Showing your last synced meetings — couldn’t refresh just now.',
+      );
+      expect(blocked.notice).not.toMatch(/could not refresh/i);
+      expect(blocked.refreshBlocked).toBe(true);
+    });
+
+    it('resets the failure streak on success', () => {
+      const reset = meetingsRefreshGate(
+        MEETINGS_STALE_NOTICE_FAILURES,
+        null,
+        MEETINGS_STALE_NOTICE_FAILURES,
+      );
+      expect(reset).toEqual({
+        consecutiveFailures: 0,
+        notice: '',
+        refreshBlocked: false,
+      });
+
+      const firstMissAfterSuccess = meetingsRefreshGate(
+        reset.consecutiveFailures,
+        'Error: 503 Service Unavailable',
+        MEETINGS_STALE_NOTICE_FAILURES,
+      );
+      expect(firstMissAfterSuccess.notice).toBe('');
+      expect(firstMissAfterSuccess.refreshBlocked).toBe(false);
+    });
+
+    it('shows auth failures immediately without enabling the report action', () => {
+      const gate = meetingsRefreshGate(0, 'Error: 401 Unauthorized');
+
+      expect(isAuthError('auth token expired')).toBe(true);
+      expect(gate.notice).toBe('Sign in again to load meetings.');
+      expect(gate.refreshBlocked).toBe(false);
+    });
+  });
+
+  describe('buildRefreshProblemReport', () => {
+    it('attaches the raw error and refresh context', () => {
+      const report = buildRefreshProblemReport({
+        notice: 'Showing your last synced meetings — couldn’t refresh just now.',
+        rawError: 'Error: 503 Service Unavailable',
+        meetingsShown: 14,
+        connectedAccounts: 2,
+      });
+
+      expect(report.title).toBe("HQ Sync: Meetings won't refresh");
+      expect(report.body).toContain('Error: 503 Service Unavailable');
+      expect(report.body).toContain('Meetings currently shown: 14');
+      expect(report.body).toContain('Connected accounts: 2');
+    });
+
+    it('falls back gracefully when no raw error was captured', () => {
+      const report = buildRefreshProblemReport({
+        notice: '',
+        rawError: '',
+        meetingsShown: 0,
+        connectedAccounts: 0,
+      });
+
+      expect(report.body).toContain('Last refresh error: (none captured)');
     });
   });
 

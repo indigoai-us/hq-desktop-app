@@ -19,7 +19,10 @@
   import { isAlreadyScheduledError } from '../lib/invite-errors';
   import {
     botForEvent,
+    buildRefreshProblemReport,
     calendarEventIdsForBotLookup,
+    MEETINGS_STALE_NOTICE_FAILURES,
+    meetingsRefreshGate,
     mergeScheduledBotLookups,
   } from '../desktop-alt/lib/meetings-model';
   import {
@@ -181,6 +184,11 @@
   let loading = $state(false);
   let primaryLoaded = $state(false);
   let listError = $state<string | null>(null);
+  let refreshNotice = $state<string | null>(null);
+  let refreshBlocked = $state(false);
+  let refreshFailureCount = 0;
+  let lastRefreshErrorRaw = '';
+  let reportingRefreshProblem = $state(false);
   let toast = $state<{ kind: 'info' | 'warn'; text: string } | null>(null);
 
   // ── Live meeting-detect bridge ────────────────────────────────────────
@@ -515,7 +523,6 @@
     // matches the existing refresh-button-disabled-while-loading UX.
     if (loading) return;
     loading = true;
-    listError = null;
     try {
       // Fetch events + memberships + connected accounts in parallel, then
       // fetch bots using the actual event ids. hq-pro's full bot list is a
@@ -547,7 +554,15 @@
       // Primary content is now ready. Update the render-driving state before
       // the secondary bot/calendar fan-outs so the detached window can move
       // past the cold Loading placeholder under degraded network conditions.
-      if (evts !== null) events = evts;
+      if (evts !== null) {
+        events = evts;
+        const resetGate = meetingsRefreshGate(refreshFailureCount, null);
+        refreshFailureCount = resetGate.consecutiveFailures;
+        refreshNotice = null;
+        refreshBlocked = false;
+        lastRefreshErrorRaw = '';
+        listError = null;
+      }
       memberships = membershipRows ?? [];
       companyNamesByUid = buildCompanyNameMap(membershipRows ?? []);
       accounts = accts ?? [];
@@ -555,7 +570,15 @@
         (accts ?? []).map((a) => [a.accountId, a.email ?? '']),
       );
       if (upcomingErr !== null) {
-        listError = friendlyError(upcomingErr, 'Could not load meetings.');
+        lastRefreshErrorRaw = String(upcomingErr ?? '');
+        const gate = meetingsRefreshGate(
+          refreshFailureCount,
+          upcomingErr,
+          MEETINGS_STALE_NOTICE_FAILURES,
+        );
+        refreshFailureCount = gate.consecutiveFailures;
+        refreshNotice = gate.notice || null;
+        refreshBlocked = gate.refreshBlocked;
       }
       primaryLoaded = true;
 
@@ -582,9 +605,7 @@
       if (botEventIds.length > 0 && eventBots === null) botsErr = eventBotsErr;
       else if (botEventIds.length === 0 && fullBots === null) botsErr = fullBotsErr;
       // Only overwrite on success so a transient 500 keeps the last good
-      // snapshot in memory until recovery. The error banner still wins in
-      // the render branch order, but the cached state is correct for the
-      // next successful refresh.
+      // snapshot in memory until recovery.
       if (bots !== null) {
         botsByEventId = buildBotMap(bots);
         allBots = bots;
@@ -597,27 +618,30 @@
       // accountId as the badge fallback.
       await loadCalendarsForAccounts(accts ?? []);
 
-      // Surface the upstream error through friendlyError() so the user
-      // sees "Server hiccup — try again in a moment." instead of a raw
-      // `events HTTP 500: {"message":"Internal Server Error"}` blob.
-      // listError gets cleared at the top of the next refresh(), so the
-      // 30s poll drops this banner the moment hq-pro recovers.
       if (upcomingErr === null && botsErr !== null) {
-        listError = friendlyError(botsErr, 'Could not load meetings.');
+        refreshNotice = friendlyError(botsErr, 'Could not load meetings.');
+        refreshBlocked = false;
+        lastRefreshErrorRaw = String(botsErr ?? '');
       }
 
       // Persist after EVERYTHING (events + calendars) so the next open
-      // hydrates a complete view — calendar maps need to be in the cache
-      // too or the filter dropdown would be empty on next paint until the
-      // second refresh ran. Best-effort: any write failure is swallowed
-      // inside saveMeetingsCache and never breaks this code path.
-      persistSnapshot();
+      // hydrates a complete view. Skip writes while the primary events fetch
+      // is stale so a failed poll cannot overwrite the last good snapshot.
+      if (upcomingErr === null) {
+        persistSnapshot();
+      }
     } catch (err) {
       // Defensive backstop. Network errors are caught per-call above; this
-      // only fires on an unexpected throw in the post-Promise.all body
-      // (e.g. a serialization bug). Route through friendlyError() too so
-      // a programming bug doesn't dump a stack trace into the UI either.
-      listError = friendlyError(err, 'Could not load meetings.');
+      // only fires on an unexpected throw in the post-Promise.all body.
+      lastRefreshErrorRaw = String(err ?? '');
+      const gate = meetingsRefreshGate(
+        refreshFailureCount,
+        err,
+        MEETINGS_STALE_NOTICE_FAILURES,
+      );
+      refreshFailureCount = gate.consecutiveFailures;
+      refreshNotice = gate.notice || null;
+      refreshBlocked = gate.refreshBlocked;
     } finally {
       primaryLoaded = true;
       loading = false;
@@ -966,6 +990,25 @@
     setTimeout(() => {
       if (toast && toast.text === text) toast = null;
     }, 4000);
+  }
+
+  async function onReportRefreshProblem(): Promise<void> {
+    if (reportingRefreshProblem) return;
+    reportingRefreshProblem = true;
+    const { title, body } = buildRefreshProblemReport({
+      notice: refreshNotice ?? '',
+      rawError: lastRefreshErrorRaw,
+      meetingsShown: events.length,
+      connectedAccounts: accounts.length,
+    });
+    try {
+      await invoke('submit_bug_report', { title, body });
+      flashToast('info', 'Thanks — bug report filed.');
+    } catch (err) {
+      flashToast('warn', friendlyError(err, 'Could not file the report — try /hq-bug.'));
+    } finally {
+      reportingRefreshProblem = false;
+    }
   }
 
   interface DayGroup {
@@ -1428,6 +1471,22 @@
   {#if toast}
     <p class="toast" class:toast-warn={toast.kind === 'warn'}>
       {toast.text}
+    </p>
+  {/if}
+
+  {#if refreshNotice}
+    <p class="refresh-notice" role="status">
+      <span>{refreshNotice}</span>
+      {#if refreshBlocked}
+        <button
+          type="button"
+          class="refresh-report"
+          onclick={onReportRefreshProblem}
+          disabled={reportingRefreshProblem}
+        >
+          {reportingRefreshProblem ? 'Reporting…' : 'Report a problem'}
+        </button>
+      {/if}
     </p>
   {/if}
 
@@ -2020,6 +2079,35 @@
     background: rgba(202, 138, 4, 0.10);
     border-color: rgba(202, 138, 4, 0.40);
     color: #fcd34d;
+  }
+
+  .refresh-notice {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin: 8px 18px 0;
+    color: #a1a1aa;
+    font-size: var(--text-base);
+    line-height: 18px;
+  }
+  .refresh-report {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: #e4e4e7;
+    font: inherit;
+    font-size: var(--text-base);
+    line-height: 18px;
+    text-decoration: underline;
+    cursor: pointer;
+  }
+  .refresh-report:hover:not(:disabled) {
+    color: #bfdbfe;
+  }
+  .refresh-report:disabled {
+    opacity: 0.55;
+    cursor: wait;
   }
 
   .meetings-body {
