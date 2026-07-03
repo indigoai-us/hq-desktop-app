@@ -117,18 +117,25 @@ export class StageTimeoutError extends Error {
 
 /**
  * Resolve/reject with `promise`, but reject with `onTimeout()` if it hasn't
- * settled within `ms`. The underlying work is not cancelled — a slow stage's
- * process keeps running in the background; we just stop blocking the wizard on
- * it. A non-positive `ms` disables the timeout.
+ * settled within `ms`. A caller can pass `onTimeoutCancel` to stop foreground
+ * backend work before the wizard moves on. A non-positive `ms` disables the
+ * timeout.
  */
 export function withTimeout<T>(
   promise: Promise<T>,
   ms: number,
   onTimeout: () => Error,
+  onTimeoutCancel?: () => void | Promise<void>,
 ): Promise<T> {
   if (!(ms > 0)) return promise;
   return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(onTimeout()), ms);
+    const timer = setTimeout(() => {
+      try {
+        void onTimeoutCancel?.();
+      } finally {
+        reject(onTimeout());
+      }
+    }, ms);
     promise.then(
       (value) => {
         clearTimeout(timer);

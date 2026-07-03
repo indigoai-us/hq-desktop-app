@@ -5,7 +5,7 @@
 //! tools use a user-local HQ-managed toolchain when possible; Homebrew remains
 //! an optional system package-manager provider.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader};
 #[cfg(windows)]
 use std::mem::size_of;
@@ -23,6 +23,7 @@ use std::time::Duration;
 #[cfg(not(windows))]
 use std::time::Instant;
 
+use futures_util::future::join_all;
 #[cfg(unix)]
 use nix::sys::signal::{self, Signal};
 #[cfg(unix)]
@@ -1284,6 +1285,7 @@ async fn run_streaming(app: &AppHandle, program: &str, args: &[&str]) -> Result<
         }
     };
     register_process_group(&handle_id, child.id() as i32);
+    emit_install_handle_started(app, &handle_id);
 
     let stdout = match child.stdout.take() {
         Some(stdout) => stdout,
@@ -2849,6 +2851,7 @@ async fn run_streaming(app: &AppHandle, program: &str, args: &[&str]) -> Result<
         return Err(e);
     }
     register_job_handle(&handle_id, job.clone());
+    emit_install_handle_started(app, &handle_id);
     if is_cancelled(&handle_id) {
         if let Err(e) = terminate_process_tree(&handle_id) {
             record_kill_error(&handle_id, e);
@@ -4030,13 +4033,199 @@ fn patch_hq_cli_pack_install_rsync_at(target: &Path) -> Result<(), String> {
     Ok(())
 }
 
-struct OrchestratedDep {
+#[derive(Debug, Clone, Copy)]
+struct DepDef {
     id: &'static str,
     label: &'static str,
     binary: &'static str,
+    optional: bool,
+    depends_on: &'static [&'static str],
 }
 
-async fn install_orchestrated_dep(app: &AppHandle, dep: &OrchestratedDep) -> Result<(), String> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DepInstallStatus {
+    Ok,
+    Skipped,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DepInstallResult {
+    id: &'static str,
+    label: &'static str,
+    optional: bool,
+    status: DepInstallStatus,
+    error: Option<String>,
+}
+
+const DEP_DEFS: &[DepDef] = &[
+    DepDef {
+        id: "node",
+        label: "Node.js",
+        binary: "node",
+        optional: false,
+        depends_on: &[],
+    },
+    DepDef {
+        id: "yq",
+        label: "yq",
+        binary: "yq",
+        optional: false,
+        depends_on: &[],
+    },
+    DepDef {
+        id: "qmd",
+        label: "qmd",
+        binary: "qmd",
+        optional: false,
+        depends_on: &["node"],
+    },
+    DepDef {
+        id: "hq-cli",
+        label: "HQ CLI",
+        binary: "hq",
+        optional: false,
+        depends_on: &["node"],
+    },
+    DepDef {
+        id: "git",
+        label: "Git",
+        binary: "git",
+        optional: false,
+        depends_on: &[],
+    },
+    DepDef {
+        id: "gh",
+        label: "GitHub CLI",
+        binary: "gh",
+        optional: true,
+        depends_on: &[],
+    },
+    DepDef {
+        id: "claude-code",
+        label: "Claude Code",
+        binary: "claude",
+        optional: true,
+        depends_on: &["node"],
+    },
+    DepDef {
+        id: "homebrew",
+        label: "Homebrew",
+        binary: "brew",
+        optional: true,
+        depends_on: &[],
+    },
+];
+
+fn dependency_defs() -> &'static [DepDef] {
+    DEP_DEFS
+}
+
+fn skipped_optional_result(dep: &DepDef) -> DepInstallResult {
+    DepInstallResult {
+        id: dep.id,
+        label: dep.label,
+        optional: dep.optional,
+        status: DepInstallStatus::Skipped,
+        error: None,
+    }
+}
+
+fn premark_optional_results(deps: &[DepDef]) -> HashMap<&'static str, DepInstallResult> {
+    deps.iter()
+        .filter(|dep| dep.optional)
+        .map(|dep| (dep.id, skipped_optional_result(dep)))
+        .collect()
+}
+
+fn ready_required_deps<'a>(
+    deps: &'a [DepDef],
+    result_by_id: &HashMap<&'static str, DepInstallResult>,
+    ok_set: &HashSet<&'static str>,
+) -> Vec<&'a DepDef> {
+    deps.iter()
+        .filter(|dep| {
+            !dep.optional
+                && !result_by_id.contains_key(dep.id)
+                && dep.depends_on.iter().all(|parent| ok_set.contains(parent))
+        })
+        .collect()
+}
+
+fn blocked_required_results(
+    deps: &[DepDef],
+    result_by_id: &HashMap<&'static str, DepInstallResult>,
+    ok_set: &HashSet<&'static str>,
+) -> Vec<DepInstallResult> {
+    deps.iter()
+        .filter(|dep| !dep.optional && !result_by_id.contains_key(dep.id))
+        .map(|dep| {
+            let missing: Vec<&str> = dep
+                .depends_on
+                .iter()
+                .copied()
+                .filter(|parent| !ok_set.contains(parent))
+                .collect();
+            let error = if missing.is_empty() {
+                "Dependency was not processed".to_string()
+            } else {
+                format!("Prerequisite not installed: {}", missing.join(", "))
+            };
+            DepInstallResult {
+                id: dep.id,
+                label: dep.label,
+                optional: dep.optional,
+                status: DepInstallStatus::Failed,
+                error: Some(error),
+            }
+        })
+        .collect()
+}
+
+fn result_from_install(dep: &DepDef, install_result: Result<(), String>) -> DepInstallResult {
+    match install_result {
+        Ok(()) => DepInstallResult {
+            id: dep.id,
+            label: dep.label,
+            optional: dep.optional,
+            status: DepInstallStatus::Ok,
+            error: None,
+        },
+        Err(err) => DepInstallResult {
+            id: dep.id,
+            label: dep.label,
+            optional: dep.optional,
+            status: DepInstallStatus::Failed,
+            error: Some(err),
+        },
+    }
+}
+
+fn emit_install_line(app: &AppHandle, msg: &str) {
+    let _ = app.emit(
+        "install:progress",
+        InstallProgress {
+            handle: "preflight".to_string(),
+            line: msg.to_string(),
+            finished: false,
+            error: None,
+        },
+    );
+}
+
+fn emit_install_handle_started(app: &AppHandle, handle: &str) {
+    let _ = app.emit(
+        "install:progress",
+        InstallProgress {
+            handle: handle.to_string(),
+            line: String::new(),
+            finished: false,
+            error: None,
+        },
+    );
+}
+
+async fn install_orchestrated_dep(app: &AppHandle, dep: &DepDef) -> Result<(), String> {
     if check_dep_impl(dep.binary, None).installed {
         return Ok(());
     }
@@ -4066,57 +4255,65 @@ async fn install_orchestrated_dep(app: &AppHandle, dep: &OrchestratedDep) -> Res
 
 #[tauri::command]
 pub async fn install_deps(app: AppHandle) -> Result<(), String> {
-    let deps = [
-        #[cfg(not(windows))]
-        OrchestratedDep {
-            id: "homebrew",
-            label: "Homebrew",
-            binary: "brew",
-        },
-        OrchestratedDep {
-            id: "git",
-            label: "Git",
-            binary: "git",
-        },
-        OrchestratedDep {
-            id: "gh",
-            label: "GitHub CLI",
-            binary: "gh",
-        },
-        OrchestratedDep {
-            id: "node",
-            label: "Node.js",
-            binary: "node",
-        },
-        OrchestratedDep {
-            id: "claude-code",
-            label: "Claude Code",
-            binary: "claude",
-        },
-        OrchestratedDep {
-            id: "qmd",
-            label: "qmd",
-            binary: "qmd",
-        },
-        OrchestratedDep {
-            id: "hq-cli",
-            label: "HQ CLI",
-            binary: "hq",
-        },
-        OrchestratedDep {
-            id: "yq",
-            label: "yq",
-            binary: "yq",
-        },
-    ];
+    let deps = dependency_defs();
+    let mut result_by_id = premark_optional_results(deps);
+    let mut ok_set: HashSet<&'static str> = HashSet::new();
 
-    let mut failures = Vec::new();
-    for dep in deps {
-        if let Err(err) = install_orchestrated_dep(&app, &dep).await {
-            let summary = err.lines().next().unwrap_or("installation failed").trim();
-            failures.push(format!("{}: {}", dep.label, summary));
+    for dep in deps.iter().filter(|dep| dep.optional) {
+        emit_install_line(
+            &app,
+            &format!("[{}] Optional dependency skipped: {}", dep.id, dep.label),
+        );
+    }
+
+    loop {
+        let ready = ready_required_deps(deps, &result_by_id, &ok_set);
+        if ready.is_empty() {
+            break;
+        }
+
+        let settled = join_all(ready.into_iter().map(|dep| {
+            let app = app.clone();
+            async move {
+                let install_result = install_orchestrated_dep(&app, dep).await;
+                result_from_install(dep, install_result)
+            }
+        }))
+        .await;
+
+        for result in settled {
+            if result.status == DepInstallStatus::Ok {
+                ok_set.insert(result.id);
+            }
+            result_by_id.insert(result.id, result);
         }
     }
+
+    for result in blocked_required_results(deps, &result_by_id, &ok_set) {
+        if let Some(error) = result.error.as_deref() {
+            emit_install_line(&app, &format!("[{}] {}", result.id, error));
+        }
+        result_by_id.insert(result.id, result);
+    }
+
+    let failures: Vec<String> = deps
+        .iter()
+        .filter_map(|dep| {
+            let result = result_by_id.get(dep.id)?;
+            if result.optional || result.status != DepInstallStatus::Failed {
+                return None;
+            }
+            let summary = result
+                .error
+                .as_deref()
+                .unwrap_or("installation failed")
+                .lines()
+                .next()
+                .unwrap_or("installation failed")
+                .trim();
+            Some(format!("{}: {}", result.label, summary))
+        })
+        .collect();
 
     if failures.is_empty() {
         Ok(())
@@ -4125,6 +4322,131 @@ pub async fn install_deps(app: AppHandle) -> Result<(), String> {
             "Dependency install failed: {}",
             failures.join("; ")
         ))
+    }
+}
+
+#[cfg(test)]
+mod install_deps_planner_tests {
+    use super::*;
+
+    fn ids(deps: Vec<&DepDef>) -> Vec<&'static str> {
+        deps.into_iter().map(|dep| dep.id).collect()
+    }
+
+    fn ok_result(dep: &DepDef) -> DepInstallResult {
+        DepInstallResult {
+            id: dep.id,
+            label: dep.label,
+            optional: dep.optional,
+            status: DepInstallStatus::Ok,
+            error: None,
+        }
+    }
+
+    fn failed_result(dep: &DepDef) -> DepInstallResult {
+        DepInstallResult {
+            id: dep.id,
+            label: dep.label,
+            optional: dep.optional,
+            status: DepInstallStatus::Failed,
+            error: Some("boom".to_string()),
+        }
+    }
+
+    #[test]
+    fn planner_pre_marks_optional_deps_as_skipped() {
+        let deps = dependency_defs();
+        let result_by_id = premark_optional_results(deps);
+
+        for dep_id in ["gh", "claude-code", "homebrew"] {
+            let result = result_by_id
+                .get(dep_id)
+                .expect("optional dep should be pre-marked");
+            assert!(result.optional);
+            assert_eq!(result.status, DepInstallStatus::Skipped);
+        }
+        for dep_id in ["node", "yq", "qmd", "hq-cli", "git"] {
+            assert!(
+                !result_by_id.contains_key(dep_id),
+                "required dep should not be pre-marked: {dep_id}"
+            );
+        }
+    }
+
+    #[test]
+    fn planner_gates_qmd_and_hq_cli_on_node() {
+        let deps = dependency_defs();
+        let mut result_by_id = premark_optional_results(deps);
+        let mut ok_set = HashSet::new();
+
+        assert_eq!(
+            ids(ready_required_deps(deps, &result_by_id, &ok_set)),
+            vec!["node", "yq", "git"]
+        );
+
+        for dep_id in ["node", "yq", "git"] {
+            let dep = deps.iter().find(|dep| dep.id == dep_id).unwrap();
+            result_by_id.insert(dep.id, ok_result(dep));
+            ok_set.insert(dep.id);
+        }
+
+        assert_eq!(
+            ids(ready_required_deps(deps, &result_by_id, &ok_set)),
+            vec!["qmd", "hq-cli"]
+        );
+    }
+
+    #[test]
+    fn planner_propagates_parent_failure_to_dependents() {
+        let deps = dependency_defs();
+        let mut result_by_id = premark_optional_results(deps);
+        let mut ok_set = HashSet::new();
+
+        for dep_id in ["yq", "git"] {
+            let dep = deps.iter().find(|dep| dep.id == dep_id).unwrap();
+            result_by_id.insert(dep.id, ok_result(dep));
+            ok_set.insert(dep.id);
+        }
+        let node = deps.iter().find(|dep| dep.id == "node").unwrap();
+        result_by_id.insert(node.id, failed_result(node));
+
+        let blocked = blocked_required_results(deps, &result_by_id, &ok_set);
+        assert_eq!(
+            blocked.iter().map(|result| result.id).collect::<Vec<_>>(),
+            vec!["qmd", "hq-cli"]
+        );
+        for result in blocked {
+            assert_eq!(result.status, DepInstallStatus::Failed);
+            assert_eq!(
+                result.error.as_deref(),
+                Some("Prerequisite not installed: node")
+            );
+        }
+    }
+
+    #[test]
+    fn planner_selects_each_ready_wave() {
+        let deps = dependency_defs();
+        let mut result_by_id = premark_optional_results(deps);
+        let mut ok_set = HashSet::new();
+        let mut waves = Vec::new();
+
+        loop {
+            let ready = ready_required_deps(deps, &result_by_id, &ok_set);
+            if ready.is_empty() {
+                break;
+            }
+            waves.push(ids(ready.clone()));
+            for dep in ready {
+                result_by_id.insert(dep.id, ok_result(dep));
+                ok_set.insert(dep.id);
+            }
+        }
+
+        assert_eq!(
+            waves,
+            vec![vec!["node", "yq", "git"], vec!["qmd", "hq-cli"]]
+        );
     }
 }
 
