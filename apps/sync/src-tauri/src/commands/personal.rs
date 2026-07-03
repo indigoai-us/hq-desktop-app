@@ -673,6 +673,26 @@ async fn validate_cache_via_list(
     Ok(entities.iter().any(|e| e.uid == cache.person_uid))
 }
 
+async fn list_person_entities_with_retry(
+    vault: &VaultClient,
+) -> Result<Vec<EntityInfo>, VaultClientError> {
+    const MAX_ATTEMPTS: usize = 3;
+    const INITIAL_BACKOFF_MS: u64 = 200;
+
+    let mut attempt = 1;
+    loop {
+        match vault.list_entities_by_type("person").await {
+            Ok(entities) => return Ok(entities),
+            Err(err) if attempt >= MAX_ATTEMPTS => return Err(err),
+            Err(_) => {
+                let backoff_ms = INITIAL_BACKOFF_MS * (1_u64 << (attempt - 1));
+                tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+                attempt += 1;
+            }
+        }
+    }
+}
+
 /// Provision the caller's person entity by reading Cognito idToken claims
 /// (sub, name/email) and POST'ing to /entity. Used when `list_entities_by_type`
 /// returns empty — i.e. a brand-new account that has never synced before.
@@ -822,8 +842,7 @@ async fn resolve_or_provision<R: tauri::Runtime + 'static>(
     }
 
     // Cache miss or just invalidated: list all person entities and apply canonical sort
-    let entities = vault
-        .list_entities_by_type("person")
+    let entities = list_person_entities_with_retry(vault)
         .await
         .map_err(|e| format!("list person entities: {e}"))?;
 
@@ -1180,6 +1199,98 @@ mod tests {
             },
             "expiresAt": "2026-01-01T01:00:00Z"
         })
+    }
+
+    #[tokio::test]
+    async fn test_cache_miss_person_list_retries_then_recovers() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/entity/by-type/person"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("temporary"))
+            .up_to_n_times(2)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/entity/by-type/person"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "entities": [person_entity_json("prs_x", "user@example.com", Some("hq-vault-prs-x"), "2026-01-01T00:00:00Z")]
+            })))
+            .mount(&server)
+            .await;
+
+        let tmp_home = TempDir::new().unwrap();
+        let result = {
+            let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+            std::env::set_var("HOME", tmp_home.path());
+
+            let app = tauri::test::mock_app();
+            let handle = app.handle().clone();
+            let vault = VaultClient::new(&server.uri(), "tok");
+            let r = resolve_or_provision(&handle, &vault).await;
+
+            std::env::remove_var("HOME");
+            r
+        };
+
+        assert_eq!(
+            result.unwrap(),
+            Some(("prs_x".to_string(), "hq-vault-prs-x".to_string())),
+            "cache-miss list should recover after transient failures"
+        );
+
+        let reqs = server.received_requests().await.unwrap();
+        let list_reqs: Vec<_> = reqs
+            .iter()
+            .filter(|r| r.url.path() == "/entity/by-type/person")
+            .collect();
+        assert_eq!(
+            list_reqs.len(),
+            3,
+            "person list should be attempted twice after transient failures"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_cache_miss_person_list_gives_up_after_max_attempts() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/entity/by-type/person"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
+            .mount(&server)
+            .await;
+
+        let tmp_home = TempDir::new().unwrap();
+        let result = {
+            let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+            std::env::set_var("HOME", tmp_home.path());
+
+            let app = tauri::test::mock_app();
+            let handle = app.handle().clone();
+            let vault = VaultClient::new(&server.uri(), "tok");
+            let r = resolve_or_provision(&handle, &vault).await;
+
+            std::env::remove_var("HOME");
+            r
+        };
+
+        assert_eq!(
+            result.unwrap_err(),
+            "list person entities: HTTP 500: boom",
+            "final failure should keep the original error message shape"
+        );
+
+        let reqs = server.received_requests().await.unwrap();
+        let list_reqs: Vec<_> = reqs
+            .iter()
+            .filter(|r| r.url.path() == "/entity/by-type/person")
+            .collect();
+        assert_eq!(
+            list_reqs.len(),
+            3,
+            "person list should stop after the bounded retry budget"
+        );
     }
 
     /// Writes a `~/.hq/cognito-tokens.json` (under the test's `HOME`) whose
