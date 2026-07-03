@@ -88,6 +88,39 @@ export const STAGE_COMMAND: Partial<Record<StageId, string>> = {
   menubar: 'install_menubar_app',
 };
 
+export interface StageCommandContext {
+  installPath: string | null;
+}
+
+export interface StageCommandInvocation {
+  command: string;
+  args?: Record<string, unknown>;
+  required: boolean;
+}
+
+export function stageCommandInvocations(
+  id: StageId,
+  context: StageCommandContext,
+): StageCommandInvocation[] {
+  const command = STAGE_COMMAND[id];
+  if (!command) return [];
+
+  const invocations: StageCommandInvocation[] = [{ command, required: true }];
+
+  if (id === 'deps' && context.installPath) {
+    invocations.push({
+      command: 'configure_claude_settings_path',
+      args: { hqPath: context.installPath },
+      required: false,
+    });
+  }
+
+  // TODO(windows): surface is_long_paths_enabled/enable_long_paths in a
+  // dedicated remediation UI before deps; invoking it here could surprise
+  // users with a UAC prompt.
+  return invocations;
+}
+
 // Per-stage timeout so a hung backend stage can never wedge the whole wizard.
 // Without this, `await invoke(command)` on a stage whose CLI never exits (e.g.
 // `hq reindex` blocked on a lock held by the freshly-started sync daemon)

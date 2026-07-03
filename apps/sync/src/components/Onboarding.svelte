@@ -156,7 +156,10 @@
     {:else if currentStep === 3}
       <SignInScreen onsignedin={handleSignedIn} />
     {:else if currentStep === 4}
-      <SetupScreen onsetupcomplete={handleSetupComplete} />
+      <SetupScreen
+        installPath={wizardState.installPath}
+        onsetupcomplete={handleSetupComplete}
+      />
     {:else}
       <SummaryScreen installPath={wizardState.installPath} onfinish={handleFinish} />
     {/if}

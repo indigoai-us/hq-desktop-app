@@ -1110,6 +1110,151 @@ fn ensure_shell_path_configured(home: &std::path::Path, app: &AppHandle) {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Claude settings.json PATH injection
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Compose the PATH value written into a scaffolded HQ's
+/// `.claude/settings.json` `env.PATH`.
+///
+/// Claude Code's `env` block does a literal assignment with no `$PATH`
+/// expansion and overrides the inherited environment for every hook and
+/// subagent shell. The hq-core template historically shipped a
+/// system-dirs-only value, so a fresh install whose only qmd/node/hq live in
+/// the managed toolchain resolved none of them until setup.sh re-snapshotted
+/// PATH on first Claude startup. Composing and writing the value at install
+/// time closes that day-one gap.
+///
+/// Order: managed toolchain dirs first, then the user's login-shell PATH, then
+/// whatever the template already listed, then a baseline of system dirs so the
+/// result is safe even when the login-shell probe returns empty. Deduped, first
+/// occurrence wins, empty segments dropped.
+#[cfg(not(windows))]
+pub fn composed_settings_env_path(
+    home: &std::path::Path,
+    login_path: &str,
+    existing: Option<&str>,
+) -> String {
+    let mut seen = HashSet::new();
+    let mut out: Vec<String> = Vec::new();
+    let mut push = |segment: &str| {
+        if !segment.is_empty() && seen.insert(segment.to_string()) {
+            out.push(segment.to_string());
+        }
+    };
+    for dir in managed_tool_paths_in(home) {
+        push(&dir);
+    }
+    for seg in login_path.split(':') {
+        push(seg);
+    }
+    if let Some(existing) = existing {
+        for seg in existing.split(':') {
+            push(seg);
+        }
+    }
+    for seg in [
+        "/opt/homebrew/bin",
+        "/opt/homebrew/sbin",
+        "/usr/local/bin",
+        "/usr/bin",
+        "/bin",
+        "/usr/sbin",
+        "/sbin",
+    ] {
+        push(seg);
+    }
+    out.join(":")
+}
+
+/// Return `settings_json` with `.env.PATH` set to `new_path`, preserving every
+/// other key. Creates the `env` object when absent. Errors when the document
+/// is not a JSON object.
+#[cfg(not(windows))]
+pub fn settings_json_with_env_path(settings_json: &str, new_path: &str) -> Result<String, String> {
+    let mut doc: serde_json::Value = serde_json::from_str(settings_json)
+        .map_err(|e| format!("settings.json is not valid JSON: {e}"))?;
+    let obj = doc
+        .as_object_mut()
+        .ok_or_else(|| "settings.json root is not an object".to_string())?;
+    let env = obj
+        .entry("env")
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    let env_obj = env
+        .as_object_mut()
+        .ok_or_else(|| "settings.json 'env' is not an object".to_string())?;
+    env_obj.insert(
+        "PATH".to_string(),
+        serde_json::Value::String(new_path.to_string()),
+    );
+    let mut rendered = serde_json::to_string_pretty(&doc)
+        .map_err(|e| format!("failed to serialize settings.json: {e}"))?;
+    rendered.push('\n');
+    Ok(rendered)
+}
+
+/// Write the composed toolchain PATH into `<hq>/.claude/settings.json` and
+/// re-ensure the shell-profile PATH block.
+///
+/// Invoked by the setup orchestrator after the deps stage on every installer
+/// pass, including reinstalls where all deps are already present. A missing
+/// settings.json is a skip rather than an error.
+#[cfg(not(windows))]
+#[tauri::command]
+pub async fn configure_claude_settings_path(
+    app: AppHandle,
+    hq_path: String,
+) -> Result<String, String> {
+    let home = home_dir_or_err(&app, "path")?;
+    ensure_shell_path_configured(&home, &app);
+
+    let settings_path = Path::new(&hq_path).join(".claude").join("settings.json");
+    let contents = match std::fs::read_to_string(&settings_path) {
+        Ok(c) => c,
+        Err(e) => {
+            let msg = format!(
+                "[path] no settings.json at {} - skipped ({e})",
+                settings_path.display()
+            );
+            emit_preflight_line(&app, &msg);
+            return Ok(msg);
+        }
+    };
+
+    let existing_env_path = serde_json::from_str::<serde_json::Value>(&contents)
+        .ok()
+        .and_then(|v| v.get("env")?.get("PATH")?.as_str().map(|s| s.to_string()));
+    let composed =
+        composed_settings_env_path(&home, shell_login_path(), existing_env_path.as_deref());
+    let updated = settings_json_with_env_path(&contents, &composed)?;
+
+    let staged = unique_sibling_path(&settings_path, "pathfix")?;
+    std::fs::write(&staged, &updated)
+        .map_err(|e| format!("failed to stage {}: {e}", staged.display()))?;
+    if let Err(e) = atomic_replace_file(&staged, &settings_path) {
+        let _ = std::fs::remove_file(&staged);
+        return Err(e);
+    }
+
+    let msg = format!(
+        "[path] wrote managed toolchain PATH into {}",
+        settings_path.display()
+    );
+    emit_preflight_line(&app, &msg);
+    Ok(msg)
+}
+
+/// Windows no-op. The managed toolchain dirs land on the user PATH via the
+/// registry there, which hooks and subagents inherit directly.
+#[cfg(windows)]
+#[tauri::command]
+pub async fn configure_claude_settings_path(
+    _app: AppHandle,
+    _hq_path: String,
+) -> Result<String, String> {
+    Ok("[path] skipped - PATH is registry-managed on Windows".to_string())
+}
+
 /// Internal implementation shared by `check_dep` (uses real PATH) and
 /// `check_dep_in` (uses a caller-supplied search path — useful for tests).
 /// True when `(tool, bin_path)` is the macOS `/usr/bin/git` CLT shim. Pure so
@@ -4518,6 +4663,115 @@ mod install_deps_tests {
             .get("GIT_TEMPLATE_DIR")
             .expect("GIT_TEMPLATE_DIR should be set")
             .ends_with("toolchain/git/share/git-core/templates"));
+    }
+
+    #[test]
+    fn test_composed_settings_env_path_orders_and_dedupes_sources() {
+        let home = tempfile::TempDir::new().unwrap();
+        let managed_node = home
+            .path()
+            .join("Library/Application Support/Indigo HQ/toolchain/node/bin")
+            .to_string_lossy()
+            .into_owned();
+
+        let path = composed_settings_env_path(
+            home.path(),
+            "/usr/local/bin:/custom/bin:/usr/bin",
+            Some("/custom/bin:/template/bin:/bin"),
+        );
+        let parts: Vec<&str> = path.split(':').collect();
+
+        assert_eq!(parts.first().copied(), Some(managed_node.as_str()));
+        assert_eq!(
+            parts.iter().filter(|part| **part == "/custom/bin").count(),
+            1
+        );
+        assert_eq!(parts.iter().filter(|part| **part == "/usr/bin").count(), 1);
+        assert_eq!(parts.iter().filter(|part| **part == "/bin").count(), 1);
+        assert!(
+            parts
+                .iter()
+                .position(|part| *part == "/usr/local/bin")
+                .unwrap()
+                < parts
+                    .iter()
+                    .position(|part| *part == "/template/bin")
+                    .unwrap()
+        );
+    }
+
+    #[test]
+    fn test_settings_json_with_env_path_preserves_existing_key_order() {
+        let input = r#"{
+  "permissions": {
+    "allow": [
+      "Bash(hq:*)"
+    ]
+  },
+  "env": {
+    "FOO": "bar",
+    "PATH": "/usr/bin",
+    "BAZ": "qux"
+  },
+  "hooks": {
+    "PostToolUse": []
+  }
+}"#;
+
+        let updated = settings_json_with_env_path(input, "/managed/bin:/usr/bin").unwrap();
+        let root_permissions = updated.find("\"permissions\"").unwrap();
+        let root_env = updated.find("\"env\"").unwrap();
+        let root_hooks = updated.find("\"hooks\"").unwrap();
+        let env_foo = updated.find("\"FOO\"").unwrap();
+        let env_path = updated.find("\"PATH\"").unwrap();
+        let env_baz = updated.find("\"BAZ\"").unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&updated).unwrap();
+
+        assert!(root_permissions < root_env);
+        assert!(root_env < root_hooks);
+        assert!(env_foo < env_path);
+        assert!(env_path < env_baz);
+        assert_eq!(
+            parsed
+                .get("env")
+                .and_then(|env| env.get("PATH"))
+                .and_then(|path| path.as_str()),
+            Some("/managed/bin:/usr/bin")
+        );
+        assert!(updated.ends_with('\n'));
+    }
+
+    #[test]
+    fn test_settings_json_with_env_path_creates_env_at_end_when_absent() {
+        let input = r#"{
+  "permissions": {},
+  "hooks": {}
+}"#;
+
+        let updated = settings_json_with_env_path(input, "/managed/bin").unwrap();
+        let root_permissions = updated.find("\"permissions\"").unwrap();
+        let root_hooks = updated.find("\"hooks\"").unwrap();
+        let root_env = updated.find("\"env\"").unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&updated).unwrap();
+
+        assert!(root_permissions < root_hooks);
+        assert!(root_hooks < root_env);
+        assert_eq!(
+            parsed
+                .get("env")
+                .and_then(|env| env.get("PATH"))
+                .and_then(|path| path.as_str()),
+            Some("/managed/bin")
+        );
+    }
+
+    #[test]
+    fn test_settings_json_with_env_path_rejects_non_object_documents() {
+        let err = settings_json_with_env_path("[]", "/managed/bin").unwrap_err();
+        assert_eq!(err, "settings.json root is not an object");
+
+        let err = settings_json_with_env_path(r#"{"env": "bad"}"#, "/managed/bin").unwrap_err();
+        assert_eq!(err, "settings.json 'env' is not an object");
     }
 
     #[test]
