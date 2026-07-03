@@ -17,12 +17,12 @@
 //! be sufficient to escape stable.
 //!
 //! Endpoint resolution ([`resolve_channel_endpoint`]) queries the public
-//! GitHub Releases API (`/repos/indigoai-us/hq-sync/releases?per_page=30`),
+//! GitHub Releases API (`/repos/indigoai-us/hq-desktop-app/releases?per_page=30`),
 //! filters by channel, picks the highest semver, and returns the
 //! per-release `latest.json` URL the Tauri updater can poll. On any failure
 //! (network down, rate limit, malformed body, no eligible release) the
 //! resolver falls back to the static stable endpoint —
-//! `https://github.com/indigoai-us/hq-sync/releases/latest/download/latest.json`
+//! `https://github.com/indigoai-us/hq-desktop-app/releases/latest/download/latest.json`
 //! — which GitHub's `releases/latest/` alias already filters to
 //! non-prereleases. This means a Beta user behind a corporate proxy that
 //! blocks api.github.com still gets stable updates rather than an empty
@@ -41,24 +41,24 @@ use serde::Deserialize;
 
 use crate::client_info::build_client;
 
-/// Public GitHub Releases API endpoint for hq-sync. 30 results is enough
-/// to span several release cycles without paginating — at the current
-/// ~weekly cadence that's roughly half a year of history, far more than
-/// any user could miss between launches.
+/// Public GitHub Releases API endpoint for the unified hq-desktop-app.
+/// 30 results is enough to span several release cycles without paginating
+/// — at the current ~weekly cadence that's roughly half a year of history,
+/// far more than any user could miss between launches.
 const GH_RELEASES_URL: &str =
-    "https://api.github.com/repos/indigoai-us/hq-sync/releases?per_page=30";
+    "https://api.github.com/repos/indigoai-us/hq-desktop-app/releases?per_page=30";
 
 /// Per-release `latest.json` URL pattern. `{tag}` is substituted with the
 /// matched release's `tag_name` (e.g. `v0.1.109-beta.1`).
 const PER_RELEASE_MANIFEST_PATTERN: &str =
-    "https://github.com/indigoai-us/hq-sync/releases/download/{tag}/latest.json";
+    "https://github.com/indigoai-us/hq-desktop-app/releases/download/{tag}/latest.json";
 
 /// Static stable fallback. GitHub's `/releases/latest/download/` alias is
 /// guaranteed to point at the newest non-prerelease — exactly the right
 /// behavior for stable users, and a safe fallback for prerelease users
 /// when the API is unreachable.
 pub const STABLE_FALLBACK_ENDPOINT: &str =
-    "https://github.com/indigoai-us/hq-sync/releases/latest/download/latest.json";
+    "https://github.com/indigoai-us/hq-desktop-app/releases/latest/download/latest.json";
 
 /// HTTP timeout for the GitHub API call. Tight on purpose — the updater
 /// runs on a 6h background loop and a slow API must not stall it.
