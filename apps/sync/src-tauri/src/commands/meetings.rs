@@ -36,9 +36,10 @@ pub use hq_desktop_core::meetings::{
     build_notification_body, build_notification_title, build_set_company_body, dedupe_new,
     first_active_bot, is_recorded, is_unattributed, is_url_safe_id, select_recorded,
     select_unattributed, set_company_error_message, AccountCalendars, AccountsResponse,
-    BotsResponse, CalendarsResponse, CompanyMembership, EventTime, EventsResponse, GoogleAccount,
-    GoogleCalendar, InviteBotBody, MeetingEvent, NotifyDetectedPayload, OntologyParticipant,
-    ScheduledBot, SelectedCalendarRef, SetCompanyBody, SetCompanyErrorBody, SetCompanyResult,
+    BotsResponse, CalendarsResponse, CancelBotResult, CompanyMembership, EventTime, EventsResponse,
+    GoogleAccount, GoogleCalendar, InviteBotBody, MeetingEvent, NotifyDetectedPayload,
+    OntologyParticipant, ScheduledBot, SelectedCalendarRef, SetCompanyBody, SetCompanyErrorBody,
+    SetCompanyResult,
 };
 
 // ── Feature flag ─────────────────────────────────────────────────────────────
@@ -403,6 +404,7 @@ pub async fn meetings_set_company(
 pub async fn meetings_invite_bot(
     meeting_url: String,
     calendar_event_id: Option<String>,
+    calendar_series_id: Option<String>,
     company_id: Option<String>,
 ) -> Result<ScheduledBot, String> {
     let base = vault_base().await?;
@@ -422,6 +424,7 @@ pub async fn meetings_invite_bot(
     let body = InviteBotBody {
         meeting_url,
         calendar_event_id,
+        calendar_series_id,
         participants,
     };
     let res = build_client()
@@ -460,6 +463,7 @@ pub async fn meetings_invite_bot(
 pub async fn meetings_join_bot_now(
     meeting_url: String,
     calendar_event_id: Option<String>,
+    calendar_series_id: Option<String>,
     company_id: Option<String>,
 ) -> Result<ScheduledBot, String> {
     let base = vault_base().await?;
@@ -474,6 +478,7 @@ pub async fn meetings_join_bot_now(
     let body = InviteBotBody {
         meeting_url,
         calendar_event_id,
+        calendar_series_id,
         // join-now reuses an existing bot record when one already exists
         // for the meeting; if not, the server creates a fresh one. We
         // don't have ontology participants in scope here (we'd need a
@@ -533,7 +538,7 @@ pub async fn meetings_list_memberships() -> Result<Vec<CompanyMembership>, Strin
 /// validate the shape before concatenating into the path to keep the URL
 /// well-formed without pulling in a percent-encoding crate.
 #[tauri::command]
-pub async fn meetings_cancel_bot(bot_id: String) -> Result<(), String> {
+pub async fn meetings_cancel_bot(bot_id: String) -> Result<CancelBotResult, String> {
     if bot_id.is_empty() {
         return Err("bot_id is required".to_string());
     }
@@ -550,11 +555,14 @@ pub async fn meetings_cancel_bot(bot_id: String) -> Result<(), String> {
         .await
         .map_err(|e| format!("bot/cancel fetch: {e}"))?;
     let status = res.status();
+    let text = res
+        .text()
+        .await
+        .map_err(|e| format!("bot/cancel read: {e}"))?;
     if !status.is_success() {
-        let text = res.text().await.unwrap_or_default();
         return Err(format!("bot/cancel HTTP {status}: {text}"));
     }
-    Ok(())
+    serde_json::from_str(&text).map_err(|e| format!("bot/cancel parse: {e} — body: {text}"))
 }
 
 // ── Detection-triggered notification commands ─────────────────────────────────
@@ -1078,4 +1086,32 @@ pub async fn meetings_notify_detected(
 pub async fn meetings_clear_prompt_badge(app: AppHandle) {
     use crate::tray::{get_prompt_pending, set_prompt_badge};
     set_prompt_badge(&app, get_prompt_pending().saturating_sub(1));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn meetings_cancel_bot_result_parses_series_response() {
+        let json = r#"{
+            "botId": "bot-abc",
+            "status": "failed",
+            "cancelled": true,
+            "scope": "series",
+            "cancelledCount": 3,
+            "failedCount": 1,
+            "calendarSeriesId": "series-1",
+            "recurringMeeting": true,
+            "cancelledBotIds": ["bot-abc", "bot-def", "bot-ghi"]
+        }"#;
+        let result: CancelBotResult = serde_json::from_str(json).expect("cancel result parse");
+        assert_eq!(result.bot_id, "bot-abc");
+        assert_eq!(result.scope.as_deref(), Some("series"));
+        assert_eq!(result.cancelled_count, Some(3));
+        assert_eq!(result.failed_count, Some(1));
+        assert_eq!(result.calendar_series_id.as_deref(), Some("series-1"));
+        assert!(result.recurring_meeting);
+        assert_eq!(result.cancelled_bot_ids.len(), 3);
+    }
 }

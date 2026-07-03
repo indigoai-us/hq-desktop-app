@@ -17,6 +17,11 @@
   } from '../lib/meetingsCache';
   import { isAlreadyScheduledError } from '../lib/invite-errors';
   import {
+    botForEvent,
+    calendarEventIdsForBotLookup,
+    mergeScheduledBotLookups,
+  } from '../desktop-alt/lib/meetings-model';
+  import {
     UNATTRIBUTED,
     companyOptions,
     isUnattributed,
@@ -32,6 +37,9 @@
     summary?: string;
     start: { dateTime?: string; date?: string; timeZone?: string };
     end: { dateTime?: string; date?: string; timeZone?: string };
+    recurringEventId?: string | null;
+    recurrence?: string[];
+    originalStartTime?: { dateTime?: string; date?: string; timeZone?: string } | null;
     status: string;
     hangoutLink?: string;
     /** Server-extracted meeting URL (BE-5) — picks across hangoutLink,
@@ -97,6 +105,8 @@
     platform: string;
     status: string;
     calendarEventId?: string | null;
+    calendarSeriesId?: string | null;
+    recurringMeeting?: boolean;
     meetingTitle?: string | null;
     scheduledStartTime?: string | null;
     createdAt?: string | null;
@@ -109,6 +119,26 @@
     // status alone. Optional on the wire; a pre-US-010 server omits it (Rust
     // defaults to false) so an older backend never shows a premature "saved".
     sourceLanded?: boolean;
+  }
+
+  interface CancelBotResult {
+    scope?: string | null;
+    cancelledCount?: number | null;
+    failedCount?: number | null;
+    recurringMeeting?: boolean;
+  }
+
+  const GOOGLE_RECURRING_EVENT_ID_RE = /^(.*)_(?:\d{8}T\d{6}Z|\d{8})$/;
+
+  function recurringSeriesId(event: MeetingEvent): string | null {
+    const explicit = event.recurringEventId?.trim();
+    if (explicit) return explicit;
+    if (event.recurrence && event.recurrence.length > 0) return event.id;
+    return event.id.match(GOOGLE_RECURRING_EVENT_ID_RE)?.[1] ?? null;
+  }
+
+  function isRecurringMeeting(event: MeetingEvent): boolean {
+    return recurringSeriesId(event) !== null;
   }
 
   interface CompanyMembership {
@@ -139,7 +169,10 @@
   let botsByEventId = $state<Map<string, ScheduledBot>>(
     new Map(cachedSnapshot?.botsByEventId ?? []),
   );
-  let allBots = $state<ScheduledBot[]>([]);
+  let allBots = $state<ScheduledBot[]>(
+    cachedSnapshot?.scheduledBots ??
+      (cachedSnapshot?.botsByEventId ?? []).map(([, bot]) => bot),
+  );
   let companyNamesByUid = $state<Map<string, string>>(
     new Map(cachedSnapshot?.companyNamesByUid ?? []),
   );
@@ -482,26 +515,22 @@
     loading = true;
     listError = null;
     try {
-      // Fetch events + bots + memberships + connected accounts in parallel.
+      // Fetch events + memberships + connected accounts in parallel, then
+      // fetch bots using the actual event ids. hq-pro's full bot list is a
+      // legacy/recent-bots convenience path and can miss a row; the per-event
+      // path is the authoritative "does this visible event already have a
+      // bot?" source.
       //
       // Catch the two primary list calls individually instead of letting
       // Promise.all reject on first failure: an outage that 500s
       // /v1/calendar/events should not blank in-memory bot state, and
-      // vice versa, so the 30s poll can recover one independently. Memberships
-      // and accounts already swallow to [] for the same reason — a person
-      // with zero connected Google accounts still wants the events render
-      // (the empty-state below handles that branch).
+      // vice versa, so the 30s poll can recover one independently.
+      // Memberships and accounts already swallow to [] for the same reason.
       let upcomingErr: unknown = null;
       let botsErr: unknown = null;
-      const [evts, bots, membershipRows, accts] = await Promise.all([
+      const [evts, membershipRows, accts] = await Promise.all([
         invoke<MeetingEvent[]>('meetings_list_upcoming').catch((err: unknown) => {
           upcomingErr = err;
-          return null;
-        }),
-        invoke<ScheduledBot[]>('meetings_list_scheduled_bots', {
-          calendarEventIds: null,
-        }).catch((err: unknown) => {
-          botsErr = err;
           return null;
         }),
         // Memberships are tiny + rarely change — fetched on every open is
@@ -512,6 +541,28 @@
           () => [] as GoogleAccount[],
         ),
       ]);
+      const botEventIds = calendarEventIdsForBotLookup(evts ?? events);
+      let eventBotsErr: unknown = null;
+      let fullBotsErr: unknown = null;
+      const [eventBots, fullBots] = await Promise.all([
+        botEventIds.length === 0
+          ? Promise.resolve([] as ScheduledBot[])
+          : invoke<ScheduledBot[]>('meetings_list_scheduled_bots', {
+              calendarEventIds: botEventIds,
+            }).catch((err: unknown) => {
+              eventBotsErr = err;
+              return null;
+            }),
+        invoke<ScheduledBot[]>('meetings_list_scheduled_bots', {
+          calendarEventIds: null,
+        }).catch((err: unknown) => {
+          fullBotsErr = err;
+          return null;
+        }),
+      ]);
+      const bots = mergeScheduledBotLookups(botEventIds, eventBots, fullBots);
+      if (botEventIds.length > 0 && eventBots === null) botsErr = eventBotsErr;
+      else if (botEventIds.length === 0 && fullBots === null) botsErr = fullBotsErr;
       // Only overwrite on success so a transient 500 keeps the last good
       // snapshot in memory until recovery. The error banner still wins in
       // the render branch order, but the cached state is correct for the
@@ -571,6 +622,7 @@
   function persistSnapshot(): void {
     saveMeetingsCache<MeetingEvent, ScheduledBot, GoogleAccount, GoogleCalendar>({
       events,
+      scheduledBots: allBots,
       botsByEventId: Array.from(botsByEventId.entries()),
       companyNamesByUid: Array.from(companyNamesByUid.entries()),
       accounts,
@@ -667,6 +719,7 @@
       await invoke<ScheduledBot>('meetings_invite_bot', {
         meetingUrl: url,
         calendarEventId: evt.id,
+        calendarSeriesId: recurringSeriesId(evt),
         companyId: evt.sourceCompanyUid ?? null,
       });
       flashToast('info', 'Bot invited.');
@@ -691,14 +744,18 @@
   }
 
   async function onUninvite(evt: MeetingEvent) {
-    const bot = botsByEventId.get(evt.id);
+    const bot = botForEvent(evt, botsByEventId, allBots);
     if (!bot) return;
     const key = evt.id;
     if (rowPending.has(key)) return;
     rowPending = new Set(rowPending).add(key);
     try {
-      await invoke('meetings_cancel_bot', { botId: bot.botId });
-      flashToast('info', 'Bot uninvited.');
+      const result = await invoke<CancelBotResult>('meetings_cancel_bot', { botId: bot.botId });
+      if (result.scope === 'series' || result.recurringMeeting || (result.cancelledCount ?? 0) > 1) {
+        flashToast('info', 'Bot uninvited from series.');
+      } else {
+        flashToast('info', 'Bot uninvited.');
+      }
       await refresh();
     } catch (err) {
       flashToast('warn', friendlyError(err, "Couldn't remove the bot."));
@@ -736,6 +793,7 @@
       await invoke<ScheduledBot>('meetings_join_bot_now', {
         meetingUrl: url,
         calendarEventId: evt.id,
+        calendarSeriesId: recurringSeriesId(evt),
         companyId: evt.sourceCompanyUid ?? null,
       });
       flashToast('info', "Bot's on the way.");
@@ -850,6 +908,7 @@
       await invoke<ScheduledBot>('meetings_invite_bot', {
         meetingUrl: url,
         calendarEventId: null,
+        calendarSeriesId: null,
         companyId: submittedCompanyId,
       });
       // Clear the row on success — input AND the company pick — so the
@@ -1643,10 +1702,11 @@
         <h3 class="day-heading">{group.label}</h3>
         <ul class="event-list">
           {#each group.events as evt (evt.id)}
-            {@const bot = botsByEventId.get(evt.id)}
+            {@const bot = botForEvent(evt, botsByEventId, allBots)}
             {@const pending = rowPending.has(evt.id)}
             {@const kind = rowButtonKind(bot)}
             {@const url = eventMeetingUrl(evt)}
+            {@const recurring = isRecurringMeeting(evt)}
             <li
               class="event-row"
               class:event-row-focused={bot?.botId === focusedMeetingId}
@@ -1660,8 +1720,20 @@
               <span class="event-cal-bar" style="background:{eventCalColor(evt)}" aria-hidden="true"></span>
               <div class="event-meta">
                 <span class="event-time">{timeLabel(evt)}</span>
-                <span class="event-title" title={eventRowTooltip(evt)}>
-                  {evt.summary ?? '(no title)'}
+                <span class="event-title-row">
+                  <span class="event-title" title={eventRowTooltip(evt)}>
+                    {evt.summary ?? '(no title)'}
+                  </span>
+                  {#if recurring}
+                    <span class="series-chip" title="series" aria-label="series" role="img">
+                      <svg width="12" height="12" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                        <path d="M3.5 4.5h5.8c.95 0 1.7.76 1.7 1.7v.3" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" />
+                        <path d="M8.8 2.8 11 4.5 8.8 6.2" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" />
+                        <path d="M10.5 9.5H4.7C3.76 9.5 3 8.74 3 7.8v-.3" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" />
+                        <path d="M5.2 11.2 3 9.5l2.2-1.7" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" />
+                      </svg>
+                    </span>
+                  {/if}
                 </span>
               </div>
               {#if bot}
@@ -1696,7 +1768,7 @@
                     type="button"
                     class="row-icon-btn row-icon-invite"
                     disabled={pending}
-                    title={pending ? 'Inviting…' : 'Invite bot to this meeting'}
+                    title={pending ? 'Inviting…' : recurring ? 'Invite bot to this series' : 'Invite bot to this meeting'}
                     aria-label="Invite bot"
                     onclick={() => onInvite(evt)}
                   >
@@ -1713,8 +1785,8 @@
                     type="button"
                     class="row-icon-btn row-icon-invited"
                     disabled={pending}
-                    title={pending ? 'Cancelling…' : 'Bot scheduled — click to uninvite'}
-                    aria-label="Uninvite bot"
+                    title={pending ? 'Cancelling…' : recurring ? 'Bot scheduled for series — click to uninvite series' : 'Bot scheduled — click to uninvite'}
+                    aria-label={recurring ? 'Uninvite bot from series' : 'Uninvite bot'}
                     onclick={() => onUninvite(evt)}
                   >
                     {#if pending}
@@ -1730,8 +1802,8 @@
                     type="button"
                     class="row-icon-btn row-icon-incall"
                     disabled={pending}
-                    title={pending ? 'Removing bot…' : 'Bot is in the meeting — click to remove'}
-                    aria-label="Remove bot from meeting"
+                    title={pending ? 'Removing bot…' : recurring ? 'Bot is in this series — click to remove from series' : 'Bot is in the meeting — click to remove'}
+                    aria-label={recurring ? 'Remove bot from series' : 'Remove bot from meeting'}
                     onclick={() => onUninvite(evt)}
                   >
                     {#if pending}
@@ -1745,8 +1817,8 @@
                     type="button"
                     class="row-icon-btn row-icon-joining"
                     disabled={pending}
-                    title={pending ? 'Cancelling…' : 'Bot is joining — click to cancel'}
-                    aria-label="Cancel bot join"
+                    title={pending ? 'Cancelling…' : recurring ? 'Bot is joining this series — click to cancel series' : 'Bot is joining — click to cancel'}
+                    aria-label={recurring ? 'Cancel bot series join' : 'Cancel bot join'}
                     onclick={() => onUninvite(evt)}
                   >
                     <span class="row-icon-spinner row-icon-spinner-amber" aria-hidden="true"></span>
@@ -2154,13 +2226,41 @@
     color: #a1a1aa;
     line-height: 1.2;
   }
-  .event-title {
-    font-size: var(--text-base);
-    color: #f4f4f5;
+  .event-title-row {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
     white-space: nowrap;
     overflow: hidden;
-    text-overflow: ellipsis;
     line-height: 1.3;
+  }
+  .event-title {
+    min-width: 0;
+    overflow: hidden;
+    color: #f4f4f5;
+    font-size: var(--text-base);
+    text-overflow: ellipsis;
+  }
+  .series-chip {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
+    color: rgba(250, 250, 250, 0.36);
+    line-height: 1;
+    opacity: 0.76;
+  }
+  .series-chip svg {
+    display: block;
+    width: 12px;
+    height: 12px;
+  }
+  .series-chip:hover {
+    color: rgba(250, 250, 250, 0.62);
+    opacity: 1;
   }
   /* Per-calendar colour bar at the row's left edge. Replaces the
      calendar/account/company/platform text chips that used to occupy

@@ -2,10 +2,16 @@ import { describe, expect, it } from 'vitest';
 import { get } from 'svelte/store';
 import {
   activeRecordingsFromScheduledBots,
+  botForEvent,
   buildConnectedCalendarRows,
+  calendarEventIdsForBotLookup,
   dayLabel,
   groupByDay,
+  isRecurringMeeting,
+  mergeScheduledBotLookups,
+  mergeScheduledBots,
   pickLiveMeeting,
+  recurringSeriesId,
   rowButtonKind,
   totalSignalCounts,
   type MeetingEvent,
@@ -253,6 +259,168 @@ describe('meetings-model', () => {
 
     expect(groups).toHaveLength(1);
     expect(groups[0].events.map((e) => e.id)).toEqual(['real']);
+  });
+
+  describe('recurring meeting detection', () => {
+    it('prefers the explicit Google recurringEventId', () => {
+      const event = {
+        ...eventAt('instance-1', new Date(2026, 4, 27, 12, 0, 0)),
+        recurringEventId: 'series-1',
+      };
+
+      expect(recurringSeriesId(event)).toBe('series-1');
+      expect(isRecurringMeeting(event)).toBe(true);
+    });
+
+    it('treats recurrence rules on a master event as a series', () => {
+      const event = {
+        ...eventAt('series-master', new Date(2026, 4, 27, 12, 0, 0)),
+        recurrence: ['RRULE:FREQ=WEEKLY'],
+      };
+
+      expect(recurringSeriesId(event)).toBe('series-master');
+      expect(isRecurringMeeting(event)).toBe(true);
+    });
+
+    it('derives the series id from Google instance ids for legacy payloads', () => {
+      const event = eventAt('team_sync_20260527T190000Z', new Date(2026, 4, 27, 12, 0, 0));
+
+      expect(recurringSeriesId(event)).toBe('team_sync');
+      expect(isRecurringMeeting(event)).toBe(true);
+    });
+
+    it('returns null for one-off events', () => {
+      const event = eventAt('one-off', new Date(2026, 4, 27, 12, 0, 0));
+
+      expect(recurringSeriesId(event)).toBeNull();
+      expect(isRecurringMeeting(event)).toBe(false);
+    });
+  });
+
+  describe('botForEvent', () => {
+    function bot(overrides: Partial<ScheduledBot>): ScheduledBot {
+      return {
+        botId: 'bot-1',
+        meetingUrl: 'https://meet.google.com/abc-defg-hij',
+        platform: 'google_meet',
+        status: 'scheduled',
+        autoScheduled: true,
+        ...overrides,
+      };
+    }
+
+    it('prefers the exact event bot when both exact and series bots match', () => {
+      const event = {
+        ...eventAt('series-1_20260527T190000Z', new Date(2026, 4, 27, 12, 0, 0)),
+        recurringEventId: 'series-1',
+      };
+      const exact = bot({
+        botId: 'bot-exact',
+        calendarEventId: event.id,
+        calendarSeriesId: 'series-1',
+      });
+      const series = bot({
+        botId: 'bot-series',
+        calendarEventId: 'series-1_20260520T190000Z',
+        calendarSeriesId: 'series-1',
+      });
+
+      expect(botForEvent(event, new Map([[event.id, exact]]), [series, exact])?.botId).toBe(
+        'bot-exact',
+      );
+    });
+
+    it('matches a recurring event row to a bot scheduled for the series', () => {
+      const event = {
+        ...eventAt('series-1_20260527T190000Z', new Date(2026, 4, 27, 12, 0, 0)),
+        recurringEventId: 'series-1',
+      };
+      const seriesBot = bot({
+        calendarEventId: 'series-1_20260520T190000Z',
+        calendarSeriesId: 'series-1',
+      });
+
+      expect(rowButtonKind(botForEvent(event, new Map(), [seriesBot]))).toBe('invited');
+    });
+
+    it('ignores inactive series bots so failed cancels can be retried by inviting again', () => {
+      const event = {
+        ...eventAt('series-1_20260527T190000Z', new Date(2026, 4, 27, 12, 0, 0)),
+        recurringEventId: 'series-1',
+      };
+      const failedBot = bot({
+        status: 'failed',
+        calendarSeriesId: 'series-1',
+      });
+
+      expect(botForEvent(event, new Map(), [failedBot])).toBeUndefined();
+    });
+  });
+
+  describe('bot list lookup helpers', () => {
+    it('dedupes event ids before asking the backend for per-event bot state', () => {
+      expect(
+        calendarEventIdsForBotLookup([
+          eventAt('event-1', new Date(2026, 4, 27, 12, 0, 0)),
+          eventAt('event-2', new Date(2026, 4, 27, 13, 0, 0)),
+          eventAt('event-1', new Date(2026, 4, 27, 14, 0, 0)),
+          { ...eventAt('   ', new Date(2026, 4, 27, 15, 0, 0)), id: '   ' },
+        ]),
+      ).toEqual(['event-1', 'event-2']);
+    });
+
+    it('keeps authoritative per-event bot rows before legacy full-list rows', () => {
+      const eventBot: ScheduledBot = {
+        botId: 'bot-1',
+        meetingUrl: 'https://meet.google.com/abc-defg-hij',
+        platform: 'google_meet',
+        status: 'scheduled',
+        calendarEventId: 'event-1',
+        autoScheduled: true,
+        meetingTitle: 'Authoritative row',
+      };
+      const fullListBot: ScheduledBot = {
+        ...eventBot,
+        meetingTitle: 'Legacy full-list row',
+      };
+      const recordedBot: ScheduledBot = {
+        botId: 'bot-2',
+        meetingUrl: 'https://meet.google.com/def-ghij-klm',
+        platform: 'google_meet',
+        status: 'completed',
+        calendarEventId: 'event-2',
+        autoScheduled: true,
+        meetingTitle: 'Recorded row',
+      };
+
+      expect(mergeScheduledBots([eventBot], [fullListBot, recordedBot])).toEqual([
+        eventBot,
+        recordedBot,
+      ]);
+    });
+
+    it('requires per-event bot rows when visible event ids are known', () => {
+      const eventBot: ScheduledBot = {
+        botId: 'bot-1',
+        meetingUrl: 'https://meet.google.com/abc-defg-hij',
+        platform: 'google_meet',
+        status: 'scheduled',
+        calendarEventId: 'event-1',
+        autoScheduled: true,
+      };
+      const fullListBot: ScheduledBot = {
+        ...eventBot,
+        botId: 'bot-legacy',
+      };
+
+      expect(mergeScheduledBotLookups(['event-1'], null, [fullListBot])).toBeNull();
+      expect(mergeScheduledBotLookups(['event-1'], [eventBot], null)).toEqual([
+        eventBot,
+      ]);
+      expect(mergeScheduledBotLookups([], null, [fullListBot])).toEqual([
+        fullListBot,
+      ]);
+    });
   });
 
   // US-010 — "Done — transcript saved" must be gated on the REAL source-landed

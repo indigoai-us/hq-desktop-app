@@ -10,6 +10,12 @@ pub struct MeetingEvent {
     pub summary: Option<String>,
     pub start: EventTime,
     pub end: EventTime,
+    #[serde(default, rename = "recurringEventId")]
+    pub recurring_event_id: Option<String>,
+    #[serde(default)]
+    pub recurrence: Vec<String>,
+    #[serde(default, rename = "originalStartTime")]
+    pub original_start_time: Option<EventTime>,
     /// "confirmed" | "tentative" | "cancelled"
     pub status: String,
     #[serde(default, rename = "hangoutLink")]
@@ -46,6 +52,10 @@ pub struct ScheduledBot {
     pub platform: String,
     pub status: String,
     pub calendar_event_id: Option<String>,
+    #[serde(default)]
+    pub calendar_series_id: Option<String>,
+    #[serde(default)]
+    pub recurring_meeting: bool,
     #[serde(alias = "title")]
     pub meeting_title: Option<String>,
     pub scheduled_start_time: Option<String>,
@@ -120,8 +130,33 @@ pub struct InviteBotBody {
     pub meeting_url: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub calendar_event_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub calendar_series_id: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub participants: Vec<OntologyParticipant>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CancelBotResult {
+    #[serde(alias = "recallBotId")]
+    pub bot_id: String,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub cancelled: bool,
+    #[serde(default)]
+    pub scope: Option<String>,
+    #[serde(default)]
+    pub cancelled_count: Option<u32>,
+    #[serde(default)]
+    pub failed_count: Option<u32>,
+    #[serde(default)]
+    pub calendar_series_id: Option<String>,
+    #[serde(default)]
+    pub recurring_meeting: bool,
+    #[serde(default)]
+    pub cancelled_bot_ids: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -362,6 +397,8 @@ mod tests {
             platform: "zoom".into(),
             status: status.into(),
             calendar_event_id: None,
+            calendar_series_id: None,
+            recurring_meeting: false,
             meeting_title: None,
             scheduled_start_time: None,
             created_at: None,
@@ -422,6 +459,8 @@ mod tests {
             "platform": "google_meet",
             "status": "scheduled",
             "calendarEventId": "evt-1",
+            "calendarSeriesId": "series-1",
+            "recurringMeeting": true,
             "meetingTitle": "Standup",
             "scheduledStartTime": "2026-05-15T10:00:00Z",
             "autoScheduled": true,
@@ -431,6 +470,8 @@ mod tests {
         assert_eq!(bot.bot_id, "bot-abc");
         assert_eq!(bot.status, "scheduled");
         assert_eq!(bot.calendar_event_id.as_deref(), Some("evt-1"));
+        assert_eq!(bot.calendar_series_id.as_deref(), Some("series-1"));
+        assert!(bot.recurring_meeting);
         assert!(bot.auto_scheduled);
         assert!(bot.error_message.is_none());
     }
@@ -460,7 +501,32 @@ mod tests {
             "manual invite defaults to not auto-scheduled"
         );
         assert!(bot.calendar_event_id.is_none());
+        assert!(bot.calendar_series_id.is_none());
+        assert!(!bot.recurring_meeting);
         assert!(bot.meeting_title.is_none());
+    }
+
+    #[test]
+    fn cancel_bot_result_parses_series_response() {
+        let json = r#"{
+            "botId": "bot-abc",
+            "status": "failed",
+            "cancelled": true,
+            "scope": "series",
+            "cancelledCount": 3,
+            "failedCount": 1,
+            "calendarSeriesId": "series-1",
+            "recurringMeeting": true,
+            "cancelledBotIds": ["bot-abc", "bot-def", "bot-ghi"]
+        }"#;
+        let result: CancelBotResult = serde_json::from_str(json).expect("cancel result parse");
+        assert_eq!(result.bot_id, "bot-abc");
+        assert_eq!(result.scope.as_deref(), Some("series"));
+        assert_eq!(result.cancelled_count, Some(3));
+        assert_eq!(result.failed_count, Some(1));
+        assert_eq!(result.calendar_series_id.as_deref(), Some("series-1"));
+        assert!(result.recurring_meeting);
+        assert_eq!(result.cancelled_bot_ids.len(), 3);
     }
 
     #[test]
@@ -677,11 +743,37 @@ mod tests {
         assert_eq!(evt.id, "evt-1");
         assert_eq!(evt.status, "confirmed");
         assert!(evt.summary.is_none());
+        assert!(evt.recurring_event_id.is_none());
+        assert!(evt.recurrence.is_empty());
+        assert!(evt.original_start_time.is_none());
         assert!(evt.hangout_link.is_none());
         assert!(evt.source_calendar_id.is_none());
         assert!(evt.source_company_uid.is_none());
         assert!(evt.signals.is_none());
         assert_eq!(evt.start.date_time.as_deref(), Some("2026-05-15T14:00:00Z"));
+    }
+
+    #[test]
+    fn meeting_event_parses_recurring_fields() {
+        let json = r#"{
+            "id": "evt-1",
+            "start": {"dateTime": "2026-05-15T14:00:00Z"},
+            "end": {"dateTime": "2026-05-15T15:00:00Z"},
+            "status": "confirmed",
+            "recurringEventId": "series-1",
+            "recurrence": ["RRULE:FREQ=WEEKLY"],
+            "originalStartTime": {"dateTime": "2026-05-15T14:00:00Z"}
+        }"#;
+        let evt: MeetingEvent = serde_json::from_str(json).expect("parse");
+        assert_eq!(evt.id, "evt-1");
+        assert_eq!(evt.recurring_event_id.as_deref(), Some("series-1"));
+        assert_eq!(evt.recurrence, vec!["RRULE:FREQ=WEEKLY"]);
+        assert_eq!(
+            evt.original_start_time
+                .as_ref()
+                .and_then(|time| time.date_time.as_deref()),
+            Some("2026-05-15T14:00:00Z"),
+        );
     }
 
     /// BE-4 enhancement — events tagged with source calendar + company.

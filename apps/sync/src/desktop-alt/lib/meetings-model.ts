@@ -14,6 +14,9 @@ export interface MeetingEvent {
   summary?: string;
   start: { dateTime?: string; date?: string; timeZone?: string };
   end: { dateTime?: string; date?: string; timeZone?: string };
+  recurringEventId?: string | null;
+  recurrence?: string[];
+  originalStartTime?: { dateTime?: string; date?: string; timeZone?: string } | null;
   status: string;
   hangoutLink?: string;
   meetingUrl?: string | null;
@@ -29,6 +32,8 @@ export interface ScheduledBot {
   platform: string;
   status: string;
   calendarEventId?: string | null;
+  calendarSeriesId?: string | null;
+  recurringMeeting?: boolean;
   meetingTitle?: string | null;
   scheduledStartTime?: string | null;
   autoScheduled: boolean;
@@ -128,6 +133,79 @@ export function durationMinutes(event: MeetingEvent): number | null {
   if (!start || !end) return null;
   const mins = Math.round((end.getTime() - start.getTime()) / 60000);
   return mins > 0 ? mins : null;
+}
+
+const GOOGLE_RECURRING_EVENT_ID_RE = /^(.*)_(?:\d{8}T\d{6}Z|\d{8})$/;
+
+export function recurringSeriesId(event: MeetingEvent): string | null {
+  const explicit = event.recurringEventId?.trim();
+  if (explicit) return explicit;
+  if (event.recurrence && event.recurrence.length > 0) return event.id;
+  return event.id.match(GOOGLE_RECURRING_EVENT_ID_RE)?.[1] ?? null;
+}
+
+export function isRecurringMeeting(event: MeetingEvent): boolean {
+  return recurringSeriesId(event) !== null;
+}
+
+export function isActiveBotStatus(status: string): boolean {
+  return (
+    status === 'scheduled' ||
+    status === 'joining' ||
+    status === 'recording' ||
+    status === 'processing' ||
+    status === 'completed'
+  );
+}
+
+export function botForEvent(
+  event: MeetingEvent,
+  botsByEventId: Map<string, ScheduledBot>,
+  scheduledBots: ScheduledBot[] = Array.from(botsByEventId.values()),
+): ScheduledBot | undefined {
+  const exact = botsByEventId.get(event.id);
+  if (exact && isActiveBotStatus(exact.status)) return exact;
+
+  const seriesId = recurringSeriesId(event);
+  if (!seriesId) return undefined;
+
+  return scheduledBots.find((bot) => {
+    if (!isActiveBotStatus(bot.status)) return false;
+    return bot.calendarSeriesId?.trim() === seriesId;
+  });
+}
+
+export function calendarEventIdsForBotLookup(events: MeetingEvent[]): string[] {
+  return Array.from(
+    new Set(
+      events
+        .map((event) => event.id?.trim())
+        .filter((id): id is string => typeof id === 'string' && id.length > 0),
+    ),
+  );
+}
+
+export function mergeScheduledBots(
+  primary: ScheduledBot[],
+  secondary: ScheduledBot[],
+): ScheduledBot[] {
+  const byId = new Map<string, ScheduledBot>();
+  for (const bot of [...primary, ...secondary]) {
+    if (!byId.has(bot.botId)) byId.set(bot.botId, bot);
+  }
+  return Array.from(byId.values());
+}
+
+export function mergeScheduledBotLookups(
+  eventIds: string[],
+  eventBots: ScheduledBot[] | null,
+  fullBots: ScheduledBot[] | null,
+): ScheduledBot[] | null {
+  if (eventIds.length > 0) {
+    if (eventBots === null) return null;
+    return mergeScheduledBots(eventBots, fullBots ?? []);
+  }
+  return fullBots;
 }
 
 export function isToday(event: MeetingEvent, now = new Date()): boolean {
@@ -542,4 +620,3 @@ function countSignalKind(signals: MeetingSignal[], kind: 'action' | 'decision' |
 function isSignalLike(value: unknown): value is MeetingSignal {
   return typeof value === 'object' && value !== null;
 }
-
