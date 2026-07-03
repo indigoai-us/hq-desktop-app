@@ -6,10 +6,13 @@ import {
 } from '../../lib/activeMeetings';
 import { loadMeetingsCache, saveMeetingsCache } from '../../lib/meetingsCache';
 import {
+  buildRefreshProblemReport,
   botForEvent,
   calendarEventIdsForBotLookup,
   eventMeetingUrl,
   friendlyError,
+  MEETINGS_STALE_NOTICE_FAILURES,
+  meetingsRefreshGate,
   mergeScheduledBotLookups,
   recurringSeriesId,
 } from './meetings-model';
@@ -79,10 +82,15 @@ let accountEmailById = $state<Map<string, string>>(new Map());
 let calendarSummaryByKey = $state<Map<string, string>>(new Map());
 let memberships = $state<CompanyMembership[]>([]);
 let membershipsError = $state('');
-// Surfaced when the live calendar fetch fails outright (vs. cache miss):
-// we keep the stale paint on screen and show this rather than faking an
-// empty state. Auth failures are special-cased to a "sign in again" hint.
+// Surfaced only when the live calendar fetch has missed repeatedly. The agenda
+// keeps showing the cached paint during transient failures; this stays quiet
+// until the stale-grace gate opens. Auth failures are actionable immediately.
 let fetchError = $state('');
+// True only while the agenda is genuinely stuck and should offer the one-click
+// feedback path. Auth prompts and silent transient misses do not set it.
+let refreshBlocked = $state(false);
+let refreshFailureCount = 0;
+let lastRefreshErrorRaw = '';
 let loading = $state(false);
 // Per-row optimistic lock for bot actions (invite / cancel / join-now), keyed
 // by calendar event id. The agenda reads it to disable a row's buttons + show a
@@ -129,7 +137,6 @@ function hydrateFromCache() {
 async function refresh() {
   if (loading) return;
   loading = true;
-  fetchError = '';
   membershipsError = '';
   try {
     const [evts, members, accts] = await Promise.all([
@@ -144,6 +151,11 @@ async function refresh() {
       ),
     ]);
     events = evts ?? [];
+    const resetGate = meetingsRefreshGate(refreshFailureCount, null);
+    refreshFailureCount = resetGate.consecutiveFailures;
+    fetchError = resetGate.notice;
+    refreshBlocked = resetGate.refreshBlocked;
+    lastRefreshErrorRaw = '';
     const botEventIds = calendarEventIdsForBotLookup(evts ?? []);
     let eventBotsErr: unknown = null;
     let fullBotsErr: unknown = null;
@@ -171,11 +183,15 @@ async function refresh() {
         eventBotsErr,
         'Could not refresh meeting bot status.',
       );
+      refreshBlocked = false;
+      lastRefreshErrorRaw = String(eventBotsErr ?? '');
     } else if (botEventIds.length === 0 && fullBots === null) {
       fetchError = friendlyError(
         fullBotsErr,
         'Could not refresh meeting bot status.',
       );
+      refreshBlocked = false;
+      lastRefreshErrorRaw = String(fullBotsErr ?? '');
     }
     if (bots !== null) {
       botsByEventId = buildBotMap(bots);
@@ -198,9 +214,39 @@ async function refresh() {
   } catch (err) {
     // Keep the cached paint; surface the failure rather than blanking out.
     console.error('meetings refresh failed:', err);
-    fetchError = friendlyFetchError(err);
+    lastRefreshErrorRaw = String(err ?? '');
+    const gate = meetingsRefreshGate(
+      refreshFailureCount,
+      err,
+      MEETINGS_STALE_NOTICE_FAILURES,
+    );
+    refreshFailureCount = gate.consecutiveFailures;
+    fetchError = gate.notice;
+    refreshBlocked = gate.refreshBlocked;
   } finally {
     loading = false;
+  }
+}
+
+/**
+ * File a bug report for a stuck meetings refresh via the canonical `hq
+ * feedback` pathway, attaching the raw error and current cache context.
+ */
+async function reportRefreshProblem(): Promise<ToastDescriptor> {
+  const { title, body } = buildRefreshProblemReport({
+    notice: fetchError,
+    rawError: lastRefreshErrorRaw,
+    meetingsShown: events.length,
+    connectedAccounts: accounts.length,
+  });
+  try {
+    await invoke('submit_bug_report', { title, body });
+    return { kind: 'info', text: 'Thanks — bug report filed.' };
+  } catch (err) {
+    return {
+      kind: 'warn',
+      text: friendlyError(err, 'Could not file the report — try /hq-bug.'),
+    };
   }
 }
 
@@ -277,14 +323,6 @@ function isActiveStatus(s: string): boolean {
     s === 'processing' ||
     s === 'completed'
   );
-}
-
-function friendlyFetchError(err: unknown): string {
-  const raw = String(err ?? '');
-  if (/\b401\b/.test(raw) || /auth/i.test(raw)) {
-    return 'Sign in again to load meetings.';
-  }
-  return 'Could not refresh meetings — showing the last cached view.';
 }
 
 // ---------------------------------------------------------------------------
@@ -479,6 +517,9 @@ export const meetingsStore = {
   get fetchError() {
     return fetchError;
   },
+  get refreshBlocked() {
+    return refreshBlocked;
+  },
   get loading() {
     return loading;
   },
@@ -489,4 +530,5 @@ export const meetingsStore = {
   inviteBot,
   cancelBot,
   joinBotNow,
+  reportRefreshProblem,
 };

@@ -589,6 +589,90 @@ export function friendlyError(err: unknown, fallback: string): string {
   return fallback;
 }
 
+export const MEETINGS_STALE_NOTICE_FAILURES = 4;
+
+/**
+ * Whether a refresh failure is an auth problem (vs. a transient/stale one).
+ * Single source of truth for the heuristic so the notice copy and the store's
+ * "is this reportable?" gate can't drift apart.
+ */
+export function isAuthError(err: unknown): boolean {
+  const raw = String(err ?? '');
+  return /\b401\b/.test(raw) || /auth/i.test(raw);
+}
+
+export interface MeetingsRefreshGate {
+  consecutiveFailures: number;
+  notice: string;
+  refreshBlocked: boolean;
+}
+
+/**
+ * Stale-grace reducer for poll-driven refreshes. Success resets the failure
+ * streak. Transient misses stay silent until the configured Nth consecutive
+ * failure, at which point the UI can show a muted stale-cache notice and offer
+ * "Report a problem" without hiding the cached agenda.
+ */
+export function meetingsRefreshGate(
+  previousFailures: number,
+  err: unknown | null,
+  staleAfterFailures = MEETINGS_STALE_NOTICE_FAILURES,
+): MeetingsRefreshGate {
+  if (err === null) {
+    return { consecutiveFailures: 0, notice: '', refreshBlocked: false };
+  }
+
+  const consecutiveFailures = Math.max(0, previousFailures) + 1;
+  if (isAuthError(err)) {
+    return {
+      consecutiveFailures,
+      notice: 'Sign in again to load meetings.',
+      refreshBlocked: false,
+    };
+  }
+
+  if (consecutiveFailures >= Math.max(1, staleAfterFailures)) {
+    return {
+      consecutiveFailures,
+      notice: 'Showing your last synced meetings — couldn’t refresh just now.',
+      refreshBlocked: true,
+    };
+  }
+
+  return { consecutiveFailures, notice: '', refreshBlocked: false };
+}
+
+export interface BugReport {
+  title: string;
+  body: string;
+}
+
+/**
+ * Build the title + body for a "Meetings won't refresh" bug report, filed via
+ * the `hq feedback` pathway when the agenda is genuinely blocked. Kept pure
+ * (the store/window just hands the result to `submit_bug_report`) so the exact
+ * copy + technical context are unit-testable.
+ */
+export function buildRefreshProblemReport(ctx: {
+  notice: string;
+  rawError: string;
+  meetingsShown: number;
+  connectedAccounts: number;
+}): BugReport {
+  const body = [
+    'The Meetings agenda could not refresh for several poll cycles and is',
+    'stuck showing the last synced view.',
+    '',
+    `Notice shown to user: ${ctx.notice || '(none)'}`,
+    `Last refresh error: ${ctx.rawError || '(none captured)'}`,
+    `Meetings currently shown: ${ctx.meetingsShown}`,
+    `Connected accounts: ${ctx.connectedAccounts}`,
+    '',
+    'Filed from the HQ Sync desktop app (Meetings -> Report a problem).',
+  ].join('\n');
+  return { title: "HQ Sync: Meetings won't refresh", body };
+}
+
 function normalizeSignals(raw: unknown): MeetingSignal[] {
   if (!raw) return [];
   if (Array.isArray(raw)) return raw.filter(isSignalLike);

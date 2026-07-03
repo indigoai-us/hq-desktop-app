@@ -49,6 +49,7 @@
   const memberships = $derived(meetingsStore.memberships);
   const membershipsError = $derived(meetingsStore.membershipsError);
   const fetchError = $derived(meetingsStore.fetchError);
+  const refreshBlocked = $derived(meetingsStore.refreshBlocked);
   const loading = $derived(meetingsStore.loading);
   // Per-row in-flight set for bot actions, owned by the store. Passed to the
   // agenda so each row can disable its buttons + spin while its invoke runs.
@@ -120,6 +121,17 @@
     const t = await meetingsStore.joinBotNow(evt);
     if (t) flashToast(t.kind, t.text);
   }
+  let reporting = $state(false);
+  async function onReportProblem(): Promise<void> {
+    if (reporting) return;
+    reporting = true;
+    try {
+      const t = await meetingsStore.reportRefreshProblem();
+      flashToast(t.kind, t.text);
+    } finally {
+      reporting = false;
+    }
+  }
 
   function openCalendar(): void {
     void openExternal('https://calendar.google.com');
@@ -173,7 +185,14 @@
         {upcomingEvents.length} upcoming across {dayGroups.length} day{dayGroups.length === 1 ? '' : 's'} · all companies
       </div>
       {#if fetchError}
-        <div class="page-error" role="status">{fetchError}</div>
+        <div class="page-error" role="status">
+          <span>{fetchError}</span>
+          {#if refreshBlocked}
+            <button type="button" class="report-link" onclick={onReportProblem} disabled={reporting}>
+              {reporting ? 'Reporting…' : 'Report a problem'}
+            </button>
+          {/if}
+        </div>
       {/if}
     </div>
     <div class="actions">
@@ -341,7 +360,17 @@
   }
   .ph-titles { min-width: 0; }
   .subtitle { margin-top: 4px; color: var(--muted); font-size: var(--text-base); line-height: 18px; }
-  .page-error { margin-top: 6px; color: var(--red); font-size: var(--text-base); line-height: 18px; }
+  .page-error {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+    margin-top: 6px; color: var(--muted); font-size: var(--text-base); line-height: 18px;
+  }
+  .report-link {
+    padding: 0; border: 0; background: transparent; color: var(--fg);
+    font: inherit; font-size: var(--text-base); line-height: 18px; text-decoration: underline;
+    cursor: default;
+  }
+  .report-link:hover:not(:disabled) { color: var(--blue); }
+  .report-link:disabled { opacity: 0.55; }
   .actions { display: flex; flex-shrink: 0; align-items: center; gap: 8px; }
 
   /* Transient action feedback. Amber (not red) for recoverable bot-action
