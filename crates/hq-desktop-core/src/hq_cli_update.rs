@@ -82,7 +82,9 @@ pub fn version_from_hq_binary(hq_bin: &Path) -> Option<String> {
 /// `util::hq_resolver`), so this may be stale. We still prefer a possibly-
 /// stale number over returning None and silently disabling the nag.
 pub fn hq_version_string(bin: &Path) -> Option<String> {
-    let out = Command::new(bin).arg("--version").output().ok()?;
+    let mut cmd = Command::new(bin);
+    paths::no_window(&mut cmd);
+    let out = cmd.arg("--version").output().ok()?;
     if !out.status.success() {
         return None;
     }
@@ -318,7 +320,9 @@ pub fn install_argv(prefix: Option<&str>) -> Vec<String> {
 /// default global prefix and is only a fallback for version detection layouts
 /// that cannot be resolved from the `hq` binary itself.
 pub fn read_installed_version(npm_bin: &str, path: &str) -> Option<String> {
-    let out = Command::new(npm_bin)
+    let mut cmd = Command::new(npm_bin);
+    paths::no_window(&mut cmd);
+    let out = cmd
         .args(["root", "-g"])
         .env("PATH", path)
         .output()

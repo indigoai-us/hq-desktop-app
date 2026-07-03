@@ -518,7 +518,9 @@ fn node_too_old_message(current_major: u32) -> String {
 /// (`env node` against the same `child_path()` we hand the spawned `npx`), which
 /// matters under nvm where that can differ from `resolve_bin("node")`.
 fn preflight_node_too_old() -> Option<u32> {
-    let output = std::process::Command::new("/usr/bin/env")
+    let mut cmd = std::process::Command::new("/usr/bin/env");
+    paths::no_window(&mut cmd);
+    let output = cmd
         .args(["node", "--version"])
         .env("PATH", paths::child_path())
         .output()
@@ -554,7 +556,9 @@ fn runner_unresolvable_reason(node_resolves: bool, npx_resolves: bool) -> Option
 /// the runner's interpreter is *positively* unresolvable (probed and missing);
 /// fails OPEN otherwise. `pub(crate)` so the daemon watcher path can reuse it.
 pub(crate) fn preflight_runner_unresolvable() -> Option<String> {
-    let node_resolves = std::process::Command::new("/usr/bin/env")
+    let mut node_cmd = std::process::Command::new("/usr/bin/env");
+    paths::no_window(&mut node_cmd);
+    let node_resolves = node_cmd
         .args(["node", "--version"])
         .env("PATH", paths::child_path())
         .output()
@@ -562,7 +566,9 @@ pub(crate) fn preflight_runner_unresolvable() -> Option<String> {
         .unwrap_or(false);
 
     let npx_bin = paths::resolve_bin("npx");
-    let npx_resolves = std::process::Command::new(&npx_bin)
+    let mut npx_cmd = std::process::Command::new(&npx_bin);
+    paths::no_window(&mut npx_cmd);
+    let npx_resolves = npx_cmd
         .arg("--version")
         .env("PATH", paths::child_path())
         .output()

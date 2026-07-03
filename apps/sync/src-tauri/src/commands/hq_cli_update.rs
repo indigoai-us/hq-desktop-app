@@ -218,7 +218,9 @@ async fn run_npm_install(
     let path = path.to_string();
     log("hq-cli-update", &format!("install: spawning {} {}", npm, args.join(" ")));
     tauri::async_runtime::spawn_blocking(move || {
-        Command::new(&npm).args(&args).env("PATH", path).output()
+        let mut cmd = Command::new(&npm);
+        paths::no_window(&mut cmd);
+        cmd.args(&args).env("PATH", path).output()
     })
     .await
     .map_err(|e| format!("join blocking task: {e}"))?

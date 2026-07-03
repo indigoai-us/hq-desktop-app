@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 use chrono::SecondsFormat;
 
 use crate::logfile::log;
+use crate::paths;
 
 const LOG_TAG: &str = "git-mirror";
 
@@ -156,8 +157,9 @@ fn run_git(cwd: &str, args: &[&str]) -> Result<(), String> {
 }
 
 fn git_output(cwd: &str, args: &[&str]) -> Result<Output, String> {
-    Command::new("git")
-        .arg("-C")
+    let mut cmd = Command::new("git");
+    paths::no_window(&mut cmd);
+    cmd.arg("-C")
         .arg(cwd)
         .args(args)
         .output()
