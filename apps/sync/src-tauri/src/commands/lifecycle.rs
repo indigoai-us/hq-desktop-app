@@ -68,8 +68,7 @@ pub fn setup_lifecycle(app: &AppHandle) {
         config_valid,
         hq_root_valid,
         has_auth,
-        // TODO(install-marker): wire the install marker subsystem when it exists.
-        install_in_progress: false,
+        install_in_progress: crate::commands::install_manifest::install_in_progress_from_disk(),
     };
     let verdict = classify_lifecycle(inputs);
 
@@ -102,7 +101,7 @@ pub fn setup_lifecycle(app: &AppHandle) {
     log(
         "lifecycle",
         &format!(
-            "setup_lifecycle: state={} install_completed={} first_run_completed={} had_machine_id={} config_valid={} hq_root_valid={} has_auth={} install_in_progress=false backfill={}",
+            "setup_lifecycle: state={} install_completed={} first_run_completed={} had_machine_id={} config_valid={} hq_root_valid={} has_auth={} install_in_progress={} backfill={}",
             lifecycle_state_str(verdict.state),
             install_completed,
             first_run_completed,
@@ -110,6 +109,7 @@ pub fn setup_lifecycle(app: &AppHandle) {
             config_valid,
             hq_root_valid,
             has_auth,
+            inputs.install_in_progress,
             verdict.needs_install_backfill,
         ),
     );

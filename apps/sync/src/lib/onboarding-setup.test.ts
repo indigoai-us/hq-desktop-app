@@ -5,8 +5,11 @@ import { mount, unmount } from 'svelte';
 import {
   allSettled,
   buildInitialStages,
+  buildStagesFromManifest,
   failedRequiredStages,
+  isContentRetryEligible,
   isStageSkipEligible,
+  resumeStartStageFromManifest,
   setStageStatus,
   setupCompletionResult,
   setupNeedsAttention,
@@ -120,6 +123,29 @@ describe('onboarding setup stages', () => {
       error: 'missing command',
     });
     expect(failed.find((stage) => stage.id === 'deps')?.status).toBe('pending');
+  });
+});
+
+describe('install manifest resume state', () => {
+  it('resumes at the first incomplete manifest stage', () => {
+    const manifest = {
+      schemaVersion: 1,
+      installerVersion: '0.0.0-test',
+      installPath: '/tmp/HQ',
+      startedAt: '2026-01-01T00:00:00Z',
+      completedAt: null,
+      steps: {
+        content: { status: 'ok' as const },
+        deps: { status: 'failed' as const, error: 'node failed' },
+      },
+    };
+
+    expect(resumeStartStageFromManifest(manifest)).toBe('deps');
+    expect(buildStagesFromManifest(manifest).slice(0, 3)).toMatchObject([
+      { id: 'content', status: 'ok' },
+      { id: 'deps', status: 'pending' },
+      { id: 'initial-sync', status: 'pending' },
+    ]);
   });
 });
 
@@ -256,6 +282,43 @@ describe('stage skip affordance', () => {
         elapsedMs: threshold,
       }),
     ).toBe(true);
+  });
+});
+
+describe('content retry eligibility', () => {
+  it('enables retry for failed content or a stalled active content fetch only', () => {
+    const failed = setStageStatus(buildInitialStages(), 'content', 'failed', 'boom')
+      .find((stage) => stage.id === 'content');
+    expect(
+      isContentRetryEligible({
+        contentStage: failed,
+        activeStageId: null,
+      }),
+    ).toBe(true);
+
+    const running = setStageStatus(buildInitialStages(), 'content', 'running')
+      .find((stage) => stage.id === 'content');
+    expect(
+      isContentRetryEligible({
+        contentStage: running,
+        activeStageId: 'content',
+        progress: { stalled: true },
+      }),
+    ).toBe(true);
+    expect(
+      isContentRetryEligible({
+        contentStage: running,
+        activeStageId: 'content',
+        progress: { stalled: false },
+      }),
+    ).toBe(false);
+    expect(
+      isContentRetryEligible({
+        contentStage: running,
+        activeStageId: 'deps',
+        progress: { stalled: true },
+      }),
+    ).toBe(false);
   });
 });
 
@@ -484,7 +547,7 @@ describe('SetupScreen install cancellation', () => {
     expect(invokeMock).toHaveBeenCalledWith('cancel_install', {
       handle: 'install-handle-skip',
     });
-    for (let i = 0; i < 20 && onsetupcomplete.mock.calls.length === 0; i += 1) {
+    for (let i = 0; i < 100 && onsetupcomplete.mock.calls.length === 0; i += 1) {
       await flushMicrotasks();
     }
     expect(onsetupcomplete).toHaveBeenCalledWith(

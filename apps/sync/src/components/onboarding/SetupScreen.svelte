@@ -5,7 +5,10 @@
   import {
     allSettled,
     buildInitialStages,
+    buildStagesFromManifest,
+    isContentRetryEligible,
     isStageSkipEligible,
+    resumeStartStageFromManifest,
     setStageStatus,
     setupCompletionResult,
     setupProgressPercent,
@@ -15,6 +18,7 @@
     StageTimeoutError,
     STAGE_ORDER,
     withTimeout,
+    type InstallManifest,
     type StageId,
     type StageState,
     type SetupCompletionResult,
@@ -30,6 +34,7 @@
   let stages = $state<StageState[]>(buildInitialStages());
   let completed = $state(false);
   let stageCreep = $state(0);
+  let effectiveInstallPath = $state<string | null>(null);
   let currentRunId = 0;
   let setupCancelled = false;
   let unlistenInstallProgress: UnlistenFn | null = null;
@@ -37,6 +42,9 @@
   let skipReadyStage = $state<StageId | null>(null);
   let activeStageControl: ActiveStageControl | null = null;
   let contentProgress = $state<ContentProgressPayload | null>(null);
+  let contentRetryInFlight = $state(false);
+  let stagingSource = $state(false);
+  let stagingSourceSaving = $state(false);
   const activeInstallHandles = new Set<string>();
   const activeContentHandles = new Set<string>();
 
@@ -46,6 +54,20 @@
   );
   const currentStageId = $derived(
     stages.find((stage) => stage.status === 'running')?.id ?? null,
+  );
+  const contentStage = $derived(
+    stages.find((stage) => stage.id === 'content') ?? null,
+  );
+  const contentRetryEligible = $derived(
+    isContentRetryEligible({
+      contentStage,
+      activeStageId: currentStageId,
+      progress: contentProgress,
+      retrying: contentRetryInFlight,
+    }),
+  );
+  const stagingToggleDisabled = $derived(
+    stagingSourceSaving || contentStage?.status === 'ok',
   );
   const setupDone = $derived(allSettled(stages));
   const overallPercent = $derived(
@@ -91,6 +113,7 @@
     runId: number;
     stageId: StageId;
     skip: () => void;
+    retry: () => void;
     skipped: boolean;
   };
 
@@ -102,6 +125,7 @@
     activeStageControl = null;
     skipReadyStage = null;
     contentProgress = null;
+    contentRetryInFlight = false;
     return currentRunId;
   }
 
@@ -209,12 +233,79 @@
     return args === undefined ? invoke(command) : invoke(command, args);
   }
 
+  $effect(() => {
+    if (installPath) effectiveInstallPath = installPath;
+  });
+
   function contentHandle(runId: number): string {
     return `content-${runId}-${Date.now().toString(36)}`;
   }
 
+  async function loadStagingSource(): Promise<void> {
+    if (typeof invoke !== 'function') return;
+    try {
+      stagingSource = Boolean(await invoke<boolean>('get_staging_source'));
+    } catch {
+      stagingSource = false;
+    }
+  }
+
+  async function handleToggleStagingSource(): Promise<void> {
+    if (stagingToggleDisabled || typeof invoke !== 'function') return;
+    const next = !stagingSource;
+    stagingSource = next;
+    stagingSourceSaving = true;
+    let saved = false;
+    try {
+      stagingSource = Boolean(
+        await invoke<boolean>('set_staging_source', { enabled: next }),
+      );
+      saved = true;
+    } catch (err) {
+      stagingSource = !next;
+      console.error('Failed to save staging source:', err);
+    } finally {
+      stagingSourceSaving = false;
+    }
+    if (saved && currentStageId === 'content' && activeStageControl?.stageId === 'content') {
+      retryActiveContentStage(activeStageControl);
+    }
+  }
+
+  async function journalStageStart(id: StageId): Promise<void> {
+    try {
+      await invoke('record_step_start', { stepId: id });
+    } catch {
+      // Resume journaling is best-effort; setup itself remains authoritative.
+    }
+  }
+
+  async function journalStageOk(id: StageId): Promise<void> {
+    try {
+      await invoke('record_step_ok', { stepId: id });
+    } catch {
+      // non-fatal
+    }
+  }
+
+  async function journalStageFailure(id: StageId, message: string): Promise<void> {
+    try {
+      await invoke('record_step_failure', { stepId: id, error: message });
+    } catch {
+      // non-fatal
+    }
+  }
+
+  async function journalInstallComplete(): Promise<void> {
+    try {
+      await invoke('record_install_complete');
+    } catch {
+      // non-fatal
+    }
+  }
+
   async function invokeStageCommand(id: StageId, runId: number): Promise<void> {
-    const invocations = stageCommandInvocations(id, { installPath });
+    const invocations = stageCommandInvocations(id, { installPath: effectiveInstallPath });
     if (invocations.length === 0) return;
     if (typeof invoke !== 'function') {
       throw new Error('The desktop bridge is not available in this environment.');
@@ -252,19 +343,25 @@
     }
   }
 
-  async function runStage(id: StageId, runId: number): Promise<void> {
-    if (!isCurrentRun(runId)) return;
+  type StageRunOutcome = 'ok' | 'failed' | 'cancelled' | 'retry';
+
+  async function runStage(id: StageId, runId: number): Promise<StageRunOutcome> {
+    if (!isCurrentRun(runId)) return 'cancelled';
     stages = setStageStatus(stages, id, 'running');
     if (id === 'content') contentProgress = null;
+    await journalStageStart(id);
 
     let skipStage!: () => void;
-    const skipPromise = new Promise<'skipped'>((resolve) => {
+    let retryStage!: () => void;
+    const controlPromise = new Promise<'skipped' | 'retry'>((resolve) => {
       skipStage = () => resolve('skipped');
+      retryStage = () => resolve('retry');
     });
     const control: ActiveStageControl = {
       runId,
       stageId: id,
       skip: skipStage,
+      retry: retryStage,
       skipped: false,
     };
     activeStageControl = control;
@@ -275,32 +372,56 @@
     );
     const result = await Promise.race([
       workPromise,
-      skipPromise.then((kind) => ({ kind })),
+      controlPromise.then((kind) => ({ kind })),
     ]);
 
     if (activeStageControl === control) {
       activeStageControl = null;
     }
 
-    if (!isCurrentRun(runId)) return;
+    if (!isCurrentRun(runId)) return 'cancelled';
+
+    if (result.kind === 'retry') {
+      stages = setStageStatus(stages, id, 'pending');
+      if (id === 'content') contentProgress = null;
+      return 'retry';
+    }
 
     if (result.kind === 'skipped') {
-      stages = setStageStatus(stages, id, 'failed', 'Skipped after timeout');
-      return;
+      const message = 'Skipped after timeout';
+      stages = setStageStatus(stages, id, 'failed', message);
+      await journalStageFailure(id, message);
+      return 'failed';
     }
 
-    if (control.skipped) return;
+    if (control.skipped) return 'cancelled';
     if (result.kind === 'done') {
       stages = setStageStatus(stages, id, 'ok');
-    } else {
-      stages = setStageStatus(stages, id, 'failed', errorMessage(result.err));
+      await journalStageOk(id);
+      return 'ok';
     }
+    if (result.kind === 'failed') {
+      const message = errorMessage(result.err);
+      stages = setStageStatus(stages, id, 'failed', message);
+      await journalStageFailure(id, message);
+      return 'failed';
+    }
+    return 'cancelled';
   }
 
-  async function runSetup(runId: number) {
-    for (const id of STAGE_ORDER) {
+  async function runSetup(runId: number, startStage: StageId = STAGE_ORDER[0]) {
+    const startIndex = Math.max(0, STAGE_ORDER.indexOf(startStage));
+    for (const id of STAGE_ORDER.slice(startIndex)) {
       if (!isCurrentRun(runId)) return;
-      await runStage(id, runId);
+      let outcome: StageRunOutcome;
+      do {
+        outcome = await runStage(id, runId);
+      } while (outcome === 'retry' && isCurrentRun(runId));
+      if (outcome === 'cancelled') return;
+      if (id === 'content' && outcome === 'failed') {
+        skipReadyStage = null;
+        return;
+      }
       if (isCurrentRun(runId)) {
         skipReadyStage = null;
       }
@@ -308,15 +429,27 @@
 
     if (isCurrentRun(runId) && !completed && allSettled(stages)) {
       completed = true;
+      await journalInstallComplete();
       onsetupcomplete?.(setupCompletionResult(stages));
     }
   }
 
   async function startSetupRun() {
     const runId = beginSetupRun();
+    if (installPath) effectiveInstallPath = installPath;
     await listenForProgress(runId);
+    await loadStagingSource();
+    let startStage: StageId = STAGE_ORDER[0];
+    try {
+      const manifest = await invoke<InstallManifest>('read_install_manifest');
+      effectiveInstallPath = manifest.installPath || effectiveInstallPath;
+      startStage = resumeStartStageFromManifest(manifest);
+      stages = buildStagesFromManifest(manifest, startStage);
+    } catch {
+      // Missing/corrupt manifests fall back to a fresh run.
+    }
     if (!isCurrentRun(runId)) return;
-    await runSetup(runId);
+    await runSetup(runId, startStage);
   }
 
   function cancelSetupRun() {
@@ -337,6 +470,30 @@
     skipReadyStage = null;
     void cancelForegroundWork(control.runId);
     control.skip();
+  }
+
+  function retryActiveContentStage(control: ActiveStageControl) {
+    contentRetryInFlight = true;
+    skipReadyStage = null;
+    void cancelActiveContentHandles(control.runId).finally(() => {
+      contentRetryInFlight = false;
+    });
+    control.retry();
+  }
+
+  function handleRetryContentStage() {
+    if (!contentRetryEligible || contentRetryInFlight) return;
+    const control = activeStageControl;
+    if (control && control.stageId === 'content' && currentStageId === 'content') {
+      retryActiveContentStage(control);
+      return;
+    }
+
+    if (currentStageId !== null) return;
+    contentRetryInFlight = true;
+    void runSetup(currentRunId, 'content').finally(() => {
+      contentRetryInFlight = false;
+    });
   }
 
   function formatBytes(bytes: number | null | undefined): string {
@@ -443,6 +600,18 @@
     >
       <span style={`width: ${progressFillPercent}%`}></span>
     </div>
+    <button
+      type="button"
+      class="staging-toggle"
+      class:active={stagingSource}
+      disabled={stagingToggleDisabled}
+      onclick={handleToggleStagingSource}
+      role="switch"
+      aria-checked={stagingSource}
+    >
+      <span class="toggle-knob" aria-hidden="true"></span>
+      <span>Staging template</span>
+    </button>
   </div>
 
   <ol class="stage-list" aria-label="Setup stages">
@@ -487,6 +656,18 @@
                 </button>
               </span>
             {/if}
+          {/if}
+          {#if stage.id === 'content' && contentRetryEligible}
+            <span class="retry-affordance">
+              <span>
+                {stage.status === 'running'
+                  ? 'Template download stalled.'
+                  : 'Template setup did not complete.'}
+              </span>
+              <button type="button" onclick={handleRetryContentStage}>
+                Retry
+              </button>
+            </span>
           {/if}
           {#if stage.error}
             <span class="stage-error">{stage.error}</span>
@@ -568,6 +749,62 @@
     border-radius: inherit;
     background: var(--popover-primary, #ffffff);
     transition: width 0.18s ease;
+  }
+
+  .staging-toggle {
+    appearance: none;
+    display: inline-flex;
+    align-items: center;
+    justify-self: start;
+    gap: var(--space-2, 8px);
+    min-height: 30px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--popover-text-muted, rgba(255, 255, 255, 0.52));
+    font: inherit;
+    font-size: var(--text-xs, 12px);
+    font-weight: 650;
+    cursor: pointer;
+  }
+
+  .staging-toggle:disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
+  }
+
+  .toggle-knob {
+    position: relative;
+    width: 34px;
+    height: 20px;
+    border: 1px solid var(--popover-border, rgba(255, 255, 255, 0.18));
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.09);
+    transition:
+      background-color 0.12s ease,
+      border-color 0.12s ease;
+  }
+
+  .toggle-knob::after {
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    width: 12px;
+    height: 12px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.78);
+    content: '';
+    transition: transform 0.12s ease;
+  }
+
+  .staging-toggle.active .toggle-knob {
+    border-color: rgba(125, 211, 168, 0.7);
+    background: rgba(125, 211, 168, 0.22);
+  }
+
+  .staging-toggle.active .toggle-knob::after {
+    background: #7dd3a8;
+    transform: translateX(14px);
   }
 
   .stage-list {
@@ -695,7 +932,8 @@
     transition: width 0.18s ease;
   }
 
-  .skip-affordance {
+  .skip-affordance,
+  .retry-affordance {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
@@ -706,7 +944,12 @@
     line-height: 1.35;
   }
 
-  .skip-affordance button {
+  .retry-affordance {
+    color: rgba(255, 210, 210, 0.82);
+  }
+
+  .skip-affordance button,
+  .retry-affordance button {
     appearance: none;
     min-height: 28px;
     padding: 0 12px;
@@ -719,11 +962,14 @@
     cursor: pointer;
   }
 
-  .skip-affordance button:hover {
+  .skip-affordance button:hover,
+  .retry-affordance button:hover {
     background: #ffffff;
   }
 
-  .skip-affordance button:focus-visible {
+  .skip-affordance button:focus-visible,
+  .retry-affordance button:focus-visible,
+  .staging-toggle:focus-visible {
     outline: 2px solid var(--popover-highlight, rgba(255, 255, 255, 0.34));
     outline-offset: 2px;
   }

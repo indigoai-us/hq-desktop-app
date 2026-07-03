@@ -25,21 +25,22 @@
 //!   * The GitHub tarball wrapper directory (`owner-repo-<sha>/`) is stripped
 //!     so the template's own root becomes the HQ root.
 //!
-//! Not yet ported from the old installer (deliberately out of scope for this
-//! pass — tracked as follow-up, not silently dropped):
-//!   * The staging-channel override (`indigoai-us/hq-core-staging` via
-//!     `download_staging_tarball`) and the installer's resumable
-//!     install-manifest bookkeeping (`recordStepStart`/`recordStepOk`).
+//! The old installer also exposed a staging-source override. That is ported
+//! here as a `~/.hq/menubar.json` flag so onboarding can pull
+//! `indigoai-us/hq-core-staging` when explicitly enabled.
 
 use std::collections::HashMap;
+use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 use tar::EntryType;
 use tauri::{AppHandle, Emitter};
 
@@ -49,6 +50,9 @@ use crate::util::logfile::log;
 
 const GITHUB_API: &str = "https://api.github.com";
 const DEFAULT_TEMPLATE_REPO: &str = "indigoai-us/hq-core";
+const STAGING_TEMPLATE_REPO: &str = "indigoai-us/hq-core-staging";
+const STAGING_TEMPLATE_REF: &str = "main";
+const STAGING_SOURCE_KEY: &str = "stagingSource";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// Per-chunk stall budget while streaming the tarball. Mirrors the old
 /// installer's `DOWNLOAD_HARD_STALL_MS` (25s) — long enough to ride out a
@@ -83,6 +87,50 @@ struct ContentProgressPayload {
     slow: bool,
     stalled: bool,
     message: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TemplateChannel {
+    StableRelease,
+    StagingMain,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TemplateSource {
+    repo: &'static str,
+    reference: Option<&'static str>,
+    channel: TemplateChannel,
+}
+
+impl TemplateSource {
+    fn label(self) -> &'static str {
+        match self.channel {
+            TemplateChannel::StableRelease => "stable",
+            TemplateChannel::StagingMain => "staging",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StagingSourceChangedPayload {
+    enabled: bool,
+}
+
+fn template_source_for_staging_source(enabled: bool) -> TemplateSource {
+    if enabled {
+        TemplateSource {
+            repo: STAGING_TEMPLATE_REPO,
+            reference: Some(STAGING_TEMPLATE_REF),
+            channel: TemplateChannel::StagingMain,
+        }
+    } else {
+        TemplateSource {
+            repo: DEFAULT_TEMPLATE_REPO,
+            reference: None,
+            channel: TemplateChannel::StableRelease,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -179,6 +227,50 @@ fn content_cancelled_error() -> String {
     "Template setup was cancelled.".to_string()
 }
 
+fn read_staging_source_from(path: &Path) -> bool {
+    let Ok(text) = fs::read_to_string(path) else {
+        return false;
+    };
+    let Ok(value) = serde_json::from_str::<Value>(&text) else {
+        return false;
+    };
+    value
+        .get(STAGING_SOURCE_KEY)
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn write_staging_source_to(path: &Path, enabled: bool) -> Result<(), String> {
+    let mut obj: Map<String, Value> = if path.exists() {
+        fs::read_to_string(path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+            .and_then(|v| v.as_object().cloned())
+            .unwrap_or_default()
+    } else {
+        Map::new()
+    };
+    obj.insert(STAGING_SOURCE_KEY.to_string(), Value::Bool(enabled));
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("create menubar dir: {e}"))?;
+    }
+    let tmp = path.with_extension("json.tmp");
+    let body = serde_json::to_string_pretty(&Value::Object(obj))
+        .map_err(|e| format!("serialize menubar staging source: {e}"))?;
+    let mut file = fs::File::create(&tmp).map_err(|e| format!("stage menubar prefs: {e}"))?;
+    file.write_all(body.as_bytes())
+        .map_err(|e| format!("write menubar prefs: {e}"))?;
+    file.sync_all().ok();
+    fs::rename(&tmp, path).map_err(|e| format!("commit menubar prefs: {e}"))
+}
+
+fn staging_source_enabled() -> bool {
+    crate::util::paths::menubar_json_path()
+        .map(|path| read_staging_source_from(&path))
+        .unwrap_or(false)
+}
+
 #[tauri::command]
 pub fn cancel_content_download(handle: String) -> Result<bool, String> {
     let Some(flag) = content_cancel_registry()
@@ -193,17 +285,48 @@ pub fn cancel_content_download(handle: String) -> Result<bool, String> {
     Ok(true)
 }
 
-fn github_client() -> Result<reqwest::Client, String> {
+#[tauri::command]
+pub fn get_staging_source() -> Result<bool, String> {
+    let path = crate::util::paths::menubar_json_path()?;
+    Ok(read_staging_source_from(&path))
+}
+
+#[tauri::command]
+pub fn set_staging_source(app: AppHandle, enabled: bool) -> Result<bool, String> {
+    let path = crate::util::paths::menubar_json_path()?;
+    let previous = read_staging_source_from(&path);
+    write_staging_source_to(&path, enabled)?;
+    if previous != enabled {
+        let _ = app.emit(
+            "staging-source:changed",
+            StagingSourceChangedPayload { enabled },
+        );
+    }
+    Ok(enabled)
+}
+
+fn github_client_with_token(token: Option<&str>) -> Result<reqwest::Client, String> {
     let mut headers = client_headers();
     headers.insert(
         reqwest::header::ACCEPT,
         reqwest::header::HeaderValue::from_static("application/vnd.github+json"),
     );
+    if let Some(token) = token {
+        let mut value = reqwest::header::HeaderValue::from_str(&format!("Bearer {token}"))
+            .map_err(|e| format!("invalid GitHub token header: {e}"))?;
+        value.set_sensitive(true);
+        headers.insert(reqwest::header::AUTHORIZATION, value);
+    }
     reqwest::Client::builder()
         .default_headers(headers)
         .timeout(REQUEST_TIMEOUT)
         .build()
         .map_err(|e| format!("build GitHub client: {e}"))
+}
+
+#[cfg(test)]
+fn github_client() -> Result<reqwest::Client, String> {
+    github_client_with_token(None)
 }
 
 async fn latest_release(
@@ -227,6 +350,68 @@ async fn latest_release(
         .await
         .map_err(|e| format!("failed to parse releases response: {e}"))?;
     Ok(releases.into_iter().find(|r| !r.prerelease && !r.draft))
+}
+
+const GH_FALLBACK_PATHS: &[&str] = &["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh"];
+
+fn resolve_gh_binary_from_path(path_env: Option<&str>, fallbacks: &[&str]) -> Option<PathBuf> {
+    if let Some(path_env) = path_env {
+        for dir in std::env::split_paths(path_env) {
+            let candidate = dir.join(if cfg!(windows) { "gh.exe" } else { "gh" });
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    for fallback in fallbacks {
+        let candidate = PathBuf::from(fallback);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn get_github_token() -> Result<String, String> {
+    let gh = resolve_gh_binary_from_path(std::env::var("PATH").ok().as_deref(), GH_FALLBACK_PATHS)
+        .ok_or_else(|| {
+            "GitHub CLI (`gh`) not found. Install it and run `gh auth login`, then retry."
+                .to_string()
+        })?;
+
+    let output = Command::new(&gh)
+        .args(["auth", "token"])
+        .output()
+        .map_err(|e| format!("failed to invoke `{} auth token`: {e}", gh.display()))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let detail = if stderr.is_empty() {
+            "no detail".to_string()
+        } else {
+            stderr
+        };
+        return Err(format!(
+            "`gh auth token` failed (exit {}). Run `gh auth login` and retry. Detail: {detail}",
+            output.status.code().unwrap_or(-1)
+        ));
+    }
+
+    let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if token.is_empty() {
+        return Err(
+            "`gh auth token` returned empty output. Run `gh auth login` and retry.".to_string(),
+        );
+    }
+    Ok(token)
+}
+
+fn staging_tarball_url(reference: &str) -> Result<String, String> {
+    if reference.trim().is_empty() || reference.contains('/') || reference.contains('\\') {
+        return Err("Invalid staging ref".to_string());
+    }
+    Ok(format!(
+        "{GITHUB_API}/repos/{STAGING_TEMPLATE_REPO}/tarball/{reference}"
+    ))
 }
 
 #[cfg(test)]
@@ -890,7 +1075,13 @@ pub async fn fetch_and_extract_template(
     handle: Option<String>,
 ) -> Result<String, String> {
     let hq_root = resolve_hq_path()?;
-    let client = github_client()?;
+    let source = template_source_for_staging_source(staging_source_enabled());
+    let token = if matches!(source.channel, TemplateChannel::StagingMain) {
+        Some(get_github_token()?)
+    } else {
+        None
+    };
+    let client = github_client_with_token(token.as_deref())?;
     let handle = handle.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let (cancel_flag, _cancel_registration) = register_content_cancel_handle(handle.clone());
     let progress = ContentProgressEmitter {
@@ -898,14 +1089,32 @@ pub async fn fetch_and_extract_template(
         handle: handle.clone(),
     };
 
-    let release = latest_release(&client, DEFAULT_TEMPLATE_REPO).await?;
-    let release = release.ok_or_else(|| {
-        format!("no stable release found for {DEFAULT_TEMPLATE_REPO}; cannot install HQ template")
-    })?;
+    let (version, tarball_url) = match source.reference {
+        Some(reference) => (reference.to_string(), staging_tarball_url(reference)?),
+        None => {
+            let release = latest_release(&client, source.repo).await?;
+            let release = release.ok_or_else(|| {
+                format!(
+                    "no stable release found for {}; cannot install HQ template",
+                    source.repo
+                )
+            })?;
+            (release.tag_name, release.tarball_url)
+        }
+    };
+
+    progress.emit(
+        "download",
+        Some(0),
+        None,
+        false,
+        false,
+        format!("Downloading HQ template ({})", source.label()),
+    );
 
     let compressed = download_tarball_with_progress(
         &client,
-        &release.tarball_url,
+        &tarball_url,
         Some(&progress),
         Some(cancel_flag.as_ref()),
     )
@@ -935,7 +1144,7 @@ pub async fn fetch_and_extract_template(
 
     progress.emit("complete", None, None, false, false, "HQ template ready");
 
-    Ok(release.tag_name)
+    Ok(version)
 }
 
 #[cfg(test)]
@@ -1021,6 +1230,48 @@ mod tests {
         assert_eq!(
             map_entry_to_template_path("indigoai-us-hq-core-abc123"),
             None
+        );
+    }
+
+    #[test]
+    fn template_source_selection_switches_stable_vs_staging() {
+        let stable = template_source_for_staging_source(false);
+        assert_eq!(stable.repo, DEFAULT_TEMPLATE_REPO);
+        assert_eq!(stable.reference, None);
+        assert_eq!(stable.channel, TemplateChannel::StableRelease);
+
+        let staging = template_source_for_staging_source(true);
+        assert_eq!(staging.repo, STAGING_TEMPLATE_REPO);
+        assert_eq!(staging.reference, Some(STAGING_TEMPLATE_REF));
+        assert_eq!(staging.channel, TemplateChannel::StagingMain);
+    }
+
+    #[test]
+    fn staging_source_toggle_round_trips_in_menubar_json() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(".hq").join("menubar.json");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, br#"{"machineId":"keep"}"#).unwrap();
+
+        write_staging_source_to(&path, true).unwrap();
+        assert!(read_staging_source_from(&path));
+        let value: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(value["machineId"], "keep");
+        assert_eq!(value[STAGING_SOURCE_KEY], true);
+
+        write_staging_source_to(&path, false).unwrap();
+        assert!(!read_staging_source_from(&path));
+    }
+
+    #[test]
+    fn staging_tarball_url_targets_private_staging_repo_ref() {
+        assert_eq!(
+            staging_tarball_url("main").unwrap(),
+            "https://api.github.com/repos/indigoai-us/hq-core-staging/tarball/main"
+        );
+        assert_eq!(
+            staging_tarball_url("../main").unwrap_err(),
+            "Invalid staging ref"
         );
     }
 
