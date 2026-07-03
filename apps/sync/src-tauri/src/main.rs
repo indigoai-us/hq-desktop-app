@@ -283,6 +283,13 @@ fn main() {
             commands::install_deps::install_hq_cli,
             commands::install_deps::install_yq,
             commands::install_deps::install_deps,
+            commands::install_deps::configure_claude_settings_path,
+            #[cfg(windows)]
+            commands::long_paths::is_long_paths_enabled,
+            #[cfg(windows)]
+            commands::long_paths::enable_long_paths,
+            #[cfg(windows)]
+            commands::long_paths::open_long_paths_settings,
             commands::autostart::get_autostart_enabled,
             commands::autostart::set_autostart_enabled,
             commands::daemon::start_daemon,

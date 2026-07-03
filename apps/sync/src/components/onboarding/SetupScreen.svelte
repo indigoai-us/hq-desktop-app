@@ -6,16 +6,21 @@
     allSettled,
     buildInitialStages,
     setStageStatus,
+    stageCommandInvocations,
     stageTimeoutMs,
     StageTimeoutError,
-    STAGE_COMMAND,
     STAGE_ORDER,
     withTimeout,
     type StageId,
     type StageState,
   } from '../../lib/onboarding-setup';
 
-  let { onsetupcomplete } = $props();
+  interface Props {
+    installPath: string | null;
+    onsetupcomplete?: () => void;
+  }
+
+  let { installPath, onsetupcomplete }: Props = $props();
 
   let stages = $state<StageState[]>(buildInitialStages());
   let completed = $state(false);
@@ -91,9 +96,13 @@
     unlistenInstallProgress = unlisten;
   }
 
+  function invokeDesktopCommand(command: string, args?: Record<string, unknown>) {
+    return args === undefined ? invoke(command) : invoke(command, args);
+  }
+
   async function invokeStageCommand(id: StageId, runId: number): Promise<void> {
-    const command = STAGE_COMMAND[id];
-    if (!command) return;
+    const invocations = stageCommandInvocations(id, { installPath });
+    if (invocations.length === 0) return;
     if (typeof invoke !== 'function') {
       throw new Error('The desktop bridge is not available in this environment.');
     }
@@ -103,14 +112,22 @@
     // runSetup moves on — all stages are non-fatal and the tray agent re-runs
     // them in steady state.
     const ms = stageTimeoutMs(id);
-    await withTimeout(
-      Promise.resolve(invoke(command)),
-      ms,
-      () => new StageTimeoutError(id, ms),
-      () => {
-        void cancelActiveInstallHandles(runId);
-      },
-    );
+    for (const invocation of invocations) {
+      try {
+        await withTimeout(
+          Promise.resolve(
+            invokeDesktopCommand(invocation.command, invocation.args),
+          ),
+          ms,
+          () => new StageTimeoutError(id, ms),
+          () => {
+            void cancelActiveInstallHandles(runId);
+          },
+        );
+      } catch (err) {
+        if (invocation.required) throw err;
+      }
+    }
   }
 
   async function runSetup(runId: number) {

@@ -29,6 +29,7 @@ pub mod install_stages;
 pub mod launch;
 pub mod library_local;
 pub mod lifecycle;
+pub mod long_paths;
 pub mod marketplace;
 pub mod meetings;
 pub mod messages;

@@ -6,6 +6,7 @@ import {
   allSettled,
   buildInitialStages,
   setStageStatus,
+  stageCommandInvocations,
   stageTimeoutMs,
   StageTimeoutError,
   STAGE_LABELS,
@@ -176,6 +177,27 @@ describe('stage timeouts', () => {
   });
 });
 
+describe('stage command invocations', () => {
+  it('adds Claude settings PATH configuration after dependency install', () => {
+    expect(
+      stageCommandInvocations('deps', { installPath: '/tmp/hq' }),
+    ).toEqual([
+      { command: 'install_deps', required: true },
+      {
+        command: 'configure_claude_settings_path',
+        args: { hqPath: '/tmp/hq' },
+        required: false,
+      },
+    ]);
+  });
+
+  it('skips the Claude settings follow-up until an install path is resolved', () => {
+    expect(stageCommandInvocations('deps', { installPath: null })).toEqual([
+      { command: 'install_deps', required: true },
+    ]);
+  });
+});
+
 describe('SetupScreen install cancellation', () => {
   beforeEach(() => {
     document.body.innerHTML = '';
@@ -200,7 +222,7 @@ describe('SetupScreen install cancellation', () => {
 
     const component = mount(SetupScreen, {
       target: document.body,
-      props: { onsetupcomplete: vi.fn() },
+      props: { installPath: '/tmp/hq', onsetupcomplete: vi.fn() },
     });
     await waitForInvoke('install_deps');
 
@@ -228,7 +250,7 @@ describe('SetupScreen install cancellation', () => {
 
     const component = mount(SetupScreen, {
       target: document.body,
-      props: { onsetupcomplete: vi.fn() },
+      props: { installPath: '/tmp/hq', onsetupcomplete: vi.fn() },
     });
     await waitForInvoke('install_deps');
 
@@ -242,6 +264,26 @@ describe('SetupScreen install cancellation', () => {
 
     expect(invokeMock).toHaveBeenCalledWith('cancel_install', {
       handle: 'install-handle-timeout',
+    });
+    await unmount(component);
+  });
+
+  it('invokes Claude settings PATH configuration after dependency install', async () => {
+    invokeMock.mockResolvedValue(undefined);
+
+    const component = mount(SetupScreen, {
+      target: document.body,
+      props: { installPath: '/tmp/hq', onsetupcomplete: vi.fn() },
+    });
+
+    await waitForInvoke('configure_claude_settings_path');
+    const commands = invokeMock.mock.calls.map(([command]) => command);
+
+    expect(commands.indexOf('install_deps')).toBeLessThan(
+      commands.indexOf('configure_claude_settings_path'),
+    );
+    expect(invokeMock).toHaveBeenCalledWith('configure_claude_settings_path', {
+      hqPath: '/tmp/hq',
     });
     await unmount(component);
   });
