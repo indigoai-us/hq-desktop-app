@@ -125,6 +125,19 @@ fn blur_hide_suppressed() -> bool {
     now_ms() < SUPPRESS_BLUR_UNTIL_MS.load(Ordering::SeqCst)
 }
 
+fn onboarding_window_requires_blur_suppression(app: &AppHandle) -> bool {
+    let first_run_launch = app
+        .try_state::<crate::commands::first_run::LaunchKindState>()
+        .map(|state| crate::commands::first_run::should_autoshow_on_launch(state.0))
+        .unwrap_or(false);
+    let setup_lifecycle = app
+        .try_state::<crate::commands::lifecycle::LifecycleStateHandle>()
+        .map(|state| crate::commands::lifecycle::lifecycle_keeps_main_window_visible(state.0))
+        .unwrap_or(false);
+
+    first_run_launch || setup_lifecycle
+}
+
 /// Last-known horizontal centre of the native "HQ" menu-bar icon, in Cocoa
 /// screen POINTS (not physical pixels), as reported by the helper on each
 /// click. `i64::MIN` = unknown (helper hasn't reported, or couldn't resolve the
@@ -445,6 +458,7 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                     && !secondary_open
                     && !disable_blur_hide
                     && !blur_hide_suppressed()
+                    && !onboarding_window_requires_blur_suppression(win_clone.app_handle())
                 {
                     let _ = win_clone.hide();
                 }
@@ -670,6 +684,18 @@ pub fn show_window_at_tray(app: &AppHandle) {
             position_below_tray(&window, rect);
         }
     }
+    let _ = window.show();
+    let _ = window.set_focus();
+}
+
+/// Show + focus the main window centered on screen for first-run onboarding.
+pub fn show_window_centered(app: &AppHandle) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    hide_desktop_alt(app);
+    let _ = window.center();
+    let _ = window.unminimize();
     let _ = window.show();
     let _ = window.set_focus();
 }

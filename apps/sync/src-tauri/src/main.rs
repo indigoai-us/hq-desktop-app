@@ -456,7 +456,7 @@ fn main() {
             // share/dm pollers below) — `machineId` is the tiebreaker that
             // distinguishes a brand-new install from a legacy user updating.
             // See commands/first_run.rs for the full rationale.
-            commands::first_run::classify_launch(app.handle());
+            let launch_kind = commands::first_run::classify_launch(app.handle());
             commands::lifecycle::setup_lifecycle(app.handle());
 
             // One-shot migration of any legacy `/deploy`-skill stub at
@@ -518,6 +518,10 @@ fn main() {
             }
 
             tray::setup_tray(app.handle())?;
+            if commands::first_run::should_autoshow_on_launch(launch_kind) {
+                tray::show_window_centered(app.handle());
+                util::logfile::log("app", "first-run launch: centered main window");
+            }
 
             // macOS: the menu-bar item lives in a separate native helper process
             // (tao parks an in-process status item off-screen on Tahoe). Spawn

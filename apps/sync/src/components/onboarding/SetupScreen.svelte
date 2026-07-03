@@ -6,6 +6,7 @@
     allSettled,
     buildInitialStages,
     setStageStatus,
+    setupProgressPercent,
     stageCommandInvocations,
     stageTimeoutMs,
     StageTimeoutError,
@@ -24,6 +25,7 @@
 
   let stages = $state<StageState[]>(buildInitialStages());
   let completed = $state(false);
+  let stageCreep = $state(0);
   let currentRunId = 0;
   let setupCancelled = false;
   let unlistenInstallProgress: UnlistenFn | null = null;
@@ -35,6 +37,19 @@
   );
   const currentStageId = $derived(
     stages.find((stage) => stage.status === 'running')?.id ?? null,
+  );
+  const setupDone = $derived(allSettled(stages));
+  const overallPercent = $derived(
+    setupProgressPercent({
+      settledCount,
+      totalStages: STAGE_ORDER.length,
+      hasRunningStage: currentStageId !== null,
+      stageCreep,
+      allDone: setupDone,
+    }),
+  );
+  const progressFillPercent = $derived(
+    setupDone ? overallPercent : Math.max(2, overallPercent),
   );
 
   function errorMessage(err: unknown): string {
@@ -169,6 +184,24 @@
     void startSetupRun();
   });
 
+  $effect(() => {
+    const activeId = currentStageId;
+    const done = setupDone;
+    let creep = 0;
+    stageCreep = creep;
+
+    if (done || activeId === null) return;
+
+    const interval = window.setInterval(() => {
+      creep += (0.92 - creep) * 0.14;
+      stageCreep = creep;
+    }, 1200);
+
+    return () => {
+      window.clearInterval(interval);
+    };
+  });
+
   onDestroy(() => {
     cancelSetupRun();
   });
@@ -178,16 +211,19 @@
   <div class="setup-header">
     <p class="eyebrow">Orchestrator Framework</p>
     <h1>Setting up HQ...</h1>
-    <p class="progress-copy">{settledCount} of {STAGE_ORDER.length} stages complete</p>
+    <p class="progress-copy">
+      {overallPercent}% &middot; {settledCount} of {STAGE_ORDER.length} stages complete
+    </p>
     <div
       class="progress-track"
+      class:running={currentStageId !== null && !setupDone}
       aria-label="Setup progress"
       aria-valuemin="0"
-      aria-valuemax={STAGE_ORDER.length}
-      aria-valuenow={settledCount}
+      aria-valuemax="100"
+      aria-valuenow={overallPercent}
       role="progressbar"
     >
-      <span style={`width: ${(settledCount / STAGE_ORDER.length) * 100}%`}></span>
+      <span style={`width: ${progressFillPercent}%`}></span>
     </div>
   </div>
 
@@ -200,9 +236,16 @@
         class:ok={stage.status === 'ok'}
         class:failed={stage.status === 'failed'}
       >
-        <span class="status-dot" aria-hidden="true"></span>
+        {#if stage.status === 'running'}
+          <span class="stage-spinner" aria-hidden="true"></span>
+        {:else}
+          <span class="status-dot" aria-hidden="true"></span>
+        {/if}
         <span class="stage-main">
           <span class="stage-label">{stage.label}</span>
+          {#if stage.status === 'running'}
+            <span class="stage-progress" aria-hidden="true"><span></span></span>
+          {/if}
           {#if stage.error}
             <span class="stage-error">{stage.error}</span>
           {/if}
@@ -252,12 +295,29 @@
   }
 
   .progress-track {
+    position: relative;
     width: 100%;
     height: 8px;
     overflow: hidden;
     border: 1px solid var(--popover-border, rgba(255, 255, 255, 0.18));
     border-radius: 999px;
     background: rgba(255, 255, 255, 0.08);
+  }
+
+  .progress-track.running::after {
+    position: absolute;
+    inset: 0;
+    width: 42%;
+    border-radius: inherit;
+    background: linear-gradient(
+      90deg,
+      transparent,
+      rgba(255, 255, 255, 0.32),
+      transparent
+    );
+    content: '';
+    transform: translateX(-120%);
+    animation: setup-progress-sweep 1.35s ease-in-out infinite;
   }
 
   .progress-track span {
@@ -308,6 +368,15 @@
     box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.12);
   }
 
+  .stage-spinner {
+    width: 12px;
+    height: 12px;
+    border: 2px solid rgba(255, 255, 255, 0.28);
+    border-top-color: #ffffff;
+    border-radius: 999px;
+    animation: setup-spinner 0.8s linear infinite;
+  }
+
   li.ok .status-dot {
     border-color: #7dd3a8;
     background: #7dd3a8;
@@ -340,6 +409,30 @@
     line-height: 1.35;
   }
 
+  .stage-progress {
+    position: relative;
+    display: block;
+    width: min(220px, 100%);
+    height: 3px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.11);
+  }
+
+  .stage-progress span {
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 46%;
+    border-radius: inherit;
+    background: linear-gradient(
+      90deg,
+      transparent,
+      rgba(255, 255, 255, 0.82),
+      transparent
+    );
+    animation: setup-stage-sweep 1.05s ease-in-out infinite;
+  }
+
   .stage-status {
     color: inherit;
     font-size: var(--text-xs, 12px);
@@ -354,6 +447,78 @@
 
   li.failed .stage-status {
     color: #f8b4b4;
+  }
+
+  li.running .stage-status,
+  li.running .stage-label {
+    background-image:
+      linear-gradient(
+        90deg,
+        transparent calc(50% - 2.5em),
+        #ffffff,
+        transparent calc(50% + 2.5em)
+      ),
+      linear-gradient(currentColor, currentColor);
+    background-repeat: no-repeat;
+    background-size: 250% 100%, auto;
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    -webkit-text-fill-color: transparent;
+    animation: setup-text-shimmer 2s linear infinite;
+  }
+
+  @keyframes setup-progress-sweep {
+    0% {
+      transform: translateX(-120%);
+    }
+
+    100% {
+      transform: translateX(260%);
+    }
+  }
+
+  @keyframes setup-stage-sweep {
+    0% {
+      transform: translateX(-115%);
+    }
+
+    100% {
+      transform: translateX(250%);
+    }
+  }
+
+  @keyframes setup-spinner {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  @keyframes setup-text-shimmer {
+    0% {
+      background-position: 100% center, 0 0;
+    }
+
+    100% {
+      background-position: 0% center, 0 0;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .progress-track.running::after,
+    .stage-progress span,
+    .stage-spinner,
+    li.running .stage-status,
+    li.running .stage-label {
+      animation: none;
+    }
+
+    li.running .stage-status,
+    li.running .stage-label {
+      background-image: none;
+      color: inherit;
+      -webkit-text-fill-color: currentColor;
+    }
   }
 
   @media (max-width: 640px) {

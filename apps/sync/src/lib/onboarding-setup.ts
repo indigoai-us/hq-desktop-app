@@ -57,6 +57,29 @@ export function allSettled(stages: StageState[]): boolean {
   );
 }
 
+export interface SetupProgressInput {
+  settledCount: number;
+  totalStages: number;
+  hasRunningStage: boolean;
+  stageCreep: number;
+  allDone?: boolean;
+}
+
+export function setupProgressPercent(input: SetupProgressInput): number {
+  const total = Math.max(1, input.totalStages);
+  const settled = Math.min(Math.max(0, input.settledCount), total);
+  const allDone = input.allDone ?? settled >= total;
+  if (allDone) return 100;
+
+  const base = settled / total;
+  const next = input.hasRunningStage
+    ? Math.min(settled + 1, total) / total
+    : base;
+  const creep = Math.min(Math.max(0, input.stageCreep), 0.92);
+
+  return Math.round((base + (next - base) * creep) * 100);
+}
+
 export function setStageStatus(
   stages: StageState[],
   id: StageId,

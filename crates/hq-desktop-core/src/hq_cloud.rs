@@ -246,7 +246,10 @@
 /// `~6.12.0` -> `~6.12.1`: floor the tilde pin at the hq-cloud release carrying
 /// the S3 presign fix (atop the cert-panic fix). Without this the pin could
 /// resolve back to 6.12.0 and miss the presign correction.
-pub const HQ_CLOUD_VERSION: &str = "~6.12.1";
+///
+/// `~6.12.1` -> `~6.13.5`: pull in the runner fixes for transient offline blips
+/// and the exit-2 path, matching the legacy hq-sync pin.
+pub const HQ_CLOUD_VERSION: &str = "~6.13.5";
 
 /// Package name for the runner. Used by both the spawn site below and the
 /// startup prewarm. Paired with `HQ_CLOUD_VERSION` to form the full
