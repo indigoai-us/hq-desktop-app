@@ -225,7 +225,7 @@
     position: fixed;
     inset: 0;
     z-index: 40;
-    background: rgba(0, 0, 0, 0.45);
+    background: var(--pop-highlight);
     animation: backdrop-fade 160ms ease;
   }
 
@@ -238,9 +238,9 @@
     flex-direction: column;
     width: 520px;
     max-width: 94vw;
-    border-left: 1px solid var(--border);
-    background: var(--bg);
-    box-shadow: -8px 0 32px rgba(0, 0, 0, 0.45);
+    border-left: 1px solid var(--v4-hairline);
+    background: var(--v4-chrome);
+    box-shadow: var(--v4-shadow-popover);
     animation: panel-slide-in 200ms cubic-bezier(0.2, 0.7, 0.2, 1);
   }
 
@@ -249,9 +249,9 @@
     flex-shrink: 0;
     align-items: flex-start;
     justify-content: space-between;
-    gap: var(--space-3);
-    padding: var(--space-5) var(--space-5) var(--space-4);
-    border-bottom: 1px solid var(--border);
+    gap: var(--v4-space-3);
+    padding: var(--v4-space-5) var(--v4-space-5) var(--v4-space-4);
+    border-bottom: 1px solid var(--v4-hairline);
   }
 
   .header-text {
@@ -259,16 +259,16 @@
   }
 
   .kind-tag {
-    color: var(--muted);
+    color: var(--v4-text-2);
     font-size: var(--text-micro);
     font-weight: 600;
-    letter-spacing: 0.04em;
+    letter-spacing: 0;
     text-transform: uppercase;
   }
 
   .detail-title {
-    margin: var(--space-1) 0 0;
-    color: var(--fg);
+    margin: var(--v4-space-1) 0 0;
+    color: var(--v4-text-1);
     font-size: var(--text-base);
     font-weight: 600;
     line-height: 22px;
@@ -278,18 +278,18 @@
   .badges {
     display: flex;
     flex-wrap: wrap;
-    gap: var(--space-1);
-    margin-top: var(--space-2);
+    gap: var(--v4-space-1);
+    margin-top: var(--v4-space-2);
   }
 
   .scope-badge {
     display: inline-flex;
     align-items: center;
     padding: 1px 7px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--row-active);
-    color: var(--muted-3);
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-button);
+    background: var(--v4-control-faint);
+    color: var(--v4-text-3);
     font-size: var(--text-base);
     font-weight: 600;
     line-height: 16px;
@@ -304,9 +304,9 @@
     width: 28px;
     height: 28px;
     border: 0;
-    border-radius: var(--radius-sm);
+    border-radius: var(--v4-radius-button);
     background: transparent;
-    color: var(--muted);
+    color: var(--v4-text-2);
     font-size: var(--text-base);
     line-height: 1;
     cursor: pointer;
@@ -316,12 +316,12 @@
   }
 
   .close-button:hover {
-    background: var(--row-hover);
-    color: var(--fg);
+    background: var(--v4-active-row);
+    color: var(--v4-text-1);
   }
 
   .close-button:focus-visible {
-    outline: 2px solid var(--blue);
+    outline: 2px solid var(--v4-control-border);
     outline-offset: 2px;
   }
 
@@ -329,18 +329,18 @@
     display: flex;
     flex: 1 1 auto;
     flex-direction: column;
-    gap: var(--space-5);
+    gap: var(--v4-space-5);
     min-height: 0;
-    padding: var(--space-5);
+    padding: var(--v4-space-5);
     overflow-y: auto;
   }
 
   .detail-error {
-    padding: var(--space-3);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--row-active);
-    color: var(--amber);
+    padding: var(--v4-space-3);
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-button);
+    background: var(--v4-control-faint);
+    color: var(--v4-warn);
     font-size: var(--text-base);
   }
 
@@ -349,17 +349,17 @@
   }
 
   .section-title {
-    margin: 0 0 var(--space-2);
-    color: var(--muted-3);
+    margin: 0 0 var(--v4-space-2);
+    color: var(--v4-text-3);
     font-size: var(--text-micro);
     font-weight: 600;
-    letter-spacing: 0.04em;
+    letter-spacing: 0;
     text-transform: uppercase;
   }
 
   .section-body {
     margin: 0;
-    color: var(--muted-2);
+    color: var(--v4-text-2);
     font-size: var(--text-base);
     line-height: 19px;
     overflow-wrap: anywhere;
@@ -367,14 +367,14 @@
 
   .muted-note {
     margin: 0;
-    color: var(--muted-3);
+    color: var(--v4-text-3);
     font-size: var(--text-base);
   }
 
   .skill-list {
     display: flex;
     flex-direction: column;
-    gap: var(--space-2);
+    gap: var(--v4-space-2);
     margin: 0;
     padding: 0;
     list-style: none;
@@ -385,20 +385,20 @@
     flex-direction: column;
     gap: 2px;
     min-width: 0;
-    padding: var(--space-2) var(--space-3);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--row-active);
+    padding: var(--v4-space-2) var(--v4-space-3);
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-button);
+    background: var(--v4-control-faint);
   }
 
   .skill-name {
-    color: var(--fg);
+    color: var(--v4-text-1);
     font-size: var(--text-base);
     font-weight: 600;
   }
 
   .skill-desc {
-    color: var(--muted);
+    color: var(--v4-text-2);
     font-size: var(--text-base);
     line-height: 16px;
   }
@@ -406,26 +406,25 @@
   .chip-row {
     display: flex;
     flex-wrap: wrap;
-    gap: var(--space-1);
+    gap: var(--v4-space-1);
   }
 
   .tool-chip {
     display: inline-flex;
     align-items: center;
     padding: 2px 8px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--row-active);
-    color: var(--muted-2);
-    font-family:
-      ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-button);
+    background: var(--v4-control-faint);
+    color: var(--v4-text-2);
+    font-family: var(--font-mono);
     font-size: var(--text-base);
     font-weight: 600;
   }
 
   /* ---- markdown typography (mirrors ProjectDetailView .markdown-body) ----- */
   .markdown-body {
-    color: var(--fg);
+    color: var(--v4-text-1);
     font-size: var(--text-base);
     line-height: 1.6;
   }
@@ -436,8 +435,8 @@
   .markdown-body :global(h4),
   .markdown-body :global(h5),
   .markdown-body :global(h6) {
-    margin: var(--space-5) 0 var(--space-2);
-    color: var(--fg);
+    margin: var(--v4-space-5) 0 var(--v4-space-2);
+    color: var(--v4-text-1);
     font-weight: 600;
     line-height: 1.3;
   }
@@ -446,8 +445,8 @@
     font-size: var(--text-base);
   }
   .markdown-body :global(h2) {
-    padding-bottom: var(--space-1);
-    border-bottom: 1px solid var(--border);
+    padding-bottom: var(--v4-space-1);
+    border-bottom: 1px solid var(--v4-hairline);
     font-size: var(--text-base);
   }
   .markdown-body :global(h3) {
@@ -455,23 +454,23 @@
   }
 
   .markdown-body :global(p) {
-    margin: var(--space-2) 0;
-    color: var(--muted);
+    margin: var(--v4-space-2) 0;
+    color: var(--v4-text-2);
   }
 
   .markdown-body :global(ul),
   .markdown-body :global(ol) {
-    margin: var(--space-2) 0;
-    padding-left: var(--space-5);
-    color: var(--muted);
+    margin: var(--v4-space-2) 0;
+    padding-left: var(--v4-space-5);
+    color: var(--v4-text-2);
   }
 
   .markdown-body :global(li) {
-    margin: var(--space-1) 0;
+    margin: var(--v4-space-1) 0;
   }
 
   .markdown-body :global(a) {
-    color: var(--blue);
+    color: var(--v4-text-1);
     text-decoration: none;
   }
 
@@ -480,22 +479,21 @@
   }
 
   .markdown-body :global(code) {
-    padding: 1px var(--space-1);
-    border-radius: var(--radius-sm);
-    background: var(--row-active);
-    color: var(--fg);
-    font-family:
-      ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+    padding: 1px var(--v4-space-1);
+    border-radius: var(--v4-radius-button);
+    background: var(--v4-control-faint);
+    color: var(--v4-text-1);
+    font-family: var(--font-mono);
     font-size: var(--text-base);
   }
 
   .markdown-body :global(pre) {
-    margin: var(--space-3) 0;
-    padding: var(--space-3);
+    margin: var(--v4-space-3) 0;
+    padding: var(--v4-space-3);
     overflow-x: auto;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-md);
-    background: var(--bg-subtle);
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-field);
+    background: var(--v4-inset);
   }
 
   .markdown-body :global(pre code) {
@@ -504,20 +502,20 @@
   }
 
   .markdown-body :global(blockquote) {
-    margin: var(--space-3) 0;
-    padding: var(--space-1) var(--space-3);
-    border-left: 3px solid var(--border-strong);
-    color: var(--muted-3);
+    margin: var(--v4-space-3) 0;
+    padding: var(--v4-space-1) var(--v4-space-3);
+    border-left: 3px solid var(--v4-control-border);
+    color: var(--v4-text-3);
   }
 
   .markdown-body :global(hr) {
-    margin: var(--space-4) 0;
+    margin: var(--v4-space-4) 0;
     border: 0;
-    border-top: 1px solid var(--border);
+    border-top: 1px solid var(--v4-hairline);
   }
 
   .markdown-body :global(strong) {
-    color: var(--fg);
+    color: var(--v4-text-1);
     font-weight: 600;
   }
 

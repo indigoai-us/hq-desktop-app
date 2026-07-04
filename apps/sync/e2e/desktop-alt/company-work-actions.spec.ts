@@ -55,7 +55,8 @@ describe('desktop-alt company work actions are functional', () => {
   });
 
   it('keeps story details legible over the desktop shell', () => {
-    expect(storyPanel).toContain('background: var(--v4-raised)');
+    expect(storyPanel).toContain('background: var(--v4-chrome)');
+    expect(storyPanel).toContain('box-shadow: var(--v4-shadow-popover)');
     expect(storyPanel).toContain('z-index: 100');
     expect(storyPanel).toContain('@media (max-width: 520px)');
     expect(storyPanel).toContain('width: 100vw');

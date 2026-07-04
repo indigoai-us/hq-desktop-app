@@ -109,21 +109,22 @@
 <style>
   .library-page {
     display: grid;
-    gap: 18px;
+    gap: var(--v4-space-5);
+    font-family: var(--font-sans);
   }
 
   .page-header h1 {
     margin: 0;
-    color: var(--fg);
-    font-size: var(--text-base);
+    color: var(--v4-text-1);
+    font-size: var(--text-lg);
     font-weight: 600;
-    line-height: 29px;
+    line-height: 1.15;
   }
 
   .page-header p {
     margin: 5px 0 0;
-    color: var(--muted);
+    color: var(--v4-text-3);
     font-size: var(--text-base);
-    line-height: 18px;
+    line-height: 1.4;
   }
 </style>

@@ -297,7 +297,7 @@
     container: company-tasks / inline-size;
     display: flex;
     flex-direction: column;
-    gap: 22px;
+    gap: var(--v4-space-5);
     min-width: 0;
     height: 100%;
     color: var(--v4-text-1);
@@ -316,7 +316,7 @@
 
   .tasks-header {
     justify-content: space-between;
-    gap: 18px;
+    gap: var(--v4-space-5);
   }
 
   .tasks-heading {
@@ -327,9 +327,9 @@
   .tasks-heading h2 {
     margin: 0;
     color: var(--v4-text-1);
-    font-size: var(--text-base);
-    font-weight: 500;
-    line-height: 1.2;
+    font-size: var(--text-lg);
+    font-weight: 600;
+    line-height: 1.15;
   }
 
   .tasks-heading span,
@@ -342,10 +342,10 @@
   .tasks-header button {
     height: 28px;
     padding: 0 12px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: 6px;
-    background: transparent;
-    color: var(--v4-text-2);
+    border: 1px solid var(--v4-control-border);
+    border-radius: var(--v4-radius-button);
+    background: var(--v4-secondary-bg);
+    color: var(--v4-secondary-fg);
     font: inherit;
     font-size: var(--text-base);
     cursor: default;
@@ -353,20 +353,26 @@
 
   .task-list {
     min-width: 0;
+    display: grid;
+    gap: var(--v4-space-5);
   }
 
   .task-group {
     min-width: 720px;
-    margin-bottom: 17px;
+    overflow: hidden;
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-card);
+    background: var(--v4-raised);
+    box-shadow: var(--v4-shadow-card);
   }
 
   .task-group-title {
     gap: 8px;
     height: 28px;
-    margin: 0 0 2px;
+    margin: 0;
     padding: 0 12px;
-    border-radius: 6px;
-    background: var(--v4-control-faint);
+    border-bottom: 1px solid var(--v4-hairline);
+    background: var(--v4-inset);
     color: var(--v4-text-3);
     font-size: var(--text-base);
     font-weight: 400;
@@ -380,7 +386,7 @@
     column-gap: 18px;
     min-height: 37px;
     width: 100%;
-    padding: 0;
+    padding: 0 12px;
     border: 0;
     border-bottom: 1px solid var(--v4-rowline);
     background: transparent;
@@ -392,11 +398,11 @@
   }
 
   .task-row:hover {
-    background: var(--v4-control-faint);
+    background: var(--v4-active-row);
   }
 
   .task-row:focus-visible {
-    outline: 1px solid var(--v4-focus);
+    outline: 1px solid var(--v4-control-border);
     outline-offset: -1px;
   }
 
@@ -433,7 +439,7 @@
     justify-self: end;
     max-width: 132px;
     padding: 2px 8px;
-    border-radius: 4px;
+    border-radius: var(--v4-radius-button);
     background: var(--v4-control-bg);
     color: var(--v4-text-3);
     font-size: var(--text-base);
@@ -449,7 +455,7 @@
     width: 6px;
     height: 6px;
     flex: 0 0 auto;
-    border-radius: 50%;
+    border-radius: var(--v4-radius-pill);
   }
 
   .status-dot.ok {
@@ -472,8 +478,9 @@
   .empty-state {
     padding: 12px;
     border: 1px solid var(--v4-hairline);
-    border-radius: 6px;
-    background: var(--v4-inset);
+    border-radius: var(--v4-radius-card);
+    background: var(--v4-raised);
+    box-shadow: var(--v4-shadow-card);
     color: var(--v4-text-2);
     font-size: var(--text-base);
   }
@@ -492,7 +499,7 @@
     height: 37px;
     min-width: 720px;
     border-bottom: 1px solid var(--v4-rowline);
-    background: linear-gradient(90deg, transparent, var(--v4-control-faint), transparent);
+    background: var(--v4-control-faint);
     opacity: 0.48;
   }
 

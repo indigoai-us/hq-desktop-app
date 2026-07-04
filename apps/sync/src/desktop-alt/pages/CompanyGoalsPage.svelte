@@ -510,7 +510,7 @@
   .company-goals {
     display: flex;
     flex-direction: column;
-    gap: 18px;
+    gap: var(--v4-space-5);
     min-width: 0;
     height: 100%;
     color: var(--v4-text-1);
@@ -532,7 +532,7 @@
 
   .goals-header {
     justify-content: space-between;
-    gap: 18px;
+    gap: var(--v4-space-5);
   }
 
   .goal-actions {
@@ -560,9 +560,9 @@
   .goals-heading h2 {
     margin: 0;
     color: var(--v4-text-1);
-    font-size: var(--text-base);
-    font-weight: 500;
-    line-height: 1.2;
+    font-size: var(--text-lg);
+    font-weight: 600;
+    line-height: 1.15;
   }
 
   .goals-heading span,
@@ -582,9 +582,9 @@
     height: 30px;
     padding: 0 12px;
     border: 1px solid transparent;
-    border-radius: 6px;
-    background: var(--v4-control-bg);
-    color: var(--v4-text-1);
+    border-radius: var(--v4-radius-button);
+    background: var(--v4-primary-bg);
+    color: var(--v4-primary-fg);
     font: inherit;
     font-size: var(--text-base);
     font-weight: 400;
@@ -599,10 +599,10 @@
 
   .goals-error {
     padding: 10px 12px;
-    border: 1px solid rgba(254, 188, 46, 0.3);
-    border-radius: 6px;
-    background: var(--v4-inset);
-    color: var(--v4-text-2);
+    border: 1px solid var(--v4-warn);
+    border-radius: var(--v4-radius-field);
+    background: var(--v4-raised);
+    color: var(--v4-warn);
     font-size: var(--text-base);
     font-weight: 400;
     line-height: 1.35;
@@ -611,7 +611,7 @@
   .goal-stack {
     display: flex;
     flex-direction: column;
-    gap: 18px;
+    gap: var(--v4-space-5);
     min-width: 0;
   }
 
@@ -622,12 +622,13 @@
     min-width: 0;
     padding: 18px;
     border: 1px solid var(--v4-hairline);
-    border-radius: 8px;
+    border-radius: var(--v4-radius-card);
     background: var(--v4-raised);
+    box-shadow: var(--v4-shadow-card);
   }
 
   .goal-card.at-risk {
-    border-color: rgba(254, 188, 46, 0.3);
+    border-color: var(--v4-warn);
   }
 
   .goal-card-header {
@@ -663,7 +664,7 @@
     width: 6px;
     height: 6px;
     flex: 0 0 auto;
-    border-radius: 50%;
+    border-radius: var(--v4-radius-pill);
   }
 
   .status-dot.ok {
@@ -751,7 +752,7 @@
   .progress-track {
     height: 3px;
     overflow: hidden;
-    border-radius: 999px;
+    border-radius: var(--v4-radius-pill);
     background: var(--v4-control-faint);
   }
 
@@ -819,7 +820,7 @@
     padding: 0 7px;
     overflow: hidden;
     border: 0;
-    border-radius: 4px;
+    border-radius: var(--v4-radius-button);
     background: var(--v4-control-faint);
     color: var(--v4-text-2);
     font: inherit;
@@ -846,8 +847,9 @@
     gap: 4px;
     padding: 28px 20px;
     border: 1px dashed var(--v4-hairline);
-    border-radius: 8px;
-    background: var(--v4-inset);
+    border-radius: var(--v4-radius-card);
+    background: var(--v4-raised);
+    box-shadow: var(--v4-shadow-card);
     color: var(--v4-text-3);
     font-size: var(--text-base);
     font-weight: 400;
@@ -869,8 +871,9 @@
   .goal-skeleton {
     height: 160px;
     border: 1px solid var(--v4-hairline);
-    border-radius: 8px;
-    background: var(--v4-inset);
+    border-radius: var(--v4-radius-card);
+    background: var(--v4-raised);
+    box-shadow: var(--v4-shadow-card);
     animation: goals-skeleton-pulse 1.3s ease-in-out infinite;
   }
 

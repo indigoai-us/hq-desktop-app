@@ -419,6 +419,7 @@
     min-width: 0;
     height: 100%;
     color: var(--v4-text-1);
+    font-family: var(--font-sans);
   }
 
   .settings-section h2,
@@ -433,7 +434,7 @@
   .settings-main {
     display: flex;
     flex-direction: column;
-    gap: 18px;
+    gap: var(--v4-space-5);
     min-width: 0;
     overflow: auto;
   }
@@ -454,8 +455,9 @@
     display: grid;
     overflow: hidden;
     border: 1px solid var(--v4-hairline);
-    border-radius: 8px;
+    border-radius: var(--v4-radius-card);
     background: var(--v4-raised);
+    box-shadow: var(--v4-shadow-card);
   }
 
   .setting-row {
@@ -507,8 +509,7 @@
 
   /* macOS-style toggle pill — the one place green is allowed as a control fill
      (SPEC §5/§6: "26×16 pills, on = green fill — the one non-dot color
-     exception, matching macOS"). The track is tokenized; the knob is a fixed
-     white-with-shadow, a deliberate platform-convention value like the green. */
+     exception, matching macOS"). The track and knob route through shared tokens. */
   input[type='checkbox'] {
     appearance: none;
     -webkit-appearance: none;
@@ -516,7 +517,7 @@
     flex-shrink: 0;
     width: 26px;
     height: 16px;
-    border-radius: 999px;
+    border-radius: var(--v4-radius-pill);
     background: var(--v4-control-bg);
     cursor: pointer;
     transition: background-color 0.15s ease;
@@ -529,9 +530,9 @@
     left: 2px;
     width: 12px;
     height: 12px;
-    border-radius: 50%;
-    background: #fff;
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+    border-radius: var(--v4-radius-pill);
+    background: var(--c-bg);
+    box-shadow: var(--v4-shadow-card);
     transition: transform 0.15s ease;
   }
 
@@ -557,7 +558,7 @@
   select {
     height: 30px;
     border: 1px solid var(--v4-hairline);
-    border-radius: 6px;
+    border-radius: var(--v4-radius-field);
     background: var(--v4-inset);
     color: var(--v4-text-1);
     font: inherit;
@@ -567,7 +568,7 @@
   .gated-row em {
     padding: 3px 7px;
     border: 1px solid var(--v4-hairline);
-    border-radius: 999px;
+    border-radius: var(--v4-radius-pill);
     color: var(--v4-text-3);
     font-size: var(--text-base);
     font-style: normal;
@@ -579,10 +580,10 @@
     justify-self: end;
     height: 30px;
     padding: 0 12px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: 6px;
-    background: var(--v4-inset);
-    color: var(--v4-text-1);
+    border: 1px solid var(--v4-control-border);
+    border-radius: var(--v4-radius-button);
+    background: var(--v4-secondary-bg);
+    color: var(--v4-secondary-fg);
     font: inherit;
     font-size: var(--text-base);
     cursor: pointer;
@@ -612,7 +613,7 @@
   .platforms button {
     height: 26px;
     border: 1px solid var(--v4-hairline);
-    border-radius: 999px;
+    border-radius: var(--v4-radius-pill);
     background: transparent;
     color: var(--v4-text-2);
     font: inherit;
@@ -620,7 +621,7 @@
   }
 
   .platforms button.active {
-    background: var(--v4-control-bg);
-    color: var(--v4-text-1);
+    background: var(--v4-primary-bg);
+    color: var(--v4-primary-fg);
   }
 </style>

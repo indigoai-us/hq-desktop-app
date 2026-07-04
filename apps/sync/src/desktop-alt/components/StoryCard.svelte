@@ -104,14 +104,14 @@
 <style>
   .story-card {
     display: grid;
-    gap: var(--space-2);
+    gap: var(--v4-space-2);
     width: 100%;
     min-width: 0;
-    padding: var(--space-3);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--bg);
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+    padding: var(--v4-space-3);
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-field);
+    background: var(--v4-raised);
+    box-shadow: var(--v4-shadow-card);
     text-align: left;
     cursor: pointer;
     transition:
@@ -120,12 +120,12 @@
   }
 
   .story-card:hover {
-    border-color: var(--border-strong);
-    background: var(--row-hover);
+    border-color: var(--v4-control-border);
+    background: var(--v4-active-row);
   }
 
   .story-card:focus-visible {
-    outline: 2px solid var(--blue);
+    outline: 2px solid var(--v4-control-border);
     outline-offset: 2px;
   }
 
@@ -137,15 +137,14 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: var(--space-2);
+    gap: var(--v4-space-2);
     min-width: 0;
   }
 
   .story-id {
     overflow: hidden;
-    color: var(--muted);
-    font-family:
-      ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+    color: var(--v4-text-2);
+    font-family: var(--font-mono);
     font-size: var(--text-base);
     font-weight: 600;
     text-overflow: ellipsis;
@@ -156,7 +155,7 @@
     display: inline-flex;
     flex-shrink: 0;
     align-items: center;
-    gap: var(--space-1);
+    gap: var(--v4-space-1);
   }
 
   .model-badge,
@@ -164,10 +163,10 @@
     display: inline-flex;
     align-items: center;
     padding: 1px 6px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--row-active);
-    color: var(--muted-2);
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-button);
+    background: var(--v4-control-faint);
+    color: var(--v4-text-2);
     font-size: var(--text-micro);
     font-weight: 600;
     line-height: 14px;
@@ -181,19 +180,19 @@
 
   /* Color-coded priority (hq-desktop parity): P1 red · P2 amber · P3 blue. */
   .priority-badge[data-priority='P1'] {
-    border-color: transparent;
-    background: rgba(248, 113, 113, 0.15);
-    color: var(--red);
+    border-color: var(--v4-control-border);
+    background: var(--v4-control-faint);
+    color: var(--v4-error);
   }
   .priority-badge[data-priority='P2'] {
-    border-color: transparent;
-    background: rgba(245, 158, 11, 0.15);
-    color: var(--amber);
+    border-color: var(--v4-control-border);
+    background: var(--v4-control-faint);
+    color: var(--v4-warn);
   }
   .priority-badge[data-priority='P3'] {
-    border-color: transparent;
-    background: rgba(96, 165, 250, 0.15);
-    color: var(--blue);
+    border-color: var(--v4-control-border);
+    background: var(--v4-control-faint);
+    color: var(--v4-text-3);
   }
 
   .story-title {
@@ -201,7 +200,7 @@
     min-width: 0;
     margin: 0;
     overflow: hidden;
-    color: var(--fg);
+    color: var(--v4-text-1);
     font-size: var(--text-base);
     font-weight: 600;
     line-height: 18px;
@@ -213,7 +212,7 @@
   .labels {
     display: flex;
     flex-wrap: wrap;
-    gap: var(--space-1);
+    gap: var(--v4-space-1);
     min-width: 0;
   }
 
@@ -221,10 +220,10 @@
     display: inline-flex;
     align-items: center;
     padding: 1px 6px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--row-active);
-    color: var(--muted-3);
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-button);
+    background: var(--v4-control-faint);
+    color: var(--v4-text-3);
     font-size: var(--text-base);
     font-weight: 600;
     line-height: 16px;
@@ -233,7 +232,7 @@
   .ac-progress {
     display: flex;
     align-items: center;
-    gap: var(--space-2);
+    gap: var(--v4-space-2);
     min-width: 0;
   }
 
@@ -242,15 +241,15 @@
     flex: 1;
     height: 5px;
     overflow: hidden;
-    border-radius: 999px;
-    background: var(--row-active);
+    border-radius: var(--v4-radius-pill);
+    background: var(--v4-control-faint);
   }
 
   .progress-fill {
     width: 100%;
     height: 100%;
     border-radius: inherit;
-    background: var(--emerald);
+    background: var(--v4-ok);
     transform: scaleX(var(--progress-scale, 0));
     transform-origin: left center;
     transition: transform 180ms cubic-bezier(0.2, 0.7, 0.2, 1);
@@ -258,7 +257,7 @@
 
   .ac-count {
     flex-shrink: 0;
-    color: var(--muted-3);
+    color: var(--v4-text-3);
     font-size: var(--text-base);
     font-variant-numeric: tabular-nums;
     font-weight: 600;
