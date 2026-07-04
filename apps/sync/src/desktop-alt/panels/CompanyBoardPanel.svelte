@@ -613,10 +613,10 @@
   .board-note,
   .board-error {
     padding: 10px 12px;
-    border: 1px solid rgba(254, 188, 46, 0.3);
-    border-radius: 6px;
-    background: var(--v4-inset);
-    color: var(--v4-text-2);
+    border: 1px solid color-mix(in srgb, var(--v4-warn) 32%, var(--v4-hairline));
+    border-radius: var(--v4-radius-field);
+    background: color-mix(in srgb, var(--v4-warn) 10%, var(--v4-raised));
+    color: var(--v4-warn);
     font-size: var(--text-base);
     font-weight: 400;
     line-height: 1.35;
@@ -624,6 +624,8 @@
 
   .board-note {
     border-color: var(--v4-hairline);
+    background: var(--v4-raised);
+    color: var(--v4-text-2);
   }
 
   .stat-strip {
@@ -631,8 +633,9 @@
     grid-template-columns: repeat(4, minmax(0, 1fr));
     overflow: hidden;
     border: 1px solid var(--v4-hairline);
-    border-radius: 8px;
-    background: var(--v4-inset);
+    border-radius: var(--v4-radius-card);
+    background: var(--v4-raised);
+    box-shadow: var(--v4-shadow-card);
   }
 
   .stat-item {
@@ -705,8 +708,9 @@
     gap: 4px;
     padding: 20px;
     border: 1px dashed var(--v4-hairline);
-    border-radius: 8px;
-    background: var(--v4-inset);
+    border-radius: var(--v4-radius-card);
+    background: var(--v4-raised);
+    box-shadow: var(--v4-shadow-card);
     color: var(--v4-text-3);
     font-size: var(--text-base);
     font-weight: 400;
@@ -847,7 +851,7 @@
     height: 18px;
     padding: 0 7px;
     overflow: hidden;
-    border-radius: 4px;
+    border-radius: var(--v4-radius-button);
     background: var(--v4-control-faint);
     color: var(--v4-text-2);
     font-size: var(--text-base);
@@ -926,8 +930,8 @@
   .goal-skeleton,
   .inflight-skeleton {
     border: 1px solid var(--v4-hairline);
-    border-radius: 8px;
-    background: var(--v4-inset);
+    border-radius: var(--v4-radius-card);
+    background: var(--v4-raised);
     animation: board-skeleton-pulse 1.3s ease-in-out infinite;
   }
 

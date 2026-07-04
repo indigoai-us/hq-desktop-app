@@ -99,7 +99,7 @@
     display: flex; align-items: center; gap: 8px;
   }
   .count {
-    font-family: var(--font-display);
+    font-family: var(--font-sans);
     font-size: var(--text-base);
     color: var(--v4-text-3);
     background: var(--v4-inset);
@@ -112,8 +112,9 @@
   .qlist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; overflow-y: auto; }
   .qcard {
     border: 1px solid var(--v4-hairline);
-    border-radius: 10px;
-    background: var(--v4-inset);
+    border-radius: var(--v4-radius-card);
+    background: var(--v4-raised);
+    box-shadow: var(--v4-shadow-card);
     padding: 12px;
     display: flex; flex-direction: column; gap: 8px;
   }
@@ -144,7 +145,7 @@
     width: 100%;
     resize: vertical;
     border: 1px solid var(--v4-hairline);
-    border-radius: 8px;
+    border-radius: var(--v4-radius-field);
     background: var(--v4-raised);
     color: var(--v4-text-1);
     font: inherit;
@@ -155,10 +156,10 @@
   textarea:focus { outline: none; border-color: var(--v4-ok); }
   .qrow { display: flex; align-items: center; gap: 10px; }
   .send {
-    border: 1px solid var(--v4-hairline);
-    border-radius: 8px;
-    background: var(--v4-ok);
-    color: #08110a;
+    border: 1px solid transparent;
+    border-radius: var(--v4-radius-button);
+    background: var(--v4-primary-bg);
+    color: var(--v4-primary-fg);
     font: inherit;
     font-weight: 600;
     padding: 6px 14px;

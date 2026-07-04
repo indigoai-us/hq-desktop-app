@@ -424,7 +424,7 @@
 
   .activity-title h2 {
     margin: 0;
-    color: var(--fg);
+    color: var(--v4-text-1);
     font-size: var(--text-base);
     font-weight: 600;
     line-height: 22px;
@@ -434,7 +434,7 @@
   .card-header span,
   .chart-scale,
   .empty-state {
-    color: var(--muted);
+    color: var(--v4-text-3);
     font-size: var(--text-base);
     line-height: 16px;
   }
@@ -451,16 +451,16 @@
     gap: 14px;
     min-width: 0;
     padding: 12px;
-    border: 1px solid rgba(245, 158, 11, 0.3);
-    border-radius: 8px;
-    background: rgba(245, 158, 11, 0.1);
-    color: var(--amber);
+    border: 1px solid color-mix(in srgb, var(--v4-warn) 32%, var(--v4-hairline));
+    border-radius: var(--v4-radius-field);
+    background: color-mix(in srgb, var(--v4-warn) 10%, var(--v4-raised));
+    color: var(--v4-warn);
   }
 
   .activity-note {
-    border-color: var(--border);
-    background: var(--bg-raised);
-    color: var(--muted);
+    border-color: var(--v4-hairline);
+    background: var(--v4-raised);
+    color: var(--v4-text-3);
   }
 
   .activity-error div {
@@ -488,10 +488,10 @@
   .activity-error button {
     height: 30px;
     padding: 0 11px;
-    border: 1px solid var(--border);
-    border-radius: 5px;
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-button);
     background: transparent;
-    color: var(--fg);
+    color: var(--v4-text-1);
     font: inherit;
     font-size: var(--text-base);
     font-weight: 600;
@@ -515,10 +515,11 @@
 
   .activity-card {
     min-width: 0;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: var(--bg);
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-card);
+    background: var(--v4-raised);
+    box-shadow: var(--v4-shadow-card);
+    overflow: hidden;
   }
 
   .card-header {
@@ -528,14 +529,14 @@
     gap: 10px;
     min-width: 0;
     padding: 11px 13px;
-    border-bottom: 1px solid var(--border);
+    border-bottom: 1px solid var(--v4-hairline);
   }
 
   .card-header h3 {
     min-width: 0;
     margin: 0;
     overflow: hidden;
-    color: var(--muted-2);
+    color: var(--v4-text-2);
     font-size: var(--text-base);
     font-weight: 600;
     line-height: 18px;
@@ -555,9 +556,9 @@
     align-items: center;
     gap: 2px;
     padding: 2px;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    background: var(--bg-subtle);
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-field);
+    background: var(--v4-inset);
   }
 
   .direction-toggle button {
@@ -565,9 +566,9 @@
     min-width: 34px;
     padding: 0 8px;
     border: 0;
-    border-radius: 4px;
+    border-radius: var(--v4-radius-button);
     background: transparent;
-    color: var(--muted);
+    color: var(--v4-text-3);
     font: inherit;
     font-size: var(--text-base);
     font-weight: 600;
@@ -575,18 +576,18 @@
   }
 
   .direction-toggle button.is-active {
-    background: var(--row-active);
-    color: var(--fg);
+    background: var(--v4-control-faint);
+    color: var(--v4-text-1);
   }
 
   .direction-toggle button:focus-visible {
-    outline: 2px solid var(--blue);
+    outline: 2px solid var(--v4-control-border);
     outline-offset: 2px;
   }
 
   .sparkline-wrap {
     flex: 0 0 auto;
-    color: var(--muted-3);
+    color: var(--v4-text-3);
   }
 
   .bar-chart,
@@ -602,14 +603,9 @@
   .activity-bar {
     flex: 1 1 0;
     min-width: 4px;
-    border-top: 1px solid var(--muted-3);
-    background: rgba(255, 255, 255, 0.12);
+    border-top: 1px solid var(--v4-text-3);
+    background: var(--v4-control-faint);
     transition: height 300ms ease;
-  }
-  @media (prefers-color-scheme: light) {
-    .activity-bar {
-      background: rgba(0, 0, 0, 0.12);
-    }
   }
 
   .chart-scale {
@@ -642,7 +638,7 @@
     display: block;
     min-width: 0;
     overflow: hidden;
-    color: var(--muted-2);
+    color: var(--v4-text-2);
     font-size: var(--text-base);
     line-height: 18px;
     text-overflow: ellipsis;
@@ -650,7 +646,7 @@
   }
 
   .contributor-row strong {
-    color: var(--muted-3);
+    color: var(--v4-text-3);
     font-family: var(--font-mono);
     font-size: var(--text-base);
     font-weight: 600;
@@ -670,7 +666,7 @@
     position: absolute;
     inset: 0 auto 0 0;
     border-radius: inherit;
-    background: var(--fg);
+    background: var(--v4-text-1);
     opacity: 0.62;
     transition: width 380ms ease;
   }
@@ -681,7 +677,7 @@
 
   .actor-group {
     display: grid;
-    border-top: 1px solid var(--border);
+    border-top: 1px solid var(--v4-hairline);
   }
 
   .actor-group:first-child {
@@ -695,7 +691,7 @@
     gap: 9px;
     min-width: 0;
     padding: 10px 13px 8px;
-    background: var(--bg-subtle);
+    background: var(--v4-inset);
   }
 
   .actor-header strong,
@@ -707,7 +703,7 @@
   }
 
   .actor-header strong {
-    color: var(--fg);
+    color: var(--v4-text-1);
     font-size: var(--text-base);
     font-weight: 600;
     line-height: 18px;
@@ -715,7 +711,7 @@
 
   .actor-header span:last-child {
     justify-self: end;
-    color: var(--muted);
+    color: var(--v4-text-3);
     font-size: var(--text-base);
     line-height: 16px;
   }
@@ -727,7 +723,7 @@
     gap: 10px;
     min-width: 0;
     padding: 9px 13px;
-    border-top: 1px solid var(--border);
+    border-top: 1px solid var(--v4-hairline);
   }
 
   .recent-row:first-child {
@@ -739,9 +735,9 @@
     place-items: center;
     width: 44px;
     height: 22px;
-    border-radius: 5px;
-    background: var(--row-hover);
-    color: var(--muted-3);
+    border-radius: var(--v4-radius-button);
+    background: var(--v4-active-row);
+    color: var(--v4-text-3);
     font-family: var(--font-mono);
     font-size: var(--text-micro);
     font-weight: 700;
@@ -753,8 +749,8 @@
     height: 28px;
     overflow: hidden;
     border-radius: 999px;
-    background: var(--row-active);
-    color: var(--fg);
+    background: var(--v4-control-faint);
+    color: var(--v4-text-1);
     font-size: var(--text-micro);
     font-weight: 600;
     line-height: 28px;
@@ -778,7 +774,7 @@
   }
 
   .recent-copy strong {
-    color: var(--fg);
+    color: var(--v4-text-1);
     font-size: var(--text-base);
     font-weight: 600;
     line-height: 18px;
@@ -786,16 +782,16 @@
 
   .recent-copy span,
   .date-chip {
-    color: var(--muted);
+    color: var(--v4-text-3);
     font-size: var(--text-base);
     line-height: 16px;
   }
 
   .date-chip {
     padding: 3px 7px;
-    border: 1px solid var(--border);
+    border: 1px solid var(--v4-hairline);
     border-radius: 999px;
-    background: var(--bg-subtle);
+    background: var(--v4-inset);
     font-family: var(--font-mono);
     white-space: nowrap;
   }
@@ -836,7 +832,7 @@
   .chart-skeleton span {
     flex: 1 1 0;
     min-width: 4px;
-    border-radius: 4px 4px 0 0;
+    border-radius: var(--v4-radius-button) var(--v4-radius-button) 0 0;
   }
 
   .contributor-skeleton,

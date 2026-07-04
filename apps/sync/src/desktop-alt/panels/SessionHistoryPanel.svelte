@@ -227,14 +227,14 @@
   .hi-seg {
     display: inline-flex;
     padding: 2px;
-    border-radius: 8px;
+    border-radius: var(--v4-radius-field);
     background: var(--v4-control-faint);
   }
 
   .hi-seg-btn {
     padding: 3px 10px;
     border: none;
-    border-radius: 6px;
+    border-radius: var(--v4-radius-button);
     background: transparent;
     color: var(--v4-text-2);
     font: inherit;
@@ -272,7 +272,7 @@
   .hi-company-sel {
     padding: 3px 8px;
     border: 1px solid var(--v4-control-border);
-    border-radius: 8px;
+    border-radius: var(--v4-radius-button);
     background: var(--v4-control-faint);
     color: var(--v4-text-2);
     font: inherit;
@@ -449,12 +449,12 @@
     width: 8px;
     height: 8px;
     border-radius: 999px;
-    background: rgba(255, 255, 255, 0.07);
+    background: var(--v4-control-faint);
   }
 
   .hi-skel-bar {
     height: 12px;
-    border-radius: 6px;
-    background: rgba(255, 255, 255, 0.04);
+    border-radius: var(--v4-radius-button);
+    background: var(--v4-inset);
   }
 </style>
