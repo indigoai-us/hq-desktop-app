@@ -471,6 +471,26 @@ impl VaultClient {
         self.handle_response(resp).await
     }
 
+    /// `POST /v1/usage/opt-in` — persist the authenticated user's telemetry preference.
+    pub async fn post_telemetry_opt_in(&self, enabled: bool) -> Result<(), VaultClientError> {
+        let resp = self
+            .client
+            .post(format!("{}{}", self.base_url, "/v1/usage/opt-in"))
+            .bearer_auth(&self.auth_token)
+            .json(&serde_json::json!({ "enabled": enabled }))
+            .send()
+            .await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(VaultClientError::Http {
+                status: status.as_u16(),
+                body,
+            });
+        }
+        Ok(())
+    }
+
     /// `POST /v1/usage` — upload a batch of sanitized telemetry events.
     ///
     /// Body: `{ machineId, installerVersion, events }` — no `personUid` (resolved server-side).

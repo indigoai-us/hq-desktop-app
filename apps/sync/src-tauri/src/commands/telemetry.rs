@@ -7,6 +7,8 @@
 use std::collections::HashMap;
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
+use std::path::Path;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -167,6 +169,53 @@ fn read_local_telemetry_enabled() -> bool {
         }
     }
     false
+}
+
+fn write_menubar_telemetry_pref_to(path: &Path, enabled: bool) -> Result<(), String> {
+    hq_desktop_core::first_run::merge_menubar_flags(
+        path,
+        &[("telemetryEnabled", Value::Bool(enabled))],
+    )
+}
+
+#[tauri::command]
+pub fn write_menubar_telemetry_pref(enabled: bool) -> Result<(), String> {
+    let path = crate::util::paths::menubar_json_path()?;
+    write_menubar_telemetry_pref_to(&path, enabled)
+}
+
+const OPT_IN_RETRY_DELAYS: [Duration; 2] = [Duration::from_secs(1), Duration::from_secs(3)];
+
+async fn post_telemetry_opt_in_with_retry(
+    api_url: &str,
+    access_token: &str,
+    enabled: bool,
+) -> Result<(), String> {
+    let vault = VaultClient::new(api_url, access_token);
+    let mut last_error = None;
+
+    for attempt in 0..3 {
+        match vault.post_telemetry_opt_in(enabled).await {
+            Ok(()) => return Ok(()),
+            Err(err) => last_error = Some(err.to_string()),
+        }
+
+        if let Some(delay) = OPT_IN_RETRY_DELAYS.get(attempt) {
+            tokio::time::sleep(*delay).await;
+        }
+    }
+
+    Err(format!(
+        "post telemetry opt-in failed after 3 attempts: {}",
+        last_error.unwrap_or_else(|| "unknown error".to_string())
+    ))
+}
+
+#[tauri::command]
+pub async fn post_telemetry_opt_in(enabled: bool) -> Result<(), String> {
+    let access_token = crate::commands::cognito::get_valid_access_token().await?;
+    let api_url = resolve_vault_api_url()?;
+    post_telemetry_opt_in_with_retry(&api_url, &access_token, enabled).await
 }
 
 fn read_machine_id() -> String {
@@ -518,6 +567,36 @@ mod tests {
             r"C:\Users\me\.claude\projects\proj\session.jsonl"
         );
         assert!(!normalized.contains('/'));
+    }
+
+    #[test]
+    fn test_write_menubar_telemetry_pref_preserves_other_keys() {
+        let home = setup_home();
+        write_menubar(
+            home.path(),
+            r#"{"machineId":"mid-keep","hqPath":"/foo","syncOnLaunch":false}"#,
+        );
+        let path = home.path().join(".hq/menubar.json");
+
+        write_menubar_telemetry_pref_to(&path, true).unwrap();
+
+        let v: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(v["machineId"], "mid-keep");
+        assert_eq!(v["hqPath"], "/foo");
+        assert_eq!(v["syncOnLaunch"], false);
+        assert_eq!(v["telemetryEnabled"], true);
+    }
+
+    #[test]
+    fn test_write_menubar_telemetry_pref_creates_file_when_missing() {
+        let home = TempDir::new().unwrap();
+        let path = home.path().join(".hq/menubar.json");
+
+        write_menubar_telemetry_pref_to(&path, false).unwrap();
+
+        let v: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(v["telemetryEnabled"], false);
+        assert!(!path.with_extension("json.tmp").exists());
     }
 
     // ── (a) opt-in=false → 0 bytes sent ──────────────────────────────────────

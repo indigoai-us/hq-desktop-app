@@ -158,7 +158,10 @@
         }}
       />
     {:else if currentStep === 3}
-      <SignInScreen onsignedin={handleSignedIn} />
+      <SignInScreen
+        telemetryEnabled={wizardState.telemetryEnabled}
+        onsignedin={handleSignedIn}
+      />
     {:else if currentStep === 4}
       <SetupScreen
         installPath={wizardState.installPath}

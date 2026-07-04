@@ -142,12 +142,31 @@ fn main() {
         // the second process exits instead of becoming a ghost duplicate.
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             // Prefer the detached "HQ Meetings" (desktop-alt) window when it's
-            // open, else the main popover. show + unminimize + focus is
-            // idempotent, so re-firing on an already-visible window is a no-op.
-            let target = app
-                .get_webview_window("desktop-alt")
-                .or_else(|| app.get_webview_window("main"));
-            if let Some(window) = target {
+            // open. Otherwise Windows must route through the tray helper so the
+            // popover is positioned above the taskbar tray and gets its DWM
+            // always-on-top/corner treatment, matching the legacy Windows app.
+            if let Some(window) = app.get_webview_window("desktop-alt") {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+                crate::util::logfile::log(
+                    "app",
+                    "single-instance: focused existing window on second launch",
+                );
+                return;
+            }
+
+            #[cfg(target_os = "windows")]
+            {
+                tray::show_window_at_tray(app);
+                crate::util::logfile::log(
+                    "app",
+                    "single-instance: showed main popover at tray on second launch",
+                );
+            }
+
+            #[cfg(not(target_os = "windows"))]
+            if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
                 let _ = window.unminimize();
                 let _ = window.set_focus();
@@ -282,6 +301,8 @@ fn main() {
             commands::conflicts::open_in_editor,
             commands::settings::get_settings,
             commands::settings::save_settings,
+            commands::telemetry::post_telemetry_opt_in,
+            commands::telemetry::write_menubar_telemetry_pref,
             commands::folder_picker::pick_folder,
             commands::install_directory::resolve_hq_path,
             commands::install_directory::set_hq_install_path,
@@ -502,7 +523,6 @@ fn main() {
             commands::compat::keychain_get,
             commands::compat::keychain_delete,
             commands::oauth::oauth_cancel_listen,
-            commands::compat::write_menubar_telemetry_pref,
             commands::compat::write_menubar_hq_path,
             commands::compat::home_dir,
             commands::compat::write_file,
