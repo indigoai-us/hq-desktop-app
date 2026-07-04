@@ -86,12 +86,7 @@
     border-radius: 8px;
     background: var(--v4-raised);
     color: var(--v4-text-1);
-    font-family:
-      'Inter Variable',
-      Inter,
-      -apple-system,
-      'SF Pro Text',
-      sans-serif;
+    font-family: var(--font-sans);
   }
 
   .goal-header {

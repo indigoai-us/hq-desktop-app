@@ -128,6 +128,7 @@ pub fn lifecycle_keeps_main_window_visible(state: LifecycleState) -> bool {
         LifecycleState::NeedsInstall
             | LifecycleState::InstallResume
             | LifecycleState::NeedsAuthForInstall
+            | LifecycleState::InstalledFirstRun
     )
 }
 

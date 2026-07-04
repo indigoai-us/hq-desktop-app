@@ -1,4 +1,5 @@
 import * as Sentry from "@sentry/svelte";
+import './styles/design-system.css';
 import App from './App.svelte';
 import MeetingsWindow from './components/MeetingsWindow.svelte';
 import DriftDetail from './components/DriftDetail.svelte';

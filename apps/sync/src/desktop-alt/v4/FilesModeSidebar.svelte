@@ -157,12 +157,7 @@
     padding: 14px 10px 0;
     border-right: 1px solid var(--v4-hairline);
     background: var(--v4-raised);
-    font-family:
-      'Inter Variable',
-      Inter,
-      -apple-system,
-      'SF Pro Text',
-      sans-serif;
+    font-family: var(--font-sans);
   }
 
   /* Header: a prominent Back/exit control + the mode title. */

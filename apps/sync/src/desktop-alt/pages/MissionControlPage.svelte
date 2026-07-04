@@ -149,7 +149,7 @@
   }
 
   /* Summary strip — 4 inset tiles (#19191B, 10px radius): caps label + status
-     dot + big Inter Tight value + hint. */
+     dot + big Geist value + hint. */
   .mc-summary {
     display: grid;
     grid-template-columns: repeat(4, 1fr);

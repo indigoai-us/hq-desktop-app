@@ -87,12 +87,7 @@
     padding: 0 14px 0 78px;
     border-bottom: 1px solid var(--v4-hairline);
     background: var(--v4-ground);
-    font-family:
-      'Inter Variable',
-      Inter,
-      -apple-system,
-      'SF Pro Text',
-      sans-serif;
+    font-family: var(--font-sans);
   }
 
   .v4-status {

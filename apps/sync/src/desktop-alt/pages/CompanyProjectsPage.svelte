@@ -587,12 +587,7 @@
     min-width: 0;
     height: 100%;
     color: var(--v4-text-1);
-    font-family:
-      'Inter Variable',
-      Inter,
-      -apple-system,
-      'SF Pro Text',
-      sans-serif;
+    font-family: var(--font-sans);
   }
 
   .projects-header,

@@ -16,13 +16,10 @@
   //
   // Visuals adopt the desktop "Company OS" design language: the standalone
   // Messages window consumes the SAME token layer as the desktop window via
-  // `desktop-alt.css` (which `@import`s the canonical `popover.css` primitives
-  // and adds the desktop alias layer + 13px type ramp, scoped to
-  // `html[data-window='messages']` alongside `desktop-alt`). The Geist/Inter
-  // faces are bundled offline here so the window renders the real type rather
-  // than a system fallback. See DESIGN.md → "Big-window type & chrome".
-  import '@fontsource-variable/inter/wght.css';
-  import '@fontsource-variable/inter-tight/wght.css';
+  // `desktop-alt.css` (which `@import`s the canonical token primitives and adds
+  // the desktop alias layer + 13px type ramp, scoped to `html[data-window='messages']`
+  // alongside `desktop-alt`). Geist Sans is loaded by the shared design system;
+  // keep Geist Mono for data. See DESIGN.md → "Big-window type & chrome".
   import '@fontsource-variable/geist-mono/wght.css';
   import '../../desktop-alt/styles/desktop-alt.css';
   import { invoke } from '@tauri-apps/api/core';
