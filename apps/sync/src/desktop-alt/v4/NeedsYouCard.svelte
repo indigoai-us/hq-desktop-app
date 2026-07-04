@@ -54,16 +54,17 @@
   .v4-card {
     padding: 12px 14px;
     border: 1px solid var(--v4-hairline);
-    border-radius: 8px;
+    border-radius: var(--v4-radius-card);
     background: var(--v4-raised);
+    box-shadow: var(--v4-shadow-card);
   }
 
   .v4-card.warn {
-    border-color: rgba(254, 188, 46, 0.3);
+    border-color: color-mix(in srgb, var(--v4-warn) 36%, var(--v4-hairline));
   }
 
   .v4-card.error {
-    border-color: rgba(255, 69, 58, 0.3);
+    border-color: color-mix(in srgb, var(--v4-error) 36%, var(--v4-hairline));
   }
 
   .v4-card-row {
@@ -106,7 +107,7 @@
   .v4-card-action {
     padding: 5px 10px;
     border: 1px solid transparent;
-    border-radius: 6px;
+    border-radius: var(--v4-radius-button);
     background: transparent;
     color: var(--v4-text-1);
     font: inherit;
@@ -118,11 +119,15 @@
   }
 
   .v4-card-action.primary {
-    background: var(--v4-control-bg);
+    background: var(--v4-primary-bg);
+    color: var(--v4-primary-fg);
+    box-shadow: var(--v4-shadow-card);
   }
 
   .v4-card-action.secondary {
     border-color: var(--v4-control-border);
+    background: var(--v4-secondary-bg);
+    color: var(--v4-secondary-fg);
   }
 
   .v4-card-action.text {
@@ -130,8 +135,14 @@
   }
 
   .v4-card-action:hover:not(:disabled) {
-    background: var(--v4-control-bg);
+    background: var(--v4-control-faint);
     color: var(--v4-text-1);
+  }
+
+  .v4-card-action.primary:hover:not(:disabled) {
+    background: var(--v4-primary-bg);
+    color: var(--v4-primary-fg);
+    opacity: 0.86;
   }
 
   .v4-card-action:disabled {

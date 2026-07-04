@@ -84,7 +84,7 @@
 <style>
   .v4-digest {
     display: grid;
-    gap: 10px;
+    gap: var(--v4-space-2);
   }
 
   .v4-digest-header {
@@ -126,8 +126,9 @@
   .v4-digest-empty {
     padding: 14px;
     border: 1px solid var(--v4-hairline);
-    border-radius: 8px;
+    border-radius: var(--v4-radius-card);
     background: var(--v4-raised);
+    box-shadow: var(--v4-shadow-card);
   }
 
   .v4-digest-empty p {
@@ -138,7 +139,7 @@
 
   .v4-digest-list {
     display: grid;
-    gap: 8px;
+    gap: var(--v4-space-2);
     margin: 0;
     padding: 0;
     list-style: none;
@@ -146,8 +147,9 @@
 
   .v4-digest-group {
     border: 1px solid var(--v4-hairline);
-    border-radius: 8px;
+    border-radius: var(--v4-radius-card);
     background: var(--v4-raised);
+    box-shadow: var(--v4-shadow-card);
     overflow: hidden;
   }
 
@@ -173,7 +175,7 @@
     flex: 0 0 26px;
     width: 26px;
     height: 26px;
-    border-radius: 50%;
+    border-radius: var(--v4-radius-pill);
     background: var(--v4-control-faint);
     color: var(--v4-text-2);
     font-size: var(--text-base);

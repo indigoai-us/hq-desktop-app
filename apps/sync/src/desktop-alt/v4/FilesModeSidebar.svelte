@@ -156,7 +156,7 @@
     overflow: hidden;
     padding: 14px 10px 0;
     border-right: 1px solid var(--v4-hairline);
-    background: var(--v4-raised);
+    background: var(--v4-chrome);
     font-family: var(--font-sans);
   }
 
@@ -177,9 +177,9 @@
     height: 26px;
     padding: 0 10px 0 6px;
     border: 1px solid var(--v4-hairline);
-    border-radius: 6px;
-    background: var(--v4-control-faint);
-    color: var(--v4-text-1);
+    border-radius: var(--v4-radius-button);
+    background: var(--v4-secondary-bg);
+    color: var(--v4-secondary-fg);
     font: inherit;
     font-size: var(--text-base);
     font-weight: 500;
@@ -187,8 +187,9 @@
   }
 
   .fs-exit:hover {
-    background: var(--v4-control-bg);
-    border-color: var(--v4-text-3);
+    background: var(--v4-control-faint);
+    border-color: var(--v4-control-border);
+    color: var(--v4-text-1);
   }
 
   .fs-exit-icon {
@@ -243,7 +244,7 @@
   }
 
   .fs-company-list::-webkit-scrollbar-thumb {
-    border-radius: 999px;
+    border-radius: var(--v4-radius-pill);
     background: var(--v4-hairline);
   }
 
@@ -262,7 +263,7 @@
     flex: 0 0 auto;
     padding: 0 8px;
     border: none;
-    border-radius: 6px;
+    border-radius: var(--v4-radius-button);
     background: transparent;
     color: var(--v4-text-2);
     font: inherit;
@@ -289,7 +290,7 @@
     align-self: center;
     width: 6px;
     height: 6px;
-    border-radius: 50%;
+    border-radius: var(--v4-radius-pill);
   }
 
   .fs-dot.ok {
@@ -348,7 +349,7 @@
     max-width: 100%;
     padding: 2px 4px 2px 8px;
     border: 1px solid var(--v4-hairline);
-    border-radius: 999px;
+    border-radius: var(--v4-radius-pill);
     background: var(--v4-control-faint);
     color: var(--v4-text-1);
     font-size: var(--text-base);
@@ -371,14 +372,14 @@
     height: 16px;
     padding: 0;
     border: none;
-    border-radius: 50%;
+    border-radius: var(--v4-radius-pill);
     background: transparent;
     color: var(--v4-text-3);
     cursor: pointer;
   }
 
   .fs-scope-clear:hover {
-    background: var(--v4-control-bg);
+    background: var(--v4-control-faint);
     color: var(--v4-text-1);
   }
 
@@ -398,7 +399,7 @@
   }
 
   .fs-tree-area::-webkit-scrollbar-thumb {
-    border-radius: 999px;
+    border-radius: var(--v4-radius-pill);
     background: var(--v4-hairline);
   }
 </style>

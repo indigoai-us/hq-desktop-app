@@ -117,7 +117,7 @@
     overflow: hidden;
     padding: 14px 10px 0;
     border-right: 1px solid var(--v4-hairline);
-    background: var(--v4-raised);
+    background: var(--v4-chrome);
     font-family: var(--font-sans);
   }
 
@@ -143,7 +143,7 @@
     flex: 0 0 auto;
     padding: 0 8px;
     border: none;
-    border-radius: 6px;
+    border-radius: var(--v4-radius-button);
     background: transparent;
     color: var(--v4-text-2);
     font: inherit;
@@ -198,7 +198,7 @@
   }
 
   .v4-company-nav::-webkit-scrollbar-thumb {
-    border-radius: 999px;
+    border-radius: var(--v4-radius-pill);
     background: var(--v4-hairline);
   }
 
@@ -207,7 +207,7 @@
     align-self: center;
     width: 6px;
     height: 6px;
-    border-radius: 50%;
+    border-radius: var(--v4-radius-pill);
   }
 
   .v4-dot.ok {

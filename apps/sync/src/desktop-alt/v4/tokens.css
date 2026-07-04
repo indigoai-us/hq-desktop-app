@@ -1,85 +1,76 @@
-/* V4 design tokens — SPEC.md section 2, verbatim.
+/* Desktop V4 compatibility tokens.
  *
- * Single source of truth for the V4 desktop-window redesign
- * (docs/design/v4/SPEC.md). Every V4 component imports this file so the
- * custom properties resolve wherever V4 chrome renders; Vite dedupes the
- * import. Hierarchy is carried entirely by the three text grays; status
- * colors are the ONLY color in the app, almost always as 6px dots.
- * No purple anywhere (hard Indigo policy).
+ * The desktop window keeps the established --v4-* vocabulary so older pages
+ * continue to build, but those names now resolve from the shared prototype
+ * primitives in styles/design-system.css: light-default --c-* colors, --pop-*
+ * subtle surfaces, Geist, shared radii, and shared shadows.
  */
 :root {
   /* surfaces */
-  --v4-ground: #161618; /* window + main content background */
-  --v4-raised: #1b1b1d; /* cards, primary sidebar */
-  --v4-inset: #19191b; /* secondary sidebar, inset panels, table containers */
-  --v4-hairline: rgba(255, 255, 255, 0.07); /* section borders, dividers */
-  --v4-rowline: rgba(255, 255, 255, 0.05); /* table row separators */
+  --v4-ground: var(--page-bg, #e9ecf1);
+  --v4-raised: var(--c-bg, #fff);
+  --v4-inset: var(--c-field-bg, #0000000d);
+  --v4-chrome: var(--pop-bg, rgba(250, 250, 252, 0.82));
+  --v4-hairline: var(--pop-border, var(--c-divider, #00000010));
+  --v4-rowline: var(--pop-divider, var(--c-divider, #00000010));
 
-  /* text — hierarchy is done entirely with these three grays */
-  --v4-text-1: #f2f2f3; /* primary */
-  --v4-text-2: #9a9aa0; /* secondary */
-  --v4-text-3: #5d5d63; /* tertiary / meta */
+  /* text */
+  --v4-text-1: var(--c-text, #000);
+  --v4-text-2: var(--pop-muted, var(--c-muted, #00000066));
+  --v4-text-3: var(--dot, var(--c-muted, #00000066));
 
-  /* status — the ONLY color in the app, almost always as 6px dots */
-  --v4-ok: #30d158; /* ok / connected / running / on-track / success */
-  --v4-warn: #febc2e; /* needs attention / review / at-risk */
-  --v4-error: #ff453a; /* error / blocked / off-track; also destructive text actions */
-  --v4-unread: #0a84ff; /* unread dots + sent bubbles — Messages surfaces ONLY */
-  --v4-idle: #5d5d63; /* idle / paused / gated / backlog */
+  /* semantic state */
+  --v4-ok: var(--popover-success, #1f9d4d);
+  --v4-warn: #b45309;
+  --v4-error: var(--popover-danger, #dc2626);
+  --v4-unread: #0a6fd6;
+  --v4-idle: var(--dot, #0000003a);
 
   /* controls */
-  --v4-control-bg: rgba(255, 255, 255, 0.1); /* primary button fill */
-  --v4-control-border: rgba(255, 255, 255, 0.12); /* secondary button border */
-  --v4-control-faint: rgba(255, 255, 255, 0.06); /* chips, search field, segmented track */
-  --v4-active-row: rgba(255, 255, 255, 0.08); /* sidebar/list selection */
+  --v4-control-bg: var(--c-btn2-bg, #0000000d);
+  --v4-control-border: var(--c-field-border, #00000014);
+  --v4-control-faint: var(--c-field-bg, #0000000d);
+  --v4-active-row: var(--pop-hover, #0000000e);
+  --v4-primary-bg: var(--c-btn-bg, #000);
+  --v4-primary-fg: var(--c-btn-fg, #fff);
+  --v4-secondary-bg: var(--c-btn2-bg, #0000000d);
+  --v4-secondary-fg: var(--c-btn2-fg, #000);
 
-  /* spacing scale — 4px base step (mirrors popover.css --space-*). Use these
-     instead of magic px for row height, vertical gaps, and section margins so
-     V4 sidebars and desktop-alt list rows share one rhythm. */
+  /* shared shape + elevation */
+  --v4-radius-button: var(--radius-button, 8px);
+  --v4-radius-field: var(--radius-field, 10px);
+  --v4-radius-card: var(--radius-card, 18px);
+  --v4-radius-popover: var(--radius-popover, 12px);
+  --v4-radius-pill: var(--radius-pill, 980px);
+  --v4-shadow-card: var(--c-choose-shadow, 0 1px 1.5px rgba(0, 0, 0, 0.1));
+  --v4-shadow-popover: var(--pop-shadow, var(--shadow-popover-light, 0 22px 55px rgba(20, 22, 40, 0.22)));
+  --v4-shadow-window: var(--shadow-window-light, 0 24px 70px rgba(20, 22, 40, 0.28), 0 2px 8px rgba(20, 22, 40, 0.12));
+
+  /* spacing scale — 4px base step */
   --v4-space-1: 4px;
   --v4-space-2: 8px;
   --v4-space-3: 12px;
   --v4-space-4: 16px;
   --v4-space-5: 20px;
   --v4-space-6: 24px;
-  --v4-row-h: 28px; /* canonical sidebar/list row height */
-  --v4-row-gap: 2px; /* vertical gap between rows in a nav group */
+  --v4-row-h: 28px;
+  --v4-row-gap: 2px;
 }
 
-/* ── Light mode ─────────────────────────────────────────────────────────────
- * First-class neutral inversion so every V4 surface adapts when the OS is in
- * light appearance — the V4 token set was previously dark-only, which left all
- * V4 chrome (sidebars, tables, panels, text) dark on a light desktop. Mirrors
- * the popover + desktop-alt light palettes: no hue introduced, status hues
- * darkened for legibility on light surfaces. The desktop window additionally
- * overrides --v4-ground/raised/inset to translucent glass in desktop-alt.css
- * (scoped to data-window='desktop-alt'); these solids cover the Messages window
- * and any non-glass V4 usage. */
-@media (prefers-color-scheme: light) {
+@media (prefers-color-scheme: dark) {
   :root {
-    /* surfaces */
-    --v4-ground: #f6f6f8;
-    --v4-raised: #ffffff;
-    --v4-inset: #f1f1f4;
-    --v4-hairline: rgba(0, 0, 0, 0.09);
-    --v4-rowline: rgba(0, 0, 0, 0.06);
-
-    /* text */
-    --v4-text-1: #111113;
-    --v4-text-2: #5b5b61;
-    --v4-text-3: #8a8a90;
-
-    /* status — darkened for contrast on light surfaces */
-    --v4-ok: #1a8f3c;
-    --v4-warn: #b45309;
-    --v4-error: #dc2626;
-    --v4-unread: #0a6fd6;
-    --v4-idle: #8a8a90;
-
-    /* controls */
-    --v4-control-bg: rgba(0, 0, 0, 0.06);
-    --v4-control-border: rgba(0, 0, 0, 0.14);
-    --v4-control-faint: rgba(0, 0, 0, 0.04);
-    --v4-active-row: rgba(0, 0, 0, 0.06);
+    --v4-ok: var(--popover-success, #41d870);
+    --v4-warn: #f59e0b;
+    --v4-error: var(--popover-danger, #ef4444);
+    --v4-unread: #60a5fa;
+    --v4-shadow-window: var(--shadow-window-dark, 0 40px 100px rgba(0, 0, 0, 0.78));
   }
+}
+
+.dark {
+  --v4-ok: var(--popover-success, #41d870);
+  --v4-warn: #f59e0b;
+  --v4-error: var(--popover-danger, #ef4444);
+  --v4-unread: #60a5fa;
+  --v4-shadow-window: var(--shadow-window-dark, 0 40px 100px rgba(0, 0, 0, 0.78));
 }

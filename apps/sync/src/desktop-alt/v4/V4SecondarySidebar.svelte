@@ -117,7 +117,7 @@
     flex: 0 0 6px;
     width: 6px;
     height: 6px;
-    border-radius: 50%;
+    border-radius: var(--v4-radius-pill);
   }
 
   .v4-dot.ok {
@@ -158,7 +158,7 @@
     height: var(--v4-row-h);
     padding: 0 8px;
     border: none;
-    border-radius: 6px;
+    border-radius: var(--v4-radius-button);
     background: transparent;
     color: var(--v4-text-2);
     font: inherit;

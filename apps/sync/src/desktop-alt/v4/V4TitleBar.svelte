@@ -86,7 +86,7 @@
     /* 78px left inset clears the overlay traffic lights. */
     padding: 0 14px 0 78px;
     border-bottom: 1px solid var(--v4-hairline);
-    background: var(--v4-ground);
+    background: var(--v4-chrome);
     font-family: var(--font-sans);
   }
 
@@ -104,7 +104,7 @@
     flex: 0 0 6px;
     width: 6px;
     height: 6px;
-    border-radius: 50%;
+    border-radius: var(--v4-radius-pill);
   }
 
   .v4-dot.ok {
@@ -165,19 +165,21 @@
 
   .v4-action {
     flex: 0 0 auto;
-    padding: 4px 8px;
-    border: none;
-    border-radius: 6px;
-    background: transparent;
-    color: var(--v4-text-1);
+    height: 28px;
+    padding: 0 10px;
+    border: 1px solid transparent;
+    border-radius: var(--v4-radius-button);
+    background: var(--v4-primary-bg);
+    color: var(--v4-primary-fg);
     font: inherit;
     font-size: var(--text-base);
-    font-weight: 400;
+    font-weight: 500;
     line-height: 1;
     cursor: pointer;
+    box-shadow: var(--v4-shadow-card);
   }
 
   .v4-action:hover {
-    background: var(--v4-control-faint);
+    opacity: 0.86;
   }
 </style>
