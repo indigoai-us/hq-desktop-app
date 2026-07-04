@@ -322,7 +322,7 @@
   .ls-group-ctl {
     padding: 2px 8px;
     border: 1px solid var(--v4-control-border);
-    border-radius: 8px;
+    border-radius: var(--v4-radius-button);
     background: var(--v4-control-faint);
     color: var(--v4-text-2);
     font-size: 11px;
@@ -334,7 +334,7 @@
     gap: 6px;
     padding: 2px 8px;
     border-radius: 999px;
-    background: rgba(254, 188, 46, 0.12);
+    background: color-mix(in srgb, var(--v4-warn) 12%, transparent);
     color: var(--v4-warn);
     font-size: 11px;
   }
@@ -385,7 +385,7 @@
     height: 36px;
     padding: 8px 12px;
     border: 1px solid var(--v4-hairline);
-    border-radius: 8px;
+    border-radius: var(--v4-radius-field);
     background: var(--v4-raised);
     color: var(--v4-text-1);
     font: inherit;
@@ -458,7 +458,7 @@
     gap: 10px;
     min-height: 30px;
     padding: 6px 12px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    border-bottom: 1px solid var(--v4-rowline);
   }
 
   .ls-row:last-child {
@@ -553,15 +553,15 @@
 
   .ls-skel-head {
     height: 36px;
-    border-radius: 8px;
-    background: rgba(255, 255, 255, 0.07);
+    border-radius: var(--v4-radius-field);
+    background: var(--v4-control-faint);
   }
 
   .ls-skel-row {
     height: 14px;
     margin-left: 30px;
-    border-radius: 6px;
-    background: rgba(255, 255, 255, 0.04);
+    border-radius: var(--v4-radius-button);
+    background: var(--v4-inset);
   }
 
   /* ── Outpost status card (US-011) ────────────────────────────────────────
@@ -574,19 +574,20 @@
     gap: 10px;
     padding: 12px;
     border: 1px solid var(--v4-hairline);
-    border-radius: 10px;
+    border-radius: var(--v4-radius-card);
     background: var(--v4-raised);
+    box-shadow: var(--v4-shadow-card);
   }
 
   /* Up = green-tinted card; down = red card. Tints reference the status tokens
      so light/reduced-transparency branches still resolve. */
   .ls-outpost-card.up {
-    border-color: rgba(48, 209, 88, 0.15);
-    background: linear-gradient(0deg, rgba(48, 209, 88, 0.04), rgba(48, 209, 88, 0.04)), var(--v4-raised);
+    border-color: color-mix(in srgb, var(--v4-ok) 18%, var(--v4-hairline));
+    background: color-mix(in srgb, var(--v4-ok) 5%, var(--v4-raised));
   }
   .ls-outpost-card.down {
-    border-color: rgba(255, 69, 58, 0.2);
-    background: linear-gradient(0deg, rgba(255, 69, 58, 0.05), rgba(255, 69, 58, 0.05)), var(--v4-raised);
+    border-color: color-mix(in srgb, var(--v4-error) 22%, var(--v4-hairline));
+    background: color-mix(in srgb, var(--v4-error) 6%, var(--v4-raised));
   }
 
   .ls-outpost-main {
@@ -602,7 +603,7 @@
     width: 30px;
     height: 30px;
     flex: 0 0 30px;
-    border-radius: 8px;
+    border-radius: var(--v4-radius-button);
     background: var(--v4-control-faint);
     color: var(--v4-text-2);
   }
@@ -610,7 +611,7 @@
     color: var(--v4-ok);
   }
   .ls-outpost-card.down .ls-outpost-glyph {
-    color: var(--v4-error, #ff453a);
+    color: var(--v4-error);
   }
 
   .ls-outpost-name {
@@ -627,12 +628,12 @@
     letter-spacing: 0.06em;
   }
   .ls-outpost-card.up .ls-outpost-pill {
-    background: rgba(48, 209, 88, 0.16);
+    background: color-mix(in srgb, var(--v4-ok) 16%, transparent);
     color: var(--v4-ok);
   }
   .ls-outpost-card.down .ls-outpost-pill {
-    background: rgba(255, 69, 58, 0.16);
-    color: var(--v4-error, #ff453a);
+    background: color-mix(in srgb, var(--v4-error) 16%, transparent);
+    color: var(--v4-error);
   }
 
   .ls-outpost-meta {
@@ -671,7 +672,7 @@
     color: var(--v4-ok);
   }
   .ls-outpost-stat-value.bad {
-    color: var(--v4-error, #ff453a);
+    color: var(--v4-error);
   }
 
   /* Down-state stale-timeout note: amber dot + message. */
@@ -680,8 +681,8 @@
     align-items: center;
     gap: 6px;
     padding: 6px 8px;
-    border-radius: 8px;
-    background: rgba(254, 188, 46, 0.1);
+    border-radius: var(--v4-radius-field);
+    background: color-mix(in srgb, var(--v4-warn) 10%, transparent);
     color: var(--v4-text-2);
     font-size: 11px;
     line-height: 1.4;

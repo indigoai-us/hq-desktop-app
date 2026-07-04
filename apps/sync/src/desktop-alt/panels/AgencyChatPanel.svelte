@@ -118,7 +118,7 @@
   .thread {
     display: flex; flex-direction: column; gap: 10px;
     max-height: 320px; overflow-y: auto;
-    border: 1px solid var(--v4-hairline); border-radius: 10px; background: var(--v4-inset); padding: 12px;
+    border: 1px solid var(--v4-hairline); border-radius: var(--v4-radius-card); background: var(--v4-raised); box-shadow: var(--v4-shadow-card); padding: 12px;
   }
   .msg { display: flex; gap: 8px; align-items: flex-start; }
   .mbody { min-width: 0; flex: 1 1 auto; }
@@ -127,7 +127,7 @@
   .mfrom.ok { color: var(--v4-ok); } .mfrom.warn { color: var(--v4-warn); } .mfrom.unread { color: var(--v4-unread); }
   .kind {
     font-size: 11px; letter-spacing: 0.04em; color: var(--v4-text-3);
-    border: 1px solid var(--v4-hairline); border-radius: 4px; padding: 0 5px;
+    border: 1px solid var(--v4-hairline); border-radius: var(--v4-radius-button); padding: 0 5px;
   }
   .kind.ask { color: var(--v4-warn); border-color: var(--v4-warn); }
   .kind.answer { color: var(--v4-ok); border-color: var(--v4-ok); }
@@ -137,13 +137,13 @@
   .dot.ok { background: var(--v4-ok); } .dot.warn { background: var(--v4-warn); } .dot.unread { background: var(--v4-unread); } .dot.idle { background: var(--v4-idle); }
   .composer { display: flex; gap: 8px; align-items: flex-end; }
   textarea {
-    flex: 1 1 auto; resize: vertical; border: 1px solid var(--v4-hairline); border-radius: 8px;
+    flex: 1 1 auto; resize: vertical; border: 1px solid var(--v4-hairline); border-radius: var(--v4-radius-field);
     background: var(--v4-raised); color: var(--v4-text-1); font: inherit; font-size: var(--text-base);
     padding: 8px 10px; box-sizing: border-box;
   }
-  textarea:focus { outline: none; border-color: var(--v4-unread); }
+  textarea:focus { outline: none; border-color: var(--v4-control-border); }
   .send {
-    border: 1px solid var(--v4-hairline); border-radius: 8px; background: var(--v4-unread); color: #04121f;
+    border: 1px solid transparent; border-radius: var(--v4-radius-button); background: var(--v4-primary-bg); color: var(--v4-primary-fg);
     font: inherit; font-weight: 600; font-size: var(--text-base); padding: 8px 16px; cursor: pointer;
   }
   .send:disabled { opacity: 0.45; cursor: default; }

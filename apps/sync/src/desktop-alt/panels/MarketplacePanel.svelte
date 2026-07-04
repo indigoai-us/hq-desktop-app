@@ -520,7 +520,7 @@
   .marketplace {
     display: flex;
     flex-direction: column;
-    gap: var(--space-4);
+    gap: var(--v4-space-4);
     min-width: 0;
   }
 
@@ -529,7 +529,7 @@
     flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
-    gap: var(--space-3);
+    gap: var(--v4-space-3);
     min-width: 0;
   }
 
@@ -537,12 +537,13 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: var(--space-3);
+    gap: var(--v4-space-3);
     min-width: 0;
-    padding: var(--space-3);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    background: var(--bg-subtle);
+    padding: var(--v4-space-3);
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-card);
+    background: var(--v4-raised);
+    box-shadow: var(--v4-shadow-card);
   }
 
   .your-listings div {
@@ -555,7 +556,7 @@
   }
 
   .your-listings h2 {
-    color: var(--muted-2);
+    color: var(--v4-text-2);
     font-size: var(--text-micro);
     font-weight: 700;
     line-height: 14px;
@@ -563,14 +564,14 @@
 
   .your-listings p,
   .your-listings span {
-    color: var(--muted);
+    color: var(--v4-text-3);
     font-size: var(--text-base);
     line-height: 16px;
   }
 
   .count {
     margin: 0;
-    color: var(--muted);
+    color: var(--v4-text-3);
     font-size: var(--text-base);
   }
 
@@ -579,21 +580,21 @@
     max-width: 280px;
     min-width: 0;
     height: 32px;
-    padding: 0 var(--space-3);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    background: var(--bg);
-    color: var(--fg);
+    padding: 0 var(--v4-space-3);
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-field);
+    background: var(--v4-raised);
+    color: var(--v4-text-1);
     font: inherit;
     font-size: var(--text-base);
   }
 
   .search::placeholder {
-    color: var(--muted-3);
+    color: var(--v4-text-3);
   }
 
   .search:focus-visible {
-    outline: 2px solid var(--blue);
+    outline: 2px solid var(--v4-control-border);
     outline-offset: 1px;
   }
 
@@ -602,7 +603,7 @@
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(272px, 1fr));
     align-items: start;
-    gap: var(--space-3);
+    gap: var(--v4-space-3);
     min-width: 0;
   }
 
@@ -612,9 +613,10 @@
     flex-direction: column;
     min-width: 0;
     overflow: hidden;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: var(--row-active);
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-card);
+    background: var(--v4-raised);
+    box-shadow: var(--v4-shadow-card);
     text-align: left;
     cursor: pointer;
     transition:
@@ -625,14 +627,14 @@
   }
 
   .card:hover {
-    border-color: var(--border-strong);
-    background: var(--row-hover);
+    border-color: var(--v4-control-border);
+    background: var(--v4-raised);
     transform: translateY(-2px);
-    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.3);
+    box-shadow: var(--v4-shadow-card);
   }
 
   .card:focus-visible {
-    outline: 2px solid var(--blue);
+    outline: 2px solid var(--v4-control-border);
     outline-offset: 2px;
   }
 
@@ -643,7 +645,7 @@
     inset-inline-start: 0;
     z-index: 4;
     width: 3px;
-    background: var(--amber);
+    background: var(--v4-warn);
     opacity: 0.6;
     transition: opacity 140ms ease;
   }
@@ -657,7 +659,7 @@
     aspect-ratio: 16 / 9;
     width: 100%;
     overflow: hidden;
-    background: var(--bg-subtle);
+    background: var(--v4-inset);
   }
 
   .cover-img,
@@ -688,8 +690,8 @@
     font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
     font-size: 46px;
     font-weight: 700;
-    color: rgba(255, 255, 255, 0.88);
-    text-shadow: 0 2px 10px rgba(0, 0, 0, 0.45);
+    color: var(--graphic);
+    text-shadow: 0 2px 10px color-mix(in srgb, var(--graphic-fg) 45%, transparent);
   }
 
   /* Bottom-up scrim so the overlaid name stays legible over any art. */
@@ -700,9 +702,9 @@
     pointer-events: none;
     background: linear-gradient(
       to top,
-      rgba(8, 8, 10, 0.88) 0%,
-      rgba(8, 8, 10, 0.5) 30%,
-      rgba(8, 8, 10, 0) 58%
+      color-mix(in srgb, var(--graphic-fg) 88%, transparent) 0%,
+      color-mix(in srgb, var(--graphic-fg) 50%, transparent) 30%,
+      transparent 58%
     );
   }
 
@@ -711,30 +713,30 @@
   .cover-version {
     position: absolute;
     z-index: 3;
-    top: var(--space-2);
+    top: var(--v4-space-2);
     backdrop-filter: blur(8px);
     -webkit-backdrop-filter: blur(8px);
   }
 
   .kind-chip {
-    inset-inline-start: var(--space-2);
+    inset-inline-start: var(--v4-space-2);
     padding: 3px 9px;
     border-radius: 999px;
-    background: rgba(8, 8, 10, 0.5);
-    color: rgba(255, 255, 255, 0.92);
+    background: color-mix(in srgb, var(--graphic-fg) 50%, transparent);
+    color: var(--graphic);
   }
 
   .cover-version {
-    inset-inline-end: var(--space-2);
-    background: rgba(8, 8, 10, 0.5);
-    border-color: color-mix(in srgb, var(--amber) 48%, transparent);
+    inset-inline-end: var(--v4-space-2);
+    background: color-mix(in srgb, var(--graphic-fg) 50%, transparent);
+    border-color: color-mix(in srgb, var(--v4-warn) 48%, transparent);
   }
 
   .kind-tag {
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    color: var(--muted-2);
+    color: var(--v4-text-2);
     font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
     font-size: var(--text-micro);
     font-weight: 600;
@@ -746,22 +748,22 @@
     width: 6px;
     height: 6px;
     border-radius: 999px;
-    background: var(--amber);
+    background: var(--v4-warn);
   }
 
   /* Pack name overlaid on the bottom of the art (over the scrim). */
   .card-name {
     position: absolute;
     z-index: 3;
-    inset-inline: var(--space-3) var(--space-3);
-    bottom: var(--space-2);
+    inset-inline: var(--v4-space-3) var(--v4-space-3);
+    bottom: var(--v4-space-2);
     margin: 0;
     overflow: hidden;
-    color: #fff;
+    color: var(--graphic);
     font-size: 15px;
     font-weight: 680;
     line-height: 19px;
-    text-shadow: 0 1px 8px rgba(0, 0, 0, 0.65);
+    text-shadow: 0 1px 8px color-mix(in srgb, var(--graphic-fg) 65%, transparent);
     display: -webkit-box;
     -webkit-line-clamp: 2;
     line-clamp: 2;
@@ -772,13 +774,13 @@
   .card-body {
     display: flex;
     flex-direction: column;
-    gap: var(--space-1);
+    gap: var(--v4-space-1);
     min-width: 0;
-    padding: var(--space-3);
+    padding: var(--v4-space-3);
   }
 
   .author {
-    color: var(--blue);
+    color: var(--v4-unread);
     font-size: var(--text-base);
     font-weight: 600;
   }
@@ -788,7 +790,7 @@
      keeps the card byline link hugging its text (not stretching the grid cell). */
   .author-link {
     align-self: flex-start;
-    color: var(--blue);
+    color: var(--v4-unread);
     text-decoration: none;
     cursor: pointer;
   }
@@ -799,9 +801,9 @@
   }
 
   .author-link:focus-visible {
-    outline: 2px solid var(--blue);
+    outline: 2px solid var(--v4-control-border);
     outline-offset: 2px;
-    border-radius: 2px;
+    border-radius: var(--v4-radius-button);
   }
 
   .pill {
@@ -810,10 +812,10 @@
     max-width: 100%;
     overflow: hidden;
     padding: 1px 7px;
-    border: 1px solid var(--border);
-    border-radius: 3px;
-    background: var(--row-hover);
-    color: var(--muted-2);
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-button);
+    background: var(--v4-active-row);
+    color: var(--v4-text-2);
     font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
     font-size: var(--text-micro);
     font-weight: 600;
@@ -825,15 +827,15 @@
 
   .pill.version {
     flex: 0 0 auto;
-    border-color: color-mix(in srgb, var(--amber) 34%, transparent);
-    color: var(--amber);
+    border-color: color-mix(in srgb, var(--v4-warn) 34%, transparent);
+    color: var(--v4-warn);
   }
 
   .card-desc {
     margin: 4px 0 0;
     min-width: 0;
     overflow: hidden;
-    color: var(--muted);
+    color: var(--v4-text-3);
     font-size: var(--text-base);
     line-height: 16px;
     display: -webkit-box;
@@ -844,44 +846,45 @@
 
   /* ---- states ----------------------------------------------------------- */
   .state-error {
-    padding: var(--space-3);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    background: var(--row-active);
-    color: var(--amber);
+    padding: var(--v4-space-3);
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-field);
+    background: var(--v4-raised);
+    color: var(--v4-warn);
     font-size: var(--text-base);
   }
 
   .state-empty {
-    padding: var(--space-6);
-    border: 1px dashed var(--border-strong);
-    border-radius: 4px;
-    background: var(--row-active);
+    padding: var(--v4-space-6);
+    border: 1px dashed var(--v4-control-border);
+    border-radius: var(--v4-radius-card);
+    background: var(--v4-raised);
+    box-shadow: var(--v4-shadow-card);
     text-align: center;
   }
 
   .state-empty p {
-    margin: 0 0 var(--space-1);
-    color: var(--fg);
+    margin: 0 0 var(--v4-space-1);
+    color: var(--v4-text-1);
     font-weight: 650;
   }
 
   .state-empty span {
-    color: var(--muted);
+    color: var(--v4-text-3);
     font-size: var(--text-base);
   }
 
   .grid-skeleton {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(272px, 1fr));
-    gap: var(--space-3);
+    gap: var(--v4-space-3);
   }
 
   .card-skeleton {
     height: 212px;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: var(--row-active);
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-card);
+    background: var(--v4-raised);
     animation: mk-skeleton-pulse 1.3s ease-in-out infinite;
   }
 
@@ -900,7 +903,7 @@
     position: fixed;
     inset: 0;
     z-index: 40;
-    background: rgba(0, 0, 0, 0.45);
+    background: color-mix(in srgb, var(--graphic-fg) 45%, transparent);
     animation: backdrop-fade 160ms ease;
   }
 
@@ -913,9 +916,9 @@
     flex-direction: column;
     width: 520px;
     max-width: 94vw;
-    border-left: 1px solid var(--border);
-    background: var(--bg);
-    box-shadow: -8px 0 32px rgba(0, 0, 0, 0.45);
+    border-left: 1px solid var(--v4-hairline);
+    background: var(--v4-raised);
+    box-shadow: var(--v4-shadow-popover);
     animation: panel-slide-in 200ms cubic-bezier(0.2, 0.7, 0.2, 1);
   }
 
@@ -926,7 +929,7 @@
     width: 100%;
     height: 172px;
     overflow: hidden;
-    background: var(--bg-subtle);
+    background: var(--v4-inset);
   }
 
   .detail-cover-img,
@@ -955,8 +958,8 @@
     pointer-events: none;
     background: linear-gradient(
       to bottom,
-      rgba(0, 0, 0, 0) 42%,
-      color-mix(in srgb, var(--bg) 94%, transparent) 100%
+      transparent 42%,
+      color-mix(in srgb, var(--v4-raised) 94%, transparent) 100%
     );
   }
 
@@ -965,9 +968,9 @@
     flex-shrink: 0;
     align-items: flex-start;
     justify-content: space-between;
-    gap: var(--space-3);
-    padding: var(--space-5) var(--space-5) var(--space-4);
-    border-bottom: 1px solid var(--border);
+    gap: var(--v4-space-3);
+    padding: var(--v4-space-5) var(--v4-space-5) var(--v4-space-4);
+    border-bottom: 1px solid var(--v4-hairline);
   }
 
   .header-text {
@@ -975,12 +978,12 @@
   }
 
   .detail-kind {
-    color: var(--muted);
+    color: var(--v4-text-3);
   }
 
   .detail-title {
-    margin: var(--space-1) 0 0;
-    color: var(--fg);
+    margin: var(--v4-space-1) 0 0;
+    color: var(--v4-text-1);
     font-size: var(--text-base);
     font-weight: 680;
     line-height: 22px;
@@ -990,18 +993,18 @@
   .badges {
     display: flex;
     flex-wrap: wrap;
-    gap: var(--space-1);
-    margin-top: var(--space-2);
+    gap: var(--v4-space-1);
+    margin-top: var(--v4-space-2);
   }
 
   .scope-badge {
     display: inline-flex;
     align-items: center;
     padding: 1px 7px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--row-active);
-    color: var(--muted-3);
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-button);
+    background: var(--v4-control-faint);
+    color: var(--v4-text-3);
     font-size: var(--text-base);
     font-weight: 650;
     line-height: 16px;
@@ -1015,9 +1018,9 @@
     width: 28px;
     height: 28px;
     border: 0;
-    border-radius: var(--radius-sm);
+    border-radius: var(--v4-radius-button);
     background: transparent;
-    color: var(--muted);
+    color: var(--v4-text-3);
     font-size: var(--text-base);
     line-height: 1;
     cursor: pointer;
@@ -1027,12 +1030,12 @@
   }
 
   .close-button:hover {
-    background: var(--row-hover);
-    color: var(--fg);
+    background: var(--v4-active-row);
+    color: var(--v4-text-1);
   }
 
   .close-button:focus-visible {
-    outline: 2px solid var(--blue);
+    outline: 2px solid var(--v4-control-border);
     outline-offset: 2px;
   }
 
@@ -1040,9 +1043,9 @@
     display: flex;
     flex: 1 1 auto;
     flex-direction: column;
-    gap: var(--space-5);
+    gap: var(--v4-space-5);
     min-height: 0;
-    padding: var(--space-5);
+    padding: var(--v4-space-5);
     overflow-y: auto;
   }
 
@@ -1051,8 +1054,8 @@
   }
 
   .section-title {
-    margin: 0 0 var(--space-2);
-    color: var(--muted-3);
+    margin: 0 0 var(--v4-space-2);
+    color: var(--v4-text-3);
     font-size: var(--text-micro);
     font-weight: 700;
     letter-spacing: 0.04em;
@@ -1061,7 +1064,7 @@
 
   .section-body {
     margin: 0;
-    color: var(--muted-2);
+    color: var(--v4-text-2);
     font-size: var(--text-base);
     line-height: 19px;
     overflow-wrap: anywhere;
@@ -1070,8 +1073,8 @@
   /* ---- install action + scope picker (US-009) --------------------------- */
   .scope-label {
     display: block;
-    margin-bottom: var(--space-1);
-    color: var(--muted-3);
+    margin-bottom: var(--v4-space-1);
+    color: var(--v4-text-3);
     font-size: var(--text-micro);
     font-weight: 700;
     letter-spacing: 0.04em;
@@ -1081,17 +1084,17 @@
   .scope-select {
     width: 100%;
     height: 32px;
-    padding: 0 var(--space-2);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    background: var(--bg);
-    color: var(--fg);
+    padding: 0 var(--v4-space-2);
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-field);
+    background: var(--v4-raised);
+    color: var(--v4-text-1);
     font: inherit;
     font-size: var(--text-base);
   }
 
   .scope-select:focus-visible {
-    outline: 2px solid var(--blue);
+    outline: 2px solid var(--v4-control-border);
     outline-offset: 1px;
   }
 
@@ -1101,30 +1104,30 @@
   }
 
   .scope-hint {
-    margin: var(--space-2) 0 0;
-    color: var(--muted);
+    margin: var(--v4-space-2) 0 0;
+    color: var(--v4-text-3);
     font-size: var(--text-micro);
   }
 
   .consent-note {
-    margin: var(--space-2) 0 0;
-    padding: var(--space-2) var(--space-3);
-    border: 1px solid color-mix(in srgb, var(--amber) 34%, transparent);
-    border-radius: 4px;
-    background: color-mix(in srgb, var(--amber) 8%, transparent);
-    color: var(--muted-2);
+    margin: var(--v4-space-2) 0 0;
+    padding: var(--v4-space-2) var(--v4-space-3);
+    border: 1px solid color-mix(in srgb, var(--v4-warn) 34%, transparent);
+    border-radius: var(--v4-radius-field);
+    background: color-mix(in srgb, var(--v4-warn) 8%, transparent);
+    color: var(--v4-text-2);
     font-size: var(--text-micro);
     line-height: 16px;
   }
 
   .install-button {
-    margin-top: var(--space-3);
+    margin-top: var(--v4-space-3);
     width: 100%;
     height: 34px;
-    border: 1px solid var(--blue);
-    border-radius: 4px;
-    background: var(--blue);
-    color: #fff;
+    border: 1px solid transparent;
+    border-radius: var(--v4-radius-button);
+    background: var(--v4-primary-bg);
+    color: var(--v4-primary-fg);
     font: inherit;
     font-size: var(--text-base);
     font-weight: 650;
@@ -1135,11 +1138,11 @@
   }
 
   .install-button:hover:not(:disabled) {
-    filter: brightness(1.08);
+    filter: brightness(0.92);
   }
 
   .install-button:focus-visible {
-    outline: 2px solid var(--blue);
+    outline: 2px solid var(--v4-control-border);
     outline-offset: 2px;
   }
 
@@ -1149,29 +1152,29 @@
   }
 
   .install-result {
-    margin: var(--space-2) 0 0;
+    margin: var(--v4-space-2) 0 0;
     font-size: var(--text-base);
     font-weight: 600;
   }
 
   .install-result.ok {
-    color: var(--green, #2faf6a);
+    color: var(--v4-ok);
   }
 
   .install-result.fail {
-    color: var(--amber);
+    color: var(--v4-warn);
     overflow-wrap: anywhere;
   }
 
   .install-log {
-    margin: var(--space-2) 0 0;
+    margin: var(--v4-space-2) 0 0;
     max-height: 160px;
-    padding: var(--space-2) var(--space-3);
+    padding: var(--v4-space-2) var(--v4-space-3);
     overflow: auto;
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    background: var(--row-active);
-    color: var(--muted-2);
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-field);
+    background: var(--v4-control-faint);
+    color: var(--v4-text-2);
     font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
     font-size: var(--text-micro);
     line-height: 15px;

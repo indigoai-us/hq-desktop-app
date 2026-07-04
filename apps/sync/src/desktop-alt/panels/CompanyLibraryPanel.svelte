@@ -98,10 +98,12 @@
   }
 
   .empty-state {
-    padding: var(--space-4);
-    border: 1px dashed var(--border);
-    border-radius: var(--radius-md);
-    color: var(--muted-3);
+    padding: var(--v4-space-4);
+    border: 1px dashed var(--v4-hairline);
+    border-radius: var(--v4-radius-card);
+    background: var(--v4-raised);
+    box-shadow: var(--v4-shadow-card);
+    color: var(--v4-text-3);
     font-size: var(--text-base);
     text-align: center;
   }

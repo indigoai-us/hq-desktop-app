@@ -247,7 +247,7 @@
 
   .deployments-title h2 {
     margin: 0;
-    color: var(--fg);
+    color: var(--v4-text-1);
     font-size: var(--text-base);
     font-weight: 600;
     line-height: 22px;
@@ -257,7 +257,7 @@
   .card-header span,
   .empty-state,
   .counts {
-    color: var(--muted);
+    color: var(--v4-text-3);
     font-size: var(--text-base);
     line-height: 16px;
   }
@@ -284,7 +284,7 @@
   }
 
   .counts strong {
-    color: var(--fg);
+    color: var(--v4-text-1);
     font-weight: 600;
   }
 
@@ -294,10 +294,10 @@
     height: 30px;
     min-width: 0;
     padding: 0 11px;
-    border: 1px solid var(--border);
-    border-radius: 5px;
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-button);
     background: transparent;
-    color: var(--fg);
+    color: var(--v4-text-1);
     font: inherit;
     font-size: var(--text-base);
     font-weight: 600;
@@ -311,25 +311,25 @@
 
   .deploy-search {
     width: 116px;
-    color: var(--fg);
+    color: var(--v4-text-1);
     outline: none;
   }
 
   .toolbar-button:disabled {
-    color: var(--muted-3);
-    background: var(--row-hover);
+    color: var(--v4-text-3);
+    background: var(--v4-active-row);
     cursor: default;
   }
 
   .toolbar-button:hover:not(:disabled),
   .deploy-search:focus {
-    border-color: var(--border-strong);
-    background: var(--row-hover);
+    border-color: var(--v4-control-border);
+    background: var(--v4-active-row);
   }
 
   .action-status {
     margin: -8px 0 0;
-    color: var(--muted-2);
+    color: var(--v4-text-2);
     font-size: var(--text-base);
     line-height: 16px;
   }
@@ -341,16 +341,16 @@
     gap: 14px;
     min-width: 0;
     padding: 12px;
-    border: 1px solid rgba(245, 158, 11, 0.3);
-    border-radius: 8px;
-    background: rgba(245, 158, 11, 0.1);
-    color: var(--amber);
+    border: 1px solid color-mix(in srgb, var(--v4-warn) 32%, var(--v4-hairline));
+    border-radius: var(--v4-radius-field);
+    background: color-mix(in srgb, var(--v4-warn) 10%, var(--v4-raised));
+    color: var(--v4-warn);
   }
 
   .deployments-note {
-    border-color: var(--border);
-    background: var(--bg-raised);
-    color: var(--muted);
+    border-color: var(--v4-hairline);
+    background: var(--v4-raised);
+    color: var(--v4-text-3);
   }
 
   .deployments-error div {
@@ -377,10 +377,11 @@
 
   .deployments-card {
     min-width: 0;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: var(--bg);
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-card);
+    background: var(--v4-raised);
+    box-shadow: var(--v4-shadow-card);
+    overflow: hidden;
   }
 
   .card-header {
@@ -390,14 +391,14 @@
     gap: 10px;
     min-width: 0;
     padding: 11px 13px;
-    border-bottom: 1px solid var(--border);
+    border-bottom: 1px solid var(--v4-hairline);
   }
 
   .card-header h3 {
     min-width: 0;
     margin: 0;
     overflow: hidden;
-    color: var(--muted-2);
+    color: var(--v4-text-2);
     font-size: var(--text-base);
     font-weight: 600;
     line-height: 18px;
@@ -416,8 +417,8 @@
     gap: 12px;
     min-width: 0;
     padding: 8px 13px;
-    border-bottom: 1px solid var(--border);
-    color: var(--muted);
+    border-bottom: 1px solid var(--v4-hairline);
+    color: var(--v4-text-3);
     font-size: var(--text-micro);
     font-weight: 600;
     line-height: 15px;
@@ -436,7 +437,7 @@
 
   .deployment-skeleton span {
     height: 18px;
-    border-radius: 5px;
+    border-radius: var(--v4-radius-button);
     background: linear-gradient(
       90deg,
       var(--v4-control-faint),

@@ -78,7 +78,7 @@
 <style>
   .secret-env-row {
     min-width: 0;
-    border-top: 1px solid var(--border);
+    border-top: 1px solid var(--v4-rowline);
   }
 
   .secret-env-row:first-child {
@@ -95,14 +95,14 @@
     padding: 10px 13px;
     border: 0;
     background: transparent;
-    color: var(--fg);
+    color: var(--v4-text-1);
     font: inherit;
     text-align: left;
     cursor: default;
   }
 
   .env-button:hover {
-    background: var(--row-hover);
+    background: var(--v4-active-row);
   }
 
   .chevron {
@@ -110,7 +110,7 @@
     height: 0;
     border-top: 4px solid transparent;
     border-bottom: 4px solid transparent;
-    border-left: 5px solid var(--muted);
+    border-left: 5px solid var(--v4-text-3);
     justify-self: center;
     transition: transform 120ms cubic-bezier(0.33, 1, 0.68, 1);
   }
@@ -129,7 +129,7 @@
   }
 
   .env-name {
-    color: var(--fg);
+    color: var(--v4-text-1);
     font-size: var(--text-base);
     font-weight: 600;
     line-height: 18px;
@@ -146,19 +146,19 @@
   }
 
   .env-pill.sealed {
-    border: 1px solid rgba(248, 113, 113, 0.22);
-    background: rgba(248, 113, 113, 0.12);
-    color: var(--red);
+    border: 1px solid color-mix(in srgb, var(--v4-error) 24%, var(--v4-hairline));
+    background: color-mix(in srgb, var(--v4-error) 12%, transparent);
+    color: var(--v4-error);
   }
 
   .env-pill.open {
-    border: 1px solid rgba(52, 211, 153, 0.22);
-    background: rgba(52, 211, 153, 0.12);
-    color: var(--emerald);
+    border: 1px solid color-mix(in srgb, var(--v4-ok) 24%, var(--v4-hairline));
+    background: color-mix(in srgb, var(--v4-ok) 12%, transparent);
+    color: var(--v4-ok);
   }
 
   .env-count {
-    color: var(--muted);
+    color: var(--v4-text-3);
     font-size: var(--text-base);
     font-weight: 600;
     line-height: 16px;
@@ -167,8 +167,8 @@
 
   .secret-tree {
     min-width: 0;
-    border-top: 1px solid var(--border);
-    background: var(--bg-subtle);
+    border-top: 1px solid var(--v4-rowline);
+    background: var(--v4-inset);
   }
 
   .tree-head,
@@ -182,7 +182,7 @@
   }
 
   .tree-head {
-    color: var(--muted);
+    color: var(--v4-text-3);
     font-size: var(--text-micro);
     font-weight: 600;
     line-height: 15px;
@@ -190,11 +190,11 @@
   }
 
   .secret-item {
-    border-top: 1px solid var(--border);
+    border-top: 1px solid var(--v4-rowline);
   }
 
   .secret-key {
-    color: var(--fg);
+    color: var(--v4-text-1);
     font-family: var(--font-mono);
     font-size: var(--text-base);
     font-weight: 600;
@@ -203,7 +203,7 @@
 
   .secret-item time,
   .env-empty {
-    color: var(--muted-3);
+    color: var(--v4-text-3);
     font-size: var(--text-base);
     line-height: 16px;
   }

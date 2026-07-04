@@ -69,7 +69,7 @@
     display: flex; align-items: center; gap: 8px;
   }
   .count {
-    font-family: var(--font-display);
+    font-family: var(--font-sans);
     font-size: var(--text-base);
     color: var(--v4-text-3);
     background: var(--v4-inset);
@@ -81,8 +81,9 @@
   .teams { display: flex; flex-direction: column; gap: 10px; overflow-y: auto; }
   .team {
     border: 1px solid var(--v4-hairline);
-    border-radius: 10px;
-    background: var(--v4-inset);
+    border-radius: var(--v4-radius-card);
+    background: var(--v4-raised);
+    box-shadow: var(--v4-shadow-card);
     padding: 10px 12px;
   }
   .team-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px; }

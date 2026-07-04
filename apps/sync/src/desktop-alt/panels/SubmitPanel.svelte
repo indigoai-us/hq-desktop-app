@@ -292,26 +292,26 @@
   .submit {
     display: flex;
     flex-direction: column;
-    gap: var(--space-4);
+    gap: var(--v4-space-4);
     min-width: 0;
   }
 
   .submit-head {
     display: flex;
     flex-direction: column;
-    gap: var(--space-1);
+    gap: var(--v4-space-1);
   }
 
   .submit-title {
     margin: 0;
-    color: var(--fg);
+    color: var(--v4-text-1);
     font-size: var(--text-lg, 18px);
     font-weight: 700;
   }
 
   .submit-sub {
     margin: 0;
-    color: var(--muted);
+    color: var(--v4-text-3);
     font-size: var(--text-base);
     max-width: 56ch;
   }
@@ -322,22 +322,23 @@
     flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
-    gap: var(--space-3);
-    padding: var(--space-3);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    background: var(--row-active);
+    gap: var(--v4-space-3);
+    padding: var(--v4-space-3);
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-card);
+    background: var(--v4-raised);
+    box-shadow: var(--v4-shadow-card);
   }
 
   .picker-row {
     display: flex;
     align-items: center;
-    gap: var(--space-2);
+    gap: var(--v4-space-2);
     min-width: 0;
   }
 
   .chosen {
-    color: var(--fg);
+    color: var(--v4-text-1);
     font-size: var(--text-base);
     font-weight: 600;
     overflow: hidden;
@@ -347,7 +348,7 @@
   }
 
   .chosen.muted {
-    color: var(--muted-3);
+    color: var(--v4-text-3);
     font-weight: 500;
   }
 
@@ -356,11 +357,11 @@
     display: inline-flex;
     align-items: center;
     height: 32px;
-    padding: 0 var(--space-3);
-    border-radius: 4px;
-    border: 1px solid var(--border);
-    background: var(--bg);
-    color: var(--fg);
+    padding: 0 var(--v4-space-3);
+    border-radius: var(--v4-radius-button);
+    border: 1px solid var(--v4-hairline);
+    background: var(--v4-raised);
+    color: var(--v4-text-1);
     font: inherit;
     font-size: var(--text-base);
     font-weight: 600;
@@ -372,8 +373,8 @@
   }
 
   .btn:hover:not(:disabled) {
-    border-color: var(--border-strong);
-    background: var(--row-hover);
+    border-color: var(--v4-control-border);
+    background: var(--v4-active-row);
   }
 
   .btn:disabled {
@@ -382,37 +383,38 @@
   }
 
   .btn:focus-visible {
-    outline: 2px solid var(--blue);
+    outline: 2px solid var(--v4-control-border);
     outline-offset: 2px;
   }
 
   .btn-primary {
-    border-color: color-mix(in srgb, var(--blue) 55%, transparent);
-    background: var(--blue);
-    color: #fff;
+    border-color: transparent;
+    background: var(--v4-primary-bg);
+    color: var(--v4-primary-fg);
   }
 
   .btn-primary:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--blue) 88%, #000);
+    background: var(--v4-primary-bg);
+    filter: brightness(0.92);
   }
 
   .btn-secondary {
-    background: var(--bg);
+    background: var(--v4-raised);
   }
 
   /* ---- progress ---------------------------------------------------------- */
   .progress {
-    padding: var(--space-2) var(--space-3);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    background: var(--bg);
+    padding: var(--v4-space-2) var(--v4-space-3);
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-field);
+    background: var(--v4-raised);
     max-height: 220px;
     overflow: auto;
   }
 
   .progress pre {
     margin: 0;
-    color: var(--muted-2);
+    color: var(--v4-text-2);
     font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
     font-size: var(--text-micro, 13px);
     line-height: 1.5;
@@ -424,30 +426,30 @@
   .state-success {
     display: flex;
     flex-direction: column;
-    gap: var(--space-1);
-    padding: var(--space-3);
-    border: 1px solid color-mix(in srgb, var(--emerald) 45%, transparent);
-    border-radius: 4px;
-    background: color-mix(in srgb, var(--emerald) 10%, transparent);
+    gap: var(--v4-space-1);
+    padding: var(--v4-space-3);
+    border: 1px solid color-mix(in srgb, var(--v4-ok) 45%, transparent);
+    border-radius: var(--v4-radius-field);
+    background: color-mix(in srgb, var(--v4-ok) 10%, var(--v4-raised));
   }
 
   .success-line {
     margin: 0;
-    color: var(--fg);
+    color: var(--v4-text-1);
     font-size: var(--text-base);
   }
 
   .success-line code {
     padding: 1px 5px;
-    border-radius: 3px;
-    background: var(--row-active);
+    border-radius: var(--v4-radius-button);
+    background: var(--v4-control-faint);
     font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
     font-size: var(--text-micro, 13px);
   }
 
   .success-sub {
     margin: 0;
-    color: var(--muted);
+    color: var(--v4-text-3);
     font-size: var(--text-base);
   }
 
@@ -461,31 +463,31 @@
   }
 
   .status-pending {
-    background: color-mix(in srgb, var(--amber) 22%, transparent);
-    color: var(--amber);
+    background: color-mix(in srgb, var(--v4-warn) 22%, transparent);
+    color: var(--v4-warn);
   }
 
   /* ---- error ------------------------------------------------------------- */
   .state-error {
     display: flex;
     flex-direction: column;
-    gap: var(--space-1);
-    padding: var(--space-3);
-    border: 1px solid color-mix(in srgb, var(--red, #e5484d) 45%, var(--border));
-    border-radius: 4px;
-    background: color-mix(in srgb, var(--red, #e5484d) 10%, transparent);
+    gap: var(--v4-space-1);
+    padding: var(--v4-space-3);
+    border: 1px solid color-mix(in srgb, var(--v4-error) 45%, var(--v4-hairline));
+    border-radius: var(--v4-radius-field);
+    background: color-mix(in srgb, var(--v4-error) 10%, var(--v4-raised));
   }
 
   .error-title {
     margin: 0;
-    color: var(--fg);
+    color: var(--v4-text-1);
     font-size: var(--text-base);
     font-weight: 700;
   }
 
   .error-body {
     margin: 0;
-    color: var(--muted-2);
+    color: var(--v4-text-2);
     font-size: var(--text-base);
     white-space: pre-wrap;
     word-break: break-word;
@@ -495,12 +497,13 @@
   .request-access {
     display: flex;
     flex-direction: column;
-    gap: var(--space-2);
+    gap: var(--v4-space-2);
     align-items: stretch;
-    padding: var(--space-4);
-    border: 1px solid var(--border-strong);
-    border-radius: 4px;
-    background: var(--row-active);
+    padding: var(--v4-space-4);
+    border: 1px solid var(--v4-control-border);
+    border-radius: var(--v4-radius-card);
+    background: var(--v4-raised);
+    box-shadow: var(--v4-shadow-card);
   }
 
   .request-access .btn-primary {
@@ -509,35 +512,35 @@
 
   .ra-title {
     margin: 0;
-    color: var(--fg);
+    color: var(--v4-text-1);
     font-size: var(--text-base);
     font-weight: 700;
   }
 
   .ra-body {
     margin: 0;
-    color: var(--muted);
+    color: var(--v4-text-3);
     font-size: var(--text-base);
     max-width: 56ch;
   }
 
   .ra-note {
     margin: 0;
-    color: var(--emerald);
+    color: var(--v4-ok);
     font-size: var(--text-base);
     font-weight: 600;
   }
 
   .ra-pending {
     margin: 0;
-    color: var(--amber);
+    color: var(--v4-warn);
     font-size: var(--text-base);
     font-weight: 600;
   }
 
   .ra-label {
-    margin-top: var(--space-1);
-    color: var(--muted-3);
+    margin-top: var(--v4-space-1);
+    color: var(--v4-text-3);
     font-size: var(--text-micro);
     font-weight: 700;
     letter-spacing: 0.04em;
@@ -547,11 +550,11 @@
   .ra-textarea,
   .ra-input {
     width: 100%;
-    padding: var(--space-2) var(--space-3);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    background: var(--bg);
-    color: var(--fg);
+    padding: var(--v4-space-2) var(--v4-space-3);
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-field);
+    background: var(--v4-raised);
+    color: var(--v4-text-1);
     font: inherit;
     font-size: var(--text-base);
   }
@@ -568,12 +571,12 @@
 
   .ra-textarea::placeholder,
   .ra-input::placeholder {
-    color: var(--muted-3);
+    color: var(--v4-text-3);
   }
 
   .ra-textarea:focus-visible,
   .ra-input:focus-visible {
-    outline: 2px solid var(--blue);
+    outline: 2px solid var(--v4-control-border);
     outline-offset: 1px;
   }
 
@@ -585,7 +588,7 @@
 
   .ra-error {
     margin: 0;
-    color: var(--red, #e5484d);
+    color: var(--v4-error);
     font-size: var(--text-base);
     overflow-wrap: anywhere;
   }
