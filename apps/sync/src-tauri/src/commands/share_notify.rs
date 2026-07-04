@@ -273,6 +273,11 @@ async fn do_poll(app: &AppHandle) {
                         ),
                     );
 
+                    // Windows parity: persist exactly the shares whose
+                    // notifications are emitted so dismissed toasts remain
+                    // visible in local notification history.
+                    crate::commands::notification_history::record_share_events(&fresh);
+
                     #[cfg(target_os = "macos")]
                     {
                         // Lazily register the bundle identifier with mac-notification-sys

@@ -13,8 +13,10 @@
 //! returns the current TCC status for each so Settings + the wizard window
 //! can render an at-a-glance "Enabled / Setup needed" pill.
 
+#[cfg(target_os = "macos")]
 use std::process::Command;
 
+#[cfg(target_os = "macos")]
 use hq_platform::permissions;
 use serde::Serialize;
 
@@ -31,6 +33,16 @@ const LOG_TAG: &str = "permissions";
 /// async; the bool isn't useful in the return value).
 #[tauri::command]
 pub fn permissions_force_native_register() -> Result<(bool, bool), String> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        log(
+            LOG_TAG,
+            "permissions_force_native_register: no-op on non-macOS (no TCC permission system)",
+        );
+        return Ok((true, true));
+    }
+
+    #[cfg(target_os = "macos")]
     permissions::force_native_register()
 }
 
@@ -113,6 +125,20 @@ pub struct MeetingPermissionsState {
     pub system_audio: PermStatus,
     pub full_disk_access: PermStatus,
     pub all_required_granted: bool,
+}
+
+impl MeetingPermissionsState {
+    #[cfg(any(not(target_os = "macos"), test))]
+    fn all_granted() -> Self {
+        Self {
+            accessibility: PermStatus::Granted,
+            screen_capture: PermStatus::Granted,
+            microphone: PermStatus::Granted,
+            system_audio: PermStatus::Granted,
+            full_disk_access: PermStatus::Granted,
+            all_required_granted: true,
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -215,17 +241,10 @@ pub fn meetings_permissions_state() -> Result<MeetingPermissionsState, String> {
 
     #[cfg(not(target_os = "macos"))]
     {
-        // Non-macOS: feature is macOS-only; report everything as Unknown
-        // so the UI hides the row entirely (frontend gates on
-        // all_required_granted = false AND any non-Granted status).
-        Ok(MeetingPermissionsState {
-            accessibility: PermStatus::Unknown,
-            screen_capture: PermStatus::Unknown,
-            microphone: PermStatus::Unknown,
-            system_audio: PermStatus::Unknown,
-            full_disk_access: PermStatus::Unknown,
-            all_required_granted: false,
-        })
+        // Non-macOS has no TCC permission system for these capabilities.
+        // Report granted/not-required so the shared UI collapses to the
+        // "ready" state and never blocks meeting detection.
+        Ok(MeetingPermissionsState::all_granted())
     }
 }
 
@@ -285,20 +304,34 @@ pub async fn open_meeting_permissions_window(app: tauri::AppHandle) -> Result<()
 /// the pane — the `open` command is fire-and-forget.
 #[tauri::command]
 pub fn permissions_open_settings(permission: String) -> Result<(), String> {
-    let url = settings_url(&permission)
-        .unwrap_or("x-apple.systempreferences:com.apple.preference.security?Privacy");
+    #[cfg(not(target_os = "macos"))]
+    {
+        log(
+            LOG_TAG,
+            &format!(
+                "permissions_open_settings: no-op on non-macOS for {permission} (no TCC permission system)"
+            ),
+        );
+        return Ok(());
+    }
 
-    log(
-        LOG_TAG,
-        &format!("permissions_open_settings: opening {url} for {permission}"),
-    );
+    #[cfg(target_os = "macos")]
+    {
+        let url = settings_url(&permission)
+            .unwrap_or("x-apple.systempreferences:com.apple.preference.security?Privacy");
 
-    Command::new("open")
-        .arg(url)
-        .spawn()
-        .map_err(|e| format!("open System Settings failed: {e}"))?;
+        log(
+            LOG_TAG,
+            &format!("permissions_open_settings: opening {url} for {permission}"),
+        );
 
-    Ok(())
+        Command::new("open")
+            .arg(url)
+            .spawn()
+            .map_err(|e| format!("open System Settings failed: {e}"))?;
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -330,5 +363,16 @@ mod tests {
         // permission — keep them in lock-step so the UI doesn't dead-end
         // the user on a non-existent pane.
         assert_eq!(settings_url("system-audio"), settings_url("screen-capture"),);
+    }
+
+    #[test]
+    fn non_macos_state_contract_is_all_granted() {
+        let state = MeetingPermissionsState::all_granted();
+        assert_eq!(state.accessibility, PermStatus::Granted);
+        assert_eq!(state.screen_capture, PermStatus::Granted);
+        assert_eq!(state.microphone, PermStatus::Granted);
+        assert_eq!(state.system_audio, PermStatus::Granted);
+        assert_eq!(state.full_disk_access, PermStatus::Granted);
+        assert!(state.all_required_granted);
     }
 }

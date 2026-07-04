@@ -42,4 +42,13 @@ describe('recall-sdk-bridge is keyless', () => {
       'RecallAiSdk.startRecording({ windowId, uploadToken })',
     );
   });
+
+  it('gates macOS permission acquisition and probing to darwin', () => {
+    expect(bridgeSrc).toContain('const isMac = process.platform === "darwin"');
+    expect(bridgeSrc).toContain(
+      '...(isMac ? { acquirePermissionsOnStartup: REQUIRED_PERMISSIONS } : {})',
+    );
+    expect(bridgeSrc).toMatch(/if \(isMac\) \{\s+for \(const perm of REQUIRED_PERMISSIONS\)/);
+    expect(bridgeSrc).toContain('emitNdjson({ type: "permissions:all-granted" })');
+  });
 });
