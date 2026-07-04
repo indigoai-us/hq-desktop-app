@@ -12,7 +12,11 @@
 
   let { state: lifecycleStateProp, onfinish }: Props = $props();
 
-  const ONBOARDING_SIZE = new LogicalSize(760, 560);
+  // The window is transparent so the card floats over the real desktop. Size it
+  // generously around the 640x460 card + dot rail so the card's soft drop shadow
+  // (70px blur) fades into transparency instead of being clipped into a visible
+  // box at the window edge.
+  const ONBOARDING_SIZE = new LogicalSize(860, 720);
   const POPOVER_SIZE = new LogicalSize(320, 480);
 
   let initialStep = $state(0);

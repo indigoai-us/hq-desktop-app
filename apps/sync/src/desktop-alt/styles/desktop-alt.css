@@ -17,7 +17,7 @@
  * Big-window design language (mirrors hq-console; see DESIGN.md →
  * "Big-window type & chrome"). This surface intentionally diverges from the
  * popover: ONE type size (13px, hierarchy via weight + the grey/white split),
- * the bundled Geist family, hairline borders over low-fill surfaces, and a
+ * Geist Sans, hairline borders over low-fill surfaces, and a
  * restrained Indigo accent (`--accent`, <10% of surface) for the active-nav
  * cue and focus ring only. Semantic state hues
  * (`--emerald`/`--blue`/`--amber`/`--red` + the 8-hue label palette) mark
@@ -125,12 +125,10 @@ html[data-window='messages'] {
   --text-lg: 18px; /* panel headings (H1 within a pane) — DISPLAY size */
   --text-kpi: 18px; /* big-number KPI / page display figures — DISPLAY size */
 
-  /* Type families. Inter for UI + body, Inter Tight for display headings,
-     Geist Mono for data (IDs, paths, counts, versions). */
-  --font-sans: 'Inter Variable', ui-sans-serif, -apple-system, system-ui,
-    'SF Pro Text', sans-serif;
-  --font-display: 'Inter Tight Variable', 'Inter Variable', ui-sans-serif,
-    -apple-system, system-ui, sans-serif;
+  /* Type families. Geist Sans for UI/body/display; Geist Mono for data
+     (IDs, paths, counts, versions). */
+  --font-sans: 'Geist', -apple-system, system-ui, sans-serif;
+  --font-display: 'Geist', -apple-system, system-ui, sans-serif;
   --font-mono: 'Geist Mono Variable', ui-monospace, SFMono-Regular, Menlo,
     Monaco, monospace;
 

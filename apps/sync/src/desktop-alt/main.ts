@@ -1,12 +1,9 @@
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { mount } from 'svelte';
-// Self-hosted variable faces so the big window renders the real type offline,
-// not a silent system fallback. The redesigned monochrome liquid-glass surface
-// uses Inter for UI/body, Inter Tight for display headings, and Geist Mono for
-// data — IDs, paths, counts, versions. See DESIGN.md → "Big-window type".
-import '@fontsource-variable/inter/wght.css';
-import '@fontsource-variable/inter-tight/wght.css';
+// Geist Sans is loaded by the shared design-system stylesheet. Keep Geist Mono
+// for data — IDs, paths, counts, versions.
 import '@fontsource-variable/geist-mono/wght.css';
+import '../styles/design-system.css';
 import DesktopApp from './DesktopApp.svelte';
 
 document.documentElement.dataset.window = getCurrentWindow().label;

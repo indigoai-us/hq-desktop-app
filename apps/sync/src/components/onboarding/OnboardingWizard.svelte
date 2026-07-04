@@ -4,10 +4,9 @@
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { open as openExternal } from '@tauri-apps/plugin-shell';
   import { onDestroy, onMount, tick } from 'svelte';
-  import wallpaperLight from '../../assets/onboarding/wallpaper-light.jpg';
-  import wallpaperDark from '../../assets/onboarding/wallpaper-dark.jpg';
   import onboardingBg from '../../assets/onboarding/onboarding-bg.jpg';
   import folderIcon from '../../assets/onboarding/folder-icon.png';
+  import '../../styles/design-system.css';
   import { buildClaudeCodeUrl } from '../../lib/claude-code-link';
   import { friendlyPath, homeDirFromDefaultHqPath } from '../../lib/onboarding-path';
   import { mapSignInError, type SignInProvider } from '../../lib/onboarding-signin';
@@ -107,8 +106,6 @@
   let outgoingGraphicStep = $state<number | null>(null);
   let outgoingGraphicDirection = $state<'left' | 'right' | null>(null);
   let incomingGraphicDirection = $state<'left' | 'right' | null>(null);
-  let showMenubar = $state(false);
-  let showSyncPopover = $state(false);
   let reducedMotion = $state(false);
   let morphMode = $state<'forward' | 'back' | null>(null);
   let transitionToken = 0;
@@ -157,6 +154,7 @@
   let launching = $state<'claude' | 'codex' | null>(null);
   let launchError = $state<string | null>(null);
   let revealError = $state<string | null>(null);
+  let showManualTools = $state(false);
   let revealingFolder = $state(false);
   let commandCopied = $state(false);
   let pathCopied = $state(false);
@@ -168,7 +166,7 @@
   const installDisplayPath = $derived(
     installPath ? friendlyPath(installPath, homeDirFromDefaultHqPath(installPath)) : '~/hq',
   );
-  const directoryButtonLabel = $derived(directoryBusy ? 'Checking...' : 'Choose...');
+  const directoryButtonLabel = $derived(directoryBusy ? 'Checking…' : 'Choose…');
   const topHeight = $derived(currentStep >= 4 ? '240px' : '200px');
   const settledCount = $derived(
     stages.filter((stage) => stage.status === 'ok' || stage.status === 'failed')
@@ -211,6 +209,9 @@
   const setupErrorStages = $derived(stages.filter((stage) => stage.error));
   const needsAttention = $derived(setupFailures.length > 0);
   const manualCommand = $derived(readyCommandFor(installPath, aiTools));
+  const manualToolsVisible = $derived(
+    showManualTools || Boolean(launchError || revealError || detectionFailed),
+  );
 
   $effect(() => {
     if (activeInitialStep === initialStep) return;
@@ -957,6 +958,7 @@
       await invoke('reveal_folder', { path: installPath ?? '~/hq' });
     } catch (err) {
       revealError = `Could not reveal HQ folder: ${errorMessage(err)}`;
+      showManualTools = true;
     } finally {
       revealingFolder = false;
     }
@@ -984,10 +986,12 @@
       }
       launchError =
         'Claude Code was not detected. Continue with the folder and /setup prompt shown here.';
+      showManualTools = true;
       advanceTo(4);
     } catch (err) {
       const msg = errorMessage(err);
       launchError = `Could not open Claude Code: ${msg}`;
+      showManualTools = true;
       if (/Unable to find application|not installed|not found|missing/i.test(msg)) {
         aiTools = markToolUnavailable(aiTools, 'claude_desktop');
         advanceTo(4);
@@ -1013,10 +1017,12 @@
       }
       launchError =
         'Codex CLI was not detected. Continue and open this HQ folder manually from Codex.';
+      showManualTools = true;
       advanceTo(4);
     } catch (err) {
       const msg = errorMessage(err);
       launchError = `Could not open Codex: ${msg}`;
+      showManualTools = true;
       aiTools = markToolUnavailable(aiTools, 'codex_cli');
       if (/not installed|not found|missing/i.test(msg)) advanceTo(4);
     } finally {
@@ -1146,11 +1152,6 @@
       contentProgress = null;
     }
 
-    if (next !== 3) {
-      showMenubar = false;
-      showSyncPopover = false;
-    }
-
     panelOn = false;
     const delay = reducedMotion ? 120 : FADE_OUT_MS;
 
@@ -1191,12 +1192,6 @@
       if (token !== transitionToken) return;
       panelStep = next;
       panelOn = true;
-      if (next === 3) {
-        showMenubar = true;
-        setTransitionTimer(() => {
-          if (token === transitionToken) showSyncPopover = true;
-        }, reducedMotion ? 80 : 300);
-      }
     }, delay);
   }
 
@@ -1213,7 +1208,7 @@
 <div
   class="onboarding-page"
   data-testid="onboarding-wizard"
-  style={`--wallpaper-light-url: url("${wallpaperLight}"); --wallpaper-dark-url: url("${wallpaperDark}"); --onboarding-bg-url: url("${onboardingBg}");`}
+  style={`--onboarding-bg-url: url("${onboardingBg}");`}
 >
   <h1 class="sr-only">HQ desktop onboarding</h1>
 
@@ -1379,17 +1374,19 @@
               class="btn btn-primary"
               type="button"
               disabled={loadingProvider !== null}
+              aria-busy={loadingProvider === 'Google'}
               onclick={() => handleSignIn('Google')}
             >
-              {loadingProvider === 'Google' ? 'Opening Google...' : 'Log in with Google'}
+              Log in with Google
             </button>
             <button
               class="btn btn-secondary"
               type="button"
               disabled={loadingProvider !== null}
+              aria-busy={loadingProvider === 'Microsoft'}
               onclick={() => handleSignIn('Microsoft')}
             >
-              {loadingProvider === 'Microsoft' ? 'Opening Microsoft...' : 'Log in with Microsoft'}
+              Log in with Microsoft
             </button>
           </div>
         </section>
@@ -1523,14 +1520,16 @@
           {:else if detectionFailed}
             <p class="inline-note" role="status">Tool detection failed. You can still continue and open {installDisplayPath} manually.</p>
           {/if}
-          <div class="manual-tools" aria-label="Manual setup options">
-            <button type="button" onclick={handleRevealFolder} disabled={revealingFolder}>
-              {revealingFolder ? 'Revealing...' : 'Reveal folder'}
-            </button>
-            <button type="button" onclick={handleCopyPath}>{pathCopied ? 'Path copied' : 'Copy path'}</button>
-            <button type="button" onclick={handleCopyCommand}>{commandCopied ? 'Command copied' : 'Copy command'}</button>
-            <button type="button" onclick={handleCopyImportPrompt}>{importPromptCopied ? 'Import copied' : 'Copy /import-claude'}</button>
-          </div>
+          {#if manualToolsVisible}
+            <div class="manual-tools" aria-label="Manual setup options">
+              <button type="button" onclick={handleRevealFolder} disabled={revealingFolder}>
+                {revealingFolder ? 'Revealing…' : 'Reveal folder'}
+              </button>
+              <button type="button" onclick={handleCopyPath}>{pathCopied ? 'Path copied' : 'Copy path'}</button>
+              <button type="button" onclick={handleCopyCommand}>{commandCopied ? 'Command copied' : 'Copy command'}</button>
+              <button type="button" onclick={handleCopyImportPrompt}>{importPromptCopied ? 'Import copied' : 'Copy /import-claude'}</button>
+            </div>
+          {/if}
           <div class="btns">
             <button
               class="btn btn-primary"
@@ -1538,7 +1537,7 @@
               disabled={launching !== null}
               onclick={handleLaunchClaudeCode}
             >
-              {launching === 'claude' ? 'Opening...' : 'Open in Claude Code'}
+              {launching === 'claude' ? 'Opening…' : 'Open in Claude Code'}
             </button>
             <button
               class="btn btn-secondary"
@@ -1546,7 +1545,7 @@
               disabled={launching !== null}
               onclick={handleLaunchCodex}
             >
-              {launching === 'codex' ? 'Opening...' : 'Open in Codex'}
+              {launching === 'codex' ? 'Opening…' : 'Open in Codex'}
             </button>
           </div>
         </section>
@@ -1614,46 +1613,6 @@
     </div>
   </div>
 
-  <div class="menubar" class:show={showMenubar} aria-hidden="true">
-    <div class="mb-left">
-      <span class="mb-apple">{@render AppleMark()}</span>
-      <span class="mb-app">HQ</span>
-      <span class="mb-menu">File</span>
-      <span class="mb-menu">Edit</span>
-      <span class="mb-menu">View</span>
-      <span class="mb-menu">Window</span>
-      <span class="mb-menu">Help</span>
-    </div>
-    <div class="mb-right">
-      {@render BatteryIcon()}
-      {@render WifiIcon()}
-      {@render SearchIcon()}
-      {@render ControlCenterIcon()}
-      <span class="mb-hq">{@render HqLogo()}</span>
-      <span class="mb-clock">Tue 9:41 AM</span>
-    </div>
-  </div>
-
-  <div class="mbpop" class:show={showSyncPopover} aria-hidden="true">
-    <div class="mbp-head">
-      <span class="mbp-mark">{@render HqLogo()}</span>
-      <button class="mbp-icon" aria-label="Settings" type="button">{@render SettingsIcon()}</button>
-      <button class="mbp-sync" type="button">{@render SyncIcon()}Sync</button>
-    </div>
-    <div class="mbp-status">
-      <span class="gd"></span>
-      <span class="mbp-s1">All synced</span>
-      <span class="mbp-s2">Last sync · just now</span>
-    </div>
-    <div class="mbp-sec">
-      <div class="mbp-lab">Workspaces</div>
-      <div class="mbp-co"><span class="nm"><span class="who">Lizzie Liu</span><span class="tag">Personal</span></span><span class="sti on">{@render CheckSmall()}</span></div>
-      <div class="mbp-co"><span class="nm"><span class="who">Indigo</span></span><span class="sti on">{@render CheckSmall()}</span></div>
-      <div class="mbp-co"><span class="nm"><span class="who">LiveRecover</span></span><span class="sti on">{@render CheckSmall()}</span></div>
-    </div>
-    <div class="mbp-foot"><button class="mbp-open" type="button">Open desktop view</button></div>
-  </div>
-
   <nav class="dots" aria-label="Onboarding steps">
     {#each WIZARD_STEPS as step}
       <button
@@ -1680,6 +1639,34 @@
   <svg width="12" height="12" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7.5 6 10.5 11 4"/></svg>
 {/snippet}
 
+{#snippet LocalChipIcon()}
+  <svg viewBox="0 0 14 14" width="11" height="11" fill="none"><rect x="1.5" y="2" width="11" height="7.5" rx="1" stroke="currentColor" stroke-width="1.1"/><path d="M5 12h4" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>
+{/snippet}
+
+{#snippet FolderChipIcon()}
+  <svg viewBox="0 0 14 14" width="11" height="11" fill="none"><path d="M1.5 3.6c0-.6.5-1 1-1H6l1.2 1.4H11.5c.6 0 1 .5 1 1v4.6c0 .6-.4 1-1 1h-9c-.5 0-1-.4-1-1V3.6Z" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"/></svg>
+{/snippet}
+
+{#snippet GitChipIcon()}
+  <svg viewBox="0 0 14 14" width="11" height="11" fill="none"><circle cx="4" cy="3.5" r="1.6" stroke="currentColor" stroke-width="1.1"/><circle cx="4" cy="10.5" r="1.6" stroke="currentColor" stroke-width="1.1"/><circle cx="10" cy="3.5" r="1.6" stroke="currentColor" stroke-width="1.1"/><path d="M4 5v4M10 5v1.5c0 1.5-1 2-2.5 2.5" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>
+{/snippet}
+
+{#snippet ReturnIcon()}
+  <svg viewBox="0 0 16 16" width="14" height="14" fill="none"><path d="M12.5 4.5V9H5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M7.5 6.5 5 9l2.5 2.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+{/snippet}
+
+{#snippet ReturnIconLarge()}
+  <svg viewBox="0 0 16 16" width="22" height="22" fill="none"><path d="M12.5 4.5V9H5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M7.5 6.5 5 9l2.5 2.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+{/snippet}
+
+{#snippet PlusIcon()}
+  <svg viewBox="0 0 14 14" width="12" height="12" fill="none"><path d="M7 3.5v7M3.5 7h7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+{/snippet}
+
+{#snippet MicIcon()}
+  <svg viewBox="0 0 14 14" width="12" height="12" fill="none"><rect x="5" y="1.5" width="4" height="7" rx="2" stroke="currentColor" stroke-width="1.1"/><path d="M3 7a4 4 0 0 0 8 0M7 11v1.5" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>
+{/snippet}
+
 {#snippet BigCheck()}
   <svg class="bigcheck" viewBox="0 0 96 96" xmlns="http://www.w3.org/2000/svg">
     <defs><mask id="checkmask"><rect width="96" height="96" fill="white"/><path d="M35 49 L44.5 58.5 L63 38" fill="none" stroke="black" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/></mask></defs>
@@ -1699,12 +1686,12 @@
         </div>
       </div>
       <div class="chip-row">
-        <span class="mchip">Local</span>
-        <span class="mchip">hq</span>
-        <span class="mchip">main<span class="mchip-sep">|</span><span class="worktree-dot"></span>worktree</span>
+        <span class="mchip">{@render LocalChipIcon()}Local</span>
+        <span class="mchip">{@render FolderChipIcon()}hq</span>
+        <span class="mchip">{@render GitChipIcon()}main<span class="mchip-sep">|</span><span class="worktree-dot"></span>worktree</span>
       </div>
-      <div class="composer-preview"><span class="mn">/setup</span><span class="return-icon">↵</span></div>
-      <div class="settings-preview"><span><span class="auto-pill">Auto</span><span>+</span><span>🎙</span></span><span><span>Opus 4.8</span><span>High</span></span></div>
+      <div class="composer-preview"><span class="mn">/setup</span><span class="return-icon">{@render ReturnIcon()}</span></div>
+      <div class="settings-preview"><span><span class="auto-pill">Auto</span>{@render PlusIcon()}{@render MicIcon()}</span><span><span>Opus 4.8</span><span>High</span></span></div>
     </div>
   </div>
 {/snippet}
@@ -1723,7 +1710,7 @@
 {#snippet SetupPromptMock()}
   <div class="mockwin setup-prompt-mock">
     <div class="prompt-box">
-      <span class="mn prompt-command">/setup</span><span class="caret"></span><span class="return-icon large">↵</span>
+      <span class="mn prompt-command">/setup</span><span class="caret"></span><span class="return-icon large">{@render ReturnIconLarge()}</span>
     </div>
   </div>
 {/snippet}
@@ -1753,67 +1740,8 @@
   </div>
 {/snippet}
 
-{#snippet AppleMark()}
-  <svg width="13" height="15" viewBox="0 0 14 17" fill="currentColor"><path d="M11.6 9.04c-.02-1.85 1.51-2.74 1.58-2.78-.86-1.26-2.2-1.43-2.68-1.45-1.14-.12-2.23.67-2.8.67-.58 0-1.47-.65-2.42-.64-1.24.02-2.39.72-3.03 1.83-1.29 2.24-.33 5.55.93 7.37.62.89 1.35 1.89 2.31 1.85.93-.04 1.28-.6 2.4-.6 1.12 0 1.43.6 2.41.58 1-.02 1.63-.91 2.24-1.8.71-1.03 1-2.03 1.02-2.08-.02-.01-1.95-.75-1.97-2.97zM9.76 3.5c.51-.62.86-1.48.76-2.34-.74.03-1.64.49-2.17 1.11-.47.55-.89 1.43-.78 2.27.83.06 1.67-.42 2.19-1.04z"/></svg>
-{/snippet}
-
-{#snippet BatteryIcon()}
-  <svg width="22" height="13" viewBox="0 0 26 13" fill="none"><rect x="1" y="2.5" width="20" height="8" rx="2.3" stroke="currentColor" stroke-width="1" opacity="0.55"/><rect x="2.6" y="4" width="14" height="5" rx="1" fill="currentColor"/><path d="M23 5v3c1.1-.3 1.1-2.7 0-3z" fill="currentColor" opacity="0.55"/></svg>
-{/snippet}
-
-{#snippet WifiIcon()}
-  <svg width="17" height="13" viewBox="0 0 17 13" fill="none"><path d="M2 4.6a10 10 0 0 1 13 0" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M4.6 7.3a6.2 6.2 0 0 1 7.8 0" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><circle cx="8.5" cy="10.2" r="1.3" fill="currentColor"/></svg>
-{/snippet}
-
-{#snippet SearchIcon()}
-  <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="6" cy="6" r="4.2" stroke="currentColor" stroke-width="1.4"/><path d="M9.2 9.2 12.6 12.6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
-{/snippet}
-
-{#snippet ControlCenterIcon()}
-  <svg width="15" height="14" viewBox="0 0 16 15" fill="none"><rect x="1.5" y="2" width="13" height="4.4" rx="2.2" stroke="currentColor" stroke-width="1.1"/><rect x="1.5" y="8.6" width="13" height="4.4" rx="2.2" stroke="currentColor" stroke-width="1.1"/><circle cx="10.5" cy="4.2" r="1.1" fill="currentColor"/><circle cx="5.5" cy="10.8" r="1.1" fill="currentColor"/></svg>
-{/snippet}
-
-{#snippet SettingsIcon()}
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-{/snippet}
-
-{#snippet SyncIcon()}
-  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v5h-5"/></svg>
-{/snippet}
-
 <style>
-  @font-face {
-    font-family: 'Geist';
-    src: url('../../assets/fonts/geist-sans-400.woff2') format('woff2');
-    font-weight: 400;
-    font-style: normal;
-    font-display: swap;
-  }
-
-  @font-face {
-    font-family: 'Geist';
-    src: url('../../assets/fonts/geist-sans-500.woff2') format('woff2');
-    font-weight: 500;
-    font-style: normal;
-    font-display: swap;
-  }
-
-  @font-face {
-    font-family: 'Geist';
-    src: url('../../assets/fonts/geist-sans-600.woff2') format('woff2');
-    font-weight: 600;
-    font-style: normal;
-    font-display: swap;
-  }
-
   .onboarding-page {
-    --page-bg:#e9ecf1; --c-bg:#fff; --c-text:#000; --c-muted:#00000066;
-    --c-btn-bg:#000; --c-btn-fg:#fff; --c-btn2-bg:#0000000d; --c-btn2-fg:#000;
-    --c-field-bg:#0000000d; --c-field-border:#00000014; --check-border:#00000040;
-    --check-bg:#000; --check-fg:#fff; --c-divider:#00000010; --dot:#0000003a; --dot-on:#000;
-    --graphic:rgba(255,255,255,0.92); --graphic-fg:#1a1a1a; --graphic-line:rgba(0,0,0,0.12);
-    --page-grad: var(--wallpaper-light-url);
-    --c-choose-bg:#ffffff; --c-choose-border:#00000026; --c-choose-shadow:0 1px 1.5px rgba(0,0,0,0.1);
     box-sizing: border-box;
     display:flex;
     flex-direction:column;
@@ -1824,25 +1752,10 @@
     height:100vh;
     min-height:100vh;
     overflow:hidden;
-    background-color:var(--page-bg);
-    background-image:var(--page-grad);
-    background-attachment:fixed;
-    background-size:cover;
+    background:transparent;
     color:var(--c-text);
-    font-family:"Geist",-apple-system,system-ui,sans-serif;
+    font-family:var(--font-sans);
     -webkit-font-smoothing:antialiased;
-  }
-
-  @media (prefers-color-scheme: dark) {
-    .onboarding-page {
-      --page-bg:#0a0a0c; --c-bg:#2b2b2e; --c-text:#fff; --c-muted:#ffffff80;
-      --c-btn-bg:#fff; --c-btn-fg:#000; --c-btn2-bg:#ffffff1f; --c-btn2-fg:#fff;
-      --c-field-bg:#ffffff0d; --c-field-border:#ffffff1a; --check-border:#ffffff40;
-      --check-bg:#fff; --check-fg:#000; --c-divider:#ffffff12; --dot:#ffffff3a; --dot-on:#fff;
-      --graphic:rgba(255,255,255,0.92); --graphic-fg:#1a1a1a; --graphic-line:rgba(0,0,0,0.12);
-      --page-grad: var(--wallpaper-dark-url);
-      --c-choose-bg:#ffffff1f; --c-choose-border:#ffffff30; --c-choose-shadow:0 1px 1.5px rgba(0,0,0,0.3);
-    }
   }
 
   .onboarding-page *,
@@ -1853,11 +1766,13 @@
 
   .sr-only { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); }
   .scaler { transform:scale(1); transform-origin:center; }
-  .window { width:640px; height:460px; border-radius:18px; overflow:hidden; background:var(--c-bg); box-shadow:0 24px 70px rgba(20,22,40,0.28), 0 2px 8px rgba(20,22,40,0.12); position:relative; --toph:200px; }
+  .window { width:640px; height:460px; border-radius:var(--radius-card); overflow:hidden; background:var(--c-bg); box-shadow:var(--shadow-window-light); position:relative; --toph:200px; }
 
   @media (prefers-color-scheme: dark) {
-    .window { box-shadow:0 40px 100px rgba(0,0,0,0.78), 0 1px 0 0 rgba(255,255,255,0.12) inset, 0 0 0 0.5px rgba(255,255,255,0.22); }
+    .window { box-shadow:var(--shadow-window-dark); }
   }
+
+  :global(.dark) .window { box-shadow:var(--shadow-window-dark); }
 
   .drag-strip { position:absolute; top:0; left:0; right:0; height:28px; z-index:8; }
   .grad { position:absolute; top:0; left:0; right:0; height:var(--toph); background:#a98bd8 var(--onboarding-bg-url) center/cover no-repeat; transition:height .55s cubic-bezier(.65,0,.35,1); z-index:0; }
@@ -1874,7 +1789,7 @@
   .panel { position:absolute; inset:0; padding:24px; display:flex; flex-direction:column; opacity:0; pointer-events:none; transition:opacity .3s ease; }
   .panel.on { opacity:1; pointer-events:auto; }
 
-  .h { color:var(--c-text); font-size:24px; font-weight:600; line-height:32px; margin:0; letter-spacing:0; }
+  .h { color:var(--c-text); font-size:24px; font-weight:600; line-height:32px; margin:0; letter-spacing:-1px; }
   .body { color:var(--c-muted); font-size:14px; font-weight:400; line-height:20px; margin:4px 0 0; max-width:592px; }
   .check-row { display:flex; align-items:center; gap:8px; margin-top:16px; cursor:pointer; }
   .check { position:relative; width:16px; height:16px; border-radius:4px; border:1px solid var(--check-border); background:var(--check-bg); display:flex; align-items:center; justify-content:center; flex-shrink:0; }
@@ -1907,7 +1822,7 @@
 
   .logo svg { width:120px; height:auto; display:block; color:#fff; }
   .finder-item { display:flex; flex-direction:column; align-items:center; gap:2px; }
-  .finder-item .flabel { color:#fff; font-size:15px; font-weight:500; line-height:18px; padding:1.5px 7px; letter-spacing:0; text-shadow:0 1px 3px rgba(0,0,0,0.35); }
+  .finder-item .flabel { color:#fff; font-size:15px; font-weight:500; line-height:18px; padding:1.5px 7px; letter-spacing:-0.1px; text-shadow:0 1px 3px rgba(0,0,0,0.35); }
   .macfolder-lg { width:90px; height:90px; object-fit:contain; display:block; filter:drop-shadow(0 5px 11px rgba(0,0,0,0.22)); }
   .loc { display:flex; align-items:center; gap:12px; background:var(--c-field-bg); border:0.5px solid var(--c-field-border); border-radius:10px; padding:12px 14px; margin-top:18px; }
   .loc .mf { width:40px; height:40px; object-fit:contain; flex-shrink:0; display:block; }
@@ -1917,12 +1832,13 @@
   .choose { font-family:inherit; font-size:13px; font-weight:400; color:var(--c-text); background:var(--c-choose-bg); border:0.5px solid var(--c-choose-border); border-radius:6px; padding:5px 14px; cursor:pointer; box-shadow:var(--c-choose-shadow); white-space:nowrap; transition:filter .12s, opacity .12s; }
   .choose:hover:not(:disabled) { filter:brightness(0.97); }
   @media (prefers-color-scheme: dark) { .choose:hover:not(:disabled) { filter:brightness(1.25); } }
+  :global(.dark) .choose:hover:not(:disabled) { filter:brightness(1.25); }
   .choose:disabled { opacity:.5; cursor:not-allowed; }
   .prog { position:relative; width:120px; height:120px; }
   .prog svg { width:120px; height:120px; transform:rotate(-90deg); }
   .ptrack { fill:none; stroke:rgba(255,255,255,0.28); stroke-width:5; }
   .pbar { fill:none; stroke:#fff; stroke-width:5; stroke-linecap:round; transition:stroke-dashoffset .18s ease; }
-  .ppct { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:#fff; font-size:15px; font-weight:400; letter-spacing:0; text-shadow:0 1px 4px rgba(0,0,0,0.25); }
+  .ppct { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:#fff; font-size:15px; font-weight:400; letter-spacing:-0.3px; text-shadow:0 1px 4px rgba(0,0,0,0.25); }
   .bigcheck { width:84px; height:84px; display:block; }
 
   .setup-compact { margin-top:10px; display:grid; gap:5px; color:var(--c-muted); font-size:11.5px; line-height:15px; }
@@ -1962,20 +1878,21 @@
   .worktree-dot { width:9px; height:9px; border-radius:2px; background:rgba(0,0,0,0.25); display:inline-block; }
   .composer-preview { display:flex; align-items:center; border:1px solid rgba(0,0,0,0.12); border-radius:11px; padding:10px 13px; }
   .composer-preview span:first-child { font-size:13px; color:rgba(0,0,0,0.4); }
-  .return-icon { margin-left:auto; color:rgba(0,0,0,0.3); }
+  .return-icon { margin-left:auto; color:rgba(0,0,0,0.3); display:inline-flex; align-items:center; }
   .settings-preview { display:flex; justify-content:space-between; align-items:center; font-size:11px; color:rgba(0,0,0,0.5); }
   .settings-preview > span { display:flex; align-items:center; gap:9px; }
   .auto-pill { background:rgba(202,165,61,0.16); color:#9a7a1c; border-radius:5px; padding:2px 7px; font-weight:500; }
   .settings-mock { padding:40px 48px; display:flex; align-items:center; justify-content:center; }
   .settings-zoom { position:relative; display:flex; align-items:center; gap:28px; font-size:21px; color:rgba(0,0,0,0.75); }
+  .settings-zoom > span:not(.auto-pill) { letter-spacing:-0.4px; }
   .auto-pill.big { border-radius:9px; padding:8px 16px; font-size:21px; }
   .high-pill { background:rgba(0,0,0,0.07); border-radius:8px; padding:6px 12px; color:rgba(0,0,0,0.85); }
   .cursor { position:absolute; right:0; bottom:0; transform:translate(18%,42%); filter:drop-shadow(0 1px 1.5px rgba(0,0,0,0.35)); }
   .setup-prompt-mock { padding:34px 48px; display:flex; align-items:center; }
   .prompt-box { display:flex; align-items:center; width:100%; border:1px solid rgba(0,0,0,0.14); border-radius:16px; padding:20px 24px; }
-  .prompt-command { font-size:28px; font-weight:700; color:#000; }
+  .prompt-command { font-size:28px; font-weight:700; letter-spacing:-0.5px; color:#000; }
   .caret { display:inline-block; width:2px; height:26px; background:rgba(0,0,0,0.8); margin-left:3px; animation:caret 1s step-end infinite; }
-  .return-icon.large { font-size:22px; margin-left:auto; }
+  .return-icon.large { margin-left:auto; }
   @keyframes caret { 50%{opacity:0} }
   .mockwin.chat { display:flex; flex-direction:column; min-height:344px; }
   .mockwin.chat .mockbar { padding:11px 13px; gap:9px; }
@@ -1995,69 +1912,15 @@
   .dots { display:flex; gap:7px; }
   .dots button { width:7px; height:7px; border-radius:50%; background:var(--dot); cursor:pointer; transition:background .2s, width .2s, opacity .2s; border:0; padding:0; }
   .dots button.on { background:var(--dot-on); width:18px; border-radius:4px; }
-  .dots button:disabled { cursor:not-allowed; opacity:1; }
-
-  .menubar { position:fixed; top:0; left:0; right:0; height:24px; display:flex; align-items:center; justify-content:space-between; padding:0 11px; font-size:13px; color:rgba(0,0,0,0.82); background:rgba(246,246,248,0.62); backdrop-filter:blur(22px) saturate(180%); -webkit-backdrop-filter:blur(22px) saturate(180%); border-bottom:0.5px solid rgba(0,0,0,0.07); z-index:40; opacity:0; transform:translateY(-100%); transition:opacity .3s ease, transform .45s cubic-bezier(.4,0,.2,1); pointer-events:none; }
-  .menubar.show { opacity:1; transform:translateY(0); }
-  @media (prefers-color-scheme: dark) { .menubar { color:rgba(255,255,255,0.9); background:rgba(30,30,32,0.55); border-bottom-color:rgba(255,255,255,0.08); } }
-  .mb-left { display:flex; align-items:center; gap:15px; }
-  .mb-right { display:flex; align-items:center; gap:13px; }
-  .mb-apple { font-size:14px; line-height:1; }
-  .mb-app { font-weight:600; }
-  .mb-menu { opacity:0.82; }
-  .mb-right svg { display:block; }
-  .mb-hq svg { height:10px; width:auto; display:block; opacity:0.9; }
-  .mb-clock { font-variant-numeric:tabular-nums; }
-
-  .mbpop {
-    --pop-bg:rgba(250,250,252,0.82); --pop-text:#1d1d1f; --pop-muted:rgba(0,0,0,0.5);
-    --pop-border:rgba(0,0,0,0.1); --pop-divider:rgba(0,0,0,0.08); --pop-hover:rgba(0,0,0,0.055);
-    --pop-icon:rgba(0,0,0,0.5); --pop-highlight:rgba(255,255,255,0.7); --pop-shadow:0 22px 55px rgba(20,22,40,0.22);
-    --pop-accent:#1d1d1f; --pop-acc-fg:#fff;
-    position:fixed; top:30px; right:10px; width:296px; border-radius:12px; overflow:hidden; color:var(--pop-text);
-    background:var(--pop-bg); backdrop-filter:blur(32px) saturate(1.7); -webkit-backdrop-filter:blur(32px) saturate(1.7);
-    border:0.5px solid var(--pop-border); box-shadow:var(--pop-shadow), inset 0 1px 0 var(--pop-highlight);
-    z-index:39; opacity:0; transform:translateY(-12px) scale(0.97); transform-origin:top right;
-    transition:opacity .35s ease, transform .42s cubic-bezier(.34,1.18,.64,1); pointer-events:none;
-  }
-  @media (prefers-color-scheme: dark) {
-    .mbpop {
-      --pop-bg:rgba(38,38,40,0.72); --pop-text:#fff; --pop-muted:rgba(255,255,255,0.5);
-      --pop-border:rgba(255,255,255,0.14); --pop-divider:rgba(255,255,255,0.1); --pop-hover:rgba(255,255,255,0.08);
-      --pop-icon:rgba(255,255,255,0.55); --pop-highlight:rgba(255,255,255,0.26); --pop-shadow:0 24px 60px rgba(0,0,0,0.55);
-      --pop-accent:#fff; --pop-acc-fg:#111113;
-    }
-  }
-  .mbpop.show { opacity:1; transform:translateY(0) scale(1); }
-  .mbp-head { display:flex; align-items:center; gap:8px; padding:10px 12px; border-bottom:0.5px solid var(--pop-divider); }
-  .mbp-mark { flex:1; min-width:0; display:flex; align-items:center; color:var(--pop-text); }
-  .mbp-mark svg { height:14px; width:auto; opacity:0.92; }
-  .mbp-icon { display:inline-flex; align-items:center; justify-content:center; width:28px; height:28px; border-radius:7px; border:none; background:transparent; color:var(--pop-icon); cursor:pointer; transition:background .12s, color .12s; }
-  .mbp-sync { display:inline-flex; align-items:center; gap:5px; height:28px; padding:0 13px; border:none; border-radius:8px; background:var(--pop-accent); color:var(--pop-acc-fg); font-family:inherit; font-size:13px; font-weight:600; cursor:pointer; transition:filter .12s; box-shadow:0 1px 2px rgba(0,0,0,0.18); }
-  .mbp-status { display:flex; align-items:center; gap:10px; padding:11px 14px 12px; }
-  .mbp-status .gd { width:8px; height:8px; border-radius:50%; background:#34c759; box-shadow:0 0 7px rgba(52,199,89,0.55); flex-shrink:0; }
-  .mbp-s1 { color:var(--pop-text); font-size:13px; font-weight:500; }
-  .mbp-s2 { color:var(--pop-muted); font-size:11px; margin-left:auto; }
-  .mbp-sec { padding:6px; border-top:0.5px solid var(--pop-divider); }
-  .mbp-lab { color:var(--pop-muted); font-size:10px; font-weight:600; letter-spacing:.5px; text-transform:uppercase; padding:6px 8px 4px; }
-  .mbp-co { display:flex; align-items:center; gap:10px; padding:4px 8px; border-radius:7px; }
-  .mbp-co .nm { flex:1; min-width:0; display:flex; align-items:center; gap:7px; color:var(--pop-text); font-size:13px; }
-  .mbp-co .who { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  .mbp-co .tag { flex-shrink:0; font-size:9.5px; font-weight:600; padding:1px 6px; border-radius:5px; background:var(--pop-hover); color:var(--pop-muted); letter-spacing:.2px; }
-  .mbp-co .sti { width:20px; height:20px; border-radius:6px; display:flex; align-items:center; justify-content:center; flex-shrink:0; }
-  .mbp-co .sti.on { background:rgba(52,199,89,0.16); color:#1f9d4d; }
-  @media (prefers-color-scheme: dark) { .mbp-co .sti.on { background:rgba(52,199,89,0.22); color:#41d870; } }
-  .mbp-foot { padding:7px 12px 12px; border-top:0.5px solid var(--pop-divider); }
-  .mbp-open { width:100%; height:30px; border:0.5px solid var(--pop-border); border-radius:8px; background:var(--pop-hover); color:var(--pop-text); font-family:inherit; font-size:12.5px; cursor:pointer; transition:filter .12s; }
+  .dots button:disabled { cursor:default; opacity:.45; }
+  .dots button.on:disabled { opacity:1; }
 
   @media (prefers-reduced-motion: reduce) {
     .grad,
     .gfxwrap,
     .panelwrap,
     .gfx,
-    .panel,
-    .menubar,
-    .mbpop {
+    .panel {
       transition-duration:.12s !important;
       animation-duration:.12s !important;
     }

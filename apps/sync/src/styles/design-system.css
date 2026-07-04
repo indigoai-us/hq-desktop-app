@@ -1,0 +1,79 @@
+@font-face {
+  font-family: 'Geist';
+  src: url('../assets/fonts/geist-sans-400.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Geist';
+  src: url('../assets/fonts/geist-sans-500.woff2') format('woff2');
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Geist';
+  src: url('../assets/fonts/geist-sans-600.woff2') format('woff2');
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  --font-sans: 'Geist', -apple-system, system-ui, sans-serif;
+
+  --page-bg:#e9ecf1; --c-bg:#fff; --c-text:#000; --c-muted:#00000066;
+  --c-btn-bg:#000; --c-btn-fg:#fff; --c-btn2-bg:#0000000d; --c-btn2-fg:#000;
+  --c-field-bg:#0000000d; --c-field-border:#00000014; --check-border:#00000040;
+  --check-bg:#000; --check-fg:#fff; --c-divider:#00000010; --dot:#0000003a; --dot-on:#000;
+  --graphic:rgba(255,255,255,0.92); --graphic-fg:#1a1a1a; --graphic-line:rgba(0,0,0,0.12);
+  --c-choose-bg:#ffffff; --c-choose-border:#00000026; --c-choose-shadow:0 1px 1.5px rgba(0,0,0,0.1);
+
+  --pop-bg:rgba(250,250,252,0.82); --pop-text:#1d1d1f; --pop-muted:rgba(0,0,0,0.5);
+  --pop-border:rgba(0,0,0,0.1); --pop-divider:rgba(0,0,0,0.08); --pop-hover:rgba(0,0,0,0.055);
+  --pop-icon:rgba(0,0,0,0.5); --pop-highlight:rgba(255,255,255,0.7); --pop-shadow:0 22px 55px rgba(20,22,40,0.22);
+  --pop-accent:#1d1d1f; --pop-acc-fg:#fff;
+
+  --radius-button:8px;
+  --radius-field:10px;
+  --radius-card:18px;
+  --radius-popover:12px;
+  --radius-pill:980px;
+  --shadow-window-light:0 24px 70px rgba(20,22,40,0.28), 0 2px 8px rgba(20,22,40,0.12);
+  --shadow-window-dark:0 40px 100px rgba(0,0,0,0.78), 0 1px 0 0 rgba(255,255,255,0.12) inset, 0 0 0 0.5px rgba(255,255,255,0.22);
+  --shadow-popover-light:0 22px 55px rgba(20,22,40,0.22);
+  --shadow-popover-dark:0 24px 60px rgba(0,0,0,0.55);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --page-bg:#0a0a0c; --c-bg:#2b2b2e; --c-text:#fff; --c-muted:#ffffff80;
+    --c-btn-bg:#fff; --c-btn-fg:#000; --c-btn2-bg:#ffffff1f; --c-btn2-fg:#fff;
+    --c-field-bg:#ffffff0d; --c-field-border:#ffffff1a; --check-border:#ffffff40;
+    --check-bg:#fff; --check-fg:#000; --c-divider:#ffffff12; --dot:#ffffff3a; --dot-on:#fff;
+    --graphic:rgba(255,255,255,0.92); --graphic-fg:#1a1a1a; --graphic-line:rgba(0,0,0,0.12);
+    --c-choose-bg:#ffffff1f; --c-choose-border:#ffffff30; --c-choose-shadow:0 1px 1.5px rgba(0,0,0,0.3);
+
+    --pop-bg:rgba(38,38,40,0.72); --pop-text:#fff; --pop-muted:rgba(255,255,255,0.5);
+    --pop-border:rgba(255,255,255,0.14); --pop-divider:rgba(255,255,255,0.1); --pop-hover:rgba(255,255,255,0.08);
+    --pop-icon:rgba(255,255,255,0.55); --pop-highlight:rgba(255,255,255,0.26); --pop-shadow:0 24px 60px rgba(0,0,0,0.55);
+    --pop-accent:#fff; --pop-acc-fg:#111113;
+  }
+}
+
+.dark {
+  --page-bg:#0a0a0c; --c-bg:#2b2b2e; --c-text:#fff; --c-muted:#ffffff80;
+  --c-btn-bg:#fff; --c-btn-fg:#000; --c-btn2-bg:#ffffff1f; --c-btn2-fg:#fff;
+  --c-field-bg:#ffffff0d; --c-field-border:#ffffff1a; --check-border:#ffffff40;
+  --check-bg:#fff; --check-fg:#000; --c-divider:#ffffff12; --dot:#ffffff3a; --dot-on:#fff;
+  --graphic:rgba(255,255,255,0.92); --graphic-fg:#1a1a1a; --graphic-line:rgba(0,0,0,0.12);
+  --c-choose-bg:#ffffff1f; --c-choose-border:#ffffff30; --c-choose-shadow:0 1px 1.5px rgba(0,0,0,0.3);
+
+  --pop-bg:rgba(38,38,40,0.72); --pop-text:#fff; --pop-muted:rgba(255,255,255,0.5);
+  --pop-border:rgba(255,255,255,0.14); --pop-divider:rgba(255,255,255,0.1); --pop-hover:rgba(255,255,255,0.08);
+  --pop-icon:rgba(255,255,255,0.55); --pop-highlight:rgba(255,255,255,0.26); --pop-shadow:0 24px 60px rgba(0,0,0,0.55);
+  --pop-accent:#fff; --pop-acc-fg:#111113;
+}

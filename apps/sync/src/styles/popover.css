@@ -67,6 +67,7 @@ textarea,
   --text-lg: 18px;
   --text-kpi: 18px;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+  font-family: var(--font-sans);
 
   /* ---- Spacing scale (4px base) ------------------------------------ */
   --space-1: 4px;

@@ -160,13 +160,6 @@
   let showSettings = $state(false);
   let syncStatsRefresh = $state<(() => void) | null>(null);
 
-  // First-run handling. On a brand-new install we just pop the popover open and
-  // kick off the first sync — no welcome carousel, no auto-sync notice (both
-  // onboarding pages were removed). `onboardingHandled` guards `runOnboarding`
-  // so it fires at most once per session even though it's reachable from both
-  // checkAuth (already-authed at mount) and handleAuthSuccess (fresh sign-in).
-  let onboardingHandled = false;
-
   // Meetings feature flag — driven by `meetings_feature_enabled` (Rust side
   // decodes the cached Cognito id_token; GA — true for any signed-in user).
   // The icon doesn't render at all when this is false. Click opens the standalone
@@ -1973,7 +1966,6 @@
       expiresAt = state.expiresAt ?? '';
       if (authenticated) {
         await refreshDesktopAltEnabled();
-        void runOnboarding();
       }
     } catch {
       authenticated = false;
@@ -1992,44 +1984,6 @@
     authenticated = auth.authenticated;
     expiresAt = auth.expiresAt;
     void refreshDesktopAltEnabled();
-    // A user who just signed in (no token at mount) reaches the onboarding
-    // paths here rather than via checkAuth.
-    if (auth.authenticated) void runOnboarding();
-  }
-
-  /**
-   * On a brand-new install, pop the popover open and start the first sync.
-   * No onboarding pages — the carousel and the one-time auto-sync notice were
-   * removed; the app just opens and starts working. Requires `authenticated`
-   * (a fresh install is authed by the installer's tokens) — if not, we no-op
-   * and re-run from handleAuthSuccess after sign-in.
-   *
-   * `mark_first_run_complete` is called immediately (it also makes "auto-sync
-   * is on" explicit by persisting realtimeSync + personalSyncEnabled true), so
-   * the popover only force-opens on the very first launch and every later
-   * launch classifies as Normal.
-   */
-  async function runOnboarding() {
-    if (onboardingHandled || !authenticated) return;
-    onboardingHandled = true;
-    try {
-      const firstRun = await invoke<boolean>('is_first_run');
-      if (!firstRun) return;
-      // Pop the hidden menubar window open at the tray so the user sees the
-      // live first sync. Best-effort — never block the rest of first-run.
-      await invoke('show_main_window').catch((err) => {
-        console.warn('show_main_window failed:', err);
-      });
-      // Kick off the first full cloud sync immediately. handleSyncNow owns the
-      // proper state reset.
-      void handleSyncNow();
-      // Persist that first-run is done so the popover never force-opens again.
-      invoke('mark_first_run_complete').catch((err) => {
-        console.warn('mark_first_run_complete failed:', err);
-      });
-    } catch (err) {
-      console.warn('runOnboarding failed:', err);
-    }
   }
 </script>
 
@@ -2134,8 +2088,7 @@
        document. The popover's own scroll container (.popover-body) is
        the only legitimate scrollable region. */
     overflow: hidden;
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
-      Oxygen, Ubuntu, Cantarell, sans-serif;
+    font-family: var(--font-sans);
     /* Transparent so the Popover's rounded corners show the desktop
        behind them (tauri window is transparent). The popover root
        component paints its own background + border-radius. */

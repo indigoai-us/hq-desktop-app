@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { readRepoFile } from './harness';
 
-// Locks the "no onboarding pages, just pop open + sync on first run" behavior
-// and the sync-on-launch default. A regression that re-introduces a welcome
-// carousel / auto-sync notice, or flips the sync-on-launch default back to
-// off, should fail here.
-describe('first-run pops the app open instead of onboarding pages', () => {
+// Locks the staged first-run contract: the rebuilt onboarding wizard owns
+// completion, while sync-on-launch remains default-on for normal launches.
+describe('first-run routes through onboarding before completion', () => {
   const app = readRepoFile('src/App.svelte');
+  const lifecycle = readRepoFile('src/lib/lifecycle.ts');
+  const onboarding = readRepoFile('src/components/Onboarding.svelte');
   const settings = readRepoFile('src/components/Settings.svelte');
   const settingsPage = readRepoFile('src/desktop-alt/pages/SettingsPage.svelte');
   const settingsRust = readRepoFile('src-tauri/src/commands/settings.rs');
@@ -16,20 +16,18 @@ describe('first-run pops the app open instead of onboarding pages', () => {
     expect(() => readRepoFile('src/components/AutoSyncNotice.svelte')).toThrow();
   });
 
-  it('App.svelte does not import or render the onboarding overlays', () => {
+  it('App.svelte does not import or render the legacy onboarding overlays', () => {
     expect(app).not.toContain('FirstRunWelcome');
     expect(app).not.toContain('AutoSyncNotice');
     expect(app).not.toContain('showWelcome');
     expect(app).not.toContain('showAutoSyncNotice');
   });
 
-  it('first run pops the popover open, starts a sync, and marks first-run complete', () => {
-    // The runOnboarding path must force the window open, kick a sync, and
-    // persist completion so it never repeats — with no carousel in between.
-    expect(app).toContain("invoke<boolean>('is_first_run')");
-    expect(app).toContain("invoke('show_main_window')");
-    expect(app).toContain('void handleSyncNow();');
-    expect(app).toContain("invoke('mark_first_run_complete')");
+  it('first run renders onboarding and completion only happens from finish', () => {
+    expect(lifecycle).toContain("state === 'InstalledFirstRun'");
+    expect(app).not.toContain("invoke<boolean>('is_first_run')");
+    expect(app).not.toContain("invoke('mark_first_run_complete')");
+    expect(onboarding).toContain("invoke('mark_first_run_complete')");
   });
 
   it('sync-on-launch defaults ON in both Settings surfaces', () => {

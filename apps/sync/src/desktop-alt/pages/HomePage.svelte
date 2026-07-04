@@ -389,12 +389,7 @@
     display: grid;
     gap: 18px;
     align-content: start;
-    font-family:
-      'Inter Variable',
-      Inter,
-      -apple-system,
-      'SF Pro Text',
-      sans-serif;
+    font-family: var(--font-sans);
   }
 
   /* ── Portfolio stat strip ──────────────────────────────────────────────── */

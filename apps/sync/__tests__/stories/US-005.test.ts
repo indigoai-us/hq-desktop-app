@@ -89,8 +89,11 @@ describe('US-005: Alt Home surface wires to real sync state and events', () => {
     expect(app).toContain("desktopAltEnabled = await invoke<boolean>('desktop_alt_enabled')");
     expect(app).toContain('function handleAuthSuccess(auth: { authenticated: boolean; expiresAt: string })');
     expect(app).toMatch(/function handleAuthSuccess[\s\S]*void refreshDesktopAltEnabled\(\);/);
+    // First-run no longer auto-completes on auth: after sign-in we only refresh the
+    // desktop-alt gate; onboarding is driven by the lifecycle state + the wizard's
+    // finish handler (mark_first_run_complete lives in Onboarding.handleFinish).
     expect(app).toMatch(
-      /if \(authenticated\) \{ await refreshDesktopAltEnabled\(\); void runOnboarding\(\); \}/,
+      /if \(authenticated\) \{ await refreshDesktopAltEnabled\(\); \}/,
     );
 
     expect(cognito).toMatch(/pub async fn set_tokens[\s\S]*clear_cached_gate\(\);/);
