@@ -387,7 +387,7 @@
   .home {
     container: home / inline-size;
     display: grid;
-    gap: 18px;
+    gap: var(--v4-space-5);
     align-content: start;
     font-family: var(--font-sans);
   }
@@ -396,8 +396,9 @@
   .home-stats {
     display: flex;
     border: 1px solid var(--v4-hairline);
-    border-radius: 8px;
+    border-radius: var(--v4-radius-card);
     background: var(--v4-raised);
+    box-shadow: var(--v4-shadow-card);
     overflow: hidden;
   }
 
@@ -406,8 +407,8 @@
     display: flex;
     flex-direction: column;
     gap: 3px;
-    padding: 12px 16px;
-    border-left: 1px solid var(--v4-hairline);
+    padding: 14px 16px;
+    border-left: 1px solid var(--v4-rowline);
   }
 
   .home-stat:first-child {
@@ -431,13 +432,13 @@
   .home-grid {
     display: grid;
     grid-template-columns: minmax(0, 1fr) 300px;
-    gap: 18px;
+    gap: var(--v4-space-5);
     align-items: start;
   }
 
   .home-col {
     display: grid;
-    gap: 18px;
+    gap: var(--v4-space-5);
     align-content: start;
     min-width: 0;
   }
@@ -452,8 +453,9 @@
   .home-table {
     display: grid;
     border: 1px solid var(--v4-hairline);
-    border-radius: 8px;
+    border-radius: var(--v4-radius-card);
     background: var(--v4-raised);
+    box-shadow: var(--v4-shadow-card);
     overflow: hidden;
   }
 
@@ -468,6 +470,7 @@
 
   .home-table-head {
     border-bottom: 1px solid var(--v4-hairline);
+    background: var(--v4-inset);
     color: var(--v4-text-3);
     font-size: var(--text-base);
     font-weight: 400;
@@ -503,7 +506,7 @@
     flex: 0 0 6px;
     width: 6px;
     height: 6px;
-    border-radius: 50%;
+    border-radius: var(--v4-radius-pill);
   }
 
   .home-dot.ok {
@@ -575,8 +578,9 @@
   .home-agenda {
     display: grid;
     border: 1px solid var(--v4-hairline);
-    border-radius: 8px;
+    border-radius: var(--v4-radius-card);
     background: var(--v4-raised);
+    box-shadow: var(--v4-shadow-card);
     overflow: hidden;
   }
 
@@ -619,8 +623,9 @@
     margin: 0;
     padding: 12px 14px;
     border: 1px solid var(--v4-hairline);
-    border-radius: 8px;
+    border-radius: var(--v4-radius-card);
     background: var(--v4-raised);
+    box-shadow: var(--v4-shadow-card);
     color: var(--v4-text-3);
     font-size: var(--text-base);
   }
@@ -633,9 +638,9 @@
   .home-title {
     margin: 0;
     color: var(--v4-text-1);
-    font-size: var(--text-base);
-    font-weight: 500;
-    line-height: 1.3;
+    font-size: var(--text-lg);
+    font-weight: 600;
+    line-height: 1.15;
   }
 
   .home-meta {
@@ -648,7 +653,7 @@
 
   .home-section {
     display: grid;
-    gap: 8px;
+    gap: var(--v4-space-2);
   }
 
   .home-label {
@@ -666,7 +671,7 @@
   .home-label-dot {
     width: 6px;
     height: 6px;
-    border-radius: 50%;
+    border-radius: var(--v4-radius-pill);
   }
 
   .home-label-dot.ok {
@@ -683,7 +688,7 @@
 
   .home-queue {
     display: grid;
-    gap: 8px;
+    gap: var(--v4-space-2);
   }
 
   /* ── Syncing progress card ─────────────────────────────────────────────── */
@@ -692,8 +697,9 @@
     gap: 10px;
     padding: 14px;
     border: 1px solid var(--v4-hairline);
-    border-radius: 8px;
+    border-radius: var(--v4-radius-card);
     background: var(--v4-raised);
+    box-shadow: var(--v4-shadow-card);
   }
 
   .home-progress-head {
@@ -716,14 +722,14 @@
 
   .home-progress-track {
     height: 3px;
-    border-radius: 999px;
+    border-radius: var(--v4-radius-pill);
     background: var(--v4-control-faint);
     overflow: hidden;
   }
 
   .home-progress-fill {
     height: 100%;
-    border-radius: 999px;
+    border-radius: var(--v4-radius-pill);
     background: var(--v4-text-1);
     transition: width 200ms ease;
   }
@@ -772,7 +778,7 @@
     flex: 0 0 6px;
     width: 6px;
     height: 6px;
-    border-radius: 50%;
+    border-radius: var(--v4-radius-pill);
     align-self: center;
   }
 
@@ -834,7 +840,7 @@
     margin-top: 8px;
     padding: 10px 12px;
     border: 1px solid var(--v4-hairline);
-    border-radius: 6px;
+    border-radius: var(--v4-radius-field);
     background: var(--v4-inset);
   }
 
@@ -852,14 +858,15 @@
     gap: 10px;
     padding: 14px;
     border: 1px solid var(--v4-hairline);
-    border-radius: 8px;
+    border-radius: var(--v4-radius-card);
     background: var(--v4-raised);
+    box-shadow: var(--v4-shadow-card);
   }
 
   .home-skeleton-bar {
     display: block;
     height: 10px;
-    border-radius: 999px;
+    border-radius: var(--v4-radius-pill);
     background: var(--v4-control-faint);
     animation: home-skeleton-pulse 1.2s ease-in-out infinite;
   }

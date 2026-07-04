@@ -1,27 +1,10 @@
-/* Desktop window styles — consumes the unified desktop design system.
+/* Desktop window styles — compatibility aliases over the shared design system.
  *
- * Single source of truth: the canonical monochrome-glass tokens live in
- * `src/styles/popover.css` (`--popover-*`, `--text-*`, `--space-*`,
- * `--radius-*`) with first-class light, dark, and reduced-transparency
- * variants. We import them here so the desktop window and the menubar
- * popover resolve from the *same* token definitions rather than two
- * drifting copies.
- *
- * The desktop window historically used a different token vocabulary
- * (`--fg`, `--muted`, `--border`, `--row-hover`, …). Those names are kept
- * as a thin SEMANTIC ALIAS LAYER below so existing components don't need a
- * mass rename, but every alias now derives from a canonical primitive (or
- * preserves a documented desktop-specific value) instead of being an
- * independent definition. See DESIGN.md → "Unified desktop token set".
- *
- * Big-window design language (mirrors hq-console; see DESIGN.md →
- * "Big-window type & chrome"). This surface intentionally diverges from the
- * popover: ONE type size (13px, hierarchy via weight + the grey/white split),
- * Geist Sans, hairline borders over low-fill surfaces, and a
- * restrained Indigo accent (`--accent`, <10% of surface) for the active-nav
- * cue and focus ring only. Semantic state hues
- * (`--emerald`/`--blue`/`--amber`/`--red` + the 8-hue label palette) mark
- * project/story state and stay; they are not brand color and never fill.
+ * The shared light-default prototype layer is imported by desktop-alt/main.ts.
+ * This file keeps the older desktop variable names (`--fg`, `--surface-*`,
+ * `--border`, `--row-hover`, ...) as aliases so lower-priority pages can keep
+ * building while the shell and Home move onto Geist, shared radii, subtle
+ * surfaces, and black primary controls.
  */
 @import '../../styles/popover.css';
 
@@ -35,100 +18,51 @@ html[data-window='messages'] body {
   margin: 0;
 }
 
-/* The standalone Messages window adopts the same "Company OS" token layer as
-   the desktop window: it shares this alias layer + type ramp + Geist/Inter
-   families so the two surfaces read as one design system (DESIGN.md →
-   "Unified desktop token set"). Only the token-defining and base-reset blocks
-   are shared here; the structural `.desktop-*` shell classes below stay
-   desktop-only. Component visuals for Messages live in their own
-   component-scoped <style> blocks. */
+/* The standalone Messages window shares the alias layer and type ramp; its
+   component-scoped CSS owns the message-specific layout. */
 html[data-window='desktop-alt'],
 html[data-window='messages'] {
-  /* ---- Semantic alias layer (desktop vocabulary → canonical tokens) ----
-   *
-   * Dark-mode resolved values are byte-for-byte identical to the previous
-   * standalone definitions — this is a consolidation, not a restyle. Aliases
-   * that map cleanly onto a canonical token reference it directly; the few
-   * desktop-specific surfaces keep their exact rgba but are declared once
-   * here so there is a single place to read the desktop palette.
-   */
+  --bg: var(--page-bg);
+  --bg-gradient: var(--page-bg);
+  --bg-subtle: var(--c-field-bg);
+  --bg-body: var(--page-bg);
+  --desktop: var(--c-bg);
 
-  /* Window backgrounds — the monochrome liquid-glass ground. The shell paints
-     a subtle cool-dark gradient (--bg-gradient); --bg is its solid mid value
-     for the handful of surfaces that want a flat fill. Translucent white-alpha
-     "glass" surfaces (--surface-*) float over it; hierarchy comes from alpha,
-     not hue. Mirrors the Paper "Desktop Sync" build. */
-  --bg: #161618; /* solid mid of the shell gradient */
-  --bg-gradient: linear-gradient(155deg, #1c1c1f 0%, #161618 55%, #141416 100%);
-  --bg-subtle: rgba(255, 255, 255, 0.02); /* live strip / footer glass */
-  --bg-body: #121214; /* document body behind the window surface */
-  --desktop: #1a1a1c; /* reserved desktop-canvas surface */
+  --surface-rail: var(--pop-bg);
+  --surface-panel: var(--pop-bg);
+  --surface-raise: var(--c-field-bg);
 
-  /* Floating glass surfaces (translucent white over the gradient ground). */
-  --surface-rail: rgba(255, 255, 255, 0.014); /* left nav rail */
-  --surface-panel: rgba(255, 255, 255, 0.025); /* title bar / inspector */
-  --surface-raise: rgba(255, 255, 255, 0.045); /* tiles, chips, inputs */
+  --fg: var(--c-text);
+  --fg-data: var(--pop-muted);
+  --muted: var(--c-muted);
+  --muted-2: var(--pop-muted);
+  --muted-3: var(--dot);
 
-  /* Text tiers — white-alpha so text reads as light on glass, never flat grey.
-     Primary is a near-white with a whisper of warmth; the muted tiers carry
-     hierarchy by opacity. */
-  --fg: #f3f3f4; /* primary text / headings */
-  --fg-data: rgba(255, 255, 255, 0.7); /* mono values, secondary data */
-  --muted: rgba(255, 255, 255, 0.52); /* secondary / label text */
-  --muted-2: rgba(255, 255, 255, 0.7); /* slightly brighter secondary */
-  --muted-3: rgba(255, 255, 255, 0.3); /* faintest tier — caps, idle nav */
+  --border: var(--pop-border);
+  --border-strong: var(--c-field-border);
+  --row-hover: var(--pop-hover);
+  --row-active: var(--v4-active-row, var(--pop-hover));
+  --scrollbar-thumb: var(--dot);
+  --scrollbar-thumb-hover: var(--c-muted);
 
-  /* Borders + hover/active surfaces — hairline white-alpha, 7% baseline. */
-  --border: rgba(255, 255, 255, 0.07);
-  --border-strong: rgba(255, 255, 255, 0.12);
-  --row-hover: rgba(255, 255, 255, 0.035);
-  --row-active: rgba(255, 255, 255, 0.06);
-  --scrollbar-thumb: rgba(255, 255, 255, 0.08);
-  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.18);
+  --emerald: var(--v4-ok, var(--popover-success));
+  --amber: var(--v4-warn, #b45309);
+  --red: var(--v4-error, var(--popover-danger));
+  --blue: var(--v4-unread, #0a6fd6);
 
-  /* Status markers (board surfaces). Semantic state color, not brand accent:
-     priority, project/story state, AC progress, and label hues. The lone
-     permitted positive-confirmation green is the canonical --popover-success;
-     --emerald mirrors it for desktop usage. */
-  --emerald: var(--popover-success);
-  --amber: #f59e0b;
-  --red: #f87171;
-  --blue: #60a5fa;
-
-  /* Accent. SPEC §2/§6: NO purple/indigo anywhere — blue is the only sanctioned
-     accent (and only on Messages surfaces). The legacy `--accent` / `--accent-soft`
-     names are kept as aliases of `--blue` so the handful of shared messaging
-     components that still reference them (Conversation, ComposeMessage,
-     RecipientPicker, DmRequestCard) render BLUE, never the old #6366f1 indigo.
-     New code should use `--blue` / `--v4-unread` directly. */
+  /* Messaging still has a blue state channel; other desktop primary controls
+     use --v4-primary-* in their component styles. */
   --accent: var(--blue);
-  --accent-soft: rgba(96, 165, 250, 0.16);
+  --accent-soft: var(--c-field-bg);
 
-  /* ---- TYPE SCALE -------------------------------------------------------
-   * A compact, high-density ramp mirroring the Paper "Desktop Sync" build.
-   * Hierarchy is carried by size + weight + the white-alpha tiers together —
-   * restrained, never shouting. Weight discipline (hq-console standard): body
-   * 400, active-nav / labels 500, 600 reserved for genuine headings, KPI
-   * numbers, and uppercase caps. Declared in px so sizes are exact. */
-  /* Two-size system. The scale collapsed from six near-duplicate steps
-     (10/11/12/13/15/22) to exactly TWO effective sizes: a 13px BODY and an
-     18px DISPLAY. The role tokens are kept (call sites + intent stay legible)
-     but every "small" role resolves to 13px and every "large" role to 18px.
-     Hierarchy below 18px is carried by WEIGHT, UPPERCASE + tracking, the
-     white-alpha colour tiers, and the mono family — never by another px step.
-     Eyebrows/caps read as labels because they're uppercase + tracked + muted,
-     not because they're smaller. */
-  --text-micro: 13px; /* uppercase caps, eyebrows (tracked +0.08em) — BODY size */
-  --text-xs: 13px; /* mono data values, dense secondary — BODY size */
-  --text-sm: 13px; /* body-small, buttons, row meta — BODY size */
-  --text-base: 13px; /* primary body / row labels — BODY size */
-  --text-lg: 18px; /* panel headings (H1 within a pane) — DISPLAY size */
-  --text-kpi: 18px; /* big-number KPI / page display figures — DISPLAY size */
+  --text-micro: 13px;
+  --text-xs: 13px;
+  --text-sm: 13px;
+  --text-base: 13px;
+  --text-lg: 18px;
+  --text-kpi: 18px;
 
-  /* Type families. Geist Sans for UI/body/display; Geist Mono for data
-     (IDs, paths, counts, versions). */
-  --font-sans: 'Geist', -apple-system, system-ui, sans-serif;
-  --font-display: 'Geist', -apple-system, system-ui, sans-serif;
+  --font-display: var(--font-sans);
   --font-mono: 'Geist Mono Variable', ui-monospace, SFMono-Regular, Menlo,
     Monaco, monospace;
 
@@ -141,7 +75,7 @@ html[data-window='messages'] {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   font-variant-numeric: tabular-nums lining-nums;
-  letter-spacing: -0.003em;
+  letter-spacing: 0;
 }
 
 html[data-window='desktop-alt'] body,
@@ -151,124 +85,37 @@ html[data-window='messages'] body {
   background: var(--bg-body);
 }
 
-/* ---- Liquid Glass (desktop window only) -----------------------------------
- * The desktop window is transparent (tauri.conf.json + the WebviewWindowBuilder
- * in commands/desktop_alt.rs) with a native NSGlassEffectView backing inserted
- * behind the webview — Apple's macOS 26 Liquid Glass material, falling back to
- * NSVisualEffectView vibrancy on older macOS (src-tauri/src/glass.rs). These
- * overrides make the window's own surfaces translucent so the real glass shows
- * through, with a dark wash that keeps text legible over any desktop. Hierarchy
- * is by alpha: --v4-ground (window + main content) shows the most glass;
- * --v4-raised (cards, primary sidebar) reads as a denser glass panel.
- *
- * Scoped to data-window='desktop-alt' so the standalone, still-opaque Messages
- * window is untouched. The reduced-transparency blocks below restore solids. */
+/* The Tauri desktop window remains transparent so native vibrancy can show at
+   the edge; the web surfaces themselves resolve from the shared light/dark
+   tokens instead of local dark-first glass values. */
 html[data-window='desktop-alt'] {
   background: transparent;
-  --v4-ground: rgba(22, 22, 24, 0.42);
-  --v4-raised: rgba(42, 42, 47, 0.55);
-  --v4-inset: rgba(28, 28, 32, 0.5);
 }
 
 html[data-window='desktop-alt'] body {
   background: transparent;
 }
 
-/* ---- Light mode -----------------------------------------------------------
- * First-class, derived from the popover light palette so the two windows read
- * as the same monochrome-glass system under a light desktop. Neutral inversion
- * of the dark values above — no hue introduced. */
-@media (prefers-color-scheme: light) {
-  html[data-window='desktop-alt'],
-  html[data-window='messages'] {
-    --bg: #f6f6f8;
-    --bg-gradient: linear-gradient(155deg, #fbfbfc 0%, #f5f5f7 55%, #f1f1f4 100%);
-    --bg-subtle: rgba(0, 0, 0, 0.02);
-    --bg-body: #e7e7ea;
-    --desktop: #ffffff;
-
-    --surface-rail: rgba(0, 0, 0, 0.012);
-    --surface-panel: rgba(0, 0, 0, 0.025);
-    --surface-raise: rgba(0, 0, 0, 0.045);
-
-    --fg: #111113;
-    --fg-data: rgba(0, 0, 0, 0.66);
-    --muted: rgba(0, 0, 0, 0.5);
-    --muted-2: rgba(0, 0, 0, 0.62);
-    --muted-3: rgba(0, 0, 0, 0.38);
-
-    --border: rgba(0, 0, 0, 0.09);
-    --border-strong: rgba(0, 0, 0, 0.14);
-    --row-hover: rgba(0, 0, 0, 0.035);
-    --row-active: rgba(0, 0, 0, 0.06);
-    --scrollbar-thumb: rgba(0, 0, 0, 0.16);
-    --scrollbar-thumb-hover: rgba(0, 0, 0, 0.28);
-
-    --amber: #b45309;
-    --red: #dc2626;
-    --blue: #2563eb;
-  }
-}
-
-/* Liquid Glass — light desktop. Light translucent washes over the native glass
-   (which is bright under a light desktop) so the window reads as light glass.
-   Placed after the light block above so these win for the desktop window. */
-@media (prefers-color-scheme: light) {
-  html[data-window='desktop-alt'] {
-    --v4-ground: rgba(244, 244, 247, 0.5);
-    --v4-raised: rgba(255, 255, 255, 0.62);
-    --v4-inset: rgba(249, 249, 252, 0.55);
-  }
-}
-
-/* ---- Reduced transparency -------------------------------------------------
- * Promote the few alpha-based surfaces (borders, hover/active rows) to solid
- * neutrals for the reduced-transparency contract. The desktop window's glass
- * surfaces are additionally restored to opaque fills in the Liquid Glass a11y
- * blocks further below. Dark + light variants both covered. */
+/* Reduced transparency promotes popover-derived alpha surfaces to the solid
+   app primitives while preserving the same alias names. */
 @media (prefers-reduced-transparency: reduce) {
   html[data-window='desktop-alt'],
   html[data-window='messages'] {
-    --border: rgba(255, 255, 255, 0.16);
-    --border-strong: rgba(255, 255, 255, 0.22);
-    --row-hover: #18181b;
-    --row-active: #1f1f23;
+    --surface-rail: var(--c-bg);
+    --surface-panel: var(--c-bg);
+    --surface-raise: var(--c-field-bg);
+    --border: var(--c-divider);
+    --border-strong: var(--c-field-border);
+    --row-hover: var(--c-field-bg);
+    --row-active: var(--c-btn2-bg);
   }
-}
 
-@media (prefers-color-scheme: light) and (prefers-reduced-transparency: reduce) {
-  html[data-window='desktop-alt'],
-  html[data-window='messages'] {
-    --border: rgba(0, 0, 0, 0.16);
-    --border-strong: rgba(0, 0, 0, 0.22);
-    --row-hover: #ededf0;
-    --row-active: #e4e4e8;
-  }
-}
-
-/* Liquid Glass a11y fallback — when the user prefers reduced transparency,
-   restore a solid, opaque desktop window. The native glass backing view stays
-   in place but is fully covered by these opaque fills, so nothing shows
-   through. (The native NSGlassEffectView / vibrancy also self-dampens under
-   this setting, so this is belt-and-suspenders.) */
-@media (prefers-reduced-transparency: reduce) {
   html[data-window='desktop-alt'] {
     background: var(--bg);
-    --v4-ground: #161618;
-    --v4-raised: #1b1b1d;
-    --v4-inset: #19191b;
   }
 
   html[data-window='desktop-alt'] body {
     background: var(--bg-body);
-  }
-}
-
-@media (prefers-color-scheme: light) and (prefers-reduced-transparency: reduce) {
-  html[data-window='desktop-alt'] {
-    --v4-ground: #f6f6f8;
-    --v4-raised: #ffffff;
-    --v4-inset: #f1f1f4;
   }
 }
 
@@ -313,7 +160,7 @@ html[data-window='messages'] ::-webkit-scrollbar-thumb:hover {
      scroll — every ancestor clips. */
   overflow: hidden;
   /* V4 ground (SPEC section 2) — DesktopApp also sets this on the shell. */
-  background: var(--v4-ground, #161618);
+  background: var(--v4-ground, var(--page-bg));
 }
 
 /* ---- Body: V4 primary sidebar (220px) + optional secondary sidebar (200px)
@@ -408,7 +255,7 @@ html[data-window='messages'] ::-webkit-scrollbar-thumb:hover {
   font-size: var(--text-lg);
   font-weight: 600;
   line-height: 20px;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
 }
 
 .placeholder-panel {
