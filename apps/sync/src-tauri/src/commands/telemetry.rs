@@ -13,6 +13,7 @@ use serde_json::Value;
 
 use crate::commands::sync::resolve_vault_api_url;
 use crate::commands::vault_client::{UsageBatch, VaultClient};
+use crate::util::paths;
 
 // ── Cursor schema ─────────────────────────────────────────────────────────────
 
@@ -38,13 +39,53 @@ impl Default for TelemetryCursor {
 }
 
 fn cursor_path() -> Option<std::path::PathBuf> {
-    dirs::home_dir().map(|h| h.join(".hq/telemetry-cursor.json"))
+    paths::home_dir().map(|h| h.join(".hq/telemetry-cursor.json"))
+}
+
+fn normalize_cursor_key_with_separator(raw: &str, separator: char) -> String {
+    if separator == '\\' {
+        raw.replace('/', "\\")
+    } else {
+        raw.to_string()
+    }
+}
+
+fn normalize_cursor_file_key(path: &std::path::Path) -> String {
+    let native = path
+        .components()
+        .collect::<std::path::PathBuf>()
+        .to_string_lossy()
+        .to_string();
+    normalize_cursor_key_with_separator(&native, std::path::MAIN_SEPARATOR)
+}
+
+fn normalize_cursor_files(files: HashMap<String, CursorEntry>) -> HashMap<String, CursorEntry> {
+    let mut normalized = HashMap::new();
+    for (path, entry) in files {
+        let key = normalize_cursor_file_key(std::path::Path::new(&path));
+        normalized
+            .entry(key)
+            .and_modify(|existing: &mut CursorEntry| {
+                if entry.offset > existing.offset {
+                    existing.offset = entry.offset;
+                }
+                if entry.mtime > existing.mtime {
+                    existing.mtime = entry.mtime;
+                }
+            })
+            .or_insert(entry);
+    }
+    normalized
 }
 
 fn load_cursor() -> TelemetryCursor {
     cursor_path()
         .and_then(|p| fs::read_to_string(&p).ok())
-        .and_then(|s| serde_json::from_str(&s).ok())
+        .and_then(|s| serde_json::from_str::<TelemetryCursor>(&s).ok())
+        .map(|mut cursor| {
+            cursor.files = normalize_cursor_files(cursor.files);
+            cursor
+        })
         .unwrap_or_default()
 }
 
@@ -115,7 +156,7 @@ fn sanitize_row(row: &Value) -> Option<Value> {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn read_local_telemetry_enabled() -> bool {
-    let home = dirs::home_dir().unwrap_or_default();
+    let home = paths::home_dir().unwrap_or_default();
     let path = home.join(".hq/menubar.json");
     if let Ok(contents) = fs::read_to_string(&path) {
         if let Ok(v) = serde_json::from_str::<Value>(&contents) {
@@ -129,7 +170,7 @@ fn read_local_telemetry_enabled() -> bool {
 }
 
 fn read_machine_id() -> String {
-    let home = dirs::home_dir().unwrap_or_default();
+    let home = paths::home_dir().unwrap_or_default();
     let path = home.join(".hq/menubar.json");
     if let Ok(contents) = fs::read_to_string(&path) {
         if let Ok(v) = serde_json::from_str::<Value>(&contents) {
@@ -197,7 +238,7 @@ pub async fn send_telemetry_if_opted_in<R: tauri::Runtime>(
     let mut rotation_resets: HashMap<String, CursorEntry> = HashMap::new();
 
     // 4. Enumerate ~/.claude/projects/**/*.jsonl
-    let home = dirs::home_dir().ok_or("home dir unavailable")?;
+    let home = paths::home_dir().ok_or("home dir unavailable")?;
     let pattern = format!("{}/.claude/projects/**/*.jsonl", home.display());
     let file_paths: Vec<_> = match glob::glob(&pattern) {
         Ok(g) => g.flatten().filter(|p| p.is_file()).collect(),
@@ -211,7 +252,7 @@ pub async fn send_telemetry_if_opted_in<R: tauri::Runtime>(
     let mut batch_sources: Vec<RowSource> = Vec::new();
 
     for file_path in &file_paths {
-        let path_str = file_path.to_string_lossy().to_string();
+        let path_str = normalize_cursor_file_key(file_path);
 
         let metadata = match fs::metadata(file_path) {
             Ok(m) => m,
@@ -449,6 +490,34 @@ mod tests {
     fn make_app_handle() -> tauri::AppHandle<tauri::test::MockRuntime> {
         let app = tauri::test::mock_app();
         app.handle().clone()
+    }
+
+    #[test]
+    fn normalize_cursor_key_preserves_current_platform_path() {
+        let path = std::path::PathBuf::from("root")
+            .join(".claude")
+            .join("projects")
+            .join("proj")
+            .join("session.jsonl");
+        let expected = path
+            .components()
+            .collect::<std::path::PathBuf>()
+            .to_string_lossy()
+            .to_string();
+
+        assert_eq!(normalize_cursor_file_key(&path), expected);
+    }
+
+    #[test]
+    fn normalize_cursor_key_hardens_windows_mixed_separators() {
+        let raw = r"C:\Users\me/.claude/projects\proj/session.jsonl";
+        let normalized = normalize_cursor_key_with_separator(raw, '\\');
+
+        assert_eq!(
+            normalized,
+            r"C:\Users\me\.claude\projects\proj\session.jsonl"
+        );
+        assert!(!normalized.contains('/'));
     }
 
     // ── (a) opt-in=false → 0 bytes sent ──────────────────────────────────────

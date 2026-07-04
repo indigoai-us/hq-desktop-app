@@ -136,6 +136,31 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
         }
     }
 
+    // Runner-resolution preflight (HQ-SYNC-E): bail before spawning a watcher
+    // that can only exit 127 and get hot-respawned by the supervisor. This
+    // preserves one user-actionable error while rate-limiting repeated Sentry
+    // captures like the crash-loop path.
+    if let Some(msg) = crate::commands::sync::preflight_runner_unresolvable() {
+        let consecutive = note_runner_unresolvable();
+        if should_capture_crash(consecutive) {
+            crate::commands::sync::capture_sync_error(
+                None,
+                "(auto-sync)",
+                &format!(
+                    "auto-sync watcher cannot start: {msg} \
+                     (consecutive #{consecutive}, further repeats rate-limited)"
+                ),
+            );
+        } else {
+            log(
+                "daemon",
+                &format!("runner unresolvable #{consecutive} — capture rate-limited"),
+            );
+        }
+        deregister_process(DAEMON_HANDLE);
+        return Err(msg);
+    }
+
     let spawn_args = build_watch_runner_args(&hq_folder_path);
 
     log("daemon", "spawn: hq-sync-runner --watch");
@@ -317,6 +342,9 @@ struct WatcherCrashState {
     spawn_at: Option<Instant>,
     /// The supervisor must not respawn before this instant (backoff window).
     backoff_until: Option<Instant>,
+    /// Consecutive runner-resolution preflight failures. Tracked separately
+    /// because these happen before a watcher is spawned.
+    preflight_fails: u32,
     /// Last RSS (KB) sampled from the live watcher, and when — enriches an
     /// unexpected-exit capture so a `signal=9` (jetsam/OOM vs manual kill) can be
     /// told apart after the fact. Best-effort; never changes whether a crash is
@@ -335,10 +363,21 @@ fn crash_state() -> &'static Mutex<WatcherCrashState> {
 fn note_watcher_spawned() {
     let mut st = crash_state().lock().unwrap();
     st.spawn_at = Some(Instant::now());
+    // A spawn proves the runner resolved, so the preflight failure streak is
+    // over and future missing-runner episodes get a fresh first alert.
+    st.preflight_fails = 0;
     // Fresh watcher — drop the previous watcher's RSS sample so a crash capture
     // never reports a stale footprint from a process that already died.
     st.last_rss_kb = None;
     st.last_rss_at = None;
+}
+
+/// Record a runner-resolution preflight failure and return the consecutive
+/// count so the caller can rate-limit captures.
+fn note_runner_unresolvable() -> u32 {
+    let mut st = crash_state().lock().unwrap();
+    st.preflight_fails = st.preflight_fails.saturating_add(1);
+    st.preflight_fails
 }
 
 /// Update the crash-loop state on an unexpected watcher exit and return the
@@ -354,8 +393,9 @@ fn note_watcher_crashed() -> u32 {
         st.consecutive = 1;
     }
     let consecutive = st.consecutive;
-    st.backoff_until =
-        Some(Instant::now() + respawn_backoff(consecutive, SUPERVISOR_INTERVAL, RESPAWN_MAX_BACKOFF));
+    st.backoff_until = Some(
+        Instant::now() + respawn_backoff(consecutive, SUPERVISOR_INTERVAL, RESPAWN_MAX_BACKOFF),
+    );
     consecutive
 }
 
@@ -707,9 +747,31 @@ mod tests {
         assert!(!is_fast_failure(Duration::from_secs(120), window));
         // Recovery reset requires surviving at least the window.
         assert!(should_reset_after_recovery(Some(window), window));
-        assert!(should_reset_after_recovery(Some(Duration::from_secs(120)), window));
-        assert!(!should_reset_after_recovery(Some(Duration::from_secs(5)), window));
+        assert!(should_reset_after_recovery(
+            Some(Duration::from_secs(120)),
+            window
+        ));
+        assert!(!should_reset_after_recovery(
+            Some(Duration::from_secs(5)),
+            window
+        ));
         assert!(!should_reset_after_recovery(None, window));
+    }
+
+    #[test]
+    fn runner_unresolvable_counter_resets_after_successful_spawn() {
+        {
+            let mut st = crash_state().lock().unwrap();
+            *st = WatcherCrashState::default();
+        }
+        assert_eq!(note_runner_unresolvable(), 1);
+        assert_eq!(note_runner_unresolvable(), 2);
+        note_watcher_spawned();
+        {
+            let st = crash_state().lock().unwrap();
+            assert_eq!(st.preflight_fails, 0);
+        }
+        assert_eq!(note_runner_unresolvable(), 1);
     }
 
     // ── Exit diagnostics (HQ-SYNC-F) ─────────────────────────────────────
@@ -731,7 +793,10 @@ mod tests {
 
     #[test]
     fn exit_diagnostic_suffix_omits_unknown_pieces() {
-        assert_eq!(exit_diagnostic_suffix(None, None, None), " [last_rss=unsampled]");
+        assert_eq!(
+            exit_diagnostic_suffix(None, None, None),
+            " [last_rss=unsampled]"
+        );
         assert_eq!(
             exit_diagnostic_suffix(Some(Duration::from_secs(5)), None, None),
             " [uptime=5s; last_rss=unsampled]"
@@ -741,6 +806,9 @@ mod tests {
             Some(182 * 1024),
             Some(Duration::from_secs(12)),
         );
-        assert_eq!(full, " [uptime=1m30s; last_rss=182MB (sampled 12s before exit)]");
+        assert_eq!(
+            full,
+            " [uptime=1m30s; last_rss=182MB (sampled 12s before exit)]"
+        );
     }
 }
