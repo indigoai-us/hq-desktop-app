@@ -22,7 +22,17 @@
   let initialStep = $state(0);
   let activeLifecycleState = $state<string | null>(null);
 
+  // The main window carries the frosted popover vibrancy. Onboarding is a
+  // transparent floating card over the real desktop, so clear that material
+  // while onboarding is up (otherwise it shows through the transparent webview
+  // as a panel around the card) and re-apply it on the tray handoff.
+  async function setWindowVibrancy(enabled: boolean) {
+    if (typeof invoke !== 'function') return;
+    await invoke('set_main_window_vibrancy', { enabled }).catch(() => {});
+  }
+
   async function sizeForOnboarding() {
+    await setWindowVibrancy(false);
     try {
       const win = getCurrentWindow();
       await win.setSize(ONBOARDING_SIZE);
@@ -33,6 +43,7 @@
   }
 
   async function restorePopoverSize() {
+    await setWindowVibrancy(true);
     try {
       await getCurrentWindow().setSize(POPOVER_SIZE);
     } catch {

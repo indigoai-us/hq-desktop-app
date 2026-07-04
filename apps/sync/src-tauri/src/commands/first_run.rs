@@ -97,6 +97,27 @@ pub fn mark_first_run_complete() -> Result<(), String> {
     )
 }
 
+/// Toggle the main window's translucent popover backdrop. The onboarding is a
+/// transparent floating card over the real desktop, so while it is up we clear
+/// the vibrancy (otherwise the frosted popover material shows through the
+/// transparent webview as a panel around the card). The tray handoff re-applies
+/// it when the window becomes the compact popover.
+#[tauri::command]
+pub fn set_main_window_vibrancy(app: AppHandle, enabled: bool) {
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    if let Some(window) = app.get_webview_window("main") {
+        if enabled {
+            hq_platform::window_effects::apply_popover_vibrancy(&window);
+        } else {
+            hq_platform::window_effects::clear_popover_vibrancy(&window);
+        }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let _ = (app, enabled);
+    }
+}
+
 /// Mark the one-time auto-sync notice as shown for an updating user. Also sets
 /// `firstRunCompleted` so the next launch classifies as `Normal`. Deliberately
 /// does NOT touch `realtimeSync` — opt-outs are respected.

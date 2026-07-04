@@ -60,6 +60,24 @@ pub fn apply_popover_vibrancy(window: &impl HasWindowHandle) {
     }
 }
 
+/// Remove the translucent window backdrop so a `transparent` window shows the
+/// desktop behind it (used while the first-run onboarding floating card is up —
+/// the popover vibrancy is re-applied on the tray handoff).
+pub fn clear_popover_vibrancy(window: &impl HasWindowHandle) {
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    {
+        match window_vibrancy::clear_vibrancy(window) {
+            Ok(_) => log("ui", "clear_vibrancy: success"),
+            Err(e) => log("ui", &format!("clear_vibrancy FAILED: {e}")),
+        }
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let _ = window;
+    }
+}
+
 #[cfg(target_os = "windows")]
 pub fn set_small_corner(hwnd_raw: isize) {
     use windows::Win32::Foundation::HWND;
