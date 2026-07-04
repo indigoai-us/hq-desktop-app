@@ -376,22 +376,27 @@ jobs:
       - name: Install Recall sidecar dependencies
         run: pnpm run sidecar:install
 
-      - name: Build Recall SEA sidecar if present
+      # Windows recording depends on a real PE sidecar launcher. Tauri's
+      # `bundle.externalBin` now requires this file to exist for each target
+      # triple, so build and assert it before the bundle step rather than
+      # publishing an installer with the Recall bridge resources but no launcher.
+      - name: Build Recall SDK sidecar (${{ matrix.target }})
         shell: pwsh
         env:
           RECALL_SIDECAR_TARGET: ${{ matrix.target }}
         run: |
-          if (Test-Path "sidecar/recall-sdk-bridge/build.mjs") {
-            node sidecar/recall-sdk-bridge/build.mjs
-            if (-not (Test-Path "src-tauri/binaries/recall-desktop-sdk-${{ matrix.target }}.exe")) {
-              throw "Recall sidecar launcher was not produced for ${{ matrix.target }}"
-            }
-          } else {
-            Write-Host "No Recall SEA build script is present in apps/sync; skipping launcher build for the current unified Windows overlay."
+          pnpm -C sidecar/recall-sdk-bridge build
+          $launcher = "src-tauri/binaries/recall-desktop-sdk-${{ matrix.target }}.exe"
+          if (-not (Test-Path $launcher)) {
+            throw "Recall sidecar launcher was not produced for ${{ matrix.target }} at $launcher"
           }
 
       - name: Tauri build (${{ matrix.target }})
-        run: pnpm tauri build --target ${{ matrix.target }} --bundles msi nsis updater --config src-tauri/tauri.windows.conf.json
+        # The release-only overlay carries the Recall externalBin (a per-target PE
+        # launcher built by the step above). It is kept out of the auto-merged
+        # tauri.windows.conf.json so `cargo check` (windows-check.yml) — where the
+        # launcher is absent — still passes; Tauri merges the overlay here.
+        run: pnpm tauri build --target ${{ matrix.target }} --bundles msi nsis updater --config src-tauri/tauri.windows.conf.json --config src-tauri/tauri.windows.release.conf.json
 
       - name: Azure login (OIDC)
         if: ${{ vars.AZURE_CLIENT_ID != '' && env.UNVERIFIED_RELEASE != 'true' }}

@@ -3,6 +3,8 @@ dist/
 target/
 # Compiled menu-bar helper — build.rs rebuilds it from hq-tray-helper.swift.
 src-tauri/helper/hq-tray-helper
+# Windows Recall SDK sidecar launcher - produced by sidecar/recall-sdk-bridge/build.mjs.
+src-tauri/binaries/*.exe
 .DS_Store
 *.log
 .env
