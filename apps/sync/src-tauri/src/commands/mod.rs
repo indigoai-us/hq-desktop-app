@@ -7,6 +7,7 @@ pub mod autostart;
 pub mod banner;
 pub mod checksums;
 pub mod cognito;
+pub mod compat;
 pub mod config;
 pub mod conflicts;
 pub mod content;

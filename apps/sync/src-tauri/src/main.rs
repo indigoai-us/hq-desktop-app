@@ -277,6 +277,7 @@ fn main() {
             commands::install_manifest::record_import,
             commands::install_manifest::record_install_complete,
             commands::install_stages::git_init,
+            commands::install_stages::git_probe_user,
             commands::install_stages::register_search_index,
             commands::install_stages::install_default_packages,
             commands::install_stages::personalize_hq,
@@ -296,6 +297,12 @@ fn main() {
             commands::install_deps::install_yq,
             commands::install_deps::install_deps,
             commands::install_deps::configure_claude_settings_path,
+            #[cfg(windows)]
+            commands::install_deps::install_pnpm,
+            #[cfg(windows)]
+            commands::install_deps::install_rsync,
+            #[cfg(windows)]
+            commands::install_deps::ensure_shims,
             #[cfg(windows)]
             commands::long_paths::is_long_paths_enabled,
             #[cfg(windows)]
@@ -330,6 +337,8 @@ fn main() {
             commands::packages::update_package,
             commands::packages::update_packs,
             commands::packages::uninstall_package,
+            commands::packages::open_packages_window,
+            commands::packages::packages_window_ready,
             commands::activity::open_activity_log,
             commands::activity::activity_window_ready,
             commands::activity::get_activity_log,
@@ -449,6 +458,7 @@ fn main() {
             commands::messages::mark_channel_read,
             commands::messages::toggle_reaction,
             commands::messages::fetch_reactions,
+            commands::notification_history::open_notification_history,
             commands::notification_history::fetch_notification_history,
             commands::notifications::notification_permission_state,
             commands::notifications::notification_request_permission,
@@ -461,6 +471,32 @@ fn main() {
             commands::banner::preview_share_banner,
             commands::banner::preview_update_banner,
             commands::banner::preview_meeting_banner,
+            commands::compat::check_ai_tools,
+            commands::compat::device_fingerprint,
+            commands::compat::keychain_set,
+            commands::compat::keychain_get,
+            commands::compat::keychain_delete,
+            commands::oauth::oauth_cancel_listen,
+            commands::compat::write_menubar_telemetry_pref,
+            commands::compat::write_menubar_hq_path,
+            commands::compat::home_dir,
+            commands::compat::write_file,
+            commands::compat::make_dir,
+            commands::compat::read_text_file,
+            commands::compat::create_symlink,
+            commands::compat::get_use_staging_source,
+            commands::compat::download_staging_tarball,
+            commands::compat::is_primary_instance,
+            commands::compat::recheck_primary_instance,
+            commands::compat::launch_menubar_app,
+            commands::compat::menubar_installed,
+            commands::compat::launch_claude_desktop,
+            commands::compat::launch_codex_desktop,
+            commands::compat::claude_desktop_installed,
+            #[cfg(windows)]
+            commands::compat::add_claude_trusted_folder,
+            #[cfg(windows)]
+            commands::compat::open_developer_settings,
         ])
         .setup(|app| {
             // Classify this launch (FirstRun / ExistingUpdate / Normal) and

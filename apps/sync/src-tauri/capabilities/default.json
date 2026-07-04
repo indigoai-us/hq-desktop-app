@@ -21,12 +21,29 @@
       "identifier": "http:default",
       "allow": [
         { "url": "https://*.auth.us-east-1.amazoncognito.com/*" },
+        { "url": "https://cognito-idp.us-east-1.amazonaws.com/*" },
         { "url": "https://*.execute-api.us-east-1.amazonaws.com/*" },
         { "url": "https://hqapi.getindigo.ai/*" },
+        { "url": "https://api.github.com/*" },
+        { "url": "https://codeload.github.com/*" },
         { "url": "https://*.amazonaws.com/*" },
         { "url": "https://*.s3.amazonaws.com/*" },
         { "url": "https://*.s3.us-east-1.amazonaws.com/*" },
-        { "url": "https://s3.us-east-1.amazonaws.com/*" }
+        { "url": "https://s3.us-east-1.amazonaws.com/*" },
+        { "url": "https://telemetry.getindigo.ai/*" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-mkdir",
+      "allow": [
+        { "path": "$HOME/.hq" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-write-file",
+      "allow": [
+        { "path": "$HOME/.hq/cognito-tokens.json" },
+        { "path": "$HOME/.hq/.cognito-tokens.json.tmp.*" }
       ]
     },
     {
@@ -54,6 +71,20 @@
       "identifier": "fs:allow-write-text-file",
       "allow": [
         { "path": "$HOME/.hq/**" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-rename",
+      "allow": [
+        { "path": "$HOME/.hq/cognito-tokens.json" },
+        { "path": "$HOME/.hq/.cognito-tokens.json.tmp.*" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-remove",
+      "allow": [
+        { "path": "$HOME/.hq/cognito-tokens.json" },
+        { "path": "$HOME/.hq/.cognito-tokens.json.tmp.*" }
       ]
     }
   ]

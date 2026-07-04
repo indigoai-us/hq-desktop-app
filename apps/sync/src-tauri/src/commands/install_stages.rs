@@ -3,6 +3,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+use serde::Serialize;
+
 use crate::commands::install_directory::resolve_hq_path;
 use crate::commands::sync::{resolve_jwt, resolve_vault_api_url};
 use crate::commands::vault_client::VaultClient;
@@ -11,6 +13,12 @@ use crate::util::{hq_resolver, paths};
 /// Canonical default-package set is a product decision; empty for now —
 /// populate with slugs to auto-install at onboarding.
 const DEFAULT_PACKAGES: &[&str] = &[];
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct GitUser {
+    pub name: Option<String>,
+    pub email: Option<String>,
+}
 
 fn git_command(git: &str, path_env: &str) -> Command {
     let mut cmd = Command::new(git);
@@ -164,20 +172,53 @@ fn git_init_path(path: &Path, name: Option<&str>, email: Option<&str>) -> Result
     Ok(())
 }
 
-/// Initialise the resolved HQ root as a git repository and copy any global git
-/// identity into local repo config. Idempotent: `git init` on an existing repo
-/// reuses the repository.
+fn normalize_optional_git_config(value: Option<String>) -> Option<String> {
+    value
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
+/// Initialise an HQ root as a git repository. Backward-compatible with the
+/// legacy installer contract: old callers may pass `path`, `name`, and `email`;
+/// unified onboarding passes no args and uses the resolved HQ path plus global
+/// git identity when available.
 #[tauri::command]
-pub fn git_init() -> Result<String, String> {
-    let hq_root = resolve_hq_path()?;
+pub fn git_init(
+    path: Option<String>,
+    name: Option<String>,
+    email: Option<String>,
+) -> Result<String, String> {
+    let hq_root = normalize_optional_git_config(path).map_or_else(resolve_hq_path, Ok)?;
     let git = paths::resolve_bin("git");
     let path_env = paths::child_path();
-    let name = read_global_git_config(&git, &path_env, "user.name")?;
-    let email = read_global_git_config(&git, &path_env, "user.email")?;
+    let explicit_name = normalize_optional_git_config(name);
+    let explicit_email = normalize_optional_git_config(email);
+    let name = match explicit_name {
+        Some(name) => Some(name),
+        None => read_global_git_config(&git, &path_env, "user.name")?,
+    };
+    let email = match explicit_email {
+        Some(email) => Some(email),
+        None => read_global_git_config(&git, &path_env, "user.email")?,
+    };
 
     git_init_path(Path::new(&hq_root), name.as_deref(), email.as_deref())?;
 
     Ok(format!("initialised {hq_root}"))
+}
+
+/// Read global git user identity for legacy installer UI pre-fill.
+#[tauri::command]
+pub fn git_probe_user() -> Result<Option<GitUser>, String> {
+    let git = paths::resolve_bin("git");
+    let path_env = paths::child_path();
+    let name = read_global_git_config(&git, &path_env, "user.name")?;
+    let email = read_global_git_config(&git, &path_env, "user.email")?;
+    if name.is_none() && email.is_none() {
+        Ok(None)
+    } else {
+        Ok(Some(GitUser { name, email }))
+    }
 }
 
 /// Build the local search index and refresh CLI-generated registries.

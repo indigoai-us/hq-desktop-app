@@ -17,6 +17,7 @@
 //! auth/URL failure (can't even build the request) surfaces as an error.
 
 use serde::{Deserialize, Serialize};
+use tauri::AppHandle;
 
 use crate::commands::cognito;
 use crate::commands::dm_notify::DmEvent;
@@ -83,6 +84,15 @@ pub struct NotificationHistory {
     pub dms: Vec<DmEvent>,
     pub shares: Vec<ShareEvent>,
     pub files: Vec<FileHistoryItem>,
+}
+
+/// Legacy standalone-window IPC. The unified app retired that window in favor
+/// of the popover's inline NotificationFeed, so the compatibility path focuses
+/// the main surface where the feed is already mounted.
+#[tauri::command]
+pub async fn open_notification_history(app: AppHandle) -> Result<(), String> {
+    crate::tray::show_window_at_tray(&app);
+    Ok(())
 }
 
 async fn fetch_dms(

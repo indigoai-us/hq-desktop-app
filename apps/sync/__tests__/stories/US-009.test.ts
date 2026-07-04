@@ -86,17 +86,22 @@ describe('US-009: the standalone Packages destination is removed', () => {
     expect(windows.some((w) => w.label === 'packages')).toBe(false);
   });
 
-  it('removes the window-lifecycle commands + handshake state from the Rust surface', () => {
+  it('keeps only compatibility shims for the retired window lifecycle', () => {
     const rust = read('src-tauri/src/commands/packages.rs');
-    // The lifecycle commands and the ready-handshake managed state are gone …
-    expect(rust).not.toContain('pub async fn open_packages_window');
-    expect(rust).not.toContain('pub fn packages_window_ready');
+    // The standalone window and ready-handshake state are still gone.
     expect(rust).not.toContain('pub struct PendingPackages');
+    // The legacy command names exist only as thin shims to the unified Library
+    // surface, so older automation does not hit an unknown IPC command.
+    expect(rust).toContain('pub async fn open_packages_window');
+    expect(rust).toContain('Some("library:installed")');
+    expect(rust).toContain('pub fn packages_window_ready');
+    expect(rust).toContain('None');
 
     const main = read('src-tauri/src/main.rs');
-    // … and they are no longer registered / managed in main.rs.
-    expect(main).not.toContain('open_packages_window');
-    expect(main).not.toContain('packages_window_ready');
+    // They are registered as compatibility commands, but no managed
+    // PendingPackages state or packages window is reintroduced.
+    expect(main).toContain('commands::packages::open_packages_window');
+    expect(main).toContain('commands::packages::packages_window_ready');
     expect(main).not.toContain('PendingPackages');
     // The data commands that now back the Library tab are still registered.
     expect(main).toContain('commands::packages::list_packages');
