@@ -1036,15 +1036,15 @@
   .settings {
     display: flex;
     flex-direction: column;
-    width: 320px;
+    width: 296px;
     max-height: 480px;
     background: var(--popover-bg, rgba(18, 18, 20, 0.68));
     backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
     -webkit-backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
     color: var(--popover-text, #e0e0e0);
     overflow-y: auto;
-    border-radius: 18px;
-    border: 1px solid var(--popover-border, rgba(255, 255, 255, 0.18));
+    border-radius: 12px;
+    border: 0.5px solid var(--popover-border, rgba(255, 255, 255, 0.18));
     box-sizing: border-box;
   }
 

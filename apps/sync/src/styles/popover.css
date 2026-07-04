@@ -23,39 +23,31 @@ textarea,
 }
 
 :root {
-  /* Colors — dark mode defaults */
-  --popover-bg: rgba(18, 18, 20, 0.68);
-  --popover-surface: rgba(255, 255, 255, 0.08);
-  --popover-surface-strong: rgba(255, 255, 255, 0.16);
-  --popover-border: rgba(255, 255, 255, 0.18);
-  --popover-highlight: rgba(255, 255, 255, 0.34);
-  --popover-text: rgba(255, 255, 255, 0.86);
-  --popover-text-muted: rgba(255, 255, 255, 0.52);
-  --popover-text-heading: #ffffff;
-  --popover-primary: #ffffff;
-  --popover-primary-hover: rgba(255, 255, 255, 0.9);
-  --popover-primary-active: rgba(255, 255, 255, 0.78);
-  --popover-primary-text: #111113;
-  --popover-danger: #ef4444;
-  /* Notice tokens — replace the legacy yellow/red warning + error palette.
-     "Notice" is the unified visual language for everything that used to be
-     a warning or error: same subtle grey surface as info, slightly stronger
-     border, muted text. No severity colour, no alarm — copy + a Copy-prompt
-     button carry the meaning. */
-  --popover-notice: rgba(255, 255, 255, 0.65);
-  --popover-notice-strong: #ffffff;
-  --popover-notice-bg: rgba(255, 255, 255, 0.05);
-  --popover-notice-border: rgba(255, 255, 255, 0.16);
-  /* Kept for back-compat: any straggler that still references --popover-warning
-     now resolves to the muted notice text rather than amber. Remove once
-     consumers are fully migrated. */
+  /* Popover aliases over the shared light-default --pop-* contract. */
+  --popover-bg: var(--pop-bg);
+  --popover-surface: var(--pop-hover);
+  --popover-surface-strong: var(--pop-divider);
+  --popover-border: var(--pop-border);
+  --popover-highlight: var(--pop-highlight);
+  --popover-text: var(--pop-text);
+  --popover-text-muted: var(--pop-muted);
+  --popover-text-heading: var(--pop-text);
+  --popover-primary: var(--pop-accent);
+  --popover-primary-hover: var(--pop-accent);
+  --popover-primary-active: var(--pop-accent);
+  --popover-primary-text: var(--pop-acc-fg);
+  --popover-danger: #dc2626;
+  --popover-notice: var(--pop-muted);
+  --popover-notice-strong: var(--pop-text);
+  --popover-notice-bg: var(--pop-hover);
+  --popover-notice-border: var(--pop-border);
   --popover-warning: var(--popover-notice);
-  --popover-success: #22c55e;
-  --popover-divider: rgba(255, 255, 255, 0.11);
-  --popover-action-hover: rgba(255, 255, 255, 0.1);
-  --popover-progress-track: rgba(255, 255, 255, 0.14);
-  --popover-progress-fill: #ffffff;
-  --popover-blur: blur(28px) saturate(1.45);
+  --popover-success: #1f9d4d;
+  --popover-divider: var(--pop-divider);
+  --popover-action-hover: var(--pop-hover);
+  --popover-progress-track: var(--pop-hover);
+  --popover-progress-fill: var(--pop-accent);
+  --popover-blur: blur(32px) saturate(1.7);
 
   /* ---- Type scale ---------------------------------------------------- */
   /* Match the desktop app: one body size and one display size. Hierarchy is
@@ -81,50 +73,27 @@ textarea,
   --radius-sm: 8px; /* pills, small buttons, toggles, segments */
   --radius-md: 10px; /* grouped buttons, larger controls */
   --radius-lg: 14px; /* section group cards */
-  --radius-xl: 18px; /* the popover window */
-}
-
-@media (prefers-color-scheme: light) {
-  :root {
-    --popover-bg: rgba(246, 246, 248, 0.72);
-    --popover-surface: rgba(255, 255, 255, 0.5);
-    --popover-surface-strong: rgba(255, 255, 255, 0.72);
-    --popover-border: rgba(0, 0, 0, 0.12);
-    --popover-highlight: rgba(255, 255, 255, 0.86);
-    --popover-text: rgba(0, 0, 0, 0.78);
-    --popover-text-muted: rgba(0, 0, 0, 0.48);
-    --popover-text-heading: #111113;
-    --popover-primary: #111113;
-    --popover-primary-hover: rgba(17, 17, 19, 0.9);
-    --popover-primary-active: rgba(17, 17, 19, 0.78);
-    --popover-primary-text: #ffffff;
-    --popover-danger: #dc2626;
-    --popover-notice: rgba(0, 0, 0, 0.6);
-    --popover-notice-strong: #111113;
-    --popover-notice-bg: rgba(0, 0, 0, 0.04);
-    --popover-notice-border: rgba(0, 0, 0, 0.12);
-    --popover-warning: var(--popover-notice);
-    --popover-success: #16a34a;
-    --popover-divider: rgba(0, 0, 0, 0.09);
-    --popover-action-hover: rgba(0, 0, 0, 0.06);
-    --popover-progress-track: rgba(0, 0, 0, 0.1);
-    --popover-progress-fill: #111113;
-  }
+  --radius-xl: 12px; /* the popover window */
 }
 
 @media (prefers-reduced-transparency: reduce) {
   :root {
-    --popover-bg: #18181a;
-    --popover-surface: rgba(255, 255, 255, 0.07);
-    --popover-surface-strong: rgba(255, 255, 255, 0.12);
+    --pop-bg: #f7f7f8;
+    --popover-bg: var(--pop-bg);
     --popover-blur: none;
   }
 }
 
-@media (prefers-color-scheme: light) and (prefers-reduced-transparency: reduce) {
+@media (prefers-color-scheme: dark) {
   :root {
-    --popover-bg: #f7f7f8;
-    --popover-surface: rgba(0, 0, 0, 0.04);
-    --popover-surface-strong: rgba(0, 0, 0, 0.07);
+    --popover-danger: #ef4444;
+    --popover-success: #41d870;
+  }
+}
+
+@media (prefers-color-scheme: dark) and (prefers-reduced-transparency: reduce) {
+  :root {
+    --pop-bg: #262628;
+    --popover-bg: var(--pop-bg);
   }
 }

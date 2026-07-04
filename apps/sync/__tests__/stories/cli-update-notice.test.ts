@@ -60,8 +60,8 @@ describe('CLI-update notice: dismissible per-version', () => {
   it('renders a dismiss control wired to the dismiss callback', () => {
     const p = normalize(popover);
     expect(p).toContain('ondismisshqcliupdate?: () => void;');
-    expect(p).toContain('class="banner-dismiss"');
-    expect(p).toContain('onclick={ondismisshqcliupdate}');
+    expect(p).toContain('ondismisshqcliupdate?.();');
+    expect(p).toContain('Dismiss');
   });
 
   it('App.svelte persists the dismissal per-version then hides the banner', () => {
