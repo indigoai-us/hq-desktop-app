@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "new-files-detail",
+  "description": "Capability set for the new-files detail window. Receives the file-list payload via event IPC and invokes the ready handshake before the window is shown.",
+  "windows": ["new-files-detail"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:window:allow-close",
+    "core:window:allow-set-focus"
+  ]
+}

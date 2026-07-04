@@ -9,9 +9,9 @@
 //!
 //! These commands back the unified desktop-alt **Library → Installed** surface
 //! (`src/desktop-alt/panels/InstalledPacksPanel.svelte`). US-009 removed the old
-//! standalone Packages window (and its `open_packages_window` /
-//! `packages_window_ready` lifecycle commands + `PendingPackages` handshake
-//! state); the data commands below are unchanged and now feed the in-Library tab.
+//! standalone Packages window and its `PendingPackages` handshake state; the
+//! old lifecycle command names remain only as compatibility shims that route
+//! callers into the in-Library tab.
 //!
 //! Commands:
 //!   * `list_packages`          — read-only snapshot (content packs + registry)
@@ -196,6 +196,22 @@ pub async fn check_package_updates(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 pub async fn check_pack_update(app: AppHandle) -> Result<Option<PackUpdateInfo>, String> {
     check_pack_updates_once(&app).await
+}
+
+/// Legacy standalone Packages-window IPC. Installed packs now live in the
+/// desktop-alt Library surface; route old callers to Library > Installed.
+#[tauri::command]
+pub async fn open_packages_window(app: AppHandle) -> Result<(), String> {
+    crate::commands::desktop_alt::open_desktop_alt_window_inner(app, Some("library:installed"))
+        .await
+}
+
+/// Legacy ready-handshake for the retired Packages window. The unified
+/// Installed panel self-fetches with `list_packages`, so there is no stashed
+/// payload to return.
+#[tauri::command]
+pub fn packages_window_ready() -> Option<Value> {
+    None
 }
 
 /// Stream a long-running `hq` mutation, relaying its output to the window as

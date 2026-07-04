@@ -670,7 +670,7 @@ fn is_under_known_symlink(relative: &str, symlink_relatives: &[String]) -> bool 
 // ---------------------------------------------------------------------------
 
 #[cfg(unix)]
-fn create_symlink_impl(target: &Path, link_path: &Path) -> Result<(), String> {
+pub(crate) fn create_symlink_impl(target: &Path, link_path: &Path) -> Result<(), String> {
     if let Some(parent) = link_path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("failed to create parent dir: {e}"))?;
     }
@@ -797,7 +797,7 @@ fn remove_existing_windows_entry(path: &Path, md: &std::fs::Metadata) -> std::io
 }
 
 #[cfg(windows)]
-fn create_symlink_impl(target: &Path, link_path: &Path) -> Result<(), String> {
+pub(crate) fn create_symlink_impl(target: &Path, link_path: &Path) -> Result<(), String> {
     if let Some(parent) = link_path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("failed to create parent dir: {e}"))?;
     }

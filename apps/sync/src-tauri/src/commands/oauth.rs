@@ -276,6 +276,18 @@ pub async fn start_oauth_login(provider: String) -> Result<OAuthFlowInit, String
     })
 }
 
+/// Legacy installer cancellation IPC. Dropping the pre-bound listeners closes
+/// the sockets and clears the one-shot PKCE verifier.
+#[tauri::command]
+pub fn oauth_cancel_listen() {
+    if let Ok(mut guard) = listener_store().lock() {
+        *guard = None;
+    }
+    if let Ok(mut guard) = pkce_store().lock() {
+        *guard = None;
+    }
+}
+
 /// Exchange an authorization code for tokens using the stored PKCE verifier.
 #[tauri::command]
 pub async fn oauth_exchange_code(code: String) -> Result<AuthState, String> {
@@ -417,13 +429,10 @@ pub async fn oauth_listen_for_code(state: String) -> Result<OAuthResult, String>
                                         &error_html(&reason),
                                     );
                                     return Err(
-                                        "OAuth state mismatch — possible CSRF, aborting.".into(),
+                                        "OAuth state mismatch — possible CSRF, aborting.".into()
                                     );
                                 }
-                                eprintln!(
-                                    "[oauth] callback accepted — code length {}",
-                                    code.len()
-                                );
+                                eprintln!("[oauth] callback accepted — code length {}", code.len());
                                 write_response(&mut stream, "200 OK", SUCCESS_HTML);
                                 return Ok(OAuthResult { code });
                             }

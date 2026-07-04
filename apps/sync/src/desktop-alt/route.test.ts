@@ -221,6 +221,10 @@ describe('US-002 pending-route aliases (desktop_alt_consume_pending_route)', () 
       kind: 'library',
       tab: 'marketplace',
     });
+    expect(resolvePendingDesktopRoute('library:installed')).toEqual({
+      kind: 'library',
+      tab: 'installed',
+    });
     expect(resolvePendingDesktopRoute('settings:meetings')).toEqual({
       kind: 'settings',
       tab: 'meetings',
