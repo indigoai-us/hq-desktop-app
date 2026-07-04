@@ -104,15 +104,10 @@ pub async fn keychain_delete(service: String, account: String) -> Result<(), Str
     Ok(())
 }
 
-/// Preserve the old installer telemetry toggle write.
-#[tauri::command]
-pub fn write_menubar_telemetry_pref(enabled: bool) -> Result<(), String> {
-    let path = paths::menubar_json_path()?;
-    hq_desktop_core::first_run::merge_menubar_flags(
-        &path,
-        &[("telemetryEnabled", Value::Bool(enabled))],
-    )
-}
+// Note: the legacy `write_menubar_telemetry_pref` command now lives in
+// commands::telemetry (added alongside onboarding telemetry opt-in persistence),
+// which is the canonical home for it. Tauri requires unique command names in
+// generate_handler!, so this compat module intentionally does NOT redeclare it.
 
 /// Preserve the old installer HQ-path write.
 #[tauri::command]
@@ -399,7 +394,8 @@ mod tests {
             "commands::compat::keychain_get",
             "commands::compat::keychain_delete",
             "commands::oauth::oauth_cancel_listen",
-            "commands::compat::write_menubar_telemetry_pref",
+            // write_menubar_telemetry_pref now lives in commands::telemetry (its
+            // canonical home) — see commands::telemetry::write_menubar_telemetry_pref.
             "commands::compat::write_menubar_hq_path",
             "commands::compat::home_dir",
             "commands::compat::write_file",

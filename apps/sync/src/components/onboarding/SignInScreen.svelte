@@ -7,12 +7,14 @@
     mapSignInError,
     type SignInProvider,
   } from '../../lib/onboarding-signin';
+  import { postOptIn } from '../../lib/onboarding-telemetry';
 
   interface Props {
+    telemetryEnabled?: boolean;
     onsignedin?: () => void;
   }
 
-  let { onsignedin }: Props = $props();
+  let { telemetryEnabled = true, onsignedin }: Props = $props();
 
   const providers: { key: SignInProvider; label: string }[] = [
     { key: 'Google', label: 'Google' },
@@ -100,6 +102,7 @@
       if (result.authenticated) {
         await refocusWindow();
         if (!isCurrentCall(call)) return;
+        void postOptIn({ enabled: telemetryEnabled });
         onsignedin?.();
       } else {
         error = 'Authentication failed. Please try again.';
