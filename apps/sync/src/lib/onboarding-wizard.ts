@@ -9,15 +9,20 @@ export interface WizardState {
 }
 
 export const WIZARD_STEPS: WizardStep[] = [
-  { index: 1, id: 'welcome', label: 'Welcome' },
-  { index: 2, id: 'install', label: 'Install' },
-  { index: 3, id: 'signin', label: 'Sign In' },
-  { index: 4, id: 'setup', label: 'Setup' },
-  { index: 5, id: 'done', label: 'Done' },
+  { index: 0, id: 'welcome-signin', label: 'Welcome' },
+  { index: 1, id: 'directory', label: 'Location' },
+  { index: 2, id: 'setup', label: 'Setup' },
+  { index: 3, id: 'ready', label: 'Ready' },
+  { index: 4, id: 'trust', label: 'Trust' },
+  { index: 5, id: 'settings', label: 'Settings' },
+  { index: 6, id: 'run-setup', label: 'Run setup' },
+  { index: 7, id: 'handoff', label: 'Handoff' },
+  { index: 8, id: 'build', label: 'Build' },
 ];
 
-const SETUP_STEP_INDEX = 4;
-const TOTAL_STEPS = WIZARD_STEPS.length;
+const FIRST_STEP_INDEX = WIZARD_STEPS[0].index;
+const SETUP_STEP_INDEX = 2;
+const FINAL_STEP_INDEX = WIZARD_STEPS[WIZARD_STEPS.length - 1].index;
 const completedSteps = new Set<number>();
 
 export const AUTH_GATED_STEPS: number[] = [SETUP_STEP_INDEX];
@@ -35,9 +40,9 @@ export function getStepValidity(
   state: Readonly<WizardState>,
 ): boolean {
   switch (step) {
-    case 2:
+    case 1:
       return state.installPath !== null && state.installPath.length > 0;
-    case 4:
+    case SETUP_STEP_INDEX:
       return false;
     default:
       return true;
@@ -56,16 +61,18 @@ export interface WizardRouter {
 
 export function createWizardRouter(opts: { start?: number } = {}): WizardRouter {
   let current =
-    opts.start !== undefined && opts.start >= 1 && opts.start <= TOTAL_STEPS
+    opts.start !== undefined &&
+    opts.start >= FIRST_STEP_INDEX &&
+    opts.start <= FINAL_STEP_INDEX
       ? opts.start
-      : 1;
+      : FIRST_STEP_INDEX;
 
   function isAuthGated(step: number): boolean {
     return AUTH_GATED_STEPS.includes(step);
   }
 
   function isCompletedGate(step: number): boolean {
-    return step === SETUP_STEP_INDEX && completedSteps.has(SETUP_STEP_INDEX);
+    return step <= SETUP_STEP_INDEX && completedSteps.has(SETUP_STEP_INDEX);
   }
 
   const router: WizardRouter = {
@@ -74,38 +81,51 @@ export function createWizardRouter(opts: { start?: number } = {}): WizardRouter 
     },
 
     next() {
-      if (current < TOTAL_STEPS) {
+      if (current < FINAL_STEP_INDEX) {
         current += 1;
       }
     },
 
     back() {
-      if (current <= 1) return;
-      if (isAuthGated(current)) return;
+      if (current <= FIRST_STEP_INDEX) return;
+      if (isAuthGated(current) && completedSteps.has(SETUP_STEP_INDEX)) return;
       current -= 1;
     },
 
     get canGoBack() {
-      return current > 1 && !isAuthGated(current);
+      return (
+        current > FIRST_STEP_INDEX &&
+        !(isAuthGated(current) && completedSteps.has(SETUP_STEP_INDEX))
+      );
     },
 
     canGoNext(state: Readonly<WizardState>) {
-      return current < TOTAL_STEPS && getStepValidity(current, state);
+      return current < FINAL_STEP_INDEX && getStepValidity(current, state);
     },
 
     goTo(step: number) {
-      if (step >= 1 && step <= TOTAL_STEPS && !isCompletedGate(step)) {
+      if (
+        step >= FIRST_STEP_INDEX &&
+        step <= FINAL_STEP_INDEX &&
+        !isCompletedGate(step)
+      ) {
         current = step;
       }
     },
 
     canNavigateTo(target: number) {
-      if (target < 1 || target > TOTAL_STEPS) return false;
+      if (target < FIRST_STEP_INDEX || target > FINAL_STEP_INDEX) return false;
       if (target === current) return false;
       if (isCompletedGate(target)) return false;
       if (target < current) {
         for (const gate of AUTH_GATED_STEPS) {
-          if (target < gate && gate <= current) return false;
+          if (
+            completedSteps.has(gate) &&
+            target < gate &&
+            gate <= current
+          ) {
+            return false;
+          }
         }
       }
       return true;
@@ -118,10 +138,10 @@ export function createWizardRouter(opts: { start?: number } = {}): WizardRouter 
 export function initialStepForLifecycle(state: string): number {
   switch (state) {
     case 'NeedsAuthForInstall':
-      return 3;
+      return 0;
     case 'InstallResume':
-      return 4;
+      return 2;
     default:
-      return 1;
+      return 0;
   }
 }

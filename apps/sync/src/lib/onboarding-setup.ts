@@ -165,6 +165,34 @@ export function setupProgressPercent(input: SetupProgressInput): number {
   return Math.round((base + (next - base) * creep) * 100);
 }
 
+export type FriendlySetupBandStatus = 'pending' | 'active' | 'done';
+
+export interface FriendlySetupBand {
+  label: string;
+  status: FriendlySetupBandStatus;
+}
+
+export const FRIENDLY_SETUP_BAND_LABELS = [
+  'Laying the groundwork',
+  'Building your workspace',
+  'Bringing in your AI workers and workflows',
+  'Making it yours',
+  'Syncing across your devices',
+] as const;
+
+export function friendlySetupBands(overallPercent: number): FriendlySetupBand[] {
+  const clamped = Math.max(0, Math.min(100, overallPercent));
+  const activeBand = clamped >= 100 ? -1 : Math.min(4, Math.floor(clamped / 20));
+
+  return FRIENDLY_SETUP_BAND_LABELS.map((label, index) => {
+    const done = clamped >= (index + 1) * 20;
+    return {
+      label,
+      status: done ? 'done' : index === activeBand ? 'active' : 'pending',
+    };
+  });
+}
+
 export function setStageStatus(
   stages: StageState[],
   id: StageId,

@@ -7,6 +7,7 @@ import {
   buildInitialStages,
   buildStagesFromManifest,
   failedRequiredStages,
+  friendlySetupBands,
   isContentRetryEligible,
   isStageSkipEligible,
   resumeStartStageFromManifest,
@@ -234,6 +235,55 @@ describe('setup progress percent', () => {
         allDone: true,
       }),
     ).toBe(100);
+  });
+});
+
+describe('friendly setup bands', () => {
+  it('marks the first band active at the start', () => {
+    expect(friendlySetupBands(0)).toEqual([
+      { label: 'Laying the groundwork', status: 'active' },
+      { label: 'Building your workspace', status: 'pending' },
+      {
+        label: 'Bringing in your AI workers and workflows',
+        status: 'pending',
+      },
+      { label: 'Making it yours', status: 'pending' },
+      { label: 'Syncing across your devices', status: 'pending' },
+    ]);
+  });
+
+  it('maps each 20 percent band to done, active, and pending states', () => {
+    expect(friendlySetupBands(42).map((band) => band.status)).toEqual([
+      'done',
+      'done',
+      'active',
+      'pending',
+      'pending',
+    ]);
+  });
+
+  it('marks every band done at completion and clamps out-of-range values', () => {
+    expect(friendlySetupBands(100).map((band) => band.status)).toEqual([
+      'done',
+      'done',
+      'done',
+      'done',
+      'done',
+    ]);
+    expect(friendlySetupBands(150).map((band) => band.status)).toEqual([
+      'done',
+      'done',
+      'done',
+      'done',
+      'done',
+    ]);
+    expect(friendlySetupBands(-12).map((band) => band.status)).toEqual([
+      'active',
+      'pending',
+      'pending',
+      'pending',
+      'pending',
+    ]);
   });
 });
 
