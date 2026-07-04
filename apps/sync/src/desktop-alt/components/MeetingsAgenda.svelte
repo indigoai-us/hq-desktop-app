@@ -254,14 +254,14 @@
 
   .panel-header h2 {
     margin: 0;
-    color: var(--fg);
+    color: var(--v4-text-1);
     font-size: var(--text-base);
     font-weight: 600;
     line-height: 20px;
   }
 
   .panel-header span {
-    color: var(--muted);
+    color: var(--v4-text-2);
     font-size: var(--text-base);
   }
 
@@ -269,10 +269,10 @@
      MeetingsWindow day-heading, retoned to the desktop-alt token palette. */
   .day-heading {
     margin: 14px 0 6px;
-    color: var(--muted);
+    color: var(--v4-text-2);
     font-size: var(--text-micro);
     font-weight: 600;
-    letter-spacing: 0.08em;
+    letter-spacing: 0;
     line-height: 16px;
     text-transform: uppercase;
   }
@@ -283,9 +283,10 @@
 
   /* Card wrapping a day's rows — mirrors prototype `.card`. */
   .meeting-card {
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: var(--bg);
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-card);
+    background: var(--v4-raised);
+    box-shadow: var(--v4-shadow-card);
     overflow: hidden;
   }
 
@@ -298,7 +299,7 @@
     gap: 14px;
     align-items: center;
     padding: 9px 16px;
-    border-top: 1px solid var(--border);
+    border-top: 1px solid var(--v4-hairline);
     transition: background-color 140ms ease;
   }
 
@@ -307,7 +308,7 @@
   }
 
   .meeting-row:not(.empty-row):hover {
-    background: var(--row-hover);
+    background: var(--v4-active-row);
   }
 
   .meeting-row.past {
@@ -315,14 +316,14 @@
   }
 
   .mtime {
-    color: var(--muted);
+    color: var(--v4-text-2);
     font-family: var(--font-mono);
     font-size: var(--text-base);
     white-space: nowrap;
   }
 
   .mtime .mdur {
-    color: var(--muted-3);
+    color: var(--v4-text-3);
   }
 
   .mmeta {
@@ -335,7 +336,7 @@
     gap: 6px;
     min-width: 0;
     overflow: hidden;
-    color: var(--fg);
+    color: var(--v4-text-1);
     font-size: var(--text-base);
     line-height: 18px;
     white-space: nowrap;
@@ -354,7 +355,7 @@
     justify-content: center;
     width: 14px;
     height: 14px;
-    color: var(--muted-3);
+    color: var(--v4-text-3);
     line-height: 1;
     opacity: 0.76;
   }
@@ -366,23 +367,23 @@
   }
 
   .series-chip:hover {
-    color: var(--muted);
+    color: var(--v4-text-2);
     opacity: 1;
   }
 
   .dot-live {
     margin-right: 6px;
-    color: var(--emerald);
+    color: var(--v4-ok);
   }
 
   .arrow-next {
     margin-right: 6px;
-    color: var(--muted);
+    color: var(--v4-text-2);
   }
 
   .mcompany {
     overflow: hidden;
-    color: var(--muted);
+    color: var(--v4-text-2);
     font-size: var(--text-base);
     line-height: 16px;
     text-overflow: ellipsis;
@@ -390,7 +391,7 @@
   }
 
   .msig {
-    color: var(--muted-3);
+    color: var(--v4-text-3);
     font-size: var(--text-base);
     white-space: nowrap;
   }
@@ -400,31 +401,31 @@
     align-items: center;
     gap: 6px;
     padding: 2px 8px;
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    color: var(--muted);
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-pill);
+    color: var(--v4-text-2);
     font-size: var(--text-base);
     line-height: 16px;
     white-space: nowrap;
   }
 
   .pill.ok {
-    color: var(--emerald);
-    border-color: rgba(52, 211, 153, 0.22);
+    color: var(--v4-ok);
+    border-color: var(--v4-control-border);
   }
 
   .pill.live {
-    color: var(--emerald);
-    border-color: rgba(52, 211, 153, 0.22);
+    color: var(--v4-ok);
+    border-color: var(--v4-control-border);
   }
 
   .pill.live::before {
     content: '';
     width: 6px;
     height: 6px;
-    border-radius: 50%;
-    background: var(--emerald);
-    box-shadow: 0 0 8px rgba(52, 211, 153, 0.7);
+    border-radius: var(--v4-radius-pill);
+    background: var(--v4-ok);
+    box-shadow: none;
     animation: livePulse 2s ease-in-out infinite;
   }
 
@@ -435,7 +436,7 @@
   /* ── Action cluster (parity 5th column) ───────────────────────────────
      Icon-only buttons ported from classic MeetingsWindow.row-actions, with
      base neutrals retoned to the desktop-alt token palette. The status
-     colour vocabulary (red live / amber joining / blue processing / green
+     colour vocabulary (red live / amber joining / neutral processing / green
      done) is preserved; tooltips carry meaning so icon-only stays a11y-safe. */
   .mactions {
     flex: 0 0 auto;
@@ -453,20 +454,20 @@
     align-items: center;
     justify-content: center;
     padding: 0;
-    border: 1px solid var(--border);
-    border-radius: 5px;
-    background: var(--row-hover);
-    color: var(--muted-2);
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-button);
+    background: var(--v4-active-row);
+    color: var(--v4-text-2);
     cursor: pointer;
     transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
   }
   .row-icon-btn:hover:not(:disabled) {
     background: var(--v4-active-row);
-    border-color: var(--border-strong);
-    color: var(--fg);
+    border-color: var(--v4-control-border);
+    color: var(--v4-text-1);
   }
   .row-icon-btn:focus-visible {
-    outline: 2px solid rgba(180, 180, 255, 0.7);
+    outline: 2px solid var(--v4-control-border);
     outline-offset: 1px;
   }
   .row-icon-btn:disabled {
@@ -476,7 +477,7 @@
 
   /* No URL — inert placeholder, keeps the trailing column aligned. */
   .row-icon-empty {
-    color: var(--muted-3);
+    color: var(--v4-text-3);
     background: transparent;
     border-color: transparent;
     cursor: default;
@@ -484,86 +485,86 @@
   }
   /* Open-in-browser — discreet so the eye lands on the state button first. */
   .row-icon-join {
-    color: var(--muted-2);
+    color: var(--v4-text-2);
     background: transparent;
-    border-color: var(--border);
+    border-color: var(--v4-hairline);
   }
   /* Invite CTA — brighter so it reads as actionable. */
   .row-icon-invite {
-    color: var(--fg);
+    color: var(--v4-text-1);
     background: var(--v4-control-bg);
-    border-color: var(--border-strong);
+    border-color: var(--v4-control-border);
   }
   .row-icon-invite:hover:not(:disabled) {
     background: var(--v4-active-row);
   }
   /* Invited — muted check; hover hints at the uninvite affordance. */
   .row-icon-invited {
-    color: var(--muted-2);
+    color: var(--v4-text-2);
   }
   .row-icon-invited:hover:not(:disabled) {
     color: var(--v4-error);
-    background: rgba(220, 38, 38, 0.12);
-    border-color: rgba(220, 38, 38, 0.4);
+    background: var(--v4-control-faint);
+    border-color: var(--v4-control-border);
   }
   /* In-call — red tint broadcasts "live" at a glance. */
   .row-icon-incall {
     color: var(--v4-error);
-    background: rgba(220, 38, 38, 0.12);
-    border-color: rgba(220, 38, 38, 0.4);
+    background: var(--v4-control-faint);
+    border-color: var(--v4-control-border);
   }
   .row-icon-incall:hover:not(:disabled) {
-    background: rgba(220, 38, 38, 0.22);
+    background: var(--v4-active-row);
   }
   /* Joining — amber spinner; transient. */
   .row-icon-joining {
     color: var(--v4-warn);
-    background: rgba(202, 138, 4, 0.1);
-    border-color: rgba(202, 138, 4, 0.4);
+    background: var(--v4-control-faint);
+    border-color: var(--v4-control-border);
   }
-  /* Processing — muted blue; non-interactive. */
+  /* Processing — muted neutral; non-interactive. */
   .row-icon-processing {
-    color: var(--v4-unread);
-    background: rgba(59, 130, 246, 0.08);
-    border-color: rgba(59, 130, 246, 0.3);
+    color: var(--v4-text-2);
+    background: var(--v4-control-faint);
+    border-color: var(--v4-control-border);
     cursor: default;
   }
   /* Done — muted green; non-interactive. */
   .row-icon-done {
-    color: var(--emerald);
-    background: rgba(52, 211, 153, 0.08);
-    border-color: rgba(52, 211, 153, 0.3);
+    color: var(--v4-ok);
+    background: var(--v4-control-faint);
+    border-color: var(--v4-control-border);
     cursor: default;
   }
   /* Join-now — amber-accented "act now", distinct from state colours. */
   .row-icon-bot-now {
     color: var(--v4-warn);
-    background: rgba(202, 138, 4, 0.08);
-    border-color: rgba(202, 138, 4, 0.32);
+    background: var(--v4-control-faint);
+    border-color: var(--v4-control-border);
   }
   .row-icon-bot-now:hover:not(:disabled) {
-    background: rgba(202, 138, 4, 0.18);
-    border-color: rgba(202, 138, 4, 0.55);
+    background: var(--v4-active-row);
+    border-color: var(--v4-control-border);
   }
 
   .live-dot {
     display: inline-block;
     width: 6px;
     height: 6px;
-    border-radius: 50%;
+    border-radius: var(--v4-radius-pill);
     background: var(--v4-error);
-    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7);
+    box-shadow: 0 0 0 0 var(--v4-error);
     animation: live-pulse 1.6s ease-out infinite;
   }
   @keyframes live-pulse {
     0% {
-      box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.55);
+      box-shadow: 0 0 0 0 var(--v4-error);
     }
     70% {
-      box-shadow: 0 0 0 6px rgba(239, 68, 68, 0);
+      box-shadow: 0 0 0 6px transparent;
     }
     100% {
-      box-shadow: 0 0 0 0 rgba(239, 68, 68, 0);
+      box-shadow: 0 0 0 0 transparent;
     }
   }
 
@@ -572,7 +573,7 @@
   .row-icon-spinner {
     width: 12px;
     height: 12px;
-    border-radius: 50%;
+    border-radius: var(--v4-radius-pill);
     border: 1.5px solid currentColor;
     border-right-color: transparent;
     animation: row-icon-spin 0.7s linear infinite;
@@ -589,7 +590,7 @@
 
   .empty-row {
     display: block;
-    color: var(--muted);
+    color: var(--v4-text-2);
     font-size: var(--text-base);
     line-height: 18px;
   }

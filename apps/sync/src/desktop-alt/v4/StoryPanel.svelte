@@ -249,7 +249,7 @@
     position: fixed;
     inset: 0;
     z-index: 90;
-    background: rgba(0, 0, 0, 0.36);
+    background: var(--pop-highlight);
   }
 
   .story-panel {
@@ -261,9 +261,9 @@
     width: min(420px, 100vw);
     flex-direction: column;
     border-left: 1px solid var(--v4-hairline);
-    background: var(--v4-raised);
+    background: var(--v4-chrome);
     color: var(--v4-text-1);
-    box-shadow: -20px 0 48px rgba(0, 0, 0, 0.32);
+    box-shadow: var(--v4-shadow-popover);
   }
 
   .panel-header,
@@ -321,7 +321,7 @@
     min-height: 22px;
     padding: 0 8px;
     border: 1px solid var(--v4-hairline);
-    border-radius: 6px;
+    border-radius: var(--v4-radius-button);
     background: var(--v4-inset);
     color: var(--v4-text-2);
     font-size: var(--text-base);
@@ -331,7 +331,7 @@
     width: 28px;
     height: 28px;
     border: 0;
-    border-radius: 6px;
+    border-radius: var(--v4-radius-button);
     background: transparent;
     color: var(--v4-text-3);
     font: inherit;
@@ -358,7 +358,7 @@
   .panel-footer button {
     height: 28px;
     border: 0;
-    border-radius: 5px;
+    border-radius: var(--v4-radius-button);
     background: transparent;
     color: var(--v4-text-3);
     font: inherit;
@@ -412,7 +412,7 @@
   .progress-track {
     height: 4px;
     overflow: hidden;
-    border-radius: 999px;
+    border-radius: var(--v4-radius-pill);
     background: var(--v4-rowline);
   }
 
@@ -447,7 +447,7 @@
     width: 18px;
     height: 18px;
     border: 1px solid var(--v4-hairline);
-    border-radius: 5px;
+    border-radius: var(--v4-radius-button);
     background: transparent;
     color: var(--v4-ok);
     font-size: var(--text-base);
@@ -470,7 +470,7 @@
   .file-list li {
     overflow: hidden;
     color: var(--v4-text-2);
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-family: var(--font-mono);
     font-size: var(--text-base);
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -502,8 +502,8 @@
 
   .panel-footer button.primary {
     border-color: transparent;
-    background: var(--v4-control-bg);
-    color: var(--v4-text-1);
+    background: var(--v4-primary-bg);
+    color: var(--v4-primary-fg);
   }
 
   .panel-footer button:disabled {

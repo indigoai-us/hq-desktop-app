@@ -106,20 +106,20 @@
   .story-list {
     display: flex;
     flex-direction: column;
-    gap: var(--space-1);
+    gap: var(--v4-space-1);
     min-width: 0;
   }
 
   .story-row {
     display: flex;
     align-items: center;
-    gap: var(--space-3);
+    gap: var(--v4-space-3);
     width: 100%;
     min-width: 0;
-    padding: var(--space-2) var(--space-3);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--bg);
+    padding: var(--v4-space-2) var(--v4-space-3);
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-button);
+    background: var(--v4-raised);
     text-align: left;
     cursor: pointer;
     transition:
@@ -128,12 +128,12 @@
   }
 
   .story-row:hover {
-    border-color: var(--border-strong);
-    background: var(--row-hover);
+    border-color: var(--v4-control-border);
+    background: var(--v4-active-row);
   }
 
   .story-row:focus-visible {
-    outline: 2px solid var(--blue);
+    outline: 2px solid var(--v4-control-border);
     outline-offset: 2px;
   }
 
@@ -145,31 +145,30 @@
     flex: 0 0 auto;
     width: 8px;
     height: 8px;
-    border-radius: 999px;
-    background: var(--muted-3);
+    border-radius: var(--v4-radius-pill);
+    background: var(--v4-text-3);
   }
 
   /* Status carried by neutral surface layering + the muted/emerald markers the
      desktop token set permits — no severity palette. */
   .state-dot[data-state='blocked'] {
-    background: var(--amber);
+    background: var(--v4-warn);
   }
 
   .state-dot[data-state='in-progress'] {
-    background: var(--emerald);
+    background: var(--v4-ok);
   }
 
   .state-dot[data-state='complete'] {
-    background: var(--muted-2);
+    background: var(--v4-text-2);
   }
 
   .story-id {
     flex: 0 0 auto;
     width: 56px;
     overflow: hidden;
-    color: var(--muted);
-    font-family:
-      ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+    color: var(--v4-text-2);
+    font-family: var(--font-mono);
     font-size: var(--text-base);
     font-weight: 600;
     text-overflow: ellipsis;
@@ -180,14 +179,14 @@
     display: flex;
     flex: 1 1 auto;
     align-items: center;
-    gap: var(--space-2);
+    gap: var(--v4-space-2);
     min-width: 0;
   }
 
   .story-title {
     flex: 0 1 auto;
     overflow: hidden;
-    color: var(--fg);
+    color: var(--v4-text-1);
     font-size: var(--text-base);
     font-weight: 600;
     text-overflow: ellipsis;
@@ -197,7 +196,7 @@
   .row-labels {
     display: flex;
     flex: 0 1 auto;
-    gap: var(--space-1);
+    gap: var(--v4-space-1);
     min-width: 0;
     overflow: hidden;
   }
@@ -209,72 +208,71 @@
     flex: 0 0 auto;
     align-items: center;
     padding: 1px 7px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--row-active);
-    color: var(--muted-2);
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-button);
+    background: var(--v4-control-faint);
+    color: var(--v4-text-2);
     font-size: var(--text-base);
     font-weight: 600;
     line-height: 16px;
   }
 
   .state-badge[data-state='blocked'] {
-    color: var(--amber);
+    color: var(--v4-warn);
   }
 
   .state-badge[data-state='in-progress'] {
-    color: var(--emerald);
+    color: var(--v4-ok);
   }
 
   .state-badge[data-state='complete'] {
-    color: var(--muted-3);
+    color: var(--v4-text-3);
   }
 
   .priority-badge {
     font-variant-numeric: tabular-nums;
   }
 
-  /* Color-coded priority (hq-desktop parity): P1 red · P2 amber · P3 blue. */
   .priority-badge[data-priority='P1'] {
-    border-color: transparent;
-    background: rgba(248, 113, 113, 0.15);
-    color: var(--red);
+    border-color: var(--v4-control-border);
+    background: var(--v4-control-faint);
+    color: var(--v4-error);
   }
   .priority-badge[data-priority='P2'] {
-    border-color: transparent;
-    background: rgba(245, 158, 11, 0.15);
-    color: var(--amber);
+    border-color: var(--v4-control-border);
+    background: var(--v4-control-faint);
+    color: var(--v4-warn);
   }
   .priority-badge[data-priority='P3'] {
-    border-color: transparent;
-    background: rgba(96, 165, 250, 0.15);
-    color: var(--blue);
+    border-color: var(--v4-control-border);
+    background: var(--v4-control-faint);
+    color: var(--v4-text-3);
   }
 
   .ac-count {
     flex: 0 0 auto;
-    color: var(--muted-3);
+    color: var(--v4-text-3);
     font-size: var(--text-base);
     font-variant-numeric: tabular-nums;
     font-weight: 600;
   }
 
   .empty-state {
-    padding: var(--space-6);
-    border: 1px dashed var(--border-strong);
-    border-radius: var(--radius-sm);
-    background: var(--bg);
+    padding: var(--v4-space-6);
+    border: 1px dashed var(--v4-control-border);
+    border-radius: var(--v4-radius-button);
+    background: var(--v4-raised);
     text-align: center;
   }
 
   .empty-state p {
-    margin: 0 0 var(--space-1);
-    color: var(--fg);
+    margin: 0 0 var(--v4-space-1);
+    color: var(--v4-text-1);
     font-weight: 600;
   }
 
   .empty-state span {
-    color: var(--muted);
+    color: var(--v4-text-2);
     font-size: var(--text-base);
   }
 

@@ -35,7 +35,7 @@ describe('desktop-alt company Goals view source contract (US-006)', () => {
     expect(page).toContain('onclick={newGoal}');
     expect(page).toContain("invoke('open_claude_code_link', { url })");
     expect(page).toContain('buildClaudeCodeUrl({ folder: config.hqFolderPath ?? \'\', prompt })');
-    expect(page).toContain('rgba(254, 188, 46, 0.3)');
+    expect(page).toContain('border-color: var(--v4-warn)');
   });
 
   it('linked project chips drill into the existing project detail view', () => {

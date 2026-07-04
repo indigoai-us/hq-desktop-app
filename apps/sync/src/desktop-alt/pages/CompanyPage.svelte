@@ -137,7 +137,8 @@
 <style>
   .company-page {
     display: grid;
-    gap: 18px;
+    gap: var(--v4-space-5);
+    font-family: var(--font-sans);
   }
 
   .visually-hidden {
@@ -168,10 +169,10 @@
     height: 30px;
     overflow: hidden;
     padding: 0 11px;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    background: transparent;
-    color: var(--fg);
+    border: 1px solid var(--v4-control-border);
+    border-radius: var(--v4-radius-button);
+    background: var(--v4-secondary-bg);
+    color: var(--v4-secondary-fg);
     font: inherit;
     font-size: var(--text-base);
     font-weight: 400;
@@ -183,15 +184,15 @@
   }
 
   .company-actions button:hover {
-    border-color: var(--border-strong);
-    background: var(--row-hover);
+    border-color: var(--v4-hairline);
+    background: var(--v4-active-row);
     transform: translateY(-1px);
   }
 
   .company-actions button.primary {
     border-color: transparent;
-    background: var(--v4-control-bg);
-    color: var(--v4-text-1);
+    background: var(--v4-primary-bg);
+    color: var(--v4-primary-fg);
   }
 
   .company-actions button:active {

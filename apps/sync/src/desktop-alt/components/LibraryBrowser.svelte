@@ -264,8 +264,9 @@
   .library-browser {
     display: flex;
     flex-direction: column;
-    gap: var(--space-4);
+    gap: var(--v4-space-4);
     min-width: 0;
+    font-family: var(--font-sans);
   }
 
   .toolbar {
@@ -273,35 +274,35 @@
     flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
-    gap: var(--space-3);
+    gap: var(--v4-space-3);
     min-width: 0;
   }
 
   .toolbar-right {
     display: flex;
     align-items: center;
-    gap: var(--space-2);
+    gap: var(--v4-space-2);
     min-width: 0;
   }
 
   .segmented {
     display: inline-flex;
-    gap: var(--space-1);
-    padding: var(--space-1);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    background: var(--row-active);
+    gap: var(--v4-space-1);
+    padding: var(--v4-space-1);
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-field);
+    background: var(--v4-control-faint);
   }
 
   .segmented button {
     display: inline-flex;
     align-items: center;
-    gap: var(--space-1);
-    padding: var(--space-1) var(--space-3);
+    gap: var(--v4-space-1);
+    padding: var(--v4-space-1) var(--v4-space-3);
     border: 0;
-    border-radius: 3px;
+    border-radius: var(--v4-radius-button);
     background: transparent;
-    color: var(--muted);
+    color: var(--v4-text-2);
     font: inherit;
     font-size: var(--text-base);
     font-weight: 600;
@@ -312,26 +313,26 @@
   }
 
   .segmented button:hover {
-    color: var(--fg);
+    color: var(--v4-text-1);
   }
 
   .segmented button.active {
-    background: var(--bg);
-    color: var(--fg);
+    background: var(--v4-raised);
+    color: var(--v4-text-1);
   }
 
   .segmented button:focus-visible {
-    outline: 2px solid var(--blue);
+    outline: 2px solid var(--v4-control-border);
     outline-offset: 2px;
   }
 
   .seg-count {
     min-width: 18px;
     padding: 0 5px;
-    border-radius: 999px;
-    background: var(--row-hover);
-    color: var(--muted-3);
-    font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+    border-radius: var(--v4-radius-pill);
+    background: var(--v4-active-row);
+    color: var(--v4-text-3);
+    font-family: var(--font-mono);
     font-size: var(--text-base);
     font-weight: 600;
     font-variant-numeric: tabular-nums;
@@ -350,11 +351,11 @@
     align-items: center;
     gap: 6px;
     height: 32px;
-    padding: 0 var(--space-2);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    background: var(--row-active);
-    color: var(--fg);
+    padding: 0 var(--v4-space-2);
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-button);
+    background: var(--v4-control-faint);
+    color: var(--v4-text-1);
     font: inherit;
     font-size: var(--text-base);
     cursor: pointer;
@@ -364,70 +365,71 @@
   }
 
   .scope-trigger:hover {
-    border-color: var(--border-strong);
-    background: var(--row-hover);
+    border-color: var(--v4-control-border);
+    background: var(--v4-active-row);
   }
 
   .scope-trigger.active {
-    border-color: color-mix(in srgb, var(--blue) 45%, transparent);
+    border-color: var(--v4-control-border);
+    background: var(--v4-active-row);
   }
 
   .scope-trigger:focus-visible {
-    outline: 2px solid var(--blue);
+    outline: 2px solid var(--v4-control-border);
     outline-offset: 2px;
   }
 
   .scope-label {
-    color: var(--muted);
-    font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+    color: var(--v4-text-2);
+    font-family: var(--font-mono);
     font-size: var(--text-micro);
     font-weight: 600;
-    letter-spacing: 0.08em;
+    letter-spacing: 0;
     text-transform: uppercase;
   }
 
   .scope-value {
-    color: var(--fg);
+    color: var(--v4-text-1);
     font-size: var(--text-base);
     font-weight: 600;
   }
 
   .scope-caret {
-    color: var(--muted-3);
+    color: var(--v4-text-3);
     font-size: var(--text-base);
     line-height: 1;
   }
 
   .scope-menu {
     position: absolute;
-    top: calc(100% + var(--space-1));
+    top: calc(100% + var(--v4-space-1));
     right: 0;
     z-index: 50;
     min-width: 184px;
     max-height: 320px;
     overflow-y: auto;
-    padding: var(--space-1);
-    border: 1px solid var(--border-strong);
-    border-radius: 4px;
-    background: var(--bg);
-    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
+    padding: var(--v4-space-1);
+    border: 1px solid var(--v4-control-border);
+    border-radius: var(--v4-radius-popover);
+    background: var(--v4-raised);
+    box-shadow: var(--v4-shadow-popover);
   }
 
   .scope-menu-actions {
     display: flex;
     align-items: center;
-    gap: var(--space-1);
-    padding: var(--space-1) var(--space-2) var(--space-2);
-    border-bottom: 1px solid var(--border);
-    margin-bottom: var(--space-1);
-    color: var(--muted-3);
+    gap: var(--v4-space-1);
+    padding: var(--v4-space-1) var(--v4-space-2) var(--v4-space-2);
+    border-bottom: 1px solid var(--v4-hairline);
+    margin-bottom: var(--v4-space-1);
+    color: var(--v4-text-3);
     font-size: var(--text-base);
   }
 
   .scope-menu-actions button {
     border: 0;
     background: transparent;
-    color: var(--blue);
+    color: var(--v4-text-2);
     font: inherit;
     font-size: var(--text-base);
     font-weight: 600;
@@ -441,13 +443,13 @@
   .scope-option {
     display: flex;
     align-items: center;
-    gap: var(--space-2);
+    gap: var(--v4-space-2);
     width: 100%;
-    padding: var(--space-1) var(--space-2);
+    padding: var(--v4-space-1) var(--v4-space-2);
     border: 0;
-    border-radius: 3px;
+    border-radius: var(--v4-radius-button);
     background: transparent;
-    color: var(--muted-2);
+    color: var(--v4-text-2);
     font: inherit;
     font-size: var(--text-base);
     text-align: left;
@@ -455,8 +457,8 @@
   }
 
   .scope-option:hover {
-    background: var(--row-hover);
-    color: var(--fg);
+    background: var(--v4-active-row);
+    color: var(--v4-text-1);
   }
 
   .checkbox {
@@ -466,32 +468,32 @@
     justify-content: center;
     width: 15px;
     height: 15px;
-    border: 1px solid var(--border-strong);
-    border-radius: 3px;
-    background: var(--row-active);
-    color: var(--bg);
+    border: 1px solid var(--v4-control-border);
+    border-radius: var(--v4-radius-button);
+    background: var(--v4-control-faint);
+    color: var(--v4-raised);
     font-size: var(--text-base);
     font-weight: 600;
     line-height: 1;
   }
 
   .checkbox.checked {
-    border-color: var(--blue);
-    background: var(--blue);
+    border-color: var(--v4-primary-bg);
+    background: var(--v4-primary-bg);
+    color: var(--v4-primary-fg);
   }
 
-  /* Scope option label carries the same per-facet tint as the card pills. */
   .scope-option-label {
     font-weight: 600;
   }
   .scope-option-label[data-facet='core'] {
-    color: var(--blue);
+    color: var(--v4-text-2);
   }
   .scope-option-label[data-facet='personal'] {
-    color: var(--amber);
+    color: var(--v4-text-2);
   }
   .scope-option-label:not([data-facet='core']):not([data-facet='personal']) {
-    color: var(--emerald);
+    color: var(--v4-text-2);
   }
 
   .search {
@@ -499,44 +501,45 @@
     max-width: 240px;
     min-width: 0;
     height: 32px;
-    padding: 0 var(--space-3);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    background: var(--bg);
-    color: var(--fg);
+    padding: 0 var(--v4-space-3);
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-field);
+    background: var(--v4-raised);
+    color: var(--v4-text-1);
     font: inherit;
     font-size: var(--text-base);
   }
 
   .search::placeholder {
-    color: var(--muted-3);
+    color: var(--v4-text-3);
   }
 
   .search:focus-visible {
-    outline: 2px solid var(--blue);
+    outline: 2px solid var(--v4-control-border);
     outline-offset: 1px;
   }
 
   .browser-error {
-    padding: var(--space-3);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    background: var(--row-active);
-    color: var(--amber);
+    padding: var(--v4-space-3);
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-field);
+    background: var(--v4-control-faint);
+    color: var(--v4-warn);
     font-size: var(--text-base);
   }
 
   .browser-loading {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(296px, 1fr));
-    gap: var(--space-2);
+    gap: var(--v4-space-2);
   }
 
   .card-skeleton {
     height: 104px;
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    background: var(--row-active);
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-card);
+    background: var(--v4-control-faint);
+    box-shadow: var(--v4-shadow-card);
     animation: lib-skeleton-pulse 1.3s ease-in-out infinite;
   }
 

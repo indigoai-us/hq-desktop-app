@@ -125,7 +125,7 @@
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(272px, 1fr));
     align-items: start;
-    gap: var(--space-2);
+    gap: var(--v4-space-2);
     min-width: 0;
   }
 
@@ -133,14 +133,14 @@
     position: relative;
     display: flex;
     flex-direction: column;
-    gap: var(--space-2);
+    gap: var(--v4-space-2);
     min-width: 0;
-    padding: var(--space-3) var(--space-3) var(--space-3) calc(var(--space-3) + 4px);
+    padding: var(--v4-space-3) var(--v4-space-3) var(--v4-space-3) calc(var(--v4-space-3) + 4px);
     overflow: hidden;
-    /* Near-square corners + hairline border = Foundry tile. */
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    background: var(--row-active);
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-card);
+    background: var(--v4-raised);
+    box-shadow: var(--v4-shadow-card);
     text-align: left;
     cursor: pointer;
     transition:
@@ -150,17 +150,16 @@
   }
 
   .lib-card:hover {
-    border-color: var(--border-strong);
-    background: var(--row-hover);
+    border-color: var(--v4-control-border);
+    background: var(--v4-active-row);
     transform: translateY(-1px);
   }
 
   .lib-card:focus-visible {
-    outline: 2px solid var(--blue);
+    outline: 2px solid var(--v4-control-border);
     outline-offset: 2px;
   }
 
-  /* Left kind accent bar — emerald (worker) / blue (skill), brightens on hover. */
   .accent {
     position: absolute;
     inset-block: 0;
@@ -170,10 +169,10 @@
     transition: opacity 140ms ease;
   }
   .lib-card.is-worker .accent {
-    background: var(--emerald);
+    background: var(--v4-text-3);
   }
   .lib-card.is-skill .accent {
-    background: var(--blue);
+    background: var(--v4-text-1);
   }
   .lib-card:hover .accent {
     opacity: 1;
@@ -183,40 +182,39 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: var(--space-2);
+    gap: var(--v4-space-2);
     min-width: 0;
   }
 
-  /* Monospace ALL-CAPS micro-label — the signature ops-console tag. */
   .kind-tag {
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    color: var(--muted-2);
-    font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+    color: var(--v4-text-2);
+    font-family: var(--font-mono);
     font-size: var(--text-micro);
     font-weight: 600;
-    letter-spacing: 0.09em;
+    letter-spacing: 0;
     text-transform: uppercase;
   }
 
   .kind-dot {
     width: 6px;
     height: 6px;
-    border-radius: 999px;
-    background: var(--muted-3);
+    border-radius: var(--v4-radius-pill);
+    background: var(--v4-text-3);
   }
   .lib-card.is-worker .kind-dot {
-    background: var(--emerald);
+    background: var(--v4-text-2);
   }
   .lib-card.is-skill .kind-dot {
-    background: var(--blue);
+    background: var(--v4-text-1);
   }
 
   .card-name {
     margin: 0;
     overflow: hidden;
-    color: var(--fg);
+    color: var(--v4-text-1);
     font-size: var(--text-base);
     font-weight: 600;
     line-height: 18px;
@@ -231,62 +229,60 @@
     min-width: 0;
   }
 
-  /* Base pill — mono, uppercase, hairline. */
   .pill {
     display: inline-flex;
     align-items: center;
     max-width: 100%;
     overflow: hidden;
     padding: 1px 7px;
-    border: 1px solid var(--border);
-    border-radius: 3px;
-    background: var(--row-hover);
-    color: var(--muted-2);
-    font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-button);
+    background: var(--v4-active-row);
+    color: var(--v4-text-2);
+    font-family: var(--font-mono);
     font-size: var(--text-micro);
     font-weight: 600;
-    letter-spacing: 0.05em;
+    letter-spacing: 0;
     line-height: 15px;
     text-overflow: ellipsis;
     text-transform: uppercase;
     white-space: nowrap;
   }
 
-  /* Scope pills carry the strongest hierarchy cue — tinted text + edge. */
   .pill.scope {
     flex: 0 0 auto;
   }
   .scope-core {
-    border-color: color-mix(in srgb, var(--blue) 38%, transparent);
-    color: var(--blue);
+    border-color: var(--v4-hairline);
+    color: var(--v4-text-2);
   }
   .scope-personal {
-    border-color: color-mix(in srgb, var(--amber) 40%, transparent);
-    color: var(--amber);
+    border-color: var(--v4-hairline);
+    color: var(--v4-text-2);
   }
   .scope-company {
-    border-color: color-mix(in srgb, var(--emerald) 42%, transparent);
-    color: var(--emerald);
+    border-color: var(--v4-hairline);
+    color: var(--v4-text-2);
   }
 
   /* Meta pills (type / pack / counts) stay neutral so scope dominates. */
   .pill.meta {
-    color: var(--muted-2);
+    color: var(--v4-text-2);
   }
   .pill.meta.ghost {
     background: transparent;
-    color: var(--muted);
+    color: var(--v4-text-2);
   }
   .pill.meta.pack {
-    border-color: color-mix(in srgb, var(--blue) 26%, transparent);
-    color: var(--muted-2);
+    border-color: var(--v4-hairline);
+    color: var(--v4-text-2);
   }
 
   .card-desc {
     margin: 2px 0 0;
     min-width: 0;
     overflow: hidden;
-    color: var(--muted);
+    color: var(--v4-text-2);
     font-size: var(--text-base);
     line-height: 16px;
     /* Clamp to two lines so tiles stay uniform. */
@@ -297,21 +293,22 @@
   }
 
   .empty-state {
-    padding: var(--space-6);
-    border: 1px dashed var(--border-strong);
-    border-radius: 4px;
-    background: var(--row-active);
+    padding: var(--v4-space-6);
+    border: 1px dashed var(--v4-control-border);
+    border-radius: var(--v4-radius-card);
+    background: var(--v4-raised);
+    box-shadow: var(--v4-shadow-card);
     text-align: center;
   }
 
   .empty-state p {
-    margin: 0 0 var(--space-1);
-    color: var(--fg);
+    margin: 0 0 var(--v4-space-1);
+    color: var(--v4-text-1);
     font-weight: 600;
   }
 
   .empty-state span {
-    color: var(--muted);
+    color: var(--v4-text-2);
     font-size: var(--text-base);
   }
 

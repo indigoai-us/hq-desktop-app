@@ -127,14 +127,12 @@
 </section>
 
 <style>
-  /* Page shell mirrors the existing primary destinations (design.md
-     "Navigation"): the outer .page already pads the surface; sections stack
-     with an 18px gap. */
   .mc {
     display: flex;
     flex-direction: column;
-    gap: 18px;
+    gap: var(--v4-space-5);
     min-height: 0;
+    font-family: var(--font-sans);
   }
 
   .mc-header {
@@ -148,12 +146,10 @@
     line-height: 1.3;
   }
 
-  /* Summary strip — 4 inset tiles (#19191B, 10px radius): caps label + status
-     dot + big Geist value + hint. */
   .mc-summary {
     display: grid;
     grid-template-columns: repeat(4, 1fr);
-    gap: 12px;
+    gap: var(--v4-space-3);
   }
 
   .mc-tile {
@@ -162,8 +158,9 @@
     gap: 6px;
     padding: 12px 14px;
     border: 1px solid var(--v4-hairline);
-    border-radius: 10px;
-    background: var(--v4-inset);
+    border-radius: var(--v4-radius-card);
+    background: var(--v4-raised);
+    box-shadow: var(--v4-shadow-card);
   }
 
   .mc-tile-label {
@@ -173,13 +170,13 @@
     color: var(--v4-text-3);
     font-size: var(--text-base);
     font-weight: 600;
-    letter-spacing: 0.06em;
+    letter-spacing: 0;
     text-transform: uppercase;
   }
 
   .mc-tile-value {
     color: var(--v4-text-1);
-    font-family: var(--font-display);
+    font-family: var(--font-sans);
     font-size: var(--text-kpi);
     font-weight: 600;
     line-height: 1;
@@ -195,7 +192,7 @@
     flex: 0 0 6px;
     width: 6px;
     height: 6px;
-    border-radius: 999px;
+    border-radius: var(--v4-radius-pill);
     background: var(--v4-idle);
   }
 
@@ -214,7 +211,7 @@
   /* Agency row — questions (wider) left, teams right. */
   .mc-agency {
     display: flex;
-    gap: 18px;
+    gap: var(--v4-space-5);
   }
   .mc-agency-q { flex: 3 1 0; }
   .mc-agency-t { flex: 2 1 0; }
@@ -226,20 +223,21 @@
   .mc-columns {
     display: flex;
     flex: 1 1 auto;
-    gap: 18px;
+    gap: var(--v4-space-5);
     min-height: 0;
   }
 
   .mc-col {
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: var(--v4-space-3);
     min-width: 0;
     min-height: 220px;
     padding: 14px;
     border: 1px solid var(--v4-hairline);
-    border-radius: 10px;
+    border-radius: var(--v4-radius-card);
     background: var(--v4-raised);
+    box-shadow: var(--v4-shadow-card);
   }
 
   .mc-col-live {

@@ -72,7 +72,7 @@
     align-items: center;
     gap: 1px;
     padding: 2px;
-    border-radius: 999px;
+    border-radius: var(--v4-radius-pill);
     background: var(--v4-control-faint);
     border: 1px solid var(--v4-hairline);
     flex-shrink: 0;
@@ -93,7 +93,7 @@
     font-weight: 400;
     line-height: 1;
     padding: 3px 9px;
-    border-radius: 999px;
+    border-radius: var(--v4-radius-pill);
     cursor: pointer;
     transition:
       background-color 0.12s ease,
@@ -105,8 +105,8 @@
   }
 
   .syncmode-opt.active {
-    background: var(--v4-control-bg);
-    color: var(--v4-text-1);
+    background: var(--v4-primary-bg);
+    color: var(--v4-primary-fg);
   }
 
   .syncmode-opt:disabled {

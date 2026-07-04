@@ -583,7 +583,7 @@
     container: company-projects / inline-size;
     display: flex;
     flex-direction: column;
-    gap: 22px;
+    gap: var(--v4-space-5);
     min-width: 0;
     height: 100%;
     color: var(--v4-text-1);
@@ -604,7 +604,7 @@
 
   .projects-header {
     justify-content: space-between;
-    gap: 18px;
+    gap: var(--v4-space-5);
   }
 
   .projects-heading {
@@ -615,9 +615,9 @@
   .projects-heading h2 {
     margin: 0;
     color: var(--v4-text-1);
-    font-size: var(--text-base);
-    font-weight: 500;
-    line-height: 1.2;
+    font-size: var(--text-lg);
+    font-weight: 600;
+    line-height: 1.15;
   }
 
   .projects-heading span {
@@ -644,13 +644,19 @@
   .project-actions button {
     height: 28px;
     padding: 0 12px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: 6px;
-    background: var(--v4-control-bg);
-    color: var(--v4-text-2);
+    border: 1px solid var(--v4-control-border);
+    border-radius: var(--v4-radius-button);
+    background: var(--v4-secondary-bg);
+    color: var(--v4-secondary-fg);
     font: inherit;
     font-size: var(--text-base);
     cursor: default;
+  }
+
+  .project-actions button:last-child {
+    border-color: transparent;
+    background: var(--v4-primary-bg);
+    color: var(--v4-primary-fg);
   }
 
   .project-actions button:disabled,
@@ -660,6 +666,11 @@
 
   .project-table {
     min-width: 0;
+    overflow-x: auto;
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-card);
+    background: var(--v4-raised);
+    box-shadow: var(--v4-shadow-card);
   }
 
   .project-table-head,
@@ -671,8 +682,9 @@
   }
 
   .project-table-head {
-    padding-bottom: 10px;
-    border-bottom: 1px solid var(--v4-rowline);
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--v4-hairline);
+    background: var(--v4-inset);
     color: var(--v4-text-3);
     font-size: var(--text-base);
     line-height: 1.2;
@@ -691,7 +703,7 @@
     color: inherit;
     font: inherit;
     font-size: var(--text-base);
-    letter-spacing: inherit;
+    letter-spacing: 0;
     text-align: left;
     text-transform: inherit;
     white-space: nowrap;
@@ -709,7 +721,7 @@
   .project-table-head .th:focus-visible {
     outline: 1px solid var(--v4-control-border);
     outline-offset: 2px;
-    border-radius: 4px;
+    border-radius: var(--v4-radius-button);
   }
 
   .project-group {
@@ -720,6 +732,7 @@
     gap: 8px;
     height: 38px;
     margin: 0;
+    padding: 0 14px;
     color: var(--v4-text-3);
     font-size: var(--text-base);
     font-weight: 400;
@@ -729,9 +742,14 @@
 
   .project-row {
     min-height: 54px;
+    padding: 0 14px;
     border-bottom: 1px solid var(--v4-rowline);
     color: var(--v4-text-2);
     font-size: var(--text-base);
+  }
+
+  .project-row:hover {
+    background: var(--v4-active-row);
   }
 
   .project-main {
@@ -792,6 +810,7 @@
     width: 76px;
     height: 3px;
     overflow: hidden;
+    border-radius: var(--v4-radius-pill);
     background: var(--v4-control-faint);
   }
 
@@ -809,7 +828,7 @@
     width: 6px;
     height: 6px;
     flex: 0 0 auto;
-    border-radius: 50%;
+    border-radius: var(--v4-radius-pill);
   }
 
   .status-dot.ok {
@@ -832,8 +851,9 @@
   .empty-state {
     padding: 12px;
     border: 1px solid var(--v4-hairline);
-    border-radius: 6px;
-    background: var(--v4-inset);
+    border-radius: var(--v4-radius-card);
+    background: var(--v4-raised);
+    box-shadow: var(--v4-shadow-card);
     color: var(--v4-text-2);
     font-size: var(--text-base);
   }
@@ -852,7 +872,7 @@
     height: 54px;
     min-width: 720px;
     border-bottom: 1px solid var(--v4-rowline);
-    background: linear-gradient(90deg, transparent, var(--v4-control-faint), transparent);
+    background: var(--v4-control-faint);
     opacity: 0.48;
   }
 

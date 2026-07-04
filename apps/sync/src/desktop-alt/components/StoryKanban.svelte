@@ -141,7 +141,7 @@
     container: story-kanban / inline-size;
     display: flex;
     flex-direction: column;
-    gap: var(--space-3);
+    gap: var(--v4-space-3);
     min-width: 0;
     height: 100%;
   }
@@ -152,25 +152,23 @@
     justify-content: flex-end;
   }
 
-  /* Segmented control in the app's primary language: the active segment carries
-     the monochrome `--popover-primary` fill, matching the popover's toggle. */
   .view-toggle {
     display: inline-flex;
     gap: 2px;
     padding: 2px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--row-active);
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-button);
+    background: var(--v4-control-faint);
   }
 
   .toggle-segment {
     display: inline-flex;
     align-items: center;
-    padding: var(--space-1) var(--space-3);
+    padding: var(--v4-space-1) var(--v4-space-3);
     border: 0;
-    border-radius: calc(var(--radius-sm) - 2px);
+    border-radius: calc(var(--v4-radius-button) - 2px);
     background: transparent;
-    color: var(--muted);
+    color: var(--v4-text-2);
     font-size: var(--text-base);
     font-weight: 600;
     cursor: pointer;
@@ -180,16 +178,16 @@
   }
 
   .toggle-segment:hover {
-    color: var(--fg);
+    color: var(--v4-text-1);
   }
 
   .toggle-segment.is-active {
-    background: var(--popover-primary);
-    color: var(--popover-primary-text);
+    background: var(--v4-primary-bg);
+    color: var(--v4-primary-fg);
   }
 
   .toggle-segment:focus-visible {
-    outline: 2px solid var(--blue);
+    outline: 2px solid var(--v4-control-border);
     outline-offset: 2px;
   }
 
@@ -203,7 +201,7 @@
   .board-grid {
     display: grid;
     grid-template-columns: repeat(4, minmax(160px, 1fr));
-    gap: var(--space-4);
+    gap: var(--v4-space-4);
     min-width: 0;
     height: 100%;
   }
@@ -217,11 +215,11 @@
   .column-header {
     display: flex;
     align-items: center;
-    gap: var(--space-2);
+    gap: var(--v4-space-2);
     width: 100%;
-    padding: var(--space-2) var(--space-3);
+    padding: var(--v4-space-2) var(--v4-space-3);
     border: 0;
-    border-radius: var(--radius-sm);
+    border-radius: var(--v4-radius-button);
     background: transparent;
     text-align: left;
     cursor: pointer;
@@ -229,11 +227,11 @@
   }
 
   .column-header:hover {
-    background: var(--row-hover);
+    background: var(--v4-active-row);
   }
 
   .column-header:focus-visible {
-    outline: 2px solid var(--blue);
+    outline: 2px solid var(--v4-control-border);
     outline-offset: 2px;
   }
 
@@ -241,24 +239,24 @@
     flex: 0 0 auto;
     width: 8px;
     height: 8px;
-    border-radius: 999px;
-    background: var(--muted-3);
+    border-radius: var(--v4-radius-pill);
+    background: var(--v4-text-3);
   }
 
   .status-dot[data-state='blocked'] {
-    background: var(--amber);
+    background: var(--v4-warn);
   }
 
   .status-dot[data-state='in-progress'] {
-    background: var(--emerald);
+    background: var(--v4-ok);
   }
 
   .status-dot[data-state='complete'] {
-    background: var(--muted-2);
+    background: var(--v4-text-2);
   }
 
   .column-label {
-    color: var(--muted);
+    color: var(--v4-text-2);
     font-size: var(--text-base);
     font-weight: 600;
   }
@@ -267,9 +265,9 @@
     display: inline-flex;
     align-items: center;
     padding: 0 6px;
-    border-radius: var(--radius-sm);
-    background: var(--row-active);
-    color: var(--muted-3);
+    border-radius: var(--v4-radius-button);
+    background: var(--v4-control-faint);
+    color: var(--v4-text-3);
     font-size: var(--text-base);
     font-variant-numeric: tabular-nums;
     font-weight: 600;
@@ -278,7 +276,7 @@
 
   .chevron {
     margin-left: auto;
-    color: var(--muted-3);
+    color: var(--v4-text-3);
     font-size: var(--text-base);
     line-height: 1;
     transition: transform 150ms ease;
@@ -292,24 +290,24 @@
     display: flex;
     flex: 1 1 auto;
     flex-direction: column;
-    gap: var(--space-2);
+    gap: var(--v4-space-2);
     min-height: 0;
-    margin-top: var(--space-2);
+    margin-top: var(--v4-space-2);
     overflow-y: auto;
-    padding-right: var(--space-1);
+    padding-right: var(--v4-space-1);
   }
 
   .column-empty {
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: var(--space-5);
-    border: 1px dashed var(--border);
-    border-radius: var(--radius-sm);
+    padding: var(--v4-space-5);
+    border: 1px dashed var(--v4-hairline);
+    border-radius: var(--v4-radius-button);
   }
 
   .column-empty span {
-    color: var(--muted-3);
+    color: var(--v4-text-3);
     font-size: var(--text-base);
   }
 
@@ -323,27 +321,27 @@
   .board-loading {
     display: grid;
     grid-template-columns: repeat(4, minmax(160px, 1fr));
-    gap: var(--space-4);
+    gap: var(--v4-space-4);
     min-width: 0;
   }
 
   .skeleton-column {
     display: flex;
     flex-direction: column;
-    gap: var(--space-2);
+    gap: var(--v4-space-2);
   }
 
   .skeleton-header {
     height: 28px;
-    border-radius: var(--radius-sm);
-    background: var(--row-active);
+    border-radius: var(--v4-radius-button);
+    background: var(--v4-control-faint);
   }
 
   .skeleton-card {
     height: 84px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--row-active);
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-button);
+    background: var(--v4-control-faint);
   }
 
   .skeleton-header,

@@ -419,7 +419,7 @@
   .companies {
     container: companies / inline-size;
     display: grid;
-    gap: 16px;
+    gap: var(--v4-space-5);
     align-content: start;
     font-family: var(--font-sans);
   }
@@ -432,9 +432,9 @@
   .companies-title {
     margin: 0;
     color: var(--v4-text-1);
-    font-size: var(--text-base);
-    font-weight: 500;
-    line-height: 1.3;
+    font-size: var(--text-lg);
+    font-weight: 600;
+    line-height: 1.15;
   }
 
   .companies-summary {
@@ -463,12 +463,12 @@
     overflow-wrap: anywhere;
   }
 
-  /* ── Table containers (inset surface per SPEC section 2) ───────────────── */
   .companies-table {
     display: grid;
     border: 1px solid var(--v4-hairline);
-    border-radius: 8px;
-    background: var(--v4-inset);
+    border-radius: var(--v4-radius-card);
+    background: var(--v4-raised);
+    box-shadow: var(--v4-shadow-card);
     overflow: hidden;
   }
 
@@ -487,10 +487,11 @@
 
   .companies-head {
     border-bottom: 1px solid var(--v4-hairline);
+    background: var(--v4-inset);
     color: var(--v4-text-3);
     font-size: var(--text-base);
     font-weight: 400;
-    letter-spacing: 0.06em;
+    letter-spacing: 0;
     text-transform: uppercase;
   }
 
@@ -538,7 +539,7 @@
   .companies-rowlink:focus-visible {
     outline: 1px solid var(--v4-control-border);
     outline-offset: -2px;
-    border-radius: 6px;
+    border-radius: var(--v4-radius-field);
   }
 
   /* Lift the Sync lane above the stretched-link overlay so the toggle / Retry
@@ -559,7 +560,7 @@
     flex: 0 0 6px;
     width: 6px;
     height: 6px;
-    border-radius: 50%;
+    border-radius: var(--v4-radius-pill);
   }
 
   .companies-dot.ok {
@@ -654,9 +655,9 @@
     display: inline-block;
     padding: 5px 10px;
     border: 1px solid var(--v4-control-border);
-    border-radius: 6px;
-    background: transparent;
-    color: var(--v4-text-1);
+    border-radius: var(--v4-radius-button);
+    background: var(--v4-secondary-bg);
+    color: var(--v4-secondary-fg);
     font: inherit;
     font-size: var(--text-base);
     font-weight: 400;
@@ -667,11 +668,17 @@
 
   .companies-action.primary {
     border-color: transparent;
-    background: var(--v4-control-bg);
+    background: var(--v4-primary-bg);
+    color: var(--v4-primary-fg);
   }
 
   .companies-action:hover:not(:disabled) {
-    background: var(--v4-control-bg);
+    background: var(--v4-active-row);
+  }
+
+  .companies-action.primary:hover:not(:disabled) {
+    background: var(--v4-primary-bg);
+    color: var(--v4-primary-fg);
   }
 
   .companies-action:disabled {
@@ -687,7 +694,7 @@
     gap: 10px;
     padding: 12px 16px;
     border-bottom: 1px solid var(--v4-rowline);
-    background: var(--v4-control-faint);
+    background: var(--v4-inset);
   }
 
   .companies-confirm:last-child {
@@ -739,14 +746,15 @@
     gap: 10px;
     padding: 14px;
     border: 1px solid var(--v4-hairline);
-    border-radius: 8px;
-    background: var(--v4-inset);
+    border-radius: var(--v4-radius-card);
+    background: var(--v4-raised);
+    box-shadow: var(--v4-shadow-card);
   }
 
   .companies-skeleton-bar {
     display: block;
     height: 10px;
-    border-radius: 999px;
+    border-radius: var(--v4-radius-pill);
     background: var(--v4-control-faint);
     animation: companies-skeleton-pulse 1.2s ease-in-out infinite;
   }
