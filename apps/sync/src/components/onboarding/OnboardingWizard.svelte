@@ -1030,24 +1030,12 @@
     }
   }
 
-  function canVisitDot(step: number): boolean {
-    if (step > furthestStep) return false;
-    if (step === currentStep) return true;
-    return router.canNavigateTo(step);
-  }
-
   function advanceTo(step: number) {
     router.goTo(step);
     transitionTo(router.currentStep);
   }
 
   function goBackTo(step: number) {
-    router.goTo(step);
-    transitionTo(router.currentStep);
-  }
-
-  function handleDotClick(step: number) {
-    if (!canVisitDot(step)) return;
     router.goTo(step);
     transitionTo(router.currentStep);
   }
@@ -1612,19 +1600,6 @@
       </div>
     </div>
   </div>
-
-  <nav class="dots" aria-label="Onboarding steps">
-    {#each WIZARD_STEPS as step}
-      <button
-        type="button"
-        class:on={step.index === currentStep}
-        disabled={!canVisitDot(step.index)}
-        aria-current={step.index === currentStep ? 'step' : undefined}
-        aria-label={`Go to ${step.label}`}
-        onclick={() => handleDotClick(step.index)}
-      ></button>
-    {/each}
-  </nav>
 </div>
 
 {#snippet HqLogo()}
@@ -1909,11 +1884,6 @@
   .composer-pad { padding:13px 15px 15px; }
   .mcomposer { display:flex; align-items:center; justify-content:space-between; border:1px solid rgba(0,0,0,0.15); border-radius:8px; padding:9px 12px; font-size:13px; color:rgba(0,0,0,0.35); }
 
-  .dots { display:flex; gap:7px; }
-  .dots button { width:7px; height:7px; border-radius:50%; background:var(--dot); cursor:pointer; transition:background .2s, width .2s, opacity .2s; border:0; padding:0; }
-  .dots button.on { background:var(--dot-on); width:18px; border-radius:4px; }
-  .dots button:disabled { cursor:default; opacity:.45; }
-  .dots button.on:disabled { opacity:1; }
 
   @media (prefers-reduced-motion: reduce) {
     .grad,

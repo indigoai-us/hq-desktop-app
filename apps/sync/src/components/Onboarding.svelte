@@ -13,10 +13,9 @@
   let { state: lifecycleStateProp, onfinish }: Props = $props();
 
   // The window is transparent so the card floats over the real desktop. Size it
-  // generously around the 640x460 card + dot rail so the card's soft drop shadow
-  // (70px blur) fades into transparency instead of being clipped into a visible
-  // box at the window edge.
-  const ONBOARDING_SIZE = new LogicalSize(860, 720);
+  // to exactly the 640x460 card so there is no surrounding transparent margin —
+  // macOS draws the card's drop shadow around the window's opaque content.
+  const ONBOARDING_SIZE = new LogicalSize(640, 460);
   const POPOVER_SIZE = new LogicalSize(320, 480);
 
   let initialStep = $state(0);
@@ -35,6 +34,9 @@
     await setWindowVibrancy(false);
     try {
       const win = getCurrentWindow();
+      // Drop the native window shadow so only the card's own CSS shadow shows —
+      // otherwise the transparent window's shadow traces a rectangle on the desktop.
+      await win.setShadow(false).catch(() => {});
       await win.setSize(ONBOARDING_SIZE);
       await win.center();
     } catch {
@@ -45,7 +47,9 @@
   async function restorePopoverSize() {
     await setWindowVibrancy(true);
     try {
-      await getCurrentWindow().setSize(POPOVER_SIZE);
+      const win = getCurrentWindow();
+      await win.setShadow(true).catch(() => {});
+      await win.setSize(POPOVER_SIZE);
     } catch {
       // Non-Tauri / test environment.
     }
