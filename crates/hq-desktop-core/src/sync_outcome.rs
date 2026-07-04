@@ -39,6 +39,11 @@ pub struct RunTotals {
     /// network blip, or an expected per-file ACL-scope skip. Gates the Sentry
     /// capture at the non-zero-exit site (see `should_alert_on_nonzero_exit`).
     pub saw_alertable_error: bool,
+    /// Set true when raw runner stderr carries the Node-too-old startup crash
+    /// signature. The runner exits before emitting protocol in this case, so it
+    /// would otherwise look like an unexplained crash. It is an environment
+    /// fault the user fixes by updating Node, not a defect.
+    pub saw_node_too_old: bool,
 }
 
 impl RunTotals {
@@ -77,6 +82,16 @@ impl RunTotals {
         self.saw_error = true;
         if is_alertable_error(err) {
             self.saw_alertable_error = true;
+        }
+    }
+
+    /// Record raw runner stderr toward reactive environment-fault
+    /// classification. This intentionally does not flip `saw_error`: the
+    /// Node-too-old signature is not a runner protocol error, it is the
+    /// interpreter failing before the runner can start.
+    pub fn record_stderr_line(&mut self, line: &str) {
+        if is_node_too_old_signature(line) {
+            self.saw_node_too_old = true;
         }
     }
 }
@@ -183,6 +198,16 @@ pub fn is_expected_acl_scope_skip(message: &str) -> bool {
     msg.contains("outside granted acl scope") || msg.contains("scope_exceeds_parent")
 }
 
+/// True when raw runner stderr is the Node-too-old startup crash:
+/// `diagnostics_channel.tracingChannel` is unavailable before Node 20, or npm
+/// reports an `EBADENGINE` warning for the `node` engine. Narrow matching keeps
+/// unrelated stderr from suppressing real defects.
+pub fn is_node_too_old_signature(line: &str) -> bool {
+    let msg = line.to_lowercase();
+    msg.contains("tracingchannel is not a function")
+        || (msg.contains("ebadengine") && msg.contains("node"))
+}
+
 /// Returns `true` when a runner error should raise a Sentry alert if it drives a
 /// non-zero runner exit. Applies to errors of ANY level — company-level
 /// (`path == "(company)"`) and per-file alike — because `hq-cloud`'s fanout
@@ -219,6 +244,9 @@ pub fn is_alertable_error(err: &SyncErrorEvent) -> bool {
 ///   - a run whose errors were all benign (`saw_error && !saw_alertable_error`):
 ///     the non-zero exit is fully explained by not-yet-provisioned 404s,
 ///     transient network blips, and/or expected per-file ACL-scope skips.
+///   - a Node-too-old startup crash (`saw_node_too_old`): the runner could not
+///     start under the user's Node version, so this is an environment fault
+///     surfaced to the UI rather than an alertable product defect.
 ///
 /// An *unexplained* non-zero exit — no error event seen at all, e.g. the runner
 /// panicked or was OOM-killed before emitting protocol — still alerts,
@@ -234,11 +262,15 @@ pub fn should_alert_on_nonzero_exit(
     signal: Option<i32>,
     saw_error: bool,
     saw_alertable_error: bool,
+    saw_node_too_old: bool,
 ) -> bool {
     if signal == Some(SIGTERM_SIGNAL) {
         return false;
     }
     if code == Some(RUNNER_OPERATION_LOCKED_EXIT) {
+        return false;
+    }
+    if saw_node_too_old {
         return false;
     }
     if saw_error && !saw_alertable_error {
@@ -609,9 +641,21 @@ mod tests {
     #[test]
     fn test_exit_alert_suppressed_for_operation_locked() {
         // Exit 17 = another sync holds the lock — a normal concurrent race.
-        assert!(!should_alert_on_nonzero_exit(Some(17), None, false, false));
+        assert!(!should_alert_on_nonzero_exit(
+            Some(17),
+            None,
+            false,
+            false,
+            false
+        ));
         // Even if it somehow co-occurred with an alertable error, locked wins.
-        assert!(!should_alert_on_nonzero_exit(Some(17), None, true, true));
+        assert!(!should_alert_on_nonzero_exit(
+            Some(17),
+            None,
+            true,
+            true,
+            false
+        ));
     }
 
     #[test]
@@ -620,11 +664,29 @@ mod tests {
         // OUR own cancel_process_impl ending the run — Stop button, timeout
         // watchdog, app quit, or a newer sync superseding this one. An expected
         // cancellation must NEVER alert, even with no protocol seen…
-        assert!(!should_alert_on_nonzero_exit(None, Some(15), false, false));
+        assert!(!should_alert_on_nonzero_exit(
+            None,
+            Some(15),
+            false,
+            false,
+            false
+        ));
         // …and even if company errors (benign or alertable) were mid-flight when
         // the cancel landed — the cancellation is the cause, not the errors.
-        assert!(!should_alert_on_nonzero_exit(None, Some(15), true, false));
-        assert!(!should_alert_on_nonzero_exit(None, Some(15), true, true));
+        assert!(!should_alert_on_nonzero_exit(
+            None,
+            Some(15),
+            true,
+            false,
+            false
+        ));
+        assert!(!should_alert_on_nonzero_exit(
+            None,
+            Some(15),
+            true,
+            true,
+            false
+        ));
     }
 
     #[test]
@@ -632,10 +694,34 @@ mod tests {
         // A real crash signal is NOT a cancellation and must stay loud:
         // SIGSEGV (11) / SIGBUS (10) / SIGABRT (6) are crashes, and SIGKILL (9)
         // is an OOM or force-quit worth seeing — only SIGTERM is suppressed.
-        assert!(should_alert_on_nonzero_exit(None, Some(11), false, false));
-        assert!(should_alert_on_nonzero_exit(None, Some(10), false, false));
-        assert!(should_alert_on_nonzero_exit(None, Some(6), false, false));
-        assert!(should_alert_on_nonzero_exit(None, Some(9), false, false));
+        assert!(should_alert_on_nonzero_exit(
+            None,
+            Some(11),
+            false,
+            false,
+            false
+        ));
+        assert!(should_alert_on_nonzero_exit(
+            None,
+            Some(10),
+            false,
+            false,
+            false
+        ));
+        assert!(should_alert_on_nonzero_exit(
+            None,
+            Some(6),
+            false,
+            false,
+            false
+        ));
+        assert!(should_alert_on_nonzero_exit(
+            None,
+            Some(9),
+            false,
+            false,
+            false
+        ));
     }
 
     #[test]
@@ -643,13 +729,25 @@ mod tests {
         // The HQ-SYNC-WEB-6 shape: exit 2 driven solely by benign errors
         // (per-file ACL-scope skips, a not-provisioned 404, or a transient
         // ECONNRESET) → saw_error && !saw_alertable_error → no alert.
-        assert!(!should_alert_on_nonzero_exit(Some(2), None, true, false));
+        assert!(!should_alert_on_nonzero_exit(
+            Some(2),
+            None,
+            true,
+            false,
+            false
+        ));
     }
 
     #[test]
     fn test_exit_alert_fires_for_real_error() {
         // exit 2 with at least one alertable error (e.g. EISDIR) → alert.
-        assert!(should_alert_on_nonzero_exit(Some(2), None, true, true));
+        assert!(should_alert_on_nonzero_exit(
+            Some(2),
+            None,
+            true,
+            true,
+            false
+        ));
     }
 
     #[test]
@@ -657,10 +755,36 @@ mod tests {
         // Non-zero exit with NO error event seen — runner panicked / was
         // OOM-killed before emitting protocol. This is the original
         // "bailed before a useful stream" signal and must keep alerting.
-        assert!(should_alert_on_nonzero_exit(Some(1), None, false, false));
+        assert!(should_alert_on_nonzero_exit(
+            Some(1),
+            None,
+            false,
+            false,
+            false
+        ));
         // Signal-kill with neither code nor a recognized signal is likewise
         // unexplained (only a SIGTERM cancel is suppressed).
-        assert!(should_alert_on_nonzero_exit(None, None, false, false));
+        assert!(should_alert_on_nonzero_exit(
+            None, None, false, false, false
+        ));
+    }
+
+    #[test]
+    fn test_exit_alert_suppressed_for_node_too_old() {
+        assert!(!should_alert_on_nonzero_exit(
+            Some(1),
+            None,
+            false,
+            false,
+            true
+        ));
+        assert!(!should_alert_on_nonzero_exit(
+            Some(2),
+            None,
+            true,
+            true,
+            true
+        ));
     }
 
     // ── accumulate / record_error: any-level error classification ────────────
@@ -757,8 +881,39 @@ mod tests {
             Some(2),
             None,
             t.saw_error,
-            t.saw_alertable_error
+            t.saw_alertable_error,
+            t.saw_node_too_old
         ));
+    }
+
+    #[test]
+    fn test_node_too_old_signature_matches_crash_and_ebadengine() {
+        assert!(is_node_too_old_signature(
+            "TypeError: diagChan.tracingChannel is not a function"
+        ));
+        assert!(is_node_too_old_signature(
+            "npm warn EBADENGINE Unsupported engine { required: { node: '>=20.0.0' }, current: { node: 'v19.3.0' } }"
+        ));
+    }
+
+    #[test]
+    fn test_node_too_old_signature_ignores_unrelated_stderr() {
+        assert!(!is_node_too_old_signature("uploading projects/index.html"));
+        assert!(!is_node_too_old_signature(
+            "Error: connect ECONNRESET 10.0.0.1:443"
+        ));
+        assert!(!is_node_too_old_signature(
+            "npm warn EBADENGINE required: { npm: '>=10' }"
+        ));
+    }
+
+    #[test]
+    fn test_record_stderr_line_flags_node_too_old_only() {
+        let mut t = RunTotals::default();
+        t.record_stderr_line("TypeError: diagChan.tracingChannel is not a function");
+        assert!(t.saw_node_too_old);
+        assert!(!t.saw_error);
+        assert!(!t.saw_alertable_error);
     }
 
     // ── classify_error_event ─────────────────────────────────────────────────

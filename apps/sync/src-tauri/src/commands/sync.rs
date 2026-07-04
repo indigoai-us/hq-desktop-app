@@ -566,10 +566,7 @@ pub(crate) fn preflight_runner_unresolvable() -> Option<String> {
         .unwrap_or(false);
 
     let npx_bin = paths::resolve_bin("npx");
-    let mut npx_cmd = std::process::Command::new(&npx_bin);
-    paths::no_window(&mut npx_cmd);
-    let npx_resolves = npx_cmd
-        .arg("--version")
+    let npx_resolves = paths::spawn_command(&npx_bin, &["--version"])
         .env("PATH", paths::child_path())
         .output()
         .map(|o| o.status.success())
@@ -927,6 +924,10 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
                     let mut t = totals.lock().unwrap_or_else(|e| e.into_inner());
                     t.record_error(&payload);
                 }
+                {
+                    let mut t = totals.lock().unwrap_or_else(|e| e.into_inner());
+                    t.record_stderr_line(&line);
+                }
                 #[cfg(debug_assertions)]
                 eprintln!("[sync stderr] {}", line);
             }
@@ -959,17 +960,42 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
                     // event + stderr breadcrumb was already surfaced to the UI
                     // and the local sync log, so suppression loses no
                     // diagnostics — only the Sentry alert.
-                    let (saw_error, saw_alertable) = totals
+                    let (saw_error, saw_alertable, saw_node_too_old) = totals
                         .lock()
-                        .map(|t| (t.saw_error, t.saw_alertable_error))
-                        .unwrap_or((false, false));
-                    if should_alert_on_nonzero_exit(code, signal, saw_error, saw_alertable) {
+                        .map(|t| (t.saw_error, t.saw_alertable_error, t.saw_node_too_old))
+                        .unwrap_or((false, false, false));
+                    if should_alert_on_nonzero_exit(
+                        code,
+                        signal,
+                        saw_error,
+                        saw_alertable,
+                        saw_node_too_old,
+                    ) {
                         let _ = report_sync_error(
                             &app_bg,
                             crate::events::SyncErrorEvent {
                                 company: None,
                                 path: "(runner)".to_string(),
                                 message: format!("hq-sync-runner exited {}", exit_desc),
+                            },
+                        );
+                    } else if saw_node_too_old {
+                        log(
+                            "sync",
+                            &format!(
+                                "runner exited non-zero ({}) due to Node too old — surfacing update-Node message, not alerting",
+                                exit_desc
+                            ),
+                        );
+                        let _ = app_bg.emit(
+                            EVENT_SYNC_ERROR,
+                            crate::events::SyncErrorEvent {
+                                company: None,
+                                path: "(node)".to_string(),
+                                message: format!(
+                                    "HQ Sync needs Node {MIN_NODE_MAJOR} or newer to sync. \
+                                     Please update Node (https://nodejs.org), then try Sync again."
+                                ),
                             },
                         );
                     } else {
@@ -1529,8 +1555,14 @@ mod tests {
         assert!(!is_node_too_old(MIN_NODE_MAJOR));
         assert!(!is_node_too_old(22));
         let msg = node_too_old_message(18);
-        assert!(msg.contains("Node 20"), "message must name the floor: {msg}");
-        assert!(msg.contains("Node 18"), "message must name the current major: {msg}");
+        assert!(
+            msg.contains("Node 20"),
+            "message must name the floor: {msg}"
+        );
+        assert!(
+            msg.contains("Node 18"),
+            "message must name the current major: {msg}"
+        );
     }
 
     #[test]

@@ -69,16 +69,41 @@ fn set_app_icon_from_bytes(bytes: &'static [u8]) {
     }
 }
 
+#[cfg(target_os = "windows")]
+const SENTRY_IDENTITY: hq_telemetry::SentryIdentity<'static> = hq_telemetry::SentryIdentity {
+    release_prefix: "hq-sync-win",
+    repo: "hq-sync-win",
+    app: "hq-desktop-app",
+    flavor: "windows-sync-installer",
+};
+
+#[cfg(target_os = "macos")]
+const SENTRY_IDENTITY: hq_telemetry::SentryIdentity<'static> = hq_telemetry::SentryIdentity {
+    release_prefix: "hq-sync",
+    repo: "hq-sync",
+    app: "hq-desktop-app",
+    flavor: "macos-sync-installer",
+};
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+const SENTRY_IDENTITY: hq_telemetry::SentryIdentity<'static> = hq_telemetry::SentryIdentity {
+    release_prefix: "hq-desktop-app",
+    repo: "hq-desktop-app",
+    app: "hq-desktop-app",
+    flavor: "desktop",
+};
+
 fn main() {
     // Sentry init + the PII/secret scrubber live in the hq-telemetry crate. The
     // build-time values (DSN/version/environment, emitted by build.rs) are read
     // here in the binary and passed in, so the crate carries no build-env coupling.
     // `env!("SENTRY_DSN")` is "" on dev/PR CI (no release secret) → Sentry no-ops.
     // Hold the guard for the process lifetime.
-    let _guard = hq_telemetry::init(
+    let _guard = hq_telemetry::init_with_identity(
         env!("SENTRY_DSN"),
         env!("APP_VERSION"),
         option_env!("SENTRY_ENVIRONMENT"),
+        SENTRY_IDENTITY,
     );
 
     // Wire the foundation crate's injected dependencies before anything reads them:
@@ -697,6 +722,10 @@ fn main() {
                     let _ = commands::daemon::start_daemon(handle);
                 });
             }
+
+            // Bound the meeting-detect notify ledger on launch: drop entries
+            // older than 14 days. Best-effort; failures never block setup.
+            util::meeting_ledger::prune_on_launch(chrono::Utc::now());
 
             // Start the Recall Desktop SDK sidecar — gated on
             // `meeting_detect_eligible()` so users outside the @getindigo.ai

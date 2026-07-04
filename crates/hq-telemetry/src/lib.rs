@@ -149,6 +149,40 @@ pub fn init(
     release_version: &str,
     environment: Option<&str>,
 ) -> Option<sentry::ClientInitGuard> {
+    init_with_identity(
+        dsn_str,
+        release_version,
+        environment,
+        SentryIdentity::default(),
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SentryIdentity<'a> {
+    pub release_prefix: &'a str,
+    pub repo: &'a str,
+    pub app: &'a str,
+    pub flavor: &'a str,
+}
+
+impl Default for SentryIdentity<'_> {
+    fn default() -> Self {
+        Self {
+            release_prefix: "hq-sync",
+            repo: "hq-sync",
+            app: "hq-desktop-app",
+            flavor: "sync",
+        }
+    }
+}
+
+/// Initialize Sentry with app/flavor-specific release and attribution tags.
+pub fn init_with_identity(
+    dsn_str: &str,
+    release_version: &str,
+    environment: Option<&str>,
+    identity: SentryIdentity<'_>,
+) -> Option<sentry::ClientInitGuard> {
     let dsn: Option<sentry::types::Dsn> = if dsn_str.is_empty() {
         None
     } else {
@@ -156,7 +190,7 @@ pub fn init(
     };
     let guard = sentry::init(sentry::ClientOptions {
         dsn,
-        release: Some(format!("hq-sync@{release_version}").into()),
+        release: Some(format!("{}@{release_version}", identity.release_prefix).into()),
         environment: Some(environment.unwrap_or("production").to_string().into()),
         sample_rate: std::env::var("SENTRY_SAMPLE_RATE")
             .ok()
@@ -169,7 +203,9 @@ pub fn init(
         ..Default::default()
     });
     sentry::configure_scope(|scope| {
-        scope.set_tag("repo", "hq-sync");
+        scope.set_tag("repo", identity.repo);
+        scope.set_tag("app", identity.app);
+        scope.set_tag("flavor", identity.flavor);
     });
     Some(guard)
 }
@@ -193,6 +229,15 @@ mod tests {
         assert!(!is_sensitive_key("x-api-key"));
         assert!(!is_sensitive_key("url"));
         assert!(!is_sensitive_key("note"));
+    }
+
+    #[test]
+    fn test_default_identity_keeps_legacy_sync_release() {
+        let identity = SentryIdentity::default();
+        assert_eq!(identity.release_prefix, "hq-sync");
+        assert_eq!(identity.repo, "hq-sync");
+        assert_eq!(identity.app, "hq-desktop-app");
+        assert_eq!(identity.flavor, "sync");
     }
 
     // 2. Header strip

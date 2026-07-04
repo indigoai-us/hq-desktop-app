@@ -243,6 +243,22 @@ pub fn record_action(key: &str, action: LedgerAction, now: DateTime<Utc>) {
     let _ = write_ledger(&ledger);
 }
 
+/// Read → [`prune`] → write, under [`LEDGER_LOCK`]. Called once on app launch
+/// to bound ledger growth. Best-effort: absent/corrupt/unwritable ledgers are
+/// harmless because suppression windows still expire by timestamp.
+pub fn prune_on_launch(now: DateTime<Utc>) {
+    let _guard = ledger_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let mut ledger = match read_ledger() {
+        Ok(l) => l,
+        Err(_) => return,
+    };
+    let before = ledger.len();
+    prune(&mut ledger, now);
+    if ledger.len() != before {
+        let _ = write_ledger(&ledger);
+    }
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -484,6 +500,36 @@ mod tests {
 
         let ledger = read_ledger().unwrap();
         assert!(ledger.is_empty());
+
+        clear_override();
+    }
+
+    #[test]
+    fn prune_on_launch_rewrites_pruned_ledger() {
+        let _g = lock();
+        let _tmp = with_test_ledger();
+
+        let now = ts("2026-05-20T12:00:00Z");
+        let mut ledger = NotifyLedger::new();
+        mark(
+            &mut ledger,
+            "old".to_string(),
+            LedgerAction::Notified,
+            ts("2026-05-05T12:00:00Z"),
+        );
+        mark(
+            &mut ledger,
+            "recent".to_string(),
+            LedgerAction::Notified,
+            ts("2026-05-19T12:00:00Z"),
+        );
+        write_ledger(&ledger).unwrap();
+
+        prune_on_launch(now);
+
+        let loaded = read_ledger().unwrap();
+        assert!(!loaded.contains_key("old"));
+        assert!(loaded.contains_key("recent"));
 
         clear_override();
     }
