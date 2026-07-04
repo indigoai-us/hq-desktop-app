@@ -2683,6 +2683,7 @@ dependencies = [
  "sha1 0.10.6",
  "sha2 0.10.9",
  "tokio",
+ "url",
  "uuid",
  "walkdir",
  "windows 0.58.0",

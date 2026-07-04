@@ -1448,6 +1448,10 @@ async fn do_poll(app: &AppHandle) {
     // live. The count is reset when the Messages window opens.
     bump_unread(app, fresh.len() as u32);
 
+    // Windows parity: persist exactly the DMs whose notifications are emitted
+    // so dismissed toasts remain visible in local notification history.
+    crate::commands::notification_history::record_dm_events(&fresh);
+
     // SPIKE: when the custom banner is enabled, route every DM through the
     // in-app banner (commands::banner) — event-driven, no blocking Cocoa run
     // loop — and skip the native firing path entirely.

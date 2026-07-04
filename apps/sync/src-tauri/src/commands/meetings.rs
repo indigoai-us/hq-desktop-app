@@ -34,12 +34,12 @@ use crate::util::client_info::build_client;
 #[allow(unused_imports)]
 pub use hq_desktop_core::meetings::{
     build_notification_body, build_notification_title, build_set_company_body, dedupe_new,
-    first_active_bot, is_recorded, is_unattributed, is_url_safe_id, select_recorded,
-    select_unattributed, set_company_error_message, AccountCalendars, AccountsResponse,
-    BotsResponse, CalendarsResponse, CancelBotResult, CompanyMembership, EventTime, EventsResponse,
-    GoogleAccount, GoogleCalendar, InviteBotBody, MeetingEvent, NotifyDetectedPayload,
-    OntologyParticipant, ScheduledBot, SelectedCalendarRef, SetCompanyBody, SetCompanyErrorBody,
-    SetCompanyResult,
+    encode_query_value, first_active_bot, is_recorded, is_unattributed, is_url_safe_id,
+    select_recorded, select_unattributed, set_company_error_message, AccountCalendars,
+    AccountsResponse, BotsResponse, CalendarsResponse, CancelBotResult, CompanyMembership,
+    EventTime, EventsResponse, GoogleAccount, GoogleCalendar, InviteBotBody, MeetingEvent,
+    NotifyDetectedPayload, OntologyParticipant, ScheduledBot, SelectedCalendarRef, SetCompanyBody,
+    SetCompanyErrorBody, SetCompanyResult,
 };
 
 // ── Feature flag ─────────────────────────────────────────────────────────────
@@ -327,7 +327,11 @@ pub async fn meetings_list_scheduled_bots(
     let mut url = format!("{base}/v1/bot/list");
     if let Some(ids) = calendar_event_ids.as_ref() {
         if !ids.is_empty() {
-            let joined = ids.join(",");
+            let joined = ids
+                .iter()
+                .map(|id| encode_query_value(id))
+                .collect::<Vec<_>>()
+                .join(",");
             url.push_str(&format!("?calendarEventIds={joined}"));
         }
     }
@@ -1091,6 +1095,15 @@ pub async fn meetings_clear_prompt_badge(app: AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scheduled_bot_event_id_query_encoding_escapes_reserved_chars() {
+        assert_eq!(encode_query_value("event_123-abc.def"), "event_123-abc.def");
+        assert_eq!(
+            encode_query_value("event 1?x=2#frag"),
+            "event+1%3Fx%3D2%23frag"
+        );
+    }
 
     #[test]
     fn meetings_cancel_bot_result_parses_series_response() {

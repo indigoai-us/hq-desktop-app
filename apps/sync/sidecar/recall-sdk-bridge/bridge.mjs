@@ -104,8 +104,12 @@ function emitLog(level, message) {
 // Override via RECALL_API_URL env if the account is ever migrated.
 const apiUrl = process.env.RECALL_API_URL || "https://us-west-2.recall.ai";
 const dev = process.env.RECALL_SDK_DEV === "1";
+// Windows/Linux have no macOS TCC screen/mic/accessibility permission system,
+// so the SDK permission acquisition/probe is gated to darwin. Meeting
+// detection itself remains platform-neutral.
+const isMac = process.platform === "darwin";
 
-emitLog("info", `starting SDK init (apiUrl=${apiUrl} dev=${dev})`);
+emitLog("info", `starting SDK init (apiUrl=${apiUrl} dev=${dev} platform=${process.platform})`);
 
 // The five permissions the SDK can request on macOS. We track all of them so
 // the Svelte UI can render an exact "missing permissions" list and deep-link
@@ -122,10 +126,10 @@ try {
   await RecallAiSdk.init({
     apiUrl,
     dev,
-    // Acquire on startup so the user gets the standard macOS prompts on
-    // first run. After first run macOS won't re-prompt; the Svelte UI surfaces
-    // missing permissions and deep-links into System Settings.
-    acquirePermissionsOnStartup: REQUIRED_PERMISSIONS,
+    // macOS only: acquire on startup so the user gets the standard prompts on
+    // first run. Omitted elsewhere because there is no TCC permission system
+    // and passing macOS permission names can make SDK init fail.
+    ...(isMac ? { acquirePermissionsOnStartup: REQUIRED_PERMISSIONS } : {}),
     restartOnError: true,
   });
 } catch (err) {
@@ -147,16 +151,18 @@ emitLog("info", "SDK init complete; listening for meeting-detected events");
 // After first denial the call is a silent no-op — but the binary is now
 // in System Settings where the user can toggle it on. This is the same
 // pattern Granola/Loom/etc. use.
-for (const perm of REQUIRED_PERMISSIONS) {
-  try {
-    await RecallAiSdk.requestPermission(perm);
-    emitLog("info", `requestPermission(${perm}) returned`);
-  } catch (err) {
-    // Best-effort — a failure here is logged and the next perm is tried.
-    emitLog(
-      "warn",
-      `requestPermission(${perm}) failed: ${err?.message ?? err}`,
-    );
+if (isMac) {
+  for (const perm of REQUIRED_PERMISSIONS) {
+    try {
+      await RecallAiSdk.requestPermission(perm);
+      emitLog("info", `requestPermission(${perm}) returned`);
+    } catch (err) {
+      // Best-effort — a failure here is logged and the next perm is tried.
+      emitLog(
+        "warn",
+        `requestPermission(${perm}) failed: ${err?.message ?? err}`,
+      );
+    }
   }
 }
 
@@ -180,18 +186,22 @@ RecallAiSdk.addEventListener("permissions-granted", () => {
   for (const p of REQUIRED_PERMISSIONS) seenPermissionUpdate(p);
 });
 
-setTimeout(() => {
-  for (const perm of REQUIRED_PERMISSIONS) {
-    if (!probedPermissions.has(perm)) {
-      emitNdjson({
-        type: "permission:status",
-        permission: perm,
-        status: "not-determined",
-      });
-      emitLog("info", `synthetic not-determined for ${perm}`);
+if (isMac) {
+  setTimeout(() => {
+    for (const perm of REQUIRED_PERMISSIONS) {
+      if (!probedPermissions.has(perm)) {
+        emitNdjson({
+          type: "permission:status",
+          permission: perm,
+          status: "not-determined",
+        });
+        emitLog("info", `synthetic not-determined for ${perm}`);
+      }
     }
-  }
-}, 2500);
+  }, 2500);
+} else {
+  emitNdjson({ type: "permissions:all-granted" });
+}
 
 // --- In-flight recording bookkeeping ---
 //
