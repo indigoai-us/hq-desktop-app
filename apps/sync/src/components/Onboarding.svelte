@@ -16,7 +16,7 @@
   // to exactly the 640x460 card so there is no surrounding transparent margin —
   // macOS draws the card's drop shadow around the window's opaque content.
   const ONBOARDING_SIZE = new LogicalSize(640, 460);
-  const POPOVER_SIZE = new LogicalSize(320, 480);
+  const POPOVER_SIZE = new LogicalSize(296, 360);
 
   let initialStep = $state(0);
   let activeLifecycleState = $state<string | null>(null);

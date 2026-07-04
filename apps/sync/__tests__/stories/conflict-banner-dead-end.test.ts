@@ -46,7 +46,8 @@ describe('conflict dead-end: actionable conflict banner', () => {
   it('Popover renders an actionable conflict banner in the conflict state', () => {
     const p = normalize(popover);
     // A dedicated branch for the conflict state (not just auth/error).
-    expect(p).toContain("{:else if syncState === 'conflict'}");
+    expect(p).toContain("syncState === 'conflict'");
+    expect(p).toContain("!(showConflictModal && conflicts.length > 0)");
     // Plain, non-alarming framing — no raw paths, no "failed".
     expect(p).toContain('Sync paused');
     expect(p).not.toContain('Sync failed');
