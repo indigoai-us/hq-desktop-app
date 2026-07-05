@@ -128,7 +128,7 @@
   }
 
   .ranked-card:focus-visible {
-    outline: 2px solid var(--blue);
+    outline: 2px solid var(--border-strong);
     outline-offset: 1px;
   }
 

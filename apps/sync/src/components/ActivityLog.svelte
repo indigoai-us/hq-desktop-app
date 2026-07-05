@@ -187,7 +187,9 @@
     width: 100vw;
     height: 100vh;
     overflow: hidden;
-    background: transparent;
+    background: var(--page-bg);
+    color: var(--c-text);
+    font-family: var(--font-sans);
   }
 
   .detail-window {
@@ -196,16 +198,13 @@
     width: 100vw;
     height: 100vh;
     box-sizing: border-box;
-    /* Sit a mostly-opaque dark layer over the NSVisualEffect vibrancy so the
-       glass reads as a consistent dark surface — just a hint of translucency —
-       rather than letting the busy content behind the window bleed through as
-       colored blotches. Higher alpha than the popover (0.68) because this
-       window is large and often sits over a terminal/editor. */
-    background: rgba(20, 20, 24, 0.88);
-    backdrop-filter: blur(30px) saturate(1.2);
-    -webkit-backdrop-filter: blur(30px) saturate(1.2);
-    color: var(--popover-text, #e0e0e0);
-    font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: var(--pop-bg);
+    backdrop-filter: blur(32px) saturate(1.7);
+    -webkit-backdrop-filter: blur(32px) saturate(1.7);
+    border: 1px solid var(--pop-border);
+    box-shadow: inset 0 1px 0 var(--pop-highlight);
+    color: var(--pop-text);
+    font-family: var(--font-sans);
     overflow: hidden;
   }
 
@@ -216,7 +215,7 @@
     /* Extra top padding clears the macOS traffic-light buttons that the
        Overlay title-bar style floats over the body's top-left. */
     padding: 2.25rem 1.25rem 0.75rem;
-    border-bottom: 1px solid var(--popover-divider, rgba(255, 255, 255, 0.06));
+    border-bottom: 1px solid var(--pop-divider);
     flex-shrink: 0;
   }
 
@@ -224,12 +223,12 @@
     margin: 0;
     font-size: 1rem;
     font-weight: 600;
-    color: var(--popover-text-heading, #ffffff);
+    color: var(--pop-text);
   }
 
   .detail-count {
     font-size: 0.75rem;
-    color: var(--popover-text-muted, #a0a0b0);
+    color: var(--pop-muted);
   }
 
   .detail-empty {
@@ -241,7 +240,7 @@
 
   .detail-empty p {
     font-size: 0.8125rem;
-    color: var(--popover-text-muted, #a0a0b0);
+    color: var(--pop-muted);
     margin: 0;
   }
 
@@ -250,7 +249,7 @@
     overflow-y: auto;
     padding: 0.25rem 0 0.75rem;
     scrollbar-width: thin;
-    scrollbar-color: rgba(255, 255, 255, 0.15) transparent;
+    scrollbar-color: var(--pop-muted) transparent;
   }
 
   .detail-list::-webkit-scrollbar {
@@ -260,11 +259,11 @@
     background: transparent;
   }
   .detail-list::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.12);
+    background: var(--pop-hover);
     border-radius: 3px;
   }
   .detail-list:hover::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.22);
+    background: var(--c-field-bg);
   }
 
   .day-header {
@@ -274,12 +273,12 @@
     padding: 0.5rem 1.25rem 0.3rem;
     font-size: 0.6875rem;
     font-weight: 600;
-    color: var(--popover-text-muted, #a0a0b0);
+    color: var(--pop-muted);
     text-transform: uppercase;
     letter-spacing: 0.04em;
     /* Slightly more opaque than the body so rows scrolling under it stay
        legible; same hue as the window surface to avoid a seam. */
-    background: rgba(20, 20, 24, 0.95);
+    background: var(--pop-bg);
     backdrop-filter: blur(12px);
     -webkit-backdrop-filter: blur(12px);
   }
@@ -290,11 +289,11 @@
     gap: 0.5rem;
     padding: 0.5rem 1.25rem;
     font-size: 0.8125rem;
-    border-bottom: 1px solid var(--popover-divider, rgba(255, 255, 255, 0.05));
+    border-bottom: 1px solid var(--pop-divider);
     transition: background-color 0.1s ease;
   }
   .detail-row:hover {
-    background: var(--popover-action-hover, rgba(255, 255, 255, 0.05));
+    background: var(--pop-hover);
   }
 
   .col-dir {
@@ -311,13 +310,13 @@
     line-height: 1;
   }
   .dir-up {
-    color: #5ad27e;
+    color: var(--popover-success, #1f9d4d);
   }
   .dir-down {
-    color: #6ab3ff;
+    color: var(--pop-muted);
   }
   .dir-del {
-    color: #ff8a8a;
+    color: var(--popover-danger, #dc2626);
   }
 
   .col-path {
@@ -331,11 +330,11 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    color: var(--popover-text, #e0e0e0);
+    color: var(--pop-text);
   }
   .path-company {
     font-size: 0.6875rem;
-    color: var(--popover-text-muted, #8a8a98);
+    color: var(--pop-muted);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -343,7 +342,7 @@
   .path-author {
     /* The "who" — slightly brighter than the trailing verb so it reads as the
        subject of "{author} added/updated". */
-    color: var(--popover-text, #c8c8d2);
+    color: var(--pop-text);
     font-weight: 500;
   }
 
@@ -352,7 +351,7 @@
     flex-shrink: 0;
     text-align: right;
     font-size: 0.7rem;
-    color: var(--popover-text-muted, #a0a0b0);
+    color: var(--pop-muted);
     font-variant-numeric: tabular-nums;
   }
 
@@ -361,7 +360,16 @@
     flex-shrink: 0;
     text-align: right;
     font-size: 0.7rem;
-    color: var(--popover-text-muted, #a0a0b0);
+    color: var(--pop-muted);
     font-variant-numeric: tabular-nums;
+  }
+
+  @media (prefers-reduced-transparency: reduce) {
+    .detail-window,
+    .day-header {
+      background: var(--c-bg);
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
+    }
   }
 </style>

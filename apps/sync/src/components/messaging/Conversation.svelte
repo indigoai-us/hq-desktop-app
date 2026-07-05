@@ -351,7 +351,7 @@
     flex-direction: column;
     gap: 0.5rem;
     scrollbar-width: thin;
-    scrollbar-color: rgba(255, 255, 255, 0.15) transparent;
+    scrollbar-color: var(--pop-muted) transparent;
   }
 
   .dm-thread::-webkit-scrollbar {
@@ -359,18 +359,18 @@
   }
 
   .dm-thread::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.12);
+    background: var(--pop-hover);
     border-radius: 3px;
   }
 
   .dm-thread-status {
     margin: 0 auto;
     font-size: var(--text-base);
-    color: var(--popover-text-muted, #a0a0b0);
+    color: var(--pop-muted);
   }
 
   .dm-thread-error {
-    color: #ff9b9b;
+    color: var(--red, var(--popover-danger));
   }
 
   .dm-msg {
@@ -392,7 +392,7 @@
   .dm-msg-author {
     font-size: var(--text-base);
     font-weight: 600;
-    color: var(--popover-text-muted, #a0a0b0);
+    color: var(--pop-muted);
     margin: 0 0.25rem 0.125rem;
   }
 
@@ -436,31 +436,31 @@
     border: none;
     border-radius: 6px;
     cursor: pointer;
-    background: rgba(0, 0, 0, 0.32);
-    color: var(--popover-text, #e0e0e0);
+    background: var(--pop-bg);
+    color: var(--pop-text);
     transition: background-color 0.12s ease, color 0.12s ease;
   }
 
   .dm-action:hover {
-    background: rgba(0, 0, 0, 0.48);
+    background: var(--pop-hover);
   }
 
   .dm-action:focus-visible {
-    outline: 2px solid rgba(255, 255, 255, 0.4);
+    outline: 2px solid var(--pop-border);
     outline-offset: 1px;
   }
 
   .dm-action-done {
-    color: #7ee0a8;
+    color: var(--emerald, var(--popover-success));
   }
 
   .dm-msg-in .dm-bubble {
-    background: rgba(255, 255, 255, 0.07);
+    background: var(--pop-hover);
     border-bottom-left-radius: 4px;
   }
 
   .dm-msg-out .dm-bubble {
-    background: rgba(120, 170, 255, 0.22);
+    background: var(--c-btn2-bg);
     border-bottom-right-radius: 4px;
   }
 
@@ -468,7 +468,7 @@
     margin: 0;
     font-size: var(--text-base);
     line-height: 1.45;
-    color: var(--popover-text, #e8e8ee);
+    color: var(--pop-text);
     white-space: pre-wrap;
     word-break: break-word;
   }
@@ -476,9 +476,9 @@
   .dm-bubble-details {
     font-size: var(--text-base);
     line-height: 1.5;
-    color: var(--popover-text, #e0e0e0);
-    background: rgba(0, 0, 0, 0.18);
-    border-left: 2px solid rgba(255, 255, 255, 0.15);
+    color: var(--pop-text);
+    background: var(--c-field-bg);
+    border-left: 2px solid var(--c-field-border);
     padding: 0.5rem 0.625rem;
     border-radius: 0 6px 6px 0;
     white-space: pre-wrap;
@@ -487,15 +487,15 @@
 
   .dm-msg-time {
     font-size: var(--text-base);
-    color: var(--popover-text-muted, #8a8a98);
+    color: var(--pop-muted);
     margin: 0.125rem 0.25rem 0;
   }
 
   .dm-msg-pending {
     font-size: var(--text-base);
     font-weight: 600;
-    color: #ffd9b0;
-    background: rgba(255, 176, 102, 0.18);
+    color: var(--amber, var(--v4-warn, #b45309));
+    background: color-mix(in srgb, var(--amber, var(--v4-warn, #b45309)) 16%, transparent);
     padding: 0.0625rem 0.4375rem;
     border-radius: 999px;
     margin: 0.1875rem 0.25rem 0;
@@ -506,7 +506,7 @@
     align-items: center;
     gap: 0.5rem;
     margin: 0.5rem 0;
-    color: var(--popover-text-muted, #8a8a98);
+    color: var(--pop-muted);
     font-size: var(--text-base);
   }
 
@@ -515,7 +515,7 @@
     content: '';
     height: 1px;
     flex: 1;
-    background: var(--popover-divider, rgba(255, 255, 255, 0.08));
+    background: var(--pop-divider);
   }
 
   /* ── Thread reply-count affordance (US-022) ───────────────────────────── */
@@ -530,10 +530,10 @@
     align-self: inherit;
     margin: 0.25rem 0.125rem 0;
     padding: 0.1875rem 0.5rem;
-    border: 1px solid rgba(120, 170, 255, 0.28);
+    border: 1px solid var(--pop-border);
     border-radius: 999px;
-    background: rgba(120, 170, 255, 0.12);
-    color: #bcd4ff;
+    background: var(--pop-hover);
+    color: var(--pop-text);
     font-family: inherit;
     font-size: var(--text-base);
     font-weight: 600;
@@ -544,8 +544,8 @@
 
   .thread-affordance:hover,
   .thread-affordance:focus-visible {
-    background: rgba(120, 170, 255, 0.22);
-    border-color: rgba(120, 170, 255, 0.45);
+    background: var(--c-field-bg);
+    border-color: var(--c-field-border);
     outline: none;
   }
 
@@ -555,14 +555,14 @@
 
   .thread-affordance-time {
     font-weight: 500;
-    color: rgba(188, 212, 255, 0.72);
+    color: var(--pop-muted);
   }
 
   /* The root bubble of the thread currently open in the ThreadPanel. */
   .dm-bubble-thread-active {
     box-shadow:
-      0 0 0 1px rgba(120, 170, 255, 0.55),
-      0 0 0 4px rgba(120, 170, 255, 0.16);
+      0 0 0 1px var(--pop-border),
+      0 0 0 4px var(--pop-hover);
   }
 
   .btn {
@@ -580,12 +580,12 @@
   }
 
   .btn-copy {
-    background: rgba(255, 255, 255, 0.12);
-    color: var(--popover-text, #e0e0e0);
+    background: var(--pop-hover);
+    color: var(--pop-text);
   }
 
   .btn-copy:hover {
-    background: rgba(255, 255, 255, 0.2);
+    background: var(--c-field-bg);
   }
 
   /* ── Reply composer ───────────────────────────────────────────────────── */
@@ -596,7 +596,7 @@
     flex-direction: column;
     gap: 0.5rem;
     padding: 0.875rem 1.25rem 1rem;
-    border-top: 1px solid var(--popover-divider, rgba(255, 255, 255, 0.06));
+    border-top: 1px solid var(--pop-divider);
   }
 
   .dm-reply-input {
@@ -605,9 +605,9 @@
     resize: none;
     padding: 0.5rem 0.625rem;
     border-radius: 8px;
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    background: rgba(255, 255, 255, 0.04);
-    color: var(--popover-text, #e0e0e0);
+    border: 1px solid var(--pop-border);
+    background: var(--pop-hover);
+    color: var(--pop-text);
     font-family: inherit;
     font-size: var(--text-base);
     line-height: 1.4;
@@ -615,8 +615,8 @@
 
   .dm-reply-input:focus {
     outline: none;
-    border-color: rgba(255, 255, 255, 0.28);
-    background: rgba(255, 255, 255, 0.06);
+    border-color: var(--c-field-border);
+    background: var(--c-field-bg);
   }
 
   .dm-reply-input:disabled {
@@ -631,23 +631,23 @@
 
   .dm-reply-hint {
     font-size: var(--text-base);
-    color: var(--popover-text-muted, #a0a0b0);
+    color: var(--pop-muted);
   }
 
   .dm-reply-error {
     font-size: var(--text-base);
-    color: #ff9b9b;
+    color: var(--red, var(--popover-danger));
     word-break: break-word;
   }
 
   .btn-send {
     margin-left: auto;
-    background: rgba(120, 170, 255, 0.22);
-    color: #dce8ff;
+    background: var(--c-btn-bg);
+    color: var(--c-btn-fg);
   }
 
   .btn-send:hover:not(:disabled) {
-    background: rgba(120, 170, 255, 0.32);
+    filter: brightness(0.94);
   }
 
   .btn-send:disabled {
@@ -665,8 +665,8 @@
    * `[data-window='messages']` so DmDetail's appearance is unaffected.
    *
    * Outbound vs inbound is distinguished by SURFACE LAYERING + alignment, not
-   * a saturated blue fill: inbound left on a subtle raise surface, outbound
-   * right on a restrained --accent-soft "self/primary" tint. Tokens resolve
+   * a saturated fill: inbound left on a subtle raise surface, outbound
+   * right on a restrained neutral "self/primary" tint. Tokens resolve
    * from the shared desktop alias layer (desktop-alt.css).
    * ────────────────────────────────────────────────────────────────────── */
 
@@ -815,7 +815,7 @@
 
   :global([data-window='messages']) .btn-send {
     background: var(--accent);
-    color: #fff;
+    color: var(--accent-fg);
     border-radius: var(--radius-sm);
     font-family: var(--font-sans);
     font-weight: 600;
@@ -823,6 +823,6 @@
 
   :global([data-window='messages']) .btn-send:hover:not(:disabled) {
     background: var(--accent);
-    filter: brightness(1.1);
+    filter: brightness(0.94);
   }
 </style>

@@ -811,7 +811,7 @@
   }
   .btn:disabled {
     opacity: 0.5;
-    cursor: not-allowed;
+    cursor: default;
   }
   .btn:focus-visible {
     outline: 2px solid var(--v4-control-border);

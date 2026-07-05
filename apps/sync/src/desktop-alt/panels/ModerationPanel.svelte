@@ -812,7 +812,7 @@
     margin: 0;
     color: var(--v4-text-1);
     font-size: var(--text-base);
-    font-weight: 680;
+    font-weight: 600;
   }
 
   .subtitle {
@@ -900,14 +900,14 @@
   .request-email {
     color: var(--v4-text-1);
     font-size: var(--text-base);
-    font-weight: 640;
+    font-weight: 600;
     overflow-wrap: anywhere;
   }
 
   .request-handle {
     color: var(--v4-text-2);
     font-size: var(--text-micro);
-    font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+    font-family: var(--font-mono);
   }
 
   .request-date {
@@ -947,7 +947,7 @@
     margin: 0 0 var(--v4-space-1);
     color: var(--v4-text-3);
     font-size: var(--text-micro);
-    font-weight: 700;
+    font-weight: 600;
     letter-spacing: 0.04em;
     text-transform: uppercase;
   }
@@ -972,7 +972,7 @@
 
   .refresh:disabled {
     opacity: 0.55;
-    cursor: not-allowed;
+    cursor: default;
   }
 
   .muted-line {
@@ -1038,7 +1038,7 @@
 
   .row-name {
     font-size: var(--text-base);
-    font-weight: 640;
+    font-weight: 600;
   }
 
   .row-ver {
@@ -1050,7 +1050,7 @@
     margin-left: auto;
     color: var(--v4-warn);
     font-size: var(--text-micro);
-    font-weight: 700;
+    font-weight: 600;
   }
 
   .row-sub {
@@ -1081,7 +1081,7 @@
     margin: 0;
     color: var(--v4-text-1);
     font-size: var(--text-base);
-    font-weight: 680;
+    font-weight: 600;
   }
 
   .ver {
@@ -1117,7 +1117,7 @@
     margin: 0;
     color: var(--v4-text-3);
     font-size: var(--text-micro);
-    font-weight: 700;
+    font-weight: 600;
     letter-spacing: 0.04em;
     text-transform: uppercase;
   }
@@ -1133,7 +1133,7 @@
 
   .file {
     color: var(--v4-text-2);
-    font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+    font-family: var(--font-mono);
     font-size: var(--text-micro);
     overflow-wrap: anywhere;
   }
@@ -1141,7 +1141,7 @@
   .doc-path {
     margin: var(--v4-space-1) 0 0;
     color: var(--v4-text-3);
-    font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+    font-family: var(--font-mono);
     font-size: var(--text-micro);
   }
 
@@ -1158,7 +1158,7 @@
     background: color-mix(in srgb, var(--v4-warn) 14%, transparent);
     color: var(--v4-warn);
     font-size: var(--text-micro);
-    font-weight: 700;
+    font-weight: 600;
     letter-spacing: 0.02em;
   }
 
@@ -1182,7 +1182,7 @@
     background: var(--v4-warn);
     color: var(--v4-primary-bg);
     font-size: var(--text-micro);
-    font-weight: 700;
+    font-weight: 600;
     letter-spacing: 0.04em;
     text-transform: uppercase;
   }
@@ -1199,7 +1199,7 @@
     border-radius: var(--v4-radius-field);
     background: var(--v4-control-faint);
     color: var(--v4-text-1);
-    font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+    font-family: var(--font-mono);
     font-size: var(--text-micro);
     line-height: 16px;
     white-space: pre-wrap;
@@ -1235,7 +1235,7 @@
   }
 
   .flag-file {
-    font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+    font-family: var(--font-mono);
     color: var(--v4-text-3);
   }
 
@@ -1266,7 +1266,7 @@
     background: var(--v4-ok);
     color: var(--v4-primary-bg);
     font: inherit;
-    font-weight: 680;
+    font-weight: 600;
     cursor: pointer;
     transition: filter 140ms ease;
   }
@@ -1277,7 +1277,7 @@
 
   .approve:disabled {
     opacity: 0.45;
-    cursor: not-allowed;
+    cursor: default;
   }
 
   .reject {
@@ -1292,7 +1292,7 @@
 
   .reject:disabled {
     opacity: 0.55;
-    cursor: not-allowed;
+    cursor: default;
   }
 
   .field-label {
@@ -1300,7 +1300,7 @@
     margin-top: var(--v4-space-1);
     color: var(--v4-text-3);
     font-size: var(--text-micro);
-    font-weight: 700;
+    font-weight: 600;
     letter-spacing: 0.04em;
     text-transform: uppercase;
   }
@@ -1328,7 +1328,7 @@
 
   .text-input:disabled {
     opacity: 0.6;
-    cursor: not-allowed;
+    cursor: default;
   }
 
   /* Yank */
@@ -1349,7 +1349,7 @@
     display: block;
     margin-top: 2px;
     color: var(--v4-text-3);
-    font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+    font-family: var(--font-mono);
     font-size: var(--text-micro);
   }
 
@@ -1403,7 +1403,7 @@
 
   .yank-button:disabled {
     opacity: 0.5;
-    cursor: not-allowed;
+    cursor: default;
   }
 
   .confirm-row {
@@ -1433,13 +1433,13 @@
     background: var(--v4-warn);
     color: var(--v4-primary-bg);
     font: inherit;
-    font-weight: 680;
+    font-weight: 600;
     cursor: pointer;
   }
 
   .confirm-yank:disabled {
     opacity: 0.55;
-    cursor: not-allowed;
+    cursor: default;
   }
 
   .confirm-cancel {
@@ -1456,7 +1456,7 @@
 
   .confirm-cancel:disabled {
     opacity: 0.55;
-    cursor: not-allowed;
+    cursor: default;
   }
 
   .result {

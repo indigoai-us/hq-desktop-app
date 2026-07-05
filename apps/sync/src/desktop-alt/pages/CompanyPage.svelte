@@ -178,7 +178,7 @@
     font-weight: 400;
     text-overflow: ellipsis;
     white-space: nowrap;
-    cursor: default;
+    cursor: pointer;
     transition: opacity 120ms cubic-bezier(0.33, 1, 0.68, 1),
       transform 120ms cubic-bezier(0.33, 1, 0.68, 1);
   }
@@ -203,6 +203,7 @@
   .company-actions button:disabled {
     transform: none;
     opacity: 0.58;
+    cursor: default;
   }
 
   .company-action-error {

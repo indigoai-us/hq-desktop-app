@@ -136,30 +136,42 @@
 
   .new-channel-btn {
     width: 100%;
-    border: 1px solid rgba(120, 170, 255, 0.32);
-    background: rgba(120, 170, 255, 0.16);
-    color: #dce8ff;
+    border: 1px solid transparent;
+    background: var(--v4-primary-bg, var(--c-btn-bg));
+    color: var(--v4-primary-fg, var(--c-btn-fg));
     font-family: inherit;
     font-size: var(--text-base);
     font-weight: 600;
     padding: 0.375rem 0.5rem;
-    border-radius: 7px;
+    border-radius: var(--v4-radius-button, var(--radius-button));
     cursor: pointer;
-    transition: background-color 0.12s ease;
+    transition: filter 0.12s ease, background-color 0.12s ease, border-color 0.12s ease;
+  }
+
+  .new-group-btn {
+    margin-top: 0.375rem;
+    border-color: var(--v4-control-border, var(--c-field-border));
+    background: var(--v4-secondary-bg, var(--c-btn2-bg));
+    color: var(--v4-secondary-fg, var(--c-btn2-fg));
   }
 
   .new-channel-btn:hover {
-    background: rgba(120, 170, 255, 0.28);
+    filter: brightness(0.94);
+  }
+
+  .new-group-btn:hover {
+    background: var(--pop-hover);
+    filter: none;
   }
 
   .rail-status {
     margin: 0.5rem 0.625rem;
     font-size: var(--text-base);
-    color: var(--popover-text-muted, #a0a0b0);
+    color: var(--pop-muted);
   }
 
   .rail-error {
-    color: #ff9b9b;
+    color: var(--v4-error, var(--popover-danger));
   }
 
   .segment-empty {
@@ -171,14 +183,14 @@
     margin: 0 0 0.375rem;
     font-size: var(--text-base);
     font-weight: 600;
-    color: var(--popover-text, #e8e8ee);
+    color: var(--pop-text);
   }
 
   .segment-empty-sub {
     margin: 0;
     font-size: var(--text-base);
     line-height: 1.45;
-    color: var(--popover-text-muted, #8a8a98);
+    color: var(--pop-muted);
   }
 
   .channel-group {
@@ -203,7 +215,7 @@
     font-weight: 600;
     letter-spacing: 0.04em;
     text-transform: uppercase;
-    color: var(--popover-text-muted, #8a8a98);
+    color: var(--pop-muted);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -219,7 +231,7 @@
     flex-shrink: 0;
     border: none;
     background: transparent;
-    color: var(--popover-text-muted, #8a8a98);
+    color: var(--pop-muted);
     font-size: var(--text-base);
     line-height: 1;
     cursor: pointer;
@@ -228,8 +240,8 @@
   }
 
   .group-add:hover {
-    background: rgba(255, 255, 255, 0.08);
-    color: var(--popover-text, #e8e8ee);
+    background: var(--pop-hover);
+    color: var(--pop-text);
   }
 
   .channel-list {
@@ -258,24 +270,24 @@
   }
 
   .channel-row:hover {
-    background: rgba(255, 255, 255, 0.05);
+    background: var(--pop-hover);
   }
 
   .channel-row.active {
-    background: rgba(120, 170, 255, 0.16);
+    background: var(--pop-hover);
   }
 
   .channel-hash {
     flex-shrink: 0;
     font-size: var(--text-base);
     font-weight: 600;
-    color: var(--popover-text-muted, #8a8a98);
+    color: var(--pop-muted);
   }
 
   .channel-name {
     font-size: var(--text-base);
     font-weight: 500;
-    color: var(--popover-text, #e8e8ee);
+    color: var(--pop-text);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -290,8 +302,8 @@
     letter-spacing: 0.02em;
     padding: 0.0625rem 0.375rem;
     border-radius: 999px;
-    background: rgba(120, 170, 255, 0.16);
-    color: #cfe0ff;
+    background: var(--pop-hover);
+    color: var(--pop-muted);
     max-width: 6.5rem;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -300,7 +312,7 @@
 
   .scope-chip.personal {
     background: var(--surface-raise);
-    color: var(--muted-2);
+    color: var(--muted-2, var(--pop-muted));
   }
 
   .invited-chip {
@@ -312,8 +324,8 @@
     text-transform: uppercase;
     padding: 0.0625rem 0.375rem;
     border-radius: 999px;
-    background: rgba(255, 176, 102, 0.22);
-    color: #ffd9b0;
+    background: color-mix(in srgb, var(--v4-warn, #b45309) 16%, transparent);
+    color: var(--v4-warn, #b45309);
   }
 
   .unread-badge {
@@ -327,9 +339,9 @@
     justify-content: center;
     border-radius: 999px;
     font-size: var(--text-base);
-    font-weight: 700;
+    font-weight: 600;
     line-height: 1;
-    background: rgba(120, 170, 255, 0.32);
-    color: #eaf2ff;
+    background: var(--v4-unread, var(--blue));
+    color: var(--c-bg);
   }
 </style>

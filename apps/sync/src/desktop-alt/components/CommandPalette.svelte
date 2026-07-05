@@ -194,17 +194,21 @@
     align-items: flex-start;
     justify-content: center;
     padding: 72px 20px 20px;
-    background: rgba(0, 0, 0, 0.5);
+    background: color-mix(in srgb, var(--pop-bg) 48%, transparent);
+    backdrop-filter: blur(8px) saturate(1.2);
+    -webkit-backdrop-filter: blur(8px) saturate(1.2);
   }
 
   .command-palette {
     width: min(560px, 100%);
     overflow: hidden;
-    border: 1px solid var(--border-strong);
-    border-radius: 8px;
-    background: var(--bg);
-    box-shadow: 0 22px 60px rgba(0, 0, 0, 0.55);
-    color: var(--fg);
+    border: 1px solid var(--pop-border);
+    border-radius: var(--v4-radius-popover, var(--radius-popover));
+    background: var(--v4-chrome, var(--pop-bg));
+    backdrop-filter: blur(32px) saturate(1.7);
+    -webkit-backdrop-filter: blur(32px) saturate(1.7);
+    box-shadow: var(--v4-shadow-popover, var(--pop-shadow)), inset 0 1px 0 var(--pop-highlight);
+    color: var(--pop-text);
     transform-origin: top center;
   }
 
@@ -223,16 +227,16 @@
     gap: 10px;
     height: 48px;
     padding: 0 12px;
-    border-bottom: 1px solid var(--border);
-    background: var(--bg-subtle);
+    border-bottom: 1px solid var(--pop-divider);
+    background: var(--pop-hover);
   }
 
   .command-glyph,
   .command-palette kbd {
-    border: 1px solid var(--border);
+    border: 1px solid var(--pop-border);
     border-radius: 5px;
-    background: var(--row-active);
-    color: var(--muted-3);
+    background: var(--pop-hover);
+    color: var(--pop-muted);
     font-family: var(--font-mono);
     font-size: var(--text-base);
     line-height: 18px;
@@ -249,31 +253,31 @@
     border: 0;
     outline: 0;
     background: transparent;
-    color: var(--fg);
+    color: var(--pop-text);
     font: inherit;
     font-size: var(--text-base);
   }
 
   .command-palette input::placeholder {
-    color: var(--muted-3);
+    color: var(--pop-muted);
   }
 
   .command-list {
     max-height: min(360px, calc(100vh - 160px));
     overflow-y: auto;
     padding: 6px;
-    scrollbar-color: var(--scrollbar-thumb-hover) transparent;
+    scrollbar-color: var(--pop-muted) transparent;
   }
 
   .command-section + .command-section {
     margin-top: 6px;
     padding-top: 6px;
-    border-top: 1px solid var(--border);
+    border-top: 1px solid var(--pop-divider);
   }
 
   .command-section-title {
     padding: 5px 8px 4px;
-    color: var(--muted-3);
+    color: var(--pop-muted);
     font-size: var(--text-micro);
     font-weight: 600;
     line-height: 14px;
@@ -295,10 +299,10 @@
     padding: 7px 8px;
     border: 0;
     background: transparent;
-    color: var(--muted-2);
+    color: var(--pop-muted);
     font: inherit;
     text-align: left;
-    cursor: default;
+    cursor: pointer;
     transition:
       background-color 120ms ease,
       color 120ms ease,
@@ -308,9 +312,9 @@
 
   .command-list button.highlighted,
   .command-list button:focus-visible {
-    background: rgba(96, 165, 250, 0.14);
-    color: var(--fg);
-    outline: 1px solid rgba(96, 165, 250, 0.5);
+    background: var(--pop-hover);
+    color: var(--pop-text);
+    outline: 1px solid var(--pop-border);
   }
 
   .command-list button.highlighted {
@@ -338,7 +342,7 @@
   }
 
   .command-copy span {
-    color: var(--muted);
+    color: var(--pop-muted);
     font-size: var(--text-base);
   }
 
@@ -354,16 +358,32 @@
   }
 
   .command-list button.highlighted kbd {
-    border-color: rgba(96, 165, 250, 0.4);
-    background: rgba(96, 165, 250, 0.12);
-    color: var(--blue);
+    border-color: var(--pop-border);
+    background: var(--pop-hover);
+    color: var(--pop-text);
   }
 
   .command-empty {
     display: flex;
     align-items: center;
     padding: 0 10px;
-    color: var(--muted);
+    color: var(--pop-muted);
+  }
+
+  @media (prefers-reduced-transparency: reduce) {
+    .command-backdrop,
+    .command-palette {
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
+    }
+
+    .command-backdrop {
+      background: color-mix(in srgb, var(--c-bg) 74%, transparent);
+    }
+
+    .command-palette {
+      background: var(--c-bg);
+    }
   }
 
   @media (prefers-reduced-motion: no-preference) {

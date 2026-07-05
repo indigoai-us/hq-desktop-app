@@ -221,9 +221,9 @@
     align-items: flex-start;
     justify-content: center;
     padding: 3.5rem 1.5rem 1.5rem;
-    background: rgba(0, 0, 0, 0.42);
-    backdrop-filter: blur(2px);
-    -webkit-backdrop-filter: blur(2px);
+    background: color-mix(in srgb, var(--pop-bg) 48%, transparent);
+    backdrop-filter: blur(8px) saturate(1.2);
+    -webkit-backdrop-filter: blur(8px) saturate(1.2);
   }
 
   .roster-sheet {
@@ -234,13 +234,13 @@
     flex-direction: column;
     gap: 0.625rem;
     padding: 1.125rem 1.25rem 1.25rem;
-    border-radius: 14px;
-    border: 1px solid var(--popover-divider, rgba(255, 255, 255, 0.1));
-    background: var(--popover-bg, #1a1a22);
-    backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
-    -webkit-backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
-    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
-    color: var(--popover-text, rgba(255, 255, 255, 0.86));
+    border-radius: var(--radius-popover);
+    border: 1px solid var(--pop-border);
+    background: var(--pop-bg);
+    backdrop-filter: var(--popover-blur, blur(32px) saturate(1.7));
+    -webkit-backdrop-filter: var(--popover-blur, blur(32px) saturate(1.7));
+    box-shadow: var(--pop-shadow), inset 0 1px 0 var(--pop-highlight);
+    color: var(--pop-text);
     overflow: hidden;
   }
 
@@ -254,13 +254,13 @@
     margin: 0;
     font-size: var(--text-base);
     font-weight: 600;
-    color: var(--popover-text-heading, #ffffff);
+    color: var(--pop-text);
   }
 
   .roster-close {
     border: none;
     background: transparent;
-    color: var(--popover-text-muted, #a0a0b0);
+    color: var(--pop-muted);
     font-size: var(--text-lg);
     line-height: 1;
     cursor: pointer;
@@ -269,15 +269,15 @@
   }
 
   .roster-close:hover {
-    background: rgba(255, 255, 255, 0.08);
-    color: var(--popover-text, #e8e8ee);
+    background: var(--pop-hover);
+    color: var(--pop-text);
   }
 
   .invite-open {
     align-self: flex-start;
-    border: 1px solid rgba(120, 170, 255, 0.32);
-    background: rgba(120, 170, 255, 0.16);
-    color: #dce8ff;
+    border: 1px solid transparent;
+    background: var(--v4-primary-bg, var(--c-btn-bg));
+    color: var(--v4-primary-fg, var(--c-btn-fg));
     font-family: inherit;
     font-size: var(--text-base);
     font-weight: 600;
@@ -287,7 +287,7 @@
   }
 
   .invite-open:hover {
-    background: rgba(120, 170, 255, 0.28);
+    filter: brightness(0.94);
   }
 
   .invite-row {
@@ -295,9 +295,9 @@
     flex-direction: column;
     gap: 0.5rem;
     padding: 0.625rem;
-    border: 1px solid var(--popover-divider, rgba(255, 255, 255, 0.1));
+    border: 1px solid var(--pop-border);
     border-radius: 10px;
-    background: rgba(255, 255, 255, 0.03);
+    background: var(--pop-hover);
   }
 
   .invite-actions {
@@ -308,18 +308,18 @@
 
   .invite-error {
     font-size: var(--text-base);
-    color: #ff9b9b;
+    color: var(--red, var(--popover-danger));
     margin-right: auto;
   }
 
   .roster-status {
     margin: 0.5rem 0;
     font-size: var(--text-base);
-    color: var(--popover-text-muted, #a0a0b0);
+    color: var(--pop-muted);
   }
 
   .roster-error {
-    color: #ff9b9b;
+    color: var(--red, var(--popover-danger));
   }
 
   .member-list {
@@ -331,7 +331,7 @@
     gap: 0.125rem;
     overflow-y: auto;
     scrollbar-width: thin;
-    scrollbar-color: rgba(255, 255, 255, 0.15) transparent;
+    scrollbar-color: var(--pop-muted) transparent;
   }
 
   .member-row {
@@ -343,7 +343,7 @@
   }
 
   .member-row:hover {
-    background: rgba(255, 255, 255, 0.04);
+    background: var(--pop-hover);
   }
 
   .member-meta {
@@ -356,7 +356,7 @@
   .member-name {
     font-size: var(--text-base);
     font-weight: 500;
-    color: var(--popover-text, #e8e8ee);
+    color: var(--pop-text);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -367,19 +367,19 @@
     font-weight: 600;
     letter-spacing: 0.03em;
     text-transform: uppercase;
-    color: var(--popover-text-muted, #8a8a98);
+    color: var(--pop-muted);
   }
 
   .member-role.owner {
-    color: #ffd9b0;
+    color: var(--amber, var(--v4-warn));
   }
 
   .member-remove {
     margin-left: auto;
     flex-shrink: 0;
-    border: 1px solid rgba(255, 107, 107, 0.34);
-    background: rgba(255, 107, 107, 0.12);
-    color: #ffb0b0;
+    border: 1px solid color-mix(in srgb, var(--red, var(--popover-danger)) 40%, transparent);
+    background: color-mix(in srgb, var(--red, var(--popover-danger)) 12%, transparent);
+    color: var(--red, var(--popover-danger));
     font-family: inherit;
     font-size: var(--text-base);
     font-weight: 600;
@@ -389,7 +389,7 @@
   }
 
   .member-remove:hover:not(:disabled) {
-    background: rgba(255, 107, 107, 0.22);
+    background: color-mix(in srgb, var(--red, var(--popover-danger)) 18%, transparent);
   }
 
   .member-remove:disabled {
@@ -411,25 +411,41 @@
   }
 
   .btn-ghost {
-    background: rgba(255, 255, 255, 0.06);
-    color: var(--popover-text, #e8e8ee);
+    background: var(--pop-hover);
+    color: var(--pop-text);
   }
 
   .btn-ghost:hover {
-    background: rgba(255, 255, 255, 0.12);
+    background: var(--c-field-bg);
   }
 
   .btn-primary {
-    background: rgba(120, 170, 255, 0.26);
-    color: #dce8ff;
+    background: var(--v4-primary-bg, var(--c-btn-bg));
+    color: var(--v4-primary-fg, var(--c-btn-fg));
   }
 
   .btn-primary:hover:not(:disabled) {
-    background: rgba(120, 170, 255, 0.38);
+    filter: brightness(0.94);
   }
 
   .btn-primary:disabled {
     opacity: 0.45;
     cursor: default;
+  }
+
+  @media (prefers-reduced-transparency: reduce) {
+    .roster-backdrop,
+    .roster-sheet {
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
+    }
+
+    .roster-backdrop {
+      background: color-mix(in srgb, var(--c-bg) 74%, transparent);
+    }
+
+    .roster-sheet {
+      background: var(--c-bg);
+    }
   }
 </style>

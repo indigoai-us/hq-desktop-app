@@ -254,11 +254,11 @@
   .action-accept {
     background: var(--accent);
     border-color: var(--accent);
-    color: #fff;
+    color: var(--accent-fg);
   }
 
   .action-accept:hover:not(:disabled) {
-    filter: brightness(1.1);
+    filter: brightness(0.94);
   }
 
   .action-decline {

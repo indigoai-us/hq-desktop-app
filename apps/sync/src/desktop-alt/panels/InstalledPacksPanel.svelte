@@ -465,7 +465,7 @@
 
   .refresh:disabled {
     opacity: 0.55;
-    cursor: not-allowed;
+    cursor: default;
   }
 
   /* ---- in-flight op + log ----------------------------------------------- */
@@ -786,7 +786,7 @@
 
   .action:disabled {
     opacity: 0.55;
-    cursor: not-allowed;
+    cursor: default;
   }
 
   .action.primary {

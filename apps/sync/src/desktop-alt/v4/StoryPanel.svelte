@@ -249,7 +249,9 @@
     position: fixed;
     inset: 0;
     z-index: 90;
-    background: var(--pop-highlight);
+    background: color-mix(in srgb, var(--pop-bg) 46%, transparent);
+    backdrop-filter: blur(4px) saturate(1.1);
+    -webkit-backdrop-filter: blur(4px) saturate(1.1);
   }
 
   .story-panel {
@@ -538,6 +540,14 @@
     .footer-status {
       flex-basis: 100%;
       white-space: normal;
+    }
+  }
+
+  @media (prefers-reduced-transparency: reduce) {
+    .story-backdrop {
+      background: color-mix(in srgb, var(--c-bg) 74%, transparent);
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
     }
   }
 </style>

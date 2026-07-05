@@ -214,17 +214,18 @@
     height: 100vh;
     box-sizing: border-box;
     padding: 1rem;
-    background: var(--popover-bg, rgba(18, 18, 20, 0.68));
+    background: var(--pop-bg);
     backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
     -webkit-backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
-    color: var(--popover-text, #e0e0e0);
+    color: var(--pop-text);
+    font-family: var(--font-sans);
     overflow: hidden;
     /* Rounded corners — requires tauri window transparent:true +
        decorations:false + macOSPrivateApi:true for the OS to honor
        transparency outside the radius. */
     border-radius: 18px;
-    border: 1px solid var(--popover-border, rgba(255, 255, 255, 0.18));
-    box-shadow: inset 0 1px 0 var(--popover-highlight, rgba(255, 255, 255, 0.34));
+    border: 1px solid var(--pop-border);
+    box-shadow: var(--pop-shadow), inset 0 1px 0 var(--pop-highlight);
   }
 
   .sign-in-card {
@@ -243,13 +244,13 @@
   h1 {
     font-size: 1.25rem;
     font-weight: 600;
-    color: #ffffff;
+    color: var(--pop-text);
     margin: 0 0 0.5rem 0;
   }
 
   .description {
     font-size: 0.8125rem;
-    color: #a0a0b0;
+    color: var(--pop-muted);
     margin: 0 0 1.5rem 0;
     line-height: 1.4;
   }
@@ -270,8 +271,8 @@
     font-size: 0.875rem;
     font-weight: 500;
     font-family: inherit;
-    color: var(--popover-primary-text, #111113);
-    background-color: var(--popover-primary, #ffffff);
+    color: var(--pop-acc-fg);
+    background-color: var(--pop-accent);
     border: none;
     border-radius: 8px;
     cursor: pointer;
@@ -279,24 +280,24 @@
   }
 
   .sign-in-btn:hover:not(:disabled) {
-    background-color: var(--popover-primary-hover, rgba(255, 255, 255, 0.9));
+    filter: brightness(0.94);
   }
 
   .sign-in-btn:active:not(:disabled) {
-    background-color: var(--popover-primary-active, rgba(255, 255, 255, 0.78));
+    filter: brightness(0.88);
   }
 
   .sign-in-btn:disabled {
     opacity: 0.6;
-    cursor: not-allowed;
+    cursor: default;
   }
 
   .spinner {
     display: inline-block;
     width: 14px;
     height: 14px;
-    border: 2px solid rgba(0, 0, 0, 0.22);
-    border-top-color: var(--popover-primary-text, #111113);
+    border: 2px solid color-mix(in srgb, var(--pop-acc-fg) 22%, transparent);
+    border-top-color: var(--pop-acc-fg);
     border-radius: 50%;
     animation: spin 0.6s linear infinite;
   }
@@ -320,14 +321,14 @@
 
   .error {
     font-size: 0.75rem;
-    color: var(--popover-text-muted, #a0a0b0);
+    color: var(--pop-muted);
     margin: 0;
     line-height: 1.4;
   }
 
   .loading-hint {
     font-size: 0.6875rem;
-    color: #a0a0b0;
+    color: var(--pop-muted);
     margin: 0.75rem 0 0 0;
     line-height: 1.4;
   }
@@ -337,7 +338,7 @@
     padding: 0.375rem 0.625rem;
     font-size: 0.75rem;
     font-family: inherit;
-    color: var(--popover-text-muted, #a0a0b0);
+    color: var(--pop-muted);
     background: none;
     border: none;
     border-radius: 6px;
@@ -346,8 +347,8 @@
   }
 
   .quit-btn:hover {
-    background: var(--popover-action-hover, rgba(255, 255, 255, 0.05));
-    color: var(--popover-text, #e0e0e0);
+    background: var(--pop-hover);
+    color: var(--pop-text);
   }
 
   .provider-glyph {
@@ -380,30 +381,16 @@
 
   .footer {
     font-size: 0.6875rem;
-    color: #555568;
+    color: var(--dot);
     margin: 1.5rem 0 0 0;
     letter-spacing: 0.02em;
   }
 
-  @media (prefers-color-scheme: light) {
-    h1 {
-      color: #111113;
-    }
-
-    .description {
-      color: #6b7280;
-    }
-
-    .loading-hint {
-      color: #6b7280;
-    }
-
-    .footer {
-      color: #9ca3af;
-    }
-
-    .error {
-      color: var(--popover-text-muted, rgba(0, 0, 0, 0.48));
+  @media (prefers-reduced-transparency: reduce) {
+    .sign-in-container {
+      background: var(--c-bg);
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
     }
   }
 </style>
