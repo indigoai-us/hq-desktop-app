@@ -28,6 +28,11 @@ describe('macOS menu-bar helper process (HQ status item)', () => {
     const swift = read('src-tauri/helper/hq-tray-helper.swift');
     expect(swift).toContain('NSStatusBar.system.statusItem');
     expect(swift).toContain('"HQ"');
+    expect(swift).toContain('makeHQTemplateImage');
+    expect(swift).toContain('image.isTemplate = true');
+    expect(swift).toContain('item.button?.image = mark');
+    expect(swift).toContain('item.button?.imagePosition = .imageOnly');
+    expect(swift).toContain('setAccessibilityLabel("HQ")');
     // Relays actions to the main app via the command file it polls. The "show"
     // command carries the icon's on-screen x so the popover anchors under it.
     expect(swift).toContain('.hq/.tray-cmd');

@@ -36,13 +36,19 @@ textarea,
   --popover-primary-hover: var(--pop-accent);
   --popover-primary-active: var(--pop-accent);
   --popover-primary-text: var(--pop-acc-fg);
+  --popover-primary-soft: var(--pop-hover);
+  --popover-focus-ring: var(--pop-focus-ring, var(--pop-accent));
+  --popover-focus-offset: var(--pop-focus-offset, 2px);
   --popover-danger: #dc2626;
   --popover-notice: var(--pop-muted);
   --popover-notice-strong: var(--pop-text);
   --popover-notice-bg: var(--pop-hover);
   --popover-notice-border: var(--pop-border);
-  --popover-warning: var(--popover-notice);
+  --popover-warning: #b45309;
+  --popover-warning-glow: rgba(180, 83, 9, 0.28);
   --popover-success: #1f9d4d;
+  --popover-success-bg: rgba(31, 157, 77, 0.14);
+  --popover-success-border: rgba(31, 157, 77, 0.28);
   --popover-divider: var(--pop-divider);
   --popover-action-hover: var(--pop-hover);
   --popover-progress-track: var(--pop-hover);
@@ -87,7 +93,11 @@ textarea,
 @media (prefers-color-scheme: dark) {
   :root {
     --popover-danger: #ef4444;
+    --popover-warning: #f59e0b;
+    --popover-warning-glow: rgba(245, 158, 11, 0.36);
     --popover-success: #41d870;
+    --popover-success-bg: rgba(65, 216, 112, 0.22);
+    --popover-success-border: rgba(65, 216, 112, 0.34);
   }
 }
 

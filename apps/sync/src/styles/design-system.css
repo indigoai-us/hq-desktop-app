@@ -31,11 +31,13 @@
   --check-bg:#000; --check-fg:#fff; --c-divider:#00000010; --dot:#0000003a; --dot-on:#000;
   --graphic:rgba(255,255,255,0.92); --graphic-fg:#1a1a1a; --graphic-line:rgba(0,0,0,0.12);
   --c-choose-bg:#ffffff; --c-choose-border:#00000026; --c-choose-shadow:0 1px 1.5px rgba(0,0,0,0.1);
+  --c-focus-ring:var(--c-text); --c-focus-offset:2px;
 
   --pop-bg:rgba(250,250,252,0.82); --pop-text:#1d1d1f; --pop-muted:rgba(0,0,0,0.5);
   --pop-border:rgba(0,0,0,0.1); --pop-divider:rgba(0,0,0,0.08); --pop-hover:rgba(0,0,0,0.055);
   --pop-icon:rgba(0,0,0,0.5); --pop-highlight:rgba(255,255,255,0.7); --pop-shadow:0 22px 55px rgba(20,22,40,0.22);
   --pop-accent:#1d1d1f; --pop-acc-fg:#fff;
+  --pop-focus-ring:var(--pop-accent); --pop-focus-offset:2px;
 
   --radius-button:8px;
   --radius-field:10px;

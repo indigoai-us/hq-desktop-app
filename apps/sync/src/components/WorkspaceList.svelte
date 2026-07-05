@@ -412,15 +412,15 @@
     gap: 0.4375rem;
     padding: 0.4375rem 0.625rem;
     border-radius: 6px;
-    background: var(--popover-notice-bg, rgba(255, 255, 255, 0.05));
-    border: 1px solid var(--popover-notice-border, rgba(255, 255, 255, 0.16));
+    background: var(--popover-notice-bg, var(--pop-hover));
+    border: 1px solid var(--popover-notice-border, var(--pop-border));
   }
 
   .cloud-warning-text {
     flex: 1;
     min-width: 0;
     font-size: 0.6875rem;
-    color: var(--popover-text-muted, #a0a0b0);
+    color: var(--popover-text-muted, var(--pop-muted));
     line-height: 1.3;
   }
 
@@ -447,7 +447,7 @@
   }
 
   .workspace-row:hover {
-    background: rgba(255, 255, 255, 0.025);
+    background: var(--popover-action-hover, var(--pop-hover));
   }
 
   .workspace-row.clickable {
@@ -482,8 +482,8 @@
   }
 
   .row-link:focus-visible::after {
-    outline: 1px solid var(--popover-highlight, rgba(255, 255, 255, 0.34));
-    outline-offset: -1px;
+    outline: 1.5px solid var(--popover-focus-ring, var(--pop-accent));
+    outline-offset: -2px;
   }
 
   .workspace-row.local-only {
@@ -495,11 +495,11 @@
      is carried by the "Manifest out of sync — click to reconnect" meta line
      and the Copy-prompt button, not by colour. */
   .workspace-row.broken {
-    background: var(--popover-notice-bg, rgba(255, 255, 255, 0.05));
+    background: var(--popover-notice-bg, var(--pop-hover));
   }
 
   .workspace-row.broken:hover {
-    background: var(--popover-action-hover, rgba(255, 255, 255, 0.1));
+    background: var(--popover-action-hover, var(--pop-hover));
   }
 
   .row-main {
@@ -520,7 +520,7 @@
   .row-name {
     font-size: 0.8125rem;
     font-weight: 500;
-    color: var(--popover-text, #e0e0e0);
+    color: var(--popover-text, var(--pop-text));
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -538,15 +538,15 @@
     line-height: 1;
     padding: 0.1875rem 0.4375rem;
     border-radius: 999px;
-    background: var(--popover-surface, rgba(255, 255, 255, 0.08));
-    color: var(--popover-text-muted, #a0a0b0);
+    background: var(--popover-surface, var(--pop-hover));
+    color: var(--popover-text-muted, var(--pop-muted));
     flex-shrink: 0;
   }
 
   .row-meta {
     /* Same consolidation as row-slug (v0.1.85): 10px → 11px. */
     font-size: 0.6875rem;
-    color: var(--popover-text-muted, #a0a0b0);
+    color: var(--popover-text-muted, var(--pop-muted));
     line-height: 1.3;
   }
 
@@ -561,7 +561,7 @@
     display: none;
     margin-left: auto;
     font-size: 0.6875rem;
-    color: var(--popover-text-muted, #a0a0b0);
+    color: var(--popover-text-muted, var(--pop-muted));
     line-height: 1;
     white-space: nowrap;
     flex-shrink: 0;
@@ -590,7 +590,7 @@
   /* "Connect failed" / "Manifest out of sync" meta lines — same muted grey
      as any other row-meta; copy carries the meaning. */
   .row-meta-error {
-    color: var(--popover-text-muted, #a0a0b0);
+    color: var(--popover-text-muted, var(--pop-muted));
   }
 
   /* Row-meta line that mixes the message + Copy-prompt button for broken
@@ -611,32 +611,39 @@
     width: 22px;
     height: 22px;
     padding: 0;
-    background: rgba(56, 189, 248, 0.10);
-    color: #7dd3fc;
-    border: 1px solid rgba(56, 189, 248, 0.28);
+    background: var(--popover-primary-soft, var(--pop-hover));
+    color: var(--popover-text, var(--pop-text));
+    border: 1px solid var(--popover-border, var(--pop-border));
     border-radius: 6px;
     cursor: pointer;
-    transition: background-color 0.1s ease, color 0.1s ease, opacity 0.1s ease;
+    transition: background-color 0.1s ease, color 0.1s ease, border-color 0.1s ease, opacity 0.1s ease;
     flex-shrink: 0;
   }
 
   .row-action:hover:not(:disabled) {
-    background: rgba(56, 189, 248, 0.18);
-    color: #bae6fd;
+    background: var(--popover-primary, var(--pop-accent));
+    color: var(--popover-primary-text, var(--pop-acc-fg));
+    border-color: var(--popover-primary, var(--pop-accent));
+  }
+
+  .row-action:focus-visible {
+    outline: 1.5px solid var(--popover-focus-ring, var(--pop-accent));
+    outline-offset: 2px;
   }
 
   /* Broken-state Connect button: same secondary-button treatment as the
      local-only Connect. Visual hierarchy is carried by the row text +
      Copy-prompt affordance, not by colour. */
   .row-action-broken {
-    background: var(--popover-surface-strong, rgba(255, 255, 255, 0.16));
-    color: var(--popover-text, rgba(255, 255, 255, 0.86));
-    border-color: var(--popover-border, rgba(255, 255, 255, 0.18));
+    background: var(--popover-surface-strong, var(--pop-divider));
+    color: var(--popover-text, var(--pop-text));
+    border-color: var(--popover-border, var(--pop-border));
   }
 
   .row-action-broken:hover:not(:disabled) {
-    background: var(--popover-action-hover, rgba(255, 255, 255, 0.1));
-    color: var(--popover-text-heading, #ffffff);
+    background: var(--popover-primary, var(--pop-accent));
+    color: var(--popover-primary-text, var(--pop-acc-fg));
+    border-color: var(--popover-primary, var(--pop-accent));
   }
 
   .row-action:disabled {
@@ -653,8 +660,8 @@
     display: inline-block;
     width: 12px;
     height: 12px;
-    border: 1.5px solid rgba(125, 211, 252, 0.3);
-    border-top-color: #7dd3fc;
+    border: 1.5px solid var(--popover-border, var(--pop-border));
+    border-top-color: var(--popover-text, var(--pop-text));
     border-radius: 50%;
     animation: row-spin 0.7s linear infinite;
   }
@@ -679,28 +686,28 @@
   }
 
   .badge-personal {
-    background: rgba(255, 255, 255, 0.06);
-    color: rgba(255, 255, 255, 0.62);
-    border-color: rgba(255, 255, 255, 0.14);
+    background: var(--popover-surface, var(--pop-hover));
+    color: var(--popover-text-muted, var(--pop-muted));
+    border-color: var(--popover-border, var(--pop-border));
   }
 
   .badge-synced {
-    background: rgba(34, 197, 94, 0.10);
-    color: #86efac;
-    border-color: rgba(34, 197, 94, 0.28);
+    background: var(--popover-success-bg);
+    color: var(--popover-success);
+    border-color: var(--popover-success-border);
   }
 
   .badge-cloud {
-    background: rgba(56, 189, 248, 0.10);
-    color: #7dd3fc;
-    border-color: rgba(56, 189, 248, 0.28);
+    background: var(--popover-primary-soft, var(--pop-hover));
+    color: var(--popover-text, var(--pop-text));
+    border-color: var(--popover-border, var(--pop-border));
   }
 
   /* Broken badge: muted grey, same notice tone. The triangle icon + tooltip
      ("Manifest is out of sync with cloud") communicate status. */
   .badge-broken {
-    background: var(--popover-notice-bg, rgba(255, 255, 255, 0.05));
-    color: var(--popover-text-muted, rgba(255, 255, 255, 0.52));
-    border-color: var(--popover-notice-border, rgba(255, 255, 255, 0.16));
+    background: var(--popover-notice-bg, var(--pop-hover));
+    color: var(--popover-text-muted, var(--pop-muted));
+    border-color: var(--popover-notice-border, var(--pop-border));
   }
 </style>

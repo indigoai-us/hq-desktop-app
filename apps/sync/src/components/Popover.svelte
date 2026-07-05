@@ -1,8 +1,9 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
+  import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
   import { open } from '@tauri-apps/plugin-shell';
-  import { untrack } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import ConflictModal from './ConflictModal.svelte';
   import WorkspaceList from './WorkspaceList.svelte';
   import CopyPromptButton from './CopyPromptButton.svelte';
@@ -208,6 +209,8 @@
   let overflowButtonEl: HTMLButtonElement | null = $state(null);
   let overflowEl: HTMLDivElement | null = $state(null);
   let overflowOpen = $state(false);
+  let opening = $state(false);
+  let openingTimer: number | null = null;
   let showWorkspaceActions = $state(false);
   let desktopAltError = $state('');
   let desktopAltErrorTimer: ReturnType<typeof setTimeout> | null = null;
@@ -479,6 +482,22 @@
     overflowOpen = false;
   }
 
+  function restartOpeningMotion() {
+    if (typeof window === 'undefined') return;
+    if (openingTimer !== null) {
+      window.clearTimeout(openingTimer);
+      openingTimer = null;
+    }
+    opening = false;
+    window.requestAnimationFrame(() => {
+      opening = true;
+      openingTimer = window.setTimeout(() => {
+        opening = false;
+        openingTimer = null;
+      }, 480);
+    });
+  }
+
   function toggleOverflow(event: MouseEvent) {
     event.stopPropagation();
     overflowOpen = !overflowOpen;
@@ -629,9 +648,45 @@
       document.removeEventListener('keydown', handleKey);
     };
   });
+
+  onMount(() => {
+    let cancelled = false;
+    let unlistenFocus: UnlistenFn | null = null;
+    let unlistenOpened: UnlistenFn | null = null;
+
+    restartOpeningMotion();
+
+    void getCurrentWindow()
+      .onFocusChanged(({ payload: focused }) => {
+        if (focused) restartOpeningMotion();
+      })
+      .then((unlisten) => {
+        if (cancelled) unlisten();
+        else unlistenFocus = unlisten;
+      })
+      .catch(() => {
+        // Non-Tauri / test environment.
+      });
+
+    void listen('popover:opened', () => restartOpeningMotion())
+      .then((unlisten) => {
+        if (cancelled) unlisten();
+        else unlistenOpened = unlisten;
+      })
+      .catch(() => {
+        // Non-Tauri / test environment.
+      });
+
+    return () => {
+      cancelled = true;
+      unlistenFocus?.();
+      unlistenOpened?.();
+      if (openingTimer !== null) window.clearTimeout(openingTimer);
+    };
+  });
 </script>
 
-<div class="popover mbpop show" bind:this={popoverEl} data-testid="popover-root">
+<div class="popover mbpop show" class:opening bind:this={popoverEl} data-testid="popover-root">
   <header class="mbp-head" data-tauri-drag-region>
     <span class="mbp-mark" data-tauri-drag-region>
       <svg
@@ -1060,32 +1115,56 @@
       {#if compactWorkspaces.length > 0}
         <div class="mbp-list">
           {#each compactWorkspaces as w (`${w.kind}:${w.slug}`)}
-            <button
-              class="mbp-co"
-              class:clickable={isWorkspaceClickable(w)}
-              type="button"
-              onclick={() => handleWorkspaceOpen(w)}
-              title={workspaceStateLabel(w)}
-              aria-label={`${w.displayName} - ${workspaceStateLabel(w)}`}
-              data-testid="popover-workspace-row"
-              data-workspace-key={`${w.kind}:${w.slug}`}
-            >
-              <span class="nm">
-                <span class="who">{w.displayName}</span>
-                {#if w.state === 'personal'}
-                  <span class="tag">Personal</span>
-                {/if}
-              </span>
-              {#if isWorkspaceSynced(w)}
-                <span class="sti on" aria-label="Synced">
-                  <svg width="12" height="12" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                    <path d="M3 7.5 6 10.5 11 4" />
-                  </svg>
+            {#if isWorkspaceClickable(w)}
+              <button
+                class="mbp-co clickable"
+                type="button"
+                onclick={() => handleWorkspaceOpen(w)}
+                title={workspaceStateLabel(w)}
+                aria-label={`${w.displayName} - ${workspaceStateLabel(w)}`}
+                data-testid="popover-workspace-row"
+                data-workspace-key={`${w.kind}:${w.slug}`}
+              >
+                <span class="nm">
+                  <span class="who">{w.displayName}</span>
+                  {#if w.state === 'personal'}
+                    <span class="tag">Personal</span>
+                  {/if}
                 </span>
-              {:else}
-                <span class="sti off" aria-label={workspaceStateLabel(w)}></span>
-              {/if}
-            </button>
+                {#if isWorkspaceSynced(w)}
+                  <span class="sti on" aria-label="Synced">
+                    <svg width="12" height="12" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <path d="M3 7.5 6 10.5 11 4" />
+                    </svg>
+                  </span>
+                {:else}
+                  <span class="sti off" aria-label={workspaceStateLabel(w)}></span>
+                {/if}
+              </button>
+            {:else}
+              <div
+                class="mbp-co"
+                title={workspaceStateLabel(w)}
+                data-testid="popover-workspace-row"
+                data-workspace-key={`${w.kind}:${w.slug}`}
+              >
+                <span class="nm">
+                  <span class="who">{w.displayName}</span>
+                  {#if w.state === 'personal'}
+                    <span class="tag">Personal</span>
+                  {/if}
+                </span>
+                {#if isWorkspaceSynced(w)}
+                  <span class="sti on" aria-label="Synced">
+                    <svg width="12" height="12" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <path d="M3 7.5 6 10.5 11 4" />
+                    </svg>
+                  </span>
+                {:else}
+                  <span class="sti off" aria-label={workspaceStateLabel(w)}></span>
+                {/if}
+              </div>
+            {/if}
           {/each}
         </div>
       {:else}
@@ -1141,6 +1220,9 @@
     box-shadow: var(--pop-shadow), inset 0 1px 0 var(--pop-highlight);
     overflow: hidden;
     transform-origin: top right;
+  }
+
+  .mbpop.opening {
     animation: mbpop-show 0.42s cubic-bezier(.34, 1.18, .64, 1) both;
   }
 
@@ -1157,7 +1239,7 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .mbpop {
+    .mbpop.opening {
       animation: none;
     }
   }
@@ -1211,7 +1293,17 @@
   .mbp-icon:focus-visible {
     background: var(--pop-hover);
     color: var(--pop-text);
-    outline: none;
+  }
+
+  .mbp-icon:focus-visible,
+  .mbp-sync:focus-visible,
+  .mbp-open:focus-visible,
+  .mbp-menu-item:focus-visible,
+  .mbp-mini:focus-visible,
+  .mbp-pill:focus-visible,
+  .mbp-dismiss:focus-visible {
+    outline: 1.5px solid var(--popover-focus-ring, var(--pop-accent));
+    outline-offset: var(--popover-focus-offset, 2px);
   }
 
   .mbp-sync {
@@ -1331,19 +1423,19 @@
     width: 8px;
     height: 8px;
     border-radius: 50%;
-    background: #34c759;
-    box-shadow: 0 0 7px rgba(52, 199, 89, 0.55);
+    background: var(--popover-success);
+    box-shadow: 0 0 7px var(--popover-success-bg);
     flex-shrink: 0;
   }
 
   .mbp-status.syncing .gd {
-    background: #0a84ff;
-    box-shadow: 0 0 7px rgba(10, 132, 255, 0.45);
+    background: var(--pop-accent);
+    box-shadow: 0 0 7px var(--pop-hover);
   }
 
   .mbp-status.attention .gd {
-    background: #ff9f0a;
-    box-shadow: 0 0 7px rgba(255, 159, 10, 0.42);
+    background: var(--popover-warning);
+    box-shadow: 0 0 7px var(--popover-warning-glow);
   }
 
   .mbp-s1 {
@@ -1423,10 +1515,14 @@
     cursor: pointer;
   }
 
-  .mbp-co:hover,
-  .mbp-co:focus-visible {
+  .mbp-co:hover {
     background: var(--pop-hover);
-    outline: none;
+  }
+
+  .mbp-co.clickable:focus-visible {
+    background: var(--pop-hover);
+    outline: 1.5px solid var(--popover-focus-ring, var(--pop-accent));
+    outline-offset: var(--popover-focus-offset, 2px);
   }
 
   .mbp-co .nm {
@@ -1474,13 +1570,20 @@
   }
 
   .mbp-co .sti.on {
-    background: rgba(52, 199, 89, 0.16);
-    color: #1f9d4d;
+    background: var(--popover-success-bg);
+    color: var(--popover-success);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .mbp-co .sti.on {
+      background: var(--popover-success-bg);
+      color: var(--popover-success);
+    }
   }
 
   :global(.dark) .mbp-co .sti.on {
-    background: rgba(52, 199, 89, 0.22);
-    color: #41d870;
+    background: var(--popover-success-bg);
+    color: var(--popover-success);
   }
 
   .mbp-co .sti.off {
