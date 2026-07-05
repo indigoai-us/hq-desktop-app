@@ -293,6 +293,7 @@ fn main() {
             commands::first_run::mark_first_run_complete,
             commands::first_run::mark_auto_sync_notice_shown,
             commands::first_run::set_main_window_vibrancy,
+            commands::first_run::show_main_window_at_tray,
             commands::lifecycle::get_lifecycle_state,
             commands::workspaces::list_syncable_workspaces,
             commands::workspaces::connect_workspace_to_cloud,

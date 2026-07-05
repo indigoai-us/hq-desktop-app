@@ -1340,7 +1340,7 @@
           <h2 class="h" id="onboarding-title-signin">Welcome to HQ</h2>
           <p class="body">One home for your whole team and every AI tool you use. Your knowledge, your best work, and your way of doing things all in one place, getting better over time.</p>
           <label class="check-row">
-            <span class="check">
+            <span class="check" class:on={telemetryEnabled}>
               <input
                 type="checkbox"
                 bind:checked={telemetryEnabled}
@@ -1767,7 +1767,8 @@
   .h { color:var(--c-text); font-size:24px; font-weight:600; line-height:32px; margin:0; letter-spacing:-1px; }
   .body { color:var(--c-muted); font-size:14px; font-weight:400; line-height:20px; margin:4px 0 0; max-width:592px; }
   .check-row { display:flex; align-items:center; gap:8px; margin-top:16px; cursor:pointer; }
-  .check { position:relative; width:16px; height:16px; border-radius:4px; border:1px solid var(--check-border); background:var(--check-bg); display:flex; align-items:center; justify-content:center; flex-shrink:0; }
+  .check { position:relative; width:16px; height:16px; border-radius:4px; border:1px solid var(--check-border); background:transparent; display:flex; align-items:center; justify-content:center; flex-shrink:0; transition:background-color .12s, border-color .12s; }
+  .check.on { background:var(--check-bg); border-color:var(--check-bg); }
   .check input { position:absolute; inset:0; width:16px; height:16px; opacity:0; cursor:pointer; }
   .check svg { width:10px; height:10px; stroke:var(--check-fg); }
   .checkmark { display:grid; place-items:center; opacity:0; }

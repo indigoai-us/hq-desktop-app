@@ -12,10 +12,13 @@
 
   let { state: lifecycleStateProp, onfinish }: Props = $props();
 
-  // The window is transparent so the card floats over the real desktop. Size it
-  // to exactly the 640x460 card so there is no surrounding transparent margin —
-  // macOS draws the card's drop shadow around the window's opaque content.
-  const ONBOARDING_SIZE = new LogicalSize(640, 460);
+  // The window is transparent so the card floats over the real desktop. Give a
+  // small margin around the 640x460 card so its 18px rounded corners render
+  // anti-aliased against transparency (not clipped hard at the window edge) and
+  // the card's own soft drop shadow can breathe. The native window shadow stays
+  // OFF (below), so this margin shows only the desktop + the card's soft CSS
+  // shadow — no hard rectangular outline.
+  const ONBOARDING_SIZE = new LogicalSize(720, 540);
   const POPOVER_SIZE = new LogicalSize(296, 360);
 
   let initialStep = $state(0);
@@ -74,6 +77,11 @@
       await invoke('mark_first_run_complete').catch(() => {});
     }
     await restorePopoverSize();
+    // Hand off from the centered installer card to the compact popover anchored
+    // next to the menu-bar tray icon.
+    if (typeof invoke === 'function') {
+      await invoke('show_main_window_at_tray').catch(() => {});
+    }
     onfinish?.();
   }
 </script>
