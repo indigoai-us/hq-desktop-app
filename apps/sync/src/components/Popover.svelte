@@ -12,6 +12,13 @@
   import { liveProgressCaption } from '../lib/live-progress-caption';
   import { isCorePath, CORE_SETUP_LABEL } from '../lib/progressLabel';
   import { packUpdateTitle } from '../lib/packUpdate';
+  import {
+    POPOVER_MIN_HEIGHT,
+    POPOVER_WIDTH,
+    clampPopoverHeight,
+    measuredSurfaceContentHeight,
+    shouldResizePopoverWindow,
+  } from '../lib/popover-window-size';
   import type { ConflictFile } from '../stores/conflicts';
 
   interface Config {
@@ -200,12 +207,11 @@
     desktopAltEnabled = false,
   }: Props = $props();
 
-  const POPOVER_WIDTH = 296;
-  const POPOVER_MIN_HEIGHT = 226;
-  const POPOVER_MAX_HEIGHT = 480;
   const HQ_CLI_UPGRADE_CMD = 'npm install -g @indigoai-us/hq-cli@latest';
 
   let popoverEl: HTMLElement | null = $state(null);
+  let popoverContentEl: HTMLElement | null = $state(null);
+  let popoverMainContentEl: HTMLElement | null = $state(null);
   let overflowButtonEl: HTMLButtonElement | null = $state(null);
   let overflowEl: HTMLDivElement | null = $state(null);
   let overflowOpen = $state(false);
@@ -306,10 +312,6 @@
   );
 
   let dismissedMemberships = $state(new Set<string>());
-
-  function clamp(n: number, min: number, max: number): number {
-    return Math.max(min, Math.min(max, n));
-  }
 
   function timeAgo(isoDate: string): string {
     const then = new Date(isoDate).getTime();
@@ -505,11 +507,6 @@
 
   function openSettings() {
     closeOverflow();
-    try {
-      void getCurrentWindow().setSize(new LogicalSize(POPOVER_WIDTH, POPOVER_MAX_HEIGHT));
-    } catch {
-      // Non-Tauri / test environment.
-    }
     onsettings();
   }
 
@@ -557,7 +554,7 @@
   }
 
   function resizePopoverWindow(height: number) {
-    if (Math.abs(height - lastWindowHeight) < 2) return;
+    if (!shouldResizePopoverWindow(height, lastWindowHeight)) return;
     lastWindowHeight = height;
     try {
       void getCurrentWindow().setSize(new LogicalSize(POPOVER_WIDTH, height));
@@ -567,11 +564,20 @@
   }
 
   function measuredPopoverHeight(): number {
-    if (!popoverEl) return POPOVER_MIN_HEIGHT;
+    if (!popoverContentEl) return POPOVER_MIN_HEIGHT;
+    const headerEl = popoverContentEl.querySelector<HTMLElement>('.mbp-head');
+    const footerEl = popoverContentEl.querySelector<HTMLElement>('.mbp-foot');
+    const contentHeight =
+      (headerEl?.offsetHeight ?? 0) +
+      (popoverMainContentEl?.scrollHeight ?? 0) +
+      (footerEl?.offsetHeight ?? 0);
     const menuBottom = overflowOpen && overflowEl
-      ? overflowEl.offsetTop + overflowEl.scrollHeight + 12
+      ? overflowEl.getBoundingClientRect().bottom - popoverContentEl.getBoundingClientRect().top + 12
       : 0;
-    return Math.max(Math.ceil(popoverEl.scrollHeight), menuBottom);
+    return measuredSurfaceContentHeight({
+      contentScrollHeight: Math.max(popoverContentEl.scrollHeight, contentHeight),
+      floatingBottom: menuBottom,
+    });
   }
 
   $effect(() => {
@@ -594,18 +600,19 @@
   });
 
   $effect(() => {
-    if (!popoverEl || typeof ResizeObserver === 'undefined') return;
+    if (!popoverContentEl || typeof ResizeObserver === 'undefined') return;
 
     let raf = 0;
     const syncSize = () => {
       cancelAnimationFrame(raf);
       raf = requestAnimationFrame(() => {
-        resizePopoverWindow(clamp(measuredPopoverHeight(), POPOVER_MIN_HEIGHT, POPOVER_MAX_HEIGHT));
+        resizePopoverWindow(clampPopoverHeight(measuredPopoverHeight()));
       });
     };
 
     const observer = new ResizeObserver(syncSize);
-    observer.observe(popoverEl);
+    observer.observe(popoverContentEl);
+    if (popoverMainContentEl) observer.observe(popoverMainContentEl);
     syncSize();
 
     return () => {
@@ -616,9 +623,9 @@
 
   $effect(() => {
     const _overflowOpen = overflowOpen;
-    if (!popoverEl) return;
+    if (!popoverContentEl) return;
     requestAnimationFrame(() => {
-      resizePopoverWindow(clamp(measuredPopoverHeight(), POPOVER_MIN_HEIGHT, POPOVER_MAX_HEIGHT));
+      resizePopoverWindow(clampPopoverHeight(measuredPopoverHeight()));
     });
   });
 
@@ -687,6 +694,7 @@
 </script>
 
 <div class="popover mbpop show" class:opening bind:this={popoverEl} data-testid="popover-root">
+  <div class="mbpop-content" bind:this={popoverContentEl}>
   <header class="mbp-head" data-tauri-drag-region>
     <span class="mbp-mark" data-tauri-drag-region>
       <svg
@@ -941,6 +949,7 @@
   </header>
 
   <div class="mbp-main">
+    <div class="mbp-main-content" bind:this={popoverMainContentEl}>
     {#if showConflictModal && conflicts.length > 0 && onresolve && onopen && ondismissconflicts}
       <div class="mbp-notices">
         <ConflictModal
@@ -1184,6 +1193,7 @@
         </div>
       {/if}
     </section>
+    </div>
   </div>
 
   {#if desktopAltEnabled}
@@ -1198,11 +1208,13 @@
       </button>
     </div>
   {/if}
+  </div>
 </div>
 
 <style>
   .popover {
     width: min(100vw, 296px);
+    height: 100vh;
     max-height: 100vh;
     display: flex;
     flex-direction: column;
@@ -1219,10 +1231,18 @@
     border-radius: 12px;
     box-shadow: var(--pop-shadow), inset 0 1px 0 var(--pop-highlight);
     overflow: hidden;
+  }
+
+  .mbpop-content {
+    width: 100%;
+    min-height: 0;
+    max-height: 100%;
+    display: flex;
+    flex-direction: column;
     transform-origin: top right;
   }
 
-  .mbpop.opening {
+  .mbpop.opening .mbpop-content {
     animation: mbpop-show 0.42s cubic-bezier(.34, 1.18, .64, 1) both;
   }
 
@@ -1239,7 +1259,7 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .mbpop.opening {
+    .mbpop.opening .mbpop-content {
       animation: none;
     }
   }
@@ -1344,6 +1364,10 @@
   .mbp-main::-webkit-scrollbar {
     width: 0;
     height: 0;
+  }
+
+  .mbp-main-content {
+    min-height: 0;
   }
 
   .mbp-notices {

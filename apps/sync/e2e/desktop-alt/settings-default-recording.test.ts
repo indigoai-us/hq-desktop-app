@@ -110,6 +110,18 @@ vi.mock('@tauri-apps/api/app', () => ({
   getVersion: vi.fn(async () => '0.0.0-test'),
 }));
 
+vi.mock('@tauri-apps/api/window', () => ({
+  getCurrentWindow: vi.fn(() => ({
+    setSize: vi.fn(async () => undefined),
+  })),
+  LogicalSize: class LogicalSize {
+    constructor(
+      public width: number,
+      public height: number,
+    ) {}
+  },
+}));
+
 vi.mock('@tauri-apps/plugin-shell', () => ({
   open: vi.fn(async () => {}),
 }));
