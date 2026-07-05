@@ -143,6 +143,7 @@
   let contentRetryInFlight = $state(false);
   let stagingSource = $state(false);
   let stagingSourceSaving = $state(false);
+  let setupAdvancedOpen = $state(false);
   let setupFailures = $state<FailedStageDetail[]>([]);
   const activeInstallHandles = new Set<string>();
   const activeContentHandles = new Set<string>();
@@ -207,6 +208,24 @@
     currentStageId ? stages.find((stage) => stage.id === currentStageId) : null,
   );
   const setupErrorStages = $derived(stages.filter((stage) => stage.error));
+  const setupNeedsRecovery = $derived(
+    Boolean(
+      skipReadyStage ||
+      contentRetryEligible ||
+      setupErrorStages.length > 0 ||
+      contentProgress?.slow ||
+      contentProgress?.stalled,
+    ),
+  );
+  const setupRecoverySummary = $derived(
+    setupErrorStages.length > 0
+      ? 'A setup step needs attention.'
+      : contentRetryEligible
+        ? 'Template setup needs another try.'
+        : skipReadyStage || contentProgress?.slow || contentProgress?.stalled
+          ? 'This is taking longer than expected.'
+          : 'Setup options',
+  );
   const needsAttention = $derived(setupFailures.length > 0);
   const manualCommand = $derived(readyCommandFor(installPath, aiTools));
   const manualToolsVisible = $derived(
@@ -223,6 +242,10 @@
     furthestStep = Math.max(furthestStep, router.currentStep);
     panelOn = true;
     graphicOn = true;
+  });
+
+  $effect(() => {
+    if (!setupNeedsRecovery) setupAdvancedOpen = false;
   });
 
   $effect(() => {
@@ -1438,52 +1461,67 @@
               </div>
             {/each}
           </div>
-          <div class="setup-compact" aria-live="polite">
-            <div class="setup-row">
-              <span>{overallPercent}% · {settledCount} of {STAGE_ORDER.length} stages</span>
-              {#if currentStage}
-                <span class="stage-pill">{currentStage.label}</span>
-              {/if}
-            </div>
-            {#if contentProgressText()}
-              <p class:slow={contentProgress?.slow || contentProgress?.stalled} class="setup-detail">
-                {contentProgressText()}
-              </p>
-            {/if}
-            <div class="setup-actions">
-              <button
-                type="button"
-                class="mini-switch"
-                class:active={stagingSource}
-                disabled={stagingToggleDisabled}
-                onclick={handleToggleStagingSource}
-                role="switch"
-                aria-checked={stagingSource}
-              >
-                <span aria-hidden="true"></span>
-                Staging template
-              </button>
-              {#if skipReadyStage}
+          {#if setupNeedsRecovery}
+            <div class="setup-compact setup-recovery" aria-live="polite">
+              <div class="setup-row">
+                <span>{setupRecoverySummary}</span>
                 <button
                   type="button"
                   class="mini-link"
-                  onclick={() => skipReadyStage && handleSkipCurrentStage(skipReadyStage)}
+                  aria-expanded={setupAdvancedOpen}
+                  onclick={() => (setupAdvancedOpen = !setupAdvancedOpen)}
                 >
-                  Skip slow step
+                  {setupAdvancedOpen ? 'Hide options' : 'Show options'}
                 </button>
-              {/if}
-              {#if contentRetryEligible}
-                <button type="button" class="mini-link" onclick={handleRetryContentStage}>
-                  Retry template
-                </button>
+              </div>
+              {#if setupAdvancedOpen}
+                <div class="setup-row">
+                  <span>{overallPercent}% · {settledCount} of {STAGE_ORDER.length} stages</span>
+                  {#if currentStage}
+                    <span class="stage-pill">{currentStage.label}</span>
+                  {/if}
+                </div>
+                {#if contentProgressText()}
+                  <p class:slow={contentProgress?.slow || contentProgress?.stalled} class="setup-detail">
+                    {contentProgressText()}
+                  </p>
+                {/if}
+                <div class="setup-actions">
+                  <button
+                    type="button"
+                    class="mini-switch"
+                    class:active={stagingSource}
+                    disabled={stagingToggleDisabled}
+                    onclick={handleToggleStagingSource}
+                    role="switch"
+                    aria-checked={stagingSource}
+                  >
+                    <span aria-hidden="true"></span>
+                    Staging template
+                  </button>
+                  {#if skipReadyStage}
+                    <button
+                      type="button"
+                      class="mini-link"
+                      onclick={() => skipReadyStage && handleSkipCurrentStage(skipReadyStage)}
+                    >
+                      Skip slow step
+                    </button>
+                  {/if}
+                  {#if contentRetryEligible}
+                    <button type="button" class="mini-link" onclick={handleRetryContentStage}>
+                      Retry template
+                    </button>
+                  {/if}
+                </div>
+                {#if setupErrorStages.length > 0}
+                  <p class="setup-detail error">
+                    {setupErrorStages[0].label}: {setupErrorStages[0].error}
+                  </p>
+                {/if}
               {/if}
             </div>
-            {#if setupErrorStages.length > 0}
-              <p class="setup-detail error">
-                {setupErrorStages[0].label}: {setupErrorStages[0].error}
-              </p>
-            {/if}
-          </div>
+          {/if}
           <div class="btns">
             <button class="btn btn-secondary" type="button" onclick={() => goBackTo(1)}>Back</button>
           </div>
@@ -1784,6 +1822,15 @@
   .btn-primary { background:var(--c-btn-bg); color:var(--c-btn-fg); }
   .btn-secondary { background:var(--c-btn2-bg); color:var(--c-btn2-fg); }
   .btn:hover:not(:disabled) { opacity:.88; }
+  .btn:focus-visible,
+  .choose:focus-visible,
+  .manual-tools button:focus-visible,
+  .mini-switch:focus-visible,
+  .mini-link:focus-visible,
+  .check:has(input:focus-visible) {
+    outline:1.5px solid var(--c-focus-ring, var(--c-text));
+    outline-offset:var(--c-focus-offset, 2px);
+  }
   .btn:disabled { cursor:not-allowed; opacity:.48; }
 
   .inline-note { margin:10px 0 0; color:var(--c-muted); font-size:12px; line-height:16px; }
@@ -1821,6 +1868,7 @@
   .bigcheck { width:84px; height:84px; display:block; }
 
   .setup-compact { margin-top:10px; display:grid; gap:5px; color:var(--c-muted); font-size:11.5px; line-height:15px; }
+  .setup-recovery { padding-top:8px; border-top:1px solid var(--c-divider); }
   .setup-row, .setup-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
   .setup-row { justify-content:space-between; }
   .stage-pill { max-width:280px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--c-text); }
@@ -1904,6 +1952,26 @@
     .gfx.out-left,
     .gfx.out-right {
       transform:none;
+    }
+
+    .spin,
+    .mspin2 i,
+    .caret {
+      animation:none !important;
+    }
+
+    .spin,
+    .mspin2 i {
+      border-top-color:currentColor;
+      transform:none;
+    }
+
+    .caret {
+      opacity:1;
+    }
+
+    .pbar {
+      transition:none;
     }
   }
 </style>

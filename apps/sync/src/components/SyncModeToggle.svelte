@@ -133,8 +133,8 @@
     gap: 1px;
     padding: 1px;
     border-radius: 999px;
-    background: var(--popover-surface, rgba(255, 255, 255, 0.08));
-    border: 1px solid var(--popover-border, rgba(255, 255, 255, 0.14));
+    background: var(--popover-surface, var(--pop-hover));
+    border: 1px solid var(--popover-border, var(--pop-border));
     flex-shrink: 0;
   }
 
@@ -147,7 +147,7 @@
     appearance: none;
     border: 0;
     background: transparent;
-    color: var(--popover-text-muted, #a0a0b0);
+    color: var(--popover-text-muted, var(--pop-muted));
     font: inherit;
     font-size: 0.625rem;
     font-weight: 600;
@@ -159,12 +159,18 @@
   }
 
   .sync-mode-opt:hover:not(:disabled):not(.active) {
-    color: var(--popover-text, #e0e0e0);
+    background: var(--popover-action-hover, var(--pop-hover));
+    color: var(--popover-text, var(--pop-text));
   }
 
   .sync-mode-opt.active {
-    background: rgba(56, 189, 248, 0.18);
-    color: #bae6fd;
+    background: var(--popover-primary, var(--pop-accent));
+    color: var(--popover-primary-text, var(--pop-acc-fg));
+  }
+
+  .sync-mode-opt:focus-visible {
+    outline: 1.5px solid var(--popover-focus-ring, var(--pop-accent));
+    outline-offset: 2px;
   }
 
   .sync-mode-opt:disabled {
@@ -178,14 +184,14 @@
     flex-shrink: 0;
     font-size: 0.625rem;
     font-weight: 600;
-    color: var(--popover-text-muted, #a0a0b0);
+    color: var(--popover-text-muted, var(--pop-muted));
     padding: 0.1875rem 0.4375rem;
     border-radius: 999px;
-    background: var(--popover-surface, rgba(255, 255, 255, 0.08));
+    background: var(--popover-surface, var(--pop-hover));
   }
 
   .sync-mode-custom {
-    border: 1px solid var(--popover-border, rgba(255, 255, 255, 0.14));
+    border: 1px solid var(--popover-border, var(--pop-border));
   }
 
   .sync-mode-error {

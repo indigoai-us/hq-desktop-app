@@ -276,9 +276,11 @@ fn icon_for_state(state: TrayState) -> Image<'static> {
 fn set_state_icon<R: tauri::Runtime>(tray: &tauri::tray::TrayIcon<R>, _state: TrayState) {
     #[cfg(target_os = "macos")]
     {
-        // Text-only tray (the template-image path does not render on this OS). Keep a
-        // constant "HQ" label; sync state is conveyed by the tooltip
-        // (refresh_tray_tooltip) and the popover itself, not by swapping the glyph.
+        // The visible macOS status item is owned by the native helper, but keep
+        // the in-process fallback aligned with the helper: template HQ mark with
+        // the text title retained as an accessibility / image-failure fallback.
+        let _ = tray.set_icon(Some(icon_for_state(_state)));
+        let _ = tray.set_icon_as_template(true);
         let _ = tray.set_title(Some("HQ"));
     }
     #[cfg(not(target_os = "macos"))]
@@ -337,16 +339,16 @@ fn build_tray_icon(app: &AppHandle) -> Result<tauri::tray::TrayIcon, Box<dyn std
         .item(&quit)
         .build()?;
 
-    // TEXT-ONLY menu-bar item. The template-image NSStatusItem never drew on
-    // this user's macOS Tahoe — verified on-device across a black solid icon, a
-    // full status-item recreate, and a SystemUIServer restart, none of which put
-    // anything in the bar. A plain text title is the most robust possible status
-    // item: it's just a label on the status button, with no image-drawing path
-    // to fail. Per the user's explicit call, drop the glyph and show "HQ".
+    // The helper process owns the real macOS menu-bar item. This in-process tray
+    // is skipped on macOS, but if it is ever recreated for fallback diagnostics,
+    // keep the same template HQ mark and preserve "HQ" as the text fallback.
     let tray_builder = TrayIconBuilder::with_id(TRAY_ID);
 
     #[cfg(target_os = "macos")]
-    let tray_builder = tray_builder.title("HQ");
+    let tray_builder = tray_builder
+        .icon(icon_for_state(TrayState::Idle))
+        .icon_as_template(true)
+        .title("HQ");
 
     #[cfg(not(target_os = "macos"))]
     let tray_builder = tray_builder
@@ -545,6 +547,7 @@ fn toggle_window(app: &AppHandle, tray_rect: Option<Rect>) {
             }
             let _ = window.show();
             let _ = window.set_focus();
+            let _ = window.emit("popover:opened", ());
         }
     }
 }
@@ -686,6 +689,7 @@ pub fn show_window_at_tray(app: &AppHandle) {
     }
     let _ = window.show();
     let _ = window.set_focus();
+    let _ = window.emit("popover:opened", ());
 }
 
 /// Show + focus the main window centered on screen for first-run onboarding.
@@ -785,6 +789,7 @@ pub fn show_popover_window(app: &AppHandle) {
     }
     let _ = window.show();
     let _ = window.set_focus();
+    let _ = window.emit("popover:opened", ());
 }
 
 #[cfg(target_os = "windows")]
