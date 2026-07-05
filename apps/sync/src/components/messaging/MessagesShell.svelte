@@ -26,6 +26,7 @@
   import { listen } from '@tauri-apps/api/event';
   import { buildClaudeCodeUrl } from '../../lib/claude-code-link';
   import { hqSkillMarkdownLink } from '../../lib/hq-skill-link';
+  import { appendInboundBatch } from '../../lib/dmThread';
   import Conversation, { type ConversationMessage } from './Conversation.svelte';
   import ComposeMessage, { type ComposeSendResult } from './ComposeMessage.svelte';
   import DmRequestCard from './DmRequestCard.svelte';
@@ -84,6 +85,17 @@
     previewBody?: string | null;
     previewAt?: string | null;
     previewDirection?: string | null;
+  }
+
+  interface DmEvent {
+    eventId: string;
+    fromPersonUid: string;
+    fromEmail: string;
+    fromDisplayName: string;
+    body: string;
+    details?: string | null;
+    prompt?: string | null;
+    createdAt: string;
   }
 
   interface ContactsResponse {
@@ -155,6 +167,8 @@
   let hqFolderPath = $state('');
   let previewHydrationRun = 0;
   const PREVIEW_HYDRATION_LIMIT = 40;
+  const LIVE_INBOUND_BACKFILL_LIMIT = 50;
+  const liveInboundByPeer = new Map<string, DmEvent[]>();
 
   interface MembershipRow {
     companyUid: string;
@@ -450,6 +464,85 @@
     );
   }
 
+  function dmEventTime(dm: DmEvent): number {
+    const t = Date.parse(dm.createdAt);
+    return Number.isNaN(t) ? 0 : t;
+  }
+
+  function rememberLiveInbound(dms: DmEvent[]): void {
+    for (const dm of dms) {
+      const list = liveInboundByPeer.get(dm.fromPersonUid) ?? [];
+      if (!list.some((item) => item.eventId === dm.eventId)) {
+        list.push(dm);
+      }
+      list.sort((a, b) => dmEventTime(a) - dmEventTime(b));
+      if (list.length > LIVE_INBOUND_BACKFILL_LIMIT) {
+        list.splice(0, list.length - LIVE_INBOUND_BACKFILL_LIMIT);
+      }
+      liveInboundByPeer.set(dm.fromPersonUid, list);
+    }
+  }
+
+  function inboundToThreadMessage(dm: DmEvent): ThreadMessage {
+    return {
+      eventId: dm.eventId,
+      fromPersonUid: dm.fromPersonUid,
+      fromEmail: dm.fromEmail,
+      fromDisplayName: dm.fromDisplayName,
+      body: dm.body,
+      details: dm.details ?? null,
+      prompt: dm.prompt ?? null,
+      createdAt: dm.createdAt,
+      direction: 'in',
+    };
+  }
+
+  function appendLiveInbound(base: ThreadMessage[], peerUid: string): ThreadMessage[] {
+    return appendInboundBatch(
+      base,
+      liveInboundByPeer.get(peerUid) ?? [],
+      peerUid,
+      inboundToThreadMessage,
+    );
+  }
+
+  function updateContactPreviewsFromInbound(dms: DmEvent[]): void {
+    const latestByPeer = new Map<string, DmEvent>();
+    for (const dm of dms) {
+      const prev = latestByPeer.get(dm.fromPersonUid);
+      if (!prev || dmEventTime(dm) >= dmEventTime(prev)) {
+        latestByPeer.set(dm.fromPersonUid, dm);
+      }
+    }
+    if (latestByPeer.size === 0) return;
+
+    contacts = sortContactsByRecentActivity(
+      contacts.map((contact) => {
+        const dm = latestByPeer.get(contact.personUid);
+        if (!dm) return contact;
+        return {
+          ...contact,
+          lastMessageAt: dm.createdAt || contact.lastMessageAt || null,
+          previewBody: dm.body,
+          previewAt: dm.createdAt || contact.previewAt || contact.lastMessageAt || null,
+          previewDirection: 'in',
+        };
+      }),
+    );
+  }
+
+  function applyLiveInbound(dms: DmEvent[]): void {
+    if (dms.length === 0) return;
+    rememberLiveInbound(dms);
+    updateContactPreviewsFromInbound(dms);
+
+    if (!selected || selected.source === 'agent') return;
+    const next = appendLiveInbound(messages, selected.personUid);
+    if (next !== messages) {
+      messages = next;
+    }
+  }
+
   function shouldHydratePreview(c: Contact): boolean {
     if (c.source === 'agent' || c.personUid.startsWith('email:')) return false;
     if (contactPreviewText(c)) return false;
@@ -669,7 +762,7 @@
         withPersonUid: c.personUid,
       });
       // Server returns newest-first; render chronologically (oldest → newest).
-      messages = [...(resp.messages ?? [])].reverse();
+      messages = appendLiveInbound([...(resp.messages ?? [])].reverse(), c.personUid);
       const preview = previewFromMessages(resp.messages ?? []);
       if (preview) applyContactPreview(c.personUid, preview);
     } catch (err) {
@@ -809,7 +902,8 @@
     // A new DM may arrive while this window is open — refresh the contact list
     // (so a brand-new conversation appears) and the request count. The badge
     // reset is handled in Rust on messages_window_ready.
-    listen('dm:new-events', () => {
+    listen<DmEvent[]>('dm:new-events', (e) => {
+      applyLiveInbound(e.payload ?? []);
       void loadContacts();
       void loadUnreadSummary();
     }).then((fn) => unlisteners.push(fn));

@@ -1,4 +1,4 @@
-// Pure helpers for the DM detail thread (DmDetail.svelte).
+// Pure helpers for DM conversation views (DmDetail.svelte and MessagesShell).
 //
 // The detail window opens scoped to one peer and renders the two-way thread. A
 // freshly-arrived inbound DM (broadcast as `dm:new-events`) should fold into the
@@ -33,4 +33,25 @@ export function shouldAppendInbound(
 ): boolean {
   if (!peerUid || dm.fromPersonUid !== peerUid) return false;
   return !messages.some((m) => m.eventId === dm.eventId);
+}
+
+/**
+ * Append a batch of freshly-arrived inbound DMs to an already-rendered thread.
+ * The caller supplies the renderer-specific mapping because DmDetail and
+ * MessagesShell carry slightly different message shapes, while the peer/dedupe
+ * rule stays identical.
+ */
+export function appendInboundBatch<T extends ThreadIdLike, Dm extends InboundDmLike>(
+  messages: T[],
+  dms: Dm[],
+  peerUid: string | null | undefined,
+  toMessage: (dm: Dm) => T,
+): T[] {
+  let next = messages;
+  for (const dm of dms) {
+    if (shouldAppendInbound(next, dm, peerUid)) {
+      next = [...next, toMessage(dm)];
+    }
+  }
+  return next;
 }

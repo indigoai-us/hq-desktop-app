@@ -22,6 +22,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
   import Conversation, { type ConversationMessage } from './Conversation.svelte';
+  import { renderMessageBodyMarkdown } from '../../lib/messageMarkdown';
   import { type ReactionEvent, dmScope, channelScope } from '../../lib/reactions';
   import { ReactionController } from '../../lib/reactionController.svelte';
 
@@ -234,7 +235,7 @@
         <span class="thread-root-author">{root.fromDisplayName}</span>
       {/if}
       <div class="thread-root-bubble">
-        <p class="thread-root-body">{root.body}</p>
+        <p class="thread-root-body">{@html renderMessageBodyMarkdown(root.body)}</p>
         {#if root.details}
           <div class="thread-root-details">{root.details}</div>
         {/if}
@@ -343,6 +344,20 @@
     color: var(--fg, var(--pop-text));
     white-space: pre-wrap;
     word-break: break-word;
+  }
+
+  .thread-root-body :global(a) {
+    color: #bcd4ff;
+    text-decoration: underline;
+    text-underline-offset: 0.125rem;
+  }
+
+  .thread-root-body :global(code) {
+    padding: 0.0625rem 0.25rem;
+    border-radius: 4px;
+    background: rgba(0, 0, 0, 0.24);
+    font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+    font-size: 0.92em;
   }
 
   .thread-root-details {

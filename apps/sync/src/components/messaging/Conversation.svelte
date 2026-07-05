@@ -10,6 +10,7 @@
   import ReactionBar from './ReactionBar.svelte';
   import { type ReactionMap } from '../../lib/reactions';
   import { copyableText, type CopyKind } from '../../lib/conversation-copy';
+  import { renderMessageBodyMarkdown } from '../../lib/messageMarkdown';
 
   // One rendered message in the thread. `direction` is relative to the signed-in
   // user: "out" = I sent it, "in" = the other person sent it. Extra fields
@@ -263,7 +264,7 @@
             {/if}
           </button>
         </div>
-        <p class="dm-bubble-body selectable-text">{msg.body}</p>
+        <p class="dm-bubble-body selectable-text">{@html renderMessageBodyMarkdown(msg.body)}</p>
         {#if msg.details}
           <div class="dm-bubble-details selectable-text">{msg.details}</div>
         {/if}
@@ -471,6 +472,20 @@
     color: var(--pop-text);
     white-space: pre-wrap;
     word-break: break-word;
+  }
+
+  .dm-bubble-body :global(a) {
+    color: #bcd4ff;
+    text-decoration: underline;
+    text-underline-offset: 0.125rem;
+  }
+
+  .dm-bubble-body :global(code) {
+    padding: 0.0625rem 0.25rem;
+    border-radius: 4px;
+    background: rgba(0, 0, 0, 0.24);
+    font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+    font-size: 0.92em;
   }
 
   .dm-bubble-details {

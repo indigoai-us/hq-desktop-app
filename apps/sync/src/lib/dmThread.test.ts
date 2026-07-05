@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { shouldAppendInbound } from './dmThread';
+import { appendInboundBatch, shouldAppendInbound } from './dmThread';
 
 const peer = 'prs_alice';
 const msg = (eventId: string) => ({ eventId });
@@ -26,5 +26,27 @@ describe('shouldAppendInbound (DM detail live thread)', () => {
 
   it('appends into an empty thread from the viewed peer', () => {
     expect(shouldAppendInbound([], dm('first', peer), peer)).toBe(true);
+  });
+});
+
+describe('appendInboundBatch', () => {
+  it('appends only new DMs from the viewed peer, preserving arrival order', () => {
+    const out = appendInboundBatch(
+      [msg('e1')],
+      [dm('e2', peer), dm('skip-other', 'prs_bob'), dm('e2', peer), dm('e3', peer)],
+      peer,
+      (item) => msg(item.eventId),
+    );
+
+    expect(out.map((m) => m.eventId)).toEqual(['e1', 'e2', 'e3']);
+  });
+
+  it('returns the same array when nothing is appended', () => {
+    const existing = [msg('e1')];
+    const out = appendInboundBatch(existing, [dm('e1', peer)], peer, (item) =>
+      msg(item.eventId),
+    );
+
+    expect(out).toBe(existing);
   });
 });

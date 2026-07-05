@@ -62,7 +62,10 @@ describe('US-022: ThreadPanel right-side panel', () => {
   it('pins the root, reuses Conversation for replies, and has its own composer', () => {
     const p = normalize(threadPanel);
     expect(p).toContain('class="thread-root"');
-    expect(p).toContain('<p class="thread-root-body">{root.body}</p>');
+    expect(p).toContain("import { renderMessageBodyMarkdown } from '../../lib/messageMarkdown';");
+    expect(p).toContain(
+      '<p class="thread-root-body">{@html renderMessageBodyMarkdown(root.body)}</p>',
+    );
     // Replies + composer reuse the shared Conversation.
     expect(p).toContain('<Conversation');
     expect(p).toContain('messages={replies}');
