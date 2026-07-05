@@ -1461,67 +1461,11 @@
               </div>
             {/each}
           </div>
-          {#if setupNeedsRecovery}
-            <div class="setup-compact setup-recovery" aria-live="polite">
-              <div class="setup-row">
-                <span>{setupRecoverySummary}</span>
-                <button
-                  type="button"
-                  class="mini-link"
-                  aria-expanded={setupAdvancedOpen}
-                  onclick={() => (setupAdvancedOpen = !setupAdvancedOpen)}
-                >
-                  {setupAdvancedOpen ? 'Hide options' : 'Show options'}
-                </button>
-              </div>
-              {#if setupAdvancedOpen}
-                <div class="setup-row">
-                  <span>{overallPercent}% · {settledCount} of {STAGE_ORDER.length} stages</span>
-                  {#if currentStage}
-                    <span class="stage-pill">{currentStage.label}</span>
-                  {/if}
-                </div>
-                {#if contentProgressText()}
-                  <p class:slow={contentProgress?.slow || contentProgress?.stalled} class="setup-detail">
-                    {contentProgressText()}
-                  </p>
-                {/if}
-                <div class="setup-actions">
-                  <button
-                    type="button"
-                    class="mini-switch"
-                    class:active={stagingSource}
-                    disabled={stagingToggleDisabled}
-                    onclick={handleToggleStagingSource}
-                    role="switch"
-                    aria-checked={stagingSource}
-                  >
-                    <span aria-hidden="true"></span>
-                    Staging template
-                  </button>
-                  {#if skipReadyStage}
-                    <button
-                      type="button"
-                      class="mini-link"
-                      onclick={() => skipReadyStage && handleSkipCurrentStage(skipReadyStage)}
-                    >
-                      Skip slow step
-                    </button>
-                  {/if}
-                  {#if contentRetryEligible}
-                    <button type="button" class="mini-link" onclick={handleRetryContentStage}>
-                      Retry template
-                    </button>
-                  {/if}
-                </div>
-                {#if setupErrorStages.length > 0}
-                  <p class="setup-detail error">
-                    {setupErrorStages[0].label}: {setupErrorStages[0].error}
-                  </p>
-                {/if}
-              {/if}
-            </div>
-          {/if}
+          <!-- The setup screen intentionally shows ONLY the friendly checklist (matching
+               the design). Recovery — retry on stall, skip on hard timeout, transient-
+               failure retries — runs AUTOMATICALLY in the setup engine; any stage that
+               still fails is surfaced on the "HQ is ready" screen's needs-attention note,
+               not here. No percentages, stage counts, staging toggle, or manual controls. -->
           <div class="btns">
             <button class="btn btn-secondary" type="button" onclick={() => goBackTo(1)}>Back</button>
           </div>
