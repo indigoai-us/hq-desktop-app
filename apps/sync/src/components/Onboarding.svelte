@@ -18,7 +18,7 @@
   // the card's own soft drop shadow can breathe. The native window shadow stays
   // OFF (below), so this margin shows only the desktop + the card's soft CSS
   // shadow — no hard rectangular outline.
-  const ONBOARDING_SIZE = new LogicalSize(720, 540);
+  const ONBOARDING_SIZE = new LogicalSize(780, 620);
   const POPOVER_SIZE = new LogicalSize(296, 360);
 
   let initialStep = $state(0);

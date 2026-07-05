@@ -1741,13 +1741,16 @@
 
   .sr-only { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); }
   .scaler { transform:scale(1); transform-origin:center; }
-  .window { width:640px; height:460px; border-radius:var(--radius-card); overflow:hidden; background:var(--c-bg); box-shadow:var(--shadow-window-light); position:relative; --toph:200px; }
+  /* The onboarding card floats in a transparent window with a small margin, so
+     use a shadow tuned to fit that margin (tighter than the generic
+     --shadow-window-* tokens, which would clip at the window edge). */
+  .window { width:640px; height:460px; border-radius:var(--radius-card); overflow:hidden; background:var(--c-bg); box-shadow:0 18px 50px rgba(20,22,40,0.24), 0 2px 8px rgba(20,22,40,0.10); position:relative; --toph:200px; }
 
   @media (prefers-color-scheme: dark) {
-    .window { box-shadow:var(--shadow-window-dark); }
+    .window { box-shadow:0 24px 60px rgba(0,0,0,0.58), 0 0 0 0.5px rgba(255,255,255,0.14); }
   }
 
-  :global(.dark) .window { box-shadow:var(--shadow-window-dark); }
+  :global(.dark) .window { box-shadow:0 24px 60px rgba(0,0,0,0.58), 0 0 0 0.5px rgba(255,255,255,0.14); }
 
   .drag-strip { position:absolute; top:0; left:0; right:0; height:28px; z-index:8; }
   .grad { position:absolute; top:0; left:0; right:0; height:var(--toph); background:#a98bd8 var(--onboarding-bg-url) center/cover no-repeat; transition:height .55s cubic-bezier(.65,0,.35,1); z-index:0; }

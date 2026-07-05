@@ -600,23 +600,33 @@ fn main() {
                 set_app_icon_from_bytes(HQ_ICON_PNG);
             }
 
-            #[cfg(target_os = "macos")]
-            if let Some(window) = app.get_webview_window("main") {
-                hq_platform::window_effects::apply_popover_vibrancy(&window);
-            }
+            let first_run = commands::first_run::should_autoshow_on_launch(launch_kind);
 
-            #[cfg(target_os = "windows")]
+            // The very first launch opens the onboarding FLOATING CARD (transparent,
+            // centered, no frosted popover material, no native window shadow) rather
+            // than the compact popover. Apply that window state BEFORE the window is
+            // shown so it paints correctly framed from the first frame — no flash of
+            // the small frosted popover shell before onboarding resizes it.
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
             if let Some(window) = app.get_webview_window("main") {
-                hq_platform::window_effects::apply_popover_vibrancy(&window);
-                if let Ok(h) = window.hwnd() {
-                    hq_platform::window_effects::set_small_corner(h.0 as isize);
+                if first_run {
+                    let _ = window.set_size(tauri::LogicalSize::new(780.0_f64, 620.0_f64));
+                    let _ = window.set_shadow(false);
+                    hq_platform::window_effects::clear_popover_vibrancy(&window);
+                    let _ = window.center();
+                } else {
+                    hq_platform::window_effects::apply_popover_vibrancy(&window);
+                    #[cfg(target_os = "windows")]
+                    if let Ok(h) = window.hwnd() {
+                        hq_platform::window_effects::set_small_corner(h.0 as isize);
+                    }
                 }
             }
 
             tray::setup_tray(app.handle())?;
-            if commands::first_run::should_autoshow_on_launch(launch_kind) {
+            if first_run {
                 tray::show_window_centered(app.handle());
-                util::logfile::log("app", "first-run launch: centered main window");
+                util::logfile::log("app", "first-run launch: centered onboarding card");
             }
 
             // macOS: the menu-bar item lives in a separate native helper process
