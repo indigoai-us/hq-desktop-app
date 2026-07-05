@@ -372,6 +372,7 @@ pub fn reveal_folder(path: String) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::util::test_support::ENV_MUTEX;
 
     #[test]
     fn deep_link_accepts_a_well_formed_url() {
@@ -423,6 +424,9 @@ mod tests {
 
     #[test]
     fn reveal_target_rejects_paths_outside_home() {
+        // Serialize against tests that mutate the process-global HOME (e.g.
+        // telemetry tests) so `validate_reveal_target` reads a stable home dir.
+        let _env = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         // Absolute paths outside home are rejected.
         assert!(validate_reveal_target("/etc").is_err());
         assert!(validate_reveal_target("/tmp").is_err());
@@ -431,6 +435,11 @@ mod tests {
 
     #[test]
     fn reveal_target_accepts_home_and_expands_tilde() {
+        // Serialize against tests that mutate the process-global HOME (e.g.
+        // telemetry tests). Without this, a concurrent test can point HOME at a
+        // temp dir mid-run, so `dirs::home_dir()` and the containment check
+        // disagree and this test flakes.
+        let _env = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let home = dirs::home_dir().expect("home dir");
         // `~` resolves to home and passes containment.
         let resolved = validate_reveal_target("~").expect("~ should resolve to home");
@@ -442,6 +451,7 @@ mod tests {
 
     #[test]
     fn reveal_target_rejects_tilde_parent_escape() {
+        let _env = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         // `~/..` canonicalizes above home and is rejected.
         assert!(validate_reveal_target("~/../..").is_err());
     }
