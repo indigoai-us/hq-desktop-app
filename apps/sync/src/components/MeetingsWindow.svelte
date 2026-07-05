@@ -1187,7 +1187,7 @@
   let showOnlyWithUrl = $state(true);
 
   /** Fixed colour palette assigned to calendars in stable sorted order.
-   *  Chosen for legibility on the `#18181b` background — saturated enough
+   *  Chosen for legibility on the shared page background — saturated enough
    *  to scan-distinguish, muted enough not to vibrate. Repeats once the
    *  user has >12 enabled calendars, which is rare and acceptable since
    *  the dropdown still labels each one. */
@@ -1984,9 +1984,9 @@
     margin: 0;
     padding: 0;
     height: 100vh;
-    background: #18181b;
-    color: #f4f4f5;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--page-bg);
+    color: var(--c-text);
+    font-family: var(--font-sans);
     font-size: var(--text-base);
     overflow: hidden;
   }
@@ -1998,8 +1998,8 @@
     display: flex;
     flex-direction: column;
     height: 100vh;
-    background: #18181b;
-    color: #f4f4f5;
+    background: var(--page-bg);
+    color: var(--c-text);
   }
 
   .url-invite-row {
@@ -2009,29 +2009,29 @@
   }
   .url-input {
     flex: 1 1 auto;
-    background: rgba(255, 255, 255, 0.04);
-    border: 1px solid rgba(255, 255, 255, 0.10);
-    color: #f4f4f5;
+    background: var(--c-field-bg);
+    border: 1px solid var(--c-field-border);
+    color: var(--c-text);
     border-radius: 6px;
     padding: 7px 10px;
     font-size: var(--text-base);
     outline: none;
   }
   .url-input:focus {
-    border-color: rgba(255, 255, 255, 0.24);
+    border-color: var(--c-field-border);
   }
   .url-input:disabled {
     opacity: 0.6;
-    cursor: wait;
+    cursor: default;
   }
   /* Destination picker — visually paired with the input so it reads as a
      single composite control. Renders only while a URL is being typed. */
   .url-invite-company {
     flex: 0 0 auto;
     max-width: 140px;
-    background: rgba(255, 255, 255, 0.04);
-    color: #f4f4f5;
-    border: 1px solid rgba(255, 255, 255, 0.10);
+    background: var(--c-field-bg);
+    color: var(--c-text);
+    border: 1px solid var(--c-field-border);
     border-radius: 6px;
     padding: 7px 8px;
     font-size: var(--text-base);
@@ -2039,36 +2039,36 @@
   }
   .url-invite-company:focus {
     outline: none;
-    border-color: rgba(255, 255, 255, 0.24);
+    border-color: var(--c-field-border);
   }
   .url-invite-company:disabled {
     opacity: 0.6;
-    cursor: wait;
+    cursor: default;
   }
   .url-invite-btn {
-    background: rgba(255, 255, 255, 0.12);
-    color: #f4f4f5;
-    border: 1px solid rgba(255, 255, 255, 0.20);
+    background: var(--pop-hover);
+    color: var(--c-text);
+    border: 1px solid var(--c-field-border);
     border-radius: 6px;
     padding: 7px 12px;
     font-size: var(--text-base);
     cursor: pointer;
   }
   .url-invite-btn:hover:not(:disabled) {
-    background: rgba(255, 255, 255, 0.18);
+    background: var(--pop-hover);
   }
   .url-invite-btn:disabled {
     opacity: 0.4;
-    cursor: not-allowed;
+    cursor: default;
   }
 
   .toast {
     margin: 8px 18px 0;
     padding: 7px 10px;
     border-radius: 6px;
-    background: rgba(255, 255, 255, 0.04);
-    border: 1px solid rgba(255, 255, 255, 0.10);
-    color: #f4f4f5;
+    background: var(--c-field-bg);
+    border: 1px solid var(--c-field-border);
+    color: var(--c-text);
     font-size: var(--text-base);
   }
   /* Warn — yellow, used for recoverable user-facing failures (per HQ
@@ -2076,9 +2076,9 @@
      amber palette as the cross-account conflict warning in hq-console
      for a consistent failure-vocabulary across the suite. */
   .toast-warn {
-    background: rgba(202, 138, 4, 0.10);
-    border-color: rgba(202, 138, 4, 0.40);
-    color: #fcd34d;
+    background: color-mix(in srgb, var(--v4-warn, #b45309) 12%, transparent);
+    border-color: color-mix(in srgb, var(--v4-warn, #b45309) 38%, transparent);
+    color: var(--v4-warn, #b45309);
   }
 
   .refresh-notice {
@@ -2087,7 +2087,7 @@
     align-items: center;
     gap: 8px;
     margin: 8px 18px 0;
-    color: #a1a1aa;
+    color: var(--c-muted);
     font-size: var(--text-base);
     line-height: 18px;
   }
@@ -2095,7 +2095,7 @@
     padding: 0;
     border: 0;
     background: transparent;
-    color: #e4e4e7;
+    color: var(--c-text);
     font: inherit;
     font-size: var(--text-base);
     line-height: 18px;
@@ -2107,7 +2107,7 @@
   }
   .refresh-report:disabled {
     opacity: 0.55;
-    cursor: wait;
+    cursor: default;
   }
 
   .meetings-body {
@@ -2131,13 +2131,13 @@
     gap: 6px;
     padding: 4px 0 12px;
     margin-bottom: 8px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    border-bottom: 1px solid var(--c-divider);
   }
   .active-meetings-label {
     margin: 0 0 2px;
     font-size: var(--text-base);
     font-weight: 600;
-    color: #a1a1aa;
+    color: var(--c-muted);
     letter-spacing: 0.05em;
     text-transform: uppercase;
   }
@@ -2146,8 +2146,8 @@
     align-items: center;
     gap: 10px;
     padding: 9px 11px;
-    background: rgba(255, 255, 255, 0.04);
-    border: 1px solid rgba(255, 255, 255, 0.06);
+    background: var(--c-field-bg);
+    border: 1px solid var(--c-divider);
     border-radius: 8px;
     transition: background 120ms ease, border-color 120ms ease;
   }
@@ -2169,11 +2169,11 @@
   .active-platform {
     font-size: var(--text-base);
     font-weight: 500;
-    color: #fafafa;
+    color: var(--c-text);
   }
   .active-status {
     font-size: var(--text-base);
-    color: rgba(250, 250, 250, 0.62);
+    color: var(--c-muted);
     display: inline-flex;
     align-items: center;
     gap: 5px;
@@ -2207,9 +2207,9 @@
     font-size: var(--text-base);
     font-family: inherit;
     padding: 5px 22px 5px 9px;
-    background: rgba(255, 255, 255, 0.06);
-    color: #fafafa;
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    background: var(--c-divider);
+    color: var(--c-text);
+    border: 1px solid var(--c-field-border);
     border-radius: 6px;
     cursor: pointer;
     text-overflow: ellipsis;
@@ -2221,12 +2221,12 @@
     background-position: right 6px center;
   }
   .active-company:hover:not(:disabled) {
-    background-color: rgba(255, 255, 255, 0.1);
-    border-color: rgba(255, 255, 255, 0.18);
+    background-color: var(--c-field-border);
+    border-color: var(--pop-hover);
   }
   .active-company:focus {
     outline: none;
-    border-color: rgba(255, 255, 255, 0.24);
+    border-color: var(--c-field-border);
   }
   .active-company:disabled {
     opacity: 0.6;
@@ -2237,16 +2237,16 @@
     font-size: var(--text-base);
     font-weight: 500;
     padding: 5px 11px;
-    background: rgba(255, 255, 255, 0.08);
-    color: #fafafa;
-    border: 1px solid rgba(255, 255, 255, 0.12);
+    background: var(--c-btn2-bg);
+    color: var(--c-text);
+    border: 1px solid var(--pop-hover);
     border-radius: 6px;
     cursor: pointer;
     transition: background 100ms ease, border-color 100ms ease;
   }
   .active-action:hover:not(:disabled) {
-    background: rgba(255, 255, 255, 0.14);
-    border-color: rgba(255, 255, 255, 0.2);
+    background: var(--pop-hover);
+    border-color: var(--c-field-border);
   }
   .active-action:disabled {
     opacity: 0.55;
@@ -2262,13 +2262,13 @@
     border-color: rgba(239, 68, 68, 0.48);
   }
   .active-action-stop {
-    background: rgba(255, 255, 255, 0.06);
-    border-color: rgba(255, 255, 255, 0.18);
+    background: var(--c-divider);
+    border-color: var(--pop-hover);
   }
   .meetings-placeholder,
   .meetings-error {
     margin: 0;
-    color: #a1a1aa;
+    color: var(--c-muted);
     font-size: var(--text-base);
     text-align: center;
     padding: 20px 0;
@@ -2281,7 +2281,7 @@
     margin: 14px 0 6px;
     font-size: var(--text-base);
     font-weight: 600;
-    color: #a1a1aa;
+    color: var(--c-muted);
     text-transform: uppercase;
     letter-spacing: 0.08em;
   }
@@ -2302,7 +2302,7 @@
     align-items: center;
     gap: 6px;
     padding: 6px 4px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    border-bottom: 1px solid var(--c-field-bg);
     border-radius: 6px;
     transition: background 140ms ease, box-shadow 140ms ease;
   }
@@ -2322,7 +2322,7 @@
   }
   .event-time {
     font-size: var(--text-base);
-    color: #a1a1aa;
+    color: var(--c-muted);
     line-height: 1.2;
   }
   .event-title-row {
@@ -2337,7 +2337,7 @@
   .event-title {
     min-width: 0;
     overflow: hidden;
-    color: #f4f4f5;
+    color: var(--c-text);
     font-size: var(--text-base);
     text-overflow: ellipsis;
   }
@@ -2348,7 +2348,7 @@
     justify-content: center;
     width: 14px;
     height: 14px;
-    color: rgba(250, 250, 250, 0.36);
+    color: var(--dot);
     line-height: 1;
     opacity: 0.76;
   }
@@ -2358,7 +2358,7 @@
     height: 12px;
   }
   .series-chip:hover {
-    color: rgba(250, 250, 250, 0.62);
+    color: var(--c-muted);
     opacity: 1;
   }
   /* Per-calendar colour bar at the row's left edge. Replaces the
@@ -2388,9 +2388,9 @@
     font-size: var(--text-base);
     font-family: inherit;
     padding: 5px 22px 5px 8px;
-    background: rgba(255, 255, 255, 0.05);
-    color: #f4f4f5;
-    border: 1px solid rgba(255, 255, 255, 0.10);
+    background: var(--pop-hover);
+    color: var(--c-text);
+    border: 1px solid var(--c-field-border);
     border-radius: 6px;
     cursor: pointer;
     text-overflow: ellipsis;
@@ -2402,28 +2402,28 @@
     background-position: right 6px center;
   }
   .meeting-company:hover:not(:disabled) {
-    background-color: rgba(255, 255, 255, 0.09);
-    border-color: rgba(255, 255, 255, 0.18);
+    background-color: var(--pop-hover);
+    border-color: var(--pop-hover);
   }
   .meeting-company:focus {
     outline: none;
-    border-color: rgba(255, 255, 255, 0.30);
+    border-color: var(--c-field-border);
   }
   .meeting-company:disabled {
     opacity: 0.6;
-    cursor: wait;
+    cursor: default;
   }
   .series-control {
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    color: #a1a1aa;
+    color: var(--c-muted);
     font-size: var(--text-base);
     white-space: nowrap;
   }
   .series-control input {
     margin: 0;
-    accent-color: #e4e4e7;
+    accent-color: var(--c-text);
   }
 
   /* Inline-link inside the meetings-placeholder copy — used by the
@@ -2459,32 +2459,32 @@
   }
   .meetings-empty-title {
     margin: 0;
-    color: #f4f4f5;
+    color: var(--c-text);
     font-size: var(--text-base);
     font-weight: 500;
   }
   .meetings-empty-copy {
     margin: 0;
-    color: #a1a1aa;
+    color: var(--c-muted);
     font-size: var(--text-base);
     max-width: 280px;
     line-height: 1.4;
   }
   .meetings-empty-btn {
     margin-top: 6px;
-    background: rgba(255, 255, 255, 0.12);
-    color: #f4f4f5;
-    border: 1px solid rgba(255, 255, 255, 0.20);
+    background: var(--pop-hover);
+    color: var(--c-text);
+    border: 1px solid var(--c-field-border);
     border-radius: 6px;
     padding: 7px 14px;
     font-size: var(--text-base);
     cursor: pointer;
   }
   .meetings-empty-btn:hover {
-    background: rgba(255, 255, 255, 0.18);
+    background: var(--pop-hover);
   }
   .meetings-empty-btn:focus-visible {
-    outline: 2px solid #93c5fd;
+    outline: 2px solid var(--c-field-border);
     outline-offset: 2px;
   }
 
@@ -2509,9 +2509,9 @@
   .controls-refresh {
     width: 24px;
     height: 24px;
-    border: 1px solid rgba(255, 255, 255, 0.10);
-    background: rgba(255, 255, 255, 0.03);
-    color: #d4d4d8;
+    border: 1px solid var(--c-field-border);
+    background: var(--c-field-bg);
+    color: var(--c-muted);
     border-radius: 6px;
     cursor: pointer;
     display: inline-flex;
@@ -2520,12 +2520,12 @@
     padding: 0;
   }
   .controls-refresh:hover:not(:disabled) {
-    background: rgba(255, 255, 255, 0.08);
-    color: #f4f4f5;
+    background: var(--c-btn2-bg);
+    color: var(--c-text);
   }
   .controls-refresh:disabled {
     opacity: 0.5;
-    cursor: wait;
+    cursor: default;
   }
 
   /* ── Calendar filter dropdown ──────────────────────────────────────── */
@@ -2535,14 +2535,14 @@
     gap: 6px;
     padding: 4px 10px;
     border-radius: 6px;
-    border: 1px solid rgba(255, 255, 255, 0.10);
-    background: rgba(255, 255, 255, 0.03);
-    color: #d4d4d8;
+    border: 1px solid var(--c-field-border);
+    background: var(--c-field-bg);
+    color: var(--c-muted);
     font-size: var(--text-base);
     cursor: pointer;
   }
   .filter-trigger:hover {
-    background: rgba(255, 255, 255, 0.06);
+    background: var(--c-divider);
   }
   .filter-menu {
     position: absolute;
@@ -2554,38 +2554,40 @@
     overflow-y: auto;
     padding: 6px;
     border-radius: 8px;
-    border: 1px solid rgba(255, 255, 255, 0.12);
-    background: #161618;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+    border: 1px solid var(--pop-border);
+    background: var(--pop-bg);
+    box-shadow: var(--pop-shadow), inset 0 1px 0 var(--pop-highlight);
+    backdrop-filter: blur(32px) saturate(1.7);
+    -webkit-backdrop-filter: blur(32px) saturate(1.7);
   }
   .filter-actions {
     display: flex;
     gap: 4px;
     padding: 4px 6px 8px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    border-bottom: 1px solid var(--c-divider);
     margin-bottom: 4px;
   }
   .filter-action {
     flex: 1;
     padding: 4px 8px;
     border-radius: 4px;
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    border: 1px solid var(--c-btn2-bg);
     background: transparent;
-    color: #a1a1aa;
+    color: var(--c-muted);
     font-size: var(--text-base);
     text-transform: uppercase;
     letter-spacing: 0.08em;
     cursor: pointer;
   }
   .filter-action:hover {
-    background: rgba(255, 255, 255, 0.04);
-    color: #fafafa;
+    background: var(--c-field-bg);
+    color: var(--c-text);
   }
   .filter-group {
     padding: 4px 0;
   }
   .filter-group + .filter-group {
-    border-top: 1px solid rgba(255, 255, 255, 0.04);
+    border-top: 1px solid var(--c-field-bg);
     margin-top: 4px;
     padding-top: 8px;
   }
@@ -2593,13 +2595,13 @@
     font-size: var(--text-base);
     text-transform: uppercase;
     letter-spacing: 0.08em;
-    color: #71717a;
+    color: var(--dot);
     margin: 0 0 4px;
     padding: 0 6px;
   }
   .filter-group-empty {
     font-size: var(--text-base);
-    color: #52525b;
+    color: var(--dot);
     margin: 0;
     padding: 0 6px;
     font-style: italic;
@@ -2613,15 +2615,15 @@
     cursor: pointer;
   }
   .filter-option:hover {
-    background: rgba(255, 255, 255, 0.04);
+    background: var(--c-field-bg);
   }
   .filter-option input[type="checkbox"] {
     margin: 0;
-    accent-color: #e4e4e7;
+    accent-color: var(--c-text);
   }
   .filter-option-label {
     font-size: var(--text-base);
-    color: #d4d4d8;
+    color: var(--c-muted);
     flex: 1;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -2632,8 +2634,8 @@
     margin-left: 6px;
     padding: 1px 5px;
     border-radius: 3px;
-    background: rgba(255, 255, 255, 0.06);
-    color: #a1a1aa;
+    background: var(--c-divider);
+    color: var(--c-muted);
     font-size: var(--text-base);
     text-transform: uppercase;
     letter-spacing: 0.06em;
@@ -2676,7 +2678,7 @@
   /* ── Compact icon-button row actions ─────────────────────────────────
      Replaced the prior text-pill buttons (~78px wide each) with 24x24
      icon buttons. The status colour vocabulary is preserved (muted /
-     red live / amber joining / blue processing / green done) but each
+     red live / amber joining / neutral processing / green done) but each
      state collapses to a single glyph. Tooltips carry the meaning so
      accessibility doesn't degrade. */
   .row-actions {
@@ -2693,30 +2695,30 @@
     align-items: center;
     justify-content: center;
     border-radius: 5px;
-    border: 1px solid rgba(255, 255, 255, 0.10);
-    background: rgba(255, 255, 255, 0.03);
-    color: #d4d4d8;
+    border: 1px solid var(--c-field-border);
+    background: var(--c-field-bg);
+    color: var(--c-muted);
     cursor: pointer;
     padding: 0;
     transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
   }
   .row-icon-btn:hover:not(:disabled) {
-    background: rgba(255, 255, 255, 0.10);
-    color: #f4f4f5;
-    border-color: rgba(255, 255, 255, 0.20);
+    background: var(--c-field-border);
+    color: var(--c-text);
+    border-color: var(--c-field-border);
   }
   .row-icon-btn:focus-visible {
-    outline: 2px solid rgba(180, 180, 255, 0.7);
+    outline: 2px solid var(--c-field-border);
     outline-offset: 1px;
   }
   .row-icon-btn:disabled {
     opacity: 0.6;
-    cursor: wait;
+    cursor: default;
   }
   /* Empty placeholder — renders when there's no URL. Inert; same square
      so the trailing column stays aligned with rows that do have a URL. */
   .row-icon-empty {
-    color: #52525b;
+    color: var(--dot);
     cursor: default;
     background: transparent;
     border-color: transparent;
@@ -2725,22 +2727,22 @@
   /* Open-in-browser — discreet so the eye lands on the primary state
      button first. Identical box size, just lower base contrast. */
   .row-icon-join {
-    color: #a1a1aa;
+    color: var(--c-muted);
     background: transparent;
-    border-color: rgba(255, 255, 255, 0.08);
+    border-color: var(--c-btn2-bg);
   }
   /* Invite CTA — brighter border + fill so it reads as actionable. */
   .row-icon-invite {
-    color: #f4f4f5;
-    background: rgba(255, 255, 255, 0.12);
-    border-color: rgba(255, 255, 255, 0.28);
+    color: var(--c-text);
+    background: var(--pop-hover);
+    border-color: var(--c-field-border);
   }
   .row-icon-invite:hover:not(:disabled) {
-    background: rgba(255, 255, 255, 0.20);
+    background: var(--c-field-border);
   }
   /* Invited — muted check; hover hints at the uninvite affordance. */
   .row-icon-invited {
-    color: #a1a1aa;
+    color: var(--c-muted);
   }
   .row-icon-invited:hover:not(:disabled) {
     color: #fca5a5;
@@ -2763,11 +2765,11 @@
     background: rgba(202, 138, 4, 0.10);
     border-color: rgba(202, 138, 4, 0.40);
   }
-  /* Processing — blue muted; non-interactive (no hover lift). */
+  /* Processing — neutral muted; non-interactive (no hover lift). */
   .row-icon-processing {
-    color: #93c5fd;
-    background: rgba(59, 130, 246, 0.08);
-    border-color: rgba(59, 130, 246, 0.30);
+    color: var(--c-muted);
+    background: var(--c-field-bg);
+    border-color: var(--c-field-border);
     cursor: default;
   }
   /* Done — green muted; non-interactive. */
@@ -2816,9 +2818,6 @@
      Sits next to the calendar filter trigger. Default ON — visual is
      "filled" when active so the user sees at a glance that the list is
      filtered. Click toggles, tooltip explains. */
-  .filter-link {
-    /* Inherits .filter-trigger layout; only colour state diverges. */
-  }
   .filter-link-active {
     color: #bfdbfe;
     background: rgba(96, 165, 250, 0.12);

@@ -558,7 +558,7 @@
   .your-listings h2 {
     color: var(--v4-text-2);
     font-size: var(--text-micro);
-    font-weight: 700;
+    font-weight: 600;
     line-height: 14px;
   }
 
@@ -687,9 +687,9 @@
   }
 
   .cover-monogram {
-    font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+    font-family: var(--font-mono);
     font-size: 46px;
-    font-weight: 700;
+    font-weight: 600;
     color: var(--graphic);
     text-shadow: 0 2px 10px color-mix(in srgb, var(--graphic-fg) 45%, transparent);
   }
@@ -737,7 +737,7 @@
     align-items: center;
     gap: 6px;
     color: var(--v4-text-2);
-    font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+    font-family: var(--font-mono);
     font-size: var(--text-micro);
     font-weight: 600;
     letter-spacing: 0;
@@ -761,7 +761,7 @@
     overflow: hidden;
     color: var(--graphic);
     font-size: 15px;
-    font-weight: 680;
+    font-weight: 600;
     line-height: 19px;
     text-shadow: 0 1px 8px color-mix(in srgb, var(--graphic-fg) 65%, transparent);
     display: -webkit-box;
@@ -816,7 +816,7 @@
     border-radius: var(--v4-radius-button);
     background: var(--v4-active-row);
     color: var(--v4-text-2);
-    font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+    font-family: var(--font-mono);
     font-size: var(--text-micro);
     font-weight: 600;
     letter-spacing: 0.05em;
@@ -866,7 +866,7 @@
   .state-empty p {
     margin: 0 0 var(--v4-space-1);
     color: var(--v4-text-1);
-    font-weight: 650;
+    font-weight: 600;
   }
 
   .state-empty span {
@@ -985,7 +985,7 @@
     margin: var(--v4-space-1) 0 0;
     color: var(--v4-text-1);
     font-size: var(--text-base);
-    font-weight: 680;
+    font-weight: 600;
     line-height: 22px;
     overflow-wrap: anywhere;
   }
@@ -1006,7 +1006,7 @@
     background: var(--v4-control-faint);
     color: var(--v4-text-3);
     font-size: var(--text-base);
-    font-weight: 650;
+    font-weight: 600;
     line-height: 16px;
   }
 
@@ -1057,7 +1057,7 @@
     margin: 0 0 var(--v4-space-2);
     color: var(--v4-text-3);
     font-size: var(--text-micro);
-    font-weight: 700;
+    font-weight: 600;
     letter-spacing: 0.04em;
     text-transform: uppercase;
   }
@@ -1076,7 +1076,7 @@
     margin-bottom: var(--v4-space-1);
     color: var(--v4-text-3);
     font-size: var(--text-micro);
-    font-weight: 700;
+    font-weight: 600;
     letter-spacing: 0.04em;
     text-transform: uppercase;
   }
@@ -1100,7 +1100,7 @@
 
   .scope-select:disabled {
     opacity: 0.6;
-    cursor: not-allowed;
+    cursor: default;
   }
 
   .scope-hint {
@@ -1130,7 +1130,7 @@
     color: var(--v4-primary-fg);
     font: inherit;
     font-size: var(--text-base);
-    font-weight: 650;
+    font-weight: 600;
     cursor: pointer;
     transition:
       opacity 140ms ease,
@@ -1148,7 +1148,7 @@
 
   .install-button:disabled {
     opacity: 0.55;
-    cursor: not-allowed;
+    cursor: default;
   }
 
   .install-result {
@@ -1175,7 +1175,7 @@
     border-radius: var(--v4-radius-field);
     background: var(--v4-control-faint);
     color: var(--v4-text-2);
-    font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+    font-family: var(--font-mono);
     font-size: var(--text-micro);
     line-height: 15px;
     white-space: pre-wrap;

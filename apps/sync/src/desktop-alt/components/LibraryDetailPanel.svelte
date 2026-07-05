@@ -225,7 +225,9 @@
     position: fixed;
     inset: 0;
     z-index: 40;
-    background: var(--pop-highlight);
+    background: color-mix(in srgb, var(--pop-bg) 46%, transparent);
+    backdrop-filter: blur(4px) saturate(1.1);
+    -webkit-backdrop-filter: blur(4px) saturate(1.1);
     animation: backdrop-fade 160ms ease;
   }
 
@@ -543,6 +545,14 @@
     .detail-backdrop,
     .detail-panel {
       animation: none;
+    }
+  }
+
+  @media (prefers-reduced-transparency: reduce) {
+    .detail-backdrop {
+      background: color-mix(in srgb, var(--c-bg) 74%, transparent);
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
     }
   }
 </style>

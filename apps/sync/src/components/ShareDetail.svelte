@@ -159,20 +159,17 @@
 </div>
 
 <style>
-  /* Kill default white html/body bleed inside the share-detail window —
+  /* Paint the share-detail document with the shared light-default ground —
      scoped via the [data-window] attribute set by main.ts so it only
-     affects this window, not the popover. Without this, the 32%-transparent
-     area of `.detail-window` reveals white desktop chrome behind the
-     content (the "light grey on white" dogfood feedback, 2026-05-26).
-     We deliberately render an opaque near-black behind the translucent
-     surface so the Liquid Glass tint is consistent regardless of what
-     desktop wallpaper is behind the window. */
+     affects this window, not the popover. */
   :global([data-window="share-detail"] html),
   :global([data-window="share-detail"] body) {
     margin: 0;
     padding: 0;
-    background: #0d0d10;
-    color-scheme: dark;
+    background: var(--page-bg);
+    color: var(--c-text);
+    color-scheme: light;
+    font-family: var(--font-sans);
   }
 
   .detail-window {
@@ -181,15 +178,13 @@
     width: 100vw;
     height: 100vh;
     box-sizing: border-box;
-    /* Opaque base (no alpha) so the window is fully painted even without
-       macOS vibrancy. Vibrancy can be opted in later from the Rust side
-       via apply_vibrancy on the share-detail window if we want true
-       desktop-tinted glass. */
-    background: var(--popover-bg, #14141a);
+    background: var(--pop-bg);
     backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
     -webkit-backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
-    color: var(--popover-text, rgba(255, 255, 255, 0.86));
-    font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    border: 1px solid var(--pop-border);
+    box-shadow: inset 0 1px 0 var(--pop-highlight);
+    color: var(--pop-text);
+    font-family: var(--font-sans);
     overflow: hidden;
   }
 
@@ -198,7 +193,7 @@
     align-items: baseline;
     gap: 0.5rem;
     padding: 1rem 1.25rem 0.75rem;
-    border-bottom: 1px solid var(--popover-divider, rgba(255, 255, 255, 0.06));
+    border-bottom: 1px solid var(--pop-divider);
     flex-shrink: 0;
   }
 
@@ -206,12 +201,12 @@
     margin: 0;
     font-size: 1rem;
     font-weight: 600;
-    color: var(--popover-text-heading, #ffffff);
+    color: var(--pop-text);
   }
 
   .detail-count {
     font-size: 0.75rem;
-    color: var(--popover-text-muted, #a0a0b0);
+    color: var(--pop-muted);
   }
 
   .detail-empty {
@@ -223,7 +218,7 @@
 
   .detail-empty p {
     font-size: 0.8125rem;
-    color: var(--popover-text-muted, #a0a0b0);
+    color: var(--pop-muted);
     margin: 0;
   }
 
@@ -235,7 +230,7 @@
     flex-direction: column;
     gap: 0.75rem;
     scrollbar-width: thin;
-    scrollbar-color: rgba(255, 255, 255, 0.15) transparent;
+    scrollbar-color: var(--pop-muted) transparent;
   }
 
   .events-list::-webkit-scrollbar {
@@ -243,13 +238,13 @@
   }
 
   .events-list::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.12);
+    background: var(--pop-hover);
     border-radius: 3px;
   }
 
   .event-card {
-    background: rgba(255, 255, 255, 0.04);
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: var(--c-bg);
+    border: 1px solid var(--pop-border);
     border-radius: 10px;
     padding: 0.875rem 1rem;
     display: flex;
@@ -267,18 +262,18 @@
   .event-issuer {
     font-size: 0.875rem;
     font-weight: 600;
-    color: var(--popover-text-heading, #ffffff);
+    color: var(--pop-text);
   }
 
   .event-email {
     font-size: 0.75rem;
-    color: var(--popover-text-muted, #a0a0b0);
+    color: var(--pop-muted);
   }
 
   .event-date {
     margin-left: auto;
     font-size: 0.6875rem;
-    color: var(--popover-text-muted, #a0a0b0);
+    color: var(--pop-muted);
     white-space: nowrap;
   }
 
@@ -300,12 +295,12 @@
   .path-basename {
     font-size: 0.8125rem;
     font-weight: 500;
-    color: var(--popover-text, #e0e0e0);
+    color: var(--pop-text);
   }
 
   .path-full {
     font-size: 0.6875rem;
-    color: var(--popover-text-muted, #a0a0b0);
+    color: var(--pop-muted);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -314,9 +309,9 @@
   .event-note {
     margin: 0;
     font-size: 0.8125rem;
-    color: var(--popover-text, #e0e0e0);
-    background: rgba(255, 255, 255, 0.03);
-    border-left: 2px solid rgba(255, 255, 255, 0.15);
+    color: var(--pop-text);
+    background: var(--pop-hover);
+    border-left: 2px solid var(--c-field-border);
     padding: 0.375rem 0.625rem;
     border-radius: 0 4px 4px 0;
     white-space: pre-wrap;
@@ -343,22 +338,30 @@
   }
 
   .btn-copy {
-    background: rgba(255, 255, 255, 0.1);
-    color: var(--popover-text, #e0e0e0);
+    background: var(--pop-hover);
+    color: var(--pop-text);
   }
 
   .btn-copy:hover {
-    background: rgba(255, 255, 255, 0.16);
+    background: var(--c-field-bg);
   }
 
   .btn-console {
     background: transparent;
-    color: var(--popover-text-muted, #a0a0b0);
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    color: var(--pop-muted);
+    border: 1px solid var(--pop-border);
   }
 
   .btn-console:hover {
-    background: rgba(255, 255, 255, 0.05);
-    color: var(--popover-text, #e0e0e0);
+    background: var(--pop-hover);
+    color: var(--pop-text);
+  }
+
+  @media (prefers-reduced-transparency: reduce) {
+    .detail-window {
+      background: var(--c-bg);
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
+    }
   }
 </style>

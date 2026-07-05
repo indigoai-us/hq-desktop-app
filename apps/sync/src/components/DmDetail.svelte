@@ -232,8 +232,10 @@
   :global([data-window="dm-detail"] body) {
     margin: 0;
     padding: 0;
-    background: #0d0d10;
-    color-scheme: dark;
+    background: var(--page-bg);
+    color: var(--c-text);
+    color-scheme: light;
+    font-family: var(--font-sans);
   }
 
   .detail-window {
@@ -242,11 +244,13 @@
     width: 100vw;
     height: 100vh;
     box-sizing: border-box;
-    background: var(--popover-bg, #14141a);
+    background: var(--pop-bg);
     backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
     -webkit-backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
-    color: var(--popover-text, rgba(255, 255, 255, 0.86));
-    font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    border: 1px solid var(--pop-border);
+    box-shadow: inset 0 1px 0 var(--pop-highlight);
+    color: var(--pop-text);
+    font-family: var(--font-sans);
     overflow: hidden;
   }
 
@@ -255,7 +259,7 @@
     align-items: baseline;
     gap: 0.5rem;
     padding: 1rem 1.25rem 0.75rem;
-    border-bottom: 1px solid var(--popover-divider, rgba(255, 255, 255, 0.06));
+    border-bottom: 1px solid var(--pop-divider);
     flex-shrink: 0;
   }
 
@@ -263,7 +267,7 @@
     margin: 0;
     font-size: var(--text-lg);
     font-weight: 600;
-    color: var(--popover-text-heading, #ffffff);
+    color: var(--pop-text);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -272,7 +276,7 @@
   .detail-count {
     margin-left: auto;
     font-size: var(--text-base);
-    color: var(--popover-text-muted, #a0a0b0);
+    color: var(--pop-muted);
     white-space: nowrap;
   }
 
@@ -285,7 +289,15 @@
 
   .detail-empty p {
     font-size: var(--text-base);
-    color: var(--popover-text-muted, #a0a0b0);
+    color: var(--pop-muted);
     margin: 0;
+  }
+
+  @media (prefers-reduced-transparency: reduce) {
+    .detail-window {
+      background: var(--c-bg);
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
+    }
   }
 </style>

@@ -161,16 +161,16 @@
   .live-error { margin: 12px 0 0; color: var(--v4-error); font-size: var(--text-base); line-height: 18px; }
   .live-company { display: flex; align-items: center; gap: 8px; margin-top: 14px; }
   .lc-label { flex: 0 0 auto; color: var(--v4-text-2); font-size: var(--text-base); font-weight: 600; line-height: 16px; }
-  .lc-select { min-width: 0; flex: 1 1 auto; padding: 5px 8px; border: 1px solid var(--v4-hairline); border-radius: var(--v4-radius-field); background: var(--v4-raised); color: var(--v4-text-1); font: inherit; font-size: var(--text-base); line-height: 16px; cursor: default; }
+  .lc-select { min-width: 0; flex: 1 1 auto; padding: 5px 8px; border: 1px solid var(--v4-hairline); border-radius: var(--v4-radius-field); background: var(--v4-raised); color: var(--v4-text-1); font: inherit; font-size: var(--text-base); line-height: 16px; cursor: pointer; }
   .lc-select:hover:not(:disabled) { border-color: var(--v4-control-border); }
   .lc-select:focus-visible { outline: 2px solid var(--v4-text-1); outline-offset: 2px; }
-  .lc-select:disabled { opacity: 0.56; }
+  .lc-select:disabled { opacity: 0.56; cursor: default; }
   .live-actions { display: flex; gap: 8px; margin-top: 14px; }
   .empty-copy { margin: 0; color: var(--v4-text-2); font-size: var(--text-base); line-height: 18px; }
-  .btn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border: 1px solid var(--v4-control-border); border-radius: var(--v4-radius-button); background: var(--v4-secondary-bg); color: var(--v4-secondary-fg); font: inherit; font-size: var(--text-base); font-weight: 600; white-space: nowrap; cursor: default; transition: background 140ms cubic-bezier(.2,.7,.2,1), border-color 140ms cubic-bezier(.2,.7,.2,1), opacity 140ms cubic-bezier(.2,.7,.2,1); }
+  .btn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border: 1px solid var(--v4-control-border); border-radius: var(--v4-radius-button); background: var(--v4-secondary-bg); color: var(--v4-secondary-fg); font: inherit; font-size: var(--text-base); font-weight: 600; white-space: nowrap; cursor: pointer; transition: background 140ms cubic-bezier(.2,.7,.2,1), border-color 140ms cubic-bezier(.2,.7,.2,1), opacity 140ms cubic-bezier(.2,.7,.2,1); }
   .btn:hover:not(:disabled) { border-color: var(--v4-control-border); background: var(--v4-active-row); }
   .btn:focus-visible { outline: 2px solid var(--v4-text-1); outline-offset: 2px; }
-  .btn:disabled { opacity: 0.56; }
+  .btn:disabled { opacity: 0.56; cursor: default; }
   .btn.primary { border-color: transparent; background: var(--v4-primary-bg); color: var(--v4-primary-fg); }
   .btn.primary:hover:not(:disabled) { border-color: transparent; background: var(--v4-primary-bg); color: var(--v4-primary-fg); }
   .btn-icon { display: flex; align-items: center; justify-content: center; width: 14px; height: 14px; }

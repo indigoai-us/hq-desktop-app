@@ -265,9 +265,11 @@
     max-height: 248px;
     overflow-y: auto;
     border-radius: var(--radius-md);
-    border: 1px solid var(--border-strong);
-    background: var(--bg);
-    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+    border: 1px solid var(--pop-border);
+    background: var(--pop-bg);
+    backdrop-filter: var(--popover-blur, blur(32px) saturate(1.7));
+    -webkit-backdrop-filter: var(--popover-blur, blur(32px) saturate(1.7));
+    box-shadow: var(--pop-shadow), inset 0 1px 0 var(--pop-highlight);
     scrollbar-width: thin;
     scrollbar-color: var(--scrollbar-thumb) transparent;
   }

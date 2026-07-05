@@ -306,7 +306,7 @@
     margin: 0;
     color: var(--v4-text-1);
     font-size: var(--text-lg, 18px);
-    font-weight: 700;
+    font-weight: 600;
   }
 
   .submit-sub {
@@ -379,7 +379,7 @@
 
   .btn:disabled {
     opacity: 0.5;
-    cursor: not-allowed;
+    cursor: default;
   }
 
   .btn:focus-visible {
@@ -415,7 +415,7 @@
   .progress pre {
     margin: 0;
     color: var(--v4-text-2);
-    font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+    font-family: var(--font-mono);
     font-size: var(--text-micro, 13px);
     line-height: 1.5;
     white-space: pre-wrap;
@@ -443,7 +443,7 @@
     padding: 1px 5px;
     border-radius: var(--v4-radius-button);
     background: var(--v4-control-faint);
-    font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+    font-family: var(--font-mono);
     font-size: var(--text-micro, 13px);
   }
 
@@ -459,7 +459,7 @@
     padding: 1px 7px;
     border-radius: 999px;
     font-size: var(--text-micro, 13px);
-    font-weight: 700;
+    font-weight: 600;
   }
 
   .status-pending {
@@ -482,7 +482,7 @@
     margin: 0;
     color: var(--v4-text-1);
     font-size: var(--text-base);
-    font-weight: 700;
+    font-weight: 600;
   }
 
   .error-body {
@@ -514,7 +514,7 @@
     margin: 0;
     color: var(--v4-text-1);
     font-size: var(--text-base);
-    font-weight: 700;
+    font-weight: 600;
   }
 
   .ra-body {
@@ -542,7 +542,7 @@
     margin-top: var(--v4-space-1);
     color: var(--v4-text-3);
     font-size: var(--text-micro);
-    font-weight: 700;
+    font-weight: 600;
     letter-spacing: 0.04em;
     text-transform: uppercase;
   }
@@ -583,7 +583,7 @@
   .ra-textarea:disabled,
   .ra-input:disabled {
     opacity: 0.6;
-    cursor: not-allowed;
+    cursor: default;
   }
 
   .ra-error {

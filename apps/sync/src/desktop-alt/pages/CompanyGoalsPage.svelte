@@ -589,12 +589,13 @@
     font-size: var(--text-base);
     font-weight: 400;
     line-height: 30px;
-    cursor: default;
+    cursor: pointer;
   }
 
   .new-goal-button:disabled,
   .risk-row button:disabled {
     opacity: 0.52;
+    cursor: default;
   }
 
   .goals-error {
@@ -790,7 +791,7 @@
     font: inherit;
     font-size: var(--text-base);
     font-weight: 400;
-    cursor: default;
+    cursor: pointer;
   }
 
   .linked-row {

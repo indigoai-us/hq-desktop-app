@@ -546,7 +546,7 @@
 
   input[type='checkbox']:disabled {
     opacity: 0.5;
-    cursor: not-allowed;
+    cursor: default;
   }
 
   input[type='checkbox']:focus-visible {

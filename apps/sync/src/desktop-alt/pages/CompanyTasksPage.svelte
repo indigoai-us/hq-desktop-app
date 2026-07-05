@@ -348,7 +348,7 @@
     color: var(--v4-secondary-fg);
     font: inherit;
     font-size: var(--text-base);
-    cursor: default;
+    cursor: pointer;
   }
 
   .task-list {
@@ -394,7 +394,7 @@
     font: inherit;
     font-size: var(--text-base);
     text-align: left;
-    cursor: default;
+    cursor: pointer;
   }
 
   .task-row:hover {
