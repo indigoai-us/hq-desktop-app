@@ -371,10 +371,10 @@
   .report-link {
     padding: 0; border: 0; background: transparent; color: var(--v4-text-1);
     font: inherit; font-size: var(--text-base); line-height: 18px; text-decoration: underline;
-    cursor: default;
+    cursor: pointer;
   }
   .report-link:hover:not(:disabled) { color: var(--v4-text-2); }
-  .report-link:disabled { opacity: 0.55; }
+  .report-link:disabled { opacity: 0.55; cursor: default; }
   .actions { display: flex; flex-shrink: 0; align-items: center; gap: 8px; }
 
   .toast {
@@ -390,11 +390,11 @@
     display: inline-flex; align-items: center; gap: 6px;
     padding: 5px 10px; border: 1px solid transparent; border-radius: var(--v4-radius-button);
     background: var(--v4-primary-bg); color: var(--v4-primary-fg); font: inherit; font-size: var(--text-base);
-    white-space: nowrap; cursor: default;
+    white-space: nowrap; cursor: pointer;
     transition: background 140ms cubic-bezier(.2,.7,.2,1), border-color 140ms cubic-bezier(.2,.7,.2,1);
   }
   .btn:hover:not(:disabled) { border-color: transparent; background: var(--v4-primary-bg); }
-  .btn:disabled { opacity: 0.5; }
+  .btn:disabled { opacity: 0.5; cursor: default; }
   .btn.subtle {
     border-color: var(--v4-control-border);
     background: var(--v4-secondary-bg);

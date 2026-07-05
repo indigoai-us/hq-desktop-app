@@ -336,7 +336,7 @@
     align-items: center;
     gap: 0.75rem;
     padding: 1rem 1.25rem 0.75rem;
-    border-bottom: 1px solid var(--popover-divider, rgba(255, 255, 255, 0.06));
+    border-bottom: 1px solid var(--border, var(--pop-divider));
     flex-shrink: 0;
   }
 
@@ -350,14 +350,14 @@
   .channel-hash {
     font-size: var(--text-base);
     font-weight: 600;
-    color: var(--popover-text-muted, #8a8a98);
+    color: var(--muted, var(--pop-muted));
   }
 
   .channel-title h2 {
     margin: 0;
     font-size: var(--text-base);
     font-weight: 600;
-    color: var(--popover-text-heading, #ffffff);
+    color: var(--fg, var(--pop-text));
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -373,8 +373,8 @@
     letter-spacing: 0.02em;
     padding: 0.125rem 0.4375rem;
     border-radius: 999px;
-    background: rgba(120, 170, 255, 0.16);
-    color: #cfe0ff;
+    background: var(--row-hover, var(--pop-hover));
+    color: var(--muted-2, var(--pop-muted));
   }
 
   .scope-chip.personal {
@@ -390,9 +390,9 @@
   .member-count-btn {
     margin-left: auto;
     flex-shrink: 0;
-    border: 1px solid rgba(255, 255, 255, 0.12);
-    background: rgba(255, 255, 255, 0.05);
-    color: var(--popover-text, #d8d8e0);
+    border: 1px solid var(--border, var(--pop-border));
+    background: var(--surface-raise, var(--pop-hover));
+    color: var(--fg, var(--pop-text));
     font-family: inherit;
     font-size: var(--text-base);
     font-weight: 500;
@@ -403,7 +403,7 @@
   }
 
   .member-count-btn:hover {
-    background: rgba(255, 255, 255, 0.1);
+    background: var(--row-hover, var(--pop-hover));
   }
 
   .join-cta {
@@ -412,25 +412,25 @@
     flex-direction: column;
     gap: 0.625rem;
     padding: 1rem 1.25rem 1.25rem;
-    border-top: 1px solid var(--popover-divider, rgba(255, 255, 255, 0.06));
+    border-top: 1px solid var(--border, var(--pop-divider));
   }
 
   .join-text {
     margin: 0;
     font-size: var(--text-base);
     line-height: 1.5;
-    color: var(--popover-text-muted, #b8b8c4);
+    color: var(--muted-2, var(--pop-muted));
   }
 
   .join-text strong {
-    color: var(--popover-text, #e8e8ee);
+    color: var(--fg, var(--pop-text));
     font-weight: 600;
   }
 
   .join-error {
     margin: 0;
     font-size: var(--text-base);
-    color: #ff9b9b;
+    color: var(--red, var(--popover-danger));
   }
 
   .btn {
@@ -448,12 +448,12 @@
   }
 
   .btn-join {
-    background: rgba(120, 170, 255, 0.26);
-    color: #dce8ff;
+    background: var(--accent, var(--c-btn-bg));
+    color: var(--accent-fg, var(--c-btn-fg));
   }
 
   .btn-join:hover:not(:disabled) {
-    background: rgba(120, 170, 255, 0.38);
+    filter: brightness(0.94);
   }
 
   .btn-join:disabled {

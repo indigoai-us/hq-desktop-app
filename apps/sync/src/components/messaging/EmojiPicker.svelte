@@ -84,13 +84,11 @@
     width: max-content;
     max-width: 13.5rem;
     border-radius: 12px;
-    background: var(--popover-bg, #1c1c24);
-    border: 1px solid rgba(255, 255, 255, 0.12);
-    box-shadow:
-      0 8px 28px rgba(0, 0, 0, 0.45),
-      0 0 0 1px rgba(0, 0, 0, 0.25);
-    backdrop-filter: blur(20px) saturate(1.4);
-    -webkit-backdrop-filter: blur(20px) saturate(1.4);
+    background: var(--pop-bg);
+    border: 1px solid var(--pop-border);
+    box-shadow: var(--pop-shadow), inset 0 1px 0 var(--pop-highlight);
+    backdrop-filter: blur(32px) saturate(1.7);
+    -webkit-backdrop-filter: blur(32px) saturate(1.7);
   }
 
   .emoji-picker:focus {
@@ -115,8 +113,16 @@
 
   .emoji-cell:hover,
   .emoji-cell:focus-visible {
-    background: rgba(255, 255, 255, 0.12);
+    background: var(--pop-hover);
     outline: none;
+  }
+
+  @media (prefers-reduced-transparency: reduce) {
+    .emoji-picker {
+      background: var(--c-bg);
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
+    }
   }
 
   .emoji-cell:active {

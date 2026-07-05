@@ -1,8 +1,9 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
+  import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
   import { open } from '@tauri-apps/plugin-shell';
-  import { untrack } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import ConflictModal from './ConflictModal.svelte';
   import WorkspaceList from './WorkspaceList.svelte';
   import CopyPromptButton from './CopyPromptButton.svelte';
@@ -11,6 +12,13 @@
   import { liveProgressCaption } from '../lib/live-progress-caption';
   import { isCorePath, CORE_SETUP_LABEL } from '../lib/progressLabel';
   import { packUpdateTitle } from '../lib/packUpdate';
+  import {
+    POPOVER_MIN_HEIGHT,
+    POPOVER_WIDTH,
+    clampPopoverHeight,
+    measuredSurfaceContentHeight,
+    shouldResizePopoverWindow,
+  } from '../lib/popover-window-size';
   import type { ConflictFile } from '../stores/conflicts';
 
   interface Config {
@@ -199,15 +207,16 @@
     desktopAltEnabled = false,
   }: Props = $props();
 
-  const POPOVER_WIDTH = 296;
-  const POPOVER_MIN_HEIGHT = 226;
-  const POPOVER_MAX_HEIGHT = 480;
   const HQ_CLI_UPGRADE_CMD = 'npm install -g @indigoai-us/hq-cli@latest';
 
   let popoverEl: HTMLElement | null = $state(null);
+  let popoverContentEl: HTMLElement | null = $state(null);
+  let popoverMainContentEl: HTMLElement | null = $state(null);
   let overflowButtonEl: HTMLButtonElement | null = $state(null);
   let overflowEl: HTMLDivElement | null = $state(null);
   let overflowOpen = $state(false);
+  let opening = $state(false);
+  let openingTimer: number | null = null;
   let showWorkspaceActions = $state(false);
   let desktopAltError = $state('');
   let desktopAltErrorTimer: ReturnType<typeof setTimeout> | null = null;
@@ -303,10 +312,6 @@
   );
 
   let dismissedMemberships = $state(new Set<string>());
-
-  function clamp(n: number, min: number, max: number): number {
-    return Math.max(min, Math.min(max, n));
-  }
 
   function timeAgo(isoDate: string): string {
     const then = new Date(isoDate).getTime();
@@ -479,6 +484,22 @@
     overflowOpen = false;
   }
 
+  function restartOpeningMotion() {
+    if (typeof window === 'undefined') return;
+    if (openingTimer !== null) {
+      window.clearTimeout(openingTimer);
+      openingTimer = null;
+    }
+    opening = false;
+    window.requestAnimationFrame(() => {
+      opening = true;
+      openingTimer = window.setTimeout(() => {
+        opening = false;
+        openingTimer = null;
+      }, 480);
+    });
+  }
+
   function toggleOverflow(event: MouseEvent) {
     event.stopPropagation();
     overflowOpen = !overflowOpen;
@@ -486,11 +507,6 @@
 
   function openSettings() {
     closeOverflow();
-    try {
-      void getCurrentWindow().setSize(new LogicalSize(POPOVER_WIDTH, POPOVER_MAX_HEIGHT));
-    } catch {
-      // Non-Tauri / test environment.
-    }
     onsettings();
   }
 
@@ -538,7 +554,7 @@
   }
 
   function resizePopoverWindow(height: number) {
-    if (Math.abs(height - lastWindowHeight) < 2) return;
+    if (!shouldResizePopoverWindow(height, lastWindowHeight)) return;
     lastWindowHeight = height;
     try {
       void getCurrentWindow().setSize(new LogicalSize(POPOVER_WIDTH, height));
@@ -548,11 +564,20 @@
   }
 
   function measuredPopoverHeight(): number {
-    if (!popoverEl) return POPOVER_MIN_HEIGHT;
+    if (!popoverContentEl) return POPOVER_MIN_HEIGHT;
+    const headerEl = popoverContentEl.querySelector<HTMLElement>('.mbp-head');
+    const footerEl = popoverContentEl.querySelector<HTMLElement>('.mbp-foot');
+    const contentHeight =
+      (headerEl?.offsetHeight ?? 0) +
+      (popoverMainContentEl?.scrollHeight ?? 0) +
+      (footerEl?.offsetHeight ?? 0);
     const menuBottom = overflowOpen && overflowEl
-      ? overflowEl.offsetTop + overflowEl.scrollHeight + 12
+      ? overflowEl.getBoundingClientRect().bottom - popoverContentEl.getBoundingClientRect().top + 12
       : 0;
-    return Math.max(Math.ceil(popoverEl.scrollHeight), menuBottom);
+    return measuredSurfaceContentHeight({
+      contentScrollHeight: Math.max(popoverContentEl.scrollHeight, contentHeight),
+      floatingBottom: menuBottom,
+    });
   }
 
   $effect(() => {
@@ -575,18 +600,19 @@
   });
 
   $effect(() => {
-    if (!popoverEl || typeof ResizeObserver === 'undefined') return;
+    if (!popoverContentEl || typeof ResizeObserver === 'undefined') return;
 
     let raf = 0;
     const syncSize = () => {
       cancelAnimationFrame(raf);
       raf = requestAnimationFrame(() => {
-        resizePopoverWindow(clamp(measuredPopoverHeight(), POPOVER_MIN_HEIGHT, POPOVER_MAX_HEIGHT));
+        resizePopoverWindow(clampPopoverHeight(measuredPopoverHeight()));
       });
     };
 
     const observer = new ResizeObserver(syncSize);
-    observer.observe(popoverEl);
+    observer.observe(popoverContentEl);
+    if (popoverMainContentEl) observer.observe(popoverMainContentEl);
     syncSize();
 
     return () => {
@@ -597,9 +623,9 @@
 
   $effect(() => {
     const _overflowOpen = overflowOpen;
-    if (!popoverEl) return;
+    if (!popoverContentEl) return;
     requestAnimationFrame(() => {
-      resizePopoverWindow(clamp(measuredPopoverHeight(), POPOVER_MIN_HEIGHT, POPOVER_MAX_HEIGHT));
+      resizePopoverWindow(clampPopoverHeight(measuredPopoverHeight()));
     });
   });
 
@@ -629,9 +655,46 @@
       document.removeEventListener('keydown', handleKey);
     };
   });
+
+  onMount(() => {
+    let cancelled = false;
+    let unlistenFocus: UnlistenFn | null = null;
+    let unlistenOpened: UnlistenFn | null = null;
+
+    restartOpeningMotion();
+
+    void getCurrentWindow()
+      .onFocusChanged(({ payload: focused }) => {
+        if (focused) restartOpeningMotion();
+      })
+      .then((unlisten) => {
+        if (cancelled) unlisten();
+        else unlistenFocus = unlisten;
+      })
+      .catch(() => {
+        // Non-Tauri / test environment.
+      });
+
+    void listen('popover:opened', () => restartOpeningMotion())
+      .then((unlisten) => {
+        if (cancelled) unlisten();
+        else unlistenOpened = unlisten;
+      })
+      .catch(() => {
+        // Non-Tauri / test environment.
+      });
+
+    return () => {
+      cancelled = true;
+      unlistenFocus?.();
+      unlistenOpened?.();
+      if (openingTimer !== null) window.clearTimeout(openingTimer);
+    };
+  });
 </script>
 
-<div class="popover mbpop show" bind:this={popoverEl} data-testid="popover-root">
+<div class="popover mbpop show" class:opening bind:this={popoverEl} data-testid="popover-root">
+  <div class="mbpop-content" bind:this={popoverContentEl}>
   <header class="mbp-head" data-tauri-drag-region>
     <span class="mbp-mark" data-tauri-drag-region>
       <svg
@@ -886,6 +949,7 @@
   </header>
 
   <div class="mbp-main">
+    <div class="mbp-main-content" bind:this={popoverMainContentEl}>
     {#if showConflictModal && conflicts.length > 0 && onresolve && onopen && ondismissconflicts}
       <div class="mbp-notices">
         <ConflictModal
@@ -1060,32 +1124,56 @@
       {#if compactWorkspaces.length > 0}
         <div class="mbp-list">
           {#each compactWorkspaces as w (`${w.kind}:${w.slug}`)}
-            <button
-              class="mbp-co"
-              class:clickable={isWorkspaceClickable(w)}
-              type="button"
-              onclick={() => handleWorkspaceOpen(w)}
-              title={workspaceStateLabel(w)}
-              aria-label={`${w.displayName} - ${workspaceStateLabel(w)}`}
-              data-testid="popover-workspace-row"
-              data-workspace-key={`${w.kind}:${w.slug}`}
-            >
-              <span class="nm">
-                <span class="who">{w.displayName}</span>
-                {#if w.state === 'personal'}
-                  <span class="tag">Personal</span>
-                {/if}
-              </span>
-              {#if isWorkspaceSynced(w)}
-                <span class="sti on" aria-label="Synced">
-                  <svg width="12" height="12" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                    <path d="M3 7.5 6 10.5 11 4" />
-                  </svg>
+            {#if isWorkspaceClickable(w)}
+              <button
+                class="mbp-co clickable"
+                type="button"
+                onclick={() => handleWorkspaceOpen(w)}
+                title={workspaceStateLabel(w)}
+                aria-label={`${w.displayName} - ${workspaceStateLabel(w)}`}
+                data-testid="popover-workspace-row"
+                data-workspace-key={`${w.kind}:${w.slug}`}
+              >
+                <span class="nm">
+                  <span class="who">{w.displayName}</span>
+                  {#if w.state === 'personal'}
+                    <span class="tag">Personal</span>
+                  {/if}
                 </span>
-              {:else}
-                <span class="sti off" aria-label={workspaceStateLabel(w)}></span>
-              {/if}
-            </button>
+                {#if isWorkspaceSynced(w)}
+                  <span class="sti on" aria-label="Synced">
+                    <svg width="12" height="12" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <path d="M3 7.5 6 10.5 11 4" />
+                    </svg>
+                  </span>
+                {:else}
+                  <span class="sti off" aria-label={workspaceStateLabel(w)}></span>
+                {/if}
+              </button>
+            {:else}
+              <div
+                class="mbp-co"
+                title={workspaceStateLabel(w)}
+                data-testid="popover-workspace-row"
+                data-workspace-key={`${w.kind}:${w.slug}`}
+              >
+                <span class="nm">
+                  <span class="who">{w.displayName}</span>
+                  {#if w.state === 'personal'}
+                    <span class="tag">Personal</span>
+                  {/if}
+                </span>
+                {#if isWorkspaceSynced(w)}
+                  <span class="sti on" aria-label="Synced">
+                    <svg width="12" height="12" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <path d="M3 7.5 6 10.5 11 4" />
+                    </svg>
+                  </span>
+                {:else}
+                  <span class="sti off" aria-label={workspaceStateLabel(w)}></span>
+                {/if}
+              </div>
+            {/if}
           {/each}
         </div>
       {:else}
@@ -1105,6 +1193,7 @@
         </div>
       {/if}
     </section>
+    </div>
   </div>
 
   {#if desktopAltEnabled}
@@ -1119,11 +1208,13 @@
       </button>
     </div>
   {/if}
+  </div>
 </div>
 
 <style>
   .popover {
     width: min(100vw, 296px);
+    height: 100vh;
     max-height: 100vh;
     display: flex;
     flex-direction: column;
@@ -1140,7 +1231,18 @@
     border-radius: 12px;
     box-shadow: var(--pop-shadow), inset 0 1px 0 var(--pop-highlight);
     overflow: hidden;
+  }
+
+  .mbpop-content {
+    width: 100%;
+    min-height: 0;
+    max-height: 100%;
+    display: flex;
+    flex-direction: column;
     transform-origin: top right;
+  }
+
+  .mbpop.opening .mbpop-content {
     animation: mbpop-show 0.42s cubic-bezier(.34, 1.18, .64, 1) both;
   }
 
@@ -1157,7 +1259,7 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .mbpop {
+    .mbpop.opening .mbpop-content {
       animation: none;
     }
   }
@@ -1211,7 +1313,17 @@
   .mbp-icon:focus-visible {
     background: var(--pop-hover);
     color: var(--pop-text);
-    outline: none;
+  }
+
+  .mbp-icon:focus-visible,
+  .mbp-sync:focus-visible,
+  .mbp-open:focus-visible,
+  .mbp-menu-item:focus-visible,
+  .mbp-mini:focus-visible,
+  .mbp-pill:focus-visible,
+  .mbp-dismiss:focus-visible {
+    outline: 1.5px solid var(--popover-focus-ring, var(--pop-accent));
+    outline-offset: var(--popover-focus-offset, 2px);
   }
 
   .mbp-sync {
@@ -1252,6 +1364,10 @@
   .mbp-main::-webkit-scrollbar {
     width: 0;
     height: 0;
+  }
+
+  .mbp-main-content {
+    min-height: 0;
   }
 
   .mbp-notices {
@@ -1331,19 +1447,19 @@
     width: 8px;
     height: 8px;
     border-radius: 50%;
-    background: #34c759;
-    box-shadow: 0 0 7px rgba(52, 199, 89, 0.55);
+    background: var(--popover-success);
+    box-shadow: 0 0 7px var(--popover-success-bg);
     flex-shrink: 0;
   }
 
   .mbp-status.syncing .gd {
-    background: #0a84ff;
-    box-shadow: 0 0 7px rgba(10, 132, 255, 0.45);
+    background: var(--pop-accent);
+    box-shadow: 0 0 7px var(--pop-hover);
   }
 
   .mbp-status.attention .gd {
-    background: #ff9f0a;
-    box-shadow: 0 0 7px rgba(255, 159, 10, 0.42);
+    background: var(--popover-warning);
+    box-shadow: 0 0 7px var(--popover-warning-glow);
   }
 
   .mbp-s1 {
@@ -1423,10 +1539,14 @@
     cursor: pointer;
   }
 
-  .mbp-co:hover,
-  .mbp-co:focus-visible {
+  .mbp-co:hover {
     background: var(--pop-hover);
-    outline: none;
+  }
+
+  .mbp-co.clickable:focus-visible {
+    background: var(--pop-hover);
+    outline: 1.5px solid var(--popover-focus-ring, var(--pop-accent));
+    outline-offset: var(--popover-focus-offset, 2px);
   }
 
   .mbp-co .nm {
@@ -1474,13 +1594,20 @@
   }
 
   .mbp-co .sti.on {
-    background: rgba(52, 199, 89, 0.16);
-    color: #1f9d4d;
+    background: var(--popover-success-bg);
+    color: var(--popover-success);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .mbp-co .sti.on {
+      background: var(--popover-success-bg);
+      color: var(--popover-success);
+    }
   }
 
   :global(.dark) .mbp-co .sti.on {
-    background: rgba(52, 199, 89, 0.22);
-    color: #41d870;
+    background: var(--popover-success-bg);
+    color: var(--popover-success);
   }
 
   .mbp-co .sti.off {

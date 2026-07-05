@@ -273,8 +273,8 @@
     min-height: 0;
     min-width: 0;
     height: 100%;
-    background: var(--popover-bg, #14141a);
-    border-left: 1px solid var(--popover-divider, rgba(255, 255, 255, 0.08));
+    background: var(--surface-panel, var(--pop-bg));
+    border-left: 1px solid var(--border, var(--pop-divider));
   }
 
   .thread-header {
@@ -282,14 +282,14 @@
     align-items: center;
     gap: 0.5rem;
     padding: 0.875rem 1rem 0.75rem;
-    border-bottom: 1px solid var(--popover-divider, rgba(255, 255, 255, 0.06));
+    border-bottom: 1px solid var(--border, var(--pop-divider));
     flex-shrink: 0;
   }
 
   .thread-close {
     border: none;
-    background: rgba(255, 255, 255, 0.06);
-    color: var(--popover-text, #d8d8e0);
+    background: var(--row-hover, var(--pop-hover));
+    color: var(--fg, var(--pop-text));
     font-family: inherit;
     font-size: var(--text-base);
     font-weight: 600;
@@ -300,14 +300,14 @@
   }
 
   .thread-close:hover {
-    background: rgba(255, 255, 255, 0.12);
+    background: var(--c-field-bg);
   }
 
   .thread-title {
     margin: 0;
     font-size: var(--text-base);
     font-weight: 600;
-    color: var(--popover-text-heading, #ffffff);
+    color: var(--fg, var(--pop-text));
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -320,28 +320,28 @@
     flex-direction: column;
     gap: 0.25rem;
     padding: 0.875rem 1rem;
-    border-bottom: 1px solid var(--popover-divider, rgba(255, 255, 255, 0.06));
-    background: rgba(120, 170, 255, 0.06);
+    border-bottom: 1px solid var(--border, var(--pop-divider));
+    background: var(--surface-raise, var(--pop-hover));
   }
 
   .thread-root-author {
     font-size: var(--text-base);
     font-weight: 600;
-    color: var(--popover-text-muted, #a0a0b0);
+    color: var(--muted, var(--pop-muted));
   }
 
   .thread-root-bubble {
     padding: 0.5rem 0.75rem;
     border-radius: 12px;
     border-bottom-left-radius: 4px;
-    background: rgba(255, 255, 255, 0.07);
+    background: var(--surface-panel, var(--pop-hover));
   }
 
   .thread-root-body {
     margin: 0;
     font-size: var(--text-base);
     line-height: 1.45;
-    color: var(--popover-text, #e8e8ee);
+    color: var(--fg, var(--pop-text));
     white-space: pre-wrap;
     word-break: break-word;
   }
@@ -364,9 +364,9 @@
     margin-top: 0.5rem;
     font-size: var(--text-base);
     line-height: 1.5;
-    color: var(--popover-text, #e0e0e0);
-    background: rgba(0, 0, 0, 0.18);
-    border-left: 2px solid rgba(255, 255, 255, 0.15);
+    color: var(--fg, var(--pop-text));
+    background: var(--surface-raise, var(--c-field-bg));
+    border-left: 2px solid var(--border-strong, var(--c-field-border));
     padding: 0.5rem 0.625rem;
     border-radius: 0 6px 6px 0;
     white-space: pre-wrap;
@@ -377,18 +377,18 @@
     font-size: var(--text-base);
     font-weight: 600;
     letter-spacing: 0.02em;
-    color: var(--popover-text-muted, #8a8a98);
+    color: var(--muted, var(--pop-muted));
     text-transform: uppercase;
   }
 
   .thread-root-status {
     margin: 0;
     font-size: var(--text-base);
-    color: var(--popover-text-muted, #a0a0b0);
+    color: var(--muted, var(--pop-muted));
   }
 
   .thread-root-error {
-    color: #ff9b9b;
+    color: var(--red, var(--popover-danger));
   }
 
   /* The reply list + composer (shared <Conversation/>) flexes to fill. */

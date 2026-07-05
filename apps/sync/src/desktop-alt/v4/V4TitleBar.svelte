@@ -87,6 +87,9 @@
     padding: 0 14px 0 78px;
     border-bottom: 1px solid var(--v4-hairline);
     background: var(--v4-chrome);
+    backdrop-filter: blur(22px) saturate(180%);
+    -webkit-backdrop-filter: blur(22px) saturate(180%);
+    box-shadow: inset 0 1px 0 var(--pop-highlight);
     font-family: var(--font-sans);
   }
 
@@ -181,5 +184,18 @@
 
   .v4-action:hover {
     opacity: 0.86;
+  }
+
+  .v4-action:focus-visible {
+    outline: 2px solid var(--v4-control-border);
+    outline-offset: 2px;
+  }
+
+  @media (prefers-reduced-transparency: reduce) {
+    .v4-titlebar {
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
+      box-shadow: none;
+    }
   }
 </style>

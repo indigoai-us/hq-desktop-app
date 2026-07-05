@@ -90,10 +90,10 @@
     gap: 0.25rem;
     min-height: 1.75rem; /* 28px tap target */
     padding: 0.125rem 0.5rem;
-    border: 1px solid rgba(255, 255, 255, 0.14);
+    border: 1px solid var(--pop-border);
     border-radius: 999px;
-    background: rgba(255, 255, 255, 0.06);
-    color: var(--popover-text, #e0e0e0);
+    background: var(--pop-hover);
+    color: var(--pop-text);
     font-family: inherit;
     font-size: var(--text-base);
     line-height: 1;
@@ -103,20 +103,20 @@
 
   .reaction-pill:hover,
   .reaction-pill:focus-visible {
-    background: rgba(255, 255, 255, 0.12);
+    background: var(--c-field-bg);
     outline: none;
   }
 
   /* Highlighted when the caller is among the reactors. */
   .reaction-pill.reacted {
-    background: rgba(120, 170, 255, 0.22);
-    border-color: rgba(120, 170, 255, 0.5);
-    color: #dce8ff;
+    background: var(--c-field-bg);
+    border-color: var(--c-field-border);
+    color: var(--pop-text);
   }
 
   .reaction-pill.reacted:hover,
   .reaction-pill.reacted:focus-visible {
-    background: rgba(120, 170, 255, 0.3);
+    background: var(--pop-hover);
   }
 
   .reaction-emoji {
@@ -142,10 +142,10 @@
     min-width: 1.75rem; /* 28px tap target */
     min-height: 1.75rem;
     padding: 0 0.375rem;
-    border: 1px solid rgba(255, 255, 255, 0.12);
+    border: 1px solid var(--pop-border);
     border-radius: 999px;
-    background: rgba(255, 255, 255, 0.04);
-    color: var(--popover-text-muted, #a0a0b0);
+    background: var(--pop-hover);
+    color: var(--pop-muted);
     font-family: inherit;
     cursor: pointer;
     transition: background-color 0.12s ease, color 0.12s ease;
@@ -154,8 +154,8 @@
   .reaction-add:hover,
   .reaction-add:focus-visible,
   .reaction-add[aria-expanded='true'] {
-    background: rgba(255, 255, 255, 0.1);
-    color: var(--popover-text, #e0e0e0);
+    background: var(--c-field-bg);
+    color: var(--pop-text);
     outline: none;
   }
 
@@ -166,7 +166,7 @@
 
   .reaction-add-plus {
     font-size: var(--text-base);
-    font-weight: 700;
+    font-weight: 600;
     line-height: 1;
   }
 </style>

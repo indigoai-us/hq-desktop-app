@@ -1309,11 +1309,11 @@
 
   .new-message-btn:hover {
     background: var(--row-hover);
-    border-color: var(--blue);
+    border-color: var(--border-strong);
   }
 
   .new-message-btn:focus-visible {
-    outline: 2px solid var(--blue);
+    outline: 2px solid var(--border-strong);
     outline-offset: 1px;
   }
 
@@ -1359,7 +1359,7 @@
   }
 
   .seg:focus-visible {
-    outline: 2px solid var(--blue);
+    outline: 2px solid var(--border-strong);
     outline-offset: 2px;
     border-radius: 2px;
   }
@@ -1438,7 +1438,7 @@
   }
 
   .rail-retry:focus-visible {
-    outline: 2px solid var(--blue);
+    outline: 2px solid var(--border-strong);
     outline-offset: 1px;
   }
 
@@ -1477,7 +1477,7 @@
   }
 
   .rail-action:focus-visible {
-    outline: 2px solid var(--blue);
+    outline: 2px solid var(--border-strong);
     outline-offset: 1px;
   }
 
@@ -1541,7 +1541,7 @@
   }
 
   /* Selected conversation: restrained row-active surface + a 2px Indigo edge —
-     the desktop "active row" treatment, accent kept to a hairline. */
+     the desktop "active row" treatment, emphasis kept neutral. */
   .contact-row.active {
     background: var(--row-active);
   }
@@ -1554,11 +1554,11 @@
     bottom: 7px;
     width: 2px;
     border-radius: 999px;
-    background: var(--blue);
+    background: var(--fg);
   }
 
   .contact-row:focus-visible {
-    outline: 2px solid var(--blue);
+    outline: 2px solid var(--border-strong);
     outline-offset: -2px;
   }
 
@@ -1734,7 +1734,7 @@
       right: 0;
       bottom: 0;
       width: min(100%, 420px);
-      box-shadow: -12px 0 32px rgba(0, 0, 0, 0.4);
+      box-shadow: var(--pop-shadow);
       z-index: 5;
     }
 

@@ -177,7 +177,9 @@
     align-items: flex-start;
     justify-content: center;
     padding: 3.5rem var(--space-5) var(--space-5);
-    background: rgba(0, 0, 0, 0.5);
+    background: color-mix(in srgb, var(--pop-bg) 48%, transparent);
+    backdrop-filter: blur(8px) saturate(1.2);
+    -webkit-backdrop-filter: blur(8px) saturate(1.2);
   }
 
   .compose-sheet {
@@ -187,10 +189,12 @@
     flex-direction: column;
     gap: var(--space-3);
     padding: var(--space-4) var(--space-5) var(--space-5);
-    border-radius: var(--radius-md);
-    border: 1px solid var(--border-strong);
-    background: var(--bg);
-    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
+    border-radius: var(--radius-popover);
+    border: 1px solid var(--pop-border);
+    background: var(--pop-bg);
+    backdrop-filter: var(--popover-blur, blur(32px) saturate(1.7));
+    -webkit-backdrop-filter: var(--popover-blur, blur(32px) saturate(1.7));
+    box-shadow: var(--pop-shadow), inset 0 1px 0 var(--pop-highlight);
     color: var(--fg);
     font-family: var(--font-sans);
     letter-spacing: -0.006em;
@@ -324,7 +328,7 @@
   .btn-send {
     margin-left: auto;
     background: var(--accent);
-    color: #fff;
+    color: var(--accent-fg);
   }
 
   .btn-send:hover:not(:disabled) {
@@ -334,5 +338,21 @@
   .btn-send:disabled {
     opacity: 0.45;
     cursor: default;
+  }
+
+  @media (prefers-reduced-transparency: reduce) {
+    .compose-backdrop,
+    .compose-sheet {
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
+    }
+
+    .compose-backdrop {
+      background: color-mix(in srgb, var(--c-bg) 74%, transparent);
+    }
+
+    .compose-sheet {
+      background: var(--c-bg);
+    }
   }
 </style>

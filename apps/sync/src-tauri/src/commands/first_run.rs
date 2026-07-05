@@ -118,6 +118,17 @@ pub fn set_main_window_vibrancy(app: AppHandle, enabled: bool) {
     }
 }
 
+/// Reposition the main window to the menu-bar popover anchor and show it. Used on
+/// the onboarding→popover handoff so the popover appears next to the tray rather
+/// than staying centered where the installer was. Uses `show_popover_window`,
+/// which anchors under the native menu-bar helper icon on macOS (the menu-bar
+/// item is a separate helper process, so there is no Tauri tray to read a rect
+/// from) with a top-right fallback.
+#[tauri::command]
+pub fn show_main_window_at_tray(app: AppHandle) {
+    crate::tray::show_popover_window(&app);
+}
+
 /// Mark the one-time auto-sync notice as shown for an updating user. Also sets
 /// `firstRunCompleted` so the next launch classifies as `Normal`. Deliberately
 /// does NOT touch `realtimeSync` — opt-outs are respected.

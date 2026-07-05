@@ -311,9 +311,9 @@
   :global(html[data-window='meeting-permissions'] body) {
     margin: 0;
     padding: 0;
-    background: #18181b;
-    color: #fafafa;
-    font-family: -apple-system, BlinkMacSystemFont, 'Inter', system-ui, sans-serif;
+    background: var(--page-bg);
+    color: var(--c-text);
+    font-family: var(--font-sans);
     font-size: 13px;
     line-height: 1.5;
     -webkit-font-smoothing: antialiased;
@@ -327,11 +327,12 @@
     flex-direction: column;
     height: 100vh;
     overflow: hidden;
+    background: var(--page-bg);
   }
 
   header {
     padding: 18px 22px 14px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    border-bottom: 1px solid var(--c-divider);
   }
   header h1 {
     margin: 0 0 4px;
@@ -342,33 +343,34 @@
   header .subtitle {
     margin: 0;
     font-size: 12.5px;
-    color: rgba(250, 250, 250, 0.62);
+    color: var(--c-muted);
     max-width: 520px;
   }
   header .subtitle strong {
-    color: #4ade80;
+    color: var(--popover-success, #1f9d4d);
     font-weight: 500;
   }
 
   .why-card {
     margin: 14px 22px 0;
     padding: 14px 16px;
-    background: rgba(255, 255, 255, 0.03);
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 8px;
+    background: var(--c-bg);
+    border: 1px solid var(--c-field-border);
+    border-radius: var(--radius-field);
+    box-shadow: var(--c-choose-shadow);
   }
   .why-card h2 {
     margin: 0 0 6px;
     font-size: 12.5px;
     font-weight: 500;
-    color: #fafafa;
+    color: var(--c-text);
   }
   .why-lead,
   .why-foot {
     margin: 0;
     font-size: 12px;
     line-height: 1.55;
-    color: rgba(250, 250, 250, 0.6);
+    color: var(--c-muted);
   }
   .why-list {
     margin: 9px 0;
@@ -381,28 +383,28 @@
   .why-list li {
     font-size: 12px;
     line-height: 1.5;
-    color: rgba(250, 250, 250, 0.72);
+    color: var(--c-muted);
   }
   .why-key {
-    color: #fafafa;
+    color: var(--c-text);
     font-weight: 500;
   }
   .why-key::after {
     content: ' — ';
-    color: rgba(250, 250, 250, 0.4);
+    color: var(--dot);
     font-weight: 400;
   }
   .why-foot {
     margin-top: 10px;
     padding-top: 10px;
-    border-top: 1px solid rgba(255, 255, 255, 0.06);
+    border-top: 1px solid var(--c-divider);
   }
 
   .quick-prompt {
     margin: 14px 22px 0;
     padding: 12px 14px;
-    background: rgba(129, 140, 248, 0.08);
-    border: 1px solid rgba(129, 140, 248, 0.32);
+    background: var(--pop-hover);
+    border: 1px solid var(--pop-border);
     border-radius: 8px;
     display: flex;
     align-items: center;
@@ -411,17 +413,17 @@
   }
   .quick-text {
     font-size: 12.5px;
-    color: rgba(250, 250, 250, 0.85);
+    color: var(--c-text);
   }
   .quick-text strong {
     display: block;
     margin-bottom: 2px;
-    color: #fafafa;
+    color: var(--c-text);
     font-weight: 500;
   }
   .primary-btn {
-    background: #818cf8;
-    color: #0a0a0c;
+    background: var(--c-btn-bg);
+    color: var(--c-btn-fg);
     border: 0;
     padding: 7px 14px;
     border-radius: 6px;
@@ -431,7 +433,7 @@
     flex-shrink: 0;
   }
   .primary-btn:hover {
-    background: #a5b4fc;
+    background: var(--c-btn-bg);
   }
 
   .perm-list {
@@ -447,7 +449,7 @@
     gap: 14px;
     align-items: center;
     padding: 14px 22px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    border-bottom: 1px solid var(--c-divider);
   }
   .perm-row:last-child {
     border-bottom: 0;
@@ -460,21 +462,21 @@
   .perm-title {
     font-size: 13.5px;
     font-weight: 500;
-    color: #fafafa;
+    color: var(--c-text);
   }
   .optional-tag {
     font-size: 10px;
     text-transform: uppercase;
     letter-spacing: 0.06em;
-    color: rgba(250, 250, 250, 0.42);
-    background: rgba(255, 255, 255, 0.06);
+    color: var(--dot);
+    background: var(--c-divider);
     padding: 2px 6px;
     border-radius: 3px;
   }
   .perm-reason {
     margin: 4px 0 0;
     font-size: 12.5px;
-    color: rgba(250, 250, 250, 0.62);
+    color: var(--c-muted);
     max-width: 480px;
   }
   .perm-controls {
@@ -493,25 +495,25 @@
     letter-spacing: 0.01em;
   }
   .pill-ok {
-    background: rgba(74, 222, 128, 0.15);
-    color: #4ade80;
+    background: color-mix(in srgb, var(--popover-success, #1f9d4d) 14%, transparent);
+    color: var(--popover-success, #1f9d4d);
   }
   .pill-needs {
-    background: rgba(248, 113, 113, 0.15);
-    color: #f87171;
+    background: color-mix(in srgb, var(--popover-danger, #dc2626) 14%, transparent);
+    color: var(--popover-danger, #dc2626);
   }
   .pill-prompt {
-    background: rgba(250, 204, 21, 0.15);
-    color: #facc15;
+    background: color-mix(in srgb, var(--v4-warn, #b45309) 16%, transparent);
+    color: var(--v4-warn, #b45309);
   }
   .pill-unknown {
-    background: rgba(255, 255, 255, 0.08);
-    color: rgba(250, 250, 250, 0.55);
+    background: var(--c-btn2-bg);
+    color: var(--c-muted);
   }
 
   .open-btn {
-    background: rgba(255, 255, 255, 0.08);
-    color: #fafafa;
+    background: var(--c-btn2-bg);
+    color: var(--c-text);
     border: 0;
     padding: 6px 12px;
     border-radius: 6px;
@@ -520,7 +522,7 @@
     font-weight: 500;
   }
   .open-btn:hover:not(:disabled) {
-    background: rgba(255, 255, 255, 0.14);
+    background: var(--pop-hover);
   }
   .open-btn:disabled {
     opacity: 0.55;
@@ -532,24 +534,24 @@
     align-items: center;
     justify-content: space-between;
     padding: 12px 22px;
-    border-top: 1px solid rgba(255, 255, 255, 0.08);
-    background: rgba(0, 0, 0, 0.18);
+    border-top: 1px solid var(--c-btn2-bg);
+    background: var(--c-field-bg);
   }
   .footer-meta {
     font-size: 11.5px;
-    color: rgba(250, 250, 250, 0.42);
+    color: var(--dot);
   }
   .refresh-btn {
     background: transparent;
-    color: rgba(250, 250, 250, 0.85);
-    border: 1px solid rgba(255, 255, 255, 0.14);
+    color: var(--c-text);
+    border: 1px solid var(--pop-hover);
     padding: 5px 11px;
     border-radius: 5px;
     font-size: 12px;
     cursor: pointer;
   }
   .refresh-btn:hover:not(:disabled) {
-    background: rgba(255, 255, 255, 0.06);
+    background: var(--c-divider);
   }
   .refresh-btn:disabled {
     opacity: 0.55;

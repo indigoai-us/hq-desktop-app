@@ -42,7 +42,9 @@
   --v4-radius-card: var(--radius-card, 18px);
   --v4-radius-popover: var(--radius-popover, 12px);
   --v4-radius-pill: var(--radius-pill, 980px);
-  --v4-shadow-card: var(--c-choose-shadow, 0 1px 1.5px rgba(0, 0, 0, 0.1));
+  --v4-shadow-card-light: var(--c-choose-shadow, 0 1px 1.5px rgba(0, 0, 0, 0.1));
+  --v4-shadow-card-dark: 0 12px 32px rgba(0, 0, 0, 0.34), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  --v4-shadow-card: var(--v4-shadow-card-light);
   --v4-shadow-popover: var(--pop-shadow, var(--shadow-popover-light, 0 22px 55px rgba(20, 22, 40, 0.22)));
   --v4-shadow-window: var(--shadow-window-light, 0 24px 70px rgba(20, 22, 40, 0.28), 0 2px 8px rgba(20, 22, 40, 0.12));
 
@@ -63,6 +65,7 @@
     --v4-warn: #f59e0b;
     --v4-error: var(--popover-danger, #ef4444);
     --v4-unread: #60a5fa;
+    --v4-shadow-card: var(--v4-shadow-card-dark);
     --v4-shadow-window: var(--shadow-window-dark, 0 40px 100px rgba(0, 0, 0, 0.78));
   }
 }
@@ -72,5 +75,6 @@
   --v4-warn: #f59e0b;
   --v4-error: var(--popover-danger, #ef4444);
   --v4-unread: #60a5fa;
+  --v4-shadow-card: var(--v4-shadow-card-dark);
   --v4-shadow-window: var(--shadow-window-dark, 0 40px 100px rgba(0, 0, 0, 0.78));
 }

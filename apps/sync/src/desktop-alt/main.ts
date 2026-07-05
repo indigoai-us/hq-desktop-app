@@ -4,9 +4,11 @@ import { mount } from 'svelte';
 // for data — IDs, paths, counts, versions.
 import '@fontsource-variable/geist-mono/wght.css';
 import '../styles/design-system.css';
+import GlobalErrorBoundary from '../components/GlobalErrorBoundary.svelte';
 import DesktopApp from './DesktopApp.svelte';
 
-document.documentElement.dataset.window = getCurrentWindow().label;
+const windowLabel = getCurrentWindow().label;
+document.documentElement.dataset.window = windowLabel;
 
 const target = document.getElementById('desktop-alt');
 
@@ -14,6 +16,9 @@ if (!target) {
   throw new Error('Missing desktop-alt mount target');
 }
 
-const app = mount(DesktopApp, { target });
+const app = mount(GlobalErrorBoundary, {
+  target,
+  props: { component: DesktopApp, windowLabel },
+});
 
 export default app;

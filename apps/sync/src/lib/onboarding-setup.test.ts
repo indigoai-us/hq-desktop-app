@@ -9,12 +9,17 @@ import {
   failedRequiredStages,
   friendlySetupBands,
   isContentRetryEligible,
+  isHardStageTimeoutMessage,
   isStageSkipEligible,
+  isTransientSetupStageFailure,
   resumeStartStageFromManifest,
   setStageStatus,
+  setupAutoRetryDelayMs,
   setupCompletionResult,
   setupNeedsAttention,
   setupProgressPercent,
+  setupStageRecoveryAction,
+  stageAutoRetryLimit,
   stageCommandInvocations,
   stageSkipThresholdMs,
   stageTimeoutMs,
@@ -369,6 +374,81 @@ describe('content retry eligibility', () => {
         progress: { stalled: true },
       }),
     ).toBe(false);
+  });
+});
+
+describe('automatic setup recovery', () => {
+  it('bounds auto-retry attempts to transient setup failures', () => {
+    expect(stageAutoRetryLimit('content')).toBe(2);
+    expect(stageAutoRetryLimit('git-init')).toBe(0);
+
+    expect(
+      isTransientSetupStageFailure({
+        stageId: 'content',
+        message: 'Template download stalled before receiving more data.',
+      }),
+    ).toBe(true);
+    expect(
+      isTransientSetupStageFailure({
+        stageId: 'packages',
+        message: 'npm registry timeout fetching package',
+      }),
+    ).toBe(true);
+    expect(
+      isTransientSetupStageFailure({
+        stageId: 'content',
+        message: 'template tarball not found (404)',
+      }),
+    ).toBe(false);
+    expect(
+      isTransientSetupStageFailure({
+        stageId: 'deps',
+        message: 'permission denied writing toolchain',
+      }),
+    ).toBe(false);
+  });
+
+  it('uses exponential backoff for automatic retries', () => {
+    expect(setupAutoRetryDelayMs(0)).toBe(1000);
+    expect(setupAutoRetryDelayMs(1)).toBe(1000);
+    expect(setupAutoRetryDelayMs(2)).toBe(2000);
+    expect(setupAutoRetryDelayMs(10)).toBe(8000);
+  });
+
+  it('plans retry, skip, or final failure without user interaction', () => {
+    expect(
+      setupStageRecoveryAction({
+        stageId: 'content',
+        message: 'network error downloading template: connection reset',
+        retryCount: 0,
+      }),
+    ).toEqual({
+      kind: 'retry',
+      delayMs: 1000,
+      nextRetryCount: 1,
+      message: 'network error downloading template: connection reset',
+    });
+
+    expect(
+      setupStageRecoveryAction({
+        stageId: 'content',
+        message: 'Template download stalled before receiving more data.',
+        retryCount: 2,
+      }),
+    ).toEqual({
+      kind: 'fail',
+      message: 'Template download stalled before receiving more data.',
+    });
+
+    const hardTimeout = 'This step took too long (over 390s) and was skipped.';
+    expect(isHardStageTimeoutMessage(hardTimeout)).toBe(true);
+    expect(
+      setupStageRecoveryAction({
+        stageId: 'indexing',
+        message: hardTimeout,
+        retryCount: 0,
+      }),
+    ).toEqual({ kind: 'skip', message: hardTimeout });
   });
 });
 

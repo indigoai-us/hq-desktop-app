@@ -1,8 +1,16 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { getVersion } from '@tauri-apps/api/app';
+  import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
   import { open as openUrl } from '@tauri-apps/plugin-shell';
   import { permissionState, loadMeetingPermissions } from '../lib/permissionState.svelte';
+  import {
+    POPOVER_MIN_HEIGHT,
+    POPOVER_WIDTH,
+    clampPopoverHeight,
+    measuredSurfaceContentHeight,
+    shouldResizePopoverWindow,
+  } from '../lib/popover-window-size';
 
   interface Props {
     onback: () => void;
@@ -139,6 +147,8 @@
   // Sourced from a single place (the Rust bundle metadata) so it stays in
   // sync with the binary the user is actually running.
   let appVersion = $state<string>('');
+  let settingsContentEl: HTMLElement | null = $state(null);
+  let lastWindowHeight = $state(0);
 
   let pathDisplay = $derived(
     hqPath ? hqPath.replace(/^\/Users\/[^/]+/, '~') : '~/hq'
@@ -223,6 +233,23 @@
     } finally {
       loading = false;
     }
+  }
+
+  function resizeSettingsWindow(height: number) {
+    if (!shouldResizePopoverWindow(height, lastWindowHeight)) return;
+    lastWindowHeight = height;
+    try {
+      void getCurrentWindow().setSize(new LogicalSize(POPOVER_WIDTH, height));
+    } catch {
+      // Non-Tauri / test environment.
+    }
+  }
+
+  function measuredSettingsHeight(): number {
+    if (!settingsContentEl) return POPOVER_MIN_HEIGHT;
+    return measuredSurfaceContentHeight({
+      contentScrollHeight: settingsContentEl.scrollHeight,
+    });
   }
 
   function showSaved() {
@@ -500,9 +527,31 @@
       if (updateResultTimeout) clearTimeout(updateResultTimeout);
     };
   });
+
+  $effect(() => {
+    if (!settingsContentEl || typeof ResizeObserver === 'undefined') return;
+
+    let raf = 0;
+    const syncSize = () => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        resizeSettingsWindow(clampPopoverHeight(measuredSettingsHeight()));
+      });
+    };
+
+    const observer = new ResizeObserver(syncSize);
+    observer.observe(settingsContentEl);
+    syncSize();
+
+    return () => {
+      cancelAnimationFrame(raf);
+      observer.disconnect();
+    };
+  });
 </script>
 
 <div class="settings">
+  <div class="settings-content" bind:this={settingsContentEl}>
   <!-- Header -->
   <header class="settings-header">
     <button class="back-button" onclick={onback} aria-label="Back to main view">
@@ -1030,14 +1079,15 @@
       </section>
     </div>
   {/if}
+  </div>
 </div>
 
 <style>
   .settings {
-    display: flex;
-    flex-direction: column;
-    width: 296px;
-    max-height: 480px;
+    display: block;
+    width: min(100vw, 296px);
+    height: 100vh;
+    max-height: 100vh;
     background: var(--popover-bg, rgba(18, 18, 20, 0.68));
     backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
     -webkit-backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
@@ -1046,6 +1096,13 @@
     border-radius: 12px;
     border: 0.5px solid var(--popover-border, rgba(255, 255, 255, 0.18));
     box-sizing: border-box;
+  }
+
+  .settings-content {
+    width: 100%;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
   }
 
   /* Header */
