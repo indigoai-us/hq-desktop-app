@@ -21,14 +21,12 @@
     buildInitialStages,
     buildStagesFromManifest,
     friendlySetupBands,
-    isContentRetryEligible,
-    isStageSkipEligible,
     resumeStartStageFromManifest,
     setStageStatus,
     setupCompletionResult,
     setupProgressPercent,
+    setupStageRecoveryAction,
     stageCommandInvocations,
-    stageSkipThresholdMs,
     stageTimeoutMs,
     StageTimeoutError,
     STAGE_ORDER,
@@ -81,14 +79,6 @@
     message?: string;
   };
 
-  type ActiveStageControl = {
-    runId: number;
-    stageId: StageId;
-    skip: () => void;
-    retry: () => void;
-    skipped: boolean;
-  };
-
   const RING_CIRCUMFERENCE = 2 * Math.PI * 52;
   const FADE_OUT_MS = 320;
   const DEFAULT_STEP = WIZARD_STEPS[0].index;
@@ -137,13 +127,6 @@
   let setupCancelled = false;
   let unlistenInstallProgress: UnlistenFn | null = null;
   let unlistenContentProgress: UnlistenFn | null = null;
-  let skipReadyStage = $state<StageId | null>(null);
-  let activeStageControl: ActiveStageControl | null = null;
-  let contentProgress = $state<ContentProgressPayload | null>(null);
-  let contentRetryInFlight = $state(false);
-  let stagingSource = $state(false);
-  let stagingSourceSaving = $state(false);
-  let setupAdvancedOpen = $state(false);
   let setupFailures = $state<FailedStageDetail[]>([]);
   const activeInstallHandles = new Set<string>();
   const activeContentHandles = new Set<string>();
@@ -176,20 +159,6 @@
   const currentStageId = $derived(
     stages.find((stage) => stage.status === 'running')?.id ?? null,
   );
-  const contentStage = $derived(
-    stages.find((stage) => stage.id === 'content') ?? null,
-  );
-  const contentRetryEligible = $derived(
-    isContentRetryEligible({
-      contentStage,
-      activeStageId: currentStageId,
-      progress: contentProgress,
-      retrying: contentRetryInFlight,
-    }),
-  );
-  const stagingToggleDisabled = $derived(
-    stagingSourceSaving || contentStage?.status === 'ok',
-  );
   const setupDone = $derived(allSettled(stages));
   const overallPercent = $derived(
     setupProgressPercent({
@@ -204,28 +173,6 @@
     RING_CIRCUMFERENCE * (1 - Math.max(0, Math.min(100, overallPercent)) / 100),
   );
   const setupBands = $derived(friendlySetupBands(overallPercent));
-  const currentStage = $derived(
-    currentStageId ? stages.find((stage) => stage.id === currentStageId) : null,
-  );
-  const setupErrorStages = $derived(stages.filter((stage) => stage.error));
-  const setupNeedsRecovery = $derived(
-    Boolean(
-      skipReadyStage ||
-      contentRetryEligible ||
-      setupErrorStages.length > 0 ||
-      contentProgress?.slow ||
-      contentProgress?.stalled,
-    ),
-  );
-  const setupRecoverySummary = $derived(
-    setupErrorStages.length > 0
-      ? 'A setup step needs attention.'
-      : contentRetryEligible
-        ? 'Template setup needs another try.'
-        : skipReadyStage || contentProgress?.slow || contentProgress?.stalled
-          ? 'This is taking longer than expected.'
-          : 'Setup options',
-  );
   const needsAttention = $derived(setupFailures.length > 0);
   const manualCommand = $derived(readyCommandFor(installPath, aiTools));
   const manualToolsVisible = $derived(
@@ -242,10 +189,6 @@
     furthestStep = Math.max(furthestStep, router.currentStep);
     panelOn = true;
     graphicOn = true;
-  });
-
-  $effect(() => {
-    if (!setupNeedsRecovery) setupAdvancedOpen = false;
   });
 
   $effect(() => {
@@ -281,33 +224,6 @@
 
     return () => {
       window.clearInterval(interval);
-    };
-  });
-
-  $effect(() => {
-    const activeId = currentStageId;
-    const done = setupDone;
-    skipReadyStage = null;
-
-    if (done || activeId === null) return;
-
-    const startedAt = Date.now();
-    const threshold = stageSkipThresholdMs(activeId);
-    const timeout = window.setTimeout(() => {
-      if (
-        isStageSkipEligible({
-          activeStageId: currentStageId,
-          stageId: activeId,
-          elapsedMs: Date.now() - startedAt,
-          setupDone,
-        })
-      ) {
-        skipReadyStage = activeId;
-      }
-    }, threshold);
-
-    return () => {
-      window.clearTimeout(timeout);
     };
   });
 
@@ -524,10 +440,6 @@
     setupCancelled = false;
     activeInstallHandles.clear();
     activeContentHandles.clear();
-    activeStageControl = null;
-    skipReadyStage = null;
-    contentProgress = null;
-    contentRetryInFlight = false;
     return currentRunId;
   }
 
@@ -572,25 +484,6 @@
     activeInstallHandles.add(handle);
   }
 
-  function normalizeContentProgress(
-    payload: ContentProgressPayload,
-  ): ContentProgressPayload {
-    const total = payload.totalBytes ?? null;
-    const received = payload.receivedBytes ?? null;
-    const percent =
-      typeof payload.percent === 'number'
-        ? Math.max(0, Math.min(100, Math.round(payload.percent)))
-        : total && total > 0 && typeof received === 'number'
-          ? Math.max(0, Math.min(100, Math.round((received / total) * 100)))
-          : null;
-    return {
-      ...payload,
-      receivedBytes: received,
-      totalBytes: total,
-      percent,
-    };
-  }
-
   function trackContentProgress(runId: number, payload: ContentProgressPayload): void {
     if (!isCurrentRun(runId)) return;
     const handle = payload.handle;
@@ -601,8 +494,6 @@
     ) {
       return;
     }
-
-    contentProgress = normalizeContentProgress(payload);
 
     if (handle && payload.phase === 'complete') {
       activeContentHandles.delete(handle);
@@ -637,37 +528,6 @@
 
   function contentHandle(runId: number): string {
     return `content-${runId}-${Date.now().toString(36)}`;
-  }
-
-  async function loadStagingSource(): Promise<void> {
-    if (typeof invoke !== 'function') return;
-    try {
-      stagingSource = Boolean(await invoke<boolean>('get_staging_source'));
-    } catch {
-      stagingSource = false;
-    }
-  }
-
-  async function handleToggleStagingSource(): Promise<void> {
-    if (stagingToggleDisabled || typeof invoke !== 'function') return;
-    const next = !stagingSource;
-    stagingSource = next;
-    stagingSourceSaving = true;
-    let saved = false;
-    try {
-      stagingSource = Boolean(
-        await invoke<boolean>('set_staging_source', { enabled: next }),
-      );
-      saved = true;
-    } catch (err) {
-      stagingSource = !next;
-      console.error('Failed to save staging source:', err);
-    } finally {
-      stagingSourceSaving = false;
-    }
-    if (saved && currentStageId === 'content' && activeStageControl?.stageId === 'content') {
-      retryActiveContentStage(activeStageControl);
-    }
   }
 
   async function journalStageStart(id: StageId): Promise<void> {
@@ -737,58 +597,20 @@
     }
   }
 
-  type StageRunOutcome = 'ok' | 'failed' | 'cancelled' | 'retry';
+  type StageRunOutcome = 'ok' | 'failed' | 'cancelled';
 
   async function runStage(id: StageId, runId: number): Promise<StageRunOutcome> {
     if (!isCurrentRun(runId)) return 'cancelled';
     stages = setStageStatus(stages, id, 'running');
-    if (id === 'content') contentProgress = null;
     await journalStageStart(id);
 
-    let skipStage!: () => void;
-    let retryStage!: () => void;
-    const controlPromise = new Promise<'skipped' | 'retry'>((resolve) => {
-      skipStage = () => resolve('skipped');
-      retryStage = () => resolve('retry');
-    });
-    const control: ActiveStageControl = {
-      runId,
-      stageId: id,
-      skip: skipStage,
-      retry: retryStage,
-      skipped: false,
-    };
-    activeStageControl = control;
-
-    const workPromise = invokeStageCommand(id, runId).then(
+    const result = await invokeStageCommand(id, runId).then(
       () => ({ kind: 'done' as const }),
       (err) => ({ kind: 'failed' as const, err }),
     );
-    const result = await Promise.race([
-      workPromise,
-      controlPromise.then((kind) => ({ kind })),
-    ]);
-
-    if (activeStageControl === control) {
-      activeStageControl = null;
-    }
 
     if (!isCurrentRun(runId)) return 'cancelled';
 
-    if (result.kind === 'retry') {
-      stages = setStageStatus(stages, id, 'pending');
-      if (id === 'content') contentProgress = null;
-      return 'retry';
-    }
-
-    if (result.kind === 'skipped') {
-      const message = 'Skipped after timeout';
-      stages = setStageStatus(stages, id, 'failed', message);
-      await journalStageFailure(id, message);
-      return 'failed';
-    }
-
-    if (control.skipped) return 'cancelled';
     if (result.kind === 'done') {
       stages = setStageStatus(stages, id, 'ok');
       await journalStageOk(id);
@@ -803,21 +625,40 @@
     return 'cancelled';
   }
 
+  function stageFailureMessage(id: StageId): string {
+    return (
+      stages.find((stage) => stage.id === id)?.error?.trim() ||
+      'Stage failed with no detail recorded.'
+    );
+  }
+
+  function waitForAutoRetry(ms: number): Promise<void> {
+    if (!(ms > 0)) return Promise.resolve();
+    return new Promise((resolve) => {
+      window.setTimeout(resolve, ms);
+    });
+  }
+
   async function runSetup(runId: number, startStage: StageId = STAGE_ORDER[0]) {
     const startIndex = Math.max(0, STAGE_ORDER.indexOf(startStage));
+    const retryCounts = new Map<StageId, number>();
     for (const id of STAGE_ORDER.slice(startIndex)) {
       if (!isCurrentRun(runId)) return;
-      let outcome: StageRunOutcome;
-      do {
-        outcome = await runStage(id, runId);
-      } while (outcome === 'retry' && isCurrentRun(runId));
-      if (outcome === 'cancelled') return;
-      if (id === 'content' && outcome === 'failed') {
-        skipReadyStage = null;
-        return;
-      }
-      if (isCurrentRun(runId)) {
-        skipReadyStage = null;
+      while (isCurrentRun(runId)) {
+        const outcome = await runStage(id, runId);
+        if (outcome === 'cancelled') return;
+        if (outcome === 'ok') break;
+
+        const action = setupStageRecoveryAction({
+          stageId: id,
+          message: stageFailureMessage(id),
+          retryCount: retryCounts.get(id) ?? 0,
+        });
+        if (action.kind !== 'retry') break;
+
+        retryCounts.set(id, action.nextRetryCount);
+        stages = setStageStatus(stages, id, 'pending');
+        await waitForAutoRetry(action.delayMs);
       }
     }
 
@@ -835,7 +676,6 @@
     const runId = beginSetupRun();
     if (installPath) effectiveInstallPath = installPath;
     await listenForProgress(runId);
-    await loadStagingSource();
     let startStage: StageId = STAGE_ORDER[0];
     try {
       const manifest = await invoke<InstallManifest>('read_install_manifest');
@@ -857,73 +697,6 @@
     unlistenContentProgress?.();
     unlistenContentProgress = null;
     void cancelForegroundWork(currentRunId);
-  }
-
-  function handleSkipCurrentStage(stageId: StageId) {
-    const control = activeStageControl;
-    if (!control || control.stageId !== stageId || stageId !== currentStageId) {
-      return;
-    }
-    control.skipped = true;
-    skipReadyStage = null;
-    void cancelForegroundWork(control.runId);
-    control.skip();
-  }
-
-  function retryActiveContentStage(control: ActiveStageControl) {
-    contentRetryInFlight = true;
-    skipReadyStage = null;
-    void cancelActiveContentHandles(control.runId).finally(() => {
-      contentRetryInFlight = false;
-    });
-    control.retry();
-  }
-
-  function handleRetryContentStage() {
-    if (!contentRetryEligible || contentRetryInFlight) return;
-    const control = activeStageControl;
-    if (control && control.stageId === 'content' && currentStageId === 'content') {
-      retryActiveContentStage(control);
-      return;
-    }
-
-    if (currentStageId !== null) return;
-    contentRetryInFlight = true;
-    void runSetup(currentRunId, 'content').finally(() => {
-      contentRetryInFlight = false;
-    });
-  }
-
-  function formatBytes(bytes: number | null | undefined): string {
-    if (typeof bytes !== 'number' || !Number.isFinite(bytes) || bytes < 0) {
-      return '';
-    }
-    if (bytes < 1024) return `${Math.round(bytes)} B`;
-    const units = ['KB', 'MB', 'GB'];
-    let value = bytes / 1024;
-    let unit = units[0];
-    for (let i = 1; i < units.length && value >= 1024; i += 1) {
-      value /= 1024;
-      unit = units[i];
-    }
-    return `${value >= 10 ? value.toFixed(0) : value.toFixed(1)} ${unit}`;
-  }
-
-  function contentProgressText(): string | null {
-    if (!contentProgress) return null;
-    if (contentProgress.message) {
-      if (typeof contentProgress.percent === 'number') {
-        return `${contentProgress.message} (${contentProgress.percent}%)`;
-      }
-      return contentProgress.message;
-    }
-    const prefix =
-      contentProgress.phase === 'extract' ? 'Extracting template' : 'Downloading template';
-    if (typeof contentProgress.percent === 'number') {
-      return `${prefix} (${contentProgress.percent}%)`;
-    }
-    const received = formatBytes(contentProgress.receivedBytes);
-    return received ? `${prefix} (${received})` : prefix;
   }
 
   async function probeAiTools() {
@@ -1160,7 +933,6 @@
       cancelSetupRun();
       setupStarted = false;
       stages = buildInitialStages();
-      contentProgress = null;
     }
 
     panelOn = false;
@@ -1461,67 +1233,11 @@
               </div>
             {/each}
           </div>
-          {#if setupNeedsRecovery}
-            <div class="setup-compact setup-recovery" aria-live="polite">
-              <div class="setup-row">
-                <span>{setupRecoverySummary}</span>
-                <button
-                  type="button"
-                  class="mini-link"
-                  aria-expanded={setupAdvancedOpen}
-                  onclick={() => (setupAdvancedOpen = !setupAdvancedOpen)}
-                >
-                  {setupAdvancedOpen ? 'Hide options' : 'Show options'}
-                </button>
-              </div>
-              {#if setupAdvancedOpen}
-                <div class="setup-row">
-                  <span>{overallPercent}% · {settledCount} of {STAGE_ORDER.length} stages</span>
-                  {#if currentStage}
-                    <span class="stage-pill">{currentStage.label}</span>
-                  {/if}
-                </div>
-                {#if contentProgressText()}
-                  <p class:slow={contentProgress?.slow || contentProgress?.stalled} class="setup-detail">
-                    {contentProgressText()}
-                  </p>
-                {/if}
-                <div class="setup-actions">
-                  <button
-                    type="button"
-                    class="mini-switch"
-                    class:active={stagingSource}
-                    disabled={stagingToggleDisabled}
-                    onclick={handleToggleStagingSource}
-                    role="switch"
-                    aria-checked={stagingSource}
-                  >
-                    <span aria-hidden="true"></span>
-                    Staging template
-                  </button>
-                  {#if skipReadyStage}
-                    <button
-                      type="button"
-                      class="mini-link"
-                      onclick={() => skipReadyStage && handleSkipCurrentStage(skipReadyStage)}
-                    >
-                      Skip slow step
-                    </button>
-                  {/if}
-                  {#if contentRetryEligible}
-                    <button type="button" class="mini-link" onclick={handleRetryContentStage}>
-                      Retry template
-                    </button>
-                  {/if}
-                </div>
-                {#if setupErrorStages.length > 0}
-                  <p class="setup-detail error">
-                    {setupErrorStages[0].label}: {setupErrorStages[0].error}
-                  </p>
-                {/if}
-              {/if}
-            </div>
-          {/if}
+          <!-- The setup screen intentionally shows ONLY the friendly checklist (matching
+               the design). Recovery — retry on stall, skip on hard timeout, transient-
+               failure retries — runs AUTOMATICALLY in the setup engine; any stage that
+               still fails is surfaced on the "HQ is ready" screen's needs-attention note,
+               not here. No percentages, stage counts, staging toggle, or manual controls. -->
           <div class="btns">
             <button class="btn btn-secondary" type="button" onclick={() => goBackTo(1)}>Back</button>
           </div>
@@ -1825,8 +1541,6 @@
   .btn:focus-visible,
   .choose:focus-visible,
   .manual-tools button:focus-visible,
-  .mini-switch:focus-visible,
-  .mini-link:focus-visible,
   .check:has(input:focus-visible) {
     outline:1.5px solid var(--c-focus-ring, var(--c-text));
     outline-offset:var(--c-focus-offset, 2px);
@@ -1866,21 +1580,6 @@
   .pbar { fill:none; stroke:#fff; stroke-width:5; stroke-linecap:round; transition:stroke-dashoffset .18s ease; }
   .ppct { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:#fff; font-size:15px; font-weight:400; letter-spacing:-0.3px; text-shadow:0 1px 4px rgba(0,0,0,0.25); }
   .bigcheck { width:84px; height:84px; display:block; }
-
-  .setup-compact { margin-top:10px; display:grid; gap:5px; color:var(--c-muted); font-size:11.5px; line-height:15px; }
-  .setup-recovery { padding-top:8px; border-top:1px solid var(--c-divider); }
-  .setup-row, .setup-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
-  .setup-row { justify-content:space-between; }
-  .stage-pill { max-width:280px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--c-text); }
-  .setup-detail { margin:0; color:var(--c-muted); }
-  .setup-detail.slow, .setup-detail.error { color:var(--c-text); }
-  .setup-actions button { font-family:inherit; font-size:11.5px; }
-  .mini-switch { display:inline-flex; align-items:center; gap:5px; border:0; border-radius:999px; color:var(--c-muted); background:var(--c-btn2-bg); padding:3px 8px; cursor:pointer; }
-  .mini-switch span { width:14px; height:8px; border-radius:999px; background:var(--check-border); position:relative; }
-  .mini-switch span::after { content:''; position:absolute; top:1px; left:1px; width:6px; height:6px; border-radius:50%; background:var(--c-bg); transition:transform .12s; }
-  .mini-switch.active span::after { transform:translateX(6px); }
-  .mini-switch:disabled { opacity:.45; cursor:not-allowed; }
-  .mini-link { border:0; padding:0; background:transparent; color:var(--c-text); cursor:pointer; text-decoration:underline; text-underline-offset:2px; }
 
   .manual-tools { display:flex; flex-wrap:wrap; gap:6px; margin-top:12px; }
   .manual-tools button { appearance:none; border:0.5px solid var(--c-field-border); border-radius:6px; background:var(--c-btn2-bg); color:var(--c-muted); font:inherit; font-size:11.5px; line-height:15px; padding:4px 7px; cursor:pointer; }

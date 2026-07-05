@@ -328,6 +328,104 @@ export function isContentRetryEligible(
   );
 }
 
+export const DEFAULT_STAGE_AUTO_RETRY_LIMIT = 0;
+export const STAGE_AUTO_RETRY_LIMITS: Partial<Record<StageId, number>> = {
+  content: 2,
+  deps: 1,
+  'initial-sync': 1,
+  packages: 1,
+  indexing: 1,
+};
+
+export const DEFAULT_SETUP_AUTO_RETRY_DELAY_MS = 1_000;
+export const MAX_SETUP_AUTO_RETRY_DELAY_MS = 8_000;
+
+export function stageAutoRetryLimit(id: StageId): number {
+  return STAGE_AUTO_RETRY_LIMITS[id] ?? DEFAULT_STAGE_AUTO_RETRY_LIMIT;
+}
+
+export function setupAutoRetryDelayMs(retryNumber: number): number {
+  const normalizedRetryNumber = Math.max(1, Math.floor(retryNumber));
+  return Math.min(
+    DEFAULT_SETUP_AUTO_RETRY_DELAY_MS * 2 ** (normalizedRetryNumber - 1),
+    MAX_SETUP_AUTO_RETRY_DELAY_MS,
+  );
+}
+
+export interface TransientSetupStageFailureInput {
+  stageId: StageId;
+  message: string | null | undefined;
+}
+
+export function isHardStageTimeoutMessage(
+  message: string | null | undefined,
+): boolean {
+  const normalized = (message ?? '').toLowerCase();
+  return (
+    normalized.includes('this step took too long') ||
+    normalized.includes('skipped after timeout')
+  );
+}
+
+export function isTransientSetupStageFailure(
+  input: TransientSetupStageFailureInput,
+): boolean {
+  const normalized = (input.message ?? '').toLowerCase();
+  if (!normalized || isHardStageTimeoutMessage(normalized)) return false;
+  if (
+    normalized.includes('cancelled') ||
+    normalized.includes('canceled') ||
+    normalized.includes('permission denied') ||
+    normalized.includes('not found (404)') ||
+    normalized.includes('unsupported') ||
+    normalized.includes('invalid ')
+  ) {
+    return false;
+  }
+
+  const transientPattern =
+    /\b(network|timeout|timed out|temporary|temporarily|econnreset|econnaborted|etimedout|enotfound|eai_again|dns|socket|connection reset|connection closed|connection refused|tls|ssl|fetch|download|stream|stalled|github|rate limit|429|5\d\d|npm|registry|tarball|release|proxy|offline)\b/i;
+  if (!transientPattern.test(normalized)) return false;
+
+  return stageAutoRetryLimit(input.stageId) > 0;
+}
+
+export type SetupStageRecoveryAction =
+  | { kind: 'retry'; delayMs: number; nextRetryCount: number; message: string }
+  | { kind: 'skip'; message: string }
+  | { kind: 'fail'; message: string };
+
+export interface SetupStageRecoveryInput {
+  stageId: StageId;
+  message: string | null | undefined;
+  retryCount: number;
+}
+
+export function setupStageRecoveryAction(
+  input: SetupStageRecoveryInput,
+): SetupStageRecoveryAction {
+  const message =
+    input.message?.trim() || 'Stage failed with no detail recorded.';
+  if (isHardStageTimeoutMessage(message)) {
+    return { kind: 'skip', message };
+  }
+
+  const nextRetryCount = Math.max(0, Math.floor(input.retryCount)) + 1;
+  if (
+    isTransientSetupStageFailure({ stageId: input.stageId, message }) &&
+    nextRetryCount <= stageAutoRetryLimit(input.stageId)
+  ) {
+    return {
+      kind: 'retry',
+      delayMs: setupAutoRetryDelayMs(nextRetryCount),
+      nextRetryCount,
+      message,
+    };
+  }
+
+  return { kind: 'fail', message };
+}
+
 export class StageTimeoutError extends Error {
   constructor(public readonly stageId: StageId, public readonly ms: number) {
     super(`This step took too long (over ${Math.round(ms / 1000)}s) and was skipped.`);

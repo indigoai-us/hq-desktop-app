@@ -8,6 +8,7 @@ import ShareDetail from './components/ShareDetail.svelte';
 import MeetingPermissionsWindow from './components/MeetingPermissionsWindow.svelte';
 import DmDetail from './components/DmDetail.svelte';
 import BannerNotification from './components/BannerNotification.svelte';
+import GlobalErrorBoundary from './components/GlobalErrorBoundary.svelte';
 import { mount } from 'svelte';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { beforeSend } from "./sentry-before-send";
@@ -47,6 +48,9 @@ if (windowLabel === 'meetings-window') {
   Component = App;
 }
 
-const app = mount(Component, { target: document.getElementById('app')! });
+const app = mount(GlobalErrorBoundary, {
+  target: document.getElementById('app')!,
+  props: { component: Component, windowLabel },
+});
 
 export default app;
