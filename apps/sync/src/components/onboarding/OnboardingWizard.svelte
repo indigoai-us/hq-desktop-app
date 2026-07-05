@@ -1340,7 +1340,7 @@
           <h2 class="h" id="onboarding-title-signin">Welcome to HQ</h2>
           <p class="body">One home for your whole team and every AI tool you use. Your knowledge, your best work, and your way of doing things all in one place, getting better over time.</p>
           <label class="check-row">
-            <span class="check">
+            <span class="check" class:on={telemetryEnabled}>
               <input
                 type="checkbox"
                 bind:checked={telemetryEnabled}
@@ -1741,13 +1741,16 @@
 
   .sr-only { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); }
   .scaler { transform:scale(1); transform-origin:center; }
-  .window { width:640px; height:460px; border-radius:var(--radius-card); overflow:hidden; background:var(--c-bg); box-shadow:var(--shadow-window-light); position:relative; --toph:200px; }
+  /* The onboarding card floats in a transparent window with a small margin, so
+     use a shadow tuned to fit that margin (tighter than the generic
+     --shadow-window-* tokens, which would clip at the window edge). */
+  .window { width:640px; height:460px; border-radius:var(--radius-card); overflow:hidden; background:var(--c-bg); box-shadow:0 18px 50px rgba(20,22,40,0.24), 0 2px 8px rgba(20,22,40,0.10); position:relative; --toph:200px; }
 
   @media (prefers-color-scheme: dark) {
-    .window { box-shadow:var(--shadow-window-dark); }
+    .window { box-shadow:0 24px 60px rgba(0,0,0,0.58), 0 0 0 0.5px rgba(255,255,255,0.14); }
   }
 
-  :global(.dark) .window { box-shadow:var(--shadow-window-dark); }
+  :global(.dark) .window { box-shadow:0 24px 60px rgba(0,0,0,0.58), 0 0 0 0.5px rgba(255,255,255,0.14); }
 
   .drag-strip { position:absolute; top:0; left:0; right:0; height:28px; z-index:8; }
   .grad { position:absolute; top:0; left:0; right:0; height:var(--toph); background:#a98bd8 var(--onboarding-bg-url) center/cover no-repeat; transition:height .55s cubic-bezier(.65,0,.35,1); z-index:0; }
@@ -1767,7 +1770,8 @@
   .h { color:var(--c-text); font-size:24px; font-weight:600; line-height:32px; margin:0; letter-spacing:-1px; }
   .body { color:var(--c-muted); font-size:14px; font-weight:400; line-height:20px; margin:4px 0 0; max-width:592px; }
   .check-row { display:flex; align-items:center; gap:8px; margin-top:16px; cursor:pointer; }
-  .check { position:relative; width:16px; height:16px; border-radius:4px; border:1px solid var(--check-border); background:var(--check-bg); display:flex; align-items:center; justify-content:center; flex-shrink:0; }
+  .check { position:relative; width:16px; height:16px; border-radius:4px; border:1px solid var(--check-border); background:transparent; display:flex; align-items:center; justify-content:center; flex-shrink:0; transition:background-color .12s, border-color .12s; }
+  .check.on { background:var(--check-bg); border-color:var(--check-bg); }
   .check input { position:absolute; inset:0; width:16px; height:16px; opacity:0; cursor:pointer; }
   .check svg { width:10px; height:10px; stroke:var(--check-fg); }
   .checkmark { display:grid; place-items:center; opacity:0; }
