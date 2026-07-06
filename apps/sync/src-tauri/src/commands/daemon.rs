@@ -219,10 +219,32 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
                     let cancelled = crate::commands::process::is_cancelled(DAEMON_HANDLE);
                     if is_unexpected_watcher_exit(success, signal, cancelled) {
                         let consecutive = note_watcher_crashed();
-                        if should_capture_crash(consecutive) {
+                        if is_benign_watcher_exit(code, signal) {
+                            log(
+                                "daemon",
+                                &format!(
+                                    "benign watcher exit #{consecutive} — capture skipped \
+                                     (code={:?} signal={:?})",
+                                    code, signal
+                                ),
+                            );
+                            sentry::add_breadcrumb(sentry::Breadcrumb {
+                                category: Some("daemon.exit".into()),
+                                level: sentry::Level::Info,
+                                message: Some(format!(
+                                    "benign auto-sync watcher exit #{consecutive}: \
+                                     code={:?} signal={:?}",
+                                    code, signal
+                                )),
+                                ..Default::default()
+                            });
+                        } else if should_capture_crash(consecutive) {
                             let (uptime, rss_kb, rss_age) = watcher_exit_diagnostics();
                             let diag = exit_diagnostic_suffix(uptime, rss_kb, rss_age);
-                            crate::commands::sync::capture_sync_error(
+                            let fingerprint_token = watcher_exit_fingerprint_token(code, signal);
+                            let fingerprint =
+                                ["sync", "auto-sync-watcher-exit", fingerprint_token.as_str()];
+                            crate::commands::sync::capture_sync_error_with_fingerprint(
                                 None,
                                 "(auto-sync)",
                                 &format!(
@@ -230,6 +252,7 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
                                      consecutive failure #{consecutive}{diag}",
                                     code, signal
                                 ),
+                                &fingerprint,
                             );
                         } else {
                             log(
@@ -276,6 +299,13 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
 /// crash-vs-teardown decision reads intentionally.
 const SIGTERM: i32 = 15;
 
+const SIGABRT: i32 = 6;
+const SIGBUS_LINUX: i32 = 7;
+const SIGBUS_MACOS: i32 = 10;
+const SIGILL: i32 = 4;
+const SIGKILL: i32 = 9;
+const SIGSEGV: i32 = 11;
+
 /// Pure decision: should this watcher exit be Sentry-captured as an unexpected
 /// crash? A genuine crash is a non-zero `exit(code)` or a fault signal
 /// (SIGSEGV/SIGABRT/SIGBUS = real bug, SIGKILL = OOM/`kill -9`). A bare
@@ -290,6 +320,33 @@ fn is_unexpected_watcher_exit(success: bool, signal: Option<i32>, cancelled: boo
         return false;
     }
     signal != Some(SIGTERM)
+}
+
+/// Pure signal classifier for fault-style terminations that must still alert.
+fn is_fault_signal(signal: Option<i32>) -> bool {
+    matches!(
+        signal,
+        Some(SIGABRT | SIGBUS_LINUX | SIGBUS_MACOS | SIGILL | SIGKILL | SIGSEGV)
+    )
+}
+
+/// Pure classifier for runner exits that are environmental and not actionable
+/// Sentry crashes: denied/not-provisioned/transient/ACL-scope skips surface as
+/// code 1/2 with no signal.
+fn is_benign_watcher_exit(code: Option<i32>, signal: Option<i32>) -> bool {
+    matches!(code, Some(1 | 2)) && signal.is_none() && !is_fault_signal(signal)
+}
+
+/// Stable Sentry grouping token for watcher-exit captures. This intentionally
+/// excludes dynamic diagnostics (uptime, RSS, consecutive failure count).
+fn watcher_exit_fingerprint_token(code: Option<i32>, signal: Option<i32>) -> String {
+    if let Some(signal) = signal {
+        format!("signal:{signal}")
+    } else if let Some(code) = code {
+        format!("code:{code}")
+    } else {
+        "unknown".to_string()
+    }
 }
 
 /// A non-zero exit this soon after spawn is a crash-loop failure — distinct from
@@ -709,9 +766,52 @@ mod tests {
         // The HQ-SYNC-5 false-positive: signal=15 on app-quit must NOT capture.
         assert!(!is_unexpected_watcher_exit(false, Some(SIGTERM), false));
         // Fault/OOM signals and non-zero code ARE crashes.
-        assert!(is_unexpected_watcher_exit(false, Some(9), false)); // SIGKILL/OOM
-        assert!(is_unexpected_watcher_exit(false, Some(11), false)); // SIGSEGV
+        assert!(is_unexpected_watcher_exit(false, Some(SIGKILL), false)); // OOM/kill -9
+        assert!(is_unexpected_watcher_exit(false, Some(SIGSEGV), false));
         assert!(is_unexpected_watcher_exit(false, None, false)); // exit(code)
+    }
+
+    #[test]
+    fn fault_signal_classifier_covers_crash_signals_only() {
+        for signal in [
+            SIGABRT,
+            SIGBUS_LINUX,
+            SIGBUS_MACOS,
+            SIGILL,
+            SIGKILL,
+            SIGSEGV,
+        ] {
+            assert!(
+                is_fault_signal(Some(signal)),
+                "expected fault signal {signal}"
+            );
+        }
+        assert!(!is_fault_signal(None));
+        assert!(!is_fault_signal(Some(SIGTERM)));
+    }
+
+    #[test]
+    fn code_1_and_2_without_signal_are_benign_watcher_exits() {
+        assert!(is_benign_watcher_exit(Some(1), None));
+        assert!(is_benign_watcher_exit(Some(2), None));
+
+        assert!(!is_benign_watcher_exit(Some(0), None));
+        assert!(!is_benign_watcher_exit(Some(126), None));
+        assert!(!is_benign_watcher_exit(Some(127), None));
+        assert!(!is_benign_watcher_exit(None, None));
+        assert!(!is_benign_watcher_exit(Some(1), Some(SIGSEGV)));
+        assert!(!is_benign_watcher_exit(Some(2), Some(SIGKILL)));
+    }
+
+    #[test]
+    fn watcher_exit_fingerprint_token_is_stable_per_code_or_signal() {
+        assert_eq!(watcher_exit_fingerprint_token(Some(126), None), "code:126");
+        assert_eq!(watcher_exit_fingerprint_token(Some(127), None), "code:127");
+        assert_eq!(
+            watcher_exit_fingerprint_token(Some(1), Some(SIGSEGV)),
+            "signal:11"
+        );
+        assert_eq!(watcher_exit_fingerprint_token(None, None), "unknown");
     }
 
     // ── Crash-loop dampening (HQ-SYNC-4) ─────────────────────────────────

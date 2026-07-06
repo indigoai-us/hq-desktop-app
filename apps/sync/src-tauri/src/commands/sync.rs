@@ -103,12 +103,33 @@ pub use hq_desktop_core::sync_outcome::RunTotals;
 /// Shared by `report_sync_error` (manual Sync Now) and the auto-sync daemon so
 /// BOTH paths surface runner failures in #hq-alerts.
 pub(crate) fn capture_sync_error(company: Option<&str>, path: &str, message: &str) {
+    capture_sync_error_impl(company, path, message, None);
+}
+
+pub(crate) fn capture_sync_error_with_fingerprint(
+    company: Option<&str>,
+    path: &str,
+    message: &str,
+    fingerprint: &[&str],
+) {
+    capture_sync_error_impl(company, path, message, Some(fingerprint));
+}
+
+fn capture_sync_error_impl(
+    company: Option<&str>,
+    path: &str,
+    message: &str,
+    fingerprint: Option<&[&str]>,
+) {
     sentry::with_scope(
         |scope| {
             if let Some(c) = company {
                 scope.set_tag("company", c);
             }
             scope.set_tag("path", path);
+            if let Some(fingerprint) = fingerprint {
+                scope.set_fingerprint(Some(fingerprint));
+            }
         },
         || {
             sentry::capture_message(&format!("[sync] {message}"), sentry::Level::Error);
