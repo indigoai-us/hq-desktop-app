@@ -7,9 +7,15 @@ import { main, readVersionFromVersionsToml } from "./version-app";
 
 describe("version-app", () => {
   it("parses the app version from versions.toml", async () => {
-    const versionsToml = await readFile(new URL("../versions.toml", import.meta.url), "utf8");
+    const versionsToml = [
+      "[product]",
+      'name = "HQ Sync"',
+      'version = "1.2.3"',
+      'base_crate = "hq-sync-menubar"',
+      "",
+    ].join("\n");
 
-    expect(readVersionFromVersionsToml(versionsToml)).toBe("0.9.2");
+    expect(readVersionFromVersionsToml(versionsToml)).toBe("1.2.3");
   });
 
   it("detects mismatched app files in check mode without writing", async () => {
