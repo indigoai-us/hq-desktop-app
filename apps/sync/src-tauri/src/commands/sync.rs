@@ -155,7 +155,7 @@ fn resolve_hq_folder_path() -> Result<String, String> {
 ///   2. `~/.hq/config.json` `vault_api_url` field — legacy installer-provisioned
 ///      setups continue to work without migration. Read errors fall through
 ///      to the default rather than aborting (the file may be partial/stale).
-///   3. Hardcoded canonical hq-dev URL — lets create-hq users (and anyone
+///   3. Hardcoded canonical hq.computer URL — lets create-hq users (and anyone
 ///      with `companies/{slug}/company.yaml: { cloud: true }` but no global
 ///      config) run hq-sync directly. `provision_missing_companies` then
 ///      walks the YAMLs and writes per-company `.hq/config.json` files
@@ -163,7 +163,7 @@ fn resolve_hq_folder_path() -> Result<String, String> {
 ///
 /// See hq-pro ADR-0003 for the canonical-stage rationale.
 pub(crate) fn resolve_vault_api_url() -> Result<String, String> {
-    const DEFAULT_VAULT_API_URL: &str = "https://hqapi.getindigo.ai";
+    const DEFAULT_VAULT_API_URL: &str = "https://hqapi.hq.computer";
 
     if let Ok(url) = std::env::var("HQ_VAULT_API_URL") {
         if !url.is_empty() {
@@ -1082,6 +1082,25 @@ pub fn cancel_sync() -> bool {
 mod tests {
     use super::*;
     use crate::commands::cognito::CognitoTokens;
+    use std::fs;
+    use std::sync::Mutex;
+    use tempfile::TempDir;
+
+    static ENV_MUTEX: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn resolve_vault_api_url_defaults_to_hq_computer() {
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = TempDir::new().unwrap();
+        fs::create_dir_all(tmp.path().join(".hq")).unwrap();
+
+        std::env::remove_var("HQ_VAULT_API_URL");
+        std::env::set_var("HOME", tmp.path());
+        let base = resolve_vault_api_url().unwrap();
+        std::env::remove_var("HOME");
+
+        assert_eq!(base, "https://hqapi.hq.computer");
+    }
 
     // ── resolve_jwt_impl ─────────────────────────────────────────────────────────
 
