@@ -24,13 +24,15 @@
         { "url": "https://cognito-idp.us-east-1.amazonaws.com/*" },
         { "url": "https://*.execute-api.us-east-1.amazonaws.com/*" },
         { "url": "https://hqapi.getindigo.ai/*" },
+        { "url": "https://hqapi.hq.computer/*" },
         { "url": "https://api.github.com/*" },
         { "url": "https://codeload.github.com/*" },
         { "url": "https://*.amazonaws.com/*" },
         { "url": "https://*.s3.amazonaws.com/*" },
         { "url": "https://*.s3.us-east-1.amazonaws.com/*" },
         { "url": "https://s3.us-east-1.amazonaws.com/*" },
-        { "url": "https://telemetry.getindigo.ai/*" }
+        { "url": "https://telemetry.getindigo.ai/*" },
+        { "url": "https://telemetry.hq.computer/*" }
       ]
     },
     {

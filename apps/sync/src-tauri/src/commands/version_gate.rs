@@ -102,7 +102,7 @@ fn platform_tag() -> String {
 /// path.
 ///
 /// The `base_url` argument is the resolved API base (e.g.
-/// `https://hqapi.getindigo.ai`). Factored as an argument so the unit test
+/// `https://hqapi.hq.computer`). Factored as an argument so the unit test
 /// can point at a `wiremock::MockServer::uri()` without re-implementing the
 /// vault URL precedence.
 pub(crate) async fn fetch_decision(

@@ -82,7 +82,7 @@ pub struct DetailEnvelope {
 /// Resolve the vault API base, trimming any trailing slash. Follows the same
 /// env/config/default precedence as the sync pipeline and desktop-alt readers.
 pub fn api_base() -> Result<String, String> {
-    const DEFAULT_VAULT_API_URL: &str = "https://hqapi.getindigo.ai";
+    const DEFAULT_VAULT_API_URL: &str = "https://hqapi.hq.computer";
 
     if let Ok(url) = std::env::var("HQ_VAULT_API_URL") {
         if !url.is_empty() {
@@ -1516,6 +1516,23 @@ pub fn parse_my_creator_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::ENV_MUTEX;
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[test]
+    fn api_base_defaults_to_hq_computer() {
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = TempDir::new().unwrap();
+        fs::create_dir_all(tmp.path().join(".hq")).unwrap();
+
+        std::env::remove_var("HQ_VAULT_API_URL");
+        std::env::set_var("HOME", tmp.path());
+        let base = api_base().unwrap();
+        std::env::remove_var("HOME");
+
+        assert_eq!(base, "https://hqapi.hq.computer");
+    }
 
     #[test]
     fn browse_parses_listings_envelope() {

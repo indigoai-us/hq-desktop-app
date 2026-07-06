@@ -464,7 +464,7 @@ fn reconstruct_personal_hq_config() -> Option<HqConfig> {
         person_uid,
         role: "owner".to_string(),
         bucket_name,
-        vault_api_url: "https://hqapi.getindigo.ai".to_string(),
+        vault_api_url: "https://hqapi.hq.computer".to_string(),
         hq_folder_path,
     })
 }
@@ -535,6 +535,9 @@ struct ConfigState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::ENV_MUTEX;
+    use std::fs;
+    use tempfile::TempDir;
 
     #[test]
     fn test_hq_config_deserialize() {
@@ -716,6 +719,29 @@ mod tests {
         let json = serde_json::to_string(&state).unwrap();
         assert!(json.contains("\"configured\":false"));
         assert!(json.contains("\"error\":\"Not configured\""));
+    }
+
+    #[test]
+    fn reconstruct_personal_hq_config_uses_new_domain_default() {
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = TempDir::new().unwrap();
+        fs::create_dir_all(tmp.path().join(".hq")).unwrap();
+        fs::write(
+            tmp.path().join(".hq/person-entity.json"),
+            r#"{"personUid":"prs_123","bucketName":"hq-personal-bucket"}"#,
+        )
+        .unwrap();
+        fs::write(
+            tmp.path().join(".hq/menubar.json"),
+            r#"{"hqPath":"/tmp/HQ"}"#,
+        )
+        .unwrap();
+
+        std::env::set_var("HOME", tmp.path());
+        let config = reconstruct_personal_hq_config().unwrap();
+        std::env::remove_var("HOME");
+
+        assert_eq!(config.vault_api_url, "https://hqapi.hq.computer");
     }
 }
 
