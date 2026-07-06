@@ -15,7 +15,7 @@
 //!
 //! Trust model: anonymous. The menubar may be running pre-sign-in (cold
 //! launch, expired tokens) so we never send credentials. Endpoint identifies
-//! us by `clientId="hq-sync"` + `currentVersion=APP_VERSION`.
+//! us by `clientId="hq-desktop"` + `currentVersion=APP_VERSION`.
 //!
 //! Failure mode: silent. Network down, hq-pro 5xx, malformed body — log via
 //! `util::logfile::log` and return. The gate must never break the app for a
@@ -38,7 +38,7 @@ use crate::util::logfile::log;
 
 /// Client identifier we present to hq-pro. Must match an entry in the server's
 /// `CLIENT_VERSIONS` table.
-const CLIENT_ID: &str = "hq-sync";
+const CLIENT_ID: &str = "hq-desktop";
 
 /// Endpoint path appended to whatever `resolve_vault_api_url` returns.
 const ENDPOINT_PATH: &str = "/v1/client-version/check";
@@ -263,7 +263,7 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/v1/client-version/check"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "clientId": "hq-sync",
+                "clientId": "hq-desktop",
                 "currentVersion": "0.1.50",
                 "minVersion": "0.1.100",
                 "latestVersion": "0.1.110",
@@ -293,7 +293,7 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/v1/client-version/check"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "clientId": "hq-sync",
+                "clientId": "hq-desktop",
                 "currentVersion": "0.1.105",
                 "minVersion": "0.1.100",
                 "latestVersion": "0.1.110",
@@ -364,11 +364,11 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/v1/client-version/check"))
             .and(body_partial_json(json!({
-                "clientId": "hq-sync",
+                "clientId": "hq-desktop",
                 "currentVersion": "0.1.107",
             })))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "clientId": "hq-sync",
+                "clientId": "hq-desktop",
                 "currentVersion": "0.1.107",
                 "minVersion": "0.1.0",
                 "latestVersion": "0.1.107",
