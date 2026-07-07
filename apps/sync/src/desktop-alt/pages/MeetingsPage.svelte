@@ -303,7 +303,7 @@
               <div class="card-empty no-accounts">
                 <div class="na-title">No calendars connected yet</div>
                 <p class="na-copy">Connect a Google Calendar in HQ Console to start capturing meetings here.</p>
-                <button type="button" class="btn" onclick={() => void openExternal('https://hq.getindigo.ai/integrations')}>Open HQ Console Integrations</button>
+                <button type="button" class="btn" onclick={() => void openExternal('https://hq.computer/integrations')}>Open HQ Console Integrations</button>
               </div>
             {:else}
               <div class="card-empty">No connected calendars in the cached snapshot.</div>

@@ -32,11 +32,11 @@ All link targets return HTTP 200 (no dead/404 links):
 
 | Link | URL | Status |
 |---|---|---|
-| Company console | https://hq.getindigo.ai/indigo | 200 |
-| Company invite | https://hq.getindigo.ai/indigo/invite | 200 |
-| Meetings integrations | https://hq.getindigo.ai/integrations | 200 |
+| Company console | https://hq.computer/indigo | 200 |
+| Company invite | https://hq.computer/indigo/invite | 200 |
+| Meetings integrations | https://hq.computer/integrations | 200 |
 | Open calendar | https://calendar.google.com | 200 |
-| Indigo site | https://getindigo.ai | 200 |
+| HQ marketing site | https://www.hqforwork.com | 200 |
 
 (Reachability only — full logged-in visual confirmation of each landing page is a recommended follow-up.)
 

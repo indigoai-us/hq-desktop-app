@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest';
  * AC1 (hq-sync slice): the author @handle byline shown on Marketplace listing
  * CARDS and in the listing DETAIL slide-over must LINK to the creator's public
  * profile (the US-018 marketing directory page at
- * `https://hq.getindigo.ai/creators/<handle>`).
+ * `https://hq.computer/creators/<handle>`).
  *
  * This repo's frontend has no DOM/component test harness (vitest `environment:
  * "node"`), so — like the other US-0xx story tests — this is a source-contract
@@ -30,7 +30,7 @@ describe('US-019: attribution byline links to the creator profile', () => {
   it('builds the creator-profile URL from the US-018 marketing directory base + the @handle', () => {
     const src = normalize(panel);
     // Links to the public creator directory profile (US-018 marketing page).
-    expect(panel).toContain("const CREATOR_PROFILE_BASE = 'https://hq.getindigo.ai/creators'");
+    expect(panel).toContain("const CREATOR_PROFILE_BASE = 'https://hq.computer/creators'");
     // URL = base + the (encoded) handle; a missing handle → no link.
     expect(src).toContain('function creatorProfileHref(listing: MarketplaceListing): string | null');
     expect(src).toContain('const handle = listing.author?.trim();');
