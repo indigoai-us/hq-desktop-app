@@ -1521,6 +1521,12 @@
   }
 
   .mbp-co {
+    /* Rows render as either <button> (clickable) or <div> (not). A <button>
+       defaults to box-sizing:border-box while a <div> is content-box, so with
+       width:100% + horizontal padding the div rows overflowed by the padding
+       and their right-aligned state indicator drifted right (and clipped).
+       Pin border-box so both row types align identically. */
+    box-sizing: border-box;
     width: 100%;
     display: flex;
     align-items: center;
