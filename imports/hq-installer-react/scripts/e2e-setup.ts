@@ -31,7 +31,7 @@ import { randomBytes } from "crypto";
 // ---------------------------------------------------------------------------
 
 // hq-prod custom domain (canonical post-2026-04-28 cutover).
-const VAULT_API_URL = "https://hqapi.getindigo.ai";
+const VAULT_API_URL = "https://hqapi.hq.computer";
 const USER_POOL_ID = "us-east-1_AXf6Kb5nE";
 const CLIENT_ID = "7acei2c8v870enheptb1j5foln";
 const REGION = "us-east-1";

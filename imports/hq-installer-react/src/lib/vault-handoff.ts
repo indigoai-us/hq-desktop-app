@@ -8,8 +8,8 @@ import { fetch } from "@tauri-apps/plugin-http";
 import type { HandoffResult } from "../types/handoff";
 import { CLIENT_HEADERS } from "./client-info";
 
-// hq-prod custom domain (canonical post-2026-04-28 cutover). Override via VITE_VAULT_API_URL.
-const DEFAULT_VAULT_API_URL = "https://hqapi.getindigo.ai";
+// hq-prod custom domain. Override via VITE_VAULT_API_URL.
+const DEFAULT_VAULT_API_URL = "https://hqapi.hq.computer";
 
 function getVaultApiUrl(): string {
   return (
