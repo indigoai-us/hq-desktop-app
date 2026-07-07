@@ -169,10 +169,10 @@ function isPathWithinRoot(path: string, root: string): boolean {
 }
 
 function getVaultApiUrl(): string {
-  // hq-prod custom domain (canonical post-2026-04-28 cutover). Override via VITE_VAULT_API_URL.
+  // hq-prod custom domain. Override via VITE_VAULT_API_URL.
   return (
     (import.meta.env.VITE_VAULT_API_URL as string | undefined) ??
-    "https://hqapi.getindigo.ai"
+    "https://hqapi.hq.computer"
   );
 }
 

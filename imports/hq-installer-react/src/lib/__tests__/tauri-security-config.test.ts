@@ -67,6 +67,7 @@ describe("Tauri renderer security config", () => {
     expect(httpUrls).toEqual([
       "https://*.execute-api.us-east-1.amazonaws.com/*",
       "https://hqapi.getindigo.ai/*",
+      "https://hqapi.hq.computer/*",
       "https://*.auth.us-east-1.amazoncognito.com/*",
       "https://cognito-idp.us-east-1.amazonaws.com/*",
       "https://api.github.com/*",
@@ -75,6 +76,7 @@ describe("Tauri renderer security config", () => {
       "https://*.s3.us-east-1.amazonaws.com/*",
       "https://s3.us-east-1.amazonaws.com/*",
       "https://telemetry.getindigo.ai/*",
+      "https://telemetry.hq.computer/*",
     ]);
     expect(httpUrls).not.toContain("https://*.amazonaws.com/*");
 

@@ -24,7 +24,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; connect-src 'self' https://*.execute-api.us-east-1.amazonaws.com https://hqapi.getindigo.ai https://*.auth.us-east-1.amazoncognito.com https://cognito-idp.us-east-1.amazonaws.com https://api.github.com https://codeload.github.com https://*.s3.amazonaws.com https://*.s3.us-east-1.amazonaws.com https://s3.us-east-1.amazonaws.com https://telemetry.getindigo.ai; img-src 'self' data:; style-src 'self' 'unsafe-inline'"
+      "csp": "default-src 'self'; script-src 'self'; connect-src 'self' https://*.execute-api.us-east-1.amazonaws.com https://hqapi.getindigo.ai https://hqapi.hq.computer https://*.auth.us-east-1.amazoncognito.com https://cognito-idp.us-east-1.amazonaws.com https://api.github.com https://codeload.github.com https://*.s3.amazonaws.com https://*.s3.us-east-1.amazonaws.com https://s3.us-east-1.amazonaws.com https://telemetry.getindigo.ai https://telemetry.hq.computer; img-src 'self' data:; style-src 'self' 'unsafe-inline'"
     }
   },
   "bundle": {
@@ -37,7 +37,7 @@
     "createUpdaterArtifacts": false,
     "publisher": "Indigo AI",
     "shortDescription": "HQ native Windows installer wizard",
-    "longDescription": "Guided wizard to install HQ on Windows: AWS Cognito auth, dep installation via winget, repository clone, and Claude Code launch \u2014 all from a native MSI/NSIS bundle.",
+    "longDescription": "Guided wizard to install HQ on Windows: AWS Cognito auth, dep installation via winget, repository clone, and Claude Code launch — all from a native MSI/NSIS bundle.",
     "category": "DeveloperTool",
     "copyright": "Copyright (c) Indigo AI",
     "icon": [

@@ -24,6 +24,7 @@
       "allow": [
         { "url": "https://*.execute-api.us-east-1.amazonaws.com/*" },
         { "url": "https://hqapi.getindigo.ai/*" },
+        { "url": "https://hqapi.hq.computer/*" },
         { "url": "https://*.auth.us-east-1.amazoncognito.com/*" },
         { "url": "https://cognito-idp.us-east-1.amazonaws.com/*" },
         { "url": "https://api.github.com/*" },
@@ -31,7 +32,8 @@
         { "url": "https://*.s3.amazonaws.com/*" },
         { "url": "https://*.s3.us-east-1.amazonaws.com/*" },
         { "url": "https://s3.us-east-1.amazonaws.com/*" },
-        { "url": "https://telemetry.getindigo.ai/*" }
+        { "url": "https://telemetry.getindigo.ai/*" },
+        { "url": "https://telemetry.hq.computer/*" }
       ]
     },
     {

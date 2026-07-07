@@ -13,7 +13,7 @@
  */
 
 // hq-prod custom domain (canonical post-2026-04-28 cutover).
-const VAULT_API_URL = "https://hqapi.getindigo.ai";
+const VAULT_API_URL = "https://hqapi.hq.computer";
 const INSTALLER_URL =
   "https://github.com/indigoai-us/hq-installer/releases/latest/download/hq-installer_universal.zip";
 const ONBOARDING_URL = "https://onboarding.getindigo.ai";

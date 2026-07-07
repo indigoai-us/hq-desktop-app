@@ -6,8 +6,8 @@ import { fetch } from "@tauri-apps/plugin-http";
 import { invoke } from "@tauri-apps/api/core";
 import { CLIENT_HEADERS } from "./client-info";
 
-const TELEMETRY_ENDPOINT = "https://telemetry.getindigo.ai/v1/installer/success";
-const STEP_ENDPOINT = "https://telemetry.getindigo.ai/v1/installer/step";
+const TELEMETRY_ENDPOINT = "https://telemetry.hq.computer/v1/installer/success";
+const STEP_ENDPOINT = "https://telemetry.hq.computer/v1/installer/step";
 
 // Anonymous install-session id, minted once per installer process. It is the
 // spine of the step funnel before sign-in; once a personUid is known it rides
@@ -80,7 +80,7 @@ export async function pingStep(opts: {
  * disables failure pings entirely (useful for local dev).
  */
 const FAILURE_ENDPOINT_DEFAULT =
-  "https://telemetry.getindigo.ai/v1/installer/failure";
+  "https://telemetry.hq.computer/v1/installer/failure";
 
 function getFailureEndpoint(): string | null {
   const v = import.meta.env.VITE_INSTALLER_FAILURE_URL as string | undefined;
@@ -89,8 +89,8 @@ function getFailureEndpoint(): string | null {
   return v ?? FAILURE_ENDPOINT_DEFAULT;
 }
 
-// hq-prod custom domain (canonical post-2026-04-28 cutover). Override via VITE_VAULT_API_URL.
-const DEFAULT_VAULT_API_URL = "https://hqapi.getindigo.ai";
+// hq-prod custom domain. Override via VITE_VAULT_API_URL.
+const DEFAULT_VAULT_API_URL = "https://hqapi.hq.computer";
 
 function getVaultApiUrl(): string {
   return (
