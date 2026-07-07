@@ -135,7 +135,7 @@
   async function handleOpenCompany(w: Workspace) {
     if (!isCompanyClickable(w)) return;
     try {
-      await open(`https://hq.getindigo.ai/companies/${w.slug}`);
+      await open(`https://hq.computer/companies/${w.slug}`);
     } catch (err) {
       console.error('Failed to open company URL:', err);
     }

@@ -189,11 +189,11 @@
   //
   // The @handle byline on each card + in the detail slide-over LINKS to the
   // creator's PUBLIC profile (the US-018 marketing directory page at
-  // `https://hq.getindigo.ai/creators/<handle>`). An external link to the
+  // `https://hq.computer/creators/<handle>`). An external link to the
   // marketing profile is the simplest fit — it opens in the system browser via
   // a plain anchor (mirrors ProfilePanel's preview links). A listing with no
   // author handle has no profile to link to, so it renders as plain text.
-  const CREATOR_PROFILE_BASE = 'https://hq.getindigo.ai/creators';
+  const CREATOR_PROFILE_BASE = 'https://hq.computer/creators';
 
   /** The creator-profile URL for a handle, or null when there's no handle. */
   function creatorProfileHref(listing: MarketplaceListing): string | null {

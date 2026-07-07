@@ -10,7 +10,7 @@
  */
 
 /** Production HQ console host. */
-export const HQ_CONSOLE_BASE = 'https://hq.getindigo.ai';
+export const HQ_CONSOLE_BASE = 'https://hq.computer';
 
 /**
  * A company's console home. The console namespaces every company surface under

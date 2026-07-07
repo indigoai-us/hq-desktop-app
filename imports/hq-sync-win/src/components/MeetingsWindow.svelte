@@ -1614,7 +1614,7 @@
           type="button"
           class="meetings-empty-btn"
           onclick={() => {
-            openExternal('https://hq.getindigo.ai/integrations').catch((err) => {
+            openExternal('https://hq.computer/integrations').catch((err) => {
               flashToast('warn', friendlyError(err, "Couldn't open HQ Console."));
             });
           }}
