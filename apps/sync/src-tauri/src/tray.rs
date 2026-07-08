@@ -295,6 +295,8 @@ fn set_state_icon<R: tauri::Runtime>(tray: &tauri::tray::TrayIcon<R>, _state: Tr
 
 const MENU_VERSION: &str = "version";
 const MENU_SYNC_NOW: &str = "sync-now";
+const MENU_OPEN_DESKTOP: &str = "open-desktop";
+const MENU_SIGN_OUT: &str = "sign-out";
 const MENU_SETTINGS: &str = "settings";
 const MENU_QUIT: &str = "quit";
 
@@ -326,16 +328,24 @@ fn build_tray_icon(app: &AppHandle) -> Result<tauri::tray::TrayIcon, Box<dyn std
     let version_item = MenuItemBuilder::with_id(MENU_VERSION, format!("HQ v{}", version))
         .enabled(false)
         .build(app)?;
+    // Context-menu items aligned to the redesign's tray menu:
+    // Sync Now / Open desktop view / Sign Out / Quit HQ. Settings stays for
+    // parity with the popover's overflow menu.
     let sync_now = MenuItemBuilder::with_id(MENU_SYNC_NOW, "Sync Now").build(app)?;
+    let open_desktop =
+        MenuItemBuilder::with_id(MENU_OPEN_DESKTOP, "Open desktop view").build(app)?;
     let settings = MenuItemBuilder::with_id(MENU_SETTINGS, "Settings").build(app)?;
-    let quit = MenuItemBuilder::with_id(MENU_QUIT, "Quit").build(app)?;
+    let sign_out = MenuItemBuilder::with_id(MENU_SIGN_OUT, "Sign Out").build(app)?;
+    let quit = MenuItemBuilder::with_id(MENU_QUIT, "Quit HQ").build(app)?;
 
     let menu = MenuBuilder::new(app)
         .item(&version_item)
         .separator()
         .item(&sync_now)
+        .item(&open_desktop)
         .separator()
         .item(&settings)
+        .item(&sign_out)
         .item(&quit)
         .build()?;
 
@@ -366,6 +376,12 @@ fn build_tray_icon(app: &AppHandle) -> Result<tauri::tray::TrayIcon, Box<dyn std
                 match id {
                     id if id == MENU_SYNC_NOW => {
                         let _ = app_handle.emit("tray:sync-now", ());
+                    }
+                    id if id == MENU_OPEN_DESKTOP => {
+                        let _ = app_handle.emit("tray:open-desktop", ());
+                    }
+                    id if id == MENU_SIGN_OUT => {
+                        let _ = app_handle.emit("tray:sign-out", ());
                     }
                     id if id == MENU_SETTINGS => {
                         let _ = app_handle.emit("tray:open-settings", ());
@@ -1100,6 +1116,8 @@ mod tests {
     #[test]
     fn test_menu_id_constants() {
         assert_eq!(MENU_SYNC_NOW, "sync-now");
+        assert_eq!(MENU_OPEN_DESKTOP, "open-desktop");
+        assert_eq!(MENU_SIGN_OUT, "sign-out");
         assert_eq!(MENU_SETTINGS, "settings");
         assert_eq!(MENU_QUIT, "quit");
     }

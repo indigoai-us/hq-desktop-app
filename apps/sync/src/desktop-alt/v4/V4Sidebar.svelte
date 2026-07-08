@@ -1,7 +1,13 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
+  import { listen } from '@tauri-apps/api/event';
   import { onMount } from 'svelte';
   import type { Workspace, WorkspacesResult } from '../../lib/workspaces';
+  import {
+    loadNotificationItems,
+    getLastReadTs,
+    countUnread,
+  } from '../../lib/notificationFeedData';
   import { getV4SidebarModel, type V4NavId, type V4Route } from './model';
   import './tokens.css';
 
@@ -49,6 +55,38 @@
       });
   });
 
+  // Unread badge on the Notifications nav row. Self-loaded (like the
+  // companies fallback above) from the shared feed-data lib; refreshed when
+  // new content lands (DM wake / sync complete) and when the Notifications
+  // page advances the read watermark (`hq:notifications-read` window event).
+  let notifUnread = $state(0);
+
+  async function refreshUnread() {
+    try {
+      const items = await loadNotificationItems();
+      notifUnread = countUnread(items, getLastReadTs());
+    } catch {
+      // Vault unreachable / signed out — no badge is the right render.
+      notifUnread = 0;
+    }
+  }
+
+  $effect(() => {
+    void refreshUnread();
+
+    const onread = () => void refreshUnread();
+    window.addEventListener('hq:notifications-read', onread);
+
+    const unlisteners: Array<() => void> = [];
+    void listen('dm:unread-summary', onread).then((u) => unlisteners.push(u));
+    void listen('sync:complete', onread).then((u) => unlisteners.push(u));
+
+    return () => {
+      window.removeEventListener('hq:notifications-read', onread);
+      for (const u of unlisteners) u();
+    };
+  });
+
   function go(kind: V4NavId | 'settings', slug?: string) {
     onnavigate?.(slug ? { kind: 'company', slug } : { kind });
   }
@@ -64,7 +102,12 @@
         aria-current={row.active ? 'page' : undefined}
         onclick={() => go(row.id)}
       >
-        {row.label}
+        <span class="v4-row-label">{row.label}</span>
+        {#if row.id === 'notifications' && notifUnread > 0}
+          <span class="v4-unread-badge" aria-label={`${notifUnread} unread`}>
+            {notifUnread > 99 ? '99+' : notifUnread}
+          </span>
+        {/if}
       </button>
     {/each}
   </nav>
@@ -173,6 +216,31 @@
     background: var(--v4-active-row);
     color: var(--v4-text-1);
     font-weight: 500;
+  }
+
+  .v4-row-label {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .v4-unread-badge {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 5px;
+    box-sizing: border-box;
+    border-radius: 999px;
+    background: var(--v4-unread);
+    color: #ffffff;
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 1;
   }
 
   .v4-section-label {

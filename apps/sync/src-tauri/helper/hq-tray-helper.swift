@@ -69,10 +69,19 @@ final class TrayController: NSObject {
         }
 
         // Right-click context menu (NOT set as item.menu — that would make a
-        // plain left-click open the menu instead of the popover).
+        // plain left-click open the menu instead of the popover). Items per
+        // the notifications-first redesign: Sync Now / Open desktop view /
+        // Sign Out / Quit HQ ⌘Q.
         let sync = NSMenuItem(title: "Sync Now", action: #selector(syncNow), keyEquivalent: "")
         sync.target = self
         menu.addItem(sync)
+        let desktop = NSMenuItem(
+            title: "Open desktop view", action: #selector(openDesktop), keyEquivalent: "")
+        desktop.target = self
+        menu.addItem(desktop)
+        let signOut = NSMenuItem(title: "Sign Out", action: #selector(signOutHQ), keyEquivalent: "")
+        signOut.target = self
+        menu.addItem(signOut)
         menu.addItem(.separator())
         let quit = NSMenuItem(title: "Quit HQ", action: #selector(quitHQ), keyEquivalent: "q")
         quit.target = self
@@ -105,6 +114,11 @@ final class TrayController: NSObject {
     }
 
     @objc func syncNow() { writeCommand("sync") }
+    @objc func openDesktop() {
+        writeCommand("desktop")
+        activateHQ()
+    }
+    @objc func signOutHQ() { writeCommand("signout") }
     @objc func quitHQ() {
         writeCommand("quit")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { NSApp.terminate(nil) }

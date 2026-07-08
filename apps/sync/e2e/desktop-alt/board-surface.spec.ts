@@ -84,13 +84,13 @@ describe('desktop-alt Board surface (US-007)', () => {
       expect(resolved?.kind).not.toBe('board');
     }
 
-    // ⌘1 maps to Home; ⌘5 to Meetings (V4 order: Home/Mission Control/Companies/
-    // Messages/Meetings/Library — Mission Control inserted under Home in US-006).
+    // ⌘1 maps to Home; ⌘6 to Meetings (V4 order: Home/Mission Control/Companies/
+    // Messages/Notifications/Meetings/Library — Notifications took the ⌘5 slot).
     expect(
       getDesktopHotkeyRoute({ key: '1', metaKey: true, ctrlKey: false }, companies),
     ).toEqual({ kind: 'home' } satisfies DesktopRoute);
     expect(
-      getDesktopHotkeyRoute({ key: '5', metaKey: true, ctrlKey: false }, companies),
+      getDesktopHotkeyRoute({ key: '6', metaKey: true, ctrlKey: false }, companies),
     ).toEqual({ kind: 'meetings' } satisfies DesktopRoute);
   });
 
@@ -155,7 +155,7 @@ describe('desktop-alt Board surface (US-007)', () => {
     // Control / Companies / Messages / Meetings / Library plus settings, the
     // default-deny moderation surface, and per-company routes — see route.ts).
     expect(route).toContain(
-      "{ kind: 'home' | 'mission-control' | 'companies' | 'messages' | 'meetings' | 'moderation' }",
+      "{ kind: 'home' | 'mission-control' | 'companies' | 'messages' | 'notifications' | 'meetings' | 'moderation' }",
     );
     expect(route).not.toContain("'board'");
     expect(desktopApp).not.toContain("import BoardPage from './pages/BoardPage.svelte'");

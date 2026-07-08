@@ -18,6 +18,7 @@ export type V4NavId =
   | 'mission-control'
   | 'companies'
   | 'messages'
+  | 'notifications'
   | 'meetings'
   | 'library'
   | 'files';
@@ -37,6 +38,7 @@ export const V4_NAV_ITEMS: ReadonlyArray<{ id: V4NavId; label: string }> = [
   { id: 'mission-control', label: 'Mission Control' },
   { id: 'companies', label: 'Companies' },
   { id: 'messages', label: 'Messages' },
+  { id: 'notifications', label: 'Notifications' },
   { id: 'meetings', label: 'Meetings' },
   { id: 'library', label: 'Library' },
   { id: 'files', label: 'Files' },

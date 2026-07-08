@@ -7,12 +7,13 @@ describe('NotificationFeed popover theme tokens', () => {
   it('uses shared popover tokens for adaptive feed surfaces and text', () => {
     expect(source).toContain('color: var(--popover-text-muted);');
     expect(source).toContain('color: var(--popover-danger);');
-    expect(source).toContain('border-bottom: 1px solid var(--popover-divider);');
     expect(source).toContain('background: var(--popover-action-hover);');
     expect(source).toContain('color: var(--popover-text-heading);');
     expect(source).toContain('color: var(--popover-text);');
-    expect(source).toContain('--accent: var(--popover-text-muted);');
-    expect(source).toContain('--accent-soft: var(--popover-surface);');
+    // Redesigned compact rows: neutral chips + unread dot ride the shared
+    // surface/unread tokens instead of the legacy --accent aliases.
+    expect(source).toContain('background: var(--popover-surface);');
+    expect(source).toContain('var(--popover-unread');
   });
 
   it('does not reintroduce the dark-only notification feed palette', () => {
