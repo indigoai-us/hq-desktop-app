@@ -58,6 +58,19 @@ export function channelScope(channelId: string): string {
   return `chan:${channelId.trim()}`;
 }
 
+/** Build the `messageScope` string for a share event (share reactions). The
+ * share's eventId is BOTH the scope id and the messageId — one scope per
+ * share, `messageId === eventId` (hq-pro contract; authorized for the issuer
+ * + recipients, 404 for anyone else). */
+export function shareScope(eventId: string): string {
+  return `share:${eventId.trim()}`;
+}
+
+/** True when a `messageScope` addresses a share event. */
+export function isShareScope(scope: string): boolean {
+  return scope.startsWith('share:');
+}
+
 /** Curated emoji set for the picker. Kept intentionally small (~24) and inline
  * so we never pull a multi-MB emoji-data dependency (the bundle budget is
  * <15MB — see tests/PERF.md). Ordered by rough frequency of use. */

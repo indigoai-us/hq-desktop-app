@@ -121,6 +121,11 @@ pub struct ShareEvent {
     pub event_id: String,
     pub issuer_email: String,
     pub issuer_display_name: String,
+    /// The issuer's canonical person uid (hq-pro US-026). Empty string for
+    /// legacy rows the server can't attribute — `serde(default)` keeps older
+    /// backend payloads (and cached cursor fixtures) parsing.
+    #[serde(default)]
+    pub issuer_person_uid: String,
     pub paths: Vec<String>,
     pub note: Option<String>,
     pub permission: String,
@@ -422,6 +427,25 @@ mod tests {
                 "paths":["/x.md"],"permission":"read","createdAt":"{created_at}"}}"#
         );
         serde_json::from_str(&json).unwrap()
+    }
+
+    #[test]
+    fn test_share_event_issuer_person_uid_defaults_empty() {
+        // Legacy server rows (and cached payloads) omit `issuerPersonUid` —
+        // parsing must default it to "" rather than fail (hq-pro US-026).
+        let legacy = share_event("e1", "2026-05-29T03:19:02.349Z");
+        assert_eq!(legacy.issuer_person_uid, "");
+
+        let modern: ShareEvent = serde_json::from_str(
+            r#"{"eventId":"e2","issuerEmail":"a@b.com","issuerDisplayName":"A",
+                "issuerPersonUid":"prs_a","paths":["/x.md"],"permission":"read",
+                "createdAt":"2026-05-29T03:19:02.349Z"}"#,
+        )
+        .unwrap();
+        assert_eq!(modern.issuer_person_uid, "prs_a");
+        // And it round-trips on serialize (camelCase key).
+        let out = serde_json::to_value(&modern).unwrap();
+        assert_eq!(out["issuerPersonUid"], "prs_a");
     }
 
     #[test]

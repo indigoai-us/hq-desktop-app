@@ -508,6 +508,7 @@ pub async fn preview_share_banner(app: AppHandle) -> Result<(), String> {
         event_id: "shr_preview".to_string(),
         issuer_email: "grace@getindigo.ai".to_string(),
         issuer_display_name: "Grace Hopper".to_string(),
+        issuer_person_uid: "prs_preview_issuer".to_string(),
         paths: vec![
             "indigo/reports/q1-forecast.md".to_string(),
             "indigo/reports/q1-model.xlsx".to_string(),

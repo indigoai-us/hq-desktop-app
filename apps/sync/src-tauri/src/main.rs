@@ -247,6 +247,8 @@ fn main() {
         .manage(commands::dm_notify::SeenChannelState::new())
         .manage(commands::dm_notify::ActiveThreadState::new())
         .manage(commands::dm_notify::ActiveConversationState::new())
+        .manage(commands::dm_notify::WatchedSharesState::new())
+        .manage(commands::messages::PendingMessagesTarget::new())
         .manage(commands::banner::PendingBanner(Mutex::new(None)))
         // new-files-detail window handshake state (folded in from hq-sync-win).
         .manage(commands::new_files::PendingNewFiles(Mutex::new(Vec::new())))
@@ -487,6 +489,7 @@ fn main() {
             commands::dm_notify::send_thread_reply,
             commands::dm_notify::set_active_thread,
             commands::dm_notify::set_active_conversation,
+            commands::dm_notify::set_watched_shares,
             commands::dm_notify::list_dm_requests,
             commands::dm_notify::respond_dm_request,
             commands::messages::open_messages_window,
