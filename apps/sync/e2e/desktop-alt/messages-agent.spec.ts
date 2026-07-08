@@ -30,9 +30,12 @@ describe('desktop-alt Messages agent handoff', () => {
   it('keeps agent handoff out of DM-only features', () => {
     expect(shell).toContain("peer.source === 'agent'");
     expect(shell).toContain("selected.source === 'agent'");
-    expect(shell).toContain("selected.source === 'agent' ? {} : (dmReactions?.map ?? {})");
+    // Share reactions merged into the DM thread map — agent conversations
+    // still get NO reactions surface (empty map, no toggle handler).
+    expect(shell).toContain("reactions={selected.source === 'agent'");
+    expect(shell).toContain("{ ...(dmReactions?.map ?? {}), ...shareReactions.map }");
     expect(shell).toContain(
-      "selected.source === 'agent' ? undefined : dmReactions?.toggle",
+      "ontogglereaction={selected.source === 'agent' ? undefined : toggleThreadReaction}",
     );
   });
 });

@@ -941,6 +941,23 @@
       })
     );
 
+    // Native tray right-click menu (hq-tray-helper): Open desktop view +
+    // Sign Out. Both route through the same guarded frontend paths the
+    // popover uses (the backend gate is re-checked by open_desktop_alt_window).
+    unlisteners.push(
+      await listen('tray:open-desktop', () => {
+        void invoke('open_desktop_alt_window').catch((e) =>
+          console.error('tray open_desktop_alt_window failed:', e),
+        );
+      })
+    );
+
+    unlisteners.push(
+      await listen('tray:sign-out', () => {
+        void handleSignOut();
+      })
+    );
+
     // --- Phase 7 runner event listeners ---
     // Protocol (see src-tauri/src/events.rs):
     //   sync:setup-needed  -- signed in, no person entity yet

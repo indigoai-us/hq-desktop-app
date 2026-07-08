@@ -62,6 +62,20 @@
   } from '../../lib/channels';
   import { type ReactionEvent, dmScope } from '../../lib/reactions';
   import { ReactionController } from '../../lib/reactionController.svelte';
+  import { ShareReactionController } from '../../lib/shareReactionController.svelte';
+  import type { ShareEvent } from '../../lib/notificationGroups';
+  import {
+    applySharePreviews,
+    buildSharePrompt,
+    mergeSharesIntoThread,
+    shareSummary,
+    sharesForPeer,
+  } from '../../lib/shareTimeline';
+  import {
+    MESSAGE_PERSON_EVENT,
+    takePendingConversation,
+    type ConversationTarget,
+  } from '../../lib/pendingConversation';
 
   // Channels live ALONGSIDE people now — no separate "Channels" tab. `all` is the
   // unified rail (channels + DMs interleaved by recency); `people` filters to DMs.
@@ -104,6 +118,7 @@
 
   interface NotificationHistoryResponse {
     dms?: ConversationEventRecencyFields[];
+    shares?: ShareEvent[];
   }
 
   interface ThreadMessage extends ConversationMessage {
@@ -189,6 +204,75 @@
 
   let sending = $state(false);
   let sendError = $state<string | null>(null);
+
+  // Share history (client-side merge): the peer's share events from the same
+  // notification-history fetch the rail already makes. Rendered as inline
+  // share-card bubbles in the DM thread and as the rail's "Shared a file"
+  // preview when the newest item for a contact is a share.
+  let shareHistory = $state<ShareEvent[]>([]);
+
+  const peerShares = $derived.by((): ShareEvent[] => {
+    const peer = selected;
+    if (!peer || peer.source === 'agent') return [];
+    return sharesForPeer(shareHistory, {
+      // An unresolved compose peer carries a synthetic `email:` uid — match by
+      // email only in that case.
+      personUid: peer.personUid.startsWith('email:') ? '' : peer.personUid,
+      email: peer.email,
+    });
+  });
+
+  // Reactions on the peer's shares (scope `share:{eventId}` per share, a
+  // SEPARATE Rust watch slot from the DM conversation registration).
+  const shareReactions = new ShareReactionController();
+  $effect(() => {
+    void shareReactions.setShares(peerShares.map((s) => s.eventId));
+  });
+
+  const shareIds = $derived(new Set(peerShares.map((s) => s.eventId)));
+
+  function shareToMessage(share: ShareEvent): ThreadMessage {
+    return {
+      eventId: share.eventId,
+      fromPersonUid: share.issuerPersonUid || '',
+      fromEmail: share.issuerEmail,
+      fromDisplayName: share.issuerDisplayName,
+      body: shareSummary(share),
+      details: null,
+      prompt: buildSharePrompt(share),
+      createdAt: share.createdAt,
+      direction: 'in',
+      share,
+    };
+  }
+
+  // The rendered DM timeline: server DMs (chronological) with the peer's
+  // shares merged in as inline share cards. `messages` itself stays DM-only so
+  // the DM reaction registration below never claims share ids.
+  const displayMessages = $derived(
+    selected && selected.source !== 'agent'
+      ? mergeSharesIntoThread(messages, peerShares, shareToMessage)
+      : messages,
+  );
+
+  // Route a reaction toggle to the right controller: share bubbles carry the
+  // share's own `share:{eventId}` scope, everything else is the DM scope.
+  function toggleThreadReaction(messageId: string, emoji: string): void {
+    if (shareIds.has(messageId)) {
+      shareReactions.toggle(messageId, emoji);
+      return;
+    }
+    dmReactions?.toggle(messageId, emoji);
+  }
+
+  async function openShareInClaude(share: ShareEvent): Promise<void> {
+    try {
+      const url = buildClaudeCodeUrl({ folder: hqFolderPath, prompt: buildSharePrompt(share) });
+      await invoke('open_claude_code_link', { url });
+    } catch (err) {
+      console.error('messages: open_claude_code_link failed', err);
+    }
+  }
 
   // Reactions (US-025) for the open DM conversation. Recreated when the selected
   // peer changes (each conversation is its own messageScope); the message list is
@@ -449,6 +533,12 @@
     createdAt: string | null;
     direction: string | null;
   }): void {
+    // Never regress a newer preview (e.g. the "Shared a file" share preview)
+    // with an older DM preview loaded when the thread opens.
+    const current = contacts.find((c) => c.personUid === personUid);
+    const currentAt = Date.parse(current?.previewAt ?? '') || 0;
+    const nextAt = Date.parse(preview.createdAt ?? '') || 0;
+    if (current && currentAt > nextAt) return;
     contacts = sortContactsByRecentActivity(
       contacts.map((contact) =>
         contact.personUid === personUid
@@ -586,8 +676,13 @@
         invoke<ContactsResponse>('list_contacts'),
         loadContactHistoryEvents(),
       ]);
+      // Overlay "Shared a file" previews for contacts whose newest item is a
+      // share (before sorting, so the share recency bumps the row up).
       const nextContacts = sortContactsByRecentActivity(
-        mergeContactPreviews(resp.contacts ?? [], historyEvents),
+        applySharePreviews(
+          mergeContactPreviews(resp.contacts ?? [], historyEvents),
+          shareHistory,
+        ),
         historyEvents,
       );
       contacts = nextContacts;
@@ -606,6 +701,8 @@
       const history = await invoke<NotificationHistoryResponse>('fetch_notification_history', {
         limit: 200,
       });
+      // Same fetch feeds the share timeline + rail share previews.
+      shareHistory = history.shares ?? [];
       return history.dms ?? [];
     } catch (err) {
       console.error('messages: fetch_notification_history failed', err);
@@ -747,6 +844,38 @@
     }
   }
 
+  // Open a deep-linked conversation ("Message the sharer"). A resolved
+  // personUid opens the normal thread; a legacy target with only an email
+  // opens an empty conversation whose sends route via `send_dm_to_email`.
+  function openConversationTarget(t: ConversationTarget): void {
+    const uid = t.personUid?.trim() ?? '';
+    const email = t.email?.trim() ?? '';
+    if (!uid && !email) return;
+    const existing = contacts.find(
+      (c) =>
+        (uid && c.personUid === uid) ||
+        (email && (c.email ?? '').trim().toLowerCase() === email.toLowerCase()),
+    );
+    const peer: Contact = existing ?? {
+      personUid: uid || `email:${email}`,
+      email,
+      displayName: t.displayName?.trim() || email || uid,
+      companyUid: null,
+      source: null,
+    };
+    if (peer.personUid.startsWith('email:')) {
+      selected = peer;
+      selectedChannel = null;
+      openThread = null;
+      messages = [];
+      threadError = null;
+      sendError = null;
+      loadingThread = false;
+    } else {
+      void selectContact(peer);
+    }
+  }
+
   async function selectContact(c: Contact): Promise<void> {
     selected = c;
     // Opening a DM clears the active channel so the pane shows this conversation.
@@ -850,6 +979,36 @@
     try {
       if (selected.source === 'agent') {
         await sendAgentPrompt(text);
+      } else if (selected.personUid.startsWith('email:')) {
+        // Unresolved (email-only) peer — e.g. "Message the sharer" on a legacy
+        // share row with no issuerPersonUid. Route through the compose-flow
+        // command, which addresses by email and may hold the message behind a
+        // connection request (202).
+        const sentAt = new Date().toISOString();
+        const outcome = await invoke<{ state: string }>('send_dm_to_email', {
+          toEmail: selected.email,
+          toPersonUid: null,
+          body: text,
+        });
+        const pending = outcome?.state === 'connectionRequested';
+        messages = [
+          ...messages,
+          {
+            eventId: `${pending ? 'pending' : 'local'}-${messages.length}-${text.length}`,
+            fromPersonUid: 'me',
+            fromEmail: '',
+            fromDisplayName: 'You',
+            body: text,
+            details: null,
+            prompt: null,
+            createdAt: sentAt,
+            direction: 'out',
+            pending,
+            pendingLabel: pending
+              ? `Pending — waiting for ${displayLabel(selected)} to accept`
+              : null,
+          },
+        ];
       } else {
         const sentAt = new Date().toISOString();
         await invoke('send_dm', { toPersonUid: selected.personUid, body: text });
@@ -942,7 +1101,28 @@
     // no-ops when the open pane is a channel or nothing is selected.
     listen<ReactionEvent>('message:reaction', (e) => {
       dmReactions?.applyEvent(e.payload);
+      // Share-scope events reconcile the inline share cards' reactions.
+      shareReactions.applyEvent(e.payload);
     }).then((fn) => unlisteners.push(fn));
+
+    // Deep link from the standalone-window path: `open_messages_window` with a
+    // target stashes it in Rust and the ready-handshake (or an already-open
+    // focus) emits it here.
+    listen<ConversationTarget>('messages:open-conversation', (e) => {
+      openConversationTarget(e.payload);
+    }).then((fn) => unlisteners.push(fn));
+
+    // Deep link from within the SAME desktop window (Notifications page →
+    // Messages destination): the sender stashes the target and dispatches
+    // hq:message-person; consume the stash whether we were mounted (event) or
+    // mounted just after the navigation (initial take below).
+    const onMessagePerson = () => {
+      const t = takePendingConversation();
+      if (t) openConversationTarget(t);
+    };
+    window.addEventListener(MESSAGE_PERSON_EVENT, onMessagePerson);
+    unlisteners.push(() => window.removeEventListener(MESSAGE_PERSON_EVENT, onMessagePerson));
+    onMessagePerson();
 
     // A brand-new channel/invite appeared, or a channel's metadata changed.
     // Upsert it into the rail so it shows live without a manual refresh.
@@ -965,6 +1145,7 @@
 
     return () => {
       for (const fn of unlisteners) fn();
+      shareReactions.dispose();
     };
   });
 </script>
@@ -1193,7 +1374,7 @@
         {/if}
       </header>
       <Conversation
-        {messages}
+        messages={displayMessages}
         showAuthors={false}
         loading={loadingThread}
         error={threadError}
@@ -1207,8 +1388,11 @@
         onsend={sendReply}
         onopenthread={handleOpenDmThread}
         activeRootEventId={openThread?.scope === 'dm' ? openThread.rootEventId : null}
-        reactions={selected.source === 'agent' ? {} : (dmReactions?.map ?? {})}
-        ontogglereaction={selected.source === 'agent' ? undefined : dmReactions?.toggle}
+        reactions={selected.source === 'agent'
+          ? {}
+          : { ...(dmReactions?.map ?? {}), ...shareReactions.map }}
+        ontogglereaction={selected.source === 'agent' ? undefined : toggleThreadReaction}
+        onopenshareinclaude={openShareInClaude}
       />
     {/if}
   </section>

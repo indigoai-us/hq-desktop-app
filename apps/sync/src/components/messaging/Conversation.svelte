@@ -11,6 +11,8 @@
   import { type ReactionMap } from '../../lib/reactions';
   import { copyableText, type CopyKind } from '../../lib/conversation-copy';
   import { renderMessageBodyMarkdown } from '../../lib/messageMarkdown';
+  import { shareTitle } from '../../lib/share-path';
+  import type { ShareEvent } from '../../lib/notificationGroups';
 
   // One rendered message in the thread. `direction` is relative to the signed-in
   // user: "out" = I sent it, "in" = the other person sent it. Extra fields
@@ -38,6 +40,12 @@
     rootEventId?: string | null;
     replyCount?: number | null;
     lastReplyAt?: string | null;
+    // Share timeline (share history in Messages). When set, the bubble renders
+    // as a distinct inline share card (file icon, filename(s), note,
+    // permission, timestamp) instead of a plain text body. `prompt` carries
+    // the templated share prompt so the standard Copy-prompt action works; the
+    // host passes `onopenshareinclaude` for the Open-in-Claude action.
+    share?: ShareEvent | null;
   }
 
   interface Props {
@@ -71,6 +79,9 @@
     // preview) simply omit the callback and no bar renders.
     reactions?: ReactionMap;
     ontogglereaction?: (messageId: string, emoji: string) => void;
+    // Share timeline: called with a share-card bubble's ShareEvent when its
+    // "Open in Claude" action is tapped (the host owns the deep link).
+    onopenshareinclaude?: (share: ShareEvent) => void;
     // When true, the reply composer is hidden and a static note renders in its
     // place. Used for read-only history or preview panes that have no writable
     // recipient yet.
@@ -93,6 +104,7 @@
     activeRootEventId = null,
     reactions = {},
     ontogglereaction,
+    onopenshareinclaude,
     readonly = false,
   }: Props = $props();
 
@@ -264,18 +276,59 @@
             {/if}
           </button>
         </div>
-        <p class="dm-bubble-body selectable-text">{@html renderMessageBodyMarkdown(msg.body)}</p>
+        {#if msg.share}
+          {@const share = msg.share}
+          <!-- Inline share card: file icon + filename(s), note, permission. -->
+          <div class="share-card" class:share-card-multi={share.paths.length > 1}>
+            <div class="share-card-head">
+              <span class="share-card-icon" aria-hidden="true">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M9 1.5H4.5A1.5 1.5 0 0 0 3 3v10a1.5 1.5 0 0 0 1.5 1.5h7A1.5 1.5 0 0 0 13 13V5.5L9 1.5Z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" />
+                  <path d="M9 1.5V5.5H13" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" />
+                </svg>
+              </span>
+              <span class="share-card-label">
+                Shared {share.paths.length === 1 ? 'a file' : `${share.paths.length} files`}
+              </span>
+              <span class="share-card-permission">{share.permission}</span>
+            </div>
+            <ul class="share-card-paths">
+              {#each share.paths as p (p)}
+                <li class="share-card-path" title={p}>{shareTitle(p)}</li>
+              {/each}
+            </ul>
+            {#if share.note}
+              <p class="share-card-note">{share.note}</p>
+            {/if}
+          </div>
+        {:else}
+          <p class="dm-bubble-body selectable-text">{@html renderMessageBodyMarkdown(msg.body)}</p>
+        {/if}
         {#if msg.details}
           <div class="dm-bubble-details selectable-text">{msg.details}</div>
         {/if}
-        {#if msg.prompt}
-          <button
-            class="btn btn-copy"
-            onclick={() => copyText(msg.eventId, 'prompt', msg)}
-            aria-label="Copy agent prompt to clipboard"
-          >
-            {isCopied(msg.eventId, 'prompt') ? 'Copied!' : 'Copy prompt'}
-          </button>
+        {#if msg.prompt || msg.share}
+          <div class="dm-bubble-cta-row">
+            {#if msg.prompt}
+              <button
+                class="btn btn-copy"
+                onclick={() => copyText(msg.eventId, 'prompt', msg)}
+                aria-label={msg.share ? 'Copy share prompt to clipboard' : 'Copy agent prompt to clipboard'}
+              >
+                {isCopied(msg.eventId, 'prompt') ? 'Copied!' : 'Copy prompt'}
+              </button>
+            {/if}
+            {#if msg.share && onopenshareinclaude}
+              {@const share = msg.share}
+              <button
+                class="btn btn-copy"
+                onclick={() => onopenshareinclaude(share)}
+                aria-label="Open share in Claude Code with prompt"
+              >
+                Open in Claude ↗
+              </button>
+            {/if}
+          </div>
         {/if}
       </div>
       {#if hasReplies(msg)}
@@ -601,6 +654,108 @@
 
   .btn-copy:hover {
     background: var(--c-field-bg);
+  }
+
+  .dm-bubble-cta-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.375rem;
+  }
+
+  /* ── Inline share card (share history in Messages) ────────────────────── */
+
+  .share-card {
+    display: flex;
+    flex-direction: column;
+    gap: 0.375rem;
+    min-width: 180px;
+  }
+
+  .share-card-head {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+  }
+
+  .share-card-icon {
+    display: inline-flex;
+    color: var(--popover-text-muted, #a0a0b0);
+  }
+
+  .share-card-label {
+    font-size: var(--text-base);
+    font-weight: 600;
+    color: var(--popover-text, #e8e8ee);
+  }
+
+  .share-card-permission {
+    margin-left: auto;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--popover-text-muted, #a0a0b0);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 999px;
+    padding: 0.0625rem 0.375rem;
+  }
+
+  .share-card-paths {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.125rem;
+  }
+
+  .share-card-path {
+    font-size: var(--text-base);
+    color: var(--popover-text, #e0e0e0);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .share-card-note {
+    margin: 0;
+    font-size: var(--text-base);
+    color: var(--popover-text, #e0e0e0);
+    /* Token-driven so the note chip adapts in the light-mode desktop host
+       (a dark-tuned rgba(0,0,0,.18) literal read as a heavy grey band). */
+    background: var(--popover-surface, rgba(0, 0, 0, 0.18));
+    border-left: 2px solid var(--popover-divider, rgba(255, 255, 255, 0.15));
+    padding: 0.375rem 0.625rem;
+    border-radius: 0 4px 4px 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  /* Messages-window (desktop token) skin for the share card. */
+  :global([data-window='messages']) .share-card-label {
+    color: var(--fg);
+  }
+
+  :global([data-window='messages']) .share-card-icon {
+    color: var(--muted-2);
+  }
+
+  :global([data-window='messages']) .share-card-permission {
+    font-family: var(--font-mono);
+    color: var(--muted-2);
+    border-color: var(--border-strong);
+  }
+
+  :global([data-window='messages']) .share-card-path {
+    color: var(--fg);
+  }
+
+  :global([data-window='messages']) .share-card-note {
+    font-size: var(--text-base);
+    color: var(--fg);
+    background: var(--surface-panel);
+    border-left: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
   }
 
   /* ── Reply composer ───────────────────────────────────────────────────── */
