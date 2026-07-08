@@ -5,6 +5,7 @@
   import { open } from '@tauri-apps/plugin-shell';
   import { onMount, untrack } from 'svelte';
   import ConflictModal from './ConflictModal.svelte';
+  import NotificationFeed from './NotificationFeed.svelte';
   import WorkspaceList from './WorkspaceList.svelte';
   import CopyPromptButton from './CopyPromptButton.svelte';
   import OpenInClaudeCodeButton from './OpenInClaudeCodeButton.svelte';
@@ -225,6 +226,17 @@
   let syncStatusLoading = $state(true);
   let syncStatusError = $state('');
   let lastWindowHeight = $state(0);
+
+  // ── Notifications-first tabs (redesign) ───────────────────────────────────
+  // Notifications is the default tab; the feed stays mounted while hidden so
+  // its realtime listeners + unread count survive tab switches.
+  let activeTab = $state<'notifications' | 'workspaces'>('notifications');
+  let unreadCount = $state(0);
+  let feedEl: NotificationFeed | undefined = $state();
+
+  function handleMarkAllRead() {
+    feedEl?.markAllRead();
+  }
 
   const stateOrder: Record<Workspace['state'], number> = {
     personal: 0,
@@ -1119,6 +1131,52 @@
       </div>
     {/if}
 
+    <div class="mbp-tabs" role="tablist" aria-label="Popover sections">
+      <button
+        class="mbp-tab"
+        class:active={activeTab === 'notifications'}
+        type="button"
+        role="tab"
+        aria-selected={activeTab === 'notifications'}
+        onclick={() => (activeTab = 'notifications')}
+      >
+        Notifications
+        {#if unreadCount > 0}
+          <span class="mbp-tab-badge">{unreadCount > 99 ? '99+' : unreadCount}</span>
+        {/if}
+      </button>
+      <button
+        class="mbp-tab"
+        class:active={activeTab === 'workspaces'}
+        type="button"
+        role="tab"
+        aria-selected={activeTab === 'workspaces'}
+        onclick={() => (activeTab = 'workspaces')}
+      >
+        Workspaces
+      </button>
+    </div>
+
+    <!-- Notifications — recent DMs, shares, and new-file activity. A tap opens
+         the matching detail window; grouped new-file rows expand inline. Kept
+         mounted while hidden so listeners + unread count persist. -->
+    <div class="mbp-panel" class:hidden={activeTab !== 'notifications'}>
+      <section class="mbp-sec" aria-labelledby="popover-notifications-label">
+        <div class="mbp-sec-head">
+          <div class="mbp-lab" id="popover-notifications-label">Notifications</div>
+          <button class="mbp-sec-action" type="button" onclick={handleMarkAllRead}>
+            Mark all read
+          </button>
+        </div>
+        <NotificationFeed
+          bind:this={feedEl}
+          showDayLabels={false}
+          onunreadchange={(n) => (unreadCount = n)}
+        />
+      </section>
+    </div>
+
+    <div class="mbp-panel" class:hidden={activeTab !== 'workspaces'}>
     <section class="mbp-sec" aria-labelledby="popover-workspaces-label">
       <div class="mbp-lab" id="popover-workspaces-label">Workspaces</div>
       {#if compactWorkspaces.length > 0}
@@ -1193,6 +1251,7 @@
         </div>
       {/if}
     </section>
+    </div>
     </div>
   </div>
 
@@ -1803,5 +1862,93 @@
   .mbp-pill:disabled {
     opacity: 0.55;
     cursor: default;
+  }
+
+  /* ── Notifications-first tabs ───────────────────────────────────────────── */
+  .mbp-tabs {
+    display: flex;
+    gap: 4px;
+    margin: 0 8px 2px;
+    padding: 3px;
+    border-radius: 9px;
+    background: var(--popover-seg-track, var(--pop-hover));
+  }
+
+  .mbp-tab {
+    flex: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    height: 24px;
+    padding: 0 8px;
+    border: 0;
+    border-radius: 7px;
+    background: transparent;
+    color: var(--pop-muted);
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.12s, color 0.12s;
+  }
+
+  .mbp-tab:hover {
+    color: var(--pop-text);
+  }
+
+  .mbp-tab:focus-visible {
+    outline: 1.5px solid var(--popover-focus-ring, var(--pop-accent));
+    outline-offset: var(--popover-focus-offset, 2px);
+  }
+
+  .mbp-tab.active {
+    background: var(--popover-seg-active, var(--pop-bg));
+    color: var(--pop-text);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+  }
+
+  .mbp-tab-badge {
+    min-width: 16px;
+    padding: 1px 5px;
+    border-radius: 999px;
+    background: var(--popover-unread, var(--pop-accent));
+    color: #ffffff;
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 1.3;
+  }
+
+  .mbp-panel.hidden {
+    display: none;
+  }
+
+  .mbp-sec-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-right: 8px;
+  }
+
+  .mbp-sec-action {
+    border: 0;
+    padding: 2px 6px;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--pop-muted);
+    font-family: inherit;
+    font-size: 10.5px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .mbp-sec-action:hover {
+    color: var(--pop-text);
+    background: var(--pop-hover);
+  }
+
+  .mbp-sec-action:focus-visible {
+    outline: 1.5px solid var(--popover-focus-ring, var(--pop-accent));
+    outline-offset: var(--popover-focus-offset, 2px);
   }
 </style>

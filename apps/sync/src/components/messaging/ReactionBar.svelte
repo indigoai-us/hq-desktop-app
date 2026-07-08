@@ -22,9 +22,14 @@
     // Called with (messageId, emoji) when a pill or a picked emoji is tapped. The
     // host performs the optimistic toggle + the toggle_reaction invoke.
     ontoggle: (messageId: string, emoji: string) => void;
+    // Compact treatment for dense list rows (the notification feed): smaller
+    // pills, and the add-reaction trigger stays visually quiet until the row
+    // is hovered / focused (it remains in the tab order — hidden by opacity,
+    // not display, so keyboard users can still reach it).
+    compact?: boolean;
   }
 
-  let { messageId, reactions = [], ontoggle }: Props = $props();
+  let { messageId, reactions = [], ontoggle, compact = false }: Props = $props();
 
   let pickerOpen = $state(false);
 
@@ -38,7 +43,7 @@
   }
 </script>
 
-<div class="reaction-bar">
+<div class="reaction-bar" class:compact>
   {#each reactions as r (r.emoji)}
     <button
       class="reaction-pill"
@@ -107,7 +112,9 @@
     outline: none;
   }
 
-  /* Highlighted when the caller is among the reactors. */
+  /* Highlighted when the caller is among the reactors. Count color is
+     token-driven — the old #dce8ff literal vanished on light-mode hosts
+     (popover feed / desktop notifications). */
   .reaction-pill.reacted {
     background: var(--c-field-bg);
     border-color: var(--c-field-border);
@@ -168,5 +175,37 @@
     font-size: var(--text-base);
     font-weight: 600;
     line-height: 1;
+  }
+
+  /* ── Compact mode (dense feed rows) ─────────────────────────────────────
+     Smaller pills; the add trigger fades in on hover/focus of the bar (or of
+     an ancestor `.reaction-hover-scope`, e.g. the whole feed row) so the
+     resting row stays quiet. Existing reaction chips stay inline always. */
+  .reaction-bar.compact {
+    gap: 0.1875rem;
+    margin: 0.25rem 0 0;
+  }
+
+  .reaction-bar.compact .reaction-pill {
+    min-height: 1.375rem;
+    padding: 0.0625rem 0.4375rem;
+    font-size: 11px;
+  }
+
+  .reaction-bar.compact .reaction-add {
+    min-width: 1.375rem;
+    min-height: 1.375rem;
+    padding: 0 0.25rem;
+    font-size: 11px;
+    opacity: 0;
+    transition: opacity 0.12s ease, background-color 0.12s ease, color 0.12s ease;
+  }
+
+  .reaction-bar.compact:hover .reaction-add,
+  .reaction-bar.compact:focus-within .reaction-add,
+  .reaction-bar.compact .reaction-add[aria-expanded='true'],
+  :global(.reaction-hover-scope:hover) .reaction-bar.compact .reaction-add,
+  :global(.reaction-hover-scope:focus-within) .reaction-bar.compact .reaction-add {
+    opacity: 1;
   }
 </style>

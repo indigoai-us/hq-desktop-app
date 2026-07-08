@@ -156,32 +156,32 @@ describe('US-002 hotkeys — ⌘1..9 over the V4 destinations', () => {
     company({ slug: 'second', displayName: 'Second', state: 'synced' }),
   ]);
 
-  it('maps ⌘1–⌘6 to the six primary destinations in sidebar order, with Mission Control under Home', () => {
+  it('maps ⌘1–⌘7 to the seven primary destinations in sidebar order, with Notifications under Messages', () => {
     const meta = (key: string) => getDesktopHotkeyRoute({ key, metaKey: true, ctrlKey: false }, companies);
     expect(meta('1')).toEqual({ kind: 'home' });
     expect(meta('2')).toEqual({ kind: 'mission-control' });
     expect(meta('3')).toEqual({ kind: 'companies' });
     expect(meta('4')).toEqual({ kind: 'messages' });
-    expect(meta('5')).toEqual({ kind: 'meetings' });
-    expect(meta('6')).toEqual({ kind: 'library' });
+    expect(meta('5')).toEqual({ kind: 'notifications' });
+    expect(meta('6')).toEqual({ kind: 'meetings' });
+    expect(meta('7')).toEqual({ kind: 'library' });
   });
 
-  it('maps ⌘7+ to companies in list order, ctrl works too, and unmodified keys do nothing', () => {
+  it('maps ⌘8+ to companies in list order, ctrl works too, and unmodified keys do nothing', () => {
     expect(
-      getDesktopHotkeyRoute({ key: '7', metaKey: true, ctrlKey: false }, companies),
+      getDesktopHotkeyRoute({ key: '8', metaKey: true, ctrlKey: false }, companies),
     ).toEqual({ kind: 'company', slug: 'first' });
     expect(
-      getDesktopHotkeyRoute({ key: '8', metaKey: false, ctrlKey: true }, companies),
+      getDesktopHotkeyRoute({ key: '9', metaKey: false, ctrlKey: true }, companies),
     ).toEqual({ kind: 'company', slug: 'second' });
-    // No company at ⌘9 here → no route.
-    expect(getDesktopHotkeyRoute({ key: '9', metaKey: true, ctrlKey: false }, companies)).toBeNull();
+    // Only two company slots exist (⌘8/⌘9) — a third company gets none.
     expect(getDesktopHotkeyRoute({ key: '1', metaKey: false, ctrlKey: false }, companies)).toBeNull();
   });
 
-  it('labels company hotkeys ⌘7–⌘9 and none past the ninth slot', () => {
-    expect(companyHotkey(0)).toBe('⌘7');
-    expect(companyHotkey(2)).toBe('⌘9');
-    expect(companyHotkey(3)).toBeUndefined();
+  it('labels company hotkeys ⌘8–⌘9 and none past the ninth slot', () => {
+    expect(companyHotkey(0)).toBe('⌘8');
+    expect(companyHotkey(1)).toBe('⌘9');
+    expect(companyHotkey(2)).toBeUndefined();
   });
 });
 
@@ -193,6 +193,7 @@ describe('US-002 pending-route aliases (desktop_alt_consume_pending_route)', () 
   it('resolves the V4 destinations and rejects unknown intents', () => {
     expect(resolvePendingDesktopRoute('meetings')).toEqual({ kind: 'meetings' });
     expect(resolvePendingDesktopRoute('messages')).toEqual({ kind: 'messages' });
+    expect(resolvePendingDesktopRoute('notifications')).toEqual({ kind: 'notifications' });
     expect(resolvePendingDesktopRoute('home')).toEqual({ kind: 'home' });
     expect(resolvePendingDesktopRoute('mission-control')).toEqual({ kind: 'mission-control' });
     expect(resolvePendingDesktopRoute('companies')).toEqual({ kind: 'companies' });

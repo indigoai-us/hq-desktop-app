@@ -38,7 +38,7 @@
 //!   `DM_NOTIFY_SEND_OK` / `_SEND_FAIL` — outbound send result.
 
 use std::collections::HashMap;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -727,6 +727,150 @@ pub fn set_active_conversation(
     Ok(())
 }
 
+/// Managed state: the share events currently visible in a share surface
+/// (ShareDetail window, popover/desktop notification feed, or the Messages
+/// share timeline), so the SINGLE poll path can re-fetch their reactions on a
+/// "reaction" wake (share reactions, hq-pro contract: messageScope
+/// `share:{eventId}`, messageId = eventId). Kept SEPARATE from
+/// `ActiveConversationState` on purpose: shares are many one-message scopes,
+/// and registering them must not clobber the open DM/channel conversation
+/// (nor vice versa).
+#[derive(Default)]
+pub struct WatchedSharesInner {
+    /// The share eventIds currently rendered by a share surface.
+    pub event_ids: Vec<String>,
+    /// eventId → last-emitted aggregate snapshot (serialized) so the poll only
+    /// emits genuinely-changed reaction sets.
+    pub last_seen: HashMap<String, String>,
+}
+
+pub struct WatchedSharesState(pub Mutex<WatchedSharesInner>);
+
+impl WatchedSharesState {
+    pub fn new() -> Self {
+        WatchedSharesState(Mutex::new(WatchedSharesInner::default()))
+    }
+}
+
+/// Tauri command: register the share events currently visible in a share
+/// surface (replace semantics — the newest caller wins, mirroring how only one
+/// share surface is focused at a time). An empty list clears the watch. The
+/// `last_seen` snapshots of ids that stay watched survive the replace so a
+/// re-registration doesn't re-emit unchanged aggregate sets.
+#[tauri::command]
+pub fn set_watched_shares(app: AppHandle, event_ids: Vec<String>) -> Result<(), String> {
+    let Some(state) = app.try_state::<WatchedSharesState>() else {
+        return Ok(());
+    };
+    let ids: Vec<String> = event_ids
+        .into_iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let mut guard = state.0.lock().unwrap_or_else(|p| p.into_inner());
+    guard.last_seen.retain(|k, _| ids.contains(k));
+    log(
+        LOG_TAG,
+        &format!("DM_NOTIFY_WATCHED_SHARES_SET count={}", ids.len()),
+    );
+    guard.event_ids = ids;
+    Ok(())
+}
+
+/// Build the `share:{eventId}` messageScope for one share event. The share's
+/// eventId is BOTH the scope id and the messageId (hq-pro contract).
+pub(crate) fn share_scope(event_id: &str) -> String {
+    format!("share:{}", event_id.trim())
+}
+
+/// Re-fetch reactions for every watched share and emit `message:reaction` for
+/// any share whose aggregate set changed since the last poll. Folded into the
+/// SINGLE `do_poll` path right beside `poll_reactions` (NOT a parallel poller).
+/// Best-effort; no-op when no share surface is registered.
+async fn poll_share_reactions(app: &AppHandle, base_url: &str, access_token: &str) {
+    let event_ids = {
+        let Some(state) = app.try_state::<WatchedSharesState>() else {
+            return;
+        };
+        let guard = state.0.lock().unwrap_or_else(|p| p.into_inner());
+        if guard.event_ids.is_empty() {
+            return;
+        }
+        guard.event_ids.clone()
+    };
+
+    for event_id in &event_ids {
+        let scope = share_scope(event_id);
+        let url = format!(
+            "{}/v1/notify/reactions?messageScope={}&messageId={}",
+            base_url,
+            esc_thread_seg(&scope),
+            esc_thread_seg(event_id),
+        );
+        let resp = build_client()
+            .get(&url)
+            .header("authorization", format!("Bearer {}", access_token))
+            .send()
+            .await;
+
+        let reactions = match resp {
+            Err(e) => {
+                log(LOG_TAG, &format!("DM_NOTIFY_SHARE_REACTION_POLL_NETWORK_FAIL {e}"));
+                continue;
+            }
+            Ok(r) => {
+                let status = r.status();
+                if !status.is_success() {
+                    log(
+                        LOG_TAG,
+                        &format!("DM_NOTIFY_SHARE_REACTION_POLL_ERROR status={status}"),
+                    );
+                    continue;
+                }
+                match r.json::<Vec<crate::commands::messages::ReactionAggregate>>().await {
+                    Ok(v) => v,
+                    Err(e) => {
+                        log(LOG_TAG, &format!("DM_NOTIFY_SHARE_REACTION_POLL_ERROR parse: {e}"));
+                        continue;
+                    }
+                }
+            }
+        };
+
+        // Compare against the last-emitted snapshot; emit only on a change.
+        // Bail if the watch was cleared/replaced while we were fetching.
+        let snapshot = serde_json::to_string(&reactions).unwrap_or_default();
+        let changed = {
+            let Some(state) = app.try_state::<WatchedSharesState>() else {
+                return;
+            };
+            let mut guard = state.0.lock().unwrap_or_else(|p| p.into_inner());
+            if !guard.event_ids.contains(event_id) {
+                continue; // this share is no longer watched — stale fetch
+            }
+            if guard.last_seen.get(event_id) == Some(&snapshot) {
+                false
+            } else {
+                guard.last_seen.insert(event_id.clone(), snapshot);
+                true
+            }
+        };
+
+        if changed {
+            let payload = crate::commands::messages::MessageReactions {
+                message_scope: scope.clone(),
+                message_id: event_id.to_string(),
+                reactions,
+            };
+            log(
+                LOG_TAG,
+                &format!("DM_NOTIFY_SHARE_REACTION_CHANGED scope={scope}"),
+            );
+            let _ = app.emit(EVENT_MESSAGE_REACTION, &payload);
+        }
+    }
+}
+
 /// Re-fetch reactions for the open conversation and emit `message:reaction` for
 /// any message whose aggregate set changed since the last poll (US-025). Folded
 /// into the SINGLE `do_poll` path (NOT a parallel poller). Best-effort: any
@@ -1350,6 +1494,12 @@ async fn do_poll(app: &AppHandle) {
     // whose aggregate set changed. No-op when no conversation is open. NOT a
     // parallel poller.
     poll_reactions(app, &base_url, &access_token).await;
+
+    // Share-reaction polling rides the same wake: a "reaction" wake for a
+    // `share:` scope arrives on the person topic exactly like a `dm:` one, so
+    // re-fetching the watched shares here keeps every visible share surface
+    // live without a parallel poller.
+    poll_share_reactions(app, &base_url, &access_token).await;
 
     let entry = read_cursor_entry(&machine_id);
     let since = entry.cursor.clone();

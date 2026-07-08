@@ -6,9 +6,19 @@ const previewLabel =
     new URLSearchParams(location.search).get('window')) ||
   'main';
 
+export class LogicalSize {
+  width: number;
+  height: number;
+  constructor(width: number, height: number) {
+    this.width = width;
+    this.height = height;
+  }
+}
+
 export function getCurrentWindow() {
   return {
     label: previewLabel,
+    async setSize() {},
     async listen() {
       return () => {};
     },

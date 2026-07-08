@@ -4,6 +4,7 @@
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { onMount, tick } from 'svelte';
   import { loadMeetingsCache } from '../lib/meetingsCache';
+  import { MESSAGE_PERSON_EVENT } from '../lib/pendingConversation';
   import { effectiveTotalFiles as computeEffectiveTotalFiles } from '../lib/effective-total-files';
   import type { Workspace, WorkspacesResult } from '../lib/workspaces';
   import HomePage from './pages/HomePage.svelte';
@@ -11,6 +12,7 @@
   import MeetingsPage from './pages/MeetingsPage.svelte';
   import LibraryPage from './pages/LibraryPage.svelte';
   import MessagesPage from './pages/MessagesPage.svelte';
+  import NotificationsPage from './pages/NotificationsPage.svelte';
   import CompanyPage from './pages/CompanyPage.svelte';
   import CompaniesPage from './pages/CompaniesPage.svelte';
   import SettingsPage from './pages/SettingsPage.svelte';
@@ -328,17 +330,24 @@
       action: () => navigate({ kind: 'messages' }),
     },
     {
+      id: 'command-go-notifications',
+      label: 'Go to Notifications',
+      detail: 'DMs, shares, and new-file activity',
+      shortcut: '⌘5',
+      action: () => navigate({ kind: 'notifications' }),
+    },
+    {
       id: 'command-go-meetings',
       label: 'Go to Meetings',
       detail: 'Show calendar and recordings',
-      shortcut: '⌘5',
+      shortcut: '⌘6',
       action: () => navigate({ kind: 'meetings' }),
     },
     {
       id: 'command-go-library',
       label: 'Go to Library',
       detail: 'Skills, workers, and the marketplace',
-      shortcut: '⌘6',
+      shortcut: '⌘7',
       action: () => navigate({ kind: 'library' }),
     },
     ...LIBRARY_SECTIONS.filter((section) => section.id !== DEFAULT_LIBRARY_TAB).map(
@@ -417,6 +426,10 @@
   // return the user to where they were (default Home). Updated on every
   // navigation AWAY from a non-files route (US-010).
   let routeBeforeFiles = $state<DesktopRoute>({ kind: 'home' });
+
+  function handleMessagePerson(): void {
+    navigate({ kind: 'messages' });
+  }
 
   function navigate(nextRoute: DesktopRoute) {
     // Remember where we were before entering Files mode so the exit control can
@@ -905,6 +918,10 @@
     window.addEventListener('keydown', handleKeydown);
     window.addEventListener('focus', hydrateMeetingStatus);
     window.addEventListener('storage', hydrateMeetingStatus);
+    // "Message the sharer" (and future message-person deep links): a page
+    // stashed a pending conversation (lib/pendingConversation) — route to the
+    // Messages destination; the MessagesShell there consumes the stash.
+    window.addEventListener(MESSAGE_PERSON_EVENT, handleMessagePerson);
 
     void getCurrentWindow()
       .onFocusChanged(({ payload: focused }) => {
@@ -1151,6 +1168,7 @@
       window.removeEventListener('keydown', handleKeydown);
       window.removeEventListener('focus', hydrateMeetingStatus);
       window.removeEventListener('storage', hydrateMeetingStatus);
+      window.removeEventListener(MESSAGE_PERSON_EVENT, handleMessagePerson);
     };
   });
 </script>
@@ -1279,6 +1297,10 @@
           {:else if route.kind === 'messages'}
             <div class="messages-host">
               <MessagesPage />
+            </div>
+          {:else if route.kind === 'notifications'}
+            <div class="page">
+              <NotificationsPage />
             </div>
           {:else if route.kind === 'moderation'}
             <!-- Admin-only. Rendered only when the admin gate is satisfied

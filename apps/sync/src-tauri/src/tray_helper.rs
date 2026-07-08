@@ -82,6 +82,16 @@ pub fn spawn_and_poll(app: &AppHandle) {
                     "sync" => {
                         let _ = app.emit("tray:sync-now", ());
                     }
+                    // Right-click menu: "Open desktop view" / "Sign Out". Both
+                    // are relayed to the frontend, which routes them through
+                    // the same guarded paths the popover uses (the desktop
+                    // window gate is re-checked by open_desktop_alt_window).
+                    "desktop" => {
+                        let _ = app.emit("tray:open-desktop", ());
+                    }
+                    "signout" => {
+                        let _ = app.emit("tray:sign-out", ());
+                    }
                     "quit" => app.exit(0),
                     other => log("tray", &format!("native helper: unknown cmd '{other}'")),
                 }

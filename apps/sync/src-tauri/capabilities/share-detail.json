@@ -1,8 +1,10 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "share-detail",
-  "description": "Capability set for the share-detail window. Receives event list via IPC; uses window.open() (Web API, no shell plugin needed) for the HQ Console link.",
-  "windows": ["share-detail"],
+  "description": "Capability set for the share-detail window. Receives event list via IPC; uses window.open() (Web API, no shell plugin needed) for the HQ Console link. Share reactions + reply: the window additionally invokes toggle_reaction / fetch_reactions (messageScope 'share:{eventId}', messageId = eventId), set_watched_shares (registers the visible share eventIds with the SINGLE DM poll path so a 'reaction' wake re-fetches and emits message:reaction), and open_messages_window (the 'Message the sharer' action deep-links the Messages window with a pending conversation target).",
+  "windows": [
+    "share-detail"
+  ],
   "permissions": [
     "core:default",
     "core:event:default",

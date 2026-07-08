@@ -54,6 +54,17 @@ textarea,
   --popover-progress-track: var(--pop-hover);
   --popover-progress-fill: var(--pop-accent);
   --popover-blur: blur(32px) saturate(1.7);
+  --popover-border-width: 0.5px;
+  /* Redesign accents (notifications-first popover) — status dots, the unread
+     indicator, and the segmented-control fill, aliased over the --pop-*
+     contract where possible. */
+  --popover-status-ok: #28a745;
+  --popover-status-busy: #e6a700;
+  --popover-status-paused: #e8590c;
+  --popover-unread: #0a6cff;
+  --popover-seg-track: var(--pop-hover);
+  --popover-seg-active: var(--pop-bg);
+  --popover-footer-button-bg: var(--pop-hover);
 
   /* ---- Type scale ---------------------------------------------------- */
   /* Match the desktop app: one body size and one display size. Hierarchy is
