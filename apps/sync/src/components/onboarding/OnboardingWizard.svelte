@@ -1272,23 +1272,26 @@
               <button type="button" onclick={handleCopyImportPrompt}>{importPromptCopied ? 'Import copied' : 'Copy /import-claude'}</button>
             </div>
           {/if}
-          <div class="btns">
-            <button
-              class="btn btn-primary"
-              type="button"
-              disabled={launching !== null}
-              onclick={handleLaunchClaudeCode}
-            >
-              {launching === 'claude' ? 'Opening…' : 'Open in Claude Code'}
-            </button>
-            <button
-              class="btn btn-secondary"
-              type="button"
-              disabled={launching !== null}
-              onclick={handleLaunchCodex}
-            >
-              {launching === 'codex' ? 'Opening…' : 'Open in Codex'}
-            </button>
+          <div class="btns split">
+            <div class="btn-group">
+              <button
+                class="btn btn-secondary"
+                type="button"
+                disabled={launching !== null}
+                onclick={handleLaunchClaudeCode}
+              >
+                {launching === 'claude' ? 'Opening…' : 'Open in Claude Code'}
+              </button>
+              <button
+                class="btn btn-secondary"
+                type="button"
+                disabled={launching !== null}
+                onclick={handleLaunchCodex}
+              >
+                {launching === 'codex' ? 'Opening…' : 'Open in Codex'}
+              </button>
+            </div>
+            <button class="btn btn-primary" type="button" onclick={() => advanceTo(4)}>Continue</button>
           </div>
         </section>
 
@@ -1533,6 +1536,7 @@
   .check-row span:last-child { color:var(--c-muted); font-size:14px; line-height:20px; }
   .btns { display:flex; gap:8px; margin-top:auto; }
   .btns.split { justify-content:space-between; }
+  .btn-group { display:flex; gap:8px; }
   .btn { font-family:inherit; font-size:14px; font-weight:400; line-height:20px; padding:10px 16px; border-radius:8px; border:none; cursor:pointer; transition:opacity .15s, transform .1s; }
   .btn:active:not(:disabled) { transform:scale(.97); }
   .btn-primary { background:var(--c-btn-bg); color:var(--c-btn-fg); }
