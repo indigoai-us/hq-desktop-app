@@ -52,7 +52,8 @@ use crate::util::paths;
 
 #[allow(unused_imports)]
 pub use hq_desktop_core::hq_cli_update::{
-    cli_auto_update_enabled, cmp_semver, dismissed_cli_version, get_local_version,
+    auto_update_enabled, cli_auto_update_enabled, cmp_semver, dismissed_cli_version,
+    get_local_version,
     hq_version_string, install_argv, install_failure_report, is_cli_update_dismissed,
     is_prefix_permission_failure, npm_prefix_from_hq_bin, read_installed_version,
     report_install_failure, report_unreadable_version, suppress_for_dismissal,
@@ -320,7 +321,10 @@ pub fn setup_hq_cli_update_checker(app: &AppHandle) {
         loop {
             match check_once(&handle).await {
                 Ok(Some(_)) => {
-                    if cli_auto_update_enabled() {
+                    // Gate on the master `autoUpdate` switch (default ON). The
+                    // legacy `cliAutoUpdate` key is superseded — one toggle now
+                    // governs the app, CLI, and core auto-installers.
+                    if auto_update_enabled() {
                         log("hq-cli-update", "auto-update enabled — installing");
                         match install_hq_cli_update(handle.clone()).await {
                             Ok(_) => log("hq-cli-update", "auto-update succeeded"),

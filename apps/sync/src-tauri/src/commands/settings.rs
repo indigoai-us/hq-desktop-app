@@ -37,6 +37,9 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
             share_notifications: Some(true),
             dm_notifications: Some(true),
             cli_auto_update: Some(true),
+            // Master automatic-updates switch defaults ON — a fresh install
+            // keeps the app, CLI, and hq-core current silently.
+            auto_update: Some(true),
             staging_channel: Some(true),
             release_channel: None,
             meeting_detect_notify: Some(default_meeting_detect_notify()),
@@ -86,6 +89,11 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
         // hq_cli_update.rs on each background check so the toggle takes effect
         // without restart. Mirrors `dm_notifications`.
         cli_auto_update: Some(prefs.cli_auto_update.unwrap_or(true)),
+        // Master automatic-updates switch — defaults ON. Governs silent
+        // install of the app, CLI, and hq-core (see
+        // `hq_cli_update::auto_update_enabled`). Absent in older menubar.json
+        // files → true, so existing installs keep updating without asking.
+        auto_update: Some(prefs.auto_update.unwrap_or(true)),
         // Staging channel (@getindigo.ai-only): defaults ON so existing
         // builders' "Update to Staging" pill keeps rendering across the
         // upgrade. An explicit `false` flips them to the prod release

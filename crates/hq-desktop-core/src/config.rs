@@ -130,6 +130,19 @@ pub struct MenubarPrefs {
     /// files → treated as true (see `get_settings`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cli_auto_update: Option<bool>,
+    /// Master automatic-updates switch: when true (default), HQ installs ALL
+    /// updates silently, without asking — the menubar app itself (Tauri
+    /// self-update + restart), the globally-installed `hq` CLI (npm global),
+    /// and the hq-core scaffold (the drift-safe rescue, which preserves local
+    /// edits as `personal/` overrides). Read untyped by
+    /// `hq_cli_update::auto_update_enabled` so each updater picks the toggle up
+    /// without a restart; this typed field round-trips the single Settings
+    /// toggle through get/save_settings. Absent in older menubar.json files →
+    /// treated as true (see `get_settings`). Supersedes the standalone
+    /// `cli_auto_update` toggle — the CLI auto-installer now gates on this
+    /// master switch, so the two agree on a fresh install (both default ON).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_update: Option<bool>,
     /// Rescue-source channel for @getindigo.ai builders. When `true`
     /// (default), the Settings toggle is ON → the popover's `CoreState`
     /// runs against `indigoai-us/hq-core-staging` (drift vs staging main,
