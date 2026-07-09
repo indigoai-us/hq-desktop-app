@@ -991,7 +991,7 @@
                be misleading. Persisted via save_settings on every change so
                the next 6-hour updater poll picks up the new endpoint. -->
           {#if availableChannels.length > 1}
-            <div class="setting-row channel-row">
+            <div class="setting-row setting-row-stacked">
               <div class="setting-info">
                 <span class="setting-label">Release channel</span>
                 <span class="setting-desc">
@@ -1004,11 +1004,11 @@
                   {/if}
                 </span>
               </div>
-              <div class="channel-segments" role="radiogroup" aria-label="Release channel">
+              <div class="seg-track channel-segments" role="radiogroup" aria-label="Release channel">
                 {#each availableChannels as channel (channel)}
                   <button
                     type="button"
-                    class="channel-segment"
+                    class="seg"
                     class:active={displayedChannel === channel}
                     role="radio"
                     aria-checked={displayedChannel === channel}
@@ -1126,21 +1126,21 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 28px;
-    height: 28px;
+    width: 26px;
+    height: 26px;
     padding: 0;
     background: none;
     border: none;
-    border-radius: 9px;
-    color: var(--popover-text-muted, #a0a0b0);
+    border-radius: 7px;
+    color: var(--pop-icon);
     cursor: pointer;
     transition: background-color 0.1s ease, color 0.1s ease;
     flex-shrink: 0;
   }
 
   .back-button:hover {
-    background: var(--popover-action-hover, rgba(255, 255, 255, 0.05));
-    color: var(--popover-text, #e0e0e0);
+    background: var(--pop-hover);
+    color: var(--pop-text);
   }
 
   .saved-indicator {
@@ -1160,8 +1160,8 @@
   .settings-body {
     display: flex;
     flex-direction: column;
-    gap: var(--space-5);
-    padding: var(--space-2) var(--space-3) var(--space-4);
+    gap: 15px;
+    padding: var(--space-3);
   }
 
   /* Grouped inset list (macOS System Settings idiom). A muted uppercase
@@ -1175,28 +1175,34 @@
 
   .settings-group-title {
     margin: 0;
-    padding: 0 var(--space-2);
-    font-size: var(--text-xs);
+    padding: 0 4px;
+    font-size: 10px;
     font-weight: 600;
-    letter-spacing: 0.06em;
+    letter-spacing: 0.5px;
     text-transform: uppercase;
-    color: var(--popover-text-muted, #a0a0b0);
+    color: var(--pop-muted);
   }
 
   .settings-group {
     display: flex;
     flex-direction: column;
-    background: var(--popover-surface, rgba(255, 255, 255, 0.08));
-    border: 1px solid var(--popover-divider, rgba(255, 255, 255, 0.06));
-    border-radius: var(--radius-lg);
+    background: rgba(255, 255, 255, 0.55);
+    border: 0.5px solid var(--pop-border);
+    border-radius: 10px;
     overflow: hidden;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .settings-group {
+      background: rgba(255, 255, 255, 0.045);
+    }
   }
 
   /* Divider between consecutive rows within a group only. CSS adjacency
      ignores Svelte's {#if} anchor comments, so gated rows still divide
      correctly. */
   .settings-group > .setting-row + .setting-row {
-    border-top: 1px solid var(--popover-divider, rgba(255, 255, 255, 0.06));
+    border-top: 0.5px solid var(--pop-divider);
   }
 
   .settings-loading {
@@ -1228,7 +1234,7 @@
     align-items: center;
     justify-content: space-between;
     gap: var(--space-3);
-    padding: var(--space-3);
+    padding: 9px var(--space-3);
   }
 
   /* Vertical variant — label/desc on top, control on a second row spanning
@@ -1249,46 +1255,51 @@
   }
 
   .setting-label {
-    font-size: 0.8125rem;
+    font-size: 13px;
     font-weight: 500;
-    color: var(--popover-text, #e0e0e0);
+    color: var(--pop-text);
     cursor: default;
   }
 
   .setting-desc {
-    font-size: 0.6875rem;
-    color: var(--popover-text-muted, #a0a0b0);
-    line-height: 1.3;
+    font-size: 11px;
+    color: var(--pop-muted);
+    line-height: 1.32;
   }
 
   .setting-path {
-    font-size: 0.6875rem;
-    color: var(--popover-text-muted, #a0a0b0);
-    line-height: 1.3;
+    font-size: 11px;
+    color: var(--pop-muted);
+    line-height: 1.32;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
 
-  /* Change button */
+  /* Secondary pill button (Change… / Manage / Check Now / Enable). */
   .change-button {
-    font-size: 0.75rem;
+    font-size: 12px;
+    font-weight: 500;
     font-family: inherit;
-    padding: 0.25rem 0.625rem;
-    background: var(--popover-surface, rgba(255, 255, 255, 0.08));
-    color: var(--popover-text-muted, #a0a0b0);
-    border: 1px solid var(--popover-divider, rgba(255, 255, 255, 0.06));
-    border-radius: 9px;
+    padding: 4px 11px;
+    background: var(--pop-hover);
+    color: var(--pop-text);
+    border: 0.5px solid var(--pop-border);
+    border-radius: 7px;
     cursor: pointer;
-    transition: background-color 0.1s ease, color 0.1s ease, border-color 0.1s ease;
+    transition: background-color 0.12s ease;
     white-space: nowrap;
     flex-shrink: 0;
   }
 
   .change-button:hover {
-    background: var(--popover-action-hover, rgba(255, 255, 255, 0.05));
-    color: var(--popover-text, #e0e0e0);
-    border-color: var(--popover-border, rgba(255, 255, 255, 0.18));
+    background: rgba(0, 0, 0, 0.1);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .change-button:hover {
+      background: rgba(255, 255, 255, 0.16);
+    }
   }
 
   .change-button:disabled {
@@ -1302,13 +1313,13 @@
      Caret colour follows the muted text so the control reads as inactive
      until hovered/focused. */
   .default-recording-company {
-    font-size: 0.8125rem;
+    font-size: 12.5px;
     font-family: inherit;
     padding: 0.4375rem 1.75rem 0.4375rem 0.625rem;
-    background: var(--popover-surface, rgba(255, 255, 255, 0.08));
-    color: var(--popover-text, #e0e0e0);
-    border: 1px solid var(--popover-divider, rgba(255, 255, 255, 0.06));
-    border-radius: 9px;
+    background: var(--pop-hover);
+    color: var(--pop-text);
+    border: 0.5px solid var(--pop-border);
+    border-radius: 7px;
     cursor: pointer;
     width: 100%;
     text-overflow: ellipsis;
@@ -1320,119 +1331,79 @@
     background-position: right 0.5rem center;
   }
   .default-recording-company:hover {
-    background-color: var(--popover-action-hover, rgba(255, 255, 255, 0.05));
-    border-color: var(--popover-border, rgba(255, 255, 255, 0.18));
+    background-color: rgba(0, 0, 0, 0.1);
+  }
+  @media (prefers-color-scheme: dark) {
+    .default-recording-company:hover {
+      background-color: rgba(255, 255, 255, 0.16);
+    }
   }
   .default-recording-company:focus {
     outline: none;
-    border-color: var(--popover-border, rgba(255, 255, 255, 0.18));
+    border-color: var(--pop-border);
   }
 
   /* Permission status pill — informational, green-tinted "Enabled" state.
      Mirrors .version-value sizing so the value column stays aligned. */
   .perm-pill {
-    font-size: 0.6875rem;
+    font-size: 11px;
     font-weight: 600;
     padding: 0.1875rem 0.5rem;
-    border-radius: 9px;
-    background: rgba(52, 199, 89, 0.16);
-    color: #5fd27a;
-    white-space: nowrap;
-    flex-shrink: 0;
-  }
-
-  /* Release-channel segmented picker. Each segment is a button; the active
-     one is highlighted in the same primary tone as a "Saved" pill. Sized
-     to fit Stable / Beta / Alpha in one row without truncation; the row
-     re-flows to a column on narrow popovers via `.channel-row`. */
-  .channel-segments {
-    display: flex;
-    gap: 2px;
-    padding: 2px;
-    background: var(--popover-surface, rgba(255, 255, 255, 0.08));
-    border: 1px solid var(--popover-divider, rgba(255, 255, 255, 0.06));
-    border-radius: 9px;
-    flex-shrink: 0;
-  }
-
-  .channel-segment {
-    font-size: 0.6875rem;
-    font-family: inherit;
-    font-weight: 500;
-    padding: 0.1875rem 0.5rem;
-    background: transparent;
-    color: var(--popover-text-muted, #a0a0b0);
-    border: none;
     border-radius: 7px;
-    cursor: pointer;
-    transition: background-color 0.12s ease, color 0.12s ease;
+    background: var(--popover-success-bg);
+    color: var(--popover-success);
     white-space: nowrap;
+    flex-shrink: 0;
   }
 
-  .channel-segment:hover {
-    color: var(--popover-text, #e0e0e0);
-  }
-
-  .channel-segment.active {
-    background: var(--popover-primary, #ffffff);
-    color: var(--popover-primary-text, #111113);
-  }
-
-  /* The channel row's value column carries a wider control than the other
-     rows (3 segments, ~140px wide vs. a 36px toggle), so loosen the gap
-     and let the value column shrink the description if needed. */
-  .channel-row {
-    align-items: center;
-  }
+  /* Release-channel segmented picker. Styled by the shared native segmented
+     control (.seg-track / .seg / .seg.active in styles/popover.css). It sits
+     in a `.setting-row-stacked` so it spans the full row width below the
+     label, matching the prototype's Updates group. */
 
   /* Version value — monospace, subdued, aligned to the right like a
      value column. Not a button — purely informational. */
   .version-value {
     font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
-    font-size: 0.75rem;
-    color: var(--popover-text-muted, #a0a0b0);
+    font-size: 12.5px;
+    color: var(--pop-muted);
     white-space: nowrap;
     flex-shrink: 0;
   }
 
-  /* Toggle switch */
+  /* iOS-style switch — green when on, white knob in both states. */
   .toggle {
     position: relative;
-    width: 36px;
+    width: 34px;
     height: 20px;
     padding: 0;
-    background: var(--popover-surface, rgba(255, 255, 255, 0.08));
-    border: 1px solid var(--popover-divider, rgba(255, 255, 255, 0.06));
-    border-radius: 10px;
+    border: 0;
+    background: var(--switch-off, rgba(120, 120, 128, 0.28));
+    border-radius: 999px;
     cursor: pointer;
-    transition: background-color 0.2s ease, border-color 0.2s ease;
+    transition: background-color 0.16s ease;
     flex-shrink: 0;
   }
 
   .toggle.active {
-    background: var(--popover-primary, #ffffff);
-    border-color: var(--popover-primary, #ffffff);
+    background: var(--switch-on, #34c759);
   }
 
   .toggle-knob {
     position: absolute;
     top: 2px;
     left: 2px;
-    width: 14px;
-    height: 14px;
+    width: 16px;
+    height: 16px;
     background: #ffffff;
     border-radius: 50%;
-    transition: transform 0.2s ease;
+    box-shadow: 0 1px 2.5px rgba(0, 0, 0, 0.3);
+    transition: transform 0.16s ease;
     pointer-events: none;
   }
 
   .toggle.active .toggle-knob {
-    transform: translateX(16px);
-    /* Active pill is `--popover-primary` (white in dark mode, black in light).
-       Default knob is also white, so on dark mode the knob disappeared into
-       the pill. Flip the knob to the inverted contrast color when active so
-       it stays visible against the filled pill. */
-    background: var(--popover-primary-text, #111113);
+    transform: translateX(14px);
   }
 
   /* Platform sub-rows (shown when meeting detection is enabled) */
@@ -1464,18 +1435,18 @@
     width: 18px;
     height: 18px;
     padding: 0;
-    background: var(--popover-surface, rgba(255, 255, 255, 0.08));
-    border: 1px solid var(--popover-divider, rgba(255, 255, 255, 0.12));
+    background: var(--pop-hover);
+    border: 0.5px solid var(--pop-border);
     border-radius: 5px;
     cursor: pointer;
-    color: var(--popover-primary-text, #111113);
+    color: var(--pop-acc-fg);
     transition: background-color 0.15s ease, border-color 0.15s ease;
     flex-shrink: 0;
   }
 
   .platform-check.checked {
-    background: var(--popover-primary, #ffffff);
-    border-color: var(--popover-primary, #ffffff);
+    background: var(--pop-accent);
+    border-color: var(--pop-accent);
   }
 
   .ledger-path-row {

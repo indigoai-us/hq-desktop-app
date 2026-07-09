@@ -35,7 +35,7 @@ function getDesktopAltButton(source = popoverSource): string {
 }
 
 describe('US-004: Desktop view affordance in the redesigned popover', () => {
-  it('renders the desktop view CTA as the mbpop footer while Settings and overflow live in the header', () => {
+  it('renders the desktop view CTA as the mbpop footer while the overflow menu + Sync live in the header', () => {
     const gate = getDesktopAltGate();
     const compactGate = normalize(gate);
     const compactSource = normalize(popoverSource);
@@ -49,11 +49,14 @@ describe('US-004: Desktop view affordance in the redesigned popover', () => {
     expect(compactGate).toContain('data-testid="popover-open-desktop-view"');
     expect(compactGate).toContain('Open desktop view');
 
-    // Header now follows the prototype: HQ mark, settings gear, overflow, Sync.
+    // Notifications-first redesign header: HQ mark, overflow ("More"), Sync.
+    // Settings moved OUT of the header (no standalone gear) and into the More
+    // menu, which stays wired to openSettings.
     expect(compactSource).toContain('class="mbp-head"');
-    expect(compactSource).toContain('data-testid="popover-settings-gear"');
+    expect(compactSource).not.toContain('data-testid="popover-settings-gear"');
     expect(compactSource).toContain('data-testid="popover-overflow-button"');
     expect(compactSource).toContain('data-testid="popover-sync-button"');
+    expect(compactSource).toContain('onclick={openSettings}');
     expect(compactSource).not.toContain('class="header-icon-button desktop-alt-toggle"');
     expect(compactSource).not.toContain('<button class="footer-action" onclick={onsettings}>');
   });
@@ -86,7 +89,10 @@ describe('US-004: Desktop view affordance in the redesigned popover', () => {
 
     expect(compactSource).toContain("console.error('open_desktop_alt_window failed:', e)");
     expect(compactSource).toContain("showDesktopAltError('Could not open desktop view.')");
-    expect(compactSource).toContain('<div class="mbp-banner" role="status"> <p>{desktopAltError}</p> </div>');
+    // The failure notice folds into the notifications feed as a pinned
+    // system-notice row (alert glyph + preview) instead of a separate banner.
+    expect(compactSource).toContain('<div class="notif-row" role="status">');
+    expect(compactSource).toContain('<div class="notif-summary">{desktopAltError}</div>');
     expect(compactSource).toContain('desktopAltErrorTimer = setTimeout(() => {');
     expect(compactSource).toContain("desktopAltError = ''");
     expect(compactSource).toMatch(/},\s*5000\)/);

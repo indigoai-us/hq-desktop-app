@@ -10,6 +10,7 @@
   import { type ReactionEvent } from '../lib/reactions';
   import { ShareReactionController } from '../lib/shareReactionController.svelte';
   import ReactionBar from './messaging/ReactionBar.svelte';
+  import PopoverIcon from './PopoverIcon.svelte';
   import {
     loadNotificationItems,
     getLastReadTs,
@@ -41,9 +42,19 @@
      *  conversation); the popover default opens the standalone Messages
      *  window with the target. */
     onmessagesharer?: (share: ShareEvent) => void;
+    /** Suppress the "No notifications yet" empty state. The popover sets this
+     *  when it is rendering its own system-notice rows above the feed, so an
+     *  empty data feed doesn't read as "nothing here" while a sync-paused /
+     *  update row sits right above it. */
+    hideEmptyState?: boolean;
   }
 
-  let { onunreadchange, showDayLabels = true, onmessagesharer }: Props = $props();
+  let {
+    onunreadchange,
+    showDayLabels = true,
+    onmessagesharer,
+    hideEmptyState = false,
+  }: Props = $props();
 
   let loading = $state(true);
   let error = $state<string | null>(null);
@@ -179,13 +190,10 @@
 
 {#snippet leading(it: Item)}
   {#if hasAvatar(it.kind)}
-    <span class="notif-avatar notif-avatar-{it.kind}" aria-hidden="true">{initials(it.actor)}</span>
+    <span class="notif-avatar" aria-hidden="true">{initials(it.actor)}</span>
   {:else}
-    <span class="notif-icon-chip" aria-hidden="true">
-      <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-        <path d="M9 1.5H4.5A1.5 1.5 0 0 0 3 3v10a1.5 1.5 0 0 0 1.5 1.5h7A1.5 1.5 0 0 0 13 13V5.5L9 1.5Z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" />
-        <path d="M9 1.5V5.5H13" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" />
-      </svg>
+    <span class="notif-gly" aria-hidden="true">
+      <PopoverIcon name="files" size={14} />
     </span>
   {/if}
 {/snippet}
@@ -196,13 +204,14 @@
   {:else if error}
     <p class="notif-status notif-error" role="alert">{error}</p>
   {:else if items.length === 0}
-    <div class="notif-empty" role="status">
-      <svg class="notif-empty-bell" width="22" height="22" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-        <path d="M18 9a6 6 0 1 0-12 0c0 5-2 6.5-2 6.5h16S18 14 18 9Z" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
-        <path d="M10.3 19.5a2 2 0 0 0 3.4 0" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
-      </svg>
-      <p>No notifications yet</p>
-    </div>
+    {#if !hideEmptyState}
+      <div class="notif-empty" role="status">
+        <span class="notif-empty-bell" aria-hidden="true">
+          <PopoverIcon name="bell" size={30} />
+        </span>
+        <p>No notifications yet</p>
+      </div>
+    {/if}
   {:else}
     {#each groups as group (group.key)}
       <div class="notif-day">
@@ -274,11 +283,8 @@
                 (e.key === 'Enter' || e.key === ' ') &&
                 (e.preventDefault(), toggleCluster(row.key))}
             >
-              <span class="notif-icon-chip" aria-hidden="true">
-                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-                  <path d="M9 1.5H4.5A1.5 1.5 0 0 0 3 3v10a1.5 1.5 0 0 0 1.5 1.5h7A1.5 1.5 0 0 0 13 13V5.5L9 1.5Z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" />
-                  <path d="M9 1.5V5.5H13" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" />
-                </svg>
+              <span class="notif-gly" aria-hidden="true">
+                <PopoverIcon name="files" size={14} />
               </span>
               <div class="notif-main">
                 <div class="notif-line1">
@@ -331,21 +337,26 @@
     color: var(--popover-danger);
   }
 
-  /* Empty state — bell + "No notifications yet". */
+  /* Empty state — bell + "No notifications yet" (prototype `.empty`). */
   .notif-empty {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 8px;
-    padding: 28px 16px;
-    color: var(--popover-text-muted);
+    gap: 11px;
+    padding: 30px 16px 32px;
+    text-align: center;
+    color: var(--pop-muted);
   }
   .notif-empty-bell {
-    opacity: 0.7;
+    display: flex;
+    color: var(--pop-muted);
+    opacity: 0.85;
   }
   .notif-empty p {
     margin: 0;
-    font-size: var(--text-sm);
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--pop-muted);
   }
 
   .notif-day {
@@ -364,101 +375,11 @@
     z-index: 1;
   }
 
-  .notif-row {
-    display: flex;
-    align-items: flex-start;
-    gap: 9px;
-    padding: 7px 2px;
-    border-radius: 8px;
-  }
-  .notif-row.clickable {
-    cursor: pointer;
-  }
-  .notif-row.clickable:hover {
-    background: var(--popover-action-hover);
-  }
-
-  /* Leading 24px chips. Human rows (dm / share) carry an initials avatar with
-     a per-kind tint; ambient new-file rows keep a quiet neutral icon chip. */
-  .notif-avatar {
-    flex: 0 0 auto;
-    width: 24px;
-    height: 24px;
-    display: grid;
-    place-items: center;
-    border-radius: 50%;
-    font-size: 9.5px;
-    font-weight: 700;
-    letter-spacing: 0.02em;
-    margin-top: 1px;
-  }
-  .notif-avatar-dm {
-    background: rgba(126, 140, 255, 0.18);
-    color: #7e8cff;
-  }
-  .notif-avatar-share {
-    background: rgba(70, 214, 166, 0.18);
-    color: #2fb98a;
-  }
-  .notif-icon-chip {
-    flex: 0 0 auto;
-    width: 24px;
-    height: 24px;
-    display: grid;
-    place-items: center;
-    border-radius: 7px;
-    background: var(--popover-surface);
-    color: var(--popover-text-muted);
-    margin-top: 1px;
-  }
-
-  .notif-main {
-    flex: 1;
-    min-width: 0;
-  }
-  .notif-line1 {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 8px;
-  }
-  .notif-actor {
-    font-size: 13px;
-    font-weight: 600;
-    color: var(--popover-text-heading);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    min-width: 0;
-  }
-  .notif-meta {
-    flex: 0 0 auto;
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-  }
-  .notif-time {
-    font-size: 11px;
-    color: var(--popover-text-muted);
-    font-variant-numeric: tabular-nums;
-  }
-  .notif-unread-dot {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: var(--popover-unread, #0a84ff);
-  }
-  .notif-summary {
-    font-size: 12px;
-    color: var(--popover-text-muted);
-    margin-top: 1px;
-    line-height: 1.35;
-    overflow: hidden;
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    line-clamp: 2;
-    -webkit-box-orient: vertical;
-  }
+  /* The row shell + leading chips (.notif-row, .notif-avatar, .notif-gly,
+     .notif-main, .notif-line1, .notif-actor, .notif-meta, .notif-time,
+     .notif-unread-dot, .notif-summary) are defined globally in
+     styles/popover.css so the popover's synthetic system-notice rows and
+     these data rows render identically. Only feed-specific extras stay here. */
 
   /* Share-row inline actions: compact reaction chips + a quiet Message reply
      affordance revealed with the same hover scope as the add-reaction "+". */
