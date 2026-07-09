@@ -9,6 +9,7 @@
   import WorkspaceList from './WorkspaceList.svelte';
   import CopyPromptButton from './CopyPromptButton.svelte';
   import OpenInClaudeCodeButton from './OpenInClaudeCodeButton.svelte';
+  import PopoverIcon from './PopoverIcon.svelte';
   import { dedupeWorkspaces, joinableMemberships, type Workspace } from '../lib/workspaces';
   import { liveProgressCaption } from '../lib/live-progress-caption';
   import { isCorePath, CORE_SETUP_LABEL } from '../lib/progressLabel';
@@ -250,10 +251,47 @@
     dedupeWorkspaces(workspaces ?? []).sort((a, b) => stateOrder[a.state] - stateOrder[b.state]),
   );
 
+  const syncedWorkspaceCount = $derived(
+    compactWorkspaces.filter((w) => isWorkspaceSynced(w)).length,
+  );
+
   const membershipsToPull = $derived(
     joinableMemberships(workspaces ?? []).filter(
       (w) => !dismissedMemberships.has(w.slug),
     ),
+  );
+
+  // ── System notices in the feed (redesign) ──────────────────────────────────
+  // Conflict / update / membership / auth / error notices fold into the
+  // notifications list as pinned rows at the top instead of a separate banner
+  // stack above the status row. The active count feeds the segmented-control
+  // badge alongside the feed's own unread count, and tells NotificationFeed to
+  // suppress its empty state so a quiet data feed doesn't read as "nothing
+  // here" while a sync-paused row sits right above it.
+  const conflictModalActive = $derived(showConflictModal && conflicts.length > 0);
+  const systemNoticeCount = $derived(
+    (desktopAltError ? 1 : 0) +
+      (membershipsToPull.length > 0 ? 1 : 0) +
+      (updateAvailable ? 1 : 0) +
+      (syncState === 'conflict' && !conflictModalActive ? 1 : 0) +
+      (syncState === 'auth-error' ? 1 : 0) +
+      (syncState === 'error' && errorMessage ? 1 : 0) +
+      (manifestError ? 1 : 0) +
+      (!cloudReachable ? 1 : 0),
+  );
+  const hasSystemNotices = $derived(systemNoticeCount > 0 || conflictModalActive);
+  const notifBadge = $derived(unreadCount + systemNoticeCount);
+  const conflictNoticeText = $derived(
+    conflictCount > 0
+      ? `${conflictCount} file${conflictCount === 1 ? '' : 's'} changed in two places. Resolve in Claude Code, then Sync again.`
+      : 'A file changed in two places. Resolve in Claude Code, then Sync again.',
+  );
+  const membershipNoticeTitle = $derived(
+    membershipsToPull.length > 0
+      ? `Added to ${membershipsToPull[0].displayName}${
+          membershipsToPull.length > 1 ? ` + ${membershipsToPull.length - 1} more` : ''
+        }`
+      : '',
   );
 
   const barPct = $derived.by(() => {
@@ -721,24 +759,11 @@
       </svg>
     </span>
 
-    <button
-      class="mbp-icon"
-      type="button"
-      onclick={openSettings}
-      aria-label="Settings"
-      title="Settings"
-      data-testid="popover-settings-gear"
-    >
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
-        <circle cx="12" cy="12" r="3" />
-        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09A1.65 1.65 0 0 0 19.4 15Z" />
-      </svg>
-    </button>
-
     <div class="mbp-overflow">
       <button
         bind:this={overflowButtonEl}
         class="mbp-icon"
+        class:active={overflowOpen}
         type="button"
         onclick={toggleOverflow}
         aria-label="More"
@@ -746,7 +771,7 @@
         title="More"
         data-testid="popover-overflow-button"
       >
-        <span aria-hidden="true">⋯</span>
+        <PopoverIcon name="dots-three" size={18} />
       </button>
 
       {#if overflowOpen}
@@ -756,9 +781,32 @@
           role="menu"
           data-testid="popover-overflow-menu"
         >
-          <div class="mbp-menu-version">
-            <span>{hqVersion ? `HQ v${hqVersion}` : 'HQ version unknown'}</span>
-            {#if hqVersion === null}
+          <div class="mbp-menu-ver">
+            <div class="mv-text">
+              <span class="mv-name">{hqVersion ? `HQ v${hqVersion}` : 'HQ'}</span>
+              {#if updateAvailable}
+                <span class="mv-sub">v{updateAvailable.version} available</span>
+              {:else if hqVersion}
+                <span class="mv-sub ok">Up to date</span>
+              {:else}
+                <span class="mv-sub">Version unknown</span>
+              {/if}
+            </div>
+            {#if updateAvailable}
+              <button
+                class="mv-btn"
+                type="button"
+                onclick={() => {
+                  closeOverflow();
+                  oninstallupdate?.();
+                }}
+                disabled={updateInstalling || !oninstallupdate}
+                data-testid="popover-menu-update-button"
+              >
+                <PopoverIcon name="download-simple" size={13} />
+                {updateInstalling ? 'Updating…' : 'Update'}
+              </button>
+            {:else if hqVersion === null}
               <CopyPromptButton
                 variant="compact"
                 label="Copy prompt"
@@ -830,23 +878,30 @@
           <div class="mbp-menu-divider"></div>
 
           <button class="mbp-menu-item" type="button" role="menuitem" onclick={openSettings}>
-            Settings
+            <PopoverIcon name="gear" size={17} />
+            <span class="grow">Settings</span>
           </button>
           {#if desktopAltEnabled}
             <button class="mbp-menu-item" type="button" role="menuitem" onclick={openDesktopAltWindow}>
-              Open desktop view
+              <PopoverIcon name="laptop" size={17} />
+              <span class="grow">Open desktop view</span>
             </button>
           {/if}
           <button class="mbp-menu-item" type="button" role="menuitem" onclick={openActivityLog}>
-            Recent activity
+            <PopoverIcon name="clock-counter-clockwise" size={17} />
+            <span class="grow">Recent activity</span>
           </button>
           {#if meetingsEnabled && onmeetingsclick}
             <button class="mbp-menu-item" type="button" role="menuitem" onclick={openMeetings}>
-              Meetings{meetingsPromptActive ? ' · active' : ''}
+              <PopoverIcon name="video-camera" size={17} />
+              <span class="grow">Meetings</span>
+              {#if meetingsPromptActive}
+                <span class="mbp-menu-dot" title="Active"></span>
+              {/if}
             </button>
           {/if}
-          <button class="mbp-menu-item" type="button" role="menuitem" onclick={toggleWorkspaceActions}>
-            {showWorkspaceActions ? 'Hide workspace actions' : 'Workspace actions'}
+          <button class="mbp-menu-item no-icon" type="button" role="menuitem" onclick={toggleWorkspaceActions}>
+            <span class="grow">{showWorkspaceActions ? 'Hide workspace actions' : 'Workspace actions'}</span>
           </button>
 
           {#if hqCliUpdateAvailable || (packUpdateAvailable && packUpdateAvailable.count > 0)}
@@ -924,14 +979,14 @@
 
           <div class="mbp-menu-divider"></div>
 
-          <div class="mbp-menu-row">
-            <button class="mbp-menu-item danger" type="button" role="menuitem" onclick={onsignout}>
-              Sign out
-            </button>
-            <button class="mbp-menu-item danger" type="button" role="menuitem" onclick={handleQuit}>
-              Quit
-            </button>
-          </div>
+          <button class="mbp-menu-item danger" type="button" role="menuitem" onclick={onsignout}>
+            <PopoverIcon name="sign-out" size={17} />
+            <span class="grow">Sign out</span>
+          </button>
+          <button class="mbp-menu-item danger" type="button" role="menuitem" onclick={handleQuit}>
+            <PopoverIcon name="power" size={17} />
+            <span class="grow">Quit</span>
+          </button>
         </div>
       {/if}
     </div>
@@ -962,155 +1017,6 @@
 
   <div class="mbp-main">
     <div class="mbp-main-content" bind:this={popoverMainContentEl}>
-    {#if showConflictModal && conflicts.length > 0 && onresolve && onopen && ondismissconflicts}
-      <div class="mbp-notices">
-        <ConflictModal
-          {conflicts}
-          onresolve={onresolve}
-          onopen={onopen}
-          ondismiss={ondismissconflicts}
-        />
-      </div>
-    {/if}
-
-    {#if desktopAltError || updateAvailable || manifestError || !cloudReachable || membershipsToPull.length > 0 || syncState === 'auth-error' || (syncState === 'error' && errorMessage) || syncState === 'conflict'}
-      <div class="mbp-notices">
-        {#if desktopAltError}
-          <div class="mbp-banner" role="status">
-            <p>{desktopAltError}</p>
-          </div>
-        {/if}
-
-        {#if updateAvailable}
-          <div class="mbp-banner">
-            <div>
-              <p>Update available: v{updateAvailable.version}</p>
-              {#if updateAvailable.body}
-                <span>{updateAvailable.body}</span>
-              {/if}
-            </div>
-            <button
-              type="button"
-              class="mbp-mini primary"
-              onclick={oninstallupdate}
-              disabled={updateInstalling || !oninstallupdate}
-            >
-              {updateInstalling ? 'Installing...' : 'Install'}
-            </button>
-          </div>
-        {/if}
-
-        {#if manifestError}
-          <div class="mbp-banner" title={manifestError}>
-            <p>companies/manifest.yaml could not be read.</p>
-            <CopyPromptButton
-              variant="compact"
-              label="Copy fix prompt"
-              issue={{ kind: 'manifest-error', payload: { error: manifestError } }}
-            />
-          </div>
-        {/if}
-
-        {#if !cloudReachable}
-          <div class="mbp-banner" title={cloudError ?? ''}>
-            <p>Cloud unreachable - showing local folders.</p>
-            <CopyPromptButton
-              variant="compact"
-              label="Copy diagnose prompt"
-              issue={{ kind: 'cloud-unreachable', payload: { error: cloudError ?? '' } }}
-            />
-          </div>
-        {/if}
-
-        {#if membershipsToPull.length > 0}
-          <div class="mbp-banner">
-            <button
-              class="mbp-dismiss"
-              type="button"
-              onclick={() => dismissMembershipPrompt(membershipsToPull[0].slug)}
-              aria-label="Dismiss membership prompt"
-            >
-              ×
-            </button>
-            <div>
-              <p>
-                Added to {membershipsToPull[0].displayName}{membershipsToPull.length > 1
-                  ? ` + ${membershipsToPull.length - 1} more`
-                  : ''}
-              </p>
-              <span>Sync to pull {membershipsToPull.length > 1 ? 'them' : 'it'} down.</span>
-            </div>
-            <button
-              type="button"
-              class="mbp-mini primary"
-              onclick={onsync}
-              disabled={syncState === 'syncing'}
-            >
-              {syncState === 'syncing' ? 'Syncing...' : 'Sync'}
-            </button>
-          </div>
-        {/if}
-
-        {#if syncState === 'auth-error'}
-          <div class="mbp-banner">
-            <div>
-              <p>Session expired</p>
-              <span>{errorMessage || 'Please sign in again to continue syncing.'}</span>
-            </div>
-            <CopyPromptButton
-              variant="inline"
-              label="Copy prompt"
-              issue={{ kind: 'auth-expired', payload: { message: errorMessage } }}
-            />
-          </div>
-        {:else if syncState === 'error' && errorMessage}
-          <div class="mbp-banner">
-            <div>
-              <p>Sync initialized</p>
-              <span>Finish in Claude Code to complete sync.</span>
-            </div>
-            <div class="mbp-banner-actions">
-              <OpenInClaudeCodeButton
-                variant="compact"
-                label="Finish sync in Claude Code"
-                folder={config?.hqFolderPath ?? ''}
-                issue={{ kind: 'sync-failed', payload: { message: errorMessage, company: errorCompany } }}
-              />
-              <CopyPromptButton
-                variant="compact"
-                label="Copy prompt"
-                issue={{ kind: 'sync-failed', payload: { message: errorMessage, company: errorCompany } }}
-              />
-            </div>
-          </div>
-        {:else if syncState === 'conflict' && !(showConflictModal && conflicts.length > 0)}
-          <div class="mbp-banner">
-            <div>
-              <p>
-                Sync paused - {conflictCount > 0
-                  ? `${conflictCount} file${conflictCount === 1 ? '' : 's'} changed in two places`
-                  : 'a file changed in two places'}
-              </p>
-              <span>Resolve in Claude Code, then Sync again.</span>
-            </div>
-            <div class="mbp-banner-actions">
-              <OpenInClaudeCodeButton
-                variant="compact"
-                label="Resolve in Claude Code"
-                folder={config?.hqFolderPath ?? ''}
-                issue={{ kind: 'sync-conflict', payload: { count: conflictCount, company: conflictCompany } }}
-              />
-              <CopyPromptButton
-                variant="compact"
-                label="Copy prompt"
-                issue={{ kind: 'sync-conflict', payload: { count: conflictCount, company: conflictCompany } }}
-              />
-            </div>
-          </div>
-        {/if}
-      </div>
-    {/if}
-
     <div
       class="mbp-status"
       class:syncing={syncState === 'syncing'}
@@ -1119,47 +1025,49 @@
     >
       <span class="gd" aria-hidden="true"></span>
       <span class="mbp-s1">{statusTitle}</span>
-      <span class="mbp-s2">{lastSyncLabel}</span>
+      {#if syncState === 'syncing'}
+        <span class="mbp-s2 prog" title={liveWorkspaceLine}>
+          <span class="mbp-bar"><i style="width: {barPct}%"></i></span>
+          <span class="mbp-pct">{Math.round(barPct)}%</span>
+        </span>
+      {:else}
+        <span class="mbp-s2">{lastSyncLabel}</span>
+      {/if}
     </div>
 
-    {#if syncState === 'syncing'}
-      <div class="mbp-progress">
-        <p>{liveWorkspaceLine}</p>
-        <div class="mbp-progress-track">
-          <span style="width: {barPct}%"></span>
-        </div>
+    <div class="mbp-segbar">
+      <div class="seg-track" role="tablist" aria-label="Popover sections">
+        <button
+          class="seg"
+          class:active={activeTab === 'notifications'}
+          type="button"
+          role="tab"
+          aria-selected={activeTab === 'notifications'}
+          onclick={() => (activeTab = 'notifications')}
+        >
+          Notifications
+          {#if notifBadge > 0}
+            <span class="seg-badge">{notifBadge > 99 ? '99+' : notifBadge}</span>
+          {/if}
+        </button>
+        <button
+          class="seg"
+          class:active={activeTab === 'workspaces'}
+          type="button"
+          role="tab"
+          aria-selected={activeTab === 'workspaces'}
+          onclick={() => (activeTab = 'workspaces')}
+        >
+          Workspaces
+        </button>
       </div>
-    {/if}
-
-    <div class="mbp-tabs" role="tablist" aria-label="Popover sections">
-      <button
-        class="mbp-tab"
-        class:active={activeTab === 'notifications'}
-        type="button"
-        role="tab"
-        aria-selected={activeTab === 'notifications'}
-        onclick={() => (activeTab = 'notifications')}
-      >
-        Notifications
-        {#if unreadCount > 0}
-          <span class="mbp-tab-badge">{unreadCount > 99 ? '99+' : unreadCount}</span>
-        {/if}
-      </button>
-      <button
-        class="mbp-tab"
-        class:active={activeTab === 'workspaces'}
-        type="button"
-        role="tab"
-        aria-selected={activeTab === 'workspaces'}
-        onclick={() => (activeTab = 'workspaces')}
-      >
-        Workspaces
-      </button>
     </div>
 
-    <!-- Notifications — recent DMs, shares, and new-file activity. A tap opens
-         the matching detail window; grouped new-file rows expand inline. Kept
-         mounted while hidden so listeners + unread count persist. -->
+    <!-- Notifications — system notices (conflict / update / membership / auth /
+         errors) pin to the top as feed rows, then recent DMs, shares, and
+         new-file activity. A tap opens the matching detail window; grouped
+         new-file rows expand inline. Kept mounted while hidden so listeners +
+         unread count persist. -->
     <div class="mbp-panel" class:hidden={activeTab !== 'notifications'}>
       <section class="mbp-sec" aria-labelledby="popover-notifications-label">
         <div class="mbp-sec-head">
@@ -1168,9 +1076,180 @@
             Mark all read
           </button>
         </div>
+
+        {#if conflictModalActive && onresolve && onopen && ondismissconflicts}
+          <div class="mbp-conflict-card">
+            <ConflictModal
+              {conflicts}
+              onresolve={onresolve}
+              onopen={onopen}
+              ondismiss={ondismissconflicts}
+            />
+          </div>
+        {/if}
+
+        {#if desktopAltError}
+          <div class="notif-row" role="status">
+            <span class="notif-gly alert"><PopoverIcon name="warning" size={14} /></span>
+            <div class="notif-main">
+              <div class="notif-line1"><span class="notif-actor">Couldn’t open desktop view</span></div>
+              <div class="notif-summary">{desktopAltError}</div>
+            </div>
+          </div>
+        {/if}
+
+        {#if membershipsToPull.length > 0}
+          <div class="notif-row">
+            <span class="notif-gly action"><PopoverIcon name="cloud-arrow-down" size={14} /></span>
+            <div class="notif-main">
+              <div class="notif-line1">
+                <span class="notif-actor">{membershipNoticeTitle}</span>
+              </div>
+              <div class="notif-summary">
+                Sync to pull {membershipsToPull.length > 1 ? 'them' : 'it'} onto this machine.
+              </div>
+              <div class="notif-act">
+                <button
+                  type="button"
+                  class="mbp-mini primary"
+                  onclick={onsync}
+                  disabled={syncState === 'syncing'}
+                >
+                  {syncState === 'syncing' ? 'Syncing…' : 'Sync now'}
+                </button>
+                <button
+                  type="button"
+                  class="mbp-mini"
+                  onclick={() => dismissMembershipPrompt(membershipsToPull[0].slug)}
+                >
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          </div>
+        {/if}
+
+        {#if updateAvailable}
+          <div class="notif-row">
+            <span class="notif-gly action"><PopoverIcon name="download-simple" size={14} /></span>
+            <div class="notif-main">
+              <div class="notif-line1"><span class="notif-actor">Update available</span></div>
+              <div class="notif-summary">
+                HQ v{updateAvailable.version}{updateAvailable.body ? ` — ${updateAvailable.body}` : ''}
+              </div>
+              <div class="notif-act">
+                <button
+                  type="button"
+                  class="mbp-mini primary"
+                  onclick={oninstallupdate}
+                  disabled={updateInstalling || !oninstallupdate}
+                >
+                  {updateInstalling ? 'Installing…' : 'Install'}
+                </button>
+              </div>
+            </div>
+          </div>
+        {/if}
+
+        {#if syncState === 'conflict' && !conflictModalActive}
+          <div class="notif-row">
+            <span class="notif-gly alert"><PopoverIcon name="warning" size={14} /></span>
+            <div class="notif-main">
+              <div class="notif-line1"><span class="notif-actor">Sync paused</span></div>
+              <div class="notif-summary">{conflictNoticeText}</div>
+              <div class="notif-act">
+                <OpenInClaudeCodeButton
+                  variant="compact"
+                  label="Resolve"
+                  folder={config?.hqFolderPath ?? ''}
+                  issue={{ kind: 'sync-conflict', payload: { count: conflictCount, company: conflictCompany } }}
+                />
+                <CopyPromptButton
+                  variant="compact"
+                  label="Copy prompt"
+                  issue={{ kind: 'sync-conflict', payload: { count: conflictCount, company: conflictCompany } }}
+                />
+              </div>
+            </div>
+          </div>
+        {/if}
+
+        {#if syncState === 'auth-error'}
+          <div class="notif-row">
+            <span class="notif-gly alert"><PopoverIcon name="warning" size={14} /></span>
+            <div class="notif-main">
+              <div class="notif-line1"><span class="notif-actor">Session expired</span></div>
+              <div class="notif-summary">{errorMessage || 'Sign in again to keep syncing.'}</div>
+              <div class="notif-act">
+                <CopyPromptButton
+                  variant="compact"
+                  label="Copy prompt"
+                  issue={{ kind: 'auth-expired', payload: { message: errorMessage } }}
+                />
+              </div>
+            </div>
+          </div>
+        {:else if syncState === 'error' && errorMessage}
+          <div class="notif-row">
+            <span class="notif-gly alert"><PopoverIcon name="warning" size={14} /></span>
+            <div class="notif-main">
+              <div class="notif-line1"><span class="notif-actor">Finish sync in Claude Code</span></div>
+              <div class="notif-summary">Sync started but needs a hand to complete.</div>
+              <div class="notif-act">
+                <OpenInClaudeCodeButton
+                  variant="compact"
+                  label="Finish in Claude Code"
+                  folder={config?.hqFolderPath ?? ''}
+                  issue={{ kind: 'sync-failed', payload: { message: errorMessage, company: errorCompany } }}
+                />
+                <CopyPromptButton
+                  variant="compact"
+                  label="Copy prompt"
+                  issue={{ kind: 'sync-failed', payload: { message: errorMessage, company: errorCompany } }}
+                />
+              </div>
+            </div>
+          </div>
+        {/if}
+
+        {#if manifestError}
+          <div class="notif-row" title={manifestError}>
+            <span class="notif-gly alert"><PopoverIcon name="warning" size={14} /></span>
+            <div class="notif-main">
+              <div class="notif-line1"><span class="notif-actor">Couldn’t read companies list</span></div>
+              <div class="notif-summary">companies/manifest.yaml could not be read.</div>
+              <div class="notif-act">
+                <CopyPromptButton
+                  variant="compact"
+                  label="Copy fix prompt"
+                  issue={{ kind: 'manifest-error', payload: { error: manifestError } }}
+                />
+              </div>
+            </div>
+          </div>
+        {/if}
+
+        {#if !cloudReachable}
+          <div class="notif-row" title={cloudError ?? ''}>
+            <span class="notif-gly warn"><PopoverIcon name="warning" size={14} /></span>
+            <div class="notif-main">
+              <div class="notif-line1"><span class="notif-actor">Cloud unreachable</span></div>
+              <div class="notif-summary">Showing local folders.</div>
+              <div class="notif-act">
+                <CopyPromptButton
+                  variant="compact"
+                  label="Copy diagnose prompt"
+                  issue={{ kind: 'cloud-unreachable', payload: { error: cloudError ?? '' } }}
+                />
+              </div>
+            </div>
+          </div>
+        {/if}
+
         <NotificationFeed
           bind:this={feedEl}
           showDayLabels={false}
+          hideEmptyState={hasSystemNotices}
           onunreadchange={(n) => (unreadCount = n)}
         />
       </section>
@@ -1178,7 +1257,12 @@
 
     <div class="mbp-panel" class:hidden={activeTab !== 'workspaces'}>
     <section class="mbp-sec" aria-labelledby="popover-workspaces-label">
-      <div class="mbp-lab" id="popover-workspaces-label">Workspaces</div>
+      <div class="mbp-sec-head">
+        <div class="mbp-lab" id="popover-workspaces-label">Workspaces</div>
+        {#if compactWorkspaces.length > 0}
+          <span class="mbp-lab-count">{syncedWorkspaceCount} of {compactWorkspaces.length} synced</span>
+        {/if}
+      </div>
       {#if compactWorkspaces.length > 0}
         <div class="mbp-list">
           {#each compactWorkspaces as w (`${w.kind}:${w.slug}`)}
@@ -1204,6 +1288,10 @@
                       <path d="M3 7.5 6 10.5 11 4" />
                     </svg>
                   </span>
+                {:else if w.state === 'local-only'}
+                  <span class="sti local" aria-label={workspaceStateLabel(w)}>
+                    <PopoverIcon name="laptop" size={12} />
+                  </span>
                 {:else}
                   <span class="sti off" aria-label={workspaceStateLabel(w)}></span>
                 {/if}
@@ -1226,6 +1314,10 @@
                     <svg width="12" height="12" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                       <path d="M3 7.5 6 10.5 11 4" />
                     </svg>
+                  </span>
+                {:else if w.state === 'local-only'}
+                  <span class="sti local" aria-label={workspaceStateLabel(w)}>
+                    <PopoverIcon name="laptop" size={12} />
                   </span>
                 {:else}
                   <span class="sti off" aria-label={workspaceStateLabel(w)}></span>
@@ -1369,7 +1461,8 @@
   }
 
   .mbp-icon:hover,
-  .mbp-icon:focus-visible {
+  .mbp-icon:focus-visible,
+  .mbp-icon.active {
     background: var(--pop-hover);
     color: var(--pop-text);
   }
@@ -1379,8 +1472,7 @@
   .mbp-open:focus-visible,
   .mbp-menu-item:focus-visible,
   .mbp-mini:focus-visible,
-  .mbp-pill:focus-visible,
-  .mbp-dismiss:focus-visible {
+  .mbp-pill:focus-visible {
     outline: 1.5px solid var(--popover-focus-ring, var(--pop-accent));
     outline-offset: var(--popover-focus-offset, 2px);
   }
@@ -1429,45 +1521,15 @@
     min-height: 0;
   }
 
-  .mbp-notices {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    padding: 8px 8px 0;
-  }
-
-  .mbp-banner {
-    position: relative;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    padding: 7px 8px;
-    border-radius: 8px;
-    border: 0.5px solid var(--pop-border);
-    background: var(--pop-hover);
-    color: var(--pop-text);
-    font-size: 11.5px;
-    line-height: 1.3;
-  }
-
-  .mbp-banner p,
   .mbp-menu-block p,
-  .mbp-progress p,
   .mbp-empty {
     margin: 0;
   }
 
-  .mbp-banner p {
-    font-weight: 600;
-  }
-
-  .mbp-banner span,
   .mbp-menu-block span {
     color: var(--pop-muted);
   }
 
-  .mbp-banner-actions,
   .mbp-menu-actions {
     display: flex;
     align-items: center;
@@ -1477,22 +1539,10 @@
     flex-shrink: 0;
   }
 
-  .mbp-dismiss {
-    position: absolute;
-    top: 3px;
-    right: 4px;
-    width: 18px;
-    height: 18px;
-    border: 0;
-    border-radius: 5px;
-    color: var(--pop-muted);
-    background: transparent;
-    cursor: pointer;
-  }
-
-  .mbp-dismiss:hover {
-    color: var(--pop-text);
-    background: var(--pop-hover);
+  /* Detailed conflict resolver keeps its own card; the lighter conflict
+     summary folds into the feed as a system-notice row. */
+  .mbp-conflict-card {
+    padding: 6px 6px 0;
   }
 
   .mbp-status {
@@ -1512,8 +1562,8 @@
   }
 
   .mbp-status.syncing .gd {
-    background: var(--pop-accent);
-    box-shadow: 0 0 7px var(--pop-hover);
+    background: #eab308;
+    box-shadow: 0 0 7px rgba(234, 179, 8, 0.5);
   }
 
   .mbp-status.attention .gd {
@@ -1538,26 +1588,39 @@
     white-space: nowrap;
   }
 
-  .mbp-progress {
-    padding: 0 14px 10px;
-    color: var(--pop-muted);
-    font-size: 11px;
+  /* Mid-sync the "last sync" line becomes an inline progress meter + percent
+     (prototype `.s2.prog`) instead of a separate progress block below. */
+  .mbp-s2.prog {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    overflow: visible;
   }
 
-  .mbp-progress-track {
+  .mbp-bar {
+    width: 60px;
     height: 5px;
-    margin-top: 6px;
     border-radius: 999px;
     background: var(--pop-hover);
     overflow: hidden;
+    flex-shrink: 0;
   }
 
-  .mbp-progress-track span {
+  .mbp-bar > i {
     display: block;
     height: 100%;
     border-radius: inherit;
     background: var(--pop-accent);
     transition: width 0.25s ease-out;
+  }
+
+  .mbp-pct {
+    color: var(--pop-text);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .mbp-segbar {
+    padding: 3px 12px 4px;
   }
 
   .mbp-sec {
@@ -1571,6 +1634,18 @@
     font-weight: 600;
     letter-spacing: 0.5px;
     text-transform: uppercase;
+    padding: 6px 8px 4px;
+  }
+
+  .mbp-lab-count {
+    margin-left: auto;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    color: var(--pop-muted);
+    opacity: 0.6;
+    font-variant-numeric: tabular-nums;
     padding: 6px 8px 4px;
   }
 
@@ -1679,6 +1754,11 @@
     background: var(--pop-hover);
   }
 
+  .mbp-co .sti.local {
+    background: var(--pop-hover);
+    color: var(--pop-muted);
+  }
+
   .mbp-empty {
     padding: 6px 8px 8px;
     color: var(--pop-muted);
@@ -1723,22 +1803,20 @@
     position: absolute;
     top: 34px;
     right: -86px;
-    width: 248px;
+    width: 240px;
     z-index: 5;
     display: flex;
     flex-direction: column;
-    gap: 4px;
-    padding: 8px;
-    border-radius: 10px;
-    border: 0.5px solid var(--pop-border);
-    background: var(--pop-bg);
-    backdrop-filter: blur(28px) saturate(1.6);
-    -webkit-backdrop-filter: blur(28px) saturate(1.6);
-    box-shadow: 0 18px 40px rgba(0, 0, 0, 0.22), inset 0 1px 0 var(--pop-highlight);
+    gap: 2px;
+    padding: 6px;
+    border-radius: 12px;
+    border: 0.5px solid var(--menu-border);
+    background: var(--menu-bg);
+    backdrop-filter: blur(40px) saturate(1.9);
+    -webkit-backdrop-filter: blur(40px) saturate(1.9);
+    box-shadow: var(--menu-shadow), inset 0 1px 0 var(--menu-inset);
   }
 
-  .mbp-menu-version,
-  .mbp-menu-row,
   .mbp-menu-pills,
   .mbp-menu-actions {
     display: flex;
@@ -1746,16 +1824,66 @@
     gap: 6px;
   }
 
-  .mbp-menu-version {
-    justify-content: space-between;
-    color: var(--pop-text);
-    font-size: 12px;
-    font-weight: 600;
-    padding: 3px 4px 5px;
+  /* Version row — name + "Up to date" / "vX available", with an inline Update
+     button when a build is ready (prototype `.menu-ver`). */
+  .mbp-menu-ver {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 5px 9px;
   }
 
-  .mbp-menu-row {
+  .mv-text {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+
+  .mv-name {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--pop-text);
+  }
+
+  .mv-sub {
+    font-size: 11px;
+    color: var(--pop-muted);
+    display: flex;
+    align-items: center;
     gap: 4px;
+  }
+
+  .mv-sub.ok {
+    color: var(--popover-success);
+  }
+
+  .mv-btn {
+    height: 25px;
+    padding: 0 11px;
+    border: 0;
+    border-radius: 7px;
+    background: var(--pop-accent);
+    color: var(--pop-acc-fg);
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    flex-shrink: 0;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
+  }
+
+  .mv-btn:hover:not(:disabled) {
+    filter: brightness(1.07);
+  }
+
+  .mv-btn:disabled {
+    opacity: 0.6;
+    cursor: default;
   }
 
   .mbp-menu-pills {
@@ -1772,29 +1900,38 @@
   .mbp-menu-divider {
     height: 0.5px;
     background: var(--pop-divider);
-    margin: 3px 0;
+    margin: 5px 7px;
   }
 
   .mbp-menu-item {
     width: 100%;
-    min-height: 26px;
+    height: 30px;
     display: flex;
     align-items: center;
     justify-content: flex-start;
-    padding: 0 8px;
+    gap: 11px;
+    padding: 0 9px;
     border: 0;
     border-radius: 7px;
     background: transparent;
     color: var(--pop-text);
     font-family: inherit;
-    font-size: 12px;
+    font-size: 13px;
     text-align: left;
     cursor: pointer;
   }
 
-  .mbp-menu-row .mbp-menu-item {
+  .mbp-menu-item .grow {
     flex: 1;
-    justify-content: center;
+    min-width: 0;
+  }
+
+  .mbp-menu-item.no-icon {
+    padding-left: 38px;
+  }
+
+  .mbp-menu-item :global(.ph) {
+    color: var(--pop-icon);
   }
 
   .mbp-menu-item:hover,
@@ -1803,8 +1940,34 @@
     outline: none;
   }
 
+  .mbp-menu-item:hover :global(.ph) {
+    color: var(--pop-text);
+  }
+
   .mbp-menu-item.danger {
     color: var(--pop-muted);
+  }
+
+  .mbp-menu-item.danger :global(.ph) {
+    color: var(--pop-muted);
+  }
+
+  .mbp-menu-item.danger:hover,
+  .mbp-menu-item.danger:focus-visible {
+    color: var(--pop-text);
+  }
+
+  .mbp-menu-item.danger:hover :global(.ph) {
+    color: var(--pop-text);
+  }
+
+  .mbp-menu-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--popover-success);
+    flex-shrink: 0;
+    box-shadow: 0 0 6px var(--popover-success-bg);
   }
 
   .mbp-menu-block {
@@ -1862,61 +2025,6 @@
   .mbp-pill:disabled {
     opacity: 0.55;
     cursor: default;
-  }
-
-  /* ── Notifications-first tabs ───────────────────────────────────────────── */
-  .mbp-tabs {
-    display: flex;
-    gap: 4px;
-    margin: 0 8px 2px;
-    padding: 3px;
-    border-radius: 9px;
-    background: var(--popover-seg-track, var(--pop-hover));
-  }
-
-  .mbp-tab {
-    flex: 1;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 6px;
-    height: 24px;
-    padding: 0 8px;
-    border: 0;
-    border-radius: 7px;
-    background: transparent;
-    color: var(--pop-muted);
-    font-family: inherit;
-    font-size: 12px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: background 0.12s, color 0.12s;
-  }
-
-  .mbp-tab:hover {
-    color: var(--pop-text);
-  }
-
-  .mbp-tab:focus-visible {
-    outline: 1.5px solid var(--popover-focus-ring, var(--pop-accent));
-    outline-offset: var(--popover-focus-offset, 2px);
-  }
-
-  .mbp-tab.active {
-    background: var(--popover-seg-active, var(--pop-bg));
-    color: var(--pop-text);
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
-  }
-
-  .mbp-tab-badge {
-    min-width: 16px;
-    padding: 1px 5px;
-    border-radius: 999px;
-    background: var(--popover-unread, var(--pop-accent));
-    color: #ffffff;
-    font-size: 10px;
-    font-weight: 700;
-    line-height: 1.3;
   }
 
   .mbp-panel.hidden {
