@@ -425,6 +425,19 @@
   // terminates before the promise resolves, so this rarely flips back.
   let updateInstalling = $state(false);
 
+  // Master automatic-updates switch (`autoUpdate` pref, default ON). When on,
+  // the app installs updates silently without asking: the menubar app itself
+  // (self-update + restart, below) and hq-core (drift-safe rescue, below). The
+  // `hq` CLI auto-installer gates on the same pref in Rust
+  // (`hq_cli_update::auto_update_enabled`). Loaded on mount + refreshed on
+  // focus so flipping the Settings toggle takes effect without a relaunch.
+  let autoUpdate = $state(true);
+  // Session dedup so a failed silent install doesn't hammer the same version
+  // (a fresh 6h check / next launch retries). Plain (non-reactive) `let` so
+  // read/writing them inside the auto-install effects never re-triggers them.
+  let autoAppUpdatedVersion: string | null = null;
+  let autoCoreUpdatedVersion: string | null = null;
+
   // hq CLI updater state — populated by `hq-cli-update:available` from the
   // Rust background checker (launch+15s, then every 6h). Non-null means
   // the user's globally-installed `hq` is behind npm `latest`. The banner
@@ -546,6 +559,18 @@
       coreState = s;
     } catch (err) {
       console.error('check_core_state failed:', err);
+    }
+  }
+
+  // Read the master automatic-updates pref (default ON). Called on mount and
+  // on window focus so a Settings toggle takes effect without a relaunch.
+  // Fail-open to true — matches the Rust `auto_update_enabled` leniency.
+  async function loadAutoUpdatePref() {
+    try {
+      const s = await invoke<{ autoUpdate?: boolean | null }>('get_settings');
+      autoUpdate = s?.autoUpdate ?? true;
+    } catch {
+      autoUpdate = true;
     }
   }
 
@@ -923,6 +948,9 @@
           //    (transient core.yaml/folder-resolution race) without a relaunch
           // Set is a typed contract in lib/popover-refresh — see its test.
           refreshOnPopoverOpen({ loadWorkspaces, refreshHqCliUpdate, loadHqVersion });
+          // Re-read the auto-update pref so a Settings toggle takes effect on
+          // the next popover open, not just on relaunch.
+          void loadAutoUpdatePref();
           if (shouldRecheckAuthOnFocus(focused, authenticated)) void checkAuth();
         }
       })
@@ -1885,6 +1913,7 @@
     // tick. Calling here gives the popover a populated state on first
     // open instead of waiting 30s for the bg checker.
     loadCoreState();
+    loadAutoUpdatePref();
     loadUnreadSummary();
     setupTrayListeners();
     // Resolve the Phase-0 meeting-detect eligibility flag once on mount.
@@ -1923,6 +1952,44 @@
       unlisteners.forEach((unlisten) => unlisten());
       unlisteners = [];
     };
+  });
+
+  // ── Silent auto-update (master `autoUpdate` pref) ──────────────────────────
+  // Silent app self-update: when auto-update is on and the background checker
+  // reports a newer version, install it without asking. Deferred while a sync
+  // is running — never yank the app out mid-sync; the effect re-runs when
+  // `syncState` flips back to idle. Deduped by version so a failed install
+  // (e.g. transient network) doesn't hammer; the 6h re-check / next launch
+  // retries. `updateInstalling` blocks re-entry (and on macOS the process is
+  // usually replaced before it flips back). `handleInstallUpdate` is the same
+  // guarded path the in-app Install button uses.
+  $effect(() => {
+    if (!autoUpdate) return;
+    const info = updateAvailable;
+    if (!info || updateInstalling) return;
+    if (syncState === 'syncing') return;
+    if (autoAppUpdatedVersion === info.version) return;
+    autoAppUpdatedVersion = info.version;
+    void handleInstallUpdate();
+  });
+
+  // Silent hq-core update: when auto-update is on and the user is version-behind
+  // on an eligible channel, run the drift-safe rescue in the background (edits
+  // to locked core files are preserved as `personal/` overrides — nothing is
+  // destroyed). Only fires on `versionBehind` (a genuine new release), NOT on
+  // drift alone — silently rewriting a user's own edits away with no version
+  // change would be surprising. Deduped by target version so a failed rescue
+  // doesn't loop; deferred while syncing. `handleInstallCore` is the same path
+  // the Update pill uses (picks release vs. staging by channel).
+  $effect(() => {
+    if (!autoUpdate) return;
+    const s = coreState;
+    if (!s || !s.isEligible || !s.versionBehind) return;
+    if (coreInstalling) return;
+    if (syncState === 'syncing') return;
+    if (autoCoreUpdatedVersion === s.targetVersion) return;
+    autoCoreUpdatedVersion = s.targetVersion;
+    void handleInstallCore();
   });
 
   // Broadcast the active-meetings snapshot to MeetingsWindow whenever the

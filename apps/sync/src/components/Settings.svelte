@@ -76,6 +76,12 @@
   // this from menubar.json on each background check, so the toggle takes
   // effect without restart. Default ON: the app keeps the HQ CLI current.
   let cliAutoUpdate = $state(true);
+  // Master automatic-updates switch — one toggle governs silent install of the
+  // app, CLI, and hq-core. Default ON. Read fresh on each App.svelte popover
+  // focus + by the Rust auto-installers, so it takes effect without a restart.
+  // Supersedes the standalone cliAutoUpdate toggle (still round-tripped for
+  // back-compat, but the CLI installer now gates on autoUpdate).
+  let autoUpdate = $state(true);
   // Usage telemetry — shown to ALL signed-in users. OFF by default (opt-in):
   // telemetry.rs re-reads `telemetryEnabled` untyped from menubar.json after
   // each sync, so the toggle takes effect without restart. The authoritative
@@ -168,6 +174,7 @@
           shareNotifications: boolean | null;
           dmNotifications: boolean | null;
           cliAutoUpdate: boolean | null;
+          autoUpdate: boolean | null;
           stagingChannel: boolean | null;
           releaseChannel: string | null;
           meetingDetectNotify?: {
@@ -204,6 +211,7 @@
       shareNotifications = settings.shareNotifications ?? true;
       dmNotifications = settings.dmNotifications ?? true;
       cliAutoUpdate = settings.cliAutoUpdate ?? true;
+      autoUpdate = settings.autoUpdate ?? true;
       telemetryEnabled = settings.telemetryEnabled ?? false;
       stagingChannel = settings.stagingChannel ?? true;
       isIndigoUser = indigoUser;
@@ -274,6 +282,7 @@
           shareNotifications,
           dmNotifications,
           cliAutoUpdate,
+          autoUpdate,
           telemetryEnabled,
           stagingChannel,
           // Round-trip the RAW stored value (null when never explicitly
@@ -349,8 +358,8 @@
     await saveAll();
   }
 
-  async function handleToggleCliAutoUpdate() {
-    cliAutoUpdate = !cliAutoUpdate;
+  async function handleToggleAutoUpdate() {
+    autoUpdate = !autoUpdate;
     await saveAll();
   }
 
@@ -781,24 +790,6 @@
 
           <div class="setting-row">
             <div class="setting-info">
-              <label class="setting-label" for="toggle-cli-auto-update">Auto-update HQ CLI</label>
-              <span class="setting-desc">Keep the <code>hq</code> command-line tool up to date automatically</span>
-            </div>
-            <button
-              id="toggle-cli-auto-update"
-              class="toggle"
-              class:active={cliAutoUpdate}
-              onclick={handleToggleCliAutoUpdate}
-              role="switch"
-              aria-checked={cliAutoUpdate}
-              aria-label="Automatically update HQ CLI"
-            >
-              <span class="toggle-knob"></span>
-            </button>
-          </div>
-
-          <div class="setting-row">
-            <div class="setting-info">
               <label class="setting-label" for="toggle-telemetry">Usage telemetry</label>
               <span class="setting-desc">Share anonymized usage counts to help improve HQ. Off by default.</span>
             </div>
@@ -958,6 +949,28 @@
       <section class="settings-group-wrap">
         <h2 class="settings-group-title">Updates</h2>
         <div class="settings-group">
+          <!-- Master automatic-updates switch (default ON). One toggle governs
+               silent, no-prompt install of the app itself (self-update +
+               restart), the hq CLI, and hq-core (drift-safe rescue). Supersedes
+               the old per-CLI "Auto-update HQ CLI" toggle. -->
+          <div class="setting-row">
+            <div class="setting-info">
+              <label class="setting-label" for="toggle-auto-update">Automatic updates</label>
+              <span class="setting-desc">Install HQ, the app, and the CLI updates automatically in the background — no prompts</span>
+            </div>
+            <button
+              id="toggle-auto-update"
+              class="toggle"
+              class:active={autoUpdate}
+              onclick={handleToggleAutoUpdate}
+              role="switch"
+              aria-checked={autoUpdate}
+              aria-label="Automatic updates"
+            >
+              <span class="toggle-knob"></span>
+            </button>
+          </div>
+
           <!-- Staging channel — @getindigo.ai-only toggle. When ON (default
                for @indigo builders), the popover's Update pill targets
                `hq-core-staging` and shows the staging-flavored drift count.

@@ -61,6 +61,7 @@ mod tests {
             share_notifications: None,
             dm_notifications: None,
             cli_auto_update: None,
+            auto_update: None,
             staging_channel: None,
             release_channel: None,
             meeting_detect_notify: None,
@@ -88,6 +89,7 @@ mod tests {
             share_notifications: Some(prefs.share_notifications.unwrap_or(true)),
             dm_notifications: Some(prefs.dm_notifications.unwrap_or(true)),
             cli_auto_update: Some(prefs.cli_auto_update.unwrap_or(true)),
+            auto_update: Some(prefs.auto_update.unwrap_or(true)),
             staging_channel: Some(prefs.staging_channel.unwrap_or(true)),
             release_channel: prefs.release_channel,
             meeting_detect_notify: prefs.meeting_detect_notify,
@@ -114,6 +116,9 @@ mod tests {
         // CLI auto-update defaults ON — the app keeps the CLI current unless
         // the user opts out.
         assert_eq!(result.cli_auto_update, Some(true));
+        // Master automatic-updates switch defaults ON — silent app/CLI/core
+        // updates unless the user opts out.
+        assert_eq!(result.auto_update, Some(true));
         // Telemetry is opt-in — defaults OFF when absent from disk.
         assert_eq!(result.telemetry_enabled, Some(false));
         // release_channel stays None at the apply_defaults boundary; the
@@ -153,6 +158,7 @@ mod tests {
             share_notifications: Some(false),
             dm_notifications: Some(false),
             cli_auto_update: Some(false),
+            auto_update: Some(false),
             staging_channel: Some(false),
             release_channel: Some("alpha".to_string()),
             meeting_detect_notify: None,
@@ -171,6 +177,8 @@ mod tests {
         assert_eq!(result.share_notifications, Some(false));
         assert_eq!(result.dm_notifications, Some(false));
         assert_eq!(result.cli_auto_update, Some(false));
+        // explicit auto-update opt-out survives apply_defaults
+        assert_eq!(result.auto_update, Some(false));
         assert_eq!(result.staging_channel, Some(false));
         // explicit telemetry opt-in survives the default-off coercion
         assert_eq!(result.telemetry_enabled, Some(true));
@@ -195,6 +203,7 @@ mod tests {
             share_notifications: Some(true),
             dm_notifications: Some(true),
             cli_auto_update: Some(true),
+            auto_update: Some(true),
             staging_channel: Some(true),
             release_channel: Some("beta".to_string()),
             meeting_detect_notify: None,
