@@ -125,6 +125,8 @@ mod tests {
             meeting_detect_notify: None,
             default_recording_company_uid: None,
             telemetry_enabled: None,
+            widget_enabled: None,
+            widget_display: None,
         }
     }
 

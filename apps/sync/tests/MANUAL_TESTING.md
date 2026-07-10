@@ -821,6 +821,80 @@ verification pass on the built macOS app.
 
 ---
 
+## Widget mode (US-006)
+
+Widget mode (always-on-top HQ wordmark + in-window notification stack), native
+banner takeover, fullscreen occlusion queue/flush, and the menubar → desktop
+launcher path cannot be fully exercised headless. Automated coverage for
+US-006 is the **source-contract + pure-reducer** suite under
+`e2e/desktop-alt/` (`widget-lifecycle.spec.ts`, `menubar-launcher.spec.ts`,
+plus IA/inbox/shared-all hover specs — run with `pnpm run test:e2e:desktop-alt`).
+
+This section is the **manual / live** half. Drive it with the HQ skill
+**`indigo:hq-sync-test-macos`** (build → launch with dev env vars → AX +
+CGEvent tray/popover driving → transparent `NSWindow` screencapture).
+
+### Setup
+
+- [ ] Build + launch HQ Sync via `indigo:hq-sync-test-macos` (signed-in).
+- [ ] Confirm `~/.hq/menubar.json` either omits `widgetEnabled` or sets
+      `"widgetEnabled": true` (default ON).
+- [ ] Have a second surface ready to go fullscreen (browser, video, or any
+      full-screen app) so occlusion can be forced.
+
+### 1 — Widget window on launch (lower-right)
+
+- [ ] 1. Launch the app (or relaunch after a clean quit).
+- [ ] 2. Verify the HQ wordmark **widget** appears at the **lower-right** of
+      the configured display within a few seconds of launch (always-on-top,
+      non-activating).
+- [ ] 3. Expected: idle wordmark only (no notification stack) until a
+      notification arrives.
+
+### 2 — Native banner suppressed (takeover)
+
+- [ ] 1. With widget mode ON, trigger a notification that would normally show
+      a native banner (DM, share, meeting, or update path).
+- [ ] 2. Verify the notification appears as a **one-line row on the widget
+      stack** (above the wordmark), **not** as the classic dm-banner /
+      native OS toast path.
+- [ ] 3. Expected: no separate floating banner window; stack grows upward
+      from the lower-right anchor.
+
+### 3 — Fullscreen occlusion queue + flush
+
+- [ ] 1. Put another app in **fullscreen** so the widget is occluded (or
+      cover it so macOS reports occlusion).
+- [ ] 2. While occluded, trigger 2+ notifications.
+- [ ] 3. Expected: the widget does **not** show new stack rows while
+      occluded; a **plain superscript count** on the wordmark reflects
+      queued items (no badge chrome).
+- [ ] 4. Exit fullscreen / uncover the widget so it becomes visible again.
+- [ ] 5. Expected: queued rows **flush** into the visible stack
+      (newest-on-top, capped), each with a fresh auto-collapse window.
+
+### 4 — Toggle-off restores native + closes widget
+
+- [ ] 1. Open desktop Settings → Widget (or the widget prefs surface) and
+      turn **Widget mode OFF**.
+- [ ] 2. Expected: the widget window **closes** immediately.
+- [ ] 3. Trigger another notification.
+- [ ] 4. Expected: delivery returns to the **native** banner path (dm-banner
+      / OS notification), not the (now-closed) widget stack.
+
+### 5 — Menubar click opens the desktop window
+
+- [ ] 1. While signed in, **click the menu-bar HQ icon**.
+- [ ] 2. Expected: the **desktop view** window opens (or toggles closed if
+      already visible) — not the classic popover as the primary launcher.
+- [ ] 3. While signed out, click the menu-bar icon again.
+- [ ] 4. Expected: **popover fallback** (sign-in surface) so a signed-out
+      user still reaches SignInPrompt.
+- [ ] 5. Expected: the popover has **no** “Open desktop view” toggle chrome
+      (`desktop-alt-toggle` is gone).
+
+---
+
 ## Release Checklist
 
 Before each release (v1.0.0 and every subsequent minor/patch):

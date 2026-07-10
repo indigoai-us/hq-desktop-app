@@ -523,6 +523,10 @@ fn main() {
             commands::banner::preview_share_banner,
             commands::banner::preview_update_banner,
             commands::banner::preview_meeting_banner,
+            commands::widget::resize_widget,
+            commands::widget::widget_ready,
+            commands::widget::list_displays,
+            commands::widget::apply_widget_settings,
             commands::compat::check_ai_tools,
             commands::compat::device_fingerprint,
             commands::compat::keychain_set,
@@ -632,6 +636,11 @@ fn main() {
                 tray::show_window_centered(app.handle());
                 util::logfile::log("app", "first-run launch: centered onboarding card");
             }
+
+            // US-002: always-on-top HQ wordmark widget (lower-right of the
+            // configured display). Gated by widgetEnabled in menubar.json
+            // (default on). Non-activating, appearance-reactive.
+            commands::widget::setup_widget_window(app.handle());
 
             // macOS: the menu-bar item lives in a separate native helper process
             // (tao parks an in-process status item off-screen on Tahoe). Spawn

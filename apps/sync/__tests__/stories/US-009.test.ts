@@ -109,7 +109,8 @@ describe('US-009: the standalone Packages destination is removed', () => {
   });
 
   it('removes the Settings "Manage packages" entry that opened the standalone window', () => {
-    const settings = read('src/components/Settings.svelte');
+    // US-005: canonical settings surface is desktop SettingsPage (popover Settings gone).
+    const settings = read('src/desktop-alt/pages/SettingsPage.svelte');
     expect(settings).not.toContain('open_packages_window');
     expect(settings).not.toContain('handleManagePackages');
   });

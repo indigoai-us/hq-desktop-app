@@ -10,16 +10,14 @@ import type { SyncState } from '../lib/sync-model';
  */
 
 /**
- * The primary-nav destinations, in display order. Mission Control sits directly
- * under Home as a global, cross-company surface (US-006).
+ * The primary-nav destinations, in display order. Inbox is the single combined
+ * messages + notifications destination (US-008). Home, Mission Control, and the
+ * Companies page are palette-only / company-row surfaces — not sidebar nav items.
  */
 export type V4NavId =
-  | 'home'
-  | 'mission-control'
-  | 'companies'
-  | 'messages'
-  | 'notifications'
+  | 'inbox'
   | 'meetings'
+  | 'marketplace'
   | 'library'
   | 'files';
 
@@ -34,12 +32,9 @@ export interface V4Route {
 }
 
 export const V4_NAV_ITEMS: ReadonlyArray<{ id: V4NavId; label: string }> = [
-  { id: 'home', label: 'Home' },
-  { id: 'mission-control', label: 'Mission Control' },
-  { id: 'companies', label: 'Companies' },
-  { id: 'messages', label: 'Messages' },
-  { id: 'notifications', label: 'Notifications' },
+  { id: 'inbox', label: 'Inbox' },
   { id: 'meetings', label: 'Meetings' },
+  { id: 'marketplace', label: 'Marketplace' },
   { id: 'library', label: 'Library' },
   { id: 'files', label: 'Files' },
 ];
@@ -65,6 +60,12 @@ export interface V4SidebarCompanyRow {
   label: string;
   tone: V4DotTone;
   active: boolean;
+  /**
+   * True when this row is a cloud-activated company membership (synced or
+   * cloud-only). Gates the Shared/All hover control (US-009); personal and
+   * local-only/broken rows stay false.
+   */
+  cloudActivated: boolean;
 }
 
 export interface V4SidebarModel {
@@ -102,14 +103,19 @@ export function v4CompanyConnected(workspace: Workspace): boolean {
   );
 }
 
-/**
- * Derive the primary-sidebar render model from the route + the
- * `list_syncable_workspaces` result. Invariant (locked by v4.test.ts):
- * EXACTLY ONE active row per sidebar — a nav item, a company row, or the
- * Settings footer. Company pages highlight the company row, not a nav item;
- * all local-first/cloud-visible companies render directly in the sidebar; a
- * company route whose slug isn't in the list falls back to the Companies nav row.
- */
+/** Cloud-activated = a company row with a live, ACCEPTED vault membership
+ *  (synced or cloud-only). Personal is local-first (not a company membership),
+ *  local-only/broken rows have no membership sync-config yet, and a pending
+ *  cloud-only row is an unaccepted invite (its affordance is "Open invite" on
+ *  the company page, never a sync-mode read/write) — no control on any of those. */
+export function v4CompanyCloudActivated(workspace: Workspace): boolean {
+  return (
+    workspace.kind === 'company' &&
+    (workspace.state === 'synced' || workspace.state === 'cloud-only') &&
+    workspace.membershipStatus !== 'pending'
+  );
+}
+
 /**
  * Shared dedupe + connected-first + alpha sort for the COMPANIES list (US-007).
  * Both the primary V4Sidebar (via getV4SidebarModel) and the FilesModeSidebar
@@ -136,6 +142,7 @@ export function sortV4CompaniesConnectedFirst(
         label: workspace.displayName,
         tone: v4CompanyDotTone(workspace),
         active: activeSlug != null && activeSlug === workspace.slug,
+        cloudActivated: v4CompanyCloudActivated(workspace),
       },
     });
   }
@@ -152,6 +159,15 @@ export function sortV4CompaniesConnectedFirst(
   return deduped.map((entry) => entry.row);
 }
 
+/**
+ * Derive the primary-sidebar render model from the route + the
+ * `list_syncable_workspaces` result. Invariant (US-007): AT MOST one active
+ * row — a nav item, a company row, or the Settings footer. Palette-only
+ * surfaces (home, mission-control, moderation, unknown kinds) and company
+ * routes with no matching row light no row. Company pages highlight the
+ * company row, not a nav item; all local-first/cloud-visible companies render
+ * directly in the sidebar.
+ */
 export function getV4SidebarModel(route: V4Route, workspaces: Workspace[]): V4SidebarModel {
   const settingsActive = route.kind === 'settings';
 
@@ -161,20 +177,16 @@ export function getV4SidebarModel(route: V4Route, workspaces: Workspace[]): V4Si
   );
 
   const companyRowActive = companies.some((row) => row.active);
-  // Company route with no matching row (e.g. not connected yet) → fall back
-  // to the Companies nav destination so exactly one row stays active.
-  const companiesFallback = route.kind === 'company' && !companyRowActive && !settingsActive;
 
+  // Settings footer or a company row owns the highlight — nav stays unlit.
+  // Otherwise the matching primary nav item, or null (no fallback to home /
+  // companies: those rows no longer exist — US-007).
   const activeNavId: V4NavId | null =
     settingsActive || companyRowActive
       ? null
-      : companiesFallback
-        ? 'companies'
-        : V4_NAV_ITEMS.some((item) => item.id === route.kind)
-          ? (route.kind as V4NavId)
-          : // Unknown kinds (transitional routes) read as Home — the exception
-            // surface — rather than leaving the sidebar with no "you are here".
-            'home';
+      : V4_NAV_ITEMS.some((item) => item.id === route.kind)
+        ? (route.kind as V4NavId)
+        : null;
 
   return {
     nav: V4_NAV_ITEMS.map((item) => ({

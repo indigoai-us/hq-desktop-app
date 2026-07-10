@@ -67,6 +67,8 @@ mod tests {
             meeting_detect_notify: None,
             default_recording_company_uid: None,
             telemetry_enabled: None,
+            widget_enabled: None,
+            widget_display: None,
         }
     }
 
@@ -94,7 +96,12 @@ mod tests {
             release_channel: prefs.release_channel,
             meeting_detect_notify: prefs.meeting_detect_notify,
             default_recording_company_uid: prefs.default_recording_company_uid,
+            // Telemetry is opt-out — defaults ON when absent from disk (#159).
             telemetry_enabled: Some(prefs.telemetry_enabled.unwrap_or(true)),
+            // Widget defaults ON when absent (ships default-enabled after update).
+            widget_enabled: Some(prefs.widget_enabled.unwrap_or(true)),
+            // Pass-through — None = primary display.
+            widget_display: prefs.widget_display,
         }
     }
 
@@ -125,6 +132,9 @@ mod tests {
         // identity-aware resolution happens inside get_settings itself
         // and is exercised by util::release_channel::tests.
         assert_eq!(result.release_channel, None);
+        // Widget defaults ON when absent; display stays None (primary).
+        assert_eq!(result.widget_enabled, Some(true));
+        assert_eq!(result.widget_display, None);
     }
 
     #[test]
@@ -164,6 +174,8 @@ mod tests {
             meeting_detect_notify: None,
             default_recording_company_uid: Some("co_xyz".to_string()),
             telemetry_enabled: Some(false),
+            widget_enabled: Some(false),
+            widget_display: Some("DELL U2720Q".to_string()),
         };
 
         let result = apply_defaults(prefs);
@@ -186,6 +198,9 @@ mod tests {
         // indigo-gating coercion is verified separately in
         // `util::release_channel::tests::non_indigo_always_coerced_to_stable`.
         assert_eq!(result.release_channel, Some("alpha".to_string()));
+        // explicit widget_enabled false + display pass through
+        assert_eq!(result.widget_enabled, Some(false));
+        assert_eq!(result.widget_display, Some("DELL U2720Q".to_string()));
     }
 
     #[test]
@@ -209,6 +224,8 @@ mod tests {
             meeting_detect_notify: None,
             default_recording_company_uid: None,
             telemetry_enabled: Some(true),
+            widget_enabled: Some(true),
+            widget_display: Some("Built-in Retina Display".to_string()),
         };
 
         let json = serde_json::to_string_pretty(&prefs).unwrap();
@@ -396,5 +413,84 @@ mod tests {
         let json = r#"{"hqPath":"/x","syncOnLaunch":false,"notifications":true,"startAtLogin":true,"autostartDaemon":false}"#;
         let prefs: MenubarPrefs = serde_json::from_str(json).unwrap();
         assert!(prefs.meeting_detect_notify.is_none());
+    }
+
+    // ── Widget prefs (US-004) ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_widget_defaults_absent_enabled_on_display_none() {
+        // Absent widget_enabled → Some(true); widget_display stays None (primary).
+        let result = apply_defaults(empty_prefs());
+        assert_eq!(result.widget_enabled, Some(true));
+        assert_eq!(result.widget_display, None);
+    }
+
+    #[test]
+    fn test_explicit_widget_enabled_false_preserved() {
+        // A user who toggled the widget off must not be flipped back on.
+        let prefs = MenubarPrefs {
+            widget_enabled: Some(false),
+            ..empty_prefs()
+        };
+        let result = apply_defaults(prefs);
+        assert_eq!(result.widget_enabled, Some(false));
+    }
+
+    #[test]
+    fn test_widget_fields_serialize_camel_case_and_skip_none() {
+        // Explicit values → camelCase keys; None fields are skipped (no null).
+        let with_values = MenubarPrefs {
+            widget_enabled: Some(false),
+            widget_display: Some("DELL U2720Q".to_string()),
+            ..empty_prefs()
+        };
+        let json = serde_json::to_string(&with_values).unwrap();
+        assert!(
+            json.contains("\"widgetEnabled\":false"),
+            "expected camelCase widgetEnabled, got: {json}"
+        );
+        assert!(
+            json.contains("\"widgetDisplay\":\"DELL U2720Q\""),
+            "expected camelCase widgetDisplay, got: {json}"
+        );
+        assert!(!json.contains("widget_enabled"));
+        assert!(!json.contains("widget_display"));
+
+        let none_fields = MenubarPrefs {
+            widget_enabled: None,
+            widget_display: None,
+            ..empty_prefs()
+        };
+        let skipped = serde_json::to_string(&none_fields).unwrap();
+        assert!(
+            !skipped.contains("widgetEnabled"),
+            "None widget_enabled must skip (no null), got: {skipped}"
+        );
+        assert!(
+            !skipped.contains("widgetDisplay"),
+            "None widget_display must skip (no null), got: {skipped}"
+        );
+    }
+
+    #[test]
+    fn test_merge_prefs_preserves_existing_widget_fields_when_typed_none() {
+        // When the typed struct has widget fields None (e.g. Settings UI
+        // didn't touch them / older client), merge must keep on-disk values.
+        let existing = r#"{
+            "widgetEnabled": false,
+            "widgetDisplay": "DELL U2720Q",
+            "machineId": "mid-keep"
+        }"#;
+        let prefs = MenubarPrefs {
+            // Typed fields None — should not wipe on-disk widget prefs.
+            widget_enabled: None,
+            widget_display: None,
+            ..empty_prefs()
+        };
+        let merged = merge_prefs_over_existing(&prefs, Some(existing)).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&merged).unwrap();
+        assert_eq!(v["widgetEnabled"], false);
+        assert_eq!(v["widgetDisplay"], "DELL U2720Q");
+        assert_eq!(v["machineId"], "mid-keep");
     }
 }

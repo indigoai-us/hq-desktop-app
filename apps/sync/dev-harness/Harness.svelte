@@ -1,9 +1,8 @@
 <script lang="ts">
-  import Settings from '../src/components/Settings.svelte';
+  import SettingsPage from '../src/desktop-alt/pages/SettingsPage.svelte';
   import Popover from '../src/components/Popover.svelte';
   import BannerNotification from '../src/components/BannerNotification.svelte';
   import CompanyPage from '../src/desktop-alt/pages/CompanyPage.svelte';
-  import CompaniesPage from '../src/desktop-alt/pages/CompaniesPage.svelte';
   import HomePage from '../src/desktop-alt/pages/HomePage.svelte';
   import DesktopApp from '../src/desktop-alt/DesktopApp.svelte';
   import MeetingPermissionsWindow from '../src/components/MeetingPermissionsWindow.svelte';
@@ -12,7 +11,7 @@
   } from '../src/components/messaging/Conversation.svelte';
   import CreateChannel from '../src/components/messaging/CreateChannel.svelte';
   import '../src/desktop-alt/styles/desktop-alt.css';
-  import { popoverProps, bannerFixtures, workspaces, hqCliUpdateAvailable } from './fixtures';
+  import { popoverProps, bannerFixtures, workspaces } from './fixtures';
   import { emit } from '@tauri-apps/api/event';
 
   // Fixture thread for ?view=conversation — exercises the copy-message toolbar
@@ -82,17 +81,14 @@
   const view = params.get('view') ?? 'settings';
   const theme = params.get('theme') ?? 'dark';
   const bannerKind = params.get('kind') ?? 'share';
-  // ?state=error   renders the "Sync initialized" notice banner.
-  // ?state=cli-update renders the "hq CLI update available" banner (copyable
-  //                one-liner + dismiss ×) off a deliberately-stale CLI fixture.
+  // ?state=error renders the "Sync initialized" notice banner.
   // Otherwise the popover mounts in its idle fixture state.
+  // (CLI-update overflow preview retired with US-001 chrome strip.)
   const stateOverride = params.get('state');
   const previewPopoverProps =
     stateOverride === 'error'
       ? { ...popoverProps, syncState: 'error' as const, errorMessage: 'failed to push indigo: exit 1', errorCompany: 'indigo' }
-      : stateOverride === 'cli-update'
-        ? { ...popoverProps, hqCliUpdateAvailable }
-        : popoverProps;
+      : popoverProps;
 
   // The banner reads its transparent-window CSS off html[data-window=dm-banner]
   // and renders only after a `banner:event`. Set the attr + emit the fixture
@@ -101,7 +97,7 @@
     'data-window',
     view === 'banner'
       ? 'dm-banner'
-      : view === 'company' || view === 'desktop' || view === 'companies' || view === 'home'
+      : view === 'company' || view === 'desktop' || view === 'home'
         ? 'desktop-alt'
         : view === 'permissions'
           ? 'meeting-permissions'
@@ -184,24 +180,11 @@
       onopencompany={() => {}}
     />
   </div>
-{:else if view === 'companies'}
-  <!-- The desktop Companies page in isolation (DesktopApp is auth-gated). Drives
-       the per-company Shared/All sync-mode toggle, the All→Shared confirm, and
-       the cloud-unreachable gating. Append ?cloud=off to preview the offline
-       notice + disabled writes. Resize the viewport to ~1180x720. -->
-  <div class="desktop-stage">
-    <CompaniesPage
-      {workspaces}
-      cloudReachable={params.get('cloud') !== 'off'}
-      onopencompany={() => {}}
-      onrefresh={() => {}}
-    />
-  </div>
 {:else}
-  <div class="stage" class:light={theme === 'light'}>
-    <div class="window">
-      <Settings onback={() => (window.location.search = '?view=popover')} />
-    </div>
+  <!-- Settings now live in the desktop-alt window (US-005). Preview the V4
+       SettingsPage rather than the retired popover Settings.svelte. -->
+  <div class="desktop-stage" class:light={theme === 'light'}>
+    <SettingsPage activeTab="sync" />
   </div>
 {/if}
 

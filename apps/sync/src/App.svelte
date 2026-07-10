@@ -14,7 +14,6 @@
   } from './lib/dmRequests';
   import SignInPrompt from './components/SignInPrompt.svelte';
   import Popover from './components/Popover.svelte';
-  import Settings from './components/Settings.svelte';
   import { conflictStore, type ConflictFile } from './stores/conflicts';
   import { transferCountDelta } from './lib/transfer-count';
   import { effectiveTotalFiles as computeEffectiveTotalFiles } from './lib/effective-total-files';
@@ -159,7 +158,6 @@
   // than one company aborted (no single slug to name in the prompt).
   let syncConflictCount = $state(0);
   let syncConflictCompany = $state('');
-  let showSettings = $state(false);
   let syncStatsRefresh = $state<(() => void) | null>(null);
 
   // Meetings feature flag — driven by `meetings_feature_enabled` (Rust side
@@ -397,14 +395,6 @@
     }
   }
 
-  // Desktop window feature flag — driven by `desktop_alt_enabled` (Rust side
-  // delegates to the GA gate `desktop_features_enabled`, the same gate as
-  // `meetings_feature_enabled`; true for any signed-in user). Defaults false
-  // so a signed-out user never sees the desktop window surface even if the
-  // gate command hasn't resolved yet. The toggle button + desktop window
-  // render path are gated on this flag.
-  let desktopAltEnabled = $state(false);
-
   // Workspaces — populated by `list_syncable_workspaces` (Rust). Replaces the
   // legacy "No companies yet" dead-end with a union over Person + memberships
   // + local company folders. `null` = first invocation in flight; non-null
@@ -595,14 +585,6 @@
     }
   }
 
-  async function refreshDesktopAltEnabled() {
-    try {
-      desktopAltEnabled = await invoke<boolean>('desktop_alt_enabled');
-    } catch {
-      desktopAltEnabled = false;
-    }
-  }
-
   // Unified "Update" action — dispatches to the right rescue command based
   // on the active channel. Release channel runs `install_hq_core_update`
   // (overlays the latest hq-core release tag); staging channel runs
@@ -754,28 +736,6 @@
     } catch (err) {
       console.error('cancel_sync failed:', err);
     }
-  }
-
-  function handleSettings() {
-    showSettings = true;
-  }
-
-  function handleBackFromSettings() {
-    showSettings = false;
-    // User may have changed the HQ folder path in Settings; the header in
-    // Popover renders from `config.hqFolderPath`, which was snapshotted at
-    // mount. Re-read menubar.json so the change is visible without a quit.
-    // Workspaces depend on hq_root too — local folder enumeration would point
-    // at the wrong tree otherwise. hqVersion also follows the HQ root —
-    // re-tethering to a different folder may surface a different (or now-
-    // readable) `core.yaml`.
-    loadConfig();
-    loadWorkspaces();
-    loadHqVersion();
-    // User may have just flipped the staging-channel toggle — re-run the
-    // unified state check so channel + target + drift all swing without
-    // waiting for the 6h background tick.
-    loadCoreState();
   }
 
   async function handleSignOut() {
@@ -974,7 +934,11 @@
 
     unlisteners.push(
       await listen('tray:open-settings', () => {
-        handleSettings();
+        void invoke('open_desktop_alt_window', { route: 'settings' }).catch((e) => {
+          console.error('tray open_desktop_alt_window (settings) failed:', e);
+          // Signed-out fallback: GA gate rejects alt window — surface SignInPrompt.
+          void invoke('show_main_window').catch(console.error);
+        });
       })
     );
 
@@ -983,9 +947,11 @@
     // popover uses (the backend gate is re-checked by open_desktop_alt_window).
     unlisteners.push(
       await listen('tray:open-desktop', () => {
-        void invoke('open_desktop_alt_window').catch((e) =>
-          console.error('tray open_desktop_alt_window failed:', e),
-        );
+        void invoke('open_desktop_alt_window').catch((e) => {
+          console.error('tray open_desktop_alt_window failed:', e);
+          // Signed-out fallback: GA gate rejects alt window — surface SignInPrompt.
+          void invoke('show_main_window').catch(console.error);
+        });
       })
     );
 
@@ -1952,7 +1918,7 @@
     loadUnreadSummary();
     setupTrayListeners();
     // Resolve the Phase-0 meeting-detect eligibility flag once on mount.
-    // Settings.svelte hides the meeting-detect toggle when this is false.
+    // Desktop SettingsPage gates the meeting-detect toggle when this is false.
     // (Per-permission TCC status tracking was removed 2026-05-25 — see
     // permissionState.svelte.ts for why; native macOS prompts are
     // sufficient.)
@@ -1977,11 +1943,6 @@
       .catch(() => {
         meetingsEnabled = false;
       });
-
-    // Desktop window gate (GA). Same signed-in check as
-    // `meetings_feature_enabled`; errors fall back to false so a misfiring
-    // gate command can never expose the desktop window to a signed-out user.
-    refreshDesktopAltEnabled();
 
     return () => {
       unlisteners.forEach((unlisten) => unlisten());
@@ -2049,7 +2010,7 @@
 
   // Notification authorization is no longer requested on launch — it is a
   // user-initiated action from Settings ("Enable notifications" →
-  // `handleEnableNotifications` in Settings.svelte).
+  // `handleEnableNotifications` in desktop SettingsPage).
   //
   // macOS caveat that still applies wherever we DO request it: calling
   // `requestAuthorizationWithOptions` registers the process as a
@@ -2083,9 +2044,6 @@
 
       authenticated = shouldSkipSignIn(hasToken, state);
       expiresAt = state.expiresAt ?? '';
-      if (authenticated) {
-        await refreshDesktopAltEnabled();
-      }
     } catch {
       authenticated = false;
     } finally {
@@ -2102,7 +2060,6 @@
   function handleAuthSuccess(auth: { authenticated: boolean; expiresAt: string }) {
     authenticated = auth.authenticated;
     expiresAt = auth.expiresAt;
-    void refreshDesktopAltEnabled();
   }
 </script>
 
@@ -2116,8 +2073,6 @@
       state={(lifecycleState ?? 'NeedsInstall') as LifecycleState}
       onfinish={handleOnboardingFinish}
     />
-  {:else if authenticated && showSettings}
-    <Settings onback={handleBackFromSettings} />
   {:else if authenticated}
     <Popover
       {syncState}
@@ -2136,8 +2091,6 @@
       cloudReachable={workspacesCloudReachable}
       cloudError={workspacesError}
       manifestError={workspacesManifestError}
-      onworkspacesrefresh={loadWorkspaces}
-      lastSummary={syncLastSummary}
       errorMessage={syncErrorMessage}
       errorCompany={syncErrorCompany}
       {conflicts}
@@ -2146,47 +2099,12 @@
       conflictCompany={syncConflictCompany}
       {updateAvailable}
       {updateInstalling}
-      {hqCliUpdateAvailable}
-      {hqCliUpdateInstalling}
-      {hqCliUpdateError}
-      {packUpdateAvailable}
-      {packsUpdating}
-      {packUpdateError}
-      {coreState}
-      {coreInstalling}
-      {coreInstallLastResult}
-      {hqVersion}
       onsync={handleSyncNow}
-      oncancel={handleCancel}
-      onsettings={handleSettings}
-      onsignout={handleSignOut}
       onresolve={handleResolveConflict}
       onopen={handleOpenInEditor}
       ondismissconflicts={handleDismissConflicts}
       oninstallupdate={handleInstallUpdate}
-      oninstallhqcliupdate={handleInstallHqCliUpdate}
-      ondismisshqcliupdate={handleDismissHqCliUpdate}
-      onupdatepacks={handleUpdatePacks}
-      oninstallcore={handleInstallCore}
       bindStatsRefresh={(fn) => (syncStatsRefresh = fn)}
-      {meetingsEnabled}
-      {desktopAltEnabled}
-      onmeetingsclick={() => {
-        // Spawn the detached Upcoming Meetings window (label: meetings-window).
-        // Fire-and-forget — the Rust handler focuses an existing window if
-        // already open, otherwise creates a fresh one. Errors are swallowed
-        // since they'd be infra-level (Tauri failure) and there's nothing
-        // useful to show inline.
-        // Also clear the tray Prompt badge — the user is now acting on any
-        // pending meeting detections.
-        invoke('open_meetings_window').catch(() => {});
-        invoke('meetings_clear_prompt_badge').catch(() => {});
-      }}
-      {activeMeetings}
-      onstartrecording={handleStartRecording}
-      onstoprecording={handleStopRecording}
-      recordingCompanies={memberships}
-      onchangerecordingcompany={handleChangeRecordingCompany}
     />
   {:else}
     <SignInPrompt onsuccess={handleAuthSuccess} />

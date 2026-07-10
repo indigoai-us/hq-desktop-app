@@ -1,22 +1,21 @@
 // @vitest-environment happy-dom
 //
-// Regression — "Default recording" company renders BLANK in the menubar popover.
+// Regression — "Default recording" company must not render BLANK.
 //
-// This is a REAL component-mount test: it boots the actual
-// `src/components/Settings.svelte` into a live DOM and asserts on the rendered
-// `<select id="default-recording-company">` — no source-contract stub, no bypass
-// of the component.
+// US-005: mounts the canonical desktop SettingsPage (popover Settings.svelte
+// retired). Boots `src/desktop-alt/pages/SettingsPage.svelte` into a live DOM
+// and asserts on the rendered default-recording-company `<select>` — no
+// source-contract stub, no bypass of the component.
 //
-// The bug (popover Settings only — the desktop-alt SettingsPage already coerced):
+// The bug (originally in classic Settings; SettingsPage already coerced):
 // the select used `value={defaultRecordingCompanyUid}`, a RAW value that is
 // `null` for the common "Personal" case. Svelte compiles a one-way select
 // `value` to `select.__value = value; select_option(select, value)`. With a raw
 // `null`, `select.__value` becomes `null` — which NO <option> carries (Personal
 // is `value=""`) — so `select_option` finds no match and sets
-// `selectedIndex = -1`. In the popover's WKWebView that renders a BLANK control
-// instead of "Personal" (the reported "always resets to blank"). The fix coerces
-// `null → ''` (`value={defaultRecordingCompanyUid ?? ''}`) so it matches the
-// Personal <option>, mirroring the desktop-alt SettingsPage.
+// `selectedIndex = -1`. In WKWebView that renders a BLANK control instead of
+// "Personal". The fix coerces `null → ''` (`value={defaultRecordingCompanyUid ?? ''}`)
+// so it matches the Personal <option>.
 //
 // Why assert `select.__value` rather than `selectedIndex`/visible text:
 // happy-dom normalizes a single-select's `selectedIndex` back to 0 after render,
@@ -31,10 +30,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import { select_option } from 'svelte/internal/client';
+import { invoke } from '@tauri-apps/api/core';
 
 // ── Root-cause contract: how Svelte's select value matching behaves ──────────
 
-describe('select_option matching — the mechanism behind the blank popover', () => {
+describe('select_option matching — the mechanism behind the blank control', () => {
   it('a raw null value matches no option and deselects (-1); coercing to "" matches Personal', () => {
     function buildSelect(): HTMLSelectElement {
       const sel = document.createElement('select');
@@ -66,7 +66,7 @@ describe('select_option matching — the mechanism behind the blank popover', ()
 // ── Tauri / module bridge mocks ─────────────────────────────────────────────
 //
 // Mutable refs the per-test setup populates so each case controls exactly what
-// Settings sees on its single boot.
+// SettingsPage sees on its single boot.
 
 type SettingsResponse = {
   hqPath: string | null;
@@ -94,10 +94,24 @@ vi.mock('@tauri-apps/api/core', () => ({
         return false;
       case 'meetings_feature_enabled':
         return true;
+      case 'is_indigo_user':
+        return false;
       case 'available_channels':
         return ['stable'];
       case 'notification_permission_state':
         return 'granted';
+      case 'list_displays':
+        return [];
+      // Update surfaces hydrate on mount (fire-and-forget); return benign nulls.
+      // check_for_updates is user-initiated only — must NOT be called on load.
+      case 'check_hq_cli_update':
+        return null;
+      case 'check_pack_update':
+        return null;
+      case 'get_hq_version':
+        return null;
+      case 'check_core_state':
+        return null;
       case 'save_settings':
         return undefined;
       default:
@@ -110,16 +124,8 @@ vi.mock('@tauri-apps/api/app', () => ({
   getVersion: vi.fn(async () => '0.0.0-test'),
 }));
 
-vi.mock('@tauri-apps/api/window', () => ({
-  getCurrentWindow: vi.fn(() => ({
-    setSize: vi.fn(async () => undefined),
-  })),
-  LogicalSize: class LogicalSize {
-    constructor(
-      public width: number,
-      public height: number,
-    ) {}
-  },
+vi.mock('@tauri-apps/api/event', () => ({
+  emit: vi.fn(async () => {}),
 }));
 
 vi.mock('@tauri-apps/plugin-shell', () => ({
@@ -140,28 +146,32 @@ vi.mock('../../src/lib/permissionState.svelte', () => ({
 let host: HTMLElement;
 let component: Record<string, unknown> | null = null;
 
+const mockInvoke = vi.mocked(invoke);
+
 /**
- * Mount the REAL Settings component and let its async `loadSettings()` (a
- * `Promise.all` of invokes) + `getVersion()` settle, flushing reactive updates
- * into the DOM between ticks. Resolves once the settings body (gated behind
- * `{#if loading}`) has rendered the recording select, or after a bounded number
- * of ticks.
+ * Mount the REAL SettingsPage and let its async loadSettings / update surfaces
+ * settle, flushing reactive updates into the DOM between ticks. Resolves once
+ * the default-recording select has rendered, or after a bounded number of ticks.
  */
-async function mountSettings(): Promise<HTMLElement> {
-  const { default: Settings } = await import('../../src/components/Settings.svelte');
-  component = mount(Settings, { target: host, props: { onback: () => {} } });
+async function mountSettingsPage(): Promise<HTMLElement> {
+  const { default: SettingsPage } = await import(
+    '../../src/desktop-alt/pages/SettingsPage.svelte'
+  );
+  component = mount(SettingsPage, { target: host });
   flushSync();
   for (let i = 0; i < 50; i++) {
     await Promise.resolve();
     await new Promise((r) => setTimeout(r, 0));
     flushSync();
-    if (host.querySelector('#default-recording-company')) break;
+    if (host.querySelector('select[aria-label="Default recording company"]')) break;
   }
   return host;
 }
 
 function recordingSelect(dom: HTMLElement): HTMLSelectElement {
-  const el = dom.querySelector<HTMLSelectElement>('#default-recording-company');
+  const el = dom.querySelector<HTMLSelectElement>(
+    'select[aria-label="Default recording company"]',
+  );
   if (!el) throw new Error('recording select did not render');
   return el;
 }
@@ -176,6 +186,7 @@ beforeEach(() => {
   membershipsResponse = [];
   host = document.createElement('div');
   document.body.appendChild(host);
+  mockInvoke.mockClear();
 });
 
 afterEach(async () => {
@@ -187,7 +198,7 @@ afterEach(async () => {
   vi.clearAllMocks();
 });
 
-describe('Settings — Default recording company display (menubar popover)', () => {
+describe('SettingsPage — Default recording company display', () => {
   it('hands the select a value that matches the Personal option when no company default is stored', async () => {
     // Never picked a company → null on disk. This is the common case and the
     // one that rendered BLANK before the fix.
@@ -199,13 +210,21 @@ describe('Settings — Default recording company display (menubar popover)', () 
       { companyUid: 'co_acme', companyName: 'Acme Corp', role: 'member', status: 'active' },
     ];
 
-    const dom = await mountSettings();
+    const dom = await mountSettingsPage();
     const select = recordingSelect(dom);
 
     // REGRESSION GUARD: the value must be the empty string (matches the Personal
     // <option>), never a raw `null` (which matches nothing → blank in WebKit).
     expect(svelteValue(select)).toBe('');
     expect(svelteValue(select)).not.toBeNull();
+
+    // Memberships render as options (Acme) alongside Personal.
+    const optionTexts = Array.from(select.options).map((o) => o.textContent?.trim());
+    expect(optionTexts).toContain('Personal');
+    expect(optionTexts).toContain('Acme Corp');
+
+    // check_for_updates is user-initiated only — never on load.
+    expect(mockInvoke.mock.calls.some((c) => c[0] === 'check_for_updates')).toBe(false);
   });
 
   it('shows the stored company default when a valid company is selected', async () => {
@@ -219,7 +238,7 @@ describe('Settings — Default recording company display (menubar popover)', () 
       { companyUid: 'co_acme', companyName: 'Acme Corp', role: 'member', status: 'active' },
     ];
 
-    const dom = await mountSettings();
+    const dom = await mountSettingsPage();
     const select = recordingSelect(dom);
 
     expect(svelteValue(select)).toBe('co_acme');
@@ -239,10 +258,40 @@ describe('Settings — Default recording company display (menubar popover)', () 
       { companyUid: 'co_acme', companyName: 'Acme Corp', role: 'member', status: 'active' },
     ];
 
-    const dom = await mountSettings();
+    const dom = await mountSettingsPage();
     const select = recordingSelect(dom);
 
     expect(svelteValue(select)).toBe('');
     expect(svelteValue(select)).not.toBeNull();
+  });
+
+  it('persists a membership pick via save_settings', async () => {
+    settingsResponse = {
+      hqPath: '/Users/dev/hq',
+      defaultRecordingCompanyUid: null,
+    };
+    membershipsResponse = [
+      { companyUid: 'co_acme', companyName: 'Acme Corp', role: 'member', status: 'active' },
+    ];
+
+    const dom = await mountSettingsPage();
+    const select = recordingSelect(dom);
+
+    mockInvoke.mockClear();
+    select.value = 'co_acme';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    for (let i = 0; i < 12; i++) {
+      await Promise.resolve();
+    }
+    flushSync();
+
+    await vi.waitFor(() => {
+      expect(mockInvoke.mock.calls.some((c) => c[0] === 'save_settings')).toBe(true);
+    });
+
+    const saveCall = mockInvoke.mock.calls.find((c) => c[0] === 'save_settings');
+    expect(saveCall).toBeTruthy();
+    const args = saveCall![1] as { prefs: Record<string, unknown> };
+    expect(args.prefs.defaultRecordingCompanyUid).toBe('co_acme');
   });
 });

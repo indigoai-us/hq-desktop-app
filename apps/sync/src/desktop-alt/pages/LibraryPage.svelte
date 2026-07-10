@@ -1,8 +1,9 @@
 <script lang="ts">
   /**
    * LibraryPage — the root/shared Library surface (a top-level desktop-alt
-   * destination, ⌘3). Lists every shared/public worker plus root + personal
-   * skills, with a Workers|Skills toggle, a text filter, and a detail slide-over.
+   * destination, ⌘5). Lists every shared/public worker plus root + personal
+   * skills across Skills / Workers / Installed / Profile tabs (Marketplace is
+   * top-level now — US-007), with a text filter and a detail slide-over.
    *
    * Data is loaded from the local FS via get_library_root on mount and re-loaded
    * on `refreshNonce` bumps. The shared LibraryBrowser owns the filter/toggle/
@@ -33,7 +34,6 @@
     skills: 'Skills',
     workers: 'Workers',
     installed: 'Installed',
-    marketplace: 'Marketplace',
     profile: 'Profile',
   };
   const heading = $derived(HEADINGS[tab]);
@@ -45,9 +45,7 @@
         ? `${items.workers.length} ${items.workers.length === 1 ? 'worker' : 'workers'} available to you`
         : tab === 'installed'
           ? 'Marketplace packs installed in your HQ'
-          : tab === 'marketplace'
-            ? 'Discover and install skills and workers'
-            : 'Your HQ profile and published work',
+          : 'Your HQ profile and published work',
   );
 
   $effect(() => {
