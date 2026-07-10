@@ -54,6 +54,54 @@ describe('bannerToStackItem', () => {
     });
   });
 
+  it('preserves optional actionId and actionLabel from the banner payload', () => {
+    const withActions = bannerToStackItem(
+      {
+        kind: 'update',
+        title: 'HQ Sync',
+        body: '0.9.9 available',
+        clickActionId: 'open',
+        actionId: 'install-update',
+        actionLabel: 'Update now',
+        data: { version: '0.9.9' },
+      },
+      1_000,
+      'u',
+    );
+    expect(withActions.actionId).toBe('install-update');
+    expect(withActions.actionLabel).toBe('Update now');
+
+    const without = bannerToStackItem(
+      {
+        kind: 'dm',
+        title: 'Corey',
+        body: 'hi',
+        clickActionId: 'open',
+        data: null,
+      },
+      1_000,
+      'd',
+    );
+    expect(without.actionId).toBeUndefined();
+    expect(without.actionLabel).toBeUndefined();
+
+    const nullActions = bannerToStackItem(
+      {
+        kind: 'share',
+        title: 'Yousuf',
+        body: 'file.xlsx',
+        clickActionId: 'open',
+        actionId: null,
+        actionLabel: null,
+        data: null,
+      },
+      1_000,
+      's',
+    );
+    expect(nullActions.actionId).toBeNull();
+    expect(nullActions.actionLabel).toBeNull();
+  });
+
   it('maps share → share and update/meeting/unknown → system', () => {
     expect(
       bannerToStackItem(

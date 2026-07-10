@@ -264,5 +264,53 @@ describe('US-003: Notification takeover with queue-on-occlusion', () => {
       expect(widgetSource).toContain("listen<{ visible: boolean }>('widget:occlusion'");
       expect(widgetSource).toContain("invoke('widget_ready')");
     });
+
+    it('source contract: widget.rs buffers when webview not ready and widget_ready drains pending', () => {
+      // Stack channel: (ready, pending) + FIFO buffer helper
+      expect(widgetRs).toMatch(/WIDGET_STACK_CHANNEL/);
+      expect(widgetRs).toMatch(/route_widget_notification/);
+      expect(widgetRs).toMatch(/WIDGET_PENDING_CAP/);
+      expect(widgetRs).toMatch(/takeover: buffered \(webview not ready yet\)/);
+
+      // show_widget_notification buffers when not ready
+      const showIdx = widgetRs.indexOf('pub async fn show_widget_notification');
+      const bufferLogIdx = widgetRs.indexOf('takeover: buffered (webview not ready yet)');
+      expect(showIdx).toBeGreaterThan(-1);
+      expect(bufferLogIdx).toBeGreaterThan(showIdx);
+
+      // widget_ready sets ready=true, then drains pending (FIFO widget:notification)
+      expect(widgetRs).toMatch(/widget_ready: drained/);
+      const readyFnIdx = widgetRs.indexOf('pub async fn widget_ready');
+      const readyTrueIdx = widgetRs.indexOf('guard.0 = true', readyFnIdx);
+      const drainLogIdx = widgetRs.indexOf('widget_ready: drained', readyFnIdx);
+      const setupIdx = widgetRs.indexOf('// ── Setup', readyFnIdx);
+      const readySlice = widgetRs.slice(
+        readyFnIdx,
+        setupIdx > readyFnIdx ? setupIdx : undefined,
+      );
+      expect(readyTrueIdx).toBeGreaterThan(readyFnIdx);
+      expect(drainLogIdx).toBeGreaterThan(readyTrueIdx);
+      expect(readySlice).toContain('widget:notification');
+      expect(readySlice).toMatch(/std::mem::take\(&mut guard\.1\)/);
+
+      // setup_widget_window resets ready=false when creating a new window (keeps pending)
+      expect(widgetRs).toMatch(/ch\.0\s*=\s*false/);
+      expect(widgetRs).toMatch(/keep.*pending|keep ch\.1/i);
+    });
+
+    it('source contract: Widget.svelte wires onreply/onreact→send_dm for dm rows', () => {
+      expect(widgetSource).toMatch(/async function replyDm/);
+      expect(widgetSource).toMatch(/async function reactDm/);
+      expect(widgetSource).toContain("invoke('send_dm'");
+      expect(widgetSource).toMatch(/toPersonUid:\s*peer/);
+      expect(widgetSource).toMatch(/fromPersonUid/);
+      // Wired only for dm rows on NotificationRow
+      expect(widgetSource).toMatch(
+        /onreply=\{item\.kind\s*===\s*['"]dm['"]\s*\?[\s\S]*?replyDm/,
+      );
+      expect(widgetSource).toMatch(
+        /onreact=\{item\.kind\s*===\s*['"]dm['"]\s*\?[\s\S]*?reactDm/,
+      );
+    });
   });
 });

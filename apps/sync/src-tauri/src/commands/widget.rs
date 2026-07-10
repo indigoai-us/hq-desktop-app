@@ -37,6 +37,15 @@
 //! window, no native macOS notifications). The window can grow up/left from
 //! the lower-right anchor to fit notification rows (`resize_widget`), and
 //! emits `widget:occlusion` so the frontend can queue while occluded.
+//!
+//! ### Ready-handshake (never drop notifications in the startup gap)
+//!
+//! The widget webview mounts its `widget:notification` listener in `onMount`
+//! and only then invokes `widget_ready`. Any payload that arrives between
+//! window creation and that handshake would be silently dropped if emitted
+//! immediately. [`WIDGET_STACK_CHANNEL`] buffers those payloads until ready,
+//! then drains them FIFO when `widget_ready` runs (after the initial
+//! `widget:occlusion` emit). Cap is [`WIDGET_PENDING_CAP`]; oldest drop first.
 
 use std::sync::Mutex;
 
@@ -66,10 +75,27 @@ const WIDGET_H_MAX: f64 = 480.0;
 const MARGIN_RIGHT: f64 = 8.0;
 const MARGIN_BOTTOM: f64 = 16.0;
 
+/// Max payloads held while the widget webview has not completed its
+/// ready-handshake. Oldest are dropped when over cap.
+const WIDGET_PENDING_CAP: usize = 50;
+
 /// Current logical size of the widget window. Starts at the idle wordmark
 /// size; `resize_widget` grows it for notification rows while re-anchoring so
 /// the lower-right corner stays fixed.
 static WIDGET_SIZE: Mutex<(f64, f64)> = Mutex::new((WIDGET_W, WIDGET_H));
+
+/// Stack channel: `(ready, pending)`.
+///
+/// - `ready` is `false` from window creation until the frontend mounts its
+///   listeners and invokes [`widget_ready`].
+/// - `pending` is FIFO; [`show_widget_notification`] pushes while not ready;
+///   [`widget_ready`] drains after the initial occlusion emit.
+/// - Cap [`WIDGET_PENDING_CAP`]; oldest dropped first.
+///
+/// When `setup_widget_window` **creates** a new window it resets `ready` to
+/// `false` but keeps any already-buffered pending payloads.
+static WIDGET_STACK_CHANNEL: Mutex<(bool, Vec<hq_desktop_core::banner::BannerPayload>)> =
+    Mutex::new((false, Vec::new()));
 
 // ── Untyped menubar.json prefs ──────────────────────────────────────────────────
 
@@ -109,11 +135,47 @@ pub fn takeover_active(app: &AppHandle) -> bool {
     widget_enabled() && app.get_webview_window(WINDOW_LABEL).is_some()
 }
 
+/// Pure routing decision for the widget stack channel.
+///
+/// Returns `(emit_now, next_pending)`. When `ready`, the caller should emit
+/// immediately and `pending` is left unchanged (payload is not consumed into
+/// the queue). When not ready, `payload` is appended FIFO and the queue is
+/// trimmed to `cap` by dropping oldest entries.
+///
+/// Extracted so unit tests cover buffer-vs-emit + cap trimming without an
+/// `AppHandle`. Callers that need the payload after a ready/emit decision
+/// should clone before calling when `ready` is true, or pass ownership only
+/// when buffering.
+fn route_widget_notification(
+    ready: bool,
+    mut pending: Vec<hq_desktop_core::banner::BannerPayload>,
+    payload: hq_desktop_core::banner::BannerPayload,
+    cap: usize,
+) -> (bool, Vec<hq_desktop_core::banner::BannerPayload>) {
+    if ready {
+        // Payload not queued; drop the by-value arg (callers clone when needed).
+        drop(payload);
+        return (true, pending);
+    }
+    pending.push(payload);
+    if cap == 0 {
+        pending.clear();
+    } else if pending.len() > cap {
+        let overflow = pending.len() - cap;
+        pending.drain(..overflow);
+    }
+    (false, pending)
+}
+
 /// Route a notification payload to the widget's in-window stack.
 ///
-/// Emits `widget:notification` to the widget webview. Called from
-/// `show_banner` when [`takeover_active`] is true — the single funnel for
-/// DM/share/meeting/update while widget mode is on.
+/// If the webview has completed its ready-handshake, emits
+/// `widget:notification` immediately. Otherwise buffers the payload in
+/// [`WIDGET_STACK_CHANNEL`] (FIFO, capped) so nothing is dropped during the
+/// startup gap between window creation and `widget_ready`.
+///
+/// Called from `show_banner` when [`takeover_active`] is true — the single
+/// funnel for DM/share/meeting/update while widget mode is on.
 pub async fn show_widget_notification(
     app: AppHandle,
     payload: hq_desktop_core::banner::BannerPayload,
@@ -122,6 +184,29 @@ pub async fn show_widget_notification(
         LOG_TAG,
         &format!("takeover: routing kind={} to widget stack", payload.kind),
     );
+
+    // Under the lock: either emit immediately, or buffer (FIFO + cap).
+    let to_emit = {
+        let mut guard = WIDGET_STACK_CHANNEL
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if guard.0 {
+            // Ready — emit this payload; leave pending alone.
+            Some(payload)
+        } else {
+            let pending = std::mem::take(&mut guard.1);
+            let (_emit, next_pending) =
+                route_widget_notification(false, pending, payload, WIDGET_PENDING_CAP);
+            guard.1 = next_pending;
+            None
+        }
+    };
+
+    let Some(payload) = to_emit else {
+        log(LOG_TAG, "takeover: buffered (webview not ready yet)");
+        return Ok(());
+    };
+
     app.emit_to(WINDOW_LABEL, "widget:notification", &payload)
         .map_err(|e| e.to_string())
 }
@@ -439,27 +524,39 @@ fn register_occlusion_observer(app: &AppHandle, window: &tauri::WebviewWindow) {
     }
 }
 
-/// Ready-handshake: emit the current occlusion state once the frontend has
-/// mounted its `widget:occlusion` listener. Defaults `visible: true` when
-/// the AppKit query is unavailable.
+/// Ready-handshake: mark the webview ready, emit the current occlusion state
+/// once the frontend has mounted its listeners, then drain any payloads that
+/// arrived during the startup gap (FIFO `widget:notification` emits).
+///
+/// Defaults occlusion `visible: true` when the AppKit query is unavailable.
 #[tauri::command]
 pub async fn widget_ready(app: AppHandle) -> Result<(), String> {
+    // Mark ready under the lock and take pending. Concurrent
+    // `show_widget_notification` calls after this emit immediately.
+    let pending = {
+        let mut guard = WIDGET_STACK_CHANNEL
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        guard.0 = true;
+        std::mem::take(&mut guard.1)
+    };
+
+    // Initial occlusion first — frontend is listening.
     #[cfg(target_os = "macos")]
     {
-        let app = app.clone();
-        let _ = app.clone().run_on_main_thread(move || {
-            let visible = widget_occlusion_visible_now(&app).unwrap_or(true);
+        let app_for_occ = app.clone();
+        let _ = app_for_occ.clone().run_on_main_thread(move || {
+            let visible = widget_occlusion_visible_now(&app_for_occ).unwrap_or(true);
             log(
                 LOG_TAG,
                 &format!("widget_ready: initial occlusion visible={visible}"),
             );
-            let _ = app.emit_to(
+            let _ = app_for_occ.emit_to(
                 WINDOW_LABEL,
                 "widget:occlusion",
                 serde_json::json!({ "visible": visible }),
             );
         });
-        return Ok(());
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -469,8 +566,26 @@ pub async fn widget_ready(app: AppHandle) -> Result<(), String> {
             "widget:occlusion",
             serde_json::json!({ "visible": true }),
         );
-        Ok(())
     }
+
+    // Drain buffered notifications in FIFO order after occlusion.
+    let drained = pending.len();
+    for payload in pending {
+        if let Err(e) = app.emit_to(WINDOW_LABEL, "widget:notification", &payload) {
+            log(
+                LOG_TAG,
+                &format!("widget_ready: drain emit failed: {e}"),
+            );
+        }
+    }
+    if drained > 0 {
+        log(
+            LOG_TAG,
+            &format!("widget_ready: drained {drained} buffered notification(s)"),
+        );
+    }
+
+    Ok(())
 }
 
 // ── Setup ───────────────────────────────────────────────────────────────────────
@@ -492,6 +607,14 @@ pub fn setup_widget_window(app: &AppHandle) {
     // Reset size tracking for a fresh window (idle wordmark).
     if let Ok(mut size) = WIDGET_SIZE.lock() {
         *size = (WIDGET_W, WIDGET_H);
+    }
+
+    // New webview is not ready until it mounts listeners and invokes
+    // `widget_ready`. Reset ready=false; keep any already-buffered pending
+    // payloads so notifications that raced setup are not lost.
+    if let Ok(mut ch) = WIDGET_STACK_CHANNEL.lock() {
+        ch.0 = false;
+        // keep ch.1 (pending)
     }
 
     let pos = widget_position(app);
@@ -629,6 +752,20 @@ fn ns_str(s: &str) -> *mut objc2::runtime::AnyObject {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hq_desktop_core::banner::BannerPayload;
+
+    fn sample_payload(kind: &str) -> BannerPayload {
+        BannerPayload {
+            kind: kind.to_string(),
+            title: "t".to_string(),
+            body: "b".to_string(),
+            icon_text: None,
+            action_label: None,
+            action_id: None,
+            click_action_id: "open".to_string(),
+            data: serde_json::Value::Null,
+        }
+    }
 
     #[test]
     fn clamp_widget_size_holds_idle_minimum() {
@@ -657,5 +794,52 @@ mod tests {
         assert_eq!(clamp_widget_size(200.0, 120.0), (200.0, 120.0));
         assert_eq!(clamp_widget_size(100.0, 43.0), (100.0, 43.0));
         assert_eq!(clamp_widget_size(66.0, 300.0), (66.0, 300.0));
+    }
+
+    #[test]
+    fn route_widget_notification_emits_when_ready() {
+        let pending = vec![sample_payload("old")];
+        let (emit, next) =
+            route_widget_notification(true, pending.clone(), sample_payload("new"), 50);
+        assert!(emit);
+        // Pending unchanged when ready — caller emits the new payload itself.
+        assert_eq!(next.len(), 1);
+        assert_eq!(next[0].kind, "old");
+    }
+
+    #[test]
+    fn route_widget_notification_buffers_when_not_ready() {
+        let (emit, next) =
+            route_widget_notification(false, Vec::new(), sample_payload("a"), 50);
+        assert!(!emit);
+        assert_eq!(next.len(), 1);
+        assert_eq!(next[0].kind, "a");
+
+        let (emit2, next2) =
+            route_widget_notification(false, next, sample_payload("b"), 50);
+        assert!(!emit2);
+        assert_eq!(
+            next2.iter().map(|p| p.kind.as_str()).collect::<Vec<_>>(),
+            vec!["a", "b"]
+        );
+    }
+
+    #[test]
+    fn route_widget_notification_drops_oldest_over_cap() {
+        let mut pending = Vec::new();
+        for i in 0..3 {
+            let (emit, next) =
+                route_widget_notification(false, pending, sample_payload(&format!("k{i}")), 2);
+            assert!(!emit);
+            pending = next;
+        }
+        // Cap 2: kept newest (k1, k2); dropped oldest k0.
+        assert_eq!(
+            pending
+                .iter()
+                .map(|p| p.kind.as_str())
+                .collect::<Vec<_>>(),
+            vec!["k1", "k2"]
+        );
     }
 }

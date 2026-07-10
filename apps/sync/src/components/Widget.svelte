@@ -98,6 +98,8 @@
         body: item.text,
         clickActionId: item.clickActionId,
         data: item.data,
+        actionId: item.actionId,
+        actionLabel: item.actionLabel,
       };
       await invoke('banner_action', { action: item.clickActionId, payload });
     } catch (err) {
@@ -109,6 +111,29 @@
 
   function handleDismiss(id: string): void {
     applyStack(dismissItem(stack, id));
+  }
+
+  /**
+   * Mirror NotificationFeed.replyDm: real `send_dm` to the message author.
+   * DmEvent serializes camelCase; peer is `fromPersonUid` on `item.data`.
+   * Only meaningful when Tauri is present; no-ops otherwise. Errors log only
+   * — the row stays visible.
+   */
+  async function replyDm(item: WidgetStackItem, text: string): Promise<void> {
+    if (!hasTauri()) return;
+    const peer = (item.data as { fromPersonUid?: string } | null)?.fromPersonUid;
+    if (!peer || !text.trim()) return;
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('send_dm', { toPersonUid: peer, body: text.trim() });
+    } catch (err) {
+      console.error('widget: send_dm failed', err);
+    }
+  }
+
+  /** No per-event reaction API — send the emoji as a DM reply body (same as feed). */
+  async function reactDm(item: WidgetStackItem, emoji: string): Promise<void> {
+    await replyDm(item, emoji);
   }
 
   onMount(() => {
@@ -196,6 +221,8 @@
             ts={item.ts}
             onopen={() => void handleOpen(item)}
             ondismiss={() => handleDismiss(item.id)}
+            onreply={item.kind === 'dm' ? (text) => void replyDm(item, text) : undefined}
+            onreact={item.kind === 'dm' ? (emoji) => void reactDm(item, emoji) : undefined}
           />
         </div>
       {/each}

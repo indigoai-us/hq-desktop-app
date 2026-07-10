@@ -84,6 +84,16 @@ export interface WidgetStackItem {
   kind: string;
   clickActionId: string;
   data: unknown;
+  /**
+   * Optional chip action id from the banner payload. Preserved for open-routing
+   * and future stories — the locked one-line widget row does not render a chip.
+   */
+  actionId?: string | null;
+  /**
+   * Optional chip action label from the banner payload. Preserved for open-routing
+   * and future stories — the locked one-line widget row does not render a chip.
+   */
+  actionLabel?: string | null;
   /** Epoch ms — visible items with `expiresAt <= now` are dropped. */
   expiresAt: number;
 }
@@ -142,6 +152,8 @@ export function bannerToStackItem(
     kind,
     clickActionId: payload.clickActionId,
     data: payload.data,
+    actionId: payload.actionId,
+    actionLabel: payload.actionLabel,
     expiresAt: now + WIDGET_ROW_TIMEOUT_MS,
   };
 }
