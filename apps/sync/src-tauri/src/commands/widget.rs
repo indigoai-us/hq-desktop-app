@@ -40,12 +40,17 @@ const LOG_TAG: &str = "widget";
 /// `capabilities/widget.json`.
 pub const WINDOW_LABEL: &str = "widget";
 
-/// Widget geometry (logical px). Sized for the 56px wordmark plus headroom for
-/// a future queued-count superscript (US-003) above/right of the mark.
-const WIDGET_W: f64 = 96.0;
-const WIDGET_H: f64 = 72.0;
-/// Margins from the display's visible edge (locked design mockup).
-const MARGIN_RIGHT: f64 = 18.0;
+/// Widget geometry (logical px). Sized to hug the 56px wordmark so the
+/// transparent always-on-top window does not swallow desktop clicks outside
+/// the mark. 10px headroom top+right for the queued-count superscript (US-003)
+/// matches `Widget.svelte` `.wg` padding (padding 10 + mark 56 = 66 wide;
+/// padding 10 + ~32.2 mark height ≈ 42.2 ≤ 43 tall).
+const WIDGET_W: f64 = 66.0;
+const WIDGET_H: f64 = 43.0;
+/// Margins from the display's visible edge. `MARGIN_RIGHT` is 8 so the mark's
+/// visual right margin stays 18px (8 window margin + 10px right padding in
+/// `.wg`). `MARGIN_BOTTOM` is 16 — the mark sits flush to the window bottom.
+const MARGIN_RIGHT: f64 = 8.0;
 const MARGIN_BOTTOM: f64 = 16.0;
 
 // ── Untyped menubar.json prefs ──────────────────────────────────────────────────
@@ -176,9 +181,15 @@ fn widget_position_fallback(app: &AppHandle) -> tauri::LogicalPosition<f64> {
         let scale = m.scale_factor();
         let mon_w = m.size().width as f64 / scale;
         let mon_h = m.size().height as f64 / scale;
+        // Monitor origin in virtual-desktop logical coords (secondary displays
+        // are often offset from (0,0)).
+        let pos = m.position();
+        let origin_x = pos.x as f64 / scale;
+        let origin_y = pos.y as f64 / scale;
         // Extra 80px bottom clearance when we cannot read visibleFrame.
-        let x = (mon_w - WIDGET_W - MARGIN_RIGHT).max(0.0);
-        let y = (mon_h - WIDGET_H - 80.0).max(0.0);
+        // Clamp relative to the monitor origin, not the virtual desktop (0,0).
+        let x = (origin_x + mon_w - WIDGET_W - MARGIN_RIGHT).max(origin_x);
+        let y = (origin_y + mon_h - WIDGET_H - 80.0).max(origin_y);
         return tauri::LogicalPosition::new(x, y);
     }
 
