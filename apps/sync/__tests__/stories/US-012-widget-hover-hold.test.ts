@@ -221,6 +221,47 @@ describe('US-012: never hide under pointer or during reply', () => {
       expect(stillInput!.value).toBe('drafting a reply');
     });
 
+    it('sending the reply (Enter) releases the hold and auto-hide resumes', () => {
+      vi.useFakeTimers();
+      const now = Date.now();
+      mountWidget({
+        initialItems: [
+          stackItem({ id: 'dm5', type: 'message', kind: 'dm', actor: 'Corey', text: 'brb' }, now),
+        ],
+      });
+
+      const row = host.querySelector<HTMLElement>('[data-testid="notification-row"]')!;
+      row.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+      flushSync();
+
+      const input = host.querySelector<HTMLInputElement>('input.nr-reply')!;
+      input.focus();
+      input.dispatchEvent(new FocusEvent('focus', { bubbles: true }));
+      flushSync();
+      setInputValue(input, 'on my way');
+      flushSync();
+
+      // Pointer leaves while drafting — hold keeps the row alive.
+      const stackEl = host.querySelector('[data-testid="widget-stack"]')!;
+      stackEl.dispatchEvent(new PointerEvent('pointerleave', { bubbles: true }));
+      flushSync();
+      vi.advanceTimersByTime(WIDGET_ROW_TIMEOUT_MS + 2_000);
+      flushSync();
+      expect(host.querySelector('[data-testid="notification-row"]')).toBeTruthy();
+
+      // Enter submits: draft clears, input blurs, hold releases.
+      input.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
+      );
+      flushSync();
+      expect(host.querySelector<HTMLInputElement>('input.nr-reply')?.value ?? '').toBe('');
+
+      // Auto-hide resumes after send: row expires within a fresh window.
+      vi.advanceTimersByTime(WIDGET_ROW_TIMEOUT_MS + 2_000);
+      flushSync();
+      expect(host.querySelector('[data-testid="notification-row"]')).toBeNull();
+    });
+
     it('Escape clears draft and resumes normal expiry after pointer leaves', () => {
       vi.useFakeTimers();
       const now = Date.now();
