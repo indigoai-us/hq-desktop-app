@@ -67,16 +67,16 @@
     lastReadTs = markAllNotificationsRead();
   }
 
-  const unreadCount = $derived(countUnread(items, lastReadTs));
-  $effect(() => {
-    onunreadchange?.(unreadCount);
-  });
-
   // Day grouping + per-(company, actor) collapse of new-file rows lives in the
   // pure, unit-tested notificationGroups module. Session-dismissed ids are
   // stripped before grouping so clusters recompute without dismissed members.
+  // Unread count uses the same visible set so dismiss keeps the badge in sync.
   const visibleItems = $derived(items.filter((it) => !dismissed.has(it.id)));
   const groups = $derived(buildNotificationGroups(visibleItems));
+  const unreadCount = $derived(countUnread(visibleItems, lastReadTs));
+  $effect(() => {
+    onunreadchange?.(unreadCount);
+  });
 
   async function openDm(it: Item): Promise<void> {
     if (!it.dm) return;

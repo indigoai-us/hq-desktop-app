@@ -82,8 +82,9 @@
   }
 
   function handleRowClick(e: MouseEvent): void {
-    if (!onopen || isMessage) return;
-    // Action buttons stopPropagation; a bare row click opens.
+    if (!onopen) return;
+    // Action buttons / reply input: ignore so reply/react never opens.
+    // (Foot also stopPropagations; this covers any bare button/input.)
     const t = e.target as HTMLElement | null;
     if (t?.closest('button, input')) return;
     onopen();

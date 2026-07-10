@@ -143,6 +143,7 @@ describe('US-001: One-line minimal notification row component', () => {
   it('Given a message row, when hovered, then it expands to full text with quick-reply and react controls, and collapses on mouse-out.', () => {
     const longText =
       'Hey — can you take a look at the Q2 metrics share when you get a chance? The numbers look off in the funnel tab.';
+    const onopen = vi.fn();
     const onreply = vi.fn();
     const onreact = vi.fn();
     mountRow({
@@ -150,6 +151,7 @@ describe('US-001: One-line minimal notification row component', () => {
       actor: 'Corey',
       text: longText,
       ts: Date.now() - 120_000,
+      onopen,
       onreply,
       onreact,
     });
@@ -166,9 +168,14 @@ describe('US-001: One-line minimal notification row component', () => {
     flushSync();
 
     expect(row.getAttribute('data-expanded')).toBe('true');
-    const body = row.querySelector('.nr-body');
+    const body = row.querySelector<HTMLElement>('.nr-body');
     expect(body).toBeTruthy();
     expect(body?.textContent).toBe(longText);
+
+    // Bare click on expanded body opens (mouse path for DMs / onopen)
+    body!.click();
+    flushSync();
+    expect(onopen).toHaveBeenCalledTimes(1);
 
     const replyInput = row.querySelector<HTMLInputElement>('input.nr-reply');
     expect(replyInput).toBeTruthy();
@@ -178,6 +185,15 @@ describe('US-001: One-line minimal notification row component', () => {
     expect(reactButtons.length).toBe(3);
     expect([...reactButtons].map((b) => b.textContent)).toEqual(['👍', '❤️', '👀']);
 
+    // Reply input and react buttons must not fire onopen
+    const openBeforeControls = onopen.mock.calls.length;
+    replyInput!.click();
+    flushSync();
+    reactButtons[0].click();
+    flushSync();
+    expect(onopen).toHaveBeenCalledTimes(openBeforeControls);
+    expect(onreact).toHaveBeenCalledWith('👍');
+
     // Type a reply and submit with Enter
     setInputValue(replyInput!, 'On it');
     replyInput!.dispatchEvent(
@@ -185,11 +201,6 @@ describe('US-001: One-line minimal notification row component', () => {
     );
     flushSync();
     expect(onreply).toHaveBeenCalledWith('On it');
-
-    // Emoji react
-    reactButtons[0].click();
-    flushSync();
-    expect(onreact).toHaveBeenCalledWith('👍');
 
     // Collapse on mouse-out
     row.dispatchEvent(new MouseEvent('mouseleave', { bubbles: true }));
@@ -219,5 +230,9 @@ describe('US-001: One-line minimal notification row component', () => {
     // Feed renders rows through the shared one-line NotificationRow
     expect(feedSource).toContain("import NotificationRow from './NotificationRow.svelte'");
     expect(feedSource).toContain('<NotificationRow');
+
+    // Dismissed rows must not keep the unread badge stale: count from visibleItems
+    expect(feedSource).toMatch(/countUnread\s*\(\s*visibleItems\b/);
+    expect(feedSource).not.toMatch(/countUnread\s*\(\s*items\b/);
   });
 });
