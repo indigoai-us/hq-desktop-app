@@ -109,7 +109,22 @@ fn top_right_position(app: &AppHandle) -> tauri::LogicalPosition<f64> {
 ///
 /// Single-window: a second notification reuses the same window (focus +
 /// re-emit). Stacking is a productionisation note above.
+///
+/// When widget takeover is active (US-003), forwards to the widget stack and
+/// never opens the dm-banner window.
 pub async fn show_banner(app: AppHandle, payload: BannerPayload) -> Result<(), String> {
+    // US-003: widget owns every DM/share/meeting/update while widget mode is on.
+    if crate::commands::widget::takeover_active(&app) {
+        log(
+            LOG_TAG,
+            &format!(
+                "takeover: routing kind={} title={} to widget",
+                payload.kind, payload.title
+            ),
+        );
+        return crate::commands::widget::show_widget_notification(app, payload).await;
+    }
+
     log(
         LOG_TAG,
         &format!(

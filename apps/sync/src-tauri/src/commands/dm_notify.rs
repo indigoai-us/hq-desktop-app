@@ -1605,7 +1605,10 @@ async fn do_poll(app: &AppHandle) {
     // SPIKE: when the custom banner is enabled, route every DM through the
     // in-app banner (commands::banner) — event-driven, no blocking Cocoa run
     // loop — and skip the native firing path entirely.
-    if crate::commands::banner::custom_banner_enabled() {
+    // US-003: widget takeover must never fall back to native banners
+    if crate::commands::banner::custom_banner_enabled()
+        || crate::commands::widget::takeover_active(app)
+    {
         log(
             LOG_TAG,
             &format!("DM_NOTIFY_CUSTOM_BANNER {} DM(s)", fresh.len()),

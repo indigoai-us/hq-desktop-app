@@ -522,6 +522,8 @@ fn main() {
             commands::banner::preview_share_banner,
             commands::banner::preview_update_banner,
             commands::banner::preview_meeting_banner,
+            commands::widget::resize_widget,
+            commands::widget::widget_ready,
             commands::compat::check_ai_tools,
             commands::compat::device_fingerprint,
             commands::compat::keychain_set,

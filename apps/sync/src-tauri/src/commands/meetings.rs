@@ -817,7 +817,10 @@ pub async fn meetings_notify_detected(
     // window straight from `App.svelte`'s banner-action router (no UN delegate
     // needed) and the chip starts recording. The native delivery below is kept
     // only as the `customBanner: false` fallback (older macOS / opt-out).
-    if crate::commands::banner::custom_banner_enabled() {
+    // US-003: widget takeover must never fall back to native banners
+    if crate::commands::banner::custom_banner_enabled()
+        || crate::commands::widget::takeover_active(&app)
+    {
         let title = build_notification_title(&platform_lc);
         let window_id = payload.window_id.clone().unwrap_or_default();
         if let Err(e) = crate::commands::banner::show_meeting_banner(
