@@ -632,6 +632,11 @@ fn main() {
                 util::logfile::log("app", "first-run launch: centered onboarding card");
             }
 
+            // US-002: always-on-top HQ wordmark widget (lower-right of the
+            // configured display). Gated by widgetEnabled in menubar.json
+            // (default on). Non-activating, appearance-reactive.
+            commands::widget::setup_widget_window(app.handle());
+
             // macOS: the menu-bar item lives in a separate native helper process
             // (tao parks an in-process status item off-screen on Tahoe). Spawn
             // it + start the command-file poller.

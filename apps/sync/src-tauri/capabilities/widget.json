@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "widget",
+  "description": "Capability set for the always-on-top HQ wordmark widget window. Transparent, non-activating, appearance-reactive floating mark (US-002). Receives future queued-count updates via core:event (US-003). No invoke commands in this story — core:default + core:event:default cover the webview shell.",
+  "windows": ["widget"],
+  "permissions": [
+    "core:default",
+    "core:event:default"
+  ]
+}
