@@ -61,6 +61,10 @@ const LOG_TAG: &str = "widget";
 /// this guard each enable would stack a duplicate NSNotificationCenter observer.
 static SCREEN_PARAMS_OBSERVER: Once = Once::new();
 
+/// Ensures `register_click_away_monitor` runs at most once per process.
+/// Same disable→re-enable rationale as [`SCREEN_PARAMS_OBSERVER`].
+static CLICK_AWAY_MONITOR: Once = Once::new();
+
 /// Window label — kept in sync with the `main.ts` router branch and
 /// `capabilities/widget.json`.
 pub const WINDOW_LABEL: &str = "widget";
@@ -804,6 +808,47 @@ pub fn setup_widget_window(app: &AppHandle) {
 
     #[cfg(target_os = "macos")]
     register_occlusion_observer(app, &window);
+
+    #[cfg(target_os = "macos")]
+    register_click_away_monitor(app);
+}
+
+/// Register a global mouse-down monitor so the frontend can close a
+/// click-pinned recent list when the user clicks OUTSIDE the widget window
+/// (US-010). The widget window is non-focusable, so it never sees `blur`, and
+/// clicks in other apps / the desktop never reach its `document` — a global
+/// NSEvent monitor is the only signal. Global monitors only observe events
+/// delivered to OTHER applications (clicks inside the widget stay in-webview),
+/// which is exactly the click-away set. Passive: events are observed, never
+/// consumed. The frontend ignores the event unless a list is pinned.
+///
+/// Guarded by [`CLICK_AWAY_MONITOR`]; the monitor + block leak for process
+/// life (same idiom as the other observers here).
+#[cfg(target_os = "macos")]
+fn register_click_away_monitor(app: &AppHandle) {
+    use block2::RcBlock;
+    use objc2::{class, msg_send, runtime::AnyObject};
+
+    let app = app.clone();
+    CLICK_AWAY_MONITOR.call_once(move || {
+        // NSEventMaskLeftMouseDown | NSEventMaskRightMouseDown
+        const MASK: u64 = (1 << 1) | (1 << 3);
+        // SAFETY: main thread (setup path); public AppKit selectors; the
+        // returned monitor token and block are intentionally leaked.
+        unsafe {
+            let block = RcBlock::new(move |_event: *mut AnyObject| {
+                let _ = app.emit_to(WINDOW_LABEL, "widget:click-away", serde_json::json!({}));
+            });
+            let monitor: *mut AnyObject = msg_send![
+                class!(NSEvent),
+                addGlobalMonitorForEventsMatchingMask: MASK,
+                handler: &*block
+            ];
+            std::mem::forget(block);
+            let _ = monitor; // retained token; intentionally never released
+            log(LOG_TAG, "click-away monitor registered");
+        }
+    });
 }
 
 /// Register for display arrangement/resolution changes so the widget

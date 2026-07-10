@@ -315,6 +315,14 @@ export function markRecentRead(state: WidgetStackState): WidgetStackState {
 }
 
 /**
+ * Count of recent items still marked unread. Drives the wordmark superscript
+ * when the recent list has been viewed (mark-on-leave watermark).
+ */
+export function unreadRecentCount(state: WidgetStackState): number {
+  return state.recent.filter((r) => r.unread === true).length;
+}
+
+/**
  * Rows for the wordmark hover list: recent (already includes queued+visible via
  * addItem), newest first, capped to {@link WIDGET_HOVER_MAX}.
  */

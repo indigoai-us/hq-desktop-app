@@ -196,12 +196,26 @@ describe('US-006: one-line stack — queue-on-occlusion, flush on return (behavi
   });
 });
 
-describe('US-006: queued superscript indicator', () => {
+describe('US-006/US-010: unread superscript indicator', () => {
   const widgetUi = readRepoFile('src/components/Widget.svelte');
 
-  it('renders a plain superscript count with no badge chrome', () => {
-    expect(widgetUi).toContain('<span class="qd">{queuedCount}</span>');
+  it('renders the unified unread badge as a plain superscript count with no badge chrome', () => {
+    // US-010 replaced the queued-only superscript with a unified unread badge
+    // (badgeCount = unread recent count, falling back to the queued count).
+    // The locked no-circle design rule still holds: same .qd superscript, no chip.
+    expect(widgetUi).toContain(
+      '<span class="qd" data-testid="widget-unread-badge">{badgeCount}</span>',
+    );
+    expect(widgetUi).toContain('unreadCount > 0 ? unreadCount : queuedCount');
     expect(widgetUi).toContain('Plain superscript — no background, border, or border-radius');
+
+    // The .qd style block must stay chrome-free (plain numeral, not a chip).
+    const qdStart = widgetUi.indexOf('.qd {');
+    expect(qdStart).toBeGreaterThan(-1);
+    const qdStyle = widgetUi.slice(qdStart, widgetUi.indexOf('}', qdStart));
+    expect(qdStyle).not.toContain('background');
+    expect(qdStyle).not.toContain('border');
+    expect(qdStyle).not.toContain('border-radius');
   });
 });
 
