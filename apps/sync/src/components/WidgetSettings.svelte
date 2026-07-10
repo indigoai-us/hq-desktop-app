@@ -43,13 +43,41 @@
    * Read-modify-write so unrelated menubar.json keys are never clobbered.
    * `apply_widget_settings` must run after save so the window closes/creates/
    * re-anchors immediately (escape hatch: OFF restores native notifications).
+   *
+   * Save and apply are not one transaction: save failures throw tagged
+   * `save` errors (handlers revert optimistic UI); apply failures throw tagged
+   * `apply` errors (disk is already authoritative — keep value, reload).
    */
   async function persist(partial: { widgetEnabled?: boolean; widgetDisplay?: string | null }) {
-    const prefs = await invoke<Record<string, unknown>>('get_settings');
-    await invoke('save_settings', {
-      prefs: { ...prefs, widgetEnabled, widgetDisplay, ...partial },
-    });
-    await invoke('apply_widget_settings');
+    try {
+      const prefs = await invoke<Record<string, unknown>>('get_settings');
+      await invoke('save_settings', {
+        prefs: { ...prefs, widgetEnabled, widgetDisplay, ...partial },
+      });
+    } catch (err) {
+      throw { phase: 'save' as const, err };
+    }
+    try {
+      await invoke('apply_widget_settings');
+    } catch (err) {
+      throw { phase: 'apply' as const, err };
+    }
+  }
+
+  function isPhaseError(err: unknown, phase: 'save' | 'apply'): boolean {
+    return (
+      typeof err === 'object' &&
+      err !== null &&
+      'phase' in err &&
+      (err as { phase: string }).phase === phase
+    );
+  }
+
+  function errorMessage(err: unknown): string {
+    if (typeof err === 'object' && err !== null && 'err' in err) {
+      return String((err as { err: unknown }).err);
+    }
+    return String(err);
   }
 
   async function handleToggle() {
@@ -59,8 +87,16 @@
     try {
       await persist({ widgetEnabled });
     } catch (err) {
-      widgetEnabled = previous;
-      error = String(err);
+      if (isPhaseError(err, 'save')) {
+        widgetEnabled = previous;
+        error = errorMessage(err);
+      } else {
+        // Disk already has the new value; keep optimistic state and re-sync.
+        // load() clears error — restore after so the apply failure stays visible.
+        const msg = errorMessage(err);
+        await load();
+        error = msg;
+      }
     }
   }
 
@@ -72,8 +108,16 @@
     try {
       await persist({ widgetDisplay });
     } catch (err) {
-      widgetDisplay = previous;
-      error = String(err);
+      if (isPhaseError(err, 'save')) {
+        widgetDisplay = previous;
+        error = errorMessage(err);
+      } else {
+        // Disk already has the new value; keep optimistic state and re-sync.
+        // load() clears error — restore after so the apply failure stays visible.
+        const msg = errorMessage(err);
+        await load();
+        error = msg;
+      }
     }
   }
 </script>

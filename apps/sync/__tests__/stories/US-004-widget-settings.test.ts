@@ -261,6 +261,63 @@ describe('US-004: Widget settings (enable/disable, display, persistence)', () =>
       expect(mockInvoke.mock.calls.some((c) => c[0] === 'apply_widget_settings')).toBe(false);
     });
 
+    it('behavioral: apply_widget_settings rejection does NOT revert the toggle; shows error and reloads from disk', async () => {
+      // Disk is authoritative after a successful save — apply failure must keep
+      // the new value, surface the error, and re-sync via get_settings.
+      stubInvoke({
+        settings: { widgetEnabled: true, widgetDisplay: null },
+        displays: defaultDisplays(),
+      });
+
+      await mountWidgetSettings();
+      expect(toggleButton().getAttribute('aria-checked')).toBe('true');
+
+      mockInvoke.mockClear();
+      // After save succeeds, get_settings (reload) returns the persisted OFF state.
+      stubInvoke({
+        settings: () => {
+          const applyCalls = mockInvoke.mock.calls.filter(
+            (c) => c[0] === 'apply_widget_settings',
+          ).length;
+          // Before apply: still ON for the fresh read-modify-write get.
+          // After apply fails and load() runs: disk has OFF.
+          if (applyCalls > 0) {
+            return { widgetEnabled: false, widgetDisplay: null };
+          }
+          return { widgetEnabled: true, widgetDisplay: null };
+        },
+        displays: defaultDisplays(),
+        applyError: 'main thread hop failed',
+      });
+
+      const getCallsBefore = mockInvoke.mock.calls.filter((c) => c[0] === 'get_settings').length;
+
+      toggleButton().click();
+      flushSync();
+      expect(toggleButton().getAttribute('aria-checked')).toBe('false');
+
+      await flushPersist();
+      await vi.waitFor(() => {
+        const alert = host.querySelector('[role="alert"]');
+        expect(alert).toBeTruthy();
+        expect(alert!.textContent).toMatch(/main thread hop failed/);
+      });
+
+      // Toggle stays OFF (not reverted) — disk won
+      expect(toggleButton().getAttribute('aria-checked')).toBe('false');
+      expect(displayPicker()).toBeNull();
+
+      // save + apply both ran
+      expect(mockInvoke.mock.calls.some((c) => c[0] === 'save_settings')).toBe(true);
+      expect(mockInvoke.mock.calls.some((c) => c[0] === 'apply_widget_settings')).toBe(true);
+
+      // load() re-sync: get_settings called again after the persist path
+      const getCallsAfter = mockInvoke.mock.calls.filter((c) => c[0] === 'get_settings').length;
+      expect(getCallsAfter).toBeGreaterThan(getCallsBefore);
+      // At least: persist's fresh get + load()'s get
+      expect(getCallsAfter).toBeGreaterThanOrEqual(2);
+    });
+
     it('source contract: apply_widget_settings_on_main closes window on disabled path, marks stack not-ready keeping pending; takeover_active reads widget_enabled() fresh', () => {
       // Disabled path closes the window
       expect(widgetRs).toMatch(/fn apply_widget_settings_on_main/);
@@ -286,6 +343,24 @@ describe('US-004: Widget settings (enable/disable, display, persistence)', () =>
       expect(widgetRs).toMatch(
         /After close, takeover_active\(\) is false|next notification goes native/i,
       );
+    });
+
+    it('source contract: macOS hop-failure path returns Err instead of inline apply_widget_settings_on_main', () => {
+      // Find the async apply_widget_settings command (not the _on_main helper)
+      const cmdIdx = widgetRs.indexOf('pub async fn apply_widget_settings');
+      expect(cmdIdx).toBeGreaterThan(-1);
+      // Slice the hop-failure branch of the macOS path
+      const hopIdx = widgetRs.indexOf('if hop.is_err()', cmdIdx);
+      expect(hopIdx).toBeGreaterThan(cmdIdx);
+      const hopSlice = widgetRs.slice(hopIdx, hopIdx + 400);
+
+      // Must return Err with the locked message — not run apply inline off-main
+      expect(hopSlice).toMatch(
+        /return Err\("apply_widget_settings: failed to reach main thread"\.into\(\)\)/,
+      );
+      // Inline fallback must be gone from the hop-failure branch
+      expect(hopSlice).not.toMatch(/return apply_widget_settings_on_main\(&app\)/);
+      expect(hopSlice).not.toMatch(/running inline/);
     });
   });
 
@@ -399,6 +474,17 @@ describe('US-004: Widget settings (enable/disable, display, persistence)', () =>
       // setup re-anchors existing window
       expect(widgetRs).toMatch(/window already exists — re-anchoring/);
       expect(widgetRs).toMatch(/fn setup_widget_window/);
+    });
+
+    it('source contract: list_displays dedupes duplicate names (seen-set / retain by name)', () => {
+      // Shared post-pass: drop later entries whose name already appeared
+      expect(widgetRs).toMatch(/fn dedupe_displays_by_name/);
+      expect(widgetRs).toMatch(/HashSet|seen\.insert|retain.*name|seen-set|dedupe/i);
+      expect(widgetRs).toMatch(/list\.retain\(\|d\| seen\.insert\(d\.name\.clone\(\)\)\)/);
+      // Both list paths use the dedupe helper
+      expect(widgetRs).toMatch(/dedupe_displays_by_name\(out\)/);
+      // Doc comment explains first-match anchor + keyed-each
+      expect(widgetRs).toMatch(/first-match|keyed|#each|duplicate.*name/i);
     });
   });
 

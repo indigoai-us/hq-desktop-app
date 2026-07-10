@@ -781,6 +781,9 @@ pub struct DisplayInfo {
 /// falls back to Tauri `available_monitors()`. Never errors just because
 /// some names are missing — returns whatever is available (at worst a single
 /// "Primary Display" entry).
+///
+/// Names are deduped via [`dedupe_displays_by_name`] so the picker only lists
+/// addresses the anchor can actually resolve (first-match-by-name).
 #[tauri::command]
 pub async fn list_displays(app: tauri::AppHandle) -> Result<Vec<DisplayInfo>, String> {
     #[cfg(target_os = "macos")]
@@ -814,6 +817,19 @@ pub async fn list_displays(app: tauri::AppHandle) -> Result<Vec<DisplayInfo>, St
     {
         Ok(list_displays_fallback(&app))
     }
+}
+
+/// Drop later entries whose `name` already appeared (keep first).
+///
+/// Why: `configured_display_name()` matching in `widget_position_cocoa` is
+/// first-match-by-`localizedName` (locked US-002 design), so a second monitor
+/// with an identical name can never be individually addressed. Showing it in
+/// the picker is misleading AND duplicate `name` values crash Svelte's keyed
+/// `{#each displays as display (display.name)}` in WidgetSettings.
+fn dedupe_displays_by_name(mut list: Vec<DisplayInfo>) -> Vec<DisplayInfo> {
+    let mut seen = std::collections::HashSet::new();
+    list.retain(|d| seen.insert(d.name.clone()));
+    list
 }
 
 /// macOS: enumerate `NSScreen.screens` with `localizedName` UTF-8.
@@ -865,6 +881,8 @@ fn list_displays_cocoa() -> Option<Vec<DisplayInfo>> {
         if out.is_empty() {
             None
         } else {
+            // Dedupe before primary-ensure so the kept first entry can carry primary.
+            out = dedupe_displays_by_name(out);
             // Ensure at least one primary if we skipped index 0's name.
             if !out.iter().any(|d| d.primary) {
                 out[0].primary = true;
@@ -907,6 +925,9 @@ fn list_displays_fallback(app: &AppHandle) -> Vec<DisplayInfo> {
         }];
     }
 
+    // Dedupe before primary-ensure so the kept first entry can carry primary.
+    out = dedupe_displays_by_name(out);
+
     if !out.iter().any(|d| d.primary) {
         out[0].primary = true;
     }
@@ -935,11 +956,12 @@ pub async fn apply_widget_settings(app: tauri::AppHandle) -> Result<(), String> 
             let _ = tx.send(result);
         });
         if hop.is_err() {
+            // Never create/close NSWindow off the AppKit main thread.
             log(
                 LOG_TAG,
-                "apply_widget_settings: run_on_main_thread failed — running inline",
+                "apply_widget_settings: failed to reach main thread",
             );
-            return apply_widget_settings_on_main(&app);
+            return Err("apply_widget_settings: failed to reach main thread".into());
         }
         match rx.recv_timeout(std::time::Duration::from_secs(2)) {
             Ok(result) => result,
