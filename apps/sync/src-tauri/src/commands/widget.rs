@@ -441,6 +441,75 @@ pub async fn resize_widget(app: AppHandle, width: f64, height: f64) -> Result<()
     }
 }
 
+// ── Focusable (quick-reply) ─────────────────────────────────────────────────────
+
+/// Temporarily make the widget window key so the quick-reply `<input>` can type.
+///
+/// While idle the window stays non-activating (design lock: `.focusable(false)`
+/// + Accessory policy). This command flips that on so keyboard focus can reach
+/// the reply field; the frontend restores `focusable(false)` when the reply is
+/// sent/dismissed or the pointer leaves the widget.
+#[tauri::command]
+pub async fn set_widget_focusable(app: AppHandle, focusable: bool) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let app = app.clone();
+        let _ = app.clone().run_on_main_thread(move || {
+            let Some(window) = app.get_webview_window(WINDOW_LABEL) else {
+                // Missing window is a silent no-op (mirror resize_widget).
+                return;
+            };
+            match window.set_focusable(focusable) {
+                Ok(()) => {
+                    log(
+                        LOG_TAG,
+                        &format!("set_widget_focusable: focusable={focusable}"),
+                    );
+                    if focusable {
+                        if let Err(e) = window.set_focus() {
+                            log(LOG_TAG, &format!("set_widget_focusable: set_focus failed: {e}"));
+                        }
+                    }
+                }
+                Err(e) => {
+                    log(
+                        LOG_TAG,
+                        &format!("set_widget_focusable: set_focusable failed: {e}"),
+                    );
+                }
+            }
+        });
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let Some(window) = app.get_webview_window(WINDOW_LABEL) else {
+            return Ok(());
+        };
+        match window.set_focusable(focusable) {
+            Ok(()) => {
+                log(
+                    LOG_TAG,
+                    &format!("set_widget_focusable: focusable={focusable}"),
+                );
+                if focusable {
+                    if let Err(e) = window.set_focus() {
+                        log(LOG_TAG, &format!("set_widget_focusable: set_focus failed: {e}"));
+                    }
+                }
+            }
+            Err(e) => {
+                log(
+                    LOG_TAG,
+                    &format!("set_widget_focusable: set_focusable failed: {e}"),
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
 // ── Occlusion (US-003) ──────────────────────────────────────────────────────────
 
 /// Query the widget window's current occlusion visibility.

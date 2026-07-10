@@ -524,6 +524,7 @@ fn main() {
             commands::banner::preview_update_banner,
             commands::banner::preview_meeting_banner,
             commands::widget::resize_widget,
+            commands::widget::set_widget_focusable,
             commands::widget::widget_ready,
             commands::widget::list_displays,
             commands::widget::apply_widget_settings,
