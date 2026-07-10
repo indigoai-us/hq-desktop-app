@@ -12,7 +12,7 @@
   } from '../src/components/messaging/Conversation.svelte';
   import CreateChannel from '../src/components/messaging/CreateChannel.svelte';
   import '../src/desktop-alt/styles/desktop-alt.css';
-  import { popoverProps, bannerFixtures, workspaces, hqCliUpdateAvailable } from './fixtures';
+  import { popoverProps, bannerFixtures, workspaces } from './fixtures';
   import { emit } from '@tauri-apps/api/event';
 
   // Fixture thread for ?view=conversation — exercises the copy-message toolbar
@@ -82,17 +82,14 @@
   const view = params.get('view') ?? 'settings';
   const theme = params.get('theme') ?? 'dark';
   const bannerKind = params.get('kind') ?? 'share';
-  // ?state=error   renders the "Sync initialized" notice banner.
-  // ?state=cli-update renders the "hq CLI update available" banner (copyable
-  //                one-liner + dismiss ×) off a deliberately-stale CLI fixture.
+  // ?state=error renders the "Sync initialized" notice banner.
   // Otherwise the popover mounts in its idle fixture state.
+  // (CLI-update overflow preview retired with US-001 chrome strip.)
   const stateOverride = params.get('state');
   const previewPopoverProps =
     stateOverride === 'error'
       ? { ...popoverProps, syncState: 'error' as const, errorMessage: 'failed to push indigo: exit 1', errorCompany: 'indigo' }
-      : stateOverride === 'cli-update'
-        ? { ...popoverProps, hqCliUpdateAvailable }
-        : popoverProps;
+      : popoverProps;
 
   // The banner reads its transparent-window CSS off html[data-window=dm-banner]
   // and renders only after a `banner:event`. Set the attr + emit the fixture

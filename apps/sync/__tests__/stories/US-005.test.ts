@@ -81,20 +81,19 @@ describe('US-005: Alt Home surface wires to real sync state and events', () => {
     expect(combined).not.toMatch(/Acme|Volta|Globex|Indigo demo|prototype/i);
   });
 
-  it('keeps auth success and token writes connected to the desktop-alt gate refresh', () => {
+  it('keeps auth success wired and token writes connected to the desktop feature gate cache clear', () => {
     const app = normalize(appShell);
     const cognito = normalize(cognitoCommands);
     const gate = normalize(featureGate);
 
-    expect(app).toContain("desktopAltEnabled = await invoke<boolean>('desktop_alt_enabled')");
+    // Menubar no longer polls desktop_alt_enabled for a popover toggle (US-001
+    // chrome strip). Auth still sets authenticated state; onboarding remains
+    // lifecycle-driven. Desktop open paths use tray + NotificationFeed.
     expect(app).toContain('function handleAuthSuccess(auth: { authenticated: boolean; expiresAt: string })');
-    expect(app).toMatch(/function handleAuthSuccess[\s\S]*void refreshDesktopAltEnabled\(\);/);
-    // First-run no longer auto-completes on auth: after sign-in we only refresh the
-    // desktop-alt gate; onboarding is driven by the lifecycle state + the wizard's
-    // finish handler (mark_first_run_complete lives in Onboarding.handleFinish).
-    expect(app).toMatch(
-      /if \(authenticated\) \{ await refreshDesktopAltEnabled\(\); \}/,
-    );
+    expect(app).toContain('authenticated = auth.authenticated');
+    expect(app).toContain("invoke('open_desktop_alt_window')");
+    expect(app).not.toContain('refreshDesktopAltEnabled');
+    expect(app).not.toContain('{desktopAltEnabled}');
 
     expect(cognito).toMatch(/pub async fn set_tokens[\s\S]*clear_cached_gate\(\);/);
     expect(gate).toContain('pub fn clear_cached_gate()');

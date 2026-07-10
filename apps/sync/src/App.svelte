@@ -395,14 +395,6 @@
     }
   }
 
-  // Desktop window feature flag — driven by `desktop_alt_enabled` (Rust side
-  // delegates to the GA gate `desktop_features_enabled`, the same gate as
-  // `meetings_feature_enabled`; true for any signed-in user). Defaults false
-  // so a signed-out user never sees the desktop window surface even if the
-  // gate command hasn't resolved yet. The toggle button + desktop window
-  // render path are gated on this flag.
-  let desktopAltEnabled = $state(false);
-
   // Workspaces — populated by `list_syncable_workspaces` (Rust). Replaces the
   // legacy "No companies yet" dead-end with a union over Person + memberships
   // + local company folders. `null` = first invocation in flight; non-null
@@ -565,14 +557,6 @@
       };
     } catch (err) {
       console.error('get_unread_summary failed:', err);
-    }
-  }
-
-  async function refreshDesktopAltEnabled() {
-    try {
-      desktopAltEnabled = await invoke<boolean>('desktop_alt_enabled');
-    } catch {
-      desktopAltEnabled = false;
     }
   }
 
@@ -1914,11 +1898,6 @@
         meetingsEnabled = false;
       });
 
-    // Desktop window gate (GA). Same signed-in check as
-    // `meetings_feature_enabled`; errors fall back to false so a misfiring
-    // gate command can never expose the desktop window to a signed-out user.
-    refreshDesktopAltEnabled();
-
     return () => {
       unlisteners.forEach((unlisten) => unlisten());
       unlisteners = [];
@@ -1981,9 +1960,6 @@
 
       authenticated = shouldSkipSignIn(hasToken, state);
       expiresAt = state.expiresAt ?? '';
-      if (authenticated) {
-        await refreshDesktopAltEnabled();
-      }
     } catch {
       authenticated = false;
     } finally {
@@ -2000,7 +1976,6 @@
   function handleAuthSuccess(auth: { authenticated: boolean; expiresAt: string }) {
     authenticated = auth.authenticated;
     expiresAt = auth.expiresAt;
-    void refreshDesktopAltEnabled();
   }
 </script>
 
@@ -2034,8 +2009,6 @@
       cloudReachable={workspacesCloudReachable}
       cloudError={workspacesError}
       manifestError={workspacesManifestError}
-      onworkspacesrefresh={loadWorkspaces}
-      lastSummary={syncLastSummary}
       errorMessage={syncErrorMessage}
       errorCompany={syncErrorCompany}
       {conflicts}
@@ -2044,47 +2017,12 @@
       conflictCompany={syncConflictCompany}
       {updateAvailable}
       {updateInstalling}
-      {hqCliUpdateAvailable}
-      {hqCliUpdateInstalling}
-      {hqCliUpdateError}
-      {packUpdateAvailable}
-      {packsUpdating}
-      {packUpdateError}
-      {coreState}
-      {coreInstalling}
-      {coreInstallLastResult}
-      {hqVersion}
       onsync={handleSyncNow}
-      oncancel={handleCancel}
-      onsettings={handleSettings}
-      onsignout={handleSignOut}
       onresolve={handleResolveConflict}
       onopen={handleOpenInEditor}
       ondismissconflicts={handleDismissConflicts}
       oninstallupdate={handleInstallUpdate}
-      oninstallhqcliupdate={handleInstallHqCliUpdate}
-      ondismisshqcliupdate={handleDismissHqCliUpdate}
-      onupdatepacks={handleUpdatePacks}
-      oninstallcore={handleInstallCore}
       bindStatsRefresh={(fn) => (syncStatsRefresh = fn)}
-      {meetingsEnabled}
-      {desktopAltEnabled}
-      onmeetingsclick={() => {
-        // Spawn the detached Upcoming Meetings window (label: meetings-window).
-        // Fire-and-forget — the Rust handler focuses an existing window if
-        // already open, otherwise creates a fresh one. Errors are swallowed
-        // since they'd be infra-level (Tauri failure) and there's nothing
-        // useful to show inline.
-        // Also clear the tray Prompt badge — the user is now acting on any
-        // pending meeting detections.
-        invoke('open_meetings_window').catch(() => {});
-        invoke('meetings_clear_prompt_badge').catch(() => {});
-      }}
-      {activeMeetings}
-      onstartrecording={handleStartRecording}
-      onstoprecording={handleStopRecording}
-      recordingCompanies={memberships}
-      onchangerecordingcompany={handleChangeRecordingCompany}
     />
   {:else}
     <SignInPrompt onsuccess={handleAuthSuccess} />

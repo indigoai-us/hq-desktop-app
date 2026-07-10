@@ -232,17 +232,20 @@ export class DesktopAltHarness implements DesktopAltTestHarness {
   private assertGateSourceContracts(): void {
     const app = readRepoFile('src/App.svelte');
     const popover = readRepoFile('src/components/Popover.svelte');
+    const feed = readRepoFile('src/components/NotificationFeed.svelte');
     const rust = readRepoFile('src-tauri/src/commands/desktop_alt.rs');
     const main = readRepoFile('src-tauri/src/main.rs');
 
+    // Rust-side gate stays; menubar popover is chrome-free (US-001). The
+    // desktop-view launcher surface moves into the desktop app in US-005 —
+    // until then open paths remain tray + NotificationFeed deep-links.
     expect(rust).toContain('pub async fn desktop_alt_enabled()');
     expect(rust).toContain('crate::util::feature_gate::desktop_features_enabled().await');
     expect(main).toContain('commands::desktop_alt::desktop_alt_enabled');
-    expect(app).toContain("invoke<boolean>('desktop_alt_enabled')");
-    expect(app).toContain('{desktopAltEnabled}');
-    expect(popover).toContain('{#if desktopAltEnabled}');
-    expect(popover).toContain('data-testid="desktop-alt-toggle"');
-    expect(popover).toContain("invoke('open_desktop_alt_window')");
+    expect(app).toContain("invoke('open_desktop_alt_window')");
+    expect(popover).not.toContain('data-testid="desktop-alt-toggle"');
+    expect(popover).not.toContain('{#if desktopAltEnabled}');
+    expect(feed).toContain("invoke('open_desktop_alt_window'");
   }
 
   private assertWindowLifecycleSourceContracts(): void {

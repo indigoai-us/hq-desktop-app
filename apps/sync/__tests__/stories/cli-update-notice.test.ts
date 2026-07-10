@@ -3,15 +3,10 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 // DEV-1705 / feedback_bf4dede2: the menubar app never told users their hq CLI
-// was stale. The detection (registry check + semver compare + events) already
-// existed; this change makes the surface NON-NAGGING — it shows the exact
-// `npm install -g @indigoai-us/hq-cli@latest` one-liner the "please update"
-// emails ask users to run, makes the banner dismissible per-version (sticky
-// until a newer version publishes), and clears once the CLI is current.
-//
-// Source-contract assertions (mirroring the US-* story tests) so a dropped
-// wire — the dismiss command, its registration, the copyable command, the
-// per-version suppression rule — fails fast without a macOS Tauri build.
+// was stale. Detection (registry check + semver compare + events) lives in
+// App + Rust. The overflow menu that hosted the notice was removed in US-001
+// (chrome-free notification panel); CLI update UI relocates with settings in
+// US-005. These contracts keep the backend dismiss path and App handlers live.
 
 const read = (p: string) => readFileSync(resolve(process.cwd(), p), 'utf8');
 const readIfExists = (p: string) => {
@@ -36,42 +31,27 @@ const hqCliUpdate =
   readIfExists('../../crates/hq-desktop-core/src/first_run.rs');
 const mainRs = read('src-tauri/src/main.rs');
 const fixtures = read('dev-harness/fixtures.ts');
-const harness = read('dev-harness/Harness.svelte');
 
-describe('CLI-update notice: compact copy-only affordance', () => {
-  it('copies the exact npm install command via a copy button, no inline code box', () => {
+describe('CLI-update notice: removed from chrome-free popover (US-001)', () => {
+  it('does not host the overflow CLI-update copy/dismiss UI in Popover', () => {
     const p = normalize(popover);
-    // The literal command users are emailed — must match exactly.
-    expect(popover).toContain(
-      "const HQ_CLI_UPGRADE_CMD = 'npm install -g @indigoai-us/hq-cli@latest';",
-    );
-    // Compact notice: the copy button copies the exact command string…
-    expect(p).toContain('onclick={copyHqCliCommand}');
-    expect(p).toContain('navigator.clipboard.writeText(HQ_CLI_UPGRADE_CMD)');
-    // Copied→reset feedback, not a transient toast.
-    expect(p).toContain('hqCliCmdCopied');
-    // …and the scrollable command display is gone (no inline code box).
+    expect(p).not.toContain('HQ_CLI_UPGRADE_CMD');
+    expect(p).not.toContain('copyHqCliCommand');
+    expect(p).not.toContain('hqCliCmdCopied');
+    expect(p).not.toContain('ondismisshqcliupdate');
+    expect(p).not.toContain('hqCliUpdateAvailable');
     expect(p).not.toContain('<code class="cli-cmd">');
-    expect(p).not.toContain('class="cli-cmd-row"');
   });
 });
 
-describe('CLI-update notice: dismissible per-version', () => {
-  it('renders a dismiss control wired to the dismiss callback', () => {
-    const p = normalize(popover);
-    expect(p).toContain('ondismisshqcliupdate?: () => void;');
-    expect(p).toContain('ondismisshqcliupdate?.();');
-    expect(p).toContain('Dismiss');
-  });
-
-  it('App.svelte persists the dismissal per-version then hides the banner', () => {
+describe('CLI-update notice: App + backend dismiss path stay wired', () => {
+  it('App.svelte persists the dismissal per-version then hides the state', () => {
     const a = normalize(app);
     expect(a).toContain('async function handleDismissHqCliUpdate()');
-    // Optimistic hide + persist keyed on the current latest version.
     expect(a).toContain('hqCliUpdateAvailable = null;');
     expect(a).toContain("invoke('set_hq_cli_update_dismissed', { version: latest })");
-    // Passed down to the Popover.
-    expect(a).toContain('ondismisshqcliupdate={handleDismissHqCliUpdate}');
+    // No longer passed into the chrome-free Popover.
+    expect(a).not.toContain('ondismisshqcliupdate={handleDismissHqCliUpdate}');
   });
 });
 
@@ -85,12 +65,10 @@ describe('CLI-update notice: backend dismissal + per-version reset', () => {
 
   it('suppresses the banner for the dismissed (or older) version, re-shows on a newer one', () => {
     const r = normalize(hqCliUpdate);
-    // Pure rule used by both the event emit and the on-focus check.
     expect(r).toContain(
       "pub(crate) fn suppress_for_dismissal(latest: &str, dismissed: Option<&str>) -> bool",
     );
     expect(r).toContain('cmp_semver(latest, d) != std::cmp::Ordering::Greater');
-    // The live emit is gated; the on-focus check filters dismissed out.
     expect(r).toContain('if is_cli_update_dismissed(&info.latest)');
     expect(r).toContain('result.filter(|info| !is_cli_update_dismissed(&info.latest))');
   });
@@ -102,12 +80,8 @@ describe('CLI-update notice: backend dismissal + per-version reset', () => {
   });
 });
 
-describe('CLI-update notice: dev-harness preview', () => {
-  it('exposes a stale-CLI fixture and a ?state=cli-update preview', () => {
+describe('CLI-update notice: fixture retained for future desktop surface', () => {
+  it('exposes a stale-CLI fixture object for harness/reference', () => {
     expect(normalize(fixtures)).toContain('export const hqCliUpdateAvailable = {');
-    expect(normalize(fixtures)).toContain('ondismisshqcliupdate:');
-    const h = normalize(harness);
-    expect(h).toContain("stateOverride === 'cli-update'");
-    expect(h).toContain('{ ...popoverProps, hqCliUpdateAvailable }');
   });
 });
