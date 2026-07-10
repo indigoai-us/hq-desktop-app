@@ -13,22 +13,8 @@
   // the desktop language (three text grays, hairlines, unread blue) without a
   // component fork.
 
-  import { requestConversation } from '../../lib/pendingConversation';
-  import type { ShareEvent } from '../../lib/notificationGroups';
-
   let feedEl: NotificationFeed | undefined = $state();
   let unread = $state(0);
-
-  // "Message the sharer" stays inside the desktop window: stash the target +
-  // dispatch hq:message-person; DesktopApp routes to the Messages destination
-  // and the MessagesShell there opens the conversation.
-  function messageSharer(share: ShareEvent): void {
-    requestConversation({
-      personUid: share.issuerPersonUid ?? '',
-      email: share.issuerEmail,
-      displayName: share.issuerDisplayName,
-    });
-  }
 </script>
 
 <section class="page" aria-labelledby="desktop-page-title">
@@ -49,7 +35,6 @@
       bind:this={feedEl}
       showDayLabels={true}
       onunreadchange={(n) => (unread = n)}
-      onmessagesharer={messageSharer}
     />
   </div>
 </section>
