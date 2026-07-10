@@ -44,6 +44,10 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
             // Telemetry is opt-in; absent → off (mirrors
             // telemetry.rs::read_local_telemetry_enabled's unwrap_or(false)).
             telemetry_enabled: Some(false),
+            // Widget defaults ON so it ships enabled after update (US-004).
+            widget_enabled: Some(true),
+            // None = primary display.
+            widget_display: None,
         });
     }
 
@@ -112,6 +116,12 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
         // Telemetry defaults OFF (opt-in). Re-read untyped from menubar.json by
         // the collector each sync, so the toggle takes effect without restart.
         telemetry_enabled: Some(prefs.telemetry_enabled.unwrap_or(false)),
+        // Widget defaults ON when absent (ships default-enabled after update).
+        // widget.rs also reads widgetEnabled untyped on every notification
+        // dispatch so toggling takes effect without restart.
+        widget_enabled: Some(prefs.widget_enabled.unwrap_or(true)),
+        // Pass-through — None = primary display (NSScreen.localizedName match).
+        widget_display: prefs.widget_display,
     })
 }
 

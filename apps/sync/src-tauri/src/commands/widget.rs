@@ -18,11 +18,12 @@
 //!   * Non-activating: `.focusable(false)` + `ActivationPolicy::Accessory` so
 //!     hover/clicks never steal focus from the user's current app.
 //!
-//! ## Prefs (untyped — US-004 owns settings)
+//! ## Prefs (typed in MenubarPrefs; untyped at runtime)
 //!
-//! Read `widgetEnabled` / `widgetDisplay` straight from `~/.hq/menubar.json`
-//! as untyped JSON so this story does not touch `MenubarPrefs`. Defaults:
-//! enabled ON, display = primary.
+//! Settings UI round-trips `widgetEnabled` / `widgetDisplay` via typed
+//! `MenubarPrefs` (US-004). This module still reads those keys untyped from
+//! `~/.hq/menubar.json` on every dispatch so toggles take effect without
+//! restart. Defaults: enabled ON, display = primary.
 //!
 //! ## Anchoring
 //!
@@ -47,13 +48,18 @@
 //! then drains them FIFO when `widget_ready` runs (after the initial
 //! `widget:occlusion` emit). Cap is [`WIDGET_PENDING_CAP`]; oldest drop first.
 
-use std::sync::Mutex;
+use std::sync::{Mutex, Once};
 
 use tauri::{AppHandle, Emitter, Manager, WebviewWindowBuilder};
 
 use crate::util::logfile::log;
 
 const LOG_TAG: &str = "widget";
+
+/// Ensures `register_screen_params_observer` runs at most once per process.
+/// `setup_widget_window` can run again after disable→re-enable (US-004); without
+/// this guard each enable would stack a duplicate NSNotificationCenter observer.
+static SCREEN_PARAMS_OBSERVER: Once = Once::new();
 
 /// Window label — kept in sync with the `main.ts` router branch and
 /// `capabilities/widget.json`.
@@ -692,42 +698,47 @@ pub fn setup_widget_window(app: &AppHandle) {
 
 /// Register for display arrangement/resolution changes so the widget
 /// re-anchors. macOS only. Leaks the observer token + block for process life.
+///
+/// Guarded by [`SCREEN_PARAMS_OBSERVER`] so disable→re-enable (US-004
+/// `apply_widget_settings` → `setup_widget_window`) does not stack duplicates.
 #[cfg(target_os = "macos")]
 fn register_screen_params_observer(app: &AppHandle) {
     use block2::RcBlock;
     use objc2::{class, msg_send, runtime::AnyObject};
 
     let app = app.clone();
-    // SAFETY: main thread (setup / with_webview path); public Foundation
-    // selectors; null-checked before use.
-    unsafe {
-        let center: *mut AnyObject = msg_send![class!(NSNotificationCenter), defaultCenter];
-        if center.is_null() {
-            log(LOG_TAG, "screen observer: defaultCenter is nil");
-            return;
+    SCREEN_PARAMS_OBSERVER.call_once(move || {
+        // SAFETY: main thread (setup / with_webview path); public Foundation
+        // selectors; null-checked before use.
+        unsafe {
+            let center: *mut AnyObject = msg_send![class!(NSNotificationCenter), defaultCenter];
+            if center.is_null() {
+                log(LOG_TAG, "screen observer: defaultCenter is nil");
+                return;
+            }
+            let queue: *mut AnyObject = msg_send![class!(NSOperationQueue), mainQueue];
+            let name = ns_str("NSApplicationDidChangeScreenParametersNotification");
+            let block = RcBlock::new(move |_notif: *mut AnyObject| {
+                log(LOG_TAG, "screen parameters changed — re-anchoring");
+                anchor_widget(&app);
+            });
+            let null_obj: *mut AnyObject = std::ptr::null_mut();
+            let observer: *mut AnyObject = msg_send![
+                center,
+                addObserverForName: name,
+                object: null_obj,
+                queue: queue,
+                usingBlock: &*block
+            ];
+            // Leak both: the widget lives for the app's lifetime and we never
+            // unregister. `addObserverForName:…` returns a retained token we must
+            // keep; the center also retains the block, but we forget our RcBlock
+            // so a late notification after an (impossible) early drop can't UAF.
+            std::mem::forget(block);
+            let _ = observer; // retained (+1); intentionally never released
+            log(LOG_TAG, "screen observer registered");
         }
-        let queue: *mut AnyObject = msg_send![class!(NSOperationQueue), mainQueue];
-        let name = ns_str("NSApplicationDidChangeScreenParametersNotification");
-        let block = RcBlock::new(move |_notif: *mut AnyObject| {
-            log(LOG_TAG, "screen parameters changed — re-anchoring");
-            anchor_widget(&app);
-        });
-        let null_obj: *mut AnyObject = std::ptr::null_mut();
-        let observer: *mut AnyObject = msg_send![
-            center,
-            addObserverForName: name,
-            object: null_obj,
-            queue: queue,
-            usingBlock: &*block
-        ];
-        // Leak both: the widget lives for the app's lifetime and we never
-        // unregister. `addObserverForName:…` returns a retained token we must
-        // keep; the center also retains the block, but we forget our RcBlock
-        // so a late notification after an (impossible) early drop can't UAF.
-        std::mem::forget(block);
-        let _ = observer; // retained (+1); intentionally never released
-        log(LOG_TAG, "screen observer registered");
-    }
+    });
 }
 
 /// Build an autoreleased `NSString` from a Rust &str for KVC / notification
@@ -747,6 +758,242 @@ fn ns_str(s: &str) -> *mut objc2::runtime::AnyObject {
         ];
         ns
     }
+}
+
+// ── Settings UI commands (US-004) ───────────────────────────────────────────────
+
+/// One display entry for the Settings display picker.
+///
+/// `name` MUST be the exact string matched by `configured_display_name()` /
+/// `widget_position_cocoa` (`NSScreen.localizedName`) so a picker selection
+/// round-trips into menubar.json and re-anchors correctly.
+#[derive(serde::Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct DisplayInfo {
+    pub name: String,
+    pub primary: bool,
+}
+
+/// Enumerate displays for the Settings picker.
+///
+/// macOS: hops to the main thread and reads `NSScreen.screens` +
+/// `localizedName` (same source as the anchor). On failure or non-macOS,
+/// falls back to Tauri `available_monitors()`. Never errors just because
+/// some names are missing — returns whatever is available (at worst a single
+/// "Primary Display" entry).
+#[tauri::command]
+pub async fn list_displays(app: tauri::AppHandle) -> Result<Vec<DisplayInfo>, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let (tx, rx) = std::sync::mpsc::channel::<Vec<DisplayInfo>>();
+        let app_for_main = app.clone();
+        let hop = app_for_main.clone().run_on_main_thread(move || {
+            let list = list_displays_cocoa().unwrap_or_else(|| list_displays_fallback(&app_for_main));
+            let _ = tx.send(list);
+        });
+        if hop.is_err() {
+            log(LOG_TAG, "list_displays: run_on_main_thread failed — fallback");
+            return Ok(list_displays_fallback(&app));
+        }
+        match rx.recv_timeout(std::time::Duration::from_secs(2)) {
+            Ok(list) => {
+                log(
+                    LOG_TAG,
+                    &format!("list_displays: {} display(s)", list.len()),
+                );
+                Ok(list)
+            }
+            Err(_) => {
+                log(LOG_TAG, "list_displays: main-thread recv timeout — fallback");
+                Ok(list_displays_fallback(&app))
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(list_displays_fallback(&app))
+    }
+}
+
+/// macOS: enumerate `NSScreen.screens` with `localizedName` UTF-8.
+/// Primary = index 0 (same convention as `widget_position_cocoa`).
+#[cfg(target_os = "macos")]
+fn list_displays_cocoa() -> Option<Vec<DisplayInfo>> {
+    use objc2::{class, msg_send, runtime::AnyObject};
+
+    // SAFETY: caller must be on the main thread (`run_on_main_thread`).
+    // Public AppKit selectors; pointers null-checked before use.
+    unsafe {
+        let screens: *mut AnyObject = msg_send![class!(NSScreen), screens];
+        if screens.is_null() {
+            log(LOG_TAG, "list_displays: NSScreen.screens is nil");
+            return None;
+        }
+        let count: usize = msg_send![screens, count];
+        if count == 0 {
+            log(LOG_TAG, "list_displays: NSScreen.screens is empty");
+            return None;
+        }
+
+        let mut out = Vec::with_capacity(count);
+        for i in 0..count {
+            let screen: *mut AnyObject = msg_send![screens, objectAtIndex: i];
+            if screen.is_null() {
+                continue;
+            }
+            let name_obj: *mut AnyObject = msg_send![screen, localizedName];
+            if name_obj.is_null() {
+                continue;
+            }
+            let utf8: *const std::ffi::c_char = msg_send![name_obj, UTF8String];
+            if utf8.is_null() {
+                continue;
+            }
+            if let Ok(s) = std::ffi::CStr::from_ptr(utf8).to_str() {
+                let name = s.trim();
+                if name.is_empty() {
+                    continue;
+                }
+                out.push(DisplayInfo {
+                    name: name.to_string(),
+                    primary: i == 0,
+                });
+            }
+        }
+
+        if out.is_empty() {
+            None
+        } else {
+            // Ensure at least one primary if we skipped index 0's name.
+            if !out.iter().any(|d| d.primary) {
+                out[0].primary = true;
+            }
+            Some(out)
+        }
+    }
+}
+
+/// Fallback: Tauri monitor APIs. Skips unnamed monitors; if nothing remains,
+/// returns a single "Primary Display" entry so the picker is never empty.
+fn list_displays_fallback(app: &AppHandle) -> Vec<DisplayInfo> {
+    let primary_name = app
+        .primary_monitor()
+        .ok()
+        .flatten()
+        .and_then(|m| m.name().map(|s| s.to_string()));
+
+    let monitors = app.available_monitors().ok().unwrap_or_default();
+    let mut out: Vec<DisplayInfo> = monitors
+        .into_iter()
+        .filter_map(|m| {
+            let name = m.name()?.to_string();
+            if name.trim().is_empty() {
+                return None;
+            }
+            let primary = primary_name.as_ref().map(|p| p == &name).unwrap_or(false);
+            Some(DisplayInfo { name, primary })
+        })
+        .collect();
+
+    if out.is_empty() {
+        log(
+            LOG_TAG,
+            "list_displays: no named monitors — returning Primary Display",
+        );
+        return vec![DisplayInfo {
+            name: "Primary Display".to_string(),
+            primary: true,
+        }];
+    }
+
+    if !out.iter().any(|d| d.primary) {
+        out[0].primary = true;
+    }
+    out
+}
+
+/// Reconcile the widget window with the just-saved menubar.json prefs.
+///
+/// Called by the Settings UI after `save_settings`. On the main thread:
+/// - enabled → `setup_widget_window` (re-anchor if present, create if missing)
+/// - disabled + window exists → mark stack not-ready (keep pending), close window
+///
+/// After close, `takeover_active()` is false so the next notification is
+/// delivered natively — the US-004 instant-restore contract. No extra gating.
+///
+/// `main.rs` `on_window_event` only intercepts the `"main"` label, so
+/// `window.close()` for the widget is fine (not `destroy()`).
+#[tauri::command]
+pub async fn apply_widget_settings(app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let (tx, rx) = std::sync::mpsc::channel::<Result<(), String>>();
+        let app_for_main = app.clone();
+        let hop = app_for_main.clone().run_on_main_thread(move || {
+            let result = apply_widget_settings_on_main(&app_for_main);
+            let _ = tx.send(result);
+        });
+        if hop.is_err() {
+            log(
+                LOG_TAG,
+                "apply_widget_settings: run_on_main_thread failed — running inline",
+            );
+            return apply_widget_settings_on_main(&app);
+        }
+        match rx.recv_timeout(std::time::Duration::from_secs(2)) {
+            Ok(result) => result,
+            Err(_) => {
+                log(
+                    LOG_TAG,
+                    "apply_widget_settings: main-thread recv timeout",
+                );
+                Err("apply_widget_settings timed out waiting for main thread".into())
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        apply_widget_settings_on_main(&app)
+    }
+}
+
+/// Core apply path — must run on the main thread on macOS (window create/close).
+fn apply_widget_settings_on_main(app: &AppHandle) -> Result<(), String> {
+    if widget_enabled() {
+        log(LOG_TAG, "apply_widget_settings: enabled — setup/re-anchor");
+        setup_widget_window(app);
+        return Ok(());
+    }
+
+    let Some(window) = app.get_webview_window(WINDOW_LABEL) else {
+        log(
+            LOG_TAG,
+            "apply_widget_settings: disabled — no window (already off)",
+        );
+        return Ok(());
+    };
+
+    // Mark not-ready but KEEP pending so any payloads buffered during the
+    // disable race are not dropped. After close, takeover_active() is false
+    // and the next notification goes native.
+    if let Ok(mut ch) = WIDGET_STACK_CHANNEL.lock() {
+        ch.0 = false;
+        // keep ch.1 (pending)
+    }
+
+    match window.close() {
+        Ok(()) => log(LOG_TAG, "apply_widget_settings: disabled — window closed"),
+        Err(e) => {
+            log(
+                LOG_TAG,
+                &format!("apply_widget_settings: close failed: {e}"),
+            );
+            return Err(format!("Failed to close widget window: {e}"));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
