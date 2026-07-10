@@ -11,6 +11,7 @@
     measuredSurfaceContentHeight,
     shouldResizePopoverWindow,
   } from '../lib/popover-window-size';
+  import WidgetSettings from './WidgetSettings.svelte';
 
   interface Props {
     onback: () => void;
@@ -814,6 +815,16 @@
               <span class="toggle-knob"></span>
             </button>
           </div>
+        </div>
+      </section>
+
+      <!-- ===== Group: Desktop widget ==================================
+           Self-contained WidgetSettings owns load/persist/apply so this
+           surface never needs widget fields in local state or saveAll. -->
+      <section class="settings-group-wrap">
+        <h2 class="settings-group-title">Desktop widget</h2>
+        <div class="settings-group">
+          <WidgetSettings />
         </div>
       </section>
 

@@ -81,6 +81,7 @@ describe('desktop-alt V4 settings and first-run (US-013)', () => {
     for (const [id, label] of [
       ['sync', 'Sync'],
       ['notifications', 'Notifications'],
+      ['widget', 'Widget'],
       ['updates', 'Updates'],
       ['general', 'General'],
       ['meetings', 'Meetings'],

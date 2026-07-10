@@ -2,6 +2,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import type { SettingsTab } from '../route';
   import { permissionState, loadMeetingPermissions } from '../../lib/permissionState.svelte';
+  import WidgetSettings from '../../components/WidgetSettings.svelte';
   import '../v4/tokens.css';
 
   // The secondary sidebar drives which section is in view; this page renders all
@@ -333,6 +334,13 @@
         <label class="setting-row"><span><strong>Sync notifications</strong><small>Notify when sync needs attention.</small></span><input type="checkbox" bind:checked={notifications} onchange={saveSettings} /></label>
         <label class="setting-row"><span><strong>Share notifications</strong><small>Show file-share activity from teammates.</small></span><input type="checkbox" bind:checked={shareNotifications} onchange={saveSettings} /></label>
         <label class="setting-row"><span><strong>DM notifications</strong><small>Show direct messages in the menu bar.</small></span><input type="checkbox" bind:checked={dmNotifications} onchange={saveSettings} /></label>
+      </div>
+    </section>
+
+    <section id="widget" class="settings-section">
+      <h2>Widget</h2>
+      <div class="settings-card">
+        <WidgetSettings />
       </div>
     </section>
 
