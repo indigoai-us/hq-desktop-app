@@ -19,6 +19,7 @@
   import { startMeetingsStore } from './lib/meetings-store.svelte';
   import { loadLocalProjects } from './lib/local-projects';
   import type { Project } from './lib/projects-model';
+  import { emitDesktopTelemetry } from '../lib/desktop-telemetry';
   import { startCompanyStore, setActiveCompany } from './lib/company-store.svelte';
   import { openAgentWorkflow } from './lib/agent-workflow';
   import {
@@ -161,6 +162,7 @@
   let workspaces = $state<Workspace[]>(cachedWorkspaces);
   let workspaceError = $state<string | null>(null);
   let syncState = $state<SyncState>('idle');
+  let manualSyncTelemetryPending = $state(false);
   let syncProgress = $state<SyncProgress | null>(null);
   let syncFanoutTotal = $state(0);
   let syncFanoutDoneCount = $state(0);
@@ -669,14 +671,20 @@
   async function handleSyncAll() {
     if (syncState === 'syncing') return;
     resetRunState();
+    manualSyncTelemetryPending = true;
     try {
       await invoke('set_tray_state', { state: 'syncing' });
       await invoke('start_sync');
     } catch (err) {
+      manualSyncTelemetryPending = false;
       console.error('start_sync failed:', err);
       syncState = 'error';
       syncErrorMessage = String(err);
       await invoke('set_tray_state', { state: 'error' }).catch(() => undefined);
+      void emitDesktopTelemetry({
+        eventName: 'manual_sync_failed',
+        properties: { errorKind: 'start_sync', errorCount: 1, surface: 'desktop-alt' },
+      });
     }
   }
 
@@ -1115,6 +1123,8 @@
         bytesDownloaded: number;
         errors: Array<{ company: string; message: string }>;
       }>('sync:all-complete', async (event) => {
+        const shouldEmitManualSync = manualSyncTelemetryPending;
+        manualSyncTelemetryPending = false;
         syncLastSummary = {
           companiesAttempted: event.payload.companiesAttempted,
           filesDownloaded: event.payload.filesDownloaded,
@@ -1136,6 +1146,22 @@
           syncErrorMessage = event.payload.errors.map((item) => item.message).join('; ');
         }
         await refreshRealState();
+        if (shouldEmitManualSync) {
+          void emitDesktopTelemetry({
+            eventName:
+              event.payload.errors.length > 0
+                ? 'manual_sync_failed'
+                : 'manual_sync_completed',
+            properties: {
+              surface: 'desktop-alt',
+              companiesAttempted: event.payload.companiesAttempted,
+              filesDownloaded: event.payload.filesDownloaded,
+              bytesDownloaded: event.payload.bytesDownloaded,
+              filesSkipped: syncFanoutFilesSkipped,
+              errorCount: event.payload.errors.length,
+            },
+          });
+        }
       }),
       // Conflict stream → Home's NEEDS YOU queue (dedupe by path; the same
       // conflict can re-emit across fanout retries within one run).
@@ -1161,6 +1187,8 @@
         driftDismissed = false;
       }),
       listen<{ company?: string; path: string; message: string }>('sync:error', async (event) => {
+        const shouldEmitManualSync = manualSyncTelemetryPending;
+        manualSyncTelemetryPending = false;
         syncState = 'error';
         syncProgress = null;
         syncErrorMessage = event.payload.message;
@@ -1172,6 +1200,12 @@
           }));
         }
         await invoke('set_tray_state', { state: 'error' }).catch(() => undefined);
+        if (shouldEmitManualSync) {
+          void emitDesktopTelemetry({
+            eventName: 'manual_sync_failed',
+            properties: { errorKind: 'sync_error', errorCount: 1, surface: 'desktop-alt' },
+          });
+        }
       }),
       // Brand-new account with no person entity / no companies yet: the runner
       // emits sync:setup-needed and bails. The desktop has a purpose-built,

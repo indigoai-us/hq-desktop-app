@@ -61,6 +61,7 @@ mod tests {
             share_notifications: None,
             dm_notifications: None,
             cli_auto_update: None,
+            auto_update: None,
             staging_channel: None,
             release_channel: None,
             meeting_detect_notify: None,
@@ -90,11 +91,13 @@ mod tests {
             share_notifications: Some(prefs.share_notifications.unwrap_or(true)),
             dm_notifications: Some(prefs.dm_notifications.unwrap_or(true)),
             cli_auto_update: Some(prefs.cli_auto_update.unwrap_or(true)),
+            auto_update: Some(prefs.auto_update.unwrap_or(true)),
             staging_channel: Some(prefs.staging_channel.unwrap_or(true)),
             release_channel: prefs.release_channel,
             meeting_detect_notify: prefs.meeting_detect_notify,
             default_recording_company_uid: prefs.default_recording_company_uid,
-            telemetry_enabled: Some(prefs.telemetry_enabled.unwrap_or(false)),
+            // Telemetry is opt-out — defaults ON when absent from disk (#159).
+            telemetry_enabled: Some(prefs.telemetry_enabled.unwrap_or(true)),
             // Widget defaults ON when absent (ships default-enabled after update).
             widget_enabled: Some(prefs.widget_enabled.unwrap_or(true)),
             // Pass-through — None = primary display.
@@ -120,8 +123,11 @@ mod tests {
         // CLI auto-update defaults ON — the app keeps the CLI current unless
         // the user opts out.
         assert_eq!(result.cli_auto_update, Some(true));
-        // Telemetry is opt-in — defaults OFF when absent from disk.
-        assert_eq!(result.telemetry_enabled, Some(false));
+        // Master automatic-updates switch defaults ON — silent app/CLI/core
+        // updates unless the user opts out.
+        assert_eq!(result.auto_update, Some(true));
+        // Telemetry is opt-out — defaults ON when absent from disk.
+        assert_eq!(result.telemetry_enabled, Some(true));
         // release_channel stays None at the apply_defaults boundary; the
         // identity-aware resolution happens inside get_settings itself
         // and is exercised by util::release_channel::tests.
@@ -162,11 +168,12 @@ mod tests {
             share_notifications: Some(false),
             dm_notifications: Some(false),
             cli_auto_update: Some(false),
+            auto_update: Some(false),
             staging_channel: Some(false),
             release_channel: Some("alpha".to_string()),
             meeting_detect_notify: None,
             default_recording_company_uid: Some("co_xyz".to_string()),
-            telemetry_enabled: Some(true),
+            telemetry_enabled: Some(false),
             widget_enabled: Some(false),
             widget_display: Some("DELL U2720Q".to_string()),
         };
@@ -182,9 +189,11 @@ mod tests {
         assert_eq!(result.share_notifications, Some(false));
         assert_eq!(result.dm_notifications, Some(false));
         assert_eq!(result.cli_auto_update, Some(false));
+        // explicit auto-update opt-out survives apply_defaults
+        assert_eq!(result.auto_update, Some(false));
         assert_eq!(result.staging_channel, Some(false));
-        // explicit telemetry opt-in survives the default-off coercion
-        assert_eq!(result.telemetry_enabled, Some(true));
+        // explicit telemetry opt-out survives the default-on coercion
+        assert_eq!(result.telemetry_enabled, Some(false));
         // release_channel passes through apply_defaults untouched; the
         // indigo-gating coercion is verified separately in
         // `util::release_channel::tests::non_indigo_always_coerced_to_stable`.
@@ -209,6 +218,7 @@ mod tests {
             share_notifications: Some(true),
             dm_notifications: Some(true),
             cli_auto_update: Some(true),
+            auto_update: Some(true),
             staging_channel: Some(true),
             release_channel: Some("beta".to_string()),
             meeting_detect_notify: None,
@@ -386,7 +396,7 @@ mod tests {
     #[test]
     fn test_save_with_no_existing_file_emits_typed_only() {
         // First-ever save (no menubar.json yet): output is just the typed
-        // fields, no spurious keys, telemetry opt-in respected.
+        // fields, no spurious keys, telemetry preference respected.
         let prefs = MenubarPrefs {
             telemetry_enabled: Some(true),
             ..empty_prefs()

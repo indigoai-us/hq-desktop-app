@@ -125,6 +125,39 @@
     ),
   );
 
+  // ── System notices in the feed ──────────────────────────────────────────────
+  // Conflict / update / membership / auth / error notices fold INTO the
+  // notifications list as pinned one-line rows at the top (same locked
+  // NotificationRow design language) instead of a separate banner stack above
+  // the status row. The active count feeds the panel's unread badge alongside
+  // the feed's own unread count, and tells NotificationFeed to suppress its
+  // empty state so a quiet data feed doesn't read as "nothing here" while a
+  // sync-paused row sits right above it.
+  const conflictModalActive = $derived(showConflictModal && conflicts.length > 0);
+  const systemNoticeCount = $derived(
+    (membershipsToPull.length > 0 ? 1 : 0) +
+      (updateAvailable ? 1 : 0) +
+      (syncState === 'conflict' && !conflictModalActive ? 1 : 0) +
+      (syncState === 'auth-error' ? 1 : 0) +
+      (syncState === 'error' && errorMessage ? 1 : 0) +
+      (manifestError ? 1 : 0) +
+      (!cloudReachable ? 1 : 0),
+  );
+  const hasSystemNotices = $derived(systemNoticeCount > 0 || conflictModalActive);
+  const notifBadge = $derived(unreadCount + systemNoticeCount);
+  const conflictNoticeText = $derived(
+    conflictCount > 0
+      ? `${conflictCount} file${conflictCount === 1 ? '' : 's'} changed in two places. Resolve in Claude Code, then Sync again.`
+      : 'A file changed in two places. Resolve in Claude Code, then Sync again.',
+  );
+  const membershipNoticeTitle = $derived(
+    membershipsToPull.length > 0
+      ? `Added to ${membershipsToPull[0].displayName}${
+          membershipsToPull.length > 1 ? ` + ${membershipsToPull.length - 1} more` : ''
+        }`
+      : '',
+  );
+
   const barPct = $derived.by(() => {
     if (syncTotalFiles > 0) {
       return Math.min(100, Math.max(0, (syncFilesProgressed / syncTotalFiles) * 100));
@@ -347,149 +380,6 @@
   <div class="mbpop-content" bind:this={popoverContentEl}>
   <div class="mbp-main">
     <div class="mbp-main-content" bind:this={popoverMainContentEl}>
-    {#if showConflictModal && conflicts.length > 0 && onresolve && onopen && ondismissconflicts}
-      <div class="mbp-notices">
-        <ConflictModal
-          {conflicts}
-          onresolve={onresolve}
-          onopen={onopen}
-          ondismiss={ondismissconflicts}
-        />
-      </div>
-    {/if}
-
-    {#if updateAvailable || manifestError || !cloudReachable || membershipsToPull.length > 0 || syncState === 'auth-error' || (syncState === 'error' && errorMessage) || syncState === 'conflict'}
-      <div class="mbp-notices">
-        {#if updateAvailable}
-          <div class="mbp-banner">
-            <div>
-              <p>Update available: v{updateAvailable.version}</p>
-              {#if updateAvailable.body}
-                <span>{updateAvailable.body}</span>
-              {/if}
-            </div>
-            <button
-              type="button"
-              class="mbp-mini primary"
-              onclick={oninstallupdate}
-              disabled={updateInstalling || !oninstallupdate}
-            >
-              {updateInstalling ? 'Installing...' : 'Install'}
-            </button>
-          </div>
-        {/if}
-
-        {#if manifestError}
-          <div class="mbp-banner" title={manifestError}>
-            <p>companies/manifest.yaml could not be read.</p>
-            <CopyPromptButton
-              variant="compact"
-              label="Copy fix prompt"
-              issue={{ kind: 'manifest-error', payload: { error: manifestError } }}
-            />
-          </div>
-        {/if}
-
-        {#if !cloudReachable}
-          <div class="mbp-banner" title={cloudError ?? ''}>
-            <p>Cloud unreachable - showing local folders.</p>
-            <CopyPromptButton
-              variant="compact"
-              label="Copy diagnose prompt"
-              issue={{ kind: 'cloud-unreachable', payload: { error: cloudError ?? '' } }}
-            />
-          </div>
-        {/if}
-
-        {#if membershipsToPull.length > 0}
-          <div class="mbp-banner">
-            <button
-              class="mbp-dismiss"
-              type="button"
-              onclick={() => dismissMembershipPrompt(membershipsToPull[0].slug)}
-              aria-label="Dismiss membership prompt"
-            >
-              ×
-            </button>
-            <div>
-              <p>
-                Added to {membershipsToPull[0].displayName}{membershipsToPull.length > 1
-                  ? ` + ${membershipsToPull.length - 1} more`
-                  : ''}
-              </p>
-              <span>Sync to pull {membershipsToPull.length > 1 ? 'them' : 'it'} down.</span>
-            </div>
-            <button
-              type="button"
-              class="mbp-mini primary"
-              onclick={onsync}
-              disabled={syncState === 'syncing'}
-            >
-              {syncState === 'syncing' ? 'Syncing...' : 'Sync'}
-            </button>
-          </div>
-        {/if}
-
-        {#if syncState === 'auth-error'}
-          <div class="mbp-banner">
-            <div>
-              <p>Session expired</p>
-              <span>{errorMessage || 'Please sign in again to continue syncing.'}</span>
-            </div>
-            <CopyPromptButton
-              variant="inline"
-              label="Copy prompt"
-              issue={{ kind: 'auth-expired', payload: { message: errorMessage } }}
-            />
-          </div>
-        {:else if syncState === 'error' && errorMessage}
-          <div class="mbp-banner">
-            <div>
-              <p>Sync initialized</p>
-              <span>Finish in Claude Code to complete sync.</span>
-            </div>
-            <div class="mbp-banner-actions">
-              <OpenInClaudeCodeButton
-                variant="compact"
-                label="Finish sync in Claude Code"
-                folder={config?.hqFolderPath ?? ''}
-                issue={{ kind: 'sync-failed', payload: { message: errorMessage, company: errorCompany } }}
-              />
-              <CopyPromptButton
-                variant="compact"
-                label="Copy prompt"
-                issue={{ kind: 'sync-failed', payload: { message: errorMessage, company: errorCompany } }}
-              />
-            </div>
-          </div>
-        {:else if syncState === 'conflict' && !(showConflictModal && conflicts.length > 0)}
-          <div class="mbp-banner">
-            <div>
-              <p>
-                Sync paused - {conflictCount > 0
-                  ? `${conflictCount} file${conflictCount === 1 ? '' : 's'} changed in two places`
-                  : 'a file changed in two places'}
-              </p>
-              <span>Resolve in Claude Code, then Sync again.</span>
-            </div>
-            <div class="mbp-banner-actions">
-              <OpenInClaudeCodeButton
-                variant="compact"
-                label="Resolve in Claude Code"
-                folder={config?.hqFolderPath ?? ''}
-                issue={{ kind: 'sync-conflict', payload: { count: conflictCount, company: conflictCompany } }}
-              />
-              <CopyPromptButton
-                variant="compact"
-                label="Copy prompt"
-                issue={{ kind: 'sync-conflict', payload: { count: conflictCount, company: conflictCompany } }}
-              />
-            </div>
-          </div>
-        {/if}
-      </div>
-    {/if}
-
     <div
       class="mbp-status"
       class:syncing={syncState === 'syncing'}
@@ -510,22 +400,182 @@
       </div>
     {/if}
 
-    <!-- Notifications panel body — slim label + unread count + Mark all read. -->
+    <!-- Notifications panel body — slim label + unread count + Mark all read.
+         System notices (conflict / update / membership / auth / errors) pin to
+         the top as one-line rows in the same locked row design, then the data
+         feed (DMs, shares, new-file activity). -->
     <section class="mbp-sec" aria-labelledby="popover-notifications-label">
       <div class="mbp-sec-head">
         <div class="mbp-lab" id="popover-notifications-label">
           Notifications
-          {#if unreadCount > 0}
-            <span class="mbp-unread-count">{unreadCount > 99 ? '99+' : unreadCount}</span>
+          {#if notifBadge > 0}
+            <span class="mbp-unread-count">{notifBadge > 99 ? '99+' : notifBadge}</span>
           {/if}
         </div>
         <button class="mbp-sec-action" type="button" onclick={handleMarkAllRead}>
           Mark all read
         </button>
       </div>
+
+      {#if conflictModalActive && onresolve && onopen && ondismissconflicts}
+        <!-- Detailed conflict resolver keeps its own card; the lighter conflict
+             summary folds into the feed as a system-notice row. -->
+        <div class="mbp-conflict-card">
+          <ConflictModal
+            {conflicts}
+            onresolve={onresolve}
+            onopen={onopen}
+            ondismiss={ondismissconflicts}
+          />
+        </div>
+      {/if}
+
+      {#if membershipsToPull.length > 0}
+        <div class="snr" data-testid="popover-system-notice" data-kind="membership">
+          <span class="snr-icon action" aria-hidden="true">{@render noticeGlyph('action')}</span>
+          <span class="snr-text">
+            <b>{membershipNoticeTitle}</b>
+            Sync to pull {membershipsToPull.length > 1 ? 'them' : 'it'} onto this machine.
+          </span>
+          <span class="snr-actions">
+            <button
+              type="button"
+              class="mbp-mini primary"
+              onclick={onsync}
+              disabled={syncState === 'syncing'}
+            >
+              {syncState === 'syncing' ? 'Syncing…' : 'Sync now'}
+            </button>
+            <button
+              type="button"
+              class="mbp-mini"
+              onclick={() => dismissMembershipPrompt(membershipsToPull[0].slug)}
+            >
+              Dismiss
+            </button>
+          </span>
+        </div>
+      {/if}
+
+      {#if updateAvailable}
+        <div class="snr" data-testid="popover-system-notice" data-kind="update">
+          <span class="snr-icon action" aria-hidden="true">{@render noticeGlyph('action')}</span>
+          <span class="snr-text">
+            <b>Update available</b>
+            HQ v{updateAvailable.version}{updateAvailable.body ? ` — ${updateAvailable.body}` : ''}
+          </span>
+          <span class="snr-actions">
+            <button
+              type="button"
+              class="mbp-mini primary"
+              onclick={oninstallupdate}
+              disabled={updateInstalling || !oninstallupdate}
+            >
+              {updateInstalling ? 'Installing…' : 'Install'}
+            </button>
+          </span>
+        </div>
+      {/if}
+
+      {#if syncState === 'conflict' && !conflictModalActive}
+        <div class="snr" data-testid="popover-system-notice" data-kind="conflict">
+          <span class="snr-icon alert" aria-hidden="true">{@render noticeGlyph('alert')}</span>
+          <span class="snr-text">
+            <b>Sync paused</b>
+            {conflictNoticeText}
+          </span>
+          <span class="snr-actions">
+            <OpenInClaudeCodeButton
+              variant="compact"
+              label="Resolve"
+              folder={config?.hqFolderPath ?? ''}
+              issue={{ kind: 'sync-conflict', payload: { count: conflictCount, company: conflictCompany } }}
+            />
+            <CopyPromptButton
+              variant="compact"
+              label="Copy prompt"
+              issue={{ kind: 'sync-conflict', payload: { count: conflictCount, company: conflictCompany } }}
+            />
+          </span>
+        </div>
+      {/if}
+
+      {#if syncState === 'auth-error'}
+        <div class="snr" data-testid="popover-system-notice" data-kind="auth">
+          <span class="snr-icon alert" aria-hidden="true">{@render noticeGlyph('alert')}</span>
+          <span class="snr-text">
+            <b>Session expired</b>
+            {errorMessage || 'Sign in again to keep syncing.'}
+          </span>
+          <span class="snr-actions">
+            <CopyPromptButton
+              variant="compact"
+              label="Copy prompt"
+              issue={{ kind: 'auth-expired', payload: { message: errorMessage } }}
+            />
+          </span>
+        </div>
+      {:else if syncState === 'error' && errorMessage}
+        <div class="snr" data-testid="popover-system-notice" data-kind="error">
+          <span class="snr-icon alert" aria-hidden="true">{@render noticeGlyph('alert')}</span>
+          <span class="snr-text">
+            <b>Finish sync in Claude Code</b>
+            Sync started but needs a hand to complete.
+          </span>
+          <span class="snr-actions">
+            <OpenInClaudeCodeButton
+              variant="compact"
+              label="Finish in Claude Code"
+              folder={config?.hqFolderPath ?? ''}
+              issue={{ kind: 'sync-failed', payload: { message: errorMessage, company: errorCompany } }}
+            />
+            <CopyPromptButton
+              variant="compact"
+              label="Copy prompt"
+              issue={{ kind: 'sync-failed', payload: { message: errorMessage, company: errorCompany } }}
+            />
+          </span>
+        </div>
+      {/if}
+
+      {#if manifestError}
+        <div class="snr" data-testid="popover-system-notice" data-kind="manifest" title={manifestError}>
+          <span class="snr-icon alert" aria-hidden="true">{@render noticeGlyph('alert')}</span>
+          <span class="snr-text">
+            <b>Couldn’t read companies list</b>
+            companies/manifest.yaml could not be read.
+          </span>
+          <span class="snr-actions">
+            <CopyPromptButton
+              variant="compact"
+              label="Copy fix prompt"
+              issue={{ kind: 'manifest-error', payload: { error: manifestError } }}
+            />
+          </span>
+        </div>
+      {/if}
+
+      {#if !cloudReachable}
+        <div class="snr" data-testid="popover-system-notice" data-kind="cloud" title={cloudError ?? ''}>
+          <span class="snr-icon warn" aria-hidden="true">{@render noticeGlyph('warn')}</span>
+          <span class="snr-text">
+            <b>Cloud unreachable</b>
+            Showing local folders.
+          </span>
+          <span class="snr-actions">
+            <CopyPromptButton
+              variant="compact"
+              label="Copy diagnose prompt"
+              issue={{ kind: 'cloud-unreachable', payload: { error: cloudError ?? '' } }}
+            />
+          </span>
+        </div>
+      {/if}
+
       <NotificationFeed
         bind:this={feedEl}
         showDayLabels={false}
+        hideEmptyState={hasSystemNotices}
         onunreadchange={(n) => (unreadCount = n)}
       />
     </section>
@@ -533,6 +583,34 @@
   </div>
   </div>
 </div>
+
+{#snippet noticeGlyph(kind: 'alert' | 'warn' | 'action')}
+  <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+    {#if kind === 'action'}
+      <path
+        d="M8 2.5v8.4M4.6 7.5 8 10.9l3.4-3.4M2.8 13h10.4"
+        stroke="currentColor"
+        stroke-width="1.3"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+    {:else}
+      <path
+        d="M8 2 1.8 13h12.4L8 2Z"
+        stroke="currentColor"
+        stroke-width="1.3"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+      <path
+        d="M8 6.4v3M8 11.4h.01"
+        stroke="currentColor"
+        stroke-width="1.3"
+        stroke-linecap="round"
+      />
+    {/if}
+  </svg>
+{/snippet}
 
 <style>
   .popover {
@@ -603,69 +681,76 @@
     min-height: 0;
   }
 
-  .mbp-notices {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    padding: 8px 8px 0;
+  /* Detailed conflict resolver keeps its own card; the lighter conflict
+     summary folds into the feed as a system-notice row. */
+  .mbp-conflict-card {
+    padding: 0 5px 4px;
   }
 
-  .mbp-banner {
-    position: relative;
+  /* Pinned system-notice rows — one-line, matching the locked NotificationRow
+     design (icon + single ellipsized line + hover/focus-revealed actions). */
+  .snr {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    padding: 7px 8px;
-    border-radius: 8px;
-    border: 0.5px solid var(--pop-border);
-    background: var(--pop-hover);
+    gap: 10px;
+    min-height: 30px;
+    padding: 0 11px;
+    border-radius: 9px;
+    font-size: 12px;
     color: var(--pop-text);
-    font-size: 11.5px;
-    line-height: 1.3;
+    transition: background-color 0.15s ease;
+    box-sizing: border-box;
   }
 
-  .mbp-banner p,
+  .snr:hover,
+  .snr:focus-within {
+    background: var(--pop-hover);
+  }
+
+  .snr-icon {
+    flex-shrink: 0;
+    width: 12px;
+    height: 12px;
+    display: grid;
+    place-items: center;
+    color: var(--pop-muted);
+  }
+
+  .snr-icon.alert {
+    color: var(--popover-warning);
+  }
+
+  .snr-text {
+    flex: 1;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-weight: 450;
+    color: var(--pop-text);
+  }
+
+  .snr-text b {
+    font-weight: 600;
+  }
+
+  .snr-actions {
+    margin-left: auto;
+    flex: 0 0 auto;
+    display: none;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .snr:hover .snr-actions,
+  .snr:focus-within .snr-actions {
+    display: inline-flex;
+  }
+
   .mbp-progress p {
     margin: 0;
   }
 
-  .mbp-banner p {
-    font-weight: 600;
-  }
-
-  .mbp-banner span {
-    color: var(--pop-muted);
-  }
-
-  .mbp-banner-actions {
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    gap: 5px;
-    flex-wrap: wrap;
-    flex-shrink: 0;
-  }
-
-  .mbp-dismiss {
-    position: absolute;
-    top: 3px;
-    right: 4px;
-    width: 18px;
-    height: 18px;
-    border: 0;
-    border-radius: 5px;
-    color: var(--pop-muted);
-    background: transparent;
-    cursor: pointer;
-  }
-
-  .mbp-dismiss:hover {
-    color: var(--pop-text);
-    background: var(--pop-hover);
-  }
-
-  .mbp-dismiss:focus-visible,
   .mbp-mini:focus-visible {
     outline: 1.5px solid var(--popover-focus-ring, var(--pop-accent));
     outline-offset: var(--popover-focus-offset, 2px);

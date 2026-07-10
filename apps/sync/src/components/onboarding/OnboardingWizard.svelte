@@ -37,6 +37,7 @@
     type StageState,
   } from '../../lib/onboarding-setup';
   import { postOptIn } from '../../lib/onboarding-telemetry';
+  import { emitDesktopTelemetry } from '../../lib/desktop-telemetry';
   import {
     createWizardRouter,
     markSetupStepCompleted,
@@ -341,6 +342,12 @@
         await refocusWindow();
         if (!isCurrentSignInCall(call)) return;
         void postOptIn({ enabled: telemetryEnabled });
+        if (telemetryEnabled) {
+          void emitDesktopTelemetry({
+            eventName: 'oauth_signin_succeeded',
+            properties: { provider },
+          });
+        }
         advanceTo(1);
       } else {
         signInError = 'Authentication failed. Please try again.';
@@ -668,6 +675,24 @@
       setupFailures = result.failedStages;
       markSetupStepCompleted();
       await journalInstallComplete();
+      if (telemetryEnabled) {
+        void emitDesktopTelemetry({
+          eventName: 'desktop_setup_completed',
+          properties: {
+            stageCount: stages.length,
+            failedStageCount: setupFailures.length,
+            detectedToolCount: aiTools
+              ? [
+                  aiTools.claude_cli,
+                  aiTools.claude_desktop,
+                  aiTools.codex_cli,
+                  aiTools.codex_desktop,
+                  aiTools.grok_cli,
+                ].filter(Boolean).length
+              : 0,
+          },
+        });
+      }
       advanceTo(3);
     }
   }

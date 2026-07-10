@@ -158,6 +158,28 @@ pub fn cli_auto_update_enabled() -> bool {
         .unwrap_or(true)
 }
 
+/// Master automatic-updates switch (`autoUpdate` in menubar.json), default
+/// ON. Read untyped like `cli_auto_update_enabled` so every updater (menubar
+/// app, `hq` CLI, hq-core) picks the toggle up without a restart. This is the
+/// single gate the CLI background auto-installer now uses; the app + core
+/// silent installs gate on it frontend-side. A missing/corrupt config reads as
+/// `true` — the same fail-open leniency `cli_auto_update_enabled` uses, which
+/// matches the "keep everything current unless the user opts out" intent.
+pub fn auto_update_enabled() -> bool {
+    let Ok(dir) = paths::hq_config_dir() else {
+        return true;
+    };
+    let Ok(contents) = std::fs::read_to_string(dir.join("menubar.json")) else {
+        return true;
+    };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&contents) else {
+        return true;
+    };
+    json.get("autoUpdate")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true)
+}
+
 /// menubar.json key that records the most recent CLI version the user
 /// dismissed the "update available" notice for. Read untyped (same leniency
 /// as `cli_auto_update_enabled`) so the background loop picks it up without a

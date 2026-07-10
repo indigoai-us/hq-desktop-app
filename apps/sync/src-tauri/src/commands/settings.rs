@@ -37,13 +37,16 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
             share_notifications: Some(true),
             dm_notifications: Some(true),
             cli_auto_update: Some(true),
+            // Master automatic-updates switch defaults ON — a fresh install
+            // keeps the app, CLI, and hq-core current silently.
+            auto_update: Some(true),
             staging_channel: Some(true),
             release_channel: None,
             meeting_detect_notify: Some(default_meeting_detect_notify()),
             default_recording_company_uid: None,
-            // Telemetry is opt-in; absent → off (mirrors
-            // telemetry.rs::read_local_telemetry_enabled's unwrap_or(false)).
-            telemetry_enabled: Some(false),
+// Telemetry is opt-out; absent → on (mirrors
+            // telemetry.rs::read_local_telemetry_enabled's unwrap_or(true)).
+            telemetry_enabled: Some(true),
             // Widget defaults ON so it ships enabled after update (US-004).
             widget_enabled: Some(true),
             // None = primary display.
@@ -90,6 +93,11 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
         // hq_cli_update.rs on each background check so the toggle takes effect
         // without restart. Mirrors `dm_notifications`.
         cli_auto_update: Some(prefs.cli_auto_update.unwrap_or(true)),
+        // Master automatic-updates switch — defaults ON. Governs silent
+        // install of the app, CLI, and hq-core (see
+        // `hq_cli_update::auto_update_enabled`). Absent in older menubar.json
+        // files → true, so existing installs keep updating without asking.
+        auto_update: Some(prefs.auto_update.unwrap_or(true)),
         // Staging channel (@getindigo.ai-only): defaults ON so existing
         // builders' "Update to Staging" pill keeps rendering across the
         // upgrade. An explicit `false` flips them to the prod release
@@ -113,9 +121,9 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
         // surfaces this as the "Personal" option (same shape as the
         // URL-invite picker in MeetingsWindow).
         default_recording_company_uid: prefs.default_recording_company_uid,
-        // Telemetry defaults OFF (opt-in). Re-read untyped from menubar.json by
+        // Telemetry defaults ON (opt-out). Re-read untyped from menubar.json by
         // the collector each sync, so the toggle takes effect without restart.
-        telemetry_enabled: Some(prefs.telemetry_enabled.unwrap_or(false)),
+telemetry_enabled: Some(prefs.telemetry_enabled.unwrap_or(true)),
         // Widget defaults ON when absent (ships default-enabled after update).
         // widget.rs also reads widgetEnabled untyped on every notification
         // dispatch so toggling takes effect without restart.

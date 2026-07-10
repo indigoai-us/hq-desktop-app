@@ -4,6 +4,8 @@
   import { emit } from '@tauri-apps/api/event';
   import { open as openUrl } from '@tauri-apps/plugin-shell';
   import type { SettingsTab } from '../route';
+  import { emitDesktopTelemetry } from '../../lib/desktop-telemetry';
+  import { postOptIn } from '../../lib/onboarding-telemetry';
   import { permissionState, loadMeetingPermissions } from '../../lib/permissionState.svelte';
   import { packUpdateTitle } from '../../lib/packUpdate';
   import WidgetSettings from '../../components/WidgetSettings.svelte';
@@ -30,6 +32,7 @@
     shareNotifications: boolean | null;
     dmNotifications: boolean | null;
     cliAutoUpdate: boolean | null;
+    autoUpdate: boolean | null;
     stagingChannel: boolean | null;
     releaseChannel: string | null;
     meetingDetectNotify?: {
@@ -108,14 +111,21 @@
   let shareNotifications = $state(true);
   let dmNotifications = $state(true);
   let cliAutoUpdate = $state(true);
+  // Master automatic-updates switch — one toggle governs silent install of the
+  // app, CLI, and hq-core. Default ON. Read fresh by the Rust auto-installers
+  // and re-read by App.svelte on popover focus, so it takes effect without a
+  // restart. Supersedes the standalone cliAutoUpdate toggle (still
+  // round-tripped for back-compat, but the CLI installer now gates on
+  // autoUpdate).
+  let autoUpdate = $state(true);
   let stagingChannel = $state(true);
   let releaseChannel = $state<Channel | null>(null);
   let startAtLogin = $state(true);
   let meetingDetectEnabled = $state(true);
   let meetingDetectPlatforms = $state<string[]>([...platforms]);
   let defaultRecordingCompanyUid = $state<string | null>(null);
-  // Telemetry is opt-in — defaults OFF until the user explicitly turns it on.
-  let telemetryEnabled = $state(false);
+  // Telemetry is opt-out — defaults ON until the user explicitly turns it off.
+  let telemetryEnabled = $state(true);
 
   // macOS notification authorization — distinct from the in-app `notifications`
   // preference. `'unknown'` = not yet read (row hidden until first resolve).
@@ -226,6 +236,7 @@
       shareNotifications = settings.shareNotifications ?? true;
       dmNotifications = settings.dmNotifications ?? true;
       cliAutoUpdate = settings.cliAutoUpdate ?? true;
+      autoUpdate = settings.autoUpdate ?? true;
       stagingChannel = settings.stagingChannel ?? true;
       startAtLogin = settings.startAtLogin ?? true;
       meetingDetectEnabled = settings.meetingDetectNotify?.enabled ?? true;
@@ -236,7 +247,7 @@
       const storedUid = settings.defaultRecordingCompanyUid ?? null;
       defaultRecordingCompanyUid =
         storedUid && memberships.some((m) => m.companyUid === storedUid) ? storedUid : null;
-      telemetryEnabled = settings.telemetryEnabled ?? false;
+      telemetryEnabled = settings.telemetryEnabled ?? true;
       isIndigoUser = indigoUser;
       isIndigoBuilder = indigoBuilder;
       availableChannels = channels.filter(isChannel);
@@ -300,6 +311,7 @@
           shareNotifications,
           dmNotifications,
           cliAutoUpdate,
+          autoUpdate,
           stagingChannel,
           releaseChannel,
           meetingDetectNotify: {
@@ -314,6 +326,25 @@
       window.setTimeout(() => (saved = false), 1000);
     } catch (err) {
       error = String(err);
+    }
+  }
+
+  async function auditTelemetryPreferenceChanged(enabled: boolean) {
+    await emitDesktopTelemetry({
+      eventName: 'telemetry_preference_changed',
+      properties: { enabled, surface: 'desktop-settings' },
+    });
+  }
+
+  async function applyTelemetryPreference() {
+    const next = telemetryEnabled;
+    if (!next) {
+      await auditTelemetryPreferenceChanged(next);
+    }
+    await saveSettings();
+    await postOptIn({ enabled: next });
+    if (next) {
+      await auditTelemetryPreferenceChanged(next);
     }
   }
 
@@ -627,12 +658,13 @@
       shareNotifications = settings.shareNotifications ?? true;
       dmNotifications = settings.dmNotifications ?? true;
       cliAutoUpdate = settings.cliAutoUpdate ?? true;
+      autoUpdate = settings.autoUpdate ?? true;
       stagingChannel = settings.stagingChannel ?? true;
       startAtLogin = settings.startAtLogin ?? true;
       meetingDetectEnabled = settings.meetingDetectNotify?.enabled ?? true;
       meetingDetectPlatforms = settings.meetingDetectNotify?.platforms ?? [...platforms];
       defaultRecordingCompanyUid = settings.defaultRecordingCompanyUid ?? null;
-      telemetryEnabled = settings.telemetryEnabled ?? false;
+      telemetryEnabled = settings.telemetryEnabled ?? true;
       releaseChannel = isChannel(settings.releaseChannel) ? settings.releaseChannel : null;
     } catch {
       // Non-fatal — keep showing the last-known values.
@@ -730,7 +762,11 @@
     <section id="updates" class="settings-section">
       <h2>Updates</h2>
       <div class="settings-card">
-        <label class="setting-row"><span><strong>CLI auto-update</strong><small>Keep the bundled HQ CLI current.</small></span><input type="checkbox" bind:checked={cliAutoUpdate} onchange={saveSettings} /></label>
+        <!-- Master automatic-updates switch (default ON). One toggle governs
+             silent, no-prompt install of the app itself (self-update +
+             restart), the hq CLI, and hq-core (drift-safe rescue). Supersedes
+             the old per-CLI "Auto-update HQ CLI" toggle. -->
+        <label class="setting-row"><span><strong>Automatic updates</strong><small>Install HQ, the app, and the CLI updates automatically in the background — no prompts.</small></span><input id="toggle-auto-update" type="checkbox" bind:checked={autoUpdate} onchange={saveSettings} aria-label="Automatic updates" /></label>
         <label class="setting-row gated-row"><span><strong>HQ core staging channel</strong><small>@getindigo.ai only. Changes rescue and drift targets.</small></span><input type="checkbox" disabled={!isIndigoBuilder} bind:checked={stagingChannel} onchange={async () => { await saveSettings(); await refreshCoreState(); }} /><em>Gated</em></label>
         <label class="setting-row gated-row"><span><strong>Release channel</strong><small>@getindigo.ai only. Stable is enforced for everyone else.</small></span><select disabled={availableChannels.length <= 1} bind:value={releaseChannel} onchange={saveSettings}><option value={null}>Default ({displayedChannel})</option>{#each availableChannels as channel (channel)}<option value={channel}>{channel}</option>{/each}</select><em>Gated</em></label>
         <div class="setting-row">
@@ -845,7 +881,7 @@
       <h2>General</h2>
       <div class="settings-card">
         <label class="setting-row"><span><strong>Start at login</strong><small>Open HQ when macOS starts.</small></span><input type="checkbox" bind:checked={startAtLogin} onchange={applyStartAtLogin} /></label>
-        <label class="setting-row"><span><strong>Usage telemetry</strong><small>Share anonymized usage counts to improve HQ. Off by default.</small></span><input type="checkbox" bind:checked={telemetryEnabled} onchange={saveSettings} /></label>
+        <label class="setting-row"><span><strong>Usage telemetry</strong><small>Share anonymized usage counts to improve HQ. You can turn this off any time.</small></span><input type="checkbox" bind:checked={telemetryEnabled} onchange={applyTelemetryPreference} /></label>
         <div class="setting-row">
           <span><strong>Version</strong><small>Menubar app build</small></span>
           <span class="version-value">{appVersion ? `v${appVersion}` : '—'}</span>

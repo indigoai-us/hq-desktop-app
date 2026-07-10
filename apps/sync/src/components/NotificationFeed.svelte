@@ -25,9 +25,18 @@
     /** Hide day-group headers (the popover's flat NOTIFICATIONS list). The
      *  desktop page keeps them for the day-grouped timeline. */
     showDayLabels?: boolean;
+    /** Suppress the "No notifications yet" empty state. The popover sets this
+     *  when it is rendering its own system-notice rows above the feed, so an
+     *  empty data feed doesn't read as "nothing here" while a sync-paused /
+     *  update row sits right above it. */
+    hideEmptyState?: boolean;
   }
 
-  let { onunreadchange, showDayLabels = true }: Props = $props();
+  let {
+    onunreadchange,
+    showDayLabels = true,
+    hideEmptyState = false,
+  }: Props = $props();
 
   let loading = $state(true);
   let error = $state<string | null>(null);
@@ -158,17 +167,21 @@
   {:else if error}
     <p class="notif-status notif-error" role="alert">{error}</p>
   {:else if items.length === 0}
-    <div class="notif-empty" role="status">
-      <svg class="notif-empty-bell" width="22" height="22" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-        <path d="M18 9a6 6 0 1 0-12 0c0 5-2 6.5-2 6.5h16S18 14 18 9Z" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
-        <path d="M10.3 19.5a2 2 0 0 0 3.4 0" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
-      </svg>
-      <p>No notifications yet</p>
-    </div>
+    {#if !hideEmptyState}
+      <div class="notif-empty" role="status">
+        <svg class="notif-empty-bell" width="22" height="22" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <path d="M18 9a6 6 0 1 0-12 0c0 5-2 6.5-2 6.5h16S18 14 18 9Z" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+          <path d="M10.3 19.5a2 2 0 0 0 3.4 0" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+        </svg>
+        <p>No notifications yet</p>
+      </div>
+    {/if}
   {:else if visibleItems.length === 0}
-    <div class="notif-empty" role="status">
-      <p>No notifications yet</p>
-    </div>
+    {#if !hideEmptyState}
+      <div class="notif-empty" role="status">
+        <p>No notifications yet</p>
+      </div>
+    {/if}
   {:else}
     {#each groups as group (group.key)}
       <div class="notif-day">
