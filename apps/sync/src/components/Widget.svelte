@@ -142,6 +142,9 @@
       hoverCloseTimer = undefined;
     }
     stack = markRecentRead(stack);
+    // A quick-reply input may have flipped the native window focusable while
+    // the list was pinned — always restore non-activating mode on close.
+    void setWidgetFocusable(false);
   }
 
   function togglePinned(): void {
@@ -290,6 +293,7 @@
 
     let unlistenNotif: (() => void) | undefined;
     let unlistenOcc: (() => void) | undefined;
+    let unlistenClickAway: (() => void) | undefined;
     let cancelled = false;
 
     void (async () => {
@@ -309,6 +313,13 @@
         applyStack(setOccluded(stack, !visible, Date.now()));
       });
 
+      // Native click-away: the non-focusable widget window never blurs and
+      // clicks in other apps never reach `document`, so Rust runs a global
+      // NSEvent mouse-down monitor and emits widget:click-away (US-010).
+      unlistenClickAway = await listen('widget:click-away', () => {
+        if (pinned) closePinned();
+      });
+
       const { invoke } = await import('@tauri-apps/api/core');
       if (cancelled) return;
       // Ready-handshake: Rust replies with the initial widget:occlusion.
@@ -323,6 +334,7 @@
       window.removeEventListener('blur', handleWindowBlur);
       unlistenNotif?.();
       unlistenOcc?.();
+      unlistenClickAway?.();
       if (expiryTimer !== undefined) {
         clearInterval(expiryTimer);
         expiryTimer = undefined;

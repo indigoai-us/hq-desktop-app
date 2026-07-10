@@ -153,6 +153,24 @@ describe('US-010: widget click-to-open + unread badge', () => {
       expect(widgetSource).toContain('widgetWindowSize');
     });
 
+    it('native click-away monitor is wired: Rust global mouse monitor + frontend listener', () => {
+      // The non-focusable widget window never blurs and outside clicks never
+      // reach its document — Rust must run a global NSEvent monitor and the
+      // frontend must close a pinned list on widget:click-away.
+      expect(widgetRs).toContain('addGlobalMonitorForEventsMatchingMask');
+      expect(widgetRs).toContain('widget:click-away');
+      expect(widgetRs).toContain('register_click_away_monitor');
+      expect(widgetSource).toContain("listen('widget:click-away'");
+    });
+
+    it('closePinned restores non-activating mode (setWidgetFocusable(false))', () => {
+      const closeBody = widgetSource.slice(
+        widgetSource.indexOf('function closePinned'),
+        widgetSource.indexOf('function togglePinned'),
+      );
+      expect(closeBody).toContain('setWidgetFocusable(false)');
+    });
+
     it('widget.rs resize_widget uses widget_position_for and anchor_lower_right', () => {
       expect(widgetRs).toContain('pub async fn resize_widget');
       expect(widgetRs).toContain('widget_position_for');
