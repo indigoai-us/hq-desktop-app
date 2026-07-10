@@ -247,6 +247,8 @@ fn main() {
         .manage(commands::dm_notify::SeenChannelState::new())
         .manage(commands::dm_notify::ActiveThreadState::new())
         .manage(commands::dm_notify::ActiveConversationState::new())
+        .manage(commands::dm_notify::WatchedSharesState::new())
+        .manage(commands::messages::PendingMessagesTarget::new())
         .manage(commands::banner::PendingBanner(Mutex::new(None)))
         // new-files-detail window handshake state (folded in from hq-sync-win).
         .manage(commands::new_files::PendingNewFiles(Mutex::new(Vec::new())))
@@ -305,6 +307,7 @@ fn main() {
             commands::settings::save_settings,
             commands::telemetry::post_telemetry_opt_in,
             commands::telemetry::write_menubar_telemetry_pref,
+            commands::telemetry::emit_desktop_telemetry_if_opted_in,
             commands::folder_picker::pick_folder,
             commands::install_directory::resolve_hq_path,
             commands::install_directory::set_hq_install_path,
@@ -487,6 +490,7 @@ fn main() {
             commands::dm_notify::send_thread_reply,
             commands::dm_notify::set_active_thread,
             commands::dm_notify::set_active_conversation,
+            commands::dm_notify::set_watched_shares,
             commands::dm_notify::list_dm_requests,
             commands::dm_notify::respond_dm_request,
             commands::messages::open_messages_window,
@@ -519,6 +523,10 @@ fn main() {
             commands::banner::preview_share_banner,
             commands::banner::preview_update_banner,
             commands::banner::preview_meeting_banner,
+            commands::widget::resize_widget,
+            commands::widget::widget_ready,
+            commands::widget::list_displays,
+            commands::widget::apply_widget_settings,
             commands::compat::check_ai_tools,
             commands::compat::device_fingerprint,
             commands::compat::keychain_set,
@@ -628,6 +636,11 @@ fn main() {
                 tray::show_window_centered(app.handle());
                 util::logfile::log("app", "first-run launch: centered onboarding card");
             }
+
+            // US-002: always-on-top HQ wordmark widget (lower-right of the
+            // configured display). Gated by widgetEnabled in menubar.json
+            // (default on). Non-activating, appearance-reactive.
+            commands::widget::setup_widget_window(app.handle());
 
             // macOS: the menu-bar item lives in a separate native helper process
             // (tao parks an in-process status item off-screen on Tahoe). Spawn

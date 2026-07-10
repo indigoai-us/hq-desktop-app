@@ -5,6 +5,8 @@ import {
   CURATED_EMOJI,
   dmScope,
   channelScope,
+  shareScope,
+  isShareScope,
   findAggregate,
   hasReacted,
   toggleIsAdd,
@@ -189,5 +191,18 @@ describe('buildReactionMap', () => {
     ]);
     expect(Object.keys(map)).toEqual(['e1']);
     expect(map.e1.map((r) => r.emoji)).toEqual(['🔥', '👍']);
+  });
+});
+
+describe('shareScope', () => {
+  it('builds the share:{eventId} scope, trimmed', () => {
+    expect(shareScope('shr_1')).toBe('share:shr_1');
+    expect(shareScope('  shr_2  ')).toBe('share:shr_2');
+  });
+
+  it('isShareScope discriminates share scopes from dm/chan', () => {
+    expect(isShareScope(shareScope('shr_1'))).toBe(true);
+    expect(isShareScope(dmScope('prs_1'))).toBe(false);
+    expect(isShareScope(channelScope('chn_1'))).toBe(false);
   });
 });

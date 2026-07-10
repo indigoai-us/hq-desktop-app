@@ -381,9 +381,26 @@ const handlers: Record<string, Handler> = {
           eventId: 'share-1',
           issuerDisplayName: 'Jacob Patel',
           issuerEmail: 'jacob@getindigo.ai',
+          // Legacy row — no issuerPersonUid; "Message the sharer" falls back
+          // to the email-addressed compose flow.
+          issuerPersonUid: '',
           paths: ['companies/indigo/financials/Q2-model.xlsx'],
           note: 'Latest forecast for review',
+          permission: 'read',
           createdAt: iso(20),
+        },
+        {
+          eventId: 'share-2',
+          issuerDisplayName: 'Ada Lovelace',
+          issuerEmail: 'ada@getindigo.ai',
+          issuerPersonUid: 'prs_ada',
+          paths: [
+            'companies/indigo/design/v4-spec.md',
+            'companies/indigo/design/tokens.css',
+          ],
+          note: 'Redesign spec + tokens — reactions land on these cards now.',
+          permission: 'read',
+          createdAt: iso(4),
         },
       ],
       files: [
@@ -496,6 +513,21 @@ const handlers: Record<string, Handler> = {
     ],
   }),
   send_dm: () => ({ eventId: 'sent-1', createdAt: '2026-06-09T19:44:00.000Z' }),
+  // Reactions (US-025 + share reactions) — canned aggregates so pills render.
+  fetch_reactions: (args) => {
+    const id = String(args?.messageId ?? '');
+    if (id === 'share-2') {
+      return [
+        { emoji: '🎉', count: 2, reactedByMe: true },
+        { emoji: '👀', count: 1, reactedByMe: false },
+      ];
+    }
+    if (id === 'share-1') return [{ emoji: '👍', count: 1, reactedByMe: false }];
+    return [];
+  },
+  toggle_reaction: () => ({ ok: true, added: true }),
+  set_active_conversation: () => null,
+  set_watched_shares: () => null,
   send_dm_to_email: () => ({ state: 'connection_requested' }),
   respond_dm_request: () => null,
   messages_window_ready: () => null,

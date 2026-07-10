@@ -5,102 +5,58 @@ const popoverSource = readFileSync(
   resolve(process.cwd(), 'src/components/Popover.svelte'),
   'utf8',
 );
+const feedSource = readFileSync(
+  resolve(process.cwd(), 'src/components/NotificationFeed.svelte'),
+  'utf8',
+);
+const appSource = readFileSync(resolve(process.cwd(), 'src/App.svelte'), 'utf8');
 
 function normalize(source: string): string {
   return source.replace(/\s+/g, ' ');
 }
 
-function getDesktopAltGate(source = popoverSource): string {
-  const footer = source.indexOf('<div class="mbp-foot">');
-  expect(footer).toBeGreaterThanOrEqual(0);
-
-  const start = source.lastIndexOf('{#if desktopAltEnabled}', footer);
-  expect(start).toBeGreaterThanOrEqual(0);
-
-  const end = source.indexOf('{/if}', start);
-  expect(end).toBeGreaterThan(start);
-
-  return source.slice(start, end);
-}
-
-function getDesktopAltButton(source = popoverSource): string {
-  const gate = getDesktopAltGate(source);
-  const start = gate.indexOf('<button');
-  expect(start).toBeGreaterThanOrEqual(0);
-
-  const end = gate.indexOf('</button>', start);
-  expect(end).toBeGreaterThan(start);
-
-  return gate.slice(start, end);
-}
-
-describe('US-004: Desktop view affordance in the redesigned popover', () => {
-  it('renders the desktop view CTA as the mbpop footer while Settings and overflow live in the header', () => {
-    const gate = getDesktopAltGate();
-    const compactGate = normalize(gate);
+describe('US-004 / US-001: chrome-free menubar notification panel', () => {
+  it('removes desktop-view CTA, header chrome, and tabs from the popover', () => {
     const compactSource = normalize(popoverSource);
-    const toggleIndex = gate.indexOf('data-testid="desktop-alt-toggle"');
 
-    // The desktop-alt toggle keeps its existing test id, but moved from the
-    // header icon cluster to the prototype footer CTA.
-    expect(toggleIndex).toBeGreaterThanOrEqual(0);
-    expect(compactGate).toContain('<button class="mbp-open"');
-    expect(compactGate).toContain('onclick={openDesktopAltWindow}');
-    expect(compactGate).toContain('data-testid="popover-open-desktop-view"');
-    expect(compactGate).toContain('Open desktop view');
-
-    // Header now follows the prototype: HQ mark, settings gear, overflow, Sync.
-    expect(compactSource).toContain('class="mbp-head"');
-    expect(compactSource).toContain('data-testid="popover-settings-gear"');
-    expect(compactSource).toContain('data-testid="popover-overflow-button"');
-    expect(compactSource).toContain('data-testid="popover-sync-button"');
+    // Desktop-view toggle left the menubar (US-001); launcher returns in US-005.
+    expect(compactSource).not.toContain('data-testid="desktop-alt-toggle"');
+    expect(compactSource).not.toContain('class="mbp-foot"');
+    expect(compactSource).not.toContain('Open desktop view');
+    expect(compactSource).not.toContain('class="mbp-head"');
+    expect(compactSource).not.toContain('data-testid="popover-settings-gear"');
+    expect(compactSource).not.toContain('data-testid="popover-overflow-button"');
+    expect(compactSource).not.toContain('data-testid="popover-sync-button"');
+    expect(compactSource).not.toContain('class="mbp-tabs"');
     expect(compactSource).not.toContain('class="header-icon-button desktop-alt-toggle"');
     expect(compactSource).not.toContain('<button class="footer-action" onclick={onsettings}>');
   });
 
-  it('wires the toggle click to invoke open_desktop_alt_window exactly once', () => {
-    const button = normalize(getDesktopAltButton());
-    const handler = normalize(
-      popoverSource.slice(
-        popoverSource.indexOf('async function openDesktopAltWindow()'),
-        popoverSource.indexOf('$effect(() => {', popoverSource.indexOf('async function openDesktopAltWindow()')),
-      ),
-    );
-    const invokeMatches = handler.match(/invoke\('open_desktop_alt_window'\)/g) ?? [];
-
-    expect(button).toContain('onclick={openDesktopAltWindow}');
-    expect(invokeMatches).toHaveLength(1);
-    expect(handler).toContain("await invoke('open_desktop_alt_window')");
+  it('keeps open_desktop_alt_window available via NotificationFeed deep-links', () => {
+    const invokeMatches = feedSource.match(/invoke\('open_desktop_alt_window'/g) ?? [];
+    expect(invokeMatches.length).toBeGreaterThanOrEqual(1);
+    expect(appSource).toContain("invoke('open_desktop_alt_window')");
   });
 
-  it('keeps the desktop-alt toggle absent from the non-Indigo DOM path', () => {
-    const gate = getDesktopAltGate();
-    const sourceWithoutGate = popoverSource.replace(gate, '');
-
-    expect(sourceWithoutGate).not.toContain('data-testid="desktop-alt-toggle"');
-    expect(normalize(popoverSource)).toContain('desktopAltEnabled = false');
+  it('never gates the popover DOM on desktopAltEnabled', () => {
+    expect(popoverSource).not.toContain('desktopAltEnabled');
+    expect(popoverSource).not.toContain('data-testid="desktop-alt-toggle"');
   });
 
-  it('surfaces failures as a compact inline notice and auto-dismisses within 5s', () => {
+  it('keeps status + notifications body as the panel surface', () => {
     const compactSource = normalize(popoverSource);
 
-    expect(compactSource).toContain("console.error('open_desktop_alt_window failed:', e)");
-    expect(compactSource).toContain("showDesktopAltError('Could not open desktop view.')");
-    expect(compactSource).toContain('<div class="mbp-banner" role="status"> <p>{desktopAltError}</p> </div>');
-    expect(compactSource).toContain('desktopAltErrorTimer = setTimeout(() => {');
-    expect(compactSource).toContain("desktopAltError = ''");
-    expect(compactSource).toMatch(/},\s*5000\)/);
-    expect(compactSource).toContain('clearDesktopAltErrorTimer()');
+    expect(compactSource).toContain('data-testid="popover-status-row"');
+    expect(compactSource).toContain('id="popover-notifications-label"');
+    expect(compactSource).toContain('Mark all read');
+    expect(compactSource).toContain('<NotificationFeed');
+    expect(compactSource).toContain('class="mbp-unread-count"');
   });
 
-  it('keeps the redesigned header on a single mbp row and removes the legacy action cluster', () => {
+  it('does not host desktop-alt open failures as an inline notice (chrome removed)', () => {
     const compactSource = normalize(popoverSource);
 
-    expect(compactSource).toContain('<header class="mbp-head" data-tauri-drag-region>');
-    expect(compactSource).not.toContain('has-desktop-alt-controls');
-    expect(compactSource).toContain('<span class="mbp-mark" data-tauri-drag-region>');
-    expect(compactSource).not.toContain('class="header-spacer"');
-    expect(compactSource).not.toContain('<div class="header-text">');
-    expect(compactSource).not.toContain('<div class="header-actions">');
+    expect(compactSource).not.toContain("showDesktopAltError('Could not open desktop view.')");
+    expect(compactSource).not.toContain('desktopAltError');
   });
 });

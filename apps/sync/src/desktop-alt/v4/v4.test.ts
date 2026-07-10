@@ -64,17 +64,20 @@ describe('US-001 V4 sidebar active-state mapping', () => {
     }
   });
 
-  it('renders nav rows in the SPEC order Home/Mission Control/Companies/Messages/Meetings/Library/Files', () => {
-    const model = getV4SidebarModel({ kind: 'home' }, workspaces);
+  it('renders nav rows in the US-008 order Inbox/Meetings/Marketplace/Library/Files', () => {
+    const model = getV4SidebarModel({ kind: 'inbox' }, workspaces);
     expect(model.nav.map((row) => row.label)).toEqual([
-      'Home',
-      'Mission Control',
-      'Companies',
-      'Messages',
+      'Inbox',
       'Meetings',
+      'Marketplace',
       'Library',
       'Files',
     ]);
+    // Home, Mission Control, Companies, and the pre-merge Messages/Notifications
+    // rows are gone from the sidebar.
+    for (const gone of ['Home', 'Mission Control', 'Companies', 'Messages', 'Notifications']) {
+      expect(model.nav.some((row) => row.label === gone)).toBe(false);
+    }
   });
 
   it('highlights the company row — not a nav item — on company routes', () => {
@@ -93,26 +96,37 @@ describe('US-001 V4 sidebar active-state mapping', () => {
     expect(activeRowCount(model)).toBe(1);
   });
 
-  it('falls back to the Companies nav row for a company route with no matching row', () => {
+  it('lights no row for a company route with no matching row — the Companies fallback is gone (US-007)', () => {
     const model = getV4SidebarModel({ kind: 'company', slug: 'ghost' }, workspaces);
-    expect(model.nav.filter((row) => row.active).map((row) => row.id)).toEqual(['companies']);
-    expect(activeRowCount(model)).toBe(1);
+    expect(model.nav.every((row) => !row.active)).toBe(true);
+    expect(activeRowCount(model)).toBe(0);
   });
 
-  it('keeps exactly one active row on every route, including unknown kinds', () => {
+  it('keeps exactly one active row on every sidebar destination', () => {
     const routes: V4Route[] = [
-      { kind: 'home' },
-      { kind: 'companies' },
-      { kind: 'messages' },
+      { kind: 'inbox' },
       { kind: 'meetings' },
+      { kind: 'marketplace' },
       { kind: 'library' },
+      { kind: 'files' },
       { kind: 'settings' },
       { kind: 'company', slug: 'indigo' },
+    ];
+    for (const route of routes) {
+      expect(activeRowCount(getV4SidebarModel(route, workspaces))).toBe(1);
+    }
+  });
+
+  it('lights no row on palette-only and unknown routes (US-007: at most one active row)', () => {
+    const routes: V4Route[] = [
+      { kind: 'home' },
+      { kind: 'mission-control' },
+      { kind: 'moderation' },
       { kind: 'company', slug: 'missing' },
       { kind: 'some-future-kind' },
     ];
     for (const route of routes) {
-      expect(activeRowCount(getV4SidebarModel(route, workspaces))).toBe(1);
+      expect(activeRowCount(getV4SidebarModel(route, workspaces))).toBe(0);
     }
   });
 });

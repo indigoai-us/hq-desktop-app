@@ -66,8 +66,8 @@ describe('desktop-alt V4 chrome (US-002)', () => {
     const companies = [workspace({})];
     for (const route of [
       { kind: 'home' },
-      { kind: 'companies' },
-      { kind: 'messages' },
+      { kind: 'marketplace' },
+      { kind: 'inbox' },
       { kind: 'meetings' },
       { kind: 'moderation' },
     ] satisfies DesktopRoute[]) {

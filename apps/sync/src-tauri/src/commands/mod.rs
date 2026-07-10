@@ -61,4 +61,5 @@ pub mod telemetry;
 pub mod un_notify;
 pub mod vault_client;
 pub mod version_gate;
+pub mod widget;
 pub mod workspaces;

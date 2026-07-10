@@ -38,6 +38,16 @@ describe('desktop-alt command palette coverage', () => {
     expect(desktopApp).toContain("navigate({ kind: 'settings', tab: section.id })");
   });
 
+  it('keeps Marketplace, Home, and Mission Control reachable from the palette (US-007)', () => {
+    // Marketplace is a top-level destination with the ⌘4 slot; Home and
+    // Mission Control lost their sidebar rows + hotkeys but stay routable.
+    expect(desktopApp).toContain("id: 'command-go-marketplace'");
+    expect(desktopApp).toContain("navigate({ kind: 'marketplace' })");
+    expect(desktopApp).toContain("id: 'command-go-home'");
+    expect(desktopApp).toContain("id: 'command-go-mission-control'");
+    expect(desktopApp).not.toContain("id: 'command-go-companies'");
+  });
+
   it('fills the ACTIONS section with the hq-* verbs (deploy / share / run worker)', () => {
     // The palette is the keyboard surface for hq-* actions, not just nav. Each
     // action hands off to the agent through the shared helper; their ids do NOT
@@ -74,10 +84,11 @@ describe('desktop-alt command palette coverage', () => {
   it('the section tables it enumerates carry every routable tab', () => {
     // Guards against the tables being trimmed without the palette noticing —
     // these are the SPEC-ordered sub-surfaces the palette promises to reach.
-    for (const tab of ['skills', 'workers', 'installed', 'marketplace', 'profile']) {
+    // Marketplace left the Library tabs for a top-level destination (US-007).
+    for (const tab of ['skills', 'workers', 'installed', 'profile']) {
       expect(route).toContain(`id: '${tab}'`);
     }
-    for (const tab of ['sync', 'notifications', 'updates', 'general', 'meetings']) {
+    for (const tab of ['sync', 'notifications', 'widget', 'updates', 'general', 'meetings']) {
       expect(route).toContain(`id: '${tab}'`);
     }
   });

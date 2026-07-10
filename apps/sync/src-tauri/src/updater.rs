@@ -110,7 +110,10 @@ pub async fn check_for_updates(app: AppHandle) -> Result<Option<UpdateInfo>, Str
             // Also raise the custom banner so a version drop surfaces even with
             // the popover closed (gated on customBanner; purely additive — the
             // in-app UI above is unchanged).
-            if crate::commands::banner::custom_banner_enabled() {
+            // US-003: widget takeover must never fall back to native banners
+            if crate::commands::banner::custom_banner_enabled()
+                || crate::commands::widget::takeover_active(&app)
+            {
                 let _ = crate::commands::banner::show_update_banner(
                     app.clone(),
                     info.version.clone(),
@@ -215,7 +218,10 @@ pub fn setup_update_checker(app: &AppHandle) {
                             *state.0.lock().unwrap_or_else(|e| e.into_inner()) = Some(info.clone());
                         }
                         let _ = handle.emit("update:available", &info);
-                        if crate::commands::banner::custom_banner_enabled() {
+                        // US-003: widget takeover must never fall back to native banners
+                        if crate::commands::banner::custom_banner_enabled()
+                            || crate::commands::widget::takeover_active(&handle)
+                        {
                             let _ = crate::commands::banner::show_update_banner(
                                 handle.clone(),
                                 info.version.clone(),

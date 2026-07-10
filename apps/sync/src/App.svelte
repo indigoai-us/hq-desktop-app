@@ -14,7 +14,6 @@
   } from './lib/dmRequests';
   import SignInPrompt from './components/SignInPrompt.svelte';
   import Popover from './components/Popover.svelte';
-  import Settings from './components/Settings.svelte';
   import { conflictStore, type ConflictFile } from './stores/conflicts';
   import { transferCountDelta } from './lib/transfer-count';
   import { effectiveTotalFiles as computeEffectiveTotalFiles } from './lib/effective-total-files';
@@ -25,6 +24,7 @@
   import type { Workspace, WorkspacesResult } from './lib/workspaces';
   import { loadMeetingDetectEligible } from './lib/permissionState.svelte';
   import { buildClaudeCodeUrl } from './lib/claude-code-link';
+  import { emitDesktopTelemetry } from './lib/desktop-telemetry';
   import { refreshOnPopoverOpen } from './lib/popover-refresh';
   import { isTransientSyncTransportError } from './lib/transient-sync-error';
   import {
@@ -56,6 +56,7 @@
   // cross-process file-watcher so the two sources never fight. Set on the Sync
   // Now click, cleared when the run ends.
   let manualSyncActive = $state(false);
+  let manualSyncTelemetryPending = $state(false);
   // True while the cross-process watcher (auto-sync / CLI `hq sync`) owns the
   // card — lets sync:external-idle know it should reset back to idle.
   let externalSyncActive = $state(false);
@@ -157,7 +158,6 @@
   // than one company aborted (no single slug to name in the prompt).
   let syncConflictCount = $state(0);
   let syncConflictCompany = $state('');
-  let showSettings = $state(false);
   let syncStatsRefresh = $state<(() => void) | null>(null);
 
   // Meetings feature flag — driven by `meetings_feature_enabled` (Rust side
@@ -395,14 +395,6 @@
     }
   }
 
-  // Desktop window feature flag — driven by `desktop_alt_enabled` (Rust side
-  // delegates to the GA gate `desktop_features_enabled`, the same gate as
-  // `meetings_feature_enabled`; true for any signed-in user). Defaults false
-  // so a signed-out user never sees the desktop window surface even if the
-  // gate command hasn't resolved yet. The toggle button + desktop window
-  // render path are gated on this flag.
-  let desktopAltEnabled = $state(false);
-
   // Workspaces — populated by `list_syncable_workspaces` (Rust). Replaces the
   // legacy "No companies yet" dead-end with a union over Person + memberships
   // + local company folders. `null` = first invocation in flight; non-null
@@ -424,6 +416,19 @@
   // clicks and lets the button show a spinner. On macOS the process usually
   // terminates before the promise resolves, so this rarely flips back.
   let updateInstalling = $state(false);
+
+  // Master automatic-updates switch (`autoUpdate` pref, default ON). When on,
+  // the app installs updates silently without asking: the menubar app itself
+  // (self-update + restart, below) and hq-core (drift-safe rescue, below). The
+  // `hq` CLI auto-installer gates on the same pref in Rust
+  // (`hq_cli_update::auto_update_enabled`). Loaded on mount + refreshed on
+  // focus so flipping the Settings toggle takes effect without a relaunch.
+  let autoUpdate = $state(true);
+  // Session dedup so a failed silent install doesn't hammer the same version
+  // (a fresh 6h check / next launch retries). Plain (non-reactive) `let` so
+  // read/writing them inside the auto-install effects never re-triggers them.
+  let autoAppUpdatedVersion: string | null = null;
+  let autoCoreUpdatedVersion: string | null = null;
 
   // hq CLI updater state — populated by `hq-cli-update:available` from the
   // Rust background checker (launch+15s, then every 6h). Non-null means
@@ -549,6 +554,18 @@
     }
   }
 
+  // Read the master automatic-updates pref (default ON). Called on mount and
+  // on window focus so a Settings toggle takes effect without a relaunch.
+  // Fail-open to true — matches the Rust `auto_update_enabled` leniency.
+  async function loadAutoUpdatePref() {
+    try {
+      const s = await invoke<{ autoUpdate?: boolean | null }>('get_settings');
+      autoUpdate = s?.autoUpdate ?? true;
+    } catch {
+      autoUpdate = true;
+    }
+  }
+
   // Track the pending connection-request count once on mount. Messaging UI now
   // lives in the desktop view, so the menubar no longer renders an unread badge;
   // this count is kept only so the incoming-request listeners below can surface
@@ -565,14 +582,6 @@
       };
     } catch (err) {
       console.error('get_unread_summary failed:', err);
-    }
-  }
-
-  async function refreshDesktopAltEnabled() {
-    try {
-      desktopAltEnabled = await invoke<boolean>('desktop_alt_enabled');
-    } catch {
-      desktopAltEnabled = false;
     }
   }
 
@@ -667,6 +676,7 @@
     if (syncState === 'syncing') return;
     syncState = 'syncing';
     manualSyncActive = true;
+    manualSyncTelemetryPending = true;
     externalSyncActive = false;
     syncProgress = null;
     syncFanoutTotal = 0;
@@ -696,16 +706,22 @@
       // resolve it back to idle.
       if (msg.toLowerCase().includes('already running')) {
         manualSyncActive = false;
+        manualSyncTelemetryPending = false;
         externalSyncActive = true;
         syncState = 'syncing';
         await invoke('set_tray_state', { state: 'syncing' });
         return;
       }
+      manualSyncTelemetryPending = false;
       console.error('start_sync failed:', err);
       syncState = 'error';
       syncErrorMessage = msg;
       syncErrorCompany = '';
       await invoke('set_tray_state', { state: 'error' });
+      void emitDesktopTelemetry({
+        eventName: 'manual_sync_failed',
+        properties: { errorKind: 'start_sync', errorCount: 1, surface: 'popover' },
+      });
     }
   }
 
@@ -720,28 +736,6 @@
     } catch (err) {
       console.error('cancel_sync failed:', err);
     }
-  }
-
-  function handleSettings() {
-    showSettings = true;
-  }
-
-  function handleBackFromSettings() {
-    showSettings = false;
-    // User may have changed the HQ folder path in Settings; the header in
-    // Popover renders from `config.hqFolderPath`, which was snapshotted at
-    // mount. Re-read menubar.json so the change is visible without a quit.
-    // Workspaces depend on hq_root too — local folder enumeration would point
-    // at the wrong tree otherwise. hqVersion also follows the HQ root —
-    // re-tethering to a different folder may surface a different (or now-
-    // readable) `core.yaml`.
-    loadConfig();
-    loadWorkspaces();
-    loadHqVersion();
-    // User may have just flipped the staging-channel toggle — re-run the
-    // unified state check so channel + target + drift all swing without
-    // waiting for the 6h background tick.
-    loadCoreState();
   }
 
   async function handleSignOut() {
@@ -923,6 +917,9 @@
           //    (transient core.yaml/folder-resolution race) without a relaunch
           // Set is a typed contract in lib/popover-refresh — see its test.
           refreshOnPopoverOpen({ loadWorkspaces, refreshHqCliUpdate, loadHqVersion });
+          // Re-read the auto-update pref so a Settings toggle takes effect on
+          // the next popover open, not just on relaunch.
+          void loadAutoUpdatePref();
           if (shouldRecheckAuthOnFocus(focused, authenticated)) void checkAuth();
         }
       })
@@ -937,7 +934,30 @@
 
     unlisteners.push(
       await listen('tray:open-settings', () => {
-        handleSettings();
+        void invoke('open_desktop_alt_window', { route: 'settings' }).catch((e) => {
+          console.error('tray open_desktop_alt_window (settings) failed:', e);
+          // Signed-out fallback: GA gate rejects alt window — surface SignInPrompt.
+          void invoke('show_main_window').catch(console.error);
+        });
+      })
+    );
+
+    // Native tray right-click menu (hq-tray-helper): Open desktop view +
+    // Sign Out. Both route through the same guarded frontend paths the
+    // popover uses (the backend gate is re-checked by open_desktop_alt_window).
+    unlisteners.push(
+      await listen('tray:open-desktop', () => {
+        void invoke('open_desktop_alt_window').catch((e) => {
+          console.error('tray open_desktop_alt_window failed:', e);
+          // Signed-out fallback: GA gate rejects alt window — surface SignInPrompt.
+          void invoke('show_main_window').catch(console.error);
+        });
+      })
+    );
+
+    unlisteners.push(
+      await listen('tray:sign-out', () => {
+        void handleSignOut();
       })
     );
 
@@ -1214,6 +1234,8 @@
         bytesDownloaded: number;
         errors: Array<{ company: string; message: string }>;
       }>('sync:all-complete', async (event) => {
+        const shouldEmitManualSync = manualSyncTelemetryPending;
+        manualSyncTelemetryPending = false;
         manualSyncActive = false;
         externalSyncActive = false;
         syncLastSummary = {
@@ -1233,6 +1255,22 @@
         // Refresh workspaces — sync may have created new local folders
         // (for newly-provisioned companies) or updated last-synced timestamps.
         loadWorkspaces();
+        if (shouldEmitManualSync) {
+          void emitDesktopTelemetry({
+            eventName:
+              event.payload.errors.length > 0
+                ? 'manual_sync_failed'
+                : 'manual_sync_completed',
+            properties: {
+              surface: 'popover',
+              companiesAttempted: event.payload.companiesAttempted,
+              filesDownloaded: event.payload.filesDownloaded,
+              bytesDownloaded: event.payload.bytesDownloaded,
+              filesSkipped: syncFanoutFilesSkipped,
+              errorCount: event.payload.errors.length,
+            },
+          });
+        }
       })
     );
 
@@ -1240,6 +1278,8 @@
       await listen<{ company?: string; path: string; message: string }>(
         'sync:error',
         async (event) => {
+          const shouldEmitManualSync = manualSyncTelemetryPending;
+          manualSyncTelemetryPending = false;
           // Defence-in-depth: the Rust side already captures this via
           // `report_sync_error` in src-tauri/src/commands/sync.rs (which fires
           // for the same payload that produced this Tauri event). We capture
@@ -1274,6 +1314,12 @@
           syncErrorMessage = event.payload.message;
           syncErrorCompany = event.payload.company ?? '';
           await invoke('set_tray_state', { state: 'error' });
+          if (shouldEmitManualSync) {
+            void emitDesktopTelemetry({
+              eventName: 'manual_sync_failed',
+              properties: { errorKind: 'sync_error', errorCount: 1, surface: 'popover' },
+            });
+          }
         }
       )
     );
@@ -1868,10 +1914,11 @@
     // tick. Calling here gives the popover a populated state on first
     // open instead of waiting 30s for the bg checker.
     loadCoreState();
+    loadAutoUpdatePref();
     loadUnreadSummary();
     setupTrayListeners();
     // Resolve the Phase-0 meeting-detect eligibility flag once on mount.
-    // Settings.svelte hides the meeting-detect toggle when this is false.
+    // Desktop SettingsPage gates the meeting-detect toggle when this is false.
     // (Per-permission TCC status tracking was removed 2026-05-25 — see
     // permissionState.svelte.ts for why; native macOS prompts are
     // sufficient.)
@@ -1897,15 +1944,48 @@
         meetingsEnabled = false;
       });
 
-    // Desktop window gate (GA). Same signed-in check as
-    // `meetings_feature_enabled`; errors fall back to false so a misfiring
-    // gate command can never expose the desktop window to a signed-out user.
-    refreshDesktopAltEnabled();
-
     return () => {
       unlisteners.forEach((unlisten) => unlisten());
       unlisteners = [];
     };
+  });
+
+  // ── Silent auto-update (master `autoUpdate` pref) ──────────────────────────
+  // Silent app self-update: when auto-update is on and the background checker
+  // reports a newer version, install it without asking. Deferred while a sync
+  // is running — never yank the app out mid-sync; the effect re-runs when
+  // `syncState` flips back to idle. Deduped by version so a failed install
+  // (e.g. transient network) doesn't hammer; the 6h re-check / next launch
+  // retries. `updateInstalling` blocks re-entry (and on macOS the process is
+  // usually replaced before it flips back). `handleInstallUpdate` is the same
+  // guarded path the in-app Install button uses.
+  $effect(() => {
+    if (!autoUpdate) return;
+    const info = updateAvailable;
+    if (!info || updateInstalling) return;
+    if (syncState === 'syncing') return;
+    if (autoAppUpdatedVersion === info.version) return;
+    autoAppUpdatedVersion = info.version;
+    void handleInstallUpdate();
+  });
+
+  // Silent hq-core update: when auto-update is on and the user is version-behind
+  // on an eligible channel, run the drift-safe rescue in the background (edits
+  // to locked core files are preserved as `personal/` overrides — nothing is
+  // destroyed). Only fires on `versionBehind` (a genuine new release), NOT on
+  // drift alone — silently rewriting a user's own edits away with no version
+  // change would be surprising. Deduped by target version so a failed rescue
+  // doesn't loop; deferred while syncing. `handleInstallCore` is the same path
+  // the Update pill uses (picks release vs. staging by channel).
+  $effect(() => {
+    if (!autoUpdate) return;
+    const s = coreState;
+    if (!s || !s.isEligible || !s.versionBehind) return;
+    if (coreInstalling) return;
+    if (syncState === 'syncing') return;
+    if (autoCoreUpdatedVersion === s.targetVersion) return;
+    autoCoreUpdatedVersion = s.targetVersion;
+    void handleInstallCore();
   });
 
   // Broadcast the active-meetings snapshot to MeetingsWindow whenever the
@@ -1930,7 +2010,7 @@
 
   // Notification authorization is no longer requested on launch — it is a
   // user-initiated action from Settings ("Enable notifications" →
-  // `handleEnableNotifications` in Settings.svelte).
+  // `handleEnableNotifications` in desktop SettingsPage).
   //
   // macOS caveat that still applies wherever we DO request it: calling
   // `requestAuthorizationWithOptions` registers the process as a
@@ -1964,9 +2044,6 @@
 
       authenticated = shouldSkipSignIn(hasToken, state);
       expiresAt = state.expiresAt ?? '';
-      if (authenticated) {
-        await refreshDesktopAltEnabled();
-      }
     } catch {
       authenticated = false;
     } finally {
@@ -1983,7 +2060,6 @@
   function handleAuthSuccess(auth: { authenticated: boolean; expiresAt: string }) {
     authenticated = auth.authenticated;
     expiresAt = auth.expiresAt;
-    void refreshDesktopAltEnabled();
   }
 </script>
 
@@ -1997,8 +2073,6 @@
       state={(lifecycleState ?? 'NeedsInstall') as LifecycleState}
       onfinish={handleOnboardingFinish}
     />
-  {:else if authenticated && showSettings}
-    <Settings onback={handleBackFromSettings} />
   {:else if authenticated}
     <Popover
       {syncState}
@@ -2017,8 +2091,6 @@
       cloudReachable={workspacesCloudReachable}
       cloudError={workspacesError}
       manifestError={workspacesManifestError}
-      onworkspacesrefresh={loadWorkspaces}
-      lastSummary={syncLastSummary}
       errorMessage={syncErrorMessage}
       errorCompany={syncErrorCompany}
       {conflicts}
@@ -2027,47 +2099,12 @@
       conflictCompany={syncConflictCompany}
       {updateAvailable}
       {updateInstalling}
-      {hqCliUpdateAvailable}
-      {hqCliUpdateInstalling}
-      {hqCliUpdateError}
-      {packUpdateAvailable}
-      {packsUpdating}
-      {packUpdateError}
-      {coreState}
-      {coreInstalling}
-      {coreInstallLastResult}
-      {hqVersion}
       onsync={handleSyncNow}
-      oncancel={handleCancel}
-      onsettings={handleSettings}
-      onsignout={handleSignOut}
       onresolve={handleResolveConflict}
       onopen={handleOpenInEditor}
       ondismissconflicts={handleDismissConflicts}
       oninstallupdate={handleInstallUpdate}
-      oninstallhqcliupdate={handleInstallHqCliUpdate}
-      ondismisshqcliupdate={handleDismissHqCliUpdate}
-      onupdatepacks={handleUpdatePacks}
-      oninstallcore={handleInstallCore}
       bindStatsRefresh={(fn) => (syncStatsRefresh = fn)}
-      {meetingsEnabled}
-      {desktopAltEnabled}
-      onmeetingsclick={() => {
-        // Spawn the detached Upcoming Meetings window (label: meetings-window).
-        // Fire-and-forget — the Rust handler focuses an existing window if
-        // already open, otherwise creates a fresh one. Errors are swallowed
-        // since they'd be infra-level (Tauri failure) and there's nothing
-        // useful to show inline.
-        // Also clear the tray Prompt badge — the user is now acting on any
-        // pending meeting detections.
-        invoke('open_meetings_window').catch(() => {});
-        invoke('meetings_clear_prompt_badge').catch(() => {});
-      }}
-      {activeMeetings}
-      onstartrecording={handleStartRecording}
-      onstoprecording={handleStopRecording}
-      recordingCompanies={memberships}
-      onchangerecordingcompany={handleChangeRecordingCompany}
     />
   {:else}
     <SignInPrompt onsuccess={handleAuthSuccess} />

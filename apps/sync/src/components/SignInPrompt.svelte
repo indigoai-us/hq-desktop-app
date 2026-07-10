@@ -3,6 +3,7 @@
   import { open } from '@tauri-apps/plugin-shell';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import CopyPromptButton from './CopyPromptButton.svelte';
+  import { emitDesktopTelemetry } from '../lib/desktop-telemetry';
 
   interface Props {
     onsuccess?: (auth: { authenticated: boolean; expiresAt: string }) => void;
@@ -60,6 +61,10 @@
           // Focus-stealing isn't critical; log but don't block success.
           console.warn('[signin] failed to refocus window:', focusErr);
         }
+        void emitDesktopTelemetry({
+          eventName: 'oauth_signin_succeeded',
+          properties: { provider },
+        });
         onsuccess?.(result);
       } else {
         error = 'Authentication failed. Please try again.';

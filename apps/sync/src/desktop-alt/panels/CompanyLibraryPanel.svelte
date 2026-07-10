@@ -85,7 +85,7 @@
 <section class="company-library" aria-label="Library" data-testid="company-library-panel">
   {#if !loading && !error && items.workers.length === 0 && items.skills.length === 0}
     <div class="empty-state">
-      No company-specific workers or skills yet. Shared ones live in the top-level Library (⌘3).
+      No company-specific workers or skills yet. Shared ones live in the top-level Library (⌘5).
     </div>
   {:else}
     <LibraryBrowser {items} {loading} {error} />

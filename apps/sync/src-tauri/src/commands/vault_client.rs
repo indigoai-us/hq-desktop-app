@@ -237,6 +237,28 @@ pub struct UsageBatch {
     pub events: Vec<serde_json::Value>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RawTelemetryEvent {
+    pub event_name: String,
+    pub app: String,
+    pub source: String,
+    pub occurred_at: String,
+    pub machine_id: String,
+    pub app_version: String,
+    pub consent_basis: String,
+    pub schema_version: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub company_uid: Option<String>,
+    pub properties: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TelemetryEventsBatch {
+    pub events: Vec<RawTelemetryEvent>,
+}
+
 // ── Client ────────────────────────────────────────────────────────────────────
 
 pub struct VaultClient {
@@ -499,6 +521,32 @@ impl VaultClient {
         let resp = self
             .client
             .post(format!("{}{}", self.base_url, "/v1/usage"))
+            .bearer_auth(&self.auth_token)
+            .json(batch)
+            .send()
+            .await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(VaultClientError::Http {
+                status: status.as_u16(),
+                body,
+            });
+        }
+        Ok(())
+    }
+
+    /// `POST /v1/telemetry/events` — upload raw desktop telemetry events.
+    ///
+    /// Authenticated with the user's Cognito bearer. The server resolves
+    /// `personUid`; callers must not include it in the body.
+    pub async fn post_telemetry_events(
+        &self,
+        batch: &TelemetryEventsBatch,
+    ) -> Result<(), VaultClientError> {
+        let resp = self
+            .client
+            .post(format!("{}{}", self.base_url, "/v1/telemetry/events"))
             .bearer_auth(&self.auth_token)
             .json(batch)
             .send()

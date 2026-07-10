@@ -37,7 +37,8 @@
 //!   `MESSAGES_CONTACTS_*` / `MESSAGES_MEMBERS_*` / `MESSAGES_UNREAD_*` —
 //!   per-command fetch results, mirroring the `DM_NOTIFY_*` code shape.
 
-use tauri::{AppHandle, Manager};
+use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::commands::cognito;
 use crate::commands::dm_notify;
@@ -99,16 +100,59 @@ const MESSAGES_LABEL: &str = "messages";
 
 // ── Window: open + ready handshake ──────────────────────────────────────────
 
-/// Tauri command: open (or focus) the dedicated Messages window.
+/// A conversation the Messages window should open on arrival ("message the
+/// sharer" and similar deep links). `person_uid` may be empty for a
+/// not-yet-provisioned issuer — the shell then falls back to the
+/// email-addressed compose path (`send_dm_to_email`) keyed by `email`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessagesTarget {
+    #[serde(default)]
+    pub person_uid: String,
+    #[serde(default)]
+    pub email: String,
+    #[serde(default)]
+    pub display_name: String,
+}
+
+/// Managed state: the pending deep-link target for the Messages window.
+/// Follows the `PendingShareEvents` ready-handshake pattern — stashed by
+/// `open_messages_window`, drained + emitted by `messages_window_ready` once
+/// the renderer's listeners are mounted (avoids the emit-before-listen race).
+pub struct PendingMessagesTarget(pub std::sync::Mutex<Option<MessagesTarget>>);
+
+impl PendingMessagesTarget {
+    pub fn new() -> Self {
+        PendingMessagesTarget(std::sync::Mutex::new(None))
+    }
+}
+
+/// Tauri event carrying the pending conversation target to the Messages shell.
+const EVENT_MESSAGES_OPEN_CONVERSATION: &str = "messages:open-conversation";
+
+/// Tauri command: open (or focus) the dedicated Messages window, optionally
+/// with a conversation `target` to open on arrival (deep link).
 ///
 /// Mirrors `dm_notify::open_dm_detail`: the window is created hidden
 /// (`visible(false)`) and only shown by `messages_window_ready` once the
-/// renderer has mounted. There is no stashed payload — the shell self-fetches.
+/// renderer has mounted. The shell self-fetches its data; the optional target
+/// rides the ready-handshake managed state above.
 #[tauri::command]
-pub async fn open_messages_window(app: AppHandle) -> Result<(), String> {
+pub async fn open_messages_window(
+    app: AppHandle,
+    target: Option<MessagesTarget>,
+) -> Result<(), String> {
+    if let Some(t) = target {
+        if let Some(state) = app.try_state::<PendingMessagesTarget>() {
+            *state.0.lock().unwrap_or_else(|p| p.into_inner()) = Some(t);
+        }
+    }
     if let Some(window) = app.get_webview_window(MESSAGES_LABEL) {
         window.show().map_err(|e| e.to_string())?;
         window.set_focus().map_err(|e| e.to_string())?;
+        // The window is already live (its listeners are mounted), so a ready
+        // call will never come again — deliver the pending target now.
+        emit_pending_target(&app);
         log(LOG_TAG, "MESSAGES_WINDOW_OPEN focus-existing");
         return Ok(());
     }
@@ -142,8 +186,24 @@ pub async fn messages_window_ready(app: AppHandle) -> Result<(), String> {
     }
     // Opening the Messages window clears the unread badge.
     dm_notify::reset_unread_dms(&app);
+    // Deliver any pending deep-link conversation target now that the shell's
+    // listeners are mounted.
+    emit_pending_target(&app);
     log(LOG_TAG, "MESSAGES_WINDOW_READY");
     Ok(())
+}
+
+/// Drain the stashed deep-link target (if any) and emit it to the Messages
+/// window. Take-semantics so a later ready/focus doesn't re-open it.
+fn emit_pending_target(app: &AppHandle) {
+    let Some(state) = app.try_state::<PendingMessagesTarget>() else {
+        return;
+    };
+    let target = state.0.lock().unwrap_or_else(|p| p.into_inner()).take();
+    if let Some(t) = target {
+        let _ = app.emit_to(MESSAGES_LABEL, EVENT_MESSAGES_OPEN_CONVERSATION, &t);
+        log(LOG_TAG, "MESSAGES_WINDOW_TARGET_EMIT");
+    }
 }
 
 // ── Shared HTTP helper ──────────────────────────────────────────────────────

@@ -43,11 +43,15 @@ describe('conflict dead-end: actionable conflict banner', () => {
     expect(app).toContain('conflictCompany={syncConflictCompany}');
   });
 
-  it('Popover renders an actionable conflict banner in the conflict state', () => {
+  it('Popover renders an actionable conflict notice in the conflict state', () => {
     const p = normalize(popover);
-    // A dedicated branch for the conflict state (not just auth/error).
+    // A dedicated branch for the conflict state (not just auth/error). In the
+    // notifications-first redesign it folds into the feed as a pinned
+    // system-notice row, and is mutually exclusive with the detailed
+    // ConflictModal (tracked by the `conflictModalActive` derived).
     expect(p).toContain("syncState === 'conflict'");
-    expect(p).toContain("!(showConflictModal && conflicts.length > 0)");
+    expect(p).toContain('const conflictModalActive = $derived(showConflictModal && conflicts.length > 0)');
+    expect(p).toContain("syncState === 'conflict' && !conflictModalActive");
     // Plain, non-alarming framing — no raw paths, no "failed".
     expect(p).toContain('Sync paused');
     expect(p).not.toContain('Sync failed');
@@ -57,7 +61,7 @@ describe('conflict dead-end: actionable conflict banner', () => {
     expect(p).toContain('count: conflictCount');
     expect(p).toContain('company: conflictCompany');
     // Both an Open-in-Claude-Code affordance and a Copy-prompt fallback.
-    expect(popover).toContain('Resolve in Claude Code');
+    expect(popover).toContain('OpenInClaudeCodeButton');
     expect(popover).toContain('Copy prompt');
   });
 });

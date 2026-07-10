@@ -130,6 +130,19 @@ pub struct MenubarPrefs {
     /// files → treated as true (see `get_settings`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cli_auto_update: Option<bool>,
+    /// Master automatic-updates switch: when true (default), HQ installs ALL
+    /// updates silently, without asking — the menubar app itself (Tauri
+    /// self-update + restart), the globally-installed `hq` CLI (npm global),
+    /// and the hq-core scaffold (the drift-safe rescue, which preserves local
+    /// edits as `personal/` overrides). Read untyped by
+    /// `hq_cli_update::auto_update_enabled` so each updater picks the toggle up
+    /// without a restart; this typed field round-trips the single Settings
+    /// toggle through get/save_settings. Absent in older menubar.json files →
+    /// treated as true (see `get_settings`). Supersedes the standalone
+    /// `cli_auto_update` toggle — the CLI auto-installer now gates on this
+    /// master switch, so the two agree on a fresh install (both default ON).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_update: Option<bool>,
     /// Rescue-source channel for @getindigo.ai builders. When `true`
     /// (default), the Settings toggle is ON → the popover's `CoreState`
     /// runs against `indigoai-us/hq-core-staging` (drift vs staging main,
@@ -191,11 +204,21 @@ pub struct MenubarPrefs {
     /// POSTs an anonymized diff to `/v1/usage`. The authoritative gate is the
     /// server-side `/v1/usage/opt-in`; this flag is the LOCAL fallback read
     /// untyped by `read_local_telemetry_enabled` when the vault is unreachable,
-    /// so the collector never blocks on a typed round-trip. Opt-in: absent →
-    /// false. This typed field exists so the Settings toggle round-trips cleanly
+    /// so the collector never blocks on a typed round-trip. Opt-out: absent →
+    /// true. This typed field exists so the Settings toggle round-trips cleanly
     /// through get/save_settings and isn't wiped on the next save.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub telemetry_enabled: Option<bool>,
+    /// Desktop widget on/off (US-004); defaults ON when absent so the widget
+    /// ships default-enabled after update; widget.rs also reads this key
+    /// untyped on every notification dispatch so toggling takes effect
+    /// without restart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub widget_enabled: Option<bool>,
+    /// Localized display name (NSScreen.localizedName) the widget anchors to;
+    /// None = primary display.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub widget_display: Option<String>,
 }
 
 /// Read ~/.hq/menubar.json as an untyped Value map, insert a new v4 UUID under

@@ -72,7 +72,7 @@ const FIXTURE_PROJECTS: Project[] = [
 ];
 
 describe('desktop-alt Board surface (US-007)', () => {
-  it('has no top-level Board route — ⌘1 is Home in the V4 IA', () => {
+  it('has no top-level Board route — ⌘1 is Inbox in the US-008 IA', () => {
     const companies = [workspace({ slug: 'indigo', displayName: 'Indigo' })];
 
     // No hotkey resolves to a 'board' kind anywhere on ⌘1–⌘9.
@@ -84,13 +84,13 @@ describe('desktop-alt Board surface (US-007)', () => {
       expect(resolved?.kind).not.toBe('board');
     }
 
-    // ⌘1 maps to Home; ⌘5 to Meetings (V4 order: Home/Mission Control/Companies/
-    // Messages/Meetings/Library — Mission Control inserted under Home in US-006).
+    // ⌘1 maps to Inbox; ⌘2 to Meetings (US-008 order: Inbox/Meetings/
+    // Marketplace/Library — Home and Mission Control are palette-only).
     expect(
       getDesktopHotkeyRoute({ key: '1', metaKey: true, ctrlKey: false }, companies),
-    ).toEqual({ kind: 'home' } satisfies DesktopRoute);
+    ).toEqual({ kind: 'inbox' } satisfies DesktopRoute);
     expect(
-      getDesktopHotkeyRoute({ key: '5', metaKey: true, ctrlKey: false }, companies),
+      getDesktopHotkeyRoute({ key: '2', metaKey: true, ctrlKey: false }, companies),
     ).toEqual({ kind: 'meetings' } satisfies DesktopRoute);
   });
 
@@ -151,11 +151,12 @@ describe('desktop-alt Board surface (US-007)', () => {
     const route = readRepoFile('src/desktop-alt/route.ts');
     const sidebar = readRepoFile('src/desktop-alt/v4/V4Sidebar.svelte');
 
-    // Route kind union no longer carries 'board' (the V4 IA is Home / Mission
-    // Control / Companies / Messages / Meetings / Library plus settings, the
-    // default-deny moderation surface, and per-company routes — see route.ts).
+    // Route kind union no longer carries 'board' (the US-008 IA is Inbox /
+    // Meetings / Marketplace / Library plus settings, the palette-only
+    // home / mission-control / moderation surfaces, and per-company routes
+    // — see route.ts).
     expect(route).toContain(
-      "{ kind: 'home' | 'mission-control' | 'companies' | 'messages' | 'meetings' | 'moderation' }",
+      "{ kind: 'home' | 'mission-control' | 'inbox' | 'meetings' | 'marketplace' | 'moderation' }",
     );
     expect(route).not.toContain("'board'");
     expect(desktopApp).not.toContain("import BoardPage from './pages/BoardPage.svelte'");

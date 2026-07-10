@@ -22,10 +22,6 @@ const homePage = readFileSync(
   resolve(process.cwd(), 'src/desktop-alt/pages/HomePage.svelte'),
   'utf8',
 );
-const companiesPage = readFileSync(
-  resolve(process.cwd(), 'src/desktop-alt/pages/CompaniesPage.svelte'),
-  'utf8',
-);
 const meetingsPage = readFileSync(
   resolve(process.cwd(), 'src/desktop-alt/pages/MeetingsPage.svelte'),
   'utf8',
@@ -51,8 +47,7 @@ describe('US-016: V4 connective tissue stays complete', () => {
   it('renders first-load skeletons and empty states across the main V4 surfaces', () => {
     expect(homePage).toContain('class="home-skeleton"');
     expect(homePage).toContain('aria-busy="true"');
-    expect(companiesPage).toContain('class="companies-skeleton"');
-    expect(companiesPage).toContain('No companies connected yet');
+    // (CompaniesPage was removed as a destination by hq-desktop-widget US-007.)
     expect(messagesShell).toContain('Loading conversations');
     expect(messagesShell).toContain('class="pane-empty"');
     expect(liveNowCard).toContain('No active meeting window has been detected.');
@@ -79,9 +74,10 @@ describe('US-016: V4 connective tissue stays complete', () => {
     const palette = normalize(commandPalette);
 
     expect(desktopApp).toContain('COMPANY_SECTIONS');
-    expect(desktopApp).toContain('shellCompanies.flatMap((company, index) => [');
-    expect(desktopApp).toContain('label: `Go to ${company.displayName} ${section.label}`');
-    expect(desktopApp).toContain("action: () => navigate({ kind: 'company', slug: company.slug, tab: section.id })");
+    // US-007: the palette iterates the sidebar-ordered (connected-first) rows.
+    expect(desktopApp).toContain('orderedCompanies.flatMap((row, index) => [');
+    expect(desktopApp).toContain('label: `Go to ${row.label} ${section.label}`');
+    expect(desktopApp).toContain("action: () => navigate({ kind: 'company', slug: row.slug, tab: section.id })");
 
     expect(commandPalette).toContain("label: 'ACTIONS'");
     expect(commandPalette).toContain("label: 'NAVIGATE'");
@@ -89,7 +85,7 @@ describe('US-016: V4 connective tissue stays complete', () => {
     expect(palette).toContain('{#each commandSections as section (section.id)}');
     expect(palette).toContain('<div class="command-section-title">{section.label}</div>');
     expect(app).toContain("label: 'Sync now'");
-    expect(app).toContain("label: 'Go to Companies'");
+    expect(app).toContain("label: 'Go to Marketplace'"); // Companies page removed (US-007)
   });
 
   it('keeps the V4 status bar tied to sync summary, watching count, next meeting, and version', () => {

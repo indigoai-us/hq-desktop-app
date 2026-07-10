@@ -10,19 +10,21 @@
   import { listen } from '@tauri-apps/api/event';
   import { buildClaudeCodeUrl } from '../lib/claude-code-link';
   import { shareTitle } from '../lib/share-path';
-
-  interface ShareEvent {
-    eventId: string;
-    issuerEmail: string;
-    issuerDisplayName: string;
-    paths: string[];
-    note: string | null;
-    permission: string;
-    createdAt: string;
-  }
+  import { buildSharePrompt } from '../lib/shareTimeline';
+  import type { ShareEvent } from '../lib/notificationGroups';
+  import type { ReactionEvent } from '../lib/reactions';
+  import { ShareReactionController } from '../lib/shareReactionController.svelte';
+  import ReactionBar from './messaging/ReactionBar.svelte';
 
   let events = $state<ShareEvent[]>([]);
   let copyFeedback = $state<string | null>(null);
+
+  // Share reactions: one controller for the whole window; the map is
+  // keyed by share eventId. Registered ids follow the visible events.
+  const reactionCtl = new ShareReactionController();
+  $effect(() => {
+    void reactionCtl.setShares(events.map((e) => e.eventId));
+  });
 
   function formatDate(iso: string): string {
     try {
@@ -35,10 +37,25 @@
     }
   }
 
-  function buildPrompt(evt: ShareEvent): string {
-    const pathList = evt.paths.join(', ');
-    const note = evt.note?.trim() || '(no note)';
-    return `${evt.issuerDisplayName} shared these files with me: ${pathList}\n\nTheir note: ${note}.`;
+  // Prompt template lives in lib/shareTimeline.ts (shared with the Messages
+  // share bubbles) so both surfaces copy identical text.
+  const buildPrompt = buildSharePrompt;
+
+  // "Message the sharer": open the Messages experience in a DM with the
+  // issuer. Prefers the canonical issuerPersonUid; a legacy row (empty uid)
+  // falls back to the email-addressed compose flow inside the shell.
+  async function messageSharer(evt: ShareEvent): Promise<void> {
+    try {
+      await invoke('open_messages_window', {
+        target: {
+          personUid: evt.issuerPersonUid ?? '',
+          email: evt.issuerEmail,
+          displayName: evt.issuerDisplayName,
+        },
+      });
+    } catch (err) {
+      console.error('share-notify ShareDetail: open_messages_window failed', err);
+    }
   }
 
   async function copyPrompt(evt: ShareEvent): Promise<void> {
@@ -87,6 +104,8 @@
   $effect(() => {
     let unlisten: (() => void) | undefined;
 
+    let unlistenReaction: (() => void) | undefined;
+
     listen<ShareEvent[]>('share:events-list', (event) => {
       events = event.payload;
     }).then((fn) => {
@@ -97,8 +116,18 @@
       invoke('share_detail_window_ready');
     });
 
+    // Live reaction updates for the visible shares (the single DM poll path
+    // re-fetches watched share scopes on a "reaction" wake and emits this).
+    listen<ReactionEvent>('message:reaction', (event) => {
+      reactionCtl.applyEvent(event.payload);
+    }).then((fn) => {
+      unlistenReaction = fn;
+    });
+
     return () => {
       unlisten?.();
+      unlistenReaction?.();
+      reactionCtl.dispose();
     };
   });
 </script>
@@ -136,6 +165,12 @@
             <p class="event-note">{evt.note}</p>
           {/if}
 
+          <ReactionBar
+            messageId={evt.eventId}
+            reactions={reactionCtl.map[evt.eventId]}
+            ontoggle={reactionCtl.toggle}
+          />
+
           <div class="event-actions">
             <button
               class="btn btn-copy"
@@ -150,6 +185,13 @@
               aria-label="Open in Claude Code with prompt"
             >
               Open in Claude ↗
+            </button>
+            <button
+              class="btn btn-console"
+              onclick={() => messageSharer(evt)}
+              aria-label={`Message ${evt.issuerDisplayName}`}
+            >
+              Message {evt.issuerDisplayName.split(/\s+/)[0] || 'sharer'}
             </button>
           </div>
         </div>

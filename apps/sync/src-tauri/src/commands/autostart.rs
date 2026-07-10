@@ -119,11 +119,14 @@ mod tests {
             share_notifications: None,
             dm_notifications: None,
             cli_auto_update: None,
+            auto_update: None,
             staging_channel: None,
             release_channel: None,
             meeting_detect_notify: None,
             default_recording_company_uid: None,
             telemetry_enabled: None,
+            widget_enabled: None,
+            widget_display: None,
         }
     }
 
