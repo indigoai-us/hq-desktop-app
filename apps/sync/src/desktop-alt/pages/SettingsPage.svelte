@@ -1,6 +1,8 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import type { SettingsTab } from '../route';
+  import { emitDesktopTelemetry } from '../../lib/desktop-telemetry';
+  import { postOptIn } from '../../lib/onboarding-telemetry';
   import { permissionState, loadMeetingPermissions } from '../../lib/permissionState.svelte';
   import '../v4/tokens.css';
 
@@ -75,8 +77,8 @@
   let meetingDetectEnabled = $state(true);
   let meetingDetectPlatforms = $state<string[]>([...platforms]);
   let defaultRecordingCompanyUid = $state<string | null>(null);
-  // Telemetry is opt-in — defaults OFF until the user explicitly turns it on.
-  let telemetryEnabled = $state(false);
+  // Telemetry is opt-out — defaults ON until the user explicitly turns it off.
+  let telemetryEnabled = $state(true);
 
   const displayedChannel = $derived<Channel>(
     releaseChannel ?? (availableChannels.includes('beta') ? 'beta' : 'stable'),
@@ -135,7 +137,7 @@
       const storedUid = settings.defaultRecordingCompanyUid ?? null;
       defaultRecordingCompanyUid =
         storedUid && memberships.some((m) => m.companyUid === storedUid) ? storedUid : null;
-      telemetryEnabled = settings.telemetryEnabled ?? false;
+      telemetryEnabled = settings.telemetryEnabled ?? true;
       isIndigoUser = indigoUser;
       isIndigoBuilder = indigoBuilder;
       availableChannels = channels.filter(isChannel);
@@ -216,6 +218,25 @@
     }
   }
 
+  async function auditTelemetryPreferenceChanged(enabled: boolean) {
+    await emitDesktopTelemetry({
+      eventName: 'telemetry_preference_changed',
+      properties: { enabled, surface: 'desktop-settings' },
+    });
+  }
+
+  async function applyTelemetryPreference() {
+    const next = telemetryEnabled;
+    if (!next) {
+      await auditTelemetryPreferenceChanged(next);
+    }
+    await saveSettings();
+    await postOptIn({ enabled: next });
+    if (next) {
+      await auditTelemetryPreferenceChanged(next);
+    }
+  }
+
   // Three toggles carry live backend side-effects beyond persistence — without
   // them, flipping the switch in this window only writes menubar.json and the
   // running process keeps its old behavior until the next launch. These mirror
@@ -284,7 +305,7 @@
       meetingDetectEnabled = settings.meetingDetectNotify?.enabled ?? true;
       meetingDetectPlatforms = settings.meetingDetectNotify?.platforms ?? [...platforms];
       defaultRecordingCompanyUid = settings.defaultRecordingCompanyUid ?? null;
-      telemetryEnabled = settings.telemetryEnabled ?? false;
+      telemetryEnabled = settings.telemetryEnabled ?? true;
       releaseChannel = isChannel(settings.releaseChannel) ? settings.releaseChannel : null;
     } catch {
       // Non-fatal — keep showing the last-known values.
@@ -349,7 +370,7 @@
       <h2>General</h2>
       <div class="settings-card">
         <label class="setting-row"><span><strong>Start at login</strong><small>Open HQ when macOS starts.</small></span><input type="checkbox" bind:checked={startAtLogin} onchange={applyStartAtLogin} /></label>
-        <label class="setting-row"><span><strong>Usage telemetry</strong><small>Share anonymized usage counts to improve HQ. Off by default.</small></span><input type="checkbox" bind:checked={telemetryEnabled} onchange={saveSettings} /></label>
+        <label class="setting-row"><span><strong>Usage telemetry</strong><small>Share anonymized usage counts to improve HQ. You can turn this off any time.</small></span><input type="checkbox" bind:checked={telemetryEnabled} onchange={applyTelemetryPreference} /></label>
       </div>
     </section>
 

@@ -94,7 +94,7 @@ mod tests {
             release_channel: prefs.release_channel,
             meeting_detect_notify: prefs.meeting_detect_notify,
             default_recording_company_uid: prefs.default_recording_company_uid,
-            telemetry_enabled: Some(prefs.telemetry_enabled.unwrap_or(false)),
+            telemetry_enabled: Some(prefs.telemetry_enabled.unwrap_or(true)),
         }
     }
 
@@ -119,8 +119,8 @@ mod tests {
         // Master automatic-updates switch defaults ON — silent app/CLI/core
         // updates unless the user opts out.
         assert_eq!(result.auto_update, Some(true));
-        // Telemetry is opt-in — defaults OFF when absent from disk.
-        assert_eq!(result.telemetry_enabled, Some(false));
+        // Telemetry is opt-out — defaults ON when absent from disk.
+        assert_eq!(result.telemetry_enabled, Some(true));
         // release_channel stays None at the apply_defaults boundary; the
         // identity-aware resolution happens inside get_settings itself
         // and is exercised by util::release_channel::tests.
@@ -163,7 +163,7 @@ mod tests {
             release_channel: Some("alpha".to_string()),
             meeting_detect_notify: None,
             default_recording_company_uid: Some("co_xyz".to_string()),
-            telemetry_enabled: Some(true),
+            telemetry_enabled: Some(false),
         };
 
         let result = apply_defaults(prefs);
@@ -180,8 +180,8 @@ mod tests {
         // explicit auto-update opt-out survives apply_defaults
         assert_eq!(result.auto_update, Some(false));
         assert_eq!(result.staging_channel, Some(false));
-        // explicit telemetry opt-in survives the default-off coercion
-        assert_eq!(result.telemetry_enabled, Some(true));
+        // explicit telemetry opt-out survives the default-on coercion
+        assert_eq!(result.telemetry_enabled, Some(false));
         // release_channel passes through apply_defaults untouched; the
         // indigo-gating coercion is verified separately in
         // `util::release_channel::tests::non_indigo_always_coerced_to_stable`.
@@ -379,7 +379,7 @@ mod tests {
     #[test]
     fn test_save_with_no_existing_file_emits_typed_only() {
         // First-ever save (no menubar.json yet): output is just the typed
-        // fields, no spurious keys, telemetry opt-in respected.
+        // fields, no spurious keys, telemetry preference respected.
         let prefs = MenubarPrefs {
             telemetry_enabled: Some(true),
             ..empty_prefs()
