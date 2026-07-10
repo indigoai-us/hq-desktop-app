@@ -22,6 +22,16 @@
     /** Epoch ms — rendered as a right-aligned relative timestamp. */
     ts: number;
     unread?: boolean;
+    /**
+     * Currently-selected row in a list (quick-window side pane). Persistent
+     * accent bar + hover-tint background; independent of hover/expand.
+     */
+    selected?: boolean;
+    /**
+     * When false, message rows stay one-line (no hover-expand reply/react).
+     * Default true preserves existing popover/widget/inbox behavior.
+     */
+    hoverExpand?: boolean;
     /** Hover "Open" (non-message) + Enter/Space when focused. */
     onopen?: () => void;
     /** Hover dismiss (×). */
@@ -43,6 +53,8 @@
     text,
     ts,
     unread = false,
+    selected = false,
+    hoverExpand = true,
     onopen,
     ondismiss,
     onreply,
@@ -59,7 +71,11 @@
   const isMessage = $derived(type === 'message');
   /** Draft or focus keeps the message expanded even on transient hover-out. */
   const replyHold = $derived(replyFocused || replyText.length > 0);
-  const expanded = $derived(isMessage && (hovered || focusWithin || replyHold));
+  // hoverExpand gates message expand so dense lists (side pane) stay one-line;
+  // widget surfaces keep the default (true) so reply holds still expand.
+  const expanded = $derived(
+    isMessage && hoverExpand && (hovered || focusWithin || replyHold),
+  );
   const interactive = $derived(Boolean(onopen));
 
   // Non-reactive last-notified value — only fire onholdchange on transitions.
@@ -153,11 +169,13 @@
   class:nr-message={isMessage}
   class:nr-expanded={expanded}
   class:nr-interactive={interactive}
+  class:nr-selected={selected}
   data-testid="notification-row"
   data-type={type}
   data-expanded={expanded}
   role={interactive ? 'button' : undefined}
   tabindex={interactive ? 0 : undefined}
+  aria-current={selected ? 'true' : undefined}
   onmouseenter={onMouseEnter}
   onmouseleave={onMouseLeave}
   onfocusin={onFocusIn}
@@ -340,6 +358,12 @@
 
   .nr-interactive {
     cursor: pointer;
+  }
+
+  /* Selected row in a list (quick-window side pane) — persistent, not hover. */
+  .nr-selected {
+    background: var(--popover-action-hover);
+    box-shadow: inset 2px 0 0 var(--popover-unread);
   }
 
   .nr-message.nr-expanded {
