@@ -165,6 +165,10 @@
       hoverCloseTimer = undefined;
     }
     if (hoverOpen) return;
+    // A reply is focused / has a draft on a stack row. Switching surfaces
+    // would unmount that row and destroy the draft — never hide a
+    // notification mid-reply (US-012), so ignore the wordmark hover.
+    if (replyHolds.size > 0) return;
     hoverOpen = true;
     hoverSeen = true;
     applyStack(markQueueSeen(stack));
@@ -191,6 +195,9 @@
     if (pinned) {
       closePinned();
     } else {
+      // Don't pin (and unmount a drafting stack row) mid-reply — see
+      // openHoverList's reply-hold guard.
+      if (replyHolds.size > 0) return;
       pinned = true;
       openHoverList();
     }
@@ -219,8 +226,11 @@
       clearTimeout(hoverCloseTimer);
     }
     hoverCloseTimer = setTimeout(() => {
-      hoverOpen = false;
       hoverCloseTimer = undefined;
+      // A reply hold acquired after this timer was armed wins — never
+      // collapse the list mid-reply.
+      if (replyHolds.size > 0) return;
+      hoverOpen = false;
       stack = markRecentRead(stack);
       // Hover list unmounted without a pointerleave — drop any stale hold.
       setPointerHold(false);
@@ -258,6 +268,9 @@
     setReplyHold(item.id, false);
     if (!hasTauri()) {
       applyStack(dismissItem(stack, item.id));
+      if (stack.visible.length === 0) {
+        setPointerHold(false);
+      }
       return;
     }
     try {

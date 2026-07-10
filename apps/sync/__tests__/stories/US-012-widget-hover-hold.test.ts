@@ -271,7 +271,7 @@ describe('US-012: never hide under pointer or during reply', () => {
   });
 
   describe('hold cleanup on unmount / blur (review fixes)', () => {
-    it('row unmounting with an active draft releases its reply hold (no permanent hold)', () => {
+    it('wordmark hover cannot switch surfaces mid-reply; draft survives and expiry resumes after Escape', () => {
       vi.useFakeTimers();
       const now = Date.now();
       mountWidget({
@@ -291,20 +291,32 @@ describe('US-012: never hide under pointer or during reply', () => {
       setInputValue(input, 'unsent draft');
       flushSync();
 
-      // Opening the hover list unmounts the stack row while it still holds.
+      // Grazing the wordmark must NOT open the hover list (it would unmount
+      // the drafting row and destroy the draft).
+      host.querySelector('.wm')!.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+      flushSync();
+      expect(host.querySelector('[data-testid="widget-hover-list"]')).toBeNull();
+      expect(host.querySelector('[data-testid="widget-stack"]')).toBeTruthy();
+      expect(host.querySelector<HTMLInputElement>('input.nr-reply')!.value).toBe('unsent draft');
+
+      // Clicking to pin is blocked too while a reply hold is active.
+      host.querySelector('.wm')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      flushSync();
+      expect(host.querySelector('[data-testid="widget-hover-list"]')).toBeNull();
+
+      // Escape releases the hold — the hover list opens again and the row
+      // expires normally instead of holding forever.
+      input.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }),
+      );
+      flushSync();
       host.querySelector('.wm')!.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
       flushSync();
       expect(host.querySelector('[data-testid="widget-hover-list"]')).toBeTruthy();
-      expect(host.querySelector('[data-testid="widget-stack"]')).toBeNull();
-
-      // Leave the widget: hover list collapses (hold was released on unmount)…
       host.querySelector('.wg')!.dispatchEvent(new PointerEvent('pointerleave', { bubbles: true }));
       flushSync();
       vi.advanceTimersByTime(500);
       flushSync();
-      expect(host.querySelector('[data-testid="widget-hover-list"]')).toBeNull();
-
-      // …and the re-shown stack row expires normally instead of holding forever.
       vi.advanceTimersByTime(WIDGET_ROW_TIMEOUT_MS + 2_000);
       flushSync();
       expect(host.querySelector('[data-testid="notification-row"]')).toBeNull();
