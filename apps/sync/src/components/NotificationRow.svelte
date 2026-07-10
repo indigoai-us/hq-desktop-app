@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onDestroy } from 'svelte';
   import { relativeTime } from '../lib/notificationFeedData';
 
   // Shared one-line notification row — menubar popover feed, desktop widget
@@ -68,6 +69,15 @@
     if (current !== lastHold) {
       lastHold = current;
       onholdchange?.(current);
+    }
+  });
+
+  // Effects don't re-run on destroy — release an active hold when the row
+  // unmounts (surface switch, list close) so the widget never holds forever.
+  onDestroy(() => {
+    if (lastHold) {
+      lastHold = false;
+      onholdchange?.(false);
     }
   });
 

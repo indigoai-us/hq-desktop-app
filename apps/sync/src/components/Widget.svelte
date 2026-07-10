@@ -179,6 +179,9 @@
       hoverCloseTimer = undefined;
     }
     stack = markRecentRead(stack);
+    // The hover list unmounts without a pointerleave — never leave a stale
+    // pointer hold behind (it would suspend auto-hide forever).
+    setPointerHold(false);
     // A quick-reply input may have flipped the native window focusable while
     // the list was pinned — always restore non-activating mode on close.
     void setWidgetFocusable(false);
@@ -219,6 +222,8 @@
       hoverOpen = false;
       hoverCloseTimer = undefined;
       stack = markRecentRead(stack);
+      // Hover list unmounted without a pointerleave — drop any stale hold.
+      setPointerHold(false);
     }, 450);
   }
 
@@ -273,6 +278,11 @@
       console.error('widget: open failed', err);
     } finally {
       applyStack(dismissItem(stack, item.id));
+      // Opening the last row unmounts .stack without a pointerleave —
+      // clear the pointer hold so the next notification still auto-hides.
+      if (stack.visible.length === 0) {
+        setPointerHold(false);
+      }
     }
   }
 
@@ -280,6 +290,11 @@
     // Drop any stale reply-hold for this row so ids never hold forever.
     setReplyHold(id, false);
     applyStack(dismissItem(stack, id));
+    // Dismissing the last row unmounts .stack without a pointerleave —
+    // clear the pointer hold so the next notification still auto-hides.
+    if (stack.visible.length === 0) {
+      setPointerHold(false);
+    }
     void setWidgetFocusable(false);
   }
 
@@ -321,6 +336,10 @@
     }
 
     function handleWindowBlur(): void {
+      // Never collapse mid-reply — focusing the quick-reply input toggles the
+      // native window focusable, which makes blur events likely during exactly
+      // the flow US-012 protects (match the click-away guards).
+      if (replyHolds.size > 0) return;
       if (pinned) closePinned();
     }
 

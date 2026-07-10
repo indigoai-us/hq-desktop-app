@@ -269,4 +269,95 @@ describe('US-012: never hide under pointer or during reply', () => {
       expect(host.querySelector('[data-testid="notification-row"]')).toBeNull();
     });
   });
+
+  describe('hold cleanup on unmount / blur (review fixes)', () => {
+    it('row unmounting with an active draft releases its reply hold (no permanent hold)', () => {
+      vi.useFakeTimers();
+      const now = Date.now();
+      mountWidget({
+        initialItems: [
+          stackItem({ id: 'dm3', type: 'message', kind: 'dm', actor: 'Corey', text: 'hi' }, now),
+        ],
+      });
+
+      // Expand + focus + draft on the stack row.
+      const row = host.querySelector<HTMLElement>('[data-testid="notification-row"]')!;
+      row.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+      flushSync();
+      const input = host.querySelector<HTMLInputElement>('input.nr-reply')!;
+      input.focus();
+      input.dispatchEvent(new FocusEvent('focus', { bubbles: true }));
+      flushSync();
+      setInputValue(input, 'unsent draft');
+      flushSync();
+
+      // Opening the hover list unmounts the stack row while it still holds.
+      host.querySelector('.wm')!.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+      flushSync();
+      expect(host.querySelector('[data-testid="widget-hover-list"]')).toBeTruthy();
+      expect(host.querySelector('[data-testid="widget-stack"]')).toBeNull();
+
+      // Leave the widget: hover list collapses (hold was released on unmount)…
+      host.querySelector('.wg')!.dispatchEvent(new PointerEvent('pointerleave', { bubbles: true }));
+      flushSync();
+      vi.advanceTimersByTime(500);
+      flushSync();
+      expect(host.querySelector('[data-testid="widget-hover-list"]')).toBeNull();
+
+      // …and the re-shown stack row expires normally instead of holding forever.
+      vi.advanceTimersByTime(WIDGET_ROW_TIMEOUT_MS + 2_000);
+      flushSync();
+      expect(host.querySelector('[data-testid="notification-row"]')).toBeNull();
+    });
+
+    it('window blur does not collapse a pinned list while a reply has a draft', () => {
+      vi.useFakeTimers();
+      const now = Date.now();
+      mountWidget({
+        initialItems: [
+          stackItem({ id: 'dm4', type: 'message', kind: 'dm', actor: 'Corey', text: 'yo' }, now),
+        ],
+      });
+
+      // Pin the list via wordmark click.
+      const wm = host.querySelector<HTMLElement>('.wm')!;
+      wm.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      flushSync();
+      const list = host.querySelector('[data-testid="widget-hover-list"]');
+      expect(list).toBeTruthy();
+
+      // Expand the message row in the list and start a draft.
+      const row = list!.querySelector<HTMLElement>('[data-testid="notification-row"]')!;
+      row.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+      flushSync();
+      const input = list!.querySelector<HTMLInputElement>('input.nr-reply')!;
+      input.focus();
+      input.dispatchEvent(new FocusEvent('focus', { bubbles: true }));
+      flushSync();
+      setInputValue(input, 'mid-reply');
+      flushSync();
+
+      // Native window blur (focusable toggling makes this likely mid-reply).
+      window.dispatchEvent(new Event('blur'));
+      flushSync();
+
+      const stillList = host.querySelector('[data-testid="widget-hover-list"]');
+      expect(stillList).toBeTruthy();
+      expect(host.querySelector<HTMLInputElement>('input.nr-reply')!.value).toBe('mid-reply');
+    });
+
+    it('source contract: pointer hold is cleared on every stack/list unmount path', async () => {
+      const { readFileSync } = await import('node:fs');
+      const { resolve } = await import('node:path');
+      const src = readFileSync(
+        resolve(process.cwd(), 'src/components/Widget.svelte'),
+        'utf8',
+      );
+      // closePinned + hover-close timeout + dismiss/open-to-empty all reset the
+      // pointer hold, since those unmounts never fire a pointerleave.
+      expect(src.match(/setPointerHold\(false\)/g)?.length ?? 0).toBeGreaterThanOrEqual(4);
+      // Window blur respects reply holds like the click-away paths.
+      expect(src).toMatch(/function handleWindowBlur\(\): void \{\n[^}]*replyHolds\.size > 0/);
+    });
+  });
 });
