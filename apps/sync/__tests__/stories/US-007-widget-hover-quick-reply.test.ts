@@ -100,9 +100,11 @@ describe('US-007: widget hover list + quick-reply focusable', () => {
     });
 
     it('queued superscript clears after hover open (prop seed + hoverSeen)', () => {
+      // Seed recent as already-read so the badge falls through to the queued
+      // prop (US-010: unread count takes priority when > 0).
       mountWidget({
         queued: 3,
-        initialItems: [stackItem({ id: 'a', text: 'one' }, Date.now())],
+        initialItems: [stackItem({ id: 'a', text: 'one', unread: false }, Date.now())],
       });
 
       expect(host.querySelector('.qd')?.textContent).toBe('3');

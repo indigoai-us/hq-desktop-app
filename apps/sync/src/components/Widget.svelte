@@ -27,6 +27,7 @@
     markQueueSeen,
     markRecentRead,
     setOccluded,
+    unreadRecentCount,
     widgetHoverWindowSize,
     widgetWindowSize,
   } from '../stores/widgetNotifications';
@@ -59,12 +60,14 @@
   /**
    * Superscript shows real queue length, falling back to the prop seed —
    * but once hover has opened (markQueueSeen / hoverSeen), prop seed is ignored
-   * so the count actually clears.
+   * so the count actually clears. Unread recent count takes priority when > 0.
    */
   let hoverSeen = $state(false);
   const queuedCount = $derived(
     stack.queued.length > 0 ? stack.queued.length : hoverSeen ? 0 : queued,
   );
+  const unreadCount = $derived(unreadRecentCount(stack));
+  const badgeCount = $derived(unreadCount > 0 ? unreadCount : queuedCount);
 
   let idSeq = 0;
   let expiryTimer: ReturnType<typeof setInterval> | undefined;
@@ -73,6 +76,8 @@
 
   /** Hover recent-list open state + collapse delay timer. */
   let hoverOpen = $state(false);
+  /** Click-pinned open — survives pointerleave until click-away or re-click. */
+  let pinned = $state(false);
   let hoverCloseTimer: ReturnType<typeof setTimeout> | undefined;
 
   /** Tracks native focusable state (non-reactive — avoids effect loops). */
@@ -128,6 +133,36 @@
     applyStack(markQueueSeen(stack));
   }
 
+  /** Close a click-pinned list and clear unread (mark-on-leave watermark). */
+  function closePinned(): void {
+    pinned = false;
+    hoverOpen = false;
+    if (hoverCloseTimer !== undefined) {
+      clearTimeout(hoverCloseTimer);
+      hoverCloseTimer = undefined;
+    }
+    stack = markRecentRead(stack);
+    // A quick-reply input may have flipped the native window focusable while
+    // the list was pinned — always restore non-activating mode on close.
+    void setWidgetFocusable(false);
+  }
+
+  function togglePinned(): void {
+    if (pinned) {
+      closePinned();
+    } else {
+      pinned = true;
+      openHoverList();
+    }
+  }
+
+  function handleWordmarkKeydown(e: KeyboardEvent): void {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      togglePinned();
+    }
+  }
+
   function cancelHoverClose(): void {
     if (hoverCloseTimer !== undefined) {
       clearTimeout(hoverCloseTimer);
@@ -136,6 +171,8 @@
   }
 
   function scheduleHoverClose(): void {
+    // Pinned list stays open through pointerleave — only click-away / re-click closes.
+    if (pinned) return;
     if (hoverCloseTimer !== undefined) {
       clearTimeout(hoverCloseTimer);
     }
@@ -231,8 +268,24 @@
   onMount(() => {
     syncExpiryTimer();
 
+    function handleClickAway(e: PointerEvent): void {
+      if (!pinned) return;
+      const target = e.target as HTMLElement | null;
+      if (target?.closest?.('.hover-list') || target?.closest?.('.wm')) return;
+      closePinned();
+    }
+
+    function handleWindowBlur(): void {
+      if (pinned) closePinned();
+    }
+
+    document.addEventListener('pointerdown', handleClickAway, true);
+    window.addEventListener('blur', handleWindowBlur);
+
     if (!hasTauri()) {
       return () => {
+        document.removeEventListener('pointerdown', handleClickAway, true);
+        window.removeEventListener('blur', handleWindowBlur);
         if (expiryTimer !== undefined) clearInterval(expiryTimer);
         if (hoverCloseTimer !== undefined) clearTimeout(hoverCloseTimer);
       };
@@ -240,6 +293,7 @@
 
     let unlistenNotif: (() => void) | undefined;
     let unlistenOcc: (() => void) | undefined;
+    let unlistenClickAway: (() => void) | undefined;
     let cancelled = false;
 
     void (async () => {
@@ -259,6 +313,13 @@
         applyStack(setOccluded(stack, !visible, Date.now()));
       });
 
+      // Native click-away: the non-focusable widget window never blurs and
+      // clicks in other apps never reach `document`, so Rust runs a global
+      // NSEvent mouse-down monitor and emits widget:click-away (US-010).
+      unlistenClickAway = await listen('widget:click-away', () => {
+        if (pinned) closePinned();
+      });
+
       const { invoke } = await import('@tauri-apps/api/core');
       if (cancelled) return;
       // Ready-handshake: Rust replies with the initial widget:occlusion.
@@ -269,8 +330,11 @@
 
     return () => {
       cancelled = true;
+      document.removeEventListener('pointerdown', handleClickAway, true);
+      window.removeEventListener('blur', handleWindowBlur);
       unlistenNotif?.();
       unlistenOcc?.();
+      unlistenClickAway?.();
       if (expiryTimer !== undefined) {
         clearInterval(expiryTimer);
         expiryTimer = undefined;
@@ -372,7 +436,15 @@
   {/if}
 
   <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <span class="wm" onmouseenter={openHoverList}>
+  <span
+    class="wm"
+    role="button"
+    tabindex="0"
+    aria-label="HQ notifications"
+    onmouseenter={openHoverList}
+    onclick={togglePinned}
+    onkeydown={handleWordmarkKeydown}
+  >
     <!-- Flat monochrome HQ wordmark (src/assets/hq-mark.svg, inlined so it
          inherits `currentColor` and needs no bundler asset wiring). -->
     <svg
@@ -389,8 +461,8 @@
         d="M257.169 160.035L241.014 144.096C235.343 147.973 229.096 150.988 222.276 153.142C215.527 155.296 208.419 156.373 200.952 156.373C190.757 156.373 181.172 154.363 172.197 150.342C163.223 146.25 155.325 140.65 148.505 133.542C141.684 126.362 136.335 118.07 132.458 108.664C128.581 99.187 126.642 89.0278 126.642 78.1865C126.642 67.417 128.581 57.3296 132.458 47.9242C136.335 38.4471 141.684 30.1187 148.505 22.939C155.325 15.7593 163.223 10.1592 172.197 6.1386C181.172 2.0462 190.757 0 200.952 0C211.219 0 220.84 2.0462 229.814 6.1386C238.789 10.1592 246.686 15.7593 253.507 22.939C260.328 30.1187 265.641 38.4471 269.446 47.9242C273.323 57.3296 275.261 67.417 275.261 78.1865C275.261 86.0123 274.184 93.5151 272.031 100.695C269.948 107.803 267.077 114.444 263.415 120.618L280 137.203L257.169 160.035ZM200.952 124.065C203.896 124.065 206.732 123.741 209.46 123.095C212.26 122.449 214.952 121.552 217.537 120.403L208.491 111.357L231.322 88.5252L239.291 96.4946C240.512 93.6946 241.409 90.7509 241.984 87.6637C242.63 84.5764 242.953 81.4173 242.953 78.1865C242.953 71.8684 241.84 65.9452 239.614 60.4168C237.461 54.8885 234.445 50.0422 230.568 45.878C226.691 41.642 222.204 38.3394 217.106 35.9701C212.08 33.529 206.696 32.3085 200.952 32.3085C195.208 32.3085 189.788 33.529 184.69 35.9701C179.664 38.3394 175.213 41.642 171.336 45.878C167.459 50.0422 164.407 54.8885 162.182 60.4168C160.028 65.9452 158.951 71.8684 158.951 78.1865C158.951 84.5046 160.028 90.4637 162.182 96.0639C164.407 101.592 167.459 106.474 171.336 110.71C175.213 114.875 179.664 118.141 184.69 120.511C189.788 122.88 195.208 124.065 200.952 124.065Z"
       />
     </svg>
-    {#if queuedCount > 0}
-      <span class="qd">{queuedCount}</span>
+    {#if badgeCount > 0}
+      <span class="qd" data-testid="widget-unread-badge">{badgeCount}</span>
     {/if}
   </span>
 </div>
@@ -555,6 +627,7 @@
     opacity: 0.38;
     transition: opacity 0.18s ease;
     flex-shrink: 0;
+    cursor: pointer;
     /* Light default; dark overrides below. */
     --wm-fg: #1d1d1f;
     --wm-shadow: drop-shadow(0 1px 4px rgba(255, 255, 255, 0.5));

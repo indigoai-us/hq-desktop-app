@@ -26,6 +26,7 @@ import {
   markQueueSeen,
   markRecentRead,
   setOccluded,
+  unreadRecentCount,
   widgetHoverWindowSize,
   widgetWindowSize,
   type WidgetStackItem,
@@ -306,6 +307,37 @@ describe('markQueueSeen / markRecentRead', () => {
     const next = markRecentRead(state);
     expect(next.recent.every((r) => r.unread === false)).toBe(true);
     expect(markRecentRead(next)).toBe(next);
+  });
+});
+
+describe('unreadRecentCount', () => {
+  it('counts recent items with unread === true', () => {
+    let state = emptyWidgetStack();
+    expect(unreadRecentCount(state)).toBe(0);
+
+    state = addItem(state, item({ id: 'a' }));
+    state = addItem(state, item({ id: 'b' }));
+    expect(unreadRecentCount(state)).toBe(2);
+
+    // Mix of read/unread after partial mark.
+    state = {
+      ...state,
+      recent: [
+        { ...state.recent[0]!, unread: true },
+        { ...state.recent[1]!, unread: false },
+      ],
+    };
+    expect(unreadRecentCount(state)).toBe(1);
+  });
+
+  it('returns 0 after markRecentRead', () => {
+    let state = emptyWidgetStack();
+    state = addItem(state, item({ id: 'a' }));
+    state = addItem(state, item({ id: 'b' }));
+    expect(unreadRecentCount(state)).toBe(2);
+
+    state = markRecentRead(state);
+    expect(unreadRecentCount(state)).toBe(0);
   });
 });
 
