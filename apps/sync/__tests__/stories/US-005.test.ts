@@ -38,7 +38,7 @@ const featureGate = readIfExists('../../crates/hq-desktop-core/src/feature_gate.
 const trayHelper = read('src-tauri/src/tray_helper.rs');
 const trayRs = read('src-tauri/src/tray.rs');
 const settingsPage = read('src/desktop-alt/pages/SettingsPage.svelte');
-const notificationsPage = read('src/desktop-alt/pages/NotificationsPage.svelte');
+const inboxPage = read('src/desktop-alt/pages/InboxPage.svelte');
 
 function normalize(source: string): string {
   return source.replace(/\s+/g, ' ');
@@ -215,8 +215,8 @@ describe('US-005 acceptance: all previous popover settings and company controls 
   // destination by hq-desktop-widget US-007 — companies are reached via their
   // first-class sidebar rows; cloud-only rows pull via Sync.
 
-  it('NotificationsPage still mounts NotificationFeed (notifications not orphaned)', () => {
-    expect(notificationsPage).toContain('NotificationFeed');
-    expect(notificationsPage).toMatch(/import NotificationFeed from ['"].*NotificationFeed\.svelte['"]/);
+  it('InboxPage still mounts NotificationFeed (notifications not orphaned — merged into Inbox by US-008)', () => {
+    expect(inboxPage).toContain('NotificationFeed');
+    expect(inboxPage).toMatch(/import NotificationFeed from ['"].*NotificationFeed\.svelte['"]/);
   });
 });

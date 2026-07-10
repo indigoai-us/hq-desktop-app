@@ -12,8 +12,7 @@
   import MeetingsPage from './pages/MeetingsPage.svelte';
   import LibraryPage from './pages/LibraryPage.svelte';
   import MarketplacePage from './pages/MarketplacePage.svelte';
-  import MessagesPage from './pages/MessagesPage.svelte';
-  import NotificationsPage from './pages/NotificationsPage.svelte';
+  import InboxPage from './pages/InboxPage.svelte';
   import CompanyPage from './pages/CompanyPage.svelte';
   import SettingsPage from './pages/SettingsPage.svelte';
   import ModerationPanel from './panels/ModerationPanel.svelte';
@@ -334,38 +333,31 @@
       action: () => navigate({ kind: 'mission-control' }),
     },
     {
-      id: 'command-go-messages',
-      label: 'Go to Messages',
-      detail: 'Direct messages and channels',
+      id: 'command-go-inbox',
+      label: 'Go to Inbox',
+      detail: 'Messages, mentions, shares, and activity in one place',
       shortcut: '⌘1',
-      action: () => navigate({ kind: 'messages' }),
-    },
-    {
-      id: 'command-go-notifications',
-      label: 'Go to Notifications',
-      detail: 'DMs, shares, and new-file activity',
-      shortcut: '⌘2',
-      action: () => navigate({ kind: 'notifications' }),
+      action: () => navigate({ kind: 'inbox' }),
     },
     {
       id: 'command-go-meetings',
       label: 'Go to Meetings',
       detail: 'Show calendar and recordings',
-      shortcut: '⌘3',
+      shortcut: '⌘2',
       action: () => navigate({ kind: 'meetings' }),
     },
     {
       id: 'command-go-marketplace',
       label: 'Go to Marketplace',
       detail: 'Discover and install skills and workers',
-      shortcut: '⌘4',
+      shortcut: '⌘3',
       action: () => navigate({ kind: 'marketplace' }),
     },
     {
       id: 'command-go-library',
       label: 'Go to Library',
       detail: 'Skills, workers, and installed packs',
-      shortcut: '⌘5',
+      shortcut: '⌘4',
       action: () => navigate({ kind: 'library' }),
     },
     ...LIBRARY_SECTIONS.filter((section) => section.id !== DEFAULT_LIBRARY_TAB).map(
@@ -408,7 +400,7 @@
           },
         ]
       : []),
-    // Companies start at ⌘6 (after the five primary destinations), in sidebar
+    // Companies start at ⌘5 (after the four primary destinations), in sidebar
     // (connected-first) order.
     ...orderedCompanies.flatMap((row, index) => [
       {
@@ -447,7 +439,7 @@
   let routeBeforeFiles = $state<DesktopRoute>({ kind: 'home' });
 
   function handleMessagePerson(): void {
-    navigate({ kind: 'messages' });
+    navigate({ kind: 'inbox' });
   }
 
   function navigate(nextRoute: DesktopRoute) {
@@ -971,7 +963,7 @@
     window.addEventListener('storage', hydrateMeetingStatus);
     // "Message the sharer" (and future message-person deep links): a page
     // stashed a pending conversation (lib/pendingConversation) — route to the
-    // Messages destination; the MessagesShell there consumes the stash.
+    // combined Inbox, the in-desktop messaging surface now (US-008).
     window.addEventListener(MESSAGE_PERSON_EVENT, handleMessagePerson);
 
     void getCurrentWindow()
@@ -1337,13 +1329,9 @@
             <div class="page">
               <SettingsPage activeTab={route.tab ?? 'sync'} />
             </div>
-          {:else if route.kind === 'messages'}
-            <div class="messages-host">
-              <MessagesPage />
-            </div>
-          {:else if route.kind === 'notifications'}
+          {:else if route.kind === 'inbox'}
             <div class="page">
-              <NotificationsPage />
+              <InboxPage />
             </div>
           {:else if route.kind === 'moderation'}
             <!-- Admin-only. Rendered only when the admin gate is satisfied
@@ -1433,16 +1421,6 @@
      chrome components (title bar / sidebars) paint their own surfaces. */
   .desktop-shell {
     background: var(--v4-ground);
-  }
-
-  /* The Messages route hosts the full-bleed MessagesShell rather than the
-     padded, scrolling .page layout — it fills the content area and anchors the
-     shell's absolutely-positioned host. */
-  .messages-host {
-    position: relative;
-    width: 100%;
-    height: 100%;
-    min-height: 0;
   }
 
   /* Files mode main area: full-height host so the preview pane fills it and

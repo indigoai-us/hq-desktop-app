@@ -10,13 +10,12 @@ import type { SyncState } from '../lib/sync-model';
  */
 
 /**
- * The primary-nav destinations, in display order (US-007). Home, Mission
- * Control, and the Companies page are palette-only / company-row surfaces —
- * not sidebar nav items.
+ * The primary-nav destinations, in display order. Inbox is the single combined
+ * messages + notifications destination (US-008). Home, Mission Control, and the
+ * Companies page are palette-only / company-row surfaces — not sidebar nav items.
  */
 export type V4NavId =
-  | 'messages'
-  | 'notifications'
+  | 'inbox'
   | 'meetings'
   | 'marketplace'
   | 'library'
@@ -33,8 +32,7 @@ export interface V4Route {
 }
 
 export const V4_NAV_ITEMS: ReadonlyArray<{ id: V4NavId; label: string }> = [
-  { id: 'messages', label: 'Messages' },
-  { id: 'notifications', label: 'Notifications' },
+  { id: 'inbox', label: 'Inbox' },
   { id: 'meetings', label: 'Meetings' },
   { id: 'marketplace', label: 'Marketplace' },
   { id: 'library', label: 'Library' },

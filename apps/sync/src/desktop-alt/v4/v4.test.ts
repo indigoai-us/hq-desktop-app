@@ -64,18 +64,18 @@ describe('US-001 V4 sidebar active-state mapping', () => {
     }
   });
 
-  it('renders nav rows in the US-007 order Messages/Notifications/Meetings/Marketplace/Library/Files', () => {
-    const model = getV4SidebarModel({ kind: 'messages' }, workspaces);
+  it('renders nav rows in the US-008 order Inbox/Meetings/Marketplace/Library/Files', () => {
+    const model = getV4SidebarModel({ kind: 'inbox' }, workspaces);
     expect(model.nav.map((row) => row.label)).toEqual([
-      'Messages',
-      'Notifications',
+      'Inbox',
       'Meetings',
       'Marketplace',
       'Library',
       'Files',
     ]);
-    // Home, Mission Control, and Companies rows are gone from the sidebar.
-    for (const gone of ['Home', 'Mission Control', 'Companies']) {
+    // Home, Mission Control, Companies, and the pre-merge Messages/Notifications
+    // rows are gone from the sidebar.
+    for (const gone of ['Home', 'Mission Control', 'Companies', 'Messages', 'Notifications']) {
       expect(model.nav.some((row) => row.label === gone)).toBe(false);
     }
   });
@@ -104,8 +104,7 @@ describe('US-001 V4 sidebar active-state mapping', () => {
 
   it('keeps exactly one active row on every sidebar destination', () => {
     const routes: V4Route[] = [
-      { kind: 'messages' },
-      { kind: 'notifications' },
+      { kind: 'inbox' },
       { kind: 'meetings' },
       { kind: 'marketplace' },
       { kind: 'library' },

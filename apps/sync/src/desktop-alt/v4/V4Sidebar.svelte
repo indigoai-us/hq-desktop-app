@@ -13,9 +13,9 @@
 
   /**
    * V4 primary sidebar (SPEC section 4 + chrome-master.png): 220px, raised
-   * background, hairline right border. Nav is Messages / Notifications /
-   * Meetings / Marketplace / Library / Files (US-007: Home, Mission Control
-   * and the Companies page removed; companies reached via their rows) →
+   * background, hairline right border. Nav is Inbox / Meetings / Marketplace /
+   * Library / Files (US-008: Messages + Notifications merged into Inbox;
+   * US-007 removed Home / Mission Control / Companies page rows) →
    * COMPANIES section (6px status dot + name per connected company,
    * scrollable when needed) → Settings footer (13px "Settings" + muted
    * account email, hairline top border).
@@ -58,10 +58,11 @@
       });
   });
 
-  // Unread badge on the Notifications nav row. Self-loaded (like the
-  // companies fallback above) from the shared feed-data lib; refreshed when
-  // new content lands (DM wake / sync complete) and when the Notifications
-  // page advances the read watermark (`hq:notifications-read` window event).
+  // Unified unread indicator on the combined Inbox row — one badge covering
+  // messages (DMs), shares, and new-file activity (the shared feed lib already
+  // merges all three streams) (US-008). Self-loaded from the shared feed-data
+  // lib; refreshed when new content lands (DM wake / sync complete) and when
+  // the Inbox advances the read watermark (`hq:notifications-read` window event).
   let notifUnread = $state(0);
 
   async function refreshUnread() {
@@ -110,7 +111,7 @@
         onclick={() => go(row.id)}
       >
         <span class="v4-row-label">{row.label}</span>
-        {#if row.id === 'notifications' && notifUnread > 0}
+        {#if row.id === 'inbox' && notifUnread > 0}
           <span class="v4-unread-badge" aria-label={`${notifUnread} unread`}>
             {notifUnread > 99 ? '99+' : notifUnread}
           </span>

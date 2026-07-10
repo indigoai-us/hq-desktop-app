@@ -11,12 +11,13 @@ import {
 /**
  * V4 information architecture (docs/design/v4/SPEC.md section 4).
  *
- * Five primary destinations — Messages, Notifications, Meetings, Marketplace,
- * Library — plus Files, companies as first-class sidebar rows, and a Settings
- * footer (US-007). Home / Mission Control / Moderation are palette-only routes
- * with no sidebar row; the Companies page is removed (companies are reached via
- * their sidebar rows). Company pages and the Library carry their sections in
- * the secondary sidebar rather than in-page segmented controls.
+ * Four primary destinations — Inbox, Meetings, Marketplace, Library — plus
+ * Files, companies as first-class sidebar rows, and a Settings footer.
+ * US-008 merged Messages + Notifications into the single Inbox surface.
+ * Home / Mission Control / Moderation are palette-only routes with no sidebar
+ * row; the Companies page is removed (companies are reached via their sidebar
+ * rows). Company pages and the Library carry their sections in the secondary
+ * sidebar rather than in-page segmented controls.
  */
 
 /**
@@ -54,7 +55,7 @@ export type SettingsTab = 'sync' | 'notifications' | 'widget' | 'updates' | 'gen
 export const DEFAULT_SETTINGS_TAB: SettingsTab = 'sync';
 
 export type DesktopRoute =
-  | { kind: 'home' | 'mission-control' | 'messages' | 'notifications' | 'meetings' | 'marketplace' | 'moderation' }
+  | { kind: 'home' | 'mission-control' | 'inbox' | 'meetings' | 'marketplace' | 'moderation' }
   | { kind: 'library'; tab?: LibraryTab }
   | { kind: 'settings'; tab?: SettingsTab }
   | { kind: 'files'; slug?: string; path?: string }
@@ -168,13 +169,13 @@ export function getDesktopActiveCompany(
   return companies.find((company) => company.slug === route.slug) ?? null;
 }
 
-/** First ⌘ hotkey assigned to a company row (after the five primary destinations). */
-const COMPANY_HOTKEY_BASE = 6;
+/** First ⌘ hotkey assigned to a company row (after the four primary destinations). */
+const COMPANY_HOTKEY_BASE = 5;
 
 /**
- * ⌘1–⌘5 map to the five primary destinations (Messages / Notifications /
- * Meetings / Marketplace / Library); ⌘6–⌘9 map to the first four companies
- * in sidebar (connected-first) order. Home / Mission Control have no hotkey
+ * ⌘1–⌘4 map to the four primary destinations (Inbox / Meetings / Marketplace /
+ * Library); ⌘5–⌘9 map to the first five companies in sidebar (connected-first)
+ * order (US-008 renumber, no dead slots). Home / Mission Control have no hotkey
  * (palette-only, US-007). Mirrors `companyHotkey` below for the palette labels.
  */
 export function getDesktopHotkeyRoute(
@@ -183,11 +184,10 @@ export function getDesktopHotkeyRoute(
 ): DesktopRoute | null {
   if (!(event.metaKey || event.ctrlKey)) return null;
 
-  if (event.key === '1') return { kind: 'messages' };
-  if (event.key === '2') return { kind: 'notifications' };
-  if (event.key === '3') return { kind: 'meetings' };
-  if (event.key === '4') return { kind: 'marketplace' };
-  if (event.key === '5') return { kind: 'library' };
+  if (event.key === '1') return { kind: 'inbox' };
+  if (event.key === '2') return { kind: 'meetings' };
+  if (event.key === '3') return { kind: 'marketplace' };
+  if (event.key === '4') return { kind: 'library' };
 
   const companyIndex = Number.parseInt(event.key, 10) - COMPANY_HOTKEY_BASE;
   if (companyIndex >= 0 && companyIndex <= 9 - COMPANY_HOTKEY_BASE) {
@@ -250,10 +250,11 @@ export function resolvePendingDesktopRoute(name: string | null | undefined): Des
       return { kind: 'home' };
     case 'mission-control':
       return { kind: 'mission-control' };
+    case 'inbox':
+    // legacy aliases — Messages and Notifications merged into Inbox (US-008)
     case 'messages':
-      return { kind: 'messages' };
     case 'notifications':
-      return { kind: 'notifications' };
+      return { kind: 'inbox' };
     case 'meetings':
       return { kind: 'meetings' };
     case 'marketplace':
@@ -292,10 +293,10 @@ export function fromV4Route(route: V4Route): DesktopRoute {
       return { kind: 'home' };
     case 'mission-control':
       return { kind: 'mission-control' };
+    case 'inbox':
     case 'messages':
-      return { kind: 'messages' };
     case 'notifications':
-      return { kind: 'notifications' };
+      return { kind: 'inbox' };
     case 'meetings':
       return { kind: 'meetings' };
     case 'marketplace':
@@ -333,10 +334,9 @@ export interface DesktopSecondarySidebarOptions {
 
 /**
  * SPEC section 4: the secondary sidebar exists ONLY on company, Library, and
- * Settings surfaces. Home, Mission Control, Marketplace, Meetings, and
- * Moderation have none, and Messages keeps its own 300px conversation list
- * instead. A company route whose slug isn't connected yet renders no secondary
- * column either (the body shows the not-synced placeholder).
+ * Settings surfaces. Home, Mission Control, Marketplace, Meetings, Inbox, and
+ * Moderation have none. A company route whose slug isn't connected yet renders
+ * no secondary column either (the body shows the not-synced placeholder).
  */
 export function getDesktopSecondarySidebar(
   route: DesktopRoute,

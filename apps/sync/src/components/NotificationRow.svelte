@@ -10,6 +10,7 @@
     | 'share'
     | 'sync'
     | 'deploy'
+    | 'meeting'
     | 'system';
 
   interface Props {
@@ -239,6 +240,14 @@
     {:else if t === 'deploy'}
       <path
         d="M8 13.5V4M4.2 7.8 8 4l3.8 3.8M3 2.5h10"
+        stroke="currentColor"
+        stroke-width="1.3"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+    {:else if t === 'meeting'}
+      <path
+        d="M2.5 4.5h7.5a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1H2.5a1 1 0 0 1-1-1v-5a1 1 0 0 1 1-1ZM11 8l3.5-2.2v4.4L11 8Z"
         stroke="currentColor"
         stroke-width="1.3"
         stroke-linecap="round"
