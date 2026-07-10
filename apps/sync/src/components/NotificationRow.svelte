@@ -29,6 +29,11 @@
     onreply?: (text: string) => void;
     /** Message rows: emoji react tap. */
     onreact?: (emoji: string) => void;
+    /**
+     * Fired when reply hold transitions: focus on the reply input or a non-empty
+     * draft suspends auto-hide; blur + empty draft releases it.
+     */
+    onholdchange?: (held: boolean) => void;
   }
 
   let {
@@ -41,15 +46,30 @@
     ondismiss,
     onreply,
     onreact,
+    onholdchange,
   }: Props = $props();
 
   let hovered = $state(false);
   let focusWithin = $state(false);
   let replyText = $state('');
+  let replyFocused = $state(false);
+  let replyInputEl: HTMLInputElement | undefined = $state();
 
   const isMessage = $derived(type === 'message');
-  const expanded = $derived(isMessage && (hovered || focusWithin));
+  /** Draft or focus keeps the message expanded even on transient hover-out. */
+  const replyHold = $derived(replyFocused || replyText.length > 0);
+  const expanded = $derived(isMessage && (hovered || focusWithin || replyHold));
   const interactive = $derived(Boolean(onopen));
+
+  // Non-reactive last-notified value — only fire onholdchange on transitions.
+  let lastHold = false;
+  $effect(() => {
+    const current = replyHold;
+    if (current !== lastHold) {
+      lastHold = current;
+      onholdchange?.(current);
+    }
+  });
 
   function onMouseEnter(): void {
     hovered = true;
@@ -96,6 +116,8 @@
     if (!value || !onreply) return;
     onreply(value);
     replyText = '';
+    // Auto-hide resumes after send.
+    replyInputEl?.blur();
   }
 
   function onReplyKeydown(e: KeyboardEvent): void {
@@ -103,6 +125,11 @@
     if (e.key === 'Enter') {
       e.preventDefault();
       submitReply();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      replyText = '';
+      // Releases hold; normal collapse resumes.
+      replyInputEl?.blur();
     }
   }
 
@@ -154,7 +181,14 @@
         class="nr-reply"
         type="text"
         placeholder="Reply…"
+        bind:this={replyInputEl}
         bind:value={replyText}
+        onfocus={() => {
+          replyFocused = true;
+        }}
+        onblur={() => {
+          replyFocused = false;
+        }}
         onkeydown={onReplyKeydown}
       />
       {#each REACT_EMOJI as emoji (emoji)}

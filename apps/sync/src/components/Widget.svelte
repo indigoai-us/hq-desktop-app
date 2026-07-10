@@ -26,6 +26,7 @@
     hoverRows,
     markQueueSeen,
     markRecentRead,
+    setHeld,
     setOccluded,
     unreadRecentCount,
     widgetHoverWindowSize,
@@ -53,9 +54,45 @@
         // Seed recent so hover list works with initialItems (tests + cold start).
         recent: seeded.map((i) => ({ ...i, unread: i.unread ?? true })),
         occluded: false,
+        held: false,
       };
     }),
   );
+
+  /** Pointer anywhere over a notification row/stack/list suspends auto-hide. */
+  let pointerHold = $state(false);
+  /** Per-row reply focus/draft holds (ids of rows currently holding). */
+  let replyHolds = $state(new Set<string>());
+
+  /**
+   * Apply hold to the pure stack. Plain function (not an $effect writing stack)
+   * to avoid effect loops — callers compute holdActive after local state updates.
+   */
+  function applyHold(holdActive: boolean): void {
+    stack = setHeld(stack, holdActive, Date.now());
+  }
+
+  function setPointerHold(on: boolean): void {
+    pointerHold = on;
+    applyHold(on || replyHolds.size > 0);
+  }
+
+  function setReplyHold(id: string, held: boolean): void {
+    const next = new Set(replyHolds);
+    if (held) {
+      next.add(id);
+    } else {
+      next.delete(id);
+    }
+    replyHolds = next;
+    const holdActive = pointerHold || next.size > 0;
+    applyHold(holdActive);
+    // Reply hold released with nothing else holding (pointer already left) —
+    // resume normal hover collapse.
+    if (!held && next.size === 0 && !pointerHold && hoverOpen && !pinned) {
+      scheduleHoverClose();
+    }
+  }
 
   /**
    * Superscript shows real queue length, falling back to the prop seed —
@@ -173,6 +210,8 @@
   function scheduleHoverClose(): void {
     // Pinned list stays open through pointerleave — only click-away / re-click closes.
     if (pinned) return;
+    // Reply focus/draft keeps the hover list open through pointerleave.
+    if (replyHolds.size > 0) return;
     if (hoverCloseTimer !== undefined) {
       clearTimeout(hoverCloseTimer);
     }
@@ -210,6 +249,8 @@
   }
 
   async function handleOpen(item: WidgetStackItem): Promise<void> {
+    // Drop any stale reply-hold for this row so ids never hold forever.
+    setReplyHold(item.id, false);
     if (!hasTauri()) {
       applyStack(dismissItem(stack, item.id));
       return;
@@ -236,6 +277,8 @@
   }
 
   function handleDismiss(id: string): void {
+    // Drop any stale reply-hold for this row so ids never hold forever.
+    setReplyHold(id, false);
     applyStack(dismissItem(stack, id));
     void setWidgetFocusable(false);
   }
@@ -269,6 +312,8 @@
     syncExpiryTimer();
 
     function handleClickAway(e: PointerEvent): void {
+      // Don't dismiss while a reply is focused / has a draft.
+      if (replyHolds.size > 0) return;
       if (!pinned) return;
       const target = e.target as HTMLElement | null;
       if (target?.closest?.('.hover-list') || target?.closest?.('.wm')) return;
@@ -317,6 +362,8 @@
       // clicks in other apps never reach `document`, so Rust runs a global
       // NSEvent mouse-down monitor and emits widget:click-away (US-010).
       unlistenClickAway = await listen('widget:click-away', () => {
+        // Don't dismiss while a reply is focused / has a draft.
+        if (replyHolds.size > 0) return;
         if (pinned) closePinned();
       });
 
@@ -389,11 +436,19 @@
   onpointerenter={cancelHoverClose}
   onpointerleave={() => {
     scheduleHoverClose();
-    void setWidgetFocusable(false);
+    // Typing must survive transient hover-out — keep focusable while reply holds.
+    if (replyHolds.size === 0) {
+      void setWidgetFocusable(false);
+    }
   }}
 >
   {#if hoverOpen && hoverList.length > 0}
-    <div class="hover-list frost-panel" data-testid="widget-hover-list">
+    <div
+      class="hover-list frost-panel"
+      data-testid="widget-hover-list"
+      onpointerenter={() => setPointerHold(true)}
+      onpointerleave={() => setPointerHold(false)}
+    >
       {#each hoverList as row (row.item.id)}
         {#if row.separator}<div class="hl-sep">{row.separator}</div>{/if}
         <div class="hl-row">
@@ -410,6 +465,7 @@
             onreact={row.item.kind === 'dm'
               ? (emoji) => void reactDm(row.item, emoji)
               : undefined}
+            onholdchange={(h) => setReplyHold(row.item.id, h)}
           />
         </div>
       {/each}
@@ -417,7 +473,12 @@
   {/if}
 
   {#if stack.visible.length > 0 && !hoverOpen}
-    <div class="stack" data-testid="widget-stack">
+    <div
+      class="stack"
+      data-testid="widget-stack"
+      onpointerenter={() => setPointerHold(true)}
+      onpointerleave={() => setPointerHold(false)}
+    >
       {#each stack.visible as item (item.id)}
         <div class="frost" data-kind={item.kind}>
           <NotificationRow
@@ -429,6 +490,7 @@
             ondismiss={() => handleDismiss(item.id)}
             onreply={item.kind === 'dm' ? (text) => void replyDm(item, text) : undefined}
             onreact={item.kind === 'dm' ? (emoji) => void reactDm(item, emoji) : undefined}
+            onholdchange={(h) => setReplyHold(item.id, h)}
           />
         </div>
       {/each}
