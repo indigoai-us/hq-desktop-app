@@ -204,8 +204,8 @@ pub struct MenubarPrefs {
     /// POSTs an anonymized diff to `/v1/usage`. The authoritative gate is the
     /// server-side `/v1/usage/opt-in`; this flag is the LOCAL fallback read
     /// untyped by `read_local_telemetry_enabled` when the vault is unreachable,
-    /// so the collector never blocks on a typed round-trip. Opt-in: absent →
-    /// false. This typed field exists so the Settings toggle round-trips cleanly
+    /// so the collector never blocks on a typed round-trip. Opt-out: absent →
+    /// true. This typed field exists so the Settings toggle round-trips cleanly
     /// through get/save_settings and isn't wiped on the next save.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub telemetry_enabled: Option<bool>,

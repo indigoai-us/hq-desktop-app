@@ -11,10 +11,12 @@ use std::path::Path;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::commands::sync::resolve_vault_api_url;
-use crate::commands::vault_client::{UsageBatch, VaultClient};
+use crate::commands::vault_client::{
+    RawTelemetryEvent, TelemetryEventsBatch, UsageBatch, VaultClient,
+};
 use crate::util::paths;
 
 // ── Cursor schema ─────────────────────────────────────────────────────────────
@@ -165,10 +167,10 @@ fn read_local_telemetry_enabled() -> bool {
             return v
                 .get("telemetryEnabled")
                 .and_then(|v| v.as_bool())
-                .unwrap_or(false);
+                .unwrap_or(true);
         }
     }
-    false
+    true
 }
 
 fn write_menubar_telemetry_pref_to(path: &Path, enabled: bool) -> Result<(), String> {
@@ -216,6 +218,152 @@ pub async fn post_telemetry_opt_in(enabled: bool) -> Result<(), String> {
     let access_token = crate::commands::cognito::get_valid_access_token().await?;
     let api_url = resolve_vault_api_url()?;
     post_telemetry_opt_in_with_retry(&api_url, &access_token, enabled).await
+}
+
+async fn resolve_telemetry_enabled(vault: &VaultClient) -> bool {
+    match vault.get_telemetry_opt_in().await {
+        Ok(resp) => resp.enabled,
+        Err(_) => {
+            eprintln!("[telemetry] telemetry-opt-in-fallback-local");
+            read_local_telemetry_enabled()
+        }
+    }
+}
+
+fn is_safe_event_name(event_name: &str) -> bool {
+    !event_name.is_empty()
+        && event_name.len() <= 96
+        && event_name
+            .bytes()
+            .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'_'))
+}
+
+fn is_safe_label_value(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value
+            .bytes()
+            .all(|b| matches!(b, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-' | b'.'))
+}
+
+fn is_safe_company_uid(value: &str) -> bool {
+    (value.starts_with("co_") || value.starts_with("cmp_")) && is_safe_label_value(value)
+}
+
+fn allowed_desktop_property_key(key: &str) -> bool {
+    matches!(
+        key,
+        "provider"
+            | "surface"
+            | "source"
+            | "result"
+            | "errorKind"
+            | "enabled"
+            | "companiesAttempted"
+            | "filesDownloaded"
+            | "bytesDownloaded"
+            | "filesSkipped"
+            | "errorCount"
+            | "stageCount"
+            | "failedStageCount"
+            | "detectedToolCount"
+            | "companyUid"
+    )
+}
+
+fn sanitize_desktop_properties(properties: Option<Value>) -> (Option<String>, Value) {
+    let Some(Value::Object(input)) = properties else {
+        return (None, Value::Object(Map::new()));
+    };
+
+    let mut company_uid: Option<String> = None;
+    let mut out = Map::new();
+
+    for (key, value) in input {
+        if !allowed_desktop_property_key(&key) {
+            continue;
+        }
+
+        if key == "companyUid" {
+            if let Some(uid) = value.as_str().filter(|uid| is_safe_company_uid(uid)) {
+                company_uid = Some(uid.to_string());
+            }
+            continue;
+        }
+
+        let keep = match &value {
+            Value::Bool(_) => key == "enabled",
+            Value::Number(n) => n.as_i64().is_some() || n.as_u64().is_some(),
+            Value::String(s) => is_safe_label_value(s),
+            _ => false,
+        };
+        if keep {
+            out.insert(key, value);
+        }
+    }
+
+    (company_uid, Value::Object(out))
+}
+
+fn build_desktop_telemetry_event(
+    event_name: String,
+    machine_id: String,
+    app_version: String,
+    properties: Option<Value>,
+) -> RawTelemetryEvent {
+    let (company_uid, properties) = sanitize_desktop_properties(properties);
+    RawTelemetryEvent {
+        event_name,
+        app: "hq-desktop-app".to_string(),
+        source: "desktop".to_string(),
+        occurred_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        machine_id,
+        app_version,
+        consent_basis: "desktop-opt-in".to_string(),
+        schema_version: 1,
+        company_uid,
+        properties,
+    }
+}
+
+async fn emit_desktop_telemetry_with_vault(
+    vault: &VaultClient,
+    event_name: String,
+    properties: Option<Value>,
+) -> Result<(), String> {
+    if !is_safe_event_name(&event_name) {
+        return Err(format!("invalid telemetry event name: {event_name}"));
+    }
+
+    if !resolve_telemetry_enabled(vault).await {
+        return Ok(());
+    }
+
+    let event = build_desktop_telemetry_event(
+        event_name,
+        read_machine_id(),
+        env!("APP_VERSION").to_string(),
+        properties,
+    );
+    let batch = TelemetryEventsBatch {
+        events: vec![event],
+    };
+
+    vault
+        .post_telemetry_events(&batch)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn emit_desktop_telemetry_if_opted_in(
+    event_name: String,
+    properties: Option<Value>,
+) -> Result<(), String> {
+    let access_token = crate::commands::cognito::get_valid_access_token().await?;
+    let api_url = resolve_vault_api_url()?;
+    let vault = VaultClient::new(&api_url, &access_token);
+    emit_desktop_telemetry_with_vault(&vault, event_name, properties).await
 }
 
 fn read_machine_id() -> String {
@@ -269,14 +417,7 @@ pub async fn send_telemetry_if_opted_in<R: tauri::Runtime>(
     let vault = VaultClient::new(&api_url, jwt);
 
     // 2. Opt-in check
-    let enabled = match vault.get_telemetry_opt_in().await {
-        Ok(resp) => resp.enabled,
-        Err(_) => {
-            eprintln!("[telemetry] telemetry-opt-in-fallback-local");
-            read_local_telemetry_enabled()
-        }
-    };
-    if !enabled {
+    if !resolve_telemetry_enabled(&vault).await {
         return Ok(());
     }
 
@@ -597,6 +738,127 @@ mod tests {
         let v: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(v["telemetryEnabled"], false);
         assert!(!path.with_extension("json.tmp").exists());
+    }
+
+    #[test]
+    fn test_missing_local_telemetry_pref_defaults_true() {
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let home = setup_home();
+        write_menubar(home.path(), r#"{"machineId":"mid-default"}"#);
+        std::env::set_var("HOME", home.path());
+
+        let enabled = read_local_telemetry_enabled();
+
+        std::env::remove_var("HOME");
+        assert!(enabled, "missing telemetryEnabled should default ON");
+    }
+
+    #[tokio::test]
+    async fn test_desktop_telemetry_opt_in_false_sends_no_events() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/usage/opt-in"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({"enabled": false})))
+            .mount(&server)
+            .await;
+
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let home = setup_home();
+        write_menubar(home.path(), r#"{"machineId":"mid-desktop-off"}"#);
+        std::env::set_var("HOME", home.path());
+
+        let vault = VaultClient::new(server.uri(), "test-jwt");
+        let result = emit_desktop_telemetry_with_vault(
+            &vault,
+            "manual_sync_completed".to_string(),
+            Some(json!({"filesDownloaded": 3})),
+        )
+        .await;
+
+        std::env::remove_var("HOME");
+
+        assert!(result.is_ok());
+        let reqs = server.received_requests().await.unwrap();
+        let posts: Vec<_> = reqs
+            .iter()
+            .filter(|r| r.method == wiremock::http::Method::POST)
+            .collect();
+        assert_eq!(
+            posts.len(),
+            0,
+            "no event POST expected when telemetry is off"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_desktop_telemetry_posts_sanitized_envelope() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/usage/opt-in"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({"enabled": true})))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/telemetry/events"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .mount(&server)
+            .await;
+
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let home = setup_home();
+        write_menubar(home.path(), r#"{"machineId":"mid-desktop-on"}"#);
+        std::env::set_var("HOME", home.path());
+
+        let vault = VaultClient::new(server.uri(), "test-jwt");
+        let result = emit_desktop_telemetry_with_vault(
+            &vault,
+            "telemetry_preference_changed".to_string(),
+            Some(json!({
+                "enabled": true,
+                "surface": "settings-popover",
+                "filesDownloaded": 2,
+                "path": "/Users/alice/HQ",
+                "email": "alice@example.com",
+                "message": "free text should not leave the client"
+            })),
+        )
+        .await;
+
+        std::env::remove_var("HOME");
+
+        assert!(result.is_ok());
+        let reqs = server.received_requests().await.unwrap();
+        let posts: Vec<_> = reqs
+            .iter()
+            .filter(|r| r.method == wiremock::http::Method::POST)
+            .collect();
+        assert_eq!(posts.len(), 1, "one event POST expected");
+        let body: Value = serde_json::from_slice(&posts[0].body).unwrap();
+        let event = &body["events"][0];
+        assert_eq!(event["eventName"], "telemetry_preference_changed");
+        assert_eq!(event["app"], "hq-desktop-app");
+        assert_eq!(event["source"], "desktop");
+        assert_eq!(event["machineId"], "mid-desktop-on");
+        assert_eq!(event["consentBasis"], "desktop-opt-in");
+        assert_eq!(event["schemaVersion"], 1);
+        assert!(
+            event.get("personUid").is_none(),
+            "personUid must not be sent"
+        );
+
+        let props = event["properties"].as_object().unwrap();
+        assert_eq!(props.get("enabled").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(
+            props.get("surface").and_then(|v| v.as_str()),
+            Some("settings-popover")
+        );
+        assert_eq!(
+            props.get("filesDownloaded").and_then(|v| v.as_u64()),
+            Some(2)
+        );
+        assert!(!props.contains_key("path"));
+        assert!(!props.contains_key("email"));
+        assert!(!props.contains_key("message"));
     }
 
     // ── (a) opt-in=false → 0 bytes sent ──────────────────────────────────────

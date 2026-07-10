@@ -3,6 +3,8 @@
   import { getVersion } from '@tauri-apps/api/app';
   import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
   import { open as openUrl } from '@tauri-apps/plugin-shell';
+  import { emitDesktopTelemetry } from '../lib/desktop-telemetry';
+  import { postOptIn } from '../lib/onboarding-telemetry';
   import { permissionState, loadMeetingPermissions } from '../lib/permissionState.svelte';
   import {
     POPOVER_MIN_HEIGHT,
@@ -82,11 +84,11 @@
   // Supersedes the standalone cliAutoUpdate toggle (still round-tripped for
   // back-compat, but the CLI installer now gates on autoUpdate).
   let autoUpdate = $state(true);
-  // Usage telemetry — shown to ALL signed-in users. OFF by default (opt-in):
+  // Usage telemetry — shown to ALL signed-in users. ON by default (opt-out):
   // telemetry.rs re-reads `telemetryEnabled` untyped from menubar.json after
   // each sync, so the toggle takes effect without restart. The authoritative
-  // gate is still the server-side opt-in; this is the local fallback.
-  let telemetryEnabled = $state(false);
+  // gate is still the server-side preference; this is the local fallback.
+  let telemetryEnabled = $state(true);
   // True @getindigo.ai gate. Gates the staging-channel toggle below.
   // Populated at mount from `is_indigo_user` (cached process-lifetime on the
   // Rust side) — NOT from `meetings_feature_enabled`, which graduated to a GA
@@ -212,7 +214,7 @@
       dmNotifications = settings.dmNotifications ?? true;
       cliAutoUpdate = settings.cliAutoUpdate ?? true;
       autoUpdate = settings.autoUpdate ?? true;
-      telemetryEnabled = settings.telemetryEnabled ?? false;
+      telemetryEnabled = settings.telemetryEnabled ?? true;
       stagingChannel = settings.stagingChannel ?? true;
       isIndigoUser = indigoUser;
       availableChannels = (channels.filter(
@@ -363,9 +365,24 @@
     await saveAll();
   }
 
+  async function auditTelemetryPreferenceChanged(enabled: boolean) {
+    await emitDesktopTelemetry({
+      eventName: 'telemetry_preference_changed',
+      properties: { enabled, surface: 'settings-popover' },
+    });
+  }
+
   async function handleToggleTelemetry() {
-    telemetryEnabled = !telemetryEnabled;
+    const next = !telemetryEnabled;
+    telemetryEnabled = next;
+    if (!next) {
+      await auditTelemetryPreferenceChanged(next);
+    }
     await saveAll();
+    await postOptIn({ enabled: next });
+    if (next) {
+      await auditTelemetryPreferenceChanged(next);
+    }
   }
 
   // Read the current OS permission without prompting. Called on mount and on
@@ -791,7 +808,7 @@
           <div class="setting-row">
             <div class="setting-info">
               <label class="setting-label" for="toggle-telemetry">Usage telemetry</label>
-              <span class="setting-desc">Share anonymized usage counts to help improve HQ. Off by default.</span>
+              <span class="setting-desc">Share anonymized usage counts to help improve HQ. You can turn this off any time.</span>
             </div>
             <button
               id="toggle-telemetry"

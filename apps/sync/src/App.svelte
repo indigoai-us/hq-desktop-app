@@ -25,6 +25,7 @@
   import type { Workspace, WorkspacesResult } from './lib/workspaces';
   import { loadMeetingDetectEligible } from './lib/permissionState.svelte';
   import { buildClaudeCodeUrl } from './lib/claude-code-link';
+  import { emitDesktopTelemetry } from './lib/desktop-telemetry';
   import { refreshOnPopoverOpen } from './lib/popover-refresh';
   import { isTransientSyncTransportError } from './lib/transient-sync-error';
   import {
@@ -56,6 +57,7 @@
   // cross-process file-watcher so the two sources never fight. Set on the Sync
   // Now click, cleared when the run ends.
   let manualSyncActive = $state(false);
+  let manualSyncTelemetryPending = $state(false);
   // True while the cross-process watcher (auto-sync / CLI `hq sync`) owns the
   // card — lets sync:external-idle know it should reset back to idle.
   let externalSyncActive = $state(false);
@@ -692,6 +694,7 @@
     if (syncState === 'syncing') return;
     syncState = 'syncing';
     manualSyncActive = true;
+    manualSyncTelemetryPending = true;
     externalSyncActive = false;
     syncProgress = null;
     syncFanoutTotal = 0;
@@ -721,16 +724,22 @@
       // resolve it back to idle.
       if (msg.toLowerCase().includes('already running')) {
         manualSyncActive = false;
+        manualSyncTelemetryPending = false;
         externalSyncActive = true;
         syncState = 'syncing';
         await invoke('set_tray_state', { state: 'syncing' });
         return;
       }
+      manualSyncTelemetryPending = false;
       console.error('start_sync failed:', err);
       syncState = 'error';
       syncErrorMessage = msg;
       syncErrorCompany = '';
       await invoke('set_tray_state', { state: 'error' });
+      void emitDesktopTelemetry({
+        eventName: 'manual_sync_failed',
+        properties: { errorKind: 'start_sync', errorCount: 1, surface: 'popover' },
+      });
     }
   }
 
@@ -1259,6 +1268,8 @@
         bytesDownloaded: number;
         errors: Array<{ company: string; message: string }>;
       }>('sync:all-complete', async (event) => {
+        const shouldEmitManualSync = manualSyncTelemetryPending;
+        manualSyncTelemetryPending = false;
         manualSyncActive = false;
         externalSyncActive = false;
         syncLastSummary = {
@@ -1278,6 +1289,22 @@
         // Refresh workspaces — sync may have created new local folders
         // (for newly-provisioned companies) or updated last-synced timestamps.
         loadWorkspaces();
+        if (shouldEmitManualSync) {
+          void emitDesktopTelemetry({
+            eventName:
+              event.payload.errors.length > 0
+                ? 'manual_sync_failed'
+                : 'manual_sync_completed',
+            properties: {
+              surface: 'popover',
+              companiesAttempted: event.payload.companiesAttempted,
+              filesDownloaded: event.payload.filesDownloaded,
+              bytesDownloaded: event.payload.bytesDownloaded,
+              filesSkipped: syncFanoutFilesSkipped,
+              errorCount: event.payload.errors.length,
+            },
+          });
+        }
       })
     );
 
@@ -1285,6 +1312,8 @@
       await listen<{ company?: string; path: string; message: string }>(
         'sync:error',
         async (event) => {
+          const shouldEmitManualSync = manualSyncTelemetryPending;
+          manualSyncTelemetryPending = false;
           // Defence-in-depth: the Rust side already captures this via
           // `report_sync_error` in src-tauri/src/commands/sync.rs (which fires
           // for the same payload that produced this Tauri event). We capture
@@ -1319,6 +1348,12 @@
           syncErrorMessage = event.payload.message;
           syncErrorCompany = event.payload.company ?? '';
           await invoke('set_tray_state', { state: 'error' });
+          if (shouldEmitManualSync) {
+            void emitDesktopTelemetry({
+              eventName: 'manual_sync_failed',
+              properties: { errorKind: 'sync_error', errorCount: 1, surface: 'popover' },
+            });
+          }
         }
       )
     );

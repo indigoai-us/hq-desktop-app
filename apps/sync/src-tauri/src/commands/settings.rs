@@ -44,9 +44,9 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
             release_channel: None,
             meeting_detect_notify: Some(default_meeting_detect_notify()),
             default_recording_company_uid: None,
-            // Telemetry is opt-in; absent → off (mirrors
-            // telemetry.rs::read_local_telemetry_enabled's unwrap_or(false)).
-            telemetry_enabled: Some(false),
+            // Telemetry is opt-out; absent → on (mirrors
+            // telemetry.rs::read_local_telemetry_enabled's unwrap_or(true)).
+            telemetry_enabled: Some(true),
         });
     }
 
@@ -117,9 +117,9 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
         // surfaces this as the "Personal" option (same shape as the
         // URL-invite picker in MeetingsWindow).
         default_recording_company_uid: prefs.default_recording_company_uid,
-        // Telemetry defaults OFF (opt-in). Re-read untyped from menubar.json by
+        // Telemetry defaults ON (opt-out). Re-read untyped from menubar.json by
         // the collector each sync, so the toggle takes effect without restart.
-        telemetry_enabled: Some(prefs.telemetry_enabled.unwrap_or(false)),
+        telemetry_enabled: Some(prefs.telemetry_enabled.unwrap_or(true)),
     })
 }
 

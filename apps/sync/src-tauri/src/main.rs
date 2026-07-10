@@ -307,6 +307,7 @@ fn main() {
             commands::settings::save_settings,
             commands::telemetry::post_telemetry_opt_in,
             commands::telemetry::write_menubar_telemetry_pref,
+            commands::telemetry::emit_desktop_telemetry_if_opted_in,
             commands::folder_picker::pick_folder,
             commands::install_directory::resolve_hq_path,
             commands::install_directory::set_hq_install_path,
