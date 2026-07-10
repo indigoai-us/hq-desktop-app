@@ -3,7 +3,9 @@
   import { open as openExternal } from '@tauri-apps/plugin-shell';
   import type { Workspace } from '../../lib/workspaces';
   import { buildClaudeCodeUrl } from '../../lib/claude-code-link';
+  import { hqSkillMarkdownLink } from '../../lib/hq-skill-link';
   import { companyInviteUrl, companySettingsUrl } from '../lib/hq-console';
+  import { openAgentWorkflow } from '../lib/agent-workflow';
   import ActivityPanel from '../panels/ActivityPanel.svelte';
   import CompanyBoardPanel from '../panels/CompanyBoardPanel.svelte';
   import CompanyGoalsPage from './CompanyGoalsPage.svelte';
@@ -25,12 +27,19 @@
     tab?: CompanyTab;
     /** Switch to the Projects section before handing project creation to HQ. */
     onopenprojects?: () => void;
+    /** Called after a successful Connect so the parent re-fetches workspaces. */
+    onworkspaceschanged?: () => void;
+    /** Vault reachability — while offline, Connect is disabled (it can only
+     *  fail), matching the old WorkspaceList/Companies-page guard. */
+    cloudReachable?: boolean;
   }
 
   let {
     company,
     tab = DEFAULT_COMPANY_TAB,
     onopenprojects,
+    onworkspaceschanged,
+    cloudReachable = true,
   }: Props = $props();
 
   interface SettingsWire {
@@ -38,12 +47,20 @@
   }
 
   let actionError = $state<string | null>(null);
+  let actionNotice = $state<string | null>(null);
   let newProjectBusy = $state(false);
+  let connectBusy = $state(false);
+  let inviteBusy = $state(false);
 
   const cloudBacked = $derived(
     company.state === 'synced' ||
       company.state === 'cloud-only' ||
       (company.kind === 'company' && Boolean(company.cloudUid)),
+  );
+
+  const connectable = $derived(company.state === 'local-only' || company.state === 'broken');
+  const pendingInvite = $derived(
+    company.membershipStatus === 'pending' && company.state === 'cloud-only',
   );
 
   function openInvite() {
@@ -55,12 +72,66 @@
   // system browser.
   function openCompanySettings() {
     actionError = null;
+    actionNotice = null;
     void openExternal(companySettingsUrl(company.slug));
+  }
+
+  async function handleConnect() {
+    if (connectBusy || !connectable || !cloudReachable) return;
+    actionError = null;
+    actionNotice = null;
+    connectBusy = true;
+    try {
+      await invoke('connect_workspace_to_cloud', { slug: company.slug });
+      onworkspaceschanged?.();
+    } catch (err) {
+      console.error(`connect_workspace_to_cloud(${company.slug}) failed:`, err);
+      actionError = `Connect failed: ${String(err)}`;
+    } finally {
+      connectBusy = false;
+    }
+  }
+
+  // Pending invites are accepted from the emailed magic link. The desktop
+  // membership row carries inviter/time metadata but not the one-time token, so
+  // this opens the real /accept workflow and asks the user for the link/token.
+  // Routes through openAgentWorkflow (the centralized get_config →
+  // buildClaudeCodeUrl → open_claude_code_link → clipboard-fallback sequence);
+  // the extra get_config here only feeds the skill-link path in the prompt.
+  async function handleOpenPendingInvite() {
+    if (inviteBusy) return;
+    actionError = null;
+    actionNotice = null;
+    inviteBusy = true;
+    const config = await invoke<{ hqFolderPath?: string }>('get_config').catch(() => ({
+      hqFolderPath: '',
+    }));
+    const prompt = [
+      hqSkillMarkdownLink('accept', config.hqFolderPath),
+      '',
+      `Help me accept the pending HQ company invite for ${company.displayName}.`,
+      `Company slug shown in HQ: ${company.slug}.`,
+      'The desktop app does not have the magic-link token. Ask me to paste the invite link or raw token, then complete the HQ accept flow.',
+    ].join('\n');
+
+    try {
+      const result = await openAgentWorkflow(prompt, 'invite acceptance');
+      // The clipboard fallback is still a usable path — only a total failure
+      // (no deep link AND no clipboard) styles as an error.
+      if (result.ok || result.message.includes('copied')) {
+        actionNotice = result.message;
+      } else {
+        actionError = result.message;
+      }
+    } finally {
+      inviteBusy = false;
+    }
   }
 
   async function startNewProject() {
     if (newProjectBusy) return;
     actionError = null;
+    actionNotice = null;
     newProjectBusy = true;
     onopenprojects?.();
 
@@ -97,6 +168,37 @@
   <header class="company-actions-row">
     <div></div>
     <div class="company-actions" aria-label="Company actions">
+      {#if connectable}
+        <button
+          type="button"
+          data-testid="company-connect"
+          title={!cloudReachable
+            ? 'Cloud unreachable — connecting is paused until it\u2019s back'
+            : company.state === 'broken'
+              ? (company.brokenReason ?? 'Retry connecting this company to the cloud')
+              : "Create this company's cloud vault and start syncing it"}
+          disabled={connectBusy || !cloudReachable}
+          onclick={() => void handleConnect()}
+        >
+          {#if connectBusy}
+            Connecting…
+          {:else if company.state === 'broken'}
+            Retry connect
+          {:else}
+            Connect to cloud
+          {/if}
+        </button>
+      {/if}
+      {#if pendingInvite}
+        <button
+          type="button"
+          data-testid="company-open-invite"
+          disabled={inviteBusy}
+          onclick={() => void handleOpenPendingInvite()}
+        >
+          {inviteBusy ? 'Opening…' : 'Open invite'}
+        </button>
+      {/if}
       <button type="button" onclick={openInvite}>Invite</button>
       <button type="button" onclick={openCompanySettings}>Settings</button>
       <button type="button" class="primary" onclick={() => void startNewProject()} disabled={newProjectBusy}>
@@ -107,6 +209,9 @@
 
   {#if actionError}
     <p class="company-action-error" role="status">{actionError}</p>
+  {/if}
+  {#if actionNotice}
+    <p class="company-action-notice" role="status">{actionNotice}</p>
   {/if}
 
   {#key `${company.slug}:${tab}`}
@@ -209,6 +314,13 @@
   .company-action-error {
     margin: -10px 0 0;
     color: var(--v4-text-2);
+    font-size: var(--text-base);
+    line-height: 1.3;
+  }
+
+  .company-action-notice {
+    margin: -10px 0 0;
+    color: var(--v4-text-3);
     font-size: var(--text-base);
     line-height: 1.3;
   }

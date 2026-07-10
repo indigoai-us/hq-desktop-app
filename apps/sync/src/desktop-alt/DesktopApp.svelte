@@ -218,6 +218,9 @@
 
   let companies = $state<Workspace[]>(cachedCompanies);
   let renderCompanies = $state<Workspace[]>(cachedCompanies);
+  // Vault reachability from the last list_syncable_workspaces load — gates the
+  // sidebar Shared/All writes and the company-page Connect action (US-009).
+  let cloudReachable = $state(true);
   let renderWorkspaceCount = $state(cachedCompanies.length);
   const shellCompanies = $derived(
     renderCompanies.length > 0
@@ -572,6 +575,7 @@
       const result = await invoke<WorkspacesResult>('list_syncable_workspaces');
       const nextCompanies = getDesktopCompanies(result.workspaces);
       workspaces = result.workspaces;
+      cloudReachable = result.cloudReachable;
       companies = nextCompanies;
       renderCompanies = nextCompanies;
       renderWorkspaceCount = nextCompanies.length;
@@ -1256,6 +1260,7 @@
       <V4Sidebar
         {route}
         companies={renderCompanies}
+        {cloudReachable}
         onnavigate={(next) => navigate(fromV4Route(next))}
       />
     {/if}
@@ -1374,9 +1379,11 @@
               <CompanyPage
                 company={activeCompany}
                 tab={companyTab}
+                {cloudReachable}
                 onopenprojects={() =>
                   navigate({ kind: 'company', slug: activeCompany.slug, tab: 'projects' })
                 }
+                onworkspaceschanged={() => void loadWorkspaces()}
               />
             </div>
           {:else}

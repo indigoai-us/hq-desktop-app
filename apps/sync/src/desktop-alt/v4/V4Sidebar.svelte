@@ -9,6 +9,7 @@
     countUnread,
   } from '../../lib/notificationFeedData';
   import { getV4SidebarModel, type V4NavId, type V4Route } from './model';
+  import SidebarSyncMode from './SidebarSyncMode.svelte';
   import './tokens.css';
 
   /**
@@ -32,6 +33,10 @@
     companies?: Workspace[] | null;
     /** Signed-in account email for the Settings footer. */
     accountEmail?: string | null;
+    /** Vault reachability from list_syncable_workspaces — gates sync-mode
+     *  writes (control renders read-only while offline). Omit to let the
+     *  sidebar resolve it from its own self-load; defaults to reachable. */
+    cloudReachable?: boolean | null;
     onnavigate?: (route: V4Route) => void;
   }
 
@@ -39,8 +44,12 @@
     route,
     companies,
     accountEmail,
+    cloudReachable = null,
     onnavigate,
   }: Props = $props();
+
+  let fetchedCloudReachable = $state(true);
+  const effectiveCloudReachable = $derived(cloudReachable ?? fetchedCloudReachable);
 
   let fetched = $state<Workspace[]>([]);
   const model = $derived(
@@ -52,6 +61,7 @@
     void invoke<WorkspacesResult>('list_syncable_workspaces')
       .then((result) => {
         fetched = result.workspaces;
+        fetchedCloudReachable = result.cloudReachable;
       })
       .catch((err) => {
         console.error('list_syncable_workspaces failed:', err);
@@ -98,6 +108,37 @@
   function goCompany(slug: string) {
     onnavigate?.({ kind: 'company', slug });
   }
+
+  // Once a cloud-activated company row is hovered/focused, keep SidebarSyncMode
+  // mounted so its mode cache lives; CSS owns show/hide on subsequent hover.
+  // Pointer reveal waits a short hover-intent delay so sweeping the mouse down
+  // the (up to ~25-row) list doesn't mount every control and fan out one
+  // get_sync_mode vault round-trip per row passed over. Focus reveals
+  // immediately — keyboard traversal is always intentional.
+  const REVEAL_INTENT_MS = 140;
+  let revealedSlugs = $state(new Set<string>());
+  let revealTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function reveal(slug: string) {
+    cancelPendingReveal();
+    if (revealedSlugs.has(slug)) return;
+    revealedSlugs = new Set(revealedSlugs).add(slug);
+  }
+
+  function queueReveal(slug: string) {
+    cancelPendingReveal();
+    if (revealedSlugs.has(slug)) return;
+    revealTimer = setTimeout(() => reveal(slug), REVEAL_INTENT_MS);
+  }
+
+  function cancelPendingReveal() {
+    if (revealTimer !== null) {
+      clearTimeout(revealTimer);
+      revealTimer = null;
+    }
+  }
+
+  $effect(() => () => cancelPendingReveal());
 </script>
 
 <aside class="v4-sidebar" aria-label="Primary navigation">
@@ -124,16 +165,34 @@
     <div class="v4-section-label" id="v4-companies-label">Companies</div>
     <nav class="v4-nav v4-company-nav" aria-labelledby="v4-companies-label">
       {#each model.companies as row (row.slug)}
-        <button
-          type="button"
-          class="v4-row v4-company-row"
-          class:active={row.active}
-          aria-current={row.active ? 'page' : undefined}
-          onclick={() => goCompany(row.slug)}
+        <div
+          class="v4-company-item"
+          class:has-syncmode={row.cloudActivated}
+          role="group"
+          onpointerenter={() => row.cloudActivated && queueReveal(row.slug)}
+          onpointerleave={cancelPendingReveal}
+          onfocusin={() => row.cloudActivated && reveal(row.slug)}
         >
-          <span class={`v4-dot ${row.tone}`} aria-hidden="true"></span>
-          <span class="v4-company-name">{row.label}</span>
-        </button>
+          <button
+            type="button"
+            class="v4-row v4-company-row"
+            class:active={row.active}
+            aria-current={row.active ? 'page' : undefined}
+            onclick={() => goCompany(row.slug)}
+          >
+            <span class={`v4-dot ${row.tone}`} aria-hidden="true"></span>
+            <span class="v4-company-name">{row.label}</span>
+          </button>
+          {#if row.cloudActivated && revealedSlugs.has(row.slug)}
+            <span class="v4-syncmode-slot">
+              <SidebarSyncMode
+                slug={row.slug}
+                label={row.label}
+                disabled={!effectiveCloudReachable}
+              />
+            </span>
+          {/if}
+        </div>
       {/each}
     </nav>
   </div>
@@ -286,6 +345,41 @@
   .v4-company-nav::-webkit-scrollbar-thumb {
     border-radius: var(--v4-radius-pill);
     background: var(--v4-hairline);
+  }
+
+  /* Positioned wrapper so Shared/All can overlay the row without nesting
+     buttons or changing --v4-row-h (US-009). */
+  .v4-company-item {
+    position: relative;
+    flex: 0 0 auto;
+  }
+
+  .v4-syncmode-slot {
+    position: absolute;
+    right: 4px;
+    top: 50%;
+    transform: translateY(-50%);
+    display: inline-flex;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.12s ease;
+    z-index: 1;
+  }
+
+  .v4-company-item:hover .v4-syncmode-slot,
+  .v4-company-item:focus-within .v4-syncmode-slot {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  /* While the Shared/All control is visible it overlays the right ~86px of the
+     row, so widen the company-name fade-out from the resting 24px to fade the
+     text away BEFORE the control starts — no doubled low-contrast text under
+     the pill (US-009). Only rows that actually carry a control widen. */
+  .v4-company-item.has-syncmode:hover .v4-company-name,
+  .v4-company-item.has-syncmode:focus-within .v4-company-name {
+    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 96px), transparent calc(100% - 78px));
+    mask-image: linear-gradient(to right, #000 calc(100% - 96px), transparent calc(100% - 78px));
   }
 
   .v4-dot {

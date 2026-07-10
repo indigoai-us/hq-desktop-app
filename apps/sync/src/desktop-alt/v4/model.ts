@@ -60,6 +60,12 @@ export interface V4SidebarCompanyRow {
   label: string;
   tone: V4DotTone;
   active: boolean;
+  /**
+   * True when this row is a cloud-activated company membership (synced or
+   * cloud-only). Gates the Shared/All hover control (US-009); personal and
+   * local-only/broken rows stay false.
+   */
+  cloudActivated: boolean;
 }
 
 export interface V4SidebarModel {
@@ -97,6 +103,19 @@ export function v4CompanyConnected(workspace: Workspace): boolean {
   );
 }
 
+/** Cloud-activated = a company row with a live, ACCEPTED vault membership
+ *  (synced or cloud-only). Personal is local-first (not a company membership),
+ *  local-only/broken rows have no membership sync-config yet, and a pending
+ *  cloud-only row is an unaccepted invite (its affordance is "Open invite" on
+ *  the company page, never a sync-mode read/write) — no control on any of those. */
+export function v4CompanyCloudActivated(workspace: Workspace): boolean {
+  return (
+    workspace.kind === 'company' &&
+    (workspace.state === 'synced' || workspace.state === 'cloud-only') &&
+    workspace.membershipStatus !== 'pending'
+  );
+}
+
 /**
  * Shared dedupe + connected-first + alpha sort for the COMPANIES list (US-007).
  * Both the primary V4Sidebar (via getV4SidebarModel) and the FilesModeSidebar
@@ -123,6 +142,7 @@ export function sortV4CompaniesConnectedFirst(
         label: workspace.displayName,
         tone: v4CompanyDotTone(workspace),
         active: activeSlug != null && activeSlug === workspace.slug,
+        cloudActivated: v4CompanyCloudActivated(workspace),
       },
     });
   }
