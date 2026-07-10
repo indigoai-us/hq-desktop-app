@@ -122,6 +122,25 @@ describe('US-008: combined Inbox page shows both streams as one-line rows with u
     expect(inboxPage).not.toContain('mark-read');
   });
 
+  it('viewing the Inbox counts as reading it — the watermark advances on leave (review fix)', () => {
+    // The header carries no controls (AC), so without this the desktop window
+    // would have NO way to ever clear the unified unread badge — the popover's
+    // Mark-all-read was the only remaining watermark writer. InboxPage commits
+    // the read on unmount + window pagehide, gated on the feed having loaded.
+    expect(inboxPage).toContain('markAllNotificationsRead');
+    expect(inboxPage).toContain('onDestroy(commitRead)');
+    expect(inboxPage).toContain("window.addEventListener('pagehide', commitRead)");
+    expect(inboxPage).toContain('if (!feedLoaded) return');
+  });
+
+  it('the message-person deep link consumes the conversation stash before routing to Inbox (review fix)', () => {
+    // No MessagesShell mounts in the desktop window anymore; an unconsumed
+    // stash would leak into the next standalone Messages-window mount and open
+    // an unexpected conversation there.
+    expect(desktopApp).toContain('takePendingConversation()');
+    expect(desktopApp).toContain("navigate({ kind: 'inbox' })");
+  });
+
   it('NotificationFeed wires message rows with reply/react and share rows as share type', () => {
     expect(notificationFeed).toContain('type="message"');
     expect(notificationFeed).toContain('onreply=');

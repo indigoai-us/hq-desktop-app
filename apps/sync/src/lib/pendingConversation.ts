@@ -1,14 +1,17 @@
 /**
  * In-window handoff of a "conversation to open" between desktop-alt surfaces
- * (e.g. the Notifications page's "Message the sharer" action) and the
- * MessagesShell mounted on the Messages destination.
+ * and a mounted MessagesShell.
  *
  * The standalone Messages window gets its target via the Rust ready-handshake
  * (`open_messages_window(target)` → `messages:open-conversation` Tauri event);
- * inside ONE desktop window a Rust round-trip is unnecessary — the sender
- * stashes the target here, dispatches `hq:message-person`, and the host
- * navigates to Messages. The shell consumes the stash on mount (it wasn't
- * mounted yet) or on the window event (it was).
+ * inside ONE window a Rust round-trip is unnecessary — the sender stashes the
+ * target here and dispatches `hq:message-person`. Since US-008 the desktop
+ * window hosts no MessagesShell (Messages + Notifications merged into the
+ * Inbox): DesktopApp consumes-and-clears the stash on the event and routes to
+ * the Inbox, where the sender's DM rows carry quick-reply inline — an
+ * unconsumed stash must never leak into the next standalone-window shell
+ * mount. A mounted MessagesShell (standalone window) still consumes the stash
+ * on mount or on the window event.
  */
 
 export interface ConversationTarget {

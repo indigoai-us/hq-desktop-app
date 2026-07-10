@@ -1,5 +1,7 @@
 <script lang="ts">
+  import { onDestroy } from 'svelte';
   import NotificationFeed from '../../components/NotificationFeed.svelte';
+  import { markAllNotificationsRead } from '../../lib/notificationFeedData';
 
   // Combined Inbox (US-008) — messages and notifications in one place. Hosts
   // the SAME NotificationFeed component (shared data plumbing:
@@ -16,6 +18,32 @@
   // component fork.
 
   let unread = $state(0);
+
+  // Viewing the Inbox counts as reading it (notification-center pattern): the
+  // header carries no controls (US-008), so the read watermark advances when
+  // the user LEAVES the surface — navigate-away unmount or window hide — not
+  // while they are still triaging (unread dots stay visible on screen). Gated
+  // on the feed having actually loaded so a flash-visit before data arrives
+  // can't silently swallow unread state. `markAllNotificationsRead` broadcasts
+  // `hq:notifications-read`, which recomputes the sidebar badge in place.
+  let feedLoaded = false;
+
+  function handleUnreadChange(count: number): void {
+    feedLoaded = true;
+    unread = count;
+  }
+
+  function commitRead(): void {
+    if (!feedLoaded) return;
+    markAllNotificationsRead();
+  }
+
+  onDestroy(commitRead);
+
+  $effect(() => {
+    window.addEventListener('pagehide', commitRead);
+    return () => window.removeEventListener('pagehide', commitRead);
+  });
 </script>
 
 <section class="page" aria-labelledby="desktop-page-title" data-testid="desktop-alt-inbox">
@@ -29,7 +57,7 @@
   </div>
 
   <div class="notif-host">
-    <NotificationFeed showDayLabels={true} onunreadchange={(n) => (unread = n)} />
+    <NotificationFeed showDayLabels={true} onunreadchange={handleUnreadChange} />
   </div>
 </section>
 

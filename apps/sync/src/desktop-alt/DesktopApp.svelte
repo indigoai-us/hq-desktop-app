@@ -4,7 +4,7 @@
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { onMount, tick } from 'svelte';
   import { loadMeetingsCache } from '../lib/meetingsCache';
-  import { MESSAGE_PERSON_EVENT } from '../lib/pendingConversation';
+  import { MESSAGE_PERSON_EVENT, takePendingConversation } from '../lib/pendingConversation';
   import { effectiveTotalFiles as computeEffectiveTotalFiles } from '../lib/effective-total-files';
   import type { Workspace, WorkspacesResult } from '../lib/workspaces';
   import HomePage from './pages/HomePage.svelte';
@@ -439,6 +439,12 @@
   let routeBeforeFiles = $state<DesktopRoute>({ kind: 'home' });
 
   function handleMessagePerson(): void {
+    // Consume (and clear) the stashed conversation target: no MessagesShell
+    // mounts inside the desktop window anymore (US-008), so an unconsumed
+    // stash would leak into the next standalone Messages-window shell mount
+    // and open an unexpected conversation there. The Inbox is the in-desktop
+    // messaging surface — the sender's DM rows carry quick-reply inline.
+    takePendingConversation();
     navigate({ kind: 'inbox' });
   }
 
