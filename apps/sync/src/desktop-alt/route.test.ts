@@ -6,9 +6,9 @@ import {
   fromV4Route,
   getDesktopCompanies,
   getDesktopHotkeyRoute,
+  getDesktopLandingRoute,
   getDesktopRouteKey,
   getDesktopSecondarySidebar,
-  initialDesktopRoute,
   isDesktopRouteActive,
   LIBRARY_SECTIONS,
   resolvePendingDesktopRoute,
@@ -42,8 +42,19 @@ function company(overrides: Partial<Workspace>): Workspace {
 }
 
 describe('US-002 V4 desktop routes', () => {
-  it('starts on Home — the exception surface', () => {
-    expect(initialDesktopRoute).toEqual({ kind: 'home' });
+  it('lands on the last-visited company, falling back to the first sidebar company row (US-007)', () => {
+    const workspaces = [
+      company({ slug: 'zed', displayName: 'Zed', state: 'synced' }),
+      company({ slug: 'acme', displayName: 'Acme', state: 'synced' }),
+    ];
+    // Sidebar order is connected-first + alphabetical — Acme is the first row.
+    expect(getDesktopLandingRoute(workspaces, null)).toEqual({ kind: 'company', slug: 'acme' });
+    // A persisted last-visited slug wins while it still exists…
+    expect(getDesktopLandingRoute(workspaces, 'zed')).toEqual({ kind: 'company', slug: 'zed' });
+    // …and is ignored once the workspace disappears.
+    expect(getDesktopLandingRoute(workspaces, 'ghost')).toEqual({ kind: 'company', slug: 'acme' });
+    // No companies at all → Home, the exception surface (palette-only).
+    expect(getDesktopLandingRoute([], null)).toEqual({ kind: 'home' });
   });
 
   it('exposes local-first companies plus the personal page in desktop navigation', () => {
@@ -116,12 +127,11 @@ describe('US-002 V4 desktop routes', () => {
     });
   });
 
-  it('declares the five library sections in SPEC order', () => {
+  it('declares the four library sections in SPEC order — Marketplace is top-level now (US-007)', () => {
     expect(LIBRARY_SECTIONS.map((section) => section.id)).toEqual([
       'skills',
       'workers',
       'installed',
-      'marketplace',
       'profile',
     ]);
   });
@@ -150,38 +160,60 @@ describe('US-002 V4 desktop routes', () => {
   });
 });
 
-describe('US-002 hotkeys — ⌘1..9 over the V4 destinations', () => {
+describe('US-007 hotkeys — ⌘1..9 rebalanced with no dead slots', () => {
   const companies = getDesktopCompanies([
     company({ slug: 'first', displayName: 'First', state: 'synced' }),
     company({ slug: 'second', displayName: 'Second', state: 'synced' }),
   ]);
 
-  it('maps ⌘1–⌘7 to the seven primary destinations in sidebar order, with Notifications under Messages', () => {
+  it('maps ⌘1–⌘5 to the five primary destinations in sidebar order (no Home / Mission Control / Companies slots)', () => {
     const meta = (key: string) => getDesktopHotkeyRoute({ key, metaKey: true, ctrlKey: false }, companies);
-    expect(meta('1')).toEqual({ kind: 'home' });
-    expect(meta('2')).toEqual({ kind: 'mission-control' });
-    expect(meta('3')).toEqual({ kind: 'companies' });
-    expect(meta('4')).toEqual({ kind: 'messages' });
-    expect(meta('5')).toEqual({ kind: 'notifications' });
-    expect(meta('6')).toEqual({ kind: 'meetings' });
-    expect(meta('7')).toEqual({ kind: 'library' });
+    expect(meta('1')).toEqual({ kind: 'messages' });
+    expect(meta('2')).toEqual({ kind: 'notifications' });
+    expect(meta('3')).toEqual({ kind: 'meetings' });
+    expect(meta('4')).toEqual({ kind: 'marketplace' });
+    expect(meta('5')).toEqual({ kind: 'library' });
   });
 
-  it('maps ⌘8+ to companies in list order, ctrl works too, and unmodified keys do nothing', () => {
+  it('maps ⌘6+ to companies in sidebar (connected-first) order, ctrl works too, and unmodified keys do nothing', () => {
     expect(
-      getDesktopHotkeyRoute({ key: '8', metaKey: true, ctrlKey: false }, companies),
+      getDesktopHotkeyRoute({ key: '6', metaKey: true, ctrlKey: false }, companies),
     ).toEqual({ kind: 'company', slug: 'first' });
     expect(
-      getDesktopHotkeyRoute({ key: '9', metaKey: false, ctrlKey: true }, companies),
+      getDesktopHotkeyRoute({ key: '7', metaKey: false, ctrlKey: true }, companies),
     ).toEqual({ kind: 'company', slug: 'second' });
-    // Only two company slots exist (⌘8/⌘9) — a third company gets none.
+    // Only two companies exist — ⌘8/⌘9 stay quiet rather than misfiring.
+    expect(getDesktopHotkeyRoute({ key: '8', metaKey: true, ctrlKey: false }, companies)).toBeNull();
     expect(getDesktopHotkeyRoute({ key: '1', metaKey: false, ctrlKey: false }, companies)).toBeNull();
   });
 
-  it('labels company hotkeys ⌘8–⌘9 and none past the ninth slot', () => {
-    expect(companyHotkey(0)).toBe('⌘8');
-    expect(companyHotkey(1)).toBe('⌘9');
-    expect(companyHotkey(2)).toBeUndefined();
+  it('leaves no dead slot: with four companies every ⌘1–⌘9 key resolves', () => {
+    const four = getDesktopCompanies([
+      company({ slug: 'a', displayName: 'A', state: 'synced' }),
+      company({ slug: 'b', displayName: 'B', state: 'synced' }),
+      company({ slug: 'c', displayName: 'C', state: 'synced' }),
+      company({ slug: 'd', displayName: 'D', state: 'synced' }),
+    ]);
+    for (const key of ['1', '2', '3', '4', '5', '6', '7', '8', '9']) {
+      expect(getDesktopHotkeyRoute({ key, metaKey: true, ctrlKey: false }, four)).not.toBeNull();
+    }
+  });
+
+  it('orders company hotkeys by the rendered sidebar rows, not the raw workspace list', () => {
+    const unsorted = getDesktopCompanies([
+      company({ slug: 'zeta', displayName: 'Zeta', state: 'local-only', cloudUid: null }),
+      company({ slug: 'alpha', displayName: 'Alpha', state: 'synced' }),
+    ]);
+    // Alpha (connected) is the first sidebar row even though Zeta leads the list.
+    expect(
+      getDesktopHotkeyRoute({ key: '6', metaKey: true, ctrlKey: false }, unsorted),
+    ).toEqual({ kind: 'company', slug: 'alpha' });
+  });
+
+  it('labels company hotkeys ⌘6–⌘9 and none past the ninth slot', () => {
+    expect(companyHotkey(0)).toBe('⌘6');
+    expect(companyHotkey(3)).toBe('⌘9');
+    expect(companyHotkey(4)).toBeUndefined();
   });
 });
 
@@ -196,9 +228,11 @@ describe('US-002 pending-route aliases (desktop_alt_consume_pending_route)', () 
     expect(resolvePendingDesktopRoute('notifications')).toEqual({ kind: 'notifications' });
     expect(resolvePendingDesktopRoute('home')).toEqual({ kind: 'home' });
     expect(resolvePendingDesktopRoute('mission-control')).toEqual({ kind: 'mission-control' });
-    expect(resolvePendingDesktopRoute('companies')).toEqual({ kind: 'companies' });
+    expect(resolvePendingDesktopRoute('marketplace')).toEqual({ kind: 'marketplace' });
     expect(resolvePendingDesktopRoute('library')).toEqual({ kind: 'library' });
     expect(resolvePendingDesktopRoute('settings')).toEqual({ kind: 'settings' });
+    // The Companies page is gone (US-007) — a stale intent is ignored, not routed.
+    expect(resolvePendingDesktopRoute('companies')).toBeNull();
     expect(resolvePendingDesktopRoute('bogus')).toBeNull();
     expect(resolvePendingDesktopRoute(null)).toBeNull();
   });
@@ -218,9 +252,9 @@ describe('US-002 pending-route aliases (desktop_alt_consume_pending_route)', () 
       kind: 'company',
       slug: 'indigo',
     });
+    // Legacy Library-tab alias — Marketplace is a top-level destination now (US-007).
     expect(resolvePendingDesktopRoute('library:marketplace')).toEqual({
-      kind: 'library',
-      tab: 'marketplace',
+      kind: 'marketplace',
     });
     expect(resolvePendingDesktopRoute('library:installed')).toEqual({
       kind: 'library',
@@ -241,6 +275,9 @@ describe('US-002 V4Sidebar payload narrowing', () => {
     });
     expect(fromV4Route({ kind: 'settings' })).toEqual({ kind: 'settings' });
     expect(fromV4Route({ kind: 'library' })).toEqual({ kind: 'library' });
+    // Marketplace is a top-level destination (US-007); the Companies kind is gone.
+    expect(fromV4Route({ kind: 'marketplace' })).toEqual({ kind: 'marketplace' });
+    expect(fromV4Route({ kind: 'companies' })).toEqual({ kind: 'home' });
     // Unknown kinds land on Home, mirroring the sidebar model's fallback.
     expect(fromV4Route({ kind: 'mystery' })).toEqual({ kind: 'home' });
   });
@@ -301,17 +338,18 @@ describe('US-002 secondary sidebar — company / library / settings only', () =>
     expect(getDesktopSecondarySidebar({ kind: 'company', slug: 'ghost' }, companies)).toBeNull();
   });
 
-  it('shows the five library sections with the routed tab active', () => {
+  it('shows the four library sections — without Marketplace — with the routed tab active', () => {
     const configuredPath = ['', 'Users', 'corey', 'Documents', 'HQ'].join('/');
     const model = getDesktopSecondarySidebar(
-      { kind: 'library', tab: 'marketplace' },
+      { kind: 'library', tab: 'installed' },
       companies,
       { hqFolderPath: configuredPath },
     );
     expect(model?.surface).toBe('library');
     expect(model?.meta).toBe('~/Documents/HQ');
     expect(model?.items.map((item) => item.id)).toEqual(LIBRARY_SECTIONS.map((s) => s.id));
-    expect(model?.activeId).toBe('marketplace');
+    expect(model?.items.some((item) => item.label === 'Marketplace')).toBe(false);
+    expect(model?.activeId).toBe('installed');
     expect(getDesktopSecondarySidebar({ kind: 'library' }, companies)?.activeId).toBe('skills');
   });
 
@@ -326,11 +364,11 @@ describe('US-002 secondary sidebar — company / library / settings only', () =>
     expect(model?.activeId).toBe('sync');
   });
 
-  it('has no secondary sidebar on Home, Mission Control, Companies, Messages, Meetings, or Moderation', () => {
+  it('has no secondary sidebar on Home, Mission Control, Marketplace, Messages, Meetings, or Moderation', () => {
     for (const kind of [
       'home',
       'mission-control',
-      'companies',
+      'marketplace',
       'messages',
       'meetings',
       'moderation',
@@ -407,16 +445,16 @@ describe('US-006 Mission Control destination', () => {
     expect(fromV4Route({ kind: 'mission-control' })).toEqual({ kind: 'mission-control' });
   });
 
-  it('places Mission Control directly under Home on the ⌘2 hotkey', () => {
+  it('has no ⌘ hotkey slot since US-007 — reachable via the palette intent only', () => {
     const companies = getDesktopCompanies([
       company({ slug: 'first', displayName: 'First', state: 'synced' }),
     ]);
-    expect(getDesktopHotkeyRoute({ key: '1', metaKey: true, ctrlKey: false }, companies)).toEqual({
-      kind: 'home',
-    });
-    expect(getDesktopHotkeyRoute({ key: '2', metaKey: true, ctrlKey: false }, companies)).toEqual({
-      kind: 'mission-control',
-    });
+    for (const key of ['1', '2', '3', '4', '5', '6', '7', '8', '9']) {
+      const routed = getDesktopHotkeyRoute({ key, metaKey: true, ctrlKey: false }, companies);
+      expect(routed?.kind).not.toBe('mission-control');
+      expect(routed?.kind).not.toBe('home');
+    }
+    expect(resolvePendingDesktopRoute('mission-control')).toEqual({ kind: 'mission-control' });
   });
 });
 
@@ -438,7 +476,7 @@ describe('US-012 Mission Control destination — routing coverage gate', () => {
     const route: DesktopRoute = { kind: 'mission-control' };
     for (const other of [
       { kind: 'home' },
-      { kind: 'companies' },
+      { kind: 'marketplace' },
       { kind: 'messages' },
       { kind: 'meetings' },
       { kind: 'library' },

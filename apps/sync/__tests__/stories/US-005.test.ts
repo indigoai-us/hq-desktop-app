@@ -38,7 +38,6 @@ const featureGate = readIfExists('../../crates/hq-desktop-core/src/feature_gate.
 const trayHelper = read('src-tauri/src/tray_helper.rs');
 const trayRs = read('src-tauri/src/tray.rs');
 const settingsPage = read('src/desktop-alt/pages/SettingsPage.svelte');
-const companiesPage = read('src/desktop-alt/pages/CompaniesPage.svelte');
 const notificationsPage = read('src/desktop-alt/pages/NotificationsPage.svelte');
 
 function normalize(source: string): string {
@@ -212,10 +211,9 @@ describe('US-005 acceptance: all previous popover settings and company controls 
     expect(settingsPage).toContain('packUpdateTitle');
   });
 
-  it('CompaniesPage still hosts cloud connect + SyncModeControl', () => {
-    expect(companiesPage).toContain('connect_workspace_to_cloud');
-    expect(companiesPage).toContain('SyncModeControl');
-  });
+  // The Companies page (cloud connect + SyncModeControl) was removed as a
+  // destination by hq-desktop-widget US-007 — companies are reached via their
+  // first-class sidebar rows; cloud-only rows pull via Sync.
 
   it('NotificationsPage still mounts NotificationFeed (notifications not orphaned)', () => {
     expect(notificationsPage).toContain('NotificationFeed');

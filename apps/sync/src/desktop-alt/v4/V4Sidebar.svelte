@@ -13,12 +13,15 @@
 
   /**
    * V4 primary sidebar (SPEC section 4 + chrome-master.png): 220px, raised
-   * background, hairline right border. Nav (Home / Companies / Messages /
-   * Meetings / Library) → COMPANIES section (6px status dot + name per
-   * connected company, scrollable when needed) → Settings footer (13px
-   * "Settings" + muted account email, hairline top border).
+   * background, hairline right border. Nav is Messages / Notifications /
+   * Meetings / Marketplace / Library / Files (US-007: Home, Mission Control
+   * and the Companies page removed; companies reached via their rows) →
+   * COMPANIES section (6px status dot + name per connected company,
+   * scrollable when needed) → Settings footer (13px "Settings" + muted
+   * account email, hairline top border).
    *
-   * Exactly one active row, driven by `route` (see getV4SidebarModel).
+   * At most one active row, driven by `route` (see getV4SidebarModel) —
+   * palette-only surfaces (Home / Mission Control / Moderation) light none.
    * The companies list renders the `list_syncable_workspaces` result: pass it
    * via `companies` when the shell already holds it (DesktopApp does), or omit
    * the prop and the sidebar fetches the command itself on mount.
@@ -87,8 +90,12 @@
     };
   });
 
-  function go(kind: V4NavId | 'settings', slug?: string) {
-    onnavigate?.(slug ? { kind: 'company', slug } : { kind });
+  function go(kind: V4NavId | 'settings') {
+    onnavigate?.({ kind });
+  }
+
+  function goCompany(slug: string) {
+    onnavigate?.({ kind: 'company', slug });
   }
 </script>
 
@@ -121,7 +128,7 @@
           class="v4-row v4-company-row"
           class:active={row.active}
           aria-current={row.active ? 'page' : undefined}
-          onclick={() => go('companies', row.slug)}
+          onclick={() => goCompany(row.slug)}
         >
           <span class={`v4-dot ${row.tone}`} aria-hidden="true"></span>
           <span class="v4-company-name">{row.label}</span>

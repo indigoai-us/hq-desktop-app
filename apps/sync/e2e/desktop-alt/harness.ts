@@ -268,9 +268,10 @@ export class DesktopAltHarness implements DesktopAltTestHarness {
     const desktopApp = readRepoFile('src/desktop-alt/DesktopApp.svelte');
     const route = readRepoFile('src/desktop-alt/route.ts');
 
-    // V4 IA (US-002): Home is the initial surface; the legacy 'sync' pending-
-    // route alias stays functional by resolving to Home.
-    expect(route).toContain("export const initialDesktopRoute: DesktopRoute = { kind: 'home' }");
+    // US-007 IA: the desktop lands on the last-visited company (persisted),
+    // falling back to the first sidebar company row; the legacy 'sync'
+    // pending-route alias stays functional by resolving to Home.
+    expect(route).toContain('export function getDesktopLandingRoute(');
     expect(route).toContain("case 'sync':");
     expect(desktopApp).toContain("route.kind === 'home'");
     expect(desktopApp).toContain("route.kind === 'meetings'");

@@ -11,10 +11,10 @@
   import MissionControlPage from './pages/MissionControlPage.svelte';
   import MeetingsPage from './pages/MeetingsPage.svelte';
   import LibraryPage from './pages/LibraryPage.svelte';
+  import MarketplacePage from './pages/MarketplacePage.svelte';
   import MessagesPage from './pages/MessagesPage.svelte';
   import NotificationsPage from './pages/NotificationsPage.svelte';
   import CompanyPage from './pages/CompanyPage.svelte';
-  import CompaniesPage from './pages/CompaniesPage.svelte';
   import SettingsPage from './pages/SettingsPage.svelte';
   import ModerationPanel from './panels/ModerationPanel.svelte';
   import { startMeetingsStore } from './lib/meetings-store.svelte';
@@ -35,16 +35,16 @@
     getDesktopActiveCompany,
     getDesktopCompanies,
     getDesktopHotkeyRoute,
+    getDesktopLandingRoute,
     getDesktopRouteKey,
     getDesktopSecondarySidebar,
-    initialDesktopRoute,
     resolvePendingDesktopRoute,
     type CompanyTab,
     type DesktopRoute,
     type LibraryTab,
     type SettingsTab,
   } from './route';
-  import { V4_CHROME_LAYOUT } from './v4/model';
+  import { sortV4CompaniesConnectedFirst, V4_CHROME_LAYOUT } from './v4/model';
   import type { HomeConflict, HomeCoreState } from './v4/home-model';
   import V4Sidebar from './v4/V4Sidebar.svelte';
   import FilesModeSidebar from './v4/FilesModeSidebar.svelte';
@@ -81,6 +81,16 @@
 
   const WORKSPACE_CACHE_KEY = 'hq-sync.desktop.workspaces.v1';
   const ROUTE_CACHE_KEY = 'hq-sync.desktop.route.v1';
+  const LAST_COMPANY_CACHE_KEY = 'hq-sync.desktop.last-company.v1';
+
+  // Last-visited company slug (US-007) — the desktop lands here on next open.
+  function readLastCompanySlug(): string | null {
+    try {
+      return window.localStorage.getItem(LAST_COMPANY_CACHE_KEY);
+    } catch {
+      return null;
+    }
+  }
 
   // Reload survival for Files mode (US-009): persist the files route so a
   // desktop-alt window reload returns to the same company + selected file. Only
@@ -129,7 +139,20 @@
   const cachedWorkspaces = readCachedWorkspaces();
   const cachedCompanies = getDesktopCompanies(cachedWorkspaces);
 
-  let route = $state<DesktopRoute>(initialDesktopRoute);
+  // The persisted last-visited slug, frozen at startup: the auto-landing must
+  // keep honoring the value from the PREVIOUS session even while this session's
+  // provisional (cache-based) landing settles (US-007).
+  const initialLastCompanySlug = readLastCompanySlug();
+  let route = $state<DesktopRoute>(
+    getDesktopLandingRoute(cachedWorkspaces, initialLastCompanySlug),
+  );
+  // True once the user (or a pending backend intent) navigated explicitly — the
+  // landing re-resolve in loadWorkspaces() must not clobber it (US-007).
+  let userNavigated = false;
+  // True after the first LIVE workspace load has confirmed the landing. Later
+  // background refreshes (focus, post-sync) must never move an idle user just
+  // because the company list changed shape.
+  let landingResolved = false;
   // Admin gate for the Moderation nav entry (UX only; the server is the sole
   // authorization boundary). DEFAULT-DENY: starts false and only flips true on an
   // explicit `desktop_alt_is_admin === true` (@getindigo.ai), so the row never
@@ -138,10 +161,6 @@
   let isAdmin = $state(false);
   let workspaces = $state<Workspace[]>(cachedWorkspaces);
   let workspaceError = $state<string | null>(null);
-  // Whether the last workspace fetch reached the vault. Drives Companies-page
-  // write gating (Connect / Retry / sync-mode toggle) + a quiet notice. Assume
-  // reachable until a fetch says otherwise so we never gate on a cold cache.
-  let cloudReachable = $state(true);
   let syncState = $state<SyncState>('idle');
   let syncProgress = $state<SyncProgress | null>(null);
   let syncFanoutTotal = $state(0);
@@ -208,6 +227,7 @@
         ? companies
         : getDesktopCompanies(workspaces),
   );
+  const orderedCompanies = $derived(sortV4CompaniesConnectedFirst(shellCompanies));
   const watchedWorkspaceCount = $derived(shellCompanies.length);
   const routeKey = $derived(getDesktopRouteKey(route));
   const activeCompany = $derived(getDesktopActiveCompany(route, shellCompanies));
@@ -305,49 +325,47 @@
       id: 'command-go-home',
       label: 'Go to Home',
       detail: 'Sync health and activity',
-      shortcut: '⌘1',
       action: () => navigate({ kind: 'home' }),
     },
     {
       id: 'command-go-mission-control',
       label: 'Go to Mission Control',
       detail: 'Live + historical view of running agent sessions',
-      shortcut: '⌘2',
       action: () => navigate({ kind: 'mission-control' }),
-    },
-    {
-      id: 'command-go-companies',
-      label: 'Go to Companies',
-      detail: 'Connected companies overview',
-      shortcut: '⌘3',
-      action: () => navigate({ kind: 'companies' }),
     },
     {
       id: 'command-go-messages',
       label: 'Go to Messages',
       detail: 'Direct messages and channels',
-      shortcut: '⌘4',
+      shortcut: '⌘1',
       action: () => navigate({ kind: 'messages' }),
     },
     {
       id: 'command-go-notifications',
       label: 'Go to Notifications',
       detail: 'DMs, shares, and new-file activity',
-      shortcut: '⌘5',
+      shortcut: '⌘2',
       action: () => navigate({ kind: 'notifications' }),
     },
     {
       id: 'command-go-meetings',
       label: 'Go to Meetings',
       detail: 'Show calendar and recordings',
-      shortcut: '⌘6',
+      shortcut: '⌘3',
       action: () => navigate({ kind: 'meetings' }),
+    },
+    {
+      id: 'command-go-marketplace',
+      label: 'Go to Marketplace',
+      detail: 'Discover and install skills and workers',
+      shortcut: '⌘4',
+      action: () => navigate({ kind: 'marketplace' }),
     },
     {
       id: 'command-go-library',
       label: 'Go to Library',
-      detail: 'Skills, workers, and the marketplace',
-      shortcut: '⌘7',
+      detail: 'Skills, workers, and installed packs',
+      shortcut: '⌘5',
       action: () => navigate({ kind: 'library' }),
     },
     ...LIBRARY_SECTIONS.filter((section) => section.id !== DEFAULT_LIBRARY_TAB).map(
@@ -390,21 +408,22 @@
           },
         ]
       : []),
-    ...shellCompanies.flatMap((company, index) => [
+    // Companies start at ⌘6 (after the five primary destinations), in sidebar
+    // (connected-first) order.
+    ...orderedCompanies.flatMap((row, index) => [
       {
-        id: `command-go-company-${company.slug}`,
-        label: `Go to ${company.displayName}`,
+        id: `command-go-company-${row.slug}`,
+        label: `Go to ${row.label}`,
         detail: 'Show company overview',
-        // Companies start at ⌘6 (after the five primary destinations).
         shortcut: companyHotkey(index),
-        action: () => navigate({ kind: 'company', slug: company.slug }),
+        action: () => navigate({ kind: 'company', slug: row.slug }),
       },
       ...COMPANY_SECTIONS.filter((section) => section.id !== DEFAULT_COMPANY_TAB).map(
         (section) => ({
-          id: `command-go-company-${company.slug}-${section.id}`,
-          label: `Go to ${company.displayName} ${section.label}`,
-          detail: `Show ${company.displayName} ${section.label.toLowerCase()}`,
-          action: () => navigate({ kind: 'company', slug: company.slug, tab: section.id }),
+          id: `command-go-company-${row.slug}-${section.id}`,
+          label: `Go to ${row.label} ${section.label}`,
+          detail: `Show ${row.label} ${section.label.toLowerCase()}`,
+          action: () => navigate({ kind: 'company', slug: row.slug, tab: section.id }),
         }),
       ),
     ]),
@@ -432,6 +451,7 @@
   }
 
   function navigate(nextRoute: DesktopRoute) {
+    userNavigated = true;
     // Remember where we were before entering Files mode so the exit control can
     // restore it. US-010: Files now defaults to the HQ ROOT tree (no company),
     // so a slug-less files route is the intended default — do NOT auto-pick a
@@ -461,6 +481,20 @@
       }
     } catch {
       // Best-effort persistence only.
+    }
+  });
+
+  // Persist the last-visited company for the US-007 landing rule. Gated on an
+  // explicit navigation: the auto-landing itself must not overwrite the stored
+  // slug (a cache-based fallback landing would otherwise clobber the real
+  // last-visited company before the live workspace list can restore it).
+  $effect(() => {
+    if (route.kind === 'company' && userNavigated) {
+      try {
+        window.localStorage.setItem(LAST_COMPANY_CACHE_KEY, route.slug);
+      } catch {
+        /* best-effort */
+      }
     }
   });
 
@@ -544,7 +578,6 @@
       renderCompanies = nextCompanies;
       renderWorkspaceCount = nextCompanies.length;
       workspaceError = result.error;
-      cloudReachable = result.cloudReachable;
       writeCachedWorkspaces(result.workspaces);
       // The chrome (V4Sidebar / V4TitleBar / DesktopStatusBar) consumes
       // renderCompanies + renderWorkspaceCount reactively ($derived / $props),
@@ -563,6 +596,24 @@
           .map((company) => company.slug),
       );
       if (nextCompanies.length > 0) queueDesktopRenderAudit();
+      // Re-resolve the default landing on the FIRST live workspace load
+      // (US-007): a cold/partial cache may have landed on Home or on a
+      // fallback company while the true last-visited company only exists in
+      // the live list. Never clobber an explicit navigation, and never re-run
+      // on later background refreshes — only this one confirmation pass may
+      // move the route, and only when the resolved landing actually differs.
+      if (!userNavigated && !landingResolved) {
+        const landing = getDesktopLandingRoute(result.workspaces, initialLastCompanySlug);
+        const current = route;
+        const alreadyThere =
+          current.kind === landing.kind &&
+          (landing.kind !== 'company' ||
+            (current.kind === 'company' && current.slug === landing.slug));
+        if (!alreadyThere) {
+          route = landing;
+        }
+      }
+      landingResolved = true;
     } catch (err) {
       console.error('list_syncable_workspaces failed:', err);
       workspaceError = String(err);
@@ -1270,18 +1321,6 @@
             <div class="page">
               <MissionControlPage />
             </div>
-          {:else if route.kind === 'companies'}
-            <div class="page">
-              <CompaniesPage
-                {workspaces}
-                {ready}
-                {autoSyncOn}
-                {workspaceError}
-                {cloudReachable}
-                onopencompany={(slug) => navigate({ kind: 'company', slug })}
-                onrefresh={() => void loadWorkspaces()}
-              />
-            </div>
           {:else if route.kind === 'meetings'}
             <div class="page">
               <MeetingsPage />
@@ -1289,6 +1328,10 @@
           {:else if route.kind === 'library'}
             <div class="page">
               <LibraryPage tab={libraryTab} />
+            </div>
+          {:else if route.kind === 'marketplace'}
+            <div class="page">
+              <MarketplacePage />
             </div>
           {:else if route.kind === 'settings'}
             <div class="page">

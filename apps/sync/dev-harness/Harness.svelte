@@ -3,7 +3,6 @@
   import Popover from '../src/components/Popover.svelte';
   import BannerNotification from '../src/components/BannerNotification.svelte';
   import CompanyPage from '../src/desktop-alt/pages/CompanyPage.svelte';
-  import CompaniesPage from '../src/desktop-alt/pages/CompaniesPage.svelte';
   import HomePage from '../src/desktop-alt/pages/HomePage.svelte';
   import DesktopApp from '../src/desktop-alt/DesktopApp.svelte';
   import MeetingPermissionsWindow from '../src/components/MeetingPermissionsWindow.svelte';
@@ -98,7 +97,7 @@
     'data-window',
     view === 'banner'
       ? 'dm-banner'
-      : view === 'company' || view === 'desktop' || view === 'companies' || view === 'home'
+      : view === 'company' || view === 'desktop' || view === 'home'
         ? 'desktop-alt'
         : view === 'permissions'
           ? 'meeting-permissions'
@@ -179,19 +178,6 @@
       meetingEvents={homeMeetings}
       companyNamesByUid={homeCompanyNames}
       onopencompany={() => {}}
-    />
-  </div>
-{:else if view === 'companies'}
-  <!-- The desktop Companies page in isolation (DesktopApp is auth-gated). Drives
-       the per-company Shared/All sync-mode toggle, the All→Shared confirm, and
-       the cloud-unreachable gating. Append ?cloud=off to preview the offline
-       notice + disabled writes. Resize the viewport to ~1180x720. -->
-  <div class="desktop-stage">
-    <CompaniesPage
-      {workspaces}
-      cloudReachable={params.get('cloud') !== 'off'}
-      onopencompany={() => {}}
-      onrefresh={() => {}}
     />
   </div>
 {:else}

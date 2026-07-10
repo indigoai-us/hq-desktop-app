@@ -1,7 +1,7 @@
 <script lang="ts">
   /**
    * MessagesPage — the desktop-alt Messages surface (a top-level destination,
-   * ⌘4). A thin host that mounts the SAME <MessagesShell/> used by the
+   * ⌘1). A thin host that mounts the SAME <MessagesShell/> used by the
    * standalone Messages window (one implementation, two hosts — US-019). The
    * shell owns the segmented rail (DMs / Requests / Channels), the shared
    * <Conversation> pane, and channels; this page only gives it a full-bleed box
