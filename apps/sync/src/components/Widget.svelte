@@ -22,7 +22,12 @@
     bannerToStackItem,
     dismissItem,
     expireItems,
+    hoverItems,
+    hoverRows,
+    markQueueSeen,
+    markRecentRead,
     setOccluded,
+    widgetHoverWindowSize,
     widgetWindowSize,
   } from '../stores/widgetNotifications';
 
@@ -38,23 +43,107 @@
 
   // Capture once on mount — tests seed rows; runtime stack is event-driven.
   let stack = $state<WidgetStackState>(
-    untrack(() => ({
-      visible: initialItems.length > 0 ? initialItems.map((i) => ({ ...i })) : [],
-      queued: [],
-      occluded: false,
-    })),
+    untrack(() => {
+      const seeded =
+        initialItems.length > 0 ? initialItems.map((i) => ({ ...i })) : [];
+      return {
+        visible: seeded,
+        queued: [],
+        // Seed recent so hover list works with initialItems (tests + cold start).
+        recent: seeded.map((i) => ({ ...i, unread: i.unread ?? true })),
+        occluded: false,
+      };
+    }),
   );
 
-  /** Superscript shows real queue length, falling back to the prop seed. */
-  const queuedCount = $derived(stack.queued.length > 0 ? stack.queued.length : queued);
+  /**
+   * Superscript shows real queue length, falling back to the prop seed —
+   * but once hover has opened (markQueueSeen / hoverSeen), prop seed is ignored
+   * so the count actually clears.
+   */
+  let hoverSeen = $state(false);
+  const queuedCount = $derived(
+    stack.queued.length > 0 ? stack.queued.length : hoverSeen ? 0 : queued,
+  );
 
   let idSeq = 0;
   let expiryTimer: ReturnType<typeof setInterval> | undefined;
   /** Last size sent to `resize_widget` (non-reactive — avoids effect loops). */
   let lastSent: { width: number; height: number } | null = null;
 
+  /** Hover recent-list open state + collapse delay timer. */
+  let hoverOpen = $state(false);
+  let hoverCloseTimer: ReturnType<typeof setTimeout> | undefined;
+
+  /** Tracks native focusable state (non-reactive — avoids effect loops). */
+  let widgetFocusable = false;
+
+  const hoverList = $derived(
+    hoverOpen ? hoverRows(hoverItems(stack), Date.now()) : [],
+  );
+
   function hasTauri(): boolean {
     return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+  }
+
+  /**
+   * Temporarily make the widget window key so the quick-reply input can type.
+   * Restored to false on send/dismiss/pointerleave. No-ops without Tauri or
+   * when the requested state matches the last sent value.
+   */
+  async function setWidgetFocusable(on: boolean): Promise<void> {
+    if (!hasTauri()) return;
+    if (widgetFocusable === on) return;
+    widgetFocusable = on;
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('set_widget_focusable', { focusable: on });
+    } catch (err) {
+      console.error('widget: set_widget_focusable failed', err);
+      // Roll back local flag so a retry can re-invoke.
+      widgetFocusable = !on;
+    }
+  }
+
+  function handlePointerDownCapture(e: PointerEvent): void {
+    if ((e.target as HTMLElement | null)?.closest?.('input')) {
+      void setWidgetFocusable(true);
+    }
+  }
+
+  function handleFocusInCapture(e: FocusEvent): void {
+    if ((e.target as HTMLElement | null)?.tagName === 'INPUT') {
+      void setWidgetFocusable(true);
+    }
+  }
+
+  function openHoverList(): void {
+    if (hoverCloseTimer !== undefined) {
+      clearTimeout(hoverCloseTimer);
+      hoverCloseTimer = undefined;
+    }
+    if (hoverOpen) return;
+    hoverOpen = true;
+    hoverSeen = true;
+    applyStack(markQueueSeen(stack));
+  }
+
+  function cancelHoverClose(): void {
+    if (hoverCloseTimer !== undefined) {
+      clearTimeout(hoverCloseTimer);
+      hoverCloseTimer = undefined;
+    }
+  }
+
+  function scheduleHoverClose(): void {
+    if (hoverCloseTimer !== undefined) {
+      clearTimeout(hoverCloseTimer);
+    }
+    hoverCloseTimer = setTimeout(() => {
+      hoverOpen = false;
+      hoverCloseTimer = undefined;
+      stack = markRecentRead(stack);
+    }, 450);
   }
 
   function applyStack(next: WidgetStackState): void {
@@ -111,6 +200,7 @@
 
   function handleDismiss(id: string): void {
     applyStack(dismissItem(stack, id));
+    void setWidgetFocusable(false);
   }
 
   /**
@@ -128,6 +218,8 @@
       await invoke('send_dm', { toPersonUid: peer, body: text.trim() });
     } catch (err) {
       console.error('widget: send_dm failed', err);
+    } finally {
+      void setWidgetFocusable(false);
     }
   }
 
@@ -142,6 +234,7 @@
     if (!hasTauri()) {
       return () => {
         if (expiryTimer !== undefined) clearInterval(expiryTimer);
+        if (hoverCloseTimer !== undefined) clearTimeout(hoverCloseTimer);
       };
     }
 
@@ -182,13 +275,28 @@
         clearInterval(expiryTimer);
         expiryTimer = undefined;
       }
+      if (hoverCloseTimer !== undefined) {
+        clearTimeout(hoverCloseTimer);
+        hoverCloseTimer = undefined;
+      }
     };
   });
 
-  // Grow/shrink the native window with the visible stack (lower-right anchor
-  // stays fixed in Rust). Only when Tauri is present and size actually changed.
+  // Grow/shrink the native window with the visible stack / hover list
+  // (lower-right anchor stays fixed in Rust). Only when Tauri is present and
+  // size actually changed.
   $effect(() => {
-    const size = widgetWindowSize(stack);
+    let size: { width: number; height: number };
+    if (hoverOpen) {
+      const items = hoverItems(stack);
+      const rows = hoverRows(items, Date.now());
+      size = widgetHoverWindowSize(
+        items,
+        rows.filter((r) => r.separator).length,
+      );
+    } else {
+      size = widgetWindowSize(stack);
+    }
     if (!hasTauri()) return;
     if (
       lastSent &&
@@ -209,8 +317,42 @@
   });
 </script>
 
-<div class="wg">
-  {#if stack.visible.length > 0}
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div
+  class="wg"
+  onpointerdowncapture={handlePointerDownCapture}
+  onfocusincapture={handleFocusInCapture}
+  onpointerenter={cancelHoverClose}
+  onpointerleave={() => {
+    scheduleHoverClose();
+    void setWidgetFocusable(false);
+  }}
+>
+  {#if hoverOpen && hoverList.length > 0}
+    <div class="hover-list frost-panel" data-testid="widget-hover-list">
+      {#each hoverList as row (row.item.id)}
+        {#if row.separator}<div class="hl-sep">{row.separator}</div>{/if}
+        <div class="hl-row">
+          <NotificationRow
+            type={row.item.type as NotificationRowType}
+            actor={row.item.actor}
+            text={row.item.text}
+            ts={row.item.ts}
+            unread={row.item.unread ?? false}
+            onopen={() => void handleOpen(row.item)}
+            onreply={row.item.kind === 'dm'
+              ? (text) => void replyDm(row.item, text)
+              : undefined}
+            onreact={row.item.kind === 'dm'
+              ? (emoji) => void reactDm(row.item, emoji)
+              : undefined}
+          />
+        </div>
+      {/each}
+    </div>
+  {/if}
+
+  {#if stack.visible.length > 0 && !hoverOpen}
     <div class="stack" data-testid="widget-stack">
       {#each stack.visible as item (item.id)}
         <div class="frost" data-kind={item.kind}>
@@ -229,7 +371,8 @@
     </div>
   {/if}
 
-  <span class="wm">
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <span class="wm" onmouseenter={openHoverList}>
     <!-- Flat monochrome HQ wordmark (src/assets/hq-mark.svg, inlined so it
          inherits `currentColor` and needs no bundler asset wiring). -->
     <svg
@@ -316,6 +459,52 @@
     --popover-unread: var(--qd-fg, #0064d6);
     --popover-surface: var(--reply-bg);
     --popover-divider: var(--reply-border);
+  }
+
+  /* Hover recent-notification list — single frosted panel above the mark. */
+  .hover-list {
+    width: 244px;
+    border-radius: 10px;
+    background: var(--row-bg);
+    -webkit-backdrop-filter: blur(26px) saturate(1.7);
+    backdrop-filter: blur(26px) saturate(1.7);
+    border: 0.5px solid var(--row-border);
+    box-shadow: var(--row-shadow), inset 0 1px 0 var(--row-highlight);
+    padding: 6px 4px;
+    margin-bottom: 12px;
+    display: flex;
+    flex-direction: column;
+    box-sizing: border-box;
+    flex-shrink: 0;
+    /* Bridge NotificationRow's popover tokens (same as .frost). */
+    --popover-text: var(--row-fg);
+    --popover-text-muted: var(--row-muted);
+    --popover-action-hover: var(--row-hover-bg);
+    --popover-unread: var(--qd-fg, #0064d6);
+    --popover-surface: var(--reply-bg);
+    --popover-divider: var(--reply-border);
+  }
+
+  .hl-sep {
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--row-muted);
+    padding: 4px 11px 2px;
+  }
+
+  .hl-row :global(.nr) {
+    min-height: 26px;
+    font-size: 11px;
+    background: transparent;
+    color: var(--row-fg);
+    width: 100%;
+    box-sizing: border-box;
+  }
+
+  .hl-row :global(.nr-ts) {
+    font-size: 10px;
   }
 
   /* Row sits transparent on the frost; hover uses row-bg-hover. */

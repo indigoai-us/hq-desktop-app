@@ -48,6 +48,21 @@ export const WIDGET_TOP_HEADROOM = 10;
  */
 export const WIDGET_MESSAGE_EXPAND_HEADROOM = 110;
 
+/** Cap for the recent-notification history list (hover + future surfaces). */
+export const WIDGET_RECENT_MAX = 20;
+
+/** Max rows shown in the wordmark hover list. */
+export const WIDGET_HOVER_MAX = 8;
+
+/** Compact hover-list row height. */
+export const WIDGET_HOVER_ROW_HEIGHT = 26;
+
+/** Day-separator row height in the hover list. */
+export const WIDGET_HOVER_SEPARATOR_HEIGHT = 18;
+
+/** Vertical padding inside the hover frosted panel. */
+export const WIDGET_HOVER_LIST_PADDING = 12;
+
 /** NotificationRow-compatible type strings. */
 export type WidgetRowType =
   | 'message'
@@ -96,18 +111,22 @@ export interface WidgetStackItem {
   actionLabel?: string | null;
   /** Epoch ms — visible items with `expiresAt <= now` are dropped. */
   expiresAt: number;
+  /** Unread marker for recent/hover list (set true on addItem). */
+  unread?: boolean;
 }
 
 /** Full stack state owned by Widget.svelte. */
 export interface WidgetStackState {
   visible: WidgetStackItem[];
   queued: WidgetStackItem[];
+  /** Newest-first recent history (includes items that also sit in visible/queued). */
+  recent: WidgetStackItem[];
   occluded: boolean;
 }
 
 /** Empty non-occluded stack. */
 export function emptyWidgetStack(): WidgetStackState {
-  return { visible: [], queued: [], occluded: false };
+  return { visible: [], queued: [], recent: [], occluded: false };
 }
 
 /**
@@ -165,22 +184,32 @@ function joinTitleBody(title: string, body: string | undefined): string {
   return t || b;
 }
 
+/** Prepend into recent history: unread, dedupe by id, trim to max. */
+function prependRecent(recent: WidgetStackItem[], item: WidgetStackItem): WidgetStackItem[] {
+  const entry: WidgetStackItem = { ...item, unread: true };
+  return [entry, ...recent.filter((r) => r.id !== item.id)].slice(0, WIDGET_RECENT_MAX);
+}
+
 /**
  * Enqueue or show a notification. When occluded, push onto `queued` (newest
  * first); otherwise prepend to `visible` and trim to {@link WIDGET_STACK_MAX}.
+ * Always also prepends into `recent` (unread, deduped, capped).
  */
 export function addItem(state: WidgetStackState, item: WidgetStackItem): WidgetStackState {
+  const recent = prependRecent(state.recent, item);
   if (state.occluded) {
     return {
       ...state,
       visible: state.visible.slice(),
       queued: [item, ...state.queued],
+      recent,
     };
   }
   return {
     ...state,
     queued: state.queued.slice(),
     visible: [item, ...state.visible].slice(0, WIDGET_STACK_MAX),
+    recent,
   };
 }
 
@@ -200,6 +229,7 @@ export function setOccluded(
       occluded: true,
       visible: state.visible.slice(),
       queued: state.queued.slice(),
+      recent: state.recent.slice(),
     };
   }
 
@@ -210,6 +240,7 @@ export function setOccluded(
       occluded: false,
       visible: state.visible.slice(),
       queued: state.queued.slice(),
+      recent: state.recent.slice(),
     };
   }
 
@@ -224,10 +255,11 @@ export function setOccluded(
     occluded: false,
     visible,
     queued: [],
+    recent: state.recent.slice(),
   };
 }
 
-/** Drop visible items whose `expiresAt <= now`. Queued is untouched. */
+/** Drop visible items whose `expiresAt <= now`. Queued/recent are untouched. */
 export function expireItems(state: WidgetStackState, now: number): WidgetStackState {
   const visible = state.visible.filter((item) => item.expiresAt > now);
   if (visible.length === state.visible.length) {
@@ -237,16 +269,112 @@ export function expireItems(state: WidgetStackState, now: number): WidgetStackSt
     ...state,
     visible,
     queued: state.queued.slice(),
+    recent: state.recent.slice(),
   };
 }
 
-/** Remove an item from visible and queued by id. */
+/** Remove an item from visible and queued by id. Recent history is kept. */
 export function dismissItem(state: WidgetStackState, id: string): WidgetStackState {
   return {
     ...state,
     visible: state.visible.filter((item) => item.id !== id),
     queued: state.queued.filter((item) => item.id !== id),
+    recent: state.recent.slice(),
   };
+}
+
+/**
+ * Clear the queued stack after the user has seen it via the hover list.
+ * Items remain in `recent`. No-op when queued is already empty.
+ */
+export function markQueueSeen(state: WidgetStackState): WidgetStackState {
+  if (state.queued.length === 0) {
+    return state;
+  }
+  return {
+    ...state,
+    visible: state.visible.slice(),
+    queued: [],
+    recent: state.recent.slice(),
+  };
+}
+
+/**
+ * Mark every recent item as read (unread=false). No-op when none are unread.
+ */
+export function markRecentRead(state: WidgetStackState): WidgetStackState {
+  if (!state.recent.some((r) => r.unread)) {
+    return state;
+  }
+  return {
+    ...state,
+    visible: state.visible.slice(),
+    queued: state.queued.slice(),
+    recent: state.recent.map((r) => (r.unread ? { ...r, unread: false } : r)),
+  };
+}
+
+/**
+ * Rows for the wordmark hover list: recent (already includes queued+visible via
+ * addItem), newest first, capped to {@link WIDGET_HOVER_MAX}.
+ */
+export function hoverItems(state: WidgetStackState): WidgetStackItem[] {
+  return state.recent.slice(0, WIDGET_HOVER_MAX);
+}
+
+/**
+ * Day label for hover separators. `null` when same calendar day as `now`
+ * (TODAY implied), `'YESTERDAY'` for the previous calendar day, else an
+ * uppercase short date (`en-US` month + day).
+ */
+export function dayLabel(ts: number, now: number): string | null {
+  const d = new Date(ts);
+  const n = new Date(now);
+  if (
+    d.getFullYear() === n.getFullYear() &&
+    d.getMonth() === n.getMonth() &&
+    d.getDate() === n.getDate()
+  ) {
+    return null;
+  }
+
+  const y = new Date(now);
+  y.setDate(y.getDate() - 1);
+  if (
+    d.getFullYear() === y.getFullYear() &&
+    d.getMonth() === y.getMonth() &&
+    d.getDate() === y.getDate()
+  ) {
+    return 'YESTERDAY';
+  }
+
+  return new Date(ts).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }).toUpperCase();
+}
+
+/**
+ * Walk hover items (newest first) and attach a day separator the first time the
+ * day label changes from the previous row. First row: separator is null when
+ * today; otherwise the day label itself.
+ */
+export function hoverRows(
+  items: WidgetStackItem[],
+  now: number,
+): Array<{ separator: string | null; item: WidgetStackItem }> {
+  const out: Array<{ separator: string | null; item: WidgetStackItem }> = [];
+  let prevLabel: string | null | undefined;
+  for (const item of items) {
+    const label = dayLabel(item.ts, now);
+    let separator: string | null = null;
+    if (prevLabel === undefined) {
+      // First row — null when today; label when older.
+      separator = label;
+    } else if (label !== prevLabel) {
+      separator = label;
+    }
+    out.push({ separator, item });
+    prevLabel = label;
+  }
+  return out;
 }
 
 /**
@@ -270,6 +398,36 @@ export function widgetWindowSize(state: WidgetStackState): { width: number; heig
     WIDGET_TOP_HEADROOM;
 
   if (state.visible.some((item) => item.type === 'message')) {
+    height += WIDGET_MESSAGE_EXPAND_HEADROOM;
+  }
+
+  return { width: WIDGET_STACK_WIDTH, height };
+}
+
+/**
+ * Window size while the wordmark hover list is open.
+ * Empty items → idle 66×43. Otherwise width stack width; height from mark +
+ * margins + list padding + compact rows + gaps + separators (+ message
+ * expand headroom so quick-reply hover-expand never clips).
+ */
+export function widgetHoverWindowSize(
+  items: WidgetStackItem[],
+  separators: number,
+): { width: number; height: number } {
+  if (items.length === 0) {
+    return { width: WIDGET_IDLE_WIDTH, height: WIDGET_IDLE_HEIGHT };
+  }
+
+  let height =
+    WIDGET_MARK_AREA +
+    WIDGET_STACK_MARGIN_BOTTOM +
+    WIDGET_TOP_HEADROOM +
+    WIDGET_HOVER_LIST_PADDING +
+    items.length * WIDGET_HOVER_ROW_HEIGHT +
+    (items.length > 1 ? (items.length - 1) * WIDGET_ROW_GAP : 0) +
+    separators * WIDGET_HOVER_SEPARATOR_HEIGHT;
+
+  if (items.some((item) => item.type === 'message')) {
     height += WIDGET_MESSAGE_EXPAND_HEADROOM;
   }
 
