@@ -234,14 +234,35 @@ fn current_widget_size() -> (f64, f64) {
 
 // ── Anchoring ───────────────────────────────────────────────────────────────────
 
-/// Compute the lower-right anchor for the widget window.
+/// Pure lower-right anchor in tao/tauri logical coords (top-left origin, y-down).
+///
+/// Cocoa's `visibleFrame` uses bottom-left origin with y-up. The widget's Cocoa
+/// lower-left sits at `(vf_origin_x + vf_width - w - MARGIN_RIGHT, vf_origin_y +
+/// MARGIN_BOTTOM)`. Converting to tao: `y = primary_height - (y_cocoa + h)`.
+/// Because the window grows up/left from that corner, the lower-right screen
+/// point `(x + w, y + h)` is invariant across sizes for a fixed visibleFrame.
+///
+/// cfg-independent so unit tests run on every host.
+fn anchor_lower_right(
+    vf_origin_x: f64,
+    vf_origin_y: f64,
+    vf_width: f64,
+    primary_height: f64,
+    w: f64,
+    h: f64,
+) -> (f64, f64) {
+    let x = vf_origin_x + vf_width - w - MARGIN_RIGHT;
+    let y_cocoa = vf_origin_y + MARGIN_BOTTOM;
+    (x, primary_height - (y_cocoa + h))
+}
+
+/// Compute the lower-right anchor for the widget window using `w`×`h`.
 ///
 /// On macOS, uses `NSScreen.visibleFrame` (Dock/menu-bar aware) on the main
 /// thread. Falls back to Tauri monitor APIs when Cocoa fails or off-macOS.
-/// Uses the current tracked size so re-anchors keep the lower-right fixed
-/// when the window has grown for notification rows.
-fn widget_position(app: &AppHandle) -> tauri::LogicalPosition<f64> {
-    let (w, h) = current_widget_size();
+/// Callers that need size and position to stay matched (e.g. `resize_widget`)
+/// must pass the same `(w, h)` they apply via `set_size`.
+fn widget_position_for(app: &AppHandle, w: f64, h: f64) -> tauri::LogicalPosition<f64> {
     #[cfg(target_os = "macos")]
     if let Some(pos) = widget_position_cocoa(w, h) {
         return pos;
@@ -249,9 +270,15 @@ fn widget_position(app: &AppHandle) -> tauri::LogicalPosition<f64> {
     widget_position_fallback(app, w, h)
 }
 
+/// Anchor using the currently tracked widget size (setup / re-anchor paths).
+fn widget_position(app: &AppHandle) -> tauri::LogicalPosition<f64> {
+    let (w, h) = current_widget_size();
+    widget_position_for(app, w, h)
+}
+
 /// macOS: lower-right of the configured screen's `visibleFrame`, converted
 /// from Cocoa bottom-left coords to tao/tauri top-left logical coords.
-/// `w`/`h` are the current window size so the lower-right corner stays fixed
+/// `w`/`h` are the window size so the lower-right corner stays fixed
 /// at the same margins for any size.
 #[cfg(target_os = "macos")]
 fn widget_position_cocoa(w: f64, h: f64) -> Option<tauri::LogicalPosition<f64>> {
@@ -307,13 +334,14 @@ fn widget_position_cocoa(w: f64, h: f64) -> Option<tauri::LogicalPosition<f64>> 
         let vf: CGRect = msg_send![target, visibleFrame];
         let primary_frame: CGRect = msg_send![primary, frame];
 
-        // Cocoa: bottom-left origin, y-up. Lower-right of visibleFrame:
-        // window grows up/left so the wordmark stays fixed at lower-right.
-        let x_cocoa = vf.origin.x + vf.size.width - w - MARGIN_RIGHT;
-        let y_cocoa = vf.origin.y + MARGIN_BOTTOM;
-        // tao/tauri: top-left origin, y-down, relative to primary frame.
-        let x = x_cocoa;
-        let y = primary_frame.size.height - (y_cocoa + h);
+        let (x, y) = anchor_lower_right(
+            vf.origin.x,
+            vf.origin.y,
+            vf.size.width,
+            primary_frame.size.height,
+            w,
+            h,
+        );
 
         Some(tauri::LogicalPosition::new(x, y))
     }
@@ -411,11 +439,15 @@ pub async fn resize_widget(app: AppHandle, width: f64, height: f64) -> Result<()
             let Some(window) = app.get_webview_window(WINDOW_LABEL) else {
                 return;
             };
+            // Re-read latest requested size so out-of-order main-thread
+            // closures always apply a matched size+position pair.
+            let (w, h) = current_widget_size();
             if let Err(e) = window.set_size(tauri::LogicalSize::new(w, h)) {
+                // Log but do not return early — tao keeps top-left fixed on
+                // resize, so we must still re-anchor even when set_size fails.
                 log(LOG_TAG, &format!("resize set_size failed: {e}"));
-                return;
             }
-            let pos = widget_position(&app);
+            let pos = widget_position_for(&app, w, h);
             if let Err(e) = window.set_position(pos) {
                 log(LOG_TAG, &format!("resize set_position failed: {e}"));
             } else {
@@ -431,11 +463,20 @@ pub async fn resize_widget(app: AppHandle, width: f64, height: f64) -> Result<()
     #[cfg(not(target_os = "macos"))]
     {
         if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
-            window
-                .set_size(tauri::LogicalSize::new(w, h))
-                .map_err(|e| e.to_string())?;
-            let pos = widget_position(&app);
-            let _ = window.set_position(pos);
+            // Re-read latest requested size (same convergence as macOS path).
+            let (w, h) = current_widget_size();
+            if let Err(e) = window.set_size(tauri::LogicalSize::new(w, h)) {
+                log(LOG_TAG, &format!("resize set_size failed: {e}"));
+            }
+            let pos = widget_position_for(&app, w, h);
+            if let Err(e) = window.set_position(pos) {
+                log(LOG_TAG, &format!("resize set_position failed: {e}"));
+            } else {
+                log(
+                    LOG_TAG,
+                    &format!("resized to {w:.0}×{h:.0} at ({:.0}, {:.0})", pos.x, pos.y),
+                );
+            }
         }
         Ok(())
     }
@@ -1179,5 +1220,47 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["k1", "k2"]
         );
+    }
+
+    #[test]
+    fn anchor_lower_right_keeps_lower_right_corner_fixed_across_sizes() {
+        // 1512×982 visibleFrame at origin (0,0); primary_height 982.
+        let vf_ox = 0.0;
+        let vf_oy = 0.0;
+        let vf_w = 1512.0;
+        let primary_h = 982.0;
+
+        let (x_idle, y_idle) =
+            anchor_lower_right(vf_ox, vf_oy, vf_w, primary_h, 66.0, 43.0);
+        let (x_grown, y_grown) =
+            anchor_lower_right(vf_ox, vf_oy, vf_w, primary_h, 340.0, 480.0);
+
+        // Lower-right corner (x+w, y+h) is size-invariant.
+        assert_eq!(x_idle + 66.0, x_grown + 340.0);
+        assert_eq!(y_idle + 43.0, y_grown + 480.0);
+    }
+
+    #[test]
+    fn grow_then_shrink_returns_to_idle_anchor() {
+        let vf_ox = 0.0;
+        let vf_oy = 0.0;
+        let vf_w = 1512.0;
+        let primary_h = 982.0;
+
+        let idle = anchor_lower_right(vf_ox, vf_oy, vf_w, primary_h, 66.0, 43.0);
+        let _grown = anchor_lower_right(vf_ox, vf_oy, vf_w, primary_h, 340.0, 480.0);
+        let idle_again = anchor_lower_right(vf_ox, vf_oy, vf_w, primary_h, 66.0, 43.0);
+
+        assert_eq!(idle_again, idle);
+    }
+
+    #[test]
+    fn anchor_lower_right_secondary_display_offsets() {
+        // Secondary display visibleFrame origin (1512, 100), width 1920;
+        // primary_height 982; idle size 66×43.
+        let (x, y) = anchor_lower_right(1512.0, 100.0, 1920.0, 982.0, 66.0, 43.0);
+        assert_eq!(x, 1512.0 + 1920.0 - 66.0 - 8.0);
+        // y can be negative for displays above the primary.
+        assert_eq!(y, 982.0 - (100.0 + 16.0 + 43.0));
     }
 }
