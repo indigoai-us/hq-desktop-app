@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { readRepoFile } from './harness';
 
-describe('desktop-alt V4 settings and first-run (US-013)', () => {
+describe('desktop-alt V4 settings and first-run (US-013 / US-005)', () => {
+  // US-005: classic popover Settings.svelte is retired. SettingsPage is the
+  // single settings surface — every assertion below targets that page only.
   const page = readRepoFile('src/desktop-alt/pages/SettingsPage.svelte');
-  const settings = readRepoFile('src/components/Settings.svelte');
 
   it('groups every menubar setting knob and persists through get_settings/save_settings', () => {
     expect(page).toContain("invoke<SettingsWire>('get_settings')");
@@ -24,13 +25,11 @@ describe('desktop-alt V4 settings and first-run (US-013)', () => {
       'meetingDetectNotify',
       'defaultRecordingCompanyUid',
       // Usage telemetry is opt-in; the toggle must round-trip through
-      // get_settings/save_settings in BOTH the desktop-alt page and the
-      // classic popover so a save never drops it (and the data-loss merge in
-      // save_settings preserves machineId/firstRunCompleted alongside it).
+      // get_settings/save_settings so a save never drops it (and the data-loss
+      // merge in save_settings preserves machineId/firstRunCompleted alongside it).
       'telemetryEnabled',
     ]) {
       expect(page).toContain(key);
-      expect(settings).toContain(key);
     }
   });
 
@@ -38,8 +37,7 @@ describe('desktop-alt V4 settings and first-run (US-013)', () => {
     // Persisting menubar.json is not enough — Auto-sync must start/stop the
     // daemon, Instant-sync must bounce it, and Start-at-login must reconcile the
     // macOS LaunchAgent. Without these the running process keeps its old
-    // behavior until the next launch (the desktop window's original bug). These
-    // mirror the classic popover Settings so both surfaces behave identically.
+    // behavior until the next launch.
     expect(page).toContain("invoke('start_daemon')");
     expect(page).toContain("invoke('stop_daemon')");
     expect(page).toContain("invoke('set_autostart_enabled', { enabled: startAtLogin })");
@@ -48,15 +46,9 @@ describe('desktop-alt V4 settings and first-run (US-013)', () => {
     expect(page).toContain('onchange={applyRealtimeSync}');
     expect(page).toContain('onchange={applyInstantSync}');
     expect(page).toContain('onchange={applyStartAtLogin}');
-    // And the same three live effects must exist in the classic popover too.
-    expect(settings).toContain("invoke('start_daemon')");
-    expect(settings).toContain("invoke('stop_daemon')");
-    expect(settings).toContain('set_autostart_enabled');
   });
 
-  it('reaches parity with the classic Settings (folder re-tether, memberships dropdown, permissions, platform gating)', () => {
-    // The desktop Settings page was missing several controls the classic popover
-    // has, leaving features unreachable from the desktop window.
+  it('carries folder re-tether, memberships dropdown, permissions, and platform gating', () => {
     // (1) HQ folder re-tether — a "Change…" button calling pick_folder.
     expect(page).toContain("invoke<string | null>('pick_folder')");
     expect(page).toContain('Change…');
@@ -73,6 +65,28 @@ describe('desktop-alt V4 settings and first-run (US-013)', () => {
     // (4) Platform toggles only shown when detection is enabled (otherwise they
     //     looked actionable but changed nothing).
     expect(page).toContain('{#if meetingDetectEnabled}');
+  });
+
+  it('hosts controls relocated from the classic popover (updates, OS permission, sign-out, quit, version)', () => {
+    // US-005 relocated every classic Settings control into SettingsPage.
+    expect(page).toContain("'check_for_updates'");
+    expect(page).toContain("'notification_permission_state'");
+    expect(page).toContain("'notification_request_permission'");
+    expect(page).toContain("'check_hq_cli_update'");
+    expect(page).toContain("'install_hq_cli_update'");
+    expect(page).toContain("'set_hq_cli_update_dismissed'");
+    expect(page).toContain('HQ_CLI_UPGRADE_CMD');
+    expect(page).toContain("'check_pack_update'");
+    expect(page).toContain("'update_packs'");
+    expect(page).toContain("'get_hq_version'");
+    expect(page).toContain("'check_core_state'");
+    expect(page).toContain("'open_drift_detail'");
+    expect(page).toContain("'install_hq_core_update'");
+    expect(page).toContain("'run_replace_from_staging'");
+    expect(page).toContain("'quit_app'");
+    expect(page).toContain("'show_main_window'");
+    expect(page).toContain("emit('tray:sign-out')");
+    expect(page).toContain('getVersion');
   });
 
   it('renders the section anchors, scroll behavior, and gated annotations', () => {

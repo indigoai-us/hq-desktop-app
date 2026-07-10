@@ -1,5 +1,5 @@
 <script lang="ts">
-  import Settings from '../src/components/Settings.svelte';
+  import SettingsPage from '../src/desktop-alt/pages/SettingsPage.svelte';
   import Popover from '../src/components/Popover.svelte';
   import BannerNotification from '../src/components/BannerNotification.svelte';
   import CompanyPage from '../src/desktop-alt/pages/CompanyPage.svelte';
@@ -195,10 +195,10 @@
     />
   </div>
 {:else}
-  <div class="stage" class:light={theme === 'light'}>
-    <div class="window">
-      <Settings onback={() => (window.location.search = '?view=popover')} />
-    </div>
+  <!-- Settings now live in the desktop-alt window (US-005). Preview the V4
+       SettingsPage rather than the retired popover Settings.svelte. -->
+  <div class="desktop-stage" class:light={theme === 'light'}>
+    <SettingsPage activeTab="sync" />
   </div>
 {/if}
 

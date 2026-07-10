@@ -3,7 +3,7 @@
 // US-004: Widget settings (enable/disable + display picker + restart persistence)
 // Behavioral tests mount WidgetSettings with a mocked Tauri invoke; source
 // contracts lock the Rust apply path, list_displays naming, default-ON prefs,
-// and dual-surface mount points (popover Settings + desktop-alt SettingsPage).
+// and single settings surface mount (desktop-alt SettingsPage; popover Settings retired in US-005).
 // Leave __tests__/stories/US-004.test.ts alone — legacy suite from an older project.
 
 import { readFileSync } from 'node:fs';
@@ -30,7 +30,6 @@ import WidgetSettings from '../../src/components/WidgetSettings.svelte';
 const root = (...parts: string[]) => resolve(process.cwd(), ...parts);
 
 const widgetSettingsSource = readFileSync(root('src/components/WidgetSettings.svelte'), 'utf8');
-const settingsSource = readFileSync(root('src/components/Settings.svelte'), 'utf8');
 const settingsPageSource = readFileSync(
   root('src/desktop-alt/pages/SettingsPage.svelte'),
   'utf8',
@@ -571,20 +570,19 @@ describe('US-004: Widget settings (enable/disable, display, persistence)', () =>
     });
   });
 
-  // ── 4. Dual-surface mount (US-005 ready) ──────────────────────────────────
+  // ── 4. Desktop settings surface (popover Settings retired in US-005) ──────
 
-  describe('Settings UI reachable from both surfaces without rework (US-005 ready)', () => {
-    it('source contract: Settings.svelte and SettingsPage.svelte mount WidgetSettings; route has widget section; WidgetSettings is self-contained', () => {
-      // Popover Settings surface
-      expect(settingsSource).toMatch(/import WidgetSettings from ['"]\.\/WidgetSettings\.svelte['"]/);
-      expect(settingsSource).toMatch(/<WidgetSettings\s*\/>/);
-
-      // Desktop-alt SettingsPage surface — section id="widget"
+  describe('Settings UI reachable from the desktop SettingsPage (US-005 canonical surface)', () => {
+    it('source contract: WidgetSettings mounts ONLY in SettingsPage; route has widget section; WidgetSettings is self-contained', () => {
+      // Canonical desktop SettingsPage — section id="widget"
       expect(settingsPageSource).toMatch(
         /import WidgetSettings from ['"]\.\.\/\.\.\/components\/WidgetSettings\.svelte['"]/,
       );
       expect(settingsPageSource).toMatch(/id=["']widget["']/);
       expect(settingsPageSource).toMatch(/<WidgetSettings\s*\/>/);
+
+      // Popover Settings.svelte is gone — no dual-surface mount remains.
+      expect(() => readFileSync(root('src/components/Settings.svelte'), 'utf8')).toThrow();
 
       // route.ts SETTINGS_SECTIONS includes widget row
       expect(routeSource).toMatch(/SETTINGS_SECTIONS/);

@@ -14,7 +14,6 @@
   } from './lib/dmRequests';
   import SignInPrompt from './components/SignInPrompt.svelte';
   import Popover from './components/Popover.svelte';
-  import Settings from './components/Settings.svelte';
   import { conflictStore, type ConflictFile } from './stores/conflicts';
   import { transferCountDelta } from './lib/transfer-count';
   import { effectiveTotalFiles as computeEffectiveTotalFiles } from './lib/effective-total-files';
@@ -157,7 +156,6 @@
   // than one company aborted (no single slug to name in the prompt).
   let syncConflictCount = $state(0);
   let syncConflictCompany = $state('');
-  let showSettings = $state(false);
   let syncStatsRefresh = $state<(() => void) | null>(null);
 
   // Meetings feature flag — driven by `meetings_feature_enabled` (Rust side
@@ -706,28 +704,6 @@
     }
   }
 
-  function handleSettings() {
-    showSettings = true;
-  }
-
-  function handleBackFromSettings() {
-    showSettings = false;
-    // User may have changed the HQ folder path in Settings; the header in
-    // Popover renders from `config.hqFolderPath`, which was snapshotted at
-    // mount. Re-read menubar.json so the change is visible without a quit.
-    // Workspaces depend on hq_root too — local folder enumeration would point
-    // at the wrong tree otherwise. hqVersion also follows the HQ root —
-    // re-tethering to a different folder may surface a different (or now-
-    // readable) `core.yaml`.
-    loadConfig();
-    loadWorkspaces();
-    loadHqVersion();
-    // User may have just flipped the staging-channel toggle — re-run the
-    // unified state check so channel + target + drift all swing without
-    // waiting for the 6h background tick.
-    loadCoreState();
-  }
-
   async function handleSignOut() {
     // Clear the persisted Cognito tokens (file + in-memory cache) in the backend
     // so the app doesn't silently re-authenticate on the next launch — a
@@ -921,7 +897,11 @@
 
     unlisteners.push(
       await listen('tray:open-settings', () => {
-        handleSettings();
+        void invoke('open_desktop_alt_window', { route: 'settings' }).catch((e) => {
+          console.error('tray open_desktop_alt_window (settings) failed:', e);
+          // Signed-out fallback: GA gate rejects alt window — surface SignInPrompt.
+          void invoke('show_main_window').catch(console.error);
+        });
       })
     );
 
@@ -930,9 +910,11 @@
     // popover uses (the backend gate is re-checked by open_desktop_alt_window).
     unlisteners.push(
       await listen('tray:open-desktop', () => {
-        void invoke('open_desktop_alt_window').catch((e) =>
-          console.error('tray open_desktop_alt_window failed:', e),
-        );
+        void invoke('open_desktop_alt_window').catch((e) => {
+          console.error('tray open_desktop_alt_window failed:', e);
+          // Signed-out fallback: GA gate rejects alt window — surface SignInPrompt.
+          void invoke('show_main_window').catch(console.error);
+        });
       })
     );
 
@@ -1872,7 +1854,7 @@
     loadUnreadSummary();
     setupTrayListeners();
     // Resolve the Phase-0 meeting-detect eligibility flag once on mount.
-    // Settings.svelte hides the meeting-detect toggle when this is false.
+    // Desktop SettingsPage gates the meeting-detect toggle when this is false.
     // (Per-permission TCC status tracking was removed 2026-05-25 — see
     // permissionState.svelte.ts for why; native macOS prompts are
     // sufficient.)
@@ -1926,7 +1908,7 @@
 
   // Notification authorization is no longer requested on launch — it is a
   // user-initiated action from Settings ("Enable notifications" →
-  // `handleEnableNotifications` in Settings.svelte).
+  // `handleEnableNotifications` in desktop SettingsPage).
   //
   // macOS caveat that still applies wherever we DO request it: calling
   // `requestAuthorizationWithOptions` registers the process as a
@@ -1989,8 +1971,6 @@
       state={(lifecycleState ?? 'NeedsInstall') as LifecycleState}
       onfinish={handleOnboardingFinish}
     />
-  {:else if authenticated && showSettings}
-    <Settings onback={handleBackFromSettings} />
   {:else if authenticated}
     <Popover
       {syncState}

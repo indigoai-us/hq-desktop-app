@@ -62,11 +62,11 @@ pub fn spawn_and_poll(app: &AppHandle) {
             };
             let _ = std::fs::remove_file(&cf);
             let cmd = cmd.trim();
-            // Menu-bar click toggles the popover (show if hidden, hide if already
-            // up) and hides the desktop window — one HQ window at a time. The
-            // helper appends the icon's on-screen centre ("show <x>", Cocoa
-            // points) so the popover anchors UNDER the icon; positioning +
-            // blur-hide suppression live in `tray::show_popover_window`.
+            // Menu-bar click toggles the DESKTOP window (show if hidden, hide if
+            // already up). The popover is only the signed-out / sign-in fallback
+            // when the GA gate rejects open_desktop_alt. Still parse the icon's
+            // on-screen centre ("show <x>", Cocoa points) so the popover fallback
+            // anchors UNDER the icon when needed.
             if let Some(rest) = cmd.strip_prefix("show") {
                 if let Ok(points) = rest.trim().parse::<f64>() {
                     crate::tray::set_tray_anchor_x(points);
@@ -76,7 +76,7 @@ pub fn spawn_and_poll(app: &AppHandle) {
                 // AppKit and wedges the poller after the first click. Marshal it.
                 let app_main = app.clone();
                 let _ =
-                    app.run_on_main_thread(move || crate::tray::toggle_popover_window(&app_main));
+                    app.run_on_main_thread(move || crate::tray::toggle_desktop_window(&app_main));
             } else {
                 match cmd {
                     "sync" => {

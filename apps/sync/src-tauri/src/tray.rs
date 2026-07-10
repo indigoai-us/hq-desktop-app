@@ -1,8 +1,8 @@
 //! System tray icon with state-driven icon swapping.
 //!
 //! Four visual states: **idle**, **syncing**, **error**, **conflict**.
-//! Left-click toggles the popover window; right-click shows a context menu
-//! with "Sync Now", "Settings", and "Quit".
+//! Left-click toggles the desktop view (popover is the signed-out fallback);
+//! right-click shows a context menu with "Sync Now", "Settings", and "Quit".
 
 use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -401,11 +401,10 @@ fn build_tray_icon(app: &AppHandle) -> Result<tauri::tray::TrayIcon, Box<dyn std
                 if let TrayIconEvent::Click {
                     button: MouseButton::Left,
                     button_state: MouseButtonState::Up,
-                    rect,
                     ..
                 } = event
                 {
-                    toggle_window(&app_handle, Some(rect));
+                    toggle_desktop_window(&app_handle);
                 }
             }
         })
@@ -532,40 +531,6 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Window toggle
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Toggle the main window visibility (popover behaviour).
-///
-/// When showing, position the popover directly under the tray icon
-/// (centered horizontally, small gap below) if we have its bounds.
-/// `window.hide()` preserves renderer state so re-show is instant.
-fn toggle_window(app: &AppHandle, tray_rect: Option<Rect>) {
-    if let Some(window) = app.get_webview_window("main") {
-        if window.is_visible().unwrap_or(false) {
-            #[cfg(target_os = "windows")]
-            let _ = window.set_always_on_top(false);
-            let _ = window.hide();
-        } else {
-            #[cfg(target_os = "windows")]
-            {
-                let _ = tray_rect;
-                position_above_tray_fallback(&window);
-                set_dwm_small_corner(&window);
-                let _ = window.set_always_on_top(true);
-            }
-            #[cfg(not(target_os = "windows"))]
-            if let Some(rect) = tray_rect {
-                position_below_tray(&window, rect);
-            }
-            let _ = window.show();
-            let _ = window.set_focus();
-            let _ = window.emit("popover:opened", ());
-        }
-    }
 }
 
 // Small visual gap between the menu bar and the popover top edge.
@@ -730,9 +695,10 @@ pub fn show_window_centered(app: &AppHandle) {
 // ─────────────────────────────────────────────────────────────────────────────
 //
 // Only one HQ window is ever on-screen at a time: the classic popover (`main`)
-// OR the desktop window (`desktop-alt`). Showing one hides the other. The two
-// global shortcuts (Opt+Shift+H popover, Opt+Shift+O desktop) and the menu-bar
-// click toggle their window — press again with it open and it hides.
+// OR the desktop window (`desktop-alt`). Showing one hides the other.
+// Menu-bar click toggles the desktop window (popover only as signed-out
+// fallback). Opt+Shift+H still toggles the popover; Opt+Shift+O toggles
+// desktop. Press again with the target open and it hides.
 
 /// Hide the desktop window if it's open — enforces "only one HQ window at a
 /// time" whenever the popover is summoned.
@@ -740,6 +706,40 @@ pub fn hide_desktop_alt(app: &AppHandle) {
     if let Some(win) = app.get_webview_window("desktop-alt") {
         let _ = win.hide();
     }
+}
+
+/// Toggle the desktop view from a menubar click.
+///
+/// US-005 — menubar click is a launcher for the desktop view; the popover
+/// remains only as the sign-in/notification surface.
+///
+/// If `desktop-alt` is already visible, hide it (toggle-off, matching the old
+/// popover toggle semantics). Otherwise open it asynchronously; when the GA
+/// gate rejects a signed-out user, fall back to the classic popover so they
+/// still reach the SignInPrompt.
+pub fn toggle_desktop_window(app: &AppHandle) {
+    if let Some(win) = app.get_webview_window("desktop-alt") {
+        if win.is_visible().unwrap_or(false) {
+            let _ = win.hide();
+            return;
+        }
+    }
+
+    let app_clone = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(_e) =
+            crate::commands::desktop_alt::open_desktop_alt_window_inner(app_clone.clone(), None)
+                .await
+        {
+            // GA gate rejects signed-out users — show classic popover so they
+            // still reach SignInPrompt. show_popover_window does AppKit window
+            // ops and must run on the main thread.
+            let app_main = app_clone.clone();
+            let _ = app_clone.run_on_main_thread(move || {
+                show_popover_window(&app_main);
+            });
+        }
+    });
 }
 
 /// Show the popover (`main`) on-screen, hiding the desktop window first.
@@ -857,8 +857,9 @@ fn set_dwm_small_corner(window: &tauri::WebviewWindow) {
 }
 
 /// Toggle the popover: hide it if it's already visible, otherwise show it
-/// (which also hides the desktop window). Used by the Opt+Shift+H shortcut and
-/// the menu-bar click so pressing again dismisses the window.
+/// (which also hides the desktop window). Used by the Opt+Shift+H shortcut so
+/// pressing again dismisses the window. (Menu-bar click now toggles desktop;
+/// see [`toggle_desktop_window`].)
 pub fn toggle_popover_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         if window.is_visible().unwrap_or(false) {
