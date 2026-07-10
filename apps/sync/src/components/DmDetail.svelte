@@ -4,227 +4,95 @@
   import '../styles/popover.css';
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
-  import Conversation, { type ConversationMessage } from './messaging/Conversation.svelte';
-  import { type ReactionEvent, dmScope } from '../lib/reactions';
-  import { ReactionController } from '../lib/reactionController.svelte';
-  import { shouldAppendInbound } from '../lib/dmThread';
+  import type { Item } from '../lib/notificationGroups';
+  import { defaultSelectedId } from '../lib/quickWindowPane';
+  import QuickWindowSidePane from './QuickWindowSidePane.svelte';
+  import ShareMainPane from './ShareMainPane.svelte';
+  import DmThreadPane, { type DmEvent } from './DmThreadPane.svelte';
 
-  // The DM that opened the window (the reply target). Also the most recent
-  // inbound message — it anchors who the conversation is with.
-  interface DmEvent {
-    eventId: string;
-    fromPersonUid: string;
-    fromEmail: string;
-    fromDisplayName: string;
-    body: string;
-    details?: string | null;
-    prompt?: string | null;
-    createdAt: string;
-  }
-
-  // One rendered message in the thread. `direction` is relative to the signed-in
-  // user: "out" = I sent it, "in" = the other person sent it.
-  interface ThreadMessage extends ConversationMessage {
-    fromEmail: string;
-  }
-
-  interface ThreadResponse {
-    messages: ThreadMessage[];
-    nextCursor?: string | null;
-  }
-
+  // The DM that opened the window (the reply target).
   let event = $state<DmEvent | null>(null);
-  let messages = $state<ThreadMessage[]>([]);
-  let loadingThread = $state(false);
-  let threadError = $state<string | null>(null);
+  // Explicit side-pane selection; null = show the opening DM.
+  let selected = $state<Item | null>(null);
+  // Session-viewed ids clear the unread dot without advancing the watermark.
+  let viewedIds = $state(new Set<string>());
 
-  let sending = $state(false);
-  let sendError = $state<string | null>(null);
+  const selectedId = $derived(
+    selected ? selected.id : defaultSelectedId('dm', event?.eventId),
+  );
 
-  // Reactions (US-025) for this DM conversation. Created when the DM event
-  // arrives (its peer is the scope), kept in step with the visible messages.
-  let reactionsCtl = $state<ReactionController | null>(null);
-
-  $effect(() => {
-    const peer = event?.fromPersonUid;
-    if (!peer) {
-      reactionsCtl?.dispose();
-      reactionsCtl = null;
-      return;
-    }
-    const controller = new ReactionController(dmScope(peer));
-    reactionsCtl = controller;
-    return () => controller.dispose();
-  });
-
-  $effect(() => {
-    const controller = reactionsCtl;
-    if (!controller) return;
-    const ids = messages
-      .filter((m) => !m.eventId.startsWith('local-'))
-      .map((m) => m.eventId);
-    void controller.setMessages(ids);
-  });
-
-  /**
-   * Merge the server thread (newest-first) into chronological order and ensure
-   * the live DM that opened the window is present — the conversation mirror is
-   * written best-effort server-side, so the just-arrived DM may not be in the
-   * thread response yet. Dedupe by eventId.
-   */
-  function buildThread(serverMsgs: ThreadMessage[], live: DmEvent | null): ThreadMessage[] {
-    const chrono = [...serverMsgs].reverse();
-    if (live && !chrono.some((m) => m.eventId === live.eventId)) {
-      chrono.push({
-        eventId: live.eventId,
-        fromPersonUid: live.fromPersonUid,
-        fromEmail: live.fromEmail,
-        fromDisplayName: live.fromDisplayName,
-        body: live.body,
-        details: live.details ?? null,
-        prompt: live.prompt ?? null,
-        createdAt: live.createdAt,
-        direction: 'in',
-      });
-    }
-    return chrono;
-  }
-
-  async function loadThread(forEvent: DmEvent): Promise<void> {
-    loadingThread = true;
-    threadError = null;
-    try {
-      const resp = await invoke<ThreadResponse>('fetch_dm_thread', {
-        withPersonUid: forEvent.fromPersonUid,
-      });
-      messages = buildThread(resp.messages ?? [], forEvent);
-    } catch (err) {
-      // Non-fatal: still show the single live message + composer.
-      threadError = typeof err === 'string' ? err : 'Could not load earlier messages';
-      messages = buildThread([], forEvent);
-      console.error('dm-detail: fetch_dm_thread failed', err);
-    } finally {
-      loadingThread = false;
-    }
-  }
-
-  /**
-   * Append a freshly-arrived inbound DM to the open thread when it's from the
-   * peer this window is scoped to. Without this the thread was static after the
-   * window opened — a reply from the other person didn't appear until the window
-   * was closed and reopened. Deduped by eventId (the poll can re-surface an
-   * event, and the same id may also land in a later fetch_dm_thread). DMs from
-   * other peers are ignored — this window is a single conversation.
-   */
-  function appendInbound(dm: DmEvent): void {
-    if (!shouldAppendInbound(messages, dm, event?.fromPersonUid)) return;
-    messages = [
-      ...messages,
-      {
-        eventId: dm.eventId,
-        fromPersonUid: dm.fromPersonUid,
-        fromEmail: dm.fromEmail,
-        fromDisplayName: dm.fromDisplayName,
-        body: dm.body,
-        details: dm.details ?? null,
-        prompt: dm.prompt ?? null,
-        createdAt: dm.createdAt,
-        direction: 'in',
-      },
-    ];
-  }
-
-  async function sendReply(text: string): Promise<void> {
-    if (!text || sending || !event) return;
-    sending = true;
-    sendError = null;
-    try {
-      await invoke('send_dm', { toPersonUid: event.fromPersonUid, body: text });
-      // Optimistically append the sent message so the thread updates instantly;
-      // the durable copy lands in the mirror and shows on the next open.
-      messages = [
-        ...messages,
-        {
-          eventId: `local-${messages.length}-${text.length}`,
-          fromPersonUid: 'me',
-          fromEmail: '',
-          fromDisplayName: 'You',
-          body: text,
-          details: null,
-          prompt: null,
-          createdAt: new Date().toISOString(),
-          direction: 'out',
-        },
-      ];
-    } catch (err) {
-      sendError = typeof err === 'string' ? err : 'Failed to send reply';
-      console.error('dm-detail: send_dm failed', err);
-    } finally {
-      sending = false;
-    }
+  function onselect(item: Item): void {
+    selected = item;
+    viewedIds = new Set([...viewedIds, item.id]);
   }
 
   $effect(() => {
     let unlisten: (() => void) | undefined;
 
-    const unlisteners: Array<() => void> = [];
-
     listen<DmEvent>('dm:detail-event', (e) => {
       event = e.payload;
-      void loadThread(e.payload);
+      // Reopening this singleton window must show the just-opened DM (and its
+      // reply composer), not a stale side-pane selection from a previous open.
+      selected = null;
+      // Opening DM counts as viewed for the side-pane unread dots.
+      viewedIds = new Set([...viewedIds, `dm:${e.payload.eventId}`]);
     }).then((fn) => {
       unlisten = fn;
-      unlisteners.push(fn);
       // Ready-handshake: tell Rust the listener is mounted so it emits the
       // pending event + shows the window (mirrors ShareDetail).
       invoke('dm_detail_window_ready');
     });
 
-    // Live inbound: a new DM from the peer being viewed lands in the thread
-    // without a reopen. The poll/MQTT path broadcasts every freshly-polled DM
-    // as `dm:new-events` (a batch); we filter to this conversation's peer.
-    listen<DmEvent[]>('dm:new-events', (e) => {
-      for (const dm of e.payload ?? []) appendInbound(dm);
-    }).then((fn) => unlisteners.push(fn));
-
-    // Live reaction reconcile for this DM (US-025).
-    listen<ReactionEvent>('message:reaction', (e) => {
-      reactionsCtl?.applyEvent(e.payload);
-    }).then((fn) => unlisteners.push(fn));
-
     return () => {
       unlisten?.();
-      for (const fn of unlisteners) fn();
     };
   });
 </script>
 
 <div class="detail-window">
-  <header class="detail-header">
-    <h1>{event ? event.fromDisplayName : 'Direct Message'}</h1>
-    {#if event?.fromEmail}
-      <span class="detail-count">{event.fromEmail}</span>
-    {/if}
-  </header>
+  <QuickWindowSidePane {selectedId} {viewedIds} {onselect} />
 
-  {#if !event}
-    <div class="detail-empty">
-      <p>Waiting for message…</p>
-    </div>
-  {:else}
-    <Conversation
-      {messages}
-      showAuthors={false}
-      loading={loadingThread}
-      error={threadError}
-      {sending}
-      {sendError}
-      placeholder={`Reply to ${event.fromDisplayName}…`}
-      onsend={sendReply}
-      reactions={reactionsCtl?.map ?? {}}
-      ontogglereaction={reactionsCtl ? reactionsCtl.toggle : undefined}
-    />
-  {/if}
+  <div class="detail-main">
+    {#if selected?.kind === 'share' && selected.share}
+      <header class="detail-header">
+        <h1>Shared with Me</h1>
+        <span class="detail-count">1 share</span>
+      </header>
+      <ShareMainPane events={[selected.share]} />
+    {:else if selected?.kind === 'dm' && selected.dm}
+      <header class="detail-header">
+        <h1>{selected.dm.fromDisplayName || 'Direct Message'}</h1>
+        {#if selected.dm.fromEmail}
+          <span class="detail-count">{selected.dm.fromEmail}</span>
+        {/if}
+      </header>
+      <!-- Keyed remount per thread: a fast side-pane switch must not let an
+           older fetch_dm_thread response paint (or send against) the newer
+           selection. -->
+      {#key selected.dm.eventId}
+        <DmThreadPane event={selected.dm} />
+      {/key}
+    {:else if event}
+      <header class="detail-header">
+        <h1>{event.fromDisplayName}</h1>
+        {#if event.fromEmail}
+          <span class="detail-count">{event.fromEmail}</span>
+        {/if}
+      </header>
+      <!-- Opening DM: reply composer must keep working unchanged. Keyed so a
+           reopen with a different DM remounts a fresh thread (no stale race). -->
+      {#key event.eventId}
+        <DmThreadPane {event} />
+      {/key}
+    {:else}
+      <header class="detail-header">
+        <h1>Direct Message</h1>
+      </header>
+      <div class="detail-empty">
+        <p>Waiting for message…</p>
+      </div>
+    {/if}
+  </div>
 </div>
 
 <style>
@@ -240,7 +108,7 @@
 
   .detail-window {
     display: flex;
-    flex-direction: column;
+    flex-direction: row;
     width: 100vw;
     height: 100vh;
     box-sizing: border-box;
@@ -251,6 +119,14 @@
     box-shadow: inset 0 1px 0 var(--pop-highlight);
     color: var(--pop-text);
     font-family: var(--font-sans);
+    overflow: hidden;
+  }
+
+  .detail-main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
     overflow: hidden;
   }
 
