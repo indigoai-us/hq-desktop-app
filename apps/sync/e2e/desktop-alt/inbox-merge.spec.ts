@@ -84,7 +84,14 @@ describe('US-006 / US-008: NotificationRow message hover-expand', () => {
   const feed = readRepoFile('src/components/NotificationFeed.svelte');
 
   it('message rows hover-expand with quick-reply + emoji react', () => {
-    expect(row).toContain('const expanded = $derived(isMessage && (hovered || focusWithin))');
+    // US-011 added an opt-out gate (`hoverExpand`; the quick-window side pane
+    // passes false). The default MUST stay true so popover/widget/Inbox
+    // message rows still hover-expand exactly as locked here.
+    expect(row).toContain(
+      'const expanded = $derived(isMessage && hoverExpand && (hovered || focusWithin))',
+    );
+    expect(row).toContain('hoverExpand = true');
+    expect(row).toContain('hoverExpand?: boolean');
     expect(row).toContain('class:nr-expanded={expanded}');
     expect(row).toContain('data-expanded={expanded}');
     // Quick-reply input
