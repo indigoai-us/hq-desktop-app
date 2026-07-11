@@ -141,7 +141,7 @@ describe('US-002 V4 desktop routes', () => {
     });
   });
 
-  it('resolves new company tabs skills / workers / team; knowledge → files mode', () => {
+  it('resolves new company tabs skills / workers / team; knowledge renders inline', () => {
     expect(resolvePendingDesktopRoute('company:indigo:skills')).toEqual({
       kind: 'company',
       slug: 'indigo',
@@ -153,8 +153,9 @@ describe('US-002 V4 desktop routes', () => {
       tab: 'team',
     });
     expect(resolvePendingDesktopRoute('company:indigo:knowledge')).toEqual({
-      kind: 'files',
+      kind: 'company',
       slug: 'indigo',
+      tab: 'knowledge',
     });
   });
 

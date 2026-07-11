@@ -48,10 +48,11 @@ describe('company-detail-desktop-ia: company secondary IA', () => {
     });
   });
 
-  it('maps Knowledge deep-link to files mode for the company', () => {
+  it('maps Knowledge deep-link to inline company knowledge tab', () => {
     expect(resolvePendingDesktopRoute('company:indigo:knowledge')).toEqual({
-      kind: 'files',
+      kind: 'company',
       slug: 'indigo',
+      tab: 'knowledge',
     });
   });
 
@@ -65,10 +66,24 @@ describe('company-detail-desktop-ia: company secondary IA', () => {
     expect(page).not.toContain("tab === 'library'");
   });
 
-  it('DesktopApp routes Knowledge secondary select to files mode', () => {
+  it('DesktopApp routes Knowledge secondary select as company tab (inline panel)', () => {
     const app = readRepoFile('src/desktop-alt/DesktopApp.svelte');
-    expect(app).toContain("id === 'knowledge'");
-    expect(app).toContain("kind: 'files'");
+    // The files-mode interception is gone — knowledge takes the generic
+    // company-tab navigation path like every other secondary row (US-014).
+    expect(app).not.toContain("id === 'knowledge'");
+    expect(app).toContain("navigate({ kind: 'company', slug: route.slug, tab: id as CompanyTab })");
+    const page = readRepoFile('src/desktop-alt/pages/CompanyPage.svelte');
+    expect(page).toContain('<CompanyKnowledgePanel slug={company.slug} />');
+    expect(page).not.toContain('company-knowledge-placeholder');
+  });
+
+  it('CompanyKnowledgePanel is tenant-scoped to the company knowledge subtree (source contract)', () => {
+    const panel = readRepoFile('src/desktop-alt/panels/CompanyKnowledgePanel.svelte');
+    expect(panel).toContain('`companies/${slug}/knowledge`');
+    expect(panel).toContain('CompanyFileTree');
+    expect(panel).toContain('FilePreviewPane');
+    expect(panel).toContain('inKnowledgeScope');
+    expect(panel).toContain('data-testid="company-knowledge-empty"');
   });
 
   it('Team telemetry adapter + panel exist', () => {
