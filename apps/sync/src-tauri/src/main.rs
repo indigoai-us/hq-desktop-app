@@ -367,6 +367,7 @@ fn main() {
             commands::daemon::daemon_status,
             tray::set_tray_state,
             updater::check_for_updates,
+            updater::get_pending_update,
             updater::install_update,
             updater::available_channels,
             updater::is_indigo_user,

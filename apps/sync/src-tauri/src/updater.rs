@@ -123,9 +123,27 @@ pub async fn check_for_updates(app: AppHandle) -> Result<Option<UpdateInfo>, Str
             }
             Ok(Some(info))
         }
-        Ok(None) => Ok(None),
+        Ok(None) => {
+            // Up to date — clear any previously stored pending update so a
+            // pulled/superseded release doesn't keep hydrating surfaces
+            // (e.g. the version pop-out) as "Update available" forever.
+            if let Some(state) = app.try_state::<PendingUpdate>() {
+                *state.0.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            }
+            Ok(None)
+        }
         Err(e) => Err(e.to_string()),
     }
+}
+
+/// Return the update the background checker (or a manual check) already
+/// found, if any. Lets late-mounting surfaces — e.g. the status-bar version
+/// pop-out (US-017) — hydrate "update available" state without waiting for
+/// the next `update:available` event or forcing a fresh network check.
+#[tauri::command]
+pub fn get_pending_update(app: AppHandle) -> Option<UpdateInfo> {
+    app.try_state::<PendingUpdate>()
+        .and_then(|state| state.0.lock().unwrap_or_else(|e| e.into_inner()).clone())
 }
 
 #[tauri::command]
