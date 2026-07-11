@@ -182,6 +182,9 @@
           >
             <span class={`v4-dot ${row.tone}`} aria-hidden="true"></span>
             <span class="v4-company-name">{row.label}</span>
+            {#if row.pendingInvite}
+              <span class="v4-invite-badge" data-testid={`company-invite-badge-${row.slug}`}>Invite</span>
+            {/if}
           </button>
           {#if row.cloudActivated && revealedSlugs.has(row.slug)}
             <span class="v4-syncmode-slot">
@@ -308,6 +311,21 @@
     font-size: 10px;
     font-weight: 700;
     line-height: 1;
+  }
+
+  .v4-invite-badge {
+    flex: 0 0 auto;
+    margin-left: auto;
+    padding: 1px 6px;
+    border-radius: 999px;
+    border: 1px solid var(--v4-hairline);
+    background: var(--v4-control-faint, transparent);
+    color: var(--v4-text-2);
+    font-size: 10px;
+    font-weight: 500;
+    line-height: 14px;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
   }
 
   .v4-section-label {

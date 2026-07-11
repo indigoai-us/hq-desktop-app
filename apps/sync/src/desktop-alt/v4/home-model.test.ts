@@ -8,6 +8,7 @@ import {
   activityFileVerb,
   getConflictCardModel,
   getDriftCardModel,
+  getInviteCardModel,
   getHomeCompanyRows,
   getHomeDigestGroups,
   getHomeErrorModel,
@@ -182,6 +183,34 @@ describe('US-003 NEEDS YOU queue', () => {
     expect(getNeedsYouCount([conflict()], coreState(), false)).toBe(2);
     expect(getNeedsYouCount([conflict()], coreState(), true)).toBe(1);
     expect(getNeedsYouCount([], null, false)).toBe(0);
+  });
+
+  it('counts pending company invites in the NEEDS YOU total', () => {
+    expect(getNeedsYouCount([], null, false, 2)).toBe(2);
+    expect(getNeedsYouCount([conflict()], coreState(), false, 1)).toBe(3);
+  });
+
+  it('invite card offers Accept for a pending company membership', () => {
+    const card = getInviteCardModel({
+      slug: 'sender-agency',
+      displayName: 'Sender Agency',
+      kind: 'company',
+      state: 'cloud-only',
+      cloudUid: 'cmp_sa',
+      bucketName: null,
+      hasLocalFolder: false,
+      localPath: null,
+      membershipStatus: 'pending',
+      role: 'member',
+      lastSyncedAt: null,
+      brokenReason: null,
+      invitedBy: 'teammate@example.com',
+      invitedAt: new Date(Date.now() - 2 * 24 * 3600_000).toISOString(),
+    });
+    expect(card.title).toBe('Invite — join Sender Agency');
+    expect(card.sub).toContain('teammate@example.com');
+    expect(card.tone).toBe('warn');
+    expect(card.actions.map((a) => [a.id, a.label])).toEqual([['accept-invite', 'Accept']]);
   });
 });
 

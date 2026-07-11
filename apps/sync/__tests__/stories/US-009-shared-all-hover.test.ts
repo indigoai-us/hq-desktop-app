@@ -55,7 +55,7 @@ describe('US-009: v4CompanyCloudActivated + cloudActivated row flag', () => {
     expect(v4CompanyCloudActivated(workspace({ state: 'broken' }))).toBe(false);
   });
 
-  it('is false for a pending (unaccepted) cloud-only invite — its affordance is Open invite, not a sync-mode write', () => {
+  it('is false for a pending (unaccepted) cloud-only invite — its affordance is Accept invite, not a sync-mode write', () => {
     expect(
       v4CompanyCloudActivated(
         workspace({ state: 'cloud-only', membershipStatus: 'pending' }),
@@ -165,10 +165,11 @@ describe('US-009: CompanyPage Connect + invite rehome', () => {
     expect(companyPageSrc).toContain('disabled={connectBusy || !cloudReachable}');
   });
 
-  it('pending-invite flow uses hqSkillMarkdownLink accept via the centralized agent-workflow helper', () => {
-    expect(companyPageSrc).toContain("hqSkillMarkdownLink('accept'");
-    expect(companyPageSrc).toContain("openAgentWorkflow(prompt, 'invite acceptance')");
-    expect(companyPageSrc).toContain('data-testid="company-open-invite"');
+  it('pending-invite flow claims via claim_pending_company_invite (tokenless Accept)', () => {
+    expect(companyPageSrc).toContain("'claim_pending_company_invite'");
+    expect(companyPageSrc).toContain('companySlug: company.slug');
+    expect(companyPageSrc).toContain('data-testid="company-accept-invite"');
+    expect(companyPageSrc).not.toContain("openAgentWorkflow(prompt, 'invite acceptance')");
   });
 });
 

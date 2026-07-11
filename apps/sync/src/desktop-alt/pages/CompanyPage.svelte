@@ -3,9 +3,7 @@
   import { open as openExternal } from '@tauri-apps/plugin-shell';
   import type { Workspace } from '../../lib/workspaces';
   import { buildClaudeCodeUrl } from '../../lib/claude-code-link';
-  import { hqSkillMarkdownLink } from '../../lib/hq-skill-link';
   import { companyInviteUrl, companySettingsUrl } from '../lib/hq-console';
-  import { openAgentWorkflow } from '../lib/agent-workflow';
   import ActivityPanel from '../panels/ActivityPanel.svelte';
   import CompanyBoardPanel from '../panels/CompanyBoardPanel.svelte';
   import CompanyGoalsPage from './CompanyGoalsPage.svelte';
@@ -92,37 +90,31 @@
     }
   }
 
-  // Pending invites are accepted from the emailed magic link. The desktop
-  // membership row carries inviter/time metadata but not the one-time token, so
-  // this opens the real /accept workflow and asks the user for the link/token.
-  // Routes through openAgentWorkflow (the centralized get_config →
-  // buildClaudeCodeUrl → open_claude_code_link → clipboard-fallback sequence);
-  // the extra get_config here only feeds the skill-link path in the prompt.
-  async function handleOpenPendingInvite() {
+  // Modern invites are email-keyed + tokenless — Accept runs claim-by-email.
+  async function handleAcceptPendingInvite() {
     if (inviteBusy) return;
     actionError = null;
     actionNotice = null;
     inviteBusy = true;
-    const config = await invoke<{ hqFolderPath?: string }>('get_config').catch(() => ({
-      hqFolderPath: '',
-    }));
-    const prompt = [
-      hqSkillMarkdownLink('accept', config.hqFolderPath),
-      '',
-      `Help me accept the pending HQ company invite for ${company.displayName}.`,
-      `Company slug shown in HQ: ${company.slug}.`,
-      'The desktop app does not have the magic-link token. Ask me to paste the invite link or raw token, then complete the HQ accept flow.',
-    ].join('\n');
-
     try {
-      const result = await openAgentWorkflow(prompt, 'invite acceptance');
-      // The clipboard fallback is still a usable path — only a total failure
-      // (no deep link AND no clipboard) styles as an error.
-      if (result.ok || result.message.includes('copied')) {
-        actionNotice = result.message;
-      } else {
-        actionError = result.message;
+      const result = await invoke<{
+        ok: boolean;
+        claimedSlugs: string[];
+        message: string;
+      }>('claim_pending_company_invite', { companySlug: company.slug });
+      actionNotice = result.message || 'Invite accepted. Sync to pull the company.';
+      onworkspaceschanged?.();
+      if (result.claimedSlugs?.length) {
+        void invoke('start_sync').catch((err) => {
+          console.warn('post-claim sync failed (non-fatal):', err);
+        });
       }
+    } catch (err) {
+      console.error(`claim_pending_company_invite(${company.slug}) failed:`, err);
+      actionError =
+        err instanceof Error
+          ? err.message
+          : String(err) || 'Could not accept invite. Try again or run Sync.';
     } finally {
       inviteBusy = false;
     }
@@ -192,11 +184,12 @@
       {#if pendingInvite}
         <button
           type="button"
-          data-testid="company-open-invite"
+          class="primary"
+          data-testid="company-accept-invite"
           disabled={inviteBusy}
-          onclick={() => void handleOpenPendingInvite()}
+          onclick={() => void handleAcceptPendingInvite()}
         >
-          {inviteBusy ? 'Opening…' : 'Open invite'}
+          {inviteBusy ? 'Accepting…' : 'Accept invite'}
         </button>
       {/if}
       <button type="button" onclick={openInvite}>Invite</button>
