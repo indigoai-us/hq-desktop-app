@@ -7,18 +7,18 @@
     getLastReadTs,
     markAllNotificationsRead,
   } from '../lib/notificationFeedData';
-  import { paneItems, rowUnread } from '../lib/quickWindowPane';
+  import { conversationRows } from '../lib/quickWindowPane';
   import NotificationRow from './NotificationRow.svelte';
 
-  // Left inbox strip for share-detail / dm-detail quick windows (US-011).
-  // Lists recent DMs + shares so the user can jump without reopening a
-  // notification. Read watermark advances on leave (US-008 pattern from
-  // InboxPage) once the feed has loaded.
+  // Left inbox strip for share-detail / dm-detail quick windows (US-011 + US-016).
+  // Groups recent DMs + shares into one row per conversation so the user can
+  // jump without reopening a notification. Read watermark advances on leave
+  // (US-008 pattern from InboxPage) once the feed has loaded.
 
   interface Props {
     selectedId: string | null;
     viewedIds: ReadonlySet<string>;
-    onselect: (item: Item) => void;
+    onselect: (item: Item, conversationIds?: string[], conversationItems?: Item[]) => void;
   }
 
   let { selectedId, viewedIds, onselect }: Props = $props();
@@ -29,10 +29,13 @@
   const lastReadTs = getLastReadTs();
   let feedLoaded = false;
 
+  const rows = $derived(conversationRows(items, lastReadTs, viewedIds));
+
   async function load(): Promise<void> {
     loading = true;
     try {
-      items = paneItems(await loadNotificationItems());
+      // Full feed — conversationRows filters dm|share and caps conversations at 30.
+      items = await loadNotificationItems();
       feedLoaded = true;
     } catch (err) {
       console.error('quick-window-pane: load failed', err);
@@ -94,20 +97,23 @@
 
   {#if loading && items.length === 0}
     <p class="qw-side-status">Loading…</p>
-  {:else if items.length === 0}
-    <p class="qw-side-status">No other notifications</p>
+  {:else if rows.length === 0}
+    <p class="qw-side-status">No conversations</p>
   {:else}
     <div class="qw-side-list">
-      {#each items as item (item.id)}
+      {#each rows as row (row.key)}
+        {@const isSelected = selectedId != null && row.ids.includes(selectedId)}
         <NotificationRow
-          type={item.kind === 'dm' ? 'message' : 'share'}
-          actor={item.actor}
-          text={item.kind === 'dm' ? (item.dm?.body ?? item.summary) : item.summary}
-          ts={item.ts}
-          unread={rowUnread(item, lastReadTs, viewedIds)}
-          selected={item.id === selectedId}
+          type={row.kind === 'dm' ? 'message' : 'share'}
+          actor={row.actor}
+          text={row.latest.kind === 'dm' ? (row.latest.dm?.body ?? row.latest.summary) : row.latest.summary}
+          ts={row.latest.ts}
+          unread={!isSelected && row.unreadCount > 0}
+          badgeCount={isSelected ? 0 : row.unreadCount}
+          agentActor={row.agent}
+          selected={isSelected}
           hoverExpand={false}
-          onopen={() => onselect(item)}
+          onopen={() => onselect(row.latest, row.ids, row.items)}
         />
       {/each}
     </div>
@@ -160,4 +166,8 @@
     gap: 2px;
     min-height: 0;
   }
+
+  /* US-016: subtle type hierarchy — share accent tint; system muted. */
+  .qw-side-list :global(.nr[data-type='share'] .nr-icon) { color: var(--pop-accent, #6aa1ff); }
+  .qw-side-list :global(.nr[data-type='system'] .nr-icon) { color: var(--pop-muted); }
 </style>

@@ -25,9 +25,19 @@
     selected ? selected.id : defaultSelectedId('share', events[0]?.eventId),
   );
 
-  function onselect(item: Item): void {
+  // Full grouped conversation for a selected share row (US-016) — the main
+  // pane shows every share from that sender, not just the latest.
+  let selectedShareEvents = $state<ShareEvent[]>([]);
+
+  function onselect(item: Item, conversationIds?: string[], conversationItems?: Item[]): void {
     selected = item;
-    viewedIds = new Set([...viewedIds, item.id]);
+    selectedShareEvents =
+      item.kind === 'share'
+        ? (conversationItems ?? [item]).flatMap((i) =>
+            i.kind === 'share' && i.share ? [i.share] : [],
+          )
+        : [];
+    viewedIds = new Set([...viewedIds, item.id, ...(conversationIds ?? [])]);
   }
 
   $effect(() => {
@@ -38,6 +48,7 @@
       // Reopening this singleton window must show the just-opened share, not
       // a stale side-pane selection from a previous open.
       selected = null;
+      selectedShareEvents = [];
       // Opening shares count as viewed for the side-pane unread dots.
       if (event.payload.length > 0) {
         viewedIds = new Set([
@@ -77,11 +88,14 @@
         <DmThreadPane event={selected.dm} />
       {/key}
     {:else if selected?.kind === 'share' && selected.share}
+      {@const shareEvents = selectedShareEvents.length > 0 ? selectedShareEvents : [selected.share]}
       <header class="detail-header">
         <h1>Shared with Me</h1>
-        <span class="detail-count">1 share</span>
+        <span class="detail-count"
+          >{shareEvents.length} share{shareEvents.length === 1 ? '' : 's'}</span
+        >
       </header>
-      <ShareMainPane events={[selected.share]} />
+      <ShareMainPane events={shareEvents} />
     {:else}
       <header class="detail-header">
         <h1>Shared with Me</h1>

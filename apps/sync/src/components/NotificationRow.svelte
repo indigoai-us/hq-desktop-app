@@ -49,6 +49,10 @@
      * draft suspends auto-hide; blur + empty draft releases it.
      */
     onholdchange?: (held: boolean) => void;
+    /** Conversation rows (quick-window side pane): unread-count pill replacing the dot. */
+    badgeCount?: number;
+    /** Marks the actor as an AI agent — renders a subtle agent glyph after the name. */
+    agentActor?: boolean;
   }
 
   let {
@@ -66,6 +70,8 @@
     onreply,
     onreact,
     onholdchange,
+    badgeCount = 0,
+    agentActor = false,
   }: Props = $props();
 
   let hovered = $state(false);
@@ -240,13 +246,14 @@
     <span class="nr-icon" aria-hidden="true">
       {@render typeIcon(type)}
     </span>
-    {#if unread}
+    {#if unread && badgeCount === 0}
       <span class="nr-unread" aria-label="Unread"></span>
     {/if}
     <span class="nr-text">
-      {#if actor}<b>{actor}</b>{' '}{/if}{text}
+      {#if actor}<b>{actor}</b>{#if agentActor}<span class="nr-agent" data-testid="agent-badge" title="Agent" aria-label="Agent sender"><svg width="10" height="10" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M5 6.5h6v5.5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6.5Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M8 2.5v2M5.5 4.5 4 3.5M10.5 4.5 12 3.5M6.5 9h3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></span>{/if}{' '}{/if}{text}
     </span>
     <span class="nr-trail">
+      {#if badgeCount > 0}<span class="nr-count" data-testid="unread-count" aria-label="{badgeCount} unread">{badgeCount}</span>{/if}
       <span class="nr-ts">
         {relativeTime(ts)}
       </span>
@@ -446,6 +453,30 @@
     border-radius: 50%;
     background: var(--popover-unread);
     flex-shrink: 0;
+  }
+
+  .nr-count {
+    font-size: 10px;
+    font-weight: 600;
+    min-width: 16px;
+    height: 15px;
+    border-radius: 8px;
+    background: var(--popover-unread);
+    color: white;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 4px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .nr-agent {
+    display: inline-flex;
+    color: var(--popover-text-muted);
+    width: 10px;
+    height: 10px;
+    vertical-align: -1px;
+    margin-left: 3px;
   }
 
   .nr-actions {
