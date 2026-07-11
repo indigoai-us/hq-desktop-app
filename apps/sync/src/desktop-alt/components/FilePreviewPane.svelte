@@ -1,36 +1,24 @@
 <script lang="ts">
   /**
    * FilePreviewPane — preview the selected company file beside the file tree
-   * (US-004).
+   * (Files mode + Knowledge tab).
    *
-   * Self-fetching + presentational, like the sibling detail panels. On every
-   * `path` change it resets state and calls the `get_company_file_content`
-   * Tauri command (US-001), which returns the UTF-8 text on success and REJECTS
-   * for binary OR oversized files (size cap = MAX_FILE_BYTES). So a resolved
-   * promise = text to render; a rejected promise = the "can't preview"
-   * placeholder.
+   * Self-fetching + presentational. On every `path` change it classifies the
+   * file and loads a preview:
+   *   * images (png/jpg/svg/…) → local asset URL via convertFileSrc (no base64
+   *     round-trip; works for knowledge assets under the HQ folder)
+   *   * pdf → embedded object via convertFileSrc when absolute path known
+   *   * .md / .markdown → UTF-8 text via get_company_file_content + markdown
+   *   * other text → monospaced pre
+   *   * binary/oversized/unknown failure → friendly placeholder
    *
-   * Rendering:
-   *   * `.md` / `.markdown` (case-insensitive) → rendered to safe HTML by the
-   *     dependency-free, CSP-safe `lib/markdown.ts` renderer (same as
-   *     LibraryDetailPanel / ProjectDetailView) into an `<article
-   *     class="markdown-body">`. The `.markdown-body :global(...)` typography
-   *     mirrors LibraryDetailPanel.
-   *   * other text → a monospaced `<pre>{text}</pre>` (Svelte auto-escapes the
-   *     bound text), whitespace preserved, horizontal scroll allowed.
-   *   * binary/oversized (fetch rejected) → a friendly placeholder.
-   *
-   * The two open actions — "Open in Claude Code" (reuses
-   * OpenFileInClaudeCode.svelte's claude:// custom-command path) and "Reveal in
-   * Finder" (the already-granted `shell:allow-open` via plugin-shell `open()`) —
-   * render in the header REGARDLESS of preview success, so they stay available
-   * in the can't-preview state.
-   *
-   * No purple anywhere (hard Indigo policy).
+   * Open actions (Claude Code + Reveal in Finder) stay in the header regardless
+   * of preview success.
    */
-  import { invoke } from '@tauri-apps/api/core';
+  import { convertFileSrc, invoke } from '@tauri-apps/api/core';
   import { open } from '@tauri-apps/plugin-shell';
   import { renderMarkdown } from '../lib/markdown';
+  import { filePreviewKind } from '../lib/file-preview-kind';
   import OpenFileInClaudeCode from './OpenFileInClaudeCode.svelte';
   import '../v4/tokens.css';
 
@@ -38,23 +26,28 @@
     /** HQ-folder-relative, forward-slash path of the selected file. */
     path: string;
     /** Absolute HQ root (`get_config().hqFolderPath`). Empty → open actions
-     *  that need an absolute path suppress themselves. */
+     *  that need an absolute path suppress themselves; media preview needs it. */
     hqFolderPath: string;
   }
 
   let { path, hqFolderPath }: Props = $props();
 
   let content = $state<string | null>(null);
+  let mediaUrl = $state<string | null>(null);
   let loading = $state(false);
   let unsupported = $state(false);
+  let mediaError = $state(false);
   let revealError = $state<string | null>(null);
 
   const fileName = $derived(path.split('/').pop() ?? path);
-  const isMarkdown = $derived(/\.(md|markdown)$/i.test(path));
+  const kind = $derived(filePreviewKind(path));
+  const isMarkdown = $derived(kind === 'markdown');
+  const isImage = $derived(kind === 'image');
+  const isPdf = $derived(kind === 'pdf');
 
   // Build the absolute path by joining hqFolderPath + the relative FileNode
   // path with `/`. Guard against a trailing slash on hqFolderPath. Empty root →
-  // no absolute path (Reveal suppresses itself).
+  // no absolute path (Reveal + media preview suppress themselves).
   const absolutePath = $derived(
     hqFolderPath ? `${hqFolderPath.replace(/\/+$/, '')}/${path}` : '',
   );
@@ -63,12 +56,15 @@
     isMarkdown && content !== null ? renderMarkdown(content) : '',
   );
 
-  // Fetch content on every `path` change. Cancel-flag guards against an
-  // out-of-order completion when the user clicks through files quickly.
+  // Fetch / resolve preview on every `path` (and hq root) change.
   $effect(() => {
     const current = path;
+    const abs = absolutePath;
+    const previewKind = filePreviewKind(current);
     content = null;
+    mediaUrl = null;
     unsupported = false;
+    mediaError = false;
     revealError = null;
 
     if (!current) {
@@ -79,6 +75,29 @@
     loading = true;
     let cancelled = false;
 
+    // Images + PDFs: serve via asset protocol (no UTF-8 decode).
+    if (previewKind === 'image' || previewKind === 'pdf') {
+      if (!abs) {
+        // Without HQ root we can't build a local URL — honest unsupported.
+        unsupported = true;
+        loading = false;
+        return;
+      }
+      try {
+        mediaUrl = convertFileSrc(abs);
+        unsupported = false;
+      } catch (err) {
+        console.error('convertFileSrc failed:', err);
+        mediaUrl = null;
+        unsupported = true;
+      }
+      loading = false;
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    // Text / markdown: existing UTF-8 command (rejects binary + oversized).
     void invoke<string>('get_company_file_content', { path: current })
       .then((text) => {
         if (!cancelled) {
@@ -87,7 +106,6 @@
         }
       })
       .catch((err) => {
-        // Reject = binary OR oversized OR unreadable → can't-preview state.
         console.error('get_company_file_content failed:', err);
         if (!cancelled) {
           content = null;
@@ -113,6 +131,11 @@
       revealError = 'Could not reveal file';
       setTimeout(() => (revealError = null), 4000);
     }
+  }
+
+  function onMediaError(): void {
+    mediaError = true;
+    unsupported = true;
   }
 </script>
 
@@ -158,14 +181,14 @@
     </div>
   </header>
 
-  <div class="preview-body">
+  <div class="preview-body" class:media-body={isImage || isPdf}>
     {#if loading}
       <div class="preview-skeleton" aria-label="Loading preview">
         {#each Array(6) as _, index (index)}
           <span style={`width: ${92 - index * 9}%`}></span>
         {/each}
       </div>
-    {:else if unsupported}
+    {:else if unsupported || mediaError}
       <div class="preview-unsupported" data-testid="file-preview-unsupported">
         <svg
           width="28"
@@ -189,8 +212,28 @@
           />
         </svg>
         <strong>Can&rsquo;t preview this file</strong>
-        <span>It&rsquo;s binary or too large to show here. Use the actions above to open it.</span>
+        <span
+          >It&rsquo;s unsupported or too large to show here. Use the actions above to open
+          it.</span
+        >
       </div>
+    {:else if isImage && mediaUrl}
+      <div class="image-frame" data-testid="file-preview-image">
+        <img src={mediaUrl} alt={fileName} onerror={onMediaError} />
+      </div>
+    {:else if isPdf && mediaUrl}
+      <object
+        class="pdf-frame"
+        data={mediaUrl}
+        type="application/pdf"
+        title={fileName}
+        data-testid="file-preview-pdf"
+      >
+        <div class="preview-unsupported">
+          <strong>PDF preview unavailable</strong>
+          <span>Use Reveal in Finder or Open in Claude Code to open this file.</span>
+        </div>
+      </object>
     {:else if content !== null && isMarkdown}
       <!-- eslint-disable-next-line svelte/no-at-html-tags -->
       <article class="markdown-body" data-testid="file-preview-markdown">{@html markdownHtml}</article>
@@ -287,9 +330,45 @@
     overflow: auto;
   }
 
+  .preview-body.media-body {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+  }
+
+  .image-frame {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    max-width: 100%;
+    max-height: 100%;
+  }
+
+  .image-frame img {
+    max-width: 100%;
+    max-height: min(70vh, 100%);
+    width: auto;
+    height: auto;
+    object-fit: contain;
+    border-radius: var(--radius-md, 8px);
+    border: 1px solid var(--border);
+    background: var(--bg-subtle, transparent);
+  }
+
+  .pdf-frame {
+    width: 100%;
+    height: 100%;
+    min-height: 420px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md, 8px);
+    background: var(--bg-subtle, transparent);
+  }
+
   .preview-skeleton {
     display: grid;
     gap: 10px;
+    width: 100%;
   }
 
   .preview-skeleton span {
