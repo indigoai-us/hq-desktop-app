@@ -52,6 +52,8 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use serde::Serialize;
+
 use crate::commands::personal::PERSONAL_VAULT_JOURNAL_SLUG;
 use crate::commands::sync::{resolve_jwt, resolve_vault_api_url};
 use crate::commands::vault_client::{EntityInfo, MembershipInfo, VaultClient};
@@ -488,13 +490,50 @@ pub async fn list_syncable_workspaces() -> Result<WorkspacesResult, String> {
         });
         let person = persons.into_iter().next();
 
-        let memberships = match &person {
+        let mut memberships = match &person {
             Some(p) => vault
                 .list_memberships(&p.uid)
                 .await
                 .map_err(|e| format!("list memberships: {e}"))?,
             None => Vec::new(),
         };
+
+        // Modern email-keyed invites only live on pending-by-email until
+        // claim-by-email rewrites them onto the person. Merge as synthetic
+        // pending memberships so desktop NEEDS YOU / company Accept work.
+        let pending_by_email = vault
+            .list_pending_invites_by_email()
+            .await
+            .unwrap_or_else(|e| {
+                log(
+                    "workspaces",
+                    &format!("list pending-by-email failed (non-fatal): {e}"),
+                );
+                Vec::new()
+            });
+        let existing_company_uids: std::collections::HashSet<String> =
+            memberships.iter().map(|m| m.company_uid.clone()).collect();
+        let person_uid_for_synth = person
+            .as_ref()
+            .map(|p| p.uid.clone())
+            .unwrap_or_else(|| "email-pending".to_string());
+        for inv in pending_by_email {
+            if existing_company_uids.contains(&inv.company_uid) {
+                continue;
+            }
+            memberships.push(MembershipInfo {
+                uid: String::new(),
+                person_uid: person_uid_for_synth.clone(),
+                company_uid: inv.company_uid.clone(),
+                status: "pending".to_string(),
+                role: inv.role.clone(),
+                created_at: inv.invited_at.clone(),
+                membership_key: inv.membership_key.clone(),
+                company_name: None,
+                invited_by: inv.invited_by.clone(),
+                invited_at: inv.invited_at.clone(),
+            });
+        }
 
         let mut entities: BTreeMap<String, EntityInfo> = BTreeMap::new();
         for mem in &memberships {
@@ -578,6 +617,130 @@ pub async fn list_syncable_workspaces() -> Result<WorkspacesResult, String> {
         error,
         hq_folder_path,
         manifest_error,
+    })
+}
+
+/// Result of `claim_pending_company_invite`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaimPendingInviteResult {
+    pub ok: bool,
+    pub claimed_slugs: Vec<String>,
+    pub message: String,
+}
+
+/// Accept pending company invite(s) via `POST /membership/claim-by-email`
+/// (modern tokenless path). Optional `company_slug` is advisory for messaging.
+#[tauri::command]
+pub async fn claim_pending_company_invite(
+    company_slug: Option<String>,
+) -> Result<ClaimPendingInviteResult, String> {
+    let vault_url = resolve_vault_api_url()?;
+    let jwt = resolve_jwt().await?;
+    let vault = VaultClient::new(&vault_url, &jwt);
+
+    let mut persons = vault
+        .list_entities_by_type("person")
+        .await
+        .map_err(|e| format!("list person entities: {e}"))?;
+    persons.sort_by(|a, b| match a.created_at.cmp(&b.created_at) {
+        std::cmp::Ordering::Equal => a.uid.cmp(&b.uid),
+        ord => ord,
+    });
+    let person = match persons.into_iter().next() {
+        Some(p) => p,
+        None => {
+            match crate::commands::personal::create_person_entity_from_cognito(&vault).await? {
+                Some(p) => p,
+                None => {
+                    return Err(
+                        "No person entity for this account — sign out and back in, then try Accept again."
+                            .into(),
+                    );
+                }
+            }
+        }
+    };
+
+    let before_pending = vault
+        .list_pending_invites_by_email()
+        .await
+        .map_err(|e| format!("list pending invites: {e}"))?;
+    if before_pending.is_empty() {
+        let slug_hint = company_slug
+            .as_deref()
+            .map(|s| format!(" for {s}"))
+            .unwrap_or_default();
+        return Ok(ClaimPendingInviteResult {
+            ok: true,
+            claimed_slugs: Vec::new(),
+            message: format!(
+                "No email-keyed pending invite{slug_hint}. If you still see an invite, run Sync — or use the invite email link for a legacy token invite."
+            ),
+        });
+    }
+
+    let claim = vault
+        .claim_pending_invites_by_email(Some(&person.uid))
+        .await
+        .map_err(|e| format!("claim invite failed: {e}"))?;
+
+    let mut claimed_slugs: Vec<String> = Vec::new();
+    for mem in &claim.claimed {
+        if let Ok(Some(ent)) = vault.find_entity_by_uid(&mem.company_uid).await {
+            if !ent.slug.is_empty() && !claimed_slugs.contains(&ent.slug) {
+                claimed_slugs.push(ent.slug);
+            }
+        }
+    }
+
+    if claimed_slugs.is_empty() {
+        let after = vault
+            .list_pending_invites_by_email()
+            .await
+            .unwrap_or_default();
+        if after.len() < before_pending.len() {
+            let after_uids: std::collections::HashSet<_> =
+                after.iter().map(|i| i.company_uid.clone()).collect();
+            for inv in &before_pending {
+                if after_uids.contains(&inv.company_uid) {
+                    continue;
+                }
+                if let Ok(Some(ent)) = vault.find_entity_by_uid(&inv.company_uid).await {
+                    if !ent.slug.is_empty() && !claimed_slugs.contains(&ent.slug) {
+                        claimed_slugs.push(ent.slug);
+                    }
+                }
+            }
+        }
+    }
+
+    let message = if claimed_slugs.is_empty() {
+        "Invite claim completed. Run Sync to pull any newly joined companies.".to_string()
+    } else if claimed_slugs.len() == 1 {
+        format!(
+            "Joined {}. Run Sync to pull it onto this Mac.",
+            claimed_slugs[0]
+        )
+    } else {
+        format!(
+            "Joined {}. Run Sync to pull them onto this Mac.",
+            claimed_slugs.join(", ")
+        )
+    };
+
+    log(
+        "workspaces",
+        &format!(
+            "claim_pending_company_invite ok person={} slugs={:?}",
+            person.uid, claimed_slugs
+        ),
+    );
+
+    Ok(ClaimPendingInviteResult {
+        ok: true,
+        claimed_slugs,
+        message,
     })
 }
 

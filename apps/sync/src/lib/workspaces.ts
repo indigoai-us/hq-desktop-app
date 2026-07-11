@@ -95,3 +95,21 @@ export function joinableMemberships(workspaces: Workspace[]): Workspace[] {
       w.slug !== 'personal',
   );
 }
+
+/**
+ * Pending company invites the signed-in user has not accepted yet
+ * (person-keyed pending + email-keyed pending-by-email merged server-side).
+ */
+export function pendingInviteWorkspaces(workspaces: Workspace[]): Workspace[] {
+  return dedupeWorkspaces(workspaces).filter(
+    (w) =>
+      w.kind === 'company' &&
+      w.membershipStatus === 'pending' &&
+      w.slug !== 'personal',
+  );
+}
+
+/** Count of pending company invites (for NEEDS YOU + chrome badges). */
+export function countPendingInvites(workspaces: Workspace[]): number {
+  return pendingInviteWorkspaces(workspaces).length;
+}

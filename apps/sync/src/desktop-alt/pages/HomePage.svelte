@@ -14,6 +14,7 @@
   import type { MeetingEvent } from '../lib/meetings-model';
   import ActivityDigest from '../v4/ActivityDigest.svelte';
   import NeedsYouCard from '../v4/NeedsYouCard.svelte';
+  import { pendingInviteWorkspaces } from '../../lib/workspaces';
   import {
     formatClock,
     getConflictCardModel,
@@ -25,6 +26,7 @@
     getHomePortfolioStats,
     getHomeProgressModel,
     getHomeTodayAgenda,
+    getInviteCardModel,
     getNeedsYouCount,
     type HomeConflict,
     type HomeCoreState,
@@ -78,6 +80,8 @@
     onrestoredrift?: () => void;
     onkeepdrift?: () => void;
     onviewdrift?: () => void;
+    /** Accept a pending company invite (claim-by-email). */
+    onacceptinvite?: (slug: string) => void | Promise<void>;
     onsignin?: () => void;
     onretry?: () => void;
     onopenlog?: () => void;
@@ -114,12 +118,14 @@
     onrestoredrift,
     onkeepdrift,
     onviewdrift,
+    onacceptinvite,
     onsignin,
     onretry,
     onopenlog,
   }: Props = $props();
 
   let techOpen = $state(false);
+  let acceptingInviteSlug = $state<string | null>(null);
 
   const lastSyncLabel = $derived(formatRelativeTime(status?.lastSyncAt ?? null));
   const metaLine = $derived(
@@ -148,7 +154,10 @@
   const driftCard = $derived(
     coreState && !driftDismissed ? getDriftCardModel(coreState, driftRestoring) : null,
   );
-  const needsYouCount = $derived(getNeedsYouCount(conflicts, coreState, driftDismissed));
+  const inviteWorkspaces = $derived(pendingInviteWorkspaces(workspaces));
+  const needsYouCount = $derived(
+    getNeedsYouCount(conflicts, coreState, driftDismissed, inviteWorkspaces.length),
+  );
   const progressModel = $derived(
     getHomeProgressModel({
       filesProgressed: syncFilesProgressed,
@@ -181,6 +190,16 @@
   function handleErrorAction(actionId: string) {
     if (actionId === 'sign-in') onsignin?.();
     else onretry?.();
+  }
+
+  async function handleInviteAction(slug: string, actionId: string) {
+    if (actionId !== 'accept-invite' || acceptingInviteSlug) return;
+    acceptingInviteSlug = slug;
+    try {
+      await onacceptinvite?.(slug);
+    } finally {
+      acceptingInviteSlug = null;
+    }
   }
 </script>
 
@@ -293,6 +312,12 @@
         Needs you · {needsYouCount}
       </h2>
       <div class="home-queue">
+        {#each inviteWorkspaces as invite (invite.slug)}
+          <NeedsYouCard
+            card={getInviteCardModel(invite, acceptingInviteSlug === invite.slug)}
+            onaction={(id) => void handleInviteAction(invite.slug, id)}
+          />
+        {/each}
         {#each conflicts as conflict (conflict.path)}
           <NeedsYouCard
             card={getConflictCardModel(conflict)}

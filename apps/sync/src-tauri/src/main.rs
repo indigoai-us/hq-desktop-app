@@ -299,6 +299,7 @@ fn main() {
             commands::lifecycle::get_lifecycle_state,
             commands::workspaces::list_syncable_workspaces,
             commands::workspaces::connect_workspace_to_cloud,
+            commands::workspaces::claim_pending_company_invite,
             commands::sync_mode::get_sync_mode,
             commands::sync_mode::set_sync_mode,
             commands::conflicts::resolve_conflict,

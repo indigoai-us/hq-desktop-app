@@ -690,6 +690,29 @@
 
   // ── Home NEEDS YOU actions ─────────────────────────────────────────────────
 
+  /** Accept a pending company invite via claim-by-email (desktop NEEDS YOU). */
+  async function handleAcceptInvite(slug: string) {
+    try {
+      const result = await invoke<{
+        ok: boolean;
+        claimedSlugs: string[];
+        message: string;
+      }>('claim_pending_company_invite', { companySlug: slug });
+      flashToast(result.message || `Joined ${slug}`, 'ok');
+      await refreshRealState();
+      if (result.claimedSlugs?.length) {
+        await handleSyncAll();
+      }
+    } catch (err) {
+      console.error(`claim_pending_company_invite(${slug}) failed:`, err);
+      flashToast(
+        err instanceof Error ? err.message : String(err) || 'Could not accept invite',
+        'warn',
+      );
+      throw err;
+    }
+  }
+
   async function handleResolveConflict(path: string, strategy: 'keep-local' | 'keep-remote') {
     const conflict = homeConflicts.find((entry) => entry.path === path);
     if (!conflict || conflict.status === 'resolving') return;
@@ -1346,6 +1369,7 @@
                 onopencompany={(slug) => navigate({ kind: 'company', slug })}
                 onresolveconflict={handleResolveConflict}
                 oncompareconflict={handleCompareConflict}
+                onacceptinvite={handleAcceptInvite}
                 onrestoredrift={handleRestoreDrift}
                 onkeepdrift={handleKeepDrift}
                 onviewdrift={handleViewDrift}
