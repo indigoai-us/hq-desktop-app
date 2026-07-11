@@ -31,23 +31,42 @@ export type LibraryTab = 'skills' | 'workers' | 'installed' | 'profile';
 export const DEFAULT_LIBRARY_TAB: LibraryTab = 'skills';
 
 /**
- * Company page sections — rows of the company secondary sidebar (SPEC section
- * 4: Overview / Accounts / Goals / Projects / Tasks / Activity / Deployments /
- * Secrets / Library). "Accounts" is the hq-native-crm CRM surface (US-010).
- * Defaults to 'overview' when a company route carries no tab.
+ * Company page sections — rows of the company secondary sidebar.
+ * company-detail-desktop-ia: Accounts/Tasks/Library removed; Skills, Workers,
+ * Knowledge, Team are first-class. Defaults to 'overview' when a company route
+ * carries no tab. Legacy deep-links remap in resolvePendingDesktopRoute /
+ * normalizeCompanyTab.
  */
 export type CompanyTab =
   | 'overview'
-  | 'accounts'
   | 'goals'
   | 'projects'
-  | 'tasks'
+  | 'skills'
+  | 'workers'
+  | 'knowledge'
+  | 'team'
   | 'activity'
   | 'deployments'
-  | 'secrets'
-  | 'library';
+  | 'secrets';
 
 export const DEFAULT_COMPANY_TAB: CompanyTab = 'overview';
+
+/**
+ * Legacy company-tab ids that still appear in deep links / pending routes.
+ * remapped so old bookmarks do not 404 the secondary sidebar.
+ */
+const LEGACY_COMPANY_TAB_REDIRECT: Readonly<Record<string, CompanyTab>> = {
+  accounts: 'overview',
+  tasks: 'projects',
+  library: 'skills',
+};
+
+/** Normalize a company tab string (including legacy ids) to a live CompanyTab. */
+export function normalizeCompanyTab(value: string | undefined | null): CompanyTab | undefined {
+  if (!value) return undefined;
+  if (isCompanyTab(value)) return value;
+  return LEGACY_COMPANY_TAB_REDIRECT[value];
+}
 
 /** Settings sections — rows of the Settings secondary sidebar (US-013 fills the bodies). */
 export type SettingsTab = 'sync' | 'notifications' | 'widget' | 'updates' | 'general' | 'meetings';
@@ -81,20 +100,20 @@ export function getDesktopLandingRoute(
 }
 
 /**
- * The company secondary-sidebar rows, in SPEC display order. "Accounts" (the
- * hq-native-crm CRM surface, US-010) sits directly under Overview — the
- * "where is every client?" entry point ahead of the work-system sections.
+ * Company secondary-sidebar rows (company-detail-desktop-ia).
+ * Accounts hidden; Tasks/Library removed; Skills/Workers/Knowledge/Team top-level.
  */
 export const COMPANY_SECTIONS: ReadonlyArray<{ id: CompanyTab; label: string }> = [
   { id: 'overview', label: 'Overview' },
-  { id: 'accounts', label: 'Accounts' },
   { id: 'goals', label: 'Goals' },
   { id: 'projects', label: 'Projects' },
-  { id: 'tasks', label: 'Tasks' },
+  { id: 'skills', label: 'Skills' },
+  { id: 'workers', label: 'Workers' },
+  { id: 'knowledge', label: 'Knowledge' },
+  { id: 'team', label: 'Team' },
   { id: 'activity', label: 'Activity' },
   { id: 'deployments', label: 'Deployments' },
   { id: 'secrets', label: 'Secrets' },
-  { id: 'library', label: 'Library' },
 ];
 
 /** The four Library secondary-sidebar rows, in SPEC display order. */
@@ -229,7 +248,8 @@ export function resolvePendingDesktopRoute(name: string | null | undefined): Des
   }
 
   if (kind === 'company' && first) {
-    const tab = isCompanyTab(second) ? second : undefined;
+    // Live tabs + legacy redirects (accounts→overview, tasks→projects, library→skills).
+    const tab = normalizeCompanyTab(second);
     return tab ? { kind: 'company', slug: first, tab } : { kind: 'company', slug: first };
   }
 
