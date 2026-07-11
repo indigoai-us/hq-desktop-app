@@ -36,6 +36,10 @@
     onopen?: () => void;
     /** Hover dismiss (×). */
     ondismiss?: () => void;
+    /** Text for the hover open pill; when absent keep 'Open'. */
+    actionLabel?: string;
+    /** When true the dismiss button renders as a text pill reading 'Dismiss'. */
+    textDismiss?: boolean;
     /** Message rows: quick-reply submit. */
     onreply?: (text: string) => void;
     /** Message rows: emoji react tap. */
@@ -57,6 +61,8 @@
     hoverExpand = true,
     onopen,
     ondismiss,
+    actionLabel,
+    textDismiss = false,
     onreply,
     onreact,
     onholdchange,
@@ -188,14 +194,14 @@
       <span class="nr-icon" aria-hidden="true">
         {@render typeIcon(type)}
       </span>
+      {#if unread}
+        <span class="nr-unread" aria-label="Unread"></span>
+      {/if}
       <span class="nr-text nr-text-head">
         {#if actor}<b>{actor}</b>{/if}
       </span>
       <span class="nr-trail">
         <span class="nr-ts">{relativeTime(ts)}</span>
-        {#if unread}
-          <span class="nr-unread" aria-label="Unread"></span>
-        {/if}
       </span>
     </div>
     <div class="nr-body">{text}</div>
@@ -234,38 +240,43 @@
     <span class="nr-icon" aria-hidden="true">
       {@render typeIcon(type)}
     </span>
+    {#if unread}
+      <span class="nr-unread" aria-label="Unread"></span>
+    {/if}
     <span class="nr-text">
       {#if actor}<b>{actor}</b>{' '}{/if}{text}
     </span>
     <span class="nr-trail">
       <span class="nr-ts">
-        {#if unread}
-          <span class="nr-unread" aria-label="Unread"></span>
-        {/if}
         {relativeTime(ts)}
       </span>
       {#if !isMessage && (onopen || ondismiss)}
         <span class="nr-actions">
           {#if onopen}
             <button class="nr-open" type="button" onclick={(e) => (e.stopPropagation(), handleOpen())}>
-              Open
+              {actionLabel ?? 'Open'}
             </button>
           {/if}
           {#if ondismiss}
             <button
               class="nr-dismiss"
+              class:nr-dismiss-text={textDismiss}
               type="button"
               aria-label="Dismiss"
               onclick={(e) => (e.stopPropagation(), ondismiss?.())}
             >
-              <svg width="10" height="10" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                <path
-                  d="M4 4l8 8M12 4l-8 8"
-                  stroke="currentColor"
-                  stroke-width="1.3"
-                  stroke-linecap="round"
-                />
-              </svg>
+              {#if textDismiss}
+                Dismiss
+              {:else}
+                <svg width="10" height="10" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                  <path
+                    d="M4 4l8 8M12 4l-8 8"
+                    stroke="currentColor"
+                    stroke-width="1.3"
+                    stroke-linecap="round"
+                  />
+                </svg>
+              {/if}
             </button>
           {/if}
         </span>
@@ -430,8 +441,8 @@
   }
 
   .nr-unread {
-    width: 6px;
-    height: 6px;
+    width: 5px;
+    height: 5px;
     border-radius: 50%;
     background: var(--popover-unread);
     flex-shrink: 0;
@@ -474,6 +485,11 @@
   .nr-dismiss {
     width: 20px;
     padding: 0;
+  }
+
+  .nr-dismiss-text {
+    width: auto;
+    padding: 0 8px;
   }
 
   .nr-open:hover,

@@ -55,10 +55,16 @@ export const WIDGET_RECENT_MAX = 20;
 export const WIDGET_HOVER_MAX = 8;
 
 /** Compact hover-list row height. */
-export const WIDGET_HOVER_ROW_HEIGHT = 26;
+export const WIDGET_HOVER_ROW_HEIGHT = 28;
 
 /** Day-separator row height in the hover list. */
-export const WIDGET_HOVER_SEPARATOR_HEIGHT = 18;
+export const WIDGET_HOVER_SEPARATOR_HEIGHT = 21;
+
+/** Frosted popup panel width. */
+export const WIDGET_HOVER_PANEL_WIDTH = 264;
+
+/** Gap between popup rows. */
+export const WIDGET_HOVER_ROW_GAP = 1;
 
 /** Vertical padding inside the hover frosted panel. */
 export const WIDGET_HOVER_LIST_PADDING = 12;
@@ -332,6 +338,16 @@ export function dismissItem(state: WidgetStackState, id: string): WidgetStackSta
   };
 }
 
+/** Remove an item from recent and visible by id. Queued is kept. */
+export function dismissRecent(state: WidgetStackState, id: string): WidgetStackState {
+  return {
+    ...state,
+    visible: state.visible.filter((item) => item.id !== id),
+    queued: state.queued.slice(),
+    recent: state.recent.filter((item) => item.id !== id),
+  };
+}
+
 /**
  * Clear the queued stack after the user has seen it via the hover list.
  * Items remain in `recent`. No-op when queued is already empty.
@@ -481,12 +497,12 @@ export function widgetHoverWindowSize(
     WIDGET_TOP_HEADROOM +
     WIDGET_HOVER_LIST_PADDING +
     items.length * WIDGET_HOVER_ROW_HEIGHT +
-    (items.length > 1 ? (items.length - 1) * WIDGET_ROW_GAP : 0) +
+    (items.length > 1 ? (items.length - 1) * WIDGET_HOVER_ROW_GAP : 0) +
     separators * WIDGET_HOVER_SEPARATOR_HEIGHT;
 
   if (items.some((item) => item.type === 'message')) {
     height += WIDGET_MESSAGE_EXPAND_HEADROOM;
   }
 
-  return { width: WIDGET_STACK_WIDTH, height };
+  return { width: WIDGET_HOVER_PANEL_WIDTH + 20, height };
 }
