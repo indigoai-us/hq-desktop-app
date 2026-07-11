@@ -4,7 +4,7 @@
   import '../styles/popover.css';
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
-  import type { Item } from '../lib/notificationGroups';
+  import type { Item, ShareEvent } from '../lib/notificationGroups';
   import { defaultSelectedId } from '../lib/quickWindowPane';
   import QuickWindowSidePane from './QuickWindowSidePane.svelte';
   import ShareMainPane from './ShareMainPane.svelte';
@@ -21,9 +21,19 @@
     selected ? selected.id : defaultSelectedId('dm', event?.eventId),
   );
 
-  function onselect(item: Item): void {
+  // Full grouped conversation for a selected share row (US-016) — the main
+  // pane shows every share from that sender, not just the latest.
+  let selectedShareEvents = $state<ShareEvent[]>([]);
+
+  function onselect(item: Item, conversationIds?: string[], conversationItems?: Item[]): void {
     selected = item;
-    viewedIds = new Set([...viewedIds, item.id]);
+    selectedShareEvents =
+      item.kind === 'share'
+        ? (conversationItems ?? [item]).flatMap((i) =>
+            i.kind === 'share' && i.share ? [i.share] : [],
+          )
+        : [];
+    viewedIds = new Set([...viewedIds, item.id, ...(conversationIds ?? [])]);
   }
 
   $effect(() => {
@@ -34,6 +44,7 @@
       // Reopening this singleton window must show the just-opened DM (and its
       // reply composer), not a stale side-pane selection from a previous open.
       selected = null;
+      selectedShareEvents = [];
       // Opening DM counts as viewed for the side-pane unread dots.
       viewedIds = new Set([...viewedIds, `dm:${e.payload.eventId}`]);
     }).then((fn) => {
@@ -54,11 +65,14 @@
 
   <div class="detail-main">
     {#if selected?.kind === 'share' && selected.share}
+      {@const shareEvents = selectedShareEvents.length > 0 ? selectedShareEvents : [selected.share]}
       <header class="detail-header">
         <h1>Shared with Me</h1>
-        <span class="detail-count">1 share</span>
+        <span class="detail-count"
+          >{shareEvents.length} share{shareEvents.length === 1 ? '' : 's'}</span
+        >
       </header>
-      <ShareMainPane events={[selected.share]} />
+      <ShareMainPane events={shareEvents} />
     {:else if selected?.kind === 'dm' && selected.dm}
       <header class="detail-header">
         <h1>{selected.dm.fromDisplayName || 'Direct Message'}</h1>
