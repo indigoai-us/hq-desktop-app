@@ -256,6 +256,7 @@
   .ls-version-wrap {
     position: relative;
     flex: 0 0 auto;
+    z-index: 1;
   }
 
   .ls-version {

@@ -24,8 +24,13 @@ describe('US-017: version pop-out in desktop status bar', () => {
     expect(statusBar).toContain('<VersionPopout');
     expect(statusBar).toContain('aria-expanded={versionOpen}');
     expect(s).toContain('position: relative');
-    expect(p).toContain('bottom: calc(100% + 8px)');
-    expect(p).toContain('right: 0');
+    // Fixed layer above main content (not absolute inside status-bar context —
+    // inbox hover-expand rows were painting over the panel).
+    expect(p).toContain('position: fixed');
+    expect(p).toContain('bottom: calc(var(--desktop-status-bar-height, 32px) + 8px)');
+    expect(p).toContain('right: 14px');
+    expect(p).toContain('z-index: 500');
+    expect(p).toContain('isolation: isolate');
     expect(popout).toContain('role="dialog"');
     expect(popout).toContain('aria-label="Version and updates"');
     // Click-away + Escape live on the status bar while the pop-out is open.

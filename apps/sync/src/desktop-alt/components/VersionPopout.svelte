@@ -236,23 +236,37 @@
 
 <style>
   .version-popout {
-    position: absolute;
-    bottom: calc(100% + 8px);
-    right: 0;
-    z-index: 200;
+    /* Fixed (not absolute) so inbox/message rows cannot paint over the panel.
+       Absolute + status-bar stacking context lost to the main scroll layer. */
+    position: fixed;
+    bottom: calc(var(--desktop-status-bar-height, 32px) + 8px);
+    right: 14px;
+    z-index: 500;
     width: 260px;
     padding: 12px;
     border: 1px solid var(--border-strong, var(--pop-border, rgba(120, 120, 128, 0.3)));
     border-radius: 10px;
-    /* Solid panel only — glass --pop-bg / --surface-panel are translucent. */
+    /* Force a solid, fully opaque panel — never inherit glass --pop-bg. */
     opacity: 1;
-    background: var(--c-bg, #2b2b2e);
+    isolation: isolate;
+    background-color: var(--c-bg, #2b2b2e);
+    background-image: none;
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
-    box-shadow: var(--pop-shadow, 0 12px 32px rgba(0, 0, 0, 0.18));
+    box-shadow:
+      var(--pop-shadow, 0 12px 32px rgba(0, 0, 0, 0.28)),
+      0 0 0 1px color-mix(in srgb, var(--c-bg, #2b2b2e) 80%, transparent);
     color: var(--fg, var(--c-text, inherit));
     font-size: var(--text-xs, 13px);
     line-height: 1.35;
+    /* Clip any child overflow so nothing from behind peeks through corners. */
+    overflow: hidden;
+  }
+
+  @media (prefers-color-scheme: light) {
+    .version-popout {
+      background-color: var(--c-bg, #ffffff);
+    }
   }
 
   .vp-rows {
