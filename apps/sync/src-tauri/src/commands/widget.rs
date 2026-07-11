@@ -73,20 +73,20 @@ static CLICK_AWAY_MONITOR: Once = Once::new();
 /// `capabilities/widget.json`.
 pub const WINDOW_LABEL: &str = "widget";
 
-/// Widget geometry (logical px). Sized to hug the 56px wordmark so the
-/// transparent always-on-top window does not swallow desktop clicks outside
-/// the mark. 10px headroom top+right for the queued-count superscript (US-003)
-/// matches `Widget.svelte` `.wg` padding (padding 10 + mark 56 = 66 wide;
-/// padding 10 + ~32.2 mark height ≈ 42.2 ≤ 43 tall).
-const WIDGET_W: f64 = 66.0;
-const WIDGET_H: f64 = 43.0;
+/// Widget geometry (logical px). Lizzie resting mark: 40px glyph in a 60×60
+/// padded touch target so the transparent always-on-top window does not
+/// swallow desktop clicks outside the mark (hq-widget-lizzie.indigo-hq.com).
+/// 10px headroom top+right for the queued-count superscript (US-003) lives
+/// inside that 60×60 (padding 10 + mark 40).
+const WIDGET_W: f64 = 60.0;
+const WIDGET_H: f64 = 60.0;
 /// Max size when the notification stack expands the window (US-003).
 const WIDGET_W_MAX: f64 = 340.0;
 const WIDGET_H_MAX: f64 = 480.0;
-/// Margins from the display's visible edge. `MARGIN_RIGHT` is 8 so the mark's
-/// visual right margin stays 18px (8 window margin + 10px right padding in
-/// `.wg`). `MARGIN_BOTTOM` is 16 — the mark sits flush to the window bottom.
-const MARGIN_RIGHT: f64 = 8.0;
+/// Margins from the display's visible edge. Lizzie docks 20px right / 16px
+/// bottom of the mark's visual edge: with no extra CSS pad on the right of
+/// the 60×60 box, `MARGIN_RIGHT` is 20. `MARGIN_BOTTOM` is 16.
+const MARGIN_RIGHT: f64 = 20.0;
 const MARGIN_BOTTOM: f64 = 16.0;
 
 /// Max payloads held while the widget webview has not completed its
@@ -1344,8 +1344,8 @@ mod tests {
     #[test]
     fn clamp_widget_size_passes_through_in_range() {
         assert_eq!(clamp_widget_size(200.0, 120.0), (200.0, 120.0));
-        assert_eq!(clamp_widget_size(100.0, 43.0), (100.0, 43.0));
-        assert_eq!(clamp_widget_size(66.0, 300.0), (66.0, 300.0));
+        assert_eq!(clamp_widget_size(100.0, 60.0), (100.0, 60.0));
+        assert_eq!(clamp_widget_size(60.0, 300.0), (60.0, 300.0));
     }
 
     #[test]
@@ -1404,13 +1404,13 @@ mod tests {
         let primary_h = 982.0;
 
         let (x_idle, y_idle) =
-            anchor_lower_right(vf_ox, vf_oy, vf_w, primary_h, 66.0, 43.0);
+            anchor_lower_right(vf_ox, vf_oy, vf_w, primary_h, 60.0, 60.0);
         let (x_grown, y_grown) =
             anchor_lower_right(vf_ox, vf_oy, vf_w, primary_h, 340.0, 480.0);
 
         // Lower-right corner (x+w, y+h) is size-invariant.
-        assert_eq!(x_idle + 66.0, x_grown + 340.0);
-        assert_eq!(y_idle + 43.0, y_grown + 480.0);
+        assert_eq!(x_idle + 60.0, x_grown + 340.0);
+        assert_eq!(y_idle + 60.0, y_grown + 480.0);
     }
 
     #[test]
@@ -1420,9 +1420,9 @@ mod tests {
         let vf_w = 1512.0;
         let primary_h = 982.0;
 
-        let idle = anchor_lower_right(vf_ox, vf_oy, vf_w, primary_h, 66.0, 43.0);
+        let idle = anchor_lower_right(vf_ox, vf_oy, vf_w, primary_h, 60.0, 60.0);
         let _grown = anchor_lower_right(vf_ox, vf_oy, vf_w, primary_h, 340.0, 480.0);
-        let idle_again = anchor_lower_right(vf_ox, vf_oy, vf_w, primary_h, 66.0, 43.0);
+        let idle_again = anchor_lower_right(vf_ox, vf_oy, vf_w, primary_h, 60.0, 60.0);
 
         assert_eq!(idle_again, idle);
     }
@@ -1430,11 +1430,11 @@ mod tests {
     #[test]
     fn anchor_lower_right_secondary_display_offsets() {
         // Secondary display visibleFrame origin (1512, 100), width 1920;
-        // primary_height 982; idle size 66×43.
-        let (x, y) = anchor_lower_right(1512.0, 100.0, 1920.0, 982.0, 66.0, 43.0);
-        assert_eq!(x, 1512.0 + 1920.0 - 66.0 - 8.0);
+        // primary_height 982; idle size 60×60.
+        let (x, y) = anchor_lower_right(1512.0, 100.0, 1920.0, 982.0, 60.0, 60.0);
+        assert_eq!(x, 1512.0 + 1920.0 - 60.0 - 20.0);
         // y can be negative for displays above the primary.
-        assert_eq!(y, 982.0 - (100.0 + 16.0 + 43.0));
+        assert_eq!(y, 982.0 - (100.0 + 16.0 + 60.0));
     }
 
     #[test]
@@ -1464,8 +1464,8 @@ mod tests {
 
     #[test]
     fn point_in_frame_real_widget_geometry() {
-        // Idle widget at Cocoa lower-right-ish: x=1654, y≈50, 66×43.
-        let (fx, fy, fw, fh) = (1654.0, 50.0, 66.0, 43.0);
+        // Idle widget at Cocoa lower-right-ish: x=1654, y≈50, 60×60.
+        let (fx, fy, fw, fh) = (1654.0, 50.0, 60.0, 60.0);
         // Center of the mark → inside.
         assert!(point_in_frame(1654.0 + 33.0, 50.0 + 21.5, fx, fy, fw, fh));
         // Far away (desktop / other app) → outside.
@@ -1477,22 +1477,22 @@ mod tests {
     #[test]
     fn dock_aware_bottom_dock_centers_idle_widget_on_band() {
         // frame origin y=0, visibleFrame origin y=70 → band = 70.
-        // y_cocoa bottom = (70 − 43) / 2 = 13.5; idle vertical center = 35
+        // y_cocoa bottom = (70 − 60) / 2 = 5; band centers the idle mark
         // (band center). Right-aligned on visibleFrame width.
         let vf_ox = 0.0;
         let vf_oy = 70.0;
         let vf_w = 1512.0;
         let frame_oy = 0.0;
         let primary_h = 982.0;
-        let w = 66.0;
-        let h = 43.0;
+        let w = 60.0;
+        let h = 60.0;
 
         let (x, y) = anchor_lower_right_dock_aware(
             vf_ox, vf_oy, vf_w, frame_oy, primary_h, w, h,
         );
 
         let y_cocoa = 13.5;
-        assert_eq!(x, vf_ox + vf_w - w - MARGIN_RIGHT); // 1438.0
+        assert_eq!(x, vf_ox + vf_w - w - MARGIN_RIGHT); // lower-right with MARGIN_RIGHT=20
         assert_eq!(y, primary_h - (y_cocoa + h)); // 925.5
         // Idle widget vertical center sits on band center.
         assert_eq!(y_cocoa + h / 2.0, 35.0);
@@ -1507,8 +1507,8 @@ mod tests {
         let vf_w = 1512.0;
         let frame_oy = 0.0;
         let primary_h = 982.0;
-        let w = 66.0;
-        let h = 43.0;
+        let w = 60.0;
+        let h = 60.0;
 
         let dock_aware =
             anchor_lower_right_dock_aware(vf_ox, vf_oy, vf_w, frame_oy, primary_h, w, h);
@@ -1526,8 +1526,8 @@ mod tests {
         let vf_oy = frame_oy;
         let vf_w = 1432.0;
         let primary_h = 982.0;
-        let w = 66.0;
-        let h = 43.0;
+        let w = 60.0;
+        let h = 60.0;
 
         assert!(vf_ox > frame_ox);
         assert_eq!(vf_oy, frame_oy);
@@ -1540,7 +1540,7 @@ mod tests {
 
     #[test]
     fn dock_aware_lower_right_corner_invariant_across_sizes() {
-        // Bottom dock band=70; grow idle 66×43 → stack 340×480 keeps
+        // Bottom dock band=70; grow idle 60×60 → stack 340×480 keeps
         // lower-right corner fixed (anchor-drift regression).
         let vf_ox = 0.0;
         let vf_oy = 70.0;
@@ -1549,14 +1549,14 @@ mod tests {
         let primary_h = 982.0;
 
         let (x_idle, y_idle) = anchor_lower_right_dock_aware(
-            vf_ox, vf_oy, vf_w, frame_oy, primary_h, 66.0, 43.0,
+            vf_ox, vf_oy, vf_w, frame_oy, primary_h, 60.0, 60.0,
         );
         let (x_grown, y_grown) = anchor_lower_right_dock_aware(
             vf_ox, vf_oy, vf_w, frame_oy, primary_h, 340.0, 480.0,
         );
 
-        assert_eq!(x_idle + 66.0, x_grown + 340.0);
-        assert_eq!(y_idle + 43.0, y_grown + 480.0);
+        assert_eq!(x_idle + 60.0, x_grown + 340.0);
+        assert_eq!(y_idle + 60.0, y_grown + 480.0);
     }
 
     #[test]
@@ -1568,8 +1568,8 @@ mod tests {
         let vf_oy = frame_oy + 70.0;
         let vf_w = 1920.0;
         let primary_h = 982.0;
-        let w = 66.0;
-        let h = 43.0;
+        let w = 60.0;
+        let h = 60.0;
 
         let (x, y) = anchor_lower_right_dock_aware(
             vf_ox, vf_oy, vf_w, frame_oy, primary_h, w, h,
@@ -1586,12 +1586,12 @@ mod tests {
         // band < WIDGET_H: ((band − WIDGET_H) / 2).max(0) → 0, so y_cocoa =
         // frame_origin_y (no negative offset into the screen frame).
         let vf_ox = 0.0;
-        let vf_oy = 30.0; // band = 30 < WIDGET_H (43)
+        let vf_oy = 30.0; // band = 30 < WIDGET_H (60)
         let vf_w = 1512.0;
         let frame_oy = 0.0;
         let primary_h = 982.0;
-        let w = 66.0;
-        let h = 43.0;
+        let w = 60.0;
+        let h = 60.0;
 
         let band = vf_oy - frame_oy;
         assert!(band < WIDGET_H);

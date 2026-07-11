@@ -12,13 +12,17 @@ export const WIDGET_ROW_TIMEOUT_MS = 8000;
 /** Max visible rows; overflow drops the oldest visible. */
 export const WIDGET_STACK_MAX = 4;
 
-/** Idle wordmark window width (logical px) — matches Rust WIDGET_W. */
-export const WIDGET_IDLE_WIDTH = 66;
+/**
+ * Idle wordmark window — Lizzie shipped resting mark: 40px glyph in a 60×60
+ * padded touch target (https://hq-widget-lizzie.indigo-hq.com/). Matches Rust
+ * WIDGET_W / WIDGET_H.
+ */
+export const WIDGET_IDLE_WIDTH = 60;
 
 /** Idle wordmark window height (logical px) — matches Rust WIDGET_H. */
-export const WIDGET_IDLE_HEIGHT = 43;
+export const WIDGET_IDLE_HEIGHT = 60;
 
-/** One-line notification row width (mockup). */
+/** One-line notification row width (Lizzie stack). */
 export const WIDGET_ROW_WIDTH = 244;
 
 /**
@@ -27,17 +31,17 @@ export const WIDGET_ROW_WIDTH = 244;
  */
 export const WIDGET_STACK_WIDTH = 264;
 
-/** Lower mark area height (idle window height). */
-export const WIDGET_MARK_AREA = 43;
+/** Lower mark area height (idle window height / Lizzie 60×60 touch). */
+export const WIDGET_MARK_AREA = 60;
 
 /** Gap between the stack column and the wordmark (mockup margin-bottom). */
 export const WIDGET_STACK_MARGIN_BOTTOM = 12;
 
-/** Collapsed row height (mockup). */
+/** Collapsed row height (Lizzie one-line stack). */
 export const WIDGET_ROW_HEIGHT = 30;
 
-/** Vertical gap between stacked rows (mockup). */
-export const WIDGET_ROW_GAP = 6;
+/** Vertical gap between stacked rows (Lizzie 4px). */
+export const WIDGET_ROW_GAP = 4;
 
 /** Top padding / superscript headroom above the stack. */
 export const WIDGET_TOP_HEADROOM = 10;
@@ -566,10 +570,10 @@ export function hoverRows(
 
 /**
  * Logical window size for the current stack.
- * Idle (no visible rows, regardless of queued): 66×43.
+ * Idle (no visible rows, regardless of queued): 60×60 (Lizzie touch target).
  * With N visible rows: width {@link WIDGET_STACK_WIDTH}, height from mark +
  * stack margin + rows + gaps + top headroom (+ message expand room).
- * Backend clamps to 66..340 × 43..480.
+ * Backend clamps to 60..340 × 60..480.
  */
 export function widgetWindowSize(state: WidgetStackState): { width: number; height: number } {
   const n = state.visible.length;
@@ -593,7 +597,7 @@ export function widgetWindowSize(state: WidgetStackState): { width: number; heig
 
 /**
  * Window size while the wordmark hover list is open.
- * Empty items → idle 66×43. Otherwise width stack width; height from mark +
+ * Empty items → idle 60×60. Otherwise width stack width; height from mark +
  * margins + list padding + compact rows + gaps + separators (+ message
  * expand headroom so quick-reply hover-expand never clips).
  */

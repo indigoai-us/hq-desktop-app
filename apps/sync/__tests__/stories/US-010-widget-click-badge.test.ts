@@ -238,7 +238,7 @@ describe('US-010: widget click-to-open + unread badge', () => {
       expect(widgetRs).toContain('anchor_lower_right');
     });
 
-    it('widgetWindowSize returns idle 66×43 after list closes with no visible rows', () => {
+    it('widgetWindowSize returns idle 60×60 after list closes with no visible rows', () => {
       let state = emptyWidgetStack();
       // Simulate seed → open (mark queue) → close (mark recent read) with empty visible.
       state = {
@@ -249,7 +249,7 @@ describe('US-010: widget click-to-open + unread badge', () => {
       };
       state = markRecentRead(state);
       expect(state.visible).toHaveLength(0);
-      expect(widgetWindowSize(state)).toEqual({ width: 66, height: 43 });
+      expect(widgetWindowSize(state)).toEqual({ width: 60, height: 60 });
     });
   });
 });

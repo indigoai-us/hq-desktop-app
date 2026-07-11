@@ -119,22 +119,23 @@ describe('US-016: side pane conversation grouping', () => {
   });
 
   describe('type distinction (source-contract)', () => {
-    it('QuickWindowSidePane wires conversation rows with badgeCount, agentActor, and type map', () => {
+    it('QuickWindowSidePane wires conversation rows with unread badge, agent mark, and type map', () => {
       // Selected conversation reads as caught-up: badge suppressed on the
       // active row (covers the opening event's default selection too).
-      expect(paneSource).toContain('badgeCount={isSelected ? 0 : row.unreadCount}');
       expect(paneSource).toContain(
         '{@const isSelected = selectedId != null && row.ids.includes(selectedId)}',
       );
+      expect(paneSource).toContain('{@const unread = !isSelected && row.unreadCount > 0}');
       // Selecting a row hands the whole conversation to the main pane.
-      expect(paneSource).toContain('onopen={() => onselect(row.latest, row.ids, row.items)}');
-      expect(paneSource).toContain('agentActor={row.agent}');
-      expect(paneSource).toContain("row.kind === 'dm' ? 'message' : 'share'");
-      expect(paneSource).toContain(
-        ".qw-side-list :global(.nr[data-type='share'] .nr-icon) { color: var(--pop-accent, #6aa1ff); }",
-      );
+      expect(paneSource).toContain('onselect(row.latest, row.ids, row.items)');
+      expect(paneSource).toContain('row.agent');
+      expect(paneSource).toContain("data-kind={row.kind}");
+      expect(paneSource).toContain('data-testid="unread-count"');
       expect(paneSource).toContain('conversationRows');
       expect(paneSource).toContain('No conversations');
+      // Lizzie-style avatar rail (not dense one-line NotificationRow).
+      expect(paneSource).toContain('class="qw-av"');
+      expect(paneSource).toContain('initials(row.actor)');
     });
 
     it('NotificationRow exposes unread-count pill and type icons via data-type', () => {
@@ -186,7 +187,11 @@ describe('US-016: side pane conversation grouping', () => {
           '{@const shareEvents = selectedShareEvents.length > 0 ? selectedShareEvents : [selected.share]}',
         );
         expect(src).toContain('<ShareMainPane events={shareEvents} />');
-        expect(src).toContain("{shareEvents.length} share{shareEvents.length === 1 ? '' : 's'}");
+        // Count label lives in header subtitle (template const or derived `n`).
+        expect(src).toMatch(/shareEvents\.length|selectedShareEvents\.length/);
+        expect(src.includes('share') && (src.includes("'' : 's'") || src.includes("n === 1"))).toBe(
+          true,
+        );
       }
     });
   });

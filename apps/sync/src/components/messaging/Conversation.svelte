@@ -400,10 +400,10 @@
   .dm-thread {
     flex: 1;
     overflow-y: auto;
-    padding: 1rem 1.25rem;
+    padding: 1rem 1.25rem 1.25rem;
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
+    gap: 0.625rem;
     scrollbar-width: thin;
     scrollbar-color: var(--pop-muted) transparent;
   }
@@ -510,17 +510,19 @@
 
   .dm-msg-in .dm-bubble {
     background: var(--pop-hover);
-    border-bottom-left-radius: 4px;
+    border: 0.5px solid var(--pop-border);
+    border-bottom-left-radius: 6px;
   }
 
   .dm-msg-out .dm-bubble {
-    background: var(--c-btn2-bg);
-    border-bottom-right-radius: 4px;
+    background: color-mix(in srgb, var(--c-btn-bg, #fff) 14%, transparent);
+    border: 0.5px solid var(--pop-border);
+    border-bottom-right-radius: 6px;
   }
 
   .dm-bubble-body {
     margin: 0;
-    font-size: var(--text-base);
+    font-size: 13px;
     line-height: 1.45;
     color: var(--pop-text);
     white-space: pre-wrap;
@@ -765,28 +767,31 @@
     display: flex;
     flex-direction: column;
     gap: 0.5rem;
-    padding: 0.875rem 1.25rem 1rem;
+    padding: 0.75rem 1rem 1rem;
     border-top: 1px solid var(--pop-divider);
+    background: color-mix(in srgb, var(--c-bg, transparent) 92%, #000 8%);
   }
 
   .dm-reply-input {
     width: 100%;
     box-sizing: border-box;
     resize: none;
-    padding: 0.5rem 0.625rem;
-    border-radius: 8px;
-    border: 1px solid var(--pop-border);
+    min-height: 44px;
+    padding: 0.625rem 0.75rem;
+    border-radius: 12px;
+    border: 0.5px solid var(--pop-border);
     background: var(--pop-hover);
     color: var(--pop-text);
     font-family: inherit;
-    font-size: var(--text-base);
+    font-size: 13px;
     line-height: 1.4;
   }
 
   .dm-reply-input:focus {
     outline: none;
-    border-color: var(--c-field-border);
-    background: var(--c-field-bg);
+    border-color: color-mix(in srgb, var(--pop-accent, #6cb2ff) 55%, var(--pop-border));
+    background: var(--c-field-bg, var(--pop-hover));
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--pop-accent, #6cb2ff) 18%, transparent);
   }
 
   .dm-reply-input:disabled {
