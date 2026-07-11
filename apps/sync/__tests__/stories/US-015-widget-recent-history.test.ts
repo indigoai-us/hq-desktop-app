@@ -10,7 +10,7 @@
 //    empty localStorage + no items → empty state.
 // 4. 10-max: 12 recent items → popup renders exactly 10 rows.
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Force Svelte's client entry so mount/flushSync work (same pattern as US-003).
 vi.mock('svelte', async () => {
@@ -117,8 +117,20 @@ function installLocalStorage(mem: Storage): void {
   }
 }
 
+// Capture whatever binding existed before this suite so the polyfill never
+// leaks into other test files sharing this environment (CI single-process).
+const originalDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+
 beforeEach(() => {
   installLocalStorage(makeMemStorage());
+});
+
+afterAll(() => {
+  if (originalDescriptor) {
+    Object.defineProperty(globalThis, 'localStorage', originalDescriptor);
+  } else {
+    delete (globalThis as { localStorage?: Storage }).localStorage;
+  }
 });
 
 afterEach(async () => {
