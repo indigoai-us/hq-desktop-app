@@ -122,11 +122,54 @@ export interface WidgetStackState {
   /** Newest-first recent history (includes items that also sit in visible/queued). */
   recent: WidgetStackItem[];
   occluded: boolean;
+  /**
+   * Pointer-over / reply-draft hold: when true, auto-collapse is suspended
+   * (see {@link expireItems}) so a notification under the pointer or mid-reply
+   * never disappears. Omitted/`undefined` is treated as false.
+   */
+  held?: boolean;
 }
 
 /** Empty non-occluded stack. */
 export function emptyWidgetStack(): WidgetStackState {
-  return { visible: [], queued: [], recent: [], occluded: false };
+  return { visible: [], queued: [], recent: [], occluded: false, held: false };
+}
+
+/**
+ * Toggle pointer/reply hold. No-op when `held` is already the requested value.
+ * Entering hold only flips the flag (arrays copied like other reducers).
+ * Releasing hold clears the flag and refreshes every visible item's
+ * `expiresAt` to `now + WIDGET_ROW_TIMEOUT_MS` so timers restart fresh after
+ * the pointer leaves / draft is cleared.
+ */
+export function setHeld(
+  state: WidgetStackState,
+  held: boolean,
+  now: number,
+): WidgetStackState {
+  const wasHeld = state.held === true;
+  if (held === wasHeld) {
+    return state;
+  }
+  if (held) {
+    return {
+      ...state,
+      held: true,
+      visible: state.visible.slice(),
+      queued: state.queued.slice(),
+      recent: state.recent.slice(),
+    };
+  }
+  return {
+    ...state,
+    held: false,
+    visible: state.visible.map((item) => ({
+      ...item,
+      expiresAt: now + WIDGET_ROW_TIMEOUT_MS,
+    })),
+    queued: state.queued.slice(),
+    recent: state.recent.slice(),
+  };
 }
 
 /**
@@ -259,8 +302,14 @@ export function setOccluded(
   };
 }
 
-/** Drop visible items whose `expiresAt <= now`. Queued/recent are untouched. */
+/**
+ * Drop visible items whose `expiresAt <= now`. Queued/recent are untouched.
+ * No-op while `held` — auto-collapse is suspended under the pointer / mid-reply.
+ */
 export function expireItems(state: WidgetStackState, now: number): WidgetStackState {
+  if (state.held === true) {
+    return state;
+  }
   const visible = state.visible.filter((item) => item.expiresAt > now);
   if (visible.length === state.visible.length) {
     return state;

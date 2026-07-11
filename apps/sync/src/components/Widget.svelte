@@ -26,6 +26,7 @@
     hoverRows,
     markQueueSeen,
     markRecentRead,
+    setHeld,
     setOccluded,
     unreadRecentCount,
     widgetHoverWindowSize,
@@ -53,9 +54,45 @@
         // Seed recent so hover list works with initialItems (tests + cold start).
         recent: seeded.map((i) => ({ ...i, unread: i.unread ?? true })),
         occluded: false,
+        held: false,
       };
     }),
   );
+
+  /** Pointer anywhere over a notification row/stack/list suspends auto-hide. */
+  let pointerHold = $state(false);
+  /** Per-row reply focus/draft holds (ids of rows currently holding). */
+  let replyHolds = $state(new Set<string>());
+
+  /**
+   * Apply hold to the pure stack. Plain function (not an $effect writing stack)
+   * to avoid effect loops — callers compute holdActive after local state updates.
+   */
+  function applyHold(holdActive: boolean): void {
+    stack = setHeld(stack, holdActive, Date.now());
+  }
+
+  function setPointerHold(on: boolean): void {
+    pointerHold = on;
+    applyHold(on || replyHolds.size > 0);
+  }
+
+  function setReplyHold(id: string, held: boolean): void {
+    const next = new Set(replyHolds);
+    if (held) {
+      next.add(id);
+    } else {
+      next.delete(id);
+    }
+    replyHolds = next;
+    const holdActive = pointerHold || next.size > 0;
+    applyHold(holdActive);
+    // Reply hold released with nothing else holding (pointer already left) —
+    // resume normal hover collapse.
+    if (!held && next.size === 0 && !pointerHold && hoverOpen && !pinned) {
+      scheduleHoverClose();
+    }
+  }
 
   /**
    * Superscript shows real queue length, falling back to the prop seed —
@@ -128,6 +165,10 @@
       hoverCloseTimer = undefined;
     }
     if (hoverOpen) return;
+    // A reply is focused / has a draft on a stack row. Switching surfaces
+    // would unmount that row and destroy the draft — never hide a
+    // notification mid-reply (US-012), so ignore the wordmark hover.
+    if (replyHolds.size > 0) return;
     hoverOpen = true;
     hoverSeen = true;
     applyStack(markQueueSeen(stack));
@@ -142,6 +183,9 @@
       hoverCloseTimer = undefined;
     }
     stack = markRecentRead(stack);
+    // The hover list unmounts without a pointerleave — never leave a stale
+    // pointer hold behind (it would suspend auto-hide forever).
+    setPointerHold(false);
     // A quick-reply input may have flipped the native window focusable while
     // the list was pinned — always restore non-activating mode on close.
     void setWidgetFocusable(false);
@@ -151,6 +195,9 @@
     if (pinned) {
       closePinned();
     } else {
+      // Don't pin (and unmount a drafting stack row) mid-reply — see
+      // openHoverList's reply-hold guard.
+      if (replyHolds.size > 0) return;
       pinned = true;
       openHoverList();
     }
@@ -173,13 +220,20 @@
   function scheduleHoverClose(): void {
     // Pinned list stays open through pointerleave — only click-away / re-click closes.
     if (pinned) return;
+    // Reply focus/draft keeps the hover list open through pointerleave.
+    if (replyHolds.size > 0) return;
     if (hoverCloseTimer !== undefined) {
       clearTimeout(hoverCloseTimer);
     }
     hoverCloseTimer = setTimeout(() => {
-      hoverOpen = false;
       hoverCloseTimer = undefined;
+      // A reply hold acquired after this timer was armed wins — never
+      // collapse the list mid-reply.
+      if (replyHolds.size > 0) return;
+      hoverOpen = false;
       stack = markRecentRead(stack);
+      // Hover list unmounted without a pointerleave — drop any stale hold.
+      setPointerHold(false);
     }, 450);
   }
 
@@ -210,8 +264,13 @@
   }
 
   async function handleOpen(item: WidgetStackItem): Promise<void> {
+    // Drop any stale reply-hold for this row so ids never hold forever.
+    setReplyHold(item.id, false);
     if (!hasTauri()) {
       applyStack(dismissItem(stack, item.id));
+      if (stack.visible.length === 0) {
+        setPointerHold(false);
+      }
       return;
     }
     try {
@@ -232,11 +291,23 @@
       console.error('widget: open failed', err);
     } finally {
       applyStack(dismissItem(stack, item.id));
+      // Opening the last row unmounts .stack without a pointerleave —
+      // clear the pointer hold so the next notification still auto-hides.
+      if (stack.visible.length === 0) {
+        setPointerHold(false);
+      }
     }
   }
 
   function handleDismiss(id: string): void {
+    // Drop any stale reply-hold for this row so ids never hold forever.
+    setReplyHold(id, false);
     applyStack(dismissItem(stack, id));
+    // Dismissing the last row unmounts .stack without a pointerleave —
+    // clear the pointer hold so the next notification still auto-hides.
+    if (stack.visible.length === 0) {
+      setPointerHold(false);
+    }
     void setWidgetFocusable(false);
   }
 
@@ -269,6 +340,8 @@
     syncExpiryTimer();
 
     function handleClickAway(e: PointerEvent): void {
+      // Don't dismiss while a reply is focused / has a draft.
+      if (replyHolds.size > 0) return;
       if (!pinned) return;
       const target = e.target as HTMLElement | null;
       if (target?.closest?.('.hover-list') || target?.closest?.('.wm')) return;
@@ -276,6 +349,10 @@
     }
 
     function handleWindowBlur(): void {
+      // Never collapse mid-reply — focusing the quick-reply input toggles the
+      // native window focusable, which makes blur events likely during exactly
+      // the flow US-012 protects (match the click-away guards).
+      if (replyHolds.size > 0) return;
       if (pinned) closePinned();
     }
 
@@ -317,6 +394,8 @@
       // clicks in other apps never reach `document`, so Rust runs a global
       // NSEvent mouse-down monitor and emits widget:click-away (US-010).
       unlistenClickAway = await listen('widget:click-away', () => {
+        // Don't dismiss while a reply is focused / has a draft.
+        if (replyHolds.size > 0) return;
         if (pinned) closePinned();
       });
 
@@ -389,11 +468,19 @@
   onpointerenter={cancelHoverClose}
   onpointerleave={() => {
     scheduleHoverClose();
-    void setWidgetFocusable(false);
+    // Typing must survive transient hover-out — keep focusable while reply holds.
+    if (replyHolds.size === 0) {
+      void setWidgetFocusable(false);
+    }
   }}
 >
   {#if hoverOpen && hoverList.length > 0}
-    <div class="hover-list frost-panel" data-testid="widget-hover-list">
+    <div
+      class="hover-list frost-panel"
+      data-testid="widget-hover-list"
+      onpointerenter={() => setPointerHold(true)}
+      onpointerleave={() => setPointerHold(false)}
+    >
       {#each hoverList as row (row.item.id)}
         {#if row.separator}<div class="hl-sep">{row.separator}</div>{/if}
         <div class="hl-row">
@@ -410,6 +497,7 @@
             onreact={row.item.kind === 'dm'
               ? (emoji) => void reactDm(row.item, emoji)
               : undefined}
+            onholdchange={(h) => setReplyHold(row.item.id, h)}
           />
         </div>
       {/each}
@@ -417,7 +505,12 @@
   {/if}
 
   {#if stack.visible.length > 0 && !hoverOpen}
-    <div class="stack" data-testid="widget-stack">
+    <div
+      class="stack"
+      data-testid="widget-stack"
+      onpointerenter={() => setPointerHold(true)}
+      onpointerleave={() => setPointerHold(false)}
+    >
       {#each stack.visible as item (item.id)}
         <div class="frost" data-kind={item.kind}>
           <NotificationRow
@@ -429,6 +522,7 @@
             ondismiss={() => handleDismiss(item.id)}
             onreply={item.kind === 'dm' ? (text) => void replyDm(item, text) : undefined}
             onreact={item.kind === 'dm' ? (emoji) => void reactDm(item, emoji) : undefined}
+            onholdchange={(h) => setReplyHold(item.id, h)}
           />
         </div>
       {/each}

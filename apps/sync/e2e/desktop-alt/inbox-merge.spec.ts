@@ -86,9 +86,12 @@ describe('US-006 / US-008: NotificationRow message hover-expand', () => {
   it('message rows hover-expand with quick-reply + emoji react', () => {
     // US-011 added an opt-out gate (`hoverExpand`; the quick-window side pane
     // passes false). The default MUST stay true so popover/widget/Inbox
-    // message rows still hover-expand exactly as locked here.
+    // message rows still hover-expand exactly as locked here. US-012 added
+    // `replyHold` (reply focus or draft) as an additional expand keeper.
     expect(row).toContain(
-      'const expanded = $derived(isMessage && hoverExpand && (hovered || focusWithin))',
+      'const expanded = $derived(\n' +
+        '    isMessage && hoverExpand && (hovered || focusWithin || replyHold),\n' +
+        '  );',
     );
     expect(row).toContain('hoverExpand = true');
     expect(row).toContain('hoverExpand?: boolean');

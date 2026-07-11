@@ -136,21 +136,30 @@ describe('US-007: widget hover list + quick-reply focusable', () => {
       expect(host.querySelector('[data-testid="widget-hover-list"]')).toBeNull();
     });
 
-    it("day separator renders YESTERDAY when seeded items span days", () => {
+    it("day separator renders YESTERDAY and older date labels when seeded items span days", () => {
+      // Deterministic clock: seeding relative to the REAL clock broke in CI
+      // when the run crossed midnight (the "yesterday" item became two days
+      // old and rendered as a date label). Freeze now at a fixed mid-day
+      // local time and seed relative to it.
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(2026, 6, 15, 12, 0, 0)); // Jul 15 2026, 12:00 local
       const now = Date.now();
       const today = stackItem({ id: 't', text: 'today row' }, now);
       const yesterday = stackItem(
         { id: 'y', text: 'yesterday row' },
-        now - 26 * 60 * 60 * 1000,
+        new Date(2026, 6, 14, 20, 0, 0).getTime(),
       );
-      mountWidget({ initialItems: [today, yesterday] });
+      const older = stackItem(
+        { id: 'o', text: 'older row' },
+        new Date(2026, 6, 10, 9, 0, 0).getTime(),
+      );
+      mountWidget({ initialItems: [today, yesterday, older] });
 
       host.querySelector('.wm')!.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
       flushSync();
 
-      const sep = host.querySelector('.hl-sep');
-      expect(sep).toBeTruthy();
-      expect(sep?.textContent).toBe('YESTERDAY');
+      const seps = [...host.querySelectorAll('.hl-sep')].map((el) => el.textContent);
+      expect(seps).toEqual(['YESTERDAY', 'JUL 10']);
     });
   });
 
