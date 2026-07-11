@@ -27,8 +27,12 @@
 //!
 //! ## Anchoring
 //!
-//! Lower-right of the configured display's **visibleFrame** (Dock + menu bar
-//! excluded) so a bottom Dock cannot occlude the mark. Re-anchors on
+//! When the configured display has a **bottom Dock**, the idle wordmark is
+//! vertically centered on the dock band and right-aligned near the screen
+//! edge (`frame` origin + `(band − WIDGET_H) / 2`, clamped ≥ 0). Otherwise
+//! (dock hidden, auto-hide, side dock, or other display with no bottom band)
+//! falls back to lower-right of **visibleFrame** with `MARGIN_BOTTOM` so the
+//! mark sits above the dock/menu-bar excluded region. Re-anchors on
 //! `NSApplicationDidChangeScreenParametersNotification`.
 //!
 //! ## Notification takeover (US-003)
@@ -260,6 +264,43 @@ fn anchor_lower_right(
     (x, primary_height - (y_cocoa + h))
 }
 
+/// Lower-right anchor with bottom-dock-band centering when present.
+///
+/// Dock band height is `vf_origin_y - frame_origin_y` (Cocoa: visibleFrame sits
+/// above a bottom dock). When `band > 0`, the idle wordmark (`WIDGET_H`) is
+/// vertically centered on that band; `h` is still used for the tao y-flip so
+/// notification growth keeps the lower-right corner fixed. When `band <= 0`
+/// (hidden/auto-hide dock, side dock, or no band on this display), delegates
+/// to [`anchor_lower_right`].
+///
+/// cfg-independent so unit tests run on every host.
+fn anchor_lower_right_dock_aware(
+    vf_origin_x: f64,
+    vf_origin_y: f64,
+    vf_width: f64,
+    frame_origin_y: f64,
+    primary_height: f64,
+    w: f64,
+    h: f64,
+) -> (f64, f64) {
+    let band = vf_origin_y - frame_origin_y;
+    if band <= 0.0 {
+        return anchor_lower_right(
+            vf_origin_x,
+            vf_origin_y,
+            vf_width,
+            primary_height,
+            w,
+            h,
+        );
+    }
+    let x = vf_origin_x + vf_width - w - MARGIN_RIGHT;
+    // Center the idle wordmark on the band; clamp so tiny bands never go below
+    // the screen frame. Use WIDGET_H (not h) so growth keeps lower-right fixed.
+    let y_cocoa = frame_origin_y + ((band - WIDGET_H) / 2.0).max(0.0);
+    (x, primary_height - (y_cocoa + h))
+}
+
 /// True when point (px,py) lies within the rect (fx,fy,fw,fh). Cocoa global
 /// coords for both NSEvent.mouseLocation and NSWindow.frame (bottom-left
 /// origin, y-up) — no y-flip needed since both are in the same space.
@@ -344,11 +385,13 @@ fn widget_position_cocoa(w: f64, h: f64) -> Option<tauri::LogicalPosition<f64>> 
 
         let vf: CGRect = msg_send![target, visibleFrame];
         let primary_frame: CGRect = msg_send![primary, frame];
+        let target_frame: CGRect = msg_send![target, frame];
 
-        let (x, y) = anchor_lower_right(
+        let (x, y) = anchor_lower_right_dock_aware(
             vf.origin.x,
             vf.origin.y,
             vf.size.width,
+            target_frame.origin.y,
             primary_frame.size.height,
             w,
             h,
@@ -1427,5 +1470,137 @@ mod tests {
         assert!(point_in_frame(1654.0 + 33.0, 50.0 + 21.5, fx, fy, fw, fh));
         // Far away (desktop / other app) → outside.
         assert!(!point_in_frame(100.0, 100.0, fx, fy, fw, fh));
+    }
+
+    // ── Dock-band centering (US-018) ────────────────────────────────────────
+
+    #[test]
+    fn dock_aware_bottom_dock_centers_idle_widget_on_band() {
+        // frame origin y=0, visibleFrame origin y=70 → band = 70.
+        // y_cocoa bottom = (70 − 43) / 2 = 13.5; idle vertical center = 35
+        // (band center). Right-aligned on visibleFrame width.
+        let vf_ox = 0.0;
+        let vf_oy = 70.0;
+        let vf_w = 1512.0;
+        let frame_oy = 0.0;
+        let primary_h = 982.0;
+        let w = 66.0;
+        let h = 43.0;
+
+        let (x, y) = anchor_lower_right_dock_aware(
+            vf_ox, vf_oy, vf_w, frame_oy, primary_h, w, h,
+        );
+
+        let y_cocoa = 13.5;
+        assert_eq!(x, vf_ox + vf_w - w - MARGIN_RIGHT); // 1438.0
+        assert_eq!(y, primary_h - (y_cocoa + h)); // 925.5
+        // Idle widget vertical center sits on band center.
+        assert_eq!(y_cocoa + h / 2.0, 35.0);
+        assert_eq!((vf_oy - frame_oy) / 2.0, 35.0);
+    }
+
+    #[test]
+    fn dock_aware_hidden_or_autohide_matches_visible_frame_anchor() {
+        // No bottom band: vf_origin_y == frame_origin_y.
+        let vf_ox = 0.0;
+        let vf_oy = 0.0;
+        let vf_w = 1512.0;
+        let frame_oy = 0.0;
+        let primary_h = 982.0;
+        let w = 66.0;
+        let h = 43.0;
+
+        let dock_aware =
+            anchor_lower_right_dock_aware(vf_ox, vf_oy, vf_w, frame_oy, primary_h, w, h);
+        let baseline = anchor_lower_right(vf_ox, vf_oy, vf_w, primary_h, w, h);
+        assert_eq!(dock_aware, baseline);
+    }
+
+    #[test]
+    fn dock_aware_side_dock_matches_visible_frame_anchor() {
+        // Side dock: visibleFrame is inset on x, but y matches frame origin
+        // (no bottom band).
+        let frame_ox = 0.0;
+        let frame_oy = 0.0;
+        let vf_ox = 80.0; // inset from left (left-side dock)
+        let vf_oy = frame_oy;
+        let vf_w = 1432.0;
+        let primary_h = 982.0;
+        let w = 66.0;
+        let h = 43.0;
+
+        assert!(vf_ox > frame_ox);
+        assert_eq!(vf_oy, frame_oy);
+
+        let dock_aware =
+            anchor_lower_right_dock_aware(vf_ox, vf_oy, vf_w, frame_oy, primary_h, w, h);
+        let baseline = anchor_lower_right(vf_ox, vf_oy, vf_w, primary_h, w, h);
+        assert_eq!(dock_aware, baseline);
+    }
+
+    #[test]
+    fn dock_aware_lower_right_corner_invariant_across_sizes() {
+        // Bottom dock band=70; grow idle 66×43 → stack 340×480 keeps
+        // lower-right corner fixed (anchor-drift regression).
+        let vf_ox = 0.0;
+        let vf_oy = 70.0;
+        let vf_w = 1512.0;
+        let frame_oy = 0.0;
+        let primary_h = 982.0;
+
+        let (x_idle, y_idle) = anchor_lower_right_dock_aware(
+            vf_ox, vf_oy, vf_w, frame_oy, primary_h, 66.0, 43.0,
+        );
+        let (x_grown, y_grown) = anchor_lower_right_dock_aware(
+            vf_ox, vf_oy, vf_w, frame_oy, primary_h, 340.0, 480.0,
+        );
+
+        assert_eq!(x_idle + 66.0, x_grown + 340.0);
+        assert_eq!(y_idle + 43.0, y_grown + 480.0);
+    }
+
+    #[test]
+    fn dock_aware_bottom_dock_on_secondary_display_with_offset_frame() {
+        // Secondary display below the primary: frame origin y = -1080,
+        // bottom dock band = 70 → visibleFrame origin y = -1010.
+        let vf_ox = 1512.0;
+        let frame_oy = -1080.0;
+        let vf_oy = frame_oy + 70.0;
+        let vf_w = 1920.0;
+        let primary_h = 982.0;
+        let w = 66.0;
+        let h = 43.0;
+
+        let (x, y) = anchor_lower_right_dock_aware(
+            vf_ox, vf_oy, vf_w, frame_oy, primary_h, w, h,
+        );
+
+        // Bottom edge centered on the band relative to the display's own frame.
+        let y_cocoa = frame_oy + (70.0 - WIDGET_H) / 2.0; // -1066.5
+        assert_eq!(x, vf_ox + vf_w - w - MARGIN_RIGHT);
+        assert_eq!(y, primary_h - (y_cocoa + h));
+    }
+
+    #[test]
+    fn dock_aware_tiny_band_clamps_y_cocoa_to_frame_origin() {
+        // band < WIDGET_H: ((band − WIDGET_H) / 2).max(0) → 0, so y_cocoa =
+        // frame_origin_y (no negative offset into the screen frame).
+        let vf_ox = 0.0;
+        let vf_oy = 30.0; // band = 30 < WIDGET_H (43)
+        let vf_w = 1512.0;
+        let frame_oy = 0.0;
+        let primary_h = 982.0;
+        let w = 66.0;
+        let h = 43.0;
+
+        let band = vf_oy - frame_oy;
+        assert!(band < WIDGET_H);
+
+        let (x, y) = anchor_lower_right_dock_aware(
+            vf_ox, vf_oy, vf_w, frame_oy, primary_h, w, h,
+        );
+        let y_cocoa = frame_oy; // clamped
+        assert_eq!(x, vf_ox + vf_w - w - MARGIN_RIGHT);
+        assert_eq!(y, primary_h - (y_cocoa + h));
     }
 }
