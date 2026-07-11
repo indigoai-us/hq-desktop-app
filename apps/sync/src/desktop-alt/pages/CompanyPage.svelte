@@ -13,6 +13,7 @@
   import DeploymentsPanel from '../panels/DeploymentsPanel.svelte';
   import SecretsPanel from '../panels/SecretsPanel.svelte';
   import CompanyLibraryPanel from '../panels/CompanyLibraryPanel.svelte';
+  import TeamPanel from '../panels/TeamPanel.svelte';
   import { DEFAULT_COMPANY_TAB, type CompanyTab } from '../route';
 
   interface Props {
@@ -220,19 +221,18 @@
         <CompanyGoalsPage slug={company.slug} />
       {:else if tab === 'projects'}
         <CompanyProjectsPage slug={company.slug} onnewproject={startNewProject} />
-      {:else if tab === 'skills' || tab === 'workers'}
-        <!-- US-002/003 refine Skills vs Workers; library panel is the shared body for now. -->
-        <CompanyLibraryPanel slug={company.slug} />
+      {:else if tab === 'skills'}
+        <CompanyLibraryPanel slug={company.slug} forcedFilter="skills" />
+      {:else if tab === 'workers'}
+        <CompanyLibraryPanel slug={company.slug} forcedFilter="workers" />
       {:else if tab === 'knowledge'}
+        <!-- Knowledge selection is intercepted in DesktopApp → files mode; fallback if landed here. -->
         <div class="company-tab-placeholder" data-testid="company-knowledge-placeholder">
           <h2>Knowledge</h2>
-          <p>File navigation for this company lands in the next story (US-004).</p>
+          <p>Opening the company file navigator…</p>
         </div>
       {:else if tab === 'team'}
-        <div class="company-tab-placeholder" data-testid="company-team-placeholder">
-          <h2>Team</h2>
-          <p>Agents, humans, top skills, and active projects land in US-008/US-009.</p>
-        </div>
+        <TeamPanel slug={company.slug} />
       {:else if tab === 'activity'}
         <ActivityPanel slug={company.slug} {cloudBacked} />
       {:else if tab === 'deployments'}

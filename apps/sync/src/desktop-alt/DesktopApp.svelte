@@ -784,6 +784,11 @@
   // current contextual surface (company / library / settings).
   function handleSecondarySelect(id: string) {
     if (route.kind === 'company') {
+      // Knowledge is the company entry into files mode (company-detail-desktop-ia US-004).
+      if (id === 'knowledge') {
+        navigate({ kind: 'files', slug: route.slug });
+        return;
+      }
       navigate({ kind: 'company', slug: route.slug, tab: id as CompanyTab });
     } else if (route.kind === 'library') {
       navigate({ kind: 'library', tab: id as LibraryTab });

@@ -245,6 +245,79 @@ pub async fn get_company_activity(slug: String) -> Result<CompanyActivity, Strin
     parse_activity_response(status, &text)
 }
 
+/// Company team telemetry for the Team tab (company-detail-desktop-ia).
+/// Proxies `GET /v1/telemetry/company?companyUid=&from=&to=` on the vault/hq-pro base.
+/// Returns the raw JSON object for the frontend normalizer (humans vs agents, skills).
+#[tauri::command]
+pub async fn get_company_team_telemetry(
+    slug: String,
+    from: Option<String>,
+    to: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let slug = normalize_slug(&slug)?;
+    let company_uid = resolve_company_uid(&slug).await?;
+    if !is_url_safe_id(&company_uid) {
+        return Err(format!("company uid has invalid characters: {company_uid:?}"));
+    }
+    let base = vault_base()?;
+    let from = from.unwrap_or_else(|| {
+        let d = chrono::Utc::now() - chrono::Duration::days(30);
+        d.format("%Y-%m-%d").to_string()
+    });
+    let to = to.unwrap_or_else(|| chrono::Utc::now().format("%Y-%m-%d").to_string());
+    let url = format!(
+        "{}/v1/telemetry/company?companyUid={}&from={}&to={}",
+        base.trim_end_matches('/'),
+        urlencoding_encode(&company_uid),
+        urlencoding_encode(&from),
+        urlencoding_encode(&to),
+    );
+    let token = cognito::get_valid_access_token()
+        .await
+        .map_err(|e| format!("auth: {e}"))?;
+
+    let res = build_client()
+        .get(&url)
+        .header("authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .map_err(|e| format!("team telemetry fetch: {e}"))?;
+    let status = res.status();
+    let text = res
+        .text()
+        .await
+        .map_err(|e| format!("team telemetry read: {e}"))?;
+    eprintln!(
+        "[desktop-alt] team telemetry GET {url} -> HTTP {} ({} bytes)",
+        status,
+        text.len()
+    );
+    if status.as_u16() == 401 {
+        return Err(format!("auth: unauthorized 401 — {text}"));
+    }
+    if status.as_u16() == 403 {
+        return Err(format!("forbidden 403 — {text}"));
+    }
+    if !status.is_success() {
+        return Err(format!("team telemetry HTTP {status}: {text}"));
+    }
+    serde_json::from_str(&text).map_err(|e| format!("team telemetry parse: {e}"))
+}
+
+/// Minimal query-value encoder (uid/date are already constrained).
+fn urlencoding_encode(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for b in value.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char);
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
 #[tauri::command]
 pub async fn get_company_deployments(slug: String) -> Result<Vec<DeploymentEntry>, String> {
     let slug = normalize_slug(&slug)?;

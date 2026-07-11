@@ -414,6 +414,7 @@ fn main() {
             commands::desktop_alt::get_company_board,
             commands::desktop_alt::get_company_project_creators,
             commands::desktop_alt::get_company_activity,
+            commands::desktop_alt::get_company_team_telemetry,
             commands::desktop_alt::get_company_deployments,
             commands::desktop_alt::get_company_secrets,
             commands::desktop_alt::get_company_crm_projection_vault,

@@ -43,6 +43,8 @@
   let loading = $state(true);
   let error = $state<string | null>(null);
   let projectFilter = $state<ProjectFilter>('all');
+  /** Free-text filter over project name (console-style scannability). */
+  let searchQuery = $state('');
   let actionBusy = $state<string | null>(null);
   let actionMessage = $state<string | null>(null);
   let selected = $state<Project | null>(null);
@@ -60,7 +62,12 @@
       .sort(compareProjectsByRecency),
   );
   const filteredCompanyProjects = $derived(
-    companyProjects.filter((project) => matchesProjectFilter(project, projectFilter)),
+    companyProjects.filter((project) => {
+      if (!matchesProjectFilter(project, projectFilter)) return false;
+      const q = searchQuery.trim().toLowerCase();
+      if (!q) return true;
+      return projectDisplayName(project).toLowerCase().includes(q);
+    }),
   );
   const groups = $derived.by(() => groupProjectsByGoal(objectives, filteredCompanyProjects));
 
@@ -479,13 +486,23 @@
       <div class="projects-heading">
         <h2 id="company-projects-title">Projects</h2>
         <span>
-          {filteredCompanyProjects.length} of {companyProjects.length} {companyProjects.length === 1 ? 'project' : 'projects'} · grouped by goal
+          {filteredCompanyProjects.length} of {companyProjects.length}
+          {companyProjects.length === 1 ? ' project' : ' projects'} · stories live here (no separate Tasks tab)
         </span>
       </div>
       <div class="project-actions" aria-label="Project actions">
         {#if actionMessage}
           <span class="action-status" role="status">{actionMessage}</span>
         {/if}
+        <label class="project-search">
+          <span class="visually-hidden">Search projects</span>
+          <input
+            type="search"
+            placeholder="Search projects…"
+            bind:value={searchQuery}
+            data-testid="project-search"
+          />
+        </label>
         <button type="button" onclick={cycleFilter}>Filter: {filterLabel(projectFilter)}</button>
         <button type="button" onclick={() => void onnewproject?.()}>New project</button>
       </div>
@@ -629,6 +646,36 @@
   .project-actions {
     flex: 0 0 auto;
     gap: 12px;
+    align-items: center;
+  }
+
+  .project-search input {
+    height: 28px;
+    min-width: 140px;
+    max-width: 200px;
+    padding: 0 10px;
+    border: 1px solid var(--v4-control-border);
+    border-radius: var(--v4-radius-button);
+    background: var(--v4-secondary-bg);
+    color: var(--v4-text-1);
+    font: inherit;
+    font-size: var(--text-base);
+  }
+
+  .project-search input::placeholder {
+    color: var(--v4-text-3);
+  }
+
+  .visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
   }
 
   .action-status {

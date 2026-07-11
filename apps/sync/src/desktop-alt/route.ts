@@ -248,6 +248,10 @@ export function resolvePendingDesktopRoute(name: string | null | undefined): Des
   }
 
   if (kind === 'company' && first) {
+    // Knowledge is the company entry into files mode (not a separate panel).
+    if (second === 'knowledge') {
+      return { kind: 'files', slug: first };
+    }
     // Live tabs + legacy redirects (accounts→overview, tasks→projects, library→skills).
     const tab = normalizeCompanyTab(second);
     return tab ? { kind: 'company', slug: first, tab } : { kind: 'company', slug: first };
