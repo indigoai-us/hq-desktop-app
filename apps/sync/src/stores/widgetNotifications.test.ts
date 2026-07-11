@@ -258,8 +258,8 @@ describe('widgetWindowSize', () => {
       ...emptyWidgetStack(),
       visible: [item({ id: '1', type: 'share' })],
     };
-    // 43 + 12 + 30 + 0 + 10 = 95
-    expect(widgetWindowSize(one)).toEqual({ width: WIDGET_STACK_WIDTH, height: 95 });
+    // 60 + 12 + 30 + 0 + 10 = 112
+    expect(widgetWindowSize(one)).toEqual({ width: WIDGET_STACK_WIDTH, height: 112 });
 
     const twoMsg = {
       ...emptyWidgetStack(),
@@ -268,10 +268,10 @@ describe('widgetWindowSize', () => {
         item({ id: '2', type: 'share' }),
       ],
     };
-    // 43 + 12 + 60 + 6 + 10 + 110 = 241
+    // 60 + 12 + 60 + 4 + 10 + 110 = 256
     expect(widgetWindowSize(twoMsg)).toEqual({
       width: WIDGET_STACK_WIDTH,
-      height: 95 + 30 + 6 + WIDGET_MESSAGE_EXPAND_HEADROOM,
+      height: 112 + 30 + 4 + WIDGET_MESSAGE_EXPAND_HEADROOM,
     });
   });
 });
@@ -555,13 +555,13 @@ describe('hoverRows', () => {
 });
 
 describe('widgetHoverWindowSize', () => {
-  it('returns idle 66×43 for empty items', () => {
+  it('returns idle 60×60 for empty items (Lizzie touch target)', () => {
     expect(widgetHoverWindowSize([], 0)).toEqual({
       width: WIDGET_IDLE_WIDTH,
       height: WIDGET_IDLE_HEIGHT,
     });
-    expect(WIDGET_IDLE_WIDTH).toBe(66);
-    expect(WIDGET_IDLE_HEIGHT).toBe(43);
+    expect(WIDGET_IDLE_WIDTH).toBe(60);
+    expect(WIDGET_IDLE_HEIGHT).toBe(60);
   });
 
   it('computes height from constants for N items and separators', () => {
@@ -610,7 +610,7 @@ describe('widgetHoverWindowSize', () => {
 });
 
 describe('widgetEmptyHoverWindowSize', () => {
-  it('is strictly larger than idle 66×43 and matches one-item hover width', () => {
+  it('is strictly larger than idle 60×60 and matches one-item hover width', () => {
     const empty = widgetEmptyHoverWindowSize();
     const oneItem = widgetHoverWindowSize([item({ id: '1' })], 0);
 

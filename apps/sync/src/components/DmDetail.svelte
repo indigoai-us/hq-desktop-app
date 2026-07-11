@@ -6,6 +6,7 @@
   import { listen } from '@tauri-apps/api/event';
   import type { Item, ShareEvent } from '../lib/notificationGroups';
   import { defaultSelectedId } from '../lib/quickWindowPane';
+  import { initials } from '../lib/notificationFeedData';
   import QuickWindowSidePane from './QuickWindowSidePane.svelte';
   import ShareMainPane from './ShareMainPane.svelte';
   import DmThreadPane, { type DmEvent } from './DmThreadPane.svelte';
@@ -24,6 +25,27 @@
   // Full grouped conversation for a selected share row (US-016) — the main
   // pane shows every share from that sender, not just the latest.
   let selectedShareEvents = $state<ShareEvent[]>([]);
+
+  const header = $derived.by(() => {
+    if (selected?.kind === 'share' && selected.share) {
+      const n =
+        selectedShareEvents.length > 0 ? selectedShareEvents.length : 1;
+      return {
+        title: selected.actor || 'Shared with Me',
+        subtitle: `${n} share${n === 1 ? '' : 's'}`,
+        kind: 'share' as const,
+      };
+    }
+    const dm = selected?.kind === 'dm' && selected.dm ? selected.dm : event;
+    if (dm) {
+      return {
+        title: dm.fromDisplayName?.trim() || 'Direct Message',
+        subtitle: dm.fromEmail || '',
+        kind: 'dm' as const,
+      };
+    }
+    return { title: 'Direct Message', subtitle: '', kind: 'dm' as const };
+  });
 
   function onselect(item: Item, conversationIds?: string[], conversationItems?: Item[]): void {
     selected = item;
@@ -64,22 +86,23 @@
   <QuickWindowSidePane {selectedId} {viewedIds} {onselect} />
 
   <div class="detail-main">
+    <header class="detail-header" data-tauri-drag-region>
+      <div class="detail-avatar" aria-hidden="true" data-kind={header.kind}>
+        {initials(header.title)}
+      </div>
+      <div class="detail-titles">
+        <p class="detail-eyebrow">{header.kind === 'share' ? 'Shared with you' : 'Direct Message'}</p>
+        <h1>{header.title}</h1>
+        {#if header.subtitle}
+          <p class="detail-sub">{header.subtitle}</p>
+        {/if}
+      </div>
+    </header>
+
     {#if selected?.kind === 'share' && selected.share}
       {@const shareEvents = selectedShareEvents.length > 0 ? selectedShareEvents : [selected.share]}
-      <header class="detail-header">
-        <h1>Shared with Me</h1>
-        <span class="detail-count"
-          >{shareEvents.length} share{shareEvents.length === 1 ? '' : 's'}</span
-        >
-      </header>
       <ShareMainPane events={shareEvents} />
     {:else if selected?.kind === 'dm' && selected.dm}
-      <header class="detail-header">
-        <h1>{selected.dm.fromDisplayName || 'Direct Message'}</h1>
-        {#if selected.dm.fromEmail}
-          <span class="detail-count">{selected.dm.fromEmail}</span>
-        {/if}
-      </header>
       <!-- Keyed remount per thread: a fast side-pane switch must not let an
            older fetch_dm_thread response paint (or send against) the newer
            selection. -->
@@ -87,21 +110,12 @@
         <DmThreadPane event={selected.dm} />
       {/key}
     {:else if event}
-      <header class="detail-header">
-        <h1>{event.fromDisplayName}</h1>
-        {#if event.fromEmail}
-          <span class="detail-count">{event.fromEmail}</span>
-        {/if}
-      </header>
       <!-- Opening DM: reply composer must keep working unchanged. Keyed so a
            reopen with a different DM remounts a fresh thread (no stale race). -->
       {#key event.eventId}
         <DmThreadPane {event} />
       {/key}
     {:else}
-      <header class="detail-header">
-        <h1>Direct Message</h1>
-      </header>
       <div class="detail-empty">
         <p>Waiting for message…</p>
       </div>
@@ -110,13 +124,13 @@
 </div>
 
 <style>
-  :global([data-window="dm-detail"] html),
-  :global([data-window="dm-detail"] body) {
+  :global([data-window='dm-detail'] html),
+  :global([data-window='dm-detail'] body) {
     margin: 0;
     padding: 0;
-    background: var(--page-bg);
-    color: var(--c-text);
-    color-scheme: light;
+    background: var(--page-bg, #0a0a0c);
+    color: var(--c-text, #fff);
+    color-scheme: light dark;
     font-family: var(--font-sans);
   }
 
@@ -126,12 +140,11 @@
     width: 100vw;
     height: 100vh;
     box-sizing: border-box;
-    background: var(--pop-bg);
-    backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
-    -webkit-backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
-    border: 1px solid var(--pop-border);
-    box-shadow: inset 0 1px 0 var(--pop-highlight);
-    color: var(--pop-text);
+    /* Solid panel — Lizzie frosted tokens read better opaque in a full window. */
+    background: var(--c-bg, #2b2b2e);
+    border: 1px solid var(--pop-border, rgba(255, 255, 255, 0.14));
+    box-shadow: inset 0 1px 0 var(--pop-highlight, rgba(255, 255, 255, 0.12));
+    color: var(--pop-text, var(--c-text));
     font-family: var(--font-sans);
     overflow: hidden;
   }
@@ -142,31 +155,73 @@
     display: flex;
     flex-direction: column;
     overflow: hidden;
+    background: var(--c-bg, #2b2b2e);
   }
 
   .detail-header {
     display: flex;
-    align-items: baseline;
-    gap: 0.5rem;
-    padding: 1rem 1.25rem 0.75rem;
-    border-bottom: 1px solid var(--pop-divider);
+    align-items: center;
+    gap: 12px;
+    padding: 14px 18px 12px;
+    border-bottom: 1px solid var(--pop-divider, rgba(255, 255, 255, 0.1));
     flex-shrink: 0;
+    background: color-mix(in srgb, var(--c-bg, #2b2b2e) 92%, #000 8%);
+  }
+
+  .detail-avatar {
+    flex-shrink: 0;
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    font-size: 12px;
+    font-weight: 650;
+    letter-spacing: 0.02em;
+    color: var(--pop-text, #fff);
+    background: var(--pop-hover, rgba(255, 255, 255, 0.08));
+    border: 0.5px solid var(--pop-border, rgba(255, 255, 255, 0.14));
+  }
+
+  .detail-avatar[data-kind='share'] {
+    border-radius: 10px;
+    color: var(--pop-accent, #6cb2ff);
+  }
+
+  .detail-titles {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+
+  .detail-eyebrow {
+    margin: 0;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--pop-muted, rgba(255, 255, 255, 0.5));
   }
 
   .detail-header h1 {
     margin: 0;
-    font-size: var(--text-lg);
+    font-size: 15px;
     font-weight: 600;
-    color: var(--pop-text);
+    line-height: 1.25;
+    letter-spacing: -0.01em;
+    color: var(--pop-text, #fff);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .detail-count {
-    margin-left: auto;
-    font-size: var(--text-base);
-    color: var(--pop-muted);
+  .detail-sub {
+    margin: 0;
+    font-size: 12px;
+    color: var(--pop-muted, rgba(255, 255, 255, 0.5));
+    overflow: hidden;
+    text-overflow: ellipsis;
     white-space: nowrap;
   }
 
@@ -178,16 +233,24 @@
   }
 
   .detail-empty p {
-    font-size: var(--text-base);
+    font-size: 13px;
     color: var(--pop-muted);
     margin: 0;
   }
 
-  @media (prefers-reduced-transparency: reduce) {
-    .detail-window {
-      background: var(--c-bg);
-      backdrop-filter: none;
-      -webkit-backdrop-filter: none;
+  @media (prefers-color-scheme: light) {
+    :global([data-window='dm-detail'] html),
+    :global([data-window='dm-detail'] body) {
+      background: var(--page-bg, #e9ecf1);
+    }
+
+    .detail-window,
+    .detail-main {
+      background: var(--c-bg, #fff);
+    }
+
+    .detail-header {
+      background: color-mix(in srgb, var(--c-bg, #fff) 96%, #000 4%);
     }
   }
 </style>

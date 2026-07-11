@@ -642,22 +642,22 @@
     flex-direction: column;
     align-items: flex-end;
     justify-content: flex-end;
-    /* Headroom above/right of the mark for the queued-count superscript. */
+    /* Lizzie 60×60 touch: 10px pad around 40px mark; badge uses top/right pad. */
     padding: 10px 10px 0 0;
     box-sizing: border-box;
     background: transparent;
     overflow: hidden;
-    /* Stack/row appearance tokens — light default; dark overrides below. */
+    /* Lizzie board tokens (light default). */
     --row-bg: rgba(250, 250, 252, 0.6);
     --row-bg-hover: rgba(250, 250, 252, 0.92);
-    --row-border: rgba(255, 255, 255, 0.6);
+    --row-border: rgba(0, 0, 0, 0.1);
     --row-fg: #1d1d1f;
-    --row-muted: rgba(0, 0, 0, 0.45);
-    --row-shadow: 0 8px 22px rgba(20, 22, 40, 0.16);
-    --row-highlight: rgba(255, 255, 255, 0.75);
-    --row-hover-bg: rgba(0, 0, 0, 0.06);
-    --reply-bg: rgba(0, 0, 0, 0.05);
-    --reply-border: rgba(0, 0, 0, 0.14);
+    --row-muted: rgba(0, 0, 0, 0.5);
+    --row-shadow: 0 8px 22px rgba(0, 0, 0, 0.22);
+    --row-highlight: rgba(255, 255, 255, 0.7);
+    --row-hover-bg: rgba(0, 0, 0, 0.055);
+    --reply-bg: rgba(0, 0, 0, 0.055);
+    --reply-border: rgba(0, 0, 0, 0.1);
     --qd-fg: #0064d6;
   }
 
@@ -666,21 +666,21 @@
     display: flex;
     flex-direction: column;
     align-items: flex-end;
-    gap: 6px;
+    gap: 4px;
     margin-bottom: 12px;
     flex-shrink: 0;
   }
 
-  /* Frosted glass shell around NotificationRow (mockup .row chrome). */
+  /* Frosted glass shell around NotificationRow (Lizzie .srow chrome). */
   .frost {
     width: 244px;
-    border-radius: 9px;
+    border-radius: 8px;
     background: var(--row-bg);
-    -webkit-backdrop-filter: blur(26px) saturate(1.7);
-    backdrop-filter: blur(26px) saturate(1.7);
+    -webkit-backdrop-filter: blur(30px) saturate(1.8);
+    backdrop-filter: blur(30px) saturate(1.8);
     border: 0.5px solid var(--row-border);
     box-shadow: var(--row-shadow), inset 0 1px 0 var(--row-highlight);
-    animation: widget-slide 0.4s cubic-bezier(0.34, 1.3, 0.64, 1) backwards;
+    animation: widget-slide 0.35s cubic-bezier(0.34, 1.4, 0.64, 1) backwards;
     box-sizing: border-box;
     overflow: hidden;
     /* Bridge NotificationRow's popover tokens onto the widget scheme. */
@@ -692,7 +692,7 @@
     --popover-divider: var(--reply-border);
   }
 
-  /* Hover recent-notification list — single frosted panel above the mark. */
+  /* Hover recent-notification list — Lizzie frosted panel above the mark. */
   .hover-list {
     width: 264px;
     border-radius: 12px;
@@ -801,11 +801,11 @@
 
   @keyframes widget-slide {
     from {
-      transform: translateY(10px);
+      transform: scale(0.7) translateY(6px);
       opacity: 0;
     }
     to {
-      transform: translateY(0);
+      transform: scale(1) translateY(0);
       opacity: 1;
     }
   }
@@ -825,22 +825,25 @@
     position: relative;
     display: inline-flex;
     color: var(--wm-fg);
-    opacity: 0.38;
+    /* Lizzie: 50% white in both modes; full white on hover. */
+    opacity: 0.5;
     transition: opacity 0.18s ease;
     flex-shrink: 0;
     cursor: pointer;
-    /* Light default; dark overrides below. */
-    --wm-fg: #1d1d1f;
-    --wm-shadow: drop-shadow(0 1px 4px rgba(255, 255, 255, 0.5));
+    --wm-fg: #fff;
+    --wm-shadow:
+      drop-shadow(0 1px 2px rgba(10, 20, 40, 0.28))
+      drop-shadow(0 6px 16px rgba(10, 20, 40, 0.22));
     --qd-fg: #0064d6;
   }
 
-  .wg:hover .wm {
+  .wg:hover .wm,
+  .wm:focus-visible {
     opacity: 1;
   }
 
   .wm :global(svg) {
-    width: 56px;
+    width: 40px;
     height: auto;
     display: block;
     filter: var(--wm-shadow);
@@ -861,22 +864,24 @@
 
   @media (prefers-color-scheme: dark) {
     .wg {
-      --row-bg: rgba(30, 30, 34, 0.55);
-      --row-bg-hover: rgba(38, 38, 42, 0.85);
+      --row-bg: rgba(38, 38, 40, 0.6);
+      --row-bg-hover: rgba(38, 38, 40, 0.92);
       --row-border: rgba(255, 255, 255, 0.14);
       --row-fg: #fff;
-      --row-muted: rgba(255, 255, 255, 0.48);
+      --row-muted: rgba(255, 255, 255, 0.5);
       --row-shadow: 0 8px 22px rgba(0, 0, 0, 0.32);
-      --row-highlight: rgba(255, 255, 255, 0.16);
-      --row-hover-bg: rgba(255, 255, 255, 0.1);
+      --row-highlight: rgba(255, 255, 255, 0.22);
+      --row-hover-bg: rgba(255, 255, 255, 0.08);
       --reply-bg: rgba(255, 255, 255, 0.08);
-      --reply-border: rgba(255, 255, 255, 0.18);
+      --reply-border: rgba(255, 255, 255, 0.14);
       --qd-fg: #6cb2ff;
     }
 
     .wm {
       --wm-fg: #fff;
-      --wm-shadow: drop-shadow(0 1px 6px rgba(0, 0, 0, 0.45));
+      --wm-shadow:
+        drop-shadow(0 1px 2px rgba(0, 0, 0, 0.4))
+        drop-shadow(0 6px 16px rgba(0, 0, 0, 0.35));
       --qd-fg: #6cb2ff;
     }
   }

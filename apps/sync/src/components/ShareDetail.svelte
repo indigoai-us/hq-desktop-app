@@ -75,11 +75,14 @@
 
   <div class="detail-main">
     {#if selected?.kind === 'dm' && selected.dm}
-      <header class="detail-header">
-        <h1>{selected.dm.fromDisplayName || 'Direct Message'}</h1>
-        {#if selected.dm.fromEmail}
-          <span class="detail-count">{selected.dm.fromEmail}</span>
-        {/if}
+      <header class="detail-header" data-tauri-drag-region>
+        <div class="detail-titles">
+          <p class="detail-eyebrow">Direct Message</p>
+          <h1>{selected.dm.fromDisplayName || 'Direct Message'}</h1>
+          {#if selected.dm.fromEmail}
+            <p class="detail-sub">{selected.dm.fromEmail}</p>
+          {/if}
+        </div>
       </header>
       <!-- Keyed remount per thread: a fast side-pane switch must not let an
            older fetch_dm_thread response paint (or send against) the newer
@@ -89,19 +92,25 @@
       {/key}
     {:else if selected?.kind === 'share' && selected.share}
       {@const shareEvents = selectedShareEvents.length > 0 ? selectedShareEvents : [selected.share]}
-      <header class="detail-header">
-        <h1>Shared with Me</h1>
-        <span class="detail-count"
-          >{shareEvents.length} share{shareEvents.length === 1 ? '' : 's'}</span
-        >
+      <header class="detail-header" data-tauri-drag-region>
+        <div class="detail-titles">
+          <p class="detail-eyebrow">Shared with you</p>
+          <h1>{selected.actor || 'Shared with Me'}</h1>
+          <p class="detail-sub"
+            >{shareEvents.length} share{shareEvents.length === 1 ? '' : 's'}</p
+          >
+        </div>
       </header>
       <ShareMainPane events={shareEvents} />
     {:else}
-      <header class="detail-header">
-        <h1>Shared with Me</h1>
-        <span class="detail-count"
-          >{events.length} share{events.length === 1 ? '' : 's'}</span
-        >
+      <header class="detail-header" data-tauri-drag-region>
+        <div class="detail-titles">
+          <p class="detail-eyebrow">Shared with you</p>
+          <h1>Shared with Me</h1>
+          <p class="detail-sub"
+            >{events.length} share{events.length === 1 ? '' : 's'}</p
+          >
+        </div>
       </header>
       <ShareMainPane {events} />
     {/if}
@@ -112,13 +121,13 @@
   /* Paint the share-detail document with the shared light-default ground —
      scoped via the [data-window] attribute set by main.ts so it only
      affects this window, not the popover. */
-  :global([data-window="share-detail"] html),
-  :global([data-window="share-detail"] body) {
+  :global([data-window='share-detail'] html),
+  :global([data-window='share-detail'] body) {
     margin: 0;
     padding: 0;
     background: var(--page-bg);
     color: var(--c-text);
-    color-scheme: light;
+    color-scheme: light dark;
     font-family: var(--font-sans);
   }
 
@@ -128,9 +137,7 @@
     width: 100vw;
     height: 100vh;
     box-sizing: border-box;
-    background: var(--pop-bg);
-    backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
-    -webkit-backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
+    background: var(--c-bg);
     border: 1px solid var(--pop-border);
     box-shadow: inset 0 1px 0 var(--pop-highlight);
     color: var(--pop-text);
@@ -144,38 +151,53 @@
     display: flex;
     flex-direction: column;
     overflow: hidden;
+    background: var(--c-bg);
   }
 
   .detail-header {
     display: flex;
-    align-items: baseline;
-    gap: 0.5rem;
-    padding: 1rem 1.25rem 0.75rem;
+    align-items: center;
+    gap: 12px;
+    padding: 14px 18px 12px;
     border-bottom: 1px solid var(--pop-divider);
     flex-shrink: 0;
+    background: color-mix(in srgb, var(--c-bg) 92%, #000 8%);
+  }
+
+  .detail-titles {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+
+  .detail-eyebrow {
+    margin: 0;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--pop-muted);
   }
 
   .detail-header h1 {
     margin: 0;
-    font-size: 1rem;
+    font-size: 15px;
     font-weight: 600;
+    line-height: 1.25;
+    letter-spacing: -0.01em;
     color: var(--pop-text);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .detail-count {
-    font-size: 0.75rem;
+  .detail-sub {
+    margin: 0;
+    font-size: 12px;
     color: var(--pop-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
     white-space: nowrap;
-  }
-
-  @media (prefers-reduced-transparency: reduce) {
-    .detail-window {
-      background: var(--c-bg);
-      backdrop-filter: none;
-      -webkit-backdrop-filter: none;
-    }
   }
 </style>
