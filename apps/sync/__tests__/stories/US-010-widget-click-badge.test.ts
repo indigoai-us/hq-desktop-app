@@ -6,7 +6,7 @@
 
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Vitest resolves Svelte's public entry with the default/server condition in
 // this repo's node test config, even for per-file happy-dom tests. Force the
@@ -19,6 +19,7 @@ vi.mock('svelte', async () => {
 import { flushSync, mount, unmount } from 'svelte';
 import Widget from '../../src/components/Widget.svelte';
 import {
+  WIDGET_RECENT_STORAGE_KEY,
   WIDGET_ROW_TIMEOUT_MS,
   emptyWidgetStack,
   markRecentRead,
@@ -57,6 +58,18 @@ function stackItem(
     ...overrides,
   };
 }
+
+beforeEach(() => {
+  // US-015 persists widget history to localStorage; other story suites mounting
+  // widgets can leave persisted rows behind when storage is shared across test
+  // files. These tests assume a truly-empty history (US-010 empty-state
+  // semantics: empty panel only when history is genuinely empty) — clear it.
+  try {
+    globalThis.localStorage?.removeItem(WIDGET_RECENT_STORAGE_KEY);
+  } catch {
+    // localStorage unavailable in this runtime — nothing persisted.
+  }
+});
 
 afterEach(async () => {
   if (component) {

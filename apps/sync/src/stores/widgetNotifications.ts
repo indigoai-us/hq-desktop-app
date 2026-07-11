@@ -51,8 +51,15 @@ export const WIDGET_MESSAGE_EXPAND_HEADROOM = 110;
 /** Cap for the recent-notification history list (hover + future surfaces). */
 export const WIDGET_RECENT_MAX = 20;
 
-/** Max rows shown in the wordmark hover list. */
-export const WIDGET_HOVER_MAX = 8;
+/**
+ * Max rows shown in the wordmark hover/click popup (US-015).
+ * Always lists the most recent N (or fewer when history is shorter).
+ * Read/unread does not affect inclusion — only order + this cap.
+ */
+export const WIDGET_HOVER_MAX = 10;
+
+/** localStorage key for persisted widget recent history (US-015). */
+export const WIDGET_RECENT_STORAGE_KEY = 'hq-widget-recent-v1';
 
 /** Compact hover-list row height. */
 export const WIDGET_HOVER_ROW_HEIGHT = 28;
@@ -390,9 +397,116 @@ export function unreadRecentCount(state: WidgetStackState): number {
 /**
  * Rows for the wordmark hover list: recent (already includes queued+visible via
  * addItem), newest first, capped to {@link WIDGET_HOVER_MAX}.
+ * Inclusion is independent of read/unread (US-015 history semantics).
  */
 export function hoverItems(state: WidgetStackState): WidgetStackItem[] {
   return state.recent.slice(0, WIDGET_HOVER_MAX);
+}
+
+/** Fields persisted for recent history (id, display, action, unread). */
+type SerializedRecentItem = {
+  id: string;
+  type: WidgetRowType;
+  actor?: string;
+  text: string;
+  ts: number;
+  kind: string;
+  clickActionId: string;
+  data: unknown;
+  actionId?: string | null;
+  actionLabel?: string | null;
+  expiresAt: number;
+  unread: boolean;
+};
+
+/**
+ * Serialize `state.recent` for localStorage (US-015). Only fields needed to
+ * restore the hover history after relaunch.
+ */
+export function serializeRecent(state: WidgetStackState): string {
+  const payload: SerializedRecentItem[] = state.recent.map((item) => ({
+    id: item.id,
+    type: item.type,
+    actor: item.actor,
+    text: item.text,
+    ts: item.ts,
+    kind: item.kind,
+    clickActionId: item.clickActionId,
+    data: item.data,
+    actionId: item.actionId,
+    actionLabel: item.actionLabel,
+    expiresAt: item.expiresAt,
+    unread: item.unread === true,
+  }));
+  return JSON.stringify(payload);
+}
+
+/**
+ * Safe parse of persisted recent history. Never throws.
+ * Returns [] on null/invalid JSON/non-array; filters junk entries; caps at
+ * {@link WIDGET_RECENT_MAX}.
+ *
+ * Security: localStorage is an untrusted store — a tampered entry must never
+ * drive a privileged Tauri action command. Hydrated rows are display-only:
+ * the action surface (`clickActionId`, `data`, `actionId`, `actionLabel`) is
+ * stripped on restore, and `Widget.handleOpen` skips the privileged invoke
+ * for rows with an empty `clickActionId`.
+ */
+export function deserializeRecent(
+  raw: string | null | undefined,
+): WidgetStackItem[] {
+  if (raw == null || raw === '') {
+    return [];
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) {
+    return [];
+  }
+
+  const out: WidgetStackItem[] = [];
+  for (const entry of parsed) {
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+      continue;
+    }
+    const e = entry as Record<string, unknown>;
+    if (typeof e.id !== 'string' || typeof e.text !== 'string' || typeof e.ts !== 'number') {
+      continue;
+    }
+    const type: WidgetRowType =
+      e.type === 'message' ||
+      e.type === 'mention' ||
+      e.type === 'share' ||
+      e.type === 'sync' ||
+      e.type === 'deploy' ||
+      e.type === 'system'
+        ? e.type
+        : 'system';
+    out.push({
+      id: e.id,
+      type,
+      actor: typeof e.actor === 'string' ? e.actor : undefined,
+      text: e.text,
+      ts: e.ts,
+      kind: typeof e.kind === 'string' ? e.kind : 'system',
+      // Display-only restore — action surface never rehydrated from
+      // untrusted storage (see doc comment above).
+      clickActionId: '',
+      data: null,
+      actionId: undefined,
+      actionLabel: undefined,
+      expiresAt: typeof e.expiresAt === 'number' ? e.expiresAt : 0,
+      unread: e.unread === true,
+    });
+    if (out.length >= WIDGET_RECENT_MAX) {
+      break;
+    }
+  }
+  return out;
 }
 
 /**

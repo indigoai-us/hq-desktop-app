@@ -18,8 +18,10 @@
     type BannerPayloadLike,
     type WidgetStackItem,
     type WidgetStackState,
+    WIDGET_RECENT_STORAGE_KEY,
     addItem,
     bannerToStackItem,
+    deserializeRecent,
     dismissItem,
     dismissRecent,
     expireItems,
@@ -27,6 +29,7 @@
     hoverRows,
     markQueueSeen,
     markRecentRead,
+    serializeRecent,
     setHeld,
     setOccluded,
     unreadRecentCount,
@@ -46,20 +49,48 @@
   } = $props();
 
   // Capture once on mount — tests seed rows; runtime stack is event-driven.
+  // US-015: without initialItems, hydrate recent from localStorage (never visible).
   let stack = $state<WidgetStackState>(
     untrack(() => {
-      const seeded =
-        initialItems.length > 0 ? initialItems.map((i) => ({ ...i })) : [];
+      if (initialItems.length > 0) {
+        const seeded = initialItems.map((i) => ({ ...i }));
+        return {
+          visible: seeded,
+          queued: [],
+          // Seed recent so hover list works with initialItems (tests + cold start).
+          recent: seeded.map((i) => ({ ...i, unread: i.unread ?? true })),
+          occluded: false,
+          held: false,
+        };
+      }
+      let recent: WidgetStackItem[] = [];
+      try {
+        if (typeof localStorage !== 'undefined') {
+          recent = deserializeRecent(localStorage.getItem(WIDGET_RECENT_STORAGE_KEY));
+        }
+      } catch {
+        // localStorage unavailable / blocked — empty history.
+      }
       return {
-        visible: seeded,
+        visible: [],
         queued: [],
-        // Seed recent so hover list works with initialItems (tests + cold start).
-        recent: seeded.map((i) => ({ ...i, unread: i.unread ?? true })),
+        recent,
         occluded: false,
         held: false,
       };
     }),
   );
+
+  // US-015: persist recent history so the popup survives relaunch.
+  $effect(() => {
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem(WIDGET_RECENT_STORAGE_KEY, serializeRecent(stack));
+      }
+    } catch {
+      // Quota / private mode — no-op.
+    }
+  });
 
   /** Pointer anywhere over a notification row/stack/list suspends auto-hide. */
   let pointerHold = $state(false);
@@ -268,7 +299,10 @@
   async function handleOpen(item: WidgetStackItem): Promise<void> {
     // Drop any stale reply-hold for this row so ids never hold forever.
     setReplyHold(item.id, false);
-    if (!hasTauri()) {
+    // Hydrated history rows are display-only (US-015): deserializeRecent strips
+    // the action surface, so an empty clickActionId must never reach the
+    // privileged banner_action command — dismiss locally instead.
+    if (!hasTauri() || !item.clickActionId) {
       applyStack(dismissItem(stack, item.id));
       if (stack.visible.length === 0) {
         setPointerHold(false);
