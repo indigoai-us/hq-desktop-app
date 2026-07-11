@@ -13,6 +13,7 @@
   import DeploymentsPanel from '../panels/DeploymentsPanel.svelte';
   import SecretsPanel from '../panels/SecretsPanel.svelte';
   import CompanyLibraryPanel from '../panels/CompanyLibraryPanel.svelte';
+  import CompanyKnowledgePanel from '../panels/CompanyKnowledgePanel.svelte';
   import TeamPanel from '../panels/TeamPanel.svelte';
   import { DEFAULT_COMPANY_TAB, type CompanyTab } from '../route';
 
@@ -226,11 +227,7 @@
       {:else if tab === 'workers'}
         <CompanyLibraryPanel slug={company.slug} forcedFilter="workers" />
       {:else if tab === 'knowledge'}
-        <!-- Knowledge selection is intercepted in DesktopApp → files mode; fallback if landed here. -->
-        <div class="company-tab-placeholder" data-testid="company-knowledge-placeholder">
-          <h2>Knowledge</h2>
-          <p>Opening the company file navigator…</p>
-        </div>
+        <CompanyKnowledgePanel slug={company.slug} />
       {:else if tab === 'team'}
         <TeamPanel slug={company.slug} />
       {:else if tab === 'activity'}
