@@ -1467,7 +1467,7 @@ mod tests {
         // Idle widget at Cocoa lower-right-ish: x=1654, y≈50, 60×60.
         let (fx, fy, fw, fh) = (1654.0, 50.0, 60.0, 60.0);
         // Center of the mark → inside.
-        assert!(point_in_frame(1654.0 + 33.0, 50.0 + 21.5, fx, fy, fw, fh));
+        assert!(point_in_frame(1654.0 + 30.0, 50.0 + 30.0, fx, fy, fw, fh));
         // Far away (desktop / other app) → outside.
         assert!(!point_in_frame(100.0, 100.0, fx, fy, fw, fh));
     }
@@ -1491,10 +1491,11 @@ mod tests {
             vf_ox, vf_oy, vf_w, frame_oy, primary_h, w, h,
         );
 
-        let y_cocoa = 13.5;
+        // Band 70, idle height 60 → cocoa bottom inset (70−60)/2 = 5.
+        let y_cocoa = (70.0 - h) / 2.0; // 5.0
         assert_eq!(x, vf_ox + vf_w - w - MARGIN_RIGHT); // lower-right with MARGIN_RIGHT=20
-        assert_eq!(y, primary_h - (y_cocoa + h)); // 925.5
-        // Idle widget vertical center sits on band center.
+        assert_eq!(y, primary_h - (y_cocoa + h)); // 917.0
+        // Idle widget vertical center sits on band center (35).
         assert_eq!(y_cocoa + h / 2.0, 35.0);
         assert_eq!((vf_oy - frame_oy) / 2.0, 35.0);
     }
@@ -1576,7 +1577,7 @@ mod tests {
         );
 
         // Bottom edge centered on the band relative to the display's own frame.
-        let y_cocoa = frame_oy + (70.0 - WIDGET_H) / 2.0; // -1066.5
+        let y_cocoa = frame_oy + (70.0 - WIDGET_H) / 2.0; // -1075.0 with H=60
         assert_eq!(x, vf_ox + vf_w - w - MARGIN_RIGHT);
         assert_eq!(y, primary_h - (y_cocoa + h));
     }
