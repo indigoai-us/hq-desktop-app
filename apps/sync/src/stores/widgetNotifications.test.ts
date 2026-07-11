@@ -20,6 +20,7 @@ import {
   addItem,
   bannerToStackItem,
   dayLabel,
+  deserializeRecent,
   dismissItem,
   dismissRecent,
   emptyWidgetStack,
@@ -28,6 +29,7 @@ import {
   hoverRows,
   markQueueSeen,
   markRecentRead,
+  serializeRecent,
   setOccluded,
   unreadRecentCount,
   widgetEmptyHoverWindowSize,
@@ -376,6 +378,133 @@ describe('hoverItems', () => {
     expect(items.map((i) => i.id)).toEqual(
       state.recent.slice(0, WIDGET_HOVER_MAX).map((r) => r.id),
     );
+  });
+
+  it('includes read items — unread does not filter inclusion (US-015)', () => {
+    let state = emptyWidgetStack();
+    state = addItem(state, item({ id: 'a', text: 'a' }));
+    state = addItem(state, item({ id: 'b', text: 'b' }));
+    state = markRecentRead(state);
+    expect(state.recent.every((r) => r.unread === false)).toBe(true);
+    expect(hoverItems(state).map((i) => i.id)).toEqual(['b', 'a']);
+  });
+});
+
+describe('serializeRecent / deserializeRecent (US-015)', () => {
+  it('round-trips order and unread flags', () => {
+    const state = {
+      ...emptyWidgetStack(),
+      recent: [
+        item({ id: 'n1', text: 'first', unread: true, actor: 'Ada', type: 'message', kind: 'dm' }),
+        item({
+          id: 'n2',
+          text: 'second',
+          unread: false,
+          actionLabel: 'Open',
+          actionId: 'open-share',
+        }),
+      ],
+    };
+    const raw = serializeRecent(state);
+    const restored = deserializeRecent(raw);
+    expect(restored.map((r) => r.id)).toEqual(['n1', 'n2']);
+    expect(restored[0]?.unread).toBe(true);
+    expect(restored[1]?.unread).toBe(false);
+    expect(restored[0]).toMatchObject({
+      id: 'n1',
+      text: 'first',
+      actor: 'Ada',
+      type: 'message',
+      kind: 'dm',
+    });
+    // Display-only restore: the action surface is stripped from untrusted
+    // storage so a tampered entry can never drive banner_action.
+    expect(restored[1]).toMatchObject({
+      id: 'n2',
+      text: 'second',
+      clickActionId: '',
+      data: null,
+    });
+    expect(restored[1]?.actionId).toBeUndefined();
+    expect(restored[1]?.actionLabel).toBeUndefined();
+  });
+
+  it('never rehydrates an action surface from tampered storage', () => {
+    const raw = JSON.stringify([
+      {
+        id: 'evil',
+        text: 'tampered',
+        ts: 1,
+        clickActionId: 'install-update',
+        actionId: 'install-update',
+        actionLabel: 'Update now',
+        data: { url: 'https://evil.example' },
+      },
+    ]);
+    const restored = deserializeRecent(raw);
+    expect(restored).toHaveLength(1);
+    expect(restored[0]).toMatchObject({
+      id: 'evil',
+      clickActionId: '',
+      data: null,
+    });
+    expect(restored[0]?.actionId).toBeUndefined();
+    expect(restored[0]?.actionLabel).toBeUndefined();
+  });
+
+  it('returns [] for null, undefined, empty, and invalid JSON', () => {
+    expect(deserializeRecent(null)).toEqual([]);
+    expect(deserializeRecent(undefined)).toEqual([]);
+    expect(deserializeRecent('')).toEqual([]);
+    expect(deserializeRecent('not-json')).toEqual([]);
+    expect(deserializeRecent('{"not":"array"}')).toEqual([]);
+    expect(deserializeRecent('42')).toEqual([]);
+  });
+
+  it('filters junk entries and fills defaults', () => {
+    const raw = JSON.stringify([
+      null,
+      'skip',
+      42,
+      { text: 'no-id', ts: 1 },
+      { id: 'no-text', ts: 1 },
+      { id: 'no-ts', text: 'x' },
+      { id: 'ok', text: 'hello', ts: 5_000 },
+    ]);
+    const restored = deserializeRecent(raw);
+    expect(restored).toHaveLength(1);
+    expect(restored[0]).toMatchObject({
+      id: 'ok',
+      text: 'hello',
+      ts: 5_000,
+      type: 'system',
+      kind: 'system',
+      clickActionId: '',
+      data: null,
+      expiresAt: 0,
+      unread: false,
+    });
+  });
+
+  it('caps at WIDGET_RECENT_MAX', () => {
+    const many = Array.from({ length: WIDGET_RECENT_MAX + 5 }, (_, i) =>
+      item({ id: `c${i}`, text: `${i}`, ts: 1_000 + i }),
+    );
+    const raw = serializeRecent({ ...emptyWidgetStack(), recent: many });
+    const restored = deserializeRecent(raw);
+    expect(restored).toHaveLength(WIDGET_RECENT_MAX);
+    expect(restored[0]?.id).toBe('c0');
+    expect(restored[WIDGET_RECENT_MAX - 1]?.id).toBe(`c${WIDGET_RECENT_MAX - 1}`);
+  });
+
+  it('coerces unread to boolean (truthy non-true → false)', () => {
+    const raw = JSON.stringify([
+      { id: 'a', text: 't', ts: 1, unread: 1 },
+      { id: 'b', text: 't', ts: 2, unread: true },
+      { id: 'c', text: 't', ts: 3, unread: false },
+    ]);
+    const restored = deserializeRecent(raw);
+    expect(restored.map((r) => r.unread)).toEqual([false, true, false]);
   });
 });
 
