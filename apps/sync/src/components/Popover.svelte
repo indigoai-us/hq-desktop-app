@@ -119,6 +119,16 @@
     feedEl?.markAllRead();
   }
 
+  /** Jump to the desktop Inbox for the full notification history (popover is
+   *  height-capped at ~480px so older rows need the desktop surface). */
+  async function openDesktopInbox() {
+    try {
+      await invoke('open_desktop_alt_window', { route: 'inbox' });
+    } catch (e) {
+      console.error('popover: open_desktop_alt_window (inbox) failed', e);
+    }
+  }
+
   const membershipsToPull = $derived(
     joinableMemberships(workspaces ?? []).filter(
       (w) => !dismissedMemberships.has(w.slug),
@@ -412,9 +422,19 @@
             <span class="mbp-unread-count">{notifBadge > 99 ? '99+' : notifBadge}</span>
           {/if}
         </div>
-        <button class="mbp-sec-action" type="button" onclick={handleMarkAllRead}>
-          Mark all read
-        </button>
+        <div class="mbp-sec-actions">
+          <button class="mbp-sec-action" type="button" onclick={handleMarkAllRead}>
+            Mark all read
+          </button>
+          <button
+            class="mbp-sec-action mbp-sec-action-primary"
+            type="button"
+            data-testid="popover-open-inbox"
+            onclick={() => void openDesktopInbox()}
+          >
+            Open Inbox
+          </button>
+        </div>
       </div>
 
       {#if conflictModalActive && onresolve && onopen && ondismissconflicts}
@@ -879,7 +899,15 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
+    gap: 6px;
     padding-right: 8px;
+  }
+
+  .mbp-sec-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    flex-shrink: 0;
   }
 
   .mbp-sec-action {
@@ -897,6 +925,14 @@
   .mbp-sec-action:hover {
     color: var(--pop-text);
     background: var(--pop-hover);
+  }
+
+  .mbp-sec-action-primary {
+    color: var(--pop-accent, var(--pop-text));
+  }
+
+  .mbp-sec-action-primary:hover {
+    color: var(--pop-text);
   }
 
   .mbp-sec-action:focus-visible {

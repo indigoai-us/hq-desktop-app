@@ -56,20 +56,21 @@ describe('US-006 / US-008: InboxPage surface', () => {
 
   it('renders shared NotificationFeed / NotificationRow one-line rows', () => {
     expect(inbox).toContain("import NotificationFeed from '../../components/NotificationFeed.svelte'");
-    expect(inbox).toContain(
-      '<NotificationFeed showDayLabels={true} onunreadchange={handleUnreadChange} />',
-    );
+    expect(inbox).toContain('showDayLabels={true}');
+    expect(inbox).toContain('onunreadchange={handleUnreadChange}');
+    expect(inbox).toContain('onitemschange={handleItemsChange}');
+    expect(inbox).toContain('density="comfortable"');
     expect(inbox).toContain('shared one-line NotificationRow');
   });
 
-  it('unified unread header — title + count only', () => {
+  it('unified unread header + Open Messages jump (no tabs / sync chrome)', () => {
     expect(inbox).toContain('data-testid="inbox-unread-count"');
-    expect(inbox).toContain("unread === 0 ? 'All caught up' : `${unread} unread`");
+    expect(inbox).toContain('All caught up');
     expect(inbox).toContain('<h1 id="desktop-page-title">Inbox</h1>');
-    // Header is title + unread only — no tabs / sync / overflow / hq icon / desktop-view
-    // (comment is line-wrapped in source; assert the durable fragments).
-    expect(inbox).toContain('Header is title + unread');
-    expect(inbox).toContain('count ONLY — no tabs, no sync button, no menus (US-008).');
+    // Jump to the dedicated Messages window — not tabs/sync/overflow chrome.
+    expect(inbox).toContain('data-testid="inbox-open-messages"');
+    expect(inbox).toContain("invoke('open_messages_window')");
+    expect(inbox).toContain('No tabs, no sync button, no overflow menus (US-008).');
     expect(inbox).not.toContain('data-testid="desktop-alt-toggle"');
     expect(inbox).not.toContain('Sync Now');
     expect(inbox).not.toContain('overflow-menu');

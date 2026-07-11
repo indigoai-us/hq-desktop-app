@@ -22,6 +22,9 @@
     /** Fires whenever the unread count changes (load, event reload, mark-all-
      *  read) — the popover uses it for the segmented-control badge. */
     onunreadchange?: (count: number) => void;
+    /** Fires with the visible (non-dismissed) item total — desktop Inbox
+     *  uses this for the subtitle count. */
+    onitemschange?: (count: number) => void;
     /** Hide day-group headers (the popover's flat NOTIFICATIONS list). The
      *  desktop page keeps them for the day-grouped timeline. */
     showDayLabels?: boolean;
@@ -30,12 +33,16 @@
      *  empty data feed doesn't read as "nothing here" while a sync-paused /
      *  update row sits right above it. */
     hideEmptyState?: boolean;
+    /** Visual density: popover stays compact; desktop Inbox uses roomier rows. */
+    density?: 'compact' | 'comfortable';
   }
 
   let {
     onunreadchange,
+    onitemschange,
     showDayLabels = true,
     hideEmptyState = false,
+    density = 'compact',
   }: Props = $props();
 
   let loading = $state(true);
@@ -85,6 +92,9 @@
   const unreadCount = $derived(countUnread(visibleItems, lastReadTs));
   $effect(() => {
     onunreadchange?.(unreadCount);
+  });
+  $effect(() => {
+    onitemschange?.(visibleItems.length);
   });
 
   async function openDm(it: Item): Promise<void> {
@@ -161,7 +171,7 @@
   });
 </script>
 
-<div class="notif-feed">
+<div class="notif-feed" class:notif-comfortable={density === 'comfortable'} data-density={density}>
   {#if loading && items.length === 0}
     <p class="notif-status">Loading…</p>
   {:else if error}
@@ -174,6 +184,7 @@
           <path d="M10.3 19.5a2 2 0 0 0 3.4 0" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
         </svg>
         <p>No notifications yet</p>
+        <span class="notif-empty-hint">Messages, shares, and new files will show up here.</span>
       </div>
     {/if}
   {:else if visibleItems.length === 0}
@@ -188,57 +199,59 @@
         {#if showDayLabels}
           <div class="notif-day-label">{group.label}</div>
         {/if}
-        {#each group.rows as row (row.type === 'cluster' ? row.key : row.item.id)}
-          {#if row.type === 'single'}
-            {@const it = row.item}
-            {#if it.kind === 'dm' && it.dm}
-              <NotificationRow
-                type="message"
-                actor={it.actor}
-                text={it.dm.body}
-                ts={it.ts}
-                unread={isUnread(it, lastReadTs)}
-                onopen={() => openDm(it)}
-                onreply={(text) => void replyDm(it, text)}
-                onreact={(emoji) => void reactDm(it, emoji)}
-              />
-            {:else if it.kind === 'share'}
-              <NotificationRow
-                type="share"
-                actor={it.actor}
-                text={it.summary}
-                ts={it.ts}
-                unread={isUnread(it, lastReadTs)}
-                onopen={() => openShare(it)}
-                ondismiss={() => dismiss(it.id)}
-              />
-            {:else if it.kind === 'new-file'}
+        <div class="notif-day-rows">
+          {#each group.rows as row (row.type === 'cluster' ? row.key : row.item.id)}
+            {#if row.type === 'single'}
+              {@const it = row.item}
+              {#if it.kind === 'dm' && it.dm}
+                <NotificationRow
+                  type="message"
+                  actor={it.actor}
+                  text={it.dm.body}
+                  ts={it.ts}
+                  unread={isUnread(it, lastReadTs)}
+                  onopen={() => openDm(it)}
+                  onreply={(text) => void replyDm(it, text)}
+                  onreact={(emoji) => void reactDm(it, emoji)}
+                />
+              {:else if it.kind === 'share'}
+                <NotificationRow
+                  type="share"
+                  actor={it.actor}
+                  text={it.summary}
+                  ts={it.ts}
+                  unread={isUnread(it, lastReadTs)}
+                  onopen={() => openShare(it)}
+                  ondismiss={() => dismiss(it.id)}
+                />
+              {:else if it.kind === 'new-file'}
+                <NotificationRow
+                  type="sync"
+                  text={it.summary}
+                  ts={it.ts}
+                  unread={isUnread(it, lastReadTs)}
+                  onopen={
+                    it.file?.company
+                      ? () => void openCompanyActivity(it.file!.company)
+                      : undefined
+                  }
+                  ondismiss={() => dismiss(it.id)}
+                />
+              {/if}
+            {:else if !dismissed.has(row.key)}
               <NotificationRow
                 type="sync"
-                text={it.summary}
-                ts={it.ts}
-                unread={isUnread(it, lastReadTs)}
+                text={`${row.count} new files in ${row.company}`}
+                ts={row.latestTs}
+                unread={row.items.some((it) => isUnread(it, lastReadTs))}
                 onopen={
-                  it.file?.company
-                    ? () => void openCompanyActivity(it.file!.company)
-                    : undefined
+                  row.company ? () => void openCompanyActivity(row.company) : undefined
                 }
-                ondismiss={() => dismiss(it.id)}
+                ondismiss={() => dismiss(row.key)}
               />
             {/if}
-          {:else if !dismissed.has(row.key)}
-            <NotificationRow
-              type="sync"
-              text={`${row.count} new files in ${row.company}`}
-              ts={row.latestTs}
-              unread={row.items.some((it) => isUnread(it, lastReadTs))}
-              onopen={
-                row.company ? () => void openCompanyActivity(row.company) : undefined
-              }
-              ondismiss={() => dismiss(row.key)}
-            />
-          {/if}
-        {/each}
+          {/each}
+        </div>
       </div>
     {/each}
   {/if}
@@ -277,6 +290,13 @@
     margin: 0;
     font-size: var(--text-sm);
   }
+  .notif-empty-hint {
+    font-size: 12px;
+    opacity: 0.85;
+    text-align: center;
+    max-width: 28ch;
+    line-height: 1.4;
+  }
 
   .notif-day {
     margin-top: 2px;
@@ -292,5 +312,37 @@
     letter-spacing: 0.05em;
     padding: 7px 2px 4px;
     z-index: 1;
+  }
+
+  .notif-day-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+
+  /* Desktop Inbox: roomier day sections + slightly taller rows via host tokens. */
+  .notif-comfortable .notif-day {
+    margin-top: 10px;
+  }
+  .notif-comfortable .notif-day:first-child {
+    margin-top: 0;
+  }
+  .notif-comfortable .notif-day-label {
+    padding: 10px 12px 6px;
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    border-bottom: 1px solid var(--popover-day-rule, transparent);
+  }
+  .notif-comfortable .notif-day-rows {
+    gap: 2px;
+    padding: 4px 4px 6px;
+  }
+  .notif-comfortable .notif-empty {
+    padding: 48px 24px;
+  }
+  .notif-comfortable .notif-empty p {
+    font-size: 14px;
+    color: var(--popover-text-heading, var(--popover-text));
+    font-weight: 600;
   }
 </style>

@@ -244,7 +244,11 @@
     padding: 12px;
     border: 1px solid var(--border-strong, var(--pop-border, rgba(120, 120, 128, 0.3)));
     border-radius: 10px;
-    background: var(--surface-panel, var(--pop-bg, rgba(38, 38, 40, 0.96)));
+    /* Solid panel only — glass --pop-bg / --surface-panel are translucent. */
+    opacity: 1;
+    background: var(--c-bg, #2b2b2e);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
     box-shadow: var(--pop-shadow, 0 12px 32px rgba(0, 0, 0, 0.18));
     color: var(--fg, var(--c-text, inherit));
     font-size: var(--text-xs, 13px);
