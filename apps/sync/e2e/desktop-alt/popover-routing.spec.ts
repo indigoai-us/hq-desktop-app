@@ -11,6 +11,8 @@ describe('menubar popover routes into V4 desktop surfaces', () => {
     expect(feed).toContain("it.kind === 'new-file'");
     expect(feed).toContain('openCompanyActivity');
     expect(route).toContain("kind === 'company'");
-    expect(route).toContain('isCompanyTab(second)');
+    // company-detail-desktop-ia: deep-links normalize via normalizeCompanyTab
+    // (legacy accounts/tasks/library redirects + live CompanyTab ids).
+    expect(route).toContain('normalizeCompanyTab(second)');
   });
 });

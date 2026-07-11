@@ -81,18 +81,24 @@ const LOADER_CODE = codeOnly(crmLoader).toLowerCase();
 // ── route + tab registration ─────────────────────────────────────────────────
 
 describe('US-010: accounts CompanyTab registration', () => {
-  it("adds 'accounts' to the CompanyTab route union", () => {
-    expect(NORM_ROUTE).toContain("| 'accounts'");
+  // company-detail-desktop-ia intentionally Hides Accounts from company nav
+  // (legacy deep-links redirect to overview). AccountView + CRM loader remain
+  // for future re-surface; these contracts guard the hide + redirect.
+  it("does not list 'accounts' on the live CompanyTab union", () => {
+    expect(NORM_ROUTE).not.toContain("| 'accounts'");
   });
 
-  it("registers an Accounts row in COMPANY_SECTIONS", () => {
-    expect(NORM_ROUTE).toContain("{ id: 'accounts', label: 'Accounts' }");
+  it('does not register an Accounts row in COMPANY_SECTIONS', () => {
+    expect(NORM_ROUTE).not.toContain("{ id: 'accounts', label: 'Accounts' }");
   });
 
-  it('CompanyPage renders AccountView for the accounts tab', () => {
-    expect(NORM_PAGE).toContain("import AccountView from '../../lib/crm/AccountView.svelte'");
-    expect(NORM_PAGE).toContain("tab === 'accounts'");
-    expect(NORM_PAGE).toContain('<AccountView slug={company.slug} {cloudBacked} />');
+  it('redirects legacy company:accounts deep-links to overview', () => {
+    expect(NORM_ROUTE).toContain('accounts: \'overview\'');
+  });
+
+  it('AccountView module still exists (CRM projection surface retained)', () => {
+    expect(NORM_VIEW.length).toBeGreaterThan(100);
+    expect(NORM_VIEW).toContain('loadCrmProjection');
   });
 });
 
