@@ -21,6 +21,7 @@
     addItem,
     bannerToStackItem,
     dismissItem,
+    dismissRecent,
     expireItems,
     hoverItems,
     hoverRows,
@@ -299,6 +300,21 @@
     }
   }
 
+  /**
+   * Dismiss pill inside the pinned popup / hover list. Removes the row from
+   * recent + visible; when the LAST row goes, the panel unmounts without a
+   * pointerleave — close it fully (clears the pointer hold, restores the
+   * non-activating window, and resets pinned/hoverOpen) so auto-hide and
+   * window sizing never wedge on an empty invisible panel.
+   */
+  function handleHoverDismiss(id: string): void {
+    setReplyHold(id, false);
+    applyStack(dismissRecent(stack, id));
+    if (hoverItems(stack).length === 0) {
+      closePinned();
+    }
+  }
+
   function handleDismiss(id: string): void {
     // Drop any stale reply-hold for this row so ids never hold forever.
     setReplyHold(id, false);
@@ -490,7 +506,10 @@
             text={row.item.text}
             ts={row.item.ts}
             unread={row.item.unread ?? false}
+            actionLabel={row.item.actionLabel ?? undefined}
+            textDismiss
             onopen={() => void handleOpen(row.item)}
+            ondismiss={() => handleHoverDismiss(row.item.id)}
             onreply={row.item.kind === 'dm'
               ? (text) => void replyDm(row.item, text)
               : undefined}
@@ -629,17 +648,20 @@
 
   /* Hover recent-notification list — single frosted panel above the mark. */
   .hover-list {
-    width: 244px;
-    border-radius: 10px;
-    background: var(--row-bg);
-    -webkit-backdrop-filter: blur(26px) saturate(1.7);
-    backdrop-filter: blur(26px) saturate(1.7);
-    border: 0.5px solid var(--row-border);
-    box-shadow: var(--row-shadow), inset 0 1px 0 var(--row-highlight);
-    padding: 6px 4px;
-    margin-bottom: 12px;
+    width: 264px;
+    border-radius: 12px;
+    padding: 6px;
     display: flex;
     flex-direction: column;
+    gap: 1px;
+    background: var(--row-bg);
+    -webkit-backdrop-filter: blur(30px) saturate(1.8);
+    backdrop-filter: blur(30px) saturate(1.8);
+    border: 0.5px solid var(--row-border);
+    box-shadow: var(--row-shadow), inset 0 1px 0 var(--row-highlight);
+    margin-bottom: 12px;
+    transform-origin: bottom right;
+    animation: widget-bloom 0.32s cubic-bezier(0.34, 1.3, 0.64, 1) backwards;
     box-sizing: border-box;
     flex-shrink: 0;
     /* Bridge NotificationRow's popover tokens (same as .frost). */
@@ -652,25 +674,41 @@
   }
 
   .hl-sep {
+    padding: 7px 11px 3px;
     font-size: 9px;
-    font-weight: 600;
-    letter-spacing: 0.08em;
+    font-weight: 650;
+    letter-spacing: 0.9px;
     text-transform: uppercase;
     color: var(--row-muted);
-    padding: 4px 11px 2px;
   }
 
   .hl-row :global(.nr) {
-    min-height: 26px;
-    font-size: 11px;
+    min-height: 28px;
+    font-size: 12px;
+    border-radius: 7px;
     background: transparent;
     color: var(--row-fg);
     width: 100%;
     box-sizing: border-box;
   }
 
-  .hl-row :global(.nr-ts) {
-    font-size: 10px;
+  .hl-row :global(.nr:not(.nr-message):hover),
+  .hl-row :global(.nr:not(.nr-message):focus-within),
+  .hl-row :global(.nr-message.nr-expanded) {
+    background: var(--row-hover-bg);
+  }
+
+  .hl-row :global(.nr-open),
+  .hl-row :global(.nr-dismiss),
+  .hl-row :global(.nr-react) {
+    background: var(--row-hover-bg);
+    color: var(--row-fg);
+  }
+
+  .hl-row :global(.nr-reply) {
+    background: var(--reply-bg);
+    border-color: var(--reply-border);
+    color: var(--row-fg);
   }
 
   /* Row sits transparent on the frost; hover uses row-bg-hover. */
@@ -710,6 +748,17 @@
     }
     to {
       transform: translateY(0);
+      opacity: 1;
+    }
+  }
+
+  @keyframes widget-bloom {
+    from {
+      transform: scale(0.92) translateY(8px);
+      opacity: 0;
+    }
+    to {
+      transform: scale(1) translateY(0);
       opacity: 1;
     }
   }
@@ -776,6 +825,10 @@
 
   @media (prefers-reduced-motion: reduce) {
     .frost {
+      animation: none;
+    }
+
+    .hover-list {
       animation: none;
     }
   }

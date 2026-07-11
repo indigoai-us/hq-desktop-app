@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   WIDGET_HOVER_LIST_PADDING,
   WIDGET_HOVER_MAX,
+  WIDGET_HOVER_PANEL_WIDTH,
+  WIDGET_HOVER_ROW_GAP,
   WIDGET_HOVER_ROW_HEIGHT,
   WIDGET_HOVER_SEPARATOR_HEIGHT,
   WIDGET_IDLE_HEIGHT,
@@ -19,6 +21,7 @@ import {
   bannerToStackItem,
   dayLabel,
   dismissItem,
+  dismissRecent,
   emptyWidgetStack,
   expireItems,
   hoverItems,
@@ -211,6 +214,25 @@ describe('addItem / setOccluded / expire / dismiss', () => {
     expect(next.queued.map((q) => q.id)).toEqual(['q']);
     // Recent history is kept.
     expect(next.recent.map((r) => r.id)).toEqual(['v', 'q']);
+  });
+
+  it('dismissRecent removes from recent and visible; unknown id leaves lists equal', () => {
+    const state = {
+      occluded: false,
+      visible: [item({ id: 'v' }), item({ id: 'keep' })],
+      queued: [item({ id: 'q' })],
+      recent: [item({ id: 'v' }), item({ id: 'keep' }), item({ id: 'q' })],
+    };
+    const next = dismissRecent(state, 'v');
+    expect(next.visible.map((v) => v.id)).toEqual(['keep']);
+    expect(next.recent.map((r) => r.id)).toEqual(['keep', 'q']);
+    // Queued is kept.
+    expect(next.queued.map((q) => q.id)).toEqual(['q']);
+
+    const unknown = dismissRecent(next, 'missing');
+    expect(unknown.visible.map((v) => v.id)).toEqual(next.visible.map((v) => v.id));
+    expect(unknown.recent.map((r) => r.id)).toEqual(next.recent.map((r) => r.id));
+    expect(unknown.queued.map((q) => q.id)).toEqual(next.queued.map((q) => q.id));
   });
 });
 
@@ -422,7 +444,7 @@ describe('widgetHoverWindowSize', () => {
       WIDGET_HOVER_LIST_PADDING +
       WIDGET_HOVER_ROW_HEIGHT;
     expect(widgetHoverWindowSize(one, 0)).toEqual({
-      width: WIDGET_STACK_WIDTH,
+      width: WIDGET_HOVER_PANEL_WIDTH + 20,
       height: h1,
     });
 
@@ -433,10 +455,10 @@ describe('widgetHoverWindowSize', () => {
       WIDGET_TOP_HEADROOM +
       WIDGET_HOVER_LIST_PADDING +
       2 * WIDGET_HOVER_ROW_HEIGHT +
-      WIDGET_ROW_GAP +
+      WIDGET_HOVER_ROW_GAP +
       WIDGET_HOVER_SEPARATOR_HEIGHT;
     expect(widgetHoverWindowSize(two, 1)).toEqual({
-      width: WIDGET_STACK_WIDTH,
+      width: WIDGET_HOVER_PANEL_WIDTH + 20,
       height: h2,
     });
   });
@@ -449,9 +471,9 @@ describe('widgetHoverWindowSize', () => {
       WIDGET_TOP_HEADROOM +
       WIDGET_HOVER_LIST_PADDING +
       2 * WIDGET_HOVER_ROW_HEIGHT +
-      WIDGET_ROW_GAP;
+      WIDGET_HOVER_ROW_GAP;
     expect(widgetHoverWindowSize(withMessage, 0)).toEqual({
-      width: WIDGET_STACK_WIDTH,
+      width: WIDGET_HOVER_PANEL_WIDTH + 20,
       height: base + WIDGET_MESSAGE_EXPAND_HEADROOM,
     });
   });
