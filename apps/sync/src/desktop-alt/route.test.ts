@@ -105,25 +105,56 @@ describe('US-002 V4 desktop routes', () => {
     expect(visible.map((workspace) => workspace.displayName)).toEqual(['Dupe Local', 'Next']);
   });
 
-  it('declares the company sections in SPEC order with Overview first and Accounts second', () => {
+  it('declares the company sections with Skills/Workers/Knowledge/Team (no Accounts/Tasks/Library)', () => {
     expect(COMPANY_SECTIONS.map((section) => section.id)).toEqual([
       'overview',
-      'accounts',
       'goals',
       'projects',
-      'tasks',
+      'skills',
+      'workers',
+      'knowledge',
+      'team',
       'activity',
       'deployments',
       'secrets',
-      'library',
     ]);
+    expect(COMPANY_SECTIONS.some((section) => (section.id as string) === 'accounts')).toBe(false);
+    expect(COMPANY_SECTIONS.some((section) => (section.id as string) === 'tasks')).toBe(false);
+    expect(COMPANY_SECTIONS.some((section) => (section.id as string) === 'library')).toBe(false);
   });
 
-  it('resolves an accounts company deep-link to the accounts tab', () => {
+  it('redirects legacy company deep-links: accounts→overview, tasks→projects, library→skills', () => {
     expect(resolvePendingDesktopRoute('company:indigo:accounts')).toEqual({
       kind: 'company',
       slug: 'indigo',
-      tab: 'accounts',
+      tab: 'overview',
+    });
+    expect(resolvePendingDesktopRoute('company:indigo:tasks')).toEqual({
+      kind: 'company',
+      slug: 'indigo',
+      tab: 'projects',
+    });
+    expect(resolvePendingDesktopRoute('company:indigo:library')).toEqual({
+      kind: 'company',
+      slug: 'indigo',
+      tab: 'skills',
+    });
+  });
+
+  it('resolves new company tabs skills / workers / team; knowledge → files mode', () => {
+    expect(resolvePendingDesktopRoute('company:indigo:skills')).toEqual({
+      kind: 'company',
+      slug: 'indigo',
+      tab: 'skills',
+    });
+    expect(resolvePendingDesktopRoute('company:indigo:team')).toEqual({
+      kind: 'company',
+      slug: 'indigo',
+      tab: 'team',
+    });
+    expect(resolvePendingDesktopRoute('company:indigo:knowledge')).toEqual({
+      kind: 'files',
+      slug: 'indigo',
     });
   });
 
@@ -294,7 +325,7 @@ describe('US-002 secondary sidebar — company / library / settings only', () =>
     company({ slug: 'indigo', displayName: 'Indigo', state: 'synced', role: 'owner' }),
   ];
 
-  it('shows the company sections with Overview active and Accounts second on a fresh company route', () => {
+  it('shows the company sections with Overview active (no Accounts/Tasks/Library)', () => {
     const model = getDesktopSecondarySidebar({ kind: 'company', slug: 'indigo' }, companies);
     expect(model?.surface).toBe('company');
     expect(model?.header).toBe('Indigo');
@@ -302,14 +333,15 @@ describe('US-002 secondary sidebar — company / library / settings only', () =>
     expect(model?.meta).toBe('Owner · synced just now');
     expect(model?.items.map((item) => item.label)).toEqual([
       'Overview',
-      'Accounts',
       'Goals',
       'Projects',
-      'Tasks',
+      'Skills',
+      'Workers',
+      'Knowledge',
+      'Team',
       'Activity',
       'Deployments',
       'Secrets',
-      'Library',
     ]);
     expect(model?.activeId).toBe('overview');
     expect(model?.footer).toEqual({

@@ -18,8 +18,9 @@ The desktop-alt UX is the GA desktop surface for signed-in HQ Sync users. It add
 | Rust command module | `src-tauri/src/commands/desktop_alt.rs` |
 | Vite entry | `desktop-alt.html`, `src/desktop-alt/main.ts`, `vite.config.ts` `desktopAlt` input |
 | Shell + route state | `src/desktop-alt/DesktopApp.svelte`, `src/desktop-alt/route.ts`, `src/desktop-alt/v4/V4Sidebar.svelte`, `src/desktop-alt/v4/V4SecondarySidebar.svelte`, `src/desktop-alt/v4/V4TitleBar.svelte`, `src/desktop-alt/DesktopStatusBar.svelte` |
-| Pages | `src/desktop-alt/pages/HomePage.svelte`, `CompaniesPage.svelte`, `CompanyPage.svelte`, `CompanyGoalsPage.svelte`, `CompanyProjectsPage.svelte`, `CompanyTasksPage.svelte`, `MessagesPage.svelte`, `MeetingsPage.svelte`, `LibraryPage.svelte`, `SettingsPage.svelte`, `ConflictResolutionPage.svelte`, `DriftDetailPage.svelte`, `ProjectDetailView.svelte` |
-| Company panels | `src/desktop-alt/panels/CompanyBoardPanel.svelte`, `ActivityPanel.svelte`, `DeploymentsPanel.svelte`, `SecretsPanel.svelte`, `CompanyLibraryPanel.svelte` |
+| Pages | `src/desktop-alt/pages/HomePage.svelte`, `CompanyPage.svelte`, `CompanyGoalsPage.svelte`, `CompanyProjectsPage.svelte`, `CompanyTasksPage.svelte` (legacy, not in company nav), `InboxPage.svelte`, `MeetingsPage.svelte`, `LibraryPage.svelte`, `SettingsPage.svelte`, `ConflictResolutionPage.svelte`, `DriftDetailPage.svelte`, `ProjectDetailView.svelte` |
+| Company secondary nav | Overview · Goals · Projects · Skills · Workers · Knowledge (→ files mode) · Team · Activity · Deployments · Secrets |
+| Company panels | `src/desktop-alt/panels/CompanyBoardPanel.svelte`, `ActivityPanel.svelte`, `DeploymentsPanel.svelte`, `SecretsPanel.svelte`, `CompanyLibraryPanel.svelte` (Skills/Workers), `TeamPanel.svelte` |
 | Global command surface | `src/desktop-alt/components/CommandPalette.svelte`, opened by command-K and grouped into actions/navigation rows |
 
 ## Tauri Commands

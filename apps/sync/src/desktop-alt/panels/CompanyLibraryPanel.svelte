@@ -17,9 +17,14 @@
   interface Props {
     /** The company/workspace slug this library is scoped to. */
     slug: string;
+    /**
+     * When set (company Skills / Workers top-level tabs), force that filter and
+     * hide the in-body Workers|Skills toggle — the company secondary sidebar owns switching.
+     */
+    forcedFilter?: 'skills' | 'workers';
   }
 
-  let { slug }: Props = $props();
+  let { slug, forcedFilter }: Props = $props();
 
   let items = $state<LibraryItems>({ workers: [], skills: [] });
   let loading = $state(true);
@@ -82,13 +87,27 @@
   });
 </script>
 
-<section class="company-library" aria-label="Library" data-testid="company-library-panel">
+<section
+  class="company-library"
+  aria-label={forcedFilter === 'workers' ? 'Workers' : forcedFilter === 'skills' ? 'Skills' : 'Library'}
+  data-testid={forcedFilter === 'workers'
+    ? 'company-workers-panel'
+    : forcedFilter === 'skills'
+      ? 'company-skills-panel'
+      : 'company-library-panel'}
+>
   {#if !loading && !error && items.workers.length === 0 && items.skills.length === 0}
     <div class="empty-state">
-      No company-specific workers or skills yet. Shared ones live in the top-level Library (⌘5).
+      {#if forcedFilter === 'skills'}
+        No company-specific skills yet. Shared skills live in the top-level Library.
+      {:else if forcedFilter === 'workers'}
+        No company-specific workers yet. Shared workers live in the top-level Library.
+      {:else}
+        No company-specific workers or skills yet. Shared ones live in the top-level Library.
+      {/if}
     </div>
   {:else}
-    <LibraryBrowser {items} {loading} {error} />
+    <LibraryBrowser {items} {loading} {error} {forcedFilter} />
   {/if}
 </section>
 

@@ -10,11 +10,10 @@
   import CompanyBoardPanel from '../panels/CompanyBoardPanel.svelte';
   import CompanyGoalsPage from './CompanyGoalsPage.svelte';
   import CompanyProjectsPage from './CompanyProjectsPage.svelte';
-  import CompanyTasksPage from './CompanyTasksPage.svelte';
   import DeploymentsPanel from '../panels/DeploymentsPanel.svelte';
   import SecretsPanel from '../panels/SecretsPanel.svelte';
   import CompanyLibraryPanel from '../panels/CompanyLibraryPanel.svelte';
-  import AccountView from '../../lib/crm/AccountView.svelte';
+  import TeamPanel from '../panels/TeamPanel.svelte';
   import { DEFAULT_COMPANY_TAB, type CompanyTab } from '../route';
 
   interface Props {
@@ -218,20 +217,26 @@
     <div class="company-panel">
       {#if tab === 'overview'}
         <CompanyBoardPanel slug={company.slug} {cloudBacked} />
-      {:else if tab === 'accounts'}
-        <AccountView slug={company.slug} {cloudBacked} />
       {:else if tab === 'goals'}
         <CompanyGoalsPage slug={company.slug} />
       {:else if tab === 'projects'}
         <CompanyProjectsPage slug={company.slug} onnewproject={startNewProject} />
-      {:else if tab === 'tasks'}
-        <CompanyTasksPage slug={company.slug} />
+      {:else if tab === 'skills'}
+        <CompanyLibraryPanel slug={company.slug} forcedFilter="skills" />
+      {:else if tab === 'workers'}
+        <CompanyLibraryPanel slug={company.slug} forcedFilter="workers" />
+      {:else if tab === 'knowledge'}
+        <!-- Knowledge selection is intercepted in DesktopApp → files mode; fallback if landed here. -->
+        <div class="company-tab-placeholder" data-testid="company-knowledge-placeholder">
+          <h2>Knowledge</h2>
+          <p>Opening the company file navigator…</p>
+        </div>
+      {:else if tab === 'team'}
+        <TeamPanel slug={company.slug} />
       {:else if tab === 'activity'}
         <ActivityPanel slug={company.slug} {cloudBacked} />
       {:else if tab === 'deployments'}
         <DeploymentsPanel slug={company.slug} {cloudBacked} />
-      {:else if tab === 'library'}
-        <CompanyLibraryPanel slug={company.slug} />
       {:else if tab === 'secrets'}
         <SecretsPanel slug={company.slug} {cloudBacked} />
       {/if}

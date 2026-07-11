@@ -37,7 +37,7 @@ function workspace(overrides: Partial<Workspace>): Workspace {
 }
 
 describe('desktop-alt V4 chrome (US-002)', () => {
-  it('a company row click opens the company page with the 9 sections and Overview active', () => {
+  it('a company row click opens the company page with the IA sections and Overview active', () => {
     const companies = [workspace({})];
 
     // The V4Sidebar company row emits { kind: 'company', slug } — the shell
@@ -48,16 +48,18 @@ describe('desktop-alt V4 chrome (US-002)', () => {
     const secondary = getDesktopSecondarySidebar(clicked, companies);
     expect(secondary?.surface).toBe('company');
     expect(secondary?.header).toBe('Indigo');
+    // company-detail-desktop-ia: Accounts/Tasks/Library removed; Skills/Workers/Knowledge/Team added.
     expect(secondary?.items.map((item) => item.label)).toEqual([
       'Overview',
-      'Accounts',
       'Goals',
       'Projects',
-      'Tasks',
+      'Skills',
+      'Workers',
+      'Knowledge',
+      'Team',
       'Activity',
       'Deployments',
       'Secrets',
-      'Library',
     ]);
     expect(secondary?.activeId).toBe('overview');
   });
