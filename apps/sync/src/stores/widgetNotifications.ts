@@ -506,3 +506,27 @@ export function widgetHoverWindowSize(
 
   return { width: WIDGET_HOVER_PANEL_WIDTH + 20, height };
 }
+
+/**
+ * Window size for a click-pinned hover panel with zero recent rows.
+ *
+ * US-010: clicking the wordmark must always produce visible feedback, even on
+ * a fresh session with empty recent history. Hover-only with zero items stays
+ * idle-sized (no empty panel flash); only an explicit pin uses this size —
+ * one empty-state row at the same hover panel width as a single-item list.
+ */
+export function widgetEmptyHoverWindowSize(): { width: number; height: number } {
+  // Delegate to the real sizing fn with one synthetic non-message row so the
+  // empty-state panel can never drift from single-item hover geometry.
+  const placeholderRow: WidgetStackItem = {
+    id: 'empty-state',
+    type: 'system',
+    text: '',
+    ts: 0,
+    kind: 'empty',
+    clickActionId: '',
+    data: null,
+    expiresAt: 0,
+  };
+  return widgetHoverWindowSize([placeholderRow], 0);
+}

@@ -260,6 +260,13 @@ fn anchor_lower_right(
     (x, primary_height - (y_cocoa + h))
 }
 
+/// True when point (px,py) lies within the rect (fx,fy,fw,fh). Cocoa global
+/// coords for both NSEvent.mouseLocation and NSWindow.frame (bottom-left
+/// origin, y-up) — no y-flip needed since both are in the same space.
+fn point_in_frame(px: f64, py: f64, fx: f64, fy: f64, fw: f64, fh: f64) -> bool {
+    px >= fx && px <= fx + fw && py >= fy && py <= fy + fh
+}
+
 /// Compute the lower-right anchor for the widget window using `w`×`h`.
 ///
 /// On macOS, uses `NSScreen.visibleFrame` (Dock/menu-bar aware) on the main
@@ -813,14 +820,85 @@ pub fn setup_widget_window(app: &AppHandle) {
     register_click_away_monitor(app);
 }
 
+/// True when the monitored mouse-down landed inside the widget window frame.
+///
+/// Used by the global click-away monitor to ignore clicks on our own
+/// non-activating window (see [`register_click_away_monitor`]). Prefers the
+/// EVENT's own location over `+[NSEvent mouseLocation]` — the handler block
+/// runs on the main run loop slightly after the physical event, so the live
+/// cursor may have moved off the click point by then. For global-monitor
+/// events `-[NSEvent window]` is nil and `locationInWindow` is already in
+/// Cocoa screen coords; a non-nil window is converted via
+/// `convertRectToScreen:`. Falls back to `mouseLocation` for a nil event.
+#[cfg(target_os = "macos")]
+fn mouse_location_inside_widget(app: &AppHandle, event: *mut objc2::runtime::AnyObject) -> bool {
+    use objc2::{class, msg_send, runtime::AnyObject};
+    use objc2_core_foundation::{CGPoint, CGRect, CGSize};
+
+    let Some(window) = app.get_webview_window(WINDOW_LABEL) else {
+        return false;
+    };
+    let Ok(ns_win_raw) = window.ns_window() else {
+        return false;
+    };
+    let ns_win = ns_win_raw as *mut AnyObject;
+    if ns_win.is_null() {
+        return false;
+    }
+    // SAFETY: the global-monitor handler block runs on the thread that
+    // registered it (the main thread, via setup). Selectors are public AppKit
+    // (`-[NSEvent locationInWindow]`, `-[NSEvent window]`,
+    // `-[NSWindow convertRectToScreen:]`, `+[NSEvent mouseLocation]`,
+    // `-[NSWindow frame]`); all pointers are null-checked before use.
+    unsafe {
+        let loc: CGPoint = if event.is_null() {
+            msg_send![class!(NSEvent), mouseLocation]
+        } else {
+            let in_window: CGPoint = msg_send![event, locationInWindow];
+            let event_window: *mut AnyObject = msg_send![event, window];
+            if event_window.is_null() {
+                // Global-monitor events carry no window — already screen coords.
+                in_window
+            } else {
+                let rect = CGRect {
+                    origin: in_window,
+                    size: CGSize {
+                        width: 0.0,
+                        height: 0.0,
+                    },
+                };
+                let screen_rect: CGRect = msg_send![event_window, convertRectToScreen: rect];
+                screen_rect.origin
+            }
+        };
+        let frame: CGRect = msg_send![ns_win, frame];
+        point_in_frame(
+            loc.x,
+            loc.y,
+            frame.origin.x,
+            frame.origin.y,
+            frame.size.width,
+            frame.size.height,
+        )
+    }
+}
+
 /// Register a global mouse-down monitor so the frontend can close a
 /// click-pinned recent list when the user clicks OUTSIDE the widget window
 /// (US-010). The widget window is non-focusable, so it never sees `blur`, and
 /// clicks in other apps / the desktop never reach its `document` — a global
-/// NSEvent monitor is the only signal. Global monitors only observe events
-/// delivered to OTHER applications (clicks inside the widget stay in-webview),
-/// which is exactly the click-away set. Passive: events are observed, never
-/// consumed. The frontend ignores the event unless a list is pinned.
+/// NSEvent monitor is the only signal.
+///
+/// Defense-in-depth: AppKit documents global monitors as observing events
+/// dispatched to *other* applications, and real-build testing (v0.10.2,
+/// macOS 26) confirms clicks on our own non-activating window are not
+/// delivered here — but that routing is not a contract we control for an
+/// inactive Accessory-policy app across OS releases. The handler therefore
+/// ignores any event whose `NSEvent.mouseLocation` falls inside the widget
+/// window's frame, so a click on the wordmark (or inside the pinned popup)
+/// can never be misread as click-away and dismiss the popup it just opened.
+/// Passive: events are observed, never consumed. The frontend ignores the
+/// event unless a list is pinned.
 ///
 /// Guarded by [`CLICK_AWAY_MONITOR`]; the monitor + block leak for process
 /// life (same idiom as the other observers here).
@@ -836,7 +914,14 @@ fn register_click_away_monitor(app: &AppHandle) {
         // SAFETY: main thread (setup path); public AppKit selectors; the
         // returned monitor token and block are intentionally leaked.
         unsafe {
-            let block = RcBlock::new(move |_event: *mut AnyObject| {
+            let block = RcBlock::new(move |event: *mut AnyObject| {
+                // Clicks inside the widget window frame must never count as
+                // click-away — guard against any OS routing that would let the
+                // opening click on the wordmark (or a click inside the pinned
+                // popup) dismiss the popup itself.
+                if mouse_location_inside_widget(&app, event) {
+                    return;
+                }
                 let _ = app.emit_to(WINDOW_LABEL, "widget:click-away", serde_json::json!({}));
             });
             let monitor: *mut AnyObject = msg_send![
@@ -1307,5 +1392,40 @@ mod tests {
         assert_eq!(x, 1512.0 + 1920.0 - 66.0 - 8.0);
         // y can be negative for displays above the primary.
         assert_eq!(y, 982.0 - (100.0 + 16.0 + 43.0));
+    }
+
+    #[test]
+    fn point_in_frame_inside_and_edges_inclusive() {
+        // Frame origin (10, 20), size 100×50.
+        let (fx, fy, fw, fh) = (10.0, 20.0, 100.0, 50.0);
+        // Interior.
+        assert!(point_in_frame(50.0, 40.0, fx, fy, fw, fh));
+        // All four edges (inclusive).
+        assert!(point_in_frame(10.0, 40.0, fx, fy, fw, fh)); // left
+        assert!(point_in_frame(110.0, 40.0, fx, fy, fw, fh)); // right
+        assert!(point_in_frame(50.0, 20.0, fx, fy, fw, fh)); // bottom
+        assert!(point_in_frame(50.0, 70.0, fx, fy, fw, fh)); // top
+        // Corners.
+        assert!(point_in_frame(10.0, 20.0, fx, fy, fw, fh));
+        assert!(point_in_frame(110.0, 70.0, fx, fy, fw, fh));
+    }
+
+    #[test]
+    fn point_in_frame_outside_each_side() {
+        let (fx, fy, fw, fh) = (10.0, 20.0, 100.0, 50.0);
+        assert!(!point_in_frame(9.9, 40.0, fx, fy, fw, fh)); // left of left
+        assert!(!point_in_frame(110.1, 40.0, fx, fy, fw, fh)); // right of right
+        assert!(!point_in_frame(50.0, 19.9, fx, fy, fw, fh)); // below bottom
+        assert!(!point_in_frame(50.0, 70.1, fx, fy, fw, fh)); // above top
+    }
+
+    #[test]
+    fn point_in_frame_real_widget_geometry() {
+        // Idle widget at Cocoa lower-right-ish: x=1654, y≈50, 66×43.
+        let (fx, fy, fw, fh) = (1654.0, 50.0, 66.0, 43.0);
+        // Center of the mark → inside.
+        assert!(point_in_frame(1654.0 + 33.0, 50.0 + 21.5, fx, fy, fw, fh));
+        // Far away (desktop / other app) → outside.
+        assert!(!point_in_frame(100.0, 100.0, fx, fy, fw, fh));
     }
 }
