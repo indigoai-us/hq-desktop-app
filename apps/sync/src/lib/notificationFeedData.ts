@@ -101,14 +101,24 @@ function fileKey(company: string, path: string): string {
   return `${company} ${path}`;
 }
 
+/** Server max per-source page size (matches Rust `MAX_LIMIT`). */
+export const NOTIFICATION_HISTORY_LIMIT = 200;
+
 /**
  * Load + merge the notification timeline (newest-first). Server-retained
  * history (DMs + shares + cross-session new files) plus any of THIS session's
  * new files not yet reflected server-side, deduped by company+path.
+ *
+ * Requests the full retained page (200/source) so Inbox and the menubar feed
+ * show previous notifications rather than a short default slice.
  */
-export async function loadNotificationItems(): Promise<Item[]> {
+export async function loadNotificationItems(
+  limit: number = NOTIFICATION_HISTORY_LIMIT,
+): Promise<Item[]> {
   const [history, activity] = await Promise.all([
-    invoke<NotificationHistoryResponse>('fetch_notification_history'),
+    invoke<NotificationHistoryResponse>('fetch_notification_history', {
+      limit,
+    }),
     invoke<ActivityEntry[]>('get_activity_log').catch(() => [] as ActivityEntry[]),
   ]);
 

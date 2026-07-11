@@ -114,12 +114,16 @@ describe('US-008: combined Inbox page shows both streams as one-line rows with u
     expect(countUnread([dm, share], now + 1)).toBe(0);
   });
 
-  it('InboxPage mounts NotificationFeed with title + unread count only (no mark-all-read/tabs/sync)', () => {
+  it('InboxPage mounts NotificationFeed with title + unread subtitle (no mark-all-read/tabs/sync)', () => {
     expect(inboxPage).toContain('NotificationFeed');
     expect(inboxPage).toContain('<h1 id="desktop-page-title">Inbox</h1>');
     expect(inboxPage).toContain('inbox-unread-count');
+    expect(inboxPage).toContain('inbox-open-messages');
+    expect(inboxPage).toContain("open_messages_window");
+    expect(inboxPage).toContain('density="comfortable"');
     expect(inboxPage).not.toContain('Mark all read');
     expect(inboxPage).not.toContain('mark-read');
+    expect(inboxPage).not.toContain('role="tablist"');
   });
 
   it('viewing the Inbox counts as reading it — the watermark advances on leave (review fix)', () => {
