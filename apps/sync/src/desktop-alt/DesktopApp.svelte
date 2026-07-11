@@ -1448,6 +1448,7 @@
     workspaceCount={renderWorkspaceCount}
     observedBytes={observedVaultBytes}
     {nextMeetingLabel}
+    onOpenSettings={() => navigate({ kind: 'settings' })}
   />
 
   {#if commandPaletteOpen}

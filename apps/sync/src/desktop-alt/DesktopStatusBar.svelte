@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { SyncProgress, SyncState } from './lib/sync-model';
+  import VersionPopout from './components/VersionPopout.svelte';
 
   interface Props {
     version: string;
@@ -10,26 +11,33 @@
     workspaceCount?: number;
     observedBytes?: number;
     nextMeetingLabel?: string | null;
+    onOpenSettings?: () => void;
   }
 
+  // Rename `state` → `syncStateProp` so `$state(...)` runes below are not
+  // misread as a Svelte store subscription on the `state` prop binding.
   let {
     version,
-    state,
+    state: syncStateProp,
     progress,
     filesProgressed,
     totalFiles,
     workspaceCount,
     observedBytes,
     nextMeetingLabel,
+    onOpenSettings,
   }: Props = $props();
 
-  const currentState = $derived(state ?? 'idle');
+  const currentState = $derived(syncStateProp ?? 'idle');
   const currentProgress = $derived(progress ?? null);
   const currentFilesProgressed = $derived(filesProgressed ?? 0);
   const currentTotalFiles = $derived(totalFiles ?? 0);
   const currentWorkspaceCount = $derived(workspaceCount ?? 0);
   const currentObservedBytes = $derived(observedBytes ?? 0);
   const currentNextMeetingLabel = $derived(nextMeetingLabel ?? null);
+
+  let versionOpen = $state(false);
+  let versionContainer: HTMLDivElement | null = $state(null);
 
   const tone = $derived.by(() => {
     if (currentState === 'syncing') return 'syncing';
@@ -63,6 +71,39 @@
   }
 
   const bytesLabel = $derived(formatMb(currentObservedBytes));
+
+  function toggleVersionPopout() {
+    versionOpen = !versionOpen;
+  }
+
+  function closeVersionPopout() {
+    versionOpen = false;
+  }
+
+  $effect(() => {
+    if (!versionOpen) return;
+
+    function onMouseDown(event: MouseEvent) {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (versionContainer && !versionContainer.contains(target)) {
+        versionOpen = false;
+      }
+    }
+
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        versionOpen = false;
+      }
+    }
+
+    window.addEventListener('mousedown', onMouseDown);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('mousedown', onMouseDown);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  });
 </script>
 
 <footer class="desktop-status-bar live-strip" aria-label="Status">
@@ -91,7 +132,26 @@
     {/if}
     <span class="ls-meta">watching <span class="mono">{currentWorkspaceCount}</span> workspace{currentWorkspaceCount === 1 ? '' : 's'}</span>
     <span class="ls-div" aria-hidden="true"></span>
-    <span class="ls-version mono">v{version}</span>
+    <div class="ls-version-wrap" bind:this={versionContainer}>
+      <button
+        type="button"
+        class="ls-version mono"
+        data-testid="version-label"
+        aria-expanded={versionOpen}
+        aria-haspopup="dialog"
+        aria-label={`Version v${version}`}
+        onclick={toggleVersionPopout}
+      >
+        v{version}
+      </button>
+      {#if versionOpen}
+        <VersionPopout
+          {version}
+          onOpenSettings={() => onOpenSettings?.()}
+          onclose={closeVersionPopout}
+        />
+      {/if}
+    </div>
   </div>
 </footer>
 
@@ -193,8 +253,25 @@
     background: var(--border-strong);
   }
 
+  .ls-version-wrap {
+    position: relative;
+    flex: 0 0 auto;
+  }
+
   .ls-version {
     flex: 0 0 auto;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-family: var(--font-mono);
+    cursor: pointer;
+  }
+
+  .ls-version:hover {
+    color: var(--fg);
   }
 
   @media (prefers-reduced-motion: no-preference) {
