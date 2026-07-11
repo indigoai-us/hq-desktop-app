@@ -167,6 +167,31 @@ impl MembershipInfo {
     }
 }
 
+/// One email-keyed pending invite from `GET /membership/pending-by-email`.
+/// Modern (schemaVersion 2+) invites are tokenless — claim via
+/// `POST /membership/claim-by-email` after the person entity exists.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingInviteByEmail {
+    #[serde(default)]
+    pub membership_key: Option<String>,
+    pub company_uid: String,
+    #[serde(default)]
+    pub role: Option<String>,
+    #[serde(default)]
+    pub invited_by: Option<String>,
+    #[serde(default)]
+    pub invited_at: Option<String>,
+}
+
+/// Result of `POST /membership/claim-by-email`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaimByEmailResult {
+    #[serde(default)]
+    pub claimed: Vec<MembershipInfo>,
+}
+
 /// Resolved sync-mode for a membership — `GET /v1/memberships/{id}/sync-config`.
 /// `syncMode` governs what a sync DOWNLOADS locally (footprint), NOT access.
 /// `isDefault: true` means no explicit sync-config row exists (effective `all`).
@@ -410,6 +435,67 @@ impl VaultClient {
         let wrapper: serde_json::Value = self.handle_response(resp).await?;
         serde_json::from_value(wrapper["memberships"].clone())
             .map_err(|e| VaultClientError::Json(e.to_string()))
+    }
+
+    /// `GET /membership/pending-by-email` — email-keyed pending invites for the
+    /// caller's Cognito email (modern tokenless invites). These do NOT appear
+    /// under `list_memberships` until claimed.
+    pub async fn list_pending_invites_by_email(
+        &self,
+    ) -> Result<Vec<PendingInviteByEmail>, VaultClientError> {
+        let resp = self
+            .client
+            .get(format!("{}/membership/pending-by-email", self.base_url))
+            .bearer_auth(&self.auth_token)
+            .send()
+            .await?;
+        let wrapper: serde_json::Value = self.handle_response(resp).await?;
+        match wrapper.get("invites") {
+            Some(v) if !v.is_null() => serde_json::from_value(v.clone())
+                .map_err(|e| VaultClientError::Json(e.to_string())),
+            _ => Ok(Vec::new()),
+        }
+    }
+
+    /// `POST /membership/claim-by-email` — rewrite email-keyed pending invites
+    /// onto `person_uid` (active membership). Idempotent when nothing pending.
+    pub async fn claim_pending_invites_by_email(
+        &self,
+        person_uid: Option<&str>,
+    ) -> Result<ClaimByEmailResult, VaultClientError> {
+        let mut body = serde_json::Map::new();
+        if let Some(uid) = person_uid.filter(|s| !s.is_empty()) {
+            body.insert(
+                "personUid".into(),
+                serde_json::Value::String(uid.to_string()),
+            );
+        }
+        let resp = self
+            .client
+            .post(format!("{}/membership/claim-by-email", self.base_url))
+            .bearer_auth(&self.auth_token)
+            .json(&serde_json::Value::Object(body))
+            .send()
+            .await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+        if !status.is_success() {
+            return Err(VaultClientError::Http {
+                status: status.as_u16(),
+                body: body_text,
+            });
+        }
+        if body_text.trim().is_empty() {
+            return Ok(ClaimByEmailResult {
+                claimed: Vec::new(),
+            });
+        }
+        match serde_json::from_str::<ClaimByEmailResult>(&body_text) {
+            Ok(parsed) => Ok(parsed),
+            Err(_) => Ok(ClaimByEmailResult {
+                claimed: Vec::new(),
+            }),
+        }
     }
 
     /// `GET /v1/memberships/{id}/sync-config` — resolve a membership's current

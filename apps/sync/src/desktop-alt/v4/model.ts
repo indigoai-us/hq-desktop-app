@@ -66,6 +66,8 @@ export interface V4SidebarCompanyRow {
    * local-only/broken rows stay false.
    */
   cloudActivated: boolean;
+  /** True when this row is a pending company invite (needs Accept). */
+  pendingInvite?: boolean;
 }
 
 export interface V4SidebarModel {
@@ -82,6 +84,8 @@ export interface V4SidebarModel {
  */
 export function v4CompanyDotTone(workspace: Workspace): V4DotTone {
   if (workspace.kind === 'personal') return 'ok';
+  // Pending invites must stand out in the Companies list (desktop view chrome).
+  if (workspace.kind === 'company' && workspace.membershipStatus === 'pending') return 'warn';
   if (workspace.state === 'synced') return 'ok';
   if (workspace.state === 'broken') return 'error';
   return 'idle';
@@ -106,7 +110,7 @@ export function v4CompanyConnected(workspace: Workspace): boolean {
 /** Cloud-activated = a company row with a live, ACCEPTED vault membership
  *  (synced or cloud-only). Personal is local-first (not a company membership),
  *  local-only/broken rows have no membership sync-config yet, and a pending
- *  cloud-only row is an unaccepted invite (its affordance is "Open invite" on
+ *  cloud-only row is an unaccepted invite (its affordance is Accept invite on
  *  the company page, never a sync-mode read/write) — no control on any of those. */
 export function v4CompanyCloudActivated(workspace: Workspace): boolean {
   return (
@@ -143,6 +147,8 @@ export function sortV4CompaniesConnectedFirst(
         tone: v4CompanyDotTone(workspace),
         active: activeSlug != null && activeSlug === workspace.slug,
         cloudActivated: v4CompanyCloudActivated(workspace),
+        pendingInvite:
+          workspace.kind === 'company' && workspace.membershipStatus === 'pending',
       },
     });
   }
