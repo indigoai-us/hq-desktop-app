@@ -30,6 +30,7 @@
     setHeld,
     setOccluded,
     unreadRecentCount,
+    widgetEmptyHoverWindowSize,
     widgetHoverWindowSize,
     widgetWindowSize,
   } from '../stores/widgetNotifications';
@@ -448,11 +449,18 @@
     let size: { width: number; height: number };
     if (hoverOpen) {
       const items = hoverItems(stack);
-      const rows = hoverRows(items, Date.now());
-      size = widgetHoverWindowSize(
-        items,
-        rows.filter((r) => r.separator).length,
-      );
+      // Pinned-open with no recent rows: grow for the empty-state panel so a
+      // wordmark click always produces visible feedback (US-010). Hover-only
+      // with zero items stays idle-sized — no empty panel flash.
+      if (items.length === 0 && pinned) {
+        size = widgetEmptyHoverWindowSize();
+      } else {
+        const rows = hoverRows(items, Date.now());
+        size = widgetHoverWindowSize(
+          items,
+          rows.filter((r) => r.separator).length,
+        );
+      }
     } else {
       size = widgetWindowSize(stack);
     }
@@ -490,36 +498,40 @@
     }
   }}
 >
-  {#if hoverOpen && hoverList.length > 0}
+  {#if hoverOpen && (hoverList.length > 0 || pinned)}
     <div
       class="hover-list frost-panel"
       data-testid="widget-hover-list"
       onpointerenter={() => setPointerHold(true)}
       onpointerleave={() => setPointerHold(false)}
     >
-      {#each hoverList as row (row.item.id)}
-        {#if row.separator}<div class="hl-sep">{row.separator}</div>{/if}
-        <div class="hl-row">
-          <NotificationRow
-            type={row.item.type as NotificationRowType}
-            actor={row.item.actor}
-            text={row.item.text}
-            ts={row.item.ts}
-            unread={row.item.unread ?? false}
-            actionLabel={row.item.actionLabel ?? undefined}
-            textDismiss
-            onopen={() => void handleOpen(row.item)}
-            ondismiss={() => handleHoverDismiss(row.item.id)}
-            onreply={row.item.kind === 'dm'
-              ? (text) => void replyDm(row.item, text)
-              : undefined}
-            onreact={row.item.kind === 'dm'
-              ? (emoji) => void reactDm(row.item, emoji)
-              : undefined}
-            onholdchange={(h) => setReplyHold(row.item.id, h)}
-          />
-        </div>
-      {/each}
+      {#if hoverList.length === 0}
+        <div class="hl-empty" data-testid="widget-empty-state">No recent notifications</div>
+      {:else}
+        {#each hoverList as row (row.item.id)}
+          {#if row.separator}<div class="hl-sep">{row.separator}</div>{/if}
+          <div class="hl-row">
+            <NotificationRow
+              type={row.item.type as NotificationRowType}
+              actor={row.item.actor}
+              text={row.item.text}
+              ts={row.item.ts}
+              unread={row.item.unread ?? false}
+              actionLabel={row.item.actionLabel ?? undefined}
+              textDismiss
+              onopen={() => void handleOpen(row.item)}
+              ondismiss={() => handleHoverDismiss(row.item.id)}
+              onreply={row.item.kind === 'dm'
+                ? (text) => void replyDm(row.item, text)
+                : undefined}
+              onreact={row.item.kind === 'dm'
+                ? (emoji) => void reactDm(row.item, emoji)
+                : undefined}
+              onholdchange={(h) => setReplyHold(row.item.id, h)}
+            />
+          </div>
+        {/each}
+      {/if}
     </div>
   {/if}
 
@@ -680,6 +692,18 @@
     letter-spacing: 0.9px;
     text-transform: uppercase;
     color: var(--row-muted);
+  }
+
+  /* Empty pinned list — one row of muted copy so a wordmark click always shows feedback. */
+  .hl-empty {
+    min-height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 11px;
+    font-size: 12px;
+    color: var(--row-muted);
+    box-sizing: border-box;
   }
 
   .hl-row :global(.nr) {

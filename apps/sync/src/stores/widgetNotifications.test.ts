@@ -30,6 +30,7 @@ import {
   markRecentRead,
   setOccluded,
   unreadRecentCount,
+  widgetEmptyHoverWindowSize,
   widgetHoverWindowSize,
   widgetWindowSize,
   type WidgetStackItem,
@@ -475,6 +476,26 @@ describe('widgetHoverWindowSize', () => {
     expect(widgetHoverWindowSize(withMessage, 0)).toEqual({
       width: WIDGET_HOVER_PANEL_WIDTH + 20,
       height: base + WIDGET_MESSAGE_EXPAND_HEADROOM,
+    });
+  });
+});
+
+describe('widgetEmptyHoverWindowSize', () => {
+  it('is strictly larger than idle 66×43 and matches one-item hover width', () => {
+    const empty = widgetEmptyHoverWindowSize();
+    const oneItem = widgetHoverWindowSize([item({ id: '1' })], 0);
+
+    expect(empty.width).toBeGreaterThan(WIDGET_IDLE_WIDTH);
+    expect(empty.height).toBeGreaterThan(WIDGET_IDLE_HEIGHT);
+    expect(empty.width).toBe(oneItem.width);
+    expect(empty).toEqual({
+      width: WIDGET_HOVER_PANEL_WIDTH + 20,
+      height:
+        WIDGET_MARK_AREA +
+        WIDGET_STACK_MARGIN_BOTTOM +
+        WIDGET_TOP_HEADROOM +
+        WIDGET_HOVER_LIST_PADDING +
+        WIDGET_HOVER_ROW_HEIGHT,
     });
   });
 });

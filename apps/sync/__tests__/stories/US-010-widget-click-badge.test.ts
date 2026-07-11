@@ -144,6 +144,48 @@ describe('US-010: widget click-to-open + unread badge', () => {
       expect(host.querySelector('[data-testid="widget-hover-list"]')).toBeNull();
       expect(host.querySelector('[data-testid="widget-unread-badge"]')).toBeNull();
     });
+
+    it('clicking .wm with empty stack shows empty-state panel; re-click closes', () => {
+      mountWidget();
+
+      const wm = host.querySelector('.wm')!;
+      wm.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      flushSync();
+
+      const list = host.querySelector('[data-testid="widget-hover-list"]');
+      expect(list).toBeTruthy();
+      expect(list?.querySelector('[data-testid="widget-empty-state"]')).toBeTruthy();
+      expect(list?.textContent).toContain('No recent notifications');
+
+      wm.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      flushSync();
+      expect(host.querySelector('[data-testid="widget-hover-list"]')).toBeNull();
+    });
+
+    it('hover alone on .wm with empty stack does not render hover list', () => {
+      mountWidget();
+
+      host.querySelector('.wm')!.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+      flushSync();
+
+      expect(host.querySelector('[data-testid="widget-hover-list"]')).toBeNull();
+      expect(host.querySelector('[data-testid="widget-empty-state"]')).toBeNull();
+    });
+
+    it('click-away on document.body closes pinned empty state', () => {
+      mountWidget();
+
+      host.querySelector('.wm')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      flushSync();
+      expect(host.querySelector('[data-testid="widget-hover-list"]')).toBeTruthy();
+      expect(host.querySelector('[data-testid="widget-empty-state"]')).toBeTruthy();
+
+      document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+      flushSync();
+
+      expect(host.querySelector('[data-testid="widget-hover-list"]')).toBeNull();
+      expect(host.querySelector('[data-testid="widget-empty-state"]')).toBeNull();
+    });
   });
 
   describe('anchor regression (source contracts + store size)', () => {
@@ -160,6 +202,12 @@ describe('US-010: widget click-to-open + unread badge', () => {
       expect(widgetRs).toContain('addGlobalMonitorForEventsMatchingMask');
       expect(widgetRs).toContain('widget:click-away');
       expect(widgetRs).toContain('register_click_away_monitor');
+      // Monitor must ignore clicks inside the widget frame so the opening
+      // click can never be misread as click-away and dismiss the popup it
+      // pinned (defense-in-depth — own-window event routing for an inactive
+      // Accessory app is not a contract we control across macOS releases).
+      expect(widgetRs).toContain('mouse_location_inside_widget');
+      expect(widgetRs).toContain('point_in_frame');
       expect(widgetSource).toContain("listen('widget:click-away'");
     });
 
