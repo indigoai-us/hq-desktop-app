@@ -48,9 +48,10 @@ describe('desktop-alt file preview pane + open actions (US-004 file-explorer)', 
     expect(preview).toContain(
       "import { renderMarkdown } from '../lib/markdown'",
     );
-
-    // Markdown detection regex matches .md / .markdown (case-insensitive).
-    expect(preview).toContain('/\\.(md|markdown)$/i');
+    // Classification lives in file-preview-kind (shared Files + Knowledge).
+    expect(preview).toContain("from '../lib/file-preview-kind'");
+    const kindLib = readRepoFile('src/desktop-alt/lib/file-preview-kind.ts');
+    expect(kindLib).toContain('/\\.(md|markdown)$/i');
 
     // The markdown derived-state drives renderMarkdown when isMarkdown is true.
     expect(preview).toContain('renderMarkdown(content)');
@@ -117,14 +118,26 @@ describe('desktop-alt file preview pane + open actions (US-004 file-explorer)', 
   // US-004 e2eTest 3: Binary / oversized drives unsupported placeholder;
   //                   open actions render in header regardless of state
   // -------------------------------------------------------------------------
-  it('drives file-preview-unsupported via .catch() and keeps open actions in the header independent of preview state', () => {
-    // The .catch() on the invoke sets unsupported = true.
+  it('previews images and PDFs via convertFileSrc (shared by Knowledge + Files mode)', () => {
+    expect(preview).toContain("import { convertFileSrc, invoke } from '@tauri-apps/api/core'");
+    expect(preview).toContain("from '../lib/file-preview-kind'");
+    expect(preview).toContain('filePreviewKind');
+    expect(preview).toContain('convertFileSrc(abs)');
+    expect(preview).toContain('data-testid="file-preview-image"');
+    expect(preview).toContain('data-testid="file-preview-pdf"');
+    // Knowledge panel reuses the same pane.
+    const knowledge = readRepoFile('src/desktop-alt/panels/CompanyKnowledgePanel.svelte');
+    expect(knowledge).toContain('FilePreviewPane');
+  });
+
+  it('drives file-preview-unsupported for failed text/media loads and keeps open actions in the header', () => {
+    // Text path still uses .catch() on get_company_file_content.
     expect(preview).toContain('.catch(');
     expect(preview).toContain('unsupported = true');
 
     // The unsupported placeholder is guarded by the unsupported state.
     expect(preview).toContain('data-testid="file-preview-unsupported"');
-    expect(preview).toContain('{:else if unsupported}');
+    expect(preview).toContain('unsupported || mediaError');
 
     // The preview-actions div (containing open buttons) is inside the header,
     // OUTSIDE the preview-body conditional block — it renders regardless.
@@ -133,7 +146,7 @@ describe('desktop-alt file preview pane + open actions (US-004 file-explorer)', 
 
     // Verify structural order: header (with actions) comes BEFORE preview-body.
     const headerIdx = preview.indexOf('<header class="preview-header">');
-    const bodyIdx = preview.indexOf('<div class="preview-body">');
+    const bodyIdx = preview.indexOf('class="preview-body"');
     expect(headerIdx).toBeGreaterThan(-1);
     expect(bodyIdx).toBeGreaterThan(-1);
     expect(headerIdx).toBeLessThan(bodyIdx);
