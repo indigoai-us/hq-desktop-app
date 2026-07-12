@@ -37,25 +37,40 @@
   }
 
   $effect(() => {
-    let unlisten: (() => void) | undefined;
+    let unlistenDetail: (() => void) | undefined;
+    let unlistenInbox: (() => void) | undefined;
+    let cancelled = false;
 
-    listen<DmEvent>('dm:detail-event', (e) => {
-      event = e.payload;
-      // Reopening this singleton window must show the just-opened DM (and its
-      // reply composer), not a stale side-pane selection from a previous open.
-      selected = null;
-      selectedShareEvents = [];
-      // Opening DM counts as viewed for the side-pane unread dots.
-      viewedIds = new Set([...viewedIds, `dm:${e.payload.eventId}`]);
-    }).then((fn) => {
-      unlisten = fn;
+    void (async () => {
+      unlistenDetail = await listen<DmEvent>('dm:detail-event', (e) => {
+        event = e.payload;
+        // Reopening this singleton window must show the just-opened DM (and its
+        // reply composer), not a stale side-pane selection from a previous open.
+        selected = null;
+        selectedShareEvents = [];
+        // Opening DM counts as viewed for the side-pane unread dots.
+        viewedIds = new Set([...viewedIds, `dm:${e.payload.eventId}`]);
+      });
+      // Inbox open (no forced DM): clear main canvas so the side pane is the guide.
+      unlistenInbox = await listen('dm:inbox-open', () => {
+        event = null;
+        selected = null;
+        selectedShareEvents = [];
+      });
+      if (cancelled) {
+        unlistenDetail?.();
+        unlistenInbox?.();
+        return;
+      }
       // Ready-handshake: tell Rust the listener is mounted so it emits the
       // pending event + shows the window (mirrors ShareDetail).
       invoke('dm_detail_window_ready');
-    });
+    })();
 
     return () => {
-      unlisten?.();
+      cancelled = true;
+      unlistenDetail?.();
+      unlistenInbox?.();
     };
   });
 </script>
@@ -100,10 +115,11 @@
       {/key}
     {:else}
       <header class="detail-header">
-        <h1>Direct Message</h1>
+        <h1>Inbox</h1>
       </header>
       <div class="detail-empty">
-        <p>Waiting for message…</p>
+        <p>Select a conversation</p>
+        <span class="detail-empty-hint">Pick a message or share from the side pane to reply or open details.</span>
       </div>
     {/if}
   </div>
@@ -173,14 +189,27 @@
   .detail-empty {
     flex: 1;
     display: flex;
+    flex-direction: column;
     align-items: center;
     justify-content: center;
+    gap: 8px;
+    padding: 24px;
+    text-align: center;
   }
 
   .detail-empty p {
     font-size: var(--text-base);
     color: var(--pop-muted);
     margin: 0;
+    font-weight: 600;
+  }
+
+  .detail-empty-hint {
+    font-size: 12.5px;
+    color: var(--pop-muted);
+    opacity: 0.85;
+    max-width: 32ch;
+    line-height: 1.4;
   }
 
   @media (prefers-reduced-transparency: reduce) {

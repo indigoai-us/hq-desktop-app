@@ -51,6 +51,15 @@
     }
   }
 
+  /** Open the two-pane Inbox quick window (side pane + reply canvas). */
+  async function openInboxQuickWindow(): Promise<void> {
+    try {
+      await invoke('open_inbox_window');
+    } catch (e) {
+      console.error('inbox: open_inbox_window failed', e);
+    }
+  }
+
   const subtitle = $derived.by(() => {
     if (total === 0 && unread === 0) return 'All caught up';
     const unreadPart =
@@ -77,6 +86,14 @@
       </p>
     </div>
     <div class="inbox-actions">
+      <button
+        type="button"
+        class="inbox-btn"
+        data-testid="inbox-open-quick"
+        onclick={() => void openInboxQuickWindow()}
+      >
+        Open Inbox window
+      </button>
       <button
         type="button"
         class="inbox-btn"

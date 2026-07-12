@@ -281,9 +281,23 @@
     }
   }
 
-  /** Context menu → pin-open the mini notification/message list. */
-  function menuOpenInbox(): void {
-    openMiniInbox();
+  /**
+   * Context menu → two-pane Inbox quick window (side pane + detail/reply
+   * canvas). Not the mini list (that's left-click) and not full desktop-alt.
+   */
+  async function menuOpenInbox(): Promise<void> {
+    closeContextMenu();
+    if (!hasTauri()) {
+      openMiniInbox();
+      return;
+    }
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('open_inbox_window');
+    } catch (err) {
+      console.error('widget: open_inbox_window failed', err);
+      openMiniInbox();
+    }
   }
 
   /** Context menu → full desktop app (same path as tray "Open desktop view"). */
@@ -387,12 +401,12 @@
             route: `company:${company}:activity`,
           });
         } else {
-          await invoke('open_desktop_alt_window', { route: 'inbox' });
+          // No company slug — open the two-pane Inbox quick window.
+          await invoke('open_inbox_window');
         }
       } else if (item.kind === 'update') {
         // Install chip still goes through banner_action (guarded install path
-        // in App.svelte). Body Open pins the mini inbox — same surface as DMs
-        // and shares — instead of yanking the menubar open.
+        // in App.svelte). Body Open → two-pane Inbox (not menubar / desktop-alt).
         const install =
           item.clickActionId === 'update' || item.actionId === 'update';
         if (install) {
@@ -407,7 +421,7 @@
           };
           await invoke('banner_action', { action: 'update', payload });
         } else {
-          openMiniInbox();
+          await invoke('open_inbox_window');
         }
       } else if (item.kind === 'meeting') {
         await invoke('show_main_window');
@@ -426,8 +440,8 @@
           payload,
         });
       } else {
-        // Display-only / unknown — open combined Inbox rather than no-op.
-        await invoke('open_desktop_alt_window', { route: 'inbox' });
+        // Display-only / unknown — two-pane Inbox, not full desktop-alt.
+        await invoke('open_inbox_window');
       }
     } catch (err) {
       console.error('widget: open failed', err);
@@ -710,7 +724,7 @@
         type="button"
         role="menuitem"
         data-testid="widget-menu-inbox"
-        onclick={menuOpenInbox}
+        onclick={() => void menuOpenInbox()}
       >
         Inbox
       </button>

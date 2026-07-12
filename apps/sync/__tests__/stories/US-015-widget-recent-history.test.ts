@@ -305,21 +305,23 @@ describe('US-015: widget popup shows recent history (not just unviewed)', () => 
       );
     });
 
-    it('update Open pins mini inbox; wordmark has Inbox + desktop context menu', () => {
+    it('update Open + context menu Inbox use open_inbox_window (not desktop-alt)', () => {
       const { readFileSync } = require('node:fs') as typeof import('node:fs');
       const { resolve } = require('node:path') as typeof import('node:path');
       const src = readFileSync(
         resolve(process.cwd(), 'src/components/Widget.svelte'),
         'utf8',
       );
-      expect(src).toContain('function openMiniInbox');
-      // Non-install update Open → mini inbox (not menubar).
-      expect(src).toMatch(/kind === 'update'[\s\S]*openMiniInbox\(\)/);
+      expect(src).toContain("open_inbox_window");
+      // Non-install update Open → two-pane Inbox quick window.
+      expect(src).toMatch(/kind === 'update'[\s\S]*open_inbox_window/);
       expect(src).toContain('oncontextmenu={handleWordmarkContextMenu}');
       expect(src).toContain('widget-context-menu');
       expect(src).toContain('widget-menu-inbox');
       expect(src).toContain('widget-menu-desktop');
       expect(src).toContain('Open desktop view');
+      // Fallback opens must not force desktop-alt inbox.
+      expect(src).not.toMatch(/open_desktop_alt_window',\s*\{\s*route:\s*'inbox'/);
     });
   });
 
@@ -341,15 +343,8 @@ describe('US-015: widget popup shows recent history (not just unviewed)', () => 
       ).toBe('Open desktop view');
     });
 
-    it('Inbox menu item pins the mini notification list', () => {
-      vi.useFakeTimers();
-      vi.setSystemTime(new Date(2026, 6, 15, 12, 0, 0));
-      const now = Date.now();
-      mountWidget({
-        initialItems: [
-          stackItem({ id: 'n1', text: 'hello', kind: 'update', unread: true }, now),
-        ],
-      });
+    it('Inbox menu item closes the context menu (opens quick window via Tauri)', () => {
+      mountWidget();
       const wm = host.querySelector('.wm')!;
       wm.dispatchEvent(
         new MouseEvent('contextmenu', { bubbles: true, cancelable: true }),
@@ -357,9 +352,8 @@ describe('US-015: widget popup shows recent history (not just unviewed)', () => 
       flushSync();
       host.querySelector<HTMLButtonElement>('[data-testid="widget-menu-inbox"]')!.click();
       flushSync();
+      // No Tauri → falls back to mini list; with Tauri would invoke open_inbox_window.
       expect(host.querySelector('[data-testid="widget-context-menu"]')).toBeNull();
-      expect(host.querySelector('[data-testid="widget-hover-list"]')).toBeTruthy();
-      expect(host.querySelectorAll('[data-testid="notification-row"]').length).toBeGreaterThan(0);
     });
   });
 });
