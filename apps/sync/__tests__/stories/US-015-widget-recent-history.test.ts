@@ -343,6 +343,29 @@ describe('US-015: widget popup shows recent history (not just unviewed)', () => 
       ).toBe('Open desktop view');
     });
 
+    it('mini popup footer has icon-only Inbox + Desktop actions with titles', () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(2026, 6, 15, 12, 0, 0));
+      const now = Date.now();
+      mountWidget({
+        initialItems: [stackItem({ id: 'n1', text: 'hello', unread: true }, now)],
+      });
+      pinOpen();
+      const footer = host.querySelector('[data-testid="widget-hover-footer"]');
+      expect(footer).toBeTruthy();
+      const inbox = host.querySelector<HTMLButtonElement>('[data-testid="widget-hover-inbox"]');
+      const desktop = host.querySelector<HTMLButtonElement>(
+        '[data-testid="widget-hover-desktop"]',
+      );
+      expect(inbox?.getAttribute('title')).toBe('Inbox');
+      expect(inbox?.getAttribute('aria-label')).toBe('Inbox');
+      expect(desktop?.getAttribute('title')).toBe('Desktop');
+      expect(desktop?.getAttribute('aria-label')).toBe('Desktop');
+      // Icons only — no long text labels in the button body.
+      expect(inbox?.textContent?.trim()).toBe('');
+      expect(desktop?.textContent?.trim()).toBe('');
+    });
+
     it('Inbox menu item closes the context menu (opens quick window via Tauri)', () => {
       mountWidget();
       const wm = host.querySelector('.wm')!;
