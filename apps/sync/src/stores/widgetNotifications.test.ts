@@ -25,10 +25,12 @@ import {
   dismissRecent,
   emptyWidgetStack,
   expireItems,
+  historyFeedItemToStackItem,
   hoverItems,
   hoverRows,
   markQueueSeen,
   markRecentRead,
+  mergeRecentWithHistory,
   serializeRecent,
   setOccluded,
   unreadRecentCount,
@@ -626,5 +628,194 @@ describe('widgetEmptyHoverWindowSize', () => {
         WIDGET_HOVER_LIST_PADDING +
         WIDGET_HOVER_ROW_HEIGHT,
     });
+  });
+});
+
+describe('historyFeedItemToStackItem', () => {
+  const lastRead = 1_000;
+
+  it('maps dm → message with openable body + data', () => {
+    const dm = {
+      eventId: 'e1',
+      fromPersonUid: 'prs_1',
+      fromEmail: 'c@x.com',
+      fromDisplayName: 'Corey',
+      body: 'can you work on a d…',
+      createdAt: '2026-07-11T09:39:00Z',
+    };
+    const row = historyFeedItemToStackItem(
+      {
+        id: 'dm:e1',
+        kind: 'dm',
+        actor: 'Corey',
+        summary: dm.body,
+        ts: 5_000,
+        dm,
+      },
+      lastRead,
+    );
+    expect(row).toMatchObject({
+      id: 'dm:e1',
+      type: 'message',
+      actor: 'Corey',
+      text: dm.body,
+      kind: 'dm',
+      clickActionId: 'open',
+      data: dm,
+      unread: true,
+    });
+  });
+
+  it('maps share → share with path basename preview', () => {
+    const share = {
+      eventId: 's1',
+      issuerEmail: 'y@x.com',
+      issuerDisplayName: 'Yousuf',
+      paths: ['reports/q2-metrics.xlsx'],
+      note: null,
+      permission: 'read',
+      createdAt: '2026-07-11T08:00:00Z',
+    };
+    const row = historyFeedItemToStackItem(
+      {
+        id: 'share:s1',
+        kind: 'share',
+        actor: 'Yousuf',
+        summary: 'Shared a file: reports/q2-metrics.xlsx',
+        ts: 4_000,
+        share,
+      },
+      lastRead,
+    );
+    expect(row).toMatchObject({
+      type: 'share',
+      actor: 'Yousuf',
+      text: 'q2-metrics.xlsx',
+      kind: 'share',
+      clickActionId: 'open',
+      data: share,
+      unread: true,
+    });
+  });
+
+  it('maps new-file → sync with path basename + company data', () => {
+    const row = historyFeedItemToStackItem(
+      {
+        id: 'file:1',
+        kind: 'new-file',
+        actor: 'Brand Honey',
+        summary: 'New file in brand-honey: notes/sync.md',
+        ts: 500,
+        file: { company: 'brand-honey', path: 'notes/sync.md' },
+      },
+      lastRead,
+    );
+    expect(row).toMatchObject({
+      type: 'sync',
+      kind: 'new-file',
+      text: 'sync.md',
+      clickActionId: 'open',
+      data: { company: 'brand-honey', path: 'notes/sync.md' },
+      unread: false,
+    });
+  });
+});
+
+describe('mergeRecentWithHistory', () => {
+  it('prefers openable history over display-only local twin', () => {
+    const local: WidgetStackItem[] = [
+      item({
+        id: 'dm:e1',
+        type: 'message',
+        kind: 'dm',
+        text: 'stale',
+        clickActionId: '',
+        data: null,
+        ts: 2_000,
+        unread: true,
+      }),
+      item({
+        id: 'wn-update',
+        kind: 'update',
+        text: 'New version — 0.10.8',
+        clickActionId: '',
+        data: null,
+        ts: 9_000,
+      }),
+    ];
+    const history: WidgetStackItem[] = [
+      historyFeedItemToStackItem(
+        {
+          id: 'dm:e1',
+          kind: 'dm',
+          actor: 'Corey',
+          summary: 'hello',
+          ts: 2_000,
+          dm: { eventId: 'e1', body: 'hello', fromPersonUid: 'prs' },
+        },
+        0,
+      ),
+      historyFeedItemToStackItem(
+        {
+          id: 'share:s1',
+          kind: 'share',
+          actor: 'Yousuf',
+          summary: 'q2.xlsx',
+          ts: 3_000,
+          share: { paths: ['q2.xlsx'] },
+        },
+        0,
+      ),
+    ];
+
+    const merged = mergeRecentWithHistory(local, history);
+    expect(merged.map((r) => r.id)).toEqual(['wn-update', 'share:s1', 'dm:e1']);
+    expect(merged.find((r) => r.id === 'dm:e1')).toMatchObject({
+      clickActionId: 'open',
+      data: { eventId: 'e1' },
+      unread: true,
+    });
+    expect(merged.find((r) => r.id === 'wn-update')?.kind).toBe('update');
+  });
+
+  it('caps at WIDGET_RECENT_MAX newest-first', () => {
+    const history = Array.from({ length: WIDGET_RECENT_MAX + 5 }, (_, i) =>
+      historyFeedItemToStackItem(
+        {
+          id: `h${i}`,
+          kind: 'dm',
+          actor: 'A',
+          summary: `${i}`,
+          ts: 1_000 + i,
+          dm: { body: `${i}` },
+        },
+        0,
+      ),
+    );
+    const merged = mergeRecentWithHistory([], history);
+    expect(merged).toHaveLength(WIDGET_RECENT_MAX);
+    expect(merged[0]?.id).toBe(`h${WIDGET_RECENT_MAX + 4}`);
+  });
+
+  it('hover list surfaces up to WIDGET_HOVER_MAX after merge', () => {
+    const history = Array.from({ length: 12 }, (_, i) =>
+      historyFeedItemToStackItem(
+        {
+          id: `h${i}`,
+          kind: 'share',
+          actor: 'A',
+          summary: `f${i}.xlsx`,
+          ts: 10_000 - i,
+          share: { paths: [`f${i}.xlsx`] },
+        },
+        0,
+      ),
+    );
+    const state = {
+      ...emptyWidgetStack(),
+      recent: mergeRecentWithHistory([], history),
+    };
+    expect(hoverItems(state)).toHaveLength(WIDGET_HOVER_MAX);
+    expect(hoverItems(state)[0]?.id).toBe('h0');
   });
 });

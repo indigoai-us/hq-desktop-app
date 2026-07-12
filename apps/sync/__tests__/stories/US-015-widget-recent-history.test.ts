@@ -280,4 +280,29 @@ describe('US-015: widget popup shows recent history (not just unviewed)', () => 
       expect(WIDGET_HOVER_MAX).toBe(10);
     });
   });
+
+  describe('server history seed + open routing (source contracts)', () => {
+    it('Widget seeds recent from notification history and routes Open by kind', () => {
+      // Regression: popup only showed local update banners, and Open on
+      // localStorage-hydrated rows no-op'd (stripped clickActionId).
+      const { readFileSync } = require('node:fs') as typeof import('node:fs');
+      const { resolve } = require('node:path') as typeof import('node:path');
+      const src = readFileSync(
+        resolve(process.cwd(), 'src/components/Widget.svelte'),
+        'utf8',
+      );
+      expect(src).toContain('loadNotificationItems');
+      expect(src).toContain('mergeRecentWithHistory');
+      expect(src).toContain('historyFeedItemToStackItem');
+      expect(src).toContain('refreshRecentFromHistory');
+      expect(src).toContain("open_dm_detail");
+      expect(src).toContain("open_share_detail");
+      expect(src).toContain("show_main_window");
+      expect(src).toContain("open_desktop_alt_window");
+      // Must not silent-dismiss when clickActionId is empty.
+      expect(src).not.toMatch(
+        /if \(!hasTauri\(\) \|\| !item\.clickActionId\) \{\s*applyStack\(dismissItem/,
+      );
+    });
+  });
 });

@@ -494,7 +494,8 @@ export function deserializeRecent(
       ts: e.ts,
       kind: typeof e.kind === 'string' ? e.kind : 'system',
       // Display-only restore — action surface never rehydrated from
-      // untrusted storage (see doc comment above).
+      // untrusted storage (see doc comment above). Open is restored by
+      // mergeRecentWithHistory after fetch_notification_history on mount.
       clickActionId: '',
       data: null,
       actionId: undefined,
@@ -507,6 +508,130 @@ export function deserializeRecent(
     }
   }
   return out;
+}
+
+/**
+ * Minimal feed-item shape used to seed the widget recent list from
+ * `fetch_notification_history` (shared with NotificationFeed / Inbox).
+ * Kept local to this module so the pure store stays free of Tauri imports.
+ */
+export type HistoryFeedItem = {
+  id: string;
+  kind: 'dm' | 'share' | 'new-file';
+  actor: string;
+  summary: string;
+  /** Epoch ms. */
+  ts: number;
+  dm?: unknown;
+  share?: unknown;
+  file?: { company: string; path: string };
+};
+
+/** Basename of a path for compact share/file previews (Lizzie one-line). */
+function pathBasename(path: string): string {
+  const trimmed = path.trim();
+  if (!trimmed) return '';
+  const parts = trimmed.split(/[/\\]/);
+  return parts[parts.length - 1] || trimmed;
+}
+
+/**
+ * Map a notification-history feed item into a widget stack row that can Open
+ * (clickActionId + source data preserved for handleOpen routing).
+ */
+export function historyFeedItemToStackItem(
+  item: HistoryFeedItem,
+  lastReadTs: number,
+): WidgetStackItem {
+  let type: WidgetRowType;
+  let text: string;
+  let data: unknown = null;
+  let kind: string = item.kind;
+
+  switch (item.kind) {
+    case 'dm':
+      type = 'message';
+      text =
+        item.dm && typeof item.dm === 'object' && item.dm !== null && 'body' in item.dm
+          ? String((item.dm as { body?: string }).body ?? item.summary)
+          : item.summary;
+      data = item.dm ?? null;
+      break;
+    case 'share': {
+      type = 'share';
+      // Prefer the first shared path basename (matches Lizzie mockup).
+      const paths =
+        item.share && typeof item.share === 'object' && item.share !== null && 'paths' in item.share
+          ? (item.share as { paths?: string[] }).paths
+          : undefined;
+      text =
+        Array.isArray(paths) && paths.length > 0
+          ? pathBasename(paths[0]!)
+          : item.summary;
+      data = item.share ?? null;
+      break;
+    }
+    case 'new-file':
+    default:
+      type = 'sync';
+      kind = 'new-file';
+      text = item.file?.path ? pathBasename(item.file.path) : item.summary;
+      data = item.file ?? null;
+      break;
+  }
+
+  return {
+    id: item.id,
+    type,
+    actor: item.actor || undefined,
+    text,
+    ts: item.ts,
+    kind,
+    clickActionId: 'open',
+    data,
+    expiresAt: 0,
+    unread: item.ts > lastReadTs,
+  };
+}
+
+/**
+ * Merge local widget recent history with server notification history.
+ *
+ * History rows carry openable data (dm/share/file). Local-only rows (update
+ * banners, meetings) that never appear in the server feed are kept. Prefer a
+ * history row over a display-only local twin when ids collide so Open works
+ * after relaunch (localStorage strips action surface by design).
+ *
+ * Newest-first, capped at {@link WIDGET_RECENT_MAX}.
+ */
+export function mergeRecentWithHistory(
+  localRecent: WidgetStackItem[],
+  historyItems: WidgetStackItem[],
+): WidgetStackItem[] {
+  const byId = new Map<string, WidgetStackItem>();
+
+  for (const item of localRecent) {
+    byId.set(item.id, item);
+  }
+
+  for (const item of historyItems) {
+    const existing = byId.get(item.id);
+    if (!existing) {
+      byId.set(item.id, item);
+      continue;
+    }
+    // Prefer openable history data; preserve unread if either side is unread.
+    const unread = existing.unread === true || item.unread === true;
+    const preferHistory =
+      (item.data != null && existing.data == null) ||
+      (Boolean(item.clickActionId) && !existing.clickActionId) ||
+      item.ts >= existing.ts;
+    byId.set(item.id, preferHistory ? { ...item, unread } : { ...existing, unread });
+  }
+
+  return [...byId.values()]
+    .sort((a, b) => b.ts - a.ts)
+    .slice(0, WIDGET_RECENT_MAX);
 }
 
 /**
