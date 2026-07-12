@@ -119,13 +119,13 @@
     feedEl?.markAllRead();
   }
 
-  /** Jump to the desktop Inbox for the full notification history (popover is
-   *  height-capped at ~480px so older rows need the desktop surface). */
+  /** Open the two-pane Inbox quick window (side pane + reply/detail canvas).
+   *  Not the full desktop-alt app — that stays behind explicit Open desktop. */
   async function openDesktopInbox() {
     try {
-      await invoke('open_desktop_alt_window', { route: 'inbox' });
+      await invoke('open_inbox_window');
     } catch (e) {
-      console.error('popover: open_desktop_alt_window (inbox) failed', e);
+      console.error('popover: open_inbox_window failed', e);
     }
   }
 
