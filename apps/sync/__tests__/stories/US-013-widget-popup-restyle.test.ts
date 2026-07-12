@@ -102,18 +102,15 @@ describe('US-013: pinned popup matches locked design (scenes 8-10)', () => {
 
       const list = pinOpen();
 
-      // Panel children are exclusively day separators and row wrappers.
+      // Panel shell: body (rows) + icon footer (Inbox / Desktop). No tabs/header chrome.
       const children = [...list.children];
-      expect(children.length).toBeGreaterThan(0);
-      for (const child of children) {
-        expect(
-          child.classList.contains('hl-sep') || child.classList.contains('hl-row'),
-        ).toBe(true);
-      }
-
-      // No popover-style chrome anywhere in the panel.
-      expect(list.querySelector('header, footer, [role="tablist"], [role="tab"]')).toBeNull();
-      expect(list.querySelector('.hl-header, .hl-footer, .hl-tabs, .hl-toolbar')).toBeNull();
+      expect(children.some((c) => c.classList.contains('hl-body'))).toBe(true);
+      expect(children.some((c) => c.classList.contains('hl-footer'))).toBe(true);
+      expect(list.querySelector('[role="tablist"], [role="tab"]')).toBeNull();
+      expect(list.querySelector('.hl-header, .hl-tabs')).toBeNull();
+      // Footer is icon-only jumps, not a full chrome bar.
+      expect(list.querySelector('[data-testid="widget-hover-inbox"]')).toBeTruthy();
+      expect(list.querySelector('[data-testid="widget-hover-desktop"]')).toBeTruthy();
 
       // Day separator present with the muted uppercase label.
       const seps = [...list.querySelectorAll('.hl-sep')].map((el) => el.textContent);
@@ -239,11 +236,14 @@ describe('US-013: pinned popup matches locked design (scenes 8-10)', () => {
       const panel = style.slice(panelIdx, style.indexOf('}', panelIdx));
       expect(panel).toContain('width: 264px');
       expect(panel).toContain('border-radius: 12px');
-      expect(panel).toContain('padding: 6px');
-      expect(panel).toContain('gap: 1px');
+      expect(panel).toContain('padding: 6px 6px 4px');
       expect(panel).toContain('backdrop-filter: blur(30px) saturate(1.8)');
       expect(panel).toContain('transform-origin: bottom right');
       expect(panel).toContain('widget-bloom');
+      // Row gap lives on the body; footer is a separate icon toolbar.
+      expect(style).toContain('.hl-body');
+      expect(style).toContain('.hl-footer');
+      expect(style).toContain('.hl-icon-btn');
     });
 
     it('rows inside the panel drop their own glass — transparent with panel-scoped hover tint', () => {

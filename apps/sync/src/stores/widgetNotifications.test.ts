@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  WIDGET_HOVER_FOOTER_HEIGHT,
   WIDGET_HOVER_LIST_PADDING,
   WIDGET_HOVER_MAX,
   WIDGET_HOVER_PANEL_WIDTH,
@@ -568,12 +569,13 @@ describe('widgetHoverWindowSize', () => {
 
   it('computes height from constants for N items and separators', () => {
     const one = [item({ id: '1' })];
-    // mark + margin + headroom + padding + 1*row + 0*gap + 0*sep
+    // mark + margin + headroom + padding + footer + 1*row + 0*gap + 0*sep
     const h1 =
       WIDGET_MARK_AREA +
       WIDGET_STACK_MARGIN_BOTTOM +
       WIDGET_TOP_HEADROOM +
       WIDGET_HOVER_LIST_PADDING +
+      WIDGET_HOVER_FOOTER_HEIGHT +
       WIDGET_HOVER_ROW_HEIGHT;
     expect(widgetHoverWindowSize(one, 0)).toEqual({
       width: WIDGET_HOVER_PANEL_WIDTH + 20,
@@ -586,6 +588,7 @@ describe('widgetHoverWindowSize', () => {
       WIDGET_STACK_MARGIN_BOTTOM +
       WIDGET_TOP_HEADROOM +
       WIDGET_HOVER_LIST_PADDING +
+      WIDGET_HOVER_FOOTER_HEIGHT +
       2 * WIDGET_HOVER_ROW_HEIGHT +
       WIDGET_HOVER_ROW_GAP +
       WIDGET_HOVER_SEPARATOR_HEIGHT;
@@ -602,6 +605,7 @@ describe('widgetHoverWindowSize', () => {
       WIDGET_STACK_MARGIN_BOTTOM +
       WIDGET_TOP_HEADROOM +
       WIDGET_HOVER_LIST_PADDING +
+      WIDGET_HOVER_FOOTER_HEIGHT +
       2 * WIDGET_HOVER_ROW_HEIGHT +
       WIDGET_HOVER_ROW_GAP;
     expect(widgetHoverWindowSize(withMessage, 0)).toEqual({
@@ -612,7 +616,7 @@ describe('widgetHoverWindowSize', () => {
 });
 
 describe('widgetEmptyHoverWindowSize', () => {
-  it('is strictly larger than idle 66×43 and matches one-item hover width', () => {
+  it('is strictly larger than idle and matches one-item hover width', () => {
     const empty = widgetEmptyHoverWindowSize();
     const oneItem = widgetHoverWindowSize([item({ id: '1' })], 0);
 
@@ -626,6 +630,7 @@ describe('widgetEmptyHoverWindowSize', () => {
         WIDGET_STACK_MARGIN_BOTTOM +
         WIDGET_TOP_HEADROOM +
         WIDGET_HOVER_LIST_PADDING +
+        WIDGET_HOVER_FOOTER_HEIGHT +
         WIDGET_HOVER_ROW_HEIGHT,
     });
   });

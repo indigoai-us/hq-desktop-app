@@ -76,6 +76,12 @@ export const WIDGET_HOVER_ROW_GAP = 1;
 /** Vertical padding inside the hover frosted panel. */
 export const WIDGET_HOVER_LIST_PADDING = 12;
 
+/**
+ * Footer toolbar height inside the hover popup (Inbox + Desktop icon actions).
+ * Includes top hairline gap + icon row + bottom pad.
+ */
+export const WIDGET_HOVER_FOOTER_HEIGHT = 36;
+
 /** NotificationRow-compatible type strings. */
 export type WidgetRowType =
   | 'message'
@@ -735,6 +741,7 @@ export function widgetHoverWindowSize(
     WIDGET_STACK_MARGIN_BOTTOM +
     WIDGET_TOP_HEADROOM +
     WIDGET_HOVER_LIST_PADDING +
+    WIDGET_HOVER_FOOTER_HEIGHT +
     items.length * WIDGET_HOVER_ROW_HEIGHT +
     (items.length > 1 ? (items.length - 1) * WIDGET_HOVER_ROW_GAP : 0) +
     separators * WIDGET_HOVER_SEPARATOR_HEIGHT;

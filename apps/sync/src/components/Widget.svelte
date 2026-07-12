@@ -282,11 +282,13 @@
   }
 
   /**
-   * Context menu → two-pane Inbox quick window (side pane + detail/reply
-   * canvas). Not the mini list (that's left-click) and not full desktop-alt.
+   * Open the two-pane Inbox quick window (side pane + detail/reply canvas).
+   * Used by context menu + mini-popup footer icons.
    */
   async function menuOpenInbox(): Promise<void> {
     closeContextMenu();
+    // Dismiss the mini list so it doesn't sit on top of the new window.
+    if (pinned || hoverOpen) closePinned();
     if (!hasTauri()) {
       openMiniInbox();
       return;
@@ -300,9 +302,10 @@
     }
   }
 
-  /** Context menu → full desktop app (same path as tray "Open desktop view"). */
+  /** Open the full desktop app (tray "Open desktop view" path). */
   async function menuOpenDesktop(): Promise<void> {
     closeContextMenu();
+    if (pinned || hoverOpen) closePinned();
     if (!hasTauri()) return;
     try {
       const { invoke } = await import('@tauri-apps/api/core');
@@ -745,33 +748,81 @@
       onpointerenter={() => setPointerHold(true)}
       onpointerleave={() => setPointerHold(false)}
     >
-      {#if hoverList.length === 0}
-        <div class="hl-empty" data-testid="widget-empty-state">No recent notifications</div>
-      {:else}
-        {#each hoverList as row (row.item.id)}
-          {#if row.separator}<div class="hl-sep">{row.separator}</div>{/if}
-          <div class="hl-row">
-            <NotificationRow
-              type={row.item.type as NotificationRowType}
-              actor={row.item.actor}
-              text={row.item.text}
-              ts={row.item.ts}
-              unread={row.item.unread ?? false}
-              actionLabel={row.item.actionLabel ?? undefined}
-              textDismiss
-              onopen={() => void handleOpen(row.item)}
-              ondismiss={() => handleHoverDismiss(row.item.id)}
-              onreply={row.item.kind === 'dm'
-                ? (text) => void replyDm(row.item, text)
-                : undefined}
-              onreact={row.item.kind === 'dm'
-                ? (emoji) => void reactDm(row.item, emoji)
-                : undefined}
-              onholdchange={(h) => setReplyHold(row.item.id, h)}
+      <div class="hl-body">
+        {#if hoverList.length === 0}
+          <div class="hl-empty" data-testid="widget-empty-state">No recent notifications</div>
+        {:else}
+          {#each hoverList as row (row.item.id)}
+            {#if row.separator}<div class="hl-sep">{row.separator}</div>{/if}
+            <div class="hl-row">
+              <NotificationRow
+                type={row.item.type as NotificationRowType}
+                actor={row.item.actor}
+                text={row.item.text}
+                ts={row.item.ts}
+                unread={row.item.unread ?? false}
+                actionLabel={row.item.actionLabel ?? undefined}
+                textDismiss
+                onopen={() => void handleOpen(row.item)}
+                ondismiss={() => handleHoverDismiss(row.item.id)}
+                onreply={row.item.kind === 'dm'
+                  ? (text) => void replyDm(row.item, text)
+                  : undefined}
+                onreact={row.item.kind === 'dm'
+                  ? (emoji) => void reactDm(row.item, emoji)
+                  : undefined}
+                onholdchange={(h) => setReplyHold(row.item.id, h)}
+              />
+            </div>
+          {/each}
+        {/if}
+      </div>
+      <!-- Icon-only jumps: two-pane Inbox + full desktop (title = hover label). -->
+      <div class="hl-footer" data-testid="widget-hover-footer" role="toolbar" aria-label="Open">
+        <button
+          class="hl-icon-btn"
+          type="button"
+          data-testid="widget-hover-inbox"
+          title="Inbox"
+          aria-label="Inbox"
+          onclick={() => void menuOpenInbox()}
+        >
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path
+              d="M2.5 3h11a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H6l-3.5 2.6V11h0a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z"
+              stroke="currentColor"
+              stroke-width="1.35"
+              stroke-linejoin="round"
             />
-          </div>
-        {/each}
-      {/if}
+          </svg>
+        </button>
+        <button
+          class="hl-icon-btn"
+          type="button"
+          data-testid="widget-hover-desktop"
+          title="Desktop"
+          aria-label="Desktop"
+          onclick={() => void menuOpenDesktop()}
+        >
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <rect
+              x="1.75"
+              y="2.5"
+              width="12.5"
+              height="8.5"
+              rx="1.25"
+              stroke="currentColor"
+              stroke-width="1.35"
+            />
+            <path
+              d="M5 13.5h6M8 11v2.5"
+              stroke="currentColor"
+              stroke-width="1.35"
+              stroke-linecap="round"
+            />
+          </svg>
+        </button>
+      </div>
     </div>
   {/if}
 
@@ -905,10 +956,10 @@
   .hover-list {
     width: 264px;
     border-radius: 12px;
-    padding: 6px;
+    padding: 6px 6px 4px;
     display: flex;
     flex-direction: column;
-    gap: 1px;
+    gap: 0;
     background: var(--row-bg);
     -webkit-backdrop-filter: blur(30px) saturate(1.8);
     backdrop-filter: blur(30px) saturate(1.8);
@@ -926,6 +977,47 @@
     --popover-unread: var(--qd-fg, #0064d6);
     --popover-surface: var(--reply-bg);
     --popover-divider: var(--reply-border);
+  }
+
+  .hl-body {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-height: 0;
+  }
+
+  /* Icon toolbar: Inbox (two-pane) + Desktop — titles provide hover labels. */
+  .hl-footer {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 2px;
+    margin-top: 4px;
+    padding: 4px 2px 2px;
+    border-top: 0.5px solid var(--row-border);
+    flex-shrink: 0;
+  }
+
+  .hl-icon-btn {
+    appearance: none;
+    border: 0;
+    background: transparent;
+    color: var(--row-muted);
+    width: 28px;
+    height: 28px;
+    border-radius: 7px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    padding: 0;
+  }
+
+  .hl-icon-btn:hover,
+  .hl-icon-btn:focus-visible {
+    background: var(--row-hover-bg);
+    color: var(--row-fg);
+    outline: none;
   }
 
   /* Wordmark right-click menu — same frost chrome as the mini inbox. */
