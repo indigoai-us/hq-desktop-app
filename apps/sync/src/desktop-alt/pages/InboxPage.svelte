@@ -96,7 +96,7 @@
     </div>
   </header>
 
-  <div class="inbox-panel notif-host">
+  <div class="inbox-feed notif-host">
     <NotificationFeed
       showDayLabels={true}
       density="comfortable"
@@ -183,21 +183,17 @@
     color: var(--v4-text-2, var(--muted));
   }
 
-  /* Raised feed panel — desktop-native card over the page ground. */
-  .inbox-panel {
+  /* Feed sits flush on the page canvas — no card chrome around the list. */
+  .inbox-feed {
     flex: 1 1 auto;
     min-height: 0;
-    border: 1px solid var(--v4-hairline, var(--border));
-    border-radius: var(--v4-radius-card, 14px);
-    background: var(--v4-raised, var(--c-bg, #fff));
-    box-shadow: var(--v4-shadow-card, 0 1px 2px rgba(0, 0, 0, 0.05));
-    overflow: hidden;
+    overflow: auto;
   }
 
-  /* Map the feed's popover tokens onto the V4 desktop tokens so the shared
-     component reads as a native desktop surface. Scoped to this host only. */
+  /* Map the feed's popover tokens onto the V4 desktop canvas tokens so the
+     shared component reads as list-on-canvas, not a nested raised card. */
   .notif-host {
-    --popover-bg: var(--v4-raised, var(--c-bg, #fff));
+    --popover-bg: transparent;
     --popover-surface: var(--v4-control-faint, var(--c-field-bg));
     --popover-text: var(--v4-text-2, var(--fg));
     --popover-text-muted: var(--v4-text-3, var(--muted));
@@ -209,16 +205,16 @@
     --text-sm: 13px;
   }
 
-  /* Slightly taller, more readable rows inside the desktop panel. */
+  /* Slightly taller, more readable rows on the canvas. */
   .notif-host :global(.nr) {
     min-height: 36px;
-    padding: 0 14px;
+    padding: 0 4px;
     border-radius: 10px;
     font-size: 13px;
   }
 
   .notif-host :global(.nr-message.nr-expanded) {
-    padding: 12px 14px 12px;
+    padding: 12px 4px 12px;
   }
 
   .notif-host :global(.nr-ts) {
@@ -228,6 +224,18 @@
   .notif-host :global(.nr-icon) {
     width: 14px;
     height: 14px;
+  }
+
+  /* Comfortable density paddings from NotificationFeed assume a card panel —
+     pin labels and rows flush to the canvas edges instead. */
+  .notif-host :global(.notif-comfortable .notif-day-label) {
+    padding-left: 4px;
+    padding-right: 4px;
+  }
+
+  .notif-host :global(.notif-comfortable .notif-day-rows) {
+    padding-left: 0;
+    padding-right: 0;
   }
 
   @media (prefers-color-scheme: dark) {
