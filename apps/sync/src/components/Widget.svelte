@@ -154,6 +154,8 @@
   let hoverOpen = $state(false);
   /** Click-pinned open — survives pointerleave until click-away or re-click. */
   let pinned = $state(false);
+  /** Wordmark right-click menu (Inbox + Open desktop view). */
+  let contextMenuOpen = $state(false);
   let hoverCloseTimer: ReturnType<typeof setTimeout> | undefined;
 
   /** Tracks native focusable state (non-reactive — avoids effect loops). */
@@ -204,6 +206,8 @@
       hoverCloseTimer = undefined;
     }
     if (hoverOpen) return;
+    // Right-click menu owns the chrome slot — don't steal it with hover.
+    if (contextMenuOpen) return;
     // A reply is focused / has a draft on a stack row. Switching surfaces
     // would unmount that row and destroy the draft — never hide a
     // notification mid-reply (US-012), so ignore the wordmark hover.
@@ -217,6 +221,7 @@
   function closePinned(): void {
     pinned = false;
     hoverOpen = false;
+    contextMenuOpen = false;
     if (hoverCloseTimer !== undefined) {
       clearTimeout(hoverCloseTimer);
       hoverCloseTimer = undefined;
@@ -230,22 +235,72 @@
     void setWidgetFocusable(false);
   }
 
+  /**
+   * Pin-open the mini inbox (hover/click notification + message list).
+   * Used by wordmark click, update Open, and the context-menu Inbox action.
+   */
+  function openMiniInbox(): void {
+    // Don't pin (and unmount a drafting stack row) mid-reply — see
+    // openHoverList's reply-hold guard.
+    if (replyHolds.size > 0) return;
+    contextMenuOpen = false;
+    pinned = true;
+    openHoverList();
+  }
+
   function togglePinned(): void {
     if (pinned) {
       closePinned();
     } else {
-      // Don't pin (and unmount a drafting stack row) mid-reply — see
-      // openHoverList's reply-hold guard.
-      if (replyHolds.size > 0) return;
-      pinned = true;
-      openHoverList();
+      openMiniInbox();
     }
+  }
+
+  function closeContextMenu(): void {
+    contextMenuOpen = false;
+  }
+
+  function handleWordmarkContextMenu(e: MouseEvent): void {
+    e.preventDefault();
+    e.stopPropagation();
+    // Don't open the menu mid-reply (would unmount the draft surface).
+    if (replyHolds.size > 0) return;
+    // Context menu replaces the hover list while open (same chrome slot).
+    hoverOpen = false;
+    pinned = false;
+    contextMenuOpen = true;
   }
 
   function handleWordmarkKeydown(e: KeyboardEvent): void {
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
       togglePinned();
+    } else if (e.key === 'Escape' && contextMenuOpen) {
+      e.preventDefault();
+      closeContextMenu();
+    }
+  }
+
+  /** Context menu → pin-open the mini notification/message list. */
+  function menuOpenInbox(): void {
+    openMiniInbox();
+  }
+
+  /** Context menu → full desktop app (same path as tray "Open desktop view"). */
+  async function menuOpenDesktop(): Promise<void> {
+    closeContextMenu();
+    if (!hasTauri()) return;
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('open_desktop_alt_window');
+    } catch (err) {
+      console.error('widget: open_desktop_alt_window failed', err);
+      try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        await invoke('show_main_window');
+      } catch (err2) {
+        console.error('widget: show_main_window fallback failed', err2);
+      }
     }
   }
 
@@ -335,8 +390,9 @@
           await invoke('open_desktop_alt_window', { route: 'inbox' });
         }
       } else if (item.kind === 'update') {
-        // Open reveals the menubar update UI. Install chip actions still go
-        // through banner_action so App.svelte runs the guarded install path.
+        // Install chip still goes through banner_action (guarded install path
+        // in App.svelte). Body Open pins the mini inbox — same surface as DMs
+        // and shares — instead of yanking the menubar open.
         const install =
           item.clickActionId === 'update' || item.actionId === 'update';
         if (install) {
@@ -351,9 +407,7 @@
           };
           await invoke('banner_action', { action: 'update', payload });
         } else {
-          // Direct invoke — do not depend on the (often hidden) main webview
-          // listening for notification:banner-action.
-          await invoke('show_main_window');
+          openMiniInbox();
         }
       } else if (item.kind === 'meeting') {
         await invoke('show_main_window');
@@ -465,8 +519,13 @@
     function handleClickAway(e: PointerEvent): void {
       // Don't dismiss while a reply is focused / has a draft.
       if (replyHolds.size > 0) return;
-      if (!pinned) return;
       const target = e.target as HTMLElement | null;
+      if (contextMenuOpen) {
+        if (target?.closest?.('.ctx-menu') || target?.closest?.('.wm')) return;
+        closeContextMenu();
+        return;
+      }
+      if (!pinned) return;
       if (target?.closest?.('.hover-list') || target?.closest?.('.wm')) return;
       closePinned();
     }
@@ -476,6 +535,7 @@
       // native window focusable, which makes blur events likely during exactly
       // the flow US-012 protects (match the click-away guards).
       if (replyHolds.size > 0) return;
+      if (contextMenuOpen) closeContextMenu();
       if (pinned) closePinned();
     }
 
@@ -530,6 +590,7 @@
       unlistenClickAway = await listen('widget:click-away', () => {
         // Don't dismiss while a reply is focused / has a draft.
         if (replyHolds.size > 0) return;
+        if (contextMenuOpen) closeContextMenu();
         if (pinned) closePinned();
       });
 
@@ -572,12 +633,17 @@
     };
   });
 
-  // Grow/shrink the native window with the visible stack / hover list
-  // (lower-right anchor stays fixed in Rust). Only when Tauri is present and
-  // size actually changed.
+  // Grow/shrink the native window with the visible stack / hover list /
+  // context menu (lower-right anchor stays fixed in Rust). Only when Tauri is
+  // present and size actually changed.
   $effect(() => {
     let size: { width: number; height: number };
-    if (hoverOpen) {
+    if (contextMenuOpen) {
+      // Two-row menu + chrome — same width as hover panel; slightly taller
+      // than the empty-state panel so both items have full hit targets.
+      size = widgetEmptyHoverWindowSize();
+      size = { width: size.width, height: size.height + 28 };
+    } else if (hoverOpen) {
       const items = hoverItems(stack);
       // Pinned-open with no recent rows: grow for the empty-state panel so a
       // wordmark click always produces visible feedback (US-010). Hover-only
@@ -628,7 +694,37 @@
     }
   }}
 >
-  {#if hoverOpen && (hoverList.length > 0 || pinned)}
+  {#if contextMenuOpen}
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+    <div
+      class="ctx-menu frost-panel"
+      data-testid="widget-context-menu"
+      role="menu"
+      tabindex="0"
+      aria-label="HQ widget"
+      onpointerenter={() => setPointerHold(true)}
+      onpointerleave={() => setPointerHold(false)}
+    >
+      <button
+        class="ctx-item"
+        type="button"
+        role="menuitem"
+        data-testid="widget-menu-inbox"
+        onclick={menuOpenInbox}
+      >
+        Inbox
+      </button>
+      <button
+        class="ctx-item"
+        type="button"
+        role="menuitem"
+        data-testid="widget-menu-desktop"
+        onclick={() => void menuOpenDesktop()}
+      >
+        Open desktop view
+      </button>
+    </div>
+  {:else if hoverOpen && (hoverList.length > 0 || pinned)}
     <div
       class="hover-list frost-panel"
       data-testid="widget-hover-list"
@@ -696,8 +792,11 @@
     role="button"
     tabindex="0"
     aria-label="HQ notifications"
+    aria-haspopup="menu"
+    aria-expanded={contextMenuOpen || pinned || hoverOpen}
     onmouseenter={openHoverList}
     onclick={togglePinned}
+    oncontextmenu={handleWordmarkContextMenu}
     onkeydown={handleWordmarkKeydown}
   >
     <!-- Flat monochrome HQ wordmark (src/assets/hq-mark.svg, inlined so it
@@ -813,6 +912,47 @@
     --popover-unread: var(--qd-fg, #0064d6);
     --popover-surface: var(--reply-bg);
     --popover-divider: var(--reply-border);
+  }
+
+  /* Wordmark right-click menu — same frost chrome as the mini inbox. */
+  .ctx-menu {
+    width: 200px;
+    border-radius: 12px;
+    padding: 4px;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    background: var(--row-bg);
+    -webkit-backdrop-filter: blur(30px) saturate(1.8);
+    backdrop-filter: blur(30px) saturate(1.8);
+    border: 0.5px solid var(--row-border);
+    box-shadow: var(--row-shadow), inset 0 1px 0 var(--row-highlight);
+    margin-bottom: 12px;
+    transform-origin: bottom right;
+    animation: widget-bloom 0.28s cubic-bezier(0.34, 1.3, 0.64, 1) backwards;
+    box-sizing: border-box;
+    flex-shrink: 0;
+  }
+
+  .ctx-item {
+    appearance: none;
+    border: 0;
+    background: transparent;
+    color: var(--row-fg);
+    font: inherit;
+    font-size: 12.5px;
+    font-weight: 500;
+    text-align: left;
+    padding: 8px 12px;
+    border-radius: 8px;
+    cursor: pointer;
+    line-height: 1.25;
+  }
+
+  .ctx-item:hover,
+  .ctx-item:focus-visible {
+    background: var(--row-hover-bg);
+    outline: none;
   }
 
   .hl-sep {
@@ -982,7 +1122,8 @@
       animation: none;
     }
 
-    .hover-list {
+    .hover-list,
+    .ctx-menu {
       animation: none;
     }
   }
