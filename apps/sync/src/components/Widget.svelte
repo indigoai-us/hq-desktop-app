@@ -25,10 +25,12 @@
     dismissItem,
     dismissRecent,
     expireItems,
+    historyFeedItemToStackItem,
     hoverItems,
     hoverRows,
     markQueueSeen,
     markRecentRead,
+    mergeRecentWithHistory,
     serializeRecent,
     setHeld,
     setOccluded,
@@ -37,6 +39,10 @@
     widgetHoverWindowSize,
     widgetWindowSize,
   } from '../stores/widgetNotifications';
+  import {
+    getLastReadTs,
+    loadNotificationItems,
+  } from '../lib/notificationFeedData';
 
   let {
     /** Initial/test seed for the queued superscript when the stack is empty. */
@@ -299,10 +305,7 @@
   async function handleOpen(item: WidgetStackItem): Promise<void> {
     // Drop any stale reply-hold for this row so ids never hold forever.
     setReplyHold(item.id, false);
-    // Hydrated history rows are display-only (US-015): deserializeRecent strips
-    // the action surface, so an empty clickActionId must never reach the
-    // privileged banner_action command — dismiss locally instead.
-    if (!hasTauri() || !item.clickActionId) {
+    if (!hasTauri()) {
       applyStack(dismissItem(stack, item.id));
       if (stack.visible.length === 0) {
         setPointerHold(false);
@@ -311,18 +314,67 @@
     }
     try {
       const { invoke } = await import('@tauri-apps/api/core');
-      // Mirror BannerNotification: banner_action re-emits notification:banner-action
-      // for App.svelte to route DM/share/meeting/update surfaces.
-      const payload: BannerPayloadLike = {
-        kind: item.kind,
-        title: item.actor ?? '',
-        body: item.text,
-        clickActionId: item.clickActionId,
-        data: item.data,
-        actionId: item.actionId,
-        actionLabel: item.actionLabel,
-      };
-      await invoke('banner_action', { action: item.clickActionId, payload });
+      // Route Open by kind + source data. Prefer direct open_* invokes so the
+      // widget does not depend on the (often hidden) main webview's
+      // notification:banner-action listener. Kind-based fallbacks keep
+      // localStorage-hydrated rows (action surface stripped) usable.
+      if (item.kind === 'dm' && item.data) {
+        await invoke('open_dm_detail', { event: item.data });
+      } else if (item.kind === 'share' && item.data) {
+        await invoke('open_share_detail', { events: [item.data] });
+      } else if (item.kind === 'new-file' || item.type === 'sync') {
+        const company =
+          item.data && typeof item.data === 'object' && item.data !== null
+            ? (item.data as { company?: string }).company
+            : undefined;
+        if (company) {
+          await invoke('open_desktop_alt_window', {
+            route: `company:${company}:activity`,
+          });
+        } else {
+          await invoke('open_desktop_alt_window', { route: 'inbox' });
+        }
+      } else if (item.kind === 'update') {
+        // Open reveals the menubar update UI. Install chip actions still go
+        // through banner_action so App.svelte runs the guarded install path.
+        const install =
+          item.clickActionId === 'update' || item.actionId === 'update';
+        if (install) {
+          const payload: BannerPayloadLike = {
+            kind: item.kind,
+            title: item.actor ?? '',
+            body: item.text,
+            clickActionId: item.clickActionId || 'update',
+            data: item.data,
+            actionId: item.actionId,
+            actionLabel: item.actionLabel,
+          };
+          await invoke('banner_action', { action: 'update', payload });
+        } else {
+          // Direct invoke — do not depend on the (often hidden) main webview
+          // listening for notification:banner-action.
+          await invoke('show_main_window');
+        }
+      } else if (item.kind === 'meeting') {
+        await invoke('show_main_window');
+      } else if (item.clickActionId) {
+        const payload: BannerPayloadLike = {
+          kind: item.kind,
+          title: item.actor ?? '',
+          body: item.text,
+          clickActionId: item.clickActionId,
+          data: item.data,
+          actionId: item.actionId,
+          actionLabel: item.actionLabel,
+        };
+        await invoke('banner_action', {
+          action: item.clickActionId,
+          payload,
+        });
+      } else {
+        // Display-only / unknown — open combined Inbox rather than no-op.
+        await invoke('open_desktop_alt_window', { route: 'inbox' });
+      }
     } catch (err) {
       console.error('widget: open failed', err);
     } finally {
@@ -332,6 +384,26 @@
       if (stack.visible.length === 0) {
         setPointerHold(false);
       }
+    }
+  }
+
+  /**
+   * Seed/refresh recent from server notification history so the hover/click
+   * popup shows real DMs/shares/files (Lizzie ~10-row history), not only
+   * in-session update banners. Merges with local recent (keeps update rows).
+   */
+  async function refreshRecentFromHistory(): Promise<void> {
+    if (!hasTauri()) return;
+    try {
+      const items = await loadNotificationItems();
+      const lastRead = getLastReadTs();
+      const historyRows = items.map((it) => historyFeedItemToStackItem(it, lastRead));
+      applyStack({
+        ...stack,
+        recent: mergeRecentWithHistory(stack.recent, historyRows),
+      });
+    } catch (err) {
+      console.error('widget: fetch_notification_history failed', err);
     }
   }
 
@@ -422,7 +494,18 @@
     let unlistenNotif: (() => void) | undefined;
     let unlistenOcc: (() => void) | undefined;
     let unlistenClickAway: (() => void) | undefined;
+    let unlistenDm: (() => void) | undefined;
+    let unlistenSync: (() => void) | undefined;
+    let historyReloadTimer: ReturnType<typeof setTimeout> | undefined;
     let cancelled = false;
+
+    const scheduleHistoryRefresh = () => {
+      if (historyReloadTimer !== undefined) clearTimeout(historyReloadTimer);
+      historyReloadTimer = setTimeout(() => {
+        historyReloadTimer = undefined;
+        void refreshRecentFromHistory();
+      }, 300);
+    };
 
     void (async () => {
       const { listen } = await import('@tauri-apps/api/event');
@@ -450,12 +533,19 @@
         if (pinned) closePinned();
       });
 
+      // Keep recent history in sync with the real notification feed (DMs,
+      // shares, files) so the popup isn't stuck on local update banners only.
+      unlistenDm = await listen('dm:unread-summary', scheduleHistoryRefresh);
+      unlistenSync = await listen('sync:complete', scheduleHistoryRefresh);
+
       const { invoke } = await import('@tauri-apps/api/core');
       if (cancelled) return;
       // Ready-handshake: Rust replies with the initial widget:occlusion.
       await invoke('widget_ready').catch((err: unknown) => {
         console.error('widget: widget_ready failed', err);
       });
+      // Seed ~10 openable history rows (US-015 + Lizzie inbox mockup).
+      if (!cancelled) await refreshRecentFromHistory();
     })();
 
     return () => {
@@ -465,6 +555,12 @@
       unlistenNotif?.();
       unlistenOcc?.();
       unlistenClickAway?.();
+      unlistenDm?.();
+      unlistenSync?.();
+      if (historyReloadTimer !== undefined) {
+        clearTimeout(historyReloadTimer);
+        historyReloadTimer = undefined;
+      }
       if (expiryTimer !== undefined) {
         clearInterval(expiryTimer);
         expiryTimer = undefined;
