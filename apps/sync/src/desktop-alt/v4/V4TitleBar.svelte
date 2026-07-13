@@ -82,6 +82,7 @@
   </div>
   {#if syncState === 'error' && errorMessage}
     <div class="v4-recovery-actions" data-tauri-drag-region="false">
+      <button type="button" class="v4-action" onclick={onretry}>Retry</button>
       <OpenInClaudeCodeButton
         variant="inline"
         label="Finish sync in Claude Code"
