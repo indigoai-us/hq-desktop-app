@@ -10,6 +10,7 @@
   import { joinableMemberships, type Workspace } from '../lib/workspaces';
   import { liveProgressCaption } from '../lib/live-progress-caption';
   import { isCorePath, CORE_SETUP_LABEL } from '../lib/progressLabel';
+  import { sanitizeVisibleIdentifiers } from '../lib/visible-labels';
   import {
     POPOVER_MIN_HEIGHT,
     POPOVER_WIDTH,
@@ -109,6 +110,9 @@
   let syncStatusLoading = $state(true);
   let syncStatusError = $state('');
   let lastWindowHeight = $state(0);
+  const visibleCloudError = $derived(
+    sanitizeVisibleIdentifiers(cloudError, { companies: workspaces ?? [] }),
+  );
 
   // Notifications is the sole panel body (US-001 chrome strip). Unread count
   // lives next to the section label; Mark all read remains.
@@ -576,7 +580,7 @@
       {/if}
 
       {#if !cloudReachable}
-        <div class="snr" data-testid="popover-system-notice" data-kind="cloud" title={cloudError ?? ''}>
+        <div class="snr" data-testid="popover-system-notice" data-kind="cloud" title={visibleCloudError}>
           <span class="snr-icon warn" aria-hidden="true">{@render noticeGlyph('warn')}</span>
           <span class="snr-text">
             <b>Cloud unreachable</b>

@@ -13,6 +13,7 @@
     requestDisplayName,
     requestInitials,
   } from '../../lib/dmRequests';
+  import { sanitizeVisibleIdentifiers } from '../../lib/visible-labels';
   // A pending connection request, rendered as a bordered CARD (deliberately NOT
   // a chat bubble) so an incoming request reads as something to act on, not a
   // message that silently landed in a thread. Shows the requester's name +
@@ -39,7 +40,7 @@
   let busy = $state<RequestAction | null>(null);
   let error = $state<string | null>(null);
 
-  const name = $derived(requestDisplayName(request));
+  const name = $derived(sanitizeVisibleIdentifiers(requestDisplayName(request)));
   const avatar = $derived(requestInitials(request));
 
   async function respond(action: RequestAction): Promise<void> {

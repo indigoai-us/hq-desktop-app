@@ -9,8 +9,10 @@
   } from '@tauri-apps/plugin-notification';
   import {
     type DmRequest,
+    enrichRequestFromContacts,
     requestBannerTitle,
     requestBannerBody,
+    requestHasHumanLabel,
   } from './lib/dmRequests';
   import SignInPrompt from './components/SignInPrompt.svelte';
   import Popover from './components/Popover.svelte';
@@ -44,6 +46,25 @@
     companySlug: string;
     hqFolderPath: string;
     error?: string;
+  }
+
+  interface ContactIdentityResponse {
+    contacts: Array<{
+      personUid: string;
+      email?: string | null;
+      displayName?: string | null;
+    }>;
+  }
+
+  async function enrichIncomingRequest(req: DmRequest): Promise<DmRequest> {
+    if (requestHasHumanLabel(req)) return req;
+    try {
+      const response = await invoke<ContactIdentityResponse>('list_contacts');
+      return enrichRequestFromContacts(req, response.contacts ?? []);
+    } catch (err) {
+      console.warn('dm-request: contact label lookup failed', err);
+      return req;
+    }
   }
 
   let authenticated = $state(false);
@@ -1791,7 +1812,7 @@
     // ("{name} wants to connect") — separate copy from a normal incoming DM.
     unlisteners.push(
       await listen<DmRequest>('dm:request-new', async (e) => {
-        const req = e.payload;
+        const req = await enrichIncomingRequest(e.payload);
         // Bump the popover request-count accent immediately (the poll path emits
         // 0 for requests on dm:unread-summary by design, so we own this count
         // off the request events).

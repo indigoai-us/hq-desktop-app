@@ -49,8 +49,11 @@
     type DmRequest,
     type RequestAction,
     addRequest,
+    enrichRequestFromContacts,
     removeRequest,
+    requestHasHumanLabel,
   } from '../../lib/dmRequests';
+  import { humanPersonLabel } from '../../lib/visible-labels';
   import {
     type Channel,
     type CompanyLabel,
@@ -435,7 +438,7 @@
   }
 
   function displayLabel(c: Contact): string {
-    return c.displayName?.trim() || c.email?.trim() || c.personUid;
+    return humanPersonLabel(c);
   }
 
   function initials(c: Contact): string {
@@ -727,7 +730,16 @@
     requestsError = null;
     try {
       const resp = await invoke<RequestsResponse>('list_dm_requests');
-      requests = resp.requests ?? [];
+      let next = (resp.requests ?? []).map((request) =>
+        enrichRequestFromContacts(request, contacts),
+      );
+      if (next.some((request) => !requestHasHumanLabel(request))) {
+        const response = await invoke<ContactsResponse>('list_contacts');
+        next = next.map((request) =>
+          enrichRequestFromContacts(request, response.contacts ?? []),
+        );
+      }
+      requests = next;
     } catch (err) {
       requestsError =
         typeof err === 'string' ? err : 'Could not load connection requests';
@@ -859,7 +871,7 @@
     const peer: Contact = existing ?? {
       personUid: uid || `email:${email}`,
       email,
-      displayName: t.displayName?.trim() || email || uid,
+      displayName: t.displayName?.trim() || email,
       companyUid: null,
       source: null,
     };

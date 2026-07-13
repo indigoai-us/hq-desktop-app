@@ -6,6 +6,7 @@ import {
   buildRefreshProblemReport,
   buildConnectedCalendarRows,
   calendarEventIdsForBotLookup,
+  companyLabel,
   dayLabel,
   groupByDay,
   isAuthError,
@@ -225,6 +226,14 @@ describe('meetings-model', () => {
       end: { dateTime: new Date(local.getTime() + 30 * 60_000).toISOString() },
     };
   }
+
+  it('uses a company name or a graceful fallback, never a raw company UID', () => {
+    const event = eventAt('event-company', new Date(2026, 4, 27, 12, 0, 0));
+    event.sourceCompanyUid = 'cmp_company';
+    expect(companyLabel(event, new Map([['cmp_company', 'Indigo']]))).toBe('Indigo');
+    expect(companyLabel(event, new Map())).toBe('Company');
+    expect(companyLabel(event, new Map())).not.toContain('cmp_');
+  });
 
   it('labels days relative to now as Today / Tomorrow / dated', () => {
     expect(dayLabel(new Date(2026, 4, 27, 15, 0, 0), now)).toBe('Today');

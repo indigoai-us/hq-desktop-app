@@ -15,9 +15,20 @@
 
   interface Props {
     slug: string;
+    companyUid?: string | null;
   }
 
-  let { slug }: Props = $props();
+  interface ContactRow {
+    personUid: string;
+    email?: string | null;
+    displayName?: string | null;
+  }
+
+  interface ContactsResponse {
+    contacts: ContactRow[];
+  }
+
+  let { slug, companyUid = null }: Props = $props();
 
   let loading = $state(true);
   let view = $state<TeamTelemetryView>({
@@ -29,6 +40,7 @@
 
   $effect(() => {
     const activeSlug = slug;
+    const activeCompanyUid = companyUid;
     loading = true;
     view = { humans: [], agents: [], error: null, empty: true };
     if (!activeSlug) {
@@ -41,13 +53,26 @@
 
     void (async () => {
       try {
-        const raw = await invoke<unknown>('get_company_team_telemetry', {
-          slug: activeSlug,
-          from: range.from,
-          to: range.to,
-        });
+        const [raw, contactResponse] = await Promise.all([
+          invoke<unknown>('get_company_team_telemetry', {
+            slug: activeSlug,
+            from: range.from,
+            to: range.to,
+          }),
+          activeCompanyUid
+            ? invoke<ContactsResponse>('list_company_members', {
+                companyUid: activeCompanyUid,
+              }).catch(() => ({ contacts: [] }))
+            : invoke<ContactsResponse>('list_contacts').catch(() => ({ contacts: [] })),
+        ]);
         if (cancelled) return;
-        view = normalizeCompanyTeamTelemetry(raw);
+        const memberLabelsById = Object.fromEntries(
+          (contactResponse.contacts ?? []).map((contact) => [
+            contact.personUid,
+            { email: contact.email, displayName: contact.displayName },
+          ]),
+        );
+        view = normalizeCompanyTeamTelemetry(raw, { memberLabelsById });
       } catch (err) {
         if (cancelled) return;
         console.error('get_company_team_telemetry failed:', err);

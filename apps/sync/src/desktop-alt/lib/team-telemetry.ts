@@ -30,6 +30,11 @@ export interface TeamTelemetryView {
   empty: boolean;
 }
 
+export interface TeamMemberLabel {
+  email?: string | null;
+  displayName?: string | null;
+}
+
 export function memberKindFromUid(uid: string): TeamMemberKind {
   const id = uid.trim().toLowerCase();
   if (id.startsWith('agt_') || id.startsWith('agent_')) return 'agent';
@@ -41,13 +46,12 @@ export function displayNameFromMember(raw: {
   email?: string;
   displayName?: string;
   name?: string;
-}): string {
-  const name = (raw.displayName || raw.name || '').trim();
+}, resolved?: TeamMemberLabel): string {
+  const name = (raw.displayName || raw.name || resolved?.displayName || '').trim();
   if (name) return name;
-  const email = (raw.email || '').trim();
+  const email = (raw.email || resolved?.email || '').trim();
   if (email) return email;
-  const uid = (raw.personUid || '').trim();
-  return uid || 'Unknown';
+  return 'Unknown member';
 }
 
 function skillListFromTotals(totals: unknown): TeamSkillUsage[] {
@@ -75,7 +79,10 @@ function skillListFromTotals(totals: unknown): TeamSkillUsage[] {
  */
 export function normalizeCompanyTeamTelemetry(
   payload: unknown,
-  options?: { activeProjectsByMemberId?: Record<string, string[]> },
+  options?: {
+    activeProjectsByMemberId?: Record<string, string[]>;
+    memberLabelsById?: Record<string, TeamMemberLabel>;
+  },
 ): TeamTelemetryView {
   if (!payload || typeof payload !== 'object') {
     return { humans: [], agents: [], error: null, empty: true };
@@ -101,12 +108,15 @@ export function normalizeCompanyTeamTelemetry(
         : memberKindFromUid(personUid);
     const member: TeamMember = {
       id: personUid,
-      displayName: displayNameFromMember({
-        personUid,
-        email: typeof r.email === 'string' ? r.email : undefined,
-        displayName: typeof r.displayName === 'string' ? r.displayName : undefined,
-        name: typeof r.name === 'string' ? r.name : undefined,
-      }),
+      displayName: displayNameFromMember(
+        {
+          personUid,
+          email: typeof r.email === 'string' ? r.email : undefined,
+          displayName: typeof r.displayName === 'string' ? r.displayName : undefined,
+          name: typeof r.name === 'string' ? r.name : undefined,
+        },
+        options?.memberLabelsById?.[personUid],
+      ),
       kind,
       topSkills: skillListFromTotals(r.totals),
       activeProjects: projectsMap[personUid] ?? [],
