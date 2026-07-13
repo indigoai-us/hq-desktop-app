@@ -323,6 +323,7 @@ jobs:
       matrix:
         target:
           - x86_64-pc-windows-msvc
+          - aarch64-pc-windows-msvc
 
     env:
       RUST_BACKTRACE: 1
@@ -370,6 +371,36 @@ jobs:
 
       - name: Install Recall sidecar dependencies
         run: pnpm run sidecar:install
+
+      - name: Download native ARM64 Node runtime for Recall launcher
+        if: matrix.target == 'aarch64-pc-windows-msvc'
+        shell: pwsh
+        run: |
+          $version = node -p "process.version"
+          $archiveName = "node-$version-win-arm64.zip"
+          $baseUrl = "https://nodejs.org/dist/$version"
+          $archive = Join-Path $env:RUNNER_TEMP $archiveName
+          $checksums = Join-Path $env:RUNNER_TEMP "SHASUMS256.txt"
+          $extract = Join-Path $env:RUNNER_TEMP "node-$version-win-arm64"
+
+          Invoke-WebRequest "$baseUrl/$archiveName" -OutFile $archive
+          Invoke-WebRequest "$baseUrl/SHASUMS256.txt" -OutFile $checksums
+          $checksumLine = Get-Content $checksums | Where-Object { $_ -match "\s+$([regex]::Escape($archiveName))$" } | Select-Object -First 1
+          if (-not $checksumLine) {
+            throw "No Node checksum found for $archiveName"
+          }
+          $expected = ($checksumLine -split '\s+')[0].ToLowerInvariant()
+          $actual = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) {
+            throw "Node ARM64 checksum mismatch: expected $expected, got $actual"
+          }
+
+          Expand-Archive $archive -DestinationPath $env:RUNNER_TEMP -Force
+          $nodeExe = Join-Path $extract "node.exe"
+          if (-not (Test-Path $nodeExe)) {
+            throw "ARM64 node.exe was not extracted at $nodeExe"
+          }
+          "RECALL_SIDECAR_NODE_EXECUTABLE=$nodeExe" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       # Windows recording depends on a real PE sidecar launcher. Tauri's
       # `bundle.externalBin` now requires this file to exist for each target
@@ -453,7 +484,7 @@ jobs:
         run: |
           $tag = if ("${{ github.event.inputs.tag }}") { "${{ github.event.inputs.tag }}" } else { "${{ github.ref_name }}" }
           $version = $tag.TrimStart("v")
-          $arch = "x64"
+          $arch = if ("${{ matrix.target }}" -like "x86_64-*") { "x64" } else { "arm64" }
           $stage = Join-Path $env:GITHUB_WORKSPACE "release-artifacts-${{ matrix.target }}"
           $bundleDir = "src-tauri\target\${{ matrix.target }}\release\bundle"
           New-Item -ItemType Directory -Path $stage -Force | Out-Null
@@ -531,6 +562,7 @@ jobs:
 
           MAC_SIG_PATH="release/HQ_${VERSION}_universal.app.tar.gz.sig" \
           WIN_X64_SIG_PATH="release/HQ_${VERSION}_x64-setup.exe.sig" \
+          WIN_ARM64_SIG_PATH="release/HQ_${VERSION}_arm64-setup.exe.sig" \
           VERSION="$VERSION" \
           TAG="$TAG" \
           BASE="$BASE" \
@@ -557,6 +589,12 @@ jobs:
             signature: readSig(process.env.WIN_X64_SIG_PATH),
             url: `${base}/HQ_${version}_x64-setup.exe`,
           };
+          if (exists(process.env.WIN_ARM64_SIG_PATH)) {
+            platforms["windows-aarch64"] = {
+              signature: readSig(process.env.WIN_ARM64_SIG_PATH),
+              url: `${base}/HQ_${version}_arm64-setup.exe`,
+            };
+          }
 
           const manifest = {
             version,
@@ -586,7 +624,8 @@ jobs:
           cd release
           for pair in \
             "HQ_${VERSION}_universal.dmg:HQ.dmg" \
-            "HQ_${VERSION}_x64-setup.exe:HQ_x64-setup.exe"; do
+            "HQ_${VERSION}_x64-setup.exe:HQ_x64-setup.exe" \
+            "HQ_${VERSION}_arm64-setup.exe:HQ_arm64-setup.exe"; do
             src="${pair%%:*}"; dst="${pair##*:}"
             if [ -f "$src" ]; then cp "$src" "$dst"; echo "alias $dst -> $src"; else echo "skip (missing) $src"; fi
           done

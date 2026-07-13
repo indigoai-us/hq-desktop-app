@@ -28,17 +28,20 @@
  * payload already installed is a fast no-op (safe to chain from Tauri's
  * beforeBuildCommand). Pass --force to always rebuild the launcher.
  *
- * Windows ARM64 is deliberately unsupported until CI has both a native ARM64
- * Node runtime and a verified ARM64 Recall payload. Refuse to relabel the x64
- * host runtime as ARM64.
+ * Windows ARM64 uses a native ARM64 Node runtime for this launcher. Recall's
+ * agent remains a separate x64 child process, which Windows on ARM runs under
+ * its built-in x64 emulation; it is never loaded into the ARM64 Node process.
  */
 
 import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
 import {
+  closeSync,
   copyFileSync,
   existsSync,
+  openSync,
   mkdirSync,
+  readSync,
   readFileSync,
   rmSync,
   statSync,
@@ -60,7 +63,13 @@ const CHECK_ONLY = args.has("--check");
 // externalBin stem (`binaries/recall-desktop-sdk`) when it copies the binary.
 const TARGET_TRIPLE =
   process.env.RECALL_SIDECAR_TARGET || "x86_64-pc-windows-msvc";
-const SUPPORTED_TARGET = "x86_64-pc-windows-msvc";
+const TARGET_MACHINES = new Map([
+  ["x86_64-pc-windows-msvc", 0x8664],
+  ["aarch64-pc-windows-msvc", 0xaa64],
+]);
+const launcherRuntime = process.env.RECALL_SIDECAR_NODE_EXECUTABLE
+  ? resolve(process.env.RECALL_SIDECAR_NODE_EXECUTABLE)
+  : process.execPath;
 
 const SEA_FUSE = "NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2";
 
@@ -81,6 +90,41 @@ function fail(msg) {
 
 function commandName(base) {
   return process.platform === "win32" ? `${base}.cmd` : base;
+}
+
+function peMachine(path) {
+  const fd = openSync(path, "r");
+  try {
+    const dosHeader = Buffer.alloc(64);
+    if (readSync(fd, dosHeader, 0, dosHeader.length, 0) !== dosHeader.length) {
+      fail(`cannot read DOS header from ${path}`);
+    }
+    if (dosHeader.readUInt16LE(0) !== 0x5a4d) {
+      fail(`launcher runtime is not a PE executable: ${path}`);
+    }
+    const peOffset = dosHeader.readUInt32LE(0x3c);
+    const peHeader = Buffer.alloc(6);
+    if (readSync(fd, peHeader, 0, peHeader.length, peOffset) !== peHeader.length) {
+      fail(`cannot read PE header from ${path}`);
+    }
+    if (peHeader.readUInt32LE(0) !== 0x00004550) {
+      fail(`launcher runtime has an invalid PE signature: ${path}`);
+    }
+    return peHeader.readUInt16LE(4);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function assertTargetArchitecture(path) {
+  const expected = TARGET_MACHINES.get(TARGET_TRIPLE);
+  const actual = peMachine(path);
+  if (actual !== expected) {
+    fail(
+      `runtime architecture mismatch for ${TARGET_TRIPLE}: expected PE machine ` +
+        `0x${expected.toString(16)}, got 0x${actual.toString(16)} (${path})`,
+    );
+  }
 }
 
 // 1. Ensure the @recallai/desktop-sdk runtime payload is installed.
@@ -122,6 +166,7 @@ function ensureSdkPayload() {
 // 2. Build the SEA launcher exe.
 async function buildLauncher() {
   if (existsSync(launcherExe) && !FORCE) {
+    assertTargetArchitecture(launcherExe);
     log(`launcher already present (${launcherExe}); pass --force to rebuild`);
     return;
   }
@@ -130,6 +175,10 @@ async function buildLauncher() {
   }
 
   mkdirSync(binariesDir, { recursive: true });
+  if (!existsSync(launcherRuntime)) {
+    fail(`launcher runtime not found: ${launcherRuntime}`);
+  }
+  assertTargetArchitecture(launcherRuntime);
 
   // 2a. SEA prep blob from the bootstrap.
   writeFileSync(
@@ -149,9 +198,11 @@ async function buildLauncher() {
     stdio: "inherit",
   });
 
-  // 2b. Copy the host node runtime to the launcher path.
-  log(`copying node runtime -> ${launcherExe}`);
-  copyFileSync(process.execPath, launcherExe);
+  // 2b. Copy the target-architecture Node runtime to the launcher path. The
+  // SEA preparation blob is architecture-independent because snapshots and
+  // code cache are disabled in sea-config.json.
+  log(`copying node runtime (${launcherRuntime}) -> ${launcherExe}`);
+  copyFileSync(launcherRuntime, launcherExe);
 
   // 2c. Inject the blob with postject via its programmatic API. We resolve the
   // module (a sidecar devDependency) and call inject() directly; invoking the
@@ -182,16 +233,15 @@ async function buildLauncher() {
   }
 
   const size = statSync(launcherExe).size;
+  assertTargetArchitecture(launcherExe);
   log(`launcher built: ${launcherExe} (${(size / 1024 / 1024).toFixed(1)} MB)`);
 }
 
 // Main.
 async function main() {
   log(`target triple: ${TARGET_TRIPLE}`);
-  if (TARGET_TRIPLE !== SUPPORTED_TARGET) {
-    fail(
-      `unsupported target ${TARGET_TRIPLE}; only ${SUPPORTED_TARGET} has a native Recall payload`,
-    );
+  if (!TARGET_MACHINES.has(TARGET_TRIPLE)) {
+    fail(`unsupported target ${TARGET_TRIPLE}`);
   }
   ensureSdkPayload();
   await buildLauncher();

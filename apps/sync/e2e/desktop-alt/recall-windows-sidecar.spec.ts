@@ -105,13 +105,14 @@ describe('Windows Recall SDK sidecar bundle parity', () => {
     expect(releaseWorkflow).not.toContain('skipping launcher build');
   });
 
-  it('ships only the Windows architecture backed by a native Recall payload', () => {
+  it('ships native x64 and ARM64 launchers without relabeling the host Node runtime', () => {
     expect(releaseWorkflow).toContain('- x86_64-pc-windows-msvc');
-    expect(releaseWorkflow).not.toContain('- aarch64-pc-windows-msvc');
-    expect(releaseWorkflow).not.toContain('windows-aarch64');
-    expect(sidecarBuildSource).toContain(
-      'const SUPPORTED_TARGET = "x86_64-pc-windows-msvc"',
-    );
+    expect(releaseWorkflow).toContain('- aarch64-pc-windows-msvc');
+    expect(releaseWorkflow).toContain('windows-aarch64');
+    expect(releaseWorkflow).toContain('RECALL_SIDECAR_NODE_EXECUTABLE');
+    expect(releaseWorkflow).toContain('Get-FileHash $archive -Algorithm SHA256');
+    expect(sidecarBuildSource).toContain('["aarch64-pc-windows-msvc", 0xaa64]');
+    expect(sidecarBuildSource).toContain('assertTargetArchitecture(launcherRuntime)');
   });
 
   it('requires Windows tests and release success', () => {
