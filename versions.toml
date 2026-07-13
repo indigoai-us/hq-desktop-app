@@ -15,7 +15,7 @@
 
 [product]
 name = "HQ Sync"          # OS-facing display name — open question (HQ Sync vs HQ Desktop)
-version = "0.10.12"
+version = "0.10.13"
 base_crate = "hq-sync-menubar"
 
 [updater]
