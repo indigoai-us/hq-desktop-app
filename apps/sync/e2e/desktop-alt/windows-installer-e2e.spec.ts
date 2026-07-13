@@ -29,7 +29,7 @@ describe('Windows production installer E2E', () => {
     expect(workflow).toContain('-Action install');
     expect(workflow).toContain('HQ_SYNC_DESKTOP_ALT_APP: ${{ steps.install.outputs.app }}');
     expect(workflow).toContain('HQ_SYNC_DESKTOP_ALT_LIVE: "1"');
-    expect(workflow).toContain('HQ_INSTALL_DIR: ${{ runner.temp }}\\hq-installer-e2e');
+    expect(workflow).toContain('$installDir = Join-Path $env:RUNNER_TEMP "hq-installer-e2e"');
     expect(workflow).toContain('if: always()');
     expect(workflow).toContain('-Action uninstall');
     expect(installerHarness).toContain('/D=$resolvedInstallDir');
