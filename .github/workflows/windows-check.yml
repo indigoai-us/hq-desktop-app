@@ -113,6 +113,7 @@ jobs:
       RUST_BACKTRACE: 1
       HQ_SYNC_SENTRY_DSN: ""
       RECALL_SIDECAR_TARGET: x86_64-pc-windows-msvc
+      HQ_INSTALL_DIR: ${{ runner.temp }}\hq-installer-e2e
 
     steps:
       - uses: actions/checkout@v4
@@ -173,23 +174,24 @@ jobs:
             throw "NSIS installer was not produced"
           }
 
-          $installDir = Join-Path $env:RUNNER_TEMP "hq-installer-e2e"
-          $app = & "scripts\windows-installer-e2e.ps1" -Action install -InstallerPath $installer.FullName -InstallDir $installDir
+          $app = & "scripts\windows-installer-e2e.ps1" -Action install -InstallerPath $installer.FullName -InstallDir $env:HQ_INSTALL_DIR
 
-          "HQ_SYNC_DESKTOP_ALT_APP=$app" | Out-File -FilePath $env:GITHUB_ENV -Append
-          "HQ_INSTALL_DIR=$installDir" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "app=$app" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           Write-Host "Installed application: $app"
 
       - name: Live smoke test installed application
         env:
           HQ_SYNC_DESKTOP_ALT_LIVE: "1"
+          HQ_SYNC_DESKTOP_ALT_APP: ${{ steps.install.outputs.app }}
         run: pnpm vitest run --config e2e/desktop-alt/vitest.config.ts e2e/desktop-alt/smoke-pages.spec.ts
 
-      - name: Uninstall production package
-        if: always() && steps.install.outcome == 'success'
+      - name: List installed files on failure
+        if: failure()
         shell: pwsh
         run: |
-          & "scripts\windows-installer-e2e.ps1" -Action uninstall -InstallDir $env:HQ_INSTALL_DIR
+          if (Test-Path -LiteralPath $env:HQ_INSTALL_DIR) {
+            Get-ChildItem -LiteralPath $env:HQ_INSTALL_DIR -Recurse | Select-Object FullName, Length, LastWriteTime | Format-Table -AutoSize
+          }
 
       - name: Upload application logs on failure
         if: failure()
@@ -197,6 +199,10 @@ jobs:
         with:
           name: windows-installer-e2e-logs
           if-no-files-found: warn
-          path: |
-            ~/.hq/logs/**
-            ${{ runner.temp }}/hq-installer-e2e/**
+          path: ~/.hq/logs/**
+
+      - name: Uninstall production package
+        if: always()
+        shell: pwsh
+        run: |
+          & "scripts\windows-installer-e2e.ps1" -Action uninstall -InstallDir $env:HQ_INSTALL_DIR

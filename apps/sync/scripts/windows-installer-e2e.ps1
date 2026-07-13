@@ -58,11 +58,10 @@ if ($Action -eq "install") {
 
   Wait-Until -Condition { Test-Path -LiteralPath $resolvedInstallDir } -TimeoutSeconds 30 -FailureMessage "Installer did not create $resolvedInstallDir"
 
-  $apps = @(Get-ChildItem -LiteralPath $resolvedInstallDir -Filter "*.exe" -File |
-      Where-Object { $_.Name -notmatch "(?i)uninstall" })
+  $apps = @(Get-ChildItem -LiteralPath $resolvedInstallDir -Filter "hq-sync-menubar.exe" -File)
   if ($apps.Count -ne 1) {
     $names = ($apps | ForEach-Object Name) -join ", "
-    throw "Expected one installed application executable, found $($apps.Count): $names"
+    throw "Expected one installed hq-sync-menubar.exe, found $($apps.Count): $names"
   }
 
   $machine = Get-PeMachine $apps[0].FullName
