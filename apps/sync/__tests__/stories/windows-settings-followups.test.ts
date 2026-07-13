@@ -63,7 +63,8 @@ describe('Windows Node-backed launcher audit', () => {
   it('provides both blocking and Tokio-safe shell-shim constructors', () => {
     expect(paths).toContain('pub fn spawn_command(');
     expect(paths).toContain('pub fn tokio_spawn_command(');
-    expect(paths).toContain('is_windows_shell_script(path)');
+    expect(paths).toContain('std::process::Command::new(path)');
+    expect(paths).toContain('tokio::process::Command::new(path)');
   });
 
   it('routes remaining npm, npx, and hq command sites through shared launchers', () => {

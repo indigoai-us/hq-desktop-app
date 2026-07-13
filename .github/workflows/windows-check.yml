@@ -74,7 +74,10 @@ jobs:
 
       - name: Windows tests
         working-directory: apps/sync/src-tauri
-        run: cargo test --target x86_64-pc-windows-msvc --bins
+        run: |
+          cargo test --target x86_64-pc-windows-msvc --bins
+          cargo test --manifest-path ../../../crates/hq-desktop-core/Cargo.toml paths::tests::test_windows
+          cargo test --manifest-path ../../../crates/hq-desktop-core/Cargo.toml hq_resolver::tests
 
       - name: Install Tauri WebDriver bridge
         run: cargo install tauri-driver --locked

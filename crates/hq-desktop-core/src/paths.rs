@@ -286,40 +286,22 @@ fn candidate_filenames(name: &str) -> Vec<String> {
     }
 }
 
-pub fn is_windows_shell_script(path: &str) -> bool {
-    Path::new(path)
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("cmd") || ext.eq_ignore_ascii_case("bat"))
-}
-
 pub fn spawn_command(path: &str, args: &[&str]) -> std::process::Command {
-    let mut cmd = if cfg!(target_os = "windows") && is_windows_shell_script(path) {
-        let mut c = std::process::Command::new("cmd.exe");
-        c.arg("/c").arg(path).args(args);
-        c
-    } else {
-        let mut c = std::process::Command::new(path);
-        c.args(args);
-        c
-    };
+    // On Windows, std::process::Command recognizes .cmd/.bat programs and
+    // performs its own cmd.exe dispatch with batch-aware argument escaping.
+    // Keep the program and arguments structured here: manually invoking
+    // cmd.exe would turn caller-controlled HQ arguments into shell syntax.
+    let mut cmd = std::process::Command::new(path);
+    cmd.args(args);
     no_window(&mut cmd);
     cmd
 }
 
-/// Tokio equivalent of [`spawn_command`]. Windows npm-installed tools are
-/// `.cmd`/`.bat` shims and must be launched through `cmd.exe`; native binaries
-/// and every non-Windows command continue to execute directly.
+/// Tokio equivalent of [`spawn_command`]. Tokio wraps std::process::Command,
+/// so Windows npm shims retain Rust's batch-aware dispatch and escaping.
 pub fn tokio_spawn_command(path: &str, args: &[&str]) -> tokio::process::Command {
-    let mut cmd = if cfg!(target_os = "windows") && is_windows_shell_script(path) {
-        let mut c = tokio::process::Command::new("cmd.exe");
-        c.arg("/c").arg(path).args(args);
-        c
-    } else {
-        let mut c = tokio::process::Command::new(path);
-        c.args(args);
-        c
-    };
+    let mut cmd = tokio::process::Command::new(path);
+    cmd.args(args);
     no_window_tokio(&mut cmd);
     cmd
 }
@@ -636,20 +618,35 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     #[test]
-    fn test_windows_shell_shims_use_cmd_for_blocking_and_tokio_commands() {
+    fn test_windows_shell_shims_keep_program_and_arguments_structured() {
         let npm = r"C:\Program Files\nodejs\npm.cmd";
         let blocking = spawn_command(npm, &["--version"]);
-        assert_eq!(blocking.get_program(), "cmd.exe");
-        assert_eq!(
-            blocking.get_args().collect::<Vec<_>>(),
-            vec!["/c", npm, "--version"]
-        );
+        assert_eq!(blocking.get_program(), npm);
+        assert_eq!(blocking.get_args().collect::<Vec<_>>(), vec!["--version"]);
 
         let asynchronous = tokio_spawn_command(npm, &["--version"]);
-        assert_eq!(asynchronous.as_std().get_program(), "cmd.exe");
+        assert_eq!(asynchronous.as_std().get_program(), npm);
         assert_eq!(
             asynchronous.as_std().get_args().collect::<Vec<_>>(),
-            vec!["/c", npm, "--version"]
+            vec!["--version"]
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_windows_resolved_npm_shim_executes_without_a_console_shell_command() {
+        let npm = resolve_bin("npm");
+        assert!(
+            npm.to_ascii_lowercase().ends_with("npm.cmd"),
+            "expected npm.cmd from the Windows resolver, got {npm}"
+        );
+        let output = spawn_command(&npm, &["--version"])
+            .output()
+            .expect("Rust batch dispatch should start npm.cmd");
+        assert!(
+            output.status.success(),
+            "npm.cmd --version failed: {}",
+            String::from_utf8_lossy(&output.stderr)
         );
     }
 

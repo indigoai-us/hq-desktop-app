@@ -259,7 +259,11 @@ mod tests {
         let invocation = HqInvocation::Npx;
         let cmd = invocation.command();
         let std_cmd = cmd.as_std();
-        assert_eq!(std_cmd.get_program(), "npx");
+        let expected_program = paths::resolve_bin("npx");
+        assert_eq!(
+            std_cmd.get_program(),
+            std::ffi::OsStr::new(&expected_program)
+        );
         let args: Vec<&str> = std_cmd
             .get_args()
             .map(|a| a.to_str().unwrap_or(""))
