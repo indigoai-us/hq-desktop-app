@@ -215,6 +215,21 @@ fn extended_search_dirs() -> Vec<PathBuf> {
         dirs.push(home.join("scoop").join("shims"));
     }
 
+    // Official Node.js Windows installers place node.exe and the npm/npx
+    // command shims here. Do not rely only on the inherited PATH: tray apps
+    // and start-at-login processes can retain the pre-install environment
+    // until the next Windows sign-in even though a new terminal sees Node.
+    for variable in ["ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"] {
+        if let Some(root) = std::env::var_os(variable) {
+            dirs.push(PathBuf::from(root).join("nodejs"));
+        }
+    }
+
+    // npm's per-user global prefix on Windows.
+    if let Some(app_data) = std::env::var_os("APPDATA") {
+        dirs.push(PathBuf::from(app_data).join("npm"));
+    }
+
     if let Ok(local_app) = std::env::var("LOCALAPPDATA") {
         dirs.push(
             PathBuf::from(local_app)
@@ -271,24 +286,23 @@ fn candidate_filenames(name: &str) -> Vec<String> {
     }
 }
 
-pub fn is_windows_shell_script(path: &str) -> bool {
-    Path::new(path)
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("cmd") || ext.eq_ignore_ascii_case("bat"))
+pub fn spawn_command(path: &str, args: &[&str]) -> std::process::Command {
+    // On Windows, std::process::Command recognizes .cmd/.bat programs and
+    // performs its own cmd.exe dispatch with batch-aware argument escaping.
+    // Keep the program and arguments structured here: manually invoking
+    // cmd.exe would turn caller-controlled HQ arguments into shell syntax.
+    let mut cmd = std::process::Command::new(path);
+    cmd.args(args);
+    no_window(&mut cmd);
+    cmd
 }
 
-pub fn spawn_command(path: &str, args: &[&str]) -> std::process::Command {
-    let mut cmd = if cfg!(target_os = "windows") && is_windows_shell_script(path) {
-        let mut c = std::process::Command::new("cmd.exe");
-        c.arg("/c").arg(path).args(args);
-        c
-    } else {
-        let mut c = std::process::Command::new(path);
-        c.args(args);
-        c
-    };
-    no_window(&mut cmd);
+/// Tokio equivalent of [`spawn_command`]. Tokio wraps std::process::Command,
+/// so Windows npm shims retain Rust's batch-aware dispatch and escaping.
+pub fn tokio_spawn_command(path: &str, args: &[&str]) -> tokio::process::Command {
+    let mut cmd = tokio::process::Command::new(path);
+    cmd.args(args);
+    no_window_tokio(&mut cmd);
     cmd
 }
 
@@ -602,6 +616,66 @@ mod tests {
         no_window_tokio(&mut cmd);
     }
 
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_windows_shell_shims_keep_program_and_arguments_structured() {
+        let npm = r"C:\Program Files\nodejs\npm.cmd";
+        let blocking = spawn_command(npm, &["--version"]);
+        assert_eq!(blocking.get_program(), npm);
+        assert_eq!(blocking.get_args().collect::<Vec<_>>(), vec!["--version"]);
+
+        let asynchronous = tokio_spawn_command(npm, &["--version"]);
+        assert_eq!(asynchronous.as_std().get_program(), npm);
+        assert_eq!(
+            asynchronous.as_std().get_args().collect::<Vec<_>>(),
+            vec!["--version"]
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_windows_resolved_npm_shim_executes_without_a_console_shell_command() {
+        let npm = resolve_bin("npm");
+        assert!(
+            npm.to_ascii_lowercase().ends_with("npm.cmd"),
+            "expected npm.cmd from the Windows resolver, got {npm}"
+        );
+        let output = spawn_command(&npm, &["--version"])
+            .output()
+            .expect("Rust batch dispatch should start npm.cmd");
+        assert!(
+            output.status.success(),
+            "npm.cmd --version failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_windows_native_executables_stay_direct() {
+        let command = tokio_spawn_command("node.exe", &["--version"]);
+        assert_eq!(command.as_std().get_program(), "node.exe");
+        assert_eq!(
+            command.as_std().get_args().collect::<Vec<_>>(),
+            vec!["--version"]
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_windows_search_dirs_include_standard_node_install() {
+        let program_files = std::env::var_os("ProgramFiles")
+            .map(PathBuf::from)
+            .expect("Windows test environment must define ProgramFiles");
+        let expected = program_files.join("nodejs");
+        assert!(
+            extended_search_dirs().iter().any(|dir| dir == &expected),
+            "Windows resolver must search the standard Node installer directory: {}",
+            expected.display()
+        );
+    }
+
+    #[cfg(not(target_os = "windows"))]
     #[test]
     fn test_resolve_bin_in_dirs_prefers_managed_toolchain_over_user_npm_global() {
         let tmp = tempfile::TempDir::new().unwrap();
@@ -620,6 +694,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(target_os = "windows"))]
     #[test]
     fn test_child_path_includes_homebrew() {
         let path = child_path();
@@ -645,6 +720,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(target_os = "windows"))]
     #[test]
     fn test_managed_toolchain_path_matches_installer() {
         let home = PathBuf::from("/Users/testuser");

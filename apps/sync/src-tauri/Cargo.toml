@@ -1,6 +1,6 @@
 [package]
 name = "hq-sync-menubar"
-version = "0.10.15"
+version = "0.10.16"
 edition = "2021"
 
 [build-dependencies]
@@ -188,6 +188,7 @@ path = "examples/emit-sample-journal.rs"
 required-features = ["journal-cli"]
 
 [dev-dependencies]
+hq-desktop-core = { path = "../../../crates/hq-desktop-core", features = ["test-support"] }
 tempfile = "3"
 wiremock = "0.6"
 tauri = { version = "2", features = ["test"] }

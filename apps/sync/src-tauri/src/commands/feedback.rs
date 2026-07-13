@@ -9,8 +9,6 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use tokio::process::Command;
-
 use crate::commands::config::{read_hq_config_lenient, MenubarPrefs};
 use crate::util::logfile::log;
 use crate::util::paths;
@@ -64,8 +62,7 @@ pub async fn submit_bug_report(title: String, body: String) -> Result<(), String
     log("feedback", &format!("submitting bug report: {title}"));
 
     let args = bug_report_args(&title, &body_path);
-    let mut cmd = Command::new(&hq);
-    paths::no_window_tokio(&mut cmd);
+    let mut cmd = paths::tokio_spawn_command(&hq, &[]);
     let result = cmd
         .args(&args)
         .env("PATH", paths::child_path())

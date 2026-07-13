@@ -27,7 +27,6 @@ use serde::Serialize;
 use serde_json::Value;
 use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::Command;
 
 use crate::commands::config::{read_hq_config_lenient, MenubarPrefs};
 use crate::util::logfile::log;
@@ -71,8 +70,7 @@ fn resolve_hq_folder() -> PathBuf {
 async fn run_hq_json(args: &[&str]) -> Result<Value, String> {
     let hq = paths::resolve_bin("hq");
     let folder = resolve_hq_folder();
-    let mut cmd = Command::new(&hq);
-    paths::no_window_tokio(&mut cmd);
+    let mut cmd = paths::tokio_spawn_command(&hq, &[]);
     let output = cmd
         .args(args)
         // `hq` is a `#!/usr/bin/env node` script; a Dock/launchd-spawned app
@@ -224,8 +222,7 @@ async fn stream_hq(app: &AppHandle, op: &str, name: &str, args: Vec<String>) -> 
         "packages",
         &format!("stream `hq {}` (op={op}, name={name})", args.join(" ")),
     );
-    let mut cmd = Command::new(&hq);
-    paths::no_window_tokio(&mut cmd);
+    let mut cmd = paths::tokio_spawn_command(&hq, &[]);
     let mut child = cmd
         .args(&args)
         // node-shebang PATH fix — see run_hq_json.

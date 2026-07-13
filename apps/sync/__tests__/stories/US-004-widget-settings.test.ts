@@ -28,17 +28,16 @@ import { invoke } from '@tauri-apps/api/core';
 import WidgetSettings from '../../src/components/WidgetSettings.svelte';
 
 const root = (...parts: string[]) => resolve(process.cwd(), ...parts);
+const source = (...parts: string[]) =>
+  readFileSync(root(...parts), 'utf8').replace(/\r\n/g, '\n');
 
-const widgetSettingsSource = readFileSync(root('src/components/WidgetSettings.svelte'), 'utf8');
-const settingsPageSource = readFileSync(
-  root('src/desktop-alt/pages/SettingsPage.svelte'),
-  'utf8',
-);
-const routeSource = readFileSync(root('src/desktop-alt/route.ts'), 'utf8');
-const widgetRs = readFileSync(root('src-tauri/src/commands/widget.rs'), 'utf8');
-const settingsRs = readFileSync(root('src-tauri/src/commands/settings.rs'), 'utf8');
-const mainRs = readFileSync(root('src-tauri/src/main.rs'), 'utf8');
-const configRs = readFileSync(root('../../crates/hq-desktop-core/src/config.rs'), 'utf8');
+const widgetSettingsSource = source('src/components/WidgetSettings.svelte');
+const settingsPageSource = source('src/desktop-alt/pages/SettingsPage.svelte');
+const routeSource = source('src/desktop-alt/route.ts');
+const widgetRs = source('src-tauri/src/commands/widget.rs');
+const settingsRs = source('src-tauri/src/commands/settings.rs');
+const mainRs = source('src-tauri/src/main.rs');
+const configRs = source('../../crates/hq-desktop-core/src/config.rs');
 
 const mockInvoke = vi.mocked(invoke);
 
@@ -532,7 +531,7 @@ describe('US-004: Widget settings (enable/disable, display, persistence)', () =>
       expect(toggleButton().getAttribute('aria-checked')).toBe('true');
     });
 
-    it('source contract: config.rs skip_serializing_if on widget fields; settings.rs unwrap_or(true) both branches; main launches setup_widget_window; setup no-ops when disabled', () => {
+    it('source contract: widget fields preserve explicit values and use the platform default when absent', () => {
       // Typed fields with skip_serializing_if (merge preservation on unrelated saves)
       expect(configRs).toMatch(/pub widget_enabled:\s*Option<bool>/);
       expect(configRs).toMatch(/pub widget_display:\s*Option<String>/);
@@ -547,13 +546,13 @@ describe('US-004: Widget settings (enable/disable, display, persistence)', () =>
       expect(displayAttr).toMatch(/skip_serializing_if\s*=\s*"Option::is_none"/);
 
       // settings.rs default ON in no-file branch AND existing-file branch
-      expect(settingsRs).toMatch(/widget_enabled:\s*Some\(true\)/);
-      expect(settingsRs).toMatch(
-        /widget_enabled:\s*Some\(prefs\.widget_enabled\.unwrap_or\(true\)\)/,
-      );
+      expect(settingsRs).toMatch(/const fn default_widget_enabled\(\)\s*->\s*bool/);
+      expect(settingsRs).toContain('!cfg!(target_os = "windows")');
+      expect(settingsRs).toMatch(/widget_enabled:\s*Some\(default_widget_enabled\(\)\)/);
+      expect(settingsRs).toMatch(/widget_enabled[\s\S]*?unwrap_or_else\(default_widget_enabled\)/);
       // Both occurrences of default-on for widget_enabled
-      const unwrapMatches = settingsRs.match(/widget_enabled\.unwrap_or\(true\)/g) ?? [];
-      const someTrueMatches = settingsRs.match(/widget_enabled:\s*Some\(true\)/g) ?? [];
+      const unwrapMatches = settingsRs.match(/unwrap_or_else\(default_widget_enabled\)/g) ?? [];
+      const someTrueMatches = settingsRs.match(/Some\(default_widget_enabled\(\)\)/g) ?? [];
       // no-file uses Some(true); with-file uses unwrap_or(true) — together both branches
       expect(someTrueMatches.length + unwrapMatches.length).toBeGreaterThanOrEqual(2);
       expect(unwrapMatches.length).toBeGreaterThanOrEqual(1);

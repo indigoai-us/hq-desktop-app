@@ -405,7 +405,7 @@ describe('US-012: never hide under pointer or during reply', () => {
       const src = readFileSync(
         resolve(process.cwd(), 'src/components/Widget.svelte'),
         'utf8',
-      );
+      ).replace(/\r\n/g, '\n');
       // closePinned + hover-close timeout + dismiss/open-to-empty all reset the
       // pointer hold, since those unmounts never fire a pointerleave.
       expect(src.match(/setPointerHold\(false\)/g)?.length ?? 0).toBeGreaterThanOrEqual(4);

@@ -458,11 +458,19 @@ mod tests {
     #[test]
     fn test_build_watch_runner_args_uses_npx_runner() {
         let args = build_watch_runner_args("/Users/test/HQ");
-        // Resolved npx path; varies by machine. Asserting it ends with "npx"
-        // avoids hard-coding /opt/homebrew/bin vs ~/.npm-global/bin.
+        // Resolved path varies by machine; Windows uses npm's npx.cmd shim.
+        let expected = if cfg!(target_os = "windows") {
+            "npx.cmd"
+        } else {
+            "npx"
+        };
+        let actual = std::path::Path::new(&args.cmd)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(&args.cmd);
         assert!(
-            args.cmd.ends_with("npx"),
-            "expected resolved npx path, got: {}",
+            actual.eq_ignore_ascii_case(expected),
+            "expected resolved {expected} path, got: {}",
             args.cmd
         );
     }

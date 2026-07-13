@@ -29,6 +29,8 @@ const windowLabel = getCurrentWindow().label;
 // a solid black rectangle when MeetingsWindow's #18181b body bg
 // overrode App.svelte's `background: transparent`.
 document.documentElement.dataset.window = windowLabel;
+const isWindows = /Windows/i.test(navigator.userAgent);
+document.documentElement.dataset.platform = isWindows ? 'windows' : 'other';
 
 let Component: typeof App;
 if (windowLabel === 'meetings-window') {

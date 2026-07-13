@@ -658,6 +658,17 @@
     overflow: hidden;
   }
 
+  /* Windows has no NSVisualEffectView behind the transparent webview. Give
+     the tray popup a fully opaque surface so other windows never bleed
+     through its content; macOS keeps the native glass treatment above. */
+  :global(html[data-platform='windows']) .mbpop {
+    background: #18181b;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    border-color: rgba(255, 255, 255, 0.16);
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
+  }
+
   .mbpop-content {
     width: 100%;
     min-height: 0;

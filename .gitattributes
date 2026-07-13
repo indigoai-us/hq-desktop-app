@@ -1,0 +1,16 @@
+* text=auto
+
+# Source-contract tests inspect source text directly; keep source/config files
+# stable across macOS, Linux, and Windows checkouts.
+*.json text eol=lf
+*.mjs text eol=lf
+*.rs text eol=lf
+*.svelte text eol=lf
+*.ts text eol=lf
+*.toml text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# Native Windows launchers retain their conventional line endings.
+*.bat text eol=crlf
+*.cmd text eol=crlf

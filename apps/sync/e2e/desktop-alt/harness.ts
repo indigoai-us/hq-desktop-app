@@ -60,7 +60,7 @@ export function reportDriverMode(reason?: string): void {
 }
 
 export function readRepoFile(path: string): string {
-  return readFileSync(join(repoRoot, path), 'utf8');
+  return readFileSync(join(repoRoot, path), 'utf8').replace(/\r\n/g, '\n');
 }
 
 export function assertNoRecursiveSecretFields(payload: unknown): void {

@@ -333,8 +333,7 @@ async fn stream_install(
         &format!("install `hq {}` (scope={scope_label})", argv.join(" ")),
     );
 
-    let mut cmd = tokio::process::Command::new(&hq);
-    paths::no_window_tokio(&mut cmd);
+    let mut cmd = paths::tokio_spawn_command(&hq, &[]);
     let mut child = cmd
         .args(&argv)
         // node-shebang PATH fix — same as packages.rs.
@@ -472,8 +471,7 @@ pub async fn publish_marketplace_pack(
     let path_str = dir.to_string_lossy().to_string();
     log("marketplace", &format!("publish `hq publish {path_str}`"));
 
-    let mut cmd = tokio::process::Command::new(&hq);
-    paths::no_window_tokio(&mut cmd);
+    let mut cmd = paths::tokio_spawn_command(&hq, &[]);
     let mut child = cmd
         .args(["publish", &path_str])
         .env("PATH", paths::child_path())
