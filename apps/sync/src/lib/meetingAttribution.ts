@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { humanCompanyLabel } from './visible-labels';
 
 export const UNATTRIBUTED = 'unknown';
 
@@ -57,7 +58,7 @@ export function attributionCompanyName(
   if (!companyId || isUnattributed(bot)) return null;
   const match = memberships.find((m) => m.companyUid === companyId);
   if (!match) return null;
-  return match.companyName?.trim() || match.companyUid;
+  return humanCompanyLabel(match);
 }
 
 export function attributionLabel(
@@ -78,7 +79,7 @@ export function companyOptions(
     if (status && status !== 'active') continue;
     byUid.set(uid, {
       companyUid: uid,
-      label: membership.companyName?.trim() || uid,
+      label: humanCompanyLabel(membership),
     });
   }
   return [...byUid.values()].sort((a, b) =>

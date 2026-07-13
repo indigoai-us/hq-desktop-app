@@ -15,12 +15,19 @@ describe('memberKindFromUid', () => {
 });
 
 describe('displayNameFromMember', () => {
-  it('prefers displayName, then email, then uid', () => {
+  it('prefers displayName, then email, then a non-UID fallback', () => {
     expect(displayNameFromMember({ displayName: 'Ada', email: 'a@x.com', personUid: 'prs_1' })).toBe(
       'Ada',
     );
     expect(displayNameFromMember({ email: 'a@x.com', personUid: 'prs_1' })).toBe('a@x.com');
-    expect(displayNameFromMember({ personUid: 'prs_1' })).toBe('prs_1');
+    expect(displayNameFromMember({ personUid: 'prs_1' })).toBe('Unknown member');
+    expect(displayNameFromMember({ personUid: 'prs_1' })).not.toContain('prs_');
+    expect(
+      displayNameFromMember(
+        { personUid: 'prs_1' },
+        { email: 'resolved@example.com', displayName: null },
+      ),
+    ).toBe('resolved@example.com');
   });
 });
 
@@ -71,6 +78,15 @@ describe('normalizeCompanyTeamTelemetry', () => {
   it('accepts members key and empty payloads', () => {
     expect(normalizeCompanyTeamTelemetry({ members: [] }).empty).toBe(true);
     expect(normalizeCompanyTeamTelemetry(null).empty).toBe(true);
+  });
+
+  it('joins UID-only telemetry rows to contact labels', () => {
+    const view = normalizeCompanyTeamTelemetry(
+      { perMember: [{ personUid: 'prs_ada', totals: {} }] },
+      { memberLabelsById: { prs_ada: { email: 'ada@example.com' } } },
+    );
+    expect(view.humans[0].displayName).toBe('ada@example.com');
+    expect(view.humans[0].displayName).not.toContain('prs_');
   });
 });
 

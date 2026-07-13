@@ -4,6 +4,7 @@
   import * as Sentry from '@sentry/svelte';
   import type { Workspace } from '../lib/workspaces';
   import { parseLocalEnvFailure } from '../lib/copy-prompts';
+  import { sanitizeVisibleIdentifiers } from '../lib/visible-labels';
   import CopyPromptButton from './CopyPromptButton.svelte';
   import OpenInClaudeCodeButton from './OpenInClaudeCodeButton.svelte';
   import SyncModeToggle from './SyncModeToggle.svelte';
@@ -45,6 +46,9 @@
   };
   const sortedWorkspaces = $derived(
     [...workspaces].sort((a, b) => stateOrder[a.state] - stateOrder[b.state]),
+  );
+  const visibleCloudError = $derived(
+    sanitizeVisibleIdentifiers(cloudError, { companies: workspaces }),
   );
 
   // Per-row connect state. Keys are slugs; absent = idle, true = in flight,
@@ -94,9 +98,7 @@
       case 'local-only':
         return 'Local folder exists but no matching cloud vault — click the cloud icon to connect';
       case 'broken':
-        return w.brokenReason
-          ? `Manifest is out of sync with cloud — click Connect to reconcile.\n${w.brokenReason}`
-          : 'Manifest is out of sync with cloud — click Connect to reconcile';
+        return `${w.displayName} is out of sync with the cloud — click Connect to reconcile`;
     }
   }
 
@@ -185,7 +187,7 @@
   {#if !cloudReachable}
     <!-- Soft notice: cloud unreachable. We still rendered local data, so this
          is a heads-up rather than a blocker. -->
-    <div class="cloud-warning" title={cloudError ?? ''}>
+    <div class="cloud-warning" title={visibleCloudError}>
       <span class="cloud-warning-text">Cloud unreachable — showing local folders only</span>
       <CopyPromptButton
         variant="compact"
@@ -244,7 +246,7 @@
             <span class="row-meta-line">
               <span
                 class="row-meta row-meta-error"
-                title={w.brokenReason ?? 'Manifest cloud_uid does not match cloud reality'}
+                title={`${w.displayName} needs to be reconnected to the cloud`}
               >
                 {#if typeof connectState[w.slug] === 'string'}
                   Reconnect failed — click to retry

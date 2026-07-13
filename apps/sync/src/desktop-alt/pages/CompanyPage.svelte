@@ -167,7 +167,7 @@
           title={!cloudReachable
             ? 'Cloud unreachable — connecting is paused until it\u2019s back'
             : company.state === 'broken'
-              ? (company.brokenReason ?? 'Retry connecting this company to the cloud')
+              ? `Retry connecting ${company.displayName} to the cloud`
               : "Create this company's cloud vault and start syncing it"}
           disabled={connectBusy || !cloudReachable}
           onclick={() => void handleConnect()}
@@ -222,7 +222,7 @@
       {:else if tab === 'knowledge'}
         <CompanyKnowledgePanel slug={company.slug} />
       {:else if tab === 'team'}
-        <TeamPanel slug={company.slug} />
+        <TeamPanel slug={company.slug} companyUid={company.cloudUid} />
       {:else if tab === 'activity'}
         <ActivityPanel slug={company.slug} {cloudBacked} />
       {:else if tab === 'deployments'}
