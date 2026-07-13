@@ -96,10 +96,13 @@ describe('Windows Recall SDK sidecar bundle parity', () => {
   it('builds and verifies the launcher in release before Tauri bundles Windows', () => {
     const buildIdx = releaseWorkflow.indexOf('- name: Build Recall SDK sidecar');
     const bundleIdx = releaseWorkflow.indexOf('- name: Tauri build');
+    const nextStepIdx = releaseWorkflow.indexOf('\n      - name:', bundleIdx + 1);
+    const bundleStep = releaseWorkflow.slice(bundleIdx, nextStepIdx);
 
     expect(buildIdx).toBeGreaterThan(-1);
     expect(bundleIdx).toBeGreaterThan(buildIdx);
     expect(releaseWorkflow).toContain('RECALL_SIDECAR_TARGET: ${{ matrix.target }}');
+    expect(bundleStep).toContain('RECALL_SIDECAR_TARGET: ${{ matrix.target }}');
     expect(releaseWorkflow).toMatch(/pnpm\s+-C\s+sidecar\/recall-sdk-bridge\s+build/);
     expect(releaseWorkflow).toContain('recall-desktop-sdk-${{ matrix.target }}.exe');
     expect(releaseWorkflow).not.toContain('skipping launcher build');
