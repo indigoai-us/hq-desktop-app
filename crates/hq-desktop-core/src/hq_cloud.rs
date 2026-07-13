@@ -249,7 +249,15 @@
 ///
 /// `~6.12.1` -> `~6.13.5`: pull in the runner fixes for transient offline blips
 /// and the exit-2 path, matching the legacy hq-sync pin.
-pub const HQ_CLOUD_VERSION: &str = "~6.13.5";
+///
+/// `~6.13.5` -> `~6.14.3`: adopt the 6.14 line so the menubar runner ships the
+/// session-log capture + `workspace/.session-logs` S3-sync carve-out
+/// (hq-cloud#173) — without this the tilde pin stays on 6.13 and the runner
+/// never uploads the reindex-captured Claude Code transcripts. Also inherits
+/// the 6.14.0-6.14.2 changes (default local-company personal sync, the
+/// `sessions/` push-only pull exclusion, and the doubled-path key-poisoning
+/// hardening) the pin was behind.
+pub const HQ_CLOUD_VERSION: &str = "~6.14.3";
 
 /// Package name for the runner. Used by both the spawn site below and the
 /// startup prewarm. Paired with `HQ_CLOUD_VERSION` to form the full
