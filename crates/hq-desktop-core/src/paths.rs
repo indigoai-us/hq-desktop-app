@@ -307,6 +307,23 @@ pub fn spawn_command(path: &str, args: &[&str]) -> std::process::Command {
     cmd
 }
 
+/// Tokio equivalent of [`spawn_command`]. Windows npm-installed tools are
+/// `.cmd`/`.bat` shims and must be launched through `cmd.exe`; native binaries
+/// and every non-Windows command continue to execute directly.
+pub fn tokio_spawn_command(path: &str, args: &[&str]) -> tokio::process::Command {
+    let mut cmd = if cfg!(target_os = "windows") && is_windows_shell_script(path) {
+        let mut c = tokio::process::Command::new("cmd.exe");
+        c.arg("/c").arg(path).args(args);
+        c
+    } else {
+        let mut c = tokio::process::Command::new(path);
+        c.args(args);
+        c
+    };
+    no_window_tokio(&mut cmd);
+    cmd
+}
+
 /// Build a PATH value suitable for handing to a spawned child process.
 ///
 /// **Why this exists:** even after we resolve a launcher binary to an absolute
@@ -615,6 +632,36 @@ mod tests {
     fn test_no_window_tokio_does_not_panic() {
         let mut cmd = tokio::process::Command::new("cmd.exe");
         no_window_tokio(&mut cmd);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_windows_shell_shims_use_cmd_for_blocking_and_tokio_commands() {
+        let npm = r"C:\Program Files\nodejs\npm.cmd";
+        let blocking = spawn_command(npm, &["--version"]);
+        assert_eq!(blocking.get_program(), "cmd.exe");
+        assert_eq!(
+            blocking.get_args().collect::<Vec<_>>(),
+            vec!["/c", npm, "--version"]
+        );
+
+        let asynchronous = tokio_spawn_command(npm, &["--version"]);
+        assert_eq!(asynchronous.as_std().get_program(), "cmd.exe");
+        assert_eq!(
+            asynchronous.as_std().get_args().collect::<Vec<_>>(),
+            vec!["/c", npm, "--version"]
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_windows_native_executables_stay_direct() {
+        let command = tokio_spawn_command("node.exe", &["--version"]);
+        assert_eq!(command.as_std().get_program(), "node.exe");
+        assert_eq!(
+            command.as_std().get_args().collect::<Vec<_>>(),
+            vec!["--version"]
+        );
     }
 
     #[cfg(target_os = "windows")]

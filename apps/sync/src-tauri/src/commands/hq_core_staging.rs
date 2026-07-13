@@ -432,8 +432,7 @@ pub(crate) fn resolve_hq_folder() -> std::path::PathBuf {
 /// prod-update and staging paths build the invocation identically.
 pub(crate) fn rescue_command() -> tokio::process::Command {
     let npx = paths::resolve_bin("npx");
-    let mut cmd = tokio::process::Command::new(&npx);
-    paths::no_window_tokio(&mut cmd);
+    let mut cmd = paths::tokio_spawn_command(&npx, &[]);
     cmd.arg("-y")
         .arg(format!(
             "--package={}@{}",

@@ -3,7 +3,7 @@
   import { getVersion } from '@tauri-apps/api/app';
   import { emit } from '@tauri-apps/api/event';
   import { open as openUrl } from '@tauri-apps/plugin-shell';
-  import type { SettingsTab } from '../route';
+  import { formatHqFolderMeta, normalizeNativePath, type SettingsTab } from '../route';
   import { emitDesktopTelemetry } from '../../lib/desktop-telemetry';
   import { postOptIn } from '../../lib/onboarding-telemetry';
   import { permissionState, loadMeetingPermissions } from '../../lib/permissionState.svelte';
@@ -165,7 +165,7 @@
   const displayedChannel = $derived<Channel>(
     releaseChannel ?? (availableChannels.includes('beta') ? 'beta' : 'stable'),
   );
-  const hqPathLabel = $derived(hqPath ? hqPath.replace(/^\/Users\/[^/]+/, '~') : 'HQ folder not set');
+  const hqPathLabel = $derived(hqPath ? formatHqFolderMeta(hqPath) : 'HQ folder not set');
   const coreHasDrift = $derived((coreState?.driftReport.count ?? 0) > 0);
   const coreNeedsUpdate = $derived(
     !!coreState && (coreState.versionBehind || coreHasDrift),
@@ -227,7 +227,7 @@
         // block the rest of Settings from rendering → degrade to Personal-only.
         invoke<CompanyMembership[]>('meetings_list_memberships').catch(() => []),
       ]);
-      hqPath = settings.hqPath;
+      hqPath = settings.hqPath ? normalizeNativePath(settings.hqPath) : null;
       syncOnLaunch = settings.syncOnLaunch ?? true;
       realtimeSync = settings.realtimeSync ?? true;
       personalSyncEnabled = settings.personalSyncEnabled ?? true;
@@ -277,7 +277,7 @@
     try {
       const picked = await invoke<string | null>('pick_folder');
       if (picked !== null) {
-        hqPath = picked;
+        hqPath = normalizeNativePath(picked);
         await saveSettings();
       }
     } catch (err) {
@@ -649,7 +649,7 @@
   async function refreshSettingsSilently() {
     try {
       const settings = await invoke<SettingsWire>('get_settings');
-      hqPath = settings.hqPath;
+      hqPath = settings.hqPath ? normalizeNativePath(settings.hqPath) : null;
       syncOnLaunch = settings.syncOnLaunch ?? true;
       realtimeSync = settings.realtimeSync ?? true;
       personalSyncEnabled = settings.personalSyncEnabled ?? true;
@@ -721,9 +721,9 @@
               <strong>System permission</strong>
               <small>
                 {#if notifPermission === 'granted'}
-                  macOS is allowing notifications from HQ
+                  System notifications are enabled for HQ
                 {:else if notifPermission === 'denied'}
-                  Blocked in macOS — open System Settings to allow
+                  Blocked by system settings — open notification settings to allow
                 {:else}
                   Not enabled yet — allow to see sync &amp; share alerts
                 {/if}
@@ -880,10 +880,10 @@
     <section id="general" class="settings-section">
       <h2>General</h2>
       <div class="settings-card">
-        <label class="setting-row"><span><strong>Start at login</strong><small>Open HQ when macOS starts.</small></span><input type="checkbox" bind:checked={startAtLogin} onchange={applyStartAtLogin} /></label>
+        <label class="setting-row"><span><strong>Start at login</strong><small>Open HQ when your computer starts.</small></span><input type="checkbox" bind:checked={startAtLogin} onchange={applyStartAtLogin} /></label>
         <label class="setting-row"><span><strong>Usage telemetry</strong><small>Share anonymized usage counts to improve HQ. You can turn this off any time.</small></span><input type="checkbox" bind:checked={telemetryEnabled} onchange={applyTelemetryPreference} /></label>
         <div class="setting-row">
-          <span><strong>Version</strong><small>Menubar app build</small></span>
+          <span><strong>Version</strong><small>HQ desktop app build</small></span>
           <span class="version-value">{appVersion ? `v${appVersion}` : '—'}</span>
         </div>
         <div class="setting-row">
@@ -947,11 +947,11 @@
             <strong>Meeting permissions</strong>
             <small>
               {#if !permissionState.meetingPermissions}
-                Checking macOS privacy grants…
+                Checking system privacy permissions…
               {:else if permissionState.meetingPermissions.allRequiredGranted}
                 Accessibility, screen recording &amp; microphone all granted
               {:else}
-                One or more macOS permissions need attention
+                One or more system permissions need attention
               {/if}
             </small>
           </span>
@@ -1023,8 +1023,8 @@
     border-top: 0;
   }
 
-  .setting-row span,
-  .setting-row div {
+  .setting-row > span:first-child,
+  .setting-row > div:first-child {
     display: grid;
     gap: 2px;
     min-width: 0;
@@ -1114,6 +1114,15 @@
     font-size: var(--text-base);
   }
 
+  select {
+    color-scheme: dark;
+  }
+
+  select option {
+    background: var(--v4-raised);
+    color: var(--v4-text-1);
+  }
+
   .gated-row em {
     padding: 3px 7px;
     border: 1px solid var(--v4-hairline);
@@ -1160,13 +1169,16 @@
   }
 
   .platforms button {
+    min-width: 58px;
     height: 26px;
+    padding: 0 10px;
     border: 1px solid var(--v4-hairline);
     border-radius: var(--v4-radius-pill);
     background: transparent;
     color: var(--v4-text-2);
     font: inherit;
     font-size: var(--text-base);
+    cursor: pointer;
   }
 
   .platforms button.active {
