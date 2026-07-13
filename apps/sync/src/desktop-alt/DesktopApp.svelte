@@ -1296,6 +1296,9 @@
     fanoutDone={syncFanoutDoneCount}
     fanoutTotal={syncFanoutTotal}
     errorSummary={titleBarErrorSummary}
+    errorMessage={syncErrorMessage}
+    errorCompany={syncErrorCompany}
+    {hqFolderPath}
     onsync={handleSyncAll}
     oncancel={handleCancelSync}
     onretry={handleSyncAll}
