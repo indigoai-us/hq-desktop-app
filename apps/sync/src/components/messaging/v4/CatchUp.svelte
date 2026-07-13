@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { sanitizeVisibleIdentifiers } from '../../../lib/visible-labels';
+
   export interface CatchUpItem {
     id: string;
     title: string;
@@ -33,7 +35,7 @@
         <button type="button" class="ranked-card" onclick={() => onopen?.(item)}>
           <span class="rank">{item.rank ?? ''}</span>
           <span class="text">
-            <strong>{item.title}</strong>
+            <strong>{sanitizeVisibleIdentifiers(item.title)}</strong>
             <small>{item.detail}</small>
           </span>
         </button>

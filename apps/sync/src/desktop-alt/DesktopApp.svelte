@@ -6,6 +6,7 @@
   import { loadMeetingsCache } from '../lib/meetingsCache';
   import { MESSAGE_PERSON_EVENT, takePendingConversation } from '../lib/pendingConversation';
   import { effectiveTotalFiles as computeEffectiveTotalFiles } from '../lib/effective-total-files';
+  import { sanitizeVisibleIdentifiers } from '../lib/visible-labels';
   import type { Workspace, WorkspacesResult } from '../lib/workspaces';
   import HomePage from './pages/HomePage.svelte';
   import MissionControlPage from './pages/MissionControlPage.svelte';
@@ -59,6 +60,7 @@
   } from './components/CommandPalette.svelte';
   import {
     eventStart,
+    companyLabel,
     isToday,
     sortByStart,
     type GoogleAccount,
@@ -287,10 +289,9 @@
     const startsAt = upcoming ? eventStart(upcoming) : null;
     if (!upcoming || !startsAt) return null;
 
-    const company =
-      (upcoming.sourceCompanyUid
-        ? meetingCompanyNamesByUid.get(upcoming.sourceCompanyUid) ?? upcoming.sourceCompanyUid
-        : null) ?? 'Meetings';
+    const company = upcoming.sourceCompanyUid
+      ? companyLabel(upcoming, meetingCompanyNamesByUid)
+      : 'Meetings';
     const minutes = Math.max(0, Math.ceil((startsAt.getTime() - now.getTime()) / 60000));
     return `${company} · in ${minutes}m`;
   });
@@ -581,7 +582,7 @@
       companies = nextCompanies;
       renderCompanies = nextCompanies;
       renderWorkspaceCount = nextCompanies.length;
-      workspaceError = result.error;
+      workspaceError = sanitizeVisibleIdentifiers(result.error, { companies: result.workspaces });
       writeCachedWorkspaces(result.workspaces);
       // The chrome (V4Sidebar / V4TitleBar / DesktopStatusBar) consumes
       // renderCompanies + renderWorkspaceCount reactively ($derived / $props),
@@ -620,7 +621,7 @@
       landingResolved = true;
     } catch (err) {
       console.error('list_syncable_workspaces failed:', err);
-      workspaceError = String(err);
+      workspaceError = sanitizeVisibleIdentifiers(String(err), { companies: workspaces });
     }
   }
 
