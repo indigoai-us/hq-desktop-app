@@ -226,7 +226,13 @@
   }
 
   .v4-recovery-actions :global(button) {
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     height: 28px;
+    padding-block: 0;
+    line-height: 1;
   }
 
   @media (prefers-reduced-transparency: reduce) {

@@ -72,10 +72,32 @@ jobs:
         working-directory: apps/sync/src-tauri
         run: cargo check --target x86_64-pc-windows-msvc
 
-      # Enabled as the platform graft matures:
+      - name: Windows tests
+        working-directory: apps/sync/src-tauri
+        run: |
+          cargo test --target x86_64-pc-windows-msvc --bins
+          cargo test --manifest-path ../../../crates/hq-desktop-core/Cargo.toml paths::tests::test_windows
+          cargo test --manifest-path ../../../crates/hq-desktop-core/Cargo.toml hq_resolver::tests
+
+      - name: Install Tauri WebDriver bridge
+        run: cargo install tauri-driver --locked
+
+      - name: Verify Microsoft Edge WebDriver
+        shell: pwsh
+        run: |
+          $driver = Get-Command msedgedriver.exe -ErrorAction Stop
+          Write-Host "Using $($driver.Source)"
+
+      - name: Build launchable Windows app
+        run: pnpm tauri build --debug --no-bundle --target x86_64-pc-windows-msvc --config src-tauri/tauri.windows.conf.json
+
+      - name: Live Windows desktop smoke test
+        env:
+          HQ_SYNC_DESKTOP_ALT_LIVE: "1"
+          HQ_SYNC_DESKTOP_ALT_APP: ${{ github.workspace }}\apps\sync\src-tauri\target\x86_64-pc-windows-msvc\debug\hq-sync-menubar.exe
+        run: pnpm vitest run --config e2e/desktop-alt/vitest.config.ts e2e/desktop-alt/smoke-pages.spec.ts
+
+      # Enabled after the existing warning backlog is cleaned up:
       # - name: Clippy (deny warnings)
       #   working-directory: apps/sync/src-tauri
       #   run: cargo clippy --target x86_64-pc-windows-msvc -- -D warnings
-      # - name: Windows tests
-      #   working-directory: apps/sync/src-tauri
-      #   run: cargo test --target x86_64-pc-windows-msvc --bins

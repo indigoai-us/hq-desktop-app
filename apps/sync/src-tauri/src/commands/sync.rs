@@ -528,9 +528,65 @@ fn is_node_too_old(major: u32) -> bool {
 /// runner — names the floor, their current major, and the single fix.
 fn node_too_old_message(current_major: u32) -> String {
     format!(
-        "HQ Sync needs Node {MIN_NODE_MAJOR} or newer to sync — this Mac is running Node {current_major}. \
+        "HQ Sync needs Node {MIN_NODE_MAJOR} or newer to sync — this computer is running Node {current_major}. \
          Please update Node (https://nodejs.org), then try Sync again."
     )
+}
+
+/// Construct the Node probe using the same platform rules as the runner.
+/// Windows must execute the native `node.exe`; Unix keeps `env node` so
+/// nvm/volta/asdf installations remain discoverable through `child_path()`.
+fn node_version_command() -> std::process::Command {
+    #[cfg(target_os = "windows")]
+    let mut cmd = {
+        let node = paths::resolve_bin("node");
+        paths::spawn_command(&node, &["--version"])
+    };
+
+    #[cfg(not(target_os = "windows"))]
+    let mut cmd = {
+        let mut command = std::process::Command::new("/usr/bin/env");
+        paths::no_window(&mut command);
+        command.args(["node", "--version"]);
+        command
+    };
+
+    cmd.env("PATH", paths::child_path());
+    cmd
+}
+
+/// Execute a runtime preflight with enough breadcrumbs to diagnose GUI PATH
+/// drift without exposing the full environment. Paths and version output are
+/// safe operational metadata; tokens and command environments are never logged.
+fn run_runner_probe(
+    label: &str,
+    mut command: std::process::Command,
+) -> Option<std::process::Output> {
+    let program = command.get_program().to_string_lossy().to_string();
+    match command.output() {
+        Ok(output) => {
+            let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            log(
+                "sync.preflight",
+                &format!(
+                    "{label}: program={program:?} success={} code={:?} stdout={version:?}",
+                    output.status.success(),
+                    output.status.code(),
+                ),
+            );
+            Some(output)
+        }
+        Err(error) => {
+            log(
+                "sync.preflight",
+                &format!(
+                    "{label}: program={program:?} spawn_error_kind={:?} error={error}",
+                    error.kind(),
+                ),
+            );
+            None
+        }
+    }
 }
 
 /// Best-effort Node-version preflight. Returns `Some(major)` only when the Node
@@ -539,13 +595,7 @@ fn node_too_old_message(current_major: u32) -> String {
 /// (`env node` against the same `child_path()` we hand the spawned `npx`), which
 /// matters under nvm where that can differ from `resolve_bin("node")`.
 fn preflight_node_too_old() -> Option<u32> {
-    let mut cmd = std::process::Command::new("/usr/bin/env");
-    paths::no_window(&mut cmd);
-    let output = cmd
-        .args(["node", "--version"])
-        .env("PATH", paths::child_path())
-        .output()
-        .ok()?;
+    let output = run_runner_probe("node-version", node_version_command())?;
     if !output.status.success() {
         return None;
     }
@@ -557,7 +607,7 @@ fn preflight_node_too_old() -> Option<u32> {
 /// Message when the runner's interpreter (node/npx) isn't resolvable at all —
 /// the HQ-SYNC-E exit-127 `sh: hq-sync-runner: command not found` crash-loop.
 fn runner_unresolvable_message() -> String {
-    "HQ Sync can't start the sync engine — Node.js wasn't found on this Mac. \
+    "HQ Sync can't start the sync engine — Node.js wasn't found on this computer. \
      Install Node 20 or newer (https://nodejs.org), then reopen HQ Sync."
         .to_string()
 }
@@ -577,19 +627,14 @@ fn runner_unresolvable_reason(node_resolves: bool, npx_resolves: bool) -> Option
 /// the runner's interpreter is *positively* unresolvable (probed and missing);
 /// fails OPEN otherwise. `pub(crate)` so the daemon watcher path can reuse it.
 pub(crate) fn preflight_runner_unresolvable() -> Option<String> {
-    let mut node_cmd = std::process::Command::new("/usr/bin/env");
-    paths::no_window(&mut node_cmd);
-    let node_resolves = node_cmd
-        .args(["node", "--version"])
-        .env("PATH", paths::child_path())
-        .output()
+    let node_resolves = run_runner_probe("node-resolution", node_version_command())
         .map(|o| o.status.success())
         .unwrap_or(false);
 
     let npx_bin = paths::resolve_bin("npx");
-    let npx_resolves = paths::spawn_command(&npx_bin, &["--version"])
-        .env("PATH", paths::child_path())
-        .output()
+    let mut npx_command = paths::spawn_command(&npx_bin, &["--version"]);
+    npx_command.env("PATH", paths::child_path());
+    let npx_resolves = run_runner_probe("npx-resolution", npx_command)
         .map(|o| o.status.success())
         .unwrap_or(false);
 
@@ -1181,13 +1226,20 @@ mod tests {
     #[test]
     fn test_build_sync_spawn_args_cmd() {
         let args = build_sync_spawn_args("/Users/test/HQ", true);
-        // `resolve_bin` may return an absolute path (e.g.
-        // `/opt/homebrew/bin/npx`) on a dev box with npm installed, or the
-        // bare name on a CI box without it. Either way, the trailing file
-        // component must be `npx`.
+        // `resolve_bin` may return an absolute path or a bare name. Windows
+        // resolves npm's command shim (`npx.cmd`); Unix resolves `npx`.
+        let expected = if cfg!(target_os = "windows") {
+            "npx.cmd"
+        } else {
+            "npx"
+        };
+        let actual = std::path::Path::new(&args.cmd)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(&args.cmd);
         assert!(
-            args.cmd == "npx" || args.cmd.ends_with("/npx"),
-            "expected cmd to be `npx` or `*/npx`, got `{}`",
+            actual.eq_ignore_ascii_case(expected),
+            "expected command filename `{expected}`, got `{}`",
             args.cmd
         );
     }
@@ -1310,6 +1362,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_os = "windows"))]
     fn test_build_sync_spawn_args_env_sets_path_with_homebrew() {
         let args = build_sync_spawn_args("/tmp", true);
         let env = args.env.unwrap();
@@ -1321,6 +1374,20 @@ mod tests {
             path.contains("/opt/homebrew/bin"),
             "PATH missing /opt/homebrew/bin: {}",
             path
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn test_build_sync_spawn_args_env_sets_windows_path() {
+        let args = build_sync_spawn_args(r"C:\HQ", true);
+        let env = args.env.unwrap();
+        let path = env
+            .get("PATH")
+            .expect("PATH must be set so npx.cmd can find node");
+        assert!(
+            path.to_ascii_lowercase().contains(r"windows\system32"),
+            "PATH missing Windows system32: {path}",
         );
     }
 
@@ -1612,5 +1679,23 @@ mod tests {
         assert!(runner_unresolvable_reason(false, true).is_some());
         assert!(runner_unresolvable_reason(true, false).is_some());
         assert!(runner_unresolvable_reason(false, false).is_some());
+    }
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn node_version_probe_uses_native_windows_node() {
+        let command = node_version_command();
+        let program = std::path::Path::new(command.get_program())
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
+        assert_eq!(program.to_ascii_lowercase(), "node.exe");
+    }
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn node_version_probe_preserves_env_lookup_on_unix() {
+        let command = node_version_command();
+        assert_eq!(command.get_program(), std::ffi::OsStr::new("/usr/bin/env"));
     }
 }

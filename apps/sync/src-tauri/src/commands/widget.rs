@@ -23,7 +23,7 @@
 //! Settings UI round-trips `widgetEnabled` / `widgetDisplay` via typed
 //! `MenubarPrefs` (US-004). This module still reads those keys untyped from
 //! `~/.hq/menubar.json` on every dispatch so toggles take effect without
-//! restart. Defaults: enabled ON, display = primary.
+//! restart. Defaults: enabled on macOS, disabled on Windows, display = primary.
 //!
 //! ## Anchoring
 //!
@@ -120,11 +120,17 @@ fn read_menubar_json() -> Option<serde_json::Value> {
     serde_json::from_str(&contents).ok()
 }
 
-/// `widgetEnabled` in menubar.json — defaults **true** when missing/unreadable.
+/// Platform default for the floating widget. It complements the macOS tray,
+/// but on Windows it competes with the notification area and taskbar popup.
+const fn default_widget_enabled() -> bool {
+    !cfg!(target_os = "windows")
+}
+
+/// `widgetEnabled` in menubar.json — platform default when missing/unreadable.
 fn widget_enabled() -> bool {
     read_menubar_json()
         .and_then(|j| j.get("widgetEnabled").and_then(|v| v.as_bool()))
-        .unwrap_or(true)
+        .unwrap_or_else(default_widget_enabled)
 }
 
 /// Optional `widgetDisplay` (display localized name). `None` = primary.
@@ -1304,6 +1310,11 @@ fn apply_widget_settings_on_main(app: &AppHandle) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn floating_widget_platform_default_matches_native_surface() {
+        assert_eq!(default_widget_enabled(), !cfg!(target_os = "windows"));
+    }
     use hq_desktop_core::banner::BannerPayload;
 
     fn sample_payload(kind: &str) -> BannerPayload {

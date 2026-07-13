@@ -33,6 +33,36 @@ const sidecarPackage = JSON.parse(
   readFileSync(appUrl('sidecar/recall-sdk-bridge/package.json'), 'utf8'),
 );
 const releaseWorkflow = readFileSync(repoUrl('.github/workflows/release.yml'), 'utf8');
+const windowsCheckWorkflow = readFileSync(
+  repoUrl('.github/workflows/windows-check.yml'),
+  'utf8',
+);
+const sidecarBuildSource = readFileSync(
+  appUrl('sidecar/recall-sdk-bridge/build.mjs'),
+  'utf8',
+);
+const syncMainSource = readFileSync(appUrl('src-tauri/src/main.rs'), 'utf8');
+const syncCommandSource = readFileSync(
+  appUrl('src-tauri/src/commands/sync.rs'),
+  'utf8',
+);
+const widgetSource = readFileSync(
+  appUrl('src-tauri/src/commands/widget.rs'),
+  'utf8',
+);
+const settingsSource = readFileSync(
+  appUrl('src-tauri/src/commands/settings.rs'),
+  'utf8',
+);
+const frontendMainSource = readFileSync(appUrl('src/main.ts'), 'utf8');
+const popoverSource = readFileSync(
+  appUrl('src/components/Popover.svelte'),
+  'utf8',
+);
+const prewarmSource = readFileSync(
+  repoUrl('crates/hq-desktop-core/src/prewarm.rs'),
+  'utf8',
+);
 
 describe('Windows Recall SDK sidecar bundle parity', () => {
   it('declares the Windows externalBin launcher in the release-only overlay', () => {
@@ -74,4 +104,58 @@ describe('Windows Recall SDK sidecar bundle parity', () => {
     expect(releaseWorkflow).toContain('recall-desktop-sdk-${{ matrix.target }}.exe');
     expect(releaseWorkflow).not.toContain('skipping launcher build');
   });
+
+  it('ships native x64 and ARM64 launchers without relabeling the host Node runtime', () => {
+    expect(releaseWorkflow).toContain('- x86_64-pc-windows-msvc');
+    expect(releaseWorkflow).toContain('- aarch64-pc-windows-msvc');
+    expect(releaseWorkflow).toContain('windows-aarch64');
+    expect(releaseWorkflow).toContain('RECALL_SIDECAR_NODE_EXECUTABLE');
+    expect(releaseWorkflow).toContain('Get-FileHash $archive -Algorithm SHA256');
+    expect(sidecarBuildSource).toContain('["aarch64-pc-windows-msvc", 0xaa64]');
+    expect(sidecarBuildSource).toContain('assertTargetArchitecture(launcherRuntime)');
+  });
+
+  it('requires Windows tests and release success', () => {
+    expect(windowsCheckWorkflow).toMatch(
+      /- name: Windows tests[\s\S]*cargo test --target x86_64-pc-windows-msvc --bins/,
+    );
+    expect(releaseWorkflow).not.toContain('continue-on-error: true');
+  });
+
+  it('builds and launches the Windows executable through the live driver harness', () => {
+    expect(windowsCheckWorkflow).toContain('cargo install tauri-driver');
+    expect(windowsCheckWorkflow).toContain('pnpm tauri build --debug --no-bundle');
+    expect(windowsCheckWorkflow).toContain('HQ_SYNC_DESKTOP_ALT_LIVE: "1"');
+    expect(windowsCheckWorkflow).toContain('HQ_SYNC_DESKTOP_ALT_APP:');
+    expect(windowsCheckWorkflow).toContain('smoke-pages.spec.ts');
+  });
+
+  it('keeps release builds console-free and background npm work hidden', () => {
+    expect(syncMainSource).toContain(
+      '#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]',
+    );
+    expect(prewarmSource).toContain('paths::spawn_command(');
+    expect(syncCommandSource).toContain('paths::spawn_command(&npx_bin');
+  });
+
+  it('uses native Node and npx probes on Windows', () => {
+    expect(syncCommandSource).toContain('paths::resolve_bin("node")');
+    expect(syncCommandSource).toContain('node_version_command()');
+    expect(syncCommandSource).toContain('paths::resolve_bin("npx")');
+    expect(syncCommandSource).toContain('this computer');
+  });
+
+  it('defaults the floating widget off on Windows without changing macOS', () => {
+    expect(widgetSource).toContain('fn default_widget_enabled() -> bool');
+    expect(widgetSource).toContain('!cfg!(target_os = "windows")');
+    expect(widgetSource).toContain('unwrap_or_else(default_widget_enabled)');
+    expect(settingsSource).toContain('default_widget_enabled()');
+  });
+
+  it('uses an opaque popover surface fallback on Windows', () => {
+    expect(frontendMainSource).toContain("dataset.platform = isWindows ? 'windows' : 'other'");
+    expect(popoverSource).toContain(":global(html[data-platform='windows']) .mbpop");
+    expect(popoverSource).toContain('backdrop-filter: none');
+  });
+
 });
