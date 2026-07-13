@@ -2,7 +2,7 @@
 
 This repository releases the unified `HQ` Tauri app from `apps/sync`.
 
-The release workflow builds a signed and notarized macOS universal app/DMG, signed Windows MSI and NSIS installers for x64 and arm64, Tauri updater artifacts, `latest.json`, and a GitHub Release. The updater manifest currently points at GitHub Release asset URLs in this repository. Moving the endpoint to `downloads.getindigo.ai` is a separate follow-up; this workflow does not change `tauri.conf.json` or the platform overlays.
+The release workflow builds a signed and notarized macOS universal app/DMG, signed Windows MSI and NSIS installers for x64, Tauri updater artifacts, `latest.json`, and a GitHub Release. Windows ARM64 remains disabled until native ARM64 Node and Recall payloads are available and verified. The updater manifest currently points at GitHub Release asset URLs in this repository. Moving the endpoint to `downloads.getindigo.ai` is a separate follow-up; this workflow does not change `tauri.conf.json` or the platform overlays.
 
 ## Cut a Release
 
@@ -44,13 +44,13 @@ https://github.com/indigoai-us/hq-desktop-app/releases/latest/download/latest.js
 
 - `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`: the single private key matching that pubkey (the `hq-sync` macOS updater key — set it once; the macOS and Windows jobs both use it).
 
-Each release publishes one `latest.json` covering `darwin-aarch64`, `darwin-x86_64`, `windows-x86_64`, and `windows-aarch64`, signed with that one key. GitHub's `/releases/latest/download/` redirect makes the endpoint always resolve to the newest release.
+Each release publishes one `latest.json` covering `darwin-aarch64`, `darwin-x86_64`, and `windows-x86_64`, signed with that one key. GitHub's `/releases/latest/download/` redirect makes the endpoint always resolve to the newest release.
 
 ### Versionless download aliases
 
 Alongside the version-stamped assets, each release also publishes versionless copies for stable, marketing-friendly download links (the hq-installer pattern):
 
-- `HQ.dmg`, `HQ_x64-setup.exe`, `HQ_arm64-setup.exe` → e.g. `https://github.com/indigoai-us/hq-desktop-app/releases/latest/download/HQ.dmg`
+- `HQ.dmg`, `HQ_x64-setup.exe` → e.g. `https://github.com/indigoai-us/hq-desktop-app/releases/latest/download/HQ.dmg`
 
 (The auto-updater itself uses `latest.json` with the versioned URLs; these aliases are for direct human downloads.)
 
@@ -100,17 +100,12 @@ The publish job attaches these assets to the GitHub Release:
 - `HQ_<version>_x64.msi.sig` if Tauri emits an MSI updater signature
 - `HQ_<version>_x64-setup.exe`
 - `HQ_<version>_x64-setup.exe.sig`
-- `HQ_<version>_arm64.msi`
-- `HQ_<version>_arm64.msi.sig` if Tauri emits an MSI updater signature
-- `HQ_<version>_arm64-setup.exe`
-- `HQ_<version>_arm64-setup.exe.sig`
 - `latest.json`
 
-`latest.json` contains four updater platform entries:
+`latest.json` contains three updater platform entries:
 
 - `darwin-aarch64`
 - `darwin-x86_64`
 - `windows-x86_64`
-- `windows-aarch64`
 
 Both macOS entries point at the universal `HQ.app.tar.gz` updater archive.

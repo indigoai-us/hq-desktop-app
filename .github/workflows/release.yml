@@ -309,10 +309,6 @@ jobs:
 
   windows:
     name: Build Windows ${{ matrix.target }}
-    # Resilient: a Windows failure won't block the macOS release from
-    # publishing (latest.json includes Windows platforms only if their updater
-    # signatures were produced).
-    continue-on-error: true
     runs-on: windows-latest
     timeout-minutes: 90
     permissions:
@@ -327,7 +323,6 @@ jobs:
       matrix:
         target:
           - x86_64-pc-windows-msvc
-          - aarch64-pc-windows-msvc
 
     env:
       RUST_BACKTRACE: 1
@@ -458,7 +453,7 @@ jobs:
         run: |
           $tag = if ("${{ github.event.inputs.tag }}") { "${{ github.event.inputs.tag }}" } else { "${{ github.ref_name }}" }
           $version = $tag.TrimStart("v")
-          $arch = if ("${{ matrix.target }}" -like "x86_64-*") { "x64" } else { "arm64" }
+          $arch = "x64"
           $stage = Join-Path $env:GITHUB_WORKSPACE "release-artifacts-${{ matrix.target }}"
           $bundleDir = "src-tauri\target\${{ matrix.target }}\release\bundle"
           New-Item -ItemType Directory -Path $stage -Force | Out-Null
@@ -528,15 +523,14 @@ jobs:
             fi
           }
 
-          # macOS is the baseline (always built); Windows artifacts are optional
-          # so a Windows failure can't block the release. Include a platform in
-          # latest.json only if its updater signature is present.
+          # Both macOS and Windows x64 are required release platforms.
           require_file "release/HQ_${VERSION}_universal.app.tar.gz"
           require_file "release/HQ_${VERSION}_universal.app.tar.gz.sig"
+          require_file "release/HQ_${VERSION}_x64-setup.exe"
+          require_file "release/HQ_${VERSION}_x64-setup.exe.sig"
 
           MAC_SIG_PATH="release/HQ_${VERSION}_universal.app.tar.gz.sig" \
           WIN_X64_SIG_PATH="release/HQ_${VERSION}_x64-setup.exe.sig" \
-          WIN_ARM64_SIG_PATH="release/HQ_${VERSION}_arm64-setup.exe.sig" \
           VERSION="$VERSION" \
           TAG="$TAG" \
           BASE="$BASE" \
@@ -544,9 +538,6 @@ jobs:
           import fs from "node:fs";
 
           const readSig = (path) => fs.readFileSync(path, "utf8").trim();
-          const exists = (path) => {
-            try { fs.accessSync(path); return true; } catch { return false; }
-          };
           const version = process.env.VERSION;
           const tag = process.env.TAG;
           const base = process.env.BASE;
@@ -562,18 +553,10 @@ jobs:
               url: `${base}/HQ_${version}_universal.app.tar.gz`,
             },
           };
-          if (exists(process.env.WIN_X64_SIG_PATH)) {
-            platforms["windows-x86_64"] = {
-              signature: readSig(process.env.WIN_X64_SIG_PATH),
-              url: `${base}/HQ_${version}_x64-setup.exe`,
-            };
-          }
-          if (exists(process.env.WIN_ARM64_SIG_PATH)) {
-            platforms["windows-aarch64"] = {
-              signature: readSig(process.env.WIN_ARM64_SIG_PATH),
-              url: `${base}/HQ_${version}_arm64-setup.exe`,
-            };
-          }
+          platforms["windows-x86_64"] = {
+            signature: readSig(process.env.WIN_X64_SIG_PATH),
+            url: `${base}/HQ_${version}_x64-setup.exe`,
+          };
 
           const manifest = {
             version,
@@ -603,8 +586,7 @@ jobs:
           cd release
           for pair in \
             "HQ_${VERSION}_universal.dmg:HQ.dmg" \
-            "HQ_${VERSION}_x64-setup.exe:HQ_x64-setup.exe" \
-            "HQ_${VERSION}_arm64-setup.exe:HQ_arm64-setup.exe"; do
+            "HQ_${VERSION}_x64-setup.exe:HQ_x64-setup.exe"; do
             src="${pair%%:*}"; dst="${pair##*:}"
             if [ -f "$src" ]; then cp "$src" "$dst"; echo "alias $dst -> $src"; else echo "skip (missing) $src"; fi
           done

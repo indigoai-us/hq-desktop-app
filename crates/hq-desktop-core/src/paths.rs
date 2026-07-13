@@ -215,6 +215,21 @@ fn extended_search_dirs() -> Vec<PathBuf> {
         dirs.push(home.join("scoop").join("shims"));
     }
 
+    // Official Node.js Windows installers place node.exe and the npm/npx
+    // command shims here. Do not rely only on the inherited PATH: tray apps
+    // and start-at-login processes can retain the pre-install environment
+    // until the next Windows sign-in even though a new terminal sees Node.
+    for variable in ["ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"] {
+        if let Some(root) = std::env::var_os(variable) {
+            dirs.push(PathBuf::from(root).join("nodejs"));
+        }
+    }
+
+    // npm's per-user global prefix on Windows.
+    if let Some(app_data) = std::env::var_os("APPDATA") {
+        dirs.push(PathBuf::from(app_data).join("npm"));
+    }
+
     if let Ok(local_app) = std::env::var("LOCALAPPDATA") {
         dirs.push(
             PathBuf::from(local_app)
@@ -602,6 +617,21 @@ mod tests {
         no_window_tokio(&mut cmd);
     }
 
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_windows_search_dirs_include_standard_node_install() {
+        let program_files = std::env::var_os("ProgramFiles")
+            .map(PathBuf::from)
+            .expect("Windows test environment must define ProgramFiles");
+        let expected = program_files.join("nodejs");
+        assert!(
+            extended_search_dirs().iter().any(|dir| dir == &expected),
+            "Windows resolver must search the standard Node installer directory: {}",
+            expected.display()
+        );
+    }
+
+    #[cfg(not(target_os = "windows"))]
     #[test]
     fn test_resolve_bin_in_dirs_prefers_managed_toolchain_over_user_npm_global() {
         let tmp = tempfile::TempDir::new().unwrap();
@@ -620,6 +650,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(target_os = "windows"))]
     #[test]
     fn test_child_path_includes_homebrew() {
         let path = child_path();
@@ -645,6 +676,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(target_os = "windows"))]
     #[test]
     fn test_managed_toolchain_path_matches_installer() {
         let home = PathBuf::from("/Users/testuser");

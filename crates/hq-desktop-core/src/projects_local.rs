@@ -951,12 +951,50 @@ pub fn read_json_lenient<T: serde::de::DeserializeOwned>(path: &Path) -> Option<
     match serde_json::from_slice::<T>(&bytes) {
         Ok(v) => Some(v),
         Err(e) => {
-            eprintln!(
-                "[projects-local] skipping unparseable {}: {e}",
-                path.display()
-            );
+            // serde's derived struct visitor rejects duplicate fields even
+            // though serde_json::Value follows common JSON consumer behavior
+            // and keeps the last value. Accept that recoverable shape so one
+            // duplicated optional metadata key cannot hide an entire project.
+            if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                if let Ok(parsed) = serde_json::from_value::<T>(value) {
+                    return Some(parsed);
+                }
+            }
+
+            log_parse_error_once(path, &e.to_string());
             None
         }
+    }
+}
+
+fn log_parse_error_once(path: &Path, error: &str) {
+    use std::collections::HashSet;
+    use std::sync::{Mutex, OnceLock};
+
+    static SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    let display = portable_diagnostic_path(path);
+    let key = format!("{display}\n{error}");
+    let should_log = SEEN
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+        .map(|mut seen| seen.insert(key))
+        .unwrap_or(true);
+    if should_log {
+        eprintln!("[projects-local] skipping unparseable {display}: {error}");
+    }
+}
+
+/// Render diagnostics in the same forward-slash form used by upstream HQ
+/// paths, stripping Windows' internal verbatim-path marker (`\\?\`).
+pub fn portable_diagnostic_path(path: &Path) -> String {
+    let normalized = path.to_string_lossy().replace('\\', "/");
+    if let Some(unc) = normalized.strip_prefix("//?/UNC/") {
+        format!("//{unc}")
+    } else {
+        normalized
+            .strip_prefix("//?/")
+            .unwrap_or(&normalized)
+            .to_string()
     }
 }
 
@@ -983,7 +1021,7 @@ pub fn find_prd_files(projects_dir: &Path) -> Vec<PathBuf> {
 
 /// Normalize a relative path for set membership (collapse `./`, unify slashes).
 pub fn normalize_rel(rel: &str) -> String {
-    rel.trim_start_matches("./").replace('\\', "/")
+    rel.replace('\\', "/").trim_start_matches("./").to_string()
 }
 
 /// True iff `candidate`, after lexical normalization, is contained within
@@ -1250,6 +1288,49 @@ mod tests {
             .expect_err("garbage prd must Err, not panic");
         assert!(err.contains("could not read or parse"), "got: {err}");
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn lenient_reader_accepts_duplicate_story_notes_with_last_value_winning() {
+        let root = std::env::temp_dir().join(format!(
+            "hq-projects-duplicate-notes-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("prd.json");
+        fs::write(
+            &path,
+            r#"{"name":"Duplicate notes","userStories":[{"id":"US-001","notes":"old","notes":"new"}]}"#,
+        )
+        .unwrap();
+
+        let parsed = read_json_lenient::<PrdFile>(&path).expect("duplicate keys are tolerated");
+        assert_eq!(parsed.user_stories[0].notes.as_deref(), Some("new"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn diagnostic_paths_strip_windows_verbatim_prefix_and_use_forward_slashes() {
+        assert_eq!(
+            portable_diagnostic_path(Path::new(
+                r"\\?\C:\Users\person\HQ\companies\acme\projects\demo\prd.json"
+            )),
+            "C:/Users/person/HQ/companies/acme/projects/demo/prd.json"
+        );
+    }
+
+    #[test]
+    fn normalize_rel_accepts_upstream_and_windows_separator_styles() {
+        let upstream = "./companies/acme/projects/demo/prd.json";
+        let windows = r".\companies\acme\projects\demo\prd.json";
+        assert_eq!(
+            normalize_rel(upstream),
+            "companies/acme/projects/demo/prd.json"
+        );
+        assert_eq!(
+            normalize_rel(windows),
+            "companies/acme/projects/demo/prd.json"
+        );
     }
 
     #[test]

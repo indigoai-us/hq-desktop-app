@@ -28,10 +28,9 @@
  * payload already installed is a fast no-op (safe to chain from Tauri's
  * beforeBuildCommand). Pass --force to always rebuild the launcher.
  *
- * Cross-target note: by default the launcher is built from the HOST's node.exe
- * and named with TARGET_TRIPLE (default x86_64-pc-windows-msvc). The
- * aarch64-pc-windows-msvc matrix leg needs an arm64 Node runtime to produce a
- * native arm64 launcher; windows-latest currently provides x64 Node.
+ * Windows ARM64 is deliberately unsupported until CI has both a native ARM64
+ * Node runtime and a verified ARM64 Recall payload. Refuse to relabel the x64
+ * host runtime as ARM64.
  */
 
 import { execFileSync } from "node:child_process";
@@ -61,6 +60,7 @@ const CHECK_ONLY = args.has("--check");
 // externalBin stem (`binaries/recall-desktop-sdk`) when it copies the binary.
 const TARGET_TRIPLE =
   process.env.RECALL_SIDECAR_TARGET || "x86_64-pc-windows-msvc";
+const SUPPORTED_TARGET = "x86_64-pc-windows-msvc";
 
 const SEA_FUSE = "NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2";
 
@@ -188,6 +188,11 @@ async function buildLauncher() {
 // Main.
 async function main() {
   log(`target triple: ${TARGET_TRIPLE}`);
+  if (TARGET_TRIPLE !== SUPPORTED_TARGET) {
+    fail(
+      `unsupported target ${TARGET_TRIPLE}; only ${SUPPORTED_TARGET} has a native Recall payload`,
+    );
+  }
   ensureSdkPayload();
   await buildLauncher();
 

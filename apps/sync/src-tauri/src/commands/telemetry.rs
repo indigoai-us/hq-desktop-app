@@ -929,7 +929,7 @@ mod tests {
 
         // Cursor file should exist with correct offset
         let cursor = read_cursor(home.path());
-        let path_str = jsonl_path.to_string_lossy().to_string();
+        let path_str = normalize_cursor_file_key(&jsonl_path);
         let entry = cursor
             .files
             .get(&path_str)
@@ -1139,7 +1139,7 @@ mod tests {
 
         assert!(result.is_ok());
 
-        let path_str = jsonl_path.to_string_lossy().to_string();
+        let path_str = normalize_cursor_file_key(&jsonl_path);
         // Cursor entry must be absent (or at 0), NOT at EOF
         let cursor_file = home.path().join(".hq/telemetry-cursor.json");
         if cursor_file.exists() {
@@ -1250,7 +1250,7 @@ mod tests {
         std::env::remove_var("HQ_VAULT_API_URL");
 
         let cursor = read_cursor(home.path());
-        let path_b_str = path_b.to_string_lossy().to_string();
+        let path_b_str = normalize_cursor_file_key(&path_b);
         let b_size = fs::metadata(&path_b).unwrap().len();
         let b_entry = cursor
             .files
@@ -1302,7 +1302,7 @@ mod tests {
 
         // Verify run 1 set cursor to EOF
         let cursor_after_run1 = read_cursor(home.path());
-        let path_a_str = path_a.to_string_lossy().to_string();
+        let path_a_str = normalize_cursor_file_key(&path_a);
         let entry1 = cursor_after_run1.files.get(&path_a_str).unwrap();
         assert_eq!(entry1.offset, original_size);
 

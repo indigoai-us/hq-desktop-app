@@ -68,10 +68,15 @@ pub struct AuthState {
 #[derive(Debug)]
 struct CachedTokens {
     tokens: CognitoTokens,
+    path: PathBuf,
     file_mtime: SystemTime,
 }
 
 fn tokens_file_path() -> Result<PathBuf, String> {
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(home) = std::env::var_os("HQ_TEST_HOME") {
+        return Ok(PathBuf::from(home).join(".hq").join("cognito-tokens.json"));
+    }
     let home = dirs::home_dir().ok_or_else(|| "Cannot determine home directory".to_string())?;
     Ok(home.join(".hq").join("cognito-tokens.json"))
 }
@@ -190,7 +195,7 @@ pub async fn get_tokens() -> Result<Option<CognitoTokens>, String> {
     let guard = cache().lock().await;
 
     if let Some(ref cached) = *guard {
-        if cached.file_mtime == current_mtime {
+        if cached.path == path && cached.file_mtime == current_mtime {
             return Ok(Some(cached.tokens.clone()));
         }
     }
@@ -202,6 +207,7 @@ pub async fn get_tokens() -> Result<Option<CognitoTokens>, String> {
         let mut guard = cache().lock().await;
         *guard = Some(CachedTokens {
             tokens: tokens.clone(),
+            path: path.clone(),
             file_mtime: current_mtime,
         });
     }
@@ -216,6 +222,7 @@ pub async fn set_tokens(tokens: &CognitoTokens) -> Result<(), String> {
     let mut guard = cache().lock().await;
     *guard = Some(CachedTokens {
         tokens: tokens.clone(),
+        path,
         file_mtime: mtime,
     });
     crate::feature_gate::clear_cached_gate();

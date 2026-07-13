@@ -5,6 +5,12 @@ use hq_desktop_core::settings::{default_meeting_detect_notify, merge_prefs_over_
 /// Default platform allow-list (all five) when the field is absent from disk.
 const DEFAULT_PLATFORMS: &[&str] = &["zoom", "meet", "teams", "slack", "webex"];
 
+/// The floating widget is a macOS-oriented companion surface. Windows uses
+/// the notification-area tray popup by default; users can still opt in.
+const fn default_widget_enabled() -> bool {
+    !cfg!(target_os = "windows")
+}
+
 /// Read settings from ~/.hq/menubar.json.
 /// Returns current prefs with defaults applied for missing fields.
 ///
@@ -44,11 +50,11 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
             release_channel: None,
             meeting_detect_notify: Some(default_meeting_detect_notify()),
             default_recording_company_uid: None,
-// Telemetry is opt-out; absent → on (mirrors
+            // Telemetry is opt-out; absent → on (mirrors
             // telemetry.rs::read_local_telemetry_enabled's unwrap_or(true)).
             telemetry_enabled: Some(true),
-            // Widget defaults ON so it ships enabled after update (US-004).
-            widget_enabled: Some(true),
+            // Windows defaults to the tray popup; macOS keeps the widget.
+            widget_enabled: Some(default_widget_enabled()),
             // None = primary display.
             widget_display: None,
         });
@@ -123,11 +129,11 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
         default_recording_company_uid: prefs.default_recording_company_uid,
         // Telemetry defaults ON (opt-out). Re-read untyped from menubar.json by
         // the collector each sync, so the toggle takes effect without restart.
-telemetry_enabled: Some(prefs.telemetry_enabled.unwrap_or(true)),
-        // Widget defaults ON when absent (ships default-enabled after update).
+        telemetry_enabled: Some(prefs.telemetry_enabled.unwrap_or(true)),
+        // Platform default when absent; explicit user choices are preserved.
         // widget.rs also reads widgetEnabled untyped on every notification
         // dispatch so toggling takes effect without restart.
-        widget_enabled: Some(prefs.widget_enabled.unwrap_or(true)),
+        widget_enabled: Some(prefs.widget_enabled.unwrap_or_else(default_widget_enabled)),
         // Pass-through — None = primary display (NSScreen.localizedName match).
         widget_display: prefs.widget_display,
     })

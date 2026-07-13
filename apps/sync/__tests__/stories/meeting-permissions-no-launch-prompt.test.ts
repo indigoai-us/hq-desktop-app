@@ -2,6 +2,8 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
+const source = (path: string): string => readFileSync(path, 'utf8').replace(/\r\n/g, '\n');
+
 /**
  * Regression guard: HQ Sync must NOT request any macOS permission when it is
  * installed or opened. Asking for Accessibility / Screen Recording /
@@ -15,26 +17,15 @@ import { describe, expect, it } from 'vitest';
  * contract at the source level instead.
  */
 
-const mainRs = readFileSync(
-  resolve(process.cwd(), 'src-tauri/src/main.rs'),
-  'utf8',
-);
-const recallSdkRs = readFileSync(
-  resolve(process.cwd(), 'src-tauri/src/commands/recall_sdk.rs'),
-  'utf8',
-);
-const appSvelte = readFileSync(
-  resolve(process.cwd(), 'src/App.svelte'),
-  'utf8',
-);
+const mainRs = source(resolve(process.cwd(), 'src-tauri/src/main.rs'));
+const recallSdkRs = source(resolve(process.cwd(), 'src-tauri/src/commands/recall_sdk.rs'));
+const appSvelte = source(resolve(process.cwd(), 'src/App.svelte'));
 // Canonical settings surface after US-005 (popover Settings.svelte retired).
-const settingsPageSvelte = readFileSync(
+const settingsPageSvelte = source(
   resolve(process.cwd(), 'src/desktop-alt/pages/SettingsPage.svelte'),
-  'utf8',
 );
-const wizardSvelte = readFileSync(
+const wizardSvelte = source(
   resolve(process.cwd(), 'src/components/MeetingPermissionsWindow.svelte'),
-  'utf8',
 );
 
 describe('No permission prompts on install / open', () => {
