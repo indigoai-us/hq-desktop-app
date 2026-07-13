@@ -87,13 +87,33 @@ describe('rendered desktop sync failure recovery', () => {
     flushSync();
   }
 
-  it('renders the recovery copy and both actions instead of Retry', () => {
+  it('renders Retry alongside both agent-assisted recovery actions', () => {
     renderFailure();
     expect(host.textContent).toContain('Sync initialized');
     expect(host.textContent).toContain('Click the button to finish sync in Claude Code.');
     expect(host.textContent).toContain('Finish sync in Claude Code');
     expect(host.textContent).toContain('Copy prompt');
-    expect(host.textContent).not.toContain('Retry');
+    expect(host.textContent).toContain('Retry');
+  });
+
+  it('retries sync from the failed-state title bar', () => {
+    const onretry = vi.fn();
+    component = mount(V4TitleBar, {
+      target: host,
+      props: {
+        syncState: 'error',
+        watchedCount: 16,
+        errorMessage: 'hq-sync-runner exited with code 2',
+        hqFolderPath: '/Users/test/HQ',
+        onretry,
+      },
+    });
+    flushSync();
+    const retry = Array.from(host.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'Retry',
+    );
+    retry?.click();
+    expect(onretry).toHaveBeenCalledOnce();
   });
 
   it('copies the diagnostic prompt from the explicit Copy prompt action', async () => {
