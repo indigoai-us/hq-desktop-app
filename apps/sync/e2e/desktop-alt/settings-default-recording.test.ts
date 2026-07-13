@@ -294,4 +294,30 @@ describe('SettingsPage — Default recording company display', () => {
     const args = saveCall![1] as { prefs: Record<string, unknown> };
     expect(args.prefs.defaultRecordingCompanyUid).toBe('co_acme');
   });
+
+  it('preserves a Windows verbatim HQ path when saving an unrelated setting', async () => {
+    const verbatimPath = String.raw`\\?\C:\Users\dev\lr-hq`;
+    settingsResponse = {
+      hqPath: verbatimPath,
+      defaultRecordingCompanyUid: null,
+    };
+    membershipsResponse = [
+      { companyUid: 'co_acme', companyName: 'Acme Corp', role: 'member', status: 'active' },
+    ];
+
+    const dom = await mountSettingsPage();
+    const select = recordingSelect(dom);
+
+    mockInvoke.mockClear();
+    select.value = 'co_acme';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+
+    await vi.waitFor(() => {
+      expect(mockInvoke.mock.calls.some((c) => c[0] === 'save_settings')).toBe(true);
+    });
+
+    const saveCall = mockInvoke.mock.calls.find((c) => c[0] === 'save_settings');
+    const args = saveCall![1] as { prefs: Record<string, unknown> };
+    expect(args.prefs.hqPath).toBe(verbatimPath);
+  });
 });

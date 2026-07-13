@@ -3,7 +3,7 @@
   import { getVersion } from '@tauri-apps/api/app';
   import { emit } from '@tauri-apps/api/event';
   import { open as openUrl } from '@tauri-apps/plugin-shell';
-  import { formatHqFolderMeta, normalizeNativePath, type SettingsTab } from '../route';
+  import { formatHqFolderMeta, type SettingsTab } from '../route';
   import { emitDesktopTelemetry } from '../../lib/desktop-telemetry';
   import { postOptIn } from '../../lib/onboarding-telemetry';
   import { permissionState, loadMeetingPermissions } from '../../lib/permissionState.svelte';
@@ -227,7 +227,10 @@
         // block the rest of Settings from rendering → degrade to Personal-only.
         invoke<CompanyMembership[]>('meetings_list_memberships').catch(() => []),
       ]);
-      hqPath = settings.hqPath ? normalizeNativePath(settings.hqPath) : null;
+      // Keep the persisted path byte-for-byte intact. In particular, Windows
+      // verbatim paths (\\?\C:\... and \\?\UNC\...) need their prefix for
+      // long-path filesystem operations; formatHqFolderMeta handles display.
+      hqPath = settings.hqPath;
       syncOnLaunch = settings.syncOnLaunch ?? true;
       realtimeSync = settings.realtimeSync ?? true;
       personalSyncEnabled = settings.personalSyncEnabled ?? true;
@@ -277,7 +280,7 @@
     try {
       const picked = await invoke<string | null>('pick_folder');
       if (picked !== null) {
-        hqPath = normalizeNativePath(picked);
+        hqPath = picked;
         await saveSettings();
       }
     } catch (err) {
@@ -649,7 +652,7 @@
   async function refreshSettingsSilently() {
     try {
       const settings = await invoke<SettingsWire>('get_settings');
-      hqPath = settings.hqPath ? normalizeNativePath(settings.hqPath) : null;
+      hqPath = settings.hqPath;
       syncOnLaunch = settings.syncOnLaunch ?? true;
       realtimeSync = settings.realtimeSync ?? true;
       personalSyncEnabled = settings.personalSyncEnabled ?? true;
