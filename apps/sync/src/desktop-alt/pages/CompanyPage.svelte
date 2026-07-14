@@ -105,7 +105,7 @@
       actionNotice = result.message || 'Invite accepted. Sync to pull the company.';
       onworkspaceschanged?.();
       if (result.claimedSlugs?.length) {
-        void invoke('start_sync').catch((err) => {
+        void invoke('start_sync', { companySlug: company.slug }).catch((err) => {
           console.warn('post-claim sync failed (non-fatal):', err);
         });
       }

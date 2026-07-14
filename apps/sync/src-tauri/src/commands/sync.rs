@@ -1,4 +1,4 @@
-//! Tauri commands for spawning and cancelling `hq-sync-runner --companies`.
+//! Tauri commands for spawning and cancelling `hq-sync-runner` syncs.
 //!
 //! Uses [`crate::commands::process`] for subprocess lifecycle (spawn, stream,
 //! SIGTERM→SIGKILL). Emits typed sync events to the Svelte renderer.
@@ -241,12 +241,63 @@ pub async fn resolve_jwt() -> Result<String, String> {
 // SpawnArgs builder (testable)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Build the SpawnArgs for `npx … hq-sync-runner --companies`.
+/// Scope of a single sync run: fan out to every membership (`All`) or restrict
+/// to one company by slug (`Company`). A scoped run emits `--company <slug>`
+/// (mutually exclusive with `--companies` in the runner) and never touches the
+/// personal vault.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SyncRunScope {
+    All,
+    Company(String),
+}
+
+impl SyncRunScope {
+    /// True when this scope includes the given company slug.
+    pub fn includes(&self, slug: &str) -> bool {
+        match self {
+            SyncRunScope::All => true,
+            SyncRunScope::Company(c) => c == slug,
+        }
+    }
+
+    pub fn is_all(&self) -> bool {
+        matches!(self, SyncRunScope::All)
+    }
+}
+
+/// Validate a caller-supplied company slug for a scoped sync. `None` => `All`.
+/// Slugs are lowercase alphanumeric + hyphen, non-empty, and never `personal`
+/// (the personal vault has its own sync path/toggle, not a company scope).
+pub fn parse_sync_scope(company_slug: Option<String>) -> Result<SyncRunScope, String> {
+    match company_slug {
+        None => Ok(SyncRunScope::All),
+        Some(s) => {
+            let slug = s.trim();
+            if slug.is_empty() {
+                return Err("company slug must not be empty".to_string());
+            }
+            if slug == "personal" {
+                return Err("personal vault cannot be company-scoped".to_string());
+            }
+            if !slug
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+            {
+                return Err(format!("invalid company slug: {slug}"));
+            }
+            Ok(SyncRunScope::Company(slug.to_string()))
+        }
+    }
+}
+
+/// Build the SpawnArgs for `npx … hq-sync-runner --companies` or a scoped
+/// `npx … hq-sync-runner --company <slug>` run.
 ///
 /// The command line we spawn looks like:
 /// ```text
 /// npx -y --package=@indigoai-us/hq-cloud@~5.19.0 hq-sync-runner \
-///   --companies --direction both --on-conflict keep --hq-root <path>
+///   <--companies | --company <slug>> --direction both --on-conflict keep \
+///   --hq-root <path>
 /// ```
 ///
 /// npx flags:
@@ -260,6 +311,7 @@ pub async fn resolve_jwt() -> Result<String, String> {
 ///
 /// Runner flags:
 /// - `--companies` — fan out to every membership the caller has
+/// - `--company <slug>` — restrict the run to one company
 /// - `--direction both` — bidirectional sync: push local changes first,
 ///   then pull remote. Added in hq-cloud 5.1.11. Runner default is `pull`
 ///   for back-compat; the menubar explicitly opts into `both` so a single
@@ -273,11 +325,16 @@ pub async fn resolve_jwt() -> Result<String, String> {
 /// `HQ_ROOT` is also set in the child env as defense-in-depth (matches the
 /// pre-Phase-7 pattern).
 ///
-/// `personal_sync_enabled` toggles the personal-vault target in the fanout.
-/// When false, `--skip-personal` is appended so the spawned runner's
-/// `resolveSkipPersonal()` drops the personal slot. Sourced from
-/// `MenubarPrefs.personal_sync_enabled` (defaults to true in get_settings).
-pub fn build_sync_spawn_args(hq_folder_path: &str, personal_sync_enabled: bool) -> SpawnArgs {
+/// `personal_sync_enabled` toggles the personal-vault target in an all-company
+/// fanout. When false, `--skip-personal` is appended so the spawned runner's
+/// `resolveSkipPersonal()` drops the personal slot. Company-scoped runs always
+/// append `--skip-personal`. Sourced from `MenubarPrefs.personal_sync_enabled`
+/// (defaults to true in get_settings).
+pub fn build_sync_spawn_args(
+    hq_folder_path: &str,
+    personal_sync_enabled: bool,
+    scope: &SyncRunScope,
+) -> SpawnArgs {
     let mut env = HashMap::new();
     env.insert("HQ_ROOT".to_string(), hq_folder_path.to_string());
     // The runner is a Node script with `#!/usr/bin/env node`, and npx itself
@@ -290,15 +347,23 @@ pub fn build_sync_spawn_args(hq_folder_path: &str, personal_sync_enabled: bool) 
         "-y".to_string(),
         format!("--package={}@{}", HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION),
         RUNNER_BIN.to_string(),
-        "--companies".to_string(),
+    ];
+    match scope {
+        SyncRunScope::All => args.push("--companies".to_string()),
+        SyncRunScope::Company(slug) => {
+            args.push("--company".to_string());
+            args.push(slug.clone());
+        }
+    }
+    args.extend([
         "--direction".to_string(),
         "both".to_string(),
         "--on-conflict".to_string(),
         "keep".to_string(),
         "--hq-root".to_string(),
         hq_folder_path.to_string(),
-    ];
-    if !personal_sync_enabled {
+    ]);
+    if !personal_sync_enabled || !scope.is_all() {
         // Append rather than insert mid-args so reading the joined command
         // line in logs / Sentry tags is predictable (toggle state shows at
         // the end, after the canonical args).
@@ -641,7 +706,7 @@ pub(crate) fn preflight_runner_unresolvable() -> Option<String> {
     runner_unresolvable_reason(node_resolves, npx_resolves)
 }
 
-/// Spawn `hq-sync-runner --companies` as a child process.
+/// Spawn `hq-sync-runner` for all companies or one company as a child process.
 ///
 /// - Only one sync can run at a time (singleton handle).
 /// - Emits typed sync events (see `events.rs`) to the Svelte renderer as
@@ -650,7 +715,9 @@ pub(crate) fn preflight_runner_unresolvable() -> Option<String> {
 ///
 /// Returns the handle string on success (always `"hq-sync"`).
 #[tauri::command]
-pub async fn start_sync(app: AppHandle) -> Result<String, String> {
+pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<String, String> {
+    let scope = parse_sync_scope(company_slug)?;
+    log("sync", &format!("scope={scope:?}"));
     log("sync", "start_sync invoked");
     #[cfg(debug_assertions)]
     eprintln!("[sync] start_sync invoked");
@@ -766,7 +833,11 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
         let prep_root = std::path::PathBuf::from(&hq_folder_path);
         let (local_companies, _) =
             crate::commands::workspaces::discover_local_companies(&prep_root);
-        let slugs: Vec<String> = local_companies.iter().map(|e| e.slug.clone()).collect();
+        let slugs: Vec<String> = local_companies
+            .iter()
+            .map(|e| e.slug.clone())
+            .filter(|s| scope.includes(s))
+            .collect();
         let prep_start = std::time::Instant::now();
         let to_transfer = crate::commands::personal::count_files_to_transfer(&prep_root, &slugs);
         let elapsed = prep_start.elapsed().as_millis();
@@ -810,7 +881,8 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
             return Err(e);
         }
     };
-    for company in &companies {
+    // Provisioning stays global, but first-push is filtered to this run's scope.
+    for company in companies.iter().filter(|c| scope.includes(&c.slug)) {
         if let Err(_e) = app.emit(
             EVENT_SYNC_COMPANY_PROVISIONED,
             SyncCompanyProvisionedEvent {
@@ -857,11 +929,10 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
     }
 
     // Personal first-push: provision + upload personal HQ files via /sts/vend-self.
-    // Skipped entirely when the user has flipped off "Sync personal vault" —
-    // running it anyway would auto-provision a bucket the user explicitly
-    // doesn't want populated, then upload everything just for the runner to
-    // immediately re-walk the same tree with `--skip-personal`.
-    if personal_sync_enabled {
+    // Skipped for company-scoped runs and when the user has flipped off "Sync
+    // personal vault". Running it anyway would populate a bucket outside this
+    // run's scope, then re-walk the same tree with `--skip-personal`.
+    if personal_sync_enabled && scope.is_all() {
         log("sync", "phase: personal first-push");
         if let Err(e) = crate::commands::personal::ensure_personal_bucket_and_first_push(
             &app,
@@ -887,14 +958,19 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
                 },
             );
         }
-    } else {
+    } else if !personal_sync_enabled {
         log(
             "sync",
             "phase: personal first-push skipped (personal_sync_enabled=false)",
         );
+    } else {
+        log(
+            "sync",
+            "phase: personal first-push skipped (company-scoped run)",
+        );
     }
 
-    let spawn_args = build_sync_spawn_args(&hq_folder_path, personal_sync_enabled);
+    let spawn_args = build_sync_spawn_args(&hq_folder_path, personal_sync_enabled, &scope);
     log(
         "sync",
         &format!(
@@ -1224,8 +1300,57 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_sync_scope() {
+        assert_eq!(parse_sync_scope(None), Ok(SyncRunScope::All));
+        assert_eq!(
+            parse_sync_scope(Some("indigo".to_string())),
+            Ok(SyncRunScope::Company("indigo".to_string()))
+        );
+        assert_eq!(
+            parse_sync_scope(Some("  indigo  ".to_string())),
+            Ok(SyncRunScope::Company("indigo".to_string()))
+        );
+        assert!(parse_sync_scope(Some(String::new())).is_err());
+        assert!(parse_sync_scope(Some("personal".to_string())).is_err());
+        assert!(parse_sync_scope(Some("Bad_Slug".to_string())).is_err());
+    }
+
+    #[test]
+    fn test_sync_run_scope_helpers() {
+        let all = SyncRunScope::All;
+        assert!(all.includes("indigo"));
+        assert!(all.includes("other"));
+        assert!(all.is_all());
+
+        let company = SyncRunScope::Company("indigo".to_string());
+        assert!(company.includes("indigo"));
+        assert!(!company.includes("other"));
+        assert!(!company.is_all());
+    }
+
+    #[test]
+    fn test_build_sync_spawn_args_company_scope() {
+        let args = build_sync_spawn_args(
+            "/Users/test/HQ",
+            true,
+            &SyncRunScope::Company("indigo".to_string()),
+        );
+        let company_index = args
+            .args
+            .iter()
+            .position(|arg| arg == "--company")
+            .expect("company-scoped args must include `--company`");
+        assert_eq!(
+            args.args.get(company_index + 1).map(String::as_str),
+            Some("indigo")
+        );
+        assert!(!args.args.iter().any(|arg| arg == "--companies"));
+        assert!(args.args.iter().any(|arg| arg == "--skip-personal"));
+    }
+
+    #[test]
     fn test_build_sync_spawn_args_cmd() {
-        let args = build_sync_spawn_args("/Users/test/HQ", true);
+        let args = build_sync_spawn_args("/Users/test/HQ", true, &SyncRunScope::All);
         // `resolve_bin` may return an absolute path or a bare name. Windows
         // resolves npm's command shim (`npx.cmd`); Unix resolves `npx`.
         let expected = if cfg!(target_os = "windows") {
@@ -1246,7 +1371,7 @@ mod tests {
 
     #[test]
     fn test_build_sync_spawn_args_flags() {
-        let args = build_sync_spawn_args("/Users/test/HQ", true);
+        let args = build_sync_spawn_args("/Users/test/HQ", true, &SyncRunScope::All);
         assert_eq!(
             args.args,
             vec![
@@ -1269,7 +1394,7 @@ mod tests {
     /// the flag in the wrong direction (e.g. inverted check) surfaces here.
     #[test]
     fn test_build_sync_spawn_args_omits_skip_personal_when_enabled() {
-        let args = build_sync_spawn_args("/Users/test/HQ", true);
+        let args = build_sync_spawn_args("/Users/test/HQ", true, &SyncRunScope::All);
         assert!(
             !args.args.iter().any(|a| a == "--skip-personal"),
             "expected NO `--skip-personal` when personal_sync_enabled=true, got: {:?}",
@@ -1283,7 +1408,7 @@ mod tests {
     /// the parsed-args path, equivalent to HQ_SYNC_SKIP_PERSONAL=1).
     #[test]
     fn test_build_sync_spawn_args_appends_skip_personal_when_disabled() {
-        let args = build_sync_spawn_args("/Users/test/HQ", false);
+        let args = build_sync_spawn_args("/Users/test/HQ", false, &SyncRunScope::All);
         assert_eq!(
             args.args.last().map(String::as_str),
             Some("--skip-personal"),
@@ -1303,7 +1428,7 @@ mod tests {
     /// every other file's progress on the affected company.
     #[test]
     fn test_build_sync_spawn_args_on_conflict_is_keep() {
-        let args = build_sync_spawn_args("/tmp", true);
+        let args = build_sync_spawn_args("/tmp", true, &SyncRunScope::All);
         let joined = args.args.join(" ");
         assert!(
             joined.contains("--on-conflict keep"),
@@ -1316,7 +1441,7 @@ mod tests {
     /// Guards against a future refactor silently dropping back to pull-only.
     #[test]
     fn test_build_sync_spawn_args_opts_into_direction_both() {
-        let args = build_sync_spawn_args("/tmp", true);
+        let args = build_sync_spawn_args("/tmp", true, &SyncRunScope::All);
         let joined = args.args.join(" ");
         assert!(
             joined.contains("--direction both"),
@@ -1332,7 +1457,7 @@ mod tests {
     /// obvious in CI, not at runtime on users' machines.
     #[test]
     fn test_build_sync_spawn_args_pins_hq_cloud_package() {
-        let args = build_sync_spawn_args("/tmp", true);
+        let args = build_sync_spawn_args("/tmp", true, &SyncRunScope::All);
         let expected_pin = format!("--package={}@{}", HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION);
         assert!(
             args.args.contains(&expected_pin),
@@ -1355,7 +1480,7 @@ mod tests {
 
     #[test]
     fn test_build_sync_spawn_args_env_sets_hq_root() {
-        let args = build_sync_spawn_args("/Users/test/HQ", true);
+        let args = build_sync_spawn_args("/Users/test/HQ", true, &SyncRunScope::All);
         let env = args.env.unwrap();
         assert_eq!(env.get("HQ_ROOT"), Some(&"/Users/test/HQ".to_string()));
         assert_eq!(env.len(), 2);
@@ -1364,7 +1489,7 @@ mod tests {
     #[test]
     #[cfg(not(target_os = "windows"))]
     fn test_build_sync_spawn_args_env_sets_path_with_homebrew() {
-        let args = build_sync_spawn_args("/tmp", true);
+        let args = build_sync_spawn_args("/tmp", true, &SyncRunScope::All);
         let env = args.env.unwrap();
         let path = env
             .get("PATH")
@@ -1380,7 +1505,7 @@ mod tests {
     #[test]
     #[cfg(target_os = "windows")]
     fn test_build_sync_spawn_args_env_sets_windows_path() {
-        let args = build_sync_spawn_args(r"C:\HQ", true);
+        let args = build_sync_spawn_args(r"C:\HQ", true, &SyncRunScope::All);
         let env = args.env.unwrap();
         let path = env
             .get("PATH")
@@ -1393,7 +1518,7 @@ mod tests {
 
     #[test]
     fn test_build_sync_spawn_args_no_cwd() {
-        let args = build_sync_spawn_args("/any/path", true);
+        let args = build_sync_spawn_args("/any/path", true, &SyncRunScope::All);
         assert!(args.cwd.is_none());
     }
 
