@@ -593,7 +593,7 @@ jobs:
             signature: readSig(process.env.WIN_X64_SIG_PATH),
             url: `${base}/HQ_${version}_x64-setup.exe`,
           };
-          if (exists(process.env.WIN_ARM64_SIG_PATH)) {
+          if (fs.existsSync(process.env.WIN_ARM64_SIG_PATH)) {
             platforms["windows-aarch64"] = {
               signature: readSig(process.env.WIN_ARM64_SIG_PATH),
               url: `${base}/HQ_${version}_arm64-setup.exe`,

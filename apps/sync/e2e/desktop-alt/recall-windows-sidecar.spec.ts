@@ -114,6 +114,10 @@ describe('Windows Recall SDK sidecar bundle parity', () => {
     expect(releaseWorkflow).toContain('windows-aarch64');
     expect(releaseWorkflow).toContain('RECALL_SIDECAR_NODE_EXECUTABLE');
     expect(releaseWorkflow).toContain('Get-FileHash $archive -Algorithm SHA256');
+    expect(releaseWorkflow).toContain(
+      'if (fs.existsSync(process.env.WIN_ARM64_SIG_PATH))',
+    );
+    expect(releaseWorkflow).not.toContain('if (exists(process.env.WIN_ARM64_SIG_PATH))');
     expect(sidecarBuildSource).toContain('["aarch64-pc-windows-msvc", 0xaa64]');
     expect(sidecarBuildSource).toContain('assertTargetArchitecture(launcherRuntime)');
   });
