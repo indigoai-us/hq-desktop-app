@@ -257,7 +257,13 @@
 /// the 6.14.0-6.14.2 changes (default local-company personal sync, the
 /// `sessions/` push-only pull exclusion, and the doubled-path key-poisoning
 /// hardening) the pin was behind.
-pub const HQ_CLOUD_VERSION: &str = "~6.14.3";
+///
+/// `~6.14.3` -> `~6.14.4`: floor the pin at the hq-cloud release that extends
+/// reindex's session-log capture to Codex + Grok (hq-cloud#175). That change is
+/// reindex-only and does not affect the sync runner this pin selects — the bump
+/// just keeps the floor current with the latest 6.14 line so the runner can't
+/// resolve back to an earlier 6.14.x.
+pub const HQ_CLOUD_VERSION: &str = "~6.14.4";
 
 /// Package name for the runner. Used by both the spawn site below and the
 /// startup prewarm. Paired with `HQ_CLOUD_VERSION` to form the full
