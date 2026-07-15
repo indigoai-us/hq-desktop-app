@@ -269,12 +269,10 @@ pub struct RawTelemetryEvent {
     pub app: String,
     pub source: String,
     pub occurred_at: String,
-    pub machine_id: String,
-    pub app_version: String,
     pub consent_basis: String,
     pub schema_version: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub company_uid: Option<String>,
+    pub idempotency_key: Option<String>,
     pub properties: serde_json::Value,
 }
 
