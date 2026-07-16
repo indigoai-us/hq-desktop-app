@@ -53,8 +53,8 @@ use crate::commands::process::{
 use crate::commands::status::{journal_for_sync_complete, write_journal};
 use crate::commands::vault_client::VaultClient;
 use crate::events::{
-    SyncAllCompleteEvent, SyncCompanyProvisionedEvent, SyncErrorEvent, SyncEvent,
-    EVENT_SYNC_ALL_COMPLETE, EVENT_SYNC_AUTH_ERROR, EVENT_SYNC_COMPANY_PROVISIONED,
+    SyncAllCompleteEvent, SyncAuthErrorEvent, SyncCompanyProvisionedEvent, SyncErrorEvent,
+    SyncEvent, EVENT_SYNC_ALL_COMPLETE, EVENT_SYNC_AUTH_ERROR, EVENT_SYNC_COMPANY_PROVISIONED,
     EVENT_SYNC_COMPLETE, EVENT_SYNC_DELETE_REFUSED_STALE_ETAG, EVENT_SYNC_ERROR,
     EVENT_SYNC_FANOUT_PLAN, EVENT_SYNC_NEW_FILES, EVENT_SYNC_PLAN, EVENT_SYNC_PROGRESS,
     EVENT_SYNC_SETUP_NEEDED,
@@ -558,6 +558,50 @@ fn handle_sync_line(
     }
 }
 
+/// Return the re-authentication signal encoded in a runner stderr line.
+///
+/// The runner's normal protocol is tagged with `type`, but some auth refresh
+/// failures are logged with `level` instead. Both shapes must reach the
+/// renderer: the runner exits successfully after an unrecoverable refresh
+/// failure, so waiting for a non-zero exit drops the sign-in prompt.
+pub(crate) fn runner_stderr_needs_reauth(line: &str) -> Option<SyncAuthErrorEvent> {
+    if let Ok(SyncEvent::AuthError(payload)) = serde_json::from_str(line.trim()) {
+        return Some(payload);
+    }
+
+    let value: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
+    let is_auth_error = ["type", "level"]
+        .iter()
+        .any(|field| value.get(*field).and_then(serde_json::Value::as_str) == Some("auth-error"));
+    if !is_auth_error {
+        return None;
+    }
+
+    Some(SyncAuthErrorEvent {
+        message: value
+            .get("message")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("Your sign-in session expired. Sign in again to resume syncing.")
+            .to_string(),
+    })
+}
+
+/// Forward runner stderr protocol records that affect sync state.
+///
+/// Error records still feed the exit-alert classifier; auth failures are
+/// emitted immediately because the runner deliberately exits 0 after them.
+pub(crate) fn handle_runner_stderr_line(app: &AppHandle, totals: &Mutex<RunTotals>, line: &str) {
+    if let Some(payload) = runner_stderr_needs_reauth(line) {
+        let _ = app.emit(EVENT_SYNC_AUTH_ERROR, payload);
+    } else if let Ok(SyncEvent::Error(payload)) = serde_json::from_str(line.trim()) {
+        let mut t = totals.lock().unwrap_or_else(|e| e.into_inner());
+        t.record_error(&payload);
+    }
+
+    let mut t = totals.lock().unwrap_or_else(|e| e.into_inner());
+    t.record_stderr_line(line);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Tauri commands
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1049,27 +1093,11 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
                     message: Some(line.clone()),
                     ..Default::default()
                 });
-                // …but that move ALSO took error events away from
-                // `handle_sync_line` (stdout-only), which is what fed the
-                // benign-vs-alertable exit classification in RunTotals. Without
-                // re-ingesting them here, `saw_error` stays false for every
-                // post-PR-#34 run, the exit handler treats every non-zero exit
-                // as an "unexplained crash", and the common benign code-2 (ACL-
-                // scope skips / not-provisioned / transient network) floods
-                // Sentry (HQ-SYNC-WEB-6). So parse any ndjson `error` line and
-                // record it toward the alert decision, mirroring the stdout
-                // path. Non-ndjson stderr (reindex/qmd/warning chatter) fails to
-                // parse and is ignored.
-                if let Ok(SyncEvent::Error(payload)) =
-                    serde_json::from_str::<SyncEvent>(line.trim())
-                {
-                    let mut t = totals.lock().unwrap_or_else(|e| e.into_inner());
-                    t.record_error(&payload);
-                }
-                {
-                    let mut t = totals.lock().unwrap_or_else(|e| e.into_inner());
-                    t.record_stderr_line(&line);
-                }
+                // Re-ingest stderr protocol records. Error events feed the
+                // benign-vs-alertable exit classification, while auth-error
+                // emits the re-authentication signal even though the runner
+                // intentionally exits 0 after a failed token refresh.
+                handle_runner_stderr_line(&app_bg, &totals, &line);
                 #[cfg(debug_assertions)]
                 eprintln!("[sync stderr] {}", line);
             }
@@ -1552,6 +1580,27 @@ mod tests {
             SyncEvent::AuthError(e) => assert_eq!(e.message, "Token expired"),
             _ => panic!("Expected AuthError event"),
         }
+    }
+
+    #[test]
+    fn stderr_auth_error_raises_needs_reauth_when_runner_exits_zero() {
+        let stderr_stream = [
+            "runner: refreshing token",
+            r#"{"type":"error","level":"auth-error","message":"Token refresh failed"}"#,
+        ];
+        let exit_code = 0;
+
+        let needs_reauth = stderr_stream
+            .iter()
+            .find_map(|line| runner_stderr_needs_reauth(line));
+
+        assert_eq!(exit_code, 0);
+        assert_eq!(
+            needs_reauth,
+            Some(SyncAuthErrorEvent {
+                message: "Token refresh failed".to_string(),
+            })
+        );
     }
 
     #[test]

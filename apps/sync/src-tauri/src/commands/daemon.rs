@@ -197,6 +197,7 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
                         message: Some(line.clone()),
                         ..Default::default()
                     });
+                    crate::commands::sync::handle_runner_stderr_line(&app, &totals, &line);
                 }
                 ProcessEvent::Exit {
                     code,

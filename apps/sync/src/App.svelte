@@ -1014,6 +1014,11 @@
         syncProgress = null;
         syncErrorMessage = event.payload.message;
         syncErrorCompany = '';
+        // The runner cannot recover from a failed refresh. Route directly to
+        // the sign-in screen instead of leaving an expired session in the
+        // popover, even though the runner exits with code 0.
+        authenticated = false;
+        expiresAt = '';
         await invoke('set_tray_state', { state: 'error' });
       })
     );
