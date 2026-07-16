@@ -45,7 +45,8 @@ use hq_desktop_core::oauth::{
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 const LOOPBACK_PORT: u16 = 53682;
@@ -73,9 +74,16 @@ fn pkce_store() -> &'static Mutex<Option<String>> {
 // to IPv6 (`::1`) first. Binding IPv4 only would let the browser's callback
 // hit `[::1]:53682` with nothing listening, hanging sign-in until the timeout.
 
-static PENDING_LISTENER: OnceLock<Mutex<Option<Vec<TcpListener>>>> = OnceLock::new();
+struct PendingListener {
+    state: String,
+    cancelled: Arc<AtomicBool>,
+    result: Option<mpsc::Receiver<Result<OAuthResult, String>>>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
 
-fn listener_store() -> &'static Mutex<Option<Vec<TcpListener>>> {
+static PENDING_LISTENER: OnceLock<Mutex<Option<PendingListener>>> = OnceLock::new();
+
+fn listener_store() -> &'static Mutex<Option<PendingListener>> {
     PENDING_LISTENER.get_or_init(|| Mutex::new(None))
 }
 
@@ -116,6 +124,179 @@ fn bind_loopback_listeners(port: u16) -> std::io::Result<Vec<TcpListener>> {
         }))
     } else {
         Ok(listeners)
+    }
+}
+
+/// Read the first HTTP request chunk without blocking cancellation. Browsers
+/// send loopback redirects in a single small request; a peer that connects but
+/// sends no request is discarded after `READ_TIMEOUT` instead of pinning the
+/// listener thread and preventing Retry from releasing the callback port.
+fn read_request_line(
+    stream: &mut TcpStream,
+    cancelled: &AtomicBool,
+) -> std::io::Result<String> {
+    stream.set_nonblocking(true)?;
+    let deadline = std::time::Instant::now() + READ_TIMEOUT;
+    let mut buf = [0u8; 4096];
+
+    loop {
+        if cancelled.load(Ordering::SeqCst) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "OAuth listener cancelled",
+            ));
+        }
+
+        match stream.read(&mut buf) {
+            Ok(n) => return Ok(String::from_utf8_lossy(&buf[..n]).into_owned()),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if std::time::Instant::now() >= deadline {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "Timed out waiting for OAuth callback request",
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+fn receive_loopback_callback(
+    listeners: Vec<TcpListener>,
+    expected_state: String,
+    cancelled: Arc<AtomicBool>,
+) -> Result<OAuthResult, String> {
+    // Non-blocking accept on every bound listener (IPv4 + IPv6) so the
+    // deadline check below actually runs. A blocking accept() on a single
+    // socket would sit forever ignoring the 5-minute timeout — and on macOS
+    // could be parked on the wrong loopback family while the browser delivered
+    // the callback to the other one.
+    for listener in &listeners {
+        listener
+            .set_nonblocking(true)
+            .map_err(|e| format!("set_nonblocking: {e}"))?;
+    }
+
+    let deadline = std::time::Instant::now() + IDLE_TIMEOUT;
+
+    loop {
+        if cancelled.load(Ordering::SeqCst) {
+            eprintln!("[oauth] listener cancelled");
+            return Err("Sign-in was cancelled.".into());
+        }
+
+        if std::time::Instant::now() > deadline {
+            eprintln!("[oauth] listener timed out waiting for callback");
+            return Err("Timed out waiting for sign-in (5 minutes).".into());
+        }
+
+        for listener in &listeners {
+            match listener.accept() {
+                Ok((mut stream, addr)) => {
+                    eprintln!("[oauth] callback received from {addr}");
+                    let request = match read_request_line(&mut stream, &cancelled) {
+                        Ok(request) => request,
+                        Err(_) => continue,
+                    };
+
+                    match parse_callback(&request) {
+                        Some((_code, _state, Some(error))) => {
+                            let reason = format!("Provider error: {error}");
+                            eprintln!("[oauth] callback rejected — {reason}");
+                            write_response(
+                                &mut stream,
+                                "400 Bad Request",
+                                &error_html(&reason),
+                            );
+                            return Err(structured_error(
+                                "OAUTH_PROVIDER_ERROR",
+                                "Sign-in was cancelled or denied. Retry when you are ready.",
+                            ));
+                        }
+                        Some((code, state, None)) => {
+                            if state != expected_state {
+                                let reason = format!(
+                                    "State mismatch: expected {} got {}",
+                                    expected_state, state
+                                );
+                                eprintln!("[oauth] callback rejected — {reason}");
+                                write_response(
+                                    &mut stream,
+                                    "400 Bad Request",
+                                    &error_html(&reason),
+                                );
+                                return Err("OAuth state mismatch — possible CSRF, aborting.".into());
+                            }
+                            eprintln!("[oauth] callback accepted — code length {}", code.len());
+                            write_response(&mut stream, "200 OK", SUCCESS_HTML);
+                            return Ok(OAuthResult { code });
+                        }
+                        None => {
+                            write_response(
+                                &mut stream,
+                                "404 Not Found",
+                                "<!doctype html><title>404</title>",
+                            );
+                        }
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
+                Err(e) => return Err(format!("accept failed: {e}")),
+            }
+        }
+
+        // Nothing ready on any listener this pass — yield briefly so the loop
+        // doesn't busy-spin between deadline and cancellation checks.
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn start_loopback_listener(listeners: Vec<TcpListener>, state: String) -> PendingListener {
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let listener_cancelled = Arc::clone(&cancelled);
+    let listener_state = state.clone();
+    let (sender, receiver) = mpsc::channel();
+    let thread = std::thread::spawn(move || {
+        let _ = sender.send(receive_loopback_callback(
+            listeners,
+            listener_state,
+            listener_cancelled,
+        ));
+    });
+
+    PendingListener {
+        state,
+        cancelled,
+        result: Some(receiver),
+        thread: Some(thread),
+    }
+}
+
+fn cancel_pending_listener(expected_state: Option<&str>) -> Result<bool, String> {
+    let pending = {
+        let mut guard = listener_store()
+            .lock()
+            .map_err(|e| format!("Listener lock poisoned: {e}"))?;
+        match guard.as_ref() {
+            Some(pending) if expected_state.map_or(true, |state| pending.state == state) => {
+                guard.take()
+            }
+            _ => None,
+        }
+    };
+
+    if let Some(mut pending) = pending {
+        pending.cancelled.store(true, Ordering::SeqCst);
+        if let Some(thread) = pending.thread.take() {
+            thread
+                .join()
+                .map_err(|_| "OAuth listener thread panicked while cancelling".to_string())?;
+        }
+        Ok(true)
+    } else {
+        Ok(false)
     }
 }
 
@@ -193,13 +374,6 @@ code{{color:#f87171;font-size:12px;display:block;margin-top:24px}}</style>
 
 // ── HTTP helpers ───────────────────────────────────────────────────────
 
-fn read_request_line(stream: &mut TcpStream) -> std::io::Result<String> {
-    stream.set_read_timeout(Some(READ_TIMEOUT))?;
-    let mut buf = [0u8; 4096];
-    let n = stream.read(&mut buf)?;
-    Ok(String::from_utf8_lossy(&buf[..n]).into_owned())
-}
-
 fn write_response(stream: &mut TcpStream, status: &str, body: &str) {
     let payload = format!(
         "HTTP/1.1 {status}\r\n\
@@ -212,6 +386,7 @@ fn write_response(stream: &mut TcpStream, status: &str, body: &str) {
         len = body.len(),
         body = body,
     );
+    let _ = stream.set_nonblocking(false);
     let _ = stream.write_all(payload.as_bytes());
     let _ = stream.flush();
     let _ = stream.shutdown(Shutdown::Both);
@@ -235,6 +410,11 @@ pub async fn start_oauth_login(provider: String) -> Result<OAuthFlowInit, String
     let verifier = generate_code_verifier();
     let challenge = compute_code_challenge(&verifier);
 
+    // A Retry replaces any preceding browser attempt. Wait for the old
+    // listener thread to relinquish its sockets before binding the new one so
+    // the fixed callback port is immediately reusable.
+    cancel_pending_listener(None)?;
+
     let listeners = bind_loopback_listeners(LOOPBACK_PORT).map_err(|e| {
         structured_error(
             "OAUTH_PORT_IN_USE",
@@ -246,17 +426,15 @@ pub async fn start_oauth_login(provider: String) -> Result<OAuthFlowInit, String
         )
     })?;
 
-    // Replace (and drop, closing the sockets) any previous pending listeners —
-    // e.g. the user clicked a provider button, abandoned that attempt, and
-    // clicked again. The old spawn_blocking task's accept() call unblocks
-    // with an OS error when its listener is dropped out from under it,
-    // which the frontend already ignores via its isCurrentCall() guard.
+    // Start accepting before returning the authorize URL. This makes both
+    // localhost address families ready before the frontend can open a browser.
     {
         let mut guard = listener_store()
             .lock()
             .map_err(|e| format!("Listener lock poisoned: {e}"))?;
-        *guard = Some(listeners);
+        *guard = Some(start_loopback_listener(listeners, state.clone()));
     }
+    eprintln!("[oauth] listener ready; opening provider is now safe");
 
     // Store verifier for oauth_exchange_code
     {
@@ -276,16 +454,18 @@ pub async fn start_oauth_login(provider: String) -> Result<OAuthFlowInit, String
     })
 }
 
-/// Legacy installer cancellation IPC. Dropping the pre-bound listeners closes
-/// the sockets and clears the one-shot PKCE verifier.
+/// Cancel an in-flight OAuth attempt, wait for its listener thread to release
+/// both loopback sockets, and clear the one-shot PKCE verifier.
 #[tauri::command]
-pub fn oauth_cancel_listen() {
-    if let Ok(mut guard) = listener_store().lock() {
-        *guard = None;
+pub fn oauth_cancel_listen(state: Option<String>) -> Result<(), String> {
+    let cancelled = cancel_pending_listener(state.as_deref())?;
+    if cancelled || state.is_none() {
+        if let Ok(mut guard) = pkce_store().lock() {
+            *guard = None;
+        }
     }
-    if let Ok(mut guard) = pkce_store().lock() {
-        *guard = None;
-    }
+    eprintln!("[oauth] sign-in cancelled");
+    Ok(())
 }
 
 /// Exchange an authorization code for tokens using the stored PKCE verifier.
@@ -311,12 +491,16 @@ pub async fn oauth_exchange_code(code: String) -> Result<AuthState, String> {
         ("code_verifier", &verifier),
     ];
 
+    eprintln!("[oauth] token exchange started");
     let response = client
         .post(cognito_token_url())
         .form(&params)
         .send()
         .await
-        .map_err(|e| format!("Token exchange request failed: {e}"))?;
+        .map_err(|e| {
+            eprintln!("[oauth] token exchange request failed: {e}");
+            format!("Token exchange request failed: {e}")
+        })?;
 
     if !response.status().is_success() {
         let status = response.status();
@@ -324,13 +508,17 @@ pub async fn oauth_exchange_code(code: String) -> Result<AuthState, String> {
             .text()
             .await
             .unwrap_or_else(|_| "unknown".to_string());
+        eprintln!("[oauth] token exchange rejected with {status}");
         return Err(format!("Token exchange failed ({status}): {body_text}"));
     }
 
     let token_resp: TokenResponse = response
         .json()
         .await
-        .map_err(|e| format!("Failed to parse token response: {e}"))?;
+        .map_err(|e| {
+            eprintln!("[oauth] token exchange response parse failed: {e}");
+            format!("Failed to parse token response: {e}")
+        })?;
 
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -349,6 +537,7 @@ pub async fn oauth_exchange_code(code: String) -> Result<AuthState, String> {
     };
 
     cognito::set_tokens(&tokens).await?;
+    eprintln!("[oauth] token exchange completed");
 
     Ok(AuthState {
         authenticated: true,
@@ -362,106 +551,47 @@ pub async fn oauth_exchange_code(code: String) -> Result<AuthState, String> {
 /// `start_oauth_login` is a programmer error, not a runtime race.
 #[tauri::command]
 pub async fn oauth_listen_for_code(state: String) -> Result<OAuthResult, String> {
-    let state_copy = state.clone();
-
-    let listeners = {
+    let receiver = {
         let mut guard = listener_store()
             .lock()
             .map_err(|e| format!("Listener lock poisoned: {e}"))?;
-        guard.take().ok_or_else(|| {
+        let pending = guard.as_mut().ok_or_else(|| {
             "No pending sign-in listener — was start_oauth_login called?".to_string()
+        })?;
+        if pending.state != state {
+            return Err("OAuth state does not match the pending sign-in attempt.".into());
+        }
+        pending.result.take().ok_or_else(|| {
+            "OAuth listener is already waiting for a callback.".to_string()
         })?
     };
 
-    tokio::task::spawn_blocking(move || -> Result<OAuthResult, String> {
-        // Non-blocking accept on every bound listener (IPv4 + IPv6) so the
-        // deadline check below actually runs. A blocking accept() on a single
-        // socket would sit forever ignoring the 5-minute timeout — and on
-        // macOS could be parked on the wrong loopback family while the browser
-        // delivered the callback to the other one.
-        for listener in &listeners {
-            listener
-                .set_nonblocking(true)
-                .map_err(|e| format!("set_nonblocking: {e}"))?;
-        }
-
-        let deadline = std::time::Instant::now() + IDLE_TIMEOUT;
-
-        loop {
-            if std::time::Instant::now() > deadline {
-                return Err("Timed out waiting for sign-in (5 minutes).".into());
-            }
-
-            for listener in &listeners {
-                match listener.accept() {
-                    Ok((mut stream, _addr)) => {
-                        let request = match read_request_line(&mut stream) {
-                            Ok(r) => r,
-                            Err(_) => {
-                                continue;
-                            }
-                        };
-
-                        match parse_callback(&request) {
-                            Some((_code, _state, Some(error))) => {
-                                let reason = format!("Provider error: {error}");
-                                eprintln!("[oauth] callback rejected — {reason}");
-                                write_response(
-                                    &mut stream,
-                                    "400 Bad Request",
-                                    &error_html(&reason),
-                                );
-                                return Err(structured_error(
-                                    "OAUTH_PROVIDER_ERROR",
-                                    "Sign-in was cancelled or denied. Retry when you are ready.",
-                                ));
-                            }
-                            Some((code, state, None)) => {
-                                if state != state_copy {
-                                    let reason = format!(
-                                        "State mismatch: expected {} got {}",
-                                        state_copy, state
-                                    );
-                                    eprintln!("[oauth] callback rejected — {reason}");
-                                    write_response(
-                                        &mut stream,
-                                        "400 Bad Request",
-                                        &error_html(&reason),
-                                    );
-                                    return Err(
-                                        "OAuth state mismatch — possible CSRF, aborting.".into()
-                                    );
-                                }
-                                eprintln!("[oauth] callback accepted — code length {}", code.len());
-                                write_response(&mut stream, "200 OK", SUCCESS_HTML);
-                                return Ok(OAuthResult { code });
-                            }
-                            None => {
-                                write_response(
-                                    &mut stream,
-                                    "404 Not Found",
-                                    "<!doctype html><title>404</title>",
-                                );
-                                continue;
-                            }
-                        }
-                    }
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        continue;
-                    }
-                    Err(e) => {
-                        return Err(format!("accept failed: {e}"));
-                    }
-                }
-            }
-
-            // Nothing ready on any listener this pass — yield briefly so the
-            // loop doesn't busy-spin between deadline checks.
-            std::thread::sleep(Duration::from_millis(50));
-        }
+    let result = tokio::task::spawn_blocking(move || {
+        receiver.recv().unwrap_or_else(|_| {
+            Err("OAuth listener was cancelled before the callback arrived.".into())
+        })
     })
     .await
-    .map_err(|e| format!("OAuth listener task panicked: {e}"))?
+    .map_err(|e| format!("OAuth listener task panicked: {e}"))?;
+
+    let thread = {
+        let mut guard = listener_store()
+            .lock()
+            .map_err(|e| format!("Listener lock poisoned: {e}"))?;
+        match guard.as_ref() {
+            Some(pending) if pending.state == state && pending.result.is_none() => {
+                guard.take().and_then(|mut pending| pending.thread.take())
+            }
+            _ => None,
+        }
+    };
+    if let Some(thread) = thread {
+        thread
+            .join()
+            .map_err(|_| "OAuth listener thread panicked".to_string())?;
+    }
+
+    result
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────
@@ -516,21 +646,24 @@ mod tests {
     #[test]
     fn listener_store_roundtrip() {
         let _serialize = STORE_TEST_LOCK.lock().unwrap();
-        // Exercises the same take()-then-store pattern start_oauth_login /
+        // Exercises the same store-and-take lifecycle start_oauth_login /
         // oauth_listen_for_code use, on an OS-assigned ephemeral port so this
         // test can't collide with a real running app on 53682.
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let bound_port = listener.local_addr().unwrap().port();
+        let pending = start_loopback_listener(vec![listener], "roundtrip".to_string());
 
         {
             let mut guard = listener_store().lock().unwrap();
-            *guard = Some(vec![listener]);
+            *guard = Some(pending);
         }
-        let taken = {
+        let mut taken = {
             let mut guard = listener_store().lock().unwrap();
             guard.take()
-        };
-        assert_eq!(taken.unwrap()[0].local_addr().unwrap().port(), bound_port);
+        }
+        .unwrap();
+        assert_eq!(taken.state, "roundtrip");
+        taken.cancelled.store(true, Ordering::SeqCst);
+        taken.thread.take().unwrap().join().unwrap();
         {
             let guard = listener_store().lock().unwrap();
             assert!(guard.is_none());
@@ -541,29 +674,26 @@ mod tests {
     fn listener_store_replacing_pending_listener_drops_the_old_one() {
         let _serialize = STORE_TEST_LOCK.lock().unwrap();
         // Simulates: user clicks a provider button, abandons that attempt,
-        // clicks again. The second start_oauth_login must be able to store a
-        // fresh listener without the mutex or the old socket getting in the way.
+        // clicks again. The second start_oauth_login must release the old
+        // thread and sockets before it stores a fresh listener.
         let first = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let second = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let second_port = second.local_addr().unwrap().port();
 
         {
             let mut guard = listener_store().lock().unwrap();
-            *guard = Some(vec![first]);
+            *guard = Some(start_loopback_listener(vec![first], "first".to_string()));
         }
+        cancel_pending_listener(None).unwrap();
         {
             let mut guard = listener_store().lock().unwrap();
-            *guard = Some(vec![second]); // old `first` is dropped here, closing its socket
+            *guard = Some(start_loopback_listener(vec![second], "second".to_string()));
         }
         {
             let guard = listener_store().lock().unwrap();
-            assert_eq!(
-                guard.as_ref().unwrap()[0].local_addr().unwrap().port(),
-                second_port
-            );
+            assert_eq!(guard.as_ref().unwrap().state, "second");
         }
         // Leave the process-global store empty for any other test.
-        *listener_store().lock().unwrap() = None;
+        cancel_pending_listener(None).unwrap();
     }
 
     #[test]
@@ -594,5 +724,32 @@ mod tests {
             TcpStream::connect((IPV6_LOOPBACK_HOST, port))
                 .expect("connect to IPv6 loopback listener");
         }
+    }
+
+    #[test]
+    fn listener_is_ready_before_the_provider_can_open() {
+        // The authorize URL is returned only after start_loopback_listener
+        // returns. This guards the original race: a fast browser redirect must
+        // be accepted even when oauth_listen_for_code has not run yet.
+        let listeners = bind_loopback_listeners(0).expect("bind loopback listeners");
+        let port = listeners[0].local_addr().unwrap().port();
+        let mut pending = start_loopback_listener(listeners, "test-state".to_string());
+
+        let mut callback = TcpStream::connect((LOOPBACK_HOST, port))
+            .expect("the callback listener is ready before opening the provider");
+        callback
+            .write_all(
+                b"GET /callback?code=test-code&state=test-state HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            )
+            .unwrap();
+
+        let result = pending
+            .result
+            .take()
+            .unwrap()
+            .recv_timeout(Duration::from_secs(1))
+            .expect("callback result");
+        assert_eq!(result.unwrap().code, "test-code");
+        pending.thread.take().unwrap().join().unwrap();
     }
 }
