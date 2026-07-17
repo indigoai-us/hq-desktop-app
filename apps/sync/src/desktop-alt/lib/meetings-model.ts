@@ -490,6 +490,20 @@ export function isPlausibleMeetingUrl(url: string): boolean {
 }
 
 /**
+ * Human-readable destination for an ad-hoc URL-invite: the picked company's
+ * name, or "Personal" when no company is chosen (companyId null). Falls back to
+ * the generic "company" when the id has no name in the map. Mirrors the classic
+ * MeetingsWindow url-invite toast copy so both surfaces read identically.
+ */
+export function urlInviteDestinationLabel(
+  companyId: string | null,
+  companyNamesByUid: Map<string, string>,
+): string {
+  if (!companyId) return 'Personal';
+  return companyNamesByUid.get(companyId) ?? 'company';
+}
+
+/**
  * Row action button lifecycle, driven by the scheduled bot's status:
  *   no bot     → "invite"     (CTA)
  *   scheduled  → "invited"    (click to cancel)
