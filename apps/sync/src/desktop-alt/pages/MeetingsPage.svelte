@@ -25,6 +25,7 @@
     eventStart,
     extractedSignalLabels,
     groupByDay,
+    isPlausibleMeetingUrl,
     pickLiveMeeting,
     pickUpNext,
     sortByStart,
@@ -121,6 +122,36 @@
     const t = await meetingsStore.joinBotNow(evt);
     if (t) flashToast(t.kind, t.text);
   }
+
+  // Ad-hoc "paste a meeting URL" invite — parity with the classic
+  // MeetingsWindow. Sends the recording bot to a link that isn't on the user's
+  // calendar. `urlInputCompanyId` null = Personal (the default). This page owns
+  // the in-flight guard; the store owns the invoke + toast copy.
+  let urlInput = $state('');
+  let urlInputCompanyId = $state<string | null>(null);
+  let urlInviting = $state(false);
+  async function onUrlInvite(): Promise<void> {
+    const url = urlInput.trim();
+    if (urlInviting || !isPlausibleMeetingUrl(url)) return;
+    urlInviting = true;
+    // Snapshot the destination BEFORE the await so a slow request that lands
+    // after the user re-types doesn't clear their next selection.
+    const submittedCompanyId = urlInputCompanyId;
+    try {
+      const t = await meetingsStore.inviteBotByUrl(url, submittedCompanyId);
+      if (t) {
+        // `info` = invited (success or already-scheduled) → reset the row so the
+        // next paste starts fresh on Personal. `warn` = keep it for a retry.
+        if (t.kind === 'info') {
+          urlInput = '';
+          urlInputCompanyId = null;
+        }
+        flashToast(t.kind, t.text);
+      }
+    } finally {
+      urlInviting = false;
+    }
+  }
   let reporting = $state(false);
   async function onReportProblem(): Promise<void> {
     if (reporting) return;
@@ -212,6 +243,49 @@
   {/if}
 
   <div class="content">
+    <div class="url-invite-bar">
+      <input
+        type="url"
+        inputmode="url"
+        autocomplete="off"
+        spellcheck="false"
+        placeholder="Paste a Zoom or Google Meet URL"
+        aria-label="Paste a meeting URL to send the recording bot"
+        bind:value={urlInput}
+        disabled={urlInviting}
+        class="url-input"
+        onkeydown={(e) => {
+          if (e.key === 'Enter' && isPlausibleMeetingUrl(urlInput.trim())) {
+            e.preventDefault();
+            void onUrlInvite();
+          }
+        }}
+      />
+      {#if urlInput.trim().length > 0}
+        <!-- Destination picker. Only renders once the user starts typing —
+             keeps the idle bar clean. `null` = Personal (the default). -->
+        <select
+          class="url-invite-company"
+          aria-label="Save bot to"
+          bind:value={urlInputCompanyId}
+          disabled={urlInviting}
+        >
+          <option value={null}>Personal</option>
+          {#each [...companyNamesByUid.entries()] as [uid, name] (uid)}
+            <option value={uid}>{name}</option>
+          {/each}
+        </select>
+      {/if}
+      <button
+        type="button"
+        class="btn url-invite-btn"
+        disabled={urlInviting || !isPlausibleMeetingUrl(urlInput.trim())}
+        onclick={onUrlInvite}
+      >
+        {urlInviting ? 'Inviting…' : 'Invite'}
+      </button>
+    </div>
+
     <div class="three-col">
       <LiveNowCard
         meeting={liveMeeting}
@@ -404,6 +478,31 @@
   .btn .icon { display: flex; align-items: center; justify-content: center; width: 14px; height: 14px; }
 
   .content { display: flex; flex-direction: column; gap: var(--v4-space-5); }
+
+  .url-invite-bar {
+    display: flex; align-items: center; gap: 8px;
+    padding: 10px 12px; border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-card); background: var(--v4-raised);
+    box-shadow: var(--v4-shadow-card);
+  }
+  .url-input {
+    flex: 1 1 auto; min-width: 0;
+    padding: 6px 10px; border: 1px solid var(--v4-control-border);
+    border-radius: var(--v4-radius-field); background: var(--v4-inset);
+    color: var(--v4-text-1); font: inherit; font-size: var(--text-base); line-height: 18px;
+  }
+  .url-input::placeholder { color: var(--v4-text-3); }
+  .url-input:focus { outline: none; border-color: var(--v4-text-3); }
+  .url-input:disabled { opacity: 0.55; cursor: default; }
+  .url-invite-company {
+    flex: 0 0 auto; max-width: 160px;
+    padding: 6px 8px; border: 1px solid var(--v4-control-border);
+    border-radius: var(--v4-radius-field); background: var(--v4-inset);
+    color: var(--v4-text-1); font: inherit; font-size: var(--text-base); line-height: 18px;
+    cursor: pointer;
+  }
+  .url-invite-company:disabled { opacity: 0.55; cursor: default; }
+  .url-invite-btn { flex: 0 0 auto; }
 
   .three-col { display: grid; grid-template-columns: 1.6fr 1fr 1fr; gap: 14px; align-items: start; }
 

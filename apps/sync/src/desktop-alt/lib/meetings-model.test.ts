@@ -10,6 +10,7 @@ import {
   dayLabel,
   groupByDay,
   isAuthError,
+  isPlausibleMeetingUrl,
   isRecurringMeeting,
   MEETINGS_STALE_NOTICE_FAILURES,
   meetingsRefreshGate,
@@ -19,6 +20,7 @@ import {
   recurringSeriesId,
   rowButtonKind,
   totalSignalCounts,
+  urlInviteDestinationLabel,
   type MeetingEvent,
   type ScheduledBot,
 } from './meetings-model';
@@ -585,6 +587,44 @@ describe('meetings-model', () => {
       expect(rowButtonKind(bot({ status: 'failed', sourceLanded: false }))).toBe(
         'invite',
       );
+    });
+  });
+
+  // Gate for the paste-a-URL invite bar (parity with the classic MeetingsWindow):
+  // the Invite button + Enter key only fire for a real join link, so a bogus
+  // paste can never schedule a bot.
+  describe('isPlausibleMeetingUrl', () => {
+    it('accepts real Zoom / Google Meet / Teams / Webex links', () => {
+      expect(isPlausibleMeetingUrl('https://us02web.zoom.us/j/8412345678')).toBe(true);
+      expect(isPlausibleMeetingUrl('https://meet.google.com/abc-defg-hij')).toBe(true);
+      expect(
+        isPlausibleMeetingUrl('https://teams.microsoft.com/l/meetup-join/xyz'),
+      ).toBe(true);
+      expect(isPlausibleMeetingUrl('https://acme.webex.com/meet/room')).toBe(true);
+    });
+
+    it('rejects empty, non-meeting, and non-https URLs', () => {
+      expect(isPlausibleMeetingUrl('')).toBe(false);
+      expect(isPlausibleMeetingUrl('   ')).toBe(false);
+      expect(isPlausibleMeetingUrl('https://example.com/not-a-meeting')).toBe(false);
+      expect(isPlausibleMeetingUrl('http://meet.google.com/abc-defg-hij')).toBe(false);
+      expect(isPlausibleMeetingUrl('zoom.us/j/123')).toBe(false);
+    });
+  });
+
+  describe('urlInviteDestinationLabel', () => {
+    const names = new Map<string, string>([['co-1', 'Indigo']]);
+
+    it('returns "Personal" when no company is picked', () => {
+      expect(urlInviteDestinationLabel(null, names)).toBe('Personal');
+    });
+
+    it('returns the company name for a known uid', () => {
+      expect(urlInviteDestinationLabel('co-1', names)).toBe('Indigo');
+    });
+
+    it('falls back to "company" for an unknown uid', () => {
+      expect(urlInviteDestinationLabel('co-unknown', names)).toBe('company');
     });
   });
 });
