@@ -1,6 +1,6 @@
 [package]
 name = "hq-sync-menubar"
-version = "0.9.10"
+version = "0.10.18"
 edition = "2021"
 
 [build-dependencies]
@@ -11,7 +11,7 @@ tauri-build = { version = "2", features = [] }
 hq-telemetry = { path = "../../../crates/hq-telemetry" }
 hq-desktop-core = { path = "../../../crates/hq-desktop-core" }
 hq-platform = { path = "../../../crates/hq-platform" }
-tauri = { version = "2", features = ["macos-private-api", "tray-icon", "image-png"] }
+tauri = { version = "2", features = ["macos-private-api", "tray-icon", "image-png", "protocol-asset"] }
 tauri-plugin-shell = "2"
 tauri-plugin-http = "2"
 tauri-plugin-fs = "2"
@@ -134,8 +134,7 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 # any stale NSOpenPanel/NSSavePanel before opening a new picker. rfd
 # doesn't expose the panel handle, so we reach into AppKit directly.
 objc2 = "0.6"
-# block2 has two callers in the menubar app, both needing ObjC completion
-# blocks for Apple APIs whose contract requires a non-nil block:
+# block2 callers in the menubar app — ObjC blocks for Apple APIs:
 #
 # 1. commands/notifications.rs — UNUserNotificationCenter
 #    getNotificationSettings / requestAuthorization, so we can read the
@@ -148,6 +147,11 @@ objc2 = "0.6"
 #    requestAccessForMediaType: for TCC microphone registration from HQ
 #    Sync's main process. Passing nil for the completion handler crashes
 #    per Apple's contract, so block2 constructs a valid one.
+#
+# 3. commands/widget.rs — NSNotificationCenter
+#    addObserverForName:object:queue:usingBlock: for
+#    NSApplicationDidChangeScreenParametersNotification so the floating
+#    wordmark re-anchors on display arrangement/resolution change.
 block2 = "0.6"
 # Direct dep on mac-notification-sys for action-button notifications.
 # tauri-plugin-notification (2.3.3) on macOS uses notify-rust which wraps
@@ -184,6 +188,7 @@ path = "examples/emit-sample-journal.rs"
 required-features = ["journal-cli"]
 
 [dev-dependencies]
+hq-desktop-core = { path = "../../../crates/hq-desktop-core", features = ["test-support"] }
 tempfile = "3"
 wiremock = "0.6"
 tauri = { version = "2", features = ["test"] }

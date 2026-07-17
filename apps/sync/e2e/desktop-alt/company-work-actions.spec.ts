@@ -3,7 +3,7 @@ import { readRepoFile } from './harness';
 
 describe('desktop-alt company work actions are functional', () => {
   const projects = readRepoFile('src/desktop-alt/pages/CompanyProjectsPage.svelte');
-  const tasks = readRepoFile('src/desktop-alt/pages/CompanyTasksPage.svelte');
+  const projectDetail = readRepoFile('src/desktop-alt/pages/ProjectDetailView.svelte');
   const companyPage = readRepoFile('src/desktop-alt/pages/CompanyPage.svelte');
   const storyPanel = readRepoFile('src/desktop-alt/v4/StoryPanel.svelte');
   const companyBoardStore = readRepoFile('src/desktop-alt/lib/company-board.svelte.ts');
@@ -22,36 +22,25 @@ describe('desktop-alt company work actions are functional', () => {
     expect(projects).toContain('data-testid="filtered-projects-empty-state"');
   });
 
-  it('wires Tasks filtering instead of leaving the Filter button inert', () => {
-    expect(tasks).toContain("type TaskFilter = 'all' | 'open' | 'p1'");
-    expect(tasks).toContain('const filteredRows = $derived');
-    expect(tasks).toContain('matchesTaskFilter(row, taskFilter)');
-    expect(tasks).toContain('function cycleFilter()');
-    expect(tasks).toContain('onclick={cycleFilter}');
-    expect(tasks).toContain('data-testid="filtered-tasks-empty-state"');
+  it('absorbs Tasks into Projects (no separate company Tasks tab/page)', () => {
+    // company-detail-desktop-ia: CompanyTasksPage removed; stories open from Projects.
+    expect(companyPage).not.toContain('CompanyTasksPage');
+    expect(projects).toContain('import StoryPanel from');
+    expect(projects).toContain('<ProjectDetailView');
+    expect(projects).toContain('onselectStory={openStory}');
+    expect(projectDetail).toContain("tab = $state<Tab>('board')");
   });
 
-  it('wires Tasks rows into the V4 story detail panel', () => {
-    expect(tasks).toContain("import StoryPanel from '../v4/StoryPanel.svelte'");
-    expect(tasks).toContain('const selectedTask = $derived');
-    expect(tasks).toContain('function openTask(row: TaskRow): void');
-    expect(tasks).toContain('function openTaskFromKey(event: KeyboardEvent, row: TaskRow): void');
-    expect(tasks).toContain('class="task-row"');
-    expect(tasks).toContain('type="button"');
-    expect(tasks).toContain('onclick={() => openTask(row)}');
-    expect(tasks).toContain('<StoryPanel');
-    expect(tasks).toContain('story={selectedTask?.story ?? null}');
-    expect(tasks).toContain('onselectDependency={selectStoryById}');
-    expect(tasks).toContain('{onStoryPassesChange}');
+  it('wires project story selection into the V4 story detail panel', () => {
+    expect(projects).toContain('<StoryPanel');
+    expect(projects).toContain('onselectDependency={selectStoryById}');
+    expect(projects).toContain('{onStoryPassesChange}');
   });
 
-  it('keeps Projects and Tasks responsive inside the narrow V4 shell panes', () => {
+  it('keeps Projects responsive inside the narrow V4 shell panes', () => {
     expect(projects).toContain('container: company-projects / inline-size');
     expect(projects).toContain('@container company-projects');
     expect(projects).toContain('grid-template-columns: minmax(0, 1fr)');
-    expect(tasks).toContain('container: company-tasks / inline-size');
-    expect(tasks).toContain('@container company-tasks');
-    expect(tasks).toContain('grid-template-columns: 38px minmax(0, 1fr)');
   });
 
   it('keeps story details legible over the desktop shell', () => {
@@ -100,7 +89,7 @@ describe('desktop-alt company work actions are functional', () => {
     expect(secrets).toContain("onclick={() => void openSecretsPrompt('export')}");
     expect(secrets).toContain("onclick={() => void openSecretsPrompt('new')}");
     expect(secrets).toContain('/hq-secrets ${slug}');
-    expect(secrets).toContain('buildClaudeCodeUrl({ folder: config.hqFolderPath ?? \'\', prompt })');
+    expect(secrets).toContain("buildClaudeCodeUrl({ folder: config.hqFolderPath ?? '', prompt })");
     expect(secrets).toContain("invoke('open_claude_code_link', { url })");
     expect(secrets).not.toContain('Export not available');
     expect(secrets).not.toContain('Create from CLI');

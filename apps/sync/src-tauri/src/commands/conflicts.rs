@@ -1,6 +1,5 @@
 //! Conflict resolution commands — resolve file conflicts and open in editor.
 
-use std::process::Command;
 use std::time::Duration;
 
 use crate::commands::config::MenubarPrefs;
@@ -58,7 +57,8 @@ pub fn resolve_conflict(path: String, strategy: String) -> Result<(), String> {
     #[cfg(debug_assertions)]
     eprintln!("[conflicts] resolving {} with strategy {}", path, strategy);
 
-    let mut child = Command::new(paths::resolve_bin("hq"))
+    let hq = paths::resolve_bin("hq");
+    let mut child = paths::spawn_command(&hq, &[])
         .args(&args)
         .env("HQ_ROOT", &hq_folder)
         .env("PATH", paths::child_path())
@@ -115,7 +115,7 @@ pub fn open_in_editor(path: String) -> Result<(), String> {
     #[cfg(debug_assertions)]
     eprintln!("[conflicts] opening in editor: {}", full_path);
 
-    let output = Command::new("open")
+    let output = std::process::Command::new("open")
         .arg(&full_path)
         .output()
         .map_err(|e| format!("Failed to run open command: {}", e))?;

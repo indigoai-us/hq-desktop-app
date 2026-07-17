@@ -249,7 +249,29 @@
 ///
 /// `~6.12.1` -> `~6.13.5`: pull in the runner fixes for transient offline blips
 /// and the exit-2 path, matching the legacy hq-sync pin.
-pub const HQ_CLOUD_VERSION: &str = "~6.13.5";
+///
+/// `~6.13.5` -> `~6.14.3`: adopt the 6.14 line so the menubar runner ships the
+/// session-log capture + `workspace/.session-logs` S3-sync carve-out
+/// (hq-cloud#173) — without this the tilde pin stays on 6.13 and the runner
+/// never uploads the reindex-captured Claude Code transcripts. Also inherits
+/// the 6.14.0-6.14.2 changes (default local-company personal sync, the
+/// `sessions/` push-only pull exclusion, and the doubled-path key-poisoning
+/// hardening) the pin was behind.
+///
+/// `~6.14.3` -> `~6.14.4`: floor the pin at the hq-cloud release that extends
+/// reindex's session-log capture to Codex + Grok (hq-cloud#175). That change is
+/// reindex-only and does not affect the sync runner this pin selects — the bump
+/// just keeps the floor current with the latest 6.14 line so the runner can't
+/// resolve back to an earlier 6.14.x.
+///
+/// `~6.14.4` -> `~6.14.5`: floor the pin at hq-cloud 6.14.5, which ships two
+/// sync-engine bug fixes (hq-cloud#177, #178): the fresh-push collision detector
+/// no longer mistakes an SSE-KMS ETag for a plaintext MD5 (byte-identical files
+/// were being flagged as conflicts), and `hq-rescue` now surfaces redacted git
+/// clone/checkout stderr instead of discarding it. Both are in the runner /
+/// rescue paths this pin selects. Raising the tilde floor also changes the npx
+/// cache key so an existing `~6.14.4` resolution can't keep serving 6.14.4.
+pub const HQ_CLOUD_VERSION: &str = "~6.14.5";
 
 /// Package name for the runner. Used by both the spawn site below and the
 /// startup prewarm. Paired with `HQ_CLOUD_VERSION` to form the full

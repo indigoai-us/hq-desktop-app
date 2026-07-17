@@ -322,7 +322,10 @@ async fn do_poll(app: &AppHandle) {
                         // busy-spinning Cocoa run loop) and skip the native firing
                         // loop below entirely. The tray badge + `share:new-events`
                         // emit after the branch run for both paths.
-                        if crate::commands::banner::custom_banner_enabled() {
+                        // US-003: widget takeover must never fall back to native banners
+                        if crate::commands::banner::custom_banner_enabled()
+                            || crate::commands::widget::takeover_active(app)
+                        {
                             log(
                                 LOG_TAG,
                                 &format!("SHARE_NOTIFY_CUSTOM_BANNER {} event(s)", fresh.len()),

@@ -92,10 +92,20 @@ pub const EVENT_THREAD_NEW_REPLY: &str = "thread:new-reply";
 pub const EVENT_MESSAGE_REACTION: &str = "message:reaction";
 
 /// Label of the DM detail window (mirrors share-detail).
+/// Also the unified "Inbox" quick window (side pane + detail canvas) used by
+/// Open Inbox / widget menu — same shell, not the full desktop-alt app.
 const DM_DETAIL_LABEL: &str = "dm-detail";
+
+/// Default size for the two-pane Inbox / DM detail window (side pane + canvas).
+const INBOX_WINDOW_W: f64 = 820.0;
+const INBOX_WINDOW_H: f64 = 640.0;
 
 /// Tauri event the DM detail window listens for to receive its event payload.
 const EVENT_DM_DETAIL_EVENT: &str = "dm:detail-event";
+
+/// Open the window as Inbox (no forced DM) — clears the main canvas selection
+/// so the user picks a conversation from the side pane.
+const EVENT_DM_INBOX_OPEN: &str = "dm:inbox-open";
 
 // ── Wire types ─────────────────────────────────────────────────────────────────
 
@@ -783,6 +793,17 @@ pub(crate) fn share_scope(event_id: &str) -> String {
     format!("share:{}", event_id.trim())
 }
 
+/// Decode the reactions endpoint for the realtime poll path.
+///
+/// Kept as a small pure seam so the server response contract is regression-
+/// tested independently of Tauri state and the network client.
+fn parse_reaction_poll_payload(
+    body: &[u8],
+) -> serde_json::Result<Vec<crate::commands::messages::ReactionAggregate>> {
+    let envelope: crate::commands::messages::MessageReactions = serde_json::from_slice(body)?;
+    Ok(envelope.reactions)
+}
+
 /// Re-fetch reactions for every watched share and emit `message:reaction` for
 /// any share whose aggregate set changed since the last poll. Folded into the
 /// SINGLE `do_poll` path right beside `poll_reactions` (NOT a parallel poller).
@@ -815,7 +836,10 @@ async fn poll_share_reactions(app: &AppHandle, base_url: &str, access_token: &st
 
         let reactions = match resp {
             Err(e) => {
-                log(LOG_TAG, &format!("DM_NOTIFY_SHARE_REACTION_POLL_NETWORK_FAIL {e}"));
+                log(
+                    LOG_TAG,
+                    &format!("DM_NOTIFY_SHARE_REACTION_POLL_NETWORK_FAIL {e}"),
+                );
                 continue;
             }
             Ok(r) => {
@@ -827,10 +851,23 @@ async fn poll_share_reactions(app: &AppHandle, base_url: &str, access_token: &st
                     );
                     continue;
                 }
-                match r.json::<Vec<crate::commands::messages::ReactionAggregate>>().await {
+                let body = match r.bytes().await {
+                    Ok(body) => body,
+                    Err(e) => {
+                        log(
+                            LOG_TAG,
+                            &format!("DM_NOTIFY_SHARE_REACTION_POLL_ERROR body: {e}"),
+                        );
+                        continue;
+                    }
+                };
+                match parse_reaction_poll_payload(&body) {
                     Ok(v) => v,
                     Err(e) => {
-                        log(LOG_TAG, &format!("DM_NOTIFY_SHARE_REACTION_POLL_ERROR parse: {e}"));
+                        log(
+                            LOG_TAG,
+                            &format!("DM_NOTIFY_SHARE_REACTION_POLL_ERROR parse: {e}"),
+                        );
                         continue;
                     }
                 }
@@ -919,10 +956,14 @@ async fn poll_reactions(app: &AppHandle, base_url: &str, access_token: &str) {
                     );
                     continue;
                 }
-                match r
-                    .json::<Vec<crate::commands::messages::ReactionAggregate>>()
-                    .await
-                {
+                let body = match r.bytes().await {
+                    Ok(body) => body,
+                    Err(e) => {
+                        log(LOG_TAG, &format!("DM_NOTIFY_REACTION_POLL_ERROR body: {e}"));
+                        continue;
+                    }
+                };
+                match parse_reaction_poll_payload(&body) {
                     Ok(v) => v,
                     Err(e) => {
                         log(
@@ -1605,7 +1646,10 @@ async fn do_poll(app: &AppHandle) {
     // SPIKE: when the custom banner is enabled, route every DM through the
     // in-app banner (commands::banner) — event-driven, no blocking Cocoa run
     // loop — and skip the native firing path entirely.
-    if crate::commands::banner::custom_banner_enabled() {
+    // US-003: widget takeover must never fall back to native banners
+    if crate::commands::banner::custom_banner_enabled()
+        || crate::commands::widget::takeover_active(app)
+    {
         log(
             LOG_TAG,
             &format!("DM_NOTIFY_CUSTOM_BANNER {} DM(s)", fresh.len()),
@@ -1795,12 +1839,73 @@ async fn post_ack(event_ids: Vec<String>) {
     }
 }
 
-// ── DM detail window ────────────────────────────────────────────────────────────
+// ── DM detail / Inbox quick window ──────────────────────────────────────────────
 //
 // Mirrors `open_share_detail` / `share_detail_window_ready` in share_notify.rs:
 // stash the event in managed state, create the window hidden, and let the
 // renderer's ready-handshake (`dm_detail_window_ready`) pull the payload + show
 // the window — avoids the race where emit_to fires before the JS listener mounts.
+//
+// The same webview is the product "Inbox" surface: left side pane (conversations)
+// + right canvas (thread / share detail). Prefer this over `open_desktop_alt_window`
+// for Open Inbox / notification Open — desktop-alt is the full Company OS shell.
+
+fn ensure_inbox_window(app: &AppHandle) -> Result<bool, String> {
+    // Returns true if the window already existed (caller should show/focus/emit).
+    if app.get_webview_window(DM_DETAIL_LABEL).is_some() {
+        return Ok(true);
+    }
+
+    tauri::WebviewWindowBuilder::new(
+        app,
+        DM_DETAIL_LABEL,
+        tauri::WebviewUrl::App("index.html".into()),
+    )
+    .title("Inbox")
+    .inner_size(INBOX_WINDOW_W, INBOX_WINDOW_H)
+    .min_inner_size(640.0, 480.0)
+    .resizable(true)
+    .decorations(true)
+    .visible(false)
+    .build()
+    .map_err(|e| e.to_string())?;
+
+    Ok(false)
+}
+
+fn show_focus_inbox_window(app: &AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(DM_DETAIL_LABEL) {
+        let _ = window.set_size(tauri::LogicalSize::new(INBOX_WINDOW_W, INBOX_WINDOW_H));
+        let _ = window.set_title("Inbox");
+        window.show().map_err(|e| e.to_string())?;
+        window.set_focus().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Open the two-pane Inbox quick window (side pane + detail canvas) without
+/// forcing a specific DM. Used by menubar "Open Inbox", widget menu, etc.
+/// Does **not** open the full desktop-alt app.
+#[tauri::command]
+pub async fn open_inbox_window(app: AppHandle) -> Result<(), String> {
+    log(LOG_TAG, "INBOX_WINDOW_OPEN");
+    // Clear any stashed single-DM open so ready-handshake doesn't re-open a
+    // stale thread when the window is first created.
+    if let Some(state) = app.try_state::<PendingDmEvents>() {
+        *state.0.lock().unwrap_or_else(|p| p.into_inner()) = vec![];
+    }
+
+    let existed = ensure_inbox_window(&app)?;
+    if existed {
+        show_focus_inbox_window(&app)?;
+        // Reset main canvas to "pick a conversation" (side pane stays loaded).
+        app.emit_to(DM_DETAIL_LABEL, EVENT_DM_INBOX_OPEN, serde_json::json!({}))
+            .map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    // New window: ready-handshake shows it; no pending DM to emit.
+    Ok(())
+}
 
 /// Tauri command: open (or focus) the DM detail window for a single DM event.
 /// Invoked by App.svelte's `notification:dm-action` listener on the "open" action.
@@ -1810,26 +1915,16 @@ pub async fn open_dm_detail(app: AppHandle, event: DmEvent) -> Result<(), String
         *state.0.lock().unwrap_or_else(|p| p.into_inner()) = vec![event.clone()];
     }
 
-    if let Some(window) = app.get_webview_window(DM_DETAIL_LABEL) {
-        window.show().map_err(|e| e.to_string())?;
-        window.set_focus().map_err(|e| e.to_string())?;
+    let existed = ensure_inbox_window(&app)?;
+    if existed {
+        show_focus_inbox_window(&app)?;
+        let _ = app
+            .get_webview_window(DM_DETAIL_LABEL)
+            .and_then(|w| w.set_title("Direct Message").ok());
         app.emit_to(DM_DETAIL_LABEL, EVENT_DM_DETAIL_EVENT, &event)
             .map_err(|e| e.to_string())?;
         return Ok(());
     }
-
-    tauri::WebviewWindowBuilder::new(
-        &app,
-        DM_DETAIL_LABEL,
-        tauri::WebviewUrl::App("index.html".into()),
-    )
-    .title("Direct Message")
-    .inner_size(560.0, 580.0)
-    .resizable(true)
-    .decorations(true)
-    .visible(false)
-    .build()
-    .map_err(|e| e.to_string())?;
 
     Ok(())
 }
@@ -1846,9 +1941,17 @@ pub async fn dm_detail_window_ready(app: AppHandle) -> Result<(), String> {
     if let Some(event) = events.first() {
         app.emit_to(DM_DETAIL_LABEL, EVENT_DM_DETAIL_EVENT, event)
             .map_err(|e| e.to_string())?;
+        let _ = app
+            .get_webview_window(DM_DETAIL_LABEL)
+            .and_then(|w| w.set_title("Direct Message").ok());
+    } else {
+        // Inbox open with no forced DM — empty canvas + side pane.
+        app.emit_to(DM_DETAIL_LABEL, EVENT_DM_INBOX_OPEN, serde_json::json!({}))
+            .map_err(|e| e.to_string())?;
     }
 
     if let Some(window) = app.get_webview_window(DM_DETAIL_LABEL) {
+        let _ = window.set_size(tauri::LogicalSize::new(INBOX_WINDOW_W, INBOX_WINDOW_H));
         let _ = window.show();
         let _ = window.set_focus();
     }
@@ -1974,5 +2077,22 @@ mod tests {
             diff.new_messages.is_empty(),
             "an owned channel with unread 0 must not raise a new-message event",
         );
+    }
+
+    #[test]
+    fn reaction_poll_decodes_server_envelope() {
+        let body = br#"{
+            "messageScope": "dm:prs_deacon",
+            "messageId": "evt_eyes",
+            "reactions": [
+                { "emoji": "\ud83d\udc40", "count": 1, "reactedByMe": false }
+            ]
+        }"#;
+
+        let reactions = parse_reaction_poll_payload(body).expect("reaction envelope decodes");
+        assert_eq!(reactions.len(), 1);
+        assert_eq!(reactions[0].emoji, "👀");
+        assert_eq!(reactions[0].count, 1);
+        assert!(!reactions[0].reacted_by_me);
     }
 }

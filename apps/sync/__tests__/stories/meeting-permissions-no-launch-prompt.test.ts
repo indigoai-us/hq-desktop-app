@@ -2,11 +2,13 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
+const source = (path: string): string => readFileSync(path, 'utf8').replace(/\r\n/g, '\n');
+
 /**
  * Regression guard: HQ Sync must NOT request any macOS permission when it is
  * installed or opened. Asking for Accessibility / Screen Recording /
- * Microphone / Notifications now lives exclusively behind Settings → Meeting
- * permissions (and the Settings "Enable notifications" button). A clean-room
+ * Microphone / Notifications now lives exclusively behind desktop Settings
+ * (SettingsPage → Meeting permissions / "Enable notifications"). A clean-room
  * VM opening the app for the first time should see zero permission dialogs.
  *
  * These are source-contract assertions (same style as the US-* story tests):
@@ -15,25 +17,15 @@ import { describe, expect, it } from 'vitest';
  * contract at the source level instead.
  */
 
-const mainRs = readFileSync(
-  resolve(process.cwd(), 'src-tauri/src/main.rs'),
-  'utf8',
+const mainRs = source(resolve(process.cwd(), 'src-tauri/src/main.rs'));
+const recallSdkRs = source(resolve(process.cwd(), 'src-tauri/src/commands/recall_sdk.rs'));
+const appSvelte = source(resolve(process.cwd(), 'src/App.svelte'));
+// Canonical settings surface after US-005 (popover Settings.svelte retired).
+const settingsPageSvelte = source(
+  resolve(process.cwd(), 'src/desktop-alt/pages/SettingsPage.svelte'),
 );
-const recallSdkRs = readFileSync(
-  resolve(process.cwd(), 'src-tauri/src/commands/recall_sdk.rs'),
-  'utf8',
-);
-const appSvelte = readFileSync(
-  resolve(process.cwd(), 'src/App.svelte'),
-  'utf8',
-);
-const settingsSvelte = readFileSync(
-  resolve(process.cwd(), 'src/components/Settings.svelte'),
-  'utf8',
-);
-const wizardSvelte = readFileSync(
+const wizardSvelte = source(
   resolve(process.cwd(), 'src/components/MeetingPermissionsWindow.svelte'),
-  'utf8',
 );
 
 describe('No permission prompts on install / open', () => {
@@ -81,13 +73,34 @@ describe('No permission prompts on install / open', () => {
   });
 });
 
-describe('Settings remains the only place permissions are requested', () => {
-  it('keeps the user-initiated notification request in Settings', () => {
-    expect(settingsSvelte).toContain("'notification_request_permission'");
+describe('SettingsPage remains the only place permissions are requested', () => {
+  it('loads meeting + notification permission state non-prompting on mount', () => {
+    // Non-prompting reads only — loadMeetingPermissions + notification_permission_state.
+    expect(settingsPageSvelte).toContain('loadMeetingPermissions');
+    expect(settingsPageSvelte).toContain("'notification_permission_state'");
+    // Mount effect must not call the prompting notification request.
+    // notification_request_permission is only in handleEnableNotifications.
+    const mountEffectIdx = settingsPageSvelte.indexOf('void loadMeetingPermissions()');
+    expect(mountEffectIdx).toBeGreaterThan(-1);
+    // The prompting invoke lives only inside handleEnableNotifications.
+    expect(settingsPageSvelte).toContain('async function handleEnableNotifications');
+    const handlerIdx = settingsPageSvelte.indexOf('async function handleEnableNotifications');
+    const requestIdx = settingsPageSvelte.indexOf("'notification_request_permission'");
+    expect(requestIdx).toBeGreaterThan(handlerIdx);
+    // And the mount path before the handler must not contain the request.
+    const beforeHandler = settingsPageSvelte.slice(0, handlerIdx);
+    expect(beforeHandler).not.toContain("'notification_request_permission'");
+  });
+
+  it('keeps the user-initiated notification request only in handleEnableNotifications', () => {
+    expect(settingsPageSvelte).toContain("'notification_request_permission'");
+    // Exactly one call site (user click), not on load.
+    const matches = settingsPageSvelte.match(/'notification_request_permission'/g) ?? [];
+    expect(matches.length).toBe(1);
   });
 
   it('keeps the Settings entry point to the meeting-permissions wizard', () => {
-    expect(settingsSvelte).toContain('open_meeting_permissions_window');
+    expect(settingsPageSvelte).toContain('open_meeting_permissions_window');
   });
 
   it('lets the wizard fire the native prompts on explicit user action', () => {

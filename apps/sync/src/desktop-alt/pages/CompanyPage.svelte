@@ -8,11 +8,11 @@
   import CompanyBoardPanel from '../panels/CompanyBoardPanel.svelte';
   import CompanyGoalsPage from './CompanyGoalsPage.svelte';
   import CompanyProjectsPage from './CompanyProjectsPage.svelte';
-  import CompanyTasksPage from './CompanyTasksPage.svelte';
   import DeploymentsPanel from '../panels/DeploymentsPanel.svelte';
   import SecretsPanel from '../panels/SecretsPanel.svelte';
   import CompanyLibraryPanel from '../panels/CompanyLibraryPanel.svelte';
-  import AccountView from '../../lib/crm/AccountView.svelte';
+  import CompanyKnowledgePanel from '../panels/CompanyKnowledgePanel.svelte';
+  import TeamPanel from '../panels/TeamPanel.svelte';
   import { DEFAULT_COMPANY_TAB, type CompanyTab } from '../route';
 
   interface Props {
@@ -25,12 +25,19 @@
     tab?: CompanyTab;
     /** Switch to the Projects section before handing project creation to HQ. */
     onopenprojects?: () => void;
+    /** Called after a successful Connect so the parent re-fetches workspaces. */
+    onworkspaceschanged?: () => void;
+    /** Vault reachability — while offline, Connect is disabled (it can only
+     *  fail), matching the old WorkspaceList/Companies-page guard. */
+    cloudReachable?: boolean;
   }
 
   let {
     company,
     tab = DEFAULT_COMPANY_TAB,
     onopenprojects,
+    onworkspaceschanged,
+    cloudReachable = true,
   }: Props = $props();
 
   interface SettingsWire {
@@ -38,12 +45,20 @@
   }
 
   let actionError = $state<string | null>(null);
+  let actionNotice = $state<string | null>(null);
   let newProjectBusy = $state(false);
+  let connectBusy = $state(false);
+  let inviteBusy = $state(false);
 
   const cloudBacked = $derived(
     company.state === 'synced' ||
       company.state === 'cloud-only' ||
       (company.kind === 'company' && Boolean(company.cloudUid)),
+  );
+
+  const connectable = $derived(company.state === 'local-only' || company.state === 'broken');
+  const pendingInvite = $derived(
+    company.membershipStatus === 'pending' && company.state === 'cloud-only',
   );
 
   function openInvite() {
@@ -55,12 +70,60 @@
   // system browser.
   function openCompanySettings() {
     actionError = null;
+    actionNotice = null;
     void openExternal(companySettingsUrl(company.slug));
+  }
+
+  async function handleConnect() {
+    if (connectBusy || !connectable || !cloudReachable) return;
+    actionError = null;
+    actionNotice = null;
+    connectBusy = true;
+    try {
+      await invoke('connect_workspace_to_cloud', { slug: company.slug });
+      onworkspaceschanged?.();
+    } catch (err) {
+      console.error(`connect_workspace_to_cloud(${company.slug}) failed:`, err);
+      actionError = `Connect failed: ${String(err)}`;
+    } finally {
+      connectBusy = false;
+    }
+  }
+
+  // Modern invites are email-keyed + tokenless — Accept runs claim-by-email.
+  async function handleAcceptPendingInvite() {
+    if (inviteBusy) return;
+    actionError = null;
+    actionNotice = null;
+    inviteBusy = true;
+    try {
+      const result = await invoke<{
+        ok: boolean;
+        claimedSlugs: string[];
+        message: string;
+      }>('claim_pending_company_invite', { companySlug: company.slug });
+      actionNotice = result.message || 'Invite accepted. Sync to pull the company.';
+      onworkspaceschanged?.();
+      if (result.claimedSlugs?.length) {
+        void invoke('start_sync', { companySlug: company.slug }).catch((err) => {
+          console.warn('post-claim sync failed (non-fatal):', err);
+        });
+      }
+    } catch (err) {
+      console.error(`claim_pending_company_invite(${company.slug}) failed:`, err);
+      actionError =
+        err instanceof Error
+          ? err.message
+          : String(err) || 'Could not accept invite. Try again or run Sync.';
+    } finally {
+      inviteBusy = false;
+    }
   }
 
   async function startNewProject() {
     if (newProjectBusy) return;
     actionError = null;
+    actionNotice = null;
     newProjectBusy = true;
     onopenprojects?.();
 
@@ -97,6 +160,38 @@
   <header class="company-actions-row">
     <div></div>
     <div class="company-actions" aria-label="Company actions">
+      {#if connectable}
+        <button
+          type="button"
+          data-testid="company-connect"
+          title={!cloudReachable
+            ? 'Cloud unreachable — connecting is paused until it\u2019s back'
+            : company.state === 'broken'
+              ? `Retry connecting ${company.displayName} to the cloud`
+              : "Create this company's cloud vault and start syncing it"}
+          disabled={connectBusy || !cloudReachable}
+          onclick={() => void handleConnect()}
+        >
+          {#if connectBusy}
+            Connecting…
+          {:else if company.state === 'broken'}
+            Retry connect
+          {:else}
+            Connect to cloud
+          {/if}
+        </button>
+      {/if}
+      {#if pendingInvite}
+        <button
+          type="button"
+          class="primary"
+          data-testid="company-accept-invite"
+          disabled={inviteBusy}
+          onclick={() => void handleAcceptPendingInvite()}
+        >
+          {inviteBusy ? 'Accepting…' : 'Accept invite'}
+        </button>
+      {/if}
       <button type="button" onclick={openInvite}>Invite</button>
       <button type="button" onclick={openCompanySettings}>Settings</button>
       <button type="button" class="primary" onclick={() => void startNewProject()} disabled={newProjectBusy}>
@@ -108,25 +203,30 @@
   {#if actionError}
     <p class="company-action-error" role="status">{actionError}</p>
   {/if}
+  {#if actionNotice}
+    <p class="company-action-notice" role="status">{actionNotice}</p>
+  {/if}
 
   {#key `${company.slug}:${tab}`}
     <div class="company-panel">
       {#if tab === 'overview'}
         <CompanyBoardPanel slug={company.slug} {cloudBacked} />
-      {:else if tab === 'accounts'}
-        <AccountView slug={company.slug} {cloudBacked} />
       {:else if tab === 'goals'}
         <CompanyGoalsPage slug={company.slug} />
       {:else if tab === 'projects'}
         <CompanyProjectsPage slug={company.slug} onnewproject={startNewProject} />
-      {:else if tab === 'tasks'}
-        <CompanyTasksPage slug={company.slug} />
+      {:else if tab === 'skills'}
+        <CompanyLibraryPanel slug={company.slug} forcedFilter="skills" />
+      {:else if tab === 'workers'}
+        <CompanyLibraryPanel slug={company.slug} forcedFilter="workers" />
+      {:else if tab === 'knowledge'}
+        <CompanyKnowledgePanel slug={company.slug} />
+      {:else if tab === 'team'}
+        <TeamPanel slug={company.slug} companyUid={company.cloudUid} />
       {:else if tab === 'activity'}
         <ActivityPanel slug={company.slug} {cloudBacked} />
       {:else if tab === 'deployments'}
         <DeploymentsPanel slug={company.slug} {cloudBacked} />
-      {:else if tab === 'library'}
-        <CompanyLibraryPanel slug={company.slug} />
       {:else if tab === 'secrets'}
         <SecretsPanel slug={company.slug} {cloudBacked} />
       {/if}
@@ -209,6 +309,13 @@
   .company-action-error {
     margin: -10px 0 0;
     color: var(--v4-text-2);
+    font-size: var(--text-base);
+    line-height: 1.3;
+  }
+
+  .company-action-notice {
+    margin: -10px 0 0;
+    color: var(--v4-text-3);
     font-size: var(--text-base);
     line-height: 1.3;
   }

@@ -41,7 +41,6 @@
 //! fall back to the manual copy-the-command flow (typical failure: EACCES
 //! against a system-prefix npm that needs sudo).
 
-use std::process::Command;
 use std::time::Duration;
 
 use serde_json::Value;
@@ -219,8 +218,7 @@ async fn run_npm_install(
     let path = path.to_string();
     log("hq-cli-update", &format!("install: spawning {} {}", npm, args.join(" ")));
     tauri::async_runtime::spawn_blocking(move || {
-        let mut cmd = Command::new(&npm);
-        paths::no_window(&mut cmd);
+        let mut cmd = paths::spawn_command(&npm, &[]);
         cmd.args(&args).env("PATH", path).output()
     })
     .await

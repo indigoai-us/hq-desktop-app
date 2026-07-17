@@ -1,5 +1,7 @@
 <script lang="ts">
   import type { SyncState } from '../lib/sync-model';
+  import CopyPromptButton from '../../components/CopyPromptButton.svelte';
+  import OpenInClaudeCodeButton from '../../components/OpenInClaudeCodeButton.svelte';
   import { getV4TitleBarModel } from './model';
   import './tokens.css';
 
@@ -21,6 +23,9 @@
     fanoutTotal?: number;
     /** Plain-language error summary, for error states. */
     errorSummary?: string | null;
+    errorMessage?: string;
+    errorCompany?: string | null;
+    hqFolderPath?: string | null;
     onsync?: () => void;
     oncancel?: () => void;
     onretry?: () => void;
@@ -34,6 +39,9 @@
     fanoutDone = 0,
     fanoutTotal = 0,
     errorSummary = null,
+    errorMessage = '',
+    errorCompany = null,
+    hqFolderPath = null,
     onsync,
     oncancel,
     onretry,
@@ -65,14 +73,33 @@
       class:pulsing={syncState === 'syncing'}
       aria-hidden="true"
     ></span>
-    <span class="v4-sentence">{model.sentence}</span>
-    {#if model.meta}
+    <span class="v4-sentence">{syncState === 'error' ? 'Sync initialized' : model.sentence}</span>
+    {#if syncState === 'error'}
+      <span class="v4-meta">Click the button to finish sync in Claude Code.</span>
+    {:else if model.meta}
       <span class="v4-meta">{model.meta}</span>
     {/if}
   </div>
-  <button type="button" class="v4-action" onclick={handleAction}>
-    {model.action.label}
-  </button>
+  {#if syncState === 'error' && errorMessage}
+    <div class="v4-recovery-actions" data-tauri-drag-region="false">
+      <button type="button" class="v4-action" onclick={onretry}>Retry</button>
+      <OpenInClaudeCodeButton
+        variant="inline"
+        label="Finish sync in Claude Code"
+        folder={hqFolderPath ?? ''}
+        issue={{ kind: 'sync-failed', payload: { message: errorMessage, company: errorCompany } }}
+      />
+      <CopyPromptButton
+        variant="inline"
+        label="Copy prompt"
+        issue={{ kind: 'sync-failed', payload: { message: errorMessage, company: errorCompany } }}
+      />
+    </div>
+  {:else}
+    <button type="button" class="v4-action" onclick={handleAction}>
+      {model.action.label}
+    </button>
+  {/if}
 </header>
 
 <style>
@@ -189,6 +216,23 @@
   .v4-action:focus-visible {
     outline: 2px solid var(--v4-control-border);
     outline-offset: 2px;
+  }
+
+  .v4-recovery-actions {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .v4-recovery-actions :global(button) {
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 28px;
+    padding-block: 0;
+    line-height: 1;
   }
 
   @media (prefers-reduced-transparency: reduce) {

@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import {
   type DmRequest,
+  enrichRequestFromContacts,
   requestDisplayName,
+  requestHasHumanLabel,
   requestInitials,
   addRequest,
   removeRequest,
@@ -23,14 +25,25 @@ function mk(over: Partial<DmRequest> = {}): DmRequest {
 }
 
 describe('requestDisplayName', () => {
-  it('prefers display name, falls back to email then personUid', () => {
+  it('prefers display name, falls back to email, and never renders personUid', () => {
     expect(requestDisplayName(mk())).toBe('Ada Lovelace');
     expect(requestDisplayName(mk({ fromDisplayName: '  ' }))).toBe(
       'ada@example.com'
     );
     expect(
       requestDisplayName(mk({ fromDisplayName: '', fromEmail: '' }))
-    ).toBe('prs_1');
+    ).toBe('Unknown user');
+    expect(requestDisplayName(mk({ fromDisplayName: '', fromEmail: '' }))).not.toContain('prs_');
+  });
+
+  it('enriches a UID-only request from a contacts API row', () => {
+    const request = mk({ fromDisplayName: 'prs_1', fromEmail: '' });
+    const enriched = enrichRequestFromContacts(request, [
+      { personUid: 'prs_1', displayName: 'Ada Lovelace', email: 'ada@example.com' },
+    ]);
+    expect(requestHasHumanLabel(request)).toBe(false);
+    expect(requestDisplayName(enriched)).toBe('Ada Lovelace');
+    expect(requestHasHumanLabel(enriched)).toBe(true);
   });
 });
 

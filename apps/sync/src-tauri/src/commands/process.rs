@@ -168,36 +168,20 @@ fn mark_cancelled(handle: &str) -> bool {
 // Platform helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-#[cfg(target_os = "windows")]
-fn is_windows_shell_script(path: &str) -> bool {
-    std::path::Path::new(path)
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("cmd") || ext.eq_ignore_ascii_case("bat"))
-}
-
 fn build_spawn_command(path: &str, args: &[String]) -> Command {
+    // Keep the target and arguments structured. On Windows, Rust performs the
+    // required batch dispatch for .cmd/.bat files with batch-aware escaping;
+    // routing them through a hand-built `cmd.exe /c` command line would turn
+    // caller-controlled HQ paths and package ranges into shell syntax.
+    let mut cmd = Command::new(path);
+    cmd.args(args);
+
     #[cfg(target_os = "windows")]
     {
-        let mut cmd = if is_windows_shell_script(path) {
-            let mut c = Command::new("cmd.exe");
-            c.arg("/c").arg(path).args(args);
-            c
-        } else {
-            let mut c = Command::new(path);
-            c.args(args);
-            c
-        };
         cmd.creation_flags(CREATE_NO_WINDOW);
-        cmd
     }
 
-    #[cfg(not(target_os = "windows"))]
-    {
-        let mut cmd = Command::new(path);
-        cmd.args(args);
-        cmd
-    }
+    cmd
 }
 
 #[cfg(unix)]
@@ -752,6 +736,39 @@ pub fn spawn_process(app: AppHandle, args: SpawnArgs) -> Result<String, String> 
 #[tauri::command]
 pub fn cancel_process(handle: String) -> bool {
     cancel_process_impl(&handle, Duration::from_secs(5))
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod windows_spawn_tests {
+    use super::*;
+
+    #[test]
+    fn batch_launcher_preserves_metacharacter_arguments() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let script = tmp.path().join("echo-args.cmd");
+        std::fs::write(&script, "@echo off\r\necho \"%~1\"\r\necho \"%~2\"\r\n")
+            .expect("write batch fixture");
+
+        let hq_path = r"C:\HQ & Research".to_string();
+        let package = "@indigoai-us/hq-cli@^5.10.0".to_string();
+        let output = build_spawn_command(
+            script.to_str().expect("UTF-8 batch path"),
+            &[hq_path.clone(), package.clone()],
+        )
+        .output()
+        .expect("Rust batch dispatch should start the fixture");
+
+        assert!(
+            output.status.success(),
+            "batch fixture failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let lines: Vec<_> = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(|line| line.trim_matches('"').to_string())
+            .collect();
+        assert_eq!(lines, vec![hq_path, package]);
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

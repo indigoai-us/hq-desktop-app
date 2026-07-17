@@ -204,11 +204,21 @@ pub struct MenubarPrefs {
     /// POSTs an anonymized diff to `/v1/usage`. The authoritative gate is the
     /// server-side `/v1/usage/opt-in`; this flag is the LOCAL fallback read
     /// untyped by `read_local_telemetry_enabled` when the vault is unreachable,
-    /// so the collector never blocks on a typed round-trip. Opt-in: absent →
-    /// false. This typed field exists so the Settings toggle round-trips cleanly
+    /// so the collector never blocks on a typed round-trip. Opt-out: absent →
+    /// true. This typed field exists so the Settings toggle round-trips cleanly
     /// through get/save_settings and isn't wiped on the next save.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub telemetry_enabled: Option<bool>,
+    /// Desktop widget on/off (US-004); defaults ON when absent so the widget
+    /// ships default-enabled after update; widget.rs also reads this key
+    /// untyped on every notification dispatch so toggling takes effect
+    /// without restart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub widget_enabled: Option<bool>,
+    /// Localized display name (NSScreen.localizedName) the widget anchors to;
+    /// None = primary display.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub widget_display: Option<String>,
 }
 
 /// Read ~/.hq/menubar.json as an untyped Value map, insert a new v4 UUID under

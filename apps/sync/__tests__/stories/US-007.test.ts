@@ -85,19 +85,20 @@ describe('US-007: Company page shell — V4 sections + crumb (sections moved to 
     expect(page).toContain('<button type="button" onclick={openCompanySettings}>Settings</button>');
     expect(page).toContain('onclick={() => void startNewProject()}');
 
-    // The sections live in the V4 secondary sidebar — Overview first/default,
-    // Accounts (the hq-native-crm CRM surface) second, role surfaced in the
-    // header meta line.
+    // The sections live in the V4 secondary sidebar — Overview first/default;
+    // company-detail-desktop-ia promotes Skills/Workers/Knowledge/Team and
+    // removes Accounts/Tasks/Library. Role is still surfaced in header meta.
     expect(COMPANY_SECTIONS.map((section) => section.id)).toEqual([
       'overview',
-      'accounts',
       'goals',
       'projects',
-      'tasks',
+      'skills',
+      'workers',
+      'knowledge',
+      'team',
       'activity',
       'deployments',
       'secrets',
-      'library',
     ]);
     const secondary = getDesktopSecondarySidebar({ kind: 'company', slug: 'acme' }, companies);
     expect(secondary?.header).toBe('Acme Corp');
@@ -112,7 +113,9 @@ describe('US-007: Company page shell — V4 sections + crumb (sections moved to 
     // The route drives the section; the in-page segmented control is gone.
     expect(page).toContain('tab = DEFAULT_COMPANY_TAB');
     expect(page).not.toContain('CompanyTabs');
-    expect(desktop).toContain("navigate({ kind: 'company', slug: route.slug, tab: id as CompanyTab })");
+    // Knowledge intercept may appear first; company tab navigate still present.
+    expect(desktop).toContain("tab: id as CompanyTab");
+    expect(desktop).toContain("kind: 'company'");
     expect(desktop).toContain('<CompanyPage');
     expect(desktop).toContain('company={activeCompany}');
     expect(desktop).toContain('tab={companyTab}');

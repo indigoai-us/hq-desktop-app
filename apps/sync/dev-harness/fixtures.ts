@@ -139,6 +139,8 @@ export const coreState = {
   scannedAt: new Date().toISOString(),
 };
 
+// Minimal notification-panel popover props (US-001 chrome strip — no header
+// tabs, overflow menu, or desktop-view footer).
 export const popoverProps = {
   syncState: 'idle' as const,
   config: {
@@ -150,59 +152,21 @@ export const popoverProps = {
   cloudReachable: true,
   cloudError: null,
   manifestError: null,
-  lastSummary: {
-    companiesAttempted: 3,
-    filesDownloaded: 12,
-    bytesDownloaded: 348_000,
-    filesSkipped: 2,
-  },
   conflicts: [],
   showConflictModal: false,
   updateAvailable: null,
   updateInstalling: false,
-  hqCliUpdateAvailable: null,
-  hqCliUpdateInstalling: false,
-  hqCliUpdateError: null,
-  hqVersion: '15.0.1',
-  coreState,
-  coreInstalling: false,
-  coreInstallLastResult: null,
-  meetingsEnabled: true,
-  // Indigo-gated header extras, on by default in the harness so the full
-  // header (meeting + desktop-view + Sync) is previewable. One detected
-  // meeting exercises the monochrome "detected" state.
-  desktopAltEnabled: true,
-  activeMeetings: [
-    {
-      windowId: 'w1',
-      platform: 'zoom',
-      meetingUrl: 'https://zoom.us/j/1',
-      detectedAt: '2026-06-01T09:00:00Z',
-      state: 'detected' as const,
-      companyUid: null,
-    },
-  ],
   onsync: () => console.debug('[harness] sync'),
-  oncancel: () => console.debug('[harness] cancel'),
-  onsettings: () => (window.location.search = '?view=settings'),
-  onsignout: () => console.debug('[harness] signout'),
   onresolve: () => {},
   onopen: () => {},
   ondismissconflicts: () => {},
   oninstallupdate: () => {},
-  oninstallhqcliupdate: () => {},
-  ondismisshqcliupdate: () => console.debug('[harness] dismiss hq cli update'),
-  oninstallcore: () => console.debug('[harness] install core'),
-  onworkspacesrefresh: () => {},
   bindStatsRefresh: () => {},
-  onmeetingsclick: () => {},
 };
 
 /**
- * A stale-CLI fixture for the dev-harness `?view=popover&state=cli-update`
- * preview — drives the "CLI update available" banner (copyable one-liner +
- * dismiss ×). `local` is deliberately behind `latest` so the "You're on vX"
- * line renders. Mirrors the real `HqCliUpdateInfo` shape (`{ local, latest }`).
+ * Legacy shape kept for reference / future desktop-view surfaces (US-005).
+ * The menubar popover no longer hosts the CLI-update overflow block.
  */
 export const hqCliUpdateAvailable = {
   local: '5.38.2',

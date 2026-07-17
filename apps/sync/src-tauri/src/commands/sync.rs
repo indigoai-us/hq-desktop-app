@@ -1,4 +1,4 @@
-//! Tauri commands for spawning and cancelling `hq-sync-runner --companies`.
+//! Tauri commands for spawning and cancelling `hq-sync-runner` syncs.
 //!
 //! Uses [`crate::commands::process`] for subprocess lifecycle (spawn, stream,
 //! SIGTERM→SIGKILL). Emits typed sync events to the Svelte renderer.
@@ -53,8 +53,8 @@ use crate::commands::process::{
 use crate::commands::status::{journal_for_sync_complete, write_journal};
 use crate::commands::vault_client::VaultClient;
 use crate::events::{
-    SyncAllCompleteEvent, SyncCompanyProvisionedEvent, SyncErrorEvent, SyncEvent,
-    EVENT_SYNC_ALL_COMPLETE, EVENT_SYNC_AUTH_ERROR, EVENT_SYNC_COMPANY_PROVISIONED,
+    SyncAllCompleteEvent, SyncAuthErrorEvent, SyncCompanyProvisionedEvent, SyncErrorEvent,
+    SyncEvent, EVENT_SYNC_ALL_COMPLETE, EVENT_SYNC_AUTH_ERROR, EVENT_SYNC_COMPANY_PROVISIONED,
     EVENT_SYNC_COMPLETE, EVENT_SYNC_DELETE_REFUSED_STALE_ETAG, EVENT_SYNC_ERROR,
     EVENT_SYNC_FANOUT_PLAN, EVENT_SYNC_NEW_FILES, EVENT_SYNC_PLAN, EVENT_SYNC_PROGRESS,
     EVENT_SYNC_SETUP_NEEDED,
@@ -241,12 +241,63 @@ pub async fn resolve_jwt() -> Result<String, String> {
 // SpawnArgs builder (testable)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Build the SpawnArgs for `npx … hq-sync-runner --companies`.
+/// Scope of a single sync run: fan out to every membership (`All`) or restrict
+/// to one company by slug (`Company`). A scoped run emits `--company <slug>`
+/// (mutually exclusive with `--companies` in the runner) and never touches the
+/// personal vault.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SyncRunScope {
+    All,
+    Company(String),
+}
+
+impl SyncRunScope {
+    /// True when this scope includes the given company slug.
+    pub fn includes(&self, slug: &str) -> bool {
+        match self {
+            SyncRunScope::All => true,
+            SyncRunScope::Company(c) => c == slug,
+        }
+    }
+
+    pub fn is_all(&self) -> bool {
+        matches!(self, SyncRunScope::All)
+    }
+}
+
+/// Validate a caller-supplied company slug for a scoped sync. `None` => `All`.
+/// Slugs are lowercase alphanumeric + hyphen, non-empty, and never `personal`
+/// (the personal vault has its own sync path/toggle, not a company scope).
+pub fn parse_sync_scope(company_slug: Option<String>) -> Result<SyncRunScope, String> {
+    match company_slug {
+        None => Ok(SyncRunScope::All),
+        Some(s) => {
+            let slug = s.trim();
+            if slug.is_empty() {
+                return Err("company slug must not be empty".to_string());
+            }
+            if slug == "personal" {
+                return Err("personal vault cannot be company-scoped".to_string());
+            }
+            if !slug
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+            {
+                return Err(format!("invalid company slug: {slug}"));
+            }
+            Ok(SyncRunScope::Company(slug.to_string()))
+        }
+    }
+}
+
+/// Build the SpawnArgs for `npx … hq-sync-runner --companies` or a scoped
+/// `npx … hq-sync-runner --company <slug>` run.
 ///
 /// The command line we spawn looks like:
 /// ```text
 /// npx -y --package=@indigoai-us/hq-cloud@~5.19.0 hq-sync-runner \
-///   --companies --direction both --on-conflict keep --hq-root <path>
+///   <--companies | --company <slug>> --direction both --on-conflict keep \
+///   --hq-root <path>
 /// ```
 ///
 /// npx flags:
@@ -260,6 +311,7 @@ pub async fn resolve_jwt() -> Result<String, String> {
 ///
 /// Runner flags:
 /// - `--companies` — fan out to every membership the caller has
+/// - `--company <slug>` — restrict the run to one company
 /// - `--direction both` — bidirectional sync: push local changes first,
 ///   then pull remote. Added in hq-cloud 5.1.11. Runner default is `pull`
 ///   for back-compat; the menubar explicitly opts into `both` so a single
@@ -273,11 +325,16 @@ pub async fn resolve_jwt() -> Result<String, String> {
 /// `HQ_ROOT` is also set in the child env as defense-in-depth (matches the
 /// pre-Phase-7 pattern).
 ///
-/// `personal_sync_enabled` toggles the personal-vault target in the fanout.
-/// When false, `--skip-personal` is appended so the spawned runner's
-/// `resolveSkipPersonal()` drops the personal slot. Sourced from
-/// `MenubarPrefs.personal_sync_enabled` (defaults to true in get_settings).
-pub fn build_sync_spawn_args(hq_folder_path: &str, personal_sync_enabled: bool) -> SpawnArgs {
+/// `personal_sync_enabled` toggles the personal-vault target in an all-company
+/// fanout. When false, `--skip-personal` is appended so the spawned runner's
+/// `resolveSkipPersonal()` drops the personal slot. Company-scoped runs always
+/// append `--skip-personal`. Sourced from `MenubarPrefs.personal_sync_enabled`
+/// (defaults to true in get_settings).
+pub fn build_sync_spawn_args(
+    hq_folder_path: &str,
+    personal_sync_enabled: bool,
+    scope: &SyncRunScope,
+) -> SpawnArgs {
     let mut env = HashMap::new();
     env.insert("HQ_ROOT".to_string(), hq_folder_path.to_string());
     // The runner is a Node script with `#!/usr/bin/env node`, and npx itself
@@ -290,15 +347,23 @@ pub fn build_sync_spawn_args(hq_folder_path: &str, personal_sync_enabled: bool) 
         "-y".to_string(),
         format!("--package={}@{}", HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION),
         RUNNER_BIN.to_string(),
-        "--companies".to_string(),
+    ];
+    match scope {
+        SyncRunScope::All => args.push("--companies".to_string()),
+        SyncRunScope::Company(slug) => {
+            args.push("--company".to_string());
+            args.push(slug.clone());
+        }
+    }
+    args.extend([
         "--direction".to_string(),
         "both".to_string(),
         "--on-conflict".to_string(),
         "keep".to_string(),
         "--hq-root".to_string(),
         hq_folder_path.to_string(),
-    ];
-    if !personal_sync_enabled {
+    ]);
+    if !personal_sync_enabled || !scope.is_all() {
         // Append rather than insert mid-args so reading the joined command
         // line in logs / Sentry tags is predictable (toggle state shows at
         // the end, after the canonical args).
@@ -493,6 +558,50 @@ fn handle_sync_line(
     }
 }
 
+/// Return the re-authentication signal encoded in a runner stderr line.
+///
+/// The runner's normal protocol is tagged with `type`, but some auth refresh
+/// failures are logged with `level` instead. Both shapes must reach the
+/// renderer: the runner exits successfully after an unrecoverable refresh
+/// failure, so waiting for a non-zero exit drops the sign-in prompt.
+pub(crate) fn runner_stderr_needs_reauth(line: &str) -> Option<SyncAuthErrorEvent> {
+    if let Ok(SyncEvent::AuthError(payload)) = serde_json::from_str(line.trim()) {
+        return Some(payload);
+    }
+
+    let value: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
+    let is_auth_error = ["type", "level"]
+        .iter()
+        .any(|field| value.get(*field).and_then(serde_json::Value::as_str) == Some("auth-error"));
+    if !is_auth_error {
+        return None;
+    }
+
+    Some(SyncAuthErrorEvent {
+        message: value
+            .get("message")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("Your sign-in session expired. Sign in again to resume syncing.")
+            .to_string(),
+    })
+}
+
+/// Forward runner stderr protocol records that affect sync state.
+///
+/// Error records still feed the exit-alert classifier; auth failures are
+/// emitted immediately because the runner deliberately exits 0 after them.
+pub(crate) fn handle_runner_stderr_line(app: &AppHandle, totals: &Mutex<RunTotals>, line: &str) {
+    if let Some(payload) = runner_stderr_needs_reauth(line) {
+        let _ = app.emit(EVENT_SYNC_AUTH_ERROR, payload);
+    } else if let Ok(SyncEvent::Error(payload)) = serde_json::from_str(line.trim()) {
+        let mut t = totals.lock().unwrap_or_else(|e| e.into_inner());
+        t.record_error(&payload);
+    }
+
+    let mut t = totals.lock().unwrap_or_else(|e| e.into_inner());
+    t.record_stderr_line(line);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Tauri commands
 // ─────────────────────────────────────────────────────────────────────────────
@@ -528,9 +637,65 @@ fn is_node_too_old(major: u32) -> bool {
 /// runner — names the floor, their current major, and the single fix.
 fn node_too_old_message(current_major: u32) -> String {
     format!(
-        "HQ Sync needs Node {MIN_NODE_MAJOR} or newer to sync — this Mac is running Node {current_major}. \
+        "HQ Sync needs Node {MIN_NODE_MAJOR} or newer to sync — this computer is running Node {current_major}. \
          Please update Node (https://nodejs.org), then try Sync again."
     )
+}
+
+/// Construct the Node probe using the same platform rules as the runner.
+/// Windows must execute the native `node.exe`; Unix keeps `env node` so
+/// nvm/volta/asdf installations remain discoverable through `child_path()`.
+fn node_version_command() -> std::process::Command {
+    #[cfg(target_os = "windows")]
+    let mut cmd = {
+        let node = paths::resolve_bin("node");
+        paths::spawn_command(&node, &["--version"])
+    };
+
+    #[cfg(not(target_os = "windows"))]
+    let mut cmd = {
+        let mut command = std::process::Command::new("/usr/bin/env");
+        paths::no_window(&mut command);
+        command.args(["node", "--version"]);
+        command
+    };
+
+    cmd.env("PATH", paths::child_path());
+    cmd
+}
+
+/// Execute a runtime preflight with enough breadcrumbs to diagnose GUI PATH
+/// drift without exposing the full environment. Paths and version output are
+/// safe operational metadata; tokens and command environments are never logged.
+fn run_runner_probe(
+    label: &str,
+    mut command: std::process::Command,
+) -> Option<std::process::Output> {
+    let program = command.get_program().to_string_lossy().to_string();
+    match command.output() {
+        Ok(output) => {
+            let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            log(
+                "sync.preflight",
+                &format!(
+                    "{label}: program={program:?} success={} code={:?} stdout={version:?}",
+                    output.status.success(),
+                    output.status.code(),
+                ),
+            );
+            Some(output)
+        }
+        Err(error) => {
+            log(
+                "sync.preflight",
+                &format!(
+                    "{label}: program={program:?} spawn_error_kind={:?} error={error}",
+                    error.kind(),
+                ),
+            );
+            None
+        }
+    }
 }
 
 /// Best-effort Node-version preflight. Returns `Some(major)` only when the Node
@@ -539,13 +704,7 @@ fn node_too_old_message(current_major: u32) -> String {
 /// (`env node` against the same `child_path()` we hand the spawned `npx`), which
 /// matters under nvm where that can differ from `resolve_bin("node")`.
 fn preflight_node_too_old() -> Option<u32> {
-    let mut cmd = std::process::Command::new("/usr/bin/env");
-    paths::no_window(&mut cmd);
-    let output = cmd
-        .args(["node", "--version"])
-        .env("PATH", paths::child_path())
-        .output()
-        .ok()?;
+    let output = run_runner_probe("node-version", node_version_command())?;
     if !output.status.success() {
         return None;
     }
@@ -557,7 +716,7 @@ fn preflight_node_too_old() -> Option<u32> {
 /// Message when the runner's interpreter (node/npx) isn't resolvable at all —
 /// the HQ-SYNC-E exit-127 `sh: hq-sync-runner: command not found` crash-loop.
 fn runner_unresolvable_message() -> String {
-    "HQ Sync can't start the sync engine — Node.js wasn't found on this Mac. \
+    "HQ Sync can't start the sync engine — Node.js wasn't found on this computer. \
      Install Node 20 or newer (https://nodejs.org), then reopen HQ Sync."
         .to_string()
 }
@@ -577,26 +736,21 @@ fn runner_unresolvable_reason(node_resolves: bool, npx_resolves: bool) -> Option
 /// the runner's interpreter is *positively* unresolvable (probed and missing);
 /// fails OPEN otherwise. `pub(crate)` so the daemon watcher path can reuse it.
 pub(crate) fn preflight_runner_unresolvable() -> Option<String> {
-    let mut node_cmd = std::process::Command::new("/usr/bin/env");
-    paths::no_window(&mut node_cmd);
-    let node_resolves = node_cmd
-        .args(["node", "--version"])
-        .env("PATH", paths::child_path())
-        .output()
+    let node_resolves = run_runner_probe("node-resolution", node_version_command())
         .map(|o| o.status.success())
         .unwrap_or(false);
 
     let npx_bin = paths::resolve_bin("npx");
-    let npx_resolves = paths::spawn_command(&npx_bin, &["--version"])
-        .env("PATH", paths::child_path())
-        .output()
+    let mut npx_command = paths::spawn_command(&npx_bin, &["--version"]);
+    npx_command.env("PATH", paths::child_path());
+    let npx_resolves = run_runner_probe("npx-resolution", npx_command)
         .map(|o| o.status.success())
         .unwrap_or(false);
 
     runner_unresolvable_reason(node_resolves, npx_resolves)
 }
 
-/// Spawn `hq-sync-runner --companies` as a child process.
+/// Spawn `hq-sync-runner` for all companies or one company as a child process.
 ///
 /// - Only one sync can run at a time (singleton handle).
 /// - Emits typed sync events (see `events.rs`) to the Svelte renderer as
@@ -605,7 +759,9 @@ pub(crate) fn preflight_runner_unresolvable() -> Option<String> {
 ///
 /// Returns the handle string on success (always `"hq-sync"`).
 #[tauri::command]
-pub async fn start_sync(app: AppHandle) -> Result<String, String> {
+pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<String, String> {
+    let scope = parse_sync_scope(company_slug)?;
+    log("sync", &format!("scope={scope:?}"));
     log("sync", "start_sync invoked");
     #[cfg(debug_assertions)]
     eprintln!("[sync] start_sync invoked");
@@ -721,7 +877,11 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
         let prep_root = std::path::PathBuf::from(&hq_folder_path);
         let (local_companies, _) =
             crate::commands::workspaces::discover_local_companies(&prep_root);
-        let slugs: Vec<String> = local_companies.iter().map(|e| e.slug.clone()).collect();
+        let slugs: Vec<String> = local_companies
+            .iter()
+            .map(|e| e.slug.clone())
+            .filter(|s| scope.includes(s))
+            .collect();
         let prep_start = std::time::Instant::now();
         let to_transfer = crate::commands::personal::count_files_to_transfer(&prep_root, &slugs);
         let elapsed = prep_start.elapsed().as_millis();
@@ -765,7 +925,8 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
             return Err(e);
         }
     };
-    for company in &companies {
+    // Provisioning stays global, but first-push is filtered to this run's scope.
+    for company in companies.iter().filter(|c| scope.includes(&c.slug)) {
         if let Err(_e) = app.emit(
             EVENT_SYNC_COMPANY_PROVISIONED,
             SyncCompanyProvisionedEvent {
@@ -812,11 +973,10 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
     }
 
     // Personal first-push: provision + upload personal HQ files via /sts/vend-self.
-    // Skipped entirely when the user has flipped off "Sync personal vault" —
-    // running it anyway would auto-provision a bucket the user explicitly
-    // doesn't want populated, then upload everything just for the runner to
-    // immediately re-walk the same tree with `--skip-personal`.
-    if personal_sync_enabled {
+    // Skipped for company-scoped runs and when the user has flipped off "Sync
+    // personal vault". Running it anyway would populate a bucket outside this
+    // run's scope, then re-walk the same tree with `--skip-personal`.
+    if personal_sync_enabled && scope.is_all() {
         log("sync", "phase: personal first-push");
         if let Err(e) = crate::commands::personal::ensure_personal_bucket_and_first_push(
             &app,
@@ -842,14 +1002,19 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
                 },
             );
         }
-    } else {
+    } else if !personal_sync_enabled {
         log(
             "sync",
             "phase: personal first-push skipped (personal_sync_enabled=false)",
         );
+    } else {
+        log(
+            "sync",
+            "phase: personal first-push skipped (company-scoped run)",
+        );
     }
 
-    let spawn_args = build_sync_spawn_args(&hq_folder_path, personal_sync_enabled);
+    let spawn_args = build_sync_spawn_args(&hq_folder_path, personal_sync_enabled, &scope);
     log(
         "sync",
         &format!(
@@ -928,27 +1093,11 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
                     message: Some(line.clone()),
                     ..Default::default()
                 });
-                // …but that move ALSO took error events away from
-                // `handle_sync_line` (stdout-only), which is what fed the
-                // benign-vs-alertable exit classification in RunTotals. Without
-                // re-ingesting them here, `saw_error` stays false for every
-                // post-PR-#34 run, the exit handler treats every non-zero exit
-                // as an "unexplained crash", and the common benign code-2 (ACL-
-                // scope skips / not-provisioned / transient network) floods
-                // Sentry (HQ-SYNC-WEB-6). So parse any ndjson `error` line and
-                // record it toward the alert decision, mirroring the stdout
-                // path. Non-ndjson stderr (reindex/qmd/warning chatter) fails to
-                // parse and is ignored.
-                if let Ok(SyncEvent::Error(payload)) =
-                    serde_json::from_str::<SyncEvent>(line.trim())
-                {
-                    let mut t = totals.lock().unwrap_or_else(|e| e.into_inner());
-                    t.record_error(&payload);
-                }
-                {
-                    let mut t = totals.lock().unwrap_or_else(|e| e.into_inner());
-                    t.record_stderr_line(&line);
-                }
+                // Re-ingest stderr protocol records. Error events feed the
+                // benign-vs-alertable exit classification, while auth-error
+                // emits the re-authentication signal even though the runner
+                // intentionally exits 0 after a failed token refresh.
+                handle_runner_stderr_line(&app_bg, &totals, &line);
                 #[cfg(debug_assertions)]
                 eprintln!("[sync stderr] {}", line);
             }
@@ -1179,22 +1328,78 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_sync_scope() {
+        assert_eq!(parse_sync_scope(None), Ok(SyncRunScope::All));
+        assert_eq!(
+            parse_sync_scope(Some("indigo".to_string())),
+            Ok(SyncRunScope::Company("indigo".to_string()))
+        );
+        assert_eq!(
+            parse_sync_scope(Some("  indigo  ".to_string())),
+            Ok(SyncRunScope::Company("indigo".to_string()))
+        );
+        assert!(parse_sync_scope(Some(String::new())).is_err());
+        assert!(parse_sync_scope(Some("personal".to_string())).is_err());
+        assert!(parse_sync_scope(Some("Bad_Slug".to_string())).is_err());
+    }
+
+    #[test]
+    fn test_sync_run_scope_helpers() {
+        let all = SyncRunScope::All;
+        assert!(all.includes("indigo"));
+        assert!(all.includes("other"));
+        assert!(all.is_all());
+
+        let company = SyncRunScope::Company("indigo".to_string());
+        assert!(company.includes("indigo"));
+        assert!(!company.includes("other"));
+        assert!(!company.is_all());
+    }
+
+    #[test]
+    fn test_build_sync_spawn_args_company_scope() {
+        let args = build_sync_spawn_args(
+            "/Users/test/HQ",
+            true,
+            &SyncRunScope::Company("indigo".to_string()),
+        );
+        let company_index = args
+            .args
+            .iter()
+            .position(|arg| arg == "--company")
+            .expect("company-scoped args must include `--company`");
+        assert_eq!(
+            args.args.get(company_index + 1).map(String::as_str),
+            Some("indigo")
+        );
+        assert!(!args.args.iter().any(|arg| arg == "--companies"));
+        assert!(args.args.iter().any(|arg| arg == "--skip-personal"));
+    }
+
+    #[test]
     fn test_build_sync_spawn_args_cmd() {
-        let args = build_sync_spawn_args("/Users/test/HQ", true);
-        // `resolve_bin` may return an absolute path (e.g.
-        // `/opt/homebrew/bin/npx`) on a dev box with npm installed, or the
-        // bare name on a CI box without it. Either way, the trailing file
-        // component must be `npx`.
+        let args = build_sync_spawn_args("/Users/test/HQ", true, &SyncRunScope::All);
+        // `resolve_bin` may return an absolute path or a bare name. Windows
+        // resolves npm's command shim (`npx.cmd`); Unix resolves `npx`.
+        let expected = if cfg!(target_os = "windows") {
+            "npx.cmd"
+        } else {
+            "npx"
+        };
+        let actual = std::path::Path::new(&args.cmd)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(&args.cmd);
         assert!(
-            args.cmd == "npx" || args.cmd.ends_with("/npx"),
-            "expected cmd to be `npx` or `*/npx`, got `{}`",
+            actual.eq_ignore_ascii_case(expected),
+            "expected command filename `{expected}`, got `{}`",
             args.cmd
         );
     }
 
     #[test]
     fn test_build_sync_spawn_args_flags() {
-        let args = build_sync_spawn_args("/Users/test/HQ", true);
+        let args = build_sync_spawn_args("/Users/test/HQ", true, &SyncRunScope::All);
         assert_eq!(
             args.args,
             vec![
@@ -1217,7 +1422,7 @@ mod tests {
     /// the flag in the wrong direction (e.g. inverted check) surfaces here.
     #[test]
     fn test_build_sync_spawn_args_omits_skip_personal_when_enabled() {
-        let args = build_sync_spawn_args("/Users/test/HQ", true);
+        let args = build_sync_spawn_args("/Users/test/HQ", true, &SyncRunScope::All);
         assert!(
             !args.args.iter().any(|a| a == "--skip-personal"),
             "expected NO `--skip-personal` when personal_sync_enabled=true, got: {:?}",
@@ -1231,7 +1436,7 @@ mod tests {
     /// the parsed-args path, equivalent to HQ_SYNC_SKIP_PERSONAL=1).
     #[test]
     fn test_build_sync_spawn_args_appends_skip_personal_when_disabled() {
-        let args = build_sync_spawn_args("/Users/test/HQ", false);
+        let args = build_sync_spawn_args("/Users/test/HQ", false, &SyncRunScope::All);
         assert_eq!(
             args.args.last().map(String::as_str),
             Some("--skip-personal"),
@@ -1251,7 +1456,7 @@ mod tests {
     /// every other file's progress on the affected company.
     #[test]
     fn test_build_sync_spawn_args_on_conflict_is_keep() {
-        let args = build_sync_spawn_args("/tmp", true);
+        let args = build_sync_spawn_args("/tmp", true, &SyncRunScope::All);
         let joined = args.args.join(" ");
         assert!(
             joined.contains("--on-conflict keep"),
@@ -1264,7 +1469,7 @@ mod tests {
     /// Guards against a future refactor silently dropping back to pull-only.
     #[test]
     fn test_build_sync_spawn_args_opts_into_direction_both() {
-        let args = build_sync_spawn_args("/tmp", true);
+        let args = build_sync_spawn_args("/tmp", true, &SyncRunScope::All);
         let joined = args.args.join(" ");
         assert!(
             joined.contains("--direction both"),
@@ -1280,7 +1485,7 @@ mod tests {
     /// obvious in CI, not at runtime on users' machines.
     #[test]
     fn test_build_sync_spawn_args_pins_hq_cloud_package() {
-        let args = build_sync_spawn_args("/tmp", true);
+        let args = build_sync_spawn_args("/tmp", true, &SyncRunScope::All);
         let expected_pin = format!("--package={}@{}", HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION);
         assert!(
             args.args.contains(&expected_pin),
@@ -1303,15 +1508,16 @@ mod tests {
 
     #[test]
     fn test_build_sync_spawn_args_env_sets_hq_root() {
-        let args = build_sync_spawn_args("/Users/test/HQ", true);
+        let args = build_sync_spawn_args("/Users/test/HQ", true, &SyncRunScope::All);
         let env = args.env.unwrap();
         assert_eq!(env.get("HQ_ROOT"), Some(&"/Users/test/HQ".to_string()));
         assert_eq!(env.len(), 2);
     }
 
     #[test]
+    #[cfg(not(target_os = "windows"))]
     fn test_build_sync_spawn_args_env_sets_path_with_homebrew() {
-        let args = build_sync_spawn_args("/tmp", true);
+        let args = build_sync_spawn_args("/tmp", true, &SyncRunScope::All);
         let env = args.env.unwrap();
         let path = env
             .get("PATH")
@@ -1325,8 +1531,22 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "windows")]
+    fn test_build_sync_spawn_args_env_sets_windows_path() {
+        let args = build_sync_spawn_args(r"C:\HQ", true, &SyncRunScope::All);
+        let env = args.env.unwrap();
+        let path = env
+            .get("PATH")
+            .expect("PATH must be set so npx.cmd can find node");
+        assert!(
+            path.to_ascii_lowercase().contains(r"windows\system32"),
+            "PATH missing Windows system32: {path}",
+        );
+    }
+
+    #[test]
     fn test_build_sync_spawn_args_no_cwd() {
-        let args = build_sync_spawn_args("/any/path", true);
+        let args = build_sync_spawn_args("/any/path", true, &SyncRunScope::All);
         assert!(args.cwd.is_none());
     }
 
@@ -1360,6 +1580,27 @@ mod tests {
             SyncEvent::AuthError(e) => assert_eq!(e.message, "Token expired"),
             _ => panic!("Expected AuthError event"),
         }
+    }
+
+    #[test]
+    fn stderr_auth_error_raises_needs_reauth_when_runner_exits_zero() {
+        let stderr_stream = [
+            "runner: refreshing token",
+            r#"{"type":"error","level":"auth-error","message":"Token refresh failed"}"#,
+        ];
+        let exit_code = 0;
+
+        let needs_reauth = stderr_stream
+            .iter()
+            .find_map(|line| runner_stderr_needs_reauth(line));
+
+        assert_eq!(exit_code, 0);
+        assert_eq!(
+            needs_reauth,
+            Some(SyncAuthErrorEvent {
+                message: "Token refresh failed".to_string(),
+            })
+        );
     }
 
     #[test]
@@ -1612,5 +1853,23 @@ mod tests {
         assert!(runner_unresolvable_reason(false, true).is_some());
         assert!(runner_unresolvable_reason(true, false).is_some());
         assert!(runner_unresolvable_reason(false, false).is_some());
+    }
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn node_version_probe_uses_native_windows_node() {
+        let command = node_version_command();
+        let program = std::path::Path::new(command.get_program())
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
+        assert_eq!(program.to_ascii_lowercase(), "node.exe");
+    }
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn node_version_probe_preserves_env_lookup_on_unix() {
+        let command = node_version_command();
+        assert_eq!(command.get_program(), std::ffi::OsStr::new("/usr/bin/env"));
     }
 }

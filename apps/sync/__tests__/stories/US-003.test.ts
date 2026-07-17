@@ -4,8 +4,8 @@ import {
   getDesktopCompanies,
   getDesktopActiveCompany,
   getDesktopHotkeyRoute,
+  getDesktopLandingRoute,
   getDesktopRouteKey,
-  initialDesktopRoute,
   isDesktopRouteActive,
   type DesktopRoute,
 } from '../../src/desktop-alt/route';
@@ -55,11 +55,12 @@ const workspaces: Workspace[] = [
 ];
 
 describe('US-003: Desktop-alt app shell — sidebar, route state, ⌘ hotkeys (V4 IA since US-002)', () => {
-  it('shows the V4 sidebar with the seven nav destinations and the COMPANIES section on mount', () => {
+  it('shows the V4 sidebar with the five nav destinations and the COMPANIES section on mount', () => {
     // The V4 window redesign (US-001/US-002) replaced the 216px rail + 42px
     // titlebar with the 220px raised sidebar + 40px title bar + 200px
-    // contextual secondary sidebar. Mission Control (US-006) added a sixth nav
-    // destination directly under Home.
+    // contextual secondary sidebar. hq-desktop-widget US-007 later removed the
+    // Home / Mission Control / Companies rows (palette-only routes now),
+    // promoted Marketplace top-level, and lands on the first company row.
     expect(V4_CHROME_LAYOUT).toEqual({
       titleBarHeightPx: 40,
       primarySidebarWidthPx: 220,
@@ -67,19 +68,20 @@ describe('US-003: Desktop-alt app shell — sidebar, route state, ⌘ hotkeys (V
     });
     expect(pkg.version).toMatch(/^\d+\.\d+\.\d+/);
 
-    const model = getV4SidebarModel(initialDesktopRoute, workspaces);
+    const landing = getDesktopLandingRoute(workspaces, null);
+    expect(landing).toEqual({ kind: 'company', slug: 'acme' });
+    const model = getV4SidebarModel(landing, workspaces);
+    // hq-desktop-widget US-008 merged Messages + Notifications into Inbox.
     expect(model.nav.map((row) => row.label)).toEqual([
-      'Home',
-      'Mission Control',
-      'Companies',
-      'Messages',
-      'Notifications',
+      'Inbox',
       'Meetings',
+      'Marketplace',
       'Library',
       'Files',
     ]);
-    // Home is the initial route and the only active row.
-    expect(model.nav.find((row) => row.active)?.id).toBe('home');
+    // The landing company row is the only active row — no nav item lights.
+    expect(model.nav.every((row) => !row.active)).toBe(true);
+    expect(model.companies.filter((row) => row.active).map((row) => row.slug)).toEqual(['acme']);
     // Connected-first sort (US-007): personal (always live), acme (synced) and
     // globex (cloud-only) are all connected, so they list alphabetically by
     // display name within the single connected group.
@@ -88,16 +90,16 @@ describe('US-003: Desktop-alt app shell — sidebar, route state, ⌘ hotkeys (V
       'Globex',
       'Personal',
     ]);
-    // The initial route is a non-company surface — no active company resolves.
+    // The landing route resolves its company.
     expect(
-      getDesktopActiveCompany(initialDesktopRoute, getDesktopCompanies(workspaces)),
-    ).toBeNull();
+      getDesktopActiveCompany(landing, getDesktopCompanies(workspaces)),
+    ).toMatchObject({ slug: 'acme' });
   });
 
-  it('switches the main pane to Meetings when the user presses ⌘6 (Notifications took ⌘5)', () => {
+  it('switches the main pane to Meetings when the user presses ⌘2 (US-008 renumber)', () => {
     const companies = getDesktopCompanies(workspaces);
     const nextRoute = getDesktopHotkeyRoute(
-      { key: '6', metaKey: true, ctrlKey: false },
+      { key: '2', metaKey: true, ctrlKey: false },
       companies,
     );
 
@@ -110,14 +112,15 @@ describe('US-003: Desktop-alt app shell — sidebar, route state, ⌘ hotkeys (V
   it('gives personal a navigable page and marks a clicked company row active', () => {
     const companies = getDesktopCompanies(workspaces);
 
-    // Personal is local-first and keeps its own desktop page — first company
-    // hotkey (⌘8, after the seven primary destinations incl. Notifications).
+    // Company hotkeys start at ⌘5 (US-008 renumber after the Inbox merge) and
+    // follow the rendered sidebar order (connected-first + alphabetical):
+    // Acme Corp, Globex, Personal.
     expect(
-      getDesktopHotkeyRoute({ key: '8', metaKey: true, ctrlKey: false }, companies),
-    ).toEqual({ kind: 'company', slug: 'personal' });
-    expect(
-      getDesktopHotkeyRoute({ key: '9', metaKey: true, ctrlKey: false }, companies),
+      getDesktopHotkeyRoute({ key: '5', metaKey: true, ctrlKey: false }, companies),
     ).toEqual({ kind: 'company', slug: 'acme' });
+    expect(
+      getDesktopHotkeyRoute({ key: '7', metaKey: true, ctrlKey: false }, companies),
+    ).toEqual({ kind: 'company', slug: 'personal' });
 
     const nextRoute: DesktopRoute = { kind: 'company', slug: 'acme' };
     expect(getDesktopRouteKey(nextRoute)).toBe('company:acme');

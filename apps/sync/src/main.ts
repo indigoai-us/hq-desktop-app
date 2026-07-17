@@ -8,6 +8,7 @@ import ShareDetail from './components/ShareDetail.svelte';
 import MeetingPermissionsWindow from './components/MeetingPermissionsWindow.svelte';
 import DmDetail from './components/DmDetail.svelte';
 import BannerNotification from './components/BannerNotification.svelte';
+import Widget from './components/Widget.svelte';
 import GlobalErrorBoundary from './components/GlobalErrorBoundary.svelte';
 import { mount } from 'svelte';
 import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -28,6 +29,8 @@ const windowLabel = getCurrentWindow().label;
 // a solid black rectangle when MeetingsWindow's #18181b body bg
 // overrode App.svelte's `background: transparent`.
 document.documentElement.dataset.window = windowLabel;
+const isWindows = /Windows/i.test(navigator.userAgent);
+document.documentElement.dataset.platform = isWindows ? 'windows' : 'other';
 
 let Component: typeof App;
 if (windowLabel === 'meetings-window') {
@@ -44,6 +47,8 @@ if (windowLabel === 'meetings-window') {
   Component = DmDetail as unknown as typeof App;
 } else if (windowLabel === 'dm-banner') {
   Component = BannerNotification as unknown as typeof App;
+} else if (windowLabel === 'widget') {
+  Component = Widget as unknown as typeof App;
 } else {
   Component = App;
 }

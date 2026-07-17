@@ -47,7 +47,6 @@
 //! later upgrades hq-cli (`npm install -g @indigoai-us/hq-cli@latest`),
 //! the next AppBar restart re-probes and picks up the local binary again.
 
-use std::process::Command;
 use std::sync::OnceLock;
 
 use crate::logfile::log;
@@ -89,14 +88,10 @@ impl HqInvocation {
     /// after this returns.
     pub fn command(&self) -> tokio::process::Command {
         match self {
-            HqInvocation::Local(path) => {
-                let mut cmd = tokio::process::Command::new(path);
-                paths::no_window_tokio(&mut cmd);
-                cmd
-            }
+            HqInvocation::Local(path) => paths::tokio_spawn_command(path, &[]),
             HqInvocation::Npx => {
-                let mut cmd = tokio::process::Command::new("npx");
-                paths::no_window_tokio(&mut cmd);
+                let npx = paths::resolve_bin("npx");
+                let mut cmd = paths::tokio_spawn_command(&npx, &[]);
                 cmd.args([
                     "-y",
                     "--package",
@@ -200,10 +195,8 @@ fn probe() -> HqInvocation {
 /// returns stdout on success, `None` on spawn-error or non-zero exit.
 /// Shared between the probes so a future probe addition is one helper call.
 fn run_help(bin: &str, args: &[&str]) -> Option<String> {
-    let mut cmd = Command::new(bin);
-    paths::no_window(&mut cmd);
+    let mut cmd = paths::spawn_command(bin, args);
     let output = cmd
-        .args(args)
         // Inherit PATH from parent so node-shebanged `hq` can find `node`.
         .env("PATH", paths::child_path())
         .output()
@@ -266,7 +259,11 @@ mod tests {
         let invocation = HqInvocation::Npx;
         let cmd = invocation.command();
         let std_cmd = cmd.as_std();
-        assert_eq!(std_cmd.get_program(), "npx");
+        let expected_program = paths::resolve_bin("npx");
+        assert_eq!(
+            std_cmd.get_program(),
+            std::ffi::OsStr::new(&expected_program)
+        );
         let args: Vec<&str> = std_cmd
             .get_args()
             .map(|a| a.to_str().unwrap_or(""))

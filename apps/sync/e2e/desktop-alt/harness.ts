@@ -60,7 +60,7 @@ export function reportDriverMode(reason?: string): void {
 }
 
 export function readRepoFile(path: string): string {
-  return readFileSync(join(repoRoot, path), 'utf8');
+  return readFileSync(join(repoRoot, path), 'utf8').replace(/\r\n/g, '\n');
 }
 
 export function assertNoRecursiveSecretFields(payload: unknown): void {
@@ -232,17 +232,20 @@ export class DesktopAltHarness implements DesktopAltTestHarness {
   private assertGateSourceContracts(): void {
     const app = readRepoFile('src/App.svelte');
     const popover = readRepoFile('src/components/Popover.svelte');
+    const feed = readRepoFile('src/components/NotificationFeed.svelte');
     const rust = readRepoFile('src-tauri/src/commands/desktop_alt.rs');
     const main = readRepoFile('src-tauri/src/main.rs');
 
+    // Rust-side gate stays; menubar popover is chrome-free (US-001). The
+    // desktop-view launcher surface moves into the desktop app in US-005 —
+    // until then open paths remain tray + NotificationFeed deep-links.
     expect(rust).toContain('pub async fn desktop_alt_enabled()');
     expect(rust).toContain('crate::util::feature_gate::desktop_features_enabled().await');
     expect(main).toContain('commands::desktop_alt::desktop_alt_enabled');
-    expect(app).toContain("invoke<boolean>('desktop_alt_enabled')");
-    expect(app).toContain('{desktopAltEnabled}');
-    expect(popover).toContain('{#if desktopAltEnabled}');
-    expect(popover).toContain('data-testid="desktop-alt-toggle"');
-    expect(popover).toContain("invoke('open_desktop_alt_window')");
+    expect(app).toContain("invoke('open_desktop_alt_window')");
+    expect(popover).not.toContain('data-testid="desktop-alt-toggle"');
+    expect(popover).not.toContain('{#if desktopAltEnabled}');
+    expect(feed).toContain("invoke('open_desktop_alt_window'");
   }
 
   private assertWindowLifecycleSourceContracts(): void {
@@ -265,9 +268,10 @@ export class DesktopAltHarness implements DesktopAltTestHarness {
     const desktopApp = readRepoFile('src/desktop-alt/DesktopApp.svelte');
     const route = readRepoFile('src/desktop-alt/route.ts');
 
-    // V4 IA (US-002): Home is the initial surface; the legacy 'sync' pending-
-    // route alias stays functional by resolving to Home.
-    expect(route).toContain("export const initialDesktopRoute: DesktopRoute = { kind: 'home' }");
+    // US-007 IA: the desktop lands on the last-visited company (persisted),
+    // falling back to the first sidebar company row; the legacy 'sync'
+    // pending-route alias stays functional by resolving to Home.
+    expect(route).toContain('export function getDesktopLandingRoute(');
     expect(route).toContain("case 'sync':");
     expect(desktopApp).toContain("route.kind === 'home'");
     expect(desktopApp).toContain("route.kind === 'meetings'");

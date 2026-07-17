@@ -74,8 +74,8 @@ describe('US-013: Status bar + global ⌘K command surface', () => {
     expect(app).toContain("action: () => navigate({ kind: 'home' })");
     expect(app).toContain("label: 'Go to Meetings'");
     expect(app).toContain("action: () => navigate({ kind: 'meetings' })");
-    expect(app).toContain('label: `Go to ${company.displayName}`');
-    expect(app).toContain("action: () => navigate({ kind: 'company', slug: company.slug })");
+    expect(app).toContain('label: `Go to ${row.label}`');
+    expect(app).toContain("action: () => navigate({ kind: 'company', slug: row.slug })");
     expect(app).toContain('<CommandPalette commands={commandItems} onclose={() => (commandPaletteOpen = false)} />');
     expect(palette).toContain('role="dialog"');
     expect(palette).toContain('aria-modal="true"');

@@ -7,10 +7,12 @@ describe('menubar popover routes into V4 desktop surfaces', () => {
 
   it('opens new-file notifications in the desktop company Activity screen', () => {
     expect(feed).toContain("invoke('open_desktop_alt_window'");
-    expect(feed).toContain('route: `company:${it.file.company}:activity`');
+    expect(feed).toContain('route: `company:${company}:activity`');
     expect(feed).toContain("it.kind === 'new-file'");
-    expect(feed).toContain('Boolean(it.file?.company)');
+    expect(feed).toContain('openCompanyActivity');
     expect(route).toContain("kind === 'company'");
-    expect(route).toContain('isCompanyTab(second)');
+    // company-detail-desktop-ia: deep-links normalize via normalizeCompanyTab
+    // (legacy accounts/tasks/library redirects + live CompanyTab ids).
+    expect(route).toContain('normalizeCompanyTab(second)');
   });
 });

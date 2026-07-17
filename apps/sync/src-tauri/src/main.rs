@@ -299,6 +299,7 @@ fn main() {
             commands::lifecycle::get_lifecycle_state,
             commands::workspaces::list_syncable_workspaces,
             commands::workspaces::connect_workspace_to_cloud,
+            commands::workspaces::claim_pending_company_invite,
             commands::sync_mode::get_sync_mode,
             commands::sync_mode::set_sync_mode,
             commands::conflicts::resolve_conflict,
@@ -307,6 +308,7 @@ fn main() {
             commands::settings::save_settings,
             commands::telemetry::post_telemetry_opt_in,
             commands::telemetry::write_menubar_telemetry_pref,
+            commands::telemetry::emit_desktop_telemetry_if_opted_in,
             commands::folder_picker::pick_folder,
             commands::install_directory::resolve_hq_path,
             commands::install_directory::set_hq_install_path,
@@ -366,6 +368,7 @@ fn main() {
             commands::daemon::daemon_status,
             tray::set_tray_state,
             updater::check_for_updates,
+            updater::get_pending_update,
             updater::install_update,
             updater::available_channels,
             updater::is_indigo_user,
@@ -413,6 +416,7 @@ fn main() {
             commands::desktop_alt::get_company_board,
             commands::desktop_alt::get_company_project_creators,
             commands::desktop_alt::get_company_activity,
+            commands::desktop_alt::get_company_team_telemetry,
             commands::desktop_alt::get_company_deployments,
             commands::desktop_alt::get_company_secrets,
             commands::desktop_alt::get_company_crm_projection_vault,
@@ -481,6 +485,7 @@ fn main() {
             commands::share_notify::share_detail_window_ready,
             commands::dm_notify::poll_dm_inbox,
             commands::dm_notify::open_dm_detail,
+            commands::dm_notify::open_inbox_window,
             commands::dm_notify::dm_detail_window_ready,
             commands::dm_notify::send_dm,
             commands::dm_notify::send_dm_to_email,
@@ -522,6 +527,11 @@ fn main() {
             commands::banner::preview_share_banner,
             commands::banner::preview_update_banner,
             commands::banner::preview_meeting_banner,
+            commands::widget::resize_widget,
+            commands::widget::set_widget_focusable,
+            commands::widget::widget_ready,
+            commands::widget::list_displays,
+            commands::widget::apply_widget_settings,
             commands::compat::check_ai_tools,
             commands::compat::device_fingerprint,
             commands::compat::keychain_set,
@@ -632,6 +642,11 @@ fn main() {
                 util::logfile::log("app", "first-run launch: centered onboarding card");
             }
 
+            // US-002: always-on-top HQ wordmark widget (lower-right of the
+            // configured display). Gated by widgetEnabled in menubar.json
+            // (default on). Non-activating, appearance-reactive.
+            commands::widget::setup_widget_window(app.handle());
+
             // macOS: the menu-bar item lives in a separate native helper process
             // (tao parks an in-process status item off-screen on Tahoe). Spawn
             // it + start the command-file poller.
@@ -645,6 +660,7 @@ fn main() {
             // See `commands::version_gate` for the rationale.
             commands::version_gate::setup_version_gate(app.handle());
             updater::setup_update_checker(app.handle());
+            commands::telemetry::setup_daily_active_emit();
             // Surface live progress for ANY sync (auto-sync / CLI), not just
             // a menubar-spawned Sync Now, by watching ~/.hq/sync-progress.json.
             commands::sync_progress_watch::setup_sync_progress_watch(app.handle());

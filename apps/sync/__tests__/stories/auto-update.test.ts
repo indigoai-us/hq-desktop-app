@@ -6,25 +6,29 @@ import { describe, expect, it } from 'vitest';
 // (`autoUpdate` pref, default ON): one Settings toggle that silently installs
 // the menubar app, the hq CLI, and hq-core without asking. These lock the
 // wiring so a dropped gate fails fast without a macOS Tauri build.
+//
+// The toggle lives in the desktop-view SettingsPage (the popover
+// Settings.svelte was retired in US-005 — desktop settings is the canonical
+// surface).
 
 const read = (p: string) => readFileSync(resolve(process.cwd(), p), 'utf8');
 const normalize = (s: string) => s.replace(/\s+/g, ' ');
 
 const app = read('src/App.svelte');
-const settings = read('src/components/Settings.svelte');
+const settings = read('src/desktop-alt/pages/SettingsPage.svelte');
 const cliUpdate = read('src-tauri/src/commands/hq_cli_update.rs');
 const settingsRs = read('src-tauri/src/commands/settings.rs');
 
 describe('master automatic-updates switch', () => {
-  it('Settings exposes a single "Automatic updates" toggle and drops the CLI-only one', () => {
+  it('desktop SettingsPage exposes a single "Automatic updates" toggle and drops the CLI-only one', () => {
     const s = normalize(settings);
     expect(s).toContain('id="toggle-auto-update"');
     expect(s).toContain('Automatic updates');
-    expect(s).toContain('class:active={autoUpdate}');
-    expect(s).toContain('onclick={handleToggleAutoUpdate}');
+    expect(s).toContain('bind:checked={autoUpdate}');
     // The standalone per-CLI toggle is folded into the master.
     expect(settings).not.toContain('id="toggle-cli-auto-update"');
     expect(settings).not.toContain('handleToggleCliAutoUpdate');
+    expect(settings).not.toContain('bind:checked={cliAutoUpdate}');
     // The pref round-trips through get/save_settings.
     expect(s).toContain('autoUpdate = settings.autoUpdate ?? true');
     expect(s).toContain('autoUpdate,');

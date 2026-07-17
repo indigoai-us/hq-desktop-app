@@ -1,3 +1,5 @@
+import { humanPersonLabel } from './visible-labels';
+
 // Pure helpers for the pending DM connection-requests UI (US-011).
 //
 // The Requests segment (MessagesShell) and the DmRequestCard render incoming
@@ -22,13 +24,36 @@ export interface DmRequest {
 /** The recipient-side action taken on a request. */
 export type RequestAction = 'accept' | 'decline' | 'block';
 
-/** Best display label for a request: display name → email → personUid. */
+export interface DmRequestContact {
+  personUid: string;
+  email?: string | null;
+  displayName?: string | null;
+}
+
+/** Best display label for a request: display name → email → graceful fallback. */
 export function requestDisplayName(req: DmRequest): string {
-  return (
-    req.fromDisplayName?.trim() ||
-    req.fromEmail?.trim() ||
-    req.fromPersonUid
-  );
+  return humanPersonLabel({ displayName: req.fromDisplayName, email: req.fromEmail });
+}
+
+export function requestHasHumanLabel(req: DmRequest): boolean {
+  return [req.fromDisplayName, req.fromEmail].some((value) => {
+    const label = value?.trim();
+    return Boolean(label && !/^(?:prs_|cmp_)[A-Za-z0-9_-]+$/.test(label));
+  });
+}
+
+export function enrichRequestFromContacts(
+  req: DmRequest,
+  contacts: DmRequestContact[],
+): DmRequest {
+  if (requestHasHumanLabel(req)) return req;
+  const contact = contacts.find((item) => item.personUid === req.fromPersonUid);
+  if (!contact) return req;
+  return {
+    ...req,
+    fromDisplayName: contact.displayName?.trim() || '',
+    fromEmail: contact.email?.trim() || '',
+  };
 }
 
 /** Two-letter avatar initials from the display label. */

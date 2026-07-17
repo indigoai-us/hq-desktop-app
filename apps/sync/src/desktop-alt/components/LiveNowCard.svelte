@@ -2,6 +2,7 @@
   import { open as openExternal } from '@tauri-apps/plugin-shell';
   import type { ActiveMeeting } from '../../lib/activeMeetings';
   import type { RecordingMembership } from '../../lib/recordingCompany';
+  import { humanCompanyLabel } from '../../lib/visible-labels';
 
   interface Props {
     meeting: ActiveMeeting | null;
@@ -107,7 +108,7 @@
           >
             <option value="">Personal</option>
             {#each memberships as m (m.companyUid)}
-              <option value={m.companyUid}>{m.companyName ?? m.companyUid}</option>
+              <option value={m.companyUid}>{humanCompanyLabel(m)}</option>
             {/each}
           </select>
         </div>

@@ -1,5 +1,6 @@
 import type { Workspace } from '../lib/workspaces';
 import {
+  sortV4CompaniesConnectedFirst,
   v4CompanyDotTone,
   type V4DotTone,
   type V4Route,
@@ -10,48 +11,70 @@ import {
 /**
  * V4 information architecture (docs/design/v4/SPEC.md section 4).
  *
- * Five primary destinations — Home, Companies, Messages, Meetings, Library —
- * plus companies as first-class sidebar rows, a Settings footer route, and the
- * admin-only Moderation surface (no sidebar row; reachable via the ⌘K palette).
- * Company pages and the Library carry their sections in the secondary sidebar
- * rather than in-page segmented controls.
+ * Four primary destinations — Inbox, Meetings, Marketplace, Library — plus
+ * Files, companies as first-class sidebar rows, and a Settings footer.
+ * US-008 merged Messages + Notifications into the single Inbox surface.
+ * Home / Mission Control / Moderation are palette-only routes with no sidebar
+ * row; the Companies page is removed (companies are reached via their sidebar
+ * rows). Company pages and the Library carry their sections in the secondary
+ * sidebar rather than in-page segmented controls.
  */
 
 /**
  * Library sub-surfaces — rows of the Library secondary sidebar. They all share
  * the `library` page + LibraryBrowser body, differing only by which tab is
  * forced. Defaults to 'skills' when a library route carries no tab.
+ * Marketplace is top-level now (US-007), not a Library tab.
  */
-export type LibraryTab = 'skills' | 'workers' | 'installed' | 'marketplace' | 'profile';
+export type LibraryTab = 'skills' | 'workers' | 'installed' | 'profile';
 
 export const DEFAULT_LIBRARY_TAB: LibraryTab = 'skills';
 
 /**
- * Company page sections — rows of the company secondary sidebar (SPEC section
- * 4: Overview / Accounts / Goals / Projects / Tasks / Activity / Deployments /
- * Secrets / Library). "Accounts" is the hq-native-crm CRM surface (US-010).
- * Defaults to 'overview' when a company route carries no tab.
+ * Company page sections — rows of the company secondary sidebar.
+ * company-detail-desktop-ia: Accounts/Tasks/Library removed; Skills, Workers,
+ * Knowledge, Team are first-class. Defaults to 'overview' when a company route
+ * carries no tab. Legacy deep-links remap in resolvePendingDesktopRoute /
+ * normalizeCompanyTab.
  */
 export type CompanyTab =
   | 'overview'
-  | 'accounts'
   | 'goals'
   | 'projects'
-  | 'tasks'
+  | 'skills'
+  | 'workers'
+  | 'knowledge'
+  | 'team'
   | 'activity'
   | 'deployments'
-  | 'secrets'
-  | 'library';
+  | 'secrets';
 
 export const DEFAULT_COMPANY_TAB: CompanyTab = 'overview';
 
+/**
+ * Legacy company-tab ids that still appear in deep links / pending routes.
+ * remapped so old bookmarks do not 404 the secondary sidebar.
+ */
+const LEGACY_COMPANY_TAB_REDIRECT: Readonly<Record<string, CompanyTab>> = {
+  accounts: 'overview',
+  tasks: 'projects',
+  library: 'skills',
+};
+
+/** Normalize a company tab string (including legacy ids) to a live CompanyTab. */
+export function normalizeCompanyTab(value: string | undefined | null): CompanyTab | undefined {
+  if (!value) return undefined;
+  if (isCompanyTab(value)) return value;
+  return LEGACY_COMPANY_TAB_REDIRECT[value];
+}
+
 /** Settings sections — rows of the Settings secondary sidebar (US-013 fills the bodies). */
-export type SettingsTab = 'sync' | 'notifications' | 'updates' | 'general' | 'meetings';
+export type SettingsTab = 'sync' | 'notifications' | 'widget' | 'updates' | 'general' | 'meetings';
 
 export const DEFAULT_SETTINGS_TAB: SettingsTab = 'sync';
 
 export type DesktopRoute =
-  | { kind: 'home' | 'mission-control' | 'companies' | 'messages' | 'notifications' | 'meetings' | 'moderation' }
+  | { kind: 'home' | 'mission-control' | 'inbox' | 'meetings' | 'marketplace' | 'moderation' }
   | { kind: 'library'; tab?: LibraryTab }
   | { kind: 'settings'; tab?: SettingsTab }
   | { kind: 'files'; slug?: string; path?: string }
@@ -59,31 +82,45 @@ export type DesktopRoute =
 
 export type DesktopRouteKind = DesktopRoute['kind'];
 
-export const initialDesktopRoute: DesktopRoute = { kind: 'home' };
+/**
+ * Default landing (US-007): the last-visited company when it still exists,
+ * else the FIRST company row in sidebar order (connected-first sort), else
+ * Home — the exception surface for a workspace-less install.
+ */
+export function getDesktopLandingRoute(
+  workspaces: Workspace[],
+  lastVisitedSlug?: string | null,
+): DesktopRoute {
+  const rows = sortV4CompaniesConnectedFirst(getDesktopCompanies(workspaces));
+  if (lastVisitedSlug && rows.some((row) => row.slug === lastVisitedSlug)) {
+    return { kind: 'company', slug: lastVisitedSlug };
+  }
+  if (rows[0]) return { kind: 'company', slug: rows[0].slug };
+  return { kind: 'home' };
+}
 
 /**
- * The company secondary-sidebar rows, in SPEC display order. "Accounts" (the
- * hq-native-crm CRM surface, US-010) sits directly under Overview — the
- * "where is every client?" entry point ahead of the work-system sections.
+ * Company secondary-sidebar rows (company-detail-desktop-ia).
+ * Accounts hidden; Tasks/Library removed; Skills/Workers/Knowledge/Team top-level.
  */
 export const COMPANY_SECTIONS: ReadonlyArray<{ id: CompanyTab; label: string }> = [
   { id: 'overview', label: 'Overview' },
-  { id: 'accounts', label: 'Accounts' },
   { id: 'goals', label: 'Goals' },
   { id: 'projects', label: 'Projects' },
-  { id: 'tasks', label: 'Tasks' },
+  { id: 'skills', label: 'Skills' },
+  { id: 'workers', label: 'Workers' },
+  { id: 'knowledge', label: 'Knowledge' },
+  { id: 'team', label: 'Team' },
   { id: 'activity', label: 'Activity' },
   { id: 'deployments', label: 'Deployments' },
   { id: 'secrets', label: 'Secrets' },
-  { id: 'library', label: 'Library' },
 ];
 
-/** The five Library secondary-sidebar rows, in SPEC display order. */
+/** The four Library secondary-sidebar rows, in SPEC display order. */
 export const LIBRARY_SECTIONS: ReadonlyArray<{ id: LibraryTab; label: string }> = [
   { id: 'skills', label: 'Skills' },
   { id: 'workers', label: 'Workers' },
   { id: 'installed', label: 'Installed' },
-  { id: 'marketplace', label: 'Marketplace' },
   { id: 'profile', label: 'Profile' },
 ];
 
@@ -95,6 +132,7 @@ export const SETTINGS_SECTIONS: ReadonlyArray<{
 }> = [
   { id: 'sync', label: 'Sync' },
   { id: 'notifications', label: 'Notifications' },
+  { id: 'widget', label: 'Widget' },
   { id: 'updates', label: 'Updates' },
   { id: 'general', label: 'General' },
   { id: 'meetings', label: 'Meetings', note: 'gated' },
@@ -150,15 +188,14 @@ export function getDesktopActiveCompany(
   return companies.find((company) => company.slug === route.slug) ?? null;
 }
 
-/** First ⌘ hotkey assigned to a company row (after the seven primary destinations). */
-const COMPANY_HOTKEY_BASE = 8;
+/** First ⌘ hotkey assigned to a company row (after the four primary destinations). */
+const COMPANY_HOTKEY_BASE = 5;
 
 /**
- * ⌘1–⌘7 map to the seven primary destinations in sidebar order (Home / Mission
- * Control / Companies / Messages / Notifications / Meetings / Library); ⌘8–⌘9
- * map to the first two companies. Mission Control sits directly under Home as
- * a global, cross-company surface (US-006); Notifications sits directly under
- * Messages. Mirrors `companyHotkey` below for the palette/sidebar labels.
+ * ⌘1–⌘4 map to the four primary destinations (Inbox / Meetings / Marketplace /
+ * Library); ⌘5–⌘9 map to the first five companies in sidebar (connected-first)
+ * order (US-008 renumber, no dead slots). Home / Mission Control have no hotkey
+ * (palette-only, US-007). Mirrors `companyHotkey` below for the palette labels.
  */
 export function getDesktopHotkeyRoute(
   event: Pick<KeyboardEvent, 'key' | 'metaKey' | 'ctrlKey'>,
@@ -166,24 +203,21 @@ export function getDesktopHotkeyRoute(
 ): DesktopRoute | null {
   if (!(event.metaKey || event.ctrlKey)) return null;
 
-  if (event.key === '1') return { kind: 'home' };
-  if (event.key === '2') return { kind: 'mission-control' };
-  if (event.key === '3') return { kind: 'companies' };
-  if (event.key === '4') return { kind: 'messages' };
-  if (event.key === '5') return { kind: 'notifications' };
-  if (event.key === '6') return { kind: 'meetings' };
-  if (event.key === '7') return { kind: 'library' };
+  if (event.key === '1') return { kind: 'inbox' };
+  if (event.key === '2') return { kind: 'meetings' };
+  if (event.key === '3') return { kind: 'marketplace' };
+  if (event.key === '4') return { kind: 'library' };
 
   const companyIndex = Number.parseInt(event.key, 10) - COMPANY_HOTKEY_BASE;
   if (companyIndex >= 0 && companyIndex <= 9 - COMPANY_HOTKEY_BASE) {
-    const company = companies[companyIndex];
+    const company = sortV4CompaniesConnectedFirst(companies)[companyIndex];
     if (company) return { kind: 'company', slug: company.slug };
   }
 
   return null;
 }
 
-/** ⌘ hotkey label for the company at `index`, or undefined past ⌘9. */
+/** ⌘ hotkey label for the company at `index` (sidebar order), or undefined past ⌘9. */
 export function companyHotkey(index: number): string | undefined {
   const hotkeyNumber = COMPANY_HOTKEY_BASE + index;
   return hotkeyNumber <= 9 ? `⌘${hotkeyNumber}` : undefined;
@@ -214,11 +248,15 @@ export function resolvePendingDesktopRoute(name: string | null | undefined): Des
   }
 
   if (kind === 'company' && first) {
-    const tab = isCompanyTab(second) ? second : undefined;
+    // Live tabs + legacy redirects (accounts→overview, tasks→projects, library→skills).
+    // `company:<slug>:knowledge` is a real company tab (inline Knowledge panel);
+    // it is no longer aliased to top-level files mode.
+    const tab = normalizeCompanyTab(second);
     return tab ? { kind: 'company', slug: first, tab } : { kind: 'company', slug: first };
   }
 
   if (kind === 'library') {
+    if (first === 'marketplace') return { kind: 'marketplace' }; // legacy Library tab alias — Marketplace is top-level now (US-007)
     const tab = isLibraryTab(first) ? first : undefined;
     return tab ? { kind: 'library', tab } : { kind: 'library' };
   }
@@ -234,14 +272,15 @@ export function resolvePendingDesktopRoute(name: string | null | undefined): Des
       return { kind: 'home' };
     case 'mission-control':
       return { kind: 'mission-control' };
-    case 'companies':
-      return { kind: 'companies' };
+    case 'inbox':
+    // legacy aliases — Messages and Notifications merged into Inbox (US-008)
     case 'messages':
-      return { kind: 'messages' };
     case 'notifications':
-      return { kind: 'notifications' };
+      return { kind: 'inbox' };
     case 'meetings':
       return { kind: 'meetings' };
+    case 'marketplace':
+      return { kind: 'marketplace' };
     case 'library':
       return { kind: 'library' };
     case 'settings':
@@ -276,14 +315,14 @@ export function fromV4Route(route: V4Route): DesktopRoute {
       return { kind: 'home' };
     case 'mission-control':
       return { kind: 'mission-control' };
-    case 'companies':
-      return { kind: 'companies' };
+    case 'inbox':
     case 'messages':
-      return { kind: 'messages' };
     case 'notifications':
-      return { kind: 'notifications' };
+      return { kind: 'inbox' };
     case 'meetings':
       return { kind: 'meetings' };
+    case 'marketplace':
+      return { kind: 'marketplace' };
     case 'library':
       return { kind: 'library' };
     case 'files':
@@ -317,10 +356,9 @@ export interface DesktopSecondarySidebarOptions {
 
 /**
  * SPEC section 4: the secondary sidebar exists ONLY on company, Library, and
- * Settings surfaces. Home, Companies, Meetings, and Moderation have none, and
- * Messages keeps its own 300px conversation list instead. A company route
- * whose slug isn't connected yet renders no secondary column either (the body
- * shows the not-synced placeholder).
+ * Settings surfaces. Home, Mission Control, Marketplace, Meetings, Inbox, and
+ * Moderation have none. A company route whose slug isn't connected yet renders
+ * no secondary column either (the body shows the not-synced placeholder).
  */
 export function getDesktopSecondarySidebar(
   route: DesktopRoute,
@@ -373,8 +411,21 @@ export function getDesktopSecondarySidebar(
   return null;
 }
 
+export function normalizeNativePath(path: string): string {
+  const trimmed = path.trim();
+  const windowsUncPrefix = '\\\\?\\UNC\\';
+  const windowsVerbatimPrefix = '\\\\?\\';
+  if (trimmed.toUpperCase().startsWith(windowsUncPrefix.toUpperCase())) {
+    return '\\\\' + trimmed.slice(windowsUncPrefix.length);
+  }
+  if (trimmed.startsWith(windowsVerbatimPrefix)) {
+    return trimmed.slice(windowsVerbatimPrefix.length);
+  }
+  return trimmed;
+}
+
 export function formatHqFolderMeta(path: string | null | undefined): string {
-  const trimmed = path?.trim();
+  const trimmed = path ? normalizeNativePath(path) : '';
   if (!trimmed) return 'HQ folder';
   return trimmed.replace(/^\/Users\/[^/]+/, '~');
 }
@@ -399,7 +450,7 @@ function formatCompanyStateMeta(company: Workspace): string | null {
     case 'local-only':
       return 'local only';
     case 'cloud-only':
-      return 'not on this Mac';
+      return 'not on this computer';
     case 'broken':
       return 'needs reconnect';
     default:

@@ -11,18 +11,19 @@ import { readRepoFile } from './harness';
  * field and no per-story/target dates — only Project.createdAt/updatedAt are
  * real — so any of those is a made-up value presented as fact. This locks the
  * fabrications out: derive from real fields (createdAt) or say "Unassigned"/"—".
+ *
+ * company-detail-desktop-ia: cross-project Tasks page removed; honesty for
+ * stories is asserted on Projects + ProjectDetailView instead.
  */
 describe('company surfaces show real data, not fabrications', () => {
-  const tasks = readRepoFile('src/desktop-alt/pages/CompanyTasksPage.svelte');
   const projects = readRepoFile('src/desktop-alt/pages/CompanyProjectsPage.svelte');
+  const projectDetail = readRepoFile('src/desktop-alt/pages/ProjectDetailView.svelte');
   const goals = readRepoFile('src/desktop-alt/pages/CompanyGoalsPage.svelte');
 
-  it('Tasks does not invent assignees or completion times', () => {
-    expect(tasks).not.toContain('projectIndex'); // index-mod assignee threading
-    expect(tasks).not.toContain('h ago'); // fabricated "passed Nh ago"
-    expect(tasks).not.toContain("return 'Agent'");
-    expect(tasks).toContain("'Unassigned'");
-    expect(tasks).toContain("row.story.passes ? 'Done'");
+  it('Projects does not invent assignees (Lead falls back to Unassigned)', () => {
+    expect(projects).toContain("'Unassigned'");
+    expect(projects).not.toContain("return 'Agent'");
+    expect(projects).not.toContain('projectIndex');
   });
 
   it('Projects derives "started" from the real createdAt, not a hashed weekday', () => {
@@ -31,6 +32,11 @@ describe('company surfaces show real data, not fabrications', () => {
     expect(projects).toContain('project.createdAt');
     expect(projects).toContain('formatProjectDate');
     expect(projects).not.toMatch(/Jun \$\{day\}/); // hashed target date
+  });
+
+  it('Project detail does not invent story completion times', () => {
+    expect(projectDetail).not.toContain('h ago');
+    expect(projectDetail).not.toContain('projectIndex');
   });
 
   it('Goals does not claim a fabricated agent proposal count', () => {

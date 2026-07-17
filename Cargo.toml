@@ -19,3 +19,5 @@ exclude = [
 [workspace.package]
 edition = "2021"
 license = "UNLICENSED"
+
+# NOTE: keep Cargo.toml in PR diffs for docs-only branches sparingly — required windows-check has path filters (apps/sync, crates, Cargo.*) and never reports on pure .claude/ changes, blocking merge.

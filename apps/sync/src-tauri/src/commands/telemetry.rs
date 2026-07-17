@@ -11,10 +11,12 @@ use std::path::Path;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::commands::sync::resolve_vault_api_url;
-use crate::commands::vault_client::{UsageBatch, VaultClient};
+use crate::commands::vault_client::{
+    RawTelemetryEvent, TelemetryEventsBatch, UsageBatch, VaultClient,
+};
 use crate::util::paths;
 
 // ── Cursor schema ─────────────────────────────────────────────────────────────
@@ -165,10 +167,10 @@ fn read_local_telemetry_enabled() -> bool {
             return v
                 .get("telemetryEnabled")
                 .and_then(|v| v.as_bool())
-                .unwrap_or(false);
+                .unwrap_or(true);
         }
     }
-    false
+    true
 }
 
 fn write_menubar_telemetry_pref_to(path: &Path, enabled: bool) -> Result<(), String> {
@@ -216,6 +218,189 @@ pub async fn post_telemetry_opt_in(enabled: bool) -> Result<(), String> {
     let access_token = crate::commands::cognito::get_valid_access_token().await?;
     let api_url = resolve_vault_api_url()?;
     post_telemetry_opt_in_with_retry(&api_url, &access_token, enabled).await
+}
+
+async fn resolve_telemetry_enabled(vault: &VaultClient) -> bool {
+    match vault.get_telemetry_opt_in().await {
+        Ok(resp) => resp.enabled,
+        Err(_) => {
+            eprintln!("[telemetry] telemetry-opt-in-fallback-local");
+            read_local_telemetry_enabled()
+        }
+    }
+}
+
+fn is_safe_event_name(event_name: &str) -> bool {
+    !event_name.is_empty()
+        && event_name.len() <= 96
+        && event_name
+            .bytes()
+            .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'_'))
+}
+
+fn is_safe_label_value(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value
+            .bytes()
+            .all(|b| matches!(b, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-' | b'.'))
+}
+
+fn allowed_desktop_property_key(key: &str) -> bool {
+    matches!(
+        key,
+        "provider"
+            | "surface"
+            | "source"
+            | "result"
+            | "errorKind"
+            | "enabled"
+            | "companiesAttempted"
+            | "filesDownloaded"
+            | "bytesDownloaded"
+            | "filesSkipped"
+            | "errorCount"
+            | "stageCount"
+            | "failedStageCount"
+            | "detectedToolCount"
+    )
+}
+
+fn sanitize_desktop_properties(properties: Option<Value>) -> Value {
+    let Some(Value::Object(input)) = properties else {
+        return Value::Object(Map::new());
+    };
+
+    let mut out = Map::new();
+
+    for (key, value) in input {
+        if !allowed_desktop_property_key(&key) {
+            continue;
+        }
+
+        let keep = match &value {
+            Value::Bool(_) => key == "enabled",
+            Value::Number(n) => n.as_i64().is_some() || n.as_u64().is_some(),
+            Value::String(s) => is_safe_label_value(s),
+            _ => false,
+        };
+        if keep {
+            out.insert(key, value);
+        }
+    }
+
+    Value::Object(out)
+}
+
+fn build_desktop_telemetry_event(
+    event_name: String,
+    properties: Option<Value>,
+) -> RawTelemetryEvent {
+    let properties = sanitize_desktop_properties(properties);
+    RawTelemetryEvent {
+        event_name,
+        app: "hq-desktop-app".to_string(),
+        source: "desktop".to_string(),
+        occurred_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        consent_basis: "desktop-opt-in".to_string(),
+        schema_version: 1,
+        idempotency_key: None,
+        properties,
+    }
+}
+
+async fn emit_desktop_telemetry_with_vault(
+    vault: &VaultClient,
+    event_name: String,
+    properties: Option<Value>,
+) -> Result<(), String> {
+    if !is_safe_event_name(&event_name) {
+        return Err(format!("invalid telemetry event name: {event_name}"));
+    }
+
+    if !resolve_telemetry_enabled(vault).await {
+        return Ok(());
+    }
+
+    let event = build_desktop_telemetry_event(event_name, properties);
+    let batch = TelemetryEventsBatch {
+        events: vec![event],
+    };
+
+    vault
+        .post_telemetry_events(&batch)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn emit_desktop_telemetry_if_opted_in(
+    event_name: String,
+    properties: Option<Value>,
+) -> Result<(), String> {
+    let access_token = crate::commands::cognito::get_valid_access_token().await?;
+    let api_url = resolve_vault_api_url()?;
+    let vault = VaultClient::new(&api_url, &access_token);
+    emit_desktop_telemetry_with_vault(&vault, event_name, properties).await
+}
+
+fn build_daily_active_event(utc_day: chrono::NaiveDate) -> RawTelemetryEvent {
+    let day = utc_day.format("%Y-%m-%d");
+    let occurred_at = utc_day
+        .and_hms_opt(0, 0, 0)
+        .expect("midnight is a valid UTC time")
+        .and_utc()
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+
+    RawTelemetryEvent {
+        event_name: "desktop_app_daily_active".to_string(),
+        app: "hq-desktop-app".to_string(),
+        source: "desktop".to_string(),
+        occurred_at,
+        consent_basis: "desktop-opt-in".to_string(),
+        schema_version: 1,
+        idempotency_key: Some(format!("hq-desktop-app:daily-active:{day}")),
+        properties: Value::Object(Map::new()),
+    }
+}
+
+async fn emit_daily_active_with_vault(
+    vault: &VaultClient,
+    utc_day: chrono::NaiveDate,
+) -> Result<(), String> {
+    if !resolve_telemetry_enabled(vault).await {
+        return Ok(());
+    }
+
+    let batch = TelemetryEventsBatch {
+        events: vec![build_daily_active_event(utc_day)],
+    };
+    vault
+        .post_telemetry_events(&batch)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+async fn emit_daily_active_for_utc_day(utc_day: chrono::NaiveDate) {
+    let result = async {
+        let access_token = crate::commands::cognito::get_valid_access_token().await?;
+        let api_url = resolve_vault_api_url()?;
+        let vault = VaultClient::new(&api_url, &access_token);
+        emit_daily_active_with_vault(&vault, utc_day).await
+    }
+    .await;
+
+    if result.is_err() {
+        eprintln!("[telemetry] desktop-app-daily-active-failed");
+    }
+}
+
+/// Start a best-effort daily-active emit without delaying application startup.
+pub fn setup_daily_active_emit() {
+    let utc_day = chrono::Utc::now().date_naive();
+    tauri::async_runtime::spawn(async move {
+        emit_daily_active_for_utc_day(utc_day).await;
+    });
 }
 
 fn read_machine_id() -> String {
@@ -269,14 +454,7 @@ pub async fn send_telemetry_if_opted_in<R: tauri::Runtime>(
     let vault = VaultClient::new(&api_url, jwt);
 
     // 2. Opt-in check
-    let enabled = match vault.get_telemetry_opt_in().await {
-        Ok(resp) => resp.enabled,
-        Err(_) => {
-            eprintln!("[telemetry] telemetry-opt-in-fallback-local");
-            read_local_telemetry_enabled()
-        }
-    };
-    if !enabled {
+    if !resolve_telemetry_enabled(&vault).await {
         return Ok(());
     }
 
@@ -528,6 +706,19 @@ mod tests {
         fs::write(home.join(".hq/menubar.json"), content).unwrap();
     }
 
+    fn write_valid_access_token(home: &std::path::Path) {
+        fs::write(
+            home.join(".hq/cognito-tokens.json"),
+            serde_json::to_string(&json!({
+                "accessToken": "test-access-token",
+                "refreshToken": "test-refresh-token",
+                "expiresAt": 4_102_444_800_000_i64,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+
     fn read_cursor(home: &std::path::Path) -> TelemetryCursor {
         let body = fs::read_to_string(home.join(".hq/telemetry-cursor.json")).unwrap();
         serde_json::from_str(&body).unwrap()
@@ -599,6 +790,254 @@ mod tests {
         assert!(!path.with_extension("json.tmp").exists());
     }
 
+    #[test]
+    fn test_missing_local_telemetry_pref_defaults_true() {
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let home = setup_home();
+        write_menubar(home.path(), r#"{"machineId":"mid-default"}"#);
+        std::env::set_var("HOME", home.path());
+
+        let enabled = read_local_telemetry_enabled();
+
+        std::env::remove_var("HOME");
+        assert!(enabled, "missing telemetryEnabled should default ON");
+    }
+
+    #[tokio::test]
+    async fn test_desktop_telemetry_opt_in_false_sends_no_events() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/usage/opt-in"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({"enabled": false})))
+            .mount(&server)
+            .await;
+
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let home = setup_home();
+        write_menubar(home.path(), r#"{"machineId":"mid-desktop-off"}"#);
+        std::env::set_var("HOME", home.path());
+
+        let vault = VaultClient::new(server.uri(), "test-jwt");
+        let result = emit_desktop_telemetry_with_vault(
+            &vault,
+            "manual_sync_completed".to_string(),
+            Some(json!({"filesDownloaded": 3})),
+        )
+        .await;
+
+        std::env::remove_var("HOME");
+
+        assert!(result.is_ok());
+        let reqs = server.received_requests().await.unwrap();
+        let posts: Vec<_> = reqs
+            .iter()
+            .filter(|r| r.method == wiremock::http::Method::POST)
+            .collect();
+        assert_eq!(
+            posts.len(),
+            0,
+            "no event POST expected when telemetry is off"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_desktop_telemetry_posts_sanitized_envelope() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/usage/opt-in"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({"enabled": true})))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/telemetry/events"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .mount(&server)
+            .await;
+
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let home = setup_home();
+        write_menubar(home.path(), r#"{"machineId":"mid-desktop-on"}"#);
+        std::env::set_var("HOME", home.path());
+
+        let vault = VaultClient::new(server.uri(), "test-jwt");
+        let result = emit_desktop_telemetry_with_vault(
+            &vault,
+            "telemetry_preference_changed".to_string(),
+            Some(json!({
+                "enabled": true,
+                "surface": "settings-popover",
+                "filesDownloaded": 2,
+                "companyUid": "cmp_private-company",
+                "path": "/Users/alice/HQ",
+                "email": "alice@example.com",
+                "message": "free text should not leave the client"
+            })),
+        )
+        .await;
+
+        std::env::remove_var("HOME");
+
+        assert!(result.is_ok());
+        let reqs = server.received_requests().await.unwrap();
+        let posts: Vec<_> = reqs
+            .iter()
+            .filter(|r| r.method == wiremock::http::Method::POST)
+            .collect();
+        assert_eq!(posts.len(), 1, "one event POST expected");
+        let body: Value = serde_json::from_slice(&posts[0].body).unwrap();
+        let event = &body["events"][0];
+        assert_eq!(event["eventName"], "telemetry_preference_changed");
+        assert_eq!(event["app"], "hq-desktop-app");
+        assert_eq!(event["source"], "desktop");
+        assert_eq!(event["consentBasis"], "desktop-opt-in");
+        assert_eq!(event["schemaVersion"], 1);
+        assert!(event["occurredAt"].as_str().is_some());
+
+        let allowed_event_keys = [
+            "eventName",
+            "app",
+            "source",
+            "occurredAt",
+            "consentBasis",
+            "schemaVersion",
+            "idempotencyKey",
+            "properties",
+        ];
+        let event_keys = event.as_object().unwrap();
+        assert!(event_keys
+            .keys()
+            .all(|key| allowed_event_keys.contains(&key.as_str())));
+        for unexpected_key in ["machineId", "appVersion", "companyUid", "personUid"] {
+            assert!(
+                event.get(unexpected_key).is_none(),
+                "{unexpected_key} must not be sent"
+            );
+        }
+
+        let props = event["properties"].as_object().unwrap();
+        assert_eq!(props.get("enabled").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(
+            props.get("surface").and_then(|v| v.as_str()),
+            Some("settings-popover")
+        );
+        assert_eq!(
+            props.get("filesDownloaded").and_then(|v| v.as_u64()),
+            Some(2)
+        );
+        assert!(!props.contains_key("path"));
+        assert!(!props.contains_key("email"));
+        assert!(!props.contains_key("message"));
+        assert!(!props.contains_key("companyUid"));
+    }
+
+    #[test]
+    fn test_daily_active_event_uses_stable_utc_day_values() {
+        let utc_day = chrono::NaiveDate::from_ymd_opt(2026, 7, 15).unwrap();
+
+        let first = build_daily_active_event(utc_day);
+        let retry = build_daily_active_event(utc_day);
+
+        assert_eq!(first.occurred_at, "2026-07-15T00:00:00.000Z");
+        assert_eq!(
+            first.idempotency_key.as_deref(),
+            Some("hq-desktop-app:daily-active:2026-07-15")
+        );
+        assert_eq!(first.occurred_at, retry.occurred_at);
+        assert_eq!(first.idempotency_key, retry.idempotency_key);
+        assert_eq!(first.properties, json!({}));
+
+        let serialized = serde_json::to_value(&first).unwrap();
+        assert_eq!(serialized["eventName"], "desktop_app_daily_active");
+        assert_eq!(serialized["app"], "hq-desktop-app");
+        assert_eq!(serialized["source"], "desktop");
+        assert_eq!(
+            serialized["idempotencyKey"],
+            "hq-desktop-app:daily-active:2026-07-15"
+        );
+        assert_eq!(serialized["properties"], json!({}));
+        for unexpected_key in ["machineId", "appVersion", "companyUid", "personUid"] {
+            assert!(serialized.get(unexpected_key).is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_daily_active_opt_out_sends_no_event() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/usage/opt-in"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({"enabled": false})))
+            .mount(&server)
+            .await;
+
+        let vault = VaultClient::new(server.uri(), "test-jwt");
+        let utc_day = chrono::NaiveDate::from_ymd_opt(2026, 7, 15).unwrap();
+
+        let result = emit_daily_active_with_vault(&vault, utc_day).await;
+
+        assert!(result.is_ok());
+        let reqs = server.received_requests().await.unwrap();
+        assert!(reqs
+            .iter()
+            .all(|request| request.method != wiremock::http::Method::POST));
+    }
+
+    #[tokio::test]
+    async fn test_daily_active_missing_or_invalid_token_does_not_fail_startup() {
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let server = MockServer::start().await;
+        let utc_day = chrono::NaiveDate::from_ymd_opt(2026, 7, 15).unwrap();
+
+        for token_contents in [None, Some("{not valid json")] {
+            let home = setup_home();
+            if let Some(token_contents) = token_contents {
+                fs::write(home.path().join(".hq/cognito-tokens.json"), token_contents).unwrap();
+            }
+
+            std::env::set_var("HQ_TEST_HOME", home.path());
+            std::env::set_var("HQ_VAULT_API_URL", server.uri());
+            emit_daily_active_for_utc_day(utc_day).await;
+            std::env::remove_var("HQ_TEST_HOME");
+            std::env::remove_var("HQ_VAULT_API_URL");
+        }
+
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_daily_active_non_success_response_is_swallowed() {
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/usage/opt-in"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({"enabled": true})))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/telemetry/events"))
+            .respond_with(ResponseTemplate::new(503).set_body_string("unavailable"))
+            .mount(&server)
+            .await;
+
+        let home = setup_home();
+        write_valid_access_token(home.path());
+        std::env::set_var("HQ_TEST_HOME", home.path());
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+
+        let utc_day = chrono::NaiveDate::from_ymd_opt(2026, 7, 15).unwrap();
+        emit_daily_active_for_utc_day(utc_day).await;
+
+        std::env::remove_var("HQ_TEST_HOME");
+        std::env::remove_var("HQ_VAULT_API_URL");
+
+        let reqs = server.received_requests().await.unwrap();
+        assert_eq!(
+            reqs.iter()
+                .filter(|request| request.method == wiremock::http::Method::POST)
+                .count(),
+            1
+        );
+    }
+
     // ── (a) opt-in=false → 0 bytes sent ──────────────────────────────────────
 
     #[tokio::test]
@@ -667,7 +1106,7 @@ mod tests {
 
         // Cursor file should exist with correct offset
         let cursor = read_cursor(home.path());
-        let path_str = jsonl_path.to_string_lossy().to_string();
+        let path_str = normalize_cursor_file_key(&jsonl_path);
         let entry = cursor
             .files
             .get(&path_str)
@@ -877,7 +1316,7 @@ mod tests {
 
         assert!(result.is_ok());
 
-        let path_str = jsonl_path.to_string_lossy().to_string();
+        let path_str = normalize_cursor_file_key(&jsonl_path);
         // Cursor entry must be absent (or at 0), NOT at EOF
         let cursor_file = home.path().join(".hq/telemetry-cursor.json");
         if cursor_file.exists() {
@@ -988,7 +1427,7 @@ mod tests {
         std::env::remove_var("HQ_VAULT_API_URL");
 
         let cursor = read_cursor(home.path());
-        let path_b_str = path_b.to_string_lossy().to_string();
+        let path_b_str = normalize_cursor_file_key(&path_b);
         let b_size = fs::metadata(&path_b).unwrap().len();
         let b_entry = cursor
             .files
@@ -1040,7 +1479,7 @@ mod tests {
 
         // Verify run 1 set cursor to EOF
         let cursor_after_run1 = read_cursor(home.path());
-        let path_a_str = path_a.to_string_lossy().to_string();
+        let path_a_str = normalize_cursor_file_key(&path_a);
         let entry1 = cursor_after_run1.files.get(&path_a_str).unwrap();
         assert_eq!(entry1.offset, original_size);
 

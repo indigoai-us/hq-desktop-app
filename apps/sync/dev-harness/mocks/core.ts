@@ -279,6 +279,28 @@ const handlers: Record<string, Handler> = {
   // set_sync_mode, which returns the resulting MembershipSyncConfig).
   set_sync_mode: (args) => ({ syncMode: args?.mode ?? 'all' }),
   get_config: () => ({ hqFolderPath: '/Users/corey/Documents/HQ', companySlug: 'indigo', configured: true }),
+  // Lazy HQ file tree (?view=desktop → company Knowledge tab / Files mode).
+  // Serves a small knowledge subtree for any company so the inline
+  // CompanyKnowledgePanel (US-014) is drivable in the browser harness.
+  list_hq_dir: (args) => {
+    const rel = String(args?.relPath ?? '');
+    if (/^companies\/[^/]+\/knowledge$/.test(rel)) {
+      return [
+        { name: 'guides', path: `${rel}/guides`, isDir: true, hasChildren: true },
+        { name: 'overview.md', path: `${rel}/overview.md`, isDir: false, hasChildren: false },
+      ];
+    }
+    if (/^companies\/[^/]+\/knowledge\/guides$/.test(rel)) {
+      return [
+        { name: 'onboarding.md', path: `${rel}/onboarding.md`, isDir: false, hasChildren: false },
+      ];
+    }
+    return [];
+  },
+  get_company_file_content: (args) => {
+    const path = String(args?.path ?? '');
+    return `# ${path.split('/').pop()}\n\nHarness preview content for \`${path}\`.\n`;
+  },
   get_library_root: () => LIBRARY_ROOT,
   get_library_company: () => LIBRARY_COMPANY,
   get_library_worker_detail: (args) => {
@@ -432,6 +454,8 @@ const handlers: Record<string, Handler> = {
   notification_request_permission: () => 'granted',
   pick_folder: () => null,
   check_for_updates: () => null,
+  get_pending_update: () => null,
+  install_update: () => null,
   start_daemon: () => null,
   stop_daemon: () => null,
   daemon_status: () => ({ running: true }),

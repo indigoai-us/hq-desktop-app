@@ -1,0 +1,1236 @@
+<script lang="ts">
+  /**
+   * Floating desktop widget — HQ wordmark (US-002) + notification stack (US-003).
+   *
+   * Locked design: no circle, no badge chip, no rounded container around the
+   * mark. Idle translucency + full opacity on hover. Color tracks system
+   * appearance via prefers-color-scheme. Queued count is a plain superscript
+   * numeral (no chip). Notification rows stack above the wordmark in frosted
+   * glass shells; the pure reducers live in `stores/widgetNotifications.ts`.
+   *
+   * Mountable with zero Tauri APIs (happy-dom US-002 / US-003 tests). Listeners
+   * and invokes only run when `__TAURI_INTERNALS__` is present.
+   */
+  import { onMount, untrack } from 'svelte';
+  import NotificationRow from './NotificationRow.svelte';
+  import type { NotificationRowType } from './NotificationRow.svelte';
+  import {
+    type BannerPayloadLike,
+    type WidgetStackItem,
+    type WidgetStackState,
+    WIDGET_RECENT_STORAGE_KEY,
+    addItem,
+    bannerToStackItem,
+    deserializeRecent,
+    dismissItem,
+    dismissRecent,
+    expireItems,
+    historyFeedItemToStackItem,
+    hoverItems,
+    hoverRows,
+    markQueueSeen,
+    markRecentRead,
+    mergeRecentWithHistory,
+    serializeRecent,
+    setHeld,
+    setOccluded,
+    unreadRecentCount,
+    widgetEmptyHoverWindowSize,
+    widgetHoverWindowSize,
+    widgetWindowSize,
+  } from '../stores/widgetNotifications';
+  import {
+    getLastReadTs,
+    loadNotificationItems,
+  } from '../lib/notificationFeedData';
+
+  let {
+    /** Initial/test seed for the queued superscript when the stack is empty. */
+    queued = 0,
+    /** Seed visible rows for happy-dom tests (no Tauri). */
+    initialItems = [],
+  }: {
+    queued?: number;
+    initialItems?: WidgetStackItem[];
+  } = $props();
+
+  // Capture once on mount — tests seed rows; runtime stack is event-driven.
+  // US-015: without initialItems, hydrate recent from localStorage (never visible).
+  let stack = $state<WidgetStackState>(
+    untrack(() => {
+      if (initialItems.length > 0) {
+        const seeded = initialItems.map((i) => ({ ...i }));
+        return {
+          visible: seeded,
+          queued: [],
+          // Seed recent so hover list works with initialItems (tests + cold start).
+          recent: seeded.map((i) => ({ ...i, unread: i.unread ?? true })),
+          occluded: false,
+          held: false,
+        };
+      }
+      let recent: WidgetStackItem[] = [];
+      try {
+        if (typeof localStorage !== 'undefined') {
+          recent = deserializeRecent(localStorage.getItem(WIDGET_RECENT_STORAGE_KEY));
+        }
+      } catch {
+        // localStorage unavailable / blocked — empty history.
+      }
+      return {
+        visible: [],
+        queued: [],
+        recent,
+        occluded: false,
+        held: false,
+      };
+    }),
+  );
+
+  // US-015: persist recent history so the popup survives relaunch.
+  $effect(() => {
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem(WIDGET_RECENT_STORAGE_KEY, serializeRecent(stack));
+      }
+    } catch {
+      // Quota / private mode — no-op.
+    }
+  });
+
+  /** Pointer anywhere over a notification row/stack/list suspends auto-hide. */
+  let pointerHold = $state(false);
+  /** Per-row reply focus/draft holds (ids of rows currently holding). */
+  let replyHolds = $state(new Set<string>());
+
+  /**
+   * Apply hold to the pure stack. Plain function (not an $effect writing stack)
+   * to avoid effect loops — callers compute holdActive after local state updates.
+   */
+  function applyHold(holdActive: boolean): void {
+    stack = setHeld(stack, holdActive, Date.now());
+  }
+
+  function setPointerHold(on: boolean): void {
+    pointerHold = on;
+    applyHold(on || replyHolds.size > 0);
+  }
+
+  function setReplyHold(id: string, held: boolean): void {
+    const next = new Set(replyHolds);
+    if (held) {
+      next.add(id);
+    } else {
+      next.delete(id);
+    }
+    replyHolds = next;
+    const holdActive = pointerHold || next.size > 0;
+    applyHold(holdActive);
+    // Reply hold released with nothing else holding (pointer already left) —
+    // resume normal hover collapse.
+    if (!held && next.size === 0 && !pointerHold && hoverOpen && !pinned) {
+      scheduleHoverClose();
+    }
+  }
+
+  /**
+   * Superscript shows real queue length, falling back to the prop seed —
+   * but once hover has opened (markQueueSeen / hoverSeen), prop seed is ignored
+   * so the count actually clears. Unread recent count takes priority when > 0.
+   */
+  let hoverSeen = $state(false);
+  const queuedCount = $derived(
+    stack.queued.length > 0 ? stack.queued.length : hoverSeen ? 0 : queued,
+  );
+  const unreadCount = $derived(unreadRecentCount(stack));
+  const badgeCount = $derived(unreadCount > 0 ? unreadCount : queuedCount);
+
+  let idSeq = 0;
+  let expiryTimer: ReturnType<typeof setInterval> | undefined;
+  /** Last size sent to `resize_widget` (non-reactive — avoids effect loops). */
+  let lastSent: { width: number; height: number } | null = null;
+
+  /** Hover recent-list open state + collapse delay timer. */
+  let hoverOpen = $state(false);
+  /** Click-pinned open — survives pointerleave until click-away or re-click. */
+  let pinned = $state(false);
+  /** Wordmark right-click menu (Inbox + Open desktop view). */
+  let contextMenuOpen = $state(false);
+  let hoverCloseTimer: ReturnType<typeof setTimeout> | undefined;
+
+  /** Tracks native focusable state (non-reactive — avoids effect loops). */
+  let widgetFocusable = false;
+
+  const hoverList = $derived(
+    hoverOpen ? hoverRows(hoverItems(stack), Date.now()) : [],
+  );
+
+  function hasTauri(): boolean {
+    return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+  }
+
+  /**
+   * Temporarily make the widget window key so the quick-reply input can type.
+   * Restored to false on send/dismiss/pointerleave. No-ops without Tauri or
+   * when the requested state matches the last sent value.
+   */
+  async function setWidgetFocusable(on: boolean): Promise<void> {
+    if (!hasTauri()) return;
+    if (widgetFocusable === on) return;
+    widgetFocusable = on;
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('set_widget_focusable', { focusable: on });
+    } catch (err) {
+      console.error('widget: set_widget_focusable failed', err);
+      // Roll back local flag so a retry can re-invoke.
+      widgetFocusable = !on;
+    }
+  }
+
+  function handlePointerDownCapture(e: PointerEvent): void {
+    if ((e.target as HTMLElement | null)?.closest?.('input')) {
+      void setWidgetFocusable(true);
+    }
+  }
+
+  function handleFocusInCapture(e: FocusEvent): void {
+    if ((e.target as HTMLElement | null)?.tagName === 'INPUT') {
+      void setWidgetFocusable(true);
+    }
+  }
+
+  function openHoverList(): void {
+    if (hoverCloseTimer !== undefined) {
+      clearTimeout(hoverCloseTimer);
+      hoverCloseTimer = undefined;
+    }
+    if (hoverOpen) return;
+    // Right-click menu owns the chrome slot — don't steal it with hover.
+    if (contextMenuOpen) return;
+    // A reply is focused / has a draft on a stack row. Switching surfaces
+    // would unmount that row and destroy the draft — never hide a
+    // notification mid-reply (US-012), so ignore the wordmark hover.
+    if (replyHolds.size > 0) return;
+    hoverOpen = true;
+    hoverSeen = true;
+    applyStack(markQueueSeen(stack));
+  }
+
+  /** Close a click-pinned list and clear unread (mark-on-leave watermark). */
+  function closePinned(): void {
+    pinned = false;
+    hoverOpen = false;
+    contextMenuOpen = false;
+    if (hoverCloseTimer !== undefined) {
+      clearTimeout(hoverCloseTimer);
+      hoverCloseTimer = undefined;
+    }
+    stack = markRecentRead(stack);
+    // The hover list unmounts without a pointerleave — never leave a stale
+    // pointer hold behind (it would suspend auto-hide forever).
+    setPointerHold(false);
+    // A quick-reply input may have flipped the native window focusable while
+    // the list was pinned — always restore non-activating mode on close.
+    void setWidgetFocusable(false);
+  }
+
+  /**
+   * Pin-open the mini inbox (hover/click notification + message list).
+   * Used by wordmark click, update Open, and the context-menu Inbox action.
+   */
+  function openMiniInbox(): void {
+    // Don't pin (and unmount a drafting stack row) mid-reply — see
+    // openHoverList's reply-hold guard.
+    if (replyHolds.size > 0) return;
+    contextMenuOpen = false;
+    pinned = true;
+    openHoverList();
+  }
+
+  function togglePinned(): void {
+    if (pinned) {
+      closePinned();
+    } else {
+      openMiniInbox();
+    }
+  }
+
+  function closeContextMenu(): void {
+    contextMenuOpen = false;
+  }
+
+  function handleWordmarkContextMenu(e: MouseEvent): void {
+    e.preventDefault();
+    e.stopPropagation();
+    // Don't open the menu mid-reply (would unmount the draft surface).
+    if (replyHolds.size > 0) return;
+    // Context menu replaces the hover list while open (same chrome slot).
+    hoverOpen = false;
+    pinned = false;
+    contextMenuOpen = true;
+  }
+
+  function handleWordmarkKeydown(e: KeyboardEvent): void {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      togglePinned();
+    } else if (e.key === 'Escape' && contextMenuOpen) {
+      e.preventDefault();
+      closeContextMenu();
+    }
+  }
+
+  /**
+   * Open the two-pane Inbox quick window (side pane + detail/reply canvas).
+   * Used by context menu + mini-popup footer icons.
+   */
+  async function menuOpenInbox(): Promise<void> {
+    closeContextMenu();
+    // Dismiss the mini list so it doesn't sit on top of the new window.
+    if (pinned || hoverOpen) closePinned();
+    if (!hasTauri()) {
+      openMiniInbox();
+      return;
+    }
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('open_inbox_window');
+    } catch (err) {
+      console.error('widget: open_inbox_window failed', err);
+      openMiniInbox();
+    }
+  }
+
+  /** Open the full desktop app (tray "Open desktop view" path). */
+  async function menuOpenDesktop(): Promise<void> {
+    closeContextMenu();
+    if (pinned || hoverOpen) closePinned();
+    if (!hasTauri()) return;
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('open_desktop_alt_window');
+    } catch (err) {
+      console.error('widget: open_desktop_alt_window failed', err);
+      try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        await invoke('show_main_window');
+      } catch (err2) {
+        console.error('widget: show_main_window fallback failed', err2);
+      }
+    }
+  }
+
+  function cancelHoverClose(): void {
+    if (hoverCloseTimer !== undefined) {
+      clearTimeout(hoverCloseTimer);
+      hoverCloseTimer = undefined;
+    }
+  }
+
+  function scheduleHoverClose(): void {
+    // Pinned list stays open through pointerleave — only click-away / re-click closes.
+    if (pinned) return;
+    // Reply focus/draft keeps the hover list open through pointerleave.
+    if (replyHolds.size > 0) return;
+    if (hoverCloseTimer !== undefined) {
+      clearTimeout(hoverCloseTimer);
+    }
+    hoverCloseTimer = setTimeout(() => {
+      hoverCloseTimer = undefined;
+      // A reply hold acquired after this timer was armed wins — never
+      // collapse the list mid-reply.
+      if (replyHolds.size > 0) return;
+      hoverOpen = false;
+      stack = markRecentRead(stack);
+      // Hover list unmounted without a pointerleave — drop any stale hold.
+      setPointerHold(false);
+    }, 450);
+  }
+
+  function applyStack(next: WidgetStackState): void {
+    stack = next;
+    syncExpiryTimer();
+  }
+
+  function syncExpiryTimer(): void {
+    if (stack.visible.length === 0) {
+      if (expiryTimer !== undefined) {
+        clearInterval(expiryTimer);
+        expiryTimer = undefined;
+      }
+      return;
+    }
+    if (expiryTimer !== undefined) return;
+    expiryTimer = setInterval(() => {
+      const next = expireItems(stack, Date.now());
+      if (next !== stack) {
+        stack = next;
+        if (stack.visible.length === 0 && expiryTimer !== undefined) {
+          clearInterval(expiryTimer);
+          expiryTimer = undefined;
+        }
+      }
+    }, 1000);
+  }
+
+  async function handleOpen(item: WidgetStackItem): Promise<void> {
+    // Drop any stale reply-hold for this row so ids never hold forever.
+    setReplyHold(item.id, false);
+    if (!hasTauri()) {
+      applyStack(dismissItem(stack, item.id));
+      if (stack.visible.length === 0) {
+        setPointerHold(false);
+      }
+      return;
+    }
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      // Route Open by kind + source data. Prefer direct open_* invokes so the
+      // widget does not depend on the (often hidden) main webview's
+      // notification:banner-action listener. Kind-based fallbacks keep
+      // localStorage-hydrated rows (action surface stripped) usable.
+      if (item.kind === 'dm' && item.data) {
+        await invoke('open_dm_detail', { event: item.data });
+      } else if (item.kind === 'share' && item.data) {
+        await invoke('open_share_detail', { events: [item.data] });
+      } else if (item.kind === 'new-file' || item.type === 'sync') {
+        const company =
+          item.data && typeof item.data === 'object' && item.data !== null
+            ? (item.data as { company?: string }).company
+            : undefined;
+        if (company) {
+          await invoke('open_desktop_alt_window', {
+            route: `company:${company}:activity`,
+          });
+        } else {
+          // No company slug — open the two-pane Inbox quick window.
+          await invoke('open_inbox_window');
+        }
+      } else if (item.kind === 'update') {
+        // Install chip still goes through banner_action (guarded install path
+        // in App.svelte). Body Open → two-pane Inbox (not menubar / desktop-alt).
+        const install =
+          item.clickActionId === 'update' || item.actionId === 'update';
+        if (install) {
+          const payload: BannerPayloadLike = {
+            kind: item.kind,
+            title: item.actor ?? '',
+            body: item.text,
+            clickActionId: item.clickActionId || 'update',
+            data: item.data,
+            actionId: item.actionId,
+            actionLabel: item.actionLabel,
+          };
+          await invoke('banner_action', { action: 'update', payload });
+        } else {
+          await invoke('open_inbox_window');
+        }
+      } else if (item.kind === 'meeting') {
+        await invoke('show_main_window');
+      } else if (item.clickActionId) {
+        const payload: BannerPayloadLike = {
+          kind: item.kind,
+          title: item.actor ?? '',
+          body: item.text,
+          clickActionId: item.clickActionId,
+          data: item.data,
+          actionId: item.actionId,
+          actionLabel: item.actionLabel,
+        };
+        await invoke('banner_action', {
+          action: item.clickActionId,
+          payload,
+        });
+      } else {
+        // Display-only / unknown — two-pane Inbox, not full desktop-alt.
+        await invoke('open_inbox_window');
+      }
+    } catch (err) {
+      console.error('widget: open failed', err);
+    } finally {
+      applyStack(dismissItem(stack, item.id));
+      // Opening the last row unmounts .stack without a pointerleave —
+      // clear the pointer hold so the next notification still auto-hides.
+      if (stack.visible.length === 0) {
+        setPointerHold(false);
+      }
+    }
+  }
+
+  /**
+   * Seed/refresh recent from server notification history so the hover/click
+   * popup shows real DMs/shares/files (Lizzie ~10-row history), not only
+   * in-session update banners. Merges with local recent (keeps update rows).
+   */
+  async function refreshRecentFromHistory(): Promise<void> {
+    if (!hasTauri()) return;
+    try {
+      const items = await loadNotificationItems();
+      const lastRead = getLastReadTs();
+      const historyRows = items.map((it) => historyFeedItemToStackItem(it, lastRead));
+      applyStack({
+        ...stack,
+        recent: mergeRecentWithHistory(stack.recent, historyRows),
+      });
+    } catch (err) {
+      console.error('widget: fetch_notification_history failed', err);
+    }
+  }
+
+  /**
+   * Dismiss pill inside the pinned popup / hover list. Removes the row from
+   * recent + visible; when the LAST row goes, the panel unmounts without a
+   * pointerleave — close it fully (clears the pointer hold, restores the
+   * non-activating window, and resets pinned/hoverOpen) so auto-hide and
+   * window sizing never wedge on an empty invisible panel.
+   */
+  function handleHoverDismiss(id: string): void {
+    setReplyHold(id, false);
+    applyStack(dismissRecent(stack, id));
+    if (hoverItems(stack).length === 0) {
+      closePinned();
+    }
+  }
+
+  function handleDismiss(id: string): void {
+    // Drop any stale reply-hold for this row so ids never hold forever.
+    setReplyHold(id, false);
+    applyStack(dismissItem(stack, id));
+    // Dismissing the last row unmounts .stack without a pointerleave —
+    // clear the pointer hold so the next notification still auto-hides.
+    if (stack.visible.length === 0) {
+      setPointerHold(false);
+    }
+    void setWidgetFocusable(false);
+  }
+
+  /**
+   * Mirror NotificationFeed.replyDm: real `send_dm` to the message author.
+   * DmEvent serializes camelCase; peer is `fromPersonUid` on `item.data`.
+   * Only meaningful when Tauri is present; no-ops otherwise. Errors log only
+   * — the row stays visible.
+   */
+  async function replyDm(item: WidgetStackItem, text: string): Promise<void> {
+    if (!hasTauri()) return;
+    const peer = (item.data as { fromPersonUid?: string } | null)?.fromPersonUid;
+    if (!peer || !text.trim()) return;
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('send_dm', { toPersonUid: peer, body: text.trim() });
+    } catch (err) {
+      console.error('widget: send_dm failed', err);
+    } finally {
+      void setWidgetFocusable(false);
+    }
+  }
+
+  /** No per-event reaction API — send the emoji as a DM reply body (same as feed). */
+  async function reactDm(item: WidgetStackItem, emoji: string): Promise<void> {
+    await replyDm(item, emoji);
+  }
+
+  onMount(() => {
+    syncExpiryTimer();
+
+    function handleClickAway(e: PointerEvent): void {
+      // Don't dismiss while a reply is focused / has a draft.
+      if (replyHolds.size > 0) return;
+      const target = e.target as HTMLElement | null;
+      if (contextMenuOpen) {
+        if (target?.closest?.('.ctx-menu') || target?.closest?.('.wm')) return;
+        closeContextMenu();
+        return;
+      }
+      if (!pinned) return;
+      if (target?.closest?.('.hover-list') || target?.closest?.('.wm')) return;
+      closePinned();
+    }
+
+    function handleWindowBlur(): void {
+      // Never collapse mid-reply — focusing the quick-reply input toggles the
+      // native window focusable, which makes blur events likely during exactly
+      // the flow US-012 protects (match the click-away guards).
+      if (replyHolds.size > 0) return;
+      if (contextMenuOpen) closeContextMenu();
+      if (pinned) closePinned();
+    }
+
+    document.addEventListener('pointerdown', handleClickAway, true);
+    window.addEventListener('blur', handleWindowBlur);
+
+    if (!hasTauri()) {
+      return () => {
+        document.removeEventListener('pointerdown', handleClickAway, true);
+        window.removeEventListener('blur', handleWindowBlur);
+        if (expiryTimer !== undefined) clearInterval(expiryTimer);
+        if (hoverCloseTimer !== undefined) clearTimeout(hoverCloseTimer);
+      };
+    }
+
+    let unlistenNotif: (() => void) | undefined;
+    let unlistenOcc: (() => void) | undefined;
+    let unlistenClickAway: (() => void) | undefined;
+    let unlistenDm: (() => void) | undefined;
+    let unlistenSync: (() => void) | undefined;
+    let historyReloadTimer: ReturnType<typeof setTimeout> | undefined;
+    let cancelled = false;
+
+    const scheduleHistoryRefresh = () => {
+      if (historyReloadTimer !== undefined) clearTimeout(historyReloadTimer);
+      historyReloadTimer = setTimeout(() => {
+        historyReloadTimer = undefined;
+        void refreshRecentFromHistory();
+      }, 300);
+    };
+
+    void (async () => {
+      const { listen } = await import('@tauri-apps/api/event');
+      if (cancelled) return;
+
+      unlistenNotif = await listen<BannerPayloadLike>('widget:notification', (e) => {
+        const now = Date.now();
+        const id = `wn-${now}-${++idSeq}`;
+        const item = bannerToStackItem(e.payload, now, id);
+        applyStack(addItem(stack, item));
+      });
+
+      unlistenOcc = await listen<{ visible: boolean }>('widget:occlusion', (e) => {
+        // Backend emits window visibility; occluded when not visible.
+        const visible = e.payload?.visible !== false;
+        applyStack(setOccluded(stack, !visible, Date.now()));
+      });
+
+      // Native click-away: the non-focusable widget window never blurs and
+      // clicks in other apps never reach `document`, so Rust runs a global
+      // NSEvent mouse-down monitor and emits widget:click-away (US-010).
+      unlistenClickAway = await listen('widget:click-away', () => {
+        // Don't dismiss while a reply is focused / has a draft.
+        if (replyHolds.size > 0) return;
+        if (contextMenuOpen) closeContextMenu();
+        if (pinned) closePinned();
+      });
+
+      // Keep recent history in sync with the real notification feed (DMs,
+      // shares, files) so the popup isn't stuck on local update banners only.
+      unlistenDm = await listen('dm:unread-summary', scheduleHistoryRefresh);
+      unlistenSync = await listen('sync:complete', scheduleHistoryRefresh);
+
+      const { invoke } = await import('@tauri-apps/api/core');
+      if (cancelled) return;
+      // Ready-handshake: Rust replies with the initial widget:occlusion.
+      await invoke('widget_ready').catch((err: unknown) => {
+        console.error('widget: widget_ready failed', err);
+      });
+      // Seed ~10 openable history rows (US-015 + Lizzie inbox mockup).
+      if (!cancelled) await refreshRecentFromHistory();
+    })();
+
+    return () => {
+      cancelled = true;
+      document.removeEventListener('pointerdown', handleClickAway, true);
+      window.removeEventListener('blur', handleWindowBlur);
+      unlistenNotif?.();
+      unlistenOcc?.();
+      unlistenClickAway?.();
+      unlistenDm?.();
+      unlistenSync?.();
+      if (historyReloadTimer !== undefined) {
+        clearTimeout(historyReloadTimer);
+        historyReloadTimer = undefined;
+      }
+      if (expiryTimer !== undefined) {
+        clearInterval(expiryTimer);
+        expiryTimer = undefined;
+      }
+      if (hoverCloseTimer !== undefined) {
+        clearTimeout(hoverCloseTimer);
+        hoverCloseTimer = undefined;
+      }
+    };
+  });
+
+  // Grow/shrink the native window with the visible stack / hover list /
+  // context menu (lower-right anchor stays fixed in Rust). Only when Tauri is
+  // present and size actually changed.
+  $effect(() => {
+    let size: { width: number; height: number };
+    if (contextMenuOpen) {
+      // Two-row menu + chrome — same width as hover panel; slightly taller
+      // than the empty-state panel so both items have full hit targets.
+      size = widgetEmptyHoverWindowSize();
+      size = { width: size.width, height: size.height + 28 };
+    } else if (hoverOpen) {
+      const items = hoverItems(stack);
+      // Pinned-open with no recent rows: grow for the empty-state panel so a
+      // wordmark click always produces visible feedback (US-010). Hover-only
+      // with zero items stays idle-sized — no empty panel flash.
+      if (items.length === 0 && pinned) {
+        size = widgetEmptyHoverWindowSize();
+      } else {
+        const rows = hoverRows(items, Date.now());
+        size = widgetHoverWindowSize(
+          items,
+          rows.filter((r) => r.separator).length,
+        );
+      }
+    } else {
+      size = widgetWindowSize(stack);
+    }
+    if (!hasTauri()) return;
+    if (
+      lastSent &&
+      lastSent.width === size.width &&
+      lastSent.height === size.height
+    ) {
+      return;
+    }
+    lastSent = size;
+    void import('@tauri-apps/api/core').then(({ invoke }) => {
+      void invoke('resize_widget', {
+        width: size.width,
+        height: size.height,
+      }).catch((err: unknown) => {
+        console.error('widget: resize_widget failed', err);
+      });
+    });
+  });
+</script>
+
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div
+  class="wg"
+  onpointerdowncapture={handlePointerDownCapture}
+  onfocusincapture={handleFocusInCapture}
+  onpointerenter={cancelHoverClose}
+  onpointerleave={() => {
+    scheduleHoverClose();
+    // Typing must survive transient hover-out — keep focusable while reply holds.
+    if (replyHolds.size === 0) {
+      void setWidgetFocusable(false);
+    }
+  }}
+>
+  {#if contextMenuOpen}
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+    <div
+      class="ctx-menu frost-panel"
+      data-testid="widget-context-menu"
+      role="menu"
+      tabindex="0"
+      aria-label="HQ widget"
+      onpointerenter={() => setPointerHold(true)}
+      onpointerleave={() => setPointerHold(false)}
+    >
+      <button
+        class="ctx-item"
+        type="button"
+        role="menuitem"
+        data-testid="widget-menu-inbox"
+        onclick={() => void menuOpenInbox()}
+      >
+        Inbox
+      </button>
+      <button
+        class="ctx-item"
+        type="button"
+        role="menuitem"
+        data-testid="widget-menu-desktop"
+        onclick={() => void menuOpenDesktop()}
+      >
+        Open desktop view
+      </button>
+    </div>
+  {:else if hoverOpen && (hoverList.length > 0 || pinned)}
+    <div
+      class="hover-list frost-panel"
+      data-testid="widget-hover-list"
+      onpointerenter={() => setPointerHold(true)}
+      onpointerleave={() => setPointerHold(false)}
+    >
+      <div class="hl-body">
+        {#if hoverList.length === 0}
+          <div class="hl-empty" data-testid="widget-empty-state">No recent notifications</div>
+        {:else}
+          {#each hoverList as row (row.item.id)}
+            {#if row.separator}<div class="hl-sep">{row.separator}</div>{/if}
+            <div class="hl-row">
+              <NotificationRow
+                type={row.item.type as NotificationRowType}
+                actor={row.item.actor}
+                text={row.item.text}
+                ts={row.item.ts}
+                unread={row.item.unread ?? false}
+                actionLabel={row.item.actionLabel ?? undefined}
+                textDismiss
+                onopen={() => void handleOpen(row.item)}
+                ondismiss={() => handleHoverDismiss(row.item.id)}
+                onreply={row.item.kind === 'dm'
+                  ? (text) => void replyDm(row.item, text)
+                  : undefined}
+                onreact={row.item.kind === 'dm'
+                  ? (emoji) => void reactDm(row.item, emoji)
+                  : undefined}
+                onholdchange={(h) => setReplyHold(row.item.id, h)}
+              />
+            </div>
+          {/each}
+        {/if}
+      </div>
+      <!-- Icon-only jumps: two-pane Inbox + full desktop (title = hover label). -->
+      <div class="hl-footer" data-testid="widget-hover-footer" role="toolbar" aria-label="Open">
+        <button
+          class="hl-icon-btn"
+          type="button"
+          data-testid="widget-hover-inbox"
+          title="Inbox"
+          aria-label="Inbox"
+          onclick={() => void menuOpenInbox()}
+        >
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path
+              d="M2.5 3h11a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H6l-3.5 2.6V11h0a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z"
+              stroke="currentColor"
+              stroke-width="1.35"
+              stroke-linejoin="round"
+            />
+          </svg>
+        </button>
+        <button
+          class="hl-icon-btn"
+          type="button"
+          data-testid="widget-hover-desktop"
+          title="Desktop"
+          aria-label="Desktop"
+          onclick={() => void menuOpenDesktop()}
+        >
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <rect
+              x="1.75"
+              y="2.5"
+              width="12.5"
+              height="8.5"
+              rx="1.25"
+              stroke="currentColor"
+              stroke-width="1.35"
+            />
+            <path
+              d="M5 13.5h6M8 11v2.5"
+              stroke="currentColor"
+              stroke-width="1.35"
+              stroke-linecap="round"
+            />
+          </svg>
+        </button>
+      </div>
+    </div>
+  {/if}
+
+  {#if stack.visible.length > 0 && !hoverOpen}
+    <div
+      class="stack"
+      data-testid="widget-stack"
+      onpointerenter={() => setPointerHold(true)}
+      onpointerleave={() => setPointerHold(false)}
+    >
+      {#each stack.visible as item (item.id)}
+        <div class="frost" data-kind={item.kind}>
+          <NotificationRow
+            type={item.type as NotificationRowType}
+            actor={item.actor}
+            text={item.text}
+            ts={item.ts}
+            onopen={() => void handleOpen(item)}
+            ondismiss={() => handleDismiss(item.id)}
+            onreply={item.kind === 'dm' ? (text) => void replyDm(item, text) : undefined}
+            onreact={item.kind === 'dm' ? (emoji) => void reactDm(item, emoji) : undefined}
+            onholdchange={(h) => setReplyHold(item.id, h)}
+          />
+        </div>
+      {/each}
+    </div>
+  {/if}
+
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <span
+    class="wm"
+    role="button"
+    tabindex="0"
+    aria-label="HQ notifications"
+    aria-haspopup="menu"
+    aria-expanded={contextMenuOpen || pinned || hoverOpen}
+    onmouseenter={openHoverList}
+    onclick={togglePinned}
+    oncontextmenu={handleWordmarkContextMenu}
+    onkeydown={handleWordmarkKeydown}
+  >
+    <!-- Flat monochrome HQ wordmark (src/assets/hq-mark.svg, inlined so it
+         inherits `currentColor` and needs no bundler asset wiring). -->
+    <svg
+      viewBox="0 0 280 161"
+      fill="currentColor"
+      xmlns="http://www.w3.org/2000/svg"
+      role="img"
+      aria-label="HQ"
+    >
+      <path
+        d="M85.7251 3.66162H118.034V154.434H85.7251V89.8176H32.3085V154.434H0V3.66162H32.3085V57.5091H85.7251V3.66162Z"
+      />
+      <path
+        d="M257.169 160.035L241.014 144.096C235.343 147.973 229.096 150.988 222.276 153.142C215.527 155.296 208.419 156.373 200.952 156.373C190.757 156.373 181.172 154.363 172.197 150.342C163.223 146.25 155.325 140.65 148.505 133.542C141.684 126.362 136.335 118.07 132.458 108.664C128.581 99.187 126.642 89.0278 126.642 78.1865C126.642 67.417 128.581 57.3296 132.458 47.9242C136.335 38.4471 141.684 30.1187 148.505 22.939C155.325 15.7593 163.223 10.1592 172.197 6.1386C181.172 2.0462 190.757 0 200.952 0C211.219 0 220.84 2.0462 229.814 6.1386C238.789 10.1592 246.686 15.7593 253.507 22.939C260.328 30.1187 265.641 38.4471 269.446 47.9242C273.323 57.3296 275.261 67.417 275.261 78.1865C275.261 86.0123 274.184 93.5151 272.031 100.695C269.948 107.803 267.077 114.444 263.415 120.618L280 137.203L257.169 160.035ZM200.952 124.065C203.896 124.065 206.732 123.741 209.46 123.095C212.26 122.449 214.952 121.552 217.537 120.403L208.491 111.357L231.322 88.5252L239.291 96.4946C240.512 93.6946 241.409 90.7509 241.984 87.6637C242.63 84.5764 242.953 81.4173 242.953 78.1865C242.953 71.8684 241.84 65.9452 239.614 60.4168C237.461 54.8885 234.445 50.0422 230.568 45.878C226.691 41.642 222.204 38.3394 217.106 35.9701C212.08 33.529 206.696 32.3085 200.952 32.3085C195.208 32.3085 189.788 33.529 184.69 35.9701C179.664 38.3394 175.213 41.642 171.336 45.878C167.459 50.0422 164.407 54.8885 162.182 60.4168C160.028 65.9452 158.951 71.8684 158.951 78.1865C158.951 84.5046 160.028 90.4637 162.182 96.0639C164.407 101.592 167.459 106.474 171.336 110.71C175.213 114.875 179.664 118.141 184.69 120.511C189.788 122.88 195.208 124.065 200.952 124.065Z"
+      />
+    </svg>
+    {#if badgeCount > 0}
+      <span class="qd" data-testid="widget-unread-badge">{badgeCount}</span>
+    {/if}
+  </span>
+</div>
+
+<style>
+  /* Per-window body rules — see src/main.ts data-window comment. */
+  :global(html[data-window='widget']),
+  :global(html[data-window='widget'] body) {
+    background: transparent;
+    margin: 0;
+    overflow: hidden;
+  }
+
+  .wg {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    justify-content: flex-end;
+    /* Headroom above/right of the mark for the queued-count superscript. */
+    padding: 10px 10px 0 0;
+    box-sizing: border-box;
+    background: transparent;
+    overflow: hidden;
+    /* Stack/row appearance tokens — light default; dark overrides below. */
+    --row-bg: rgba(250, 250, 252, 0.6);
+    --row-bg-hover: rgba(250, 250, 252, 0.92);
+    --row-border: rgba(255, 255, 255, 0.6);
+    --row-fg: #1d1d1f;
+    --row-muted: rgba(0, 0, 0, 0.45);
+    --row-shadow: 0 8px 22px rgba(20, 22, 40, 0.16);
+    --row-highlight: rgba(255, 255, 255, 0.75);
+    --row-hover-bg: rgba(0, 0, 0, 0.06);
+    --reply-bg: rgba(0, 0, 0, 0.05);
+    --reply-border: rgba(0, 0, 0, 0.14);
+    --qd-fg: #0064d6;
+  }
+
+  /* Notification stack — column of one-line rows ABOVE the wordmark. */
+  .stack {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 6px;
+    margin-bottom: 12px;
+    flex-shrink: 0;
+  }
+
+  /* Frosted glass shell around NotificationRow (mockup .row chrome). */
+  .frost {
+    width: 244px;
+    border-radius: 9px;
+    background: var(--row-bg);
+    -webkit-backdrop-filter: blur(26px) saturate(1.7);
+    backdrop-filter: blur(26px) saturate(1.7);
+    border: 0.5px solid var(--row-border);
+    box-shadow: var(--row-shadow), inset 0 1px 0 var(--row-highlight);
+    animation: widget-slide 0.4s cubic-bezier(0.34, 1.3, 0.64, 1) backwards;
+    box-sizing: border-box;
+    overflow: hidden;
+    /* Bridge NotificationRow's popover tokens onto the widget scheme. */
+    --popover-text: var(--row-fg);
+    --popover-text-muted: var(--row-muted);
+    --popover-action-hover: var(--row-hover-bg);
+    --popover-unread: var(--qd-fg, #0064d6);
+    --popover-surface: var(--reply-bg);
+    --popover-divider: var(--reply-border);
+  }
+
+  /* Hover recent-notification list — single frosted panel above the mark. */
+  .hover-list {
+    width: 264px;
+    border-radius: 12px;
+    padding: 6px 6px 4px;
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    background: var(--row-bg);
+    -webkit-backdrop-filter: blur(30px) saturate(1.8);
+    backdrop-filter: blur(30px) saturate(1.8);
+    border: 0.5px solid var(--row-border);
+    box-shadow: var(--row-shadow), inset 0 1px 0 var(--row-highlight);
+    margin-bottom: 12px;
+    transform-origin: bottom right;
+    animation: widget-bloom 0.32s cubic-bezier(0.34, 1.3, 0.64, 1) backwards;
+    box-sizing: border-box;
+    flex-shrink: 0;
+    /* Bridge NotificationRow's popover tokens (same as .frost). */
+    --popover-text: var(--row-fg);
+    --popover-text-muted: var(--row-muted);
+    --popover-action-hover: var(--row-hover-bg);
+    --popover-unread: var(--qd-fg, #0064d6);
+    --popover-surface: var(--reply-bg);
+    --popover-divider: var(--reply-border);
+  }
+
+  .hl-body {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-height: 0;
+  }
+
+  /* Icon toolbar: Inbox (two-pane) + Desktop — titles provide hover labels. */
+  .hl-footer {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 2px;
+    margin-top: 4px;
+    padding: 4px 2px 2px;
+    border-top: 0.5px solid var(--row-border);
+    flex-shrink: 0;
+  }
+
+  .hl-icon-btn {
+    appearance: none;
+    border: 0;
+    background: transparent;
+    color: var(--row-muted);
+    width: 28px;
+    height: 28px;
+    border-radius: 7px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    padding: 0;
+  }
+
+  .hl-icon-btn:hover,
+  .hl-icon-btn:focus-visible {
+    background: var(--row-hover-bg);
+    color: var(--row-fg);
+    outline: none;
+  }
+
+  /* Wordmark right-click menu — same frost chrome as the mini inbox. */
+  .ctx-menu {
+    width: 200px;
+    border-radius: 12px;
+    padding: 4px;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    background: var(--row-bg);
+    -webkit-backdrop-filter: blur(30px) saturate(1.8);
+    backdrop-filter: blur(30px) saturate(1.8);
+    border: 0.5px solid var(--row-border);
+    box-shadow: var(--row-shadow), inset 0 1px 0 var(--row-highlight);
+    margin-bottom: 12px;
+    transform-origin: bottom right;
+    animation: widget-bloom 0.28s cubic-bezier(0.34, 1.3, 0.64, 1) backwards;
+    box-sizing: border-box;
+    flex-shrink: 0;
+  }
+
+  .ctx-item {
+    appearance: none;
+    border: 0;
+    background: transparent;
+    color: var(--row-fg);
+    font: inherit;
+    font-size: 12.5px;
+    font-weight: 500;
+    text-align: left;
+    padding: 8px 12px;
+    border-radius: 8px;
+    cursor: pointer;
+    line-height: 1.25;
+  }
+
+  .ctx-item:hover,
+  .ctx-item:focus-visible {
+    background: var(--row-hover-bg);
+    outline: none;
+  }
+
+  .hl-sep {
+    padding: 7px 11px 3px;
+    font-size: 9px;
+    font-weight: 650;
+    letter-spacing: 0.9px;
+    text-transform: uppercase;
+    color: var(--row-muted);
+  }
+
+  /* Empty pinned list — one row of muted copy so a wordmark click always shows feedback. */
+  .hl-empty {
+    min-height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 11px;
+    font-size: 12px;
+    color: var(--row-muted);
+    box-sizing: border-box;
+  }
+
+  .hl-row :global(.nr) {
+    min-height: 28px;
+    font-size: 12px;
+    border-radius: 7px;
+    background: transparent;
+    color: var(--row-fg);
+    width: 100%;
+    box-sizing: border-box;
+  }
+
+  .hl-row :global(.nr:not(.nr-message):hover),
+  .hl-row :global(.nr:not(.nr-message):focus-within),
+  .hl-row :global(.nr-message.nr-expanded) {
+    background: var(--row-hover-bg);
+  }
+
+  .hl-row :global(.nr-open),
+  .hl-row :global(.nr-dismiss),
+  .hl-row :global(.nr-react) {
+    background: var(--row-hover-bg);
+    color: var(--row-fg);
+  }
+
+  .hl-row :global(.nr-reply) {
+    background: var(--reply-bg);
+    border-color: var(--reply-border);
+    color: var(--row-fg);
+  }
+
+  /* Row sits transparent on the frost; hover uses row-bg-hover. */
+  .frost :global(.nr) {
+    background: transparent;
+    color: var(--row-fg);
+    width: 100%;
+    box-sizing: border-box;
+  }
+
+  .frost :global(.nr-message.nr-expanded) {
+    background: var(--row-bg-hover);
+  }
+
+  .frost :global(.nr:not(.nr-message):hover),
+  .frost :global(.nr:not(.nr-message):focus-within) {
+    background: var(--row-bg-hover);
+  }
+
+  .frost :global(.nr-open),
+  .frost :global(.nr-dismiss),
+  .frost :global(.nr-react) {
+    background: var(--row-hover-bg);
+    color: var(--row-fg);
+  }
+
+  .frost :global(.nr-reply) {
+    background: var(--reply-bg);
+    border-color: var(--reply-border);
+    color: var(--row-fg);
+  }
+
+  @keyframes widget-slide {
+    from {
+      transform: translateY(10px);
+      opacity: 0;
+    }
+    to {
+      transform: translateY(0);
+      opacity: 1;
+    }
+  }
+
+  @keyframes widget-bloom {
+    from {
+      transform: scale(0.92) translateY(8px);
+      opacity: 0;
+    }
+    to {
+      transform: scale(1) translateY(0);
+      opacity: 1;
+    }
+  }
+
+  .wm {
+    position: relative;
+    display: inline-flex;
+    color: var(--wm-fg);
+    opacity: 0.38;
+    transition: opacity 0.18s ease;
+    flex-shrink: 0;
+    cursor: pointer;
+    /* Light default; dark overrides below. */
+    --wm-fg: #1d1d1f;
+    --wm-shadow: drop-shadow(0 1px 4px rgba(255, 255, 255, 0.5));
+    --qd-fg: #0064d6;
+  }
+
+  .wg:hover .wm {
+    opacity: 1;
+  }
+
+  .wm :global(svg) {
+    width: 56px;
+    height: auto;
+    display: block;
+    filter: var(--wm-shadow);
+  }
+
+  /* Plain superscript — no background, border, or border-radius. */
+  .qd {
+    position: absolute;
+    top: -9px;
+    right: -9px;
+    font-size: 10px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+    color: var(--qd-fg);
+    pointer-events: none;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .wg {
+      --row-bg: rgba(30, 30, 34, 0.55);
+      --row-bg-hover: rgba(38, 38, 42, 0.85);
+      --row-border: rgba(255, 255, 255, 0.14);
+      --row-fg: #fff;
+      --row-muted: rgba(255, 255, 255, 0.48);
+      --row-shadow: 0 8px 22px rgba(0, 0, 0, 0.32);
+      --row-highlight: rgba(255, 255, 255, 0.16);
+      --row-hover-bg: rgba(255, 255, 255, 0.1);
+      --reply-bg: rgba(255, 255, 255, 0.08);
+      --reply-border: rgba(255, 255, 255, 0.18);
+      --qd-fg: #6cb2ff;
+    }
+
+    .wm {
+      --wm-fg: #fff;
+      --wm-shadow: drop-shadow(0 1px 6px rgba(0, 0, 0, 0.45));
+      --qd-fg: #6cb2ff;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .frost {
+      animation: none;
+    }
+
+    .hover-list,
+    .ctx-menu {
+      animation: none;
+    }
+  }
+</style>

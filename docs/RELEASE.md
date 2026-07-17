@@ -2,7 +2,7 @@
 
 This repository releases the unified `HQ` Tauri app from `apps/sync`.
 
-The release workflow builds a signed and notarized macOS universal app/DMG, signed Windows MSI and NSIS installers for x64 and arm64, Tauri updater artifacts, `latest.json`, and a GitHub Release. The updater manifest currently points at GitHub Release asset URLs in this repository. Moving the endpoint to `downloads.getindigo.ai` is a separate follow-up; this workflow does not change `tauri.conf.json` or the platform overlays.
+The release workflow builds a signed and notarized macOS universal app/DMG, signed Windows MSI and NSIS installers for x64 and ARM64, Tauri updater artifacts, `latest.json`, and a GitHub Release. The ARM64 bundle uses a checksum-verified native ARM64 Node runtime for the Recall SEA launcher; Recall's separate x64 agent runs through Windows on ARM's x64 emulation. The updater manifest currently points at GitHub Release asset URLs in this repository. Moving the endpoint to `downloads.getindigo.ai` is a separate follow-up; this workflow does not change `tauri.conf.json` or the platform overlays.
 
 ## Cut a Release
 

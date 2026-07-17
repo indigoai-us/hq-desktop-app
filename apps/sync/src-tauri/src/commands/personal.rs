@@ -357,6 +357,10 @@ pub struct PersonEntityCache {
 }
 
 fn cache_path() -> Result<PathBuf, String> {
+    #[cfg(test)]
+    if let Some(home) = std::env::var_os("HQ_TEST_HOME") {
+        return Ok(PathBuf::from(home).join(".hq").join("person-entity.json"));
+    }
     let home = dirs::home_dir().ok_or("cannot resolve home directory")?;
     Ok(home.join(".hq").join("person-entity.json"))
 }
@@ -1107,7 +1111,7 @@ pub(crate) async fn ensure_impl<R: tauri::Runtime + 'static>(
 mod tests {
     use super::*;
     use crate::events::EVENT_SYNC_PERSONAL_SKIPPED_OWNERSHIP_MISMATCH;
-    use crate::util::test_support::ENV_MUTEX;
+    use crate::util::test_support::{scoped_home, ENV_MUTEX};
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
         Mutex,
@@ -1222,14 +1226,13 @@ mod tests {
         let tmp_home = TempDir::new().unwrap();
         let result = {
             let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-            std::env::set_var("HOME", tmp_home.path());
+            let _home = scoped_home(tmp_home.path());
 
             let app = tauri::test::mock_app();
             let handle = app.handle().clone();
             let vault = VaultClient::new(&server.uri(), "tok");
             let r = resolve_or_provision(&handle, &vault).await;
 
-            std::env::remove_var("HOME");
             r
         };
 
@@ -1264,14 +1267,13 @@ mod tests {
         let tmp_home = TempDir::new().unwrap();
         let result = {
             let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-            std::env::set_var("HOME", tmp_home.path());
+            let _home = scoped_home(tmp_home.path());
 
             let app = tauri::test::mock_app();
             let handle = app.handle().clone();
             let vault = VaultClient::new(&server.uri(), "tok");
             let r = resolve_or_provision(&handle, &vault).await;
 
-            std::env::remove_var("HOME");
             r
         };
 
@@ -1353,7 +1355,7 @@ mod tests {
         let result = {
             let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
             std::env::set_var("HQ_STATE_DIR", tmp_state.path());
-            std::env::set_var("HOME", tmp_home.path());
+            let _home = scoped_home(tmp_home.path());
 
             let app = tauri::test::mock_app();
             let handle = app.handle().clone();
@@ -1367,7 +1369,6 @@ mod tests {
             .await;
 
             std::env::remove_var("HQ_STATE_DIR");
-            std::env::remove_var("HOME");
             r
         };
 
@@ -1417,7 +1418,7 @@ mod tests {
         let result = {
             let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
             std::env::set_var("HQ_STATE_DIR", tmp_state.path());
-            std::env::set_var("HOME", tmp_home.path());
+            let _home = scoped_home(tmp_home.path());
 
             let app = tauri::test::mock_app();
             let handle = app.handle().clone();
@@ -1431,7 +1432,6 @@ mod tests {
             .await;
 
             std::env::remove_var("HQ_STATE_DIR");
-            std::env::remove_var("HOME");
             r
         };
 
@@ -2160,7 +2160,7 @@ mod tests {
         {
             let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
             std::env::set_var("HQ_STATE_DIR", tmp_state.path());
-            std::env::set_var("HOME", tmp_home.path());
+            let _home = scoped_home(tmp_home.path());
 
             let app = tauri::test::mock_app();
             let handle = app.handle().clone();
@@ -2196,7 +2196,6 @@ mod tests {
             .unwrap();
 
             std::env::remove_var("HQ_STATE_DIR");
-            std::env::remove_var("HOME");
         }
 
         let reqs = server.received_requests().await.unwrap();
@@ -2251,7 +2250,7 @@ mod tests {
         {
             let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
             std::env::set_var("HQ_STATE_DIR", tmp_state.path());
-            std::env::set_var("HOME", tmp_home.path());
+            let _home = scoped_home(tmp_home.path());
 
             let app = tauri::test::mock_app();
             let handle = app.handle().clone();
@@ -2266,7 +2265,6 @@ mod tests {
             .unwrap();
 
             std::env::remove_var("HQ_STATE_DIR");
-            std::env::remove_var("HOME");
         }
 
         let reqs = server.received_requests().await.unwrap();
@@ -2322,7 +2320,7 @@ mod tests {
         let result = {
             let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
             std::env::set_var("HQ_STATE_DIR", tmp_state.path());
-            std::env::set_var("HOME", tmp_home.path());
+            let _home = scoped_home(tmp_home.path());
 
             let app = tauri::test::mock_app();
             let handle = app.handle().clone();
@@ -2343,7 +2341,6 @@ mod tests {
             .await;
 
             std::env::remove_var("HQ_STATE_DIR");
-            std::env::remove_var("HOME");
             r
         };
 
@@ -2421,7 +2418,7 @@ mod tests {
         let result = {
             let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
             std::env::set_var("HQ_STATE_DIR", tmp_state.path());
-            std::env::set_var("HOME", tmp_home.path());
+            let _home = scoped_home(tmp_home.path());
             write_cognito_tokens(tmp_home.path(), "sub-123", "Test User");
 
             let app = tauri::test::mock_app();
@@ -2436,7 +2433,6 @@ mod tests {
             .await;
 
             std::env::remove_var("HQ_STATE_DIR");
-            std::env::remove_var("HOME");
             r
         };
 
@@ -2501,7 +2497,7 @@ mod tests {
         let result = {
             let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
             std::env::set_var("HQ_STATE_DIR", tmp_state.path());
-            std::env::set_var("HOME", tmp_home.path());
+            let _home = scoped_home(tmp_home.path());
             write_cognito_tokens(tmp_home.path(), "sub-123", "Test User");
 
             let app = tauri::test::mock_app();
@@ -2522,7 +2518,6 @@ mod tests {
             .await;
 
             std::env::remove_var("HQ_STATE_DIR");
-            std::env::remove_var("HOME");
             r
         };
 
@@ -2580,7 +2575,7 @@ mod tests {
         let result = {
             let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
             std::env::set_var("HQ_STATE_DIR", tmp_state.path());
-            std::env::set_var("HOME", tmp_home.path());
+            let _home = scoped_home(tmp_home.path());
             write_cognito_tokens(tmp_home.path(), "sub-123", "Test User");
 
             let app = tauri::test::mock_app();
@@ -2595,7 +2590,6 @@ mod tests {
             .await;
 
             std::env::remove_var("HQ_STATE_DIR");
-            std::env::remove_var("HOME");
             r
         };
 

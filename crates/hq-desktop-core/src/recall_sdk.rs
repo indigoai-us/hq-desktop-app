@@ -421,7 +421,9 @@ mod tests {
         // windows-msvc triples and carries a .exe suffix. A macOS-only triple
         // list (the fork's bug) means find_sdk_binary never resolves it.
         if cfg!(target_os = "windows") {
-            assert!(SDK_ARCH_TRIPLES.iter().all(|t| t.contains("pc-windows-msvc")));
+            assert!(SDK_ARCH_TRIPLES
+                .iter()
+                .all(|t| t.contains("pc-windows-msvc")));
             assert_eq!(std::env::consts::EXE_SUFFIX, ".exe");
         } else {
             assert!(SDK_ARCH_TRIPLES.iter().all(|t| t.contains("apple-darwin")));

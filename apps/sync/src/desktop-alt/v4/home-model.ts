@@ -134,16 +134,46 @@ export function getDriftCardModel(core: HomeCoreState, restoring = false): HomeC
   };
 }
 
-/** NEEDS YOU queue count — pending/errored conflicts + the drift card. */
+/** NEEDS YOU queue count — pending invites + conflicts + the drift card. */
 export function getNeedsYouCount(
   conflicts: HomeConflict[],
   core: HomeCoreState | null,
   driftDismissed: boolean,
+  pendingInviteCount = 0,
 ): number {
   const conflictCount = conflicts.length;
   const driftCount =
     !driftDismissed && core && core.driftReport && core.driftReport.count > 0 ? 1 : 0;
-  return conflictCount + driftCount;
+  return conflictCount + driftCount + Math.max(0, pendingInviteCount);
+}
+
+/**
+ * Company-invite card for the NEEDS YOU queue.
+ * Primary action is Accept → claim-by-email (no magic-link / Claude handoff).
+ */
+export function getInviteCardModel(
+  workspace: Workspace,
+  accepting = false,
+): HomeCardModel {
+  const inviter =
+    workspace.invitedBy && workspace.invitedBy.includes('@')
+      ? workspace.invitedBy
+      : 'a teammate';
+  const invitedAgo = formatRelativeTime(workspace.invitedAt);
+  const agePart = invitedAgo ? ` · invited ${invitedAgo}` : '';
+  return {
+    title: `Invite — join ${workspace.displayName}`,
+    sub: `from ${inviter}${agePart}`,
+    tone: 'warn',
+    actions: [
+      {
+        id: 'accept-invite',
+        label: accepting ? 'Accepting…' : 'Accept',
+        kind: 'primary',
+        disabled: accepting,
+      },
+    ],
+  };
 }
 
 // ── Meta line under the Home title ──────────────────────────────────────────
