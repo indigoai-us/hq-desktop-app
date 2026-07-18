@@ -94,6 +94,10 @@
   }
 
   .v4-context {
+    display: grid;
+    grid-template-rows: auto auto;
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--v4-row-stack-gap, 3px);
     margin-bottom: 14px;
     padding: 0 8px;
   }
@@ -102,13 +106,14 @@
     display: flex;
     align-items: center;
     gap: 7px;
+    min-width: 0;
   }
 
   .v4-context-title {
     overflow: hidden;
     min-width: 0;
     color: var(--v4-text-1);
-    font-size: var(--text-base);
+    font-size: var(--type-section, var(--text-section, 14px));
     font-weight: 500;
     line-height: 1.3;
     text-overflow: ellipsis;
@@ -139,9 +144,9 @@
   }
 
   .v4-context-meta {
-    margin: 4px 0 0;
+    margin: 0;
     color: var(--v4-text-3);
-    font-size: var(--text-base);
+    font-size: var(--type-secondary, var(--text-xs));
     font-weight: 400;
     line-height: 1.4;
   }
@@ -164,7 +169,7 @@
     background: transparent;
     color: var(--v4-text-2);
     font: inherit;
-    font-size: var(--text-base);
+    font-size: var(--type-body, var(--text-base));
     font-weight: 400;
     line-height: 1;
     text-align: left;
@@ -177,7 +182,7 @@
   }
 
   .v4-row:focus-visible {
-    outline: 2px solid var(--v4-control-border);
+    outline: 2px solid var(--v4-focus-ring, var(--v4-control-border));
     outline-offset: -2px;
     background: var(--v4-active-row);
     color: var(--v4-text-1);
@@ -200,7 +205,7 @@
   .v4-row-note {
     flex: 0 0 auto;
     color: var(--v4-text-3);
-    font-size: var(--text-base);
+    font-size: var(--type-secondary, var(--text-xs));
   }
 
   .v4-spacer {
@@ -209,10 +214,12 @@
   }
 
   .v4-footer {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 2px;
+    display: grid;
+    grid-template-rows: auto auto;
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+    justify-items: start;
+    gap: var(--v4-row-stack-gap, 3px);
     margin: 0 -10px;
     padding: 12px 18px 14px;
     border: none;
@@ -229,13 +236,13 @@
   }
 
   .v4-footer:focus-visible {
-    outline: 2px solid var(--v4-control-border);
+    outline: 2px solid var(--v4-focus-ring, var(--v4-control-border));
     outline-offset: -4px;
   }
 
   .v4-footer-label {
     color: var(--v4-text-2);
-    font-size: var(--text-base);
+    font-size: var(--type-body, var(--text-base));
     font-weight: 400;
     line-height: 1.2;
   }
@@ -244,7 +251,7 @@
     overflow: hidden;
     max-width: 100%;
     color: var(--v4-text-3);
-    font-size: var(--text-base);
+    font-size: var(--type-secondary, var(--text-xs));
     line-height: 1.2;
     text-overflow: ellipsis;
     white-space: nowrap;

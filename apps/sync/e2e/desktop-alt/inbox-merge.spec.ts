@@ -30,7 +30,10 @@ describe('US-006 / US-008: combined Inbox route', () => {
 
     // Combined destination is also named in the route module's DesktopRoute union.
     expect(route).toContain("'inbox'");
-    expect(route).toContain('US-008 merged Messages + Notifications into the single Inbox surface');
+    // Comment is line-wrapped in route.ts — assert the US-008 merge intent
+    // without requiring a single contiguous phrase.
+    expect(route).toContain('US-008 merged');
+    expect(route).toContain('Messages + Notifications into Inbox');
   });
 
   it('legacy messages / notifications → inbox at both resolution sites', () => {

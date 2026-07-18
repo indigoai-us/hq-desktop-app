@@ -1,25 +1,30 @@
 <script lang="ts">
-  // Dedicated Messages window (US-009). A resizable master/detail shell:
+  // Dedicated Messages window (US-009 / DESKTOP-002). A resizable master/detail
+  // shell:
   //
   //   ┌──────────────┬─────────────────────────────┐
-  //   │ segmented    │                             │
-  //   │ rail         │   conversation pane         │
-  //   │ (DMs /       │   (<Conversation/>)         │
-  //   │  Requests /  │                             │
-  //   │  Channels)   │                             │
+  //   │ source-list  │   naked conversation /      │
+  //   │ rail         │   notification canvas       │
+  //   │ (DMs +       │   (Conversation /           │
+  //   │  channels +  │    ShareMainPane /           │
+  //   │  requests +  │    DmRequestCard)            │
+  //   │  shares)     │                             │
   //   └──────────────┴─────────────────────────────┘
   //
-  // Direct Messages, Requests, Channels, threads, reactions, and the "Your
-  // agent" handoff are wired through Tauri commands. This shell owns the data
-  // loading and hands the shared <Conversation/> primitive only presentation
-  // state plus callbacks.
+  // Direct Messages, connection requests, shared HQ paths, channels, threads,
+  // reactions, and the "Your agent" handoff are wired through Tauri commands.
+  // This shell owns the data loading and hands shared primitives presentation
+  // state plus callbacks. DESKTOP-002: no People/Requests tabs — requests and
+  // share notifications are ordinary recency-sorted rail rows; no redundant
+  // "Messages" page title; glass only on the navigation rail.
   //
   // Visuals adopt the desktop "Company OS" design language: the standalone
   // Messages window consumes the SAME token layer as the desktop window via
   // `desktop-alt.css` (which `@import`s the canonical token primitives and adds
-  // the desktop alias layer + 13px type ramp, scoped to `html[data-window='messages']`
-  // alongside `desktop-alt`). Geist Sans is loaded by the shared design system;
-  // keep Geist Mono for data. See DESIGN.md → "Big-window type & chrome".
+  // the desktop alias layer + five-size type ramp, scoped to
+  // `html[data-window='messages']` alongside `desktop-alt`). Geist Sans is
+  // loaded by the shared design system; keep Geist Mono for data.
+  // See DESIGN.md → "Big-window type & chrome".
   import '@fontsource-variable/geist-mono/wght.css';
   import '../../desktop-alt/styles/desktop-alt.css';
   import { invoke } from '@tauri-apps/api/core';
@@ -27,6 +32,7 @@
   import { buildClaudeCodeUrl } from '../../lib/claude-code-link';
   import { hqSkillMarkdownLink } from '../../lib/hq-skill-link';
   import { appendInboundBatch } from '../../lib/dmThread';
+  import { shareTitle } from '../../lib/share-path';
   import Conversation, { type ConversationMessage } from './Conversation.svelte';
   import ComposeMessage, { type ComposeSendResult } from './ComposeMessage.svelte';
   import DmRequestCard from './DmRequestCard.svelte';
@@ -34,6 +40,7 @@
   import CreateChannel from './CreateChannel.svelte';
   import ThreadPanel from './ThreadPanel.svelte';
   import CatchUp, { type CatchUpItem } from './v4/CatchUp.svelte';
+  import ShareMainPane from '../ShareMainPane.svelte';
   import {
     contactPreviewAt,
     contactPreviewText,
@@ -52,6 +59,8 @@
     enrichRequestFromContacts,
     removeRequest,
     requestHasHumanLabel,
+    requestDisplayName,
+    requestInitials,
   } from '../../lib/dmRequests';
   import { humanPersonLabel } from '../../lib/visible-labels';
   import {
@@ -71,6 +80,7 @@
     applySharePreviews,
     buildSharePrompt,
     mergeSharesIntoThread,
+    previewRepresentsShare,
     shareSummary,
     sharesForPeer,
   } from '../../lib/shareTimeline';
@@ -79,10 +89,6 @@
     takePendingConversation,
     type ConversationTarget,
   } from '../../lib/pendingConversation';
-
-  // Channels live ALONGSIDE people now — no separate "Channels" tab. `all` is the
-  // unified rail (channels + DMs interleaved by recency); `people` filters to DMs.
-  type Segment = 'all' | 'people' | 'requests';
 
   // A person the caller can DM (connection or company teammate). Mirrors the
   // Rust `Contact` wire shape (camelCase).
@@ -148,20 +154,18 @@
     nextCursor?: string | null;
   }
 
-  let segment = $state<Segment>('all');
-
   let contacts = $state<Contact[]>([]);
   let loadingContacts = $state(false);
   let contactsError = $state<string | null>(null);
 
-  // Pending incoming connection requests (US-011). The count drives the Requests
-  // segment badge; the list renders one DmRequestCard each. `list_dm_requests`
-  // is the source of truth; `dm:request-new` / `dm:request-update` keep it live.
+  // Pending incoming connection requests (US-011 / DESKTOP-002). Rendered as
+  // ordinary recency-sorted rail rows (not a Requests tab). Selecting a row
+  // opens the shared <DmRequestCard/> in the main pane. `list_dm_requests` is
+  // the source of truth; `dm:request-new` / `dm:request-update` keep it live.
   let requests = $state<DmRequest[]>([]);
   let loadingRequests = $state(false);
   let requestsError = $state<string | null>(null);
-  // Derived count — the segment badge stays in lockstep with the rendered list.
-  let pendingRequests = $derived(requests.length);
+  let selectedRequest = $state<DmRequest | null>(null);
 
   // Channels (US-018). `list_channels` is the source of truth for the rail;
   // `channel:new-message` / `channel:updated` keep it live. `selectedChannel`
@@ -209,10 +213,14 @@
   let sendError = $state<string | null>(null);
 
   // Share history (client-side merge): the peer's share events from the same
-  // notification-history fetch the rail already makes. Rendered as inline
-  // share-card bubbles in the DM thread and as the rail's "Shared a file"
-  // preview when the newest item for a contact is a share.
+  // notification-history fetch the rail already makes. Rendered as:
+  //   - ordinary rail rows that open <ShareMainPane/> (DESKTOP-002),
+  //   - inline share-card bubbles in the DM thread, and
+  //   - the rail's "Shared a file" preview when a contact's newest item is a share.
   let shareHistory = $state<ShareEvent[]>([]);
+  // Selected share notification(s) for the naked payload canvas. Grouped by
+  // issuer so multiple shares from one peer open as one ShareMainPane list.
+  let selectedShareEvents = $state<ShareEvent[]>([]);
 
   const peerShares = $derived.by((): ShareEvent[] => {
     const peer = selected;
@@ -386,7 +394,8 @@
       source: null,
       lastMessageAt: new Date().toISOString(),
     };
-    segment = 'people';
+    selectedRequest = null;
+    selectedShareEvents = [];
     selected = peer;
     threadError = null;
     sendError = null;
@@ -487,10 +496,63 @@
       .map((item, index) => ({ ...item, rank: index + 1 }));
   });
 
-  // The unified rail for the `all` segment: channels + DMs in one recency-sorted
-  // list. Contacts are already recency-sorted with hydrated previews; channels
-  // interleave by their server timestamp when present, else float up when unread.
-  const mergedItems = $derived(mergeConversations(contacts, channels));
+  // DESKTOP-002 unified rail: channels + DMs + connection requests + shared HQ
+  // path notifications in ONE recency-sorted list. No People/Requests tabs.
+  type RailItem =
+    | { kind: 'dm'; key: string; time: number; contact: Contact }
+    | { kind: 'channel'; key: string; time: number; channel: Channel; unread: number }
+    | { kind: 'request'; key: string; time: number; request: DmRequest }
+    | { kind: 'share'; key: string; time: number; share: ShareEvent };
+
+  function parseRailTime(iso: string | null | undefined): number {
+    const t = Date.parse(iso ?? '');
+    return Number.isFinite(t) ? t : 0;
+  }
+
+  const railItems = $derived.by((): RailItem[] => {
+    const items: RailItem[] = [];
+    for (const row of mergeConversations(contacts, channels)) {
+      if (row.contact) {
+        const newestShare = sharesForPeer(shareHistory, row.contact).at(-1);
+        if (newestShare && previewRepresentsShare(row.contact, newestShare)) {
+          continue;
+        }
+        items.push({
+          kind: 'dm',
+          key: row.key,
+          time: row.time,
+          contact: row.contact,
+        });
+      } else if (row.channel) {
+        items.push({
+          kind: 'channel',
+          key: row.key,
+          time: row.time,
+          channel: row.channel,
+          unread: row.unread,
+        });
+      }
+    }
+    for (const request of requests) {
+      items.push({
+        kind: 'request',
+        key: `req:${request.pairKey}`,
+        time: parseRailTime(request.createdAt),
+        request,
+      });
+    }
+    for (const share of shareHistory) {
+      items.push({
+        kind: 'share',
+        key: `share:${share.eventId}`,
+        time: parseRailTime(share.createdAt),
+        share,
+      });
+    }
+    return items.sort(
+      (a, b) => b.time - a.time || a.key.localeCompare(b.key),
+    );
+  });
 
   function handleCatchUpOpen(item: CatchUpItem): void {
     if (item.id.startsWith('ch:')) {
@@ -504,6 +566,73 @@
       const contact = contacts.find((c) => c.personUid === personUid);
       if (contact) void selectContact(contact);
     }
+  }
+
+  function selectRequest(req: DmRequest): void {
+    selected = null;
+    selectedChannel = null;
+    openThread = null;
+    selectedShareEvents = [];
+    selectedRequest = req;
+    messages = [];
+    threadError = null;
+    sendError = null;
+    loadingThread = false;
+  }
+
+  function selectShare(share: ShareEvent): void {
+    selected = null;
+    selectedChannel = null;
+    openThread = null;
+    selectedRequest = null;
+    // Open every share from the same issuer in the payload pane (US-016
+    // grouping) so older shares stay reachable.
+    selectedShareEvents = sharesForPeer(shareHistory, {
+      personUid: share.issuerPersonUid ?? '',
+      email: share.issuerEmail,
+    });
+    if (selectedShareEvents.length === 0) selectedShareEvents = [share];
+    messages = [];
+    threadError = null;
+    sendError = null;
+    loadingThread = false;
+  }
+
+  function shareRowLabel(share: ShareEvent): string {
+    return share.issuerDisplayName?.trim() || share.issuerEmail || 'Shared path';
+  }
+
+  function shareRowSubline(share: ShareEvent): string {
+    return shareSummary(share);
+  }
+
+  function formatShareTime(share: ShareEvent): string | null {
+    const date = new Date(share.createdAt);
+    if (Number.isNaN(date.getTime())) return null;
+    const now = new Date();
+    const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    if (date.getTime() >= startToday) {
+      return date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+    }
+    return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  }
+
+  function formatRequestTime(req: DmRequest): string | null {
+    const date = new Date(req.createdAt);
+    if (Number.isNaN(date.getTime())) return null;
+    const now = new Date();
+    const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    if (date.getTime() >= startToday) {
+      return date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+    }
+    return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  }
+
+  function requestSubline(req: DmRequest): string {
+    const msg = req.message?.trim();
+    if (msg) return msg;
+    if (req.sharedCompany?.trim()) return `Also in ${req.sharedCompany.trim()}`;
+    return 'Wants to connect';
   }
 
   function formatContactTime(c: Contact): string | null {
@@ -792,9 +921,11 @@
 
   function selectChannel(c: Channel): void {
     selectedChannel = c;
-    // The pane switches on which item is active, so opening a channel clears any
-    // selected DM (and vice versa in selectContact).
+    // Opening a channel clears DM / request / share selection so the pane
+    // shows this channel.
     selected = null;
+    selectedRequest = null;
+    selectedShareEvents = [];
     // Switching channels closes any open thread (it belonged to the old channel).
     openThread = null;
     // Opening a channel optimistically clears its rail unread; ChannelView also
@@ -834,12 +965,12 @@
   }
 
   // A request card resolved (Accept / Decline / Block succeeded). Prune it from
-  // the list (the count badge follows via the derived `pendingRequests`). On
-  // Accept, the held first message becomes a live thread — swap to the DMs
-  // segment and open the standard <Conversation> with the requester so the card
-  // is replaced by the thread, satisfying "the held message becomes a thread".
+  // the unified rail. On Accept, the held first message becomes a live thread —
+  // open the standard <Conversation> with the requester so the card is replaced
+  // by the thread.
   function handleRequestResolved(req: DmRequest, action: RequestAction): void {
     requests = removeRequest(requests, req.pairKey);
+    if (selectedRequest?.pairKey === req.pairKey) selectedRequest = null;
     if (action === 'accept') {
       const peer: Contact = {
         personUid: req.fromPersonUid,
@@ -849,7 +980,6 @@
         source: 'request',
         lastMessageAt: req.createdAt,
       };
-      segment = 'people';
       void selectContact(peer);
       // The new connection now appears as a contact — refresh the rail.
       void loadContacts();
@@ -878,6 +1008,8 @@
     if (peer.personUid.startsWith('email:')) {
       selected = peer;
       selectedChannel = null;
+      selectedRequest = null;
+      selectedShareEvents = [];
       openThread = null;
       messages = [];
       threadError = null;
@@ -890,8 +1022,11 @@
 
   async function selectContact(c: Contact): Promise<void> {
     selected = c;
-    // Opening a DM clears the active channel so the pane shows this conversation.
+    // Opening a DM clears channel / request / share selection so the pane shows
+    // this conversation.
     selectedChannel = null;
+    selectedRequest = null;
+    selectedShareEvents = [];
     messages = [];
     threadError = null;
     sendError = null;
@@ -917,6 +1052,8 @@
 
   function openAgentThread(): void {
     selectedChannel = null;
+    selectedRequest = null;
+    selectedShareEvents = [];
     selected = {
       personUid: 'agent:self',
       email: '',
@@ -1080,16 +1217,18 @@
     }).then((fn) => unlisteners.push(fn));
 
     // A brand-new incoming connection request landed (US-011) — append it to the
-    // Requests list (the segment badge follows via the derived count). Dedupe by
+    // Requests list (rail rows follow via railItems). Dedupe by
     // pairKey so a re-emit doesn't double-add.
     listen<DmRequest>('dm:request-new', (e) => {
       requests = addRequest(requests, e.payload);
     }).then((fn) => unlisteners.push(fn));
 
     // A pending request resolved elsewhere (accepted/declined/blocked, or pruned
-    // by the poll diff). Drop it from the Requests list; the count badge follows.
+    // by the poll diff). Drop it from the unified rail; clear the detail pane
+    // when the open request is the one that left the set.
     listen<{ pairKey: string; state?: string }>('dm:request-update', (e) => {
       requests = removeRequest(requests, e.payload.pairKey);
+      if (selectedRequest?.pairKey === e.payload.pairKey) selectedRequest = null;
     }).then((fn) => unlisteners.push(fn));
 
     // A channel the caller is in has new activity (US-018). If it's the open
@@ -1163,62 +1302,29 @@
 </script>
 
 <div class="messages-window">
-  <aside class="rail">
+  <!-- DESKTOP-002: source-list rail (glass) + naked main canvas. Compact header
+       — no redundant "Messages" page title; no People/Requests tabs. -->
+  <aside class="rail" aria-label="Conversations">
     <header class="rail-header" data-tauri-drag-region>
-      <h1>Messages</h1>
-      <button
-        class="new-message-btn"
-        type="button"
-        onclick={openCompose}
-        title="New message"
-        aria-label="New message"
-      >
-        + New message
-      </button>
+      <div class="primary-actions">
+        <button
+          class="new-message-btn"
+          type="button"
+          onclick={openCompose}
+          title="New message"
+          aria-label="New message"
+        >
+          + New message
+        </button>
+      </div>
     </header>
 
-    <!-- Filter row — quiet text tabs. `All` is the unified rail (channels +
-         people interleaved by recency); `People` filters to DMs. There is no
-         separate Channels tab — channels live alongside contacts. Requests is
-         demoted to the row end behind a hairline. Active = brighter text + a
-         colorless underline. -->
-    <nav class="segments" aria-label="Message segments">
-      <button
-        class="seg"
-        class:active={segment === 'all'}
-        type="button"
-        onclick={() => (segment = 'all')}
-      >
-        All
-      </button>
-      <button
-        class="seg"
-        class:active={segment === 'people'}
-        type="button"
-        onclick={() => (segment = 'people')}
-      >
-        People
-      </button>
-      <button
-        class="seg seg-requests"
-        class:active={segment === 'requests'}
-        type="button"
-        onclick={() => (segment = 'requests')}
-      >
-        Requests
-        {#if pendingRequests > 0}
-          <span class="filter-count">{pendingRequests}</span>
-        {/if}
-      </button>
-    </nav>
-
     <div class="rail-body">
-      <!-- One DM row — used by both the unified `all` list and the `people` filter. -->
       {#snippet dmRow(c: Contact)}
         <li>
           <button
             class="contact-row"
-            class:active={selected?.personUid === c.personUid}
+            class:active={selected?.personUid === c.personUid && !selectedRequest && selectedShareEvents.length === 0}
             type="button"
             onclick={() => selectContact(c)}
             title={contactSubline(c) ? `${displayLabel(c)} — ${contactSubline(c)}` : displayLabel(c)}
@@ -1241,9 +1347,6 @@
         </li>
       {/snippet}
 
-      <!-- One channel row — same row vocabulary as a DM (avatar + name + sub),
-           with a '#' glyph, the company NAME (never the cmp_ UID), and an unread
-           badge. Lives inline with people in the unified `all` list. -->
       {#snippet channelRow(ch: Channel)}
         {@const company = companyNameFor(ch, companyLabels)}
         <li>
@@ -1270,7 +1373,61 @@
         </li>
       {/snippet}
 
-      {#if segment === 'all' && catchUpItems.length > 0 && !catchUpDismissed}
+      {#snippet requestRow(req: DmRequest)}
+        <li>
+          <button
+            class="contact-row request-row"
+            class:active={selectedRequest?.pairKey === req.pairKey}
+            type="button"
+            onclick={() => selectRequest(req)}
+            title={`${requestDisplayName(req)} — connection request`}
+            data-testid="request-rail-row"
+          >
+            <span class="contact-avatar request-avatar" aria-hidden="true">{requestInitials(req)}</span>
+            <span class="contact-meta">
+              <span class="contact-top">
+                <span class="contact-name">{requestDisplayName(req)}</span>
+                {#if formatRequestTime(req)}
+                  <time class="contact-time" datetime={req.createdAt}>{formatRequestTime(req)}</time>
+                {/if}
+              </span>
+              <span class="contact-sub">{requestSubline(req)}</span>
+            </span>
+          </button>
+        </li>
+      {/snippet}
+
+      {#snippet shareRow(share: ShareEvent)}
+        {@const firstPath = share.paths[0] ?? ''}
+        <li>
+          <button
+            class="contact-row share-row"
+            class:active={selectedShareEvents.some((e) => e.eventId === share.eventId)}
+            type="button"
+            onclick={() => selectShare(share)}
+            title={firstPath ? `${shareRowLabel(share)} — ${shareTitle(firstPath)}` : shareRowLabel(share)}
+            data-testid="share-rail-row"
+          >
+            <span class="contact-avatar share-avatar" aria-hidden="true">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M9 1.5H4.5A1.5 1.5 0 0 0 3 3v10a1.5 1.5 0 0 0 1.5 1.5h7A1.5 1.5 0 0 0 13 13V5.5L9 1.5Z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" />
+                <path d="M9 1.5V5.5H13" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" />
+              </svg>
+            </span>
+            <span class="contact-meta">
+              <span class="contact-top">
+                <span class="contact-name">{shareRowLabel(share)}</span>
+                {#if formatShareTime(share)}
+                  <time class="contact-time" datetime={share.createdAt}>{formatShareTime(share)}</time>
+                {/if}
+              </span>
+              <span class="contact-sub">{shareRowSubline(share)}</span>
+            </span>
+          </button>
+        </li>
+      {/snippet}
+
+      {#if catchUpItems.length > 0 && !catchUpDismissed}
         <div class="catch-up-host">
           <CatchUp
             items={catchUpItems}
@@ -1280,32 +1437,7 @@
         </div>
       {/if}
 
-      {#if segment === 'requests'}
-        {#if loadingRequests}
-          <p class="rail-status">Loading requests…</p>
-        {:else if requestsError}
-          <div class="rail-status rail-error" role="alert">
-            <p>{requestsError}</p>
-            <button type="button" class="rail-retry" onclick={() => loadRequests()}>Retry</button>
-          </div>
-        {:else if requests.length === 0}
-          <div class="segment-empty">
-            <p class="segment-empty-title">No pending requests</p>
-            <p class="segment-empty-sub">
-              Connection requests will appear here once someone outside your team
-              asks to message you.
-            </p>
-          </div>
-        {:else}
-          <ul class="request-list">
-            {#each requests as req (req.pairKey)}
-              <li>
-                <DmRequestCard request={req} onresolved={handleRequestResolved} />
-              </li>
-            {/each}
-          </ul>
-        {/if}
-      {:else if loadingContacts || (segment === 'all' && loadingChannels)}
+      {#if loadingContacts || loadingChannels}
         <p class="rail-status">Loading conversations…</p>
       {:else if contactsError}
         <div class="rail-status rail-error" role="alert">
@@ -1313,6 +1445,12 @@
           <button type="button" class="rail-retry" onclick={() => loadContacts()}>Retry</button>
         </div>
       {:else}
+        {#if requestsError}
+          <div class="rail-status rail-error" role="alert">
+            <p>{requestsError}</p>
+            <button type="button" class="rail-retry" onclick={() => loadRequests()}>Retry</button>
+          </div>
+        {/if}
         <div class="rail-actions">
           <button type="button" class="rail-action" onclick={() => openCreateChannel(null)}>
             + New channel
@@ -1336,35 +1474,47 @@
               </span>
             </button>
           </li>
-          {#if segment === 'all'}
-            {#each mergedItems as item (item.key)}
-              {#if item.contact}
-                {@render dmRow(item.contact)}
-              {:else if item.channel}
-                {@render channelRow(item.channel)}
-              {/if}
-            {/each}
-          {:else}
-            {#each contacts as c (c.personUid)}
-              {@render dmRow(c)}
-            {/each}
-          {/if}
+          {#each railItems as item (item.key)}
+            {#if item.kind === 'dm'}
+              {@render dmRow(item.contact)}
+            {:else if item.kind === 'channel'}
+              {@render channelRow(item.channel)}
+            {:else if item.kind === 'request'}
+              {@render requestRow(item.request)}
+            {:else if item.kind === 'share'}
+              {@render shareRow(item.share)}
+            {/if}
+          {/each}
         </ul>
-        {#if (segment === 'all' ? mergedItems.length : contacts.length) === 0}
+        {#if railItems.length === 0}
           <p class="rail-status">No conversations yet.</p>
         {/if}
       {/if}
     </div>
   </aside>
 
-  <section class="pane">
-    {#if segment === 'requests'}
-      <div class="pane-empty">
-        <p>
-          Review connection requests on the left — accept, decline, or block each
-          one.
-        </p>
+  <!-- Naked main canvas: spacing + hairlines only — no liquid-glass chrome. -->
+  <section class="pane" data-testid="messages-main-pane">
+    {#if selectedRequest}
+      <header class="pane-header">
+        <div class="pane-title-stack">
+          <h2>Connection request</h2>
+          <span class="pane-sub">{requestDisplayName(selectedRequest)}</span>
+        </div>
+      </header>
+      <div class="pane-request" data-testid="request-detail-pane">
+        <DmRequestCard request={selectedRequest} onresolved={handleRequestResolved} />
       </div>
+    {:else if selectedShareEvents.length > 0}
+      <header class="pane-header">
+        <div class="pane-title-stack">
+          <h2>Shared path</h2>
+          <span class="pane-sub">
+            {selectedShareEvents[0]?.issuerDisplayName ?? 'Shared with you'}
+          </span>
+        </div>
+      </header>
+      <ShareMainPane events={selectedShareEvents} />
     {:else if selectedChannel}
       <ChannelView
         channel={selectedChannel}
@@ -1379,11 +1529,13 @@
         <p>Select a conversation to start messaging.</p>
       </div>
     {:else}
-      <header class="pane-header" data-tauri-drag-region>
-        <h2>{displayLabel(selected)}</h2>
-        {#if selected.email}
-          <span class="pane-sub">{selected.email}</span>
-        {/if}
+      <header class="pane-header">
+        <div class="pane-title-stack">
+          <h2>{displayLabel(selected)}</h2>
+          {#if selected.email}
+            <span class="pane-sub">{selected.email}</span>
+          {/if}
+        </div>
       </header>
       <Conversation
         messages={displayMessages}
@@ -1439,27 +1591,26 @@
 </div>
 
 <style>
-  /* The Messages window adopts the desktop "Company OS" language: monochrome
-     glass surfaces layered by alpha, ONE 13px body size with monospace
-     ALL-CAPS micro-labels, hierarchy by weight + the grey/white split, hairline
-     borders, square-ish corners, and the Indigo accent reserved for the
-     active/selected row + focus ring only. Tokens come from the shared desktop
-     alias layer (desktop-alt.css, scoped to data-window='messages'). */
+  /* DESKTOP-002 / DESKTOP-011: monochrome surfaces, five-size type ramp,
+     hierarchy by weight + surface split, hairline borders. Liquid glass /
+     source-list treatment ONLY on the navigation rail; the main thread and
+     notification canvas stay naked (spacing + hairlines, no rounded outer
+     chrome). Tokens from desktop-alt.css (data-window='messages'). */
 
   .messages-window {
     display: flex;
     width: 100vw;
     height: 100vh;
     box-sizing: border-box;
-    background: var(--bg-gradient);
+    background: var(--v4-ground, var(--bg-gradient));
     color: var(--fg);
     font-family: var(--font-sans);
-    font-size: var(--text-base);
+    font-size: var(--type-body, var(--text-base));
     letter-spacing: -0.006em;
     overflow: hidden;
   }
 
-  /* ── Left rail ──────────────────────────────────────────────────────── */
+  /* ── Left rail (source-list / liquid-glass control layer) ────────────── */
 
   .rail {
     width: 300px;
@@ -1471,22 +1622,27 @@
     min-height: 0;
   }
 
+  /* Compact header: primary actions only — no redundant "Messages" title. */
   .rail-header {
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    justify-content: flex-end;
     gap: var(--space-2);
-    padding: var(--space-4) var(--space-4) var(--space-2);
+    padding: var(--space-3) var(--space-4) var(--space-2);
     flex-shrink: 0;
   }
 
-  .rail-header h1 {
-    margin: 0;
-    font-family: var(--font-display);
-    font-size: var(--text-base);
-    font-weight: 600;
-    letter-spacing: -0.01em;
-    color: var(--fg);
+  .rail-header .primary-actions {
+    display: flex;
+    flex: 0 0 auto;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    margin-left: auto;
+  }
+
+  .rail-header .new-message-btn {
+    flex: 0 0 auto;
   }
 
   .new-message-btn {
@@ -1495,7 +1651,7 @@
     background: var(--surface-raise);
     color: var(--fg);
     font-family: var(--font-sans);
-    font-size: var(--text-sm);
+    font-size: var(--type-secondary, var(--text-sm));
     font-weight: 500;
     padding: var(--space-1) var(--space-2);
     border-radius: var(--radius-sm);
@@ -1511,84 +1667,6 @@
   .new-message-btn:focus-visible {
     outline: 2px solid var(--border-strong);
     outline-offset: 1px;
-  }
-
-  /* Quiet text-tab filter row — one horizontal line of minimal labels.
-     Active = brighter text (--fg) + weight 500 + a thin colorless underline
-     drawn as an inset box-shadow (adds no height, never shifts the baseline).
-     Three grays + a neutral count chip. No pills, no track, no purple dot.
-     Uses only tokens resolvable in this cascade (popover.css + desktop-alt.css). */
-  .segments {
-    display: flex;
-    align-items: center;
-    gap: var(--space-5);
-    padding: 0 var(--space-4) var(--space-2);
-    flex-shrink: 0;
-  }
-
-  .seg {
-    position: relative;
-    border: none;
-    background: transparent;
-    padding: var(--space-1) 0;
-    color: var(--muted);
-    font-family: var(--font-sans);
-    font-size: var(--text-micro);
-    font-weight: 400;
-    letter-spacing: 0.04em;
-    line-height: 1.2;
-    cursor: pointer;
-    white-space: nowrap;
-    transition: color 0.12s cubic-bezier(0.2, 0.7, 0.2, 1);
-  }
-
-  .seg:hover {
-    color: var(--fg);
-  }
-
-  /* Active cue: brighter text + a 1.5px underline as an inset shadow. Colorless
-     on purpose — maximum calm; this is the kill of the old violet --accent dot. */
-  .seg.active {
-    color: var(--fg);
-    font-weight: 500;
-    box-shadow: inset 0 -1.5px 0 currentColor;
-  }
-
-  .seg:focus-visible {
-    outline: 2px solid var(--border-strong);
-    outline-offset: 2px;
-    border-radius: 2px;
-  }
-
-  /* Requests demoted to the row end, separated by a hairline so the All/People/
-     Channels triad reads as the primary scope switch and Requests as a quiet
-     secondary 'incoming' affordance. Behavior is identical to the old 4th tab. */
-  .seg-requests {
-    margin-left: auto;
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-2);
-    padding-left: var(--space-4);
-    border-left: 1px solid var(--border);
-  }
-
-  /* Neutral count chip — state, not decoration. Tabular monospace, no color. */
-  .filter-count {
-    min-width: 16px;
-    height: 15px;
-    padding: 0 var(--space-1);
-    box-sizing: border-box;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: var(--radius-sm);
-    font-family: var(--font-mono);
-    font-size: var(--text-micro);
-    font-weight: 600;
-    line-height: 1;
-    font-variant-numeric: tabular-nums;
-    background: var(--surface-raise);
-    color: var(--muted-2);
   }
 
   .rail-body {
@@ -1728,6 +1806,7 @@
     background: transparent;
     color: inherit;
     font-family: var(--font-sans);
+    font-size: var(--text-base);
     cursor: pointer;
     transition: background-color 0.12s cubic-bezier(0.2, 0.7, 0.2, 1);
   }
@@ -1785,9 +1864,13 @@
     color: var(--fg);
   }
 
+  /* DESKTOP-011: primary title row + secondary metadata in separate grid slots
+     with an explicit 3px gap (never stacked via margin alone). */
   .contact-meta {
-    display: flex;
-    flex-direction: column;
+    display: grid;
+    grid-template-rows: auto auto;
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--v4-row-stack-gap, 3px);
     min-width: 0;
     flex: 1;
   }
@@ -1802,7 +1885,7 @@
   .contact-name {
     flex: 1;
     min-width: 0;
-    font-size: var(--text-base);
+    font-size: var(--type-body, var(--text-base));
     font-weight: 600;
     color: var(--fg);
     overflow: hidden;
@@ -1812,49 +1895,32 @@
 
   .contact-time {
     flex-shrink: 0;
-    font-size: var(--text-micro);
+    font-size: var(--type-metadata, var(--text-micro));
     color: var(--muted);
     font-variant-numeric: tabular-nums;
   }
 
   .contact-sub {
     font-family: var(--font-sans);
-    font-size: var(--text-micro);
+    font-size: var(--type-secondary, var(--text-xs));
     color: var(--muted);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .request-list {
-    list-style: none;
-    margin: 0;
-    padding: var(--space-1) 0 var(--space-2);
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2);
+  .request-avatar,
+  .share-avatar {
+    color: var(--muted-2);
   }
 
-  .segment-empty {
-    padding: var(--space-5) var(--space-3);
-    text-align: center;
+  .share-avatar {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
   }
 
-  .segment-empty-title {
-    margin: 0 0 var(--space-1);
-    font-size: var(--text-base);
-    font-weight: 600;
-    color: var(--fg);
-  }
-
-  .segment-empty-sub {
-    margin: 0;
-    font-size: var(--text-base);
-    line-height: 1.5;
-    color: var(--muted);
-  }
-
-  /* ── Right conversation pane ────────────────────────────────────────── */
+  /* ── Right conversation / notification canvas (naked) ───────────────── */
 
   .pane {
     flex: 1;
@@ -1862,6 +1928,9 @@
     flex-direction: column;
     min-width: 0;
     min-height: 0;
+    /* Naked canvas — no glass, no raised outer shell. */
+    background: transparent;
+    border-radius: 0;
   }
 
   .pane-empty {
@@ -1874,25 +1943,35 @@
 
   .pane-empty p {
     margin: 0;
-    font-size: var(--text-base);
+    font-size: var(--type-body, var(--text-base));
     color: var(--muted);
     text-align: center;
   }
 
   .pane-header {
     display: flex;
-    align-items: baseline;
+    flex: 0 0 auto;
+    align-items: flex-start;
     gap: var(--space-3);
     padding: var(--space-4) var(--space-5) var(--space-3);
     border-bottom: 1px solid var(--border);
-    background: var(--surface-panel);
+    background: transparent;
     flex-shrink: 0;
+  }
+
+  .pane-title-stack {
+    display: grid;
+    grid-template-rows: auto auto;
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--v4-row-stack-gap, 3px);
+    min-width: 0;
+    flex: 1;
   }
 
   .pane-header h2 {
     margin: 0;
     font-family: var(--font-display);
-    font-size: var(--text-base);
+    font-size: var(--type-section, var(--text-section, 14px));
     font-weight: 600;
     letter-spacing: -0.01em;
     color: var(--fg);
@@ -1902,27 +1981,38 @@
   }
 
   .pane-sub {
-    margin-left: auto;
     font-family: var(--font-mono);
-    font-size: var(--text-micro);
+    font-size: var(--type-metadata, var(--text-micro));
     color: var(--muted);
     white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
-  /* ── Thread panel column (US-022) ──────────────────────────────────────── */
-  /* Wide (desktop-alt) default: a fixed third column to the right of the
-     conversation pane. */
+  .pane-request {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: var(--space-4) var(--space-5);
+  }
+
+  /* ── Thread panel column (US-022 / DESKTOP-011) ────────────────────────── */
+  /* Wide default: fixed third column. Narrow collapses the list-detail third
+     pane to an overlay so the conversation primary actions stay mounted. */
   .thread-column {
     width: 340px;
     flex-shrink: 0;
     display: flex;
     flex-direction: column;
     min-height: 0;
+    border-left: 1px solid var(--border);
+    background: var(--surface-rail);
   }
 
   /* Narrow: overlay the conversation pane instead of squeezing a third column
      into a small window. The panel slides over from the right and covers the
-     pane; the close/back affordance returns to the main conversation. */
+     pane; the close/back affordance returns to the main conversation. Primary
+     conversation chrome stays visible under the overlay close control. */
   @media (max-width: 720px) {
     .thread-column {
       position: absolute;
@@ -1936,6 +2026,19 @@
 
     .messages-window {
       position: relative;
+    }
+
+    .rail {
+      flex-basis: min(260px, 42%);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .contact-row,
+    .new-message-btn,
+    .rail-action,
+    .rail-retry {
+      transition: none;
     }
   }
 </style>

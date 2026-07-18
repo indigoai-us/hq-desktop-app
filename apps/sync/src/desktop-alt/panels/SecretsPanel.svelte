@@ -131,9 +131,9 @@
   }
 </script>
 
-<section class="secrets-panel" aria-labelledby="secrets-panel-title">
+<section class="secrets-panel" aria-labelledby="secrets-panel-title" data-testid="company-secrets-panel">
   <header class="secrets-header">
-    <div class="secrets-title">
+    <div class="secrets-title title-stack">
       <h2 id="secrets-panel-title">Secrets</h2>
       <span>{loading ? 'Loading secrets' : `${totalCount} keys`}</span>
     </div>
@@ -143,7 +143,7 @@
     Read-only metadata. Values are never sent to the client — use /hq-secrets to fetch a value.
   </p>
 
-  <div class="secrets-toolbar" aria-label="Secrets controls">
+  <div class="secrets-toolbar detail-primary-actions primary-actions" aria-label="Secrets controls">
     <button
       class="toolbar-button"
       type="button"
@@ -216,6 +216,7 @@
     display: grid;
     gap: 12px;
     min-width: 0;
+    background: transparent;
   }
 
   .secrets-header,
@@ -231,12 +232,18 @@
     min-width: 0;
   }
 
+  .title-stack {
+    display: grid;
+    gap: var(--v4-row-stack-gap, 3px);
+    min-width: 0;
+  }
+
   .secrets-title h2 {
     margin: 0;
     color: var(--v4-text-1);
-    font-size: var(--text-base);
+    font-size: var(--type-section, 14px);
     font-weight: 600;
-    line-height: 22px;
+    line-height: 1.2;
   }
 
   .secrets-title span,
@@ -244,13 +251,12 @@
   .empty-state,
   .doc-note {
     color: var(--v4-text-3);
-    font-size: var(--text-base);
-    line-height: 16px;
+    font-size: var(--type-secondary, 11px);
+    line-height: 1.3;
   }
 
   .secrets-title span {
     display: block;
-    margin-top: 2px;
   }
 
   .doc-note {
@@ -273,10 +279,16 @@
     background: transparent;
     color: var(--v4-text-1);
     font: inherit;
-    font-size: var(--text-base);
+    font-size: var(--type-body, 12px);
     font-weight: 600;
     white-space: nowrap;
     cursor: pointer;
+  }
+
+  .toolbar-button:focus-visible,
+  .secrets-error button:focus-visible {
+    outline: 2px solid var(--v4-text-1);
+    outline-offset: 2px;
   }
 
   .toolbar-button:disabled {
@@ -341,9 +353,8 @@
   .secrets-card {
     min-width: 0;
     border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-card);
-    background: var(--v4-raised);
-    box-shadow: var(--v4-shadow-card);
+    border-radius: 0;
+    background: transparent;
     overflow: hidden;
   }
 
@@ -416,6 +427,13 @@
   @media (prefers-reduced-motion: reduce) {
     .secrets-skeleton span {
       animation: none;
+    }
+  }
+
+  @media (prefers-reduced-transparency: reduce) {
+    .secrets-panel,
+    .secrets-card {
+      background: var(--v4-ground);
     }
   }
 </style>

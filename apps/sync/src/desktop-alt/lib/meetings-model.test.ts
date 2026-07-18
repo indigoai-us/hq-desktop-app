@@ -8,6 +8,8 @@ import {
   calendarEventIdsForBotLookup,
   companyLabel,
   dayLabel,
+  durationLabel,
+  durationMinutes,
   groupByDay,
   isAuthError,
   isPlausibleMeetingUrl,
@@ -161,6 +163,55 @@ describe('meetings-model', () => {
     );
 
     expect(rows).toEqual([]);
+  });
+
+  it('formats plausible durations and suppresses all-day / multi-day spans', () => {
+    const base = {
+      id: 'dur',
+      status: 'confirmed',
+      start: { dateTime: '2026-05-27T17:00:00.000Z' },
+    } satisfies Partial<MeetingEvent>;
+
+    expect(
+      durationLabel({
+        ...base,
+        id: 'half-hour',
+        end: { dateTime: '2026-05-27T17:30:00.000Z' },
+      } as MeetingEvent),
+    ).toBe('30m');
+    expect(
+      durationMinutes({
+        ...base,
+        id: 'half-hour',
+        end: { dateTime: '2026-05-27T17:30:00.000Z' },
+      } as MeetingEvent),
+    ).toBe(30);
+
+    // All-day (1440m) and multi-day (21600m) must never render as raw minutes.
+    expect(
+      durationLabel({
+        ...base,
+        id: 'all-day',
+        end: { dateTime: '2026-05-28T17:00:00.000Z' },
+      } as MeetingEvent),
+    ).toBe('duration unavailable');
+    expect(
+      durationLabel({
+        ...base,
+        id: 'multi-day',
+        end: { dateTime: '2026-06-11T17:00:00.000Z' },
+      } as MeetingEvent),
+    ).toBe('duration unavailable');
+
+    // Missing / non-positive → omit (null), not a fabricated zero.
+    expect(
+      durationLabel({
+        id: 'open',
+        status: 'confirmed',
+        start: { dateTime: '2026-05-27T17:00:00.000Z' },
+        end: { dateTime: '2026-05-27T17:00:00.000Z' },
+      }),
+    ).toBeNull();
   });
 
   it('seeds active Live now rows from cached scheduled recordings', () => {

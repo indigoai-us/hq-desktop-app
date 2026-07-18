@@ -109,10 +109,15 @@ describe('US-009: V4Sidebar source contracts', () => {
     // pointerleave) so a mouse sweep down the list doesn't mount every
     // control and fan out one vault round-trip per row; keyboard focus
     // reveals immediately.
-    expect(sidebarSrc).toContain('onpointerenter={() => row.cloudActivated && queueReveal(row.slug)}');
+    // DESKTOP-001: suppress Shared/All while company children are expanded.
+    expect(sidebarSrc).toContain(
+      'onpointerenter={() => row.cloudActivated && !row.expanded && queueReveal(row.slug)}',
+    );
     expect(sidebarSrc).toContain('onpointerleave={cancelPendingReveal}');
     expect(sidebarSrc).toContain('REVEAL_INTENT_MS');
-    expect(sidebarSrc).toContain('onfocusin={() => row.cloudActivated && reveal(row.slug)}');
+    expect(sidebarSrc).toContain(
+      'onfocusin={() => row.cloudActivated && !row.expanded && reveal(row.slug)}',
+    );
     // Wrapper is a div — buttons must not nest.
     expect(sidebarSrc).toMatch(/<div\s+class="v4-company-item"/);
     expect(sidebarSrc).toContain('class="v4-row v4-company-row"');

@@ -78,16 +78,19 @@ describe('US-007: Company page shell — V4 sections + crumb (sections moved to 
     const page = normalize(companyPage);
     expect(page).toContain('<h1 id="company-page-title" class="visually-hidden">{company.displayName}</h1>');
     expect(page).toContain('<header class="company-actions-row">');
-    // Company actions are wired to the HQ web console, in-desktop Settings route,
-    // and the Claude Code /plan workflow.
+    // Company actions: Invite + New project stay on the toolbar (DESKTOP-003);
+    // Settings / operational controls live under sidebar More. Console settings
+    // helper remains for the company settings URL path.
     expect(page).toContain("import { open as openExternal } from '@tauri-apps/plugin-shell';");
     expect(page).toContain('<button type="button" onclick={openInvite}>Invite</button>');
-    expect(page).toContain('<button type="button" onclick={openCompanySettings}>Settings</button>');
+    expect(page).not.toContain(
+      '<button type="button" onclick={openCompanySettings}>Settings</button>',
+    );
     expect(page).toContain('onclick={() => void startNewProject()}');
 
-    // The sections live in the V4 secondary sidebar — Overview first/default;
-    // company-detail-desktop-ia promotes Skills/Workers/Knowledge/Team and
-    // removes Accounts/Tasks/Library. Role is still surfaced in header meta.
+    // DESKTOP-001: company sections expand inline under the selected company;
+    // there is no permanent company secondary sidebar. Full section list remains
+    // route-supported (deep links / More / palette).
     expect(COMPANY_SECTIONS.map((section) => section.id)).toEqual([
       'overview',
       'goals',
@@ -99,11 +102,12 @@ describe('US-007: Company page shell — V4 sections + crumb (sections moved to 
       'activity',
       'deployments',
       'secrets',
+      'settings',
     ]);
-    const secondary = getDesktopSecondarySidebar({ kind: 'company', slug: 'acme' }, companies);
-    expect(secondary?.header).toBe('Acme Corp');
-    expect(secondary?.meta).toContain('Admin');
-    expect(secondary?.activeId).toBe('overview');
+    expect(getDesktopSecondarySidebar({ kind: 'company', slug: 'acme' }, companies)).toBeNull();
+    expect(getDesktopActiveCompany({ kind: 'company', slug: 'acme' }, companies)?.role).toBe(
+      'admin',
+    );
   });
 
   it('swaps the selected panel when a section is selected from the secondary sidebar', () => {
@@ -124,11 +128,15 @@ describe('US-007: Company page shell — V4 sections + crumb (sections moved to 
     // projects/in-flight via CompanyBoardPanel). The old flat vault BoardPanel
     // stays retired.
     expect(page).not.toContain('<BoardPanel slug={company.slug} />');
-    expect(page).toContain("import SecretsPanel from '../panels/SecretsPanel.svelte'");
-    expect(page).toContain('<CompanyBoardPanel slug={company.slug} {cloudBacked} />');
-    expect(page).toContain('<ActivityPanel slug={company.slug} {cloudBacked} />');
-    expect(page).toContain('<DeploymentsPanel slug={company.slug} {cloudBacked} />');
-    expect(page).toContain('<SecretsPanel slug={company.slug} {cloudBacked} />');
+    // DESKTOP-010: Activity / Deployments / Secrets / Settings live under More
+    // via CompanyOperationsPanel (child panels still preserve backend wiring).
+    expect(page).toContain("import CompanyOperationsPanel from '../panels/CompanyOperationsPanel.svelte'");
+    expect(page).toContain('<CompanyBoardPanel');
+    expect(page).toContain('slug={company.slug}');
+    expect(page).toContain('{cloudBacked}');
+    expect(page).toContain('isCompanyOperationsTab(tab)');
+    expect(page).toContain('<CompanyOperationsPanel');
+    expect(page).toContain('destination={operationsDestination}');
   });
 
   it('wires company metadata plus workspace role propagation', () => {

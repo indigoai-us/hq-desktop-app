@@ -20,9 +20,10 @@
     buildConnectedCalendarRows,
     activeRecordingsFromScheduledBots,
     companyLabel,
-    durationMinutes,
+    durationLabel,
     eventEnd,
     eventStart,
+    eventMeetingUrl,
     extractedSignalLabels,
     groupByDay,
     isPlausibleMeetingUrl,
@@ -33,6 +34,7 @@
     totalSignalCounts,
     type MeetingEvent,
   } from '../lib/meetings-model';
+  import '../v4/tokens.css';
 
   // Store-backed data. The singleton (started at app launch in
   // DesktopApp.onMount) loads once + polls every 30s, so this page is a thin
@@ -95,6 +97,67 @@
   const signalMeetingCount = $derived(
     upcomingEvents.filter((event) => extractedSignalLabels(event).length > 0).length,
   );
+
+  /**
+   * Compact meeting-bot health from real scheduled-bot statuses only.
+   * Calm when empty/waiting; explicit when a bot carries an error message.
+   */
+  const botHealth = $derived.by(() => {
+    let scheduled = 0;
+    let inCall = 0;
+    let joining = 0;
+    let processing = 0;
+    let done = 0;
+    let errored = 0;
+    for (const bot of scheduledBots) {
+      const status = (bot.status ?? '').toLowerCase();
+      if (bot.errorMessage) {
+        errored += 1;
+        continue;
+      }
+      if (status === 'recording' || status === 'in_call' || status === 'in-call') {
+        inCall += 1;
+      } else if (status === 'joining') {
+        joining += 1;
+      } else if (status === 'processing') {
+        processing += 1;
+      } else if (status === 'completed') {
+        done += 1;
+      } else if (status === 'scheduled') {
+        scheduled += 1;
+      } else {
+        scheduled += 1;
+      }
+    }
+    return {
+      total: scheduledBots.length,
+      scheduled,
+      inCall,
+      joining,
+      processing,
+      done,
+      errored,
+    };
+  });
+
+  const botHealthLabel = $derived.by(() => {
+    if (botHealth.total === 0) return 'No bots scheduled';
+    const parts: string[] = [];
+    if (botHealth.inCall > 0) parts.push(`${botHealth.inCall} in call`);
+    if (botHealth.joining > 0) parts.push(`${botHealth.joining} joining`);
+    if (botHealth.scheduled > 0) parts.push(`${botHealth.scheduled} ready`);
+    if (botHealth.processing > 0) parts.push(`${botHealth.processing} processing`);
+    if (botHealth.done > 0) parts.push(`${botHealth.done} done`);
+    if (botHealth.errored > 0) parts.push(`${botHealth.errored} need attention`);
+    return parts.length > 0 ? parts.join(' · ') : `${botHealth.total} bots`;
+  });
+
+  const toolbarMeta = $derived.by(() => {
+    const days = dayGroups.length;
+    const dayPart = `${days} day${days === 1 ? '' : 's'}`;
+    const meetingPart = `${upcomingEvents.length} upcoming`;
+    return `${meetingPart} · ${dayPart} · all companies`;
+  });
 
   // Transient action feedback. The store owns the invoke + decides the copy
   // (returns a ToastDescriptor next to the call that produced it); this page
@@ -168,6 +231,12 @@
     void openExternal('https://calendar.google.com');
   }
 
+  function joinUpNext(): void {
+    if (!upNext) return;
+    const url = eventMeetingUrl(upNext);
+    if (url) void openExternal(url);
+  }
+
   onMount(() => {
     invoke<boolean>('meetings_feature_enabled')
       .then((enabled) => {
@@ -193,7 +262,8 @@
   </div>
 {/if}
 
-<div class="meetings" class:hidden-by-gate={meetingsFeatureEnabled === false} aria-label="Meetings">
+<!-- DESKTOP meetings native: compact toolbar, Live now → Up next → bot health → agenda. -->
+<div class="meetings" class:hidden-by-gate={meetingsFeatureEnabled === false} aria-label="Meetings" data-testid="desktop-alt-meetings">
   {#snippet iconCalendar()}
     <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
       <rect x="3" y="4" width="18" height="18" rx="2" />
@@ -209,15 +279,14 @@
     </svg>
   {/snippet}
 
-  <header class="page-header">
+  <header class="page-header meetings-toolbar">
     <div class="ph-titles">
       <h1>Meetings</h1>
-      <div class="subtitle">
-        {upcomingEvents.length} upcoming across {dayGroups.length} day{dayGroups.length === 1 ? '' : 's'} · all companies
-      </div>
+      <div class="subtitle">{toolbarMeta}</div>
       {#if fetchError}
-        <div class="page-error" role="status">
-          <span>{fetchError}</span>
+        <div class="page-error" role="status" data-testid="meetings-refresh-error">
+          <span class="error-pill" title={fetchError}>Refresh issue</span>
+          <span class="error-copy">{fetchError}</span>
           {#if refreshBlocked}
             <button type="button" class="report-link" onclick={onReportProblem} disabled={reporting}>
               {reporting ? 'Reporting…' : 'Report a problem'}
@@ -226,7 +295,7 @@
         </div>
       {/if}
     </div>
-    <div class="actions">
+    <div class="actions detail-primary-actions">
       <button type="button" class="btn subtle" onclick={openCalendar}>
         <span class="icon">{@render iconCalendar()}</span>
         Open calendar
@@ -286,58 +355,63 @@
       </button>
     </div>
 
-    <div class="three-col">
-      <LiveNowCard
-        meeting={liveMeeting}
-        memberships={$recordingMemberships}
-        onstart={startRecording}
-        onstop={stopRecording}
-        oncompany={setRecordingCompany}
-      />
+    <!-- 1. Live now — true live monitor (rounded only while active). -->
+    <LiveNowCard
+      meeting={liveMeeting}
+      memberships={$recordingMemberships}
+      onstart={startRecording}
+      onstop={stopRecording}
+      oncompany={setRecordingCompany}
+    />
 
-      <div class="card">
-        <div class="card-header">
-          <h3>Up next</h3>
-          <span>{upNext ? timeLabel(upNext) : ''}</span>
-        </div>
-        <div class="card-body">
-          {#if upNext}
-            {@const dur = durationMinutes(upNext)}
-            <div class="un-name">{upNext.summary ?? '(no title)'}</div>
-            <div class="un-meta">
-              {companyLabel(upNext, companyNamesByUid)}{#if dur} · {dur}m{/if}
-            </div>
-          {:else}
-            <div class="card-empty">Nothing scheduled next.</div>
-          {/if}
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="card-header">
-          <h3>Signal pool</h3>
-          <span>extracted</span>
-        </div>
-        <div class="card-body">
-          <div class="sp-stats">
-            <div class="sp-stat">
-              <span class="sp-num">{signalTotals.actions}</span>
-              <span class="sp-lbl">Actions</span>
-            </div>
-            <div class="sp-stat">
-              <span class="sp-num">{signalTotals.decisions}</span>
-              <span class="sp-lbl">Decisions</span>
-            </div>
-            <div class="sp-stat">
-              <span class="sp-num">{signalTotals.risks}</span>
-              <span class="sp-lbl">Risks</span>
-            </div>
+    <!-- 2. Up next — compact strip, not a summary card. -->
+    <section class="next-strip" aria-label="Up next" data-testid="meetings-up-next">
+      <div class="next-time">{upNext ? timeLabel(upNext) : '—'}</div>
+      <div class="next-copy">
+        {#if upNext}
+          {@const dur = durationLabel(upNext)}
+          <div class="next-title">{upNext.summary ?? '(no title)'}</div>
+          <div class="next-meta">
+            Next · {companyLabel(upNext, companyNamesByUid)}{#if dur} · {dur}{/if}
           </div>
-          <div class="sp-sub">from {signalMeetingCount} meeting{signalMeetingCount === 1 ? '' : 's'}</div>
-        </div>
+        {:else}
+          <div class="next-title">Nothing scheduled next</div>
+          <div class="next-meta">Waiting for the next calendar event</div>
+        {/if}
       </div>
-    </div>
+      {#if upNext && eventMeetingUrl(upNext)}
+        <button type="button" class="btn subtle next-join" onclick={joinUpNext}>Join</button>
+      {/if}
+    </section>
 
+    <!-- 3. Meeting-bot health + calendar sync (discrete status, not dashboard cards). -->
+    <section class="health-strip" aria-label="Meeting bot status" data-testid="meetings-bot-health">
+      <div class="health-item">
+        <span class="health-label">Bots</span>
+        <span class="health-value" class:health-error={botHealth.errored > 0}>{botHealthLabel}</span>
+      </div>
+      <div class="health-item">
+        <span class="health-label">Calendars</span>
+        <span class="health-value">
+          {#if membershipsError}
+            <span class="health-error-text">{membershipsError}</span>
+          {:else if connectedRows.length === 0}
+            {accounts.length === 0 ? 'None connected' : 'No enabled calendars'}
+          {:else}
+            {connectedRows.length} connected
+          {/if}
+        </span>
+      </div>
+      <div class="health-item">
+        <span class="health-label">Signals</span>
+        <span class="health-value">
+          {signalTotals.actions}a · {signalTotals.decisions}d · {signalTotals.risks}r
+          <span class="health-sub">from {signalMeetingCount} meeting{signalMeetingCount === 1 ? '' : 's'}</span>
+        </span>
+      </div>
+    </section>
+
+    <!-- 4. Upcoming agenda — naked hairline rows, primary surface. -->
     <MeetingsAgenda
       groups={dayGroups}
       {upNext}
@@ -353,14 +427,15 @@
       onOpenExternal={openExternal}
     />
 
-    <div class="section two-col">
-      <div class="card">
-        <div class="card-header">
-          <h3>Connected calendars</h3>
+    <!-- Secondary: connected calendars + recent signals as hairline sections. -->
+    <div class="section secondary-grid">
+      <section class="secondary-section" aria-labelledby="connected-calendars-title">
+        <div class="section-head">
+          <h3 id="connected-calendars-title">Connected calendars</h3>
           <span>{connectedRows.length}</span>
         </div>
         {#if membershipsError}
-          <p class="card-error">{membershipsError}</p>
+          <p class="section-error">{membershipsError}</p>
         {/if}
         <div class="sync-list">
           {#each connectedRows as row (row.key)}
@@ -374,41 +449,37 @@
             </div>
           {:else}
             {#if accounts.length === 0}
-              <div class="card-empty no-accounts">
+              <div class="section-empty no-accounts">
                 <div class="na-title">No calendars connected yet</div>
                 <p class="na-copy">Connect a Google Calendar in HQ Console to start capturing meetings here.</p>
                 <button type="button" class="btn" onclick={() => void openExternal('https://hq.computer/integrations')}>Open HQ Console Integrations</button>
               </div>
             {:else}
-              <div class="card-empty">No connected calendars in the cached snapshot.</div>
+              <div class="section-empty">No connected calendars in the cached snapshot.</div>
             {/if}
           {/each}
         </div>
-      </div>
+      </section>
 
-      <div class="card">
-        <div class="card-header">
-          <h3>Recently synced</h3>
+      <section class="secondary-section" aria-labelledby="recently-synced-title">
+        <div class="section-head">
+          <h3 id="recently-synced-title">Recently synced</h3>
           <span>{recentlySynced.length}</span>
         </div>
-        <div class="card-body">
+        <div class="recent-list">
           {#if recentlySynced.length > 0}
-            <div class="timeline">
-              {#each recentlySynced as event (event.id)}
-                {@const labels = extractedSignalLabels(event)}
-                <div class="tl-row blue">
-                  <div class="tl-copy">
-                    <div class="what">{event.summary ?? '(no title)'}</div>
-                    <div class="who">{labels.join(' / ')}</div>
-                  </div>
-                </div>
-              {/each}
-            </div>
+            {#each recentlySynced as event (event.id)}
+              {@const labels = extractedSignalLabels(event)}
+              <div class="recent-row">
+                <div class="what">{event.summary ?? '(no title)'}</div>
+                <div class="who">{labels.join(' / ')}</div>
+              </div>
+            {/each}
           {:else}
-            <div class="card-empty">Extracted meeting signals will appear after sync.</div>
+            <div class="section-empty">Extracted meeting signals will appear after sync.</div>
           {/if}
         </div>
-      </div>
+      </section>
     </div>
   </div>
 </div>
@@ -416,74 +487,170 @@
 <style>
   .meetings {
     min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0;
     font-family: var(--font-sans);
+    background: transparent;
   }
   .meetings.hidden-by-gate { display: none; }
   .meetings-feature-hidden {
-    padding: 14px 16px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-card);
-    background: var(--v4-raised);
-    box-shadow: var(--v4-shadow-card);
+    padding: 12px 0;
+    border-bottom: 1px solid var(--v4-rowline);
     color: var(--v4-text-3);
-    font-size: var(--text-base);
+    font-size: var(--type-body, var(--text-base));
     line-height: 18px;
   }
 
-  .page-header {
+  /* Compact toolbar — no oversized title block. */
+  .page-header,
+  .meetings-toolbar {
     display: flex;
     align-items: flex-start;
     justify-content: space-between;
-    gap: 16px;
+    gap: 12px;
+    margin-bottom: 0;
   }
-  .ph-titles { min-width: 0; }
-  .subtitle { margin-top: 4px; color: var(--v4-text-3); font-size: var(--text-base); line-height: 18px; }
+  .ph-titles {
+    min-width: 0;
+    display: grid;
+    grid-template-rows: auto auto;
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--v4-row-stack-gap, 3px);
+  }
+  .ph-titles h1 {
+    margin: 0;
+    color: var(--v4-text-1);
+    font-family: var(--font-display, var(--font-sans));
+    font-size: var(--type-detail, 18px);
+    font-weight: 600;
+    line-height: 1.2;
+    letter-spacing: -0.01em;
+  }
+  .subtitle {
+    margin: 0;
+    color: var(--v4-text-3);
+    font-size: var(--type-secondary, 11px);
+    line-height: 1.4;
+  }
   .page-error {
-    display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
-    margin-top: 6px; color: var(--v4-text-2); font-size: var(--text-base); line-height: 18px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-top: 2px;
+    color: var(--v4-text-2);
+    font-size: var(--type-secondary, 11px);
+    line-height: 16px;
+  }
+  .error-pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 1px 7px;
+    border: 1px solid var(--v4-control-border);
+    border-radius: var(--v4-radius-pill);
+    color: var(--v4-warn);
+    font-size: var(--type-metadata, 10px);
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .error-copy {
+    min-width: 0;
+    color: var(--v4-text-2);
   }
   .report-link {
-    padding: 0; border: 0; background: transparent; color: var(--v4-text-1);
-    font: inherit; font-size: var(--text-base); line-height: 18px; text-decoration: underline;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--v4-text-1);
+    font: inherit;
+    font-size: var(--type-secondary, 11px);
+    line-height: 16px;
+    text-decoration: underline;
     cursor: pointer;
   }
   .report-link:hover:not(:disabled) { color: var(--v4-text-2); }
+  .report-link:focus-visible {
+    outline: 2px solid var(--v4-text-1);
+    outline-offset: 2px;
+  }
   .report-link:disabled { opacity: 0.55; cursor: default; }
-  .actions { display: flex; flex-shrink: 0; align-items: center; gap: 8px; }
+
+  .actions,
+  .detail-primary-actions {
+    display: flex;
+    flex: 0 0 auto;
+    flex-shrink: 0;
+    align-items: center;
+    gap: 8px;
+  }
 
   .toast {
-    margin: 12px 0 0; padding: 8px 12px; border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-field); background: var(--v4-raised);
-    color: var(--v4-ok); font-size: var(--text-base); line-height: 18px;
+    margin: 10px 0 0;
+    padding: 7px 10px;
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-field);
+    background: var(--v4-raised);
+    color: var(--v4-ok);
+    font-size: var(--type-body, 12px);
+    line-height: 18px;
   }
-  .toast-warn {
-    color: var(--v4-warn);
-  }
+  .toast-warn { color: var(--v4-warn); }
 
   .btn {
-    display: inline-flex; align-items: center; gap: 6px;
-    padding: 5px 10px; border: 1px solid transparent; border-radius: var(--v4-radius-button);
-    background: var(--v4-primary-bg); color: var(--v4-primary-fg); font: inherit; font-size: var(--text-base);
-    white-space: nowrap; cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex: 0 0 auto;
+    padding: 5px 10px;
+    border: 1px solid transparent;
+    border-radius: var(--v4-radius-button);
+    background: var(--v4-primary-bg);
+    color: var(--v4-primary-fg);
+    font: inherit;
+    font-size: var(--type-body, 12px);
+    white-space: nowrap;
+    cursor: pointer;
     transition: background 140ms cubic-bezier(.2,.7,.2,1), border-color 140ms cubic-bezier(.2,.7,.2,1);
   }
   .btn:hover:not(:disabled) { border-color: transparent; background: var(--v4-primary-bg); }
+  .btn:focus-visible {
+    outline: 2px solid var(--v4-text-1);
+    outline-offset: 2px;
+  }
   .btn:disabled { opacity: 0.5; cursor: default; }
   .btn.subtle {
     border-color: var(--v4-control-border);
     background: var(--v4-secondary-bg);
     color: var(--v4-secondary-fg);
   }
-  .btn.subtle:hover:not(:disabled) { background: var(--v4-active-row); color: var(--v4-text-1); }
-  .btn .icon { display: flex; align-items: center; justify-content: center; width: 14px; height: 14px; }
+  .btn.subtle:hover:not(:disabled) {
+    background: var(--v4-active-row);
+    color: var(--v4-text-1);
+  }
+  .btn .icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
+  }
 
-  .content { display: flex; flex-direction: column; gap: var(--v4-space-5); }
+  .content {
+    display: flex;
+    flex-direction: column;
+    gap: var(--v4-space-4, 16px);
+    margin-top: var(--v4-space-4, 16px);
+    background: transparent;
+  }
 
   .url-invite-bar {
-    display: flex; align-items: center; gap: 8px;
-    padding: 10px 12px; border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-card); background: var(--v4-raised);
-    box-shadow: var(--v4-shadow-card);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 0 10px;
+    border-bottom: 1px solid var(--v4-rowline);
+    background: transparent;
   }
   .url-input {
     flex: 1 1 auto; min-width: 0;
@@ -504,73 +671,270 @@
   .url-invite-company:disabled { opacity: 0.55; cursor: default; }
   .url-invite-btn { flex: 0 0 auto; }
 
-  .three-col { display: grid; grid-template-columns: 1.6fr 1fr 1fr; gap: 14px; align-items: start; }
-
-  .card {
-    min-width: 0;
-    overflow: hidden;
+  /* Up next — discrete strip (not a raised card grid cell). */
+  .next-strip {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 12px;
+    min-height: 48px;
+    padding: 8px 10px;
     border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-card);
+    border-radius: var(--v4-radius-field);
     background: var(--v4-raised);
-    box-shadow: var(--v4-shadow-card);
   }
-  .card-header {
-    display: flex; align-items: baseline; justify-content: space-between;
-    gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--v4-hairline);
-    background: var(--v4-inset);
+  .next-time {
+    min-width: 58px;
+    padding-right: 10px;
+    border-right: 1px solid var(--v4-rowline);
+    color: var(--v4-text-1);
+    font-family: var(--font-mono);
+    font-size: var(--type-metadata, 10px);
+    white-space: nowrap;
   }
-  .card-header h3 { margin: 0; color: var(--v4-text-3); font-size: var(--text-base); font-weight: 600; line-height: 18px; }
-  .card-header > span { flex: 0 0 auto; color: var(--v4-text-3); font-size: var(--text-base); line-height: 18px; }
-  .card-body { padding: 14px 16px; }
-  .card-empty { padding: 14px 16px; color: var(--v4-text-3); font-size: var(--text-base); line-height: 18px; }
-  .card-error { margin: 0; padding: 10px 16px 0; color: var(--v4-error); font-size: var(--text-base); line-height: 18px; }
+  .next-copy {
+    min-width: 0;
+    display: grid;
+    gap: var(--v4-row-stack-gap, 3px);
+  }
+  .next-title {
+    overflow: hidden;
+    color: var(--v4-text-1);
+    font-size: var(--type-body, 12px);
+    font-weight: 600;
+    line-height: 16px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .next-meta {
+    overflow: hidden;
+    color: var(--v4-text-3);
+    font-size: var(--type-metadata, 10px);
+    line-height: 14px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .next-join { flex: 0 0 auto; }
 
-  .no-accounts { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
-  .na-title { color: var(--v4-text-1); font-size: var(--text-base); font-weight: 600; line-height: 18px; }
-  .na-copy { margin: 0; color: var(--v4-text-3); font-size: var(--text-base); line-height: 18px; }
+  /* Bot / calendar health — discrete status payload strip. */
+  .health-strip {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px 16px;
+    padding: 8px 0;
+    border-top: 1px solid var(--v4-rowline);
+    border-bottom: 1px solid var(--v4-rowline);
+    border-radius: 0;
+    background: transparent;
+  }
+  .health-item {
+    min-width: 0;
+    display: grid;
+    gap: var(--v4-row-stack-gap, 3px);
+  }
+  .health-label {
+    color: var(--v4-text-3);
+    font-size: var(--type-metadata, 10px);
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+  .health-value {
+    color: var(--v4-text-2);
+    font-size: var(--type-secondary, 11px);
+    line-height: 15px;
+  }
+  .health-value.health-error,
+  .health-error-text {
+    color: var(--v4-error);
+  }
+  .health-sub {
+    display: block;
+    margin-top: 1px;
+    color: var(--v4-text-3);
+    font-size: var(--type-metadata, 10px);
+  }
 
-  .un-name { overflow: hidden; color: var(--v4-text-1); font-size: var(--text-base); font-weight: 600; line-height: 20px; text-overflow: ellipsis; white-space: nowrap; }
-  .un-meta { margin-top: 4px; color: var(--v4-text-3); font-size: var(--text-base); line-height: 18px; }
-
-  .sp-stats { display: flex; gap: 24px; }
-  .sp-stat { display: flex; flex-direction: column; gap: 2px; }
-  .sp-num { color: var(--v4-text-1); font-family: var(--font-mono); font-size: var(--text-base); font-weight: 600; line-height: 26px; }
-  .sp-lbl { color: var(--v4-text-3); font-size: var(--text-micro); font-weight: 600; line-height: 14px; text-transform: uppercase; }
-  .sp-sub { margin-top: 12px; color: var(--v4-text-3); font-size: var(--text-base); line-height: 18px; }
-
-  .section { min-width: 0; }
-  .two-col { display: grid; grid-template-columns: 1.4fr 1fr; gap: 14px; align-items: start; }
+  /* Secondary sections — naked, hairline only (no rounded outer cards). */
+  .secondary-grid {
+    display: grid;
+    grid-template-columns: 1.4fr 1fr;
+    gap: 20px;
+    align-items: start;
+  }
+  .secondary-section {
+    min-width: 0;
+    border-radius: 0;
+    background: transparent;
+  }
+  .section-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 0 0 8px;
+    border-bottom: 1px solid var(--v4-rowline);
+  }
+  .section-head h3 {
+    margin: 0;
+    color: var(--v4-text-3);
+    font-size: var(--type-metadata, 10px);
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    line-height: 14px;
+    text-transform: uppercase;
+  }
+  .section-head > span {
+    color: var(--v4-text-3);
+    font-size: var(--type-metadata, 10px);
+    line-height: 14px;
+  }
+  .section-error {
+    margin: 8px 0 0;
+    color: var(--v4-error);
+    font-size: var(--type-secondary, 11px);
+    line-height: 16px;
+  }
+  .section-empty {
+    padding: 12px 0;
+    color: var(--v4-text-3);
+    font-size: var(--type-body, 12px);
+    line-height: 18px;
+  }
+  .no-accounts {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+  .na-title {
+    color: var(--v4-text-1);
+    font-size: var(--type-body, 12px);
+    font-weight: 600;
+    line-height: 18px;
+  }
+  .na-copy {
+    margin: 0;
+    color: var(--v4-text-3);
+    font-size: var(--type-secondary, 11px);
+    line-height: 16px;
+  }
 
   .sync-list { display: flex; flex-direction: column; }
   .sync-source {
-    display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; align-items: center;
-    gap: 14px; padding: 11px 16px; border-top: 1px solid var(--v4-rowline);
+    display: grid;
+    grid-template-columns: 22px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--v4-rowline);
+    border-radius: 0;
     transition: background 140ms cubic-bezier(.2,.7,.2,1);
   }
-  .sync-source:first-child { border-top: none; }
+  .sync-source:last-child { border-bottom: none; }
   .sync-source:hover { background: var(--v4-active-row); }
   .icon-wrap {
-    display: flex; align-items: center; justify-content: center; width: 22px; height: 22px;
-    border: 1px solid var(--v4-control-border); border-radius: var(--v4-radius-button); color: var(--v4-text-3);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    border: 1px solid var(--v4-control-border);
+    border-radius: var(--v4-radius-button);
+    color: var(--v4-text-3);
   }
-  .ss-copy { min-width: 0; }
-  .ss-copy strong { display: block; overflow: hidden; color: var(--v4-text-1); font-size: var(--text-base); font-weight: 600; line-height: 18px; text-overflow: ellipsis; white-space: nowrap; }
-  .ss-copy .sub { display: block; overflow: hidden; color: var(--v4-text-3); font-size: var(--text-base); line-height: 16px; text-overflow: ellipsis; white-space: nowrap; }
+  .ss-copy { min-width: 0; display: grid; gap: var(--v4-row-stack-gap, 3px); }
+  .ss-copy strong {
+    display: block;
+    overflow: hidden;
+    color: var(--v4-text-1);
+    font-size: var(--type-body, 12px);
+    font-weight: 600;
+    line-height: 16px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .ss-copy .sub {
+    display: block;
+    overflow: hidden;
+    color: var(--v4-text-3);
+    font-size: var(--type-secondary, 11px);
+    line-height: 14px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   .status-pill {
-    max-width: 110px; overflow: hidden; padding: 2px 8px; border: 1px solid var(--v4-control-border);
-    border-radius: var(--v4-radius-pill); color: var(--v4-text-2); font-size: var(--text-base); font-weight: 600; line-height: 16px;
-    text-overflow: ellipsis; white-space: nowrap;
+    max-width: 110px;
+    overflow: hidden;
+    padding: 2px 8px;
+    border: 1px solid var(--v4-control-border);
+    border-radius: var(--v4-radius-pill);
+    color: var(--v4-text-2);
+    font-size: var(--type-metadata, 10px);
+    font-weight: 600;
+    line-height: 14px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
-  .timeline { position: relative; padding-left: 18px; }
-  .timeline::before { content: ''; position: absolute; left: 4px; top: 4px; bottom: 4px; width: 1px; background: var(--v4-rowline); }
-  .tl-row { position: relative; padding: 6px 0; }
-  .tl-row::before { content: ''; position: absolute; left: -18px; top: 11px; width: 7px; height: 7px; border-radius: var(--v4-radius-pill); background: var(--v4-idle); border: 2px solid var(--v4-raised); }
-  .tl-row.blue::before { background: var(--v4-ok); }
-  .tl-copy { min-width: 0; }
-  .what { overflow: hidden; color: var(--v4-text-1); font-size: var(--text-base); line-height: 18px; text-overflow: ellipsis; white-space: nowrap; }
-  .who { margin-top: 2px; overflow: hidden; color: var(--v4-text-3); font-size: var(--text-base); line-height: 16px; text-overflow: ellipsis; white-space: nowrap; }
+  .recent-list { display: flex; flex-direction: column; }
+  .recent-row {
+    padding: 10px 0;
+    border-bottom: 1px solid var(--v4-rowline);
+    display: grid;
+    gap: var(--v4-row-stack-gap, 3px);
+  }
+  .recent-row:last-child { border-bottom: none; }
+  .what {
+    overflow: hidden;
+    color: var(--v4-text-1);
+    font-size: var(--type-body, 12px);
+    line-height: 16px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .who {
+    overflow: hidden;
+    color: var(--v4-text-3);
+    font-size: var(--type-secondary, 11px);
+    line-height: 14px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 
-  @media (max-width: 980px) { .three-col, .two-col { grid-template-columns: minmax(0, 1fr); } }
-  @media (prefers-reduced-motion: reduce) { .btn, .sync-source { transition: none; } }
+  @media (max-width: 820px) {
+    .health-strip { grid-template-columns: minmax(0, 1fr); }
+    .secondary-grid { grid-template-columns: minmax(0, 1fr); }
+    .page-header,
+    .meetings-toolbar {
+      flex-wrap: wrap;
+    }
+    .actions,
+    .detail-primary-actions {
+      flex: 0 0 auto;
+    }
+  }
+
+  @media (max-width: 520px) {
+    .next-strip {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 8px;
+    }
+    .next-time {
+      min-width: 0;
+      padding: 0;
+      border-right: 0;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .btn,
+    .sync-source { transition: none; }
+  }
+
+  @media (prefers-reduced-transparency: reduce) {
+    .next-strip {
+      background: var(--v4-raised);
+    }
+  }
 </style>

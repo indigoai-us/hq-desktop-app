@@ -120,6 +120,49 @@ export interface LazyRow {
 }
 
 /**
+ * Filter a lazy tree by a case-insensitive name substring.
+ *
+ * Keeps a directory when its own name matches OR any loaded descendant matches.
+ * Unloaded directories only match on their own name (lazy boundary — no eager walk).
+ * Pure: returns a new array/tree; does not mutate input.
+ */
+export function filterLazyNodes(nodes: LazyNode[], query: string): LazyNode[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return nodes;
+
+  const out: LazyNode[] = [];
+  for (const node of nodes) {
+    if (node.isDir) {
+      const selfMatch = node.name.toLowerCase().includes(q);
+      const filteredChildren = node.children
+        ? filterLazyNodes(node.children, query)
+        : undefined;
+      const childMatch = (filteredChildren?.length ?? 0) > 0;
+      if (selfMatch || childMatch) {
+        out.push({
+          ...node,
+          children: filteredChildren ?? node.children,
+          // When children were filtered, reflect remaining expandable kids.
+          hasChildren:
+            childMatch ||
+            (selfMatch && node.hasChildren && !node.loaded) ||
+            (selfMatch && (filteredChildren?.some((c) => c.isDir) ?? false)),
+        });
+      }
+    } else if (node.name.toLowerCase().includes(q)) {
+      out.push(node);
+    }
+  }
+  return out;
+}
+
+/** Parent directory of an HQ-relative path, or empty string for top-level. */
+export function parentPathOf(path: string): string {
+  const idx = path.lastIndexOf('/');
+  return idx <= 0 ? '' : path.slice(0, idx);
+}
+
+/**
  * One row in the flattened display order, paired with its indentation depth.
  * `depth` is 0 for the nodes passed in at the top level and increases by one
  * per level of nesting (used by the UI to scale padding-left).

@@ -22,6 +22,7 @@ describe('company-detail-desktop-ia: company secondary IA', () => {
       'activity',
       'deployments',
       'secrets',
+      'settings',
     ]);
     expect(ids).not.toContain('accounts');
     expect(ids).not.toContain('tasks');
@@ -66,15 +67,18 @@ describe('company-detail-desktop-ia: company secondary IA', () => {
     expect(page).not.toContain("tab === 'library'");
   });
 
-  it('DesktopApp routes Knowledge secondary select as company tab (inline panel)', () => {
+  it('DesktopApp routes Knowledge as a company tab (inline panel; DESKTOP-001 primary children)', () => {
     const app = readRepoFile('src/desktop-alt/DesktopApp.svelte');
-    // The files-mode interception is gone — knowledge takes the generic
-    // company-tab navigation path like every other secondary row (US-014).
+    // Knowledge is a primary company child + deep-link tab; secondary company
+    // column is gone (DESKTOP-001). Secondary select still handles library/settings.
     expect(app).not.toContain("id === 'knowledge'");
     expect(app).toContain("navigate({ kind: 'company', slug: route.slug, tab: id as CompanyTab })");
     const page = readRepoFile('src/desktop-alt/pages/CompanyPage.svelte');
     expect(page).toContain('<CompanyKnowledgePanel slug={company.slug} />');
     expect(page).not.toContain('company-knowledge-placeholder');
+    const sidebar = readRepoFile('src/desktop-alt/v4/V4Sidebar.svelte');
+    expect(sidebar).toContain('goCompanySection');
+    expect(sidebar).toContain('v4-company-children');
   });
 
   it('CompanyKnowledgePanel is tenant-scoped to the company knowledge subtree (source contract)', () => {
@@ -86,14 +90,19 @@ describe('company-detail-desktop-ia: company secondary IA', () => {
     expect(panel).toContain('data-testid="company-knowledge-empty"');
   });
 
-  it('Team telemetry adapter + panel exist', () => {
+  it('Team telemetry adapter + mixed list/detail panel exist (DESKTOP-009)', () => {
     const adapter = readRepoFile('src/desktop-alt/lib/team-telemetry.ts');
     const panel = readRepoFile('src/desktop-alt/panels/TeamPanel.svelte');
     expect(adapter).toContain('normalizeCompanyTeamTelemetry');
     expect(adapter).toContain('memberKindFromUid');
+    expect(adapter).toContain('members: TeamMember[]');
     expect(panel).toContain('get_company_team_telemetry');
-    expect(panel).toContain('data-testid="team-humans"');
-    expect(panel).toContain('data-testid="team-agents"');
+    expect(panel).toContain('data-testid="team-workspace"');
+    expect(panel).toContain('data-testid="team-list"');
+    expect(panel).toContain('data-testid="team-invite"');
+    // One mixed list — not separate Humans/Agents sections.
+    expect(panel).not.toContain('data-testid="team-humans"');
+    expect(panel).not.toContain('data-testid="team-agents"');
   });
 
   it('Projects list exposes search and no Tasks dependency in header copy', () => {

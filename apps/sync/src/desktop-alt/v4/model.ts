@@ -24,12 +24,35 @@ export type V4NavId =
 /**
  * Route shape the V4 chrome maps to an active row. `kind` is open-ended
  * (`string & {}` keeps autocomplete on the known kinds while accepting the
- * richer kinds US-002 introduces); `slug` is set for company routes.
+ * richer kinds US-002 introduces); `slug` is set for company routes; `tab`
+ * carries the company primary section / operational tab (DESKTOP-001).
  */
 export interface V4Route {
   kind: V4NavId | 'settings' | 'company' | (string & {});
   slug?: string;
+  tab?: string;
 }
+
+/** Primary company children expanded under the selected company (DESKTOP-001). */
+export type V4CompanyPrimaryId =
+  | 'overview'
+  | 'goals'
+  | 'projects'
+  | 'knowledge'
+  | 'team'
+  | 'more';
+
+export const V4_COMPANY_PRIMARY_ITEMS: ReadonlyArray<{
+  id: V4CompanyPrimaryId;
+  label: string;
+}> = [
+  { id: 'overview', label: 'Overview' },
+  { id: 'goals', label: 'Goals' },
+  { id: 'projects', label: 'Projects' },
+  { id: 'knowledge', label: 'Knowledge' },
+  { id: 'team', label: 'Team' },
+  { id: 'more', label: 'More' },
+];
 
 export const V4_NAV_ITEMS: ReadonlyArray<{ id: V4NavId; label: string }> = [
   { id: 'inbox', label: 'Inbox' },
@@ -46,6 +69,21 @@ export const V4_CHROME_LAYOUT = {
   secondarySidebarWidthPx: 200,
 } as const;
 
+/**
+ * DESKTOP-011 semantic type ramp — primary screens use exactly these five
+ * computed sizes. CSS mirrors them as `--type-*` in `tokens.css`.
+ */
+export const V4_TYPE_SCALE = {
+  metadata: 10,
+  secondary: 11,
+  body: 12,
+  section: 14,
+  detail: 18,
+} as const;
+
+/** Explicit gap between primary row title and secondary metadata (grid slots). */
+export const V4_ROW_STACK_GAP_PX = 3;
+
 /** Status-dot tones — the only color in the app, almost always as 6px dots. */
 export type V4DotTone = 'ok' | 'warn' | 'error' | 'idle';
 
@@ -55,11 +93,24 @@ export interface V4SidebarNavRow {
   active: boolean;
 }
 
+export interface V4SidebarCompanyChild {
+  id: V4CompanyPrimaryId;
+  label: string;
+  active: boolean;
+}
+
 export interface V4SidebarCompanyRow {
   slug: string;
   label: string;
   tone: V4DotTone;
   active: boolean;
+  /**
+   * True when this company is the selected company route — its primary
+   * children expand inline (DESKTOP-001). Collapses on global destinations.
+   */
+  expanded: boolean;
+  /** Primary children, present only when expanded. */
+  children: V4SidebarCompanyChild[];
   /**
    * True when this row is a cloud-activated company membership (synced or
    * cloud-only). Gates the Shared/All hover control (US-009); personal and
@@ -75,6 +126,34 @@ export interface V4SidebarModel {
   companies: V4SidebarCompanyRow[];
   /** Settings highlights the footer, not a nav item (SPEC section 4). */
   settingsActive: boolean;
+}
+
+/**
+ * Map a company route tab onto the primary sidebar child that should light.
+ * Operational tabs highlight More; skills/workers have no primary child.
+ */
+export function v4CompanyPrimaryForTab(tab: string | undefined | null): V4CompanyPrimaryId | null {
+  switch (tab) {
+    case undefined:
+    case null:
+    case '':
+    case 'overview':
+      return 'overview';
+    case 'goals':
+    case 'projects':
+    case 'knowledge':
+    case 'team':
+      return tab;
+    case 'activity':
+    case 'deployments':
+    case 'secrets':
+    case 'settings':
+    case 'more':
+      // DESKTOP-010: all four operations destinations light More.
+      return 'more';
+    default:
+      return null;
+  }
 }
 
 /**
@@ -130,6 +209,7 @@ export function v4CompanyCloudActivated(workspace: Workspace): boolean {
 export function sortV4CompaniesConnectedFirst(
   workspaces: Workspace[],
   activeSlug?: string | null,
+  activePrimary: V4CompanyPrimaryId | null = null,
 ): V4SidebarCompanyRow[] {
   const seenCompanySlugs = new Set<string>();
 
@@ -139,13 +219,24 @@ export function sortV4CompaniesConnectedFirst(
   for (const workspace of workspaces) {
     if (seenCompanySlugs.has(workspace.slug)) continue;
     seenCompanySlugs.add(workspace.slug);
+    const active = activeSlug != null && activeSlug === workspace.slug;
     deduped.push({
       connected: v4CompanyConnected(workspace),
       row: {
         slug: workspace.slug,
         label: workspace.displayName,
         tone: v4CompanyDotTone(workspace),
-        active: activeSlug != null && activeSlug === workspace.slug,
+        active,
+        // DESKTOP-001: only the selected company expands; global destinations
+        // collapse every company so children never compete with Inbox/etc.
+        expanded: active,
+        children: active
+          ? V4_COMPANY_PRIMARY_ITEMS.map((item) => ({
+              id: item.id,
+              label: item.label,
+              active: activePrimary != null && item.id === activePrimary,
+            }))
+          : [],
         cloudActivated: v4CompanyCloudActivated(workspace),
         pendingInvite:
           workspace.kind === 'company' && workspace.membershipStatus === 'pending',
@@ -167,19 +258,22 @@ export function sortV4CompaniesConnectedFirst(
 
 /**
  * Derive the primary-sidebar render model from the route + the
- * `list_syncable_workspaces` result. Invariant (US-007): AT MOST one active
- * row — a nav item, a company row, or the Settings footer. Palette-only
- * surfaces (home, mission-control, moderation, unknown kinds) and company
- * routes with no matching row light no row. Company pages highlight the
- * company row, not a nav item; all local-first/cloud-visible companies render
- * directly in the sidebar.
+ * `list_syncable_workspaces` result. Invariant (US-007 / DESKTOP-001): AT MOST
+ * one top-level active row — a nav item, a company row, or the Settings footer.
+ * When a company is selected it expands primary children inline; company
+ * children collapse on global destinations. Palette-only surfaces light no
+ * row. Company pages highlight the company row (and a primary child when
+ * applicable), not a nav item.
  */
 export function getV4SidebarModel(route: V4Route, workspaces: Workspace[]): V4SidebarModel {
   const settingsActive = route.kind === 'settings';
+  const companyActive = route.kind === 'company';
+  const activePrimary = companyActive ? v4CompanyPrimaryForTab(route.tab) : null;
 
   const companies: V4SidebarCompanyRow[] = sortV4CompaniesConnectedFirst(
     workspaces,
-    route.kind === 'company' ? route.slug : null,
+    companyActive ? route.slug : null,
+    activePrimary,
   );
 
   const companyRowActive = companies.some((row) => row.active);

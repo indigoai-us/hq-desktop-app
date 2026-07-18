@@ -38,12 +38,17 @@
   let unsupported = $state(false);
   let mediaError = $state(false);
   let revealError = $state<string | null>(null);
+  let pathCopied = $state(false);
+  let copyError = $state<string | null>(null);
 
   const fileName = $derived(path.split('/').pop() ?? path);
   const kind = $derived(filePreviewKind(path));
   const isMarkdown = $derived(kind === 'markdown');
   const isImage = $derived(kind === 'image');
   const isPdf = $derived(kind === 'pdf');
+  const kindLabel = $derived(
+    isMarkdown ? 'Markdown' : isImage ? 'Image' : isPdf ? 'PDF' : 'Text',
+  );
 
   // Build the absolute path by joining hqFolderPath + the relative FileNode
   // path with `/`. Guard against a trailing slash on hqFolderPath. Empty root →
@@ -51,6 +56,8 @@
   const absolutePath = $derived(
     hqFolderPath ? `${hqFolderPath.replace(/\/+$/, '')}/${path}` : '',
   );
+  /** Preferred clipboard value: absolute when known, else HQ-relative. */
+  const copyPathValue = $derived(absolutePath || path);
 
   const markdownHtml = $derived(
     isMarkdown && content !== null ? renderMarkdown(content) : '',
@@ -66,6 +73,8 @@
     unsupported = false;
     mediaError = false;
     revealError = null;
+    pathCopied = false;
+    copyError = null;
 
     if (!current) {
       loading = false;
@@ -133,6 +142,19 @@
     }
   }
 
+  async function copyPath(): Promise<void> {
+    copyError = null;
+    try {
+      await navigator.clipboard.writeText(copyPathValue);
+      pathCopied = true;
+      setTimeout(() => (pathCopied = false), 1800);
+    } catch (err) {
+      console.error('Copy path failed:', err);
+      copyError = 'Could not copy path';
+      setTimeout(() => (copyError = null), 4000);
+    }
+  }
+
   function onMediaError(): void {
     mediaError = true;
     unsupported = true;
@@ -145,9 +167,44 @@
   aria-label={`Preview of ${fileName}`}
 >
   <header class="preview-header">
-    <h3 class="preview-name" title={path}>{fileName}</h3>
-    <div class="preview-actions">
+    <div class="preview-heading title-stack">
+      <h3 class="preview-name" title={path}>{fileName}</h3>
+      <span class="preview-meta" data-testid="file-preview-meta" title={path}>
+        {kindLabel} · {path}
+      </span>
+    </div>
+    <div class="preview-actions detail-primary-actions primary-actions">
       <OpenFileInClaudeCode file={path} folder={hqFolderPath} variant="inline" />
+      <button
+        type="button"
+        class="reveal-btn"
+        class:error={!!copyError}
+        class:copied={pathCopied}
+        data-testid="copy-path"
+        onclick={copyPath}
+        title={copyError ?? (pathCopied ? 'Path copied' : `Copy path: ${copyPathValue}`)}
+        aria-label={`Copy path: ${copyPathValue}`}
+      >
+        <svg
+          width="12"
+          height="12"
+          viewBox="0 0 16 16"
+          fill="none"
+          xmlns="http://www.w3.org/2000/svg"
+          aria-hidden="true"
+        >
+          <rect x="5.5" y="5.5" width="7" height="8" rx="1" stroke="currentColor" stroke-width="1.2" />
+          <path
+            d="M3.5 10.5V3.5a1 1 0 0 1 1-1h6"
+            stroke="currentColor"
+            stroke-width="1.2"
+            stroke-linecap="round"
+          />
+        </svg>
+        <span class="reveal-label">
+          {copyError ? 'Failed' : pathCopied ? 'Copied' : 'Copy path'}
+        </span>
+      </button>
       {#if absolutePath}
         <button
           type="button"
@@ -246,53 +303,86 @@
 <style>
   .preview-pane {
     display: flex;
+    flex: 1 1 auto;
     flex-direction: column;
     min-width: 0;
     min-height: 0;
     height: 100%;
+    background: transparent;
   }
 
   .preview-header {
     display: flex;
-    align-items: center;
+    flex: 0 0 auto;
+    align-items: flex-start;
     justify-content: space-between;
-    gap: var(--space-3);
+    gap: var(--space-3, 10px);
     min-width: 0;
     padding: 11px 13px;
-    border-bottom: 1px solid var(--border);
+    border-bottom: 1px solid var(--v4-hairline, var(--border));
+    background: transparent;
+  }
+
+  .preview-heading {
+    min-width: 0;
+    flex: 1 1 auto;
+  }
+
+  .title-stack {
+    display: grid;
+    gap: var(--v4-row-stack-gap, 3px);
+    min-width: 0;
   }
 
   .preview-name {
     min-width: 0;
     margin: 0;
     overflow: hidden;
-    color: var(--fg);
-    font-size: var(--text-base);
+    color: var(--v4-text-1, var(--fg));
+    font-size: var(--type-section, var(--text-section, var(--text-base)));
     font-weight: 600;
-    line-height: 18px;
+    line-height: 1.25;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .preview-meta {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--v4-text-3, var(--muted));
+    font-size: var(--type-metadata, var(--text-micro));
+    font-weight: 400;
+    line-height: 1.3;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
   .preview-actions {
     display: flex;
+    flex: 0 0 auto;
     flex-shrink: 0;
+    flex-wrap: wrap;
     align-items: center;
-    gap: var(--space-2);
+    gap: 6px;
+    min-width: 0;
+  }
+
+  .preview-actions > * {
+    flex: 0 0 auto;
   }
 
   .reveal-btn {
     display: inline-flex;
     flex-shrink: 0;
     align-items: center;
-    gap: var(--space-1);
+    gap: var(--space-1, 4px);
     padding: 2px 8px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--row-active);
-    color: var(--muted-2);
+    border: 1px solid var(--v4-control-border, var(--border));
+    border-radius: var(--v4-radius-button, var(--radius-sm, 6px));
+    background: var(--v4-control-faint, var(--row-active));
+    color: var(--v4-text-2, var(--muted-2));
     font: inherit;
-    font-size: var(--text-base);
+    font-size: var(--type-secondary, var(--text-sm, var(--text-base)));
     font-weight: 600;
     white-space: nowrap;
     cursor: pointer;
@@ -303,19 +393,24 @@
   }
 
   .reveal-btn:hover {
-    border-color: var(--border-strong);
-    background: var(--row-hover);
-    color: var(--fg);
+    border-color: var(--v4-control-border, var(--border-strong));
+    background: var(--v4-active-row, var(--row-hover));
+    color: var(--v4-text-1, var(--fg));
   }
 
   .reveal-btn:focus-visible {
-    outline: 2px solid var(--blue);
+    outline: 2px solid var(--v4-unread, var(--blue));
     outline-offset: 2px;
   }
 
   .reveal-btn.error {
-    color: var(--amber);
+    color: var(--v4-warn, var(--amber));
     opacity: 0.9;
+  }
+
+  .reveal-btn.copied {
+    color: var(--v4-text-1, var(--fg));
+    border-color: var(--v4-control-border, var(--border-strong));
   }
 
   .reveal-label {
@@ -328,6 +423,7 @@
     min-height: 0;
     padding: 14px 13px;
     overflow: auto;
+    background: transparent;
   }
 
   .preview-body.media-body {
@@ -351,18 +447,18 @@
     width: auto;
     height: auto;
     object-fit: contain;
-    border-radius: var(--radius-md, 8px);
-    border: 1px solid var(--border);
-    background: var(--bg-subtle, transparent);
+    border-radius: var(--v4-radius-button, var(--radius-md, 8px));
+    border: 1px solid var(--v4-hairline, var(--border));
+    background: var(--v4-inset, var(--bg-subtle, transparent));
   }
 
   .pdf-frame {
     width: 100%;
     height: 100%;
     min-height: 420px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-md, 8px);
-    background: var(--bg-subtle, transparent);
+    border: 1px solid var(--v4-hairline, var(--border));
+    border-radius: var(--v4-radius-button, var(--radius-md, 8px));
+    background: var(--v4-inset, var(--bg-subtle, transparent));
   }
 
   .preview-skeleton {
@@ -388,34 +484,34 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: var(--space-2);
+    gap: var(--space-2, 6px);
     padding: 36px 16px;
     text-align: center;
-    color: var(--muted);
+    color: var(--v4-text-2, var(--muted));
   }
 
   .preview-unsupported svg {
-    color: var(--muted-3);
+    color: var(--v4-text-3, var(--muted-3));
   }
 
   .preview-unsupported strong {
-    color: var(--fg);
-    font-size: var(--text-base);
+    color: var(--v4-text-1, var(--fg));
+    font-size: var(--type-body, var(--text-base));
     font-weight: 600;
   }
 
   .preview-unsupported span {
     max-width: 320px;
-    color: var(--muted);
-    font-size: var(--text-base);
-    line-height: 18px;
+    color: var(--v4-text-2, var(--muted));
+    font-size: var(--type-secondary, var(--text-sm, var(--text-base)));
+    line-height: 1.35;
   }
 
   .mono {
     margin: 0;
-    color: var(--muted);
+    color: var(--v4-text-2, var(--muted));
     font-family: var(--font-mono);
-    font-size: var(--text-base);
+    font-size: var(--type-body, var(--text-base));
     line-height: 1.55;
     white-space: pre;
     overflow-wrap: normal;
@@ -423,8 +519,8 @@
 
   /* ---- markdown typography (mirrors LibraryDetailPanel .markdown-body) ----- */
   .markdown-body {
-    color: var(--fg);
-    font-size: var(--text-base);
+    color: var(--v4-text-1, var(--fg));
+    font-size: var(--type-body, var(--text-base));
     line-height: 1.6;
   }
 
@@ -434,42 +530,42 @@
   .markdown-body :global(h4),
   .markdown-body :global(h5),
   .markdown-body :global(h6) {
-    margin: var(--space-5) 0 var(--space-2);
-    color: var(--fg);
+    margin: var(--space-5, 16px) 0 var(--space-2, 6px);
+    color: var(--v4-text-1, var(--fg));
     font-weight: 600;
     line-height: 1.3;
   }
 
   .markdown-body :global(h1) {
-    font-size: var(--text-base);
+    font-size: var(--type-detail, var(--text-lg));
   }
   .markdown-body :global(h2) {
-    padding-bottom: var(--space-1);
-    border-bottom: 1px solid var(--border);
-    font-size: var(--text-base);
+    padding-bottom: var(--space-1, 4px);
+    border-bottom: 1px solid var(--v4-hairline, var(--border));
+    font-size: var(--type-section, var(--text-section));
   }
   .markdown-body :global(h3) {
-    font-size: var(--text-base);
+    font-size: var(--type-body, var(--text-base));
   }
 
   .markdown-body :global(p) {
-    margin: var(--space-2) 0;
-    color: var(--muted);
+    margin: var(--space-2, 6px) 0;
+    color: var(--v4-text-2, var(--muted));
   }
 
   .markdown-body :global(ul),
   .markdown-body :global(ol) {
-    margin: var(--space-2) 0;
-    padding-left: var(--space-5);
-    color: var(--muted);
+    margin: var(--space-2, 6px) 0;
+    padding-left: var(--space-5, 16px);
+    color: var(--v4-text-2, var(--muted));
   }
 
   .markdown-body :global(li) {
-    margin: var(--space-1) 0;
+    margin: var(--space-1, 4px) 0;
   }
 
   .markdown-body :global(a) {
-    color: var(--blue);
+    color: var(--v4-unread, var(--blue));
     text-decoration: none;
   }
 
@@ -478,21 +574,21 @@
   }
 
   .markdown-body :global(code) {
-    padding: 1px var(--space-1);
-    border-radius: var(--radius-sm);
-    background: var(--row-active);
-    color: var(--fg);
+    padding: 1px var(--space-1, 4px);
+    border-radius: var(--v4-radius-button, var(--radius-sm, 6px));
+    background: var(--v4-control-faint, var(--row-active));
+    color: var(--v4-text-1, var(--fg));
     font-family: var(--font-mono);
-    font-size: var(--text-base);
+    font-size: var(--type-secondary, var(--text-sm));
   }
 
   .markdown-body :global(pre) {
-    margin: var(--space-3) 0;
-    padding: var(--space-3);
+    margin: var(--space-3, 10px) 0;
+    padding: var(--space-3, 10px);
     overflow-x: auto;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-md);
-    background: var(--bg-subtle);
+    border: 1px solid var(--v4-hairline, var(--border));
+    border-radius: var(--v4-radius-button, var(--radius-md, 8px));
+    background: var(--v4-inset, var(--bg-subtle));
   }
 
   .markdown-body :global(pre code) {
@@ -501,20 +597,20 @@
   }
 
   .markdown-body :global(blockquote) {
-    margin: var(--space-3) 0;
-    padding: var(--space-1) var(--space-3);
-    border-left: 3px solid var(--border-strong);
-    color: var(--muted-3);
+    margin: var(--space-3, 10px) 0;
+    padding: var(--space-1, 4px) var(--space-3, 10px);
+    border-left: 3px solid var(--v4-control-border, var(--border-strong));
+    color: var(--v4-text-3, var(--muted-3));
   }
 
   .markdown-body :global(hr) {
-    margin: var(--space-4) 0;
+    margin: var(--space-4, 12px) 0;
     border: 0;
-    border-top: 1px solid var(--border);
+    border-top: 1px solid var(--v4-hairline, var(--border));
   }
 
   .markdown-body :global(strong) {
-    color: var(--fg);
+    color: var(--v4-text-1, var(--fg));
     font-weight: 600;
   }
 
@@ -530,6 +626,18 @@
   @media (prefers-reduced-motion: reduce) {
     .preview-skeleton span {
       animation: none;
+    }
+
+    .reveal-btn {
+      transition: none;
+    }
+  }
+
+  @media (prefers-reduced-transparency: reduce) {
+    .preview-pane,
+    .preview-header,
+    .preview-body {
+      background: var(--v4-ground, var(--bg));
     }
   }
 </style>

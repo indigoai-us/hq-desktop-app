@@ -162,13 +162,15 @@
   }
 
   .request-id {
-    display: flex;
-    flex-direction: column;
+    display: grid;
+    grid-template-rows: auto auto;
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--v4-row-stack-gap, 3px);
     min-width: 0;
   }
 
   .request-name {
-    font-size: var(--text-base);
+    font-size: var(--type-body, var(--text-base));
     font-weight: 600;
     color: var(--fg);
     overflow: hidden;
@@ -178,7 +180,7 @@
 
   .request-email {
     font-family: var(--font-mono);
-    font-size: var(--text-micro);
+    font-size: var(--type-metadata, var(--text-micro));
     color: var(--muted);
     overflow: hidden;
     text-overflow: ellipsis;

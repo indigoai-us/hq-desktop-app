@@ -16,8 +16,29 @@ import {
   compareProjectsByRecency,
   matchesStatusFilter,
   projectDisplayName,
+  portfolioColumn,
+  projectHasLiveSignal,
+  liveSessionsForProject,
+  sessionMatchesProject,
+  projectLiveRunView,
+  formatLiveElapsed,
+  portfolioStateContext,
+  groupProjectsByPortfolioColumn,
+  PORTFOLIO_COLUMNS,
+  PORTFOLIO_COLUMN_LABEL,
+  matchesPortfolioStateFilter,
+  taskColumn,
+  taskIsStarted,
+  sessionMatchesStory,
+  storyLiveRunView,
+  classifyTasks,
+  groupByTaskColumn,
+  projectFilesRootFromPrdPath,
+  TASK_COLUMNS,
+  TASK_COLUMN_LABEL,
   type Story,
   type Project,
+  type PortfolioSessionRef,
 } from '../projects-model';
 
 function story(id: string, overrides: Partial<Story> = {}): Story {
@@ -29,6 +50,20 @@ function story(id: string, overrides: Partial<Story> = {}): Story {
     passes: false,
     labels: [],
     dependsOn: [],
+    ...overrides,
+  };
+}
+
+function portfolioSession(
+  overrides: Partial<PortfolioSessionRef> = {},
+): PortfolioSessionRef {
+  return {
+    project: 'hq-desktop-app',
+    company: 'indigo',
+    cwd: '/Users/x/HQ/companies/indigo/projects/hq-desktop-app',
+    status: 'running',
+    startedAt: '2026-07-18T12:00:00Z',
+    lastActivityAt: '2026-07-18T12:05:00Z',
     ...overrides,
   };
 }
@@ -371,5 +406,280 @@ describe('projectListStatus board-status mapping', () => {
     expect(projectListStatus({ status: 'archived', storiesComplete: 0, storiesTotal: 5 })).toBe(
       'archived',
     );
+  });
+});
+
+describe('DESKTOP-004 portfolio Kanban columns', () => {
+  const proj = (overrides: Partial<Project> = {}): Project => ({
+    id: 'hq-desktop-app',
+    name: 'HQ Desktop app',
+    description: 'Native shell',
+    company: 'indigo',
+    status: 'planned',
+    prdPath: '/hq/companies/indigo/projects/hq-desktop-app/prd.json',
+    storiesTotal: 4,
+    storiesComplete: 0,
+    ...overrides,
+  });
+
+  const session = (overrides: Partial<PortfolioSessionRef> = {}): PortfolioSessionRef => ({
+    project: 'hq-desktop-app',
+    company: 'indigo',
+    cwd: '/Users/x/HQ/companies/indigo/projects/hq-desktop-app',
+    status: 'running',
+    startedAt: '2026-07-18T12:00:00Z',
+    lastActivityAt: '2026-07-18T12:05:00Z',
+    ...overrides,
+  });
+
+  it('exposes exactly four columns with the shared labels', () => {
+    expect([...PORTFOLIO_COLUMNS]).toEqual([
+      'not-started',
+      'in-progress',
+      'active',
+      'complete',
+    ]);
+    expect(PORTFOLIO_COLUMN_LABEL['not-started']).toBe('Not started');
+    expect(PORTFOLIO_COLUMN_LABEL['in-progress']).toBe('In progress');
+    expect(PORTFOLIO_COLUMN_LABEL.active).toBe('Active');
+    expect(PORTFOLIO_COLUMN_LABEL.complete).toBe('Complete');
+  });
+
+  it('maps complete only from true completion status/progress', () => {
+    expect(portfolioColumn(proj({ storiesComplete: 4, storiesTotal: 4 }), false)).toBe(
+      'complete',
+    );
+    expect(portfolioColumn(proj({ status: 'completed', storiesComplete: 0, storiesTotal: 4 }), false)).toBe(
+      'complete',
+    );
+    // Partial progress is never Complete.
+    expect(portfolioColumn(proj({ storiesComplete: 2, storiesTotal: 4 }), false)).toBe(
+      'in-progress',
+    );
+  });
+
+  it('puts Active only when a live execution signal is present', () => {
+    // Board status active/live/running alone is In progress without a signal.
+    expect(portfolioColumn(proj({ status: 'active' }), false)).toBe('in-progress');
+    expect(portfolioColumn(proj({ status: 'live' }), false)).toBe('in-progress');
+    expect(portfolioColumn(proj({ status: 'running' }), false)).toBe('in-progress');
+    // Live signal → Active even if stories are still pending.
+    expect(portfolioColumn(proj({ status: 'planned' }), true)).toBe('active');
+    // Live signal never overrides true completion.
+    expect(portfolioColumn(proj({ storiesComplete: 4, storiesTotal: 4 }), true)).toBe(
+      'complete',
+    );
+  });
+
+  it('returns unfinished work to In progress when the live signal ends', () => {
+    const started = proj({ status: 'in_progress', storiesComplete: 1, storiesTotal: 4 });
+    expect(portfolioColumn(started, true)).toBe('active');
+    expect(portfolioColumn(started, false)).toBe('in-progress');
+  });
+
+  it('keeps planned work with no progress in Not started', () => {
+    expect(portfolioColumn(proj({ status: 'planned' }), false)).toBe('not-started');
+    expect(portfolioColumn(proj({ status: 'prd_created' }), false)).toBe('not-started');
+  });
+
+  it('matches sessions to projects by identity tokens and company', () => {
+    const p = proj();
+    expect(sessionMatchesProject(session(), p)).toBe(true);
+    expect(sessionMatchesProject(session({ project: 'other-thing', cwd: '/tmp' }), p)).toBe(
+      false,
+    );
+    expect(
+      sessionMatchesProject(session({ company: 'other-co' }), p),
+    ).toBe(false);
+    // Empty session company does not exclude.
+    expect(sessionMatchesProject(session({ company: '' }), p)).toBe(true);
+  });
+
+  it('counts only running/awaiting_input as live signals', () => {
+    const p = proj();
+    const sessions = [
+      session({ status: 'running' }),
+      session({ status: 'idle' }),
+      session({ status: 'ended' }),
+      session({ status: 'awaiting_input', project: 'hq-desktop-app' }),
+    ];
+    const live = liveSessionsForProject(p, sessions);
+    expect(live).toHaveLength(2);
+    expect(projectHasLiveSignal(p, sessions)).toBe(true);
+    expect(projectHasLiveSignal(p, [session({ status: 'idle' })])).toBe(false);
+  });
+
+  it('builds live run views from real session fields only (no synthetic telemetry)', () => {
+    const now = Date.parse('2026-07-18T12:10:00Z');
+    const view = projectLiveRunView(
+      proj({ storiesComplete: 1, storiesTotal: 4 }),
+      [session({ status: 'running', startedAt: '2026-07-18T12:00:00Z' })],
+      now,
+    );
+    expect(view).not.toBeNull();
+    expect(view!.phase).toBe('Running');
+    expect(view!.elapsed).toBe('10:00');
+    expect(view!.workers).toBe(1);
+    // Subagent count is not on the session contract → null (never invented 0).
+    expect(view!.subagents).toBeNull();
+    expect(view!.progressPercent).toBe(25);
+    expect(view!.lastSignalAt).toBe('2026-07-18T12:05:00Z');
+
+    // No live sessions → null view (do not fabricate a run block).
+    expect(projectLiveRunView(proj(), [session({ status: 'ended' })], now)).toBeNull();
+  });
+
+  it('formats elapsed only from real startedAt timestamps', () => {
+    const now = Date.parse('2026-07-18T13:00:00Z');
+    expect(formatLiveElapsed('2026-07-18T12:00:00Z', now)).toBe('1:00:00');
+    expect(formatLiveElapsed(null, now)).toBeNull();
+    expect(formatLiveElapsed('not-a-date', now)).toBeNull();
+  });
+
+  it('groups projects into all four portfolio columns', () => {
+    const projects = [
+      proj({ id: 'a', name: 'A', status: 'planned', storiesComplete: 0, storiesTotal: 3 }),
+      proj({
+        id: 'b',
+        name: 'B',
+        status: 'in_progress',
+        storiesComplete: 1,
+        storiesTotal: 3,
+        prdPath: '/hq/companies/indigo/projects/b/prd.json',
+      }),
+      proj({
+        id: 'c',
+        name: 'C',
+        status: 'active',
+        storiesComplete: 1,
+        storiesTotal: 3,
+        prdPath: '/hq/companies/indigo/projects/c/prd.json',
+      }),
+      proj({
+        id: 'd',
+        name: 'D',
+        status: 'completed',
+        storiesComplete: 3,
+        storiesTotal: 3,
+        prdPath: '/hq/companies/indigo/projects/d/prd.json',
+      }),
+    ];
+    const sessions = [
+      session({
+        project: 'c',
+        cwd: '/hq/companies/indigo/projects/c',
+        status: 'running',
+      }),
+    ];
+    const groups = groupProjectsByPortfolioColumn(projects, sessions);
+    expect(groups['not-started'].map((p) => p.id)).toEqual(['a']);
+    expect(groups['in-progress'].map((p) => p.id)).toEqual(['b']);
+    expect(groups.active.map((p) => p.id)).toEqual(['c']);
+    expect(groups.complete.map((p) => p.id)).toEqual(['d']);
+  });
+
+  it('filters portfolio columns without conflating Active and In progress', () => {
+    expect(matchesPortfolioStateFilter('active', 'active')).toBe(true);
+    expect(matchesPortfolioStateFilter('in-progress', 'active')).toBe(false);
+    expect(matchesPortfolioStateFilter('active', 'in-progress')).toBe(false);
+    expect(matchesPortfolioStateFilter('not-started', 'all')).toBe(true);
+  });
+
+  it('renders calm non-live state context without fake worker telemetry', () => {
+    expect(portfolioStateContext('not-started', proj())).toContain('No run expected');
+    expect(
+      portfolioStateContext('in-progress', proj({ storiesComplete: 2, storiesTotal: 4 })),
+    ).toContain('no active worker');
+    expect(
+      portfolioStateContext('complete', proj({ storiesComplete: 4, storiesTotal: 4 })),
+    ).toBe('All tasks passed');
+  });
+});
+
+describe('DESKTOP-005 task columns + live match', () => {
+  it('exposes the four task columns with shared labels', () => {
+    expect([...TASK_COLUMNS]).toEqual([
+      'not-started',
+      'in-progress',
+      'active',
+      'complete',
+    ]);
+    expect(TASK_COLUMN_LABEL.active).toBe('Active');
+  });
+
+  it('matches sessions to stories by id token only (no invented fields)', () => {
+    const s = portfolioSession({
+      project: 'hq-desktop-app',
+      source: 'execute-task DESKTOP-005',
+      cwd: '/hq/companies/indigo/projects/hq-desktop-app',
+    });
+    expect(sessionMatchesStory(s, story('DESKTOP-005'))).toBe(true);
+    expect(sessionMatchesStory(s, story('DESKTOP-009'))).toBe(false);
+  });
+
+  it('places Active only with live signal; ended signal returns started work to In progress', () => {
+    const stories = [
+      story('A', { passes: true }),
+      story('B', { notes: 'mid-run' }),
+      story('C'),
+    ];
+    expect(taskColumn(stories[0], stories, false)).toBe('complete');
+    expect(taskColumn(stories[1], stories, true)).toBe('active');
+    expect(taskColumn(stories[1], stories, false)).toBe('in-progress');
+    expect(taskIsStarted(stories[1], stories)).toBe(true);
+    // First eligible without notes: A complete → B is first eligible among remaining,
+    // but B already has notes. C has no notes and is not first eligible → not-started.
+    expect(taskColumn(stories[2], stories, false)).toBe('not-started');
+  });
+
+  it('builds honest storyLiveRunView and never fabricates when no match', () => {
+    const now = Date.parse('2026-07-18T12:10:00Z');
+    const s = portfolioSession({
+      source: 'run DESKTOP-005',
+      startedAt: '2026-07-18T12:00:00Z',
+      lastActivityAt: '2026-07-18T12:05:00Z',
+    });
+    const view = storyLiveRunView(
+      story('DESKTOP-005', { acceptanceCriteria: ['a', 'b', 'c', 'd'] }),
+      [s],
+      now,
+    );
+    expect(view).not.toBeNull();
+    expect(view!.phase).toBe('Running');
+    expect(view!.elapsed).toBe('10:00');
+    expect(view!.workers).toBe(1);
+    expect(view!.subagents).toBeNull();
+    expect(view!.progressPercent).toBe(0);
+    expect(storyLiveRunView(story('OTHER'), [s], now)).toBeNull();
+    expect(
+      storyLiveRunView(
+        story('DESKTOP-005'),
+        [portfolioSession({ status: 'ended', source: 'DESKTOP-005' })],
+        now,
+      ),
+    ).toBeNull();
+  });
+
+  it('groups classified tasks into four columns', () => {
+    const stories = [
+      story('done', { passes: true }),
+      story('live', { notes: 'x' }),
+      story('wait', { dependsOn: ['done'] }),
+    ];
+    const sessions = [portfolioSession({ source: 'working on live', status: 'running' })];
+    const groups = groupByTaskColumn(classifyTasks(stories, sessions));
+    expect(groups.complete.map((c) => c.story.id)).toEqual(['done']);
+    expect(groups.active.map((c) => c.story.id)).toEqual(['live']);
+  });
+
+  it('derives project files root from prdPath without inventing paths', () => {
+    expect(
+      projectFilesRootFromPrdPath('/Users/x/HQ/companies/indigo/projects/hq-desktop-app/prd.json'),
+    ).toBe('companies/indigo/projects/hq-desktop-app');
+    expect(projectFilesRootFromPrdPath('companies/indigo/projects/foo/prd.json')).toBe(
+      'companies/indigo/projects/foo',
+    );
+    expect(projectFilesRootFromPrdPath(null)).toBeNull();
+    expect(projectFilesRootFromPrdPath('/tmp/elsewhere/prd.json')).toBeNull();
   });
 });

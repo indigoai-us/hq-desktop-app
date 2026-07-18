@@ -9,7 +9,7 @@ import { readRepoFile } from './harness';
  */
 
 describe('desktop-alt version pop-out (US-017)', () => {
-  it('status bar renders the version label as a button wired to open the pop-out', () => {
+  it('status bar component still hosts the version pop-out (unmounted from DESKTOP-001 shell)', () => {
     const statusBar = readRepoFile('src/desktop-alt/DesktopStatusBar.svelte');
     const desktopApp = readRepoFile('src/desktop-alt/DesktopApp.svelte');
 
@@ -24,7 +24,10 @@ describe('desktop-alt version pop-out (US-017)', () => {
     expect(statusBar).toContain("window.addEventListener('mousedown'");
     expect(statusBar).toContain("event.key === 'Escape'");
 
-    expect(desktopApp).toContain("onOpenSettings={() => navigate({ kind: 'settings' })}");
+    // DESKTOP-001 removed the bottom status bar from the shell; account/settings
+    // moved into the titlebar. Version popout remains implemented on the bar.
+    expect(desktopApp).not.toContain('<DesktopStatusBar');
+    expect(desktopApp).toContain('onaccount={handleAccountMenu}');
   });
 
   it('pop-out shows current version + status and Check for updates invokes check_for_updates', () => {

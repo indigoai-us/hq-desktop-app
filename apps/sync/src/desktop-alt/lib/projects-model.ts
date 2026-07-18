@@ -626,3 +626,638 @@ export function projectCompanies(projects: Project[]): string[] {
     (a, b) => a.localeCompare(b),
   );
 }
+
+// ---------------------------------------------------------------------------
+// Project portfolio Kanban (DESKTOP-004)
+// ---------------------------------------------------------------------------
+//
+// Company Projects defaults to a four-column operational board. Active is
+// reserved for a *live execution signal* (running / awaiting_input sessions),
+// not for a board.json status of "active"/"live"/"running". When that signal
+// ends, unfinished work returns to In progress. Complete only follows true
+// completion status / full story progress.
+
+/**
+ * Portfolio Kanban columns in display order. Exactly these four — no Planned /
+ * Running / Archived labels at the portfolio level.
+ */
+export type PortfolioColumn = 'not-started' | 'in-progress' | 'active' | 'complete';
+
+/** The four portfolio columns, in left-to-right board order. */
+export const PORTFOLIO_COLUMNS: readonly PortfolioColumn[] = [
+  'not-started',
+  'in-progress',
+  'active',
+  'complete',
+] as const;
+
+/** Human labels for portfolio column headers. */
+export const PORTFOLIO_COLUMN_LABEL: Record<PortfolioColumn, string> = {
+  'not-started': 'Not started',
+  'in-progress': 'In progress',
+  active: 'Active',
+  complete: 'Complete',
+};
+
+/** Short captions under each portfolio column header. */
+export const PORTFOLIO_COLUMN_CAPTION: Record<PortfolioColumn, string> = {
+  'not-started': 'Planned, no work begun',
+  'in-progress': 'Started, no live run right now',
+  active: 'Live execution signal present',
+  complete: 'All tasks passed',
+};
+
+/** Board/List view mode for the company project portfolio. */
+export type PortfolioViewMode = 'board' | 'list';
+
+/**
+ * State filter options for the portfolio toolbar (distinct from the Board list
+ * STATUS_FILTER_OPTIONS which still includes Archived for the overview grid).
+ */
+export type PortfolioStateFilter = 'all' | PortfolioColumn;
+
+export const PORTFOLIO_STATE_FILTER_OPTIONS: {
+  value: PortfolioStateFilter;
+  label: string;
+}[] = [
+  { value: 'all', label: 'All states' },
+  { value: 'not-started', label: 'Not started' },
+  { value: 'in-progress', label: 'In progress' },
+  { value: 'active', label: 'Active' },
+  { value: 'complete', label: 'Complete' },
+];
+
+/**
+ * Minimal session slice the portfolio needs for live matching. Mirrors the
+ * AgentSession fields used for Active placement — callers pass full sessions.
+ */
+export interface PortfolioSessionRef {
+  project: string;
+  company: string;
+  cwd: string;
+  status: string;
+  startedAt?: string;
+  lastActivityAt?: string;
+  tool?: string;
+  model?: string;
+  source?: string;
+}
+
+/** Whether a session status counts as a live execution signal for Active. */
+export function isPortfolioLiveStatus(status: string | null | undefined): boolean {
+  const raw = (status ?? '').toLowerCase();
+  return raw === 'running' || raw === 'awaiting_input';
+}
+
+function normalizePortfolioToken(value: string | null | undefined): string {
+  return (value ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+/**
+ * Project identity tokens used to match agent sessions (id, name, title, and
+ * the parent directory of prdPath when present).
+ */
+export function projectMatchTokens(
+  project: Pick<Project, 'id' | 'name' | 'title' | 'prdPath'>,
+): string[] {
+  const fromPath = project.prdPath
+    ? project.prdPath.split('/').filter(Boolean).at(-2)
+    : undefined;
+  return [project.id, project.name, project.title, fromPath]
+    .map(normalizePortfolioToken)
+    .filter((token) => token.length >= 2);
+}
+
+/**
+ * Whether a session belongs to a project. Matches when the session's project
+ * field or cwd path contains a project identity token. Company is used as a
+ * soft constraint when both sides carry one — empty company never excludes.
+ */
+export function sessionMatchesProject(
+  session: PortfolioSessionRef,
+  project: Pick<Project, 'id' | 'name' | 'title' | 'prdPath' | 'company'>,
+): boolean {
+  const sessionCompany = (session.company ?? '').trim().toLowerCase();
+  const projectCompany = (project.company ?? '').trim().toLowerCase();
+  if (sessionCompany && projectCompany && sessionCompany !== projectCompany) {
+    return false;
+  }
+
+  const sessionProject = (session.project ?? '').trim().toLowerCase();
+  const projectId = (project.id ?? '').trim().toLowerCase();
+  // Exact id / display-name match first (handles short project slugs).
+  if (sessionProject) {
+    if (projectId && sessionProject === projectId) return true;
+    const name = (project.name ?? project.title ?? '').trim().toLowerCase();
+    if (name && sessionProject === name) return true;
+  }
+
+  const tokens = projectMatchTokens(project).filter((token) => token.length >= 2);
+  if (tokens.length === 0) return false;
+
+  const hay = normalizePortfolioToken(
+    [session.project, session.cwd, session.source ?? ''].filter(Boolean).join(' '),
+  );
+  if (!hay) return false;
+  return tokens.some((token) => hay.includes(token));
+}
+
+/**
+ * Live sessions for a project — only `running` / `awaiting_input`. Idle and
+ * ended sessions are not live signals (they move unfinished work to In progress).
+ */
+export function liveSessionsForProject(
+  project: Pick<Project, 'id' | 'name' | 'title' | 'prdPath' | 'company'>,
+  sessions: readonly PortfolioSessionRef[],
+): PortfolioSessionRef[] {
+  return sessions.filter(
+    (session) =>
+      isPortfolioLiveStatus(session.status) && sessionMatchesProject(session, project),
+  );
+}
+
+/** True when at least one live execution signal is currently present. */
+export function projectHasLiveSignal(
+  project: Pick<Project, 'id' | 'name' | 'title' | 'prdPath' | 'company'>,
+  sessions: readonly PortfolioSessionRef[],
+): boolean {
+  return liveSessionsForProject(project, sessions).length > 0;
+}
+
+/**
+ * Resolve a project's portfolio column.
+ *
+ * - `complete`     — archived terminal OR every story passes (true completion)
+ * - `active`       — live execution signal present NOW (and not complete)
+ * - `in-progress`  — work has started (story rollup / explicit board status) without a live signal
+ * - `not-started`  — planned / pending; no progress and no live signal
+ *
+ * Board statuses like `active`/`live`/`running` alone do **not** put a project in
+ * Active — those mean the board thinks work is underway, which is In progress
+ * unless a real session signal is present.
+ */
+export function portfolioColumn(
+  project: Pick<Project, 'status' | 'storiesComplete' | 'storiesTotal'>,
+  hasLiveSignal: boolean,
+): PortfolioColumn {
+  const raw = (project.status ?? '').toLowerCase().trim();
+  if (raw === 'archived') {
+    // Archived is terminal. If all stories pass, treat as Complete; otherwise
+    // keep it out of Active and park unfinished archives under In progress so
+    // they remain visible without a fifth column.
+    const rollup = deriveProjectState(project.storiesComplete, project.storiesTotal);
+    return rollup === 'complete' || project.storiesTotal === 0 ? 'complete' : 'in-progress';
+  }
+
+  if (
+    raw === 'completed' ||
+    raw === 'complete' ||
+    raw === 'done' ||
+    deriveProjectState(project.storiesComplete, project.storiesTotal) === 'complete'
+  ) {
+    return 'complete';
+  }
+
+  if (hasLiveSignal) return 'active';
+
+  const rollup = deriveProjectState(project.storiesComplete, project.storiesTotal);
+  if (rollup === 'in-progress') return 'in-progress';
+
+  if (IN_PROGRESS_BOARD_STATUSES.has(raw) || LIVE_BOARD_STATUSES.has(raw)) {
+    return 'in-progress';
+  }
+
+  return 'not-started';
+}
+
+/** Whether a portfolio column passes the toolbar state filter. */
+export function matchesPortfolioStateFilter(
+  column: PortfolioColumn,
+  filter: PortfolioStateFilter,
+): boolean {
+  if (filter === 'all') return true;
+  return column === filter;
+}
+
+/** Group projects into the four portfolio columns (empty columns kept). */
+export function groupProjectsByPortfolioColumn(
+  projects: Project[],
+  sessions: readonly PortfolioSessionRef[],
+): Record<PortfolioColumn, Project[]> {
+  const groups: Record<PortfolioColumn, Project[]> = {
+    'not-started': [],
+    'in-progress': [],
+    active: [],
+    complete: [],
+  };
+  for (const project of projects) {
+    const hasLive = projectHasLiveSignal(project, sessions);
+    const column = portfolioColumn(project, hasLive);
+    groups[column].push(project);
+  }
+  for (const column of PORTFOLIO_COLUMNS) {
+    groups[column] = groups[column].slice().sort(compareProjectsByRecency);
+  }
+  return groups;
+}
+
+/**
+ * Real live-run fields for an Active portfolio card. Only fields that exist on
+ * the session/project contracts are populated; missing data stays null so the
+ * UI can omit or label "unavailable" — never synthesize telemetry.
+ */
+export interface ProjectLiveRunView {
+  /** Human label from the freshest live session status (e.g. "Running"). */
+  phase: string | null;
+  /** Elapsed since session startedAt when known (mm:ss or h:mm:ss). */
+  elapsed: string | null;
+  /** Count of live workers (matching sessions). Always a real count ≥ 0. */
+  workers: number;
+  /**
+   * Subagent count when the session contract exposes one. Currently always
+   * `null` — AgentSession has no subagent field — so callers must omit or say
+   * unavailable rather than invent 0.
+   */
+  subagents: number | null;
+  /** Project story progress percent when stories exist; null when total is 0. */
+  progressPercent: number | null;
+  /** Freshest lastActivityAt ISO, when any live session has one. */
+  lastSignalAt: string | null;
+}
+
+const LIVE_PHASE_LABEL: Record<string, string> = {
+  running: 'Running',
+  awaiting_input: 'Awaiting input',
+};
+
+/**
+ * Format elapsed wall time from an ISO start. Returns null when the timestamp
+ * is missing or unparseable — never invents a duration.
+ */
+export function formatLiveElapsed(
+  startedAt: string | null | undefined,
+  now: number = Date.now(),
+): string | null {
+  if (!startedAt) return null;
+  const then = Date.parse(startedAt);
+  if (!Number.isFinite(then) || then <= 0) return null;
+  const seconds = Math.max(0, Math.floor((now - then) / 1000));
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const secs = seconds % 60;
+  if (hours > 0) {
+    return `${hours}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+  }
+  return `${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+}
+
+/**
+ * Build the Active-card live run view from real sessions + project progress.
+ * Returns null when there is no live signal (caller should not show the block).
+ */
+export function projectLiveRunView(
+  project: Pick<
+    Project,
+    'id' | 'name' | 'title' | 'prdPath' | 'company' | 'storiesComplete' | 'storiesTotal'
+  >,
+  sessions: readonly PortfolioSessionRef[],
+  now: number = Date.now(),
+): ProjectLiveRunView | null {
+  const live = liveSessionsForProject(project, sessions);
+  if (live.length === 0) return null;
+
+  // Freshest by lastActivityAt, then startedAt.
+  const sorted = live.slice().sort((a, b) => {
+    const aT = Date.parse(a.lastActivityAt ?? '') || Date.parse(a.startedAt ?? '') || 0;
+    const bT = Date.parse(b.lastActivityAt ?? '') || Date.parse(b.startedAt ?? '') || 0;
+    return bT - aT;
+  });
+  const primary = sorted[0];
+  const phase = LIVE_PHASE_LABEL[primary.status] ?? null;
+  const started =
+    sorted
+      .map((s) => s.startedAt)
+      .find((iso) => iso && Number.isFinite(Date.parse(iso))) ?? null;
+  const lastSignalAt =
+    sorted
+      .map((s) => s.lastActivityAt)
+      .find((iso) => iso && Number.isFinite(Date.parse(iso))) ?? null;
+
+  const progress = projectProgress(project.storiesComplete, project.storiesTotal);
+
+  return {
+    phase,
+    elapsed: formatLiveElapsed(started, now),
+    workers: live.length,
+    // AgentSession has no subagent count — honest null, never 0-as-real.
+    subagents: null,
+    progressPercent: progress.total > 0 ? progress.percent : null,
+    lastSignalAt,
+  };
+}
+
+/**
+ * Calm state-context line for non-Active cards. Uses only real progress /
+ * board status — no fabricated worker/run metadata.
+ */
+export function portfolioStateContext(
+  column: PortfolioColumn,
+  project: Pick<Project, 'storiesComplete' | 'storiesTotal' | 'status'>,
+): string {
+  const progress = projectProgress(project.storiesComplete, project.storiesTotal);
+  switch (column) {
+    case 'not-started':
+      return 'No run expected before work begins';
+    case 'in-progress':
+      return progress.complete > 0
+        ? 'Work remains underway · no active worker'
+        : 'Started · no active worker';
+    case 'active':
+      return 'Live execution signal present';
+    case 'complete':
+      return progress.total > 0 && progress.complete >= progress.total
+        ? 'All tasks passed'
+        : 'Complete';
+    default:
+      return '';
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Project task Kanban (DESKTOP-005)
+// ---------------------------------------------------------------------------
+//
+// Project Tasks uses the same four operational columns as the company portfolio.
+// Active requires a live session signal matched to the *task* (story id token in
+// session project/cwd/source) — not board status. When that signal ends,
+// unfinished work returns to In progress. Complete still follows story.passes.
+
+/**
+ * Task Kanban columns in display order. Exactly these four — no Blocked /
+ * Pending labels at the project-task level (blocked work parks under Not started).
+ */
+export type TaskColumn = PortfolioColumn;
+
+/** The four task columns, in left-to-right board order (same ids as portfolio). */
+export const TASK_COLUMNS: readonly TaskColumn[] = PORTFOLIO_COLUMNS;
+
+/** Human labels for task column headers. */
+export const TASK_COLUMN_LABEL: Record<TaskColumn, string> = {
+  'not-started': 'Not started',
+  'in-progress': 'In progress',
+  active: 'Active',
+  complete: 'Complete',
+};
+
+/** Short captions under each task column header. */
+export const TASK_COLUMN_CAPTION: Record<TaskColumn, string> = {
+  'not-started': 'Ready or waiting to begin',
+  'in-progress': 'Started, no live run right now',
+  active: 'Live worker signal present',
+  complete: 'Task-level checks passed',
+};
+
+/** A story enriched with its derived task Kanban column. */
+export interface ClassifiedTask {
+  story: Story;
+  column: TaskColumn;
+}
+
+/**
+ * Whether a session belongs to a specific task. Matches when the story id
+ * appears as a token in the session's project / cwd / source haystack. Does not
+ * invent a storyId field — only uses real AgentSession strings. Short ids
+ * under 3 characters are ignored to avoid accidental matches.
+ */
+export function sessionMatchesStory(
+  session: PortfolioSessionRef,
+  story: Pick<Story, 'id' | 'title'>,
+): boolean {
+  const storyId = (story.id ?? '').trim().toLowerCase();
+  if (storyId.length < 3) return false;
+  const hay = normalizePortfolioToken(
+    [session.project, session.cwd, session.source ?? ''].filter(Boolean).join(' '),
+  );
+  if (!hay) return false;
+  // Normalize story id the same way so "DESKTOP-005" matches desktop005 tokens
+  // and the raw id form in paths like .../DESKTOP-005/...
+  const idToken = normalizePortfolioToken(storyId);
+  if (idToken.length >= 3 && hay.includes(idToken)) return true;
+  // Also allow the raw lowercased id with separators stripped only (already in idToken).
+  // Require word-ish boundaries via includes on the joined lowercased raw haystack.
+  const rawHay = [session.project, session.cwd, session.source ?? '']
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+  return rawHay.includes(storyId);
+}
+
+/**
+ * Live sessions matched to a story — only `running` / `awaiting_input`.
+ * Idle and ended sessions are not live signals.
+ */
+export function liveSessionsForStory(
+  story: Pick<Story, 'id' | 'title'>,
+  sessions: readonly PortfolioSessionRef[],
+): PortfolioSessionRef[] {
+  return sessions.filter(
+    (session) =>
+      isPortfolioLiveStatus(session.status) && sessionMatchesStory(session, story),
+  );
+}
+
+/** True when at least one live execution signal is currently matched to the task. */
+export function storyHasLiveSignal(
+  story: Pick<Story, 'id' | 'title'>,
+  sessions: readonly PortfolioSessionRef[],
+): boolean {
+  return liveSessionsForStory(story, sessions).length > 0;
+}
+
+/**
+ * Whether a story counts as "started" for In progress placement when there is
+ * no live signal. Uses only existing story fields + the classic first-eligible
+ * rule — never fabricates run history.
+ *
+ * Started when:
+ * - non-empty notes, or
+ * - classic classifier would place it in `in-progress` (first eligible).
+ *
+ * Blocked (unmet deps) and untouched pending stories are not started.
+ */
+export function taskIsStarted(story: Story, allStories: Story[]): boolean {
+  if (story.passes) return false;
+  const notes = (story.notes ?? '').trim();
+  if (notes.length > 0) return true;
+  const classified = classifyStories(allStories);
+  const item = classified.find((entry) => entry.story.id === story.id);
+  return item?.state === 'in-progress';
+}
+
+/**
+ * Resolve a story's task column.
+ *
+ * - `complete`     — story.passes
+ * - `active`       — live session signal matched to this task NOW
+ * - `in-progress`  — started/unfinished with no live signal
+ * - `not-started`  — not complete, not started, or waiting on deps
+ *
+ * When a live signal ends, unfinished work returns to In progress (if started)
+ * or Not started (if never started). Board status is never consulted.
+ */
+export function taskColumn(
+  story: Story,
+  allStories: Story[],
+  hasLiveSignal: boolean,
+): TaskColumn {
+  if (story.passes) return 'complete';
+  if (hasLiveSignal) return 'active';
+  if (taskIsStarted(story, allStories)) return 'in-progress';
+  return 'not-started';
+}
+
+/** Classify all stories into task columns (empty columns kept by group helper). */
+export function classifyTasks(
+  stories: Story[],
+  sessions: readonly PortfolioSessionRef[] = [],
+): ClassifiedTask[] {
+  return stories.map((story) => ({
+    story,
+    column: taskColumn(story, stories, storyHasLiveSignal(story, sessions)),
+  }));
+}
+
+/** Group classified tasks by column (empty columns present). */
+export function groupByTaskColumn(
+  classified: ClassifiedTask[],
+): Record<TaskColumn, ClassifiedTask[]> {
+  const groups: Record<TaskColumn, ClassifiedTask[]> = {
+    'not-started': [],
+    'in-progress': [],
+    active: [],
+    complete: [],
+  };
+  for (const item of classified) {
+    groups[item.column].push(item);
+  }
+  return groups;
+}
+
+/**
+ * Real live-run fields for an Active task card. Only fields that exist on the
+ * session/story contracts are populated; missing data stays null so the UI can
+ * omit or label "unavailable" — never synthesize telemetry.
+ */
+export interface StoryLiveRunView {
+  /** Human label from the freshest live session status (e.g. "Running"). */
+  phase: string | null;
+  /** Elapsed since session startedAt when known (mm:ss or h:mm:ss). */
+  elapsed: string | null;
+  /** Count of live workers (matching sessions). Always a real count ≥ 0. */
+  workers: number;
+  /**
+   * Subagent count when the session contract exposes one. Currently always
+   * `null` — AgentSession has no subagent field.
+   */
+  subagents: number | null;
+  /** Story AC progress percent when criteria exist; null when total is 0. */
+  progressPercent: number | null;
+  /** Freshest lastActivityAt ISO, when any live session has one. */
+  lastSignalAt: string | null;
+}
+
+/**
+ * Build the Active-card live run view for a task from real sessions + story AC.
+ * Returns null when there is no live signal (caller should not show the block).
+ * Phase labels stay calm (Running / Awaiting input) — no alert thresholds.
+ */
+export function storyLiveRunView(
+  story: Story,
+  sessions: readonly PortfolioSessionRef[],
+  now: number = Date.now(),
+): StoryLiveRunView | null {
+  const live = liveSessionsForStory(story, sessions);
+  if (live.length === 0) return null;
+
+  const sorted = live.slice().sort((a, b) => {
+    const aT = Date.parse(a.lastActivityAt ?? '') || Date.parse(a.startedAt ?? '') || 0;
+    const bT = Date.parse(b.lastActivityAt ?? '') || Date.parse(b.startedAt ?? '') || 0;
+    return bT - aT;
+  });
+  const primary = sorted[0];
+  const phase = LIVE_PHASE_LABEL[primary.status] ?? null;
+  const started =
+    sorted
+      .map((s) => s.startedAt)
+      .find((iso) => iso && Number.isFinite(Date.parse(iso))) ?? null;
+  const lastSignalAt =
+    sorted
+      .map((s) => s.lastActivityAt)
+      .find((iso) => iso && Number.isFinite(Date.parse(iso))) ?? null;
+
+  const acTotal = story.acceptanceCriteria?.length ?? 0;
+  const acComplete = story.passes ? acTotal : 0;
+  const progressPercent =
+    acTotal > 0 ? Math.round((acComplete / acTotal) * 100) : null;
+
+  return {
+    phase,
+    elapsed: formatLiveElapsed(started, now),
+    workers: live.length,
+    subagents: null,
+    progressPercent,
+    lastSignalAt,
+  };
+}
+
+/**
+ * Calm state-context line for non-Active task cards. Uses only real start /
+ * dependency state — no fabricated worker/run metadata.
+ */
+export function taskStateContext(
+  column: TaskColumn,
+  story: Story,
+  allStories: Story[],
+): string {
+  switch (column) {
+    case 'not-started': {
+      const completedIds = new Set(allStories.filter((s) => s.passes).map((s) => s.id));
+      const hasUnmet = (story.dependsOn ?? []).some((depId) => !completedIds.has(depId));
+      return hasUnmet ? 'Waiting on dependencies' : 'No run expected before work begins';
+    }
+    case 'in-progress':
+      return 'Started · no active worker';
+    case 'active':
+      return 'Live execution signal present';
+    case 'complete':
+      return 'Task-level checks passed';
+    default:
+      return '';
+  }
+}
+
+/**
+ * Derive an HQ-relative project directory from a prdPath for Files scoping.
+ * Returns null when the path cannot be resolved to a companies/.../projects/...
+ * prefix — callers must not invent a root.
+ */
+export function projectFilesRootFromPrdPath(prdPath: string | null | undefined): string | null {
+  if (!prdPath) return null;
+  const normalized = prdPath.replace(/\\/g, '/');
+  const marker = '/companies/';
+  const idx = normalized.indexOf(marker);
+  const relative =
+    idx >= 0
+      ? normalized.slice(idx + 1) // drop leading slash → companies/...
+      : normalized.startsWith('companies/')
+        ? normalized
+        : null;
+  if (!relative) return null;
+  // Drop trailing prd.json (or any filename) → project directory.
+  const parts = relative.split('/').filter(Boolean);
+  if (parts.length < 3) return null;
+  if (parts[parts.length - 1]?.toLowerCase().endsWith('.json')) {
+    parts.pop();
+  }
+  return parts.join('/');
+}

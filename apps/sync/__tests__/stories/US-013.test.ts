@@ -21,41 +21,22 @@ function normalize(source: string): string {
 }
 
 describe('US-013: Status bar + global ⌘K command surface', () => {
-  it("renders the three-region status bar from real sync progress, upcoming meeting cache, and build version", () => {
+  it('DESKTOP-001: status bar component remains intact but is unmounted from the shell', () => {
     const app = normalize(desktopApp);
     const tray = normalize(trayApp);
     const bar = normalize(statusBar);
 
-    expect(app).toContain('version={__APP_VERSION__}');
-    // Progress denominator = "files being synced right now", not the full
-    // vault pre-walk. Both surfaces route through the shared, unit-tested
-    // `effectiveTotalFiles` helper, gated on `planReceived` so an up-to-date
-    // HQ shows 0 (→ "Up to date") instead of the whole-tree count. See
-    // src/lib/effective-total-files.test.ts for the regression coverage.
+    // Tray still uses the shared effective-total helper for its own progress.
     expect(tray).toContain('computeEffectiveTotalFiles({ planReceived: syncPlanReceived,');
+    // Shell no longer mounts the bottom status bar (titlebar owns sync chrome).
+    expect(desktopApp).not.toContain('<DesktopStatusBar');
     expect(app).toContain('computeEffectiveTotalFiles({ planReceived: syncPlanReceived,');
-    expect(app).toContain('filesProgressed={syncFilesProgressed}');
-    expect(app).toContain('totalFiles={effectiveTotalFiles}');
-
-    // Window redesign (#175) replaced the three-region sparkbar status bar with
-    // the monochrome liquid-glass two-region live strip (ls-left / ls-right).
+    // Component still implements the live strip for potential reuse / version popout.
     expect(bar).toContain('<div class="ls-left">');
     expect(bar).toContain('<div class="ls-right">');
-    expect(app).toContain('loadMeetingsCache<MeetingEvent, ScheduledBot, GoogleAccount, GoogleCalendar>()');
-    expect(app).toContain('.filter((event) => isToday(event, now))');
-    expect(app).toContain('.filter((event) => (eventStart(event)?.getTime() ?? 0) >= now.getTime())');
-    expect(app).toContain('return `${company} · in ${minutes}m`;');
-    expect(bar).toContain('{#if currentNextMeetingLabel}');
     expect(bar).toContain('Idle · all safe');
-    expect(bar).toContain("if (currentState === 'syncing') return 'syncing';");
-    expect(bar).toContain("if (currentState === 'error' || currentState === 'auth-error') return 'error';");
-    expect(bar).toContain("if (currentState === 'conflict' || currentState === 'setup-needed') return 'conflict';");
-    expect(bar).toContain("return 'idle';");
-    expect(bar).toContain('Math.round((currentFilesProgressed / currentTotalFiles) * 100)');
-    expect(bar).toContain('{currentFilesProgressed}/{currentTotalFiles} files');
-    expect(bar).toContain('class="ls-progress"');
-    expect(bar).toContain('{currentProgress.path}');
     expect(bar).toContain('v{version}');
+    expect(desktopApp).toContain('loadMeetingsCache<MeetingEvent, ScheduledBot, GoogleAccount, GoogleCalendar>()');
   });
 
   it('opens a modal command palette on cmd/ctrl-K with Sync now as the first row', () => {

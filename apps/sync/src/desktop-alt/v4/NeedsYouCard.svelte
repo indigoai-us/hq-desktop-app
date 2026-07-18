@@ -77,13 +77,13 @@
   .v4-card-copy {
     min-width: 0;
     display: grid;
-    gap: 3px;
+    gap: var(--v4-row-stack-gap, 3px);
   }
 
   .v4-card-title {
     margin: 0;
     color: var(--v4-text-1);
-    font-size: var(--text-base);
+    font-size: var(--type-body, var(--text-base));
     font-weight: 400;
     line-height: 1.35;
     overflow-wrap: anywhere;
@@ -92,7 +92,7 @@
   .v4-card-sub {
     margin: 0;
     color: var(--v4-text-3);
-    font-size: var(--text-base);
+    font-size: var(--type-metadata, var(--text-micro));
     font-weight: 400;
     line-height: 1.4;
   }
@@ -111,7 +111,7 @@
     background: transparent;
     color: var(--v4-text-1);
     font: inherit;
-    font-size: var(--text-base);
+    font-size: var(--type-metadata, var(--text-micro));
     font-weight: 400;
     line-height: 1;
     white-space: nowrap;

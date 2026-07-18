@@ -28,6 +28,7 @@ describe('assigned raw-ID display surfaces', () => {
     const meetings = source('./MeetingsWindow.svelte');
     const popover = source('./Popover.svelte');
     const desktop = source('../desktop-alt/DesktopApp.svelte');
+    const meetingsPage = source('../desktop-alt/pages/MeetingsPage.svelte');
     const liveNow = source('../desktop-alt/components/LiveNowCard.svelte');
     const companyPage = source('../desktop-alt/pages/CompanyPage.svelte');
     const teamPanel = source('../desktop-alt/panels/TeamPanel.svelte');
@@ -36,8 +37,9 @@ describe('assigned raw-ID display surfaces', () => {
     expect(meetings).not.toContain('c.companyName ?? c.companyUid');
     expect(meetings).not.toContain('e.sourceCompanyUid.slice(0, 12)');
     expect(popover).toContain('title={visibleCloudError}');
-    expect(desktop).toContain('companyLabel(upcoming, meetingCompanyNamesByUid)');
     expect(desktop).not.toContain('?? upcoming.sourceCompanyUid');
+    expect(meetingsPage).toContain('companyLabel(upNext, companyNamesByUid)');
+    expect(meetingsPage).not.toContain('?? upNext.sourceCompanyUid');
     expect(liveNow).toContain('humanCompanyLabel(m)');
     expect(liveNow).not.toContain('m.companyName ?? m.companyUid');
     expect(companyPage).toContain('`Retry connecting ${company.displayName} to the cloud`');

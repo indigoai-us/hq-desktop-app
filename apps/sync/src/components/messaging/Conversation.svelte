@@ -495,6 +495,7 @@
     cursor: pointer;
     background: var(--pop-bg);
     color: var(--pop-text);
+    font-size: var(--text-base);
     transition: background-color 0.12s ease, color 0.12s ease;
   }
 
