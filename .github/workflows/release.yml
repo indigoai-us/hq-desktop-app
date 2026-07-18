@@ -521,6 +521,14 @@ jobs:
   publish:
     name: Publish GitHub release
     needs: [macos, windows]
+    # Platform decoupling: macOS and Windows must not block each other. Publish
+    # runs as long as the run wasn't cancelled and at least one platform build
+    # reached a terminal state that could have produced artifacts — macOS
+    # succeeded, or the Windows matrix ran (fully green OR partially/fully failed,
+    # in which case the succeeding legs still uploaded). The latest.json step
+    # below only includes the platforms whose artifacts actually landed, so a
+    # failed Windows sign no longer skips the macOS release (and vice versa).
+    if: ${{ !cancelled() && (needs.macos.result == 'success' || needs.windows.result == 'success' || needs.windows.result == 'failure') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -550,22 +558,18 @@ jobs:
           VERSION="${TAG#v}"
           BASE="https://github.com/${REPOSITORY}/releases/download/${TAG}"
 
-          require_file() {
-            local path="$1"
-            if [ ! -f "$path" ]; then
-              echo "::error::Missing required release artifact: $path"
-              exit 1
-            fi
-          }
-
-          # Both macOS and Windows x64 are required release platforms.
-          require_file "release/HQ_${VERSION}_universal.app.tar.gz"
-          require_file "release/HQ_${VERSION}_universal.app.tar.gz.sig"
-          require_file "release/HQ_${VERSION}_x64-setup.exe"
-          require_file "release/HQ_${VERSION}_x64-setup.exe.sig"
-
+          # Include only the platforms whose build actually produced artifacts.
+          # A failed Windows (or macOS) build no longer blocks the release — the
+          # surviving platform still ships. Missing platforms are loudly
+          # annotated (::warning::) and simply omitted; the Tauri updater treats
+          # an absent platform key as "no update", so those users stay on their
+          # current version until a later release covers them. Fail only if
+          # NOTHING built (an empty manifest would be a broken release).
+          MAC_TAR_PATH="release/HQ_${VERSION}_universal.app.tar.gz" \
           MAC_SIG_PATH="release/HQ_${VERSION}_universal.app.tar.gz.sig" \
+          WIN_X64_EXE_PATH="release/HQ_${VERSION}_x64-setup.exe" \
           WIN_X64_SIG_PATH="release/HQ_${VERSION}_x64-setup.exe.sig" \
+          WIN_ARM64_EXE_PATH="release/HQ_${VERSION}_arm64-setup.exe" \
           WIN_ARM64_SIG_PATH="release/HQ_${VERSION}_arm64-setup.exe.sig" \
           VERSION="$VERSION" \
           TAG="$TAG" \
@@ -574,30 +578,47 @@ jobs:
           import fs from "node:fs";
 
           const readSig = (path) => fs.readFileSync(path, "utf8").trim();
+          const has = (path) => !!path && fs.existsSync(path);
+          const warn = (m) => console.log(`::warning::${m}`);
           const version = process.env.VERSION;
           const tag = process.env.TAG;
           const base = process.env.BASE;
-          const macSig = readSig(process.env.MAC_SIG_PATH);
 
-          const platforms = {
-            "darwin-aarch64": {
-              signature: macSig,
-              url: `${base}/HQ_${version}_universal.app.tar.gz`,
-            },
-            "darwin-x86_64": {
-              signature: macSig,
-              url: `${base}/HQ_${version}_universal.app.tar.gz`,
-            },
-          };
-          platforms["windows-x86_64"] = {
-            signature: readSig(process.env.WIN_X64_SIG_PATH),
-            url: `${base}/HQ_${version}_x64-setup.exe`,
-          };
-          if (fs.existsSync(process.env.WIN_ARM64_SIG_PATH)) {
+          const platforms = {};
+
+          // macOS — one universal archive serves both arches.
+          if (has(process.env.MAC_TAR_PATH) && has(process.env.MAC_SIG_PATH)) {
+            const macSig = readSig(process.env.MAC_SIG_PATH);
+            const macUrl = `${base}/HQ_${version}_universal.app.tar.gz`;
+            platforms["darwin-aarch64"] = { signature: macSig, url: macUrl };
+            platforms["darwin-x86_64"] = { signature: macSig, url: macUrl };
+          } else {
+            warn("macOS artifacts missing — darwin-aarch64 / darwin-x86_64 omitted from latest.json (macOS users will not auto-update from this release).");
+          }
+
+          // Windows x86_64.
+          if (has(process.env.WIN_X64_EXE_PATH) && has(process.env.WIN_X64_SIG_PATH)) {
+            platforms["windows-x86_64"] = {
+              signature: readSig(process.env.WIN_X64_SIG_PATH),
+              url: `${base}/HQ_${version}_x64-setup.exe`,
+            };
+          } else {
+            warn("Windows x64 artifacts missing — windows-x86_64 omitted from latest.json (x64 users will not auto-update from this release).");
+          }
+
+          // Windows aarch64.
+          if (has(process.env.WIN_ARM64_EXE_PATH) && has(process.env.WIN_ARM64_SIG_PATH)) {
             platforms["windows-aarch64"] = {
               signature: readSig(process.env.WIN_ARM64_SIG_PATH),
               url: `${base}/HQ_${version}_arm64-setup.exe`,
             };
+          } else {
+            warn("Windows arm64 artifacts missing — windows-aarch64 omitted from latest.json.");
+          }
+
+          if (Object.keys(platforms).length === 0) {
+            console.error("::error::No platform artifacts were produced — refusing to publish an empty latest.json.");
+            process.exit(1);
           }
 
           const manifest = {
@@ -608,6 +629,7 @@ jobs:
           };
 
           fs.writeFileSync("release/latest.json", `${JSON.stringify(manifest, null, 2)}\n`);
+          console.log(`latest.json platforms: ${Object.keys(platforms).join(", ")}`);
           NODE
 
           cat release/latest.json

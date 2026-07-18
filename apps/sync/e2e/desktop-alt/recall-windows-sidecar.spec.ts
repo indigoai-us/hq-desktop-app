@@ -114,8 +114,13 @@ describe('Windows Recall SDK sidecar bundle parity', () => {
     expect(releaseWorkflow).toContain('windows-aarch64');
     expect(releaseWorkflow).toContain('RECALL_SIDECAR_NODE_EXECUTABLE');
     expect(releaseWorkflow).toContain('Get-FileHash $archive -Algorithm SHA256');
+    // arm64 stays conditionally included in latest.json — gated on its own
+    // artifacts existing — so a missing arm64 build never blocks the release.
+    // (Platform decoupling reworked the guard from a bare fs.existsSync on the
+    // sig to a has(exe) && has(sig) check; the intent — arm64 is optional — is
+    // unchanged.)
     expect(releaseWorkflow).toContain(
-      'if (fs.existsSync(process.env.WIN_ARM64_SIG_PATH))',
+      'has(process.env.WIN_ARM64_EXE_PATH) && has(process.env.WIN_ARM64_SIG_PATH)',
     );
     expect(releaseWorkflow).not.toContain('if (exists(process.env.WIN_ARM64_SIG_PATH))');
     expect(sidecarBuildSource).toContain('["aarch64-pc-windows-msvc", 0xaa64]');
