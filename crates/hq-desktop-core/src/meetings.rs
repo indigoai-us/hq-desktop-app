@@ -43,33 +43,105 @@ pub struct EventTime {
 }
 
 /// Subset of hq-pro `BotRecord` that the modal renders.
+///
+/// Deserialized via [`ScheduledBotWire`] so a bot whose id arrives under BOTH
+/// `botId` and `recallBotId` — which hq-pro started doing 2026-06-22 — no longer
+/// collides on a single aliased field and poisons the whole list parse (the
+/// "Could not refresh meeting bot status" failure). Serialization is unchanged:
+/// canonical camelCase keys.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", from = "ScheduledBotWire")]
 pub struct ScheduledBot {
-    #[serde(alias = "recallBotId")]
     pub bot_id: String,
     pub meeting_url: String,
     pub platform: String,
     pub status: String,
     pub calendar_event_id: Option<String>,
-    #[serde(default)]
     pub calendar_series_id: Option<String>,
-    #[serde(default)]
     pub recurring_meeting: bool,
-    #[serde(alias = "title")]
     pub meeting_title: Option<String>,
     pub scheduled_start_time: Option<String>,
-    #[serde(default)]
     pub created_at: Option<String>,
-    #[serde(default)]
     pub updated_at: Option<String>,
-    #[serde(default, alias = "company")]
     pub company_id: Option<String>,
-    #[serde(default)]
     pub auto_scheduled: bool,
     pub error_message: Option<String>,
-    #[serde(default)]
     pub source_landed: bool,
+}
+
+/// Deserialization shim for [`ScheduledBot`]. The bot id is split into two
+/// distinct optional keys (`botId` / `recallBotId`) so a payload carrying both
+/// no longer collides; the rest of the record flattens through unchanged.
+/// `From` prefers a non-empty `botId`, falling back to `recallBotId`, so
+/// botId-only, recall-only, and both-present bodies all parse. Because the
+/// flatten path buffers fields instead of rejecting on repeats, a literal
+/// duplicate `botId` key is tolerated too.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ScheduledBotWire {
+    #[serde(default)]
+    bot_id: Option<String>,
+    #[serde(default)]
+    recall_bot_id: Option<String>,
+    #[serde(flatten)]
+    rest: ScheduledBotRest,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ScheduledBotRest {
+    meeting_url: String,
+    platform: String,
+    status: String,
+    #[serde(default)]
+    calendar_event_id: Option<String>,
+    #[serde(default)]
+    calendar_series_id: Option<String>,
+    #[serde(default)]
+    recurring_meeting: bool,
+    #[serde(default, alias = "title")]
+    meeting_title: Option<String>,
+    #[serde(default)]
+    scheduled_start_time: Option<String>,
+    #[serde(default)]
+    created_at: Option<String>,
+    #[serde(default)]
+    updated_at: Option<String>,
+    #[serde(default, alias = "company")]
+    company_id: Option<String>,
+    #[serde(default)]
+    auto_scheduled: bool,
+    #[serde(default)]
+    error_message: Option<String>,
+    #[serde(default)]
+    source_landed: bool,
+}
+
+impl From<ScheduledBotWire> for ScheduledBot {
+    fn from(w: ScheduledBotWire) -> Self {
+        let r = w.rest;
+        ScheduledBot {
+            bot_id: w
+                .bot_id
+                .filter(|s| !s.is_empty())
+                .or(w.recall_bot_id)
+                .unwrap_or_default(),
+            meeting_url: r.meeting_url,
+            platform: r.platform,
+            status: r.status,
+            calendar_event_id: r.calendar_event_id,
+            calendar_series_id: r.calendar_series_id,
+            recurring_meeting: r.recurring_meeting,
+            meeting_title: r.meeting_title,
+            scheduled_start_time: r.scheduled_start_time,
+            created_at: r.created_at,
+            updated_at: r.updated_at,
+            company_id: r.company_id,
+            auto_scheduled: r.auto_scheduled,
+            error_message: r.error_message,
+            source_landed: r.source_landed,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -136,27 +208,74 @@ pub struct InviteBotBody {
     pub participants: Vec<OntologyParticipant>,
 }
 
+/// Deserialized via [`CancelBotResultWire`] for the same reason as
+/// [`ScheduledBot`]: the cancel response carries the bot id under both `botId`
+/// and `recallBotId`, which a single aliased field rejects as a duplicate.
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", from = "CancelBotResultWire")]
 pub struct CancelBotResult {
-    #[serde(alias = "recallBotId")]
     pub bot_id: String,
-    #[serde(default)]
     pub status: Option<String>,
-    #[serde(default)]
     pub cancelled: bool,
-    #[serde(default)]
     pub scope: Option<String>,
-    #[serde(default)]
     pub cancelled_count: Option<u32>,
-    #[serde(default)]
     pub failed_count: Option<u32>,
-    #[serde(default)]
     pub calendar_series_id: Option<String>,
-    #[serde(default)]
     pub recurring_meeting: bool,
-    #[serde(default)]
     pub cancelled_bot_ids: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CancelBotResultWire {
+    #[serde(default)]
+    bot_id: Option<String>,
+    #[serde(default)]
+    recall_bot_id: Option<String>,
+    #[serde(flatten)]
+    rest: CancelBotResultRest,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CancelBotResultRest {
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    cancelled: bool,
+    #[serde(default)]
+    scope: Option<String>,
+    #[serde(default)]
+    cancelled_count: Option<u32>,
+    #[serde(default)]
+    failed_count: Option<u32>,
+    #[serde(default)]
+    calendar_series_id: Option<String>,
+    #[serde(default)]
+    recurring_meeting: bool,
+    #[serde(default)]
+    cancelled_bot_ids: Vec<String>,
+}
+
+impl From<CancelBotResultWire> for CancelBotResult {
+    fn from(w: CancelBotResultWire) -> Self {
+        let r = w.rest;
+        CancelBotResult {
+            bot_id: w
+                .bot_id
+                .filter(|s| !s.is_empty())
+                .or(w.recall_bot_id)
+                .unwrap_or_default(),
+            status: r.status,
+            cancelled: r.cancelled,
+            scope: r.scope,
+            cancelled_count: r.cancelled_count,
+            failed_count: r.failed_count,
+            calendar_series_id: r.calendar_series_id,
+            recurring_meeting: r.recurring_meeting,
+            cancelled_bot_ids: r.cancelled_bot_ids,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -547,6 +666,60 @@ mod tests {
         assert_eq!(bot.bot_id, "bot-alias");
         assert_eq!(bot.meeting_title.as_deref(), Some("Alias title"));
         assert_eq!(bot.company_id.as_deref(), Some("cmp_alias"));
+    }
+
+    /// Regression — hq-pro started returning a bot's id under BOTH `botId` and
+    /// `recallBotId` in the same object (observed 2026-06-22). With a single
+    /// `#[serde(alias = "recallBotId")]` field mapping both keys to `bot_id`,
+    /// serde rejected the payload as a duplicate field, so the ENTIRE bot list
+    /// failed to parse — surfacing as "Could not refresh meeting bot status"
+    /// and a silently dropped unattributed poll. Both keys present must parse,
+    /// preferring the canonical `botId`.
+    #[test]
+    fn scheduled_bot_tolerates_both_bot_id_and_recall_bot_id() {
+        let json = r#"{
+            "botId": "bot-canonical",
+            "recallBotId": "bot-canonical",
+            "status": "scheduled",
+            "meetingUrl": "https://us06web.zoom.us/j/85906",
+            "platform": "zoom"
+        }"#;
+        let bot: ScheduledBot =
+            serde_json::from_str(json).expect("both botId and recallBotId must parse");
+        assert_eq!(bot.bot_id, "bot-canonical");
+    }
+
+    /// The real failing shape: a `GET /v1/bot/list` body whose bot carries both
+    /// id keys must deserialize into `BotsResponse`, not blow up the whole list.
+    #[test]
+    fn bots_response_tolerates_duplicate_bot_id_keys() {
+        let json = r#"{
+            "bots": [{
+                "botId": "bot-1",
+                "recallBotId": "bot-1",
+                "status": "recording",
+                "meetingUrl": "https://meet.google.com/abc",
+                "platform": "google_meet"
+            }]
+        }"#;
+        let parsed: BotsResponse =
+            serde_json::from_str(json).expect("bot list with duplicate id keys must parse");
+        assert_eq!(parsed.bots.len(), 1);
+        assert_eq!(parsed.bots[0].bot_id, "bot-1");
+    }
+
+    /// The cancel response shares the same `recallBotId` alias, so it must also
+    /// tolerate both id keys arriving together.
+    #[test]
+    fn cancel_bot_result_tolerates_both_bot_id_and_recall_bot_id() {
+        let json = r#"{
+            "botId": "bot-canonical",
+            "recallBotId": "bot-canonical",
+            "cancelled": true
+        }"#;
+        let result: CancelBotResult =
+            serde_json::from_str(json).expect("both botId and recallBotId must parse");
+        assert_eq!(result.bot_id, "bot-canonical");
     }
 
     #[test]
