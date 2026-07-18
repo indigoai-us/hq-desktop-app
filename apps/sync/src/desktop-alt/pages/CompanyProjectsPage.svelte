@@ -1,4 +1,13 @@
 <script lang="ts">
+  /**
+   * Company Projects — portfolio Kanban (DESKTOP-004).
+   *
+   * Defaults to a four-column board: Not started · In progress · Active · Complete.
+   * Active requires a live execution signal from the sessions store; board.json
+   * "active" alone is In progress. Board/List, search, state filter, and owner
+   * filter share one control row; New project remains the primary action.
+   */
+  import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { buildClaudeCodeUrl } from '../../lib/claude-code-link';
   import {
@@ -9,15 +18,27 @@
   } from '../lib/local-projects';
   import {
     compareProjectsByRecency,
+    groupProjectsByPortfolioColumn,
+    matchesPortfolioStateFilter,
+    portfolioColumn,
+    portfolioStateContext,
     projectDisplayName,
-    projectListStatus,
+    projectLiveRunView,
     projectProgress,
+    PORTFOLIO_COLUMNS,
+    PORTFOLIO_COLUMN_CAPTION,
+    PORTFOLIO_COLUMN_LABEL,
+    PORTFOLIO_STATE_FILTER_OPTIONS,
+    type PortfolioColumn,
+    type PortfolioStateFilter,
+    type PortfolioViewMode,
     type Project,
-    type ProjectListStatus,
     type Story,
   } from '../lib/projects-model';
+  import { relativeActivity } from '../lib/sessions';
+  import { sessionsStore, startSessionsStore } from '../lib/sessions-store.svelte';
   import ProjectDetailView from './ProjectDetailView.svelte';
-  import StoryPanel from '../v4/StoryPanel.svelte';
+  import ProjectRow from '../components/ProjectRow.svelte';
   import '../v4/tokens.css';
 
   interface Props {
@@ -25,16 +46,8 @@
     onnewproject?: () => void | Promise<void>;
   }
 
-  type DotTone = 'ok' | 'warn' | 'error' | 'idle';
+  /** Legacy cycle filter kept for needs-link + work-actions contracts. */
   type ProjectFilter = 'all' | 'active' | 'needs-link';
-
-  interface ProjectGroup {
-    key: string;
-    label: string;
-    tone: DotTone;
-    projects: Project[];
-    noGoal: boolean;
-  }
 
   let { slug, onnewproject }: Props = $props();
 
@@ -42,9 +55,19 @@
   let projects = $state<Project[]>([]);
   let loading = $state(true);
   let error = $state<string | null>(null);
-  let projectFilter = $state<ProjectFilter>('all');
-  /** Free-text filter over project name (console-style scannability). */
+  /** Free-text filter over project name/description. */
   let searchQuery = $state('');
+  /** Portfolio state filter (All states / column). */
+  let stateFilter = $state<PortfolioStateFilter>('all');
+  /** Owner filter — empty string means Anyone. */
+  let ownerFilter = $state('');
+  /** Board is the DESKTOP-004 default. */
+  let viewMode = $state<PortfolioViewMode>('board');
+  /**
+   * Legacy projectFilter still supports the needs-link cycle used by Link goal
+   * empty-state contracts and company-work-actions.
+   */
+  let projectFilter = $state<ProjectFilter>('all');
   let actionBusy = $state<string | null>(null);
   let actionMessage = $state<string | null>(null);
   let selected = $state<Project | null>(null);
@@ -52,145 +75,40 @@
   let storiesLoading = $state(false);
   let storiesError = $state<string | null>(null);
   let selectedStoryId = $state<string | null>(null);
+  /**
+   * The workspace list is refreshed in the background and may re-deliver the
+   * same company slug through props. Keep the open project/task workspace in
+   * place for those same-company refreshes; only a real company change should
+   * reset local navigation.
+   */
+  let loadedSlug: string | null = null;
   // project board-id / prdPath → creator (display name). Best-effort, from the
   // cloud board; empty when unavailable so Lead falls back to "Unassigned".
   let creatorByKey = $state<Record<string, string>>({});
+  let now = $state(Date.now());
+
+  onMount(() => {
+    startSessionsStore();
+    const tick = setInterval(() => {
+      now = Date.now();
+    }, 15_000);
+    return () => clearInterval(tick);
+  });
 
   const companyProjects = $derived(
     projects
       .filter((project) => project.company === slug)
       .sort(compareProjectsByRecency),
   );
-  const filteredCompanyProjects = $derived(
-    companyProjects.filter((project) => {
-      if (!matchesProjectFilter(project, projectFilter)) return false;
-      const q = searchQuery.trim().toLowerCase();
-      if (!q) return true;
-      return projectDisplayName(project).toLowerCase().includes(q);
-    }),
-  );
-  const groups = $derived.by(() => groupProjectsByGoal(objectives, filteredCompanyProjects));
 
-  // ── Column sorting (within each goal group; group order is preserved) ───────
-  type SortKey = 'project' | 'lead' | 'progress' | 'status';
-  let sortKey = $state<SortKey>('project');
-  let sortDir = $state<'asc' | 'desc'>('asc');
+  const sessions = $derived(sessionsStore.sessions);
 
-  function toggleSort(key: SortKey): void {
-    if (sortKey === key) {
-      sortDir = sortDir === 'asc' ? 'desc' : 'asc';
-    } else {
-      sortKey = key;
-      sortDir = 'asc';
-    }
+  function leadLabel(project: Project): string {
+    const byId = creatorByKey[project.id];
+    if (byId) return byId;
+    const byPath = project.prdPath ? creatorByKey[project.prdPath] : undefined;
+    return byPath ?? 'Unassigned';
   }
-
-  const STATUS_RANK: Record<string, number> = {
-    live: 0,
-    'in-progress': 1,
-    complete: 2,
-    archived: 3,
-  };
-
-  function compareProjects(a: Project, b: Project): number {
-    let cmp = 0;
-    if (sortKey === 'project') {
-      cmp = projectDisplayName(a).localeCompare(projectDisplayName(b));
-    } else if (sortKey === 'lead') {
-      cmp = leadLabel(a).localeCompare(leadLabel(b));
-    } else if (sortKey === 'progress') {
-      cmp =
-        projectProgress(a.storiesComplete, a.storiesTotal).percent -
-        projectProgress(b.storiesComplete, b.storiesTotal).percent;
-    } else {
-      cmp =
-        (STATUS_RANK[projectListStatus(a)] ?? 99) - (STATUS_RANK[projectListStatus(b)] ?? 99);
-    }
-    // Stable tiebreak on name so equal keys keep a deterministic order.
-    if (cmp === 0) cmp = projectDisplayName(a).localeCompare(projectDisplayName(b));
-    return sortDir === 'asc' ? cmp : -cmp;
-  }
-
-  const sortedGroups = $derived(
-    groups.map((group) => ({
-      ...group,
-      projects: [...group.projects].sort(compareProjects),
-    })),
-  );
-
-  const sortArrow = (key: SortKey): string =>
-    sortKey !== key ? '' : sortDir === 'asc' ? ' ↑' : ' ↓';
-  const selectedStory = $derived(
-    selectedStoryId === null
-      ? null
-      : (stories.find((story) => story.id === selectedStoryId) ?? null),
-  );
-
-  $effect(() => {
-    const activeSlug = slug;
-    objectives = [];
-    projects = [];
-    error = null;
-    selected = null;
-    stories = [];
-    storiesError = null;
-    selectedStoryId = null;
-    creatorByKey = {};
-
-    if (!activeSlug) {
-      loading = false;
-      return;
-    }
-
-    loading = true;
-    let cancelled = false;
-
-    // Best-effort, decoupled from the gating load below: a creators fetch must
-    // never error the Projects page or block it — the Lead column simply stays
-    // "Unassigned" if it fails or the board isn't reachable.
-    void invoke<Array<{ id: string; prdPath?: string | null; creator: string }>>(
-      'get_company_project_creators',
-      { slug: activeSlug },
-    )
-      .then((rows) => {
-        if (cancelled) return;
-        const map: Record<string, string> = {};
-        for (const row of rows ?? []) {
-          if (!row?.creator) continue;
-          if (row.id) map[row.id] = row.creator;
-          if (row.prdPath) map[row.prdPath] = row.creator;
-        }
-        creatorByKey = map;
-      })
-      .catch((err) => {
-        console.warn(`get_company_project_creators(${activeSlug}) failed:`, err);
-      });
-
-    void (async () => {
-      try {
-        const [goals, allProjects] = await Promise.all([
-          loadCompanyGoals(activeSlug),
-          loadLocalProjects(),
-        ]);
-        if (cancelled) return;
-        objectives = goals.objectives;
-        projects = allProjects;
-      } catch (err) {
-        console.error('CompanyProjectsPage load failed:', err);
-        if (!cancelled) {
-          error = 'Projects unavailable. Try again after a sync.';
-          objectives = [];
-          projects = [];
-        }
-      } finally {
-        if (!cancelled) loading = false;
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  });
 
   function normalizeId(value: string | null | undefined): string {
     return (value ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '');
@@ -230,11 +148,22 @@
     return objectives.some((objective) => projectMatchesObjective(project, objective));
   }
 
+  function linkedGoalLabel(project: Project): string | null {
+    const goal = objectives.find((objective) => projectMatchesObjective(project, objective));
+    if (!goal) return null;
+    return goal.title || goal.id || null;
+  }
+
+  function resolveColumn(project: Project): PortfolioColumn {
+    // Active only when projectLiveRunView finds a real live session signal.
+    return portfolioColumn(project, projectLiveRunView(project, sessions, now) !== null);
+  }
+
   function matchesProjectFilter(project: Project, filter: ProjectFilter): boolean {
     if (filter === 'needs-link') return !projectLinkedToAnyGoal(project);
     if (filter === 'active') {
-      const status = projectListStatus(project);
-      return status === 'live' || status === 'in-progress';
+      const col = resolveColumn(project);
+      return col === 'active' || col === 'in-progress';
     }
     return true;
   }
@@ -249,6 +178,115 @@
     projectFilter =
       projectFilter === 'all' ? 'active' : projectFilter === 'active' ? 'needs-link' : 'all';
   }
+
+  const ownerOptions = $derived.by(() => {
+    const names = new Set<string>();
+    for (const project of companyProjects) {
+      const lead = leadLabel(project);
+      if (lead && lead !== 'Unassigned') names.add(lead);
+    }
+    return [...names].sort((a, b) => a.localeCompare(b));
+  });
+
+  const filteredCompanyProjects = $derived(
+    companyProjects.filter((project) => {
+      if (!matchesProjectFilter(project, projectFilter)) return false;
+      const col = resolveColumn(project);
+      if (!matchesPortfolioStateFilter(col, stateFilter)) return false;
+      if (ownerFilter && leadLabel(project) !== ownerFilter) return false;
+      const q = searchQuery.trim().toLowerCase();
+      if (!q) return true;
+      const name = projectDisplayName(project).toLowerCase();
+      const desc = (project.description ?? '').toLowerCase();
+      return name.includes(q) || desc.includes(q) || project.id.toLowerCase().includes(q);
+    }),
+  );
+
+  const portfolioGroups = $derived(
+    groupProjectsByPortfolioColumn(filteredCompanyProjects, sessions),
+  );
+
+  const liveCount = $derived(portfolioGroups.active.length);
+
+  const selectedStory = $derived(
+    selectedStoryId === null
+      ? null
+      : (stories.find((story) => story.id === selectedStoryId) ?? null),
+  );
+
+  $effect(() => {
+    const activeSlug = slug;
+    error = null;
+    const companyChanged = loadedSlug !== activeSlug;
+    loadedSlug = activeSlug;
+
+    if (companyChanged) {
+      objectives = [];
+      projects = [];
+      selected = null;
+      stories = [];
+      storiesError = null;
+      selectedStoryId = null;
+      creatorByKey = {};
+    }
+
+    if (!activeSlug) {
+      loading = false;
+      return;
+    }
+
+    loading = true;
+    let cancelled = false;
+
+    // Best-effort, decoupled from the gating load below: a creators fetch must
+    // never error the Projects page or block it — the Lead column simply stays
+    // "Unassigned" if it fails or the board isn't reachable.
+    void invoke<Array<{ id: string; prdPath?: string | null; creator: string }>>(
+      'get_company_project_creators',
+      { slug: activeSlug },
+    )
+      .then((rows) => {
+        if (cancelled) return;
+        const map: Record<string, string> = {};
+        for (const row of rows ?? []) {
+          if (!row?.creator) continue;
+          if (row.id) map[row.id] = row.creator;
+          if (row.prdPath) map[row.prdPath] = row.creator;
+        }
+        creatorByKey = map;
+      })
+      .catch((err) => {
+        console.warn(`get_company_project_creators(${activeSlug}) failed:`, err);
+      });
+
+    void (async () => {
+      try {
+        const [goals, allProjects] = await Promise.all([
+          loadCompanyGoals(activeSlug),
+          loadLocalProjects(),
+        ]);
+        if (cancelled) return;
+        objectives = goals.objectives;
+        projects = allProjects;
+        if (!companyChanged && selected) {
+          selected = allProjects.find((project) => project.id === selected?.id) ?? selected;
+        }
+      } catch (err) {
+        console.error('CompanyProjectsPage load failed:', err);
+        if (!cancelled) {
+          error = 'Projects unavailable. Try again after a sync.';
+          objectives = [];
+          projects = [];
+        }
+      } finally {
+        if (!cancelled) loading = false;
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  });
 
   async function requestLinkProject(project: Project) {
     if (actionBusy) return;
@@ -288,64 +326,6 @@
     }
   }
 
-  function goalTone(objective: Objective): DotTone {
-    const status = objective.status.toLowerCase().replace(/[_\s]+/g, '-');
-    if (status === 'on-track' || status === 'active' || status === 'running') return 'ok';
-    if (status === 'at-risk' || status === 'review') return 'warn';
-    if (status === 'off-track' || status === 'blocked') return 'error';
-    return 'idle';
-  }
-
-  function groupProjectsByGoal(goals: Objective[], list: Project[]): ProjectGroup[] {
-    const assigned = new Set<string>();
-    const sections: ProjectGroup[] = [];
-
-    for (const goal of goals) {
-      const linked = list.filter((project) => projectMatchesObjective(project, goal));
-      for (const project of linked) assigned.add(project.id);
-      if (linked.length > 0) {
-        sections.push({
-          key: goal.id || goal.title,
-          label: goal.title || 'Untitled goal',
-          tone: goalTone(goal),
-          projects: linked,
-          noGoal: false,
-        });
-      }
-    }
-
-    const unlinked = list.filter((project) => !assigned.has(project.id));
-    if (unlinked.length > 0) {
-      sections.push({
-        key: 'no-goal',
-        label: 'NO GOAL',
-        tone: 'idle',
-        projects: unlinked,
-        noGoal: true,
-      });
-    }
-
-    return sections;
-  }
-
-  // Lead = the project's CREATOR, joined from the cloud board's S3 `created-by`
-  // author metadata (resolved honestly server-side — never fabricated). Keyed by
-  // both board id and prdPath so either matches a local project. A project with
-  // no recorded creator (e.g. a prd uploaded before author metadata, or a
-  // local-only company) stays honestly "Unassigned".
-  function leadLabel(project: Project): string {
-    const byId = creatorByKey[project.id];
-    if (byId) return byId;
-    const byPath = project.prdPath ? creatorByKey[project.prdPath] : undefined;
-    return byPath ?? 'Unassigned';
-  }
-
-  function startedLabel(project: Project): string {
-    const total = project.storiesTotal === 1 ? '1 story' : `${project.storiesTotal} stories`;
-    const started = formatProjectDate(project.createdAt);
-    return started ? `started ${started} · ${total}` : total;
-  }
-
   // Real project start = its createdAt timestamp (when known), formatted as a
   // short calendar date — not a weekday hashed from the project id.
   function formatProjectDate(iso: string | null | undefined): string | null {
@@ -355,33 +335,13 @@
     return new Date(time).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
   }
 
-  // prd.json has no target/due date, so there is nothing real to show here. An
-  // em dash reads as "no target set" instead of a date hashed from the id.
-  function targetLabel(): string {
-    return '—';
-  }
-
-  function statusLabel(status: ProjectListStatus): string {
-    switch (status) {
-      case 'live':
-        return 'Running';
-      case 'in-progress':
-        return 'Review';
-      case 'complete':
-        return 'Done';
-      case 'archived':
-        return 'Archived';
-      default:
-        return 'Gated';
-    }
-  }
-
-  function statusTone(status: ProjectListStatus): DotTone {
-    if (status === 'live') return 'ok';
-    if (status === 'in-progress') return 'warn';
-    if (status === 'complete') return 'ok';
-    if (status === 'archived') return 'idle';
-    return 'idle';
+  function listUpdatedLabel(project: Project): string {
+    const iso = project.updatedAt || project.createdAt;
+    if (!iso) return '—';
+    // Prefer compact relative when sessions helper can parse it; else short date.
+    const rel = relativeActivity(iso, now);
+    if (rel !== '—') return rel;
+    return formatProjectDate(iso) ?? '—';
   }
 
   function selectStoryById(storyId: string): void {
@@ -458,6 +418,7 @@
       );
     }
   }
+
 </script>
 
 <section class="company-projects" aria-labelledby="company-projects-title" data-testid="company-projects-page">
@@ -471,13 +432,8 @@
       onback={backToProjects}
       onselectStory={openStory}
       onStatusChange={onProjectStatusChange}
-    />
-
-    <StoryPanel
-      story={selectedStory}
-      project={selected}
-      prdPath={selected.prdPath}
-      onclose={closeStory}
+      selectedStory={selectedStory}
+      oncloseStory={closeStory}
       onselectDependency={selectStoryById}
       {onStoryPassesChange}
     />
@@ -487,44 +443,110 @@
         <h2 id="company-projects-title">Projects</h2>
         <span>
           {filteredCompanyProjects.length} of {companyProjects.length}
-          {companyProjects.length === 1 ? ' project' : ' projects'} · stories live here (no separate Tasks tab)
+          {companyProjects.length === 1 ? ' project' : ' projects'}
+          {#if liveCount > 0}
+            · {liveCount} live
+          {/if}
+          · stories live here (no separate Tasks tab)
         </span>
       </div>
-      <div class="project-actions" aria-label="Project actions">
+      <div class="project-actions detail-primary-actions" aria-label="Project actions">
         {#if actionMessage}
           <span class="action-status" role="status">{actionMessage}</span>
         {/if}
-        <label class="project-search">
-          <span class="visually-hidden">Search projects</span>
-          <input
-            type="search"
-            placeholder="Search projects…"
-            bind:value={searchQuery}
-            data-testid="project-search"
-          />
-        </label>
-        <button type="button" onclick={cycleFilter}>Filter: {filterLabel(projectFilter)}</button>
-        <button type="button" onclick={() => void onnewproject?.()}>New project</button>
+        <button type="button" class="primary-action" onclick={() => void onnewproject?.()}>
+          New project
+        </button>
       </div>
     </header>
+
+    <div class="portfolio-tools" data-testid="portfolio-tools">
+      <label class="project-search">
+        <span class="visually-hidden">Search projects</span>
+        <input
+          type="search"
+          placeholder="Search projects…"
+          bind:value={searchQuery}
+          data-testid="project-search"
+        />
+      </label>
+
+      <label class="tool-select">
+        <span class="visually-hidden">Filter by state</span>
+        <select
+          bind:value={stateFilter}
+          data-testid="portfolio-state-filter"
+          aria-label="Filter by project state"
+        >
+          {#each PORTFOLIO_STATE_FILTER_OPTIONS as option (option.value)}
+            <option value={option.value}>{option.label}</option>
+          {/each}
+        </select>
+      </label>
+
+      <label class="tool-select">
+        <span class="visually-hidden">Filter by owner</span>
+        <select
+          bind:value={ownerFilter}
+          data-testid="portfolio-owner-filter"
+          aria-label="Filter by project owner"
+        >
+          <option value="">Owner · Anyone</option>
+          {#each ownerOptions as owner (owner)}
+            <option value={owner}>{owner}</option>
+          {/each}
+        </select>
+      </label>
+
+      <!-- Legacy cycle filter (All / Active / Needs link) for link handoff + contracts. -->
+      <button
+        type="button"
+        class="tool-button"
+        data-testid="portfolio-legacy-filter"
+        onclick={cycleFilter}
+      >
+        Filter: {filterLabel(projectFilter)}
+      </button>
+
+      <div class="view-toggle" role="group" aria-label="Project view">
+        <button
+          type="button"
+          class="toggle-segment"
+          class:is-active={viewMode === 'board'}
+          aria-pressed={viewMode === 'board'}
+          data-testid="view-toggle-board"
+          onclick={() => (viewMode = 'board')}
+        >
+          Board
+        </button>
+        <button
+          type="button"
+          class="toggle-segment"
+          class:is-active={viewMode === 'list'}
+          aria-pressed={viewMode === 'list'}
+          data-testid="view-toggle-list"
+          onclick={() => (viewMode = 'list')}
+        >
+          List
+        </button>
+      </div>
+    </div>
 
     {#if error}
       <div class="projects-error" role="alert">{error}</div>
     {/if}
 
-    <div class="project-table" aria-busy={loading}>
-      <div class="project-table-head">
-        <button type="button" class="th" class:sorted={sortKey === 'project'} onclick={() => toggleSort('project')} aria-label="Sort by project">PROJECT{sortArrow('project')}</button>
-        <button type="button" class="th" class:sorted={sortKey === 'lead'} onclick={() => toggleSort('lead')} aria-label="Sort by lead">LEAD{sortArrow('lead')}</button>
-        <button type="button" class="th" class:sorted={sortKey === 'progress'} onclick={() => toggleSort('progress')} aria-label="Sort by progress">PROGRESS{sortArrow('progress')}</button>
-        <span class="th-static">TARGET</span>
-        <button type="button" class="th" class:sorted={sortKey === 'status'} onclick={() => toggleSort('status')} aria-label="Sort by status">STATUS{sortArrow('status')}</button>
-      </div>
-
+    <div class="portfolio-body" aria-busy={loading}>
       {#if loading}
-        {#each [0, 1, 2, 3] as row (row)}
-          <div class="project-skeleton"></div>
-        {/each}
+        <div class="board-loading" aria-busy="true" aria-label="Loading projects">
+          {#each PORTFOLIO_COLUMNS as column (column)}
+            <div class="skeleton-column">
+              <div class="skeleton-header"></div>
+              <div class="skeleton-card"></div>
+              <div class="skeleton-card"></div>
+            </div>
+          {/each}
+        </div>
       {:else if companyProjects.length === 0}
         <div class="empty-state" data-testid="empty-projects-state">
           <span>No projects yet</span>
@@ -532,64 +554,131 @@
         </div>
       {:else if filteredCompanyProjects.length === 0}
         <div class="empty-state" data-testid="filtered-projects-empty-state">
-          <span>No projects match {filterLabel(projectFilter).toLowerCase()}</span>
-          <p>Change the filter to see the rest of this company’s projects.</p>
+          <span>No projects match the current filters</span>
+          <p>
+            {#if projectFilter === 'needs-link'}
+              No projects match {filterLabel(projectFilter).toLowerCase()}.
+            {:else}
+              Change the state, owner, or search filters to see more projects.
+            {/if}
+          </p>
+        </div>
+      {:else if viewMode === 'board'}
+        <div
+          class="kanban-board"
+          data-testid="portfolio-kanban"
+          aria-label="Projects by operational state"
+        >
+          {#each PORTFOLIO_COLUMNS as column (column)}
+            {@const columnProjects = portfolioGroups[column]}
+            <section
+              class="kanban-column"
+              data-testid={`portfolio-column-${column}`}
+              aria-labelledby={`portfolio-col-${column}`}
+            >
+              <header class="kanban-column-head">
+                <span class="kanban-column-title" id={`portfolio-col-${column}`}>
+                  {#if column === 'active'}
+                    <span class="live-dot" aria-hidden="true"></span>
+                  {/if}
+                  {PORTFOLIO_COLUMN_LABEL[column]}
+                  <span class="kanban-column-count">{columnProjects.length}</span>
+                </span>
+                <span class="kanban-column-caption">{PORTFOLIO_COLUMN_CAPTION[column]}</span>
+              </header>
+              <div class="kanban-stack">
+                {#if columnProjects.length === 0}
+                  <div class="column-empty">
+                    <span>No projects</span>
+                  </div>
+                {:else}
+                  {#each columnProjects as project (project.id)}
+                    {@const liveRun = projectLiveRunView(project, sessions, now)}
+                    {@const goal = linkedGoalLabel(project)}
+                    <ProjectRow
+                      {project}
+                      showCompany={false}
+                      goalLabel={goal}
+                      ownerLabel={leadLabel(project)}
+                      liveRun={column === 'active' ? liveRun : null}
+                      stateContext={portfolioStateContext(column, project)}
+                      {now}
+                      onselect={(p) => void openProject(p)}
+                      onlinkgoal={!goal ? requestLinkProject : undefined}
+                      linkBusy={actionBusy === `link-${project.id}`}
+                    />
+                  {/each}
+                {/if}
+              </div>
+            </section>
+          {/each}
         </div>
       {:else}
-        {#each sortedGroups as group (group.key)}
-          <section class="project-group" aria-labelledby={`project-group-${group.key}`}>
-            <h3 id={`project-group-${group.key}`} class="project-group-title">
-              <span class={`status-dot ${group.tone}`} aria-hidden="true"></span>
-              <span>{group.label}</span>
-            </h3>
-
-            {#each group.projects as project, index (project.id)}
-              {@const progress = projectProgress(project.storiesComplete, project.storiesTotal)}
-              {@const status = projectListStatus(project)}
-              {@const lead = leadLabel(project)}
-              <div
-                class="project-row"
-                data-testid="project-row"
-                role="button"
-                tabindex="0"
-                onclick={() => void openProject(project)}
-                onkeydown={(event) => openProjectFromKey(event, project)}
-              >
-                <div class="project-main">
-                  <strong>{projectDisplayName(project)}</strong>
-                  <span>
-                    {startedLabel(project)}
-                    {#if group.noGoal && index === group.projects.length - 1}
-                      <button
-                        type="button"
-                        class="link-nudge"
-                        onclick={(event) => {
-                          event.stopPropagation();
-                          void requestLinkProject(project);
-                        }}
-                        disabled={actionBusy !== null}
-                      >
-                        {actionBusy === `link-${project.id}` ? 'Opening…' : 'Link'}
-                      </button>
-                    {/if}
-                  </span>
-                </div>
-                <div class="lead-cell"><span>{lead}</span></div>
-                <div class="progress-cell" aria-label={`${progress.percent}% complete`}>
-                  <span class="progress-track" aria-hidden="true">
-                    <span class="progress-fill" style={`width: ${progress.percent}%`}></span>
-                  </span>
-                  <span>{progress.complete}/{progress.total}</span>
-                </div>
-                <div class="target-cell">{targetLabel()}</div>
-                <div class="status-cell">
-                  <span class={`status-dot ${statusTone(status)}`} aria-hidden="true"></span>
-                  <span>{statusLabel(status)}</span>
-                </div>
+        <div class="project-list-surface" data-testid="portfolio-list" aria-label="Projects list">
+          <div class="project-table-head">
+            <span>Project</span>
+            <span>Goal</span>
+            <span>Owner</span>
+            <span>Tasks</span>
+            <span>Updated</span>
+          </div>
+          {#each PORTFOLIO_COLUMNS as column (column)}
+            {@const columnProjects = portfolioGroups[column]}
+            {#if columnProjects.length > 0}
+              <div class="project-group-label">
+                <span>{PORTFOLIO_COLUMN_LABEL[column]}</span>
+                <span class="group-count">{columnProjects.length}</span>
               </div>
-            {/each}
-          </section>
-        {/each}
+              {#each columnProjects as project (project.id)}
+                {@const progress = projectProgress(project.storiesComplete, project.storiesTotal)}
+                {@const goal = linkedGoalLabel(project)}
+                <div
+                  class="project-list-row"
+                  data-testid="project-row"
+                  role="button"
+                  tabindex="0"
+                  onclick={() => void openProject(project)}
+                  onkeydown={(event) => openProjectFromKey(event, project)}
+                >
+                  <div class="project-name-cell">
+                    <strong class="list-name">{projectDisplayName(project)}</strong>
+                    <span class="list-desc">
+                      {project.description ||
+                        (project.createdAt
+                          ? `started ${formatProjectDate(project.createdAt)}`
+                          : '—')}
+                      {#if !goal}
+                        <button
+                          type="button"
+                          class="link-nudge"
+                          onclick={(event) => {
+                            event.stopPropagation();
+                            void requestLinkProject(project);
+                          }}
+                          disabled={actionBusy !== null}
+                        >
+                          {actionBusy === `link-${project.id}` ? 'Opening…' : 'Link'}
+                        </button>
+                      {/if}
+                    </span>
+                  </div>
+                  <div class="list-goal">{goal ?? '—'}</div>
+                  <div class="list-owner">{leadLabel(project)}</div>
+                  <div class="list-progress" aria-label={`${progress.percent}% complete`}>
+                    <span class="progress-copy">
+                      <span>{progress.complete} / {progress.total}</span>
+                      <span>{progress.percent}%</span>
+                    </span>
+                    <span class="mini-progress" aria-hidden="true">
+                      <span style={`width: ${progress.percent}%`}></span>
+                    </span>
+                  </div>
+                  <div class="list-updated">{listUpdatedLabel(project)}</div>
+                </div>
+              {/each}
+            {/if}
+          {/each}
+        </div>
       {/if}
     </div>
   {/if}
@@ -600,20 +689,19 @@
     container: company-projects / inline-size;
     display: flex;
     flex-direction: column;
-    gap: var(--v4-space-5);
+    gap: var(--v4-space-4, 12px);
     min-width: 0;
     height: 100%;
     color: var(--v4-text-1);
     font-family: var(--font-sans);
+    /* Naked main canvas — no raised outer well. */
+    background: transparent;
   }
 
   .projects-header,
   .projects-heading,
   .project-actions,
-  .project-row,
-  .progress-cell,
-  .status-cell,
-  .project-group-title {
+  .portfolio-tools {
     display: flex;
     align-items: center;
     min-width: 0;
@@ -621,7 +709,8 @@
 
   .projects-header {
     justify-content: space-between;
-    gap: var(--v4-space-5);
+    gap: var(--v4-space-5, 16px);
+    flex-shrink: 0;
   }
 
   .projects-heading {
@@ -632,14 +721,14 @@
   .projects-heading h2 {
     margin: 0;
     color: var(--v4-text-1);
-    font-size: var(--text-lg);
+    font-size: var(--type-detail, var(--text-lg, 18px));
     font-weight: 600;
     line-height: 1.15;
   }
 
   .projects-heading span {
     color: var(--v4-text-3);
-    font-size: var(--text-base);
+    font-size: var(--type-body, var(--text-base, 12px));
     line-height: 1.25;
   }
 
@@ -649,21 +738,104 @@
     align-items: center;
   }
 
-  .project-search input {
+  .action-status {
+    max-width: 150px;
+    overflow: hidden;
+    color: var(--v4-text-3);
+    font-size: var(--type-secondary, 11px);
+    line-height: 1.25;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .primary-action {
     height: 28px;
-    min-width: 140px;
-    max-width: 200px;
-    padding: 0 10px;
+    padding: 0 12px;
+    border: 1px solid transparent;
+    border-radius: var(--v4-radius-button);
+    background: var(--v4-primary-bg);
+    color: var(--v4-primary-fg);
+    font: inherit;
+    font-size: var(--type-body, 12px);
+    cursor: default;
+  }
+
+  .portfolio-tools {
+    flex-shrink: 0;
+    flex-wrap: wrap;
+    gap: 8px;
+    min-height: 36px;
+  }
+
+  .project-search input,
+  .tool-select select,
+  .tool-button {
+    height: 28px;
     border: 1px solid var(--v4-control-border);
     border-radius: var(--v4-radius-button);
     background: var(--v4-secondary-bg);
     color: var(--v4-text-1);
     font: inherit;
-    font-size: var(--text-base);
+    font-size: var(--type-body, 12px);
+  }
+
+  .project-search input {
+    min-width: 140px;
+    max-width: 220px;
+    padding: 0 10px;
   }
 
   .project-search input::placeholder {
     color: var(--v4-text-3);
+  }
+
+  .tool-select select,
+  .tool-button {
+    padding: 0 10px;
+    color: var(--v4-secondary-fg);
+    cursor: default;
+  }
+
+  .view-toggle {
+    display: inline-flex;
+    gap: 2px;
+    margin-left: auto;
+    padding: 2px;
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-button);
+    background: var(--v4-control-faint);
+  }
+
+  .toggle-segment {
+    display: inline-flex;
+    align-items: center;
+    padding: 4px 10px;
+    border: 0;
+    border-radius: calc(var(--v4-radius-button) - 2px);
+    background: transparent;
+    color: var(--v4-text-2);
+    font: inherit;
+    font-size: var(--type-body, 12px);
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .toggle-segment:hover {
+    color: var(--v4-text-1);
+  }
+
+  .toggle-segment.is-active {
+    background: var(--v4-primary-bg);
+    color: var(--v4-primary-fg);
+  }
+
+  .toggle-segment:focus-visible,
+  .primary-action:focus-visible,
+  .tool-button:focus-visible,
+  .project-search input:focus-visible,
+  .tool-select select:focus-visible {
+    outline: 2px solid var(--v4-control-border);
+    outline-offset: 2px;
   }
 
   .visually-hidden {
@@ -678,153 +850,232 @@
     border: 0;
   }
 
-  .action-status {
-    max-width: 150px;
+  .portfolio-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    min-width: 0;
+  }
+
+  /* Naked board canvas — columns use whitespace + hairlines, not rounded wells. */
+  .kanban-board {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(205px, 1fr));
+    gap: 12px;
+    min-width: 0;
+    height: 100%;
+    overflow-x: auto;
+    overflow-y: hidden;
+    background: transparent;
+  }
+
+  .kanban-column {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    min-width: 205px;
+    min-height: 0;
+    border-radius: 0;
+    background: transparent;
+  }
+
+  .kanban-column-head {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--v4-row-stack-gap, 3px);
+    min-height: 36px;
+    padding: 0 4px 8px;
+    border-bottom: 1px solid var(--v4-hairline);
+  }
+
+  .kanban-column-title {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--v4-text-2);
+    font-size: var(--type-secondary, 11px);
+    font-weight: 600;
+    line-height: 1.2;
+  }
+
+  .kanban-column-count {
+    display: inline-grid;
+    place-items: center;
+    min-width: 17px;
+    height: 17px;
+    padding: 0 5px;
+    border-radius: var(--v4-radius-pill);
+    background: var(--v4-control-faint);
+    color: var(--v4-text-3);
+    font-family: var(--font-mono);
+    font-size: var(--type-metadata, 10px);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .kanban-column-caption {
     overflow: hidden;
     color: var(--v4-text-3);
-    font-size: var(--text-base);
+    font-size: var(--type-metadata, 10px);
     line-height: 1.25;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .project-actions button {
-    height: 28px;
-    padding: 0 12px;
-    border: 1px solid var(--v4-control-border);
-    border-radius: var(--v4-radius-button);
-    background: var(--v4-secondary-bg);
-    color: var(--v4-secondary-fg);
-    font: inherit;
-    font-size: var(--text-base);
-    cursor: default;
+  .live-dot {
+    width: 6px;
+    height: 6px;
+    flex: 0 0 auto;
+    border-radius: 999px;
+    background: var(--v4-ok);
   }
 
-  .project-actions button:last-child {
-    border-color: transparent;
-    background: var(--v4-primary-bg);
-    color: var(--v4-primary-fg);
+  .kanban-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-height: 0;
+    margin-top: 10px;
+    overflow-x: hidden;
+    overflow-y: auto;
+    padding: 0 2px 4px;
   }
 
-  .project-actions button:disabled,
-  .link-nudge:disabled {
-    opacity: 0.52;
+  .column-empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 64px;
+    padding: 12px;
+    border: 1px dashed var(--v4-hairline);
+    border-radius: 0;
+    color: var(--v4-text-3);
+    font-size: var(--type-secondary, 11px);
   }
 
-  .project-table {
+  /* List surface — hairline table, no giant rounded well. */
+  .project-list-surface {
     min-width: 0;
-    overflow-x: auto;
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-card);
-    background: var(--v4-raised);
-    box-shadow: var(--v4-shadow-card);
+    overflow: auto;
+    border-top: 1px solid var(--v4-hairline);
+    background: transparent;
   }
 
   .project-table-head,
-  .project-row {
+  .project-list-row {
     display: grid;
-    grid-template-columns: minmax(260px, 1fr) 88px 148px 82px 110px;
-    column-gap: 18px;
-    min-width: 720px;
+    grid-template-columns: minmax(200px, 1.4fr) minmax(110px, 0.7fr) 88px 120px 72px;
+    align-items: center;
+    gap: 12px;
+    min-width: 680px;
+    padding: 0 4px;
   }
 
   .project-table-head {
-    padding: 10px 14px;
+    min-height: 30px;
     border-bottom: 1px solid var(--v4-hairline);
-    background: var(--v4-inset);
     color: var(--v4-text-3);
-    font-size: var(--text-base);
-    line-height: 1.2;
-    letter-spacing: 0;
-  }
-
-  /* Sortable header cells — reset the button to read as a header label, but
-     stay clickable with a hover + active-sort affordance and the ↑/↓ arrow. */
-  .project-table-head .th {
-    display: inline-flex;
-    align-items: center;
-    justify-self: start;
-    padding: 0;
-    border: 0;
-    background: none;
-    color: inherit;
-    font: inherit;
-    font-size: var(--text-base);
-    letter-spacing: 0;
-    text-align: left;
-    text-transform: inherit;
-    white-space: nowrap;
-    cursor: pointer;
-  }
-
-  .project-table-head .th:hover {
-    color: var(--v4-text-2);
-  }
-
-  .project-table-head .th.sorted {
-    color: var(--v4-text-1);
-  }
-
-  .project-table-head .th:focus-visible {
-    outline: 1px solid var(--v4-control-border);
-    outline-offset: 2px;
-    border-radius: var(--v4-radius-button);
-  }
-
-  .project-group {
-    min-width: 720px;
-  }
-
-  .project-group-title {
-    gap: 8px;
-    height: 38px;
-    margin: 0;
-    padding: 0 14px;
-    color: var(--v4-text-3);
-    font-size: var(--text-base);
-    font-weight: 400;
-    line-height: 1.2;
+    font-size: var(--type-metadata, 10px);
+    letter-spacing: 0.06em;
     text-transform: uppercase;
   }
 
-  .project-row {
-    min-height: 54px;
-    padding: 0 14px;
+  .project-group-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 28px;
+    padding: 0 4px;
     border-bottom: 1px solid var(--v4-rowline);
-    color: var(--v4-text-2);
-    font-size: var(--text-base);
+    color: var(--v4-text-3);
+    font-size: var(--type-metadata, 10px);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
   }
 
-  .project-row:hover {
+  .group-count {
+    display: inline-grid;
+    place-items: center;
+    min-width: 17px;
+    height: 17px;
+    border-radius: var(--v4-radius-pill);
+    background: var(--v4-control-faint);
+    color: var(--v4-text-3);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .project-list-row {
+    min-height: 52px;
+    border-bottom: 1px solid var(--v4-rowline);
+    color: var(--v4-text-2);
+    font-size: var(--type-body, 12px);
+    cursor: pointer;
+  }
+
+  .project-list-row:hover {
     background: var(--v4-active-row);
   }
 
-  .project-main {
+  .project-list-row:focus-visible {
+    outline: 2px solid var(--v4-control-border);
+    outline-offset: -2px;
+  }
+
+  .project-name-cell {
+    display: grid;
+    gap: var(--v4-row-stack-gap, 3px);
     min-width: 0;
   }
 
-  .project-main strong {
-    display: block;
+  .list-name {
     overflow: hidden;
     color: var(--v4-text-1);
-    font-size: var(--text-base);
-    font-weight: 400;
-    line-height: 1.3;
+    font-size: var(--type-body, 12px);
+    font-weight: 600;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .project-main span {
+  .list-desc,
+  .list-goal,
+  .list-owner,
+  .list-updated {
+    overflow: hidden;
+    color: var(--v4-text-3);
+    font-size: var(--type-secondary, 11px);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .list-desc {
     display: flex;
     align-items: center;
     gap: 7px;
-    margin-top: 2px;
-    overflow: hidden;
+  }
+
+  .list-progress {
+    display: grid;
+    gap: 5px;
+    min-width: 0;
+  }
+
+  .progress-copy {
+    display: flex;
+    justify-content: space-between;
     color: var(--v4-text-3);
-    font-size: var(--text-base);
-    line-height: 1.25;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    font-family: var(--font-mono);
+    font-size: var(--type-metadata, 10px);
+  }
+
+  .mini-progress {
+    height: 3px;
+    overflow: hidden;
+    border-radius: 3px;
+    background: var(--v4-control-faint);
+  }
+
+  .mini-progress span {
+    display: block;
+    height: 100%;
+    border-radius: inherit;
+    background: var(--v4-text-2);
   }
 
   .link-nudge {
@@ -834,96 +1085,71 @@
     background: transparent;
     color: var(--v4-text-2);
     font: inherit;
-    font-size: var(--text-base);
+    font-size: var(--type-secondary, 11px);
     cursor: default;
   }
 
-  .lead-cell,
-  .target-cell,
-  .status-cell {
-    align-self: center;
-    color: var(--v4-text-2);
-  }
-
-  .progress-cell {
-    gap: 10px;
-    align-self: center;
-    color: var(--v4-text-3);
-    font-size: var(--text-base);
-  }
-
-  .progress-track {
-    display: block;
-    width: 76px;
-    height: 3px;
-    overflow: hidden;
-    border-radius: var(--v4-radius-pill);
-    background: var(--v4-control-faint);
-  }
-
-  .progress-fill {
-    display: block;
-    height: 100%;
-    background: var(--v4-text-2);
-  }
-
-  .status-cell {
-    gap: 8px;
-  }
-
-  .status-dot {
-    width: 6px;
-    height: 6px;
-    flex: 0 0 auto;
-    border-radius: var(--v4-radius-pill);
-  }
-
-  .status-dot.ok {
-    background: var(--v4-ok);
-  }
-
-  .status-dot.warn {
-    background: var(--v4-warn);
-  }
-
-  .status-dot.error {
-    background: var(--v4-error);
-  }
-
-  .status-dot.idle {
-    background: var(--v4-idle);
+  .link-nudge:disabled {
+    opacity: 0.52;
   }
 
   .projects-error,
   .empty-state {
     padding: 12px;
     border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-card);
-    background: var(--v4-raised);
-    box-shadow: var(--v4-shadow-card);
+    border-radius: 0;
+    background: transparent;
     color: var(--v4-text-2);
-    font-size: var(--text-base);
+    font-size: var(--type-body, 12px);
   }
 
   .empty-state span {
     display: block;
     color: var(--v4-text-1);
+    font-size: var(--type-section, 14px);
   }
 
   .empty-state p {
     margin: 4px 0 0;
     color: var(--v4-text-3);
+    font-size: var(--type-secondary, 11px);
   }
 
-  .project-skeleton {
-    height: 54px;
-    min-width: 720px;
-    border-bottom: 1px solid var(--v4-rowline);
+  .board-loading {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(205px, 1fr));
+    gap: 12px;
+    min-width: 0;
+  }
+
+  .skeleton-column {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .skeleton-header {
+    height: 28px;
+    border-radius: 0;
     background: var(--v4-control-faint);
     opacity: 0.48;
   }
 
-  @container company-projects (max-width: 560px) {
+  .skeleton-card {
+    height: 96px;
+    border: 1px solid var(--v4-hairline);
+    border-radius: 6px;
+    background: var(--v4-control-faint);
+    opacity: 0.48;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .toggle-segment {
+      transition: none;
+    }
+  }
+
+  @container company-projects (max-width: 760px) {
     .projects-header {
       flex-direction: column;
       align-items: stretch;
@@ -947,52 +1173,42 @@
       white-space: normal;
     }
 
+    .portfolio-tools {
+      align-items: stretch;
+    }
+
+    .view-toggle {
+      margin-left: 0;
+    }
+
+    .project-search input {
+      max-width: none;
+      width: 100%;
+    }
+
+    /* Board may horizontal-scroll; primary tools stay visible above. */
+    .kanban-board,
+    .board-loading {
+      grid-template-columns: repeat(4, minmax(205px, 1fr));
+    }
+
     .project-table-head {
       display: none;
     }
 
-    .project-group,
-    .project-row,
-    .project-skeleton {
-      min-width: 0;
-    }
-
-    .project-group-title {
-      height: auto;
-      min-height: 30px;
-      padding: 8px 0;
-    }
-
-    .project-row {
+    .project-table-head,
+    .project-list-row {
       grid-template-columns: minmax(0, 1fr);
-      row-gap: 7px;
-      min-height: 0;
-      padding: 12px 0;
-    }
-
-    .project-main strong,
-    .project-main span {
-      overflow: visible;
-      text-overflow: initial;
-      white-space: normal;
-    }
-
-    .lead-cell,
-    .target-cell,
-    .status-cell,
-    .progress-cell {
-      align-self: start;
-    }
-
-    .progress-cell,
-    .status-cell {
       min-width: 0;
+      row-gap: 6px;
+      padding: 10px 0;
     }
 
-    .progress-track {
-      flex: 1 1 auto;
-      min-width: 64px;
-      max-width: 128px;
+    .list-progress,
+    .list-goal,
+    .list-owner,
+    .list-updated {
+      min-width: 0;
     }
   }
 </style>

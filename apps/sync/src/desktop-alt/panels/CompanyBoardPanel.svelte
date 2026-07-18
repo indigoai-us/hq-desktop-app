@@ -1,27 +1,17 @@
 <script lang="ts">
   /**
-   * CompanyBoardPanel — the per-company Board surface (US-011).
+   * CompanyBoardPanel — the per-company Overview board (US-011 + DESKTOP-003).
    *
-   * Replaces the old top-level cross-company BoardPage (deleted) with a board
-   * scoped to ONE company/workspace. Top to bottom it shows three sections:
+   * Scoped to ONE company. Canvas order (actionable, not dashboard-y):
+   *   1. Compact pulse row — real project / story / AC / goal / cloud counts
+   *   2. Needs you       — only real exceptions with review / inspect / connect
+   *   3. In flight       — live / in-progress projects with goal + status
+   *   4. Goals           — compact rows; zero-progress explains "No linked work"
+   *   5. Recent activity — honest vault activity + Open inbox
    *
-   *   1. Goals     — the company's objectives (via get_local_company_goals),
-   *                  rendered as compact monochrome-glass cards: title, a
-   *                  status pill, timeframe, owner, and (only when present) a
-   *                  small per-KR progress bar.
-   *   2. In flight — the company's projects whose rollup is in-progress/live,
-   *                  surfaced first with their current in-progress story title
-   *                  (loaded lazily per project). A short "what's moving" list.
-   *   3. Projects  — the full company-filtered project list (ProjectListView,
-   *                  showCompany=false). Selecting a project opens the detail
-   *                  view (→ StoryKanban → StoryPanel) with a back
-   *                  affordance, exactly like the old BoardPage flow.
-   *
-   * Load convention follows ActivityPanel: warm-read from the company store,
-   * $effect keyed on slug with a cancel flag, error state. Drill-in selection
-   * (selected project + selected story) is owned here, mirroring BoardPage —
-   * when a project is open the goals/in-flight/list sections hide behind the
-   * detail view, and Back returns to the board.
+   * Selecting a project drills into ProjectDetailView → StoryKanban → StoryPanel.
+   * Load convention: warm-read from company store, $effect keyed on slug with
+   * cancel flag, error state. Main canvas is naked: whitespace + hairlines.
    */
   import {
     loadLocalProjects,
@@ -43,8 +33,9 @@
   import ProjectListView from '../components/ProjectListView.svelte';
   import ProjectDetailView from '../pages/ProjectDetailView.svelte';
   import GoalCard from '../v4/GoalCard.svelte';
-  import StoryPanel from '../v4/StoryPanel.svelte';
+  import NeedsYouCard from '../v4/NeedsYouCard.svelte';
   import OverviewActivityDigest from '../components/OverviewActivityDigest.svelte';
+  import type { HomeCardModel } from '../v4/home-model';
   import '../v4/tokens.css';
 
   interface Props {
@@ -52,9 +43,21 @@
     slug: string;
     /** False for local folders that are not cloud-backed yet. */
     cloudBacked?: boolean;
+    /** Navigate to company Projects (toolbar + overview links). */
+    onopenprojects?: () => void;
+    /** Navigate to company Goals. */
+    onopengoals?: () => void;
+    /** Navigate to the global Inbox. */
+    onopeninbox?: () => void;
   }
 
-  let { slug, cloudBacked = true }: Props = $props();
+  let {
+    slug,
+    cloudBacked = true,
+    onopenprojects,
+    onopengoals,
+    onopeninbox,
+  }: Props = $props();
 
   interface InFlightDetail {
     storyTitle: string | null;
@@ -132,6 +135,72 @@
 
   const acPercent = $derived(projectsAcceptancePercent(companyProjects));
   const lastUpdated = $derived(lastUpdatedLabel(boardCards));
+  const goalsCount = $derived(objectives.length);
+  const projectPulseCount = $derived(
+    summaryState.summary.board > 0 ? summaryState.summary.board : companyProjects.length,
+  );
+
+  /** Honest cloud label — never invents health beyond backed/error state. */
+  const cloudPulse = $derived.by((): { label: string; tone: 'ok' | 'warn' | 'error' | 'idle' } => {
+    if (!cloudBacked) return { label: 'local only', tone: 'idle' };
+    if (error || boardState.error || summaryState.error) {
+      return { label: 'cloud issue', tone: 'error' };
+    }
+    return { label: 'cloud connected', tone: 'ok' };
+  });
+
+  const unlinkedGoals = $derived(
+    objectives.filter((objective) => linkedProjects(objective).length === 0),
+  );
+
+  /**
+   * Needs-you queue from real board/goals/cloud conditions only.
+   * Empty when nothing needs attention (no decorative placeholders).
+   */
+  const needsYouCards = $derived.by((): Array<HomeCardModel & { id: string }> => {
+    const cards: Array<HomeCardModel & { id: string }> = [];
+    const reviewCount = boardState.board.review.length;
+    if (reviewCount > 0) {
+      cards.push({
+        id: 'review-board',
+        title: `Review ${reviewCount} ${reviewCount === 1 ? 'story' : 'stories'} ready for review`,
+        sub: 'Acceptance work is waiting on the company board',
+        tone: 'warn',
+        actions: [{ id: 'review', label: 'Review', kind: 'primary' }],
+      });
+    }
+    if (error || boardState.error) {
+      cards.push({
+        id: 'board-error',
+        title: 'Company board could not refresh',
+        sub: error || boardState.error || 'Try again after a sync',
+        tone: 'error',
+        actions: [{ id: 'inspect', label: 'Inspect', kind: 'secondary' }],
+      });
+    }
+    if (!cloudBacked) {
+      cards.push({
+        id: 'local-only',
+        title: 'This company is local only',
+        sub: 'Connect to cloud so synced board activity can appear',
+        tone: 'warn',
+        actions: [{ id: 'inspect-local', label: 'Inspect', kind: 'secondary' }],
+      });
+    }
+    if (!loading && unlinkedGoals.length > 0) {
+      cards.push({
+        id: 'unlinked-goals',
+        title:
+          unlinkedGoals.length === 1
+            ? 'Goal has no linked work'
+            : `${unlinkedGoals.length} goals have no linked work`,
+        sub: 'Connect active projects so progress can roll up',
+        tone: 'neutral',
+        actions: [{ id: 'connect', label: 'Connect', kind: 'primary' }],
+      });
+    }
+    return cards;
+  });
 
   // Load goals + projects whenever the company slug changes. Cancel-flag guards
   // against an out-of-order completion when the user switches companies fast.
@@ -350,6 +419,31 @@
     return detail?.storyTitle || `${project.storiesComplete}/${project.storiesTotal} stories`;
   }
 
+  // ---- overview actions (preserve real navigation; never invent targets) ---
+
+  function handleNeedsYouAction(cardId: string, actionId: string): void {
+    if (cardId === 'review-board' && actionId === 'review') {
+      const firstInFlight = inFlightProjects[0];
+      if (firstInFlight) {
+        void openProject(firstInFlight);
+        return;
+      }
+      onopenprojects?.();
+      return;
+    }
+    if (cardId === 'unlinked-goals' && actionId === 'connect') {
+      onopengoals?.();
+      return;
+    }
+    if (
+      (cardId === 'board-error' && actionId === 'inspect') ||
+      (cardId === 'local-only' && actionId === 'inspect-local')
+    ) {
+      if (cardId === 'board-error') boardState.retry();
+      return;
+    }
+  }
+
   // ---- drill-in handlers (mirror BoardPage) --------------------------------
 
   function selectStoryById(storyId: string): void {
@@ -444,148 +538,182 @@
       onback={backToList}
       onselectStory={openStory}
       onStatusChange={onProjectStatusChange}
-    />
-
-    <StoryPanel
-      story={selectedStory}
-      project={selected}
-      prdPath={selected.prdPath}
-      onclose={closeStory}
+      selectedStory={selectedStory}
+      oncloseStory={closeStory}
       onselectDependency={selectStoryById}
       {onStoryPassesChange}
     />
   {:else}
-    {#if !cloudBacked}
-      <div class="board-note" role="status">
-        This company is local only. Local goals and projects are available; synced board activity appears after it is connected.
-      </div>
-    {/if}
-    {#if error}
-      <div class="board-error" role="alert">{error}</div>
-    {/if}
-    <section class="stat-strip" aria-label="Company overview stats">
-      <div class="stat-item">
-        <strong>{activeProjectCount}</strong>
-        <span>active projects</span>
-      </div>
-      <div class="stat-item">
-        <strong>{storiesInProgress}</strong>
-        <span>stories in progress</span>
-      </div>
-      <div class="stat-item">
-        <strong>{acPercent}%</strong>
-        <span>AC passing</span>
-      </div>
-      <div class="stat-item">
-        <strong>{lastUpdated}</strong>
-        <span>last updated</span>
-      </div>
-    </section>
-
-    <OverviewActivityDigest {slug} {cloudBacked} />
-
-    <section class="overview-section" aria-labelledby="board-goals-title">
-      <header class="section-header">
-        <h2 id="board-goals-title">GOALS</h2>
-        <span>{objectives.length} {objectives.length === 1 ? 'goal' : 'goals'}</span>
-      </header>
-      {#if loading}
-        <div class="goals-grid" aria-busy="true">
-          {#each [0, 1] as row (row)}
-            <div class="goal-skeleton"></div>
-          {/each}
-        </div>
-      {:else if objectives.length === 0}
-        <div class="empty-state" data-testid="empty-goals-state">
-          <span>No goals yet</span>
-          <p>Company goals will appear here after the next board sync.</p>
-        </div>
-      {:else}
-        <div class="goals-grid">
-          {#each objectives as objective (objective.id || objective.title)}
-            <GoalCard
-              {objective}
-              progress={objectiveProgress(objective)}
-              projectCount={linkedProjects(objective).length}
-              storyCount={incompleteStoryCount(linkedProjects(objective))}
-            />
-          {/each}
-        </div>
+    <div class="overview-content" data-testid="company-overview">
+      {#if error}
+        <div class="board-error" role="alert" data-testid="board-error">{error}</div>
       {/if}
-    </section>
 
-    <section class="overview-section" aria-labelledby="board-inflight-title">
-      <header class="section-header">
-        <h2 id="board-inflight-title">IN FLIGHT</h2>
-      </header>
-
-      {#if loading}
-        <div class="inflight-table skeleton-table" aria-busy="true">
-          {#each [0, 1] as row (row)}
-            <div class="inflight-skeleton"></div>
-          {/each}
+      <!-- 1. Compact pulse row (live monitor strip — low height, real counts only) -->
+      <section class="pulse-row" aria-label="Company pulse" data-testid="overview-pulse">
+        <div class="pulse-item">
+          <span class="pulse-value">{projectPulseCount}</span>
+          <span class="pulse-label">projects</span>
         </div>
-      {:else if inFlightProjects.length === 0}
-        <div class="empty-state">Nothing in flight</div>
-      {:else}
-        <table class="inflight-table" data-testid="inflight-list">
-          <thead>
-            <tr>
-              <th>Story</th>
-              <th>Labels</th>
-              <th>Goal</th>
-              <th>Priority</th>
-              <th>AC</th>
-              <th>Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            {#each inFlightProjects as project (project.id)}
-              {@const detail = inFlightStory[project.id]}
-              {@const progress = projectProgress(project.storiesComplete, project.storiesTotal)}
-              {@const status = rowStatus(project, detail)}
-              <tr data-testid="inflight-row">
-                <td class="story-cell">
-                  <button type="button" class="story-button" onclick={() => openProject(project)}>
-                    <span>{projectDisplayName(project)}</span>
-                    <small>{projectMeta(project, detail)}</small>
-                  </button>
-                </td>
-                <td>
-                  <span class="labels-cell">
-                    {#if detail?.labels.length}
-                      {#each detail.labels.slice(0, 2) as label (label)}
-                        <span class="label-chip">{label}</span>
-                      {/each}
-                    {:else}
-                      <span class="muted">—</span>
-                    {/if}
-                  </span>
-                </td>
-                <td>
-                  <span class="goal-chip" data-testid="inflight-goal-chip">{goalChip(project)}</span>
-                </td>
-                <td class="priority-cell">{priorityLabel(detail?.priority)}</td>
-                <td>
-                  <span class="ac-cell">
-                    <span class="ac-track" aria-hidden="true">
-                      <span class="ac-fill" style={`width: ${progress.percent}%`}></span>
+        <div class="pulse-item">
+          <span class="pulse-value">{storiesInProgress}</span>
+          <span class="pulse-label">stories moving</span>
+        </div>
+        <div class="pulse-item">
+          <span class="pulse-value">{acPercent}%</span>
+          <span class="pulse-label">checks passing</span>
+        </div>
+        <div class="pulse-item">
+          <span class="pulse-value">{goalsCount}</span>
+          <span class="pulse-label">goals</span>
+        </div>
+        <div class="pulse-item pulse-cloud">
+          <span class={`status-dot ${cloudPulse.tone}`} aria-hidden="true"></span>
+          <span class="pulse-label">{cloudPulse.label}</span>
+          {#if lastUpdated !== '—'}
+            <span class="pulse-meta">· {lastUpdated}</span>
+          {/if}
+        </div>
+      </section>
+
+      <div class="overview-columns">
+        <div class="overview-col overview-col-main">
+          <!-- 2. Needs you -->
+          <section
+            class="overview-section"
+            aria-labelledby="board-needs-title"
+            data-testid="overview-needs-you"
+          >
+            <header class="section-header">
+              <h2 id="board-needs-title">Needs you</h2>
+              <span>
+                {needsYouCards.length}
+                {needsYouCards.length === 1 ? 'item' : 'items'}
+              </span>
+            </header>
+            {#if needsYouCards.length === 0}
+              <p class="empty-inline">Nothing needs you right now.</p>
+            {:else}
+              <div class="needs-queue">
+                {#each needsYouCards as card (card.id)}
+                  <NeedsYouCard
+                    {card}
+                    onaction={(actionId) => handleNeedsYouAction(card.id, actionId)}
+                  />
+                {/each}
+              </div>
+            {/if}
+          </section>
+
+          <!-- 3. In flight -->
+          <section
+            class="overview-section"
+            aria-labelledby="board-inflight-title"
+            data-testid="overview-in-flight"
+          >
+            <header class="section-header">
+              <h2 id="board-inflight-title">In flight</h2>
+              <button
+                type="button"
+                class="section-link"
+                data-testid="overview-view-projects"
+                onclick={() => onopenprojects?.()}
+              >
+                View projects
+              </button>
+            </header>
+
+            {#if loading}
+              <div class="inflight-skeleton-list" aria-busy="true">
+                {#each [0, 1] as row (row)}
+                  <div class="inflight-skeleton"></div>
+                {/each}
+              </div>
+            {:else if inFlightProjects.length === 0}
+              <p class="empty-inline">Nothing in flight</p>
+            {:else}
+              <div class="work-list" data-testid="inflight-list">
+                {#each inFlightProjects as project (project.id)}
+                  {@const detail = inFlightStory[project.id]}
+                  {@const progress = projectProgress(project.storiesComplete, project.storiesTotal)}
+                  {@const status = rowStatus(project, detail)}
+                  <div class="work-row" data-testid="inflight-row">
+                    <button
+                      type="button"
+                      class="work-button"
+                      onclick={() => openProject(project)}
+                    >
+                      <span class="work-title">{projectDisplayName(project)}</span>
+                      <span class="work-meta">{projectMeta(project, detail)}</span>
+                    </button>
+                    <span class="goal-chip" data-testid="inflight-goal-chip">{goalChip(project)}</span>
+                    <span class="status-pill" class:review={status.tone === 'warn'}>
+                      <span class={`status-dot ${status.tone}`} aria-hidden="true"></span>
+                      <span>{status.label}</span>
                     </span>
-                    <span>{progress.complete}/{progress.total}</span>
-                  </span>
-                </td>
-                <td>
-                  <span class="status-cell">
-                    <span class={`status-dot ${status.tone}`} aria-hidden="true"></span>
-                    <span>{status.label}</span>
-                  </span>
-                </td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
-      {/if}
-    </section>
+                    <span class="ac-cell" aria-label={`${progress.complete} of ${progress.total} AC`}>
+                      <span class="ac-track" aria-hidden="true">
+                        <span class="ac-fill" style={`width: ${progress.percent}%`}></span>
+                      </span>
+                      <span>{progress.complete}/{progress.total}</span>
+                    </span>
+                  </div>
+                {/each}
+              </div>
+            {/if}
+          </section>
+        </div>
+
+        <div class="overview-col overview-col-side">
+          <!-- 4. Goals -->
+          <section
+            class="overview-section"
+            aria-labelledby="board-goals-title"
+            data-testid="overview-goals"
+          >
+            <header class="section-header">
+              <h2 id="board-goals-title">Goals</h2>
+              <button
+                type="button"
+                class="section-link"
+                data-testid="overview-view-goals"
+                onclick={() => onopengoals?.()}
+              >
+                View all
+              </button>
+            </header>
+            {#if loading}
+              <div class="goals-list" aria-busy="true">
+                {#each [0, 1] as row (row)}
+                  <div class="goal-skeleton"></div>
+                {/each}
+              </div>
+            {:else if objectives.length === 0}
+              <div class="empty-inline" data-testid="empty-goals-state">
+                <span>No goals yet</span>
+                <p>Company goals will appear here after the next board sync.</p>
+              </div>
+            {:else}
+              <div class="goals-list">
+                {#each objectives as objective (objective.id || objective.title)}
+                  <GoalCard
+                    {objective}
+                    progress={objectiveProgress(objective)}
+                    projectCount={linkedProjects(objective).length}
+                    storyCount={incompleteStoryCount(linkedProjects(objective))}
+                  />
+                {/each}
+              </div>
+            {/if}
+          </section>
+
+          <!-- 5. Recent activity -->
+          <section class="overview-section" data-testid="overview-activity-section">
+            <OverviewActivityDigest {slug} {cloudBacked} {onopeninbox} />
+          </section>
+        </div>
+      </div>
+    </div>
 
     {#if false}
       <div aria-hidden="true">
@@ -594,6 +722,7 @@
           {loading}
           onselect={openProject}
         />
+        {activeProjectCount}
       </div>
     {/if}
   {/if}
@@ -603,78 +732,108 @@
   .company-board {
     display: flex;
     flex-direction: column;
-    gap: 18px;
+    gap: 0;
     min-width: 0;
     height: 100%;
     color: var(--v4-text-1);
     font-family: var(--font-sans);
+    /* Naked canvas — no outer raised panel around the overview body. */
+    background: transparent;
   }
 
-  .board-note,
+  .overview-content {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    min-width: 0;
+  }
+
   .board-error {
-    padding: 10px 12px;
-    border: 1px solid color-mix(in srgb, var(--v4-warn) 32%, var(--v4-hairline));
-    border-radius: var(--v4-radius-field);
-    background: color-mix(in srgb, var(--v4-warn) 10%, var(--v4-raised));
-    color: var(--v4-warn);
-    font-size: var(--text-base);
+    padding: 10px 0;
+    border: 0;
+    border-bottom: 1px solid color-mix(in srgb, var(--v4-error) 28%, var(--v4-rowline));
+    border-radius: 0;
+    background: transparent;
+    color: var(--v4-error);
+    font-size: var(--type-body, var(--text-base));
     font-weight: 400;
     line-height: 1.35;
   }
 
-  .board-note {
-    border-color: var(--v4-hairline);
-    background: var(--v4-raised);
-    color: var(--v4-text-2);
-  }
-
-  .stat-strip {
-    display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    overflow: hidden;
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-card);
-    background: var(--v4-raised);
-    box-shadow: var(--v4-shadow-card);
-  }
-
-  .stat-item {
+  /* Compact pulse — discrete live monitor; modest radius only on the strip. */
+  .pulse-row {
     display: flex;
-    flex-direction: column;
-    gap: 5px;
+    align-items: center;
+    min-height: 34px;
     min-width: 0;
-    padding: 13px 20px;
+    overflow: auto hidden;
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-field);
+    background: var(--v4-inset);
   }
 
-  .stat-item + .stat-item {
-    border-left: 1px solid var(--v4-rowline);
-  }
-
-  .stat-item strong {
-    overflow: hidden;
-    color: var(--v4-text-1);
-    font-size: var(--text-base);
-    font-weight: 400;
-    line-height: 1.15;
-    text-overflow: ellipsis;
+  .pulse-item {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    min-width: 0;
+    flex: 0 0 auto;
+    padding: 0 12px;
+    border-right: 1px solid var(--v4-hairline);
     white-space: nowrap;
   }
 
-  .stat-item span {
+  .pulse-item:last-child {
+    border-right: 0;
+  }
+
+  .pulse-cloud {
+    align-items: center;
+  }
+
+  .pulse-value {
+    color: var(--v4-text-1);
+    font-size: var(--type-secondary, var(--text-sm));
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.2;
+  }
+
+  .pulse-label,
+  .pulse-meta {
     overflow: hidden;
     color: var(--v4-text-3);
-    font-size: var(--text-base);
+    font-size: var(--type-secondary, var(--text-sm));
     font-weight: 400;
     line-height: 1.2;
     text-overflow: ellipsis;
-    white-space: nowrap;
+  }
+
+  .overview-columns {
+    display: grid;
+    grid-template-columns: minmax(0, 1.35fr) minmax(260px, 0.75fr);
+    gap: 20px;
+    min-width: 0;
+    align-items: start;
+  }
+
+  .overview-col {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 18px;
   }
 
   .overview-section {
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: 6px;
     min-width: 0;
+    /* Naked section: no rounded outer box, no raised fill. */
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
   }
 
   .section-header {
@@ -682,120 +841,107 @@
     align-items: center;
     justify-content: space-between;
     gap: 12px;
+    min-height: 28px;
     min-width: 0;
   }
 
   .section-header h2 {
     margin: 0;
-    color: var(--v4-text-3);
-    font-size: var(--text-base);
-    font-weight: 400;
+    color: var(--v4-text-1);
+    font-size: var(--type-body, var(--text-base));
+    font-weight: 600;
     line-height: 1.25;
     letter-spacing: 0;
   }
 
-  .section-header span {
+  .section-header span,
+  .section-link {
     flex: 0 0 auto;
+    padding: 0;
+    border: 0;
+    background: transparent;
     color: var(--v4-text-3);
-    font-size: var(--text-base);
+    font: inherit;
+    font-size: var(--type-metadata, var(--text-micro));
     font-weight: 400;
     line-height: 1.25;
+    cursor: default;
   }
 
-  .empty-state {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    padding: 20px;
-    border: 1px dashed var(--v4-hairline);
-    border-radius: var(--v4-radius-card);
-    background: var(--v4-raised);
-    box-shadow: var(--v4-shadow-card);
+  .section-link {
+    cursor: pointer;
+  }
+
+  .section-link:hover {
+    color: var(--v4-text-2);
+  }
+
+  .section-link:focus-visible {
+    outline: 1px solid var(--v4-focus-ring);
+    outline-offset: var(--v4-focus-offset, 2px);
+  }
+
+  .needs-queue {
+    display: grid;
+    gap: 8px;
+  }
+
+  .empty-inline {
+    margin: 0;
+    padding: 8px 0 4px;
+    border-top: 1px solid var(--v4-rowline);
     color: var(--v4-text-3);
-    font-size: var(--text-base);
+    font-size: var(--type-secondary, var(--text-sm));
     font-weight: 400;
     line-height: 1.35;
-    text-align: center;
   }
 
-  .empty-state span {
+  .empty-inline span {
+    display: block;
     color: var(--v4-text-2);
-    font-size: var(--text-base);
+    font-size: var(--type-body, var(--text-base));
     font-weight: 500;
   }
 
-  .empty-state p {
-    margin: 0;
+  .empty-inline p {
+    margin: 3px 0 0;
     color: var(--v4-text-3);
-    font-size: var(--text-base);
+    font-size: var(--type-metadata, var(--text-micro));
     font-weight: 400;
   }
 
-  .goals-grid {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 14px;
-    min-width: 0;
-  }
-
-  .inflight-table {
-    width: 100%;
-    min-width: 760px;
-    border-collapse: collapse;
-    color: var(--v4-text-2);
-    font-size: var(--text-base);
-    font-weight: 400;
-    table-layout: fixed;
-  }
-
-  .inflight-table th {
-    padding: 0 0 9px;
-    border-bottom: 1px solid var(--v4-rowline);
-    color: var(--v4-text-3);
-    font-size: var(--text-base);
-    font-weight: 400;
-    line-height: 1.2;
-    text-align: left;
-  }
-
-  .inflight-table th:nth-child(1) {
-    width: 34%;
-  }
-
-  .inflight-table th:nth-child(2) {
-    width: 22%;
-  }
-
-  .inflight-table th:nth-child(3) {
-    width: 15%;
-  }
-
-  .inflight-table th:nth-child(4) {
-    width: 8%;
-  }
-
-  .inflight-table th:nth-child(5) {
-    width: 16%;
-  }
-
-  .inflight-table th:nth-child(6) {
-    width: 12%;
-  }
-
-  .inflight-table td {
-    min-width: 0;
-    height: 58px;
-    padding: 9px 16px 9px 0;
-    border-bottom: 1px solid var(--v4-rowline);
-    vertical-align: middle;
-  }
-
-  .story-button {
+  .goals-list {
     display: flex;
-    width: 100%;
-    min-width: 0;
     flex-direction: column;
-    gap: 3px;
+    min-width: 0;
+    border-top: 1px solid var(--v4-rowline);
+  }
+
+  .work-list {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    border-top: 1px solid var(--v4-rowline);
+  }
+
+  .work-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(72px, 100px) auto minmax(72px, 96px);
+    align-items: center;
+    gap: 12px;
+    min-height: 48px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--v4-rowline);
+  }
+
+  .work-row:last-child {
+    border-bottom: 0;
+  }
+
+  .work-button {
+    display: grid;
+    min-width: 0;
+    gap: var(--v4-row-stack-gap, 3px);
     padding: 0;
     border: 0;
     background: transparent;
@@ -805,77 +951,82 @@
     cursor: pointer;
   }
 
-  .story-button:hover span {
+  .work-button:hover .work-title {
     color: var(--v4-text-1);
   }
 
-  .story-button:focus-visible {
-    outline: 1px solid var(--v4-control-border);
+  .work-button:focus-visible {
+    outline: 1px solid var(--v4-focus-ring);
     outline-offset: 3px;
   }
 
-  .story-button span,
-  .story-button small {
+  .work-title,
+  .work-meta {
     overflow: hidden;
     max-width: 100%;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .story-button span {
+  .work-title {
     color: var(--v4-text-1);
-    font-size: var(--text-base);
+    font-size: var(--type-body, var(--text-base));
     font-weight: 500;
     line-height: 1.25;
   }
 
-  .story-button small {
+  .work-meta {
     color: var(--v4-text-3);
-    font-size: var(--text-base);
+    font-size: var(--type-metadata, var(--text-micro));
     font-weight: 400;
     line-height: 1.2;
   }
 
-  .labels-cell {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    min-width: 0;
-  }
-
-  .label-chip,
   .goal-chip {
     display: inline-flex;
     max-width: 100%;
     align-items: center;
-    height: 18px;
-    padding: 0 7px;
+    min-width: 0;
     overflow: hidden;
-    border-radius: var(--v4-radius-button);
-    background: var(--v4-control-faint);
-    color: var(--v4-text-2);
-    font-size: var(--text-base);
+    color: var(--v4-text-3);
+    font-size: var(--type-metadata, var(--text-micro));
     font-weight: 400;
-    line-height: 1;
+    line-height: 1.2;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .muted,
-  .priority-cell {
-    color: var(--v4-text-2);
-    font-size: var(--text-base);
+  /* Discrete selection/status object — pill keeps radius. */
+  .status-pill {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 6px;
+    height: 22px;
+    padding: 0 8px;
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-pill);
+    background: var(--v4-inset);
+    color: var(--v4-text-3);
+    font-size: var(--type-metadata, var(--text-micro));
     font-weight: 400;
-    line-height: 1.2;
+    line-height: 1;
+    white-space: nowrap;
+  }
+
+  .status-pill.review {
+    border-color: color-mix(in srgb, var(--v4-unread) 32%, var(--v4-hairline));
+    background: color-mix(in srgb, var(--v4-unread) 10%, transparent);
+    color: var(--v4-unread);
   }
 
   .ac-cell {
     display: grid;
-    grid-template-columns: minmax(44px, 72px) auto;
+    grid-template-columns: minmax(36px, 56px) auto;
     align-items: center;
-    gap: 10px;
-    color: var(--v4-text-2);
-    font-size: var(--text-base);
+    gap: 8px;
+    color: var(--v4-text-3);
+    font-size: var(--type-metadata, var(--text-micro));
     font-weight: 400;
     line-height: 1.2;
     font-variant-numeric: tabular-nums;
@@ -895,19 +1046,9 @@
     background: var(--v4-text-2);
   }
 
-  .status-cell {
-    display: inline-flex;
-    align-items: center;
-    gap: 7px;
-    color: var(--v4-text-2);
-    font-size: var(--text-base);
-    font-weight: 400;
-    line-height: 1.2;
-  }
-
   .status-dot {
-    width: 6px;
-    height: 6px;
+    width: 5px;
+    height: 5px;
     border-radius: 50%;
   }
 
@@ -929,18 +1070,26 @@
 
   .goal-skeleton,
   .inflight-skeleton {
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-card);
-    background: var(--v4-raised);
+    border: 0;
+    border-bottom: 1px solid var(--v4-rowline);
+    border-radius: 0;
+    background: var(--v4-control-faint);
     animation: board-skeleton-pulse 1.3s ease-in-out infinite;
   }
 
   .goal-skeleton {
-    height: 96px;
+    height: 64px;
+    margin-bottom: 4px;
+  }
+
+  .inflight-skeleton-list {
+    display: grid;
+    gap: 0;
+    border-top: 1px solid var(--v4-rowline);
   }
 
   .inflight-skeleton {
-    height: 58px;
+    height: 48px;
   }
 
   @keyframes board-skeleton-pulse {
@@ -961,24 +1110,50 @@
   }
 
   @media (max-width: 980px) {
-    .stat-strip {
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-
-    .stat-item:nth-child(3) {
-      border-left: 0;
-    }
-
-    .stat-item:nth-child(n + 3) {
-      border-top: 1px solid var(--v4-rowline);
-    }
-
-    .goals-grid {
+    .overview-columns {
       grid-template-columns: 1fr;
     }
 
-    .overview-section {
-      overflow-x: auto;
+    .work-row {
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px 12px;
+    }
+
+    .goal-chip {
+      grid-column: 1 / 2;
+    }
+
+    .status-pill {
+      justify-self: end;
+    }
+
+    .ac-cell {
+      grid-column: 1 / -1;
+      max-width: 160px;
+    }
+
+    .pulse-row {
+      flex-wrap: wrap;
+      min-height: 0;
+    }
+
+    .pulse-item {
+      flex: 1 1 40%;
+      padding: 8px 12px;
+      border-right: 0;
+      border-bottom: 1px solid var(--v4-hairline);
+    }
+  }
+
+  @media (max-width: 560px) {
+    .work-row {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .status-pill,
+    .goal-chip,
+    .ac-cell {
+      justify-self: start;
     }
   }
 </style>

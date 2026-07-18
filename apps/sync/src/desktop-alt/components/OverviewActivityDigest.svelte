@@ -4,17 +4,16 @@
   import Sparkline from './Sparkline.svelte';
 
   /**
-   * Compact team-activity digest for the company Overview. Reuses the exact
-   * data the Activity tab already loads (`get_company_activity`, warmed through
-   * `companyStore`), so the Overview becomes a real at-a-glance dashboard with
-   * NO extra backend work — it just surfaces signals the desktop already fetched
-   * but only showed on a separate tab: 7-day edits, members, vault size, the
-   * edits-over-time trend, and the top contributors. All values are real;
-   * empty/zero states render honestly.
+   * Compact recent-activity digest for company Overview (DESKTOP-003).
+   * Reuses `get_company_activity` (same as the Activity tab), warmed through
+   * companyStore. Renders as a naked section: hairline rows, no outer rounded
+   * dashboard boxes. All values are real; empty/zero states stay honest.
    */
   interface Props {
     slug: string;
     cloudBacked?: boolean;
+    /** Open the global Inbox for full notification chronology. */
+    onopeninbox?: () => void;
   }
 
   interface ActivityStats {
@@ -33,7 +32,7 @@
     top: ActivityContributor[];
   }
 
-  let { slug, cloudBacked = true }: Props = $props();
+  let { slug, cloudBacked = true, onopeninbox }: Props = $props();
 
   const emptyStats = (): ActivityStats => ({ files7: 0, edits7: 0, members: 0, vaultSize: '' });
   const emptyActivity = (): CompanyActivity => ({ stats: emptyStats(), sparkline: [], top: [] });
@@ -71,8 +70,6 @@
     }
     let cancelled = false;
 
-    // Warm from the shared store so switching between Overview and Activity is
-    // instant and the network round-trip is shared, not duplicated.
     const warm = companyStore.activity(slug);
     activity = warm != null ? normalize(warm as Partial<CompanyActivity>) : emptyActivity();
     loading = warm == null;
@@ -85,8 +82,6 @@
         }
       })
       .catch((err) => {
-        // Non-fatal: the Overview's board/goals still render. A failed activity
-        // fetch just leaves the digest empty rather than erroring the page.
         console.warn(`get_company_activity(${slug}) failed:`, err);
       })
       .finally(() => {
@@ -98,30 +93,41 @@
     };
   });
 
-  const sparklineMax = $derived(Math.max(1, ...activity.sparkline));
-  const contributorMax = $derived(Math.max(1, ...activity.top.map((c) => c.edits)));
   const hasActivity = $derived(
     activity.top.length > 0 || activity.sparkline.some((v) => v > 0) || activity.stats.edits7 > 0,
   );
-  const barHeight = (value: number): string => `${(value / sparklineMax) * 100}%`;
-  const contributorWidth = (value: number): string => `${(value / contributorMax) * 100}%`;
+  const summaryLine = $derived(
+    [
+      activity.stats.edits7 > 0 ? `${activity.stats.edits7} edits · 7d` : null,
+      activity.stats.files7 > 0 ? `${activity.stats.files7} files · 7d` : null,
+      activity.stats.members > 0 ? `${activity.stats.members} members` : null,
+      activity.stats.vaultSize ? activity.stats.vaultSize : null,
+    ]
+      .filter(Boolean)
+      .join(' · '),
+  );
 </script>
 
-<section class="digest" aria-labelledby="overview-activity-title" aria-busy={loading}>
+<section
+  class="digest"
+  aria-labelledby="overview-activity-title"
+  aria-busy={loading}
+  data-testid="overview-recent-activity"
+>
   <header class="digest-header">
-    <h2 id="overview-activity-title">TEAM ACTIVITY</h2>
-    <span class="digest-sub">last 14 days</span>
+    <h2 id="overview-activity-title">Recent activity</h2>
+    <button
+      type="button"
+      class="digest-link"
+      data-testid="overview-open-inbox"
+      onclick={() => onopeninbox?.()}
+    >
+      Open inbox
+    </button>
   </header>
 
-  <div class="digest-stats">
-    <div class="digest-stat"><strong>{activity.stats.edits7}</strong><span>edits · 7d</span></div>
-    <div class="digest-stat"><strong>{activity.stats.files7}</strong><span>files · 7d</span></div>
-    <div class="digest-stat"><strong>{activity.stats.members}</strong><span>members</span></div>
-    <div class="digest-stat"><strong>{activity.stats.vaultSize || '0'}</strong><span>vault size</span></div>
-  </div>
-
   {#if !cloudBacked}
-    <p class="digest-empty">Connect this company to see team activity.</p>
+    <p class="digest-empty">Connect this company to see recent activity.</p>
   {:else if loading && !hasActivity}
     <div class="digest-skeleton" aria-hidden="true">
       {#each [0, 1, 2] as row (row)}<span style={`width: ${78 - row * 18}%`}></span>{/each}
@@ -129,206 +135,229 @@
   {:else if !hasActivity}
     <p class="digest-empty">No activity yet — it appears here after files sync.</p>
   {:else}
-    <div class="digest-grid">
-      <div class="digest-card">
-        <header class="digest-card-head">
-          <h3>Edits over time</h3>
-          {#if activity.sparkline.length > 0}
-            <Sparkline data={activity.sparkline} width={110} height={18} />
+    {#if summaryLine || activity.sparkline.length > 0}
+      <div class="digest-summary" data-testid="overview-activity-summary">
+        <div class="digest-summary-copy">
+          {#if summaryLine}
+            <span class="digest-summary-title">{summaryLine}</span>
           {/if}
-        </header>
+          <span class="digest-summary-meta">Team vault · last 7–14 days</span>
+        </div>
         {#if activity.sparkline.length > 0}
-          <div class="digest-bars" aria-label="Edits over time">
-            {#each activity.sparkline as value, index (index)}
-              <span class="digest-bar" style={`height: ${barHeight(value)}`} title={`${value} edits`}></span>
-            {/each}
-          </div>
+          <span class="digest-monitor" aria-label="Edits over time">
+            <Sparkline data={activity.sparkline} width={88} height={16} />
+          </span>
         {/if}
       </div>
+    {/if}
 
-      <div class="digest-card">
-        <header class="digest-card-head"><h3>Top contributors</h3></header>
-        <div class="digest-contributors">
-          {#each activity.top.slice(0, 4) as c, index (`${c.who}:${index}`)}
-            <div class="digest-contributor">
-              <div class="digest-contributor-body">
-                <span class="digest-contributor-name">{c.who}</span>
-                <span class="digest-track" aria-hidden="true">
-                  <span class="digest-fill" style={`width: ${contributorWidth(c.edits)}`}></span>
-                </span>
-              </div>
-              <strong>{c.edits}</strong>
+    {#if activity.top.length > 0}
+      <ul class="digest-list">
+        {#each activity.top.slice(0, 5) as c, index (`${c.who}:${index}`)}
+          <li class="digest-row">
+            <span class="digest-mark" aria-hidden="true">{c.who.slice(0, 1).toUpperCase()}</span>
+            <div class="digest-copy">
+              <span class="digest-title">{c.who}</span>
+              <span class="digest-meta">
+                {c.edits} {c.edits === 1 ? 'edit' : 'edits'} · recent window
+              </span>
             </div>
-          {/each}
-        </div>
-      </div>
-    </div>
+            <strong class="digest-count">{c.edits}</strong>
+          </li>
+        {/each}
+      </ul>
+    {/if}
   {/if}
 </section>
 
 <style>
   .digest {
     display: grid;
-    gap: 12px;
+    gap: 8px;
+    min-width: 0;
   }
+
   .digest-header {
     display: flex;
     align-items: baseline;
     justify-content: space-between;
     gap: 12px;
+    min-height: 28px;
   }
+
   .digest-header h2 {
     margin: 0;
-    color: var(--v4-text-3);
-    font-size: var(--text-base);
-    font-weight: 400;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-  }
-  .digest-sub {
-    color: var(--v4-text-3);
-    font-size: var(--text-base);
-  }
-  .digest-stats {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 8px;
-  }
-  .digest-stat {
-    display: grid;
-    gap: 2px;
-    padding: 10px 12px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: 8px;
-    background: var(--v4-inset);
-  }
-  .digest-stat strong {
     color: var(--v4-text-1);
-    font-size: var(--text-lg, 16px);
+    font-size: var(--type-body, var(--text-base));
     font-weight: 600;
-    line-height: 1.1;
+    line-height: 1.25;
   }
-  .digest-stat span {
+
+  .digest-link {
+    padding: 0;
+    border: 0;
+    background: transparent;
     color: var(--v4-text-3);
-    font-size: var(--text-base);
+    font: inherit;
+    font-size: var(--type-metadata, var(--text-micro));
+    cursor: pointer;
   }
-  .digest-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 8px;
+
+  .digest-link:hover {
+    color: var(--v4-text-2);
   }
-  .digest-card {
-    display: grid;
-    gap: 10px;
-    align-content: start;
-    padding: 12px 14px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: 8px;
-    background: var(--v4-inset);
+
+  .digest-link:focus-visible {
+    outline: 1px solid var(--v4-focus-ring);
+    outline-offset: var(--v4-focus-offset, 2px);
   }
-  .digest-card-head {
+
+  .digest-summary {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 8px;
-  }
-  .digest-card-head h3 {
-    margin: 0;
-    color: var(--v4-text-2);
-    font-size: var(--text-base);
-    font-weight: 500;
-  }
-  .digest-bars {
-    display: flex;
-    align-items: flex-end;
-    gap: 3px;
-    height: 48px;
-  }
-  .digest-bar {
-    flex: 1 1 0;
-    min-height: 2px;
-    border-radius: 2px 2px 0 0;
-    /* Neutral white-alpha to match the app's restrained Activity bars (no
-       introduced accent colour); flips to black-alpha in light mode so the
-       bars stay visible on a light background. */
-    background: rgba(255, 255, 255, 0.14);
-  }
-  .digest-contributors {
-    display: grid;
-    gap: 8px;
-  }
-  .digest-contributor {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-  }
-  .digest-contributor-body {
-    display: grid;
-    gap: 4px;
-    flex: 1 1 auto;
+    gap: 12px;
     min-width: 0;
+    padding: 8px 0 10px;
+    border-bottom: 1px solid var(--v4-rowline);
   }
-  .digest-contributor-name {
+
+  .digest-summary-copy {
+    display: grid;
+    min-width: 0;
+    gap: var(--v4-row-stack-gap, 3px);
+  }
+
+  .digest-summary-title {
     overflow: hidden;
     color: var(--v4-text-1);
-    font-size: var(--text-base);
+    font-size: var(--type-body, var(--text-base));
+    font-weight: 500;
+    line-height: 1.25;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .digest-track {
-    height: 5px;
-    border-radius: 999px;
+
+  .digest-summary-meta {
+    color: var(--v4-text-3);
+    font-size: var(--type-metadata, var(--text-micro));
+    line-height: 1.25;
+  }
+
+  /* Discrete live monitor — rounded is intentional for object identity. */
+  .digest-monitor {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    padding: 4px 6px;
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-button);
+    background: var(--v4-inset);
+  }
+
+  .digest-list {
+    display: grid;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .digest-row {
+    display: grid;
+    grid-template-columns: 24px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 10px;
+    min-height: 44px;
+    padding: 7px 0;
+    border-bottom: 1px solid var(--v4-rowline);
+  }
+
+  .digest-row:last-child {
+    border-bottom: 0;
+  }
+
+  .digest-mark {
+    display: grid;
+    width: 24px;
+    height: 24px;
+    place-items: center;
+    border-radius: var(--v4-radius-button);
     background: var(--v4-control-faint);
+    color: var(--v4-text-2);
+    font-size: var(--type-metadata, var(--text-micro));
+    font-weight: 500;
+  }
+
+  .digest-copy {
+    display: grid;
+    min-width: 0;
+    gap: var(--v4-row-stack-gap, 3px);
+  }
+
+  .digest-title {
     overflow: hidden;
+    color: var(--v4-text-1);
+    font-size: var(--type-body, var(--text-base));
+    font-weight: 500;
+    line-height: 1.25;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
-  .digest-fill {
-    display: block;
-    height: 100%;
-    border-radius: 999px;
-    background: rgba(255, 255, 255, 0.32);
+
+  .digest-meta {
+    overflow: hidden;
+    color: var(--v4-text-3);
+    font-size: var(--type-metadata, var(--text-micro));
+    line-height: 1.25;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
-  @media (prefers-color-scheme: light) {
-    .digest-bar {
-      background: rgba(0, 0, 0, 0.14);
-    }
-    .digest-fill {
-      background: rgba(0, 0, 0, 0.32);
-    }
-  }
-  .digest-contributor strong {
+
+  .digest-count {
     flex: 0 0 auto;
     color: var(--v4-text-2);
-    font-size: var(--text-base);
+    font-size: var(--type-secondary, var(--text-sm));
+    font-weight: 500;
     font-variant-numeric: tabular-nums;
   }
+
   .digest-empty {
     margin: 0;
-    padding: 12px 14px;
-    border: 1px dashed var(--v4-hairline);
-    border-radius: 8px;
+    padding: 10px 0;
+    border: 0;
+    border-top: 1px solid var(--v4-rowline);
+    border-radius: 0;
     color: var(--v4-text-3);
-    font-size: var(--text-base);
+    font-size: var(--type-secondary, var(--text-sm));
+    line-height: 1.35;
   }
+
   .digest-skeleton {
     display: grid;
     gap: 8px;
-    padding: 4px 0;
+    padding: 8px 0;
   }
+
   .digest-skeleton span {
-    height: 10px;
+    height: 8px;
     border-radius: 999px;
     background: var(--v4-control-faint);
     animation: digest-pulse 1.2s ease-in-out infinite;
   }
+
   @keyframes digest-pulse {
-    0%, 100% { opacity: 0.5; }
-    50% { opacity: 1; }
+    0%,
+    100% {
+      opacity: 0.5;
+    }
+    50% {
+      opacity: 1;
+    }
   }
-  @container (max-width: 560px) {
-    .digest-stats { grid-template-columns: repeat(2, 1fr); }
-    .digest-grid { grid-template-columns: 1fr; }
-  }
+
   @media (prefers-reduced-motion: reduce) {
-    .digest-skeleton span { animation: none; }
+    .digest-skeleton span {
+      animation: none;
+    }
   }
 </style>

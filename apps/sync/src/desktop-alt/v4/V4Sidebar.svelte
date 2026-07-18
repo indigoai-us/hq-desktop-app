@@ -8,24 +8,27 @@
     getLastReadTs,
     countUnread,
   } from '../../lib/notificationFeedData';
-  import { getV4SidebarModel, type V4NavId, type V4Route } from './model';
+  import {
+    getV4SidebarModel,
+    type V4CompanyPrimaryId,
+    type V4NavId,
+    type V4Route,
+  } from './model';
   import SidebarSyncMode from './SidebarSyncMode.svelte';
   import './tokens.css';
 
   /**
-   * V4 primary sidebar (SPEC section 4 + chrome-master.png): 220px, raised
-   * background, hairline right border. Nav is Inbox / Meetings / Marketplace /
+   * V4 primary sidebar (SPEC section 4 + DESKTOP-001): 220px Liquid Glass
+   * chrome, hairline right border. Nav is Inbox / Meetings / Marketplace /
    * Library / Files (US-008: Messages + Notifications merged into Inbox;
    * US-007 removed Home / Mission Control / Companies page rows) →
-   * COMPANIES section (6px status dot + name per connected company,
-   * scrollable when needed) → Settings footer (13px "Settings" + muted
-   * account email, hairline top border).
+   * COMPANIES section (selected company expands Overview / Goals / Projects /
+   * Knowledge / Team / More inline; children collapse on global destinations)
+   * → Settings footer.
    *
-   * At most one active row, driven by `route` (see getV4SidebarModel) —
-   * palette-only surfaces (Home / Mission Control / Moderation) light none.
-   * The companies list renders the `list_syncable_workspaces` result: pass it
-   * via `companies` when the shell already holds it (DesktopApp does), or omit
-   * the prop and the sidebar fetches the command itself on mount.
+   * At most one top-level active row, driven by `route` (see getV4SidebarModel)
+   * — palette-only surfaces light none. Company primary children are a second
+   * hierarchy level only; there is no permanent company secondary sidebar.
    */
   interface Props {
     route: V4Route;
@@ -109,6 +112,10 @@
     onnavigate?.({ kind: 'company', slug });
   }
 
+  function goCompanySection(slug: string, section: V4CompanyPrimaryId) {
+    onnavigate?.({ kind: 'company', slug, tab: section });
+  }
+
   // Once a cloud-activated company row is hovered/focused, keep SidebarSyncMode
   // mounted so its mode cache lives; CSS owns show/hide on subsequent hover.
   // Pointer reveal waits a short hover-intent delay so sweeping the mouse down
@@ -167,26 +174,30 @@
       {#each model.companies as row (row.slug)}
         <div
           class="v4-company-item"
-          class:has-syncmode={row.cloudActivated}
+          class:has-syncmode={row.cloudActivated && !row.expanded}
+          class:expanded={row.expanded}
           role="group"
-          onpointerenter={() => row.cloudActivated && queueReveal(row.slug)}
+          onpointerenter={() => row.cloudActivated && !row.expanded && queueReveal(row.slug)}
           onpointerleave={cancelPendingReveal}
-          onfocusin={() => row.cloudActivated && reveal(row.slug)}
+          onfocusin={() => row.cloudActivated && !row.expanded && reveal(row.slug)}
         >
           <button
             type="button"
             class="v4-row v4-company-row"
             class:active={row.active}
-            aria-current={row.active ? 'page' : undefined}
+            aria-current={row.active && row.children.every((child) => !child.active) ? 'page' : undefined}
+            aria-expanded={row.expanded}
             onclick={() => goCompany(row.slug)}
           >
             <span class={`v4-dot ${row.tone}`} aria-hidden="true"></span>
             <span class="v4-company-name">{row.label}</span>
             {#if row.pendingInvite}
               <span class="v4-invite-badge" data-testid={`company-invite-badge-${row.slug}`}>Invite</span>
+            {:else if row.expanded}
+              <span class="v4-disclosure" aria-hidden="true">⌄</span>
             {/if}
           </button>
-          {#if row.cloudActivated && revealedSlugs.has(row.slug)}
+          {#if row.cloudActivated && !row.expanded && revealedSlugs.has(row.slug)}
             <span class="v4-syncmode-slot">
               <SidebarSyncMode
                 slug={row.slug}
@@ -196,6 +207,29 @@
             </span>
           {/if}
         </div>
+        {#if row.expanded && row.children.length > 0}
+          <div
+            class="v4-company-children"
+            data-testid={`company-children-${row.slug}`}
+            aria-label={`${row.label} sections`}
+          >
+            {#each row.children as child (child.id)}
+              <button
+                type="button"
+                class="v4-row v4-company-child"
+                class:active={child.active}
+                aria-current={child.active ? 'page' : undefined}
+                data-testid={`company-child-${row.slug}-${child.id}`}
+                onclick={() => goCompanySection(row.slug, child.id)}
+              >
+                <span class="v4-row-label">{child.label}</span>
+                {#if child.id === 'more'}
+                  <span class="v4-child-meta" aria-hidden="true">•••</span>
+                {/if}
+              </button>
+            {/each}
+          </div>
+        {/if}
       {/each}
     </nav>
   </div>
@@ -230,7 +264,7 @@
     overflow: hidden;
     padding: 14px 10px 0;
     border-right: 1px solid var(--v4-hairline);
-    background: var(--v4-chrome);
+    background: var(--v4-sidebar, var(--v4-chrome));
     backdrop-filter: blur(22px) saturate(180%);
     -webkit-backdrop-filter: blur(22px) saturate(180%);
     box-shadow: inset 1px 0 0 var(--pop-highlight);
@@ -263,7 +297,7 @@
     background: transparent;
     color: var(--v4-text-2);
     font: inherit;
-    font-size: var(--text-base);
+    font-size: var(--type-body, var(--text-base));
     font-weight: 400;
     line-height: 1;
     text-align: left;
@@ -276,7 +310,7 @@
   }
 
   .v4-row:focus-visible {
-    outline: 2px solid var(--v4-control-border);
+    outline: 2px solid var(--v4-focus-ring, var(--v4-control-border));
     outline-offset: -2px;
     background: var(--v4-active-row);
     color: var(--v4-text-1);
@@ -308,7 +342,7 @@
     border-radius: 999px;
     background: var(--v4-unread);
     color: #ffffff;
-    font-size: 10px;
+    font-size: var(--type-metadata, 10px);
     font-weight: 700;
     line-height: 1;
   }
@@ -321,7 +355,7 @@
     border: 1px solid var(--v4-hairline);
     background: var(--v4-control-faint, transparent);
     color: var(--v4-text-2);
-    font-size: 10px;
+    font-size: var(--type-metadata, 10px);
     font-weight: 500;
     line-height: 14px;
     letter-spacing: 0.02em;
@@ -333,7 +367,7 @@
     margin: 0 0 6px;
     padding: 0 8px;
     color: var(--v4-text-3);
-    font-size: var(--text-base);
+    font-size: var(--type-secondary, var(--text-xs));
     font-weight: 400;
     letter-spacing: 0.06em;
     text-transform: uppercase;
@@ -442,19 +476,66 @@
     mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent 100%);
   }
 
+  .v4-disclosure {
+    flex: 0 0 auto;
+    color: var(--v4-text-3);
+    font-size: var(--type-metadata, 10px);
+    line-height: 1;
+  }
+
+  /* DESKTOP-001: one additional hierarchy level under the selected company. */
+  .v4-company-children {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: var(--v4-row-gap);
+    margin: 2px 0 6px 18px;
+    padding: 2px 0 2px 12px;
+  }
+
+  .v4-company-children::before {
+    content: '';
+    position: absolute;
+    inset: 2px auto 2px 0;
+    width: 1px;
+    background: var(--v4-hairline);
+  }
+
+  .v4-company-child {
+    height: 26px;
+    min-height: 26px;
+    max-height: 26px;
+    color: var(--v4-text-3);
+    font-size: var(--type-body, 12px);
+  }
+
+  .v4-company-child.active {
+    color: var(--v4-text-1);
+  }
+
+  .v4-child-meta {
+    flex: 0 0 auto;
+    color: var(--v4-text-3);
+    font-size: var(--type-metadata, 10px);
+    letter-spacing: 0.04em;
+  }
+
   .v4-spacer {
     flex: 0 0 var(--v4-space-4);
     min-height: var(--v4-space-4);
   }
 
   .v4-footer {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
     /* Pinned: never shrink under list pressure so the footer stays on-screen
-       and the overflow goes to .v4-company-nav instead (US-007). */
+       and the overflow goes to .v4-company-nav instead (US-007).
+       DESKTOP-011: title + meta use separate grid slots with explicit 3px gap. */
+    display: grid;
+    grid-template-rows: auto auto;
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+    justify-items: start;
     flex: 0 0 auto;
-    gap: 2px;
+    gap: var(--v4-row-stack-gap, 3px);
     margin: 0 -10px;
     padding: 12px 18px 14px;
     border: none;
@@ -472,7 +553,7 @@
   }
 
   .v4-footer:focus-visible {
-    outline: 2px solid var(--v4-control-border);
+    outline: 2px solid var(--v4-focus-ring, var(--v4-control-border));
     outline-offset: -4px;
   }
 
@@ -482,7 +563,7 @@
 
   .v4-footer-label {
     color: var(--v4-text-2);
-    font-size: var(--text-base);
+    font-size: var(--type-body, var(--text-base));
     font-weight: 400;
     line-height: 1.2;
   }
@@ -491,7 +572,7 @@
     overflow: hidden;
     max-width: 100%;
     color: var(--v4-text-3);
-    font-size: var(--text-base);
+    font-size: var(--type-secondary, var(--text-xs));
     line-height: 1.2;
     text-overflow: ellipsis;
     white-space: nowrap;

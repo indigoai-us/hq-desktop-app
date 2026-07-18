@@ -4,27 +4,38 @@
   import type { Workspace } from '../../lib/workspaces';
   import { buildClaudeCodeUrl } from '../../lib/claude-code-link';
   import { companyInviteUrl, companySettingsUrl } from '../lib/hq-console';
-  import ActivityPanel from '../panels/ActivityPanel.svelte';
   import CompanyBoardPanel from '../panels/CompanyBoardPanel.svelte';
   import CompanyGoalsPage from './CompanyGoalsPage.svelte';
   import CompanyProjectsPage from './CompanyProjectsPage.svelte';
-  import DeploymentsPanel from '../panels/DeploymentsPanel.svelte';
-  import SecretsPanel from '../panels/SecretsPanel.svelte';
+  import CompanyOperationsPanel from '../panels/CompanyOperationsPanel.svelte';
   import CompanyLibraryPanel from '../panels/CompanyLibraryPanel.svelte';
   import CompanyKnowledgePanel from '../panels/CompanyKnowledgePanel.svelte';
   import TeamPanel from '../panels/TeamPanel.svelte';
-  import { DEFAULT_COMPANY_TAB, type CompanyTab } from '../route';
+  import {
+    DEFAULT_COMPANY_TAB,
+    isCompanyOperationsTab,
+    type CompanyOperationsTab,
+    type CompanyTab,
+  } from '../route';
 
   interface Props {
     company: Workspace;
     /**
-     * Which of the eight company sections to show — driven by the V4 secondary
-     * sidebar (US-002); the in-page segmented control is gone. Defaults to
-     * Overview.
+     * Which company section to show — driven by the primary sidebar children
+     * (DESKTOP-001) and operations deep links (DESKTOP-010). Defaults to Overview.
      */
     tab?: CompanyTab;
     /** Switch to the Projects section before handing project creation to HQ. */
     onopenprojects?: () => void;
+    /** Switch to the Goals section (overview “View all” / Connect). */
+    onopengoals?: () => void;
+    /** Open the global Inbox (overview recent activity). */
+    onopeninbox?: () => void;
+    /**
+     * Switch operations internal destination (Activity / Deployments / Secrets /
+     * Settings) while staying under More (DESKTOP-010).
+     */
+    onopenoperations?: (destination: CompanyOperationsTab) => void;
     /** Called after a successful Connect so the parent re-fetches workspaces. */
     onworkspaceschanged?: () => void;
     /** Vault reachability — while offline, Connect is disabled (it can only
@@ -36,6 +47,9 @@
     company,
     tab = DEFAULT_COMPANY_TAB,
     onopenprojects,
+    onopengoals,
+    onopeninbox,
+    onopenoperations,
     onworkspaceschanged,
     cloudReachable = true,
   }: Props = $props();
@@ -56,6 +70,11 @@
       (company.kind === 'company' && Boolean(company.cloudUid)),
   );
 
+  /** Active operations destination when the company tab is under More. */
+  const operationsDestination = $derived<CompanyOperationsTab>(
+    isCompanyOperationsTab(tab) ? tab : 'activity',
+  );
+
   const connectable = $derived(company.state === 'local-only' || company.state === 'broken');
   const pendingInvite = $derived(
     company.membershipStatus === 'pending' && company.state === 'cloud-only',
@@ -66,8 +85,9 @@
   }
 
   // Company settings (sync rules, members, roles) live in the HQ web console,
-  // not the in-app Settings route — open the company's console page in the
-  // system browser.
+  // not the in-app Settings route. DESKTOP-010 surfaces the open-console action
+  // from the operations Settings destination; this helper remains for deep
+  // links / callers that still open console settings by slug.
   function openCompanySettings() {
     actionError = null;
     actionNotice = null;
@@ -192,8 +212,8 @@
           {inviteBusy ? 'Accepting…' : 'Accept invite'}
         </button>
       {/if}
+      <!-- DESKTOP-003: Invite + New project stay visible; Settings / ops live under More. -->
       <button type="button" onclick={openInvite}>Invite</button>
-      <button type="button" onclick={openCompanySettings}>Settings</button>
       <button type="button" class="primary" onclick={() => void startNewProject()} disabled={newProjectBusy}>
         {newProjectBusy ? 'Opening…' : 'New project'}
       </button>
@@ -210,7 +230,13 @@
   {#key `${company.slug}:${tab}`}
     <div class="company-panel">
       {#if tab === 'overview'}
-        <CompanyBoardPanel slug={company.slug} {cloudBacked} />
+        <CompanyBoardPanel
+          slug={company.slug}
+          {cloudBacked}
+          {onopenprojects}
+          {onopengoals}
+          {onopeninbox}
+        />
       {:else if tab === 'goals'}
         <CompanyGoalsPage slug={company.slug} />
       {:else if tab === 'projects'}
@@ -223,12 +249,14 @@
         <CompanyKnowledgePanel slug={company.slug} />
       {:else if tab === 'team'}
         <TeamPanel slug={company.slug} companyUid={company.cloudUid} />
-      {:else if tab === 'activity'}
-        <ActivityPanel slug={company.slug} {cloudBacked} />
-      {:else if tab === 'deployments'}
-        <DeploymentsPanel slug={company.slug} {cloudBacked} />
-      {:else if tab === 'secrets'}
-        <SecretsPanel slug={company.slug} {cloudBacked} />
+      {:else if isCompanyOperationsTab(tab)}
+        <!-- DESKTOP-010: Activity / Deployments / Secrets / Settings under More. -->
+        <CompanyOperationsPanel
+          slug={company.slug}
+          {cloudBacked}
+          destination={operationsDestination}
+          ondestinationchange={(destination) => onopenoperations?.(destination)}
+        />
       {/if}
     </div>
   {/key}

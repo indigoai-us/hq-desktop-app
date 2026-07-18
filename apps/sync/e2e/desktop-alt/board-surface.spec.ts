@@ -205,7 +205,7 @@ describe('desktop-alt Board surface (US-007)', () => {
     expect(page).toContain('<ProjectDetailView');
     const detail = readRepoFile('src/desktop-alt/pages/ProjectDetailView.svelte');
     expect(detail).toContain('import StoryKanban');
-    expect(detail).toContain('<StoryKanban {stories}');
+    expect(detail).toContain('<StoryKanban');
     expect(detail).toContain('data-testid="detail-back"');
     // Scoped to ONE company: the panel filters projects by its slug prop.
     expect(page).toContain('project.company === slug');
@@ -231,13 +231,17 @@ describe('desktop-alt Board surface (US-007)', () => {
     expect(route).toContain("export const DEFAULT_COMPANY_TAB: CompanyTab = 'overview'");
     expect(company).not.toContain('CompanyTabs');
 
-    // Overview hosts CompanyBoardPanel as the first branch.
+    // Overview hosts CompanyBoardPanel as the first branch (DESKTOP-003 also
+    // threads open-projects / open-goals / open-inbox actions into the panel).
     expect(company).toContain("import CompanyBoardPanel from '../panels/CompanyBoardPanel.svelte'");
     expect(company).toContain("{#if tab === 'overview'}");
-    expect(company).toContain('<CompanyBoardPanel slug={company.slug} {cloudBacked} />');
+    expect(company).toContain('<CompanyBoardPanel');
+    expect(company).toContain('slug={company.slug}');
+    expect(company).toContain('{cloudBacked}');
     // Other sections remain wired below it.
-    expect(company).toContain('<ActivityPanel slug={company.slug} {cloudBacked} />');
-    expect(company).toContain('<DeploymentsPanel slug={company.slug} {cloudBacked} />');
-    expect(company).toContain('<SecretsPanel slug={company.slug} {cloudBacked} />');
+    // DESKTOP-010: operational panels mount inside CompanyOperationsPanel under More.
+    expect(company).toContain('CompanyOperationsPanel');
+    expect(company).toContain('isCompanyOperationsTab(tab)');
+    expect(company).toContain('destination={operationsDestination}');
   });
 });

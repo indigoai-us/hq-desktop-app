@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   displayNameFromMember,
   memberKindFromUid,
+  memberKindLabel,
+  memberTypeRoleLabel,
   normalizeCompanyTeamTelemetry,
   teamTelemetryErrorMessage,
 } from './team-telemetry';
@@ -11,6 +13,19 @@ describe('memberKindFromUid', () => {
     expect(memberKindFromUid('agt_01ABC')).toBe('agent');
     expect(memberKindFromUid('prs_01XYZ')).toBe('human');
     expect(memberKindFromUid('')).toBe('human');
+  });
+});
+
+describe('memberKindLabel / memberTypeRoleLabel', () => {
+  it('labels kinds honestly without inventing presence', () => {
+    expect(memberKindLabel('agent')).toBe('Agent');
+    expect(memberKindLabel('human')).toBe('Human');
+  });
+
+  it('prefers payload role when present, else kind label', () => {
+    expect(memberTypeRoleLabel({ kind: 'human', role: 'owner' })).toBe('owner');
+    expect(memberTypeRoleLabel({ kind: 'agent' })).toBe('Agent');
+    expect(memberTypeRoleLabel({ kind: 'human', role: '  ' })).toBe('Human');
   });
 });
 
@@ -32,13 +47,14 @@ describe('displayNameFromMember', () => {
 });
 
 describe('normalizeCompanyTeamTelemetry', () => {
-  it('splits humans and agents and extracts top skills', () => {
+  it('builds a mixed members list and kind partitions with top skills', () => {
     const view = normalizeCompanyTeamTelemetry(
       {
         perMember: [
           {
             personUid: 'prs_ada',
             email: 'ada@example.com',
+            role: 'admin',
             totals: {
               skills: {
                 total: 10,
@@ -65,9 +81,14 @@ describe('normalizeCompanyTeamTelemetry', () => {
       { activeProjectsByMemberId: { prs_ada: ['company-detail-desktop-ia'] } },
     );
 
+    // Unified list ranks agents/humans together by sessions/events.
+    expect(view.members).toHaveLength(2);
+    expect(view.members[0].id).toBe('agt_bot');
+    expect(view.members[1].id).toBe('prs_ada');
     expect(view.humans).toHaveLength(1);
     expect(view.agents).toHaveLength(1);
     expect(view.humans[0].displayName).toBe('ada@example.com');
+    expect(view.humans[0].role).toBe('admin');
     expect(view.humans[0].topSkills.map((s) => s.skill)).toEqual(['plan', 'deploy']);
     expect(view.humans[0].activeProjects).toEqual(['company-detail-desktop-ia']);
     expect(view.agents[0].kind).toBe('agent');
@@ -77,7 +98,26 @@ describe('normalizeCompanyTeamTelemetry', () => {
 
   it('accepts members key and empty payloads', () => {
     expect(normalizeCompanyTeamTelemetry({ members: [] }).empty).toBe(true);
+    expect(normalizeCompanyTeamTelemetry({ members: [] }).members).toEqual([]);
     expect(normalizeCompanyTeamTelemetry(null).empty).toBe(true);
+    expect(normalizeCompanyTeamTelemetry(null).members).toEqual([]);
+  });
+
+  it('keeps active projects supplied by company telemetry', () => {
+    const view = normalizeCompanyTeamTelemetry({
+      perMember: [
+        {
+          personUid: 'agt_izzy',
+          displayName: 'Izzy',
+          activeProjects: ['Instant DM delivery', { title: 'HQ Desktop app' }],
+        },
+      ],
+    });
+
+    expect(view.members[0]?.activeProjects).toEqual([
+      'Instant DM delivery',
+      'HQ Desktop app',
+    ]);
   });
 
   it('joins UID-only telemetry rows to contact labels', () => {

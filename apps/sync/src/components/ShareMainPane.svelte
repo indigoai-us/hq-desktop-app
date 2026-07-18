@@ -2,16 +2,18 @@
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
   import { buildClaudeCodeUrl } from '../lib/claude-code-link';
-  import { shareTitle } from '../lib/share-path';
+  import { shareAclLabel, sharePathPrefix, shareTitle } from '../lib/share-path';
   import { buildSharePrompt } from '../lib/shareTimeline';
   import type { ShareEvent } from '../lib/notificationGroups';
   import type { ReactionEvent } from '../lib/reactions';
   import { ShareReactionController } from '../lib/shareReactionController.svelte';
   import ReactionBar from './messaging/ReactionBar.svelte';
 
-  // Main content for share-detail (and when a share is selected from the
-  // quick-window side pane). Behavior-identical extract from ShareDetail:
-  // reaction controller, copy prompt, Open in Claude, Message sharer.
+  // Main content for share-detail, Messages shell share rows, and when a share
+  // is selected from the quick-window side pane. Shared payload surface shows
+  // sender, tenant-scoped path/prefix, timestamp, ACL truth, and current
+  // actions (copy prompt / Open in Claude / Message sharer) without inventing
+  // file-transfer chrome.
 
   interface Props {
     events: ShareEvent[];
@@ -130,23 +132,32 @@
     <p>Waiting for share data…</p>
   </div>
 {:else}
-  <div class="events-list">
+  <div class="events-list" data-testid="share-main-pane">
     {#each events as evt (evt.eventId)}
-      <div class="event-card">
-        <div class="event-header">
-          <span class="event-issuer">{evt.issuerDisplayName}</span>
-          <span class="event-email">{evt.issuerEmail}</span>
-          <span class="event-date">{formatDate(evt.createdAt)}</span>
-        </div>
+      {@const acl = shareAclLabel(evt.permission)}
+      <article class="event-card" data-testid="share-payload" aria-label={`Shared path from ${evt.issuerDisplayName}`}>
+        <header class="event-header">
+          <div class="event-identity">
+            <span class="event-issuer">{evt.issuerDisplayName}</span>
+            {#if evt.issuerEmail}
+              <span class="event-email">{evt.issuerEmail}</span>
+            {/if}
+          </div>
+          <time class="event-date" datetime={evt.createdAt}>{formatDate(evt.createdAt)}</time>
+        </header>
 
         <ul class="paths-list">
-          {#each evt.paths as p}
+          {#each evt.paths as p (p)}
             <li class="path-item" title={p}>
               <span class="path-basename">{shareTitle(p)}</span>
-              <span class="path-full">{p}</span>
+              <span class="path-full">{sharePathPrefix(p)}</span>
             </li>
           {/each}
         </ul>
+
+        {#if acl}
+          <p class="event-acl" data-testid="share-acl">{acl}</p>
+        {/if}
 
         {#if evt.note}
           <p class="event-note">{evt.note}</p>
@@ -181,7 +192,7 @@
             Message {evt.issuerDisplayName.split(/\s+/)[0] || 'sharer'}
           </button>
         </div>
-      </div>
+      </article>
     {/each}
   </div>
 {/if}
@@ -195,18 +206,20 @@
   }
 
   .detail-empty p {
-    font-size: 0.8125rem;
+    font-size: var(--type-body, 12px);
     color: var(--pop-muted);
     margin: 0;
   }
 
+  /* Naked canvas payload: spacing + hairlines only — no rounded outer shell.
+     Title/meta stacks use an explicit 3px grid gap (DESKTOP-002 / DESKTOP-011). */
   .events-list {
     flex: 1;
     overflow-y: auto;
     padding: 0.75rem 1rem;
     display: flex;
     flex-direction: column;
-    gap: 0.75rem;
+    gap: 0;
     scrollbar-width: thin;
     scrollbar-color: var(--pop-muted) transparent;
     min-height: 0;
@@ -218,42 +231,60 @@
 
   .events-list::-webkit-scrollbar-thumb {
     background: var(--pop-hover);
-    border-radius: 3px;
   }
 
   .event-card {
-    background: var(--c-bg);
-    border: 1px solid var(--pop-border);
-    border-radius: 10px;
-    padding: 0.875rem 1rem;
+    background: transparent;
+    border: none;
+    border-bottom: 1px solid var(--pop-border, var(--border));
+    border-radius: 0;
+    padding: 0.875rem 0.25rem 1rem;
     display: flex;
     flex-direction: column;
     gap: 0.625rem;
   }
 
+  .event-card:last-child {
+    border-bottom: none;
+  }
+
   .event-header {
-    display: flex;
-    align-items: baseline;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
     gap: 0.5rem;
-    flex-wrap: wrap;
+  }
+
+  .event-identity {
+    display: grid;
+    grid-template-rows: auto auto;
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--v4-row-stack-gap, 3px);
+    min-width: 0;
   }
 
   .event-issuer {
-    font-size: 0.875rem;
+    font-size: var(--type-body, 0.8125rem);
     font-weight: 600;
-    color: var(--pop-text);
+    color: var(--pop-text, var(--fg));
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .event-email {
-    font-size: 0.75rem;
-    color: var(--pop-muted);
+    font-size: var(--type-secondary, 0.75rem);
+    color: var(--pop-muted, var(--muted));
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .event-date {
-    margin-left: auto;
-    font-size: 0.6875rem;
-    color: var(--pop-muted);
+    font-size: var(--type-metadata, 0.6875rem);
+    color: var(--pop-muted, var(--muted));
     white-space: nowrap;
+    font-variant-numeric: tabular-nums;
   }
 
   .paths-list {
@@ -262,37 +293,48 @@
     padding: 0;
     display: flex;
     flex-direction: column;
-    gap: 0.25rem;
+    gap: 0.375rem;
   }
 
   .path-item {
-    display: flex;
-    flex-direction: column;
-    gap: 0.0625rem;
+    display: grid;
+    grid-template-rows: auto auto;
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--v4-row-stack-gap, 3px);
+    min-width: 0;
   }
 
   .path-basename {
-    font-size: 0.8125rem;
+    font-size: var(--type-body, 0.8125rem);
     font-weight: 500;
-    color: var(--pop-text);
+    color: var(--pop-text, var(--fg));
   }
 
   .path-full {
-    font-size: 0.6875rem;
-    color: var(--pop-muted);
+    font-size: var(--type-metadata, 0.6875rem);
+    color: var(--pop-muted, var(--muted));
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
 
+  .event-acl {
+    margin: 0;
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: var(--type-metadata, 0.6875rem);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--pop-muted, var(--muted));
+  }
+
   .event-note {
     margin: 0;
-    font-size: 0.8125rem;
-    color: var(--pop-text);
-    background: var(--pop-hover);
-    border-left: 2px solid var(--c-field-border);
+    font-size: var(--type-body, 0.8125rem);
+    color: var(--pop-text, var(--fg));
+    background: var(--pop-hover, var(--row-hover));
+    border-left: 2px solid var(--c-field-border, var(--border));
     padding: 0.375rem 0.625rem;
-    border-radius: 0 4px 4px 0;
+    border-radius: 0;
     white-space: pre-wrap;
     word-break: break-word;
   }
@@ -308,7 +350,7 @@
     align-items: center;
     padding: 0.375rem 0.75rem;
     border-radius: 6px;
-    font-size: 0.75rem;
+    font-size: var(--type-secondary, 0.75rem);
     font-weight: 500;
     cursor: pointer;
     border: none;
@@ -317,22 +359,27 @@
   }
 
   .btn-copy {
-    background: var(--pop-hover);
-    color: var(--pop-text);
+    background: var(--pop-hover, var(--row-hover));
+    color: var(--pop-text, var(--fg));
   }
 
   .btn-copy:hover {
-    background: var(--c-field-bg);
+    background: var(--c-field-bg, var(--surface-panel));
   }
 
   .btn-console {
     background: transparent;
-    color: var(--pop-muted);
-    border: 1px solid var(--pop-border);
+    color: var(--pop-muted, var(--muted));
+    border: 1px solid var(--pop-border, var(--border));
   }
 
   .btn-console:hover {
-    background: var(--pop-hover);
-    color: var(--pop-text);
+    background: var(--pop-hover, var(--row-hover));
+    color: var(--pop-text, var(--fg));
+  }
+
+  .btn:focus-visible {
+    outline: 2px solid var(--v4-unread, #0a6fd6);
+    outline-offset: 2px;
   }
 </style>

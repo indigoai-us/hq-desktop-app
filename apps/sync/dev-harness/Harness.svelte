@@ -9,6 +9,7 @@
   import Conversation, {
     type ConversationMessage,
   } from '../src/components/messaging/Conversation.svelte';
+  import MessagesShell from '../src/components/messaging/MessagesShell.svelte';
   import CreateChannel from '../src/components/messaging/CreateChannel.svelte';
   import '../src/desktop-alt/styles/desktop-alt.css';
   import { popoverProps, bannerFixtures, workspaces } from './fixtures';
@@ -101,7 +102,7 @@
         ? 'desktop-alt'
         : view === 'permissions'
           ? 'meeting-permissions'
-          : view === 'conversation' || view === 'createchannel'
+          : view === 'messages' || view === 'conversation' || view === 'createchannel'
             ? 'messages'
             : 'main'
   );
@@ -138,6 +139,10 @@
       ontogglereaction={() => {}}
     />
   </div>
+{:else if view === 'messages'}
+  <!-- Full standalone Messages window: unified recency rail with DMs, channels,
+       connection requests, and shared-path notifications. -->
+  <MessagesShell />
 {:else if view === 'createchannel'}
   <!-- The New-channel modal (font-size pass). data-window='messages' so the
        desktop tokens resolve. Companies/contacts come from Tauri commands that

@@ -31,7 +31,9 @@ describe('US-017: version pop-out in desktop status bar', () => {
     // Click-away + Escape live on the status bar while the pop-out is open.
     expect(statusBar).toContain("window.addEventListener('mousedown'");
     expect(statusBar).toContain("event.key === 'Escape'");
-    expect(desktopApp).toContain("onOpenSettings={() => navigate({ kind: 'settings' })}");
+    // DESKTOP-001: status bar unmounted; account/settings live on the titlebar.
+    expect(desktopApp).not.toContain('<DesktopStatusBar');
+    expect(desktopApp).toContain('onaccount={handleAccountMenu}');
   });
 
   it('Check for updates / Restart to update invoke Tauri commands and surface status', () => {

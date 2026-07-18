@@ -40,10 +40,21 @@ describe('US-011: Deployments panel reads hq-deploy subdomains via Tauri command
   it('wires the deployments tab to get_company_deployments with the selected company slug', () => {
     const page = normalize(companyPage);
     const panel = normalize(deploymentsPanel);
+    const operations = normalize(
+      readFileSync(
+        resolve(process.cwd(), 'src/desktop-alt/panels/CompanyOperationsPanel.svelte'),
+        'utf8',
+      ),
+    );
 
-    expect(page).toContain("import DeploymentsPanel from '../panels/DeploymentsPanel.svelte'");
-    expect(page).toContain('<DeploymentsPanel slug={company.slug} {cloudBacked} />');
+    // DESKTOP-010: Deployments mounts inside the operations workspace under More.
+    expect(page).toContain("import CompanyOperationsPanel from '../panels/CompanyOperationsPanel.svelte'");
+    expect(page).toContain('isCompanyOperationsTab(tab)');
+    expect(page).toContain('<CompanyOperationsPanel');
+    expect(page).toContain('slug={company.slug}');
+    expect(page).toContain('{cloudBacked}');
     expect(page).toContain('const cloudBacked = $derived');
+    expect(operations).toContain('<DeploymentsPanel {slug} {cloudBacked} />');
     expect(panel).toContain('if (!slug || !cloudBacked)');
     expect(panel).toContain("void invoke<Partial<DeploymentEntry>[]>('get_company_deployments', { slug })");
     expect(panel).toContain('return () => { cancelled = true; };');

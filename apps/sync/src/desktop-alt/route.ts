@@ -1,7 +1,6 @@
 import type { Workspace } from '../lib/workspaces';
 import {
   sortV4CompaniesConnectedFirst,
-  v4CompanyDotTone,
   type V4DotTone,
   type V4Route,
   type V4SecondaryFooter,
@@ -9,15 +8,17 @@ import {
 } from './v4/model';
 
 /**
- * V4 information architecture (docs/design/v4/SPEC.md section 4).
+ * V4 information architecture (docs/design/v4/SPEC.md section 4 + DESKTOP-001).
  *
- * Four primary destinations — Inbox, Meetings, Marketplace, Library — plus
- * Files, companies as first-class sidebar rows, and a Settings footer.
- * US-008 merged Messages + Notifications into the single Inbox surface.
- * Home / Mission Control / Moderation are palette-only routes with no sidebar
- * row; the Companies page is removed (companies are reached via their sidebar
- * rows). Company pages and the Library carry their sections in the secondary
- * sidebar rather than in-page segmented controls.
+ * Global destinations — Inbox, Meetings, Marketplace, Library, Files — plus
+ * companies as first-class sidebar rows and a Settings footer. US-008 merged
+ * Messages + Notifications into Inbox. Home / Mission Control / Moderation are
+ * palette-only. DESKTOP-001 expands the selected company inline (Overview /
+ * Goals / Projects / Knowledge / Team / More) and removes the permanent company
+ * secondary sidebar; Library and Settings keep their contextual secondary
+ * columns. DESKTOP-010 groups Activity / Deployments / Secrets / company
+ * Settings under More as one operations workspace; skills / workers remain
+ * route-supported deep links without a primary child.
  */
 
 /**
@@ -31,11 +32,13 @@ export type LibraryTab = 'skills' | 'workers' | 'installed' | 'profile';
 export const DEFAULT_LIBRARY_TAB: LibraryTab = 'skills';
 
 /**
- * Company page sections — rows of the company secondary sidebar.
- * company-detail-desktop-ia: Accounts/Tasks/Library removed; Skills, Workers,
- * Knowledge, Team are first-class. Defaults to 'overview' when a company route
- * carries no tab. Legacy deep-links remap in resolvePendingDesktopRoute /
- * normalizeCompanyTab.
+ * Company page sections — all route-supported company surfaces.
+ * DESKTOP-001 primary sidebar shows a compact subset (see
+ * COMPANY_PRIMARY_SECTIONS); skills / workers remain deep-linkable without a
+ * primary child. DESKTOP-010 operational tabs (activity / deployments /
+ * secrets / settings) open under More. Defaults to 'overview' when a company
+ * route carries no tab. Legacy deep-links remap in resolvePendingDesktopRoute
+ * / normalizeCompanyTab.
  */
 export type CompanyTab =
   | 'overview'
@@ -47,9 +50,23 @@ export type CompanyTab =
   | 'team'
   | 'activity'
   | 'deployments'
-  | 'secrets';
+  | 'secrets'
+  | 'settings';
+
+/** Internal destinations of the company-scoped operations workspace (DESKTOP-010). */
+export type CompanyOperationsTab = 'activity' | 'deployments' | 'secrets' | 'settings';
 
 export const DEFAULT_COMPANY_TAB: CompanyTab = 'overview';
+export const DEFAULT_COMPANY_OPERATIONS_TAB: CompanyOperationsTab = 'activity';
+
+/** Primary company children expanded under the selected company (DESKTOP-001). */
+export type CompanyPrimarySectionId =
+  | 'overview'
+  | 'goals'
+  | 'projects'
+  | 'knowledge'
+  | 'team'
+  | 'more';
 
 /**
  * Legacy company-tab ids that still appear in deep links / pending routes.
@@ -59,6 +76,8 @@ const LEGACY_COMPANY_TAB_REDIRECT: Readonly<Record<string, CompanyTab>> = {
   accounts: 'overview',
   tasks: 'projects',
   library: 'skills',
+  // "more" is a primary-nav alias for the first operational section.
+  more: 'activity',
 };
 
 /** Normalize a company tab string (including legacy ids) to a live CompanyTab. */
@@ -66,6 +85,45 @@ export function normalizeCompanyTab(value: string | undefined | null): CompanyTa
   if (!value) return undefined;
   if (isCompanyTab(value)) return value;
   return LEGACY_COMPANY_TAB_REDIRECT[value];
+}
+
+/** True when the company tab is one of the four operations destinations. */
+export function isCompanyOperationsTab(
+  tab: CompanyTab | undefined | null,
+): tab is CompanyOperationsTab {
+  return tab === 'activity' || tab === 'deployments' || tab === 'secrets' || tab === 'settings';
+}
+
+/**
+ * Map a routed company tab onto the primary sidebar child that should light.
+ * All four operations destinations highlight More; skills/workers have no
+ * primary child.
+ */
+export function companyPrimarySectionForTab(
+  tab: CompanyTab | undefined | null,
+): CompanyPrimarySectionId | null {
+  const resolved = tab ?? DEFAULT_COMPANY_TAB;
+  switch (resolved) {
+    case 'overview':
+    case 'goals':
+    case 'projects':
+    case 'knowledge':
+    case 'team':
+      return resolved;
+    case 'activity':
+    case 'deployments':
+    case 'secrets':
+    case 'settings':
+      return 'more';
+    default:
+      return null;
+  }
+}
+
+/** Resolve a primary sidebar child click to the company tab it opens. */
+export function companyTabForPrimarySection(id: CompanyPrimarySectionId): CompanyTab {
+  // More opens the operations workspace on its default destination (Activity).
+  return id === 'more' ? DEFAULT_COMPANY_OPERATIONS_TAB : id;
 }
 
 /** Settings sections — rows of the Settings secondary sidebar (US-013 fills the bodies). */
@@ -100,8 +158,11 @@ export function getDesktopLandingRoute(
 }
 
 /**
- * Company secondary-sidebar rows (company-detail-desktop-ia).
- * Accounts hidden; Tasks/Library removed; Skills/Workers/Knowledge/Team top-level.
+ * All route-supported company sections (deep links, command palette, CompanyPage).
+ * company-detail-desktop-ia + DESKTOP-001: Skills/Workers remain route-supported
+ * but are not permanent primary-sidebar children (Library owns those concepts).
+ * DESKTOP-010: activity / deployments / secrets / settings are the operations
+ * destinations under More.
  */
 export const COMPANY_SECTIONS: ReadonlyArray<{ id: CompanyTab; label: string }> = [
   { id: 'overview', label: 'Overview' },
@@ -114,6 +175,40 @@ export const COMPANY_SECTIONS: ReadonlyArray<{ id: CompanyTab; label: string }> 
   { id: 'activity', label: 'Activity' },
   { id: 'deployments', label: 'Deployments' },
   { id: 'secrets', label: 'Secrets' },
+  { id: 'settings', label: 'Settings' },
+];
+
+/**
+ * Compact internal destinations of the company operations workspace (DESKTOP-010).
+ * Rendered inside CompanyOperationsPanel — not as permanent primary sidebar
+ * children and not as a permanent secondary sidebar.
+ */
+export const COMPANY_OPERATIONS_SECTIONS: ReadonlyArray<{
+  id: CompanyOperationsTab;
+  label: string;
+  meta: string;
+}> = [
+  { id: 'activity', label: 'Activity', meta: 'Events and edits' },
+  { id: 'deployments', label: 'Deployments', meta: 'Artifacts and services' },
+  { id: 'secrets', label: 'Secrets', meta: 'Metadata only' },
+  { id: 'settings', label: 'Settings', meta: 'Console workflows' },
+];
+
+/**
+ * Compact primary company children shown under the selected company (DESKTOP-001).
+ * More opens the operations workspace (default Activity); all four operations
+ * destinations remain deep-linkable and light More when active (DESKTOP-010).
+ */
+export const COMPANY_PRIMARY_SECTIONS: ReadonlyArray<{
+  id: CompanyPrimarySectionId;
+  label: string;
+}> = [
+  { id: 'overview', label: 'Overview' },
+  { id: 'goals', label: 'Goals' },
+  { id: 'projects', label: 'Projects' },
+  { id: 'knowledge', label: 'Knowledge' },
+  { id: 'team', label: 'Team' },
+  { id: 'more', label: 'More' },
 ];
 
 /** The four Library secondary-sidebar rows, in SPEC display order. */
@@ -305,10 +400,14 @@ function isSettingsTab(value: string | undefined): value is SettingsTab {
 /**
  * Narrow a V4Sidebar navigation payload (open-ended V4Route) back into the
  * app's DesktopRoute union. Unknown kinds land on Home — the exception surface.
+ * Company payloads may carry a primary section / tab id (DESKTOP-001).
  */
 export function fromV4Route(route: V4Route): DesktopRoute {
   if (route.kind === 'company' && route.slug) {
-    return { kind: 'company', slug: route.slug };
+    const tab = normalizeCompanyTab(route.tab);
+    return tab
+      ? { kind: 'company', slug: route.slug, tab }
+      : { kind: 'company', slug: route.slug };
   }
   switch (route.kind) {
     case 'home':
@@ -355,33 +454,20 @@ export interface DesktopSecondarySidebarOptions {
 }
 
 /**
- * SPEC section 4: the secondary sidebar exists ONLY on company, Library, and
- * Settings surfaces. Home, Mission Control, Marketplace, Meetings, Inbox, and
- * Moderation have none. A company route whose slug isn't connected yet renders
- * no secondary column either (the body shows the not-synced placeholder).
+ * SPEC section 4 + DESKTOP-001: the secondary sidebar exists ONLY on Library
+ * and Settings. Company navigation expands inline in the primary sidebar, so
+ * company routes never render a permanent secondary column. Home, Mission
+ * Control, Marketplace, Meetings, Inbox, Files, and Moderation have none.
  */
 export function getDesktopSecondarySidebar(
   route: DesktopRoute,
   companies: Workspace[],
   options: DesktopSecondarySidebarOptions = {},
 ): DesktopSecondarySidebar | null {
-  if (route.kind === 'company') {
-    const company = getDesktopActiveCompany(route, companies);
-    if (!company) return null;
-    const stateMeta = formatCompanyStateMeta(company);
-    return {
-      surface: 'company',
-      header: company.displayName,
-      headerTone: v4CompanyDotTone(company),
-      meta:
-        [formatCompanyRole(company), stateMeta]
-          .filter(Boolean)
-          .join(' · ') || null,
-      items: COMPANY_SECTIONS.map(({ id, label }) => ({ id, label })),
-      activeId: route.tab ?? DEFAULT_COMPANY_TAB,
-      footer: { label: 'Company settings', meta: 'sync rules · members · roles' },
-    };
-  }
+  // DESKTOP-001: company children live under the selected company row — no
+  // permanent company secondary sidebar. Keep `companies` in the signature so
+  // call sites and library/settings meta helpers stay stable.
+  void companies;
 
   if (route.kind === 'library') {
     return {
@@ -428,34 +514,6 @@ export function formatHqFolderMeta(path: string | null | undefined): string {
   const trimmed = path ? normalizeNativePath(path) : '';
   if (!trimmed) return 'HQ folder';
   return trimmed.replace(/^\/Users\/[^/]+/, '~');
-}
-
-function formatCompanyRole(company: Workspace): string | null {
-  if (company.kind === 'personal') return 'Personal';
-  const role = company.role?.trim();
-  if (!role) return 'Member';
-  return role.slice(0, 1).toUpperCase() + role.slice(1).toLowerCase();
-}
-
-function formatCompanyStateMeta(company: Workspace): string | null {
-  if (company.kind === 'personal') {
-    const lastSync = formatRelativeTime(company.lastSyncedAt);
-    return lastSync ? `synced ${lastSync}` : 'local vault';
-  }
-  switch (company.state) {
-    case 'synced': {
-      const lastSync = formatRelativeTime(company.lastSyncedAt);
-      return lastSync ? `synced ${lastSync}` : 'synced just now';
-    }
-    case 'local-only':
-      return 'local only';
-    case 'cloud-only':
-      return 'not on this computer';
-    case 'broken':
-      return 'needs reconnect';
-    default:
-      return null;
-  }
 }
 
 /** Human relative timestamp ("just now", "5m ago") for status meta lines. */

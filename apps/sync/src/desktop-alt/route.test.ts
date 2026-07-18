@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { Workspace } from '../lib/workspaces';
 import {
+  COMPANY_PRIMARY_SECTIONS,
   COMPANY_SECTIONS,
   companyHotkey,
+  companyPrimarySectionForTab,
+  companyTabForPrimarySection,
   fromV4Route,
   getDesktopCompanies,
   getDesktopHotkeyRoute,
@@ -117,6 +120,7 @@ describe('US-002 V4 desktop routes', () => {
       'activity',
       'deployments',
       'secrets',
+      'settings',
     ]);
     expect(COMPANY_SECTIONS.some((section) => (section.id as string) === 'accounts')).toBe(false);
     expect(COMPANY_SECTIONS.some((section) => (section.id as string) === 'tasks')).toBe(false);
@@ -307,6 +311,17 @@ describe('US-002 V4Sidebar payload narrowing', () => {
       kind: 'company',
       slug: 'indigo',
     });
+    // DESKTOP-001: primary child clicks carry a tab; More aliases to activity.
+    expect(fromV4Route({ kind: 'company', slug: 'indigo', tab: 'projects' })).toEqual({
+      kind: 'company',
+      slug: 'indigo',
+      tab: 'projects',
+    });
+    expect(fromV4Route({ kind: 'company', slug: 'indigo', tab: 'more' })).toEqual({
+      kind: 'company',
+      slug: 'indigo',
+      tab: 'activity',
+    });
     expect(fromV4Route({ kind: 'settings' })).toEqual({ kind: 'settings' });
     expect(fromV4Route({ kind: 'library' })).toEqual({ kind: 'library' });
     // Marketplace is a top-level destination (US-007); the Companies kind is gone.
@@ -321,60 +336,38 @@ describe('US-002 V4Sidebar payload narrowing', () => {
   });
 });
 
-describe('US-002 secondary sidebar — company / library / settings only', () => {
+describe('DESKTOP-001 secondary sidebar — library / settings only (no company column)', () => {
   const companies = [
     company({ slug: 'indigo', displayName: 'Indigo', state: 'synced', role: 'owner' }),
   ];
 
-  it('shows the company sections with Overview active (no Accounts/Tasks/Library)', () => {
-    const model = getDesktopSecondarySidebar({ kind: 'company', slug: 'indigo' }, companies);
-    expect(model?.surface).toBe('company');
-    expect(model?.header).toBe('Indigo');
-    expect(model?.headerTone).toBe('ok');
-    expect(model?.meta).toBe('Owner · synced just now');
-    expect(model?.items.map((item) => item.label)).toEqual([
-      'Overview',
-      'Goals',
-      'Projects',
-      'Skills',
-      'Workers',
-      'Knowledge',
-      'Team',
-      'Activity',
-      'Deployments',
-      'Secrets',
-    ]);
-    expect(model?.activeId).toBe('overview');
-    expect(model?.footer).toEqual({
-      label: 'Company settings',
-      meta: 'sync rules · members · roles',
-    });
-  });
-
-  it('labels local-only company pages honestly instead of pretending they just synced', () => {
-    const companies = [
-      company({
-        slug: 'holler-mgmt',
-        displayName: 'Holler Mgmt',
-        state: 'local-only',
-        cloudUid: null,
-        role: null,
-      }),
-    ];
-    const model = getDesktopSecondarySidebar({ kind: 'company', slug: 'holler-mgmt' }, companies);
-    expect(model?.meta).toBe('Member · local only');
-  });
-
-  it('marks the routed company section active', () => {
-    const model = getDesktopSecondarySidebar(
-      { kind: 'company', slug: 'indigo', tab: 'deployments' },
-      companies,
-    );
-    expect(model?.activeId).toBe('deployments');
-  });
-
-  it('renders no secondary column for a company route with no connected workspace', () => {
+  it('never mounts a permanent company secondary sidebar', () => {
+    expect(getDesktopSecondarySidebar({ kind: 'company', slug: 'indigo' }, companies)).toBeNull();
+    expect(
+      getDesktopSecondarySidebar(
+        { kind: 'company', slug: 'indigo', tab: 'deployments' },
+        companies,
+      ),
+    ).toBeNull();
     expect(getDesktopSecondarySidebar({ kind: 'company', slug: 'ghost' }, companies)).toBeNull();
+  });
+
+  it('declares compact primary company children (More, not Skills/Workers/Activity…)', () => {
+    expect(COMPANY_PRIMARY_SECTIONS.map((s) => s.id)).toEqual([
+      'overview',
+      'goals',
+      'projects',
+      'knowledge',
+      'team',
+      'more',
+    ]);
+    expect(companyPrimarySectionForTab('overview')).toBe('overview');
+    expect(companyPrimarySectionForTab('activity')).toBe('more');
+    expect(companyPrimarySectionForTab('deployments')).toBe('more');
+    expect(companyPrimarySectionForTab('secrets')).toBe('more');
+    expect(companyPrimarySectionForTab('skills')).toBeNull();
+    expect(companyTabForPrimarySection('more')).toBe('activity');
+    expect(companyTabForPrimarySection('knowledge')).toBe('knowledge');
   });
 
   it('shows the four library sections — without Marketplace — with the routed tab active', () => {
@@ -458,8 +451,8 @@ describe('US-009 top-level Files mode', () => {
 
   it('has dropped the company Files secondary-sidebar section', () => {
     expect(COMPANY_SECTIONS.some((section) => (section.id as string) === 'files')).toBe(false);
-    const model = getDesktopSecondarySidebar({ kind: 'company', slug: 'indigo' }, companies);
-    expect(model?.items.some((item) => item.label === 'Files')).toBe(false);
+    // DESKTOP-001: company secondary column is gone entirely.
+    expect(getDesktopSecondarySidebar({ kind: 'company', slug: 'indigo' }, companies)).toBeNull();
   });
 });
 

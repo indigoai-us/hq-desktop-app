@@ -143,21 +143,25 @@
 
   .inbox-titles {
     min-width: 0;
+    display: grid;
+    grid-template-rows: auto auto;
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--v4-row-stack-gap, 3px);
   }
 
   .inbox-titles h1 {
     margin: 0;
     color: var(--v4-text-1, var(--fg));
     font-family: var(--font-display, var(--font-sans));
-    font-size: var(--text-lg, 18px);
+    font-size: var(--type-detail, var(--text-lg, 18px));
     font-weight: 600;
     line-height: 1.2;
     letter-spacing: -0.01em;
   }
 
   .inbox-subtitle {
-    margin: 4px 0 0;
-    font-size: var(--text-base, 13px);
+    margin: 0;
+    font-size: var(--type-secondary, var(--text-base, 13px));
     line-height: 1.4;
     color: var(--v4-text-3, var(--muted));
   }
@@ -180,7 +184,7 @@
     background: var(--v4-raised, var(--c-bg, #fff));
     color: var(--v4-text-1, var(--fg));
     font: inherit;
-    font-size: 12.5px;
+    font-size: var(--type-body, 12px);
     font-weight: 600;
     cursor: pointer;
     box-shadow: var(--v4-shadow-card-light, 0 1px 1.5px rgba(0, 0, 0, 0.06));
@@ -222,12 +226,13 @@
     --text-sm: 13px;
   }
 
-  /* Slightly taller, more readable rows on the canvas. */
+  /* Slightly taller, more readable rows on the naked canvas — no rounded outer
+     containers (DESKTOP-002). Spacing + hairlines establish structure. */
   .notif-host :global(.nr) {
     min-height: 36px;
     padding: 0 4px;
-    border-radius: 10px;
-    font-size: 13px;
+    border-radius: 0;
+    font-size: var(--type-body, 13px);
   }
 
   .notif-host :global(.nr-message.nr-expanded) {
@@ -235,7 +240,7 @@
   }
 
   .notif-host :global(.nr-ts) {
-    font-size: 11px;
+    font-size: var(--type-secondary, 11px);
   }
 
   .notif-host :global(.nr-icon) {

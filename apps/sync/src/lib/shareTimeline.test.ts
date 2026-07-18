@@ -4,6 +4,7 @@ import {
   applySharePreviews,
   buildSharePrompt,
   mergeSharesIntoThread,
+  previewRepresentsShare,
   shareMatchesPeer,
   shareSummary,
   sharesForPeer,
@@ -148,5 +149,30 @@ describe('applySharePreviews', () => {
   it('passes non-matching contacts through unchanged', () => {
     const contacts = [{ personUid: 'prs_bob', email: 'bob@x.y' }];
     expect(applySharePreviews(contacts, [share()])[0]).toBe(contacts[0]);
+  });
+
+  it('identifies an exact share-backed preview without hiding a newer DM', () => {
+    const event = share();
+    const [projected] = applySharePreviews(
+      [
+        {
+          personUid: 'prs_ada',
+          previewBody: 'older DM',
+          previewAt: '2026-06-30T00:00:00Z',
+        },
+      ],
+      [event],
+    );
+    expect(previewRepresentsShare(projected, event)).toBe(true);
+    expect(
+      previewRepresentsShare(
+        {
+          ...projected,
+          previewBody: 'newer DM',
+          previewAt: '2026-07-02T00:00:00Z',
+        },
+        event,
+      ),
+    ).toBe(false);
   });
 });
