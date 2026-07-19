@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -79,6 +80,28 @@ fn refresh_status_requires_reauth(status: u16) -> bool {
     (400..500).contains(&status) && status != 408 && status != 429
 }
 
+fn cognito_error_code(body: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(body).ok()?;
+    ["__type", "code", "Code", "error"]
+        .iter()
+        .find_map(|key| value.get(*key).and_then(serde_json::Value::as_str))
+        .and_then(|raw| raw.rsplit(['#', ':']).next())
+        .map(str::to_string)
+}
+
+fn classify_refresh_failure(status: u16, body: &str) -> (bool, bool) {
+    if matches!(
+        cognito_error_code(body).as_deref(),
+        Some("TooManyRequestsException")
+    ) {
+        return (true, false);
+    }
+    (
+        refresh_status_is_retryable(status),
+        refresh_status_requires_reauth(status),
+    )
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CognitoTokens {
@@ -119,18 +142,67 @@ fn file_mtime(path: &PathBuf) -> Result<SystemTime, String> {
         .map_err(|e| format!("Failed to read file mtime: {}", e))
 }
 
+#[derive(Debug)]
 enum TokenReadError {
     Io(std::io::Error),
     Parse(serde_json::Error),
 }
 
-fn read_tokens_from_path(path: &Path) -> Result<Option<CognitoTokens>, TokenReadError> {
+pub fn access_token_fingerprint(access_token: &str) -> String {
+    format!("{:x}", Sha256::digest(access_token.as_bytes()))
+}
+
+fn invalidation_path_for_token(path: &Path, access_token: &str) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".invalid.");
+    name.push(access_token_fingerprint(access_token));
+    path.with_file_name(name)
+}
+
+fn token_is_invalidated_at(path: &Path, access_token: &str) -> bool {
+    invalidation_path_for_token(path, access_token).exists()
+}
+
+fn invalidate_token_at(path: &Path, access_token: &str) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create .hq directory: {e}"))?;
+    }
+    let marker = invalidation_path_for_token(path, access_token);
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    match options.open(marker) {
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(e) => Err(format!("Failed to invalidate token: {e}")),
+    }
+}
+
+fn remove_invalidation_marker_at(path: &Path, access_token: &str) -> Result<(), String> {
+    match std::fs::remove_file(invalidation_path_for_token(path, access_token)) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("Failed to clear token invalidation: {e}")),
+    }
+}
+
+fn read_tokens_from_path_raw(path: &Path) -> Result<Option<CognitoTokens>, TokenReadError> {
     if !path.exists() {
         return Ok(None);
     }
     let contents = std::fs::read_to_string(path).map_err(TokenReadError::Io)?;
     let tokens: CognitoTokens = serde_json::from_str(&contents).map_err(TokenReadError::Parse)?;
     Ok(Some(tokens))
+}
+
+fn read_tokens_from_path(path: &Path) -> Result<Option<CognitoTokens>, TokenReadError> {
+    let tokens = read_tokens_from_path_raw(path)?;
+    Ok(tokens.filter(|tokens| !token_is_invalidated_at(path, &tokens.access_token)))
 }
 
 pub fn read_tokens_from_file() -> Result<Option<CognitoTokens>, String> {
@@ -142,8 +214,8 @@ pub fn read_tokens_from_file() -> Result<Option<CognitoTokens>, String> {
 }
 
 /// Returns true when `path` exists and its `accessToken` is non-empty.
-/// Shared reader (see `read_tokens_from_path`), so this stays in sync with
-/// `read_tokens_from_file` / `get_tokens`. Malformed JSON is logged and
+/// Reads raw storage (including an invalidated token) because this is only a
+/// friendly-copy hint. Malformed JSON is logged and
 /// reported as "not signed in" so a half-written file can't trap a user on
 /// the login step; I/O errors still bubble. This is only a presence hint for
 /// choosing reauth copy — `get_auth_state` remains the freshness authority.
@@ -153,7 +225,7 @@ pub fn read_tokens_from_file() -> Result<Option<CognitoTokens>, String> {
 /// malformed-file / empty-token edges without touching `~/.hq`.
 #[allow(dead_code)]
 pub fn has_non_empty_token_at(path: &Path) -> Result<bool, String> {
-    match read_tokens_from_path(path) {
+    match read_tokens_from_path_raw(path) {
         Ok(Some(tokens)) => Ok(!tokens.access_token.is_empty()),
         Ok(None) => Ok(false),
         Err(TokenReadError::Parse(e)) => {
@@ -167,16 +239,16 @@ pub fn has_non_empty_token_at(path: &Path) -> Result<bool, String> {
     }
 }
 
-/// Async variant backed by the shared `TOKEN_CACHE`, so repeated UI calls
-/// don't re-read the file. Any upstream failure is logged and collapsed to
-/// `Ok(false)` for the skip-login signal only.
+/// Async production variant of the raw-storage presence hint. Any upstream
+/// failure is logged and collapsed to `Ok(false)` for this UX signal only.
 pub async fn has_non_empty_stored_token() -> Result<bool, String> {
-    match get_tokens().await {
+    let path = tokens_file_path()?;
+    match read_tokens_from_path_raw(&path) {
         Ok(Some(tokens)) => Ok(!tokens.access_token.is_empty()),
         Ok(None) => Ok(false),
         Err(e) => {
             eprintln!(
-                "[cognito] has_non_empty_stored_token: treating unreadable token as absent: {}",
+                "[cognito] has_non_empty_stored_token: treating unreadable token as absent: {:?}",
                 e
             );
             Ok(false)
@@ -192,6 +264,11 @@ pub fn write_tokens_to_file(tokens: &CognitoTokens) -> Result<(), String> {
     }
     let contents = serde_json::to_string_pretty(tokens)
         .map_err(|e| format!("Failed to serialize tokens: {}", e))?;
+
+    // A successful login/refresh for this exact token generation is
+    // authoritative. Remove its old rejection marker before publishing the
+    // token file; a failure observed after this point will recreate it.
+    remove_invalidation_marker_at(&path, &tokens.access_token)?;
 
     let tmp_path = path.with_file_name(format!(".cognito-tokens.json.tmp.{}", std::process::id()));
     std::fs::write(&tmp_path, &contents)
@@ -224,10 +301,14 @@ pub async fn get_tokens() -> Result<Option<CognitoTokens>, String> {
         }
         Err(e) => return Err(format!("Failed to read file mtime: {}", e)),
     };
-    let guard = cache().lock().await;
+    let mut guard = cache().lock().await;
 
     if let Some(ref cached) = *guard {
         if cached.path == path && cached.file_mtime == current_mtime {
+            if token_is_invalidated_at(&path, &cached.tokens.access_token) {
+                *guard = None;
+                return Ok(None);
+            }
             return Ok(Some(cached.tokens.clone()));
         }
     }
@@ -242,21 +323,41 @@ pub async fn get_tokens() -> Result<Option<CognitoTokens>, String> {
             path: path.clone(),
             file_mtime: current_mtime,
         });
+    } else {
+        let mut guard = cache().lock().await;
+        *guard = None;
     }
     Ok(tokens)
 }
 
 /// Update both the file and the in-memory cache.
 pub async fn set_tokens(tokens: &CognitoTokens) -> Result<(), String> {
+    let mut guard = cache().lock().await;
     write_tokens_to_file(tokens)?;
     let path = tokens_file_path()?;
     let mtime = file_mtime(&path)?;
-    let mut guard = cache().lock().await;
     *guard = Some(CachedTokens {
         tokens: tokens.clone(),
         path,
         file_mtime: mtime,
     });
+    crate::feature_gate::clear_cached_gate();
+    Ok(())
+}
+
+/// Mark one rejected token generation unusable without deleting the shared
+/// credential file. A concurrent login/refresh that writes a different token
+/// remains valid, and the raw file stays available for friendly reauth copy.
+pub async fn invalidate_tokens(tokens: &CognitoTokens) -> Result<(), String> {
+    let path = tokens_file_path()?;
+    invalidate_token_at(&path, &tokens.access_token)?;
+    let mut guard = cache().lock().await;
+    if guard
+        .as_ref()
+        .is_some_and(|cached| cached.tokens.access_token == tokens.access_token)
+    {
+        *guard = None;
+    }
     crate::feature_gate::clear_cached_gate();
     Ok(())
 }
@@ -272,13 +373,9 @@ pub async fn set_tokens(tokens: &CognitoTokens) -> Result<(), String> {
 /// refresh token server-side, so other signed-in devices are unaffected.
 pub async fn clear_tokens() -> Result<(), String> {
     let path = tokens_file_path()?;
-    // Always drop the in-memory cache first so a concurrent get_tokens() can't
-    // re-populate it from a clone we're about to invalidate.
-    {
-        let mut guard = cache().lock().await;
-        *guard = None;
-    }
+    let mut guard = cache().lock().await;
     remove_token_file_at(&path)?;
+    *guard = None;
     crate::feature_gate::clear_cached_gate();
     Ok(())
 }
@@ -288,10 +385,34 @@ pub async fn clear_tokens() -> Result<(), String> {
 /// deletion contract is unit-testable without `$HOME` or the async cache.
 fn remove_token_file_at(path: &Path) -> Result<(), String> {
     match std::fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(format!("Failed to delete token file: {}", e)),
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("Failed to delete token file: {}", e)),
     }
+    let Some(parent) = path.parent() else {
+        return Ok(());
+    };
+    let marker_prefix = format!(
+        "{}.invalid.",
+        path.file_name().unwrap_or_default().to_string_lossy()
+    );
+    let entries = match std::fs::read_dir(parent) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(format!("Failed to list token invalidations: {e}")),
+    };
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("Failed to read token invalidation: {e}"))?;
+        if entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with(&marker_prefix)
+        {
+            std::fs::remove_file(entry.path())
+                .map_err(|e| format!("Failed to delete token invalidation: {e}"))?;
+        }
+    }
+    Ok(())
 }
 
 pub fn is_expired(tokens: &CognitoTokens) -> bool {
@@ -339,7 +460,7 @@ pub async fn get_valid_access_token() -> Result<String, String> {
         Ok(tokens) => tokens,
         Err(err) => {
             if err.requires_reauth {
-                clear_tokens().await?;
+                invalidate_tokens(&tokens).await?;
             }
             return Err(REAUTH_MESSAGE.to_string());
         }
@@ -489,24 +610,24 @@ pub async fn refresh_access_token_classified(
                 .text()
                 .await
                 .unwrap_or_else(|_| "unknown".to_string());
+            let (retryable, requires_reauth) = classify_refresh_failure(status, &body_text);
             let failure = CognitoRefreshError {
                 message: format!("Cognito refresh failed ({status}): {body_text}"),
-                requires_reauth: refresh_status_requires_reauth(status),
+                requires_reauth,
                 status_code: Some(status),
             };
-            if refresh_status_is_retryable(status) && attempt + 1 < REFRESH_ATTEMPTS {
+            if retryable && attempt + 1 < REFRESH_ATTEMPTS {
                 continue;
             }
             return Err(failure);
         }
 
-        let result: InitiateAuthResponse = response.json().await.map_err(|err| {
-            CognitoRefreshError {
+        let result: InitiateAuthResponse =
+            response.json().await.map_err(|err| CognitoRefreshError {
                 message: format!("Failed to parse Cognito response: {err}"),
                 requires_reauth: false,
                 status_code: None,
-            }
-        })?;
+            })?;
 
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -592,6 +713,57 @@ mod tests {
         assert!(!refresh_status_requires_reauth(408));
         assert!(!refresh_status_requires_reauth(429));
         assert!(!refresh_status_requires_reauth(503));
+    }
+
+    #[test]
+    fn test_too_many_requests_400_is_retryable_without_reauth() {
+        let (retryable, requires_reauth) = classify_refresh_failure(
+            400,
+            r#"{"__type":"TooManyRequestsException","message":"slow down"}"#,
+        );
+        assert!(retryable);
+        assert!(!requires_reauth);
+    }
+
+    #[test]
+    fn test_token_invalidation_is_generation_specific() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cognito-tokens.json");
+        let newer = CognitoTokens {
+            access_token: "new-access".to_string(),
+            id_token: Some("new-id".to_string()),
+            refresh_token: "new-refresh".to_string(),
+            expires_at: 999,
+        };
+        std::fs::write(&path, serde_json::to_string(&newer).unwrap()).unwrap();
+
+        invalidate_token_at(&path, "old-access").unwrap();
+
+        assert_eq!(
+            read_tokens_from_path(&path)
+                .unwrap()
+                .expect("newer token must remain usable")
+                .access_token,
+            "new-access"
+        );
+    }
+
+    #[test]
+    fn test_matching_invalidation_marker_hides_stored_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cognito-tokens.json");
+        let tokens = CognitoTokens {
+            access_token: "rejected-access".to_string(),
+            id_token: Some("id".to_string()),
+            refresh_token: "refresh".to_string(),
+            expires_at: 999,
+        };
+        std::fs::write(&path, serde_json::to_string(&tokens).unwrap()).unwrap();
+
+        invalidate_token_at(&path, &tokens.access_token).unwrap();
+
+        assert!(read_tokens_from_path(&path).unwrap().is_none());
+        assert!(has_non_empty_token_at(&path).unwrap());
     }
 
     #[test]
@@ -738,10 +910,14 @@ mod tests {
             expires_at: 1,
         };
         std::fs::write(&path, serde_json::to_string(&tokens).unwrap()).unwrap();
+        invalidate_token_at(&path, &tokens.access_token).unwrap();
+        let marker = invalidation_path_for_token(&path, &tokens.access_token);
+        assert!(marker.exists());
         assert!(has_non_empty_token_at(&path).unwrap());
 
         remove_token_file_at(&path).unwrap();
         assert!(!path.exists());
+        assert!(!marker.exists());
         // And the onboarding "is logged in" signal flips to false post-removal.
         assert!(!has_non_empty_token_at(&path).unwrap());
     }

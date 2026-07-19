@@ -236,9 +236,9 @@ enum ResolveJwtError {
 }
 
 /// Fetch the current JWT from the on-disk token cache, refreshing and
-/// persisting it if expired. Terminal refresh rejection clears the stale
-/// session; a temporary failure preserves it but still routes this run to the
-/// reauth surface after the built-in retry is exhausted.
+/// persisting it if expired. Terminal refresh rejection invalidates only the
+/// rejected token generation; a temporary failure preserves it but still
+/// routes this run to the reauth surface after the built-in retry is exhausted.
 async fn resolve_jwt_classified() -> Result<String, ResolveJwtError> {
     let tokens = cognito::get_tokens()
         .await
@@ -258,7 +258,7 @@ async fn resolve_jwt_classified() -> Result<String, ResolveJwtError> {
         }
         Err(err) => {
             if err.requires_reauth {
-                cognito::clear_tokens()
+                cognito::invalidate_tokens(&tokens)
                     .await
                     .map_err(ResolveJwtError::Other)?;
             }
@@ -474,14 +474,7 @@ fn handle_sync_line(
     // entity" signal.
     let result = match &event {
         SyncEvent::SetupNeeded => app.emit(EVENT_SYNC_SETUP_NEEDED, ()),
-        SyncEvent::AuthError(payload) => {
-            tauri::async_runtime::spawn(async {
-                if let Err(err) = cognito::clear_tokens().await {
-                    log("auth", &format!("failed to clear stale session: {err}"));
-                }
-            });
-            app.emit(EVENT_SYNC_AUTH_ERROR, payload.clone())
-        }
+        SyncEvent::AuthError(payload) => app.emit(EVENT_SYNC_AUTH_ERROR, payload.clone()),
         SyncEvent::FanoutPlan(payload) => app.emit(EVENT_SYNC_FANOUT_PLAN, payload.clone()),
         // Per-company / per-direction Stage-1 totals from `hq-sync-runner`
         // (≥hq-cloud@5.5.0). Forwarded to the Svelte frontend so it can
@@ -643,11 +636,6 @@ pub(crate) fn handle_runner_stderr_line(app: &AppHandle, totals: &Mutex<RunTotal
             let mut t = totals.lock().unwrap_or_else(|e| e.into_inner());
             t.record_auth_error();
         }
-        tauri::async_runtime::spawn(async {
-            if let Err(err) = cognito::clear_tokens().await {
-                log("auth", &format!("failed to clear stale session: {err}"));
-            }
-        });
         let _ = app.emit(EVENT_SYNC_AUTH_ERROR, payload);
     } else if let Ok(SyncEvent::Error(payload)) = serde_json::from_str(line.trim()) {
         let mut t = totals.lock().unwrap_or_else(|e| e.into_inner());

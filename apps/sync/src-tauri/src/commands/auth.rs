@@ -49,12 +49,12 @@ pub async fn get_auth_state() -> Result<AuthState, String> {
                 })
             }
             Err(err) => {
-                // A rejected/expired refresh token cannot recover on a later
-                // launch. Clear it so raw file presence never reasserts a
-                // signed-in state. Temporary transport/service failures keep
-                // the token for a later automatic recovery.
+                // Mark only the rejected token generation unusable. Keep the
+                // raw file for friendly reauth copy, and never delete a newer
+                // login that another process may have written concurrently.
+                // Temporary failures remain eligible for automatic recovery.
                 if err.requires_reauth {
-                    cognito::clear_tokens().await?;
+                    cognito::invalidate_tokens(&tokens).await?;
                 }
                 clear_sentry_user();
                 Ok(AuthState {
@@ -104,7 +104,7 @@ pub async fn refresh_tokens() -> Result<AuthState, String> {
         Ok(tokens) => tokens,
         Err(err) => {
             if err.requires_reauth {
-                cognito::clear_tokens().await?;
+                cognito::invalidate_tokens(&tokens).await?;
             }
             return Err(cognito::REAUTH_MESSAGE.to_string());
         }
