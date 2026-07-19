@@ -526,17 +526,10 @@
 
       {#if syncState === 'auth-error'}
         <div class="snr" data-testid="popover-system-notice" data-kind="auth">
-          <span class="snr-icon alert" aria-hidden="true">{@render noticeGlyph('alert')}</span>
+          <span class="snr-icon action" aria-hidden="true">{@render noticeGlyph('action')}</span>
           <span class="snr-text">
-            <b>Session expired</b>
-            {errorMessage || 'Sign in again to keep syncing.'}
-          </span>
-          <span class="snr-actions">
-            <CopyPromptButton
-              variant="compact"
-              label="Copy prompt"
-              issue={{ kind: 'auth-expired', payload: { message: errorMessage } }}
-            />
+            <b>Keep sync moving</b>
+            {errorMessage || 'Sign in once and HQ will resume automatically.'}
           </span>
         </div>
       {:else if syncState === 'error' && errorMessage}

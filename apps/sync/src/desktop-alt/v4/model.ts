@@ -316,7 +316,7 @@ export interface V4SecondaryFooter {
 /** Title-bar primary action — contextual, always exactly one. */
 export interface V4TitleBarAction {
   id: 'sync' | 'cancel' | 'retry';
-  label: 'Sync Now' | 'Cancel' | 'Retry';
+  label: 'Sync Now' | 'Cancel' | 'Retry' | 'Sign in';
 }
 
 export interface V4TitleBarModel {
@@ -372,10 +372,10 @@ export function getV4TitleBarModel(input: V4TitleBarInput): V4TitleBarModel {
       };
     case 'auth-error':
       return {
-        tone: 'error',
-        sentence: 'Signed out',
-        meta: 'sign in to resume sync',
-        action: { id: 'retry', label: 'Retry' },
+        tone: 'idle',
+        sentence: 'Ready to reconnect',
+        meta: 'sign in to keep sync moving',
+        action: { id: 'retry', label: 'Sign in' },
       };
     case 'conflict':
       return {

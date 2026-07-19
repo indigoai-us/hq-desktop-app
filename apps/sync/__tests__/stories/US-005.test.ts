@@ -75,7 +75,7 @@ describe('US-005: Alt Home surface wires to real sync state and events', () => {
     expect(app).toContain("invoke('open_in_editor', { path })");
     expect(app).toContain("await invoke('restore_from_upstream', {");
     expect(app).toContain("invoke('open_drift_detail', { report })");
-    expect(app).toContain("await invoke('refresh_tokens')");
+    expect(app).toContain("await invoke('begin_reauth')");
     expect(app).toContain("invoke('open_activity_log')");
   });
 

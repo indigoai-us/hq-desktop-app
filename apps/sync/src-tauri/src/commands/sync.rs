@@ -41,6 +41,7 @@ use std::time::Duration;
 use chrono::SecondsFormat;
 use hq_desktop_core::sync_outcome::{
     classify_error_event, describe_exit, should_alert_on_nonzero_exit,
+    should_synthesize_all_complete,
 };
 use tauri::{AppHandle, Emitter};
 
@@ -228,13 +229,52 @@ where
     Ok(tokens.access_token)
 }
 
-/// Fetch the current JWT from the on-disk token cache, refreshing if expired.
+#[derive(Debug, PartialEq, Eq)]
+enum ResolveJwtError {
+    NeedsReauth,
+    Other(String),
+}
+
+/// Fetch the current JWT from the on-disk token cache, refreshing and
+/// persisting it if expired. Terminal refresh rejection clears the stale
+/// session; a temporary failure preserves it but still routes this run to the
+/// reauth surface after the built-in retry is exhausted.
+async fn resolve_jwt_classified() -> Result<String, ResolveJwtError> {
+    let tokens = cognito::get_tokens()
+        .await
+        .map_err(ResolveJwtError::Other)?
+        .ok_or(ResolveJwtError::NeedsReauth)?;
+    if !cognito::is_expired(&tokens) {
+        return Ok(tokens.access_token);
+    }
+
+    match cognito::refresh_access_token_classified(&tokens.refresh_token).await {
+        Ok(refreshed) => {
+            let access_token = refreshed.access_token.clone();
+            cognito::set_tokens(&refreshed)
+                .await
+                .map_err(ResolveJwtError::Other)?;
+            Ok(access_token)
+        }
+        Err(err) => {
+            if err.requires_reauth {
+                cognito::clear_tokens()
+                    .await
+                    .map_err(ResolveJwtError::Other)?;
+            }
+            Err(ResolveJwtError::NeedsReauth)
+        }
+    }
+}
+
+/// Shared auth helper used by non-sync commands. Keep the long-standing
+/// string-error contract while the manual sync path consumes the structured
+/// result above to distinguish handled reauth from an operational failure.
 pub async fn resolve_jwt() -> Result<String, String> {
-    let tokens_result = cognito::get_tokens().await;
-    resolve_jwt_impl(tokens_result, |rt| async move {
-        cognito::refresh_access_token(&rt).await
+    resolve_jwt_classified().await.map_err(|err| match err {
+        ResolveJwtError::NeedsReauth => cognito::REAUTH_MESSAGE.to_string(),
+        ResolveJwtError::Other(message) => message,
     })
-    .await
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -434,7 +474,14 @@ fn handle_sync_line(
     // entity" signal.
     let result = match &event {
         SyncEvent::SetupNeeded => app.emit(EVENT_SYNC_SETUP_NEEDED, ()),
-        SyncEvent::AuthError(payload) => app.emit(EVENT_SYNC_AUTH_ERROR, payload.clone()),
+        SyncEvent::AuthError(payload) => {
+            tauri::async_runtime::spawn(async {
+                if let Err(err) = cognito::clear_tokens().await {
+                    log("auth", &format!("failed to clear stale session: {err}"));
+                }
+            });
+            app.emit(EVENT_SYNC_AUTH_ERROR, payload.clone())
+        }
         SyncEvent::FanoutPlan(payload) => app.emit(EVENT_SYNC_FANOUT_PLAN, payload.clone()),
         // Per-company / per-direction Stage-1 totals from `hq-sync-runner`
         // (≥hq-cloud@5.5.0). Forwarded to the Svelte frontend so it can
@@ -581,7 +628,7 @@ pub(crate) fn runner_stderr_needs_reauth(line: &str) -> Option<SyncAuthErrorEven
         message: value
             .get("message")
             .and_then(serde_json::Value::as_str)
-            .unwrap_or("Your sign-in session expired. Sign in again to resume syncing.")
+            .unwrap_or(cognito::REAUTH_MESSAGE)
             .to_string(),
     })
 }
@@ -592,6 +639,15 @@ pub(crate) fn runner_stderr_needs_reauth(line: &str) -> Option<SyncAuthErrorEven
 /// emitted immediately because the runner deliberately exits 0 after them.
 pub(crate) fn handle_runner_stderr_line(app: &AppHandle, totals: &Mutex<RunTotals>, line: &str) {
     if let Some(payload) = runner_stderr_needs_reauth(line) {
+        {
+            let mut t = totals.lock().unwrap_or_else(|e| e.into_inner());
+            t.record_auth_error();
+        }
+        tauri::async_runtime::spawn(async {
+            if let Err(err) = cognito::clear_tokens().await {
+                log("auth", &format!("failed to clear stale session: {err}"));
+            }
+        });
         let _ = app.emit(EVENT_SYNC_AUTH_ERROR, payload);
     } else if let Ok(SyncEvent::Error(payload)) = serde_json::from_str(line.trim()) {
         let mut t = totals.lock().unwrap_or_else(|e| e.into_inner());
@@ -851,12 +907,26 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
     };
 
     // Fetch (and if needed refresh) the Cognito JWT
-    let jwt = match resolve_jwt().await {
+    let jwt = match resolve_jwt_classified().await {
         Ok(j) => {
             log("sync", "jwt resolved");
             j
         }
-        Err(e) => {
+        Err(ResolveJwtError::NeedsReauth) => {
+            log("sync", "PAUSE: session needs reauth before sync can continue");
+            let _ = app.emit(
+                EVENT_SYNC_AUTH_ERROR,
+                SyncAuthErrorEvent {
+                    message: cognito::REAUTH_MESSAGE.to_string(),
+                },
+            );
+            deregister_process(SYNC_HANDLE);
+            // Auth-required is a handled terminal state, not a process crash.
+            // Returning success keeps the manual path aligned with the
+            // runner's exit-0 auth-error contract and avoids red error UI.
+            return Ok(SYNC_HANDLE.to_string());
+        }
+        Err(ResolveJwtError::Other(e)) => {
             log("sync", &format!("BAIL: resolve_jwt failed: {e}"));
             deregister_process(SYNC_HANDLE);
             return Err(e);
@@ -1187,8 +1257,11 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
                     // sits in "syncing" forever and the top SyncStats card
                     // shows "never" while the personal first-push (which DID
                     // run) updated everything else.
-                    let saw = totals.lock().map(|t| t.all_complete_seen).unwrap_or(false);
-                    if !saw {
+                    let (saw_complete, saw_auth_error) = totals
+                        .lock()
+                        .map(|t| (t.all_complete_seen, t.saw_auth_error))
+                        .unwrap_or((false, false));
+                    if should_synthesize_all_complete(success, saw_complete, saw_auth_error) {
                         log("sync", "runner exited without AllComplete — synthesizing");
                         let synthetic = SyncEvent::AllComplete(SyncAllCompleteEvent {
                             companies_attempted: 0,

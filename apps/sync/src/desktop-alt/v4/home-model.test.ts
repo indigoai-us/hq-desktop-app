@@ -272,7 +272,7 @@ describe('US-003 syncing progress card', () => {
 });
 
 describe('US-003 error card', () => {
-  it('auth failures get plain language, Sign in again, and technical details', () => {
+  it('auth expiry gets positive resume language, Sign in again, and technical details', () => {
     const model = getHomeErrorModel({
       syncState: 'auth-error',
       syncErrorMessage: 'VaultError 403 TokenExpired for cmp_01J8',
@@ -283,11 +283,12 @@ describe('US-003 error card', () => {
       lastSyncLabel: '11:18 AM',
     });
 
-    expect(model?.title).toBe('Sync failed for Indigo — Your session needs a refresh — sign in again.');
+    expect(model?.title).toBe('Keep sync moving');
+    expect(model?.sub).toBe('Your files are safe. Sign in once and HQ will resume automatically.');
     expect(model?.showSignIn).toBe(true);
     expect(model?.techLines.join('\n')).toContain('runner: hq-sync v0.7.3');
     expect(model?.techLines.join('\n')).toContain('~/.hq/sync-journal.log');
-    expect(model?.techLines.join('\n')).toContain('last good sync 11:18 am');
+    expect(model?.techLines.join('\n')).not.toContain('Sync failed');
   });
 
   it('non-auth failures offer Retry only and keep the raw message in details', () => {

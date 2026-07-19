@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use tokio::sync::Mutex;
@@ -46,6 +47,37 @@ const COGNITO_CLIENT_ID: &str = "7acei2c8v870enheptb1j5foln";
 const COGNITO_ENDPOINT: &str = "https://cognito-idp.us-east-1.amazonaws.com/";
 /// 2-minute buffer before expiry (in milliseconds)
 const EXPIRY_BUFFER_MS: i64 = 120_000;
+const REFRESH_ATTEMPTS: usize = 2;
+
+/// Positive, user-facing copy shared by startup and sync surfaces after the
+/// one automatic refresh retry has been exhausted.
+pub const REAUTH_MESSAGE: &str =
+    "Your HQ session needs a quick refresh. Sign in again to keep sync moving.";
+
+/// Structured refresh failure so callers can distinguish a stale refresh
+/// token (clear it) from a temporary transport/service failure (preserve it).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CognitoRefreshError {
+    pub message: String,
+    pub requires_reauth: bool,
+    pub status_code: Option<u16>,
+}
+
+impl fmt::Display for CognitoRefreshError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for CognitoRefreshError {}
+
+fn refresh_status_is_retryable(status: u16) -> bool {
+    status == 401 || status == 408 || status == 429 || status >= 500
+}
+
+fn refresh_status_requires_reauth(status: u16) -> bool {
+    (400..500).contains(&status) && status != 408 && status != 429
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -113,8 +145,8 @@ pub fn read_tokens_from_file() -> Result<Option<CognitoTokens>, String> {
 /// Shared reader (see `read_tokens_from_path`), so this stays in sync with
 /// `read_tokens_from_file` / `get_tokens`. Malformed JSON is logged and
 /// reported as "not signed in" so a half-written file can't trap a user on
-/// the login step; I/O errors still bubble. Freshness is intentionally not
-/// validated here — the frontend overrides `get_auth_state` on presence.
+/// the login step; I/O errors still bubble. This is only a presence hint for
+/// choosing reauth copy — `get_auth_state` remains the freshness authority.
 ///
 /// Production uses `has_non_empty_stored_token` (async, cache-backed);
 /// this path-parameterized variant is kept so tests can exercise the
@@ -303,7 +335,15 @@ pub async fn get_valid_access_token() -> Result<String, String> {
     if !is_expired(&tokens) {
         return Ok(tokens.access_token);
     }
-    let refreshed = refresh_access_token(&tokens.refresh_token).await?;
+    let refreshed = match refresh_access_token_classified(&tokens.refresh_token).await {
+        Ok(tokens) => tokens,
+        Err(err) => {
+            if err.requires_reauth {
+                clear_tokens().await?;
+            }
+            return Err(REAUTH_MESSAGE.to_string());
+        }
+    };
     set_tokens(&refreshed).await?;
     Ok(refreshed.access_token)
 }
@@ -404,7 +444,9 @@ struct AuthenticationResult {
     // Cognito does not return a new refresh token on REFRESH_TOKEN_AUTH
 }
 
-pub async fn refresh_access_token(refresh_token: &str) -> Result<CognitoTokens, String> {
+pub async fn refresh_access_token_classified(
+    refresh_token: &str,
+) -> Result<CognitoTokens, CognitoRefreshError> {
     let client = crate::client_info::build_client();
 
     let body = serde_json::json!({
@@ -415,46 +457,81 @@ pub async fn refresh_access_token(refresh_token: &str) -> Result<CognitoTokens, 
         }
     });
 
-    let response = client
-        .post(COGNITO_ENDPOINT)
-        .header("Content-Type", "application/x-amz-json-1.1")
-        .header(
-            "X-Amz-Target",
-            "AWSCognitoIdentityProviderService.InitiateAuth",
-        )
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| format!("Cognito refresh request failed: {}", e))?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let body_text = response
-            .text()
+    for attempt in 0..REFRESH_ATTEMPTS {
+        let response = match client
+            .post(COGNITO_ENDPOINT)
+            .header("Content-Type", "application/x-amz-json-1.1")
+            .header(
+                "X-Amz-Target",
+                "AWSCognitoIdentityProviderService.InitiateAuth",
+            )
+            .json(&body)
+            .send()
             .await
-            .unwrap_or_else(|_| "unknown".to_string());
-        return Err(format!(
-            "Cognito refresh failed ({}): {}",
-            status, body_text
-        ));
+        {
+            Ok(response) => response,
+            Err(err) => {
+                let failure = CognitoRefreshError {
+                    message: format!("Cognito refresh request failed: {err}"),
+                    requires_reauth: false,
+                    status_code: None,
+                };
+                if attempt + 1 < REFRESH_ATTEMPTS {
+                    continue;
+                }
+                return Err(failure);
+            }
+        };
+
+        if !response.status().is_success() {
+            let status = response.status().as_u16();
+            let body_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "unknown".to_string());
+            let failure = CognitoRefreshError {
+                message: format!("Cognito refresh failed ({status}): {body_text}"),
+                requires_reauth: refresh_status_requires_reauth(status),
+                status_code: Some(status),
+            };
+            if refresh_status_is_retryable(status) && attempt + 1 < REFRESH_ATTEMPTS {
+                continue;
+            }
+            return Err(failure);
+        }
+
+        let result: InitiateAuthResponse = response.json().await.map_err(|err| {
+            CognitoRefreshError {
+                message: format!("Failed to parse Cognito response: {err}"),
+                requires_reauth: false,
+                status_code: None,
+            }
+        })?;
+
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+
+        return Ok(CognitoTokens {
+            access_token: result.authentication_result.access_token,
+            id_token: result.authentication_result.id_token,
+            refresh_token: refresh_token.to_string(),
+            expires_at: now_ms + (result.authentication_result.expires_in * 1000),
+        });
     }
 
-    let result: InitiateAuthResponse = response
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse Cognito response: {}", e))?;
-
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64;
-
-    Ok(CognitoTokens {
-        access_token: result.authentication_result.access_token,
-        id_token: result.authentication_result.id_token,
-        refresh_token: refresh_token.to_string(),
-        expires_at: now_ms + (result.authentication_result.expires_in * 1000),
+    Err(CognitoRefreshError {
+        message: REAUTH_MESSAGE.to_string(),
+        requires_reauth: false,
+        status_code: None,
     })
+}
+
+pub async fn refresh_access_token(refresh_token: &str) -> Result<CognitoTokens, String> {
+    refresh_access_token_classified(refresh_token)
+        .await
+        .map_err(|err| err.to_string())
 }
 
 #[cfg(test)]
@@ -501,6 +578,20 @@ mod tests {
             expires_at: 1000, // long past
         };
         assert!(is_expired(&tokens));
+    }
+
+    #[test]
+    fn test_refresh_failure_classification() {
+        assert!(refresh_status_is_retryable(401));
+        assert!(refresh_status_is_retryable(503));
+        assert!(refresh_status_is_retryable(429));
+        assert!(!refresh_status_is_retryable(400));
+
+        assert!(refresh_status_requires_reauth(400));
+        assert!(refresh_status_requires_reauth(401));
+        assert!(!refresh_status_requires_reauth(408));
+        assert!(!refresh_status_requires_reauth(429));
+        assert!(!refresh_status_requires_reauth(503));
     }
 
     #[test]

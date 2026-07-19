@@ -47,6 +47,13 @@ describe('desktop sync failure recovery', () => {
     expect(launcher).toContain("await invoke('open_claude_code_link', { url })");
     expect(launcher).toContain('await navigator.clipboard.writeText(prompt)');
   });
+
+  it('routes auth expiry through the one-click reauth bridge instead of settings or refresh retry', () => {
+    expect(desktop).toContain("await invoke('begin_reauth')");
+    expect(desktop).toContain("state: 'reauth'");
+    expect(desktop).toContain("syncState === 'auth-error' ? handleSignInAgain : handleSyncAll");
+    expect(desktop).not.toContain("await invoke('refresh_tokens'); await handleSyncAll()");
+  });
 });
 
 describe('rendered desktop sync failure recovery', () => {
@@ -113,6 +120,28 @@ describe('rendered desktop sync failure recovery', () => {
       (button) => button.textContent?.trim() === 'Retry',
     );
     retry?.click();
+    expect(onretry).toHaveBeenCalledOnce();
+  });
+
+  it('renders auth expiry as a calm sign-in action without red error styling', () => {
+    const onretry = vi.fn();
+    component = mount(V4TitleBar, {
+      target: host,
+      props: {
+        syncState: 'auth-error',
+        watchedCount: 16,
+        onretry,
+      },
+    });
+    flushSync();
+
+    expect(host.textContent).toContain('Ready to reconnect');
+    expect(host.textContent).toContain('Sign in');
+    expect(host.querySelector('.v4-dot.error')).toBeNull();
+    const signIn = Array.from(host.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'Sign in',
+    );
+    signIn?.click();
     expect(onretry).toHaveBeenCalledOnce();
   });
 

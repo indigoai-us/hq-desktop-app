@@ -19,6 +19,10 @@ pub struct RunTotals {
     /// can emit a synthetic AllComplete and unblock the UI from a stuck
     /// "syncing" state.
     pub all_complete_seen: bool,
+    /// Set when the runner emits a terminal auth-error on either protocol
+    /// channel. Auth-required is intentionally exit 0, but must never be
+    /// overwritten by the manual exit handler's synthetic AllComplete.
+    pub saw_auth_error: bool,
     /// Set true when the runner emitted at least one error event of ANY level
     /// (company-level `path == "(company)"` OR per-file). Both drive the
     /// runner's exit-2 path — `hq-cloud`'s `executeCompanyFanout` pushes EVERY
@@ -58,6 +62,7 @@ impl RunTotals {
             SyncEvent::AllComplete(_) => {
                 self.all_complete_seen = true;
             }
+            SyncEvent::AuthError(_) => self.record_auth_error(),
             // Every error event — company-level OR per-file — is counted by the
             // runner toward its non-zero exit, so all of them feed the alert
             // decision here (classified benign-vs-alertable in `record_error`).
@@ -85,6 +90,10 @@ impl RunTotals {
         }
     }
 
+    pub fn record_auth_error(&mut self) {
+        self.saw_auth_error = true;
+    }
+
     /// Record raw runner stderr toward reactive environment-fault
     /// classification. This intentionally does not flip `saw_error`: the
     /// Node-too-old signature is not a runner protocol error, it is the
@@ -94,6 +103,17 @@ impl RunTotals {
             self.saw_node_too_old = true;
         }
     }
+}
+
+/// A successful runner exit normally needs a synthetic AllComplete when the
+/// protocol ended early. Auth-required is the exception: its dedicated state
+/// must remain visible so manual sync and watch/daemon paths agree.
+pub fn should_synthesize_all_complete(
+    success: bool,
+    all_complete_seen: bool,
+    saw_auth_error: bool,
+) -> bool {
+    success && !all_complete_seen && !saw_auth_error
 }
 
 /// Exit code the runner returns when another operation already holds this HQ
@@ -354,7 +374,9 @@ mod tests {
 
     // ── RunTotals ────────────────────────────────────────────────────────
 
-    use crate::events::{SyncAllCompleteEvent, SyncCompleteEvent, SyncProgressEvent};
+    use crate::events::{
+        SyncAllCompleteEvent, SyncAuthErrorEvent, SyncCompleteEvent, SyncProgressEvent,
+    };
 
     fn complete(company: &str, conflicts: u32, aborted: bool) -> SyncEvent {
         SyncEvent::Complete(SyncCompleteEvent {
@@ -439,6 +461,28 @@ mod tests {
         };
         t.accumulate(&complete("a", 1, false));
         assert_eq!(t.conflicts, u32::MAX);
+    }
+
+    #[test]
+    fn auth_error_is_terminal_even_with_exit_zero() {
+        let mut totals = RunTotals::default();
+        totals.accumulate(&SyncEvent::AuthError(SyncAuthErrorEvent {
+            message: "Sign in to keep sync moving".to_string(),
+        }));
+
+        assert!(totals.saw_auth_error);
+        assert!(!should_synthesize_all_complete(
+            true,
+            totals.all_complete_seen,
+            totals.saw_auth_error,
+        ));
+    }
+
+    #[test]
+    fn successful_early_exit_still_synthesizes_when_auth_is_healthy() {
+        assert!(should_synthesize_all_complete(true, false, false));
+        assert!(!should_synthesize_all_complete(false, false, false));
+        assert!(!should_synthesize_all_complete(true, true, false));
     }
 
     // ── is_entity_not_yet_provisioned ────────────────────────────────────────

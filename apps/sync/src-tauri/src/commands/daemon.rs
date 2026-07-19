@@ -120,6 +120,21 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
         return Err("Daemon is already starting".to_string());
     }
 
+    // A signed-out watcher can only emit auth-error and exit 0. Refuse that
+    // known-dead loop up front; after a terminal auth event clears the token,
+    // the supervisor will keep sync peacefully paused until reauth succeeds.
+    match crate::commands::cognito::read_tokens_from_file() {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            deregister_process(DAEMON_HANDLE);
+            return Err(crate::commands::cognito::REAUTH_MESSAGE.to_string());
+        }
+        Err(err) => {
+            deregister_process(DAEMON_HANDLE);
+            return Err(err);
+        }
+    }
+
     let hq_folder_path = match resolve_hq_folder_path() {
         Ok(p) => p,
         Err(e) => {
