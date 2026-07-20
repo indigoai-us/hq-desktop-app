@@ -223,10 +223,18 @@ const builders: Record<IssueKind, (i: Issue) => string> = {
     const added = files.filter((f) => f.kind === 'added').map((f) => f.path);
 
     if (!isBuilder) {
+      const bulkHint =
+        total >= 50
+          ? [
+              '',
+              '**Bulk-count note:** when dozens/hundreds of files show as Modified on Windows, first check line endings (CRLF vs upstream LF) and pack installs under `core/packages/` — those are usually false positives fixed by a desktop app update or `/update-hq`, not 1:1 personal overlays. Only file-by-file the remainder after EOL-normalize compare.',
+            ]
+          : [];
       return [
         `My HQ menubar's "Core Drift" panel shows ${total} locked hq-core file${plural} that differ from what v${ver} shipped.`,
         '',
         "I'm a regular HQ user — I don't promote changes to hq-core and can't open PRs against `hq-core-staging`. So the right resolution for each file is either to **lift my intentional edit into a `personal/` overlay** (so it survives `/update-hq`) or to **restore the file from upstream**. I should never leave a locked core file edited in place — that just keeps drifting against every release.",
+        ...bulkHint,
         '',
         '**Modified** (local content differs from upstream):',
         bullets(modified),
@@ -238,10 +246,10 @@ const builders: Record<IssueKind, (i: Issue) => string> = {
         bullets(added),
         '',
         'Please resolve ALL of them as one batch:',
-        `1. For each **Modified** file, read my local copy and the upstream version at https://github.com/indigoai-us/hq-core/blob/v${ver}/<path>. If my edit is intentional, move it into a \`personal/\` overlay (e.g. \`personal/<type>/<entry>\`, which master-sync symlinks back into \`core/\`) and restore the locked core file to upstream. If it's accidental or stale, just restore from upstream.`,
+        `1. For each **Modified** file, read my local copy and the upstream version at https://github.com/indigoai-us/hq-core/blob/v${ver}/<path>. Compare after LF-normalizing both sides. If only line endings differ, restore from upstream (or batch-restore). If my edit is intentional content, move it into a \`personal/\` overlay (e.g. \`personal/<type>/<entry>\`, which master-sync symlinks back into \`core/\`) and restore the locked core file to upstream.`,
         "2. For each **Missing** file, restore it from upstream — it's a release-shipped file I shouldn't be without.",
-        '3. For each **Added** file, decide whether it belongs in `personal/` (move it there) or should be deleted.',
-        '4. Give me a decision queue — one file at a time, each with a keep-as-personal / restore / delete recommendation and a one-line reason. Show me the plan before changing anything.',
+        '3. For each **Added** file: if it is a pack landing from `core/packages/hq-pack-*` (skills/policies/knowledge wired by scan-packages), leave or reinstall the pack — do not treat as core. Otherwise decide personal/ vs delete.',
+        '4. Give me a decision queue for **real content diffs only** (not EOL-only or pack landings), each with keep-as-personal / restore / delete and a one-line reason. Show me the plan before changing anything.',
         "5. After we finish, the Core Drift panel should read zero. If I'd rather discard all local core edits and re-pull the release wholesale, use `/update-hq` instead.",
       ].join('\n');
     }

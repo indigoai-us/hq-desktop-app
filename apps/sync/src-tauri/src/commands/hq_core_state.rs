@@ -45,7 +45,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::commands::config::{read_hq_config_lenient, MenubarPrefs};
 use crate::commands::hq_core_drift::{
-    excluded_scope_paths, is_conflict_artifact, path_in_excluded_scope, path_in_locked_scope,
+    excluded_scope_paths_for, is_conflict_artifact, path_in_excluded_scope, path_in_locked_scope,
     read_locked_paths, walk_local_under_scope, DriftEntry, DriftReport,
 };
 use crate::commands::hq_core_staging;
@@ -522,7 +522,8 @@ pub async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, String> {
     let (drift_report, unchanged_count, user_only_count): (DriftReport, u32, u32) =
         if let Some(target_tree) = target_tree {
             // Local files under locked scopes.
-            let excluded = excluded_scope_paths();
+            // Pack landings + static runtime excludes (see drift_scope).
+            let excluded = excluded_scope_paths_for(&hq_folder);
             let local = walk_local_under_scope(&hq_folder, &locked);
             let local: BTreeMap<String, (String, u64)> = local
                 .into_iter()

@@ -193,6 +193,7 @@ pub(crate) fn excluded_scope_paths() -> Vec<String> {
         ".claude/state",
         ".claude/audit",     // runtime audit logs; not authored content
         ".claude/worktrees", // Claude Code per-Agent worktree sandboxes
+        ".claude/handoffs",  // session handoff drafts; user/runtime, not core
         ".claude/commands",  // legacy — consolidated into .claude/skills/
         ".agents/skills",
         ".codex/claude",
@@ -214,6 +215,85 @@ pub(crate) fn excluded_scope_paths() -> Vec<String> {
     .iter()
     .map(|s| (*s).to_string())
     .collect()
+}
+
+/// Static exclusions plus pack contribute landing paths (see hq-desktop-core).
+pub(crate) fn excluded_scope_paths_for(hq_folder: &Path) -> Vec<String> {
+    let mut out = excluded_scope_paths();
+    out.extend(pack_materialization_scopes(hq_folder));
+    out
+}
+
+/// Landing paths from installed packs' `package.yaml` contributes — mirrors
+/// `scan-packages.sh` destinations so Windows pack copies are not "Added".
+pub(crate) fn pack_materialization_scopes(hq_folder: &Path) -> Vec<String> {
+    let packages_dir = hq_folder.join("core").join("packages");
+    let Ok(entries) = std::fs::read_dir(&packages_dir) else {
+        return Vec::new();
+    };
+    let mut scopes = Vec::new();
+    for entry in entries.flatten() {
+        let pkg_dir = entry.path();
+        if !pkg_dir.is_dir() {
+            continue;
+        }
+        let manifest = pkg_dir.join("package.yaml");
+        let Ok(bytes) = std::fs::read(&manifest) else {
+            continue;
+        };
+        let Ok(parsed) = serde_yaml::from_slice::<serde_yaml::Value>(&bytes) else {
+            continue;
+        };
+        let Some(contributes) = parsed.get("contributes") else {
+            continue;
+        };
+        let Some(map) = contributes.as_mapping() else {
+            continue;
+        };
+        for (key, value) in map {
+            let Some(key) = key.as_str() else {
+                continue;
+            };
+            let Some(items) = value.as_sequence() else {
+                continue;
+            };
+            for item in items {
+                let Some(name) = item.as_str() else {
+                    continue;
+                };
+                if name.is_empty() || name.contains("..") {
+                    continue;
+                }
+                match key {
+                    "workers" => scopes.push(format!("core/workers/public/{name}")),
+                    "knowledge" => scopes.push(format!("core/knowledge/public/{name}")),
+                    "skills" => scopes.push(format!(".claude/skills/{name}")),
+                    "commands" => scopes.push(format!(".claude/commands/{name}.md")),
+                    "hooks" => {
+                        let path = if name.ends_with(".sh") {
+                            format!(".claude/hooks/{name}")
+                        } else {
+                            format!(".claude/hooks/{name}.sh")
+                        };
+                        scopes.push(path);
+                    }
+                    "policies" => {
+                        let path = if name.ends_with(".md") {
+                            format!("core/policies/{name}")
+                        } else {
+                            format!("core/policies/{name}.md")
+                        };
+                        scopes.push(path);
+                    }
+                    "scripts" => scopes.push(format!("core/scripts/{name}")),
+                    _ => {}
+                }
+            }
+        }
+    }
+    scopes.sort();
+    scopes.dedup();
+    scopes
 }
 
 /// True iff the path is an HQ-Sync conflict-resolution artifact
@@ -275,10 +355,43 @@ pub(crate) fn git_blob_sha(content: &[u8]) -> String {
     hex
 }
 
+/// Drift hash for local working-tree bytes: LF-normalize probable text so
+/// Windows CRLF matches upstream LF blobs. Binary left byte-exact.
+pub(crate) fn drift_blob_sha(content: &[u8]) -> String {
+    let normalized = normalize_newlines_for_drift(content);
+    git_blob_sha(normalized.as_ref())
+}
+
+fn normalize_newlines_for_drift(content: &[u8]) -> std::borrow::Cow<'_, [u8]> {
+    let is_text = content.is_empty()
+        || !content[..content.len().min(8 * 1024)].contains(&0);
+    if !is_text || !content.contains(&b'\r') {
+        return std::borrow::Cow::Borrowed(content);
+    }
+    let mut out = Vec::with_capacity(content.len());
+    let mut i = 0;
+    while i < content.len() {
+        match content[i] {
+            b'\r' => {
+                if i + 1 < content.len() && content[i + 1] == b'\n' {
+                    out.push(b'\n');
+                    i += 2;
+                } else {
+                    out.push(b'\n');
+                    i += 1;
+                }
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    std::borrow::Cow::Owned(out)
+}
+
 /// Walk the local HQ folder, restricted to the locked-path scopes, and
-/// return a map of relative-path → (sha1, size). Walks files directly
-/// for leaf scopes; uses walkdir for directory scopes. Symlinks are
-/// followed but never escape the HQ root.
+/// return a map of relative-path → (drift_sha1, on_disk_size).
 pub(crate) fn walk_local_under_scope(
     hq_folder: &Path,
     locked: &[String],
@@ -303,6 +416,9 @@ pub(crate) fn walk_local_under_scope(
                 if !entry.file_type().is_file() {
                     continue;
                 }
+                if entry.path_is_symlink() {
+                    continue;
+                }
                 let Ok(rel_path) = entry.path().strip_prefix(hq_folder) else {
                     continue;
                 };
@@ -310,7 +426,7 @@ pub(crate) fn walk_local_under_scope(
                     continue;
                 };
                 let size = content.len() as u64;
-                let sha = git_blob_sha(&content);
+                let sha = drift_blob_sha(&content);
                 let rel_str = rel_path.to_string_lossy().replace('\\', "/");
                 out.insert(rel_str, (sha, size));
             }
@@ -331,7 +447,7 @@ pub(crate) fn walk_local_under_scope(
             }
             if let Ok(content) = std::fs::read(&abs) {
                 let size = content.len() as u64;
-                let sha = git_blob_sha(&content);
+                let sha = drift_blob_sha(&content);
                 out.insert(rel.clone(), (sha, size));
             }
         }
