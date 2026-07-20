@@ -271,7 +271,20 @@
 /// clone/checkout stderr instead of discarding it. Both are in the runner /
 /// rescue paths this pin selects. Raising the tilde floor also changes the npx
 /// cache key so an existing `~6.14.4` resolution can't keep serving 6.14.4.
-pub const HQ_CLOUD_VERSION: &str = "~6.14.5";
+///
+/// `~6.14.5` -> `~6.14.15`: ship the open Wave-1 delete/tombstone + Windows
+/// rescue stack that landed across 6.14.6–6.14.15 but was still outside the
+/// menubar pin floor. Notable pickups for auto-sync / rescue:
+/// - intentional local-delete (no respawn) + FILE_TOMBSTONE consult on
+///   push/pull (DEV-1952 resurrection class)
+/// - personal-overlay marker vs core-dir collision (hq-cloud#147 / DEV-1833)
+/// - Windows drive-letter rsync path + vault colon-key materialization
+///   (hq-cloud#185 / DEV-1933–1934 class)
+/// - version-bound tombstones + CAS before delete/overwrite (hq-cloud#182)
+/// - machine-mint identity binding fix (hq-cloud#207, 6.14.15)
+/// Runtime npx pin only; no menubar logic change. Tilde keeps later 6.14.x
+/// patches auto-applied without jumping to an unreleased 6.15 line.
+pub const HQ_CLOUD_VERSION: &str = "~6.14.15";
 
 /// Package name for the runner. Used by both the spawn site below and the
 /// startup prewarm. Paired with `HQ_CLOUD_VERSION` to form the full
