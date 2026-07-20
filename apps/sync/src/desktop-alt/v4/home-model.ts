@@ -203,7 +203,15 @@ export function getHomeMetaLine(input: HomeMetaInput): string {
     ]);
   }
 
-  if (input.syncState === 'error' || input.syncState === 'auth-error') {
+  if (input.syncState === 'auth-error') {
+    return joinMeta([
+      'sync ready to resume',
+      'sign in once to keep everything moving',
+      version,
+    ]);
+  }
+
+  if (input.syncState === 'error') {
     return joinMeta([
       'auto-sync paused after failure',
       input.autoSyncOn ? 'retries on the next change' : 'retry from the title bar',
@@ -348,6 +356,18 @@ export function getHomeErrorModel(input: HomeErrorInput): HomeErrorModel | null 
     : null;
   const showSignIn =
     input.syncState === 'auth-error' || /sign in/i.test(friendly.summary);
+
+  if (input.syncState === 'auth-error') {
+    return {
+      title: 'Keep sync moving',
+      sub: 'Your files are safe. Sign in once and HQ will resume automatically.',
+      showSignIn: true,
+      techLines: [
+        input.syncErrorMessage.trim() || 'The saved session can no longer refresh.',
+        `runner: hq-sync v${input.appVersion} · journal ~/.hq/sync-journal.log`,
+      ],
+    };
+  }
 
   const techLines: string[] = [];
   if (friendly.detail) techLines.push(friendly.detail);

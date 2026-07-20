@@ -284,6 +284,7 @@ fn main() {
             commands::oauth::oauth_exchange_code,
             commands::auth::get_auth_state,
             commands::auth::has_stored_token,
+            commands::auth::begin_reauth,
             commands::auth::refresh_tokens,
             commands::auth::sign_out,
             commands::config::get_config,

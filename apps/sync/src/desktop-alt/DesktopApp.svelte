@@ -746,17 +746,13 @@
     );
   }
 
-  // "Sign in again" on the Home error card: a silent token refresh fixes the
-  // common expired-session case in place (then retries the sync); if the
-  // refresh itself fails the session is truly gone, so open Settings where
-  // the account surface lives.
+  // One click clears the stale device session and opens the compact provider
+  // picker. App.svelte resumes sync automatically after OAuth succeeds.
   async function handleSignInAgain() {
     try {
-      await invoke('refresh_tokens');
-      await handleSyncAll();
+      await invoke('begin_reauth');
     } catch (err) {
-      console.error('refresh_tokens failed:', err);
-      handleOpenSettings();
+      console.error('begin_reauth failed:', err);
     }
   }
 
@@ -1217,7 +1213,7 @@
         syncState = 'auth-error';
         syncProgress = null;
         syncErrorMessage = event.payload.message;
-        await invoke('set_tray_state', { state: 'error' }).catch(() => undefined);
+        await invoke('set_tray_state', { state: 'reauth' }).catch(() => undefined);
       }),
       listen<ActivityEntry>('activity:append', (event) => {
         activity = [...activity, event.payload];
@@ -1276,7 +1272,7 @@
     {sidebarCollapsed}
     onsync={handleSyncAll}
     oncancel={handleCancelSync}
-    onretry={handleSyncAll}
+    onretry={syncState === 'auth-error' ? handleSignInAgain : handleSyncAll}
     ontogglesidebar={handleToggleSidebar}
     oncommand={handleOpenCommandPalette}
     onaccount={handleAccountMenu}

@@ -1019,7 +1019,16 @@
         // popover, even though the runner exits with code 0.
         authenticated = false;
         expiresAt = '';
-        await invoke('set_tray_state', { state: 'error' });
+        await invoke('set_tray_state', { state: 'reauth' });
+      })
+    );
+
+    unlisteners.push(
+      await listen('auth:reauth-required', async () => {
+        syncState = 'auth-error';
+        authenticated = false;
+        expiresAt = '';
+        await invoke('set_tray_state', { state: 'reauth' });
       })
     );
 
@@ -2052,24 +2061,24 @@
 
   async function checkAuth() {
     try {
-      // Skip the sign-in step when cognito-tokens.json already holds a
-      // non-empty token. See `shouldSkipSignIn` for the ordering: we
-      // prefer `get_auth_state`'s verdict (it tries a silent refresh) and
-      // only fall back to raw token presence when it reports
-      // unauthenticated — a stored token that's actually unusable will
-      // raise `sync:auth-error` on first sync and route back through
-      // sign-in from there.
+      // `get_auth_state` validates freshness and performs the one silent
+      // refresh retry. Raw token-file presence must not override a failed
+      // verdict; it is captured first only to select the friendly reauth copy
+      // after validation clears an expired session.
       lifecycleState = await invoke<string>('get_lifecycle_state').catch(() => null);
-      const [hasToken, state] = await Promise.all([
-        invoke<boolean>('has_stored_token'),
-        invoke<{
-          authenticated: boolean;
-          expiresAt: string | null;
-        }>('get_auth_state'),
-      ]);
+      const hadStoredToken = await invoke<boolean>('has_stored_token');
+      const state = await invoke<{
+        authenticated: boolean;
+        expiresAt: string | null;
+      }>('get_auth_state');
 
-      authenticated = shouldSkipSignIn(hasToken, state);
+      authenticated = shouldSkipSignIn(state);
       expiresAt = state.expiresAt ?? '';
+      if (hadStoredToken && !state.authenticated) {
+        syncState = 'auth-error';
+        syncErrorMessage = 'Sign in once and HQ will resume automatically.';
+        await invoke('set_tray_state', { state: 'reauth' });
+      }
     } catch {
       authenticated = false;
     } finally {
@@ -2083,9 +2092,16 @@
     lifecycleState = null;
   }
 
-  function handleAuthSuccess(auth: { authenticated: boolean; expiresAt: string }) {
+  async function handleAuthSuccess(auth: { authenticated: boolean; expiresAt: string }) {
+    const shouldResumeSync = syncState === 'auth-error';
     authenticated = auth.authenticated;
     expiresAt = auth.expiresAt;
+    syncState = 'idle';
+    syncErrorMessage = '';
+    await invoke('set_tray_state', { state: 'idle' });
+    if (shouldResumeSync) {
+      await handleSyncNow();
+    }
   }
 </script>
 
@@ -2133,7 +2149,7 @@
       bindStatsRefresh={(fn) => (syncStatsRefresh = fn)}
     />
   {:else}
-    <SignInPrompt onsuccess={handleAuthSuccess} />
+    <SignInPrompt reauth={syncState === 'auth-error'} onsuccess={handleAuthSuccess} />
   {/if}
 </main>
 

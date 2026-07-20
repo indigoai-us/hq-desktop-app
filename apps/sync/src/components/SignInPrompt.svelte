@@ -6,10 +6,11 @@
   import { emitDesktopTelemetry } from '../lib/desktop-telemetry';
 
   interface Props {
+    reauth?: boolean;
     onsuccess?: (auth: { authenticated: boolean; expiresAt: string }) => void;
   }
 
-  let { onsuccess }: Props = $props();
+  let { reauth = false, onsuccess }: Props = $props();
 
   type SignInProvider = 'Google' | 'Microsoft';
   const providers: { key: SignInProvider; label: string }[] = [
@@ -100,12 +101,12 @@
         console.info('[signin] OAuth runner succeeded', { provider });
         onsuccess?.(result);
       } else {
-        error = 'Authentication failed. Please try again.';
+        error = 'That sign-in did not finish. Choose your provider and try once more.';
       }
     } catch (err) {
       if (!isCurrentSignInRun(run)) return;
       console.error('[signin] OAuth runner failed:', err);
-      error = err instanceof Error ? err.message : String(err);
+      error = 'That sign-in did not finish. Choose your provider and try once more.';
       await cancelPendingSignIn();
     } finally {
       if (isCurrentSignInRun(run)) {
@@ -180,8 +181,12 @@
       </svg>
     </div>
 
-    <h1>Sign in to HQ</h1>
-    <p class="description">Use Google or Microsoft to sync your HQ files.</p>
+    <h1>{reauth ? 'Keep sync moving' : 'Sign in to HQ'}</h1>
+    <p class="description">
+      {reauth
+        ? 'Your files are safe. Continue with your provider and HQ will resume syncing.'
+        : 'Use Google or Microsoft to sync your HQ files.'}
+    </p>
 
     <div class="sign-in-actions">
       {#each providers as provider}

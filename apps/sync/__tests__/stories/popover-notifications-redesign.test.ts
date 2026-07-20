@@ -31,7 +31,7 @@ describe('notifications-first popover (feed-folded system notices)', () => {
     expect(p).toContain('Update available');
     expect(p).toContain('Sync now');
     expect(p).toContain('Sync paused');
-    expect(p).toContain('Session expired');
+    expect(p).toContain('Keep sync moving');
     expect(p).toContain('Cloud unreachable');
     // The legacy banner stack is gone.
     expect(popover).not.toContain('class="mbp-notices"');

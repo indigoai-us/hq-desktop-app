@@ -357,7 +357,7 @@ describe('US-001 V4 title bar model', () => {
     expect(model.meta).toBe('indigo · 2/5 companies');
   });
 
-  it('switches the primary action to Retry on sync and auth errors', () => {
+  it('keeps sync errors red but gives auth a calm direct sign-in action', () => {
     const error = getV4TitleBarModel({
       syncState: 'error',
       watchedCount: 3,
@@ -368,8 +368,9 @@ describe('US-001 V4 title bar model', () => {
     expect(error.action).toEqual({ id: 'retry', label: 'Retry' });
 
     const auth = getV4TitleBarModel({ syncState: 'auth-error', watchedCount: 3 });
-    expect(auth.action).toEqual({ id: 'retry', label: 'Retry' });
-    expect(auth.tone).toBe('error');
+    expect(auth.action).toEqual({ id: 'retry', label: 'Sign in' });
+    expect(auth.tone).toBe('idle');
+    expect(auth.sentence).toBe('Ready to reconnect');
   });
 
   it('flags conflicts as a warn state that keeps Sync Now as the action', () => {
