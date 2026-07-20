@@ -97,6 +97,13 @@
             syncState: 'auth-error' as const,
             errorMessage: 'Sign in once and HQ will resume automatically.',
           }
+      : stateOverride === 'tutorial'
+        ? {
+            ...popoverProps,
+            showTutorialPrompt: true,
+            ontutorial: () => console.debug('[harness] open tutorial'),
+            ondismisstutorial: () => console.debug('[harness] dismiss tutorial'),
+          }
       : popoverProps;
 
   // The banner reads its transparent-window CSS off html[data-window=dm-banner]

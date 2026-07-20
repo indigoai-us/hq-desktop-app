@@ -7,6 +7,7 @@
     isPermissionGranted as isNotifyPermissionGranted,
     sendNotification,
   } from '@tauri-apps/plugin-notification';
+  import { open } from '@tauri-apps/plugin-shell';
   import {
     type DmRequest,
     enrichRequestFromContacts,
@@ -29,6 +30,7 @@
   import { emitDesktopTelemetry } from './lib/desktop-telemetry';
   import { refreshOnPopoverOpen } from './lib/popover-refresh';
   import { isTransientSyncTransportError } from './lib/transient-sync-error';
+  import { tutorialUrl } from './lib/tutorial';
   import {
     handleMeetingDetected,
     type MeetingDetectedPayload,
@@ -72,6 +74,11 @@
   let checking = $state(true);
   let lifecycleState = $state<string | null>(null);
   let syncState = $state<'idle' | 'syncing' | 'error' | 'conflict' | 'setup-needed' | 'auth-error'>('idle');
+  let showTutorialPrompt = $state(false);
+
+  async function openTutorial(source: string) {
+    await open(tutorialUrl(source));
+  }
   // True while a manual "Sync Now" owns the progress UI — its richer
   // stdout-driven stream (fanout-aware) drives the card. Gates out the
   // cross-process file-watcher so the two sources never fight. Set on the Sync
@@ -960,6 +967,12 @@
           // Signed-out fallback: GA gate rejects alt window — surface SignInPrompt.
           void invoke('show_main_window').catch(console.error);
         });
+      })
+    );
+
+    unlisteners.push(
+      await listen('tray:open-tutorial', () => {
+        void openTutorial('hq_desktop_tray');
       })
     );
 
@@ -2087,6 +2100,7 @@
   }
 
   async function handleOnboardingFinish() {
+    showTutorialPrompt = true;
     lifecycleState = null;
     await checkAuth();
     lifecycleState = null;
@@ -2142,6 +2156,9 @@
       {updateAvailable}
       {updateInstalling}
       onsync={handleSyncNow}
+      {showTutorialPrompt}
+      ontutorial={() => void openTutorial('hq_desktop_onboarding')}
+      ondismisstutorial={() => (showTutorialPrompt = false)}
       onresolve={handleResolveConflict}
       onopen={handleOpenInEditor}
       ondismissconflicts={handleDismissConflicts}

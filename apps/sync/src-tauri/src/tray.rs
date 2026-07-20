@@ -2,7 +2,7 @@
 //!
 //! Visual states: **idle**, **syncing**, **reauth**, **error**, **conflict**.
 //! Left-click toggles the desktop view (popover is the signed-out fallback);
-//! right-click shows a context menu with "Sync Now", "Settings", and "Quit".
+//! right-click shows a context menu with "Sync Now", "HQ Tutorials", "Settings", and "Quit".
 
 use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -303,6 +303,7 @@ const MENU_SYNC_NOW: &str = "sync-now";
 const MENU_OPEN_DESKTOP: &str = "open-desktop";
 const MENU_SIGN_OUT: &str = "sign-out";
 const MENU_SETTINGS: &str = "settings";
+const MENU_TUTORIAL: &str = "tutorial";
 const MENU_QUIT: &str = "quit";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -340,6 +341,7 @@ fn build_tray_icon(app: &AppHandle) -> Result<tauri::tray::TrayIcon, Box<dyn std
     let open_desktop =
         MenuItemBuilder::with_id(MENU_OPEN_DESKTOP, "Open desktop view").build(app)?;
     let settings = MenuItemBuilder::with_id(MENU_SETTINGS, "Settings").build(app)?;
+    let tutorial = MenuItemBuilder::with_id(MENU_TUTORIAL, "HQ Tutorials").build(app)?;
     let sign_out = MenuItemBuilder::with_id(MENU_SIGN_OUT, "Sign Out").build(app)?;
     let quit = MenuItemBuilder::with_id(MENU_QUIT, "Quit HQ").build(app)?;
 
@@ -349,6 +351,7 @@ fn build_tray_icon(app: &AppHandle) -> Result<tauri::tray::TrayIcon, Box<dyn std
         .item(&sync_now)
         .item(&open_desktop)
         .separator()
+        .item(&tutorial)
         .item(&settings)
         .item(&sign_out)
         .item(&quit)
@@ -390,6 +393,9 @@ fn build_tray_icon(app: &AppHandle) -> Result<tauri::tray::TrayIcon, Box<dyn std
                     }
                     id if id == MENU_SETTINGS => {
                         let _ = app_handle.emit("tray:open-settings", ());
+                    }
+                    id if id == MENU_TUTORIAL => {
+                        let _ = app_handle.emit("tray:open-tutorial", ());
                     }
                     id if id == MENU_QUIT => {
                         app_handle.exit(0);
@@ -1130,6 +1136,7 @@ mod tests {
         assert_eq!(MENU_OPEN_DESKTOP, "open-desktop");
         assert_eq!(MENU_SIGN_OUT, "sign-out");
         assert_eq!(MENU_SETTINGS, "settings");
+        assert_eq!(MENU_TUTORIAL, "tutorial");
         assert_eq!(MENU_QUIT, "quit");
     }
 

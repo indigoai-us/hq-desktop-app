@@ -53,6 +53,10 @@
     updateAvailable?: { version: string; body?: string; date?: string } | null;
     updateInstalling?: boolean;
     onsync: () => void;
+    /** One-time first-run handoff into the guided HQ tutorial. */
+    showTutorialPrompt?: boolean;
+    ontutorial?: () => void;
+    ondismisstutorial?: () => void;
     onresolve?: (path: string, strategy: 'keep-local' | 'keep-remote') => void;
     onopen?: (path: string) => void;
     ondismissconflicts?: () => void;
@@ -94,6 +98,9 @@
     updateAvailable = null,
     updateInstalling = false,
     onsync,
+    showTutorialPrompt = false,
+    ontutorial,
+    ondismisstutorial,
     onresolve,
     onopen,
     ondismissconflicts,
@@ -149,7 +156,8 @@
   // sync-paused row sits right above it.
   const conflictModalActive = $derived(showConflictModal && conflicts.length > 0);
   const systemNoticeCount = $derived(
-    (membershipsToPull.length > 0 ? 1 : 0) +
+    (showTutorialPrompt ? 1 : 0) +
+      (membershipsToPull.length > 0 ? 1 : 0) +
       (updateAvailable ? 1 : 0) +
       (syncState === 'conflict' && !conflictModalActive ? 1 : 0) +
       (syncState === 'auth-error' ? 1 : 0) +
@@ -451,6 +459,24 @@
             onopen={onopen}
             ondismiss={ondismissconflicts}
           />
+        </div>
+      {/if}
+
+      {#if showTutorialPrompt}
+        <div class="snr tutorial" data-testid="popover-system-notice" data-kind="tutorial">
+          <span class="snr-icon action" aria-hidden="true">{@render noticeGlyph('action')}</span>
+          <span class="snr-text">
+            <b>Your HQ is ready</b>
+            <span>Follow the 7 guided lessons.</span>
+          </span>
+          <span class="snr-actions">
+            <button type="button" class="mbp-mini primary" onclick={ontutorial} disabled={!ontutorial}>
+              Start
+            </button>
+            <button type="button" class="mbp-mini" onclick={ondismisstutorial} disabled={!ondismisstutorial}>
+              Later
+            </button>
+          </span>
         </div>
       {/if}
 
@@ -772,6 +798,26 @@
 
   .snr:hover .snr-actions,
   .snr:focus-within .snr-actions {
+    display: inline-flex;
+  }
+
+  .snr.tutorial {
+    min-height: 44px;
+  }
+
+  .snr.tutorial .snr-text {
+    display: grid;
+    gap: 1px;
+    white-space: normal;
+    line-height: 1.2;
+  }
+
+  .snr.tutorial .snr-text span {
+    color: var(--pop-muted);
+    font-size: 10.5px;
+  }
+
+  .snr.tutorial .snr-actions {
     display: inline-flex;
   }
 

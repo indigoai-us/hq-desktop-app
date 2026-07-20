@@ -33,4 +33,12 @@ describe('isOnboardingState', () => {
     expect(app).not.toContain("invoke('mark_first_run_complete')");
     expect(onboarding).toContain("invoke('mark_first_run_complete')");
   });
+
+  it('prompts for the tutorial after onboarding finishes', () => {
+    const app = readSrc('../App.svelte');
+
+    expect(app).toContain('async function handleOnboardingFinish()');
+    expect(app).toContain('showTutorialPrompt = true');
+    expect(app).toContain("openTutorial('hq_desktop_onboarding')");
+  });
 });

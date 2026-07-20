@@ -92,6 +92,9 @@ pub fn spawn_and_poll(app: &AppHandle) {
                     "signout" => {
                         let _ = app.emit("tray:sign-out", ());
                     }
+                    "tutorial" => {
+                        let _ = app.emit("tray:open-tutorial", ());
+                    }
                     "quit" => app.exit(0),
                     other => log("tray", &format!("native helper: unknown cmd '{other}'")),
                 }

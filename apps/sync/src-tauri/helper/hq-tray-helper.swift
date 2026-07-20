@@ -16,7 +16,7 @@
 //                   the popover reliably comes to the front — without activation
 //                   a background-launched app shows the window behind everything
 //                   / lets the click-away handler swallow it).
-//   • RIGHT-click → context menu (Sync Now / Quit).
+//   • RIGHT-click → context menu (Sync Now / HQ Tutorials / Quit).
 //
 // Build: swiftc -O hq-tray-helper.swift -o hq-tray-helper
 
@@ -79,6 +79,10 @@ final class TrayController: NSObject {
             title: "Open desktop view", action: #selector(openDesktop), keyEquivalent: "")
         desktop.target = self
         menu.addItem(desktop)
+        let tutorial = NSMenuItem(
+            title: "HQ Tutorials", action: #selector(openTutorial), keyEquivalent: "")
+        tutorial.target = self
+        menu.addItem(tutorial)
         let signOut = NSMenuItem(title: "Sign Out", action: #selector(signOutHQ), keyEquivalent: "")
         signOut.target = self
         menu.addItem(signOut)
@@ -118,6 +122,7 @@ final class TrayController: NSObject {
         writeCommand("desktop")
         activateHQ()
     }
+    @objc func openTutorial() { writeCommand("tutorial") }
     @objc func signOutHQ() { writeCommand("signout") }
     @objc func quitHQ() {
         writeCommand("quit")

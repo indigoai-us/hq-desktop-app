@@ -8,6 +8,7 @@
   import { postOptIn } from '../../lib/onboarding-telemetry';
   import { permissionState, loadMeetingPermissions } from '../../lib/permissionState.svelte';
   import { packUpdateTitle } from '../../lib/packUpdate';
+  import { tutorialUrl } from '../../lib/tutorial';
   import WidgetSettings from '../../components/WidgetSettings.svelte';
   import '../v4/tokens.css';
 
@@ -885,6 +886,10 @@
       <div class="settings-card">
         <label class="setting-row"><span><strong>Start at login</strong><small>Open HQ when your computer starts.</small></span><input type="checkbox" bind:checked={startAtLogin} onchange={applyStartAtLogin} /></label>
         <label class="setting-row"><span><strong>Usage telemetry</strong><small>Share anonymized usage counts to improve HQ. You can turn this off any time.</small></span><input type="checkbox" bind:checked={telemetryEnabled} onchange={applyTelemetryPreference} /></label>
+        <div class="setting-row">
+          <span><strong>HQ tutorial</strong><small>Follow the guided seven-lesson setup course.</small></span>
+          <button type="button" class="row-button" onclick={() => void openUrl(tutorialUrl('hq_desktop_settings'))}>Open</button>
+        </div>
         <div class="setting-row">
           <span><strong>Version</strong><small>HQ desktop app build</small></span>
           <span class="version-value">{appVersion ? `v${appVersion}` : '—'}</span>
