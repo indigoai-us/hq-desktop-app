@@ -160,11 +160,20 @@
       }, 400);
     };
 
+    // `listen` registers asynchronously. A quick view swap can destroy this
+    // feed before it resolves; unlisten immediately in that case instead of
+    // retaining an orphaned handler in Tauri's event registry.
+    let disposed = false;
     const unlisteners: Array<() => void> = [];
-    void listen('dm:unread-summary', scheduleReload).then((u) => unlisteners.push(u));
-    void listen('sync:complete', scheduleReload).then((u) => unlisteners.push(u));
+    const track = (unlisten: () => void) => {
+      if (disposed) unlisten();
+      else unlisteners.push(unlisten);
+    };
+    void listen('dm:unread-summary', scheduleReload).then(track);
+    void listen('sync:complete', scheduleReload).then(track);
 
     return () => {
+      disposed = true;
       if (reloadTimer) clearTimeout(reloadTimer);
       for (const u of unlisteners) u();
     };
