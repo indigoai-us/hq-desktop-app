@@ -1,5 +1,4 @@
 <script lang="ts">
-  import * as Sentry from '@sentry/svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -28,7 +27,6 @@
   import { buildClaudeCodeUrl } from './lib/claude-code-link';
   import { emitDesktopTelemetry } from './lib/desktop-telemetry';
   import { refreshOnPopoverOpen } from './lib/popover-refresh';
-  import { isTransientSyncTransportError } from './lib/transient-sync-error';
   import {
     handleMeetingDetected,
     type MeetingDetectedPayload,
@@ -1315,33 +1313,10 @@
         async (event) => {
           const shouldEmitManualSync = manualSyncTelemetryPending;
           manualSyncTelemetryPending = false;
-          // Defence-in-depth: the Rust side already captures this via
-          // `report_sync_error` in src-tauri/src/commands/sync.rs (which fires
-          // for the same payload that produced this Tauri event). We capture
-          // here too so the renderer-tagged Sentry project (`hq-sync-web`)
-          // still receives the issue when the Rust build is missing
-          // `HQ_SYNC_SENTRY_DSN` or its DSN parses to None at startup. Sentry
-          // groups by message text so duplicate captures merge into one issue.
-          //
-          // EXCEPT a transport-level transient (the reqwest request never
-          // reached a response — DNS/connect/TLS/send dropped): a background
-          // step like the personal first-push is retried by the runner on the
-          // next pass, so it is recoverable noise, not an actionable error
-          // (HQ-SYNC-WEB-18). The user still sees the recoverable error state
-          // below; only the Sentry capture is skipped. Genuine, server-answered
-          // failures (4xx/5xx, parse/logic errors) carry a different message and
-          // still capture.
-          if (!isTransientSyncTransportError(event.payload.message)) {
-            Sentry.captureMessage(`[sync] ${event.payload.message}`, {
-              level: 'error',
-              tags: {
-                path: event.payload.path,
-                ...(event.payload.company
-                  ? { company: event.payload.company }
-                  : {}),
-              },
-            });
-          }
+          // Native owns terminal runner telemetry, including its structured
+          // exit/signal fingerprint and stderr breadcrumbs. This renderer
+          // event is UI-only: capturing here too created a second Sentry event
+          // for the same supervisor failure in a different project.
           manualSyncActive = false;
           externalSyncActive = false;
           syncState = 'error';
