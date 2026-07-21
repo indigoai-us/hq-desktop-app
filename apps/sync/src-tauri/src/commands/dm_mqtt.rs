@@ -298,7 +298,12 @@ async fn run_once(app: &AppHandle, creds: &RealtimeCredsResponse) -> Result<(), 
     let mut opts = MqttOptions::new(client_id(), url, 443);
     // Bundled webpki roots, not the macOS keychain — avoids the fatal
     // `load_native_certs().expect(...)` panic (Sentry HQ-SYNC-D). See util/mqtt_tls.rs.
-    opts.set_transport(crate::util::mqtt_tls::wss_transport_with_bundled_roots());
+    opts.set_transport(
+        crate::util::mqtt_tls::wss_transport_with_bundled_roots().map_err(|e| {
+            log(LOG_TAG, &format!("DM_MQTT_TLS_CONFIG_FAIL {e}"));
+            format!("TLS configuration: {e}")
+        })?,
+    );
     opts.set_keep_alive(Duration::from_secs(30));
     // AWS IoT requires a clean session for SigV4-WSS connections.
     opts.set_clean_session(true);
