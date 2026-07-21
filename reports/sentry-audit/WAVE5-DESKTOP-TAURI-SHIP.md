@@ -36,6 +36,8 @@ All commands passed. The Vitest invocation completed the frontend suite:
 production build passed. The desktop-alt source-contract suite also passed:
 64 files / 407 tests.
 
-Run repository CI checks before merge. A release is not required for these
-source-only fixes unless the release owner elects to ship the desktop patch
-immediately.
+## Release
+
+A patch release is required to deliver the Sentry fixes to installed desktop
+clients. This release is stamped as `v0.10.27` and includes the Wave 4 watcher
+and listener-cleanup fixes merged after `v0.10.26` as well as this Wave 5 fix.
