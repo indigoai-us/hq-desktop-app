@@ -859,6 +859,29 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
         return Err(msg);
     }
 
+    // Prewarm runs at launch, but it used to race the first real npx launch
+    // while both were writing the same cache tree. Materialize the exact
+    // runner package under the shared, bounded lock before starting any sync.
+    // A failure here is a positively diagnosed local Node/npm/cache problem:
+    // return it to the popover without a Sentry error, rather than spawning a
+    // process that often terminates as exit 126/127 and floods alerts.
+    match tauri::async_runtime::spawn_blocking(hq_desktop_core::prewarm::materialize_hq_cloud_cache)
+        .await
+    {
+        Ok(Ok(())) => {}
+        Ok(Err(msg)) => {
+            log("sync", &format!("BAIL: npx cache materialization: {msg}"));
+            deregister_process(SYNC_HANDLE);
+            return Err(msg);
+        }
+        Err(err) => {
+            let msg = format!("HQ Sync could not prepare its npm cache: {err}");
+            log("sync", &format!("BAIL: npx cache materialization task: {err}"));
+            deregister_process(SYNC_HANDLE);
+            return Err(msg);
+        }
+    }
+
     // Resolve HQ folder — deregister on failure so future syncs aren't blocked
     let hq_folder_path = match resolve_hq_folder_path() {
         Ok(p) => {
