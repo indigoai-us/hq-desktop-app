@@ -537,8 +537,31 @@
   // instead of silently hiding the row.
   let hqVersion = $state<string | null>(null);
 
-  // Collected unlisten handles for cleanup
-  let unlisteners: UnlistenFn[] = [];
+  // `listen()` and `onFocusChanged()` resolve asynchronously. The app surface
+  // normally stays mounted for the process lifetime, but it can be torn down
+  // during dev reloads or a fast window shutdown. Keep registration scoped to
+  // one mount so an unlisten handle that resolves late is called immediately,
+  // rather than leaving its handler in Tauri's event registry.
+  class ListenerRegistry {
+    private disposed = false;
+    private readonly handlers: UnlistenFn[] = [];
+
+    push(...handlers: UnlistenFn[]): number {
+      if (this.disposed) {
+        handlers.forEach((unlisten) => unlisten());
+      } else {
+        this.handlers.push(...handlers);
+      }
+      return this.handlers.length;
+    }
+
+    dispose(): void {
+      if (this.disposed) return;
+      this.disposed = true;
+      this.handlers.forEach((unlisten) => unlisten());
+      this.handlers.length = 0;
+    }
+  }
 
   async function loadConfig() {
     try {
@@ -917,7 +940,7 @@
     }
   }
 
-  async function setupTrayListeners() {
+  async function setupTrayListeners(unlisteners: ListenerRegistry) {
     // Refresh workspaces every time the menubar popover gains focus. Cheap
     // (single Tauri command + small vault round-trip) and catches external
     // mutations: a new company added via /newcompany, a manifest patch from
@@ -1926,7 +1949,11 @@
     loadCoreState();
     loadAutoUpdatePref();
     loadUnreadSummary();
-    setupTrayListeners();
+    const listenerRegistry = new ListenerRegistry();
+    void setupTrayListeners(listenerRegistry).catch((err) => {
+      // A failed registration must not turn into an unhandled rejection.
+      console.error('setup tray listeners failed:', err);
+    });
     // Resolve the Phase-0 meeting-detect eligibility flag once on mount.
     // Desktop SettingsPage gates the meeting-detect toggle when this is false.
     // (Per-permission TCC status tracking was removed 2026-05-25 — see
@@ -1954,10 +1981,7 @@
         meetingsEnabled = false;
       });
 
-    return () => {
-      unlisteners.forEach((unlisten) => unlisten());
-      unlisteners = [];
-    };
+    return () => listenerRegistry.dispose();
   });
 
   // ── Silent auto-update (master `autoUpdate` pref) ──────────────────────────
