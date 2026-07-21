@@ -20,6 +20,7 @@ use crate::commands::sync::RunTotals;
 use crate::events::{SyncEvent, EVENT_SYNC_ALL_COMPLETE};
 use crate::util::logfile::log;
 use crate::util::paths;
+use hq_desktop_core::sync_outcome::termination_fingerprint_token;
 
 #[allow(unused_imports)]
 pub use hq_desktop_core::daemon::{
@@ -301,9 +302,9 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
                         } else if should_capture_crash(consecutive) {
                             let (uptime, rss_kb, rss_age) = watcher_exit_diagnostics();
                             let diag = exit_diagnostic_suffix(uptime, rss_kb, rss_age);
-                            let fingerprint_token = watcher_exit_fingerprint_token(code, signal);
+                            let fingerprint_token = termination_fingerprint_token(code, signal);
                             let fingerprint =
-                                ["sync", "auto-sync-watcher-exit", fingerprint_token.as_str()];
+                                ["sync", "auto-sync-watcher-termination", fingerprint_token.as_str()];
                             crate::commands::sync::capture_sync_error_with_fingerprint(
                                 None,
                                 "(auto-sync)",
@@ -410,18 +411,6 @@ enum RunnerPreflightCapturePolicy {
 
 fn runner_preflight_capture_policy() -> RunnerPreflightCapturePolicy {
     RunnerPreflightCapturePolicy::LocalLogOnly
-}
-
-/// Stable Sentry grouping token for watcher-exit captures. This intentionally
-/// excludes dynamic diagnostics (uptime, RSS, consecutive failure count).
-fn watcher_exit_fingerprint_token(code: Option<i32>, signal: Option<i32>) -> String {
-    if let Some(signal) = signal {
-        format!("signal:{signal}")
-    } else if let Some(code) = code {
-        format!("code:{code}")
-    } else {
-        "unknown".to_string()
-    }
 }
 
 /// A non-zero exit this soon after spawn is a crash-loop failure — distinct from
@@ -865,14 +854,14 @@ mod tests {
     }
 
     #[test]
-    fn watcher_exit_fingerprint_token_is_stable_per_code_or_signal() {
-        assert_eq!(watcher_exit_fingerprint_token(Some(126), None), "code:126");
-        assert_eq!(watcher_exit_fingerprint_token(Some(127), None), "code:127");
+    fn watcher_exit_fingerprint_token_is_stable_per_exit_or_signal() {
+        assert_eq!(termination_fingerprint_token(Some(126), None), "exit:126");
+        assert_eq!(termination_fingerprint_token(Some(127), None), "exit:127");
         assert_eq!(
-            watcher_exit_fingerprint_token(Some(1), Some(SIGSEGV)),
+            termination_fingerprint_token(None, Some(SIGSEGV)),
             "signal:11"
         );
-        assert_eq!(watcher_exit_fingerprint_token(None, None), "unknown");
+        assert_eq!(termination_fingerprint_token(None, None), "unknown");
     }
 
     // ── Crash-loop dampening (HQ-SYNC-4) ─────────────────────────────────

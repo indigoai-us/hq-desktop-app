@@ -41,7 +41,7 @@ use std::time::Duration;
 use chrono::SecondsFormat;
 use hq_desktop_core::sync_outcome::{
     classify_error_event, describe_exit, should_alert_on_nonzero_exit,
-    should_synthesize_all_complete,
+    should_synthesize_all_complete, termination_fingerprint_token,
 };
 use tauri::{AppHandle, Emitter};
 
@@ -138,8 +138,23 @@ fn capture_sync_error_impl(
     );
 }
 
-fn report_sync_error(app: &AppHandle, payload: SyncErrorEvent) -> tauri::Result<()> {
-    capture_sync_error(payload.company.as_deref(), &payload.path, &payload.message);
+/// Capture and surface the terminal runner error exactly once. The renderer
+/// receives this event for UI state only; it deliberately does not submit a
+/// second Sentry event for the same native capture.
+fn report_runner_exit_error(
+    app: &AppHandle,
+    code: Option<i32>,
+    signal: Option<i32>,
+    payload: SyncErrorEvent,
+) -> tauri::Result<()> {
+    let termination = termination_fingerprint_token(code, signal);
+    let fingerprint = ["sync", "runner-termination", termination.as_str()];
+    capture_sync_error_with_fingerprint(
+        payload.company.as_deref(),
+        &payload.path,
+        &payload.message,
+        &fingerprint,
+    );
     app.emit(EVENT_SYNC_ERROR, payload)
 }
 
@@ -1199,8 +1214,10 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
                         saw_alertable,
                         saw_node_too_old,
                     ) {
-                        let _ = report_sync_error(
+                        let _ = report_runner_exit_error(
                             &app_bg,
+                            code,
+                            signal,
                             crate::events::SyncErrorEvent {
                                 company: None,
                                 path: "(runner)".to_string(),

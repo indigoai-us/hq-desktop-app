@@ -131,6 +131,23 @@ pub const RUNNER_OPERATION_LOCKED_EXIT: i32 = 17;
 /// 23 "killed by SIGTERM (cancelled)" events). See `should_alert_on_nonzero_exit`.
 pub const SIGTERM_SIGNAL: i32 = 15;
 
+/// Stable, structured Sentry fingerprint component for a runner termination.
+///
+/// Process exit statuses and Unix signals occupy different namespaces: an
+/// `exit(2)` means the runner deliberately returned its documented error code,
+/// while `SIGINT` is signal 2 and means the OS interrupted it. Keep that
+/// distinction in the value itself so Sentry can never group the two histories
+/// together. The malformed both-present state is also isolated rather than
+/// silently preferring one field and merging it with a valid termination.
+pub fn termination_fingerprint_token(code: Option<i32>, signal: Option<i32>) -> String {
+    match (code, signal) {
+        (Some(code), None) => format!("exit:{code}"),
+        (None, Some(signal)) => format!("signal:{signal}"),
+        (Some(code), Some(signal)) => format!("invalid:exit:{code}+signal:{signal}"),
+        (None, None) => "unknown".to_string(),
+    }
+}
+
 /// Render a process termination as a human-readable string. When `code` is
 /// `Some(N)`, the process called `exit(N)`. When `signal` is `Some(N)`, the
 /// OS killed it with that signal — name it (SIGKILL=9, SIGTERM=15, SIGSEGV=11,
@@ -370,6 +387,26 @@ mod tests {
     fn describe_exit_prefers_code_over_signal() {
         // Should never happen in practice (POSIX is XOR), but be defensive.
         assert_eq!(describe_exit(Some(42), Some(9)), "with code 42");
+    }
+
+    #[test]
+    fn termination_fingerprint_separates_exit_codes_from_signals() {
+        assert_eq!(termination_fingerprint_token(Some(2), None), "exit:2");
+        assert_eq!(termination_fingerprint_token(None, Some(2)), "signal:2");
+        assert_eq!(termination_fingerprint_token(Some(126), None), "exit:126");
+        assert_ne!(
+            termination_fingerprint_token(Some(2), None),
+            termination_fingerprint_token(Some(126), None)
+        );
+    }
+
+    #[test]
+    fn termination_fingerprint_isolates_invalid_dual_statuses() {
+        assert_eq!(
+            termination_fingerprint_token(Some(2), Some(2)),
+            "invalid:exit:2+signal:2"
+        );
+        assert_eq!(termination_fingerprint_token(None, None), "unknown");
     }
 
     // ── RunTotals ────────────────────────────────────────────────────────
