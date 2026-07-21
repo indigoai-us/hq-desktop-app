@@ -7,7 +7,7 @@
 # PHASE3.md is complete; it becomes a required check once green.
 #
 # Triggers on PRs that touch the app (not push to main) so main is not shown red
-# while the fold is in progress; also manually dispatchable.
+# while the fold is in progress; it remains manually dispatchable for diagnosis.
 name: Windows check (Phase 3)
 
 on:
