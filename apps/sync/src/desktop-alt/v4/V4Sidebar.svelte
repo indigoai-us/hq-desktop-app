@@ -94,11 +94,20 @@
     const onread = () => void refreshUnread();
     window.addEventListener('hq:notifications-read', onread);
 
+    // `listen` registers asynchronously. The desktop window can close before
+    // either promise settles, so unregister late handlers immediately rather
+    // than leaving stale event IDs in the native listener registry.
+    let disposed = false;
     const unlisteners: Array<() => void> = [];
-    void listen('dm:unread-summary', onread).then((u) => unlisteners.push(u));
-    void listen('sync:complete', onread).then((u) => unlisteners.push(u));
+    const track = (unlisten: () => void) => {
+      if (disposed) unlisten();
+      else unlisteners.push(unlisten);
+    };
+    void listen('dm:unread-summary', onread).then(track);
+    void listen('sync:complete', onread).then(track);
 
     return () => {
+      disposed = true;
       window.removeEventListener('hq:notifications-read', onread);
       for (const u of unlisteners) u();
     };
