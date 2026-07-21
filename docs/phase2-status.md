@@ -1,6 +1,6 @@
 # Phase 2 status — install-then-sync onboarding
 
-_Last updated: 2026-06-30._
+_Last updated: 2026-07-21._
 
 This document records the state of the unified app's Phase 2 work (the
 install-then-sync lifecycle and onboarding wizard), what has shipped, what
@@ -10,7 +10,7 @@ install engine from being validated end to end.
 ## Summary
 
 The unified app now classifies its launch state, routes a first-run user into a
-complete five-step onboarding wizard, and contains most of the install engine
+complete four-step onboarding wizard, and contains most of the install engine
 the wizard drives. Everything below is merged to `main` and passes the Windows
 compile gate (`windows-check`). The onboarding **user interface** is complete.
 The install **engine** is largely ported but, critically, has **never been
@@ -37,21 +37,23 @@ now a thin command-and-orchestration layer over that crate.
 
 ### Onboarding wizard UI (complete)
 
-All five steps are built in Svelte 5 + vanilla CSS, ported from the React
+All four active steps are built in Svelte 5 + vanilla CSS, ported from the React
 installer:
 
-1. **Welcome** — product identity + telemetry opt-in.
-2. **Directory** — resolve/confirm the HQ install location (`resolve_hq_path`,
+1. **Welcome** — product identity, sign-in, and telemetry opt-in.
+2. **Location** — resolve/confirm the HQ install location (`resolve_hq_path`,
    `detect_hq`, `check_writable`, with a folder picker).
-3. **Sign In** — Google/Microsoft OAuth, reusing the app's existing OAuth
-   backend.
-4. **Setup** — the orchestrator framework: an eight-stage progress screen that
+3. **Setup** — the orchestrator framework: an eight-stage progress screen that
    sequences the install stages and auto-advances when they settle.
-5. **Done** — completion + an in-session handoff that hands control back to the
-   tray/popover.
+4. **Ready** — completion and launch actions for Claude Code and Codex. A
+   successful launch immediately finishes onboarding and hands control back to
+   the tray/popover; **Finish** provides the same handoff without launching a
+   tool.
 
-The wizard step machine (`lib/onboarding-wizard.ts`) is a faithful port of the
-installer router, including the auth gate on the Setup step.
+The wizard step machine (`lib/onboarding-wizard.ts`) keeps the auth gate on the
+Setup step and ends its active route contract at Ready. Post-launch usage
+instructions live in the opened AI tool rather than as additional wizard
+screens.
 
 ### Install engine (partial)
 
