@@ -75,7 +75,10 @@ aws-sigv4 = { version = "1", features = ["http1"] }
 # as the broker address (path + SigV4 query preserved) rather than via
 # `parse_url`, because rumqttc's url parser treats unknown query keys as errors
 # and would reject the X-Amz-* params.
-rumqttc = { version = "0.24", default-features = false, features = ["websocket", "use-rustls"] }
+# 0.25.1 brings ws_stream_tungstenite 0.15, whose send path treats a peer
+# close / tungstenite protocol error as a recoverable I/O error instead of
+# `unreachable!()`-panicking. The MQTT event loop can then reconnect normally.
+rumqttc = { version = "0.25.1", default-features = false, features = ["websocket", "use-rustls"] }
 # Bundled Mozilla/webpki root certificates for the AWS IoT Core MQTT-over-WSS
 # connections. Building the rustls trust store from these (see
 # `util/mqtt_tls.rs`) avoids `TlsConfiguration::default()`'s
