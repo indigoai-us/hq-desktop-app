@@ -7,6 +7,10 @@ Implemented:
 
 - `version-app.ts` — stamp the app's `package.json`, Tauri config, `Cargo.toml`, and
   `Cargo.lock` from `versions.toml`; `--check` fails on any mismatch.
+- `onboarding-release-monitor.ts` — verify the published updater manifest,
+  version-pinned artifacts, and stable installer links advertised by
+  `hqforwork.com/install`; covered by `onboarding-release-monitor.test.ts` and run
+  every six hours by the onboarding release monitor workflow.
 
 Planned:
 
