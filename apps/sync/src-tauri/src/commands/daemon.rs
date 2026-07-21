@@ -207,6 +207,18 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
         return Err(msg);
     }
 
+    // The startup prewarm and the first watch spawn can overlap. Complete the
+    // same bounded, locked materialization preflight used by Sync Now before
+    // starting the long-lived runner. This is deliberately local-log/UI
+    // diagnosis only: an npx cache/permission failure is environmental, while
+    // an unexplained later runner exit remains alertable below.
+    if let Err(msg) = hq_desktop_core::prewarm::materialize_hq_cloud_cache() {
+        log("daemon", &format!("npx cache materialization preflight failed: {msg}"));
+        note_environment_preflight_failure();
+        deregister_process(DAEMON_HANDLE);
+        return Err(msg);
+    }
+
     let spawn_args = build_watch_runner_args(&hq_folder_path);
 
     log("daemon", "spawn: hq-sync-runner --watch");
@@ -504,6 +516,18 @@ fn note_watcher_crashed() -> u32 {
         Instant::now() + respawn_backoff(consecutive, SUPERVISOR_INTERVAL, RESPAWN_MAX_BACKOFF),
     );
     consecutive
+}
+
+/// Apply the same exponential retry dampening when a preflight positively
+/// identifies a local npm/cache setup failure. No watcher was spawned, so it
+/// must not create a Sentry event; the backoff merely prevents the supervisor
+/// from retrying the same user-actionable diagnosis every 30 seconds.
+fn note_environment_preflight_failure() {
+    let mut st = crash_state().lock().unwrap();
+    st.consecutive = st.consecutive.saturating_add(1);
+    st.backoff_until = Some(
+        Instant::now() + respawn_backoff(st.consecutive, SUPERVISOR_INTERVAL, RESPAWN_MAX_BACKOFF),
+    );
 }
 
 /// Record the latest RSS (KB) sampled from the live watcher (supervisor tick).
