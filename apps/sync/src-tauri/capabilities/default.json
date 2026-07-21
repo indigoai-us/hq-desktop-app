@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Default capability set for the HQ Sync menubar webview.",
+  "description": "Default capability set for the HQ Sync menubar webview. The popover resizes itself as its notification content changes, and the onboarding handoff switches between the onboarding card and compact popover sizes, so core:window:allow-set-size is required for the main window.",
   "windows": ["main"],
   "permissions": [
     "core:default",
