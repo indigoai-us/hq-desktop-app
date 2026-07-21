@@ -31,17 +31,25 @@
 /// Build a `rumqttc::Transport::Wss` whose TLS trust anchors come from the bundled
 /// webpki/Mozilla root set instead of the macOS platform keychain. See the module
 /// docs for the full rationale (Sentry HQ-SYNC-D / HQ-SYNC-WEB-Q).
-pub fn wss_transport_with_bundled_roots() -> rumqttc::Transport {
-    use rumqttc::tokio_rustls::rustls::{ClientConfig, RootCertStore};
+pub fn wss_transport_with_bundled_roots() -> Result<rumqttc::Transport, String> {
+    use rumqttc::tokio_rustls::rustls::{crypto, ClientConfig, RootCertStore};
     use rumqttc::TlsConfiguration;
     use std::sync::Arc;
 
     let mut roots = RootCertStore::empty();
     roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-    let config = ClientConfig::builder()
+    // rumqttc 0.25 uses rustls 0.23. The app graph enables both ring (Tauri)
+    // and aws-lc-rs (AWS SDK), so `ClientConfig::builder()` cannot infer a
+    // process-global provider and panics. Select ring for this individual WSS
+    // config instead: no global state, no provider ambiguity, and no panic.
+    let config = ClientConfig::builder_with_provider(Arc::new(crypto::ring::default_provider()))
+        .with_safe_default_protocol_versions()
+        .map_err(|e| format!("rustls protocol configuration: {e}"))?
         .with_root_certificates(roots)
         .with_no_client_auth();
-    rumqttc::Transport::Wss(TlsConfiguration::Rustls(Arc::new(config)))
+    Ok(rumqttc::Transport::Wss(TlsConfiguration::Rustls(Arc::new(
+        config,
+    ))))
 }
 
 #[cfg(test)]
@@ -57,7 +65,8 @@ mod tests {
         // Constructing the transport must not panic (the bug was a panic on
         // `load_native_certs().expect(...)`) and must yield a rustls-backed WSS
         // transport built from the bundled roots — no platform keychain touched.
-        let transport = wss_transport_with_bundled_roots();
+        let transport = wss_transport_with_bundled_roots()
+            .expect("bundled-root WSS transport must build without panicking");
         assert!(
             matches!(
                 transport,
