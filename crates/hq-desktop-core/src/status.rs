@@ -89,11 +89,25 @@ pub fn default_status() -> SyncStatus {
 /// — both represent files that need user attention before the next sync can
 /// complete.
 pub fn journal_for_sync_complete(now_iso: &str, conflicts: u32) -> SyncJournal {
+    journal_for_completed_sync(now_iso, conflicts, false)
+}
+
+/// Build the journal record written after an auto-sync daemon pass.
+///
+/// Unlike a foreground "Sync Now" run, the watch daemon remains alive after
+/// it emits `all-complete`. Persisting that fact prevents the status surface
+/// from reporting `daemonRunning: false` while the healthy watcher is still
+/// responsible for the next cycle.
+pub fn journal_for_daemon_sync_complete(now_iso: &str, conflicts: u32) -> SyncJournal {
+    journal_for_completed_sync(now_iso, conflicts, true)
+}
+
+fn journal_for_completed_sync(now_iso: &str, conflicts: u32, daemon_running: bool) -> SyncJournal {
     SyncJournal {
         last_sync_at: Some(now_iso.to_string()),
         pending_files: Some(conflicts),
         conflicts: Some(conflicts),
-        daemon_running: Some(false),
+        daemon_running: Some(daemon_running),
     }
 }
 
@@ -348,6 +362,12 @@ mod tests {
         let journal = journal_for_sync_complete("2026-04-20T12:25:22.400Z", 5);
         assert_eq!(journal.pending_files, Some(5));
         assert_eq!(journal.conflicts, Some(5));
+    }
+
+    #[test]
+    fn test_journal_for_daemon_sync_complete_marks_daemon_running() {
+        let journal = journal_for_daemon_sync_complete("2026-04-20T12:25:22.400Z", 0);
+        assert_eq!(journal.daemon_running, Some(true));
     }
 
     // ── write_journal ────────────────────────────────────────────────────

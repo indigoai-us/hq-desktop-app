@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -310,6 +311,18 @@ pub fn should_respawn_daemon(realtime_sync: bool, autostart: bool, daemon_alive:
     (realtime_sync || autostart) && !daemon_alive
 }
 
+/// Decide whether the desktop shell must terminate a live-but-stalled watch
+/// runner. PID liveness alone only says that a process exists; a runner that
+/// has stopped emitting its sync protocol cannot make progress and may still
+/// own the per-root operation lock.
+pub fn should_cancel_stalled_daemon(
+    daemon_registered: bool,
+    heartbeat_age: Duration,
+    timeout: Duration,
+) -> bool {
+    daemon_registered && heartbeat_age >= timeout
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
@@ -333,6 +346,23 @@ mod tests {
         assert!(!should_respawn_daemon(false, false, false));
         // Auto-sync off, daemon alive → no-op.
         assert!(!should_respawn_daemon(false, false, true));
+    }
+
+    #[test]
+    fn test_should_cancel_stalled_daemon_requires_live_registered_handle_and_expired_heartbeat() {
+        let timeout = Duration::from_secs(300);
+        assert!(should_cancel_stalled_daemon(true, timeout, timeout));
+        assert!(should_cancel_stalled_daemon(
+            true,
+            timeout + Duration::from_secs(1),
+            timeout
+        ));
+        assert!(!should_cancel_stalled_daemon(
+            true,
+            Duration::from_secs(299),
+            timeout
+        ));
+        assert!(!should_cancel_stalled_daemon(false, timeout * 2, timeout));
     }
 
     // ── DaemonStatus serialization ───────────────────────────────────────

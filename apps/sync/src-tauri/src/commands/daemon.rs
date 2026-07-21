@@ -4,6 +4,7 @@
 //! Behind `AUTOSTART_DAEMON` feature flag in ~/.hq/menubar.json (default false).
 //! Svelte UI does NOT expose these V1 — invocable only via Tauri devtools.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -11,9 +12,10 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
 use crate::commands::process::{
-    cancel_process_impl, deregister_process, run_process_impl, try_register_handle, ProcessEvent,
+    cancel_process_impl, deregister_process, is_registered, run_process_impl, try_register_handle,
+    ProcessEvent,
 };
-use crate::commands::status::{journal_for_sync_complete, write_journal};
+use crate::commands::status::{journal_for_daemon_sync_complete, write_journal};
 use crate::commands::sync::RunTotals;
 use crate::events::{SyncEvent, EVENT_SYNC_ALL_COMPLETE};
 use crate::util::logfile::log;
@@ -23,7 +25,8 @@ use crate::util::paths;
 pub use hq_desktop_core::daemon::{
     build_watch_runner_args, event_push_eligible, is_autostart_enabled, is_instant_sync_enabled,
     is_pid_alive, is_realtime_sync_enabled, read_daemon_json, read_menubar_bool, read_pid_file,
-    resolve_hq_folder_path, should_event_push, should_respawn_daemon, DaemonJson, DaemonStatus,
+    resolve_hq_folder_path, should_cancel_stalled_daemon, should_event_push, should_respawn_daemon,
+    DaemonJson, DaemonStatus,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -35,6 +38,13 @@ const DAEMON_HANDLE: &str = "hq-sync-daemon";
 
 /// SIGKILL delay after SIGTERM when stopping daemon.
 const SIGKILL_DELAY: Duration = Duration::from_secs(5);
+
+/// A healthy watch daemon emits protocol progress or completion records on
+/// every pass. If no record arrives for this interval, terminate the process so
+/// the existing supervisor can restart it instead of leaving its operation lock
+/// wedged indefinitely.
+const DAEMON_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+const DAEMON_HEARTBEAT_CHECK_INTERVAL: Duration = Duration::from_secs(15);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Watch-mode ndjson handler
@@ -59,14 +69,14 @@ fn handle_watch_stdout_line(
     hq_folder: &str,
     totals: &Mutex<RunTotals>,
     line: &str,
-) {
+) -> bool {
     let trimmed = line.trim();
     if trimmed.is_empty() {
-        return;
+        return false;
     }
     let event: SyncEvent = match serde_json::from_str(trimmed) {
         Ok(e) => e,
-        Err(_) => return,
+        Err(_) => return false,
     };
     {
         let mut t = totals.lock().unwrap_or_else(|e| e.into_inner());
@@ -85,7 +95,7 @@ fn handle_watch_stdout_line(
             t.conflicts
         };
         let now_iso = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-        let journal = journal_for_sync_complete(&now_iso, conflicts);
+        let journal = journal_for_daemon_sync_complete(&now_iso, conflicts);
         if let Err(e) = write_journal(hq_folder, &journal) {
             log("daemon", &format!("failed to write journal: {e}"));
         }
@@ -98,6 +108,35 @@ fn handle_watch_stdout_line(
         // Reset for the next pass — watch mode loops indefinitely.
         *totals.lock().unwrap_or_else(|e| e.into_inner()) = RunTotals::default();
     }
+    true
+}
+
+fn start_daemon_heartbeat_watchdog(last_heartbeat: Arc<Mutex<Instant>>, finished: Arc<AtomicBool>) {
+    thread::spawn(move || loop {
+        thread::sleep(DAEMON_HEARTBEAT_CHECK_INTERVAL);
+        if finished.load(Ordering::Acquire) {
+            return;
+        }
+        let heartbeat_age = last_heartbeat
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .elapsed();
+        if should_cancel_stalled_daemon(
+            is_registered(DAEMON_HANDLE),
+            heartbeat_age,
+            DAEMON_HEARTBEAT_TIMEOUT,
+        ) {
+            log(
+                "daemon.watchdog",
+                &format!(
+                    "no sync protocol heartbeat for {}s; cancelling stalled watch daemon",
+                    heartbeat_age.as_secs()
+                ),
+            );
+            cancel_process_impl(DAEMON_HANDLE, SIGKILL_DELAY);
+            return;
+        }
+    });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -188,8 +227,13 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
     // AllComplete instead of accumulating forever.
     let totals: Arc<Mutex<RunTotals>> = Arc::new(Mutex::new(RunTotals::default()));
     let hq_folder = hq_folder_path.clone();
+    let last_heartbeat = Arc::new(Mutex::new(Instant::now()));
+    let daemon_finished = Arc::new(AtomicBool::new(false));
+    start_daemon_heartbeat_watchdog(last_heartbeat.clone(), daemon_finished.clone());
 
     thread::spawn(move || {
+        let process_heartbeat = last_heartbeat.clone();
+        let process_finished = daemon_finished.clone();
         let result = run_process_impl(DAEMON_HANDLE, &spawn_args, move |event| {
             // Surface stderr and non-success exits unconditionally — they
             // are the only signals the user has when the watcher dies
@@ -200,7 +244,11 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
             // the timestamp of the last manual `Sync Now` click.
             match event {
                 ProcessEvent::Stdout(line) => {
-                    handle_watch_stdout_line(&app, &hq_folder, &totals, &line);
+                    if handle_watch_stdout_line(&app, &hq_folder, &totals, &line) {
+                        *process_heartbeat
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Instant::now();
+                    }
                 }
                 ProcessEvent::Stderr(line) => {
                     log("daemon.stderr", &line);
@@ -219,6 +267,11 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
                     signal,
                     success,
                 } => {
+                    // Mark this generation complete before the process helper
+                    // deregisters its shared handle. That prevents this
+                    // generation's watchdog from ever cancelling a newly
+                    // registered replacement during the restart handoff.
+                    process_finished.store(true, Ordering::Release);
                     log(
                         "daemon",
                         &format!(
@@ -284,6 +337,8 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
                 }
             }
         });
+
+        daemon_finished.store(true, Ordering::Release);
 
         if let Err(e) = result {
             log("daemon", &format!("spawn failed: {e}"));
