@@ -797,25 +797,23 @@
           prompt: '/setup',
         });
         await invoke('open_claude_code_link', { url });
-        advanceTo(4);
+        await onfinish?.();
         return;
       }
       if (tools.claude_cli && installPath) {
         await invoke('launch_claude_code', { path: installPath });
-        advanceTo(4);
+        await onfinish?.();
         return;
       }
       launchError =
-        'Claude Code was not detected. Continue with the folder and /setup prompt shown here.';
+        'Claude Code was not detected. Use the folder and /setup prompt shown here.';
       showManualTools = true;
-      advanceTo(4);
     } catch (err) {
       const msg = errorMessage(err);
       launchError = `Could not open Claude Code: ${msg}`;
       showManualTools = true;
       if (/Unable to find application|not installed|not found|missing/i.test(msg)) {
         aiTools = markToolUnavailable(aiTools, 'claude_desktop');
-        advanceTo(4);
       }
     } finally {
       launching = null;
@@ -833,19 +831,17 @@
           path: installPath,
           tool: 'codex',
         });
-        advanceTo(4);
+        await onfinish?.();
         return;
       }
       launchError =
-        'Codex CLI was not detected. Continue and open this HQ folder manually from Codex.';
+        'Codex CLI was not detected. Open this HQ folder manually from Codex.';
       showManualTools = true;
-      advanceTo(4);
     } catch (err) {
       const msg = errorMessage(err);
       launchError = `Could not open Codex: ${msg}`;
       showManualTools = true;
       aiTools = markToolUnavailable(aiTools, 'codex_cli');
-      if (/not installed|not found|missing/i.test(msg)) advanceTo(4);
     } finally {
       launching = null;
     }
@@ -1316,7 +1312,12 @@
                 {launching === 'codex' ? 'Opening…' : 'Open in Codex'}
               </button>
             </div>
-            <button class="btn btn-primary" type="button" onclick={() => advanceTo(4)}>Continue</button>
+            <button
+              class="btn btn-primary"
+              type="button"
+              disabled={launching !== null}
+              onclick={() => void onfinish?.()}
+            >Finish</button>
           </div>
         </section>
 
