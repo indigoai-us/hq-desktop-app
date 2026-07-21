@@ -52,12 +52,12 @@ use crate::util::paths;
 #[allow(unused_imports)]
 pub use hq_desktop_core::hq_cli_update::{
     auto_update_enabled, cli_auto_update_enabled, cmp_semver, dismissed_cli_version,
-    get_local_version,
+    classify_install_failure, get_local_version,
     hq_version_string, install_argv, install_failure_report, is_cli_update_dismissed,
-    is_prefix_permission_failure, npm_prefix_from_hq_bin, read_installed_version,
+    install_failure_detail, is_prefix_permission_failure, npm_prefix_from_hq_bin, read_installed_version,
     report_install_failure, report_unreadable_version, suppress_for_dismissal,
-    version_from_hq_binary, version_if_hq_cli, HqCliUpdateInfo, NpmLatest, DISMISSED_VERSION_KEY,
-    HQ_CLI_PACKAGE,
+    version_from_hq_binary, version_if_hq_cli, HqCliUpdateInfo, InstallFailureKind, NpmLatest,
+    DISMISSED_VERSION_KEY, HQ_CLI_PACKAGE,
 };
 
 /// npm registry endpoint that returns the dist-tag `latest` manifest. Cheap,
@@ -264,17 +264,22 @@ pub async fn install_hq_cli_update(app: AppHandle) -> Result<HqCliUpdateInfo, St
     }
 
     if !output.status.success() {
-        let detail = npm_output_detail(&output);
+        let raw_detail = npm_output_detail(&output);
+        let failure_kind = classify_install_failure(output.status.code(), &raw_detail);
+        let detail = install_failure_detail(output.status.code(), &raw_detail);
         log(
             "hq-cli-update",
-            &format!("install failed (exit {:?}): {detail}", output.status.code()),
+            &format!(
+                "install failed (kind={}, exit {:?}): {detail}",
+                failure_kind.fingerprint_component(),
+                output.status.code()
+            ),
         );
-        report_install_failure(output.status.code(), &detail);
-        return Err(if detail.is_empty() {
-            format!("npm install exited with status {:?}", output.status.code())
-        } else {
-            detail
-        });
+        // Report using the original npm output so Sentry's diagnostic extra is
+        // never replaced by the UI fallback text. Expected environment kinds
+        // deliberately no-op inside `report_install_failure`.
+        report_install_failure(output.status.code(), &raw_detail);
+        return Err(detail);
     }
 
     // npm exit 0 means the @latest tag installed successfully. Read back the
