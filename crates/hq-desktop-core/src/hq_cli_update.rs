@@ -251,6 +251,72 @@ pub fn is_prefix_permission_failure(detail: &str) -> bool {
     detail.contains("EACCES") || detail.contains("permission denied")
 }
 
+/// Windows reports an aborting child as an NTSTATUS in `ExitStatus::code()`.
+/// Rust exposes the DWORD as a signed `i32`, hence these otherwise-surprising
+/// negative values. They are both normal user-machine interruptions for an
+/// npm subprocess: `STATUS_CONTROL_C_EXIT` means a user/session manager
+/// stopped it, and `STATUS_STACK_BUFFER_OVERRUN` is Node's Windows abort path.
+/// Neither identifies an HQ service or desktop-app defect.
+const WINDOWS_CONTROL_C_EXIT: i32 = -1_073_741_510; // 0xC000013A
+const WINDOWS_ABORT_EXIT: i32 = -1_073_740_791; // 0xC0000409
+
+/// Stable classification for a failed npm install. Expected local-machine
+/// failures stay actionable in the UI/local log but must not page Sentry;
+/// unexpected failures are captured with a separate fingerprint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstallFailureKind {
+    ExpectedPrefixPermission,
+    ExpectedWindowsAbort,
+    Unexpected,
+}
+
+pub fn classify_install_failure(exit_code: Option<i32>, detail: &str) -> InstallFailureKind {
+    if is_prefix_permission_failure(detail) {
+        InstallFailureKind::ExpectedPrefixPermission
+    } else if matches!(exit_code, Some(WINDOWS_CONTROL_C_EXIT | WINDOWS_ABORT_EXIT)) {
+        InstallFailureKind::ExpectedWindowsAbort
+    } else {
+        InstallFailureKind::Unexpected
+    }
+}
+
+impl InstallFailureKind {
+    /// A stable grouping key for diagnostics and Sentry. We intentionally keep
+    /// expected local failures separate from actual updater defects; the former
+    /// are not sent to Sentry at all by `report_install_failure`.
+    pub fn fingerprint_component(self) -> &'static str {
+        match self {
+            Self::ExpectedPrefixPermission => "expected-prefix-permission",
+            Self::ExpectedWindowsAbort => "expected-windows-abort",
+            Self::Unexpected => "unexpected",
+        }
+    }
+}
+
+/// User-facing fallback text for an install failure that did not include useful
+/// npm stderr. The desktop UI always offers the copy-command escape hatch; the
+/// Windows abort wording tells the user why retrying after closing competing
+/// terminals/Node processes is worthwhile instead of presenting a raw NTSTATUS.
+pub fn install_failure_detail(exit_code: Option<i32>, detail: &str) -> String {
+    if !detail.trim().is_empty() {
+        return detail.trim().to_string();
+    }
+    match classify_install_failure(exit_code, detail) {
+        InstallFailureKind::ExpectedPrefixPermission => {
+            "npm cannot write its global prefix. Run the copied command in a terminal with a user-owned npm prefix (or use an administrator-approved install).".to_string()
+        }
+        InstallFailureKind::ExpectedWindowsAbort => {
+            "npm's Windows child process was interrupted or aborted. Close competing npm/Node terminals, retry the copied command in a fresh terminal, and check endpoint protection if it keeps happening.".to_string()
+        }
+        InstallFailureKind::Unexpected => format!(
+            "npm install exited with status {}",
+            exit_code
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "signal/none".to_string())
+        ),
+    }
+}
+
 /// Decide whether a CLI-install failure should be reported to Sentry, and with
 /// what message. Returns `None` for the expected prefix-permission (EACCES)
 /// case — the app already handles it gracefully (the UI falls back to the
@@ -261,7 +327,7 @@ pub fn is_prefix_permission_failure(detail: &str) -> bool {
 /// (network, disk, npm bugs, any other exit code) — that is the real signal we
 /// want to stay loud at Error level.
 pub fn install_failure_report(exit_code: Option<i32>, detail: &str) -> Option<String> {
-    if is_prefix_permission_failure(detail) {
+    if classify_install_failure(exit_code, detail) != InstallFailureKind::Unexpected {
         return None;
     }
     let exit_str = exit_code
@@ -277,6 +343,7 @@ pub fn install_failure_report(exit_code: Option<i32>, detail: &str) -> Option<St
 /// already has the copy-the-command fallback. The npm stderr tail (scrubbed of
 /// tokens/home paths by `sentry_scrub`) rides along as the useful signal.
 pub fn report_install_failure(exit_code: Option<i32>, detail: &str) {
+    let kind = classify_install_failure(exit_code, detail);
     let Some(message) = install_failure_report(exit_code, detail) else {
         return;
     };
@@ -286,8 +353,16 @@ pub fn report_install_failure(exit_code: Option<i32>, detail: &str) {
     sentry::with_scope(
         |scope| {
             scope.set_tag("hq_cli_update_kind", "install-failed");
+            scope.set_tag("install_failure_kind", kind.fingerprint_component());
             scope.set_tag("exit_code", exit_str.as_str());
             scope.set_tag("eacces", "false");
+            let fingerprint = [
+                "hq-cli-update",
+                "install-failed",
+                kind.fingerprint_component(),
+                exit_str.as_str(),
+            ];
+            scope.set_fingerprint(Some(&fingerprint));
             scope.set_extra("npm_stderr", detail.to_string().into());
         },
         || {
@@ -486,6 +561,31 @@ mod tests {
     }
 
     #[test]
+    fn install_failure_report_skips_expected_windows_abort_codes() {
+        // Windows exposes NTSTATUS as a signed i32. These are local process
+        // interruptions/Node aborts, not an HQ updater incident, and should
+        // remain actionable only through the returned UI error and local log.
+        for code in [WINDOWS_CONTROL_C_EXIT, WINDOWS_ABORT_EXIT] {
+            assert_eq!(
+                classify_install_failure(Some(code), ""),
+                InstallFailureKind::ExpectedWindowsAbort
+            );
+            assert_eq!(install_failure_report(Some(code), ""), None);
+            assert_eq!(
+                InstallFailureKind::ExpectedWindowsAbort.fingerprint_component(),
+                "expected-windows-abort"
+            );
+        }
+    }
+
+    #[test]
+    fn empty_windows_abort_output_gets_actionable_recovery_text() {
+        let detail = install_failure_detail(Some(WINDOWS_ABORT_EXIT), "");
+        assert!(detail.contains("Windows child process"));
+        assert!(detail.contains("fresh terminal"));
+    }
+
+    #[test]
     fn install_failure_report_captures_genuine_failures() {
         // A real, unexpected failure stays loud — `Some(message)` drives the
         // Error-level capture.
@@ -497,6 +597,14 @@ mod tests {
         assert_eq!(
             install_failure_report(None, "npm error network ETIMEDOUT"),
             Some("[hq-cli-update] install failed (exit signal/none)".to_string()),
+        );
+        assert_eq!(
+            classify_install_failure(Some(1), "npm error network ETIMEDOUT"),
+            InstallFailureKind::Unexpected
+        );
+        assert_eq!(
+            InstallFailureKind::Unexpected.fingerprint_component(),
+            "unexpected"
         );
     }
 
