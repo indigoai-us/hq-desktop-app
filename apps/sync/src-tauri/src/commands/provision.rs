@@ -2,11 +2,11 @@
 //!
 //! `provision_missing_companies` walks `$HQ/companies/*/company.yaml`, keeps
 //! entries where `cloud: true`, and handles three cases:
-//!   A. `.hq/config.json` present → verify entity still exists via find_by_slug;
-//!      if not found, remove stale config and re-provision via CLI.
-//!   B. `.hq/config.json` absent but YAML has `cloudCompanyUid` → migration:
-//!      look up entity, write config.json using the legacy UID, do NOT touch YAML.
-//!   C. Otherwise → delegate to `hq cloud provision company <slug>` (the
+//!   A. a manifest/config/YAML UID is present → verify that exact entity with
+//!      `GET /entity/{uid}`; if it is gone, remove stale config and re-provision.
+//!   B. no UID is recorded → resolve within the authenticated caller's namespace
+//!      via `GET /entity/check-slug/me`, never the global by-slug route.
+//!   C. caller-scoped lookup misses → delegate to `hq cloud provision company <slug>` (the
 //!      canonical CLI subcommand from `@indigoai-us/hq-cli`), which performs
 //!      GET-then-POST idempotency, atomic manifest patch, atomic
 //!      `.hq/config.json` write, AND triggers an initial sync via `share()`.
@@ -26,10 +26,11 @@
 //! (also different UID). Keeping the migration inline preserves the legacy
 //! UID exactly as recorded.
 //!
-//! Only Path C goes through the CLI — that is where the GET-then-POST,
+//! Only the final provision path goes through the CLI — that is where the GET-then-POST,
 //! manifest patch, config write, and initial sync all happen behind one
 //! canonical implementation.
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 
@@ -39,6 +40,7 @@ use crate::commands::run_cli_provision::{
     run_cli_provision, CliProvisionError, CliProvisionResult,
 };
 use crate::commands::vault_client::VaultClient;
+use crate::commands::workspaces::{read_manifest, ManifestLoad};
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -145,6 +147,19 @@ where
     let entries = std::fs::read_dir(&companies_dir)
         .map_err(|e| format!("read companies dir {}: {e}", companies_dir.display()))?;
 
+    // `companies/manifest.yaml` is the canonical local binding. Keep its UID
+    // ahead of the per-folder cache and legacy YAML so a same-slug entity owned
+    // by someone else can never redirect this sync to the wrong company.
+    // A malformed manifest is intentionally not fatal here: the caller-scoped
+    // lookup below remains safe and lets a sync repair its runtime cache.
+    let manifest_uids: HashMap<String, String> = match read_manifest(hq_root) {
+        ManifestLoad::Present(entries) => entries
+            .into_iter()
+            .filter_map(|entry| entry.cloud_uid.map(|uid| (entry.slug, uid)))
+            .collect(),
+        ManifestLoad::Absent | ManifestLoad::Failed(_) => HashMap::new(),
+    };
+
     let mut result: Vec<ProvisionedCompany> = Vec::new();
 
     for entry in entries {
@@ -174,12 +189,29 @@ where
         }
 
         let hq_config_path: PathBuf = folder_path.join(".hq").join("config.json");
+        let manifest_uid = manifest_uids.get(&folder_name).cloned();
 
         // ── Path A: config.json already present ────────────────────────────────
         if hq_config_path.exists() {
-            match vault.find_entity_by_slug("company", &folder_name).await {
-                Ok(Some(_)) => continue, // provisioned and verified
-                Ok(None) => {
+            let config_uid = std::fs::read_to_string(&hq_config_path)
+                .ok()
+                .and_then(|s| serde_json::from_str::<CompanyConfig>(&s).ok())
+                .map(|c| c.company_uid);
+            let verified = match manifest_uid.as_deref().or(config_uid.as_deref()) {
+                Some(uid) => match vault.find_entity_by_uid(uid).await {
+                    Ok(Some(info)) => Ok(!info.deleted),
+                    Ok(None) => Ok(false),
+                    Err(e) => Err(e),
+                },
+                // A corrupt cache must not revive the unsafe global route.
+                None => vault
+                    .find_my_company_by_slug(&folder_name)
+                    .await
+                    .map(|entity| entity.is_some_and(|entity| !entity.deleted)),
+            };
+            match verified {
+                Ok(true) => continue, // provisioned and verified
+                Ok(false) => {
                     // Stale config — entity gone; remove and fall through to re-provision
                     let _ = std::fs::remove_file(&hq_config_path);
                 }
@@ -189,20 +221,27 @@ where
             }
         }
 
-        // ── Path B: legacy cloudCompanyUid migration ───────────────────────────
-        if let Some(ref legacy_uid) = company_yaml.cloud_company_uid {
-            match vault.find_entity_by_slug("company", &folder_name).await {
+        // ── Path B: manifest/legacy UID migration ──────────────────────────────
+        // The manifest is authoritative when both it and legacy YAML name a
+        // UID. Both are exact entity identifiers and cannot be ambiguous.
+        if let Some(pinned_uid) = manifest_uid.or(company_yaml.cloud_company_uid) {
+            let resolved = match vault.find_entity_by_uid(&pinned_uid).await {
+                Ok(Some(info)) if !info.deleted => Ok(Some(info)),
+                Ok(_) => Ok(None),
+                Err(e) => Err(e),
+            };
+            match resolved {
                 Ok(Some(info)) => {
                     // If the entity has no bucket yet, provision it now — same contract as Path C.
                     let bucket_name = match info.bucket_name {
                         Some(b) => b,
                         None => {
                             vault
-                                .provision_bucket(legacy_uid)
+                                .provision_bucket(&pinned_uid)
                                 .await
                                 .map_err(|e| {
                                     format!(
-                                        "provision_bucket legacy '{}' uid={legacy_uid}: {e}",
+                                        "provision_bucket '{}' uid={pinned_uid}: {e}",
                                         folder_name
                                     )
                                 })?
@@ -210,7 +249,7 @@ where
                         }
                     };
                     let cfg = CompanyConfig {
-                        company_uid: legacy_uid.clone(),
+                        company_uid: pinned_uid.clone(),
                         company_slug: folder_name.clone(),
                         bucket_name: bucket_name.clone(),
                         vault_api_url: vault_api_url.to_string(),
@@ -218,21 +257,65 @@ where
                     write_company_config(&hq_config_path, &cfg)?;
                     result.push(ProvisionedCompany {
                         slug: folder_name,
-                        uid: legacy_uid.clone(),
+                        uid: pinned_uid,
                         bucket_name,
                     });
                     continue;
                 }
                 Ok(None) => {
-                    // Legacy UID in YAML but entity not found — fall through to full provision
+                    // Pinned UID is gone or tombstoned — fall through to safe lookup/provision.
                 }
                 Err(e) => {
-                    return Err(format!("vault legacy lookup for '{}': {e}", folder_name));
+                    return Err(format!("vault pinned-UID lookup for '{}': {e}", folder_name));
                 }
             }
         }
 
-        // ── Path C: unprovisioned — delegate to `hq cloud provision company` ─
+        // ── Path C: caller-scoped slug recovery ───────────────────────────────
+        // No local UID is available. Resolve only within the signed-in caller's
+        // namespace; the global `/entity/by-slug` endpoint 409s on unrelated
+        // same-slug companies and must never abort a full sync.
+        match vault.find_my_company_by_slug(&folder_name).await {
+            Ok(Some(info)) if !info.deleted => {
+                let uid = info.uid;
+                let bucket_name = match info.bucket_name {
+                    Some(bucket) => bucket,
+                    None => {
+                        vault
+                            .provision_bucket(&uid)
+                            .await
+                            .map_err(|e| {
+                                format!("provision_bucket '{}' uid={uid}: {e}", folder_name)
+                            })?
+                            .bucket_name
+                    }
+                };
+                write_company_config(
+                    &hq_config_path,
+                    &CompanyConfig {
+                        company_uid: uid.clone(),
+                        company_slug: folder_name.clone(),
+                        bucket_name: bucket_name.clone(),
+                        vault_api_url: vault_api_url.to_string(),
+                    },
+                )?;
+                result.push(ProvisionedCompany {
+                    slug: folder_name,
+                    uid,
+                    bucket_name,
+                });
+                continue;
+            }
+            Ok(_) => {}
+            Err(e) => {
+                return Err(format!(
+                    "vault caller-scoped lookup for '{}': {e}",
+                    folder_name
+                ))
+            }
+        }
+
+        // ── Path D: unprovisioned — delegate to `hq cloud provision company` ─
         //
         // The CLI subprocess is the canonical source of truth for:
         //   * GET-then-POST entity idempotency
@@ -395,7 +478,7 @@ mod tests {
         assert!(server.received_requests().await.unwrap().is_empty());
     }
 
-    // (c) .hq/config.json present + find_by_slug returns 200 → skipped (no provisioning)
+    // (c) .hq/config.json present + by-UID lookup returns 200 → skipped (no provisioning)
     #[tokio::test]
     async fn test_config_json_exists_and_entity_200_skipped() {
         let tmp = TempDir::new().unwrap();
@@ -418,7 +501,7 @@ mod tests {
 
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path(format!("/entity/by-slug/company/{slug}")))
+            .and(path("/entity/cmp_existing"))
             .respond_with(ResponseTemplate::new(200).set_body_json(&entity_json(
                 "cmp_existing",
                 slug,
@@ -434,11 +517,11 @@ mod tests {
             result.is_empty(),
             "already-provisioned company must be skipped"
         );
-        // Only find_by_slug was called — no create_entity, no provision_bucket
+        // Only the by-UID check was called — no create_entity, no provision_bucket.
         let reqs = server.received_requests().await.unwrap();
         assert!(
-            reqs.iter().all(|r| r.url.path().contains("by-slug")),
-            "only by-slug calls expected; got: {:?}",
+            reqs.iter().all(|r| r.url.path() == "/entity/cmp_existing"),
+            "only by-UID calls expected; got: {:?}",
             reqs.iter().map(|r| r.url.path()).collect::<Vec<_>>()
         );
     }
@@ -454,7 +537,7 @@ mod tests {
 
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path(format!("/entity/by-slug/company/{slug}")))
+            .and(path("/entity/cmp_legacy"))
             .respond_with(ResponseTemplate::new(200).set_body_json(&entity_json(
                 "cmp_legacy",
                 slug,
@@ -498,9 +581,9 @@ mod tests {
         setup_company(tmp.path(), slug, Some(yaml_content));
 
         let server = MockServer::start().await;
-        // find_by_slug returns entity with NO bucket
+        // by-UID lookup returns entity with NO bucket
         Mock::given(method("GET"))
-            .and(path(format!("/entity/by-slug/company/{slug}")))
+            .and(path("/entity/cmp_legacy"))
             .respond_with(ResponseTemplate::new(200).set_body_json(&entity_json(
                 "cmp_legacy",
                 slug,
@@ -555,11 +638,106 @@ mod tests {
         );
     }
 
-    // (e) new folder + no legacy uid → Path C dispatches to provisioner; result
-    // recorded verbatim; YAML untouched. (Pre-C3 this test also asserted on the
-    // shape of config.json, but Path C no longer writes config.json from Rust —
-    // that work moved into the `hq cloud provision` CLI subprocess. The mock
-    // provisioner here stands in for that subprocess.)
+    // Regression for feedback_b8974be9-6b79-4e3c-87b5-8bc63fd3f59b: an
+    // unrelated owner may hold the same slug, making the retired global route
+    // return 409. The manifest's cloud_uid is the precise local binding, so
+    // provision must fetch it directly and proceed without touching by-slug.
+    #[tokio::test]
+    async fn test_manifest_uid_ignores_globally_ambiguous_slug() {
+        let tmp = TempDir::new().unwrap();
+        let slug = "clean-people";
+        setup_company(tmp.path(), slug, Some("cloud: true\nname: Clean People\n"));
+        std::fs::write(
+            tmp.path().join("companies").join("manifest.yaml"),
+            "companies:\n  clean-people:\n    name: Clean People\n    cloud_uid: cmp_01KXK7SVDVRFQBCSYD5R95HAFR\n    bucket_name: hq-vault-cmp-own\n",
+        )
+        .unwrap();
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/entity/cmp_01KXK7SVDVRFQBCSYD5R95HAFR"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&entity_json(
+                "cmp_01KXK7SVDVRFQBCSYD5R95HAFR",
+                slug,
+                Some("hq-vault-cmp-own"),
+            )))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("/entity/by-slug/company/{slug}")))
+            .respond_with(ResponseTemplate::new(409).set_body_json(&serde_json::json!({
+                "error": "Slug \\\"clean-people\\\" of type \\\"company\\\" matches 2 live entities",
+                "uids": ["cmp_01KXK7SVDVRFQBCSYD5R95HAFR", "cmp_01KX6PNS53FNMGN6T4VCDJ1MK3"]
+            })))
+            .mount(&server)
+            .await;
+
+        let result = provision_missing_companies(tmp.path(), &vault(&server), VAULT_URL)
+            .await
+            .expect("ambiguous global slug must not bail provisioning");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].uid, "cmp_01KXK7SVDVRFQBCSYD5R95HAFR");
+
+        let requests = server.received_requests().await.unwrap();
+        assert!(requests
+            .iter()
+            .all(|request| !request.url.path().contains("by-slug")));
+    }
+
+    #[tokio::test]
+    async fn test_caller_scoped_lookup_ignores_globally_ambiguous_slug() {
+        let tmp = TempDir::new().unwrap();
+        let slug = "clean-people";
+        setup_company(tmp.path(), slug, Some("cloud: true\nname: Clean People\n"));
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/entity/check-slug/me"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(&serde_json::json!({
+                    "available": false,
+                    "conflictingCompanyUid": "cmp_01KXK7SVDVRFQBCSYD5R95HAFR"
+                })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/entity/cmp_01KXK7SVDVRFQBCSYD5R95HAFR"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&entity_json(
+                "cmp_01KXK7SVDVRFQBCSYD5R95HAFR",
+                slug,
+                Some("hq-vault-cmp-own"),
+            )))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("/entity/by-slug/company/{slug}")))
+            .respond_with(ResponseTemplate::new(409))
+            .mount(&server)
+            .await;
+
+        let result = provision_missing_companies(tmp.path(), &vault(&server), VAULT_URL)
+            .await
+            .expect("caller-scoped lookup must recover the caller's company");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].uid, "cmp_01KXK7SVDVRFQBCSYD5R95HAFR");
+
+        let requests = server.received_requests().await.unwrap();
+        assert!(requests.iter().any(|request| {
+            request.url.path() == "/entity/check-slug/me"
+                && request.url.query() == Some("type=company&slug=clean-people")
+        }));
+        assert!(requests
+            .iter()
+            .all(|request| !request.url.path().contains("by-slug")));
+    }
+
+    // (e) new folder + no pinned uid → caller-scoped lookup misses, then Path D
+    // dispatches to the provisioner; result recorded verbatim; YAML untouched.
+    // (Pre-C3 this test also asserted on the shape of config.json, but Path D no
+    // longer writes config.json from Rust — that work moved into the
+    // `hq cloud provision` CLI subprocess. The mock provisioner here stands in
+    // for that subprocess.)
     #[tokio::test]
     async fn test_new_folder_provisioned_yaml_unchanged() {
         let tmp = TempDir::new().unwrap();
@@ -569,6 +747,13 @@ mod tests {
         let sha_before = sha256_file(&yaml_path);
 
         let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/entity/check-slug/me"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(&serde_json::json!({ "available": true })),
+            )
+            .mount(&server)
+            .await;
         let provisioner = |s: String, _name: Option<String>, _root: PathBuf| async move {
             Ok(mock_cli_result(&s, "cmp_new", "hq-vault-cmp-new"))
         };
@@ -591,32 +776,52 @@ mod tests {
         let sha_after = sha256_file(&yaml_path);
         assert_eq!(sha_before, sha_after, "company.yaml was modified");
 
-        // Path C has no Rust-side vault traffic; everything goes through the
-        // CLI subprocess (mocked away here)
-        assert!(server.received_requests().await.unwrap().is_empty());
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(
+            requests.len(),
+            1,
+            "only the caller-scoped lookup is expected"
+        );
+        assert_eq!(requests[0].url.path(), "/entity/check-slug/me");
+        assert_eq!(requests[0].url.query(), Some("type=company&slug=new-co"));
+        assert!(requests
+            .iter()
+            .all(|request| !request.url.path().contains("by-slug")));
     }
 
-    // (f) provisioner returns a pre-existing uid → Rust trusts it verbatim and
-    // does NOT second-guess by recomputing. Pre-C3 the Rust code itself decided
-    // find-vs-create; post-C3 that decision lives in the CLI and Rust just
-    // forwards whatever uid comes back. This test pins the trust contract.
+    // (f) manifest cloud_uid → reuse the exact entity by UID and do not invoke
+    // the provisioner. A globally ambiguous slug cannot affect this binding.
     #[tokio::test]
     async fn test_find_by_slug_reuses_uid_no_create() {
         let tmp = TempDir::new().unwrap();
         let slug = "pre-existing";
         setup_company(tmp.path(), slug, Some("cloud: true\nname: Pre Co\n"));
+        std::fs::write(
+            tmp.path().join("companies").join("manifest.yaml"),
+            "companies:\n  pre-existing:\n    name: Pre Co\n    cloud_uid: cmp_preexisting\n    bucket_name: hq-vault-cmp-preexisting\n",
+        )
+        .unwrap();
 
         let server = MockServer::start().await;
-        let recorded_slugs: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-        let recorded_slugs_clone = Arc::clone(&recorded_slugs);
+        Mock::given(method("GET"))
+            .and(path("/entity/cmp_preexisting"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&entity_json(
+                "cmp_preexisting",
+                slug,
+                Some("hq-vault-cmp-preexisting"),
+            )))
+            .mount(&server)
+            .await;
+        let provisioner_calls: Arc<Mutex<u32>> = Arc::new(Mutex::new(0));
+        let provisioner_calls_clone = Arc::clone(&provisioner_calls);
         let provisioner = move |s: String, _name: Option<String>, _root: PathBuf| {
-            let recorded = Arc::clone(&recorded_slugs_clone);
+            let calls = Arc::clone(&provisioner_calls_clone);
             async move {
-                recorded.lock().unwrap().push(s.clone());
+                *calls.lock().unwrap() += 1;
                 Ok(mock_cli_result(
                     &s,
-                    "cmp_preexisting",
-                    "hq-vault-cmp-preexisting",
+                    "cmp_unexpected",
+                    "hq-vault-cmp-unexpected",
                 ))
             }
         };
@@ -634,21 +839,27 @@ mod tests {
         assert_eq!(result[0].uid, "cmp_preexisting");
         assert_eq!(result[0].bucket_name, "hq-vault-cmp-preexisting");
 
-        // Provisioner invoked exactly once with the folder slug
         assert_eq!(
-            *recorded_slugs.lock().unwrap(),
-            vec![slug.to_string()],
-            "provisioner must be called exactly once with the folder slug",
+            *provisioner_calls.lock().unwrap(),
+            0,
+            "manifest UID reuse must not create through the provisioner",
         );
 
-        // No Rust-side vault HTTP — Path C is owned by the CLI subprocess
-        assert!(server.received_requests().await.unwrap().is_empty());
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(
+            requests.len(),
+            1,
+            "only the pinned by-UID lookup is expected"
+        );
+        assert_eq!(requests[0].url.path(), "/entity/cmp_preexisting");
+        assert!(requests.iter().all(|request| {
+            request.url.path() != "/entity/check-slug/me" && !request.url.path().contains("by-slug")
+        }));
     }
 
-    // (g) provisioner returns a freshly created uid → Rust records it once; the
-    // display_name from company.yaml is forwarded so the CLI can stamp the
-    // entity's friendly name. Pre-C3 this test asserted on POST /entity; post-C3
-    // those POSTs happen inside the CLI subprocess and aren't visible from here.
+    // (g) no pinned uid and caller-scoped lookup reports the slug available →
+    // invoke the provisioner exactly once. The display_name from company.yaml
+    // is forwarded so the CLI can stamp the entity's friendly name.
     #[tokio::test]
     async fn test_find_by_slug_null_creates_entity_once() {
         let tmp = TempDir::new().unwrap();
@@ -656,6 +867,16 @@ mod tests {
         setup_company(tmp.path(), slug, Some("cloud: true\nname: Brand New\n"));
 
         let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/entity/check-slug/me"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(&serde_json::json!({
+                    "available": true,
+                    "conflictingCompanyUid": null
+                })),
+            )
+            .mount(&server)
+            .await;
         let call_count: Arc<Mutex<u32>> = Arc::new(Mutex::new(0));
         let forwarded_name: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         let call_count_clone = Arc::clone(&call_count);
@@ -693,7 +914,12 @@ mod tests {
             "display_name from company.yaml must be forwarded to the provisioner",
         );
 
-        // No Rust-side vault HTTP — Path C is owned by the CLI subprocess
-        assert!(server.received_requests().await.unwrap().is_empty());
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1, "caller-scoped lookup must happen once");
+        assert_eq!(requests[0].url.path(), "/entity/check-slug/me");
+        assert_eq!(requests[0].url.query(), Some("type=company&slug=brand-new"));
+        assert!(requests
+            .iter()
+            .all(|request| !request.url.path().contains("by-slug")));
     }
 }

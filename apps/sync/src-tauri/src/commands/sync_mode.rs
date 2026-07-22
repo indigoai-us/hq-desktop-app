@@ -57,13 +57,13 @@ async fn vault_client() -> Result<VaultClient, String> {
 /// Resolve the composite `membership_key` (`personUid#companyUid`) for a
 /// company slug from the caller's own memberships.
 ///
-/// Two vault calls: `find_entity_by_slug` (slug → company UID) then
+/// Two vault calls: `find_my_company_by_slug` (slug → company UID) then
 /// `list_my_memberships` (company UID → membership). Falls back to synthesizing
 /// the key from `person_uid#company_uid` when the live API omits
 /// `membership_key` (older vault builds / test fixtures).
 async fn resolve_membership_key(vault: &VaultClient, company_slug: &str) -> Result<String, String> {
     let entity = vault
-        .find_entity_by_slug("company", company_slug)
+        .find_my_company_by_slug(company_slug)
         .await
         .map_err(|e| format!("resolve company '{company_slug}': {e}"))?
         .ok_or_else(|| format!("no cloud company found for '{company_slug}'"))?;
@@ -136,6 +136,27 @@ mod tests {
         VaultClient::new(url, "test-token")
     }
 
+    async fn mount_my_acme(server: &MockServer) {
+        Mock::given(method("GET"))
+            .and(path("/entity/check-slug/me"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({
+                "available": false, "conflictingCompanyUid": "cmp_a"
+            })))
+            .mount(server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/entity/cmp_a"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({
+                "entity": {
+                    "uid": "cmp_a", "slug": "acme", "type": "company",
+                    "name": "Acme", "status": "active",
+                    "createdAt": "2026-01-01T00:00:00Z"
+                }
+            })))
+            .mount(server)
+            .await;
+    }
+
     #[test]
     fn validate_toggle_mode_accepts_all_and_shared() {
         assert!(validate_toggle_mode("all").is_ok());
@@ -160,17 +181,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_membership_key_uses_membership_key_from_api() {
         let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/entity/by-slug/company/acme"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({
-                "entity": {
-                    "uid": "cmp_a", "slug": "acme", "type": "company",
-                    "name": "Acme", "status": "active",
-                    "createdAt": "2026-01-01T00:00:00Z"
-                }
-            })))
-            .mount(&server)
-            .await;
+        mount_my_acme(&server).await;
         Mock::given(method("GET"))
             .and(path("/membership/me"))
             .respond_with(ResponseTemplate::new(200).set_body_json(&json!({
@@ -193,16 +204,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_membership_key_synthesizes_when_api_omits_it() {
         let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/entity/by-slug/company/acme"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({
-                "entity": {
-                    "uid": "cmp_a", "slug": "acme", "type": "company",
-                    "status": "active", "createdAt": "2026-01-01T00:00:00Z"
-                }
-            })))
-            .mount(&server)
-            .await;
+        mount_my_acme(&server).await;
         Mock::given(method("GET"))
             .and(path("/membership/me"))
             .respond_with(ResponseTemplate::new(200).set_body_json(&json!({
@@ -223,8 +225,8 @@ mod tests {
     async fn resolve_membership_key_errors_when_company_unknown() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/entity/by-slug/company/ghost"))
-            .respond_with(ResponseTemplate::new(404).set_body_json(&json!({"error": "not found"})))
+            .and(path("/entity/check-slug/me"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({"available": true})))
             .mount(&server)
             .await;
 
@@ -240,16 +242,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_membership_key_errors_when_not_a_member() {
         let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/entity/by-slug/company/acme"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({
-                "entity": {
-                    "uid": "cmp_a", "slug": "acme", "type": "company",
-                    "status": "active", "createdAt": "2026-01-01T00:00:00Z"
-                }
-            })))
-            .mount(&server)
-            .await;
+        mount_my_acme(&server).await;
         Mock::given(method("GET"))
             .and(path("/membership/me"))
             .respond_with(ResponseTemplate::new(200).set_body_json(&json!({ "memberships": [] })))

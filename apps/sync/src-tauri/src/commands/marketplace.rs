@@ -229,7 +229,7 @@ async fn assert_company_admin(company_slug: &str) -> Result<(), String> {
     // Find the company entity by slug, then confirm the caller has an
     // admin/owner membership for that entity's uid.
     let entity = vault
-        .find_entity_by_slug("company", company_slug)
+        .find_my_company_by_slug(company_slug)
         .await
         .map_err(|e| format!("resolve company '{company_slug}': {e}"))?
         .ok_or_else(|| format!("company '{company_slug}' not found in your cloud"))?;
