@@ -15,6 +15,7 @@
     POPOVER_MIN_HEIGHT,
     POPOVER_WIDTH,
     clampPopoverHeight,
+    isPopoverResizeWindow,
     measuredSurfaceContentHeight,
     shouldResizePopoverWindow,
   } from '../lib/popover-window-size';
@@ -300,12 +301,23 @@
 
   function resizePopoverWindow(height: number) {
     if (!shouldResizePopoverWindow(height, lastWindowHeight)) return;
-    lastWindowHeight = height;
+    let win: ReturnType<typeof getCurrentWindow>;
     try {
-      void getCurrentWindow().setSize(new LogicalSize(POPOVER_WIDTH, height));
+      win = getCurrentWindow();
     } catch {
       // Non-Tauri / test environment.
+      return;
     }
+    // Only the menubar popover ('main') is a self-resizing window. Other windows
+    // that render this component (new-files-detail, messages, …) have no
+    // core:window:allow-set-size grant, so a setSize there is denied by the ACL.
+    if (!isPopoverResizeWindow(win.label)) return;
+    lastWindowHeight = height;
+    // Fire-and-forget, but a denied/failed resize must never surface as an
+    // UnhandledRejection captured by Sentry (HQ-DESKTOP-38).
+    void win.setSize(new LogicalSize(POPOVER_WIDTH, height)).catch((err) => {
+      console.debug('[popover] window resize skipped:', err);
+    });
   }
 
   // No header/footer chrome — height is main content only (US-001).
