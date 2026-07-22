@@ -21,7 +21,11 @@ describe('HQ-DESKTOP-38: main-window resize ACL', () => {
   });
 
   it('keeps the permission paired with the legitimate resize callers', () => {
-    expect(popover).toContain('getCurrentWindow().setSize');
+    // The popover resize is guarded to the main window and its async rejection
+    // is caught, so a denied resize in a non-main window (new-files-detail,
+    // messages) can never become an UnhandledRejection (HQ-DESKTOP-38).
+    expect(popover).toContain('isPopoverResizeWindow(win.label)');
+    expect(popover).toMatch(/\.setSize\(new LogicalSize\(POPOVER_WIDTH, height\)\)\s*\.catch\(/);
     expect(onboarding).toContain('win.setSize(ONBOARDING_SIZE)');
     expect(onboarding).toContain('win.setSize(POPOVER_SIZE)');
   });
