@@ -41,6 +41,7 @@
 //! fall back to the manual copy-the-command flow (typical failure: EACCES
 //! against a system-prefix npm that needs sudo).
 
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde_json::Value;
@@ -206,6 +207,82 @@ fn is_bin_exists_failure(detail: &str) -> bool {
     detail.contains("EEXIST")
 }
 
+/// An `ENOTEMPTY` partial/interrupted-install failure. npm updates a package by
+/// renaming the existing package dir aside to a `.<name>-<rand>` staging dir;
+/// when a prior install was interrupted it leaves a partial `hq-cli` package dir
+/// (and/or an orphan `.hq-cli-*` staging dir) under
+/// `<prefix>/lib/node_modules/@indigoai-us`, so that rename fails
+/// `ENOTEMPTY: directory not empty`. Unlike the `EEXIST` bin collision, `--force`
+/// does NOT clear this — the leftover partial state must be removed first (see
+/// `clean_partial_hq_cli_install`). Left unhandled, every 6-hourly auto-update
+/// wedges on the same error and the user's `hq` stays broken (ENOENT) until a
+/// human runs `hq-heal` (field report feedback_44061f91).
+fn is_partial_install_failure(detail: &str) -> bool {
+    detail.contains("ENOTEMPTY")
+}
+
+/// The npm global scope dir that holds the `@indigoai-us/hq-cli` package for a
+/// given prefix. npm's macOS global layout is
+/// `<prefix>/lib/node_modules/<scope>/<pkg>`, so partial-install debris — the
+/// `hq-cli` package dir and its `.hq-cli-*` temp staging dirs — lives directly
+/// under this `@indigoai-us` dir. Factored out so cleanup stays strictly scoped
+/// and the path shape is unit-testable without touching the filesystem.
+fn partial_install_scope_dir(prefix: &str) -> PathBuf {
+    Path::new(prefix)
+        .join("lib")
+        .join("node_modules")
+        .join("@indigoai-us")
+}
+
+/// Remove partial `@indigoai-us/hq-cli` install debris left by an interrupted
+/// npm install so a fresh `npm install -g` can lay the package down cleanly.
+/// Scoped strictly to `<prefix>/lib/node_modules/@indigoai-us`: deletes the
+/// `hq-cli` package dir and any `.hq-cli-*` temp staging dir, and touches
+/// nothing else — sibling packages under the scope, and everything outside it,
+/// are left intact. Best-effort: every removal is logged, but a failure does not
+/// abort the caller's retry, since the subsequent install surfaces the real
+/// error. Mirrors the manual remedy `hq-heal` applies (back up the partial
+/// state, then reinstall).
+fn clean_partial_hq_cli_install(prefix: &str) {
+    let scope = partial_install_scope_dir(prefix);
+
+    let pkg = scope.join("hq-cli");
+    if pkg.exists() {
+        match std::fs::remove_dir_all(&pkg) {
+            Ok(()) => log(
+                "hq-cli-update",
+                &format!("cleaned partial package dir {}", pkg.display()),
+            ),
+            Err(e) => log(
+                "hq-cli-update",
+                &format!("failed to remove partial package dir {}: {e}", pkg.display()),
+            ),
+        }
+    }
+
+    // Sweep orphan `.hq-cli-*` staging dirs npm left behind mid-rename. Reading
+    // the scope dir may fail (e.g. it doesn't exist yet) — that's fine, there is
+    // simply nothing to sweep.
+    let Ok(entries) = std::fs::read_dir(&scope) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if entry.file_name().to_string_lossy().starts_with(".hq-cli-") {
+            let staging = entry.path();
+            match std::fs::remove_dir_all(&staging) {
+                Ok(()) => log(
+                    "hq-cli-update",
+                    &format!("cleaned temp staging dir {}", staging.display()),
+                ),
+                Err(e) => log(
+                    "hq-cli-update",
+                    &format!("failed to remove temp staging dir {}: {e}", staging.display()),
+                ),
+            }
+        }
+    }
+}
+
 /// Spawn `npm <args>` on the blocking pool with the beefed-up child PATH and
 /// collect its Output. Errors map to a String (join / spawn failures only —
 /// a non-zero npm exit is a successful run that returns a failing status).
@@ -260,6 +337,36 @@ pub async fn install_hq_cli_update(app: AppHandle) -> Result<HqCliUpdateInfo, St
             let mut forced = base_args.clone();
             forced.push("--force".to_string());
             output = run_npm_install(&npm, &path, forced).await?;
+        }
+    }
+
+    // ENOTEMPTY partial-install recovery: a prior interrupted install left a
+    // partial `@indigoai-us/hq-cli` package dir (and/or a `.hq-cli-*` temp
+    // staging dir) under `<prefix>/lib/node_modules/@indigoai-us`, so npm's
+    // rename-aside step fails ENOTEMPTY and every auto-update wedges on it,
+    // leaving `hq` broken (ENOENT) until a human runs hq-heal (feedback_44061f91).
+    // `--force` does not clear this, so clean the leftover partial state (scoped
+    // strictly to that dir) and retry the plain install ONCE — the same remedy
+    // hq-heal applies by hand. Requires a known prefix so we never delete outside
+    // the app's own toolchain; with no prefix we leave the failure untouched.
+    if !output.status.success() {
+        let detail = npm_output_detail(&output);
+        if is_partial_install_failure(&detail) {
+            if let Some(prefix) = prefix.as_deref() {
+                log(
+                    "hq-cli-update",
+                    &format!(
+                        "install hit ENOTEMPTY partial install; cleaning and retrying: {detail}"
+                    ),
+                );
+                clean_partial_hq_cli_install(prefix);
+                output = run_npm_install(&npm, &path, base_args.clone()).await?;
+            } else {
+                log(
+                    "hq-cli-update",
+                    "install hit ENOTEMPTY but no resolved prefix; skipping cleanup retry",
+                );
+            }
         }
     }
 
@@ -378,5 +485,86 @@ mod tests {
         assert!(forced.iter().any(|a| a == "--force"), "retry must carry --force");
         assert_eq!(forced[0], "install");
         assert!(forced.iter().any(|a| a == "-g"), "must stay a global install");
+    }
+
+    // feedback_44061f91: an ENOTEMPTY partial-install failure (leftover debris
+    // from an interrupted install blocking npm's rename) must arm the cleanup +
+    // retry path — and ONLY that failure, since the cleanup deletes files.
+    #[test]
+    fn partial_install_failure_detects_only_enotempty() {
+        // The exact "Last Failing Tool Call" from the field report.
+        const REAL_ENOTEMPTY_STDERR: &str = "npm error code ENOTEMPTY\n\
+            npm error syscall rename\n\
+            npm error path /Users/mike/Library/Application Support/Indigo HQ/toolchain/npm-global/lib/node_modules/@indigoai-us/hq-cli\n\
+            npm error dest /Users/mike/Library/Application Support/Indigo HQ/toolchain/npm-global/lib/node_modules/@indigoai-us/.hq-cli-0DY3ww6z\n\
+            npm error ENOTEMPTY: directory not empty, rename '.../hq-cli' -> '.../.hq-cli-0DY3ww6z'";
+        assert!(is_partial_install_failure(REAL_ENOTEMPTY_STDERR));
+        // EEXIST is handled by the --force retry; EACCES needs sudo; neither must
+        // arm the destructive cleanup path.
+        assert!(!is_partial_install_failure(
+            "npm ERR! code EEXIST\nnpm ERR! path /usr/local/bin/hq"
+        ));
+        assert!(!is_partial_install_failure(
+            "npm ERR! code EACCES: permission denied, mkdir '/usr/local/lib/node_modules'"
+        ));
+        assert!(!is_partial_install_failure("npm ERR! network timeout"));
+        assert!(!is_partial_install_failure(""));
+    }
+
+    #[test]
+    fn partial_install_scope_dir_is_the_npm_global_scope() {
+        // npm's macOS global layout: <prefix>/lib/node_modules/<scope>.
+        assert_eq!(
+            partial_install_scope_dir(
+                "/Users/mike/Library/Application Support/Indigo HQ/toolchain/npm-global"
+            ),
+            PathBuf::from(
+                "/Users/mike/Library/Application Support/Indigo HQ/toolchain/npm-global/lib/node_modules/@indigoai-us"
+            )
+        );
+    }
+
+    #[test]
+    fn clean_partial_hq_cli_install_removes_only_hq_cli_debris() {
+        use std::fs;
+        // A throwaway npm global prefix seeded with partial hq-cli debris plus an
+        // unrelated sibling package, to prove cleanup is surgically scoped.
+        let base = std::env::temp_dir().join(format!("hq-cli-clean-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let scope = base.join("lib").join("node_modules").join("@indigoai-us");
+        // Partial package dir + its temp staging dir (the ENOTEMPTY culprits).
+        fs::create_dir_all(scope.join("hq-cli").join("dist")).unwrap();
+        fs::write(scope.join("hq-cli").join("package.json"), "{}").unwrap();
+        fs::create_dir_all(scope.join(".hq-cli-0DY3ww6z")).unwrap();
+        fs::write(scope.join(".hq-cli-0DY3ww6z").join("partial"), "x").unwrap();
+        // An unrelated sibling package that MUST survive the cleanup.
+        fs::create_dir_all(scope.join("hq-other")).unwrap();
+        fs::write(scope.join("hq-other").join("package.json"), "{}").unwrap();
+
+        clean_partial_hq_cli_install(base.to_str().unwrap());
+
+        assert!(
+            !scope.join("hq-cli").exists(),
+            "partial package dir must be removed"
+        );
+        assert!(
+            !scope.join(".hq-cli-0DY3ww6z").exists(),
+            "temp staging dir must be removed"
+        );
+        assert!(
+            scope.join("hq-other").exists(),
+            "unrelated sibling package must be preserved"
+        );
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn clean_partial_hq_cli_install_is_a_noop_when_scope_is_absent() {
+        // A never-installed prefix (no scope dir) must not panic.
+        let base =
+            std::env::temp_dir().join(format!("hq-cli-clean-empty-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        clean_partial_hq_cli_install(base.to_str().unwrap());
     }
 }
