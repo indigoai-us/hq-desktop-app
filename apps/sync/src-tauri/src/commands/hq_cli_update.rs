@@ -265,8 +265,12 @@ pub async fn install_hq_cli_update(app: AppHandle) -> Result<HqCliUpdateInfo, St
 
     if !output.status.success() {
         let raw_detail = npm_output_detail(&output);
-        let failure_kind = classify_install_failure(output.status.code(), &raw_detail);
-        let detail = install_failure_detail(output.status.code(), &raw_detail);
+        let failure_kind = classify_install_failure(
+            output.status.code(),
+            &raw_detail,
+            prefix.as_deref(),
+        );
+        let detail = install_failure_detail(output.status.code(), &raw_detail, prefix.as_deref());
         log(
             "hq-cli-update",
             &format!(
@@ -278,7 +282,7 @@ pub async fn install_hq_cli_update(app: AppHandle) -> Result<HqCliUpdateInfo, St
         // Report using the original npm output so Sentry's diagnostic extra is
         // never replaced by the UI fallback text. Expected environment kinds
         // deliberately no-op inside `report_install_failure`.
-        report_install_failure(output.status.code(), &raw_detail);
+        report_install_failure(output.status.code(), &raw_detail, prefix.as_deref());
         return Err(detail);
     }
 

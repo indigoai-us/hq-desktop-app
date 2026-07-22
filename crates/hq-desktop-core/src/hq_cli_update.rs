@@ -243,12 +243,37 @@ pub fn report_unreadable_version(latest: &str) {
 }
 
 /// Whether an npm install failure is the EXPECTED "global npm prefix needs
-/// sudo" condition — an `EACCES`/permission-denied against a root-owned prefix
-/// (the classic `/usr/local/lib/node_modules`). The menubar app runs as the
-/// user and cannot `sudo`, so `npm install -g` can NEVER succeed on these
-/// machines; it is a client-side environment fault, not an app/server bug.
-pub fn is_prefix_permission_failure(detail: &str) -> bool {
-    detail.contains("EACCES") || detail.contains("permission denied")
+/// sudo" condition. This is deliberately stricter than an `EACCES` string
+/// check: npm and lifecycle scripts can report permission failures for its
+/// cache, a package script, or an unrelated filesystem path. Only a write to
+/// the exact prefix selected for this `hq` update is the known, non-actionable
+/// user-machine setup failure.
+///
+/// npm uses `<prefix>/lib/node_modules` on Unix and `<prefix>/node_modules`
+/// on Windows. It can also fail while linking `<prefix>/bin/hq`. Normalize
+/// separators so an event captured on either platform follows the same rule.
+pub fn is_prefix_permission_failure(detail: &str, prefix: Option<&str>) -> bool {
+    let detail = detail.to_ascii_lowercase().replace('\\', "/");
+    let is_permission_error = detail.contains("eacces") || detail.contains("permission denied");
+    let Some(prefix) = prefix else {
+        return false;
+    };
+    let prefix = prefix
+        .trim()
+        .trim_end_matches(['/', '\\'])
+        .to_ascii_lowercase()
+        .replace('\\', "/");
+    if !is_permission_error || prefix.is_empty() {
+        return false;
+    }
+
+    [
+        format!("{prefix}/lib/node_modules"),
+        format!("{prefix}/node_modules"),
+        format!("{prefix}/bin/hq"),
+    ]
+    .iter()
+    .any(|target| detail.contains(target))
 }
 
 /// Windows reports an aborting child as an NTSTATUS in `ExitStatus::code()`.
@@ -270,8 +295,12 @@ pub enum InstallFailureKind {
     Unexpected,
 }
 
-pub fn classify_install_failure(exit_code: Option<i32>, detail: &str) -> InstallFailureKind {
-    if is_prefix_permission_failure(detail) {
+pub fn classify_install_failure(
+    exit_code: Option<i32>,
+    detail: &str,
+    prefix: Option<&str>,
+) -> InstallFailureKind {
+    if is_prefix_permission_failure(detail, prefix) {
         InstallFailureKind::ExpectedPrefixPermission
     } else if matches!(exit_code, Some(WINDOWS_CONTROL_C_EXIT | WINDOWS_ABORT_EXIT)) {
         InstallFailureKind::ExpectedWindowsAbort
@@ -297,11 +326,15 @@ impl InstallFailureKind {
 /// npm stderr. The desktop UI always offers the copy-command escape hatch; the
 /// Windows abort wording tells the user why retrying after closing competing
 /// terminals/Node processes is worthwhile instead of presenting a raw NTSTATUS.
-pub fn install_failure_detail(exit_code: Option<i32>, detail: &str) -> String {
+pub fn install_failure_detail(
+    exit_code: Option<i32>,
+    detail: &str,
+    prefix: Option<&str>,
+) -> String {
     if !detail.trim().is_empty() {
         return detail.trim().to_string();
     }
-    match classify_install_failure(exit_code, detail) {
+    match classify_install_failure(exit_code, detail, prefix) {
         InstallFailureKind::ExpectedPrefixPermission => {
             "npm cannot write its global prefix. Run the copied command in a terminal with a user-owned npm prefix (or use an administrator-approved install).".to_string()
         }
@@ -318,16 +351,20 @@ pub fn install_failure_detail(exit_code: Option<i32>, detail: &str) -> String {
 }
 
 /// Decide whether a CLI-install failure should be reported to Sentry, and with
-/// what message. Returns `None` for the expected prefix-permission (EACCES)
-/// case — the app already handles it gracefully (the UI falls back to the
-/// copy-the-command path and the failure is kept in the local diagnostic log
-/// for Connect diagnostics), so an Error-level capture on every auto-update
-/// cycle is pure noise (HQ-SYNC-WEB-Y: exit 243, 180 events / 7 users, all
-/// EACCES). Returns `Some(message)` for every genuine, unexpected failure
-/// (network, disk, npm bugs, any other exit code) — that is the real signal we
+/// what message. Returns `None` only for the expected permission failure at
+/// the selected npm global prefix — the app already handles it gracefully (the
+/// UI falls back to the copy-the-command path and the failure is kept in the
+/// local diagnostic log for Connect diagnostics), so an Error-level capture on
+/// every auto-update cycle is pure noise (HQ-SYNC-WEB-Y: exit 243, 180 events /
+/// 7 users). Returns `Some(message)` for every genuine, unexpected failure,
+/// including permission errors at another path — that is the real signal we
 /// want to stay loud at Error level.
-pub fn install_failure_report(exit_code: Option<i32>, detail: &str) -> Option<String> {
-    if classify_install_failure(exit_code, detail) != InstallFailureKind::Unexpected {
+pub fn install_failure_report(
+    exit_code: Option<i32>,
+    detail: &str,
+    prefix: Option<&str>,
+) -> Option<String> {
+    if classify_install_failure(exit_code, detail, prefix) != InstallFailureKind::Unexpected {
         return None;
     }
     let exit_str = exit_code
@@ -338,13 +375,14 @@ pub fn install_failure_report(exit_code: Option<i32>, detail: &str) -> Option<St
 
 /// Capture an auto/manual CLI-install failure to Sentry — but only when it is a
 /// genuine, unexpected failure (see `install_failure_report`). The expected
-/// prefix-permission (EACCES) case is deliberately NOT captured: it floods
-/// Sentry with an unactionable Error every auto-update cycle while the user
-/// already has the copy-the-command fallback. The npm stderr tail (scrubbed of
-/// tokens/home paths by `sentry_scrub`) rides along as the useful signal.
-pub fn report_install_failure(exit_code: Option<i32>, detail: &str) {
-    let kind = classify_install_failure(exit_code, detail);
-    let Some(message) = install_failure_report(exit_code, detail) else {
+/// permission failure at the selected global prefix is deliberately NOT
+/// captured: it floods Sentry with an unactionable Error every auto-update
+/// cycle while the user already has the copy-the-command fallback. The npm
+/// stderr tail (scrubbed of tokens/home paths by `sentry_scrub`) rides along as
+/// the useful signal for every captured failure.
+pub fn report_install_failure(exit_code: Option<i32>, detail: &str, prefix: Option<&str>) {
+    let kind = classify_install_failure(exit_code, detail, prefix);
+    let Some(message) = install_failure_report(exit_code, detail, prefix) else {
         return;
     };
     let exit_str = exit_code
@@ -531,24 +569,42 @@ mod tests {
 
     #[test]
     fn prefix_permission_failure_detects_the_sudo_case() {
-        assert!(is_prefix_permission_failure(REAL_EACCES_STDERR));
-        assert!(is_prefix_permission_failure("npm error EACCES"));
         assert!(is_prefix_permission_failure(
-            "Error: permission denied, mkdir '/opt/homebrew/lib/node_modules'"
+            REAL_EACCES_STDERR,
+            Some("/usr/local"),
+        ));
+        assert!(is_prefix_permission_failure(
+            "Error: permission denied, mkdir 'C:\\Program Files\\nodejs\\node_modules'",
+            Some("C:\\Program Files\\nodejs"),
         ));
     }
 
     #[test]
-    fn prefix_permission_failure_false_for_genuine_failures() {
-        // Genuine, unexpected failures must NOT be mistaken for the expected
-        // sudo case — they are the real signal we keep capturing.
+    fn prefix_permission_failure_requires_the_selected_npm_target_path() {
+        // A bare EACCES and permission errors elsewhere must stay loud. The
+        // previous broad match silently discarded these real failures.
         assert!(!is_prefix_permission_failure(
-            "npm error network request to https://registry.npmjs.org failed: ETIMEDOUT"
+            "npm error EACCES",
+            Some("/usr/local")
         ));
         assert!(!is_prefix_permission_failure(
-            "npm error code ENOSPC: no space left on device"
+            "Error: EACCES: permission denied, open '/Users/me/.npm/_cacache/index-v5'",
+            Some("/usr/local"),
         ));
-        assert!(!is_prefix_permission_failure(""));
+        assert!(!is_prefix_permission_failure(
+            "Error: permission denied, mkdir '/opt/homebrew/lib/node_modules'",
+            Some("/usr/local"),
+        ));
+        assert!(!is_prefix_permission_failure(REAL_EACCES_STDERR, None));
+        assert!(!is_prefix_permission_failure(
+            "npm error network request to https://registry.npmjs.org failed: ETIMEDOUT",
+            Some("/usr/local"),
+        ));
+        assert!(!is_prefix_permission_failure(
+            "npm error code ENOSPC: no space left on device",
+            Some("/usr/local"),
+        ));
+        assert!(!is_prefix_permission_failure("", Some("/usr/local")));
     }
 
     #[test]
@@ -557,7 +613,23 @@ mod tests {
         // Sentry — it's an expected client-side environment fault (root-owned
         // npm prefix needs sudo) with a copy-the-command UI fallback. `None`
         // here is exactly what makes `report_install_failure` skip the capture.
-        assert_eq!(install_failure_report(Some(243), REAL_EACCES_STDERR), None);
+        assert_eq!(
+            install_failure_report(Some(243), REAL_EACCES_STDERR, Some("/usr/local")),
+            None
+        );
+    }
+
+    #[test]
+    fn exit_one_permission_failure_outside_the_selected_prefix_is_captured() {
+        let detail = "npm error code EACCES\nnpm error path /Users/me/.npm/_cacache/index-v5";
+        assert_eq!(
+            classify_install_failure(Some(1), detail, Some("/usr/local")),
+            InstallFailureKind::Unexpected
+        );
+        assert_eq!(
+            install_failure_report(Some(1), detail, Some("/usr/local")),
+            Some("[hq-cli-update] install failed (exit 1)".to_string()),
+        );
     }
 
     #[test]
@@ -567,10 +639,10 @@ mod tests {
         // remain actionable only through the returned UI error and local log.
         for code in [WINDOWS_CONTROL_C_EXIT, WINDOWS_ABORT_EXIT] {
             assert_eq!(
-                classify_install_failure(Some(code), ""),
+                classify_install_failure(Some(code), "", None),
                 InstallFailureKind::ExpectedWindowsAbort
             );
-            assert_eq!(install_failure_report(Some(code), ""), None);
+            assert_eq!(install_failure_report(Some(code), "", None), None);
             assert_eq!(
                 InstallFailureKind::ExpectedWindowsAbort.fingerprint_component(),
                 "expected-windows-abort"
@@ -580,7 +652,7 @@ mod tests {
 
     #[test]
     fn empty_windows_abort_output_gets_actionable_recovery_text() {
-        let detail = install_failure_detail(Some(WINDOWS_ABORT_EXIT), "");
+        let detail = install_failure_detail(Some(WINDOWS_ABORT_EXIT), "", None);
         assert!(detail.contains("Windows child process"));
         assert!(detail.contains("fresh terminal"));
     }
@@ -590,16 +662,16 @@ mod tests {
         // A real, unexpected failure stays loud — `Some(message)` drives the
         // Error-level capture.
         assert_eq!(
-            install_failure_report(Some(1), "npm error network ETIMEDOUT"),
+            install_failure_report(Some(1), "npm error network ETIMEDOUT", None),
             Some("[hq-cli-update] install failed (exit 1)".to_string()),
         );
         // Killed by signal (no exit code) still reports, with the signal label.
         assert_eq!(
-            install_failure_report(None, "npm error network ETIMEDOUT"),
+            install_failure_report(None, "npm error network ETIMEDOUT", None),
             Some("[hq-cli-update] install failed (exit signal/none)".to_string()),
         );
         assert_eq!(
-            classify_install_failure(Some(1), "npm error network ETIMEDOUT"),
+            classify_install_failure(Some(1), "npm error network ETIMEDOUT", None),
             InstallFailureKind::Unexpected
         );
         assert_eq!(
