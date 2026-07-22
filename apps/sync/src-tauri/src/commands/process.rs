@@ -366,7 +366,6 @@ where
     }
 
     let wait_result = child.wait().map_err(|e| e.to_string());
-    deregister_process(handle);
 
     if let Some(err) = first_stream_err {
         on_event_mut(ProcessEvent::Exit {
@@ -374,15 +373,29 @@ where
             signal: None,
             success: false,
         });
+        // Keep the entry available while the terminal callback runs: callers
+        // use `is_cancelled` there to distinguish our SIGTERM→SIGKILL
+        // escalation from an external kill.  Removing it first made an
+        // intentional timeout/watchdog SIGKILL look like a crash.
+        deregister_process(handle);
         return Err(err);
     }
 
-    let status = wait_result?;
+    let status = match wait_result {
+        Ok(status) => status,
+        Err(err) => {
+            deregister_process(handle);
+            return Err(err);
+        }
+    };
     on_event_mut(ProcessEvent::Exit {
         code: status.code(),
         signal: exit_signal(&status),
         success: status.success(),
     });
+    // `Exit` observers run synchronously, so deregister immediately after
+    // they have consumed the cancellation state and before returning.
+    deregister_process(handle);
 
     Ok(())
 }
@@ -532,7 +545,6 @@ where
     }
 
     let wait_result = child.wait().map_err(|e| e.to_string());
-    deregister_process(handle);
 
     if let Some(err) = first_stream_err {
         on_event_mut(ProcessEvent::Exit {
@@ -540,15 +552,25 @@ where
             signal: None,
             success: false,
         });
+        // See the matching path in `run_process_impl`: terminal observers
+        // need the registry entry to classify an intentional cancellation.
+        deregister_process(handle);
         return Err(err);
     }
 
-    let status = wait_result?;
+    let status = match wait_result {
+        Ok(status) => status,
+        Err(err) => {
+            deregister_process(handle);
+            return Err(err);
+        }
+    };
     on_event_mut(ProcessEvent::Exit {
         code: status.code(),
         signal: exit_signal(&status),
         success: status.success(),
     });
+    deregister_process(handle);
 
     Ok(())
 }
@@ -595,7 +617,9 @@ pub fn cancel_process_impl(handle: &str, sigkill_delay: Duration) -> bool {
             thread::sleep(sigkill_delay);
             if is_registered(&handle_owned) {
                 let _ = signal::kill(Pid::from_raw(-(pid as i32)), Signal::SIGKILL);
-                deregister_process(&handle_owned);
+                // `run_process_impl` owns deregistration after it emits its
+                // terminal event. Keeping this entry until then preserves the
+                // cancellation marker for Exit observers.
             }
         });
 
@@ -629,15 +653,15 @@ pub fn registered_pids() -> Vec<(String, u32)> {
 
 #[cfg(unix)]
 pub fn terminate_pids_for_exit(pids: &[(String, u32)], grace: Duration) {
-    for (_handle, pid) in pids {
+    for (handle, pid) in pids {
+        let _ = mark_cancelled(handle);
         let _ = signal::kill(Pid::from_raw(-(*pid as i32)), Signal::SIGTERM);
     }
     if !pids.is_empty() {
         thread::sleep(grace);
     }
-    for (handle, pid) in pids {
+    for (_handle, pid) in pids {
         let _ = signal::kill(Pid::from_raw(-(*pid as i32)), Signal::SIGKILL);
-        deregister_process(handle);
     }
 }
 
@@ -645,15 +669,12 @@ pub fn terminate_pids_for_exit(pids: &[(String, u32)], grace: Duration) {
 pub fn terminate_pids_for_exit(pids: &[(String, u32)], _grace: Duration) {
     for (handle, _pid) in pids {
         let _ = cancel_process_impl(handle, Duration::ZERO);
-        deregister_process(handle);
     }
 }
 
 #[cfg(not(any(unix, target_os = "windows")))]
 pub fn terminate_pids_for_exit(pids: &[(String, u32)], _grace: Duration) {
-    for (handle, _pid) in pids {
-        deregister_process(handle);
-    }
+    let _ = pids;
 }
 
 /// Tear down every spawned child on app exit. Call from the app's
@@ -779,6 +800,8 @@ mod windows_spawn_tests {
 mod exit_teardown_tests {
     use super::*;
     use std::process::Command as StdCommand;
+    use std::sync::mpsc;
+    use std::time::Instant;
 
     /// Probe existence without delivering a signal (signal 0). True while the
     /// pid is live OR a not-yet-reaped zombie; callers must reap first.
@@ -827,5 +850,54 @@ mod exit_teardown_tests {
     fn terminate_pids_for_exit_is_noop_when_empty() {
         // Must not sleep the grace period or panic when nothing is registered.
         terminate_pids_for_exit(&[], Duration::from_secs(30));
+    }
+
+    #[test]
+    fn sigkill_escalation_remains_cancelled_during_exit_callback() {
+        // A watcher that stops producing heartbeats is deliberately cancelled:
+        // SIGTERM first, then SIGKILL when it ignores TERM. Its Exit callback
+        // must still see `cancelled=true`, otherwise it is falsely reported as
+        // an OOM/external kill.
+        let handle = format!("test-cancelled-sigkill-{}", std::process::id());
+        pre_register_handle(&handle);
+        let args = SpawnArgs {
+            cmd: "sh".to_string(),
+            // Ignore SIGTERM so cancellation exercises the SIGKILL escalation
+            // path rather than the normal graceful-stop path.
+            args: vec![
+                "-c".to_string(),
+                "trap '' TERM; while :; do :; done".to_string(),
+            ],
+            cwd: None,
+            env: None,
+        };
+        let (exit_tx, exit_rx) = mpsc::channel();
+        let callback_handle = handle.clone();
+        let runner = thread::spawn(move || {
+            let callback_query_handle = callback_handle.clone();
+            run_process_impl(&callback_handle, &args, move |event| {
+                if let ProcessEvent::Exit { signal, .. } = event {
+                    let _ = exit_tx.send((signal, is_cancelled(&callback_query_handle)));
+                }
+            })
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while lookup_pid(&handle).is_none() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(lookup_pid(&handle).is_some(), "test process did not start");
+        assert!(cancel_process_impl(&handle, Duration::from_millis(25)));
+
+        let (signal, cancelled) = exit_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("Exit callback should run after SIGKILL escalation");
+        assert_eq!(signal, Some(9));
+        assert!(
+            cancelled,
+            "intentional SIGKILL must retain cancellation state"
+        );
+        assert!(runner.join().expect("process runner panicked").is_ok());
+        assert!(!is_registered(&handle));
     }
 }
