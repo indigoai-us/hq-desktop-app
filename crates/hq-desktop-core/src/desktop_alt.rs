@@ -1463,6 +1463,29 @@ pub fn read_file_content_capped(
     let bytes = std::fs::read(&abs).map_err(|e| format!("could not read {rel_path:?}: {e}"))?;
     String::from_utf8(bytes).map_err(|_| format!("cannot preview binary file: {rel_path:?}"))
 }
+
+/// Validate an HQ-folder-relative path for a "reveal in file manager" action
+/// and return the absolute path to hand to the platform file manager.
+///
+/// Mirrors [`read_file_content`]'s guard: trims, rejects empty, enforces the
+/// same `is_within` HQ-folder traversal guard (rejects `..` escapes / absolute
+/// paths), and requires the target to exist. Pure + unit-testable — the process
+/// spawn lives in the `reveal_in_finder` Tauri command.
+pub fn resolve_reveal_path(hq_root: &Path, rel_path: &str) -> Result<PathBuf, String> {
+    let rel = rel_path.trim();
+    if rel.is_empty() {
+        return Err("path is required".to_string());
+    }
+    let abs = hq_root.join(rel);
+    if !is_within(hq_root, &abs) {
+        return Err(format!("path escapes the HQ folder: {rel_path:?}"));
+    }
+    if !abs.exists() {
+        return Err(format!("file not found: {rel_path:?}"));
+    }
+    Ok(abs)
+}
+
 // ---- Lazy HQ-root file explorer (US-010) ----------------------------------
 
 /// One entry in a single directory listing for the lazy file explorer (US-010).
@@ -2649,7 +2672,8 @@ mod tests {
 
     mod file_explorer {
         use super::super::{
-            build_file_tree, read_file_content, read_file_content_capped, FileNode,
+            build_file_tree, read_file_content, read_file_content_capped, resolve_reveal_path,
+            FileNode,
         };
         use std::fs;
         use std::path::PathBuf;
@@ -2683,6 +2707,32 @@ mod tests {
             fs::create_dir_all(company.join("workers")).unwrap();
             fs::write(company.join("workers").join("w.md"), "worker").unwrap();
             root
+        }
+
+        #[test]
+        fn resolve_reveal_path_returns_abs_for_existing_file() {
+            let tmp = TempDir::new().unwrap();
+            let root = make_company_tree(&tmp);
+            let abs = resolve_reveal_path(&root, "companies/test/policies/foo.md").unwrap();
+            assert!(abs.is_file());
+            assert!(abs.ends_with("companies/test/policies/foo.md"));
+        }
+
+        #[test]
+        fn resolve_reveal_path_rejects_empty_and_missing() {
+            let tmp = TempDir::new().unwrap();
+            let root = make_company_tree(&tmp);
+            assert!(resolve_reveal_path(&root, "   ").is_err());
+            let missing = resolve_reveal_path(&root, "companies/test/nope.xlsx").unwrap_err();
+            assert!(missing.contains("file not found"), "got: {missing}");
+        }
+
+        #[test]
+        fn resolve_reveal_path_rejects_parent_dir_escape() {
+            let tmp = TempDir::new().unwrap();
+            let root = make_company_tree(&tmp);
+            let err = resolve_reveal_path(&root, "companies/test/../../../etc/passwd").unwrap_err();
+            assert!(err.contains("escapes the HQ folder"), "got: {err}");
         }
 
         #[test]

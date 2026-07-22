@@ -16,7 +16,6 @@
    * of preview success.
    */
   import { convertFileSrc, invoke } from '@tauri-apps/api/core';
-  import { open } from '@tauri-apps/plugin-shell';
   import { renderMarkdown } from '../lib/markdown';
   import { filePreviewKind } from '../lib/file-preview-kind';
   import OpenFileInClaudeCode from './OpenFileInClaudeCode.svelte';
@@ -134,7 +133,7 @@
     if (!absolutePath) return;
     revealError = null;
     try {
-      await open(absolutePath);
+      await invoke('reveal_in_finder', { path });
     } catch (err) {
       console.error('Reveal in Finder failed:', err);
       revealError = 'Could not reveal file';
