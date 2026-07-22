@@ -40,6 +40,7 @@ pub use hq_desktop_core::desktop_alt::{
     parse_crm_projection_response, parse_deployment_entries, parse_deployments_response,
     parse_project_creators, parse_secret_envs, parse_secrets_response, read_file_content,
     read_file_content_capped, resolve_company_uid_from_workspaces, resolve_hq_folder,
+    resolve_reveal_path,
     secret_env_and_key, secret_key, secret_rotation, secret_rows, secret_structure_summary,
     secret_updated_at, secrets_url, string_field, subdomain_from_url, summary_count_or_auth,
     ActivityContributor, ActivityEntry, ActivityStats, BoardCard, BoardColumn,
@@ -564,6 +565,64 @@ pub async fn get_company_file_content(path: String) -> Result<String, String> {
     }
     let hq = resolve_hq_folder();
     read_file_content(&hq, &path)
+}
+
+/// Reveal a company file in the OS file manager, SELECTING it (Finder on macOS).
+///
+/// `path` is HQ-folder-relative with forward slashes. Resolves + validates the
+/// path with the same `is_within` HQ-folder guard as the other file commands,
+/// then hands it to the platform file manager with a REVEAL verb so the file is
+/// selected in a file-manager window instead of being launched in its default
+/// app. This fixes the bug where `@tauri-apps/plugin-shell` `open()` opened the
+/// workbook in Excel and never revealed it. macOS: `open -R`. Windows:
+/// `explorer /select,`. Other: best-effort open the parent directory.
+#[tauri::command]
+pub async fn reveal_in_finder(path: String) -> Result<(), String> {
+    if !crate::util::feature_gate::desktop_features_enabled().await {
+        return Err("file explorer requires a signed-in user".to_string());
+    }
+    let hq = resolve_hq_folder();
+    let abs = resolve_reveal_path(&hq, &path)?;
+    reveal_path_in_file_manager(&abs)
+}
+
+/// Platform reveal-and-select. Split from the command so the verb selection is
+/// isolated and the command stays a thin, gated wrapper.
+fn reveal_path_in_file_manager(abs: &std::path::Path) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    let mut cmd = {
+        let mut c = std::process::Command::new("open");
+        c.arg("-R").arg(abs);
+        c
+    };
+    #[cfg(target_os = "windows")]
+    let mut cmd = {
+        let mut c = std::process::Command::new("explorer");
+        c.arg(format!("/select,{}", abs.display()));
+        c
+    };
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let mut cmd = {
+        // No universal reveal+select on Linux; open the containing directory.
+        let parent = abs.parent().unwrap_or(abs);
+        let mut c = std::process::Command::new("xdg-open");
+        c.arg(parent);
+        c
+    };
+
+    let status = cmd
+        .status()
+        .map_err(|e| format!("failed to launch file manager: {e}"))?;
+
+    // Windows 'explorer /select,' exits non-zero even on success — don't gate it.
+    #[cfg(not(target_os = "windows"))]
+    if !status.success() {
+        return Err(format!("reveal command exited unsuccessfully: {status}"));
+    }
+    #[cfg(target_os = "windows")]
+    let _ = status;
+
+    Ok(())
 }
 
 /// List the immediate children of an HQ-relative directory for the lazy file

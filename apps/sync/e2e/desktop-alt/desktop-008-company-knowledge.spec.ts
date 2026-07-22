@@ -62,8 +62,8 @@ describe('DESKTOP-008: company knowledge workspace', () => {
     expect(preview).toContain('<OpenFileInClaudeCode');
     expect(preview).toContain('file={path}');
     expect(preview).toContain('folder={hqFolderPath}');
-    expect(preview).toContain('await open(absolutePath)');
-    expect(preview).toContain("from '@tauri-apps/plugin-shell'");
+    expect(preview).toContain("invoke('reveal_in_finder', { path })");
+    expect(preview).not.toContain("from '@tauri-apps/plugin-shell'");
     // Actions live in the header as primary actions (outside body conditionals).
     expect(preview).toContain('class="preview-actions detail-primary-actions primary-actions"');
     const headerIdx = preview.indexOf('<header class="preview-header">');

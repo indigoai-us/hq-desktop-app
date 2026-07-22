@@ -423,6 +423,7 @@ fn main() {
             commands::desktop_alt::get_company_crm_projection_vault,
             commands::desktop_alt::get_company_file_tree,
             commands::desktop_alt::get_company_file_content,
+            commands::desktop_alt::reveal_in_finder,
             commands::desktop_alt::list_hq_dir,
             commands::projects_local::get_local_projects,
             commands::projects_local::get_local_project_prd,
