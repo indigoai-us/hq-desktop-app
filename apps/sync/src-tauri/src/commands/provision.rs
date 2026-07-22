@@ -732,11 +732,12 @@ mod tests {
             .all(|request| !request.url.path().contains("by-slug")));
     }
 
-    // (e) new folder + no legacy uid → Path C dispatches to provisioner; result
-    // recorded verbatim; YAML untouched. (Pre-C3 this test also asserted on the
-    // shape of config.json, but Path C no longer writes config.json from Rust —
-    // that work moved into the `hq cloud provision` CLI subprocess. The mock
-    // provisioner here stands in for that subprocess.)
+    // (e) new folder + no pinned uid → caller-scoped lookup misses, then Path D
+    // dispatches to the provisioner; result recorded verbatim; YAML untouched.
+    // (Pre-C3 this test also asserted on the shape of config.json, but Path D no
+    // longer writes config.json from Rust — that work moved into the
+    // `hq cloud provision` CLI subprocess. The mock provisioner here stands in
+    // for that subprocess.)
     #[tokio::test]
     async fn test_new_folder_provisioned_yaml_unchanged() {
         let tmp = TempDir::new().unwrap();
@@ -746,6 +747,13 @@ mod tests {
         let sha_before = sha256_file(&yaml_path);
 
         let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/entity/check-slug/me"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(&serde_json::json!({ "available": true })),
+            )
+            .mount(&server)
+            .await;
         let provisioner = |s: String, _name: Option<String>, _root: PathBuf| async move {
             Ok(mock_cli_result(&s, "cmp_new", "hq-vault-cmp-new"))
         };
@@ -768,32 +776,52 @@ mod tests {
         let sha_after = sha256_file(&yaml_path);
         assert_eq!(sha_before, sha_after, "company.yaml was modified");
 
-        // Path C has no Rust-side vault traffic; everything goes through the
-        // CLI subprocess (mocked away here)
-        assert!(server.received_requests().await.unwrap().is_empty());
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(
+            requests.len(),
+            1,
+            "only the caller-scoped lookup is expected"
+        );
+        assert_eq!(requests[0].url.path(), "/entity/check-slug/me");
+        assert_eq!(requests[0].url.query(), Some("type=company&slug=new-co"));
+        assert!(requests
+            .iter()
+            .all(|request| !request.url.path().contains("by-slug")));
     }
 
-    // (f) provisioner returns a pre-existing uid → Rust trusts it verbatim and
-    // does NOT second-guess by recomputing. Pre-C3 the Rust code itself decided
-    // find-vs-create; post-C3 that decision lives in the CLI and Rust just
-    // forwards whatever uid comes back. This test pins the trust contract.
+    // (f) manifest cloud_uid → reuse the exact entity by UID and do not invoke
+    // the provisioner. A globally ambiguous slug cannot affect this binding.
     #[tokio::test]
     async fn test_find_by_slug_reuses_uid_no_create() {
         let tmp = TempDir::new().unwrap();
         let slug = "pre-existing";
         setup_company(tmp.path(), slug, Some("cloud: true\nname: Pre Co\n"));
+        std::fs::write(
+            tmp.path().join("companies").join("manifest.yaml"),
+            "companies:\n  pre-existing:\n    name: Pre Co\n    cloud_uid: cmp_preexisting\n    bucket_name: hq-vault-cmp-preexisting\n",
+        )
+        .unwrap();
 
         let server = MockServer::start().await;
-        let recorded_slugs: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-        let recorded_slugs_clone = Arc::clone(&recorded_slugs);
+        Mock::given(method("GET"))
+            .and(path("/entity/cmp_preexisting"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&entity_json(
+                "cmp_preexisting",
+                slug,
+                Some("hq-vault-cmp-preexisting"),
+            )))
+            .mount(&server)
+            .await;
+        let provisioner_calls: Arc<Mutex<u32>> = Arc::new(Mutex::new(0));
+        let provisioner_calls_clone = Arc::clone(&provisioner_calls);
         let provisioner = move |s: String, _name: Option<String>, _root: PathBuf| {
-            let recorded = Arc::clone(&recorded_slugs_clone);
+            let calls = Arc::clone(&provisioner_calls_clone);
             async move {
-                recorded.lock().unwrap().push(s.clone());
+                *calls.lock().unwrap() += 1;
                 Ok(mock_cli_result(
                     &s,
-                    "cmp_preexisting",
-                    "hq-vault-cmp-preexisting",
+                    "cmp_unexpected",
+                    "hq-vault-cmp-unexpected",
                 ))
             }
         };
@@ -811,21 +839,27 @@ mod tests {
         assert_eq!(result[0].uid, "cmp_preexisting");
         assert_eq!(result[0].bucket_name, "hq-vault-cmp-preexisting");
 
-        // Provisioner invoked exactly once with the folder slug
         assert_eq!(
-            *recorded_slugs.lock().unwrap(),
-            vec![slug.to_string()],
-            "provisioner must be called exactly once with the folder slug",
+            *provisioner_calls.lock().unwrap(),
+            0,
+            "manifest UID reuse must not create through the provisioner",
         );
 
-        // No Rust-side vault HTTP — Path C is owned by the CLI subprocess
-        assert!(server.received_requests().await.unwrap().is_empty());
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(
+            requests.len(),
+            1,
+            "only the pinned by-UID lookup is expected"
+        );
+        assert_eq!(requests[0].url.path(), "/entity/cmp_preexisting");
+        assert!(requests.iter().all(|request| {
+            request.url.path() != "/entity/check-slug/me" && !request.url.path().contains("by-slug")
+        }));
     }
 
-    // (g) provisioner returns a freshly created uid → Rust records it once; the
-    // display_name from company.yaml is forwarded so the CLI can stamp the
-    // entity's friendly name. Pre-C3 this test asserted on POST /entity; post-C3
-    // those POSTs happen inside the CLI subprocess and aren't visible from here.
+    // (g) no pinned uid and caller-scoped lookup reports the slug available →
+    // invoke the provisioner exactly once. The display_name from company.yaml
+    // is forwarded so the CLI can stamp the entity's friendly name.
     #[tokio::test]
     async fn test_find_by_slug_null_creates_entity_once() {
         let tmp = TempDir::new().unwrap();
@@ -833,6 +867,16 @@ mod tests {
         setup_company(tmp.path(), slug, Some("cloud: true\nname: Brand New\n"));
 
         let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/entity/check-slug/me"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(&serde_json::json!({
+                    "available": true,
+                    "conflictingCompanyUid": null
+                })),
+            )
+            .mount(&server)
+            .await;
         let call_count: Arc<Mutex<u32>> = Arc::new(Mutex::new(0));
         let forwarded_name: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         let call_count_clone = Arc::clone(&call_count);
@@ -870,7 +914,12 @@ mod tests {
             "display_name from company.yaml must be forwarded to the provisioner",
         );
 
-        // No Rust-side vault HTTP — Path C is owned by the CLI subprocess
-        assert!(server.received_requests().await.unwrap().is_empty());
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1, "caller-scoped lookup must happen once");
+        assert_eq!(requests[0].url.path(), "/entity/check-slug/me");
+        assert_eq!(requests[0].url.query(), Some("type=company&slug=brand-new"));
+        assert!(requests
+            .iter()
+            .all(|request| !request.url.path().contains("by-slug")));
     }
 }
