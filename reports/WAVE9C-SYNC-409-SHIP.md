@@ -32,7 +32,7 @@ not called.
 
 ## Delivery
 
-- PR: pending creation
+- PR: https://github.com/indigoai-us/hq-desktop-app/pull/248
 - Merge verification: pending merge
 - Release tag: pending release cut
 - Tag includes fix verification: pending release cut
