@@ -179,7 +179,7 @@ pub(crate) async fn reconcile_manifest_after_sync(
         // Look up the cloud entity. We always add a manifest entry — but if
         // the cloud has matching slug + bucket, we stamp it with cloud info
         // so the next sync recognizes it as Synced rather than LocalOnly.
-        let cloud_match = match vault.find_entity_by_slug("company", &slug).await {
+        let cloud_match = match vault.find_my_company_by_slug(&slug).await {
             Ok(Some(e)) => Some(e),
             Ok(None) => {
                 log(
@@ -191,7 +191,9 @@ pub(crate) async fn reconcile_manifest_after_sync(
             Err(e) => {
                 log(
                     "workspaces",
-                    &format!("reconcile: find_by_slug '{slug}' failed: {e} — adding stub entry"),
+                    &format!(
+                        "reconcile: caller-scoped lookup '{slug}' failed: {e} — adding stub entry"
+                    ),
                 );
                 None
             }

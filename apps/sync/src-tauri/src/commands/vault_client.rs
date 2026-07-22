@@ -59,6 +59,17 @@ pub struct EntityInfo {
     pub deleted: bool,
 }
 
+/// Response from the caller-scoped `GET /entity/check-slug/me` endpoint.
+/// A non-available slug in the caller's namespace includes the exact company
+/// UID that holds it; an available slug has no such UID.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CallerSlugCheck {
+    available: bool,
+    #[serde(default)]
+    conflicting_company_uid: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateEntityInput {
@@ -372,6 +383,39 @@ impl VaultClient {
         serde_json::from_value(wrapper["entity"].clone())
             .map(Some)
             .map_err(|e| VaultClientError::Json(e.to_string()))
+    }
+
+    /// Resolve a company slug inside the authenticated caller's namespace.
+    ///
+    /// `GET /entity/by-slug/company/{slug}` is global and can return 409 when
+    /// an unrelated owner has the same slug. `check-slug/me` is deliberately
+    /// scoped to the caller's owned + active-member companies, where a slug is
+    /// unique. It returns the matching UID as `conflictingCompanyUid`; fetch
+    /// the entity by that UID so callers retain the normal `EntityInfo` shape.
+    ///
+    /// `available: true` means this caller has no company with the slug.
+    pub async fn find_my_company_by_slug(
+        &self,
+        slug: &str,
+    ) -> Result<Option<EntityInfo>, VaultClientError> {
+        let resp = self
+            .client
+            .get(format!("{}/entity/check-slug/me", self.base_url))
+            .query(&[("type", "company"), ("slug", slug)])
+            .bearer_auth(&self.auth_token)
+            .send()
+            .await?;
+        let check: CallerSlugCheck = self.handle_response(resp).await?;
+
+        if check.available {
+            return Ok(None);
+        }
+        let uid = check.conflicting_company_uid.ok_or_else(|| {
+            VaultClientError::Json(
+                "check-slug/me returned unavailable without conflictingCompanyUid".to_string(),
+            )
+        })?;
+        self.find_entity_by_uid(&uid).await
     }
 
     /// `GET /entity/{uid}` — fetch a single entity by its UID. Returns `None` on 404.
@@ -743,10 +787,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn find_entity_by_slug_some() {
+    async fn find_my_company_by_slug_uses_caller_namespace_then_uid() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/entity/by-slug/company/newco"))
+            .and(path("/entity/check-slug/me"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({
+                "available": false,
+                "conflictingCompanyUid": "cmp_y"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/entity/cmp_y"))
             .respond_with(ResponseTemplate::new(200).set_body_json(&json!({
                 "entity": {
                     "uid": "cmp_y", "slug": "newco", "type": "company",
@@ -757,24 +809,33 @@ mod tests {
             .await;
 
         let result = client(&server.uri())
-            .find_entity_by_slug("company", "newco")
+            .find_my_company_by_slug("newco")
             .await
             .unwrap();
         assert!(result.is_some());
         assert_eq!(result.unwrap().uid, "cmp_y");
+
+        let requests = server.received_requests().await.unwrap();
+        assert!(requests.iter().any(|request| {
+            request.url.path() == "/entity/check-slug/me"
+                && request.url.query() == Some("type=company&slug=newco")
+        }));
+        assert!(requests
+            .iter()
+            .all(|request| !request.url.path().contains("by-slug")));
     }
 
     #[tokio::test]
-    async fn find_entity_by_slug_none() {
+    async fn find_my_company_by_slug_none_when_available() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/entity/by-slug/company/missing"))
-            .respond_with(ResponseTemplate::new(404).set_body_json(&json!({"error": "not found"})))
+            .and(path("/entity/check-slug/me"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({"available": true})))
             .mount(&server)
             .await;
 
         let result = client(&server.uri())
-            .find_entity_by_slug("company", "missing")
+            .find_my_company_by_slug("missing")
             .await
             .unwrap();
         assert!(result.is_none());
