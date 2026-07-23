@@ -1273,9 +1273,17 @@
         >
           <h2 class="h" id="onboarding-title-ready">HQ is ready</h2>
           <p class="body">HQ now lives in your menubar and keeps everything in sync. Open it in your favorite AI tool to start working.</p>
-          <p class="inline-note warning" role="note">
-            To complete setup, open the HQ folder in Claude Code or Codex and run <code>/setup</code>. Choose Finish only if you want to do this later.
-          </p>
+          <div class="setup-caution" role="note" aria-label="Complete setup in your AI tool">
+            <svg class="setup-caution-icon" viewBox="0 0 20 20" aria-hidden="true">
+              <path d="M10 2.4 18 17H2L10 2.4Z"></path>
+              <path d="M10 7v4.5"></path>
+              <circle cx="10" cy="14.2" r=".7"></circle>
+            </svg>
+            <div class="setup-caution-copy">
+              <strong>Complete setup in Claude Code or Codex</strong>
+              <span>Open the HQ folder and run <code>/setup</code>. Choose Finish only if you want to do this later.</span>
+            </div>
+          </div>
           {#if needsAttention}
             <p class="inline-note warning" role="status">
               Setup finished, but {setupFailures.length} {setupFailures.length === 1 ? 'step needs' : 'steps need'} another pass inside HQ.
@@ -1583,6 +1591,58 @@
   .inline-note { margin:10px 0 0; color:var(--c-muted); font-size:12px; line-height:16px; }
   .inline-note.error { color:#d04444; }
   .inline-note.warning { color:var(--c-text); }
+  .setup-caution {
+    display:flex;
+    align-items:flex-start;
+    gap:9px;
+    margin:12px 0 0;
+    padding:9px 11px;
+    border:1px solid color-mix(in srgb, #c88a08 35%, transparent);
+    border-radius:8px;
+    background:color-mix(in srgb, #f6c945 16%, var(--c-bg));
+    color:var(--c-text);
+    font-size:12px;
+    line-height:16px;
+  }
+  .setup-caution-icon {
+    width:17px;
+    height:17px;
+    flex:0 0 17px;
+    margin-top:1px;
+    fill:color-mix(in srgb, #f6c945 24%, transparent);
+    stroke:#a66b00;
+    stroke-width:1.5;
+    stroke-linecap:round;
+    stroke-linejoin:round;
+  }
+  .setup-caution-icon circle { fill:#a66b00; stroke:none; }
+  .setup-caution-copy { display:flex; flex-direction:column; gap:1px; }
+  .setup-caution-copy strong { font-weight:600; }
+  .setup-caution-copy span { color:color-mix(in srgb, var(--c-text) 82%, #8a5a00); }
+  .setup-caution code {
+    padding:0 3px;
+    border-radius:4px;
+    background:color-mix(in srgb, #c88a08 13%, transparent);
+    color:inherit;
+    font-family:ui-monospace,"SF Mono",Menlo,Monaco,monospace;
+    font-size:11px;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .setup-caution {
+      border-color:color-mix(in srgb, #f6c945 34%, transparent);
+      background:color-mix(in srgb, #f6c945 12%, var(--c-bg));
+    }
+    .setup-caution-icon { stroke:#f6c945; }
+    .setup-caution-icon circle { fill:#f6c945; }
+  }
+
+  :global(.dark) .setup-caution {
+    border-color:color-mix(in srgb, #f6c945 34%, transparent);
+    background:color-mix(in srgb, #f6c945 12%, var(--c-bg));
+  }
+  :global(.dark) .setup-caution-icon { stroke:#f6c945; }
+  :global(.dark) .setup-caution-icon circle { fill:#f6c945; }
 
   .list { margin-top:12px; display:flex; flex-direction:column; gap:5px; }
   .li { display:flex; align-items:center; gap:10px; color:var(--c-text); font-size:13px; line-height:18px; }
