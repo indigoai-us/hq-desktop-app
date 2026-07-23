@@ -55,7 +55,8 @@ pub use hq_desktop_core::hq_cli_update::{
     auto_update_enabled, cli_auto_update_enabled, cmp_semver, dismissed_cli_version,
     classify_install_failure, get_local_version,
     hq_version_string, install_argv, install_failure_report, is_cli_update_dismissed,
-    install_failure_detail, is_prefix_permission_failure, npm_prefix_from_hq_bin, read_installed_version,
+    install_failure_detail, is_prefix_permission_failure, is_windows_locked_binary_failure,
+    npm_prefix_from_hq_bin, read_installed_version,
     report_install_failure, report_unreadable_version, suppress_for_dismissal,
     version_from_hq_binary, version_if_hq_cli, HqCliUpdateInfo, InstallFailureKind, NpmLatest,
     DISMISSED_VERSION_KEY, HQ_CLI_PACKAGE,
@@ -75,6 +76,13 @@ const INITIAL_DELAY: Duration = Duration::from_secs(15);
 
 /// Re-check cadence. Matches `updater::setup_update_checker` (6h).
 const CHECK_INTERVAL: Duration = Duration::from_secs(21600);
+
+/// One-shot backoff before retrying an install that failed because the Windows
+/// `hq` binary was locked/in use (EPERM, HQ-DESKTOP-3N). The lock is usually
+/// momentary — an antivirus scan finishing or another `hq` process exiting — so
+/// a single short, bounded wait lets it clear before the lone retry. Bounded and
+/// non-looping by design (one sleep, one retry).
+const LOCKED_BINARY_RETRY_BACKOFF: Duration = Duration::from_secs(3);
 
 async fn fetch_latest() -> Result<String, String> {
     // npm registry doesn't require a User-Agent but accepts one for telemetry —
@@ -370,6 +378,29 @@ pub async fn install_hq_cli_update(app: AppHandle) -> Result<HqCliUpdateInfo, St
         }
     }
 
+    // Windows EPERM locked-binary recovery (HQ-DESKTOP-3N): npm could not
+    // replace the `hq` executable because it was locked or in use — a running
+    // hq/terminal process, or antivirus holding the file. This is almost always
+    // transient (the lock releases once the scan finishes or the other process
+    // exits), so wait a short, bounded moment and retry the plain install ONCE.
+    // A still-failing retry is classified as an expected local condition below
+    // (no Sentry page) and surfaces the copy-the-command UI fallback. Only this
+    // specific failure arms the backoff retry; everything else falls straight
+    // through to the error handler.
+    if !output.status.success() {
+        let detail = npm_output_detail(&output);
+        if is_windows_locked_binary_failure(output.status.code(), &detail) {
+            log(
+                "hq-cli-update",
+                &format!(
+                    "install hit Windows EPERM locked-binary; retrying once after backoff: {detail}"
+                ),
+            );
+            tokio::time::sleep(LOCKED_BINARY_RETRY_BACKOFF).await;
+            output = run_npm_install(&npm, &path, base_args.clone()).await?;
+        }
+    }
+
     if !output.status.success() {
         let raw_detail = npm_output_detail(&output);
         let failure_kind = classify_install_failure(
@@ -509,6 +540,34 @@ mod tests {
         ));
         assert!(!is_partial_install_failure("npm ERR! network timeout"));
         assert!(!is_partial_install_failure(""));
+    }
+
+    // HQ-DESKTOP-3N: a Windows EPERM locked-binary failure (exit -4048, or the
+    // same libuv errno surfaced in npm stderr) must be the ONLY thing that arms
+    // the backoff retry. EACCES (sudo case) and network failures fall straight
+    // through to the error handler unchanged.
+    #[test]
+    fn windows_eperm_locked_binary_arms_the_backoff_retry() {
+        // The raw libuv errno propagated as the process exit code.
+        assert!(is_windows_locked_binary_failure(Some(-4048), ""));
+        // The same error bubbled through npm stderr with a different exit code.
+        assert!(is_windows_locked_binary_failure(
+            Some(1),
+            "npm error code EPERM\nnpm error errno -4048\n\
+             npm error EPERM: operation not permitted, unlink 'C:\\...\\hq.cmd'"
+        ));
+        // Must NOT arm on the EACCES sudo case or ordinary network failures.
+        assert!(!is_windows_locked_binary_failure(
+            Some(243),
+            "npm error code EACCES: permission denied, mkdir '/usr/local/lib/node_modules'"
+        ));
+        assert!(!is_windows_locked_binary_failure(
+            Some(1),
+            "npm ERR! network timeout"
+        ));
+        assert!(!is_windows_locked_binary_failure(Some(1), ""));
+        // The backoff is bounded and short — a single wait before the lone retry.
+        assert!(LOCKED_BINARY_RETRY_BACKOFF <= Duration::from_secs(10));
     }
 
     #[test]
