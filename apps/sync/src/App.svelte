@@ -1,6 +1,6 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
-  import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event';
+  import { emit, listen } from '@tauri-apps/api/event';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import {
     isPermissionGranted as isNotifyPermissionGranted,
@@ -22,6 +22,7 @@
   import { shouldRecheckAuthOnFocus } from './lib/authRecheckGate';
   import { isOnboardingState, type LifecycleState } from './lib/lifecycle';
   import { friendlyCompanyLabel } from './lib/company-label';
+  import { ListenerRegistry } from './lib/listener-registry';
   import type { Workspace, WorkspacesResult } from './lib/workspaces';
   import { loadMeetingDetectEligible } from './lib/permissionState.svelte';
   import { buildClaudeCodeUrl } from './lib/claude-code-link';
@@ -539,29 +540,11 @@
 
   // `listen()` and `onFocusChanged()` resolve asynchronously. The app surface
   // normally stays mounted for the process lifetime, but it can be torn down
-  // during dev reloads or a fast window shutdown. Keep registration scoped to
-  // one mount so an unlisten handle that resolves late is called immediately,
-  // rather than leaving its handler in Tauri's event registry.
-  class ListenerRegistry {
-    private disposed = false;
-    private readonly handlers: UnlistenFn[] = [];
-
-    push(...handlers: UnlistenFn[]): number {
-      if (this.disposed) {
-        handlers.forEach((unlisten) => unlisten());
-      } else {
-        this.handlers.push(...handlers);
-      }
-      return this.handlers.length;
-    }
-
-    dispose(): void {
-      if (this.disposed) return;
-      this.disposed = true;
-      this.handlers.forEach((unlisten) => unlisten());
-      this.handlers.length = 0;
-    }
-  }
+  // during dev reloads or a fast window shutdown. `ListenerRegistry`
+  // (./lib/listener-registry) keeps registration scoped to one mount so an
+  // unlisten handle that resolves late is called immediately, and tears every
+  // handle down through `safeUnlisten` so a stale/double teardown can't crash
+  // the surface (Sentry HQ-DESKTOP-39).
 
   async function loadConfig() {
     try {

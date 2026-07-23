@@ -7,6 +7,7 @@
   import { MESSAGE_PERSON_EVENT, takePendingConversation } from '../lib/pendingConversation';
   import { effectiveTotalFiles as computeEffectiveTotalFiles } from '../lib/effective-total-files';
   import { sanitizeVisibleIdentifiers } from '../lib/visible-labels';
+  import { safeUnlisten } from '../lib/listener-registry';
   import type { Workspace, WorkspacesResult } from '../lib/workspaces';
   import HomePage from './pages/HomePage.svelte';
   import MissionControlPage from './pages/MissionControlPage.svelte';
@@ -984,10 +985,11 @@
         }
       })
       .then((unlisten) => {
+        const safe = safeUnlisten(unlisten);
         if (mounted) {
-          unlistenFocus = unlisten;
+          unlistenFocus = safe;
         } else {
-          unlisten();
+          safe();
         }
       });
 
