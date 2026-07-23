@@ -323,6 +323,31 @@ pub fn should_cancel_stalled_daemon(
     daemon_registered && heartbeat_age >= timeout
 }
 
+/// Pure decision for the supervisor: force-clear a wedged daemon-start guard.
+///
+/// The supervisor guards respawns behind an in-process "starting" singleton
+/// (the process registry entry), but measures liveness from the PID file. When a
+/// start acquires that guard yet never yields a live watcher — a hung runner the
+/// watchdog cancelled but whose `run_process_impl` never returned to deregister,
+/// or a stale/never-written PID file — the two signals disagree indefinitely:
+/// every tick sees the daemon down, calls `start_daemon`, and is refused with
+/// "Daemon is already starting". Without a bound the supervisor loops on that
+/// forever (observed: 7.5+ hours, respawn firing every 30s but never completing).
+///
+/// A bounded start deadline breaks the deadlock: once a start has held the guard
+/// past `deadline` with no live daemon, the guard is stale and must be cleared so
+/// a fresh spawn can proceed. A legitimately in-flight start goes live (writes its
+/// PID) within seconds, so `daemon_alive` flips true long before the deadline and
+/// this never force-clears a healthy startup. `start_age` is `None` when no start
+/// is in flight (nothing to clear).
+pub fn should_force_clear_stalled_start(
+    daemon_alive: bool,
+    start_age: Option<Duration>,
+    deadline: Duration,
+) -> bool {
+    !daemon_alive && start_age.is_some_and(|age| age >= deadline)
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
@@ -363,6 +388,44 @@ mod tests {
             timeout
         ));
         assert!(!should_cancel_stalled_daemon(false, timeout * 2, timeout));
+    }
+
+    #[test]
+    fn test_should_force_clear_stalled_start_breaks_respawn_deadlock() {
+        let deadline = Duration::from_secs(2 * 60);
+
+        // The wedge: no live daemon and a start that has held the guard past the
+        // deadline → force-clear so respawn can proceed. This is exactly the
+        // "respawn skipped: Daemon is already starting" loop the bug reported.
+        assert!(should_force_clear_stalled_start(
+            false,
+            Some(deadline),
+            deadline
+        ));
+        assert!(should_force_clear_stalled_start(
+            false,
+            Some(deadline + Duration::from_secs(1)),
+            deadline
+        ));
+
+        // A legitimately in-flight start (guard just acquired, PID not written
+        // yet) must NOT be force-cleared — it is not yet stale.
+        assert!(!should_force_clear_stalled_start(
+            false,
+            Some(Duration::from_secs(1)),
+            deadline
+        ));
+
+        // No start in flight → nothing to clear.
+        assert!(!should_force_clear_stalled_start(false, None, deadline));
+
+        // Daemon is alive → never force-clear, regardless of guard age.
+        assert!(!should_force_clear_stalled_start(
+            true,
+            Some(deadline * 10),
+            deadline
+        ));
+        assert!(!should_force_clear_stalled_start(true, None, deadline));
     }
 
     // ── DaemonStatus serialization ───────────────────────────────────────
