@@ -26,8 +26,8 @@ use hq_desktop_core::sync_outcome::termination_fingerprint_token;
 pub use hq_desktop_core::daemon::{
     build_watch_runner_args, event_push_eligible, is_autostart_enabled, is_instant_sync_enabled,
     is_pid_alive, is_realtime_sync_enabled, read_daemon_json, read_menubar_bool, read_pid_file,
-    resolve_hq_folder_path, should_cancel_stalled_daemon, should_event_push, should_respawn_daemon,
-    DaemonJson, DaemonStatus,
+    resolve_hq_folder_path, should_cancel_stalled_daemon, should_event_push,
+    should_force_clear_stalled_start, should_respawn_daemon, DaemonJson, DaemonStatus,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -46,6 +46,14 @@ const SIGKILL_DELAY: Duration = Duration::from_secs(5);
 /// wedged indefinitely.
 const DAEMON_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const DAEMON_HEARTBEAT_CHECK_INTERVAL: Duration = Duration::from_secs(15);
+
+/// How long the singleton "starting" guard may be held with no live daemon
+/// before the supervisor treats it as wedged and force-clears it. A healthy
+/// start writes its PID within seconds, so this is comfortably longer than any
+/// legitimate spawn + preflight yet far shorter than the multi-hour deadlock the
+/// old unbounded guard produced (HQ-DESKTOP: respawn stuck on "Daemon is already
+/// starting"). Recovery lands within one guard deadline instead of never.
+const DAEMON_START_DEADLINE: Duration = Duration::from_secs(2 * 60);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Watch-mode ndjson handler
@@ -141,6 +149,62 @@ fn start_daemon_heartbeat_watchdog(last_heartbeat: Arc<Mutex<Instant>>, finished
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Start-guard deadline (respawn-deadlock backstop)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// `start_daemon` takes the `DAEMON_HANDLE` singleton before doing anything, and
+// only releases it when the start fails a preflight or the watcher process
+// exits. If the watcher instead *wedges* (hung on an untimed network read, then
+// cancelled by the watchdog but never reaped so `run_process_impl` never returns
+// to deregister), the guard is held with no live daemon and the supervisor's
+// respawn is refused with "Daemon is already starting" on every tick — forever.
+//
+// We stamp when the guard was acquired so the supervisor can tell a legitimately
+// in-flight start (age < deadline) from a wedged one (age ≥ deadline, no live
+// PID) and force-clear only the latter.
+
+static DAEMON_GUARD_AT: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
+
+fn daemon_guard_at() -> &'static Mutex<Option<Instant>> {
+    DAEMON_GUARD_AT.get_or_init(|| Mutex::new(None))
+}
+
+/// Stamp the moment the current start acquired the singleton guard.
+fn mark_daemon_guard_acquired() {
+    *daemon_guard_at().lock().unwrap_or_else(|p| p.into_inner()) = Some(Instant::now());
+}
+
+/// Clear the guard-acquisition stamp (the guard is being released).
+fn clear_daemon_guard_stamp() {
+    *daemon_guard_at().lock().unwrap_or_else(|p| p.into_inner()) = None;
+}
+
+/// How long the singleton guard has been held by the current start, if any.
+fn daemon_guard_age() -> Option<Duration> {
+    daemon_guard_at()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .map(|t| t.elapsed())
+}
+
+/// Release the guard on a failed start: clear the stamp, then deregister so the
+/// next start can acquire it. Paired with every `start_daemon` preflight bail.
+fn release_daemon_guard() {
+    clear_daemon_guard_stamp();
+    deregister_process(DAEMON_HANDLE);
+}
+
+/// Force-clear a guard the supervisor has judged wedged: terminate any lingering
+/// (hung) watcher process still tracked under the handle, then release the guard
+/// so the immediate respawn can proceed. Terminating first means the stale child
+/// is reaped rather than orphaned — on Windows this closes the KILL_ON_JOB_CLOSE
+/// job (killing the tree); on Unix it SIGTERM/SIGKILLs the process group.
+fn force_clear_daemon_guard() {
+    cancel_process_impl(DAEMON_HANDLE, SIGKILL_DELAY);
+    release_daemon_guard();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Tauri commands
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -159,6 +223,9 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
     if !try_register_handle(DAEMON_HANDLE) {
         return Err("Daemon is already starting".to_string());
     }
+    // Stamp the guard acquisition so the supervisor can bound how long a start
+    // may hold it with no live daemon before treating it as wedged.
+    mark_daemon_guard_acquired();
 
     // A signed-out watcher can only emit auth-error and exit 0. Refuse that
     // known-dead loop up front; after a terminal auth event clears the token,
@@ -166,11 +233,11 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
     match crate::commands::cognito::read_tokens_from_file() {
         Ok(Some(_)) => {}
         Ok(None) => {
-            deregister_process(DAEMON_HANDLE);
+            release_daemon_guard();
             return Err(crate::commands::cognito::REAUTH_MESSAGE.to_string());
         }
         Err(err) => {
-            deregister_process(DAEMON_HANDLE);
+            release_daemon_guard();
             return Err(err);
         }
     }
@@ -178,7 +245,7 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
     let hq_folder_path = match resolve_hq_folder_path() {
         Ok(p) => p,
         Err(e) => {
-            deregister_process(DAEMON_HANDLE);
+            release_daemon_guard();
             return Err(e);
         }
     };
@@ -186,7 +253,7 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
     // Pre-flight: check if daemon is already running from a previous session
     if let Some(pid) = read_pid_file(&hq_folder_path) {
         if is_pid_alive(pid) {
-            deregister_process(DAEMON_HANDLE);
+            release_daemon_guard();
             return Err(format!("Daemon is already running (PID {})", pid));
         }
     }
@@ -203,7 +270,7 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
                 &format!("runner unresolvable — local-only preflight: {msg}"),
             ),
         }
-        deregister_process(DAEMON_HANDLE);
+        release_daemon_guard();
         return Err(msg);
     }
 
@@ -215,7 +282,7 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
     if let Err(msg) = hq_desktop_core::prewarm::materialize_hq_cloud_cache() {
         log("daemon", &format!("npx cache materialization preflight failed: {msg}"));
         note_environment_preflight_failure();
-        deregister_process(DAEMON_HANDLE);
+        release_daemon_guard();
         return Err(msg);
     }
 
@@ -343,6 +410,11 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
         });
 
         daemon_finished.store(true, Ordering::Release);
+        // `run_process_impl` has returned, so it already deregistered the
+        // handle: the guard is released. Drop the acquisition stamp too, so the
+        // supervisor's wedge deadline only ever measures a genuinely in-flight
+        // start (a hung watcher that never gets here is what the deadline is for).
+        clear_daemon_guard_stamp();
 
         if let Err(e) = result {
             log("daemon", &format!("spawn failed: {e}"));
@@ -688,7 +760,33 @@ pub fn setup_daemon_supervisor(app: &AppHandle) {
                     );
                     match start_daemon(handle.clone()) {
                         Ok(_) => log("daemon.supervisor", "respawned watch daemon"),
-                        Err(e) => log("daemon.supervisor", &format!("respawn skipped: {e}")),
+                        Err(e) => {
+                            log("daemon.supervisor", &format!("respawn skipped: {e}"));
+                            // The classic deadlock: `start_daemon` refused with
+                            // "Daemon is already starting" because a prior start
+                            // still holds the singleton guard, yet no daemon is
+                            // alive. If that guard has been held past the start
+                            // deadline it is wedged (a hung, un-reaped watcher),
+                            // and every future tick would loop on the same skip
+                            // forever. Force-clear the stale guard so the NEXT
+                            // tick's normal respawn can proceed. We deliberately
+                            // don't respawn inline here: `force_clear_daemon_guard`
+                            // may have just scheduled an async SIGKILL/deregister
+                            // of the old watcher (Unix `cancel_process_impl`), and
+                            // a same-tick re-register could be torn down by it.
+                            // The next tick (≤30s) is well clear of that window.
+                            if should_force_clear_stalled_start(
+                                daemon_alive,
+                                daemon_guard_age(),
+                                DAEMON_START_DEADLINE,
+                            ) {
+                                log(
+                                    "daemon.supervisor",
+                                    "start guard wedged past deadline — force-clearing; respawn on next tick",
+                                );
+                                force_clear_daemon_guard();
+                            }
+                        }
                     }
                 }
             }
@@ -814,11 +912,94 @@ mod tests {
         deregister_process(handle);
     }
 
+    // ── Respawn-deadlock recovery (start-guard wedge) ────────────────────
+    //
+    // Regression for the supervisor crash-loop: a start that acquired the
+    // singleton guard but whose watcher wedged (hung network read, cancelled
+    // by the watchdog but never reaped) held the guard forever, so every
+    // supervisor tick logged "respawn skipped: Daemon is already starting" and
+    // sync never recovered (observed 7.5+ hours). These tests exercise the real
+    // process registry + guard stamp on `DAEMON_HANDLE`, so serialize them.
+    static GUARD_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn wedged_start_guard_is_cleared_so_respawn_proceeds() {
+        use crate::commands::process::{deregister_process, try_register_handle};
+        let _serial = GUARD_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+
+        // A prior start took the guard and stamped its acquisition…
+        assert!(try_register_handle(DAEMON_HANDLE));
+        mark_daemon_guard_acquired();
+
+        // …then wedged. The supervisor's respawn calls `start_daemon`, whose
+        // `try_register_handle` is refused — this IS the "Daemon is already
+        // starting" skip, with no live daemon behind it.
+        assert!(
+            !try_register_handle(DAEMON_HANDLE),
+            "guard still held → respawn refused (already starting)"
+        );
+        assert!(
+            daemon_guard_age().is_some(),
+            "a start is recorded in flight"
+        );
+
+        // A guard that JUST acquired the lock must not be force-cleared — it is
+        // a legitimately in-flight start, not a wedge.
+        assert!(
+            !should_force_clear_stalled_start(false, daemon_guard_age(), DAEMON_START_DEADLINE),
+            "a fresh start must not be force-cleared"
+        );
+
+        // Once the deadline has elapsed with no live daemon, the guard is wedged.
+        // (The time-based decision itself is unit-tested with explicit ages in
+        // hq_desktop_core::daemon.) The supervisor then force-clears it…
+        force_clear_daemon_guard();
+
+        // …which releases both the stamp and the registry handle, so the very
+        // next respawn succeeds instead of looping on "already starting".
+        assert!(daemon_guard_age().is_none(), "stamp cleared on force-clear");
+        assert!(
+            try_register_handle(DAEMON_HANDLE),
+            "respawn proceeds after the wedged guard is cleared"
+        );
+
+        // Cleanup.
+        deregister_process(DAEMON_HANDLE);
+        clear_daemon_guard_stamp();
+    }
+
+    #[test]
+    fn failed_start_releases_guard_immediately() {
+        use crate::commands::process::{deregister_process, try_register_handle};
+        let _serial = GUARD_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+
+        // Simulate a start that acquired the guard then bailed a preflight.
+        assert!(try_register_handle(DAEMON_HANDLE));
+        mark_daemon_guard_acquired();
+        assert!(daemon_guard_age().is_some());
+
+        // The preflight-bail path releases the guard on the spot — no deadline,
+        // no wedge — so the next start is free to proceed.
+        release_daemon_guard();
+        assert!(daemon_guard_age().is_none());
+        assert!(try_register_handle(DAEMON_HANDLE));
+
+        deregister_process(DAEMON_HANDLE);
+        clear_daemon_guard_stamp();
+    }
+
     // ── Constants ────────────────────────────────────────────────────────
 
     #[test]
     fn test_daemon_handle_constant() {
         assert_eq!(DAEMON_HANDLE, "hq-sync-daemon");
+    }
+
+    #[test]
+    fn test_daemon_start_deadline_constant() {
+        // Far longer than any real spawn+preflight, far shorter than the
+        // multi-hour deadlock the unbounded guard produced.
+        assert_eq!(DAEMON_START_DEADLINE, Duration::from_secs(2 * 60));
     }
 
     #[test]
