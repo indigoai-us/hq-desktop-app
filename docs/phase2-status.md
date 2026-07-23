@@ -48,7 +48,9 @@ installer:
 4. **Ready** — completion and launch actions for Claude Code and Codex. A
    successful launch immediately finishes onboarding and hands control back to
    the tray/popover; **Finish** provides the same handoff without launching a
-   tool.
+   tool. The screen warns that setup is only complete after opening the HQ
+   folder in Claude Code or Codex and running `/setup`, and frames **Finish** as
+   deferring that step until later.
 
 The wizard step machine (`lib/onboarding-wizard.ts`) keeps the auth gate on the
 Setup step and ends its active route contract at Ready. Post-launch usage
