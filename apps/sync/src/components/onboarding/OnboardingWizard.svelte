@@ -1273,6 +1273,9 @@
         >
           <h2 class="h" id="onboarding-title-ready">HQ is ready</h2>
           <p class="body">HQ now lives in your menubar and keeps everything in sync. Open it in your favorite AI tool to start working.</p>
+          <p class="inline-note warning" role="note">
+            To complete setup, open the HQ folder in Claude Code or Codex and run <code>/setup</code>. Choose Finish only if you want to do this later.
+          </p>
           {#if needsAttention}
             <p class="inline-note warning" role="status">
               Setup finished, but {setupFailures.length} {setupFailures.length === 1 ? 'step needs' : 'steps need'} another pass inside HQ.

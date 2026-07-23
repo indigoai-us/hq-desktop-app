@@ -16,4 +16,12 @@ describe('onboarding launch handoff', () => {
     expect(wizardSource).toContain('onclick={() => void onfinish?.()}');
     expect(wizardSource).toContain('>Finish</button>');
   });
+
+  it('warns that setup requires opening HQ in an AI tool and running /setup', () => {
+    expect(wizardSource).toContain(
+      'To complete setup, open the HQ folder in Claude Code or Codex and run',
+    );
+    expect(wizardSource).toContain('<code>/setup</code>');
+    expect(wizardSource).toContain('Choose Finish only if you want to do this later.');
+  });
 });
