@@ -11,6 +11,7 @@
   import { liveProgressCaption } from '../lib/live-progress-caption';
   import { isCorePath, CORE_SETUP_LABEL } from '../lib/progressLabel';
   import { sanitizeVisibleIdentifiers } from '../lib/visible-labels';
+  import { safeUnlisten } from '../lib/listener-registry';
   import {
     POPOVER_MIN_HEIGHT,
     POPOVER_WIDTH,
@@ -365,8 +366,9 @@
         if (focused) restartOpeningMotion();
       })
       .then((unlisten) => {
-        if (cancelled) unlisten();
-        else unlistenFocus = unlisten;
+        const safe = safeUnlisten(unlisten);
+        if (cancelled) safe();
+        else unlistenFocus = safe;
       })
       .catch(() => {
         // Non-Tauri / test environment.
@@ -374,8 +376,9 @@
 
     void listen('popover:opened', () => restartOpeningMotion())
       .then((unlisten) => {
-        if (cancelled) unlisten();
-        else unlistenOpened = unlisten;
+        const safe = safeUnlisten(unlisten);
+        if (cancelled) safe();
+        else unlistenOpened = safe;
       })
       .catch(() => {
         // Non-Tauri / test environment.

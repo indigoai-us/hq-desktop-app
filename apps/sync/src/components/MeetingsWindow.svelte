@@ -17,6 +17,7 @@
   } from '../lib/meetingsCache';
   import { shouldShowMeetingsLoadingPlaceholder } from '../lib/meetingsLoadingGate';
   import { humanCompanyLabel } from '../lib/visible-labels';
+  import { safeUnlisten } from '../lib/listener-registry';
   import { isAlreadyScheduledError } from '../lib/invite-errors';
   import {
     botForEvent,
@@ -498,7 +499,7 @@
         if (focused) void refresh();
       })
       .then((fn) => {
-        unlistenFocus = fn;
+        unlistenFocus = safeUnlisten(fn);
       });
 
     // Esc closes the window — feels native on macOS where ⌘W is the
