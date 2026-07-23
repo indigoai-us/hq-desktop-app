@@ -4,7 +4,7 @@
 //! Behind `AUTOSTART_DAEMON` feature flag in ~/.hq/menubar.json (default false).
 //! Svelte UI does NOT expose these V1 — invocable only via Tauri devtools.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -26,8 +26,8 @@ use hq_desktop_core::sync_outcome::termination_fingerprint_token;
 pub use hq_desktop_core::daemon::{
     build_watch_runner_args, event_push_eligible, is_autostart_enabled, is_instant_sync_enabled,
     is_pid_alive, is_realtime_sync_enabled, read_daemon_json, read_menubar_bool, read_pid_file,
-    resolve_hq_folder_path, should_cancel_stalled_daemon, should_event_push, should_respawn_daemon,
-    DaemonJson, DaemonStatus,
+    resolve_hq_folder_path, should_cancel_stalled_daemon, should_event_push,
+    should_force_clear_stalled_start, should_respawn_daemon, DaemonJson, DaemonStatus,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -46,6 +46,14 @@ const SIGKILL_DELAY: Duration = Duration::from_secs(5);
 /// wedged indefinitely.
 const DAEMON_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const DAEMON_HEARTBEAT_CHECK_INTERVAL: Duration = Duration::from_secs(15);
+
+/// How long the singleton "starting" guard may be held with no live daemon
+/// before the supervisor treats it as wedged and force-clears it. A healthy
+/// start writes its PID within seconds, so this is comfortably longer than any
+/// legitimate spawn + preflight yet far shorter than the multi-hour deadlock the
+/// old unbounded guard produced (HQ-DESKTOP: respawn stuck on "Daemon is already
+/// starting"). Recovery lands within one guard deadline instead of never.
+const DAEMON_START_DEADLINE: Duration = Duration::from_secs(2 * 60);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Watch-mode ndjson handler
@@ -141,6 +149,175 @@ fn start_daemon_heartbeat_watchdog(last_heartbeat: Arc<Mutex<Instant>>, finished
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Start-guard deadline (respawn-deadlock backstop)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// `start_daemon` takes the `DAEMON_HANDLE` singleton before doing anything, and
+// only releases it when the start fails a preflight or the watcher process
+// exits. If the watcher instead *wedges* (hung on an untimed network read, then
+// cancelled by the watchdog but never reaped so `run_process_impl` never returns
+// to deregister), the guard is held with no live daemon and the supervisor's
+// respawn is refused with "Daemon is already starting" on every tick — forever.
+//
+// The guard carries a stamp so the supervisor can tell a legitimately in-flight
+// start from a wedged one and force-clear only the latter. Two properties make
+// that decision safe rather than destructive:
+//
+//   * The stamp is *refreshed* every tick the daemon is confirmed live, so
+//     `daemon_guard_age` measures how long the daemon has been observed **down**,
+//     not the uptime of a healthy generation. A single transient liveness misread
+//     (a pid-file rewrite, or `kill(pid,0)` reporting an EPERM process as dead)
+//     therefore cannot age a long-lived healthy daemon past the deadline — it
+//     takes a sustained ~deadline of consecutive down observations. And the
+//     force-clear re-probes liveness one more time immediately before the
+//     destructive kill, aborting (and leaving a breadcrumb) if the daemon is
+//     actually alive.
+//   * Each acquisition carries a monotonic **generation** id and may only clear
+//     its own stamp. That closes the deregister→clear gap where an exiting start
+//     could otherwise wipe a newer respawn's fresh stamp and silently reopen the
+//     very deadlock this backstop exists to break.
+
+static DAEMON_GUARD_GEN: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Clone, Copy)]
+struct DaemonGuardStamp {
+    /// Which start acquisition owns this stamp; only that generation may clear it.
+    generation: u64,
+    /// When the guard was acquired, or when the daemon was last confirmed live —
+    /// a live confirmation refreshes this so the wedge deadline only ever measures
+    /// time the daemon has been observed *down*, never a healthy generation's age.
+    since: Instant,
+}
+
+static DAEMON_GUARD: OnceLock<Mutex<Option<DaemonGuardStamp>>> = OnceLock::new();
+
+fn daemon_guard() -> &'static Mutex<Option<DaemonGuardStamp>> {
+    DAEMON_GUARD.get_or_init(|| Mutex::new(None))
+}
+
+/// Stamp a new start acquiring the singleton guard. Returns the generation id so
+/// the owning start thread can later clear *only its own* stamp.
+fn mark_daemon_guard_acquired() -> u64 {
+    let generation = DAEMON_GUARD_GEN
+        .fetch_add(1, Ordering::AcqRel)
+        .wrapping_add(1);
+    *daemon_guard().lock().unwrap_or_else(|p| p.into_inner()) = Some(DaemonGuardStamp {
+        generation,
+        since: Instant::now(),
+    });
+    generation
+}
+
+/// Refresh the stamp when the daemon is confirmed live, so the wedge deadline
+/// only ever measures time the daemon has been observed *down*. Never *creates* a
+/// stamp — a daemon we didn't start holds no guard to wedge — it only refreshes
+/// an existing one, preserving its generation.
+fn note_daemon_guard_alive() {
+    if let Some(stamp) = daemon_guard()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .as_mut()
+    {
+        stamp.since = Instant::now();
+    }
+}
+
+/// Clear the stamp unconditionally (the guard is being force-released).
+fn clear_daemon_guard_stamp() {
+    *daemon_guard().lock().unwrap_or_else(|p| p.into_inner()) = None;
+}
+
+/// Clear the stamp iff it still belongs to `generation`. Used by the owning start
+/// thread on exit: `run_process_impl` has already deregistered the handle, so a
+/// respawn may have re-acquired it and stamped a *newer* generation — clearing
+/// only our own generation guarantees we never wipe that fresh stamp.
+fn clear_daemon_guard_stamp_for(generation: u64) {
+    let mut guard = daemon_guard().lock().unwrap_or_else(|p| p.into_inner());
+    if guard.map(|s| s.generation) == Some(generation) {
+        *guard = None;
+    }
+}
+
+/// How long the singleton guard has been held with no live daemon — time since
+/// acquisition or the last live confirmation, whichever is later.
+fn daemon_guard_age() -> Option<Duration> {
+    daemon_guard()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .map(|s| s.since.elapsed())
+}
+
+/// Best-effort liveness re-probe used right before the destructive force-clear.
+/// Mirrors the supervisor's own `daemon_alive` computation (pid file → process
+/// check) so a force-clear can bail if a liveness *flake* made the supervisor
+/// briefly believe a healthy daemon was down.
+fn daemon_appears_alive() -> bool {
+    resolve_hq_folder_path()
+        .ok()
+        .and_then(|p| read_pid_file(&p))
+        .map(is_pid_alive)
+        .unwrap_or(false)
+}
+
+/// Release the guard on a failed start: clear the stamp, then deregister so the
+/// next start can acquire it. Paired with every `start_daemon` preflight bail
+/// (all synchronous, before the spawn thread — no other start can hold the
+/// handle yet, so the unconditional clear is safe).
+fn release_daemon_guard() {
+    clear_daemon_guard_stamp();
+    deregister_process(DAEMON_HANDLE);
+}
+
+/// Force-clear a guard the supervisor has judged wedged: terminate any lingering
+/// (hung) watcher process still tracked under the handle, then release the guard
+/// so the immediate respawn can proceed. Terminating first means the stale child
+/// is reaped rather than orphaned — on Windows this closes the KILL_ON_JOB_CLOSE
+/// job (killing the tree); on Unix it SIGTERM/SIGKILLs the process group.
+fn force_clear_daemon_guard() {
+    force_clear_daemon_guard_impl(daemon_appears_alive())
+}
+
+/// Force-clear with the liveness re-probe result injected, so the abort/kill
+/// decision is unit-testable without a real pid file.
+fn force_clear_daemon_guard_impl(daemon_alive_recheck: bool) {
+    if daemon_alive_recheck {
+        // The supervisor thought the daemon was down, but it is alive on
+        // re-check — the "down" reading was a liveness flake. Aborting here is
+        // what keeps a single flake non-destructive: `cancel_process_impl` sets
+        // `is_cancelled`, so a mistaken force-kill would be logged by the Exit
+        // handler as a *deliberate stop* (no crash capture) and be invisible.
+        // Emit a distinct breadcrumb so the near-miss is observable instead.
+        log(
+            "daemon.supervisor",
+            "force-clear aborted: watch daemon is alive on re-check — liveness flake suspected",
+        );
+        sentry::add_breadcrumb(sentry::Breadcrumb {
+            category: Some("daemon.supervisor".into()),
+            level: sentry::Level::Warning,
+            message: Some(
+                "force-clear aborted: live watcher on re-check (liveness flake suspected)".into(),
+            ),
+            ..Default::default()
+        });
+        // Count the confirmed-live probe as a heartbeat for the wedge deadline so
+        // we don't immediately re-attempt the force-clear on the next tick.
+        note_daemon_guard_alive();
+        return;
+    }
+    // Genuinely down. Leave a distinct breadcrumb so even a residual mistaken
+    // kill (a double-flake past this re-probe) is attributable to a force-clear
+    // rather than indistinguishable from a normal deliberate stop.
+    sentry::add_breadcrumb(sentry::Breadcrumb {
+        category: Some("daemon.supervisor".into()),
+        level: sentry::Level::Info,
+        message: Some("force-clearing wedged start guard (no live daemon on re-check)".into()),
+        ..Default::default()
+    });
+    cancel_process_impl(DAEMON_HANDLE, SIGKILL_DELAY);
+    release_daemon_guard();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Tauri commands
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -159,6 +336,11 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
     if !try_register_handle(DAEMON_HANDLE) {
         return Err("Daemon is already starting".to_string());
     }
+    // Stamp the guard acquisition so the supervisor can bound how long a start
+    // may hold it with no live daemon before treating it as wedged. The
+    // generation lets this start's exit clear only its own stamp, never a
+    // respawn's fresher one.
+    let guard_generation = mark_daemon_guard_acquired();
 
     // A signed-out watcher can only emit auth-error and exit 0. Refuse that
     // known-dead loop up front; after a terminal auth event clears the token,
@@ -166,11 +348,11 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
     match crate::commands::cognito::read_tokens_from_file() {
         Ok(Some(_)) => {}
         Ok(None) => {
-            deregister_process(DAEMON_HANDLE);
+            release_daemon_guard();
             return Err(crate::commands::cognito::REAUTH_MESSAGE.to_string());
         }
         Err(err) => {
-            deregister_process(DAEMON_HANDLE);
+            release_daemon_guard();
             return Err(err);
         }
     }
@@ -178,7 +360,7 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
     let hq_folder_path = match resolve_hq_folder_path() {
         Ok(p) => p,
         Err(e) => {
-            deregister_process(DAEMON_HANDLE);
+            release_daemon_guard();
             return Err(e);
         }
     };
@@ -186,7 +368,7 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
     // Pre-flight: check if daemon is already running from a previous session
     if let Some(pid) = read_pid_file(&hq_folder_path) {
         if is_pid_alive(pid) {
-            deregister_process(DAEMON_HANDLE);
+            release_daemon_guard();
             return Err(format!("Daemon is already running (PID {})", pid));
         }
     }
@@ -203,7 +385,7 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
                 &format!("runner unresolvable — local-only preflight: {msg}"),
             ),
         }
-        deregister_process(DAEMON_HANDLE);
+        release_daemon_guard();
         return Err(msg);
     }
 
@@ -215,7 +397,7 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
     if let Err(msg) = hq_desktop_core::prewarm::materialize_hq_cloud_cache() {
         log("daemon", &format!("npx cache materialization preflight failed: {msg}"));
         note_environment_preflight_failure();
-        deregister_process(DAEMON_HANDLE);
+        release_daemon_guard();
         return Err(msg);
     }
 
@@ -343,6 +525,16 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
         });
 
         daemon_finished.store(true, Ordering::Release);
+        // `run_process_impl` has returned, so it already deregistered the
+        // handle: the guard is released. Drop the acquisition stamp too, so the
+        // supervisor's wedge deadline only ever measures a genuinely in-flight
+        // start (a hung watcher that never gets here is what the deadline is for).
+        // Generation-scoped: between the deregister above and this clear a
+        // supervisor respawn can already have re-acquired the freed handle and
+        // stamped a *newer* generation — clearing only our own generation
+        // guarantees we never wipe that fresh stamp (which would reopen the
+        // deadlock for the new start if it wedged).
+        clear_daemon_guard_stamp_for(guard_generation);
 
         if let Err(e) = result {
             log("daemon", &format!("spawn failed: {e}"));
@@ -660,6 +852,13 @@ pub fn setup_daemon_supervisor(app: &AppHandle) {
                 // crash-loop state so backoff + capture rate-limiting reset for
                 // the next failure episode (HQ-SYNC-4).
                 reset_crash_state_if_recovered();
+                // Refresh the start-guard stamp against this confirmed-live
+                // observation so the wedge deadline measures observed-*down*
+                // time, not a healthy generation's uptime. Without this a
+                // long-lived daemon's stamp is always past the deadline, and a
+                // single transient liveness misread on a later tick would
+                // force-clear (SIGKILL) a healthy watcher.
+                note_daemon_guard_alive();
                 // Sample the live watcher's RSS so if it is later killed by
                 // signal=9, the crash capture can report the footprint it had
                 // shortly before death (jetsam/OOM vs kill -9). Best-effort.
@@ -688,7 +887,33 @@ pub fn setup_daemon_supervisor(app: &AppHandle) {
                     );
                     match start_daemon(handle.clone()) {
                         Ok(_) => log("daemon.supervisor", "respawned watch daemon"),
-                        Err(e) => log("daemon.supervisor", &format!("respawn skipped: {e}")),
+                        Err(e) => {
+                            log("daemon.supervisor", &format!("respawn skipped: {e}"));
+                            // The classic deadlock: `start_daemon` refused with
+                            // "Daemon is already starting" because a prior start
+                            // still holds the singleton guard, yet no daemon is
+                            // alive. If that guard has been held past the start
+                            // deadline it is wedged (a hung, un-reaped watcher),
+                            // and every future tick would loop on the same skip
+                            // forever. Force-clear the stale guard so the NEXT
+                            // tick's normal respawn can proceed. We deliberately
+                            // don't respawn inline here: `force_clear_daemon_guard`
+                            // may have just scheduled an async SIGKILL/deregister
+                            // of the old watcher (Unix `cancel_process_impl`), and
+                            // a same-tick re-register could be torn down by it.
+                            // The next tick (≤30s) is well clear of that window.
+                            if should_force_clear_stalled_start(
+                                daemon_alive,
+                                daemon_guard_age(),
+                                DAEMON_START_DEADLINE,
+                            ) {
+                                log(
+                                    "daemon.supervisor",
+                                    "start guard wedged past deadline — force-clearing; respawn on next tick",
+                                );
+                                force_clear_daemon_guard();
+                            }
+                        }
                     }
                 }
             }
@@ -814,11 +1039,209 @@ mod tests {
         deregister_process(handle);
     }
 
+    // ── Respawn-deadlock recovery (start-guard wedge) ────────────────────
+    //
+    // Regression for the supervisor crash-loop: a start that acquired the
+    // singleton guard but whose watcher wedged (hung network read, cancelled
+    // by the watchdog but never reaped) held the guard forever, so every
+    // supervisor tick logged "respawn skipped: Daemon is already starting" and
+    // sync never recovered (observed 7.5+ hours). These tests exercise the real
+    // process registry + guard stamp on `DAEMON_HANDLE`, so serialize them.
+    static GUARD_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn wedged_start_guard_is_cleared_so_respawn_proceeds() {
+        use crate::commands::process::{deregister_process, try_register_handle};
+        let _serial = GUARD_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        clear_daemon_guard_stamp();
+
+        // A prior start took the guard and stamped its acquisition…
+        assert!(try_register_handle(DAEMON_HANDLE));
+        mark_daemon_guard_acquired();
+
+        // …then wedged. The supervisor's respawn calls `start_daemon`, whose
+        // `try_register_handle` is refused — this IS the "Daemon is already
+        // starting" skip, with no live daemon behind it.
+        assert!(
+            !try_register_handle(DAEMON_HANDLE),
+            "guard still held → respawn refused (already starting)"
+        );
+        assert!(
+            daemon_guard_age().is_some(),
+            "a start is recorded in flight"
+        );
+
+        // A guard that JUST acquired the lock must not be force-cleared — it is
+        // a legitimately in-flight start, not a wedge.
+        assert!(
+            !should_force_clear_stalled_start(false, daemon_guard_age(), DAEMON_START_DEADLINE),
+            "a fresh start must not be force-cleared"
+        );
+
+        // Once the deadline has elapsed with no live daemon, the guard is wedged.
+        // (The time-based decision itself is unit-tested with explicit ages in
+        // hq_desktop_core::daemon.) The supervisor then force-clears it — the
+        // liveness re-probe reports no live daemon (injected here for
+        // determinism), so it proceeds…
+        force_clear_daemon_guard_impl(false);
+
+        // …which releases both the stamp and the registry handle, so the very
+        // next respawn succeeds instead of looping on "already starting".
+        assert!(daemon_guard_age().is_none(), "stamp cleared on force-clear");
+        assert!(
+            try_register_handle(DAEMON_HANDLE),
+            "respawn proceeds after the wedged guard is cleared"
+        );
+
+        // Cleanup.
+        deregister_process(DAEMON_HANDLE);
+        clear_daemon_guard_stamp();
+    }
+
+    #[test]
+    fn failed_start_releases_guard_immediately() {
+        use crate::commands::process::{deregister_process, try_register_handle};
+        let _serial = GUARD_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        clear_daemon_guard_stamp();
+
+        // Simulate a start that acquired the guard then bailed a preflight.
+        assert!(try_register_handle(DAEMON_HANDLE));
+        mark_daemon_guard_acquired();
+        assert!(daemon_guard_age().is_some());
+
+        // The preflight-bail path releases the guard on the spot — no deadline,
+        // no wedge — so the next start is free to proceed.
+        release_daemon_guard();
+        assert!(daemon_guard_age().is_none());
+        assert!(try_register_handle(DAEMON_HANDLE));
+
+        deregister_process(DAEMON_HANDLE);
+        clear_daemon_guard_stamp();
+    }
+
+    // Major review finding: the acquisition stamp used to live for the daemon's
+    // whole healthy lifetime, so `daemon_guard_age()` was permanently past the
+    // deadline and a single transient liveness misread would force-clear (SIGKILL)
+    // a healthy long-lived daemon. Refreshing the stamp on every confirmed-live
+    // tick makes the deadline measure observed-*down* time, so one flake can't
+    // reach it.
+    #[test]
+    fn live_confirmation_refreshes_stamp_so_a_single_flake_is_not_force_cleared() {
+        let _serial = GUARD_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        clear_daemon_guard_stamp();
+
+        // A start acquired the guard some time ago and the daemon went live.
+        mark_daemon_guard_acquired();
+        // Each live supervisor tick refreshes the stamp against "now"…
+        note_daemon_guard_alive();
+
+        // …so the guard age is the observed-down time (≈0 right after a live
+        // confirmation), well under the deadline — even though the *acquisition*
+        // may have been hours ago on a real long-lived daemon.
+        let age = daemon_guard_age().expect("stamp present while a start is tracked");
+        assert!(
+            age < DAEMON_START_DEADLINE,
+            "a freshly-confirmed-live stamp must be far under the wedge deadline"
+        );
+
+        // Therefore a single tick that misreads the daemon as down (daemon_alive
+        // == false) does NOT force-clear it: the refreshed age is nowhere near
+        // the deadline. This is the exact false-positive the review flagged.
+        assert!(
+            !should_force_clear_stalled_start(false, daemon_guard_age(), DAEMON_START_DEADLINE),
+            "one liveness flake after a live confirmation must never force-clear a healthy daemon"
+        );
+
+        clear_daemon_guard_stamp();
+    }
+
+    // `note_daemon_guard_alive` must never *create* a stamp — a daemon we didn't
+    // start (previous app session; handle not held here) holds no guard to wedge,
+    // so it must not manufacture a wedge deadline for one.
+    #[test]
+    fn live_confirmation_does_not_create_a_stamp_when_none_is_held() {
+        let _serial = GUARD_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        clear_daemon_guard_stamp();
+
+        assert!(daemon_guard_age().is_none());
+        note_daemon_guard_alive();
+        assert!(
+            daemon_guard_age().is_none(),
+            "no stamp is fabricated for a daemon this process never started"
+        );
+    }
+
+    // Major/minor review finding: the destructive force-clear now re-probes
+    // liveness and aborts if the daemon is actually alive, so a liveness flake at
+    // the supervisor tick can never SIGKILL a healthy watcher — and the near-miss
+    // is surfaced rather than silent.
+    #[test]
+    fn force_clear_aborts_and_preserves_guard_when_daemon_is_alive_on_recheck() {
+        use crate::commands::process::{deregister_process, try_register_handle};
+        let _serial = GUARD_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        clear_daemon_guard_stamp();
+
+        assert!(try_register_handle(DAEMON_HANDLE));
+        mark_daemon_guard_acquired();
+
+        // The supervisor thought the daemon was down, but the re-probe says it is
+        // alive (a flake). Force-clear must abort: the guard stamp and the
+        // registry handle both survive, so the live watcher is neither killed nor
+        // deregistered.
+        force_clear_daemon_guard_impl(true);
+        assert!(
+            daemon_guard_age().is_some(),
+            "aborted force-clear must keep the stamp"
+        );
+        assert!(
+            !try_register_handle(DAEMON_HANDLE),
+            "aborted force-clear must keep the handle registered (watcher untouched)"
+        );
+
+        deregister_process(DAEMON_HANDLE);
+        clear_daemon_guard_stamp();
+    }
+
+    // Minor review finding: the deregister→clear gap. An exiting start generation
+    // must clear ONLY its own stamp, so it can never wipe a newer respawn's fresh
+    // stamp (which would silently reopen the deadlock for that new start).
+    #[test]
+    fn exiting_generation_clear_does_not_clobber_a_newer_generations_stamp() {
+        let _serial = GUARD_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        clear_daemon_guard_stamp();
+
+        // Generation 1 acquires the guard, then its watcher exits.
+        let gen1 = mark_daemon_guard_acquired();
+        // In the gap between gen1 deregistering the handle and clearing its stamp,
+        // a supervisor respawn re-acquires the freed handle and stamps gen2.
+        let gen2 = mark_daemon_guard_acquired();
+        assert_ne!(gen1, gen2, "each acquisition gets a fresh generation");
+
+        // gen1's late, generation-scoped clear must be a no-op — gen2 owns the
+        // stamp now.
+        clear_daemon_guard_stamp_for(gen1);
+        assert!(
+            daemon_guard_age().is_some(),
+            "gen2's fresh stamp must survive gen1's stale clear (no reopened deadlock)"
+        );
+
+        // gen2's own clear still works.
+        clear_daemon_guard_stamp_for(gen2);
+        assert!(daemon_guard_age().is_none());
+    }
+
     // ── Constants ────────────────────────────────────────────────────────
 
     #[test]
     fn test_daemon_handle_constant() {
         assert_eq!(DAEMON_HANDLE, "hq-sync-daemon");
+    }
+
+    #[test]
+    fn test_daemon_start_deadline_constant() {
+        // Far longer than any real spawn+preflight, far shorter than the
+        // multi-hour deadlock the unbounded guard produced.
+        assert_eq!(DAEMON_START_DEADLINE, Duration::from_secs(2 * 60));
     }
 
     #[test]
