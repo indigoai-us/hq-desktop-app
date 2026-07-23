@@ -285,6 +285,42 @@ pub fn is_prefix_permission_failure(detail: &str, prefix: Option<&str>) -> bool 
 const WINDOWS_CONTROL_C_EXIT: i32 = -1_073_741_510; // 0xC000013A
 const WINDOWS_ABORT_EXIT: i32 = -1_073_740_791; // 0xC0000409
 
+/// libuv encodes a Windows `EPERM` ("operation not permitted") as this signed
+/// errno, and npm propagates it as the install process's exit code when it
+/// cannot replace the `hq` executable because the file is locked or in use — a
+/// running `hq`/terminal process, or antivirus/endpoint protection holding the
+/// binary open. This is the same value Node surfaces as
+/// `{ errno: -4048, code: 'EPERM' }`. Like the abort codes above, it is a
+/// normal user-machine condition, not an HQ updater defect (HQ-DESKTOP-3N).
+const WINDOWS_EPERM_EXIT: i32 = -4048;
+
+/// Whether a failed npm install is the EXPECTED Windows "the `hq` binary is
+/// locked / in use" condition (libuv `EPERM`). npm bubbles the same underlying
+/// error two ways depending on where it aborts:
+///   * as the install process's exit code — the raw libuv errno `-4048`, or
+///   * in its stderr as `code EPERM` / `errno -4048` / "operation not
+///     permitted" while renaming or unlinking the package it is replacing.
+///
+/// This is the Windows analogue of the `EACCES` sudo case: a local-machine
+/// setup/interference fault the app already handles with the copy-the-command
+/// UI fallback, not an updater defect. `EACCES` is classified by
+/// `is_prefix_permission_failure`, so it is explicitly excluded here to keep the
+/// two buckets disjoint. The `hq-cli` updater only ever runs
+/// `npm install -g @indigoai-us/hq-cli@latest`, so an `EPERM` from that run is
+/// the locked-binary case rather than an unrelated permission fault.
+pub fn is_windows_locked_binary_failure(exit_code: Option<i32>, detail: &str) -> bool {
+    if exit_code == Some(WINDOWS_EPERM_EXIT) {
+        return true;
+    }
+    let detail = detail.to_ascii_lowercase();
+    if detail.contains("eacces") {
+        return false;
+    }
+    detail.contains("eperm")
+        || detail.contains("operation not permitted")
+        || detail.contains("errno -4048")
+}
+
 /// Stable classification for a failed npm install. Expected local-machine
 /// failures stay actionable in the UI/local log but must not page Sentry;
 /// unexpected failures are captured with a separate fingerprint.
@@ -292,6 +328,7 @@ const WINDOWS_ABORT_EXIT: i32 = -1_073_740_791; // 0xC0000409
 pub enum InstallFailureKind {
     ExpectedPrefixPermission,
     ExpectedWindowsAbort,
+    ExpectedWindowsLockedBinary,
     Unexpected,
 }
 
@@ -304,6 +341,8 @@ pub fn classify_install_failure(
         InstallFailureKind::ExpectedPrefixPermission
     } else if matches!(exit_code, Some(WINDOWS_CONTROL_C_EXIT | WINDOWS_ABORT_EXIT)) {
         InstallFailureKind::ExpectedWindowsAbort
+    } else if is_windows_locked_binary_failure(exit_code, detail) {
+        InstallFailureKind::ExpectedWindowsLockedBinary
     } else {
         InstallFailureKind::Unexpected
     }
@@ -317,6 +356,7 @@ impl InstallFailureKind {
         match self {
             Self::ExpectedPrefixPermission => "expected-prefix-permission",
             Self::ExpectedWindowsAbort => "expected-windows-abort",
+            Self::ExpectedWindowsLockedBinary => "expected-windows-locked-binary",
             Self::Unexpected => "unexpected",
         }
     }
@@ -341,6 +381,9 @@ pub fn install_failure_detail(
         InstallFailureKind::ExpectedWindowsAbort => {
             "npm's Windows child process was interrupted or aborted. Close competing npm/Node terminals, retry the copied command in a fresh terminal, and check endpoint protection if it keeps happening.".to_string()
         }
+        InstallFailureKind::ExpectedWindowsLockedBinary => {
+            "npm could not replace the hq program because the file is locked or in use (a running hq command or terminal, or antivirus/endpoint protection). Close any open hq processes and terminals, then retry the copied command in a fresh terminal; if it keeps happening, allow-list hq in your endpoint protection.".to_string()
+        }
         InstallFailureKind::Unexpected => format!(
             "npm install exited with status {}",
             exit_code
@@ -351,14 +394,16 @@ pub fn install_failure_detail(
 }
 
 /// Decide whether a CLI-install failure should be reported to Sentry, and with
-/// what message. Returns `None` only for the expected permission failure at
-/// the selected npm global prefix — the app already handles it gracefully (the
-/// UI falls back to the copy-the-command path and the failure is kept in the
-/// local diagnostic log for Connect diagnostics), so an Error-level capture on
-/// every auto-update cycle is pure noise (HQ-SYNC-WEB-Y: exit 243, 180 events /
-/// 7 users). Returns `Some(message)` for every genuine, unexpected failure,
-/// including permission errors at another path — that is the real signal we
-/// want to stay loud at Error level.
+/// what message. Returns `None` for every EXPECTED local-machine failure — the
+/// permission failure at the selected npm global prefix (HQ-SYNC-WEB-Y: exit
+/// 243, 180 events / 7 users), the Windows child abort codes, and the Windows
+/// `EPERM` locked-binary condition (HQ-DESKTOP-3N: exit -4048). The app already
+/// handles each gracefully (the UI falls back to the copy-the-command path and
+/// the failure is kept in the local diagnostic log for Connect diagnostics), so
+/// an Error-level capture on every auto-update cycle is pure noise. Returns
+/// `Some(message)` for every genuine, unexpected failure, including permission
+/// errors at another path — that is the real signal we want to stay loud at
+/// Error level.
 pub fn install_failure_report(
     exit_code: Option<i32>,
     detail: &str,
@@ -655,6 +700,72 @@ mod tests {
         let detail = install_failure_detail(Some(WINDOWS_ABORT_EXIT), "", None);
         assert!(detail.contains("Windows child process"));
         assert!(detail.contains("fresh terminal"));
+    }
+
+    // HQ-DESKTOP-3N: a Windows `EPERM` install failure (exit -4048, the libuv
+    // errno) means npm could not replace the locked/in-use `hq` binary. It is a
+    // local-machine condition with the copy-the-command fallback — NOT an
+    // updater defect — so it must classify as expected and never page Sentry.
+    #[test]
+    fn windows_eperm_exit_code_is_an_expected_locked_binary_failure() {
+        // The exact event behind HQ-DESKTOP-3N: install exited -4048 with no
+        // useful stderr tail. Old behavior classified this as Unexpected and
+        // captured "[hq-cli-update] install failed (exit -4048)" at Error level.
+        assert_eq!(
+            classify_install_failure(Some(-4048), "", None),
+            InstallFailureKind::ExpectedWindowsLockedBinary
+        );
+        // Suppressed from Sentry (the regression: this used to return Some(...)).
+        assert_eq!(install_failure_report(Some(-4048), "", None), None);
+        assert_eq!(
+            InstallFailureKind::ExpectedWindowsLockedBinary.fingerprint_component(),
+            "expected-windows-locked-binary"
+        );
+        // Empty stderr falls back to actionable locked-binary recovery text.
+        let detail = install_failure_detail(Some(-4048), "", None);
+        assert!(detail.contains("locked or in use"), "got: {detail}");
+        assert!(detail.contains("retry"), "got: {detail}");
+    }
+
+    #[test]
+    fn windows_eperm_in_stderr_is_also_treated_as_locked_binary() {
+        // npm can bubble the same libuv EPERM through stderr (with a non-4048
+        // process code) while renaming/unlinking the package it is replacing.
+        const EPERM_STDERR: &str = "npm error code EPERM\n\
+            npm error syscall unlink\n\
+            npm error errno -4048\n\
+            npm error EPERM: operation not permitted, unlink \
+            'C:\\Users\\me\\AppData\\Roaming\\npm\\hq.cmd'";
+        assert_eq!(
+            classify_install_failure(Some(1), EPERM_STDERR, None),
+            InstallFailureKind::ExpectedWindowsLockedBinary
+        );
+        assert_eq!(install_failure_report(Some(1), EPERM_STDERR, None), None);
+        assert!(is_windows_locked_binary_failure(Some(1), EPERM_STDERR));
+    }
+
+    #[test]
+    fn locked_binary_detection_excludes_eacces_and_unrelated_failures() {
+        // EACCES (the root-owned-prefix sudo case) is a DIFFERENT expected kind,
+        // classified by prefix-permission — it must not read as locked-binary.
+        assert!(!is_windows_locked_binary_failure(
+            Some(243),
+            REAL_EACCES_STDERR
+        ));
+        assert_eq!(
+            classify_install_failure(Some(243), REAL_EACCES_STDERR, Some("/usr/local")),
+            InstallFailureKind::ExpectedPrefixPermission
+        );
+        // Genuine unexpected failures (network, ENOSPC) stay loud.
+        assert!(!is_windows_locked_binary_failure(
+            Some(1),
+            "npm error network request to https://registry.npmjs.org failed: ETIMEDOUT"
+        ));
+        assert_eq!(
+            classify_install_failure(Some(1), "npm error network ETIMEDOUT", None),
+            InstallFailureKind::Unexpected
+        );
+        assert!(!is_windows_locked_binary_failure(Some(1), ""));
     }
 
     #[test]
