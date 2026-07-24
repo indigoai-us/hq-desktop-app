@@ -173,6 +173,11 @@
 
   // Thin wrappers: delegate the invoke to the store, surface its toast (if any).
   // The agenda calls these via callback props so it stays 'invoke'-free.
+  //
+  // US-005: invite HTTP 409 is recovered inside the store (already-invited row
+  // state + background refresh). The returned toast is always kind:'info' for
+  // that path — never a warn — so this page must not promote it to the
+  // refresh-error banner (fetchError is store-owned and left untouched).
   async function onInvite(evt: MeetingEvent): Promise<void> {
     const t = await meetingsStore.inviteBot(evt);
     if (t) flashToast(t.kind, t.text);

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { get } from 'svelte/store';
 import {
   activeRecordingsFromScheduledBots,
+  botAttachmentState,
   botForEvent,
   buildRefreshProblemReport,
   buildConnectedCalendarRows,
@@ -14,10 +15,13 @@ import {
   isAuthError,
   isPlausibleMeetingUrl,
   isRecurringMeeting,
+  meetingUrlsMatch,
   MEETINGS_STALE_NOTICE_FAILURES,
   meetingsRefreshGate,
   mergeScheduledBotLookups,
   mergeScheduledBots,
+  normalizeMeetingUrl,
+  optimisticAlreadyInvitedBot,
   pickLiveMeeting,
   recurringSeriesId,
   rowButtonKind,
@@ -420,6 +424,158 @@ describe('meetings-model', () => {
       });
 
       expect(botForEvent(event, new Map(), [failedBot])).toBeUndefined();
+    });
+
+    // US-005 — join priority: event ID → series ID → normalized URL.
+    it('falls back to normalized meeting URL when calendar IDs are missing or stale', () => {
+      const event = {
+        ...eventAt('one-off-stale', new Date(2026, 4, 27, 12, 0, 0)),
+        meetingUrl: 'https://meet.google.com/abc-defg-hij?authuser=0',
+      };
+      // Bot has no calendarEventId / seriesId — only the meeting URL.
+      const urlOnlyBot = bot({
+        botId: 'bot-url-only',
+        meetingUrl: 'https://meet.google.com/abc-defg-hij#noise',
+        calendarEventId: null,
+        calendarSeriesId: null,
+      });
+
+      expect(botForEvent(event, new Map(), [urlOnlyBot])?.botId).toBe('bot-url-only');
+      expect(botAttachmentState(botForEvent(event, new Map(), [urlOnlyBot]))).toBe('invited');
+    });
+
+    it('prefers series identity over URL when both would match', () => {
+      const event = {
+        ...eventAt('series-1_20260527T190000Z', new Date(2026, 4, 27, 12, 0, 0)),
+        recurringEventId: 'series-1',
+        meetingUrl: 'https://meet.google.com/abc-defg-hij',
+      };
+      const seriesBot = bot({
+        botId: 'bot-series',
+        calendarSeriesId: 'series-1',
+        meetingUrl: 'https://meet.google.com/zzz-zzzz-zzz',
+      });
+      const urlBot = bot({
+        botId: 'bot-url',
+        meetingUrl: 'https://meet.google.com/abc-defg-hij',
+        calendarEventId: null,
+      });
+
+      expect(botForEvent(event, new Map(), [urlBot, seriesBot])?.botId).toBe('bot-series');
+    });
+
+    it('does not URL-match near-miss meetings (distinct room codes / IDs)', () => {
+      const event = {
+        ...eventAt('one-off', new Date(2026, 4, 27, 12, 0, 0)),
+        meetingUrl: 'https://meet.google.com/abc-defg-hij',
+      };
+      const nearMiss = bot({
+        botId: 'bot-near',
+        meetingUrl: 'https://meet.google.com/abc-defg-xyz',
+        calendarEventId: null,
+      });
+
+      expect(botForEvent(event, new Map(), [nearMiss])).toBeUndefined();
+    });
+  });
+
+  // US-005 — conservative Zoom / Meet / Teams identity normalization.
+  describe('normalizeMeetingUrl', () => {
+    it('collapses Zoom region hosts + drops pwd/query/fragment noise', () => {
+      expect(
+        normalizeMeetingUrl('https://us02web.zoom.us/j/8412345678?pwd=secret&status=success#room'),
+      ).toBe('https://zoom.us/j/8412345678');
+      expect(normalizeMeetingUrl('https://zoom.us/j/8412345678/')).toBe(
+        'https://zoom.us/j/8412345678',
+      );
+      expect(
+        meetingUrlsMatch(
+          'https://us02web.zoom.us/j/8412345678?pwd=a',
+          'https://zoom.us/j/8412345678?pwd=b',
+        ),
+      ).toBe(true);
+    });
+
+    it('keeps distinct Zoom meeting numbers separate', () => {
+      expect(
+        meetingUrlsMatch('https://zoom.us/j/1111111111', 'https://zoom.us/j/2222222222'),
+      ).toBe(false);
+    });
+
+    it('normalizes Google Meet room codes and strips authuser noise', () => {
+      expect(normalizeMeetingUrl('https://meet.google.com/ABC-defg-HIJ?authuser=1')).toBe(
+        'https://meet.google.com/abc-defg-hij',
+      );
+      expect(
+        meetingUrlsMatch(
+          'https://meet.google.com/abc-defg-hij#fragment',
+          'https://meet.google.com/abc-defg-hij?hs=122',
+        ),
+      ).toBe(true);
+      expect(
+        meetingUrlsMatch(
+          'https://meet.google.com/abc-defg-hij',
+          'https://meet.google.com/abc-defg-xyz',
+        ),
+      ).toBe(false);
+    });
+
+    it('normalizes Teams meetup-join path and drops context query', () => {
+      const id = '19%3ameeting_AbCd%40thread.v2';
+      expect(
+        normalizeMeetingUrl(
+          `https://teams.microsoft.com/l/meetup-join/${id}?context=%7B%22Tid%22%3A%22x%22%7D`,
+        ),
+      ).toBe(`https://teams.microsoft.com/l/meetup-join/${id}`);
+      expect(
+        meetingUrlsMatch(
+          `https://teams.microsoft.com/l/meetup-join/${id}?foo=1`,
+          `https://teams.microsoft.com/l/meetup-join/${id}#frag`,
+        ),
+      ).toBe(true);
+    });
+
+    it('returns null for unsupported or malformed URLs', () => {
+      expect(normalizeMeetingUrl('')).toBeNull();
+      expect(normalizeMeetingUrl('not a url')).toBeNull();
+      expect(normalizeMeetingUrl('http://meet.google.com/abc-defg-hij')).toBeNull();
+      expect(normalizeMeetingUrl('https://example.com/meet')).toBeNull();
+      expect(normalizeMeetingUrl('https://acme.webex.com/meet/room')).toBeNull();
+    });
+  });
+
+  describe('botAttachmentState — visible list lifecycle', () => {
+    function bot(status: string, extra: Partial<ScheduledBot> = {}): ScheduledBot {
+      return {
+        botId: 'bot-1',
+        meetingUrl: 'https://meet.google.com/abc-defg-hij',
+        platform: 'google_meet',
+        status,
+        autoScheduled: true,
+        ...extra,
+      };
+    }
+
+    it('distinguishes available-to-invite / invited / joining / recording / completed', () => {
+      expect(botAttachmentState(undefined)).toBe('available-to-invite');
+      expect(botAttachmentState(bot('scheduled'))).toBe('invited');
+      expect(botAttachmentState(bot('joining'))).toBe('joining');
+      expect(botAttachmentState(bot('recording'))).toBe('recording');
+      expect(botAttachmentState(bot('completed', { sourceLanded: true }))).toBe('completed');
+      expect(botAttachmentState(bot('completed', { sourceLanded: false }))).toBe('processing');
+    });
+
+    it('optimistic 409 seed paints as invited', () => {
+      const event = {
+        ...eventAt('evt-409', new Date(2026, 4, 27, 12, 0, 0)),
+        meetingUrl: 'https://meet.google.com/abc-defg-hij',
+        summary: 'Standup',
+      };
+      const seeded = optimisticAlreadyInvitedBot(event, event.meetingUrl!);
+      expect(seeded.status).toBe('scheduled');
+      expect(seeded.calendarEventId).toBe('evt-409');
+      expect(botAttachmentState(seeded)).toBe('invited');
+      expect(rowButtonKind(seeded)).toBe('invited');
     });
   });
 

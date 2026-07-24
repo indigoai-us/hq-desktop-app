@@ -1,5 +1,6 @@
 <script lang="ts">
   import {
+    botAttachmentState,
     botForEvent,
     companyLabel,
     durationLabel,
@@ -80,9 +81,17 @@
           {@const bot = botForEvent(event, botsByEventId, scheduledBots)}
           {@const pending = pendingEventIds.has(event.id)}
           {@const kind = rowButtonKind(bot)}
+          {@const attachment = botAttachmentState(bot)}
           {@const url = eventMeetingUrl(event)}
           {@const recurring = isRecurringMeeting(event)}
-          <div class="meeting-row" class:past={state === 'past'} class:live={state === 'live'} class:next={state === 'next'}>
+          <div
+            class="meeting-row"
+            class:past={state === 'past'}
+            class:live={state === 'live'}
+            class:next={state === 'next'}
+            data-bot-state={attachment}
+            data-testid="meeting-row"
+          >
             <div class="mtime">{timeLabel(event)}</div>
             <div class="mmeta">
               <div class="mname">

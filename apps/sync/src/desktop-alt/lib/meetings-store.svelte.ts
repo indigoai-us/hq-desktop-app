@@ -16,6 +16,8 @@ import {
   MEETINGS_STALE_NOTICE_FAILURES,
   meetingsRefreshGate,
   mergeScheduledBotLookups,
+  mergeScheduledBots,
+  optimisticAlreadyInvitedBot,
   recurringSeriesId,
   urlInviteDestinationLabel,
 } from './meetings-model';
@@ -350,10 +352,15 @@ function unlockRow(key: string): void {
   rowPending = next;
 }
 
-/** Schedule a recording bot for the event's meeting. Mirrors classic onInvite,
- *  including the benign-409 path (auto-schedule cron / another instance got
- *  there first) which refreshes and reports "already invited" rather than a
- *  scary failure. */
+/**
+ * Schedule a recording bot for the event's meeting. Mirrors classic onInvite,
+ * including the benign-409 path (auto-schedule cron / another instance got
+ * there first).
+ *
+ * US-005: HTTP 409 immediately seeds an already-invited row state and kicks a
+ * *background* refresh — no error toast/banner. The row flips to Invited
+ * before the network round-trip returns.
+ */
 async function inviteBot(evt: MeetingEvent): Promise<ToastDescriptor | null> {
   const url = eventMeetingUrl(evt);
   if (!url) return { kind: 'warn', text: 'No meeting URL on this event.' };
@@ -369,15 +376,28 @@ async function inviteBot(evt: MeetingEvent): Promise<ToastDescriptor | null> {
     await refresh();
     return { kind: 'info', text: 'Bot invited.' };
   } catch (err) {
-    const msg = String(err);
-    if (msg.includes('409') || msg.includes('bot-already-scheduled')) {
-      await refresh();
+    if (isAlreadyScheduledError(err)) {
+      seedAlreadyInvited(evt, url);
+      // Background refresh — do not block the already-invited paint, and do
+      // not surface a fetch-error banner for a successful conflict recovery.
+      void refresh();
       return { kind: 'info', text: 'Already invited — refreshing.' };
     }
     return { kind: 'warn', text: friendlyError(err, "Couldn't invite the bot.") };
   } finally {
     unlockRow(key);
   }
+}
+
+/** Immediate local state for a 409 invite conflict so the agenda paints
+ *  "Invited" without waiting on the refresh. */
+function seedAlreadyInvited(evt: MeetingEvent, meetingUrl: string): void {
+  if (botForEvent(evt, botsByEventId, allBots)) return;
+  const seeded = optimisticAlreadyInvitedBot(evt, meetingUrl);
+  const nextMap = new Map(botsByEventId);
+  nextMap.set(evt.id, seeded);
+  botsByEventId = nextMap;
+  allBots = mergeScheduledBots([seeded], allBots);
 }
 
 /** Cancel the event's scheduled bot. No-op (returns null) when there's no bot
@@ -460,8 +480,10 @@ async function inviteBotByUrl(
     const dest = urlInviteDestinationLabel(companyId, companyNamesByUid);
     return { kind: 'info', text: `Bot invited — meeting will save to ${dest}.` };
   } catch (err) {
+    // URL invites have no calendar row to seed; still treat 409 as success +
+    // background refresh (no warn toast / error banner).
     if (isAlreadyScheduledError(err)) {
-      await refresh();
+      void refresh();
       return { kind: 'info', text: 'Already invited — refreshing.' };
     }
     return { kind: 'warn', text: friendlyError(err, "Couldn't invite the bot.") };
