@@ -130,13 +130,11 @@ impl PendingMessagesTarget {
 /// Tauri event carrying the pending conversation target to the Messages shell.
 const EVENT_MESSAGES_OPEN_CONVERSATION: &str = "messages:open-conversation";
 
-/// Tauri command: open (or focus) the dedicated Messages window, optionally
-/// with a conversation `target` to open on arrival (deep link).
+/// Tauri command: open Messages as a typed desktop destination (US-004).
 ///
-/// Mirrors `dm_notify::open_dm_detail`: the window is created hidden
-/// (`visible(false)`) and only shown by `messages_window_ready` once the
-/// renderer has mounted. The shell self-fetches its data; the optional target
-/// rides the ready-handshake managed state above.
+/// Legacy name kept for frontend IPC. Messages merges into the desktop Inbox
+/// surface (US-008); no longer creates a top-level Messages webview.
+/// Optional `target` is stashed for any still-mounted legacy shell listeners.
 #[tauri::command]
 pub async fn open_messages_window(
     app: AppHandle,
@@ -147,32 +145,12 @@ pub async fn open_messages_window(
             *state.0.lock().unwrap_or_else(|p| p.into_inner()) = Some(t);
         }
     }
-    if let Some(window) = app.get_webview_window(MESSAGES_LABEL) {
-        window.show().map_err(|e| e.to_string())?;
-        window.set_focus().map_err(|e| e.to_string())?;
-        // The window is already live (its listeners are mounted), so a ready
-        // call will never come again — deliver the pending target now.
-        emit_pending_target(&app);
-        log(LOG_TAG, "MESSAGES_WINDOW_OPEN focus-existing");
-        return Ok(());
-    }
-
-    tauri::WebviewWindowBuilder::new(
-        &app,
-        MESSAGES_LABEL,
-        tauri::WebviewUrl::App("index.html".into()),
+    log(LOG_TAG, "MESSAGES_WINDOW_OPEN → desktop destination inbox");
+    crate::commands::desktop_alt::open_destination(
+        app,
+        crate::commands::desktop_alt::DesktopDestination::Messages,
     )
-    .title("Messages")
-    .inner_size(720.0, 560.0)
-    .min_inner_size(420.0, 420.0)
-    .resizable(true)
-    .decorations(true)
-    .visible(false)
-    .build()
-    .map_err(|e| e.to_string())?;
-
-    log(LOG_TAG, "MESSAGES_WINDOW_OPEN create");
-    Ok(())
+    .await
 }
 
 /// Tauri command: called by MessagesShell.svelte once its listeners are

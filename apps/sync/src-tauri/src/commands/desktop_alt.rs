@@ -428,6 +428,127 @@ pub fn desktop_alt_dev_audit_render(
     eprintln!("[desktop-alt-dev] {line}");
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// WindowRouter — single-window activation + typed destination policy (US-004)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Product policy (hq-desktop-windows-reliability):
+//   Tray left-click / taskbar second-process → compact popover only
+//   Explicit Open HQ / desktop shortcut      → one full desktop window
+//   Inbox / Messages / Meetings / Activity / Library / Core Drift
+//     → focus+route the existing desktop-alt window (no new top-level windows)
+//   Short-lived detail surfaces (DM thread, drift file list) remain detachable.
+//
+// All top-level navigation converges here. Legacy `open_*` commands wrap
+// [`open_destination`] so callers migrate without a flag day.
+
+/// Activation entry points that decide compact vs full desktop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActivationSource {
+    /// System tray / menu-bar icon left-click.
+    TrayLeftClick,
+    /// Second process launch (single-instance) or taskbar re-activation.
+    TaskbarSecondProcess,
+    /// Explicit "Open HQ" / "Open desktop view" menu action.
+    OpenHqMenu,
+    /// Global desktop shortcut (Opt/Alt+Shift+O).
+    DesktopShortcut,
+    /// Global compact shortcut (Opt/Alt+Shift+H).
+    CompactShortcut,
+}
+
+/// What the activation policy does for a given source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ActivationAction {
+    /// Show the compact popover if hidden; hide if already visible.
+    ToggleCompact,
+    /// Show (do not toggle-off) the compact popover.
+    ShowCompact,
+    /// Show/focus the full desktop, optionally landing on a route string.
+    ShowDesktop { route: Option<&'static str> },
+}
+
+/// Pure activation matrix — unit-testable without a Tauri runtime.
+pub fn activation_policy(source: ActivationSource) -> ActivationAction {
+    match source {
+        ActivationSource::TrayLeftClick | ActivationSource::CompactShortcut => {
+            ActivationAction::ToggleCompact
+        }
+        ActivationSource::TaskbarSecondProcess => ActivationAction::ShowCompact,
+        ActivationSource::OpenHqMenu | ActivationSource::DesktopShortcut => {
+            ActivationAction::ShowDesktop { route: None }
+        }
+    }
+}
+
+/// Typed top-level destinations that always reuse the single desktop window.
+///
+/// Route strings match the frontend `resolvePendingDesktopRoute` / `desktop:navigate`
+/// contract in `src/desktop-alt/route.ts`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DesktopDestination {
+    /// Default landing / activity digest + Core Drift card surface.
+    Home,
+    Inbox,
+    /// Legacy Messages surface — resolves to Inbox on the frontend.
+    Messages,
+    Meetings,
+    /// Session activity digest lives on Home (no separate top-level page).
+    Activity,
+    /// Core Drift card lives on Home; file-level detail stays detachable.
+    CoreDrift,
+    Library,
+    LibraryInstalled,
+    Settings,
+    /// Free-form route already in the pending-route grammar (company tabs, etc.).
+    Custom(String),
+}
+
+impl DesktopDestination {
+    /// Wire string consumed by `open_desktop_alt_window_inner` / `desktop:navigate`.
+    pub fn route_str(&self) -> &str {
+        match self {
+            Self::Home | Self::Activity | Self::CoreDrift => "home",
+            Self::Inbox | Self::Messages => "inbox",
+            Self::Meetings => "meetings",
+            Self::Library => "library",
+            Self::LibraryInstalled => "library:installed",
+            Self::Settings => "settings",
+            Self::Custom(s) => s.as_str(),
+        }
+    }
+
+    /// Parse a legacy intent / deep-link name into a typed destination.
+    /// Unknown values become [`DesktopDestination::Custom`] when non-empty.
+    pub fn from_route_name(name: &str) -> Option<Self> {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        let normalized = trimmed.replace('/', ":");
+        Some(match normalized.as_str() {
+            "home" | "sync" | "activity" | "core-drift" | "drift" => Self::Home,
+            "inbox" | "messages" | "notifications" => Self::Inbox,
+            "meetings" => Self::Meetings,
+            "library" => Self::Library,
+            "library:installed" => Self::LibraryInstalled,
+            "settings" => Self::Settings,
+            other => Self::Custom(other.to_string()),
+        })
+    }
+}
+
+/// Focus or create the single desktop window at `destination`.
+///
+/// Already-mounted desktops receive a live `desktop:navigate` event (see
+/// [`open_desktop_alt_window_inner`]); cold builds queue a pending route.
+pub async fn open_destination(
+    app: AppHandle,
+    destination: DesktopDestination,
+) -> Result<(), String> {
+    open_desktop_alt_window_inner(app, Some(destination.route_str())).await
+}
+
 /// Open or focus the expanded desktop window (GA — any signed-in user).
 ///
 /// The window is declared in `tauri.conf.json` as hidden, so normal app
@@ -437,6 +558,9 @@ pub fn desktop_alt_dev_audit_render(
 /// `route` (optional) lands the window on a specific screen — e.g. `"meetings"`
 /// from the meeting-detected notification. Omitted (the manual "open new UX"
 /// button) keeps the default Sync screen.
+///
+/// Prefer [`open_destination`] / typed [`DesktopDestination`] for new call sites;
+/// this command remains the IPC surface and still reuses one desktop window.
 #[tauri::command]
 pub async fn open_desktop_alt_window(app: AppHandle, route: Option<String>) -> Result<(), String> {
     open_desktop_alt_window_inner(app, route.as_deref()).await
@@ -596,4 +720,87 @@ pub async fn list_hq_dir(rel_path: String) -> Result<Vec<DirEntry>, String> {
     }
     let hq = resolve_hq_folder();
     list_dir_entries(&hq, &rel_path)
+}
+
+#[cfg(test)]
+mod window_router_tests {
+    use super::*;
+
+    #[test]
+    fn activation_matrix_tray_and_taskbar_are_compact() {
+        assert_eq!(
+            activation_policy(ActivationSource::TrayLeftClick),
+            ActivationAction::ToggleCompact
+        );
+        assert_eq!(
+            activation_policy(ActivationSource::CompactShortcut),
+            ActivationAction::ToggleCompact
+        );
+        assert_eq!(
+            activation_policy(ActivationSource::TaskbarSecondProcess),
+            ActivationAction::ShowCompact
+        );
+    }
+
+    #[test]
+    fn activation_matrix_open_hq_and_desktop_shortcut_are_desktop() {
+        assert_eq!(
+            activation_policy(ActivationSource::OpenHqMenu),
+            ActivationAction::ShowDesktop { route: None }
+        );
+        assert_eq!(
+            activation_policy(ActivationSource::DesktopShortcut),
+            ActivationAction::ShowDesktop { route: None }
+        );
+    }
+
+    #[test]
+    fn destination_route_strings_match_frontend_pending_route_grammar() {
+        assert_eq!(DesktopDestination::Home.route_str(), "home");
+        assert_eq!(DesktopDestination::Activity.route_str(), "home");
+        assert_eq!(DesktopDestination::CoreDrift.route_str(), "home");
+        assert_eq!(DesktopDestination::Inbox.route_str(), "inbox");
+        assert_eq!(DesktopDestination::Messages.route_str(), "inbox");
+        assert_eq!(DesktopDestination::Meetings.route_str(), "meetings");
+        assert_eq!(DesktopDestination::Library.route_str(), "library");
+        assert_eq!(
+            DesktopDestination::LibraryInstalled.route_str(),
+            "library:installed"
+        );
+        assert_eq!(DesktopDestination::Settings.route_str(), "settings");
+        assert_eq!(
+            DesktopDestination::Custom("company:indigo:activity".into()).route_str(),
+            "company:indigo:activity"
+        );
+    }
+
+    #[test]
+    fn from_route_name_parses_top_level_destinations() {
+        assert_eq!(
+            DesktopDestination::from_route_name("inbox"),
+            Some(DesktopDestination::Inbox)
+        );
+        assert_eq!(
+            DesktopDestination::from_route_name("messages"),
+            Some(DesktopDestination::Inbox)
+        );
+        assert_eq!(
+            DesktopDestination::from_route_name("meetings"),
+            Some(DesktopDestination::Meetings)
+        );
+        assert_eq!(
+            DesktopDestination::from_route_name("activity"),
+            Some(DesktopDestination::Home)
+        );
+        assert_eq!(
+            DesktopDestination::from_route_name("core-drift"),
+            Some(DesktopDestination::Home)
+        );
+        assert_eq!(
+            DesktopDestination::from_route_name("library:installed"),
+            Some(DesktopDestination::LibraryInstalled)
+        );
+        assert_eq!(DesktopDestination::from_route_name(""), None);
+        assert_eq!(DesktopDestination::from_route_name("   "), None);
+    }
 }

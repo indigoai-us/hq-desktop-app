@@ -196,12 +196,15 @@ pub async fn check_pack_update(app: AppHandle) -> Result<Option<PackUpdateInfo>,
     check_pack_updates_once(&app).await
 }
 
-/// Legacy standalone Packages-window IPC. Installed packs now live in the
-/// desktop-alt Library surface; route old callers to Library > Installed.
+/// Legacy standalone Packages-window IPC. Installed packs live in the
+/// desktop-alt Library surface; route via typed WindowRouter (US-004).
 #[tauri::command]
 pub async fn open_packages_window(app: AppHandle) -> Result<(), String> {
-    crate::commands::desktop_alt::open_desktop_alt_window_inner(app, Some("library:installed"))
-        .await
+    crate::commands::desktop_alt::open_destination(
+        app,
+        crate::commands::desktop_alt::DesktopDestination::LibraryInstalled,
+    )
+    .await
 }
 
 /// Legacy ready-handshake for the retired Packages window. The unified

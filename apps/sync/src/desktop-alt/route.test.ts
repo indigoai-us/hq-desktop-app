@@ -269,6 +269,10 @@ describe('US-002 pending-route aliases (desktop_alt_consume_pending_route)', () 
     expect(resolvePendingDesktopRoute('marketplace')).toEqual({ kind: 'marketplace' });
     expect(resolvePendingDesktopRoute('library')).toEqual({ kind: 'library' });
     expect(resolvePendingDesktopRoute('settings')).toEqual({ kind: 'settings' });
+    // US-004 WindowRouter: Activity + Core Drift land on Home (no top-level windows).
+    expect(resolvePendingDesktopRoute('activity')).toEqual({ kind: 'home' });
+    expect(resolvePendingDesktopRoute('core-drift')).toEqual({ kind: 'home' });
+    expect(resolvePendingDesktopRoute('drift')).toEqual({ kind: 'home' });
     // The Companies page is gone (US-007) — a stale intent is ignored, not routed.
     expect(resolvePendingDesktopRoute('companies')).toBeNull();
     expect(resolvePendingDesktopRoute('bogus')).toBeNull();

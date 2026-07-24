@@ -129,19 +129,23 @@ describe('US-005: Alt Home surface wires to real sync state and events', () => {
 // relocated to SettingsPage (popover Settings.svelte retired).
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe('US-005 acceptance: menubar icon click opens the desktop view', () => {
-  it("tray_helper 'show' path marshals toggle_desktop_window (not toggle_popover_window)", () => {
-    // "show" still parses the icon anchor for popover-fallback anchoring.
+// Retargeted by hq-desktop-windows-reliability US-004: tray/menubar left-click
+// toggles the compact popover; full desktop is explicit Open HQ / shortcut only.
+describe('US-005 acceptance: menubar icon click opens the compact popover (US-004 retarget)', () => {
+  it("tray_helper 'show' path marshals toggle_popover_window (not toggle_desktop_window)", () => {
+    // "show" still parses the icon anchor for popover positioning.
     expect(trayHelper).toContain('strip_prefix("show")');
     expect(trayHelper).toContain('set_tray_anchor_x');
-    // Main-thread marshal → desktop toggle (no poll-thread AppKit deadlock).
-    expect(trayHelper).toMatch(/run_on_main_thread\([\s\S]*?toggle_desktop_window/);
-    expect(trayHelper).toContain('crate::tray::toggle_desktop_window');
-    // Must not route menubar click through the classic popover toggle.
-    expect(trayHelper).not.toContain('toggle_popover_window');
+    // Main-thread marshal → compact popover toggle (no poll-thread AppKit deadlock).
+    expect(trayHelper).toMatch(/run_on_main_thread\([\s\S]*?toggle_popover_window/);
+    expect(trayHelper).toContain('crate::tray::toggle_popover_window');
+    // Must not open full desktop from menubar left-click.
+    expect(trayHelper).not.toMatch(
+      /strip_prefix\("show"\)[\s\S]*?toggle_desktop_window/,
+    );
   });
 
-  it('tray.rs toggle_desktop_window hides visible desktop-alt, opens otherwise, falls back to popover on Err', () => {
+  it('tray.rs toggle_desktop_window remains for explicit Open HQ / shortcut', () => {
     expect(trayRs).toContain('pub fn toggle_desktop_window');
     const fnIdx = trayRs.indexOf('pub fn toggle_desktop_window');
     expect(fnIdx).toBeGreaterThan(-1);
@@ -157,11 +161,11 @@ describe('US-005 acceptance: menubar icon click opens the desktop view', () => {
     expect(body).toMatch(/if let Err[\s\S]*?show_popover_window/);
   });
 
-  it('non-macOS on_tray_icon_event left-click calls toggle_desktop_window', () => {
-    // Tao tray is the menubar surface on non-macOS; left-click must open desktop.
+  it('non-macOS on_tray_icon_event left-click calls toggle_popover_window', () => {
+    // Tao tray is the menubar surface on non-macOS; left-click toggles compact.
     expect(trayRs).toContain('on_tray_icon_event');
     expect(trayRs).toMatch(
-      /TrayIconEvent::Click\s*\{[\s\S]*?MouseButton::Left[\s\S]*?toggle_desktop_window/,
+      /TrayIconEvent::Click\s*\{[\s\S]*?MouseButton::Left[\s\S]*?toggle_popover_window/,
     );
   });
 });

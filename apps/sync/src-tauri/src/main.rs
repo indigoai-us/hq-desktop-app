@@ -141,20 +141,12 @@ fn main() {
         // menubar process. Here the callback surfaces the existing instance and
         // the second process exits instead of becoming a ghost duplicate.
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            // Prefer the detached "HQ Meetings" (desktop-alt) window when it's
-            // open. Otherwise Windows must route through the tray helper so the
-            // popover is positioned above the taskbar tray and gets its DWM
-            // always-on-top/corner treatment, matching the legacy Windows app.
-            if let Some(window) = app.get_webview_window("desktop-alt") {
-                let _ = window.show();
-                let _ = window.unminimize();
-                let _ = window.set_focus();
-                crate::util::logfile::log(
-                    "app",
-                    "single-instance: focused existing window on second launch",
-                );
-                return;
-            }
+            // US-004 WindowRouter: taskbar / second-process activation always
+            // shows the compact notification popover — never auto-focuses the
+            // full desktop. Desktop opens only via explicit Open HQ / shortcut.
+            let _ = commands::desktop_alt::activation_policy(
+                commands::desktop_alt::ActivationSource::TaskbarSecondProcess,
+            );
 
             #[cfg(target_os = "windows")]
             {
