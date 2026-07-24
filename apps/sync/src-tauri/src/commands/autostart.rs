@@ -44,14 +44,19 @@ fn start_at_login_pref() -> bool {
 /// the effective `startAtLogin` preference so a fresh install autostarts by
 /// default without the user having to open Settings — while still honouring
 /// an explicit `"startAtLogin": false` opt-out (in which case a stale plist
-/// is removed). Best-effort: every IO error is logged and swallowed so a
-/// failure here can never abort app launch.
+/// is removed). It ALSO self-heals an existing registration that points at a
+/// stale executable path: an older build wrote `.../HQ.app/Contents/MacOS/HQ`,
+/// but the bundled binary is `hq-sync-menubar`, so launchd exited EX_CONFIG
+/// and autosync never ran. On upgrade we detect the mismatch and rewrite the
+/// plist to the current executable path. Best-effort: every IO error is logged
+/// and swallowed so a failure here can never abort app launch.
 pub fn ensure_autostart_on_launch() {
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
+        use hq_platform::autostart::ReconcileAction;
+
         let want_enabled = start_at_login_pref();
 
-        #[cfg(target_os = "macos")]
         let currently_enabled = match hq_platform::autostart::is_enabled() {
             Ok(enabled) => enabled,
             Err(e) => {
@@ -59,45 +64,79 @@ pub fn ensure_autostart_on_launch() {
                     "autostart",
                     &format!("ensure: cannot read current autostart state: {e}"),
                 );
-                return;
+                // macOS: can't safely reconcile without a reliable read — bail.
+                // Windows: treat as not-registered and let reconciliation
+                // (re)create it if wanted (matches the prior behavior).
+                #[cfg(target_os = "macos")]
+                {
+                    return;
+                }
+                #[cfg(target_os = "windows")]
+                {
+                    false
+                }
             }
         };
 
-        #[cfg(target_os = "windows")]
-        let currently_enabled = match hq_platform::autostart::is_enabled() {
-            Ok(enabled) => enabled,
-            Err(e) => {
-                log(
-                    "autostart",
-                    &format!("ensure: cannot read current autostart state: {e}"),
-                );
-                false
+        // Path currency only matters while a registration exists. On a probe
+        // error, assume current so a transient failure never rewrites the plist.
+        let path_is_current = if currently_enabled {
+            match hq_platform::autostart::is_current() {
+                Ok(v) => v,
+                Err(e) => {
+                    log(
+                        "autostart",
+                        &format!("ensure: cannot read autostart path state: {e}"),
+                    );
+                    true
+                }
             }
+        } else {
+            true
         };
 
-        if want_enabled != currently_enabled {
-            match hq_platform::autostart::set_enabled(want_enabled) {
-                Ok(()) => {
-                    if want_enabled {
+        match hq_platform::autostart::reconcile_action(
+            want_enabled,
+            currently_enabled,
+            path_is_current,
+        ) {
+            ReconcileAction::None => {}
+            action @ (ReconcileAction::Enable | ReconcileAction::Refresh) => {
+                match hq_platform::autostart::set_enabled(true) {
+                    Ok(()) => {
+                        let created = if action == ReconcileAction::Refresh {
+                            "rewrote stale LaunchAgent path"
+                        } else {
+                            "created LaunchAgent plist (default-on)"
+                        };
                         #[cfg(target_os = "macos")]
+                        log("autostart", &format!("ensure: {created}"));
+                        #[cfg(target_os = "windows")]
                         log(
                             "autostart",
-                            "ensure: created LaunchAgent plist (default-on)",
+                            &format!(
+                                "ensure: {}",
+                                created
+                                    .replace("LaunchAgent plist", "Run value")
+                                    .replace("LaunchAgent", "Run value")
+                            ),
                         );
-                        #[cfg(target_os = "windows")]
-                        log("autostart", "ensure: created Run value (default-on)");
-                    } else {
-                        #[cfg(target_os = "macos")]
-                        log(
-                            "autostart",
-                            "ensure: removed LaunchAgent plist (explicit opt-out)",
-                        );
-                        #[cfg(target_os = "windows")]
-                        log("autostart", "ensure: removed Run value (explicit opt-out)");
                     }
+                    Err(e) => log("autostart", &format!("ensure: set autostart failed: {e}")),
+                }
+            }
+            ReconcileAction::Disable => match hq_platform::autostart::set_enabled(false) {
+                Ok(()) => {
+                    #[cfg(target_os = "macos")]
+                    log(
+                        "autostart",
+                        "ensure: removed LaunchAgent plist (explicit opt-out)",
+                    );
+                    #[cfg(target_os = "windows")]
+                    log("autostart", "ensure: removed Run value (explicit opt-out)");
                 }
                 Err(e) => log("autostart", &format!("ensure: set autostart failed: {e}")),
-            }
+            },
         }
     }
 }
