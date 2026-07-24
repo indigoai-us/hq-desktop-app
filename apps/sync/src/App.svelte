@@ -630,12 +630,19 @@
       coreState.channel === 'staging'
         ? 'run_replace_from_staging'
         : 'install_hq_core_update';
+    // Only this direct click path opts into retrying a persisted failed or
+    // interrupted staging transition. Callers that omit these args cannot
+    // silently repeat a failed rescue for the same target.
+    const commandArgs =
+      coreState.channel === 'staging'
+        ? { retryFailed: true, invocationReason: 'user_update_pill' }
+        : undefined;
     try {
       const result = await invoke<{
         exit_code: number;
         log_tail: string;
         log_path: string;
-      }>(command);
+      }>(command, commandArgs);
       coreInstallLastResult = {
         kind: result.exit_code === 0 ? 'ok' : 'err',
         exitCode: result.exit_code,

@@ -47,6 +47,31 @@ const DEFAULT_STAGING_REPO: &str = "indigoai-us/hq-core-staging";
 
 const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
+fn is_full_git_sha(value: &str) -> bool {
+    value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn normalize_invocation_reason(value: Option<&str>) -> String {
+    let normalized: String = value
+        .unwrap_or_default()
+        .trim()
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .take(64)
+        .collect();
+    if normalized.is_empty() {
+        "unspecified".to_string()
+    } else {
+        normalized
+    }
+}
+
 // ── Eligibility + token resolution ────────────────────────────────────────────
 
 /// Read the signed-in email from the locally-cached Cognito id_token. Same
@@ -194,6 +219,11 @@ struct GhPullFile {
     sha: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct GhCommit {
+    sha: String,
+}
+
 // ── Fetch ────────────────────────────────────────────────────────────────────
 
 fn authed_client(token: &str) -> Result<reqwest::Client, String> {
@@ -211,6 +241,31 @@ fn authed_client(token: &str) -> Result<reqwest::Client, String> {
         .timeout(REQUEST_TIMEOUT)
         .build()
         .map_err(|e| format!("build staging client: {e}"))
+}
+
+/// Resolve staging `main` once and pin the rescue invocation to that exact
+/// commit. Attempt state and the spawned child must refer to the same target.
+async fn fetch_staging_target_sha(client: &reqwest::Client, repo: &str) -> Result<String, String> {
+    let url = format!("https://api.github.com/repos/{repo}/commits/main");
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("GET {url}: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("staging commits/main HTTP {}", resp.status()));
+    }
+    let parsed: GhCommit = resp
+        .json()
+        .await
+        .map_err(|e| format!("parse staging commit JSON: {e}"))?;
+    let sha = parsed.sha.trim().to_string();
+    if !is_full_git_sha(&sha) {
+        return Err(format!(
+            "staging main returned an invalid commit SHA: {sha:?}"
+        ));
+    }
+    Ok(sha)
 }
 
 /// Fetch the staging `main` tree as path -> {sha}.
@@ -447,6 +502,23 @@ pub(crate) fn rescue_command() -> tokio::process::Command {
     cmd
 }
 
+fn append_staging_rescue_args(
+    cmd: &mut tokio::process::Command,
+    hq_folder: &std::path::Path,
+    repo: &str,
+    target_sha: &str,
+    token: &str,
+) {
+    cmd.arg("--hq-root")
+        .arg(hq_folder.as_os_str())
+        .arg("--source")
+        .arg(repo)
+        .arg("--ref")
+        .arg(target_sha)
+        .arg("--yes")
+        .env("GH_TOKEN", token);
+}
+
 /// Tauri command — run the rescue script against the resolved HQ folder.
 /// Eligibility is enforced by `resolve_staging_repo`: ineligible users with
 /// no `driftStagingRepo` override resolve to `None` and get rejected here.
@@ -460,7 +532,10 @@ pub(crate) fn rescue_command() -> tokio::process::Command {
 /// scan). The frontend should show a spinner and disable the pill while
 /// the future is pending.
 #[tauri::command]
-pub async fn run_replace_from_staging() -> Result<RescueRunResult, String> {
+pub async fn run_replace_from_staging(
+    retry_failed: Option<bool>,
+    invocation_reason: Option<String>,
+) -> Result<RescueRunResult, String> {
     // Settings toggle: @indigo user opted out of the DEFAULT staging
     // channel. The pill should already be hidden when the toggle is
     // off, so reaching this command means the frontend is stale or a
@@ -485,6 +560,8 @@ pub async fn run_replace_from_staging() -> Result<RescueRunResult, String> {
     })?;
     let token = resolve_gh_token()
         .ok_or_else(|| "no GitHub token available (gh auth token failed)".to_string())?;
+    let client = authed_client(&token)?;
+    let target_sha = fetch_staging_target_sha(&client, &repo).await?;
     let hq_folder = resolve_hq_folder();
     if !looks_like_hq_root(&hq_folder) {
         return Err(format!(
@@ -492,26 +569,113 @@ pub async fn run_replace_from_staging() -> Result<RescueRunResult, String> {
             hq_folder.display()
         ));
     }
+    let explicit_retry = retry_failed.unwrap_or(false);
+    let reason = normalize_invocation_reason(invocation_reason.as_deref());
+    let attempt_id = uuid::Uuid::new_v4().to_string();
+    let attempt_state_path = paths::hq_config_dir()?.join("rescue-attempts.json");
+    let started_at = chrono::Utc::now().to_rfc3339();
+    let admission = crate::commands::hq_core_attempt::begin_attempt(
+        &attempt_state_path,
+        crate::commands::hq_core_attempt::BeginRequest {
+            repo: &repo,
+            target_sha: &target_sha,
+            explicit_retry,
+            reason: &reason,
+            attempt_id: &attempt_id,
+            owner_pid: std::process::id(),
+            now: &started_at,
+        },
+        crate::commands::hq_core_attempt::owner_pid_is_alive,
+    )?;
+
+    match admission {
+        crate::commands::hq_core_attempt::BeginOutcome::Blocked(message) => {
+            log(
+                "hq-core-staging",
+                &format!(
+                    "rescue admission=blocked caller=hq-desktop reason={reason} explicit_retry={explicit_retry} repo={repo} target_sha={target_sha} detail={message}"
+                ),
+            );
+            return Err(message);
+        }
+        crate::commands::hq_core_attempt::BeginOutcome::AlreadySucceeded(record) => {
+            log(
+                "hq-core-staging",
+                &format!(
+                    "rescue admission=already_succeeded caller=hq-desktop reason={reason} explicit_retry={explicit_retry} repo={repo} target_sha={target_sha} attempt_id={} attempts={} snapshot=skipped",
+                    record.attempt_id, record.attempt_count
+                ),
+            );
+            return Ok(RescueRunResult {
+                exit_code: 0,
+                log_tail: format!(
+                    "Skipped rescue: {repo}@{target_sha} already completed successfully."
+                ),
+                log_path: record.log_path.unwrap_or_default(),
+            });
+        }
+        crate::commands::hq_core_attempt::BeginOutcome::Started(record) => {
+            log(
+                "hq-core-staging",
+                &format!(
+                    "rescue admission=started caller=hq-desktop reason={reason} explicit_retry={explicit_retry} repo={repo} target_sha={target_sha} attempt_id={} attempts={} snapshot=pending state={}",
+                    record.attempt_id,
+                    record.attempt_count,
+                    attempt_state_path.display()
+                ),
+            );
+        }
+    }
+
     // Stream the combined output to a per-invocation log file so the user
     // can `tail -f` it during the multi-minute scan and so we have a
     // post-mortem on failures. The popover gets a 40-line tail.
     let log_path = std::env::temp_dir().join(format!(
-        "hq-sync-replace-from-staging-{}.log",
-        std::process::id()
+        "hq-sync-replace-from-staging-{}-{}.log",
+        &target_sha[..7],
+        attempt_id
     ));
-    let log_file_for_stdout = std::fs::File::create(&log_path)
-        .map_err(|e| format!("create log file {}: {e}", log_path.display()))?;
-    let log_file_for_stderr = log_file_for_stdout
-        .try_clone()
-        .map_err(|e| format!("dup log file fd: {e}"))?;
+    let log_file_for_stdout = match std::fs::File::create(&log_path) {
+        Ok(file) => file,
+        Err(error) => {
+            let _ = crate::commands::hq_core_attempt::finish_attempt(
+                &attempt_state_path,
+                &repo,
+                &target_sha,
+                &attempt_id,
+                -1,
+                &log_path.display().to_string(),
+                &chrono::Utc::now().to_rfc3339(),
+            );
+            return Err(format!("create log file {}: {error}", log_path.display()));
+        }
+    };
+    let log_file_for_stderr = match log_file_for_stdout.try_clone() {
+        Ok(file) => file,
+        Err(error) => {
+            let _ = crate::commands::hq_core_attempt::finish_attempt(
+                &attempt_state_path,
+                &repo,
+                &target_sha,
+                &attempt_id,
+                -1,
+                &log_path.display().to_string(),
+                &chrono::Utc::now().to_rfc3339(),
+            );
+            return Err(format!("dup log file fd: {error}"));
+        }
+    };
 
     log(
         "hq-core-staging",
         &format!(
-            "spawning rescue: hq-cloud@{} hq_root={} repo={} log={}",
+            "spawning rescue: hq-cloud@{} hq_root={} repo={} target_sha={} caller=hq-desktop reason={} attempt_id={} log={}",
             crate::commands::sync::HQ_CLOUD_VERSION,
             hq_folder.display(),
             repo,
+            target_sha,
+            reason,
+            attempt_id,
             log_path.display()
         ),
     );
@@ -520,27 +684,60 @@ pub async fn run_replace_from_staging() -> Result<RescueRunResult, String> {
     //     --hq-root <folder> --source <repo> --yes
     // Token is passed via env (never in argv — argv shows up in `ps`).
     let mut cmd = rescue_command();
-    cmd.arg("--hq-root")
-        .arg(hq_folder.as_os_str())
-        .arg("--source")
-        .arg(&repo)
-        .arg("--yes")
-        .env("GH_TOKEN", &token)
-        .stdout(std::process::Stdio::from(log_file_for_stdout))
+    append_staging_rescue_args(&mut cmd, &hq_folder, &repo, &target_sha, &token);
+    cmd.stdout(std::process::Stdio::from(log_file_for_stdout))
         .stderr(std::process::Stdio::from(log_file_for_stderr));
 
-    let status = cmd
-        .status()
-        .await
-        .map_err(|e| format!("spawn rescue script: {e}"))?;
+    let status = match cmd.status().await {
+        Ok(status) => status,
+        Err(error) => {
+            let finish = crate::commands::hq_core_attempt::finish_attempt(
+                &attempt_state_path,
+                &repo,
+                &target_sha,
+                &attempt_id,
+                -1,
+                &log_path.display().to_string(),
+                &chrono::Utc::now().to_rfc3339(),
+            );
+            log(
+                "hq-core-staging",
+                &format!(
+                    "rescue outcome=spawn_failed repo={repo} target_sha={target_sha} attempt_id={attempt_id} error={error} state_result={finish:?}"
+                ),
+            );
+            return Err(format!("spawn rescue script: {error}"));
+        }
+    };
 
     let exit_code = status.code().unwrap_or(-1);
     let log_tail =
         tail_log(&log_path, 40).unwrap_or_else(|e| format!("(log tail unavailable: {e})"));
 
+    let finished = crate::commands::hq_core_attempt::finish_attempt(
+        &attempt_state_path,
+        &repo,
+        &target_sha,
+        &attempt_id,
+        exit_code,
+        &log_path.display().to_string(),
+        &chrono::Utc::now().to_rfc3339(),
+    )?;
+
     log(
         "hq-core-staging",
-        &format!("rescue exit={} log={}", exit_code, log_path.display()),
+        &format!(
+            "rescue outcome={:?} exit={} repo={} target_sha={} caller=hq-desktop reason={} attempt_id={} attempts={} log={} state={}",
+            finished.status,
+            exit_code,
+            repo,
+            target_sha,
+            reason,
+            attempt_id,
+            finished.attempt_count,
+            log_path.display(),
+            attempt_state_path.display()
+        ),
     );
 
     Ok(RescueRunResult {
@@ -562,4 +759,62 @@ pub(crate) fn tail_log(path: &std::path::Path, n_lines: usize) -> Result<String,
     let lines: Vec<&str> = content.lines().collect();
     let start = lines.len().saturating_sub(n_lines);
     Ok(lines[start..].join("\n"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rescue_attempt_contract_requires_an_exact_target_sha() {
+        assert!(is_full_git_sha("2749c9e000000000000000000000000000000000"));
+        assert!(is_full_git_sha("ABCDEF0000000000000000000000000000000000"));
+        assert!(!is_full_git_sha("2749c9e"));
+        assert!(!is_full_git_sha("z749c9e000000000000000000000000000000000"));
+        assert!(!is_full_git_sha(""));
+    }
+
+    #[test]
+    fn rescue_attempt_contract_normalizes_caller_reason_for_telemetry() {
+        assert_eq!(
+            normalize_invocation_reason(Some(" user_update_pill ")),
+            "user_update_pill"
+        );
+        assert_eq!(
+            normalize_invocation_reason(Some("background/check with spaces")),
+            "background_check_with_spaces"
+        );
+        assert_eq!(normalize_invocation_reason(Some("")), "unspecified");
+        assert!(normalize_invocation_reason(Some(&"a".repeat(100))).len() <= 64);
+    }
+
+    #[test]
+    fn rescue_attempt_contract_frontend_marks_the_update_pill_as_explicit() {
+        let app_source = include_str!("../../../src/App.svelte");
+        assert!(app_source.contains("retryFailed: true"));
+        assert!(app_source.contains("invocationReason: 'user_update_pill'"));
+    }
+
+    #[test]
+    fn rescue_attempt_regression_spawn_is_pinned_to_the_full_target_sha() {
+        let target_sha = "2749c9e000000000000000000000000000000000";
+        let mut command = paths::tokio_spawn_command("npx", &[]);
+        append_staging_rescue_args(
+            &mut command,
+            std::path::Path::new("/tmp/HQ"),
+            "indigoai-us/hq-core-staging",
+            target_sha,
+            "secret-not-logged",
+        );
+        let args: Vec<String> = command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect();
+
+        assert!(
+            args.windows(2).any(|pair| pair == ["--ref", target_sha]),
+            "rescue argv must pin the exact admitted target SHA: {args:?}"
+        );
+    }
 }
