@@ -26,7 +26,7 @@ use tauri::{AppHandle, Emitter};
 use uuid::Uuid;
 
 #[cfg(target_os = "windows")]
-use std::os::windows::{io::AsRawHandle, process::CommandExt};
+use std::os::windows::io::AsRawHandle;
 #[cfg(target_os = "windows")]
 use windows::core::PCWSTR;
 #[cfg(target_os = "windows")]
@@ -37,9 +37,6 @@ use windows::Win32::System::JobObjects::{
     SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
-
-#[cfg(target_os = "windows")]
-const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Process registry
@@ -175,12 +172,10 @@ fn build_spawn_command(path: &str, args: &[String]) -> Command {
     // caller-controlled HQ paths and package ranges into shell syntax.
     let mut cmd = Command::new(path);
     cmd.args(args);
-
-    #[cfg(target_os = "windows")]
-    {
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
-
+    // Shared CREATE_NO_WINDOW helper — daemons, probes, and other background
+    // children stay invisible. Explicit user-requested terminals do not use
+    // this spawn path.
+    crate::util::paths::no_window(&mut cmd);
     cmd
 }
 

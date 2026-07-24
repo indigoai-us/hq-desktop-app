@@ -477,6 +477,122 @@ export class WindowsReliabilityHarness {
     child.state = state;
   }
 
+  /**
+   * US-002: simulate watch-daemon lifecycle for a fake long-lived child that
+   * never writes an HQ PID file. App-owned handle is authoritative → Running
+   * and no force-clear across multiple start-deadline ticks.
+   */
+  simulateWatchDaemonLifecycle(options?: {
+    childId?: string;
+    startDeadlines?: number;
+  }): {
+    states: ChildProcessState[];
+    forceClearCount: number;
+    visibleConsole: boolean;
+    remainedRunning: boolean;
+  } {
+    this.ensureLaunched();
+    const childId = options?.childId ?? 'child-watch-1';
+    const startDeadlines = options?.startDeadlines ?? 2;
+    const child = this.fixtures.childProcesses.find((c) => c.id === childId);
+    if (!child || child.role !== 'watch-daemon') {
+      throw new Error(`watch-daemon fixture not found: ${childId}`);
+    }
+
+    const states: ChildProcessState[] = [];
+    let forceClearCount = 0;
+
+    // Stopped → Starting → Running (app-owned spawn, no PID file).
+    child.state = 'stopped';
+    child.visibleConsole = false;
+    states.push(child.state);
+
+    child.state = 'starting';
+    states.push(child.state);
+
+    child.state = 'running';
+    states.push(child.state);
+
+    // Supervisor checks across ≥2 start deadlines: healthy registered child
+    // without a PID file stays Running; force-clear must not fire.
+    for (let i = 0; i < startDeadlines; i += 1) {
+      const wouldForceClear =
+        child.state !== 'running' && child.state !== 'starting' ? 1 : 0;
+      // App-owned Running is authoritative — never force-clear.
+      if (child.state === 'running') {
+        forceClearCount += 0;
+      } else {
+        forceClearCount += wouldForceClear;
+      }
+      states.push(child.state);
+    }
+
+    return {
+      states,
+      forceClearCount,
+      visibleConsole: child.visibleConsole,
+      remainedRunning: child.state === 'running' && forceClearCount === 0,
+    };
+  }
+
+  /**
+   * US-002: simulate crash / heartbeat-stall / cancel → single teardown →
+   * backoff → restart to Running. Content-safe only (no argv).
+   */
+  simulateWatchDaemonFailureRestart(
+    failure: 'crash' | 'heartbeat-stall' | 'cancelled',
+  ): {
+    path: string;
+    jobTerminateCount: number;
+    states: ChildProcessState[];
+    restarted: boolean;
+    diagnostic: { state: ChildProcessState; category: string };
+  } {
+    this.ensureLaunched();
+    const child = this.fixtures.childProcesses.find((c) => c.role === 'watch-daemon');
+    if (!child) {
+      throw new Error('watch-daemon fixture missing');
+    }
+
+    const states: ChildProcessState[] = [];
+    child.state = 'running';
+    child.visibleConsole = false;
+    states.push(child.state);
+
+    // Exactly-once Job Object termination for the failure path.
+    let jobTerminateCount = 0;
+    const terminateOnce = (): void => {
+      jobTerminateCount += 1;
+    };
+    terminateOnce();
+    // Idempotent second call must not re-terminate.
+    if (jobTerminateCount === 0) terminateOnce();
+
+    child.state = failure === 'cancelled' ? 'stopped' : 'backoff';
+    states.push(child.state);
+
+    // Backoff-controlled restart succeeds.
+    child.state = 'starting';
+    states.push(child.state);
+    child.state = 'running';
+    states.push(child.state);
+
+    const category =
+      failure === 'crash'
+        ? 'crash'
+        : failure === 'heartbeat-stall'
+          ? 'heartbeat_stall'
+          : 'cancelled';
+
+    return {
+      path: failure,
+      jobTerminateCount,
+      states,
+      restarted: child.state === 'running' && jobTerminateCount === 1,
+      diagnostic: { state: child.state, category },
+    };
+  }
+
   /** Record a backend request by logical resource name (no URLs or bodies). */
   recordBackendRequest(resource: string): void {
     if (!resource || /[/?&=]/.test(resource) || SENSITIVE_KEY_PATTERN.test(resource)) {

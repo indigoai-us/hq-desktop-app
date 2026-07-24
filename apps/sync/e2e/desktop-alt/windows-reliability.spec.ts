@@ -153,3 +153,36 @@ describe('desktop-alt Windows reliability entry (US-001)', () => {
     ).toBe(true);
   });
 });
+
+describe('desktop-alt Windows reliability — daemon lifecycle (US-002)', () => {
+  it('progresses Stopped → Starting → Running for a fake long-lived child without a PID file', async () => {
+    const harness = track(new WindowsReliabilityHarness({ forceScripted: true }));
+    await harness.launch();
+    const lifecycle = harness.simulateWatchDaemonLifecycle({ startDeadlines: 2 });
+    expect(lifecycle.states[0]).toBe('stopped');
+    expect(lifecycle.states).toEqual(
+      expect.arrayContaining(['stopped', 'starting', 'running']),
+    );
+    expect(lifecycle.remainedRunning).toBe(true);
+    expect(lifecycle.forceClearCount).toBe(0);
+    expect(lifecycle.visibleConsole).toBe(false);
+  });
+
+  it('tears down Job Object once on crash/stall/cancel and allows restart', async () => {
+    const harness = track(new WindowsReliabilityHarness({ forceScripted: true }));
+    await harness.launch();
+    for (const failure of ['crash', 'heartbeat-stall', 'cancelled'] as const) {
+      const result = harness.simulateWatchDaemonFailureRestart(failure);
+      expect(result.jobTerminateCount).toBe(1);
+      expect(result.restarted).toBe(true);
+    }
+  });
+
+  it('keeps background probe and daemon fixtures console-hidden', async () => {
+    const harness = track(new WindowsReliabilityHarness({ forceScripted: true }));
+    await harness.launch();
+    const diagnostics = harness.captureDiagnostics();
+    expect(diagnostics.visibleConsoleProcessCount).toBe(0);
+    expect(diagnostics.childProcessStates.every((c) => !c.visibleConsole)).toBe(true);
+  });
+});

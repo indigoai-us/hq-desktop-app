@@ -103,6 +103,9 @@ fn windows_probe_command(binary: &str) -> Command {
     let mut command = Command::new(comspec);
     command.args(["/C", &format!("{binary} --version")]);
     command.env("PATH", extended_search_path());
+    // Background AI-tool capability probes must not flash a console window.
+    // Explicit user-requested terminals (Done-screen launchers) stay visible.
+    crate::util::paths::no_window(&mut command);
     command
 }
 
