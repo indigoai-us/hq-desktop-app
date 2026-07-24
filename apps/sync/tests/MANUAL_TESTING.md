@@ -909,6 +909,77 @@ Before each release (v1.0.0 and every subsequent minor/patch):
 
 ---
 
+## Windows Reliability Harness (hq-desktop-windows-reliability / US-001)
+
+Repeatable harness for Windows platform regressions before a signed release.
+Diagnostics are **content-safe**: window counts, console-visibility flags,
+child-process state enums, and backend request counts only — never vault file
+contents, tokens, or sensitive command arguments.
+
+### Source files
+
+| Path | Role |
+|------|------|
+| `e2e/desktop-alt/windows-reliability-harness.ts` | Harness + fixtures + content-safe diagnostics + capability/schema check |
+| `e2e/desktop-alt/windows-reliability.spec.ts` | desktop-alt suite entry (macOS-compatible scripted mode) |
+| `__tests__/stories/windows-reliability-harness.test.ts` | Story / acceptance coverage for US-001 |
+
+### Scripted mode (default — every OS)
+
+```powershell
+# From apps/sync
+pnpm test -- __tests__/stories/windows-reliability-harness.test.ts
+pnpm vitest run --config e2e/desktop-alt/vitest.config.ts e2e/desktop-alt/windows-reliability.spec.ts
+# Full desktop-alt suite (includes Windows reliability entry + existing macOS coverage)
+pnpm run test:e2e:desktop-alt
+```
+
+Scripted mode launches deterministic fixtures for tray activation, child
+processes, meetings, workspaces, and Core Drift without starting a real app
+binary. Use this on macOS CI and for day-to-day local runs.
+
+### Live mode (Windows + built app)
+
+```powershell
+# Build a debug Windows binary first, then:
+$env:HQ_SYNC_WINDOWS_RELIABILITY_LIVE = "1"
+$env:HQ_SYNC_DESKTOP_ALT_APP = "C:\path\to\hq-sync-menubar.exe"
+pnpm test -- __tests__/stories/windows-reliability-harness.test.ts
+```
+
+Live mode only activates on `win32` when both the live flag and a resolvable
+app path are set. Missing configuration falls back to scripted with a clear
+reason — tests do not fail solely because live mode is unavailable.
+
+### Capability / schema generation clean-check
+
+Committed files under `src-tauri/gen/schemas/` must stay aligned with
+`src-tauri/capabilities/*.json`. On Windows the harness can re-run
+`cargo check` (which executes `tauri_build` schema generation) and assert
+`git status --porcelain -- src-tauri/gen/schemas` is empty:
+
+```powershell
+# Force the cargo-driven clean-check on any OS (slow):
+$env:HQ_SYNC_WINDOWS_SCHEMA_GEN = "1"
+pnpm vitest run --config e2e/desktop-alt/vitest.config.ts e2e/desktop-alt/windows-reliability.spec.ts
+
+# Disable the cargo step even on Windows:
+$env:HQ_SYNC_WINDOWS_SCHEMA_GEN = "0"
+```
+
+Without `HQ_SYNC_WINDOWS_SCHEMA_GEN=1`, CI (every OS) only runs the static
+capability ↔ generated-schema alignment check. Force the cargo step on a
+Windows release gate or before committing capability edits.
+
+### Manual observation checklist (Windows dogfood)
+
+- [ ] Scripted story + desktop-alt entry pass on the PR branch
+- [ ] Optional: live harness with a debug `.exe` observes tray activation and child-process states without console flash
+- [ ] Captured diagnostics JSON has no `token`, `argv`, vault body, or `Bearer` material
+- [ ] After capability edits, `src-tauri/gen/schemas/` is committed and `git status` is clean
+
+---
+
 ## Policy Deviation
 
 ### Reference
