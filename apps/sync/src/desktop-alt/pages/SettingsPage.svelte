@@ -1118,7 +1118,8 @@
   }
 
   select {
-    color-scheme: dark;
+    /* Follow OS appearance — never lock the native control to dark (US-003). */
+    color-scheme: light dark;
   }
 
   select option {

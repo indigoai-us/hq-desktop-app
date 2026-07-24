@@ -654,15 +654,28 @@
     overflow: hidden;
   }
 
-  /* Windows has no NSVisualEffectView behind the transparent webview. Give
-     the tray popup a fully opaque surface so other windows never bleed
-     through its content; macOS keeps the native glass treatment above. */
+  /* Windows: Mica/Acrylic is applied natively (window_effects). Keep an
+     opaque theme-matched CSS surface so content never bleeds through when
+     composition fails — but never hard-code dark (#18181b). Tokens follow
+     prefers-color-scheme / live OS theme (US-003). */
   :global(html[data-platform='windows']) .mbpop {
-    background: #18181b;
+    background: var(--pop-bg, #f7f7f8);
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
-    border-color: rgba(255, 255, 255, 0.16);
-    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
+    border-color: var(--pop-border);
+    box-shadow: var(--pop-shadow, 0 16px 40px rgba(0, 0, 0, 0.22));
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :global(html[data-platform='windows']) .mbpop {
+      background: var(--pop-bg, #262628);
+    }
+  }
+
+  @media (prefers-reduced-transparency: reduce) {
+    :global(html[data-platform='windows']) .mbpop {
+      background: var(--pop-bg, #f7f7f8);
+    }
   }
 
   .mbpop-content {

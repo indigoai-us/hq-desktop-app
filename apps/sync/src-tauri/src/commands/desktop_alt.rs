@@ -522,9 +522,22 @@ pub async fn open_desktop_alt_window_inner(
         });
     }
 
+    // Windows: native decorated frame (system controls + Snap Layouts). The
+    // macOS Overlay title-bar branch above stays macOS-only. Map the live
+    // Tauri theme onto Mica / Acrylic so light mode is never forced dark.
     #[cfg(target_os = "windows")]
     {
-        hq_platform::window_effects::apply_popover_vibrancy(&_window);
+        let appearance = match _window.theme() {
+            Ok(tauri::Theme::Dark) => {
+                hq_platform::window_effects::WindowAppearance::Dark
+            }
+            Ok(tauri::Theme::Light) => {
+                hq_platform::window_effects::WindowAppearance::Light
+            }
+            // Unknown / future variants: fall back to system AppsUseLightTheme.
+            _ => hq_platform::window_effects::resolve_windows_appearance(None),
+        };
+        hq_platform::window_effects::apply_windows_window_style(&_window, appearance);
     }
 
     Ok(())

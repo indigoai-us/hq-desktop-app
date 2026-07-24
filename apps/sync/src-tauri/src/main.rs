@@ -266,6 +266,16 @@ fn main() {
                     let _ = window.hide();
                 }
             }
+            // Windows: reapply Mica/Acrylic when the OS theme flips so light
+            // mode never keeps a forced-dark backdrop (US-003). Theme is left
+            // unset on window builders so ThemeChanged keeps firing.
+            #[cfg(target_os = "windows")]
+            if let tauri::WindowEvent::ThemeChanged(theme) = event {
+                let appearance = hq_platform::window_effects::WindowAppearance::from_dark(
+                    matches!(theme, tauri::Theme::Dark),
+                );
+                hq_platform::window_effects::apply_windows_window_style(window, appearance);
+            }
         })
         .invoke_handler(tauri::generate_handler![
             commands::app::quit_app,

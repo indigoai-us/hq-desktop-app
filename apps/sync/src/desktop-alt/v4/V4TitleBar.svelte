@@ -183,8 +183,19 @@
     align-items: center;
     flex: 0 0 auto;
     gap: 4px;
-    /* 78px left inset clears the overlay traffic lights. */
+    /* 78px left inset clears the overlay traffic lights (macOS). */
     padding-left: 78px;
+  }
+
+  /* Windows uses the native decorated title bar (system controls + Snap
+     Layouts). The HQ toolbar sits below it — no macOS traffic-light gutter. */
+  :global(html[data-platform='windows']) .v4-titlebar-leading {
+    padding-left: 12px;
+  }
+
+  :global(html[data-platform='windows']) .v4-drag-lights {
+    width: 0;
+    display: none;
   }
 
   .v4-drag-pad {

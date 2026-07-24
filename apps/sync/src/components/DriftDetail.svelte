@@ -502,6 +502,12 @@
     -webkit-app-region: drag;
   }
 
+  /* Windows: native decorated title bar owns system controls — drop the
+     macOS traffic-light gutter so content aligns under the OS chrome. */
+  :global(html[data-platform='windows']) .drift-header {
+    padding-left: 1rem;
+  }
+
   /* Re-enable click capture on anything interactive inside the draggable
      header (currently nothing — the header is text-only — but future
      refresh / close buttons would need this). */
