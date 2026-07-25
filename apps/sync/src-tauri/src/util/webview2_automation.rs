@@ -52,12 +52,31 @@
 //! not be caught there. That is the smaller of the two available risks, not
 //! the absence of risk.
 //!
-//! # The other rule that keeps this correct
+//! # wry's defaults are re-included — with a measured caveat
 //!
-//! **wry's defaults are re-included.** Setting the property *replaces* wry's
-//! default string rather than extending it, so dropping it would silently
-//! re-enable the WebView2 mini-menu / SmartScreen components the default
-//! exists to disable.
+//! Setting `AdditionalBrowserArguments` *replaces* wry's default string rather
+//! than extending it, so the default is re-composed here to keep an automated
+//! build at parity with a stock wry one.
+//!
+//! That parity is not total, and the CI artifacts say so. The composed value
+//! is `<wry defaults> <injected switches>`, and msedgedriver injects its own
+//! `--disable-features=IgnoreDuplicateNavs,Prewarm`. On the
+//! `msedgewebview2.exe` command line captured in `processes-postsession.log`,
+//! that is the `--disable-features` value that survives:
+//! `msWebOOUI,msPdfOOUI,msSmartScreenProtection` appears nowhere in the
+//! capture, while `--autoplay-policy=no-user-gesture-required` from the same
+//! default string does. The likeliest mechanism is Chromium's last-one-wins
+//! handling of a repeated switch — that part is inference — but the absence is
+//! measured, in both this branch's runs and the one before it. So in an
+//! `e2e-automation` build those three features are NOT in fact disabled.
+//!
+//! This is left as-is rather than "fixed" by merging the two
+//! `--disable-features` values: the injected switches are forwarded verbatim
+//! on purpose (see `compose_browser_args`), and rewriting them would diverge
+//! from whatever the installed driver expects. It is tolerable only because it
+//! cannot reach a shipped build — the feature is off by default. Do not
+//! restate this as "wry's defaults are preserved". They are re-included, and
+//! then partly overridden.
 
 /// The variable msedgedriver (and any other WebView2 automation host) uses to
 /// pass browser switches to a WebView2 app.
@@ -159,13 +178,19 @@ mod tests {
     }
 
     #[test]
-    fn wry_defaults_are_preserved_when_overriding() {
+    fn wry_defaults_are_reincluded_in_the_composed_value() {
         let composed =
             compose_browser_args(Some("--remote-debugging-port=0")).expect("args expected");
 
-        // Setting `additionalBrowserArgs` REPLACES wry's default string, so
-        // losing these would silently re-enable the WebView2 mini-menu and
-        // SmartScreen components in the automated build.
+        // Setting `additionalBrowserArgs` REPLACES wry's default string, so it
+        // has to be re-composed here or an automated build would differ from a
+        // stock wry one by more than the driver's switches.
+        //
+        // Scope, stated so this test cannot be misread: it asserts the value
+        // this module COMPOSES, which is the only thing this module controls.
+        // It does NOT claim the switches survive to the browser process — CI's
+        // captured `msedgewebview2.exe` command line shows the driver's own
+        // `--disable-features` superseding wry's. See the module docs.
         assert!(composed.starts_with(WRY_DEFAULT_BROWSER_ARGS));
         assert!(composed.contains("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection"));
         assert!(composed.contains("--autoplay-policy=no-user-gesture-required"));
