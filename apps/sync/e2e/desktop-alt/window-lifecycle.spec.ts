@@ -6,9 +6,14 @@ describe('desktop-alt window lifecycle', () => {
     const app = await createDesktopAltHarness('qa@getindigo.ai');
 
     try {
-      expect((await app.bootPopover()).toggleVisible).toBe(true);
+      // The desktop window is only reachable for a signed-in user. In scripted
+      // mode this mirrors the Rust gate; in live mode it IS the Rust gate,
+      // asked of the running app — so a red here names the auth gate that
+      // `openDesktopAltWindow` below would hit anyway, rather than a selector
+      // that no longer exists in the product.
+      expect((await app.bootApp()).desktopAltEnabled).toBe(true);
 
-      const firstWindow = await app.clickDesktopAltToggle();
+      const firstWindow = await app.openDesktopAltWindow();
       expect(firstWindow.created).toBe(true);
       expect(await app.snapshot()).toMatchObject({
         popoverAlive: true,
@@ -23,7 +28,7 @@ describe('desktop-alt window lifecycle', () => {
         desktopAltWindow: null,
       });
 
-      const reopenedWindow = await app.clickDesktopAltToggle();
+      const reopenedWindow = await app.openDesktopAltWindow();
       expect(reopenedWindow.created).toBe(true);
       expect(reopenedWindow.id).not.toBe(firstWindow.id);
       expect(await app.snapshot()).toMatchObject({
@@ -40,8 +45,8 @@ describe('desktop-alt window lifecycle', () => {
     const app = await createDesktopAltHarness('qa@getindigo.ai');
 
     try {
-      const firstWindow = await app.clickDesktopAltToggle();
-      const focusedWindow = await app.clickDesktopAltToggle();
+      const firstWindow = await app.openDesktopAltWindow();
+      const focusedWindow = await app.openDesktopAltWindow();
 
       expect(focusedWindow.created).toBe(false);
       expect(focusedWindow.id).toBe(firstWindow.id);

@@ -39,7 +39,6 @@ interface WebDriverLogEntry {
 }
 
 const DESKTOP_ALT_SELECTOR = '#desktop-alt, html[data-window="desktop-alt"]';
-const POPOVER_TOGGLE_SELECTOR = '[data-testid="desktop-alt-toggle"]';
 const ERROR_CAPTURE_SCRIPT = `
   if (!window.__desktopAltE2eErrors) {
     window.__desktopAltE2eErrors = [];
@@ -114,17 +113,27 @@ class LiveDesktopAltHarness implements DesktopAltTestHarness {
     return harness;
   }
 
-  async bootPopover(): Promise<{ toggleVisible: boolean }> {
+  async bootApp(): Promise<{ desktopAltEnabled: boolean }> {
     await this.installErrorCaptureForAllWindows();
-    const popover = await this.findWindowWithSelector(POPOVER_TOGGLE_SELECTOR);
-    if (popover) await this.driver.switchToWindow(popover);
-    return { toggleVisible: Boolean(popover) };
+
+    // There is no in-popover launcher to find: the popover's
+    // `data-testid="desktop-alt-toggle"` button was removed in 3114f6a6 and
+    // `harness.ts` asserts it stays removed. Looking for it here returned null
+    // on every live run, so this method reported `toggleVisible: false`
+    // unconditionally while claiming to describe a visible control. The honest
+    // live answer to "is the desktop view reachable for this user" is the gate
+    // the app itself calls, asked of the running backend.
+    return { desktopAltEnabled: await this.invokeTauriCommand<boolean>('desktop_alt_enabled') };
   }
 
-  async clickDesktopAltToggle(): Promise<DesktopAltWindowState> {
+  async openDesktopAltWindow(): Promise<DesktopAltWindowState> {
     const existingDesktop = await this.findDesktopAltWindow();
 
-    await this.openDesktopAltWindow();
+    // The only way the app opens this window — App.svelte, the
+    // NotificationFeed deep-links and the tray item all invoke exactly this.
+    // It re-enters the Rust gate, so a signed-out run fails here, which is
+    // where that failure belongs.
+    await this.invokeTauriCommand('open_desktop_alt_window');
 
     const desktop = await this.waitForDesktopAltWindow();
     await this.driver.switchToWindow(desktop);
@@ -152,7 +161,9 @@ class LiveDesktopAltHarness implements DesktopAltTestHarness {
   async snapshot(): Promise<DesktopAltSnapshot> {
     const desktop = await this.findDesktopAltWindow();
     const popoverAlive = Boolean(await this.findResponsiveNonDesktopWindow(desktop));
-    const trayAlive = await this.invokeTauriCommand('set_tray_state', { state: 'idle' });
+    const trayAlive = await this.invokeTauriCommand('set_tray_state', { state: 'idle' }).then(
+      () => true,
+    );
 
     return {
       popoverAlive,
@@ -197,18 +208,6 @@ class LiveDesktopAltHarness implements DesktopAltTestHarness {
   async dispose(): Promise<void> {
     // Only the session: the tauri-driver server is shared across the spec file.
     await this.driver.deleteSession().catch(() => undefined);
-  }
-
-  private async openDesktopAltWindow(): Promise<void> {
-    const popover = await this.findWindowWithSelector(POPOVER_TOGGLE_SELECTOR);
-    if (popover) {
-      await this.driver.switchToWindow(popover);
-      const toggle = await this.driver.findElement(POPOVER_TOGGLE_SELECTOR);
-      await this.driver.clickElement(toggle);
-      return;
-    }
-
-    await this.invokeTauriCommand('open_desktop_alt_window', {});
   }
 
   private async clickButtonWithText(label: string): Promise<void> {
@@ -292,12 +291,6 @@ class LiveDesktopAltHarness implements DesktopAltTestHarness {
     return desktop;
   }
 
-  private async findWindowWithSelector(selector: string): Promise<string | null> {
-    return this.findWindowWithPredicate('return Boolean(document.querySelector(arguments[0]));', [
-      selector,
-    ]);
-  }
-
   private async findResponsiveNonDesktopWindow(desktop: string | null): Promise<string | null> {
     const handles = await this.driver.getWindowHandles();
     for (const handle of handles) {
@@ -323,8 +316,16 @@ class LiveDesktopAltHarness implements DesktopAltTestHarness {
     return null;
   }
 
-  private async invokeTauriCommand(command: string, args: Record<string, unknown>): Promise<boolean> {
-    const result = await this.driver.executeAsync<{ ok: boolean; error?: string }>(
+  /**
+   * Call a Tauri command in the current window and return what it resolved
+   * with, so a caller can assert on a command's *answer* (`desktop_alt_enabled`)
+   * and not merely on it having not thrown.
+   */
+  private async invokeTauriCommand<T = unknown>(
+    command: string,
+    args: Record<string, unknown> = {},
+  ): Promise<T> {
+    const result = await this.driver.executeAsync<{ ok: boolean; value?: T; error?: string }>(
       `
         const command = arguments[0];
         const payload = arguments[1];
@@ -335,14 +336,14 @@ class LiveDesktopAltHarness implements DesktopAltTestHarness {
           return;
         }
         Promise.resolve(invoke(command, payload))
-          .then(() => done({ ok: true }))
+          .then((value) => done({ ok: true, value }))
           .catch((error) => done({ ok: false, error: String(error?.message || error) }));
       `,
       [command, args],
     );
 
     if (!result.ok) throw new Error(result.error ?? `Tauri command failed: ${command}`);
-    return true;
+    return result.value as T;
   }
 }
 
@@ -698,9 +699,19 @@ async function startOrReuseDriver(config: LiveConfig): Promise<DriverStart> {
   const driverRunning = await client.status().catch(() => false);
 
   if (driverRunning) {
-    await client.createSession(config.appPath);
-    await assertWebviewAutomationSwitches(config, driverLogDir());
-    return { client };
+    // Reusing a driver this process did not spawn, so there is no
+    // tauri-driver.log or native driver log of our own — but the WebDriver
+    // error payload and the process snapshots still are the whole story, and
+    // not wrapping here silently dropped every diagnostic on exactly the path
+    // a developer re-running against a warm driver takes.
+    const logDir = driverLogDir();
+    try {
+      await client.createSession(config.appPath);
+      await assertWebviewAutomationSwitches(config, logDir);
+      return { client };
+    } catch (error) {
+      throw withDriverDiagnostics(describeDriverFailure(config, logDir, null, error), error);
+    }
   }
 
   const logDir = driverLogDir();
@@ -766,12 +777,20 @@ async function startOrReuseDriver(config: LiveConfig): Promise<DriverStart> {
           `Install it with \`cargo install tauri-driver --locked\`.${report}`,
       );
     }
-    if (error instanceof Error) {
-      error.message = `${error.message}${report}`;
-      throw error;
-    }
-    throw new Error(`${String(error)}${report}`);
+    throw withDriverDiagnostics(report, error);
   }
+}
+
+/**
+ * Attach a diagnostics report to whatever was thrown, without losing the
+ * original error's type or stack.
+ */
+function withDriverDiagnostics(report: string, error: unknown): Error {
+  if (error instanceof Error) {
+    error.message = `${error.message}${report}`;
+    return error;
+  }
+  return new Error(`${String(error)}${report}`);
 }
 
 function isTruthy(value: string | undefined): boolean {

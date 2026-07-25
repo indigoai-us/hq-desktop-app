@@ -76,6 +76,12 @@ jobs:
         working-directory: apps/sync/src-tauri
         run: |
           cargo test --target x86_64-pc-windows-msvc --bins
+          # Both sides of the `e2e-automation` gate are covered: the default
+          # run above proves a shipped build cannot read
+          # WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS at all, and this run proves
+          # the CI build still forwards it. Testing one configuration would
+          # leave the other free to rot.
+          cargo test --target x86_64-pc-windows-msvc --bins --features e2e-automation
           cargo test --manifest-path ../../../crates/hq-desktop-core/Cargo.toml paths::tests::test_windows
           cargo test --manifest-path ../../../crates/hq-desktop-core/Cargo.toml hq_resolver::tests
 
@@ -116,8 +122,15 @@ jobs:
           cargo install --list | Select-String -Pattern 'tauri-driver'
           tauri-driver --help
 
+      # `--features e2e-automation` compiles in the WebView2 automation bridge
+      # (src-tauri/src/util/webview2_automation.rs) that forwards msedgedriver's
+      # WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS into the app's webviews. It is off
+      # in every shipped build — honouring that user-writable variable in a
+      # release would let any local process turn the next launch into a CDP
+      # listener reaching the Tauri command surface — so the binary driven below
+      # differs from the one users install by exactly that gate.
       - name: Build launchable Windows app
-        run: pnpm tauri build --debug --no-bundle --target x86_64-pc-windows-msvc --config src-tauri/tauri.windows.conf.json
+        run: pnpm tauri build --debug --no-bundle --target x86_64-pc-windows-msvc --config src-tauri/tauri.windows.conf.json --features e2e-automation
 
       - name: Live Windows desktop smoke test
         env:
@@ -223,6 +236,12 @@ jobs:
           cargo install --list | Select-String -Pattern 'tauri-driver'
           tauri-driver --help
 
+      # Same flag as the windows-check job: `e2e-automation` is what lets
+      # msedgedriver attach, and it is never on in a shipped build. The honest
+      # consequence is that this job packages and installs a binary that is NOT
+      # byte-identical to the released one — it differs by that one feature.
+      # `cfg!(debug_assertions)` could not have been the gate instead: this is a
+      # release build.
       - name: Build production NSIS installer
         run: >-
           pnpm tauri build
@@ -231,6 +250,7 @@ jobs:
           --config src-tauri/tauri.windows.conf.json
           --config src-tauri/tauri.windows.release.conf.json
           --config src-tauri/tauri.windows.ci.conf.json
+          --features e2e-automation
 
       - name: Install production package
         id: install

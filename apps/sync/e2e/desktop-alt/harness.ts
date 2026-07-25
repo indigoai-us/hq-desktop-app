@@ -24,8 +24,23 @@ export interface DesktopAltSnapshot {
 
 export interface DesktopAltTestHarness {
   readonly mode: 'live' | 'scripted';
-  bootPopover(): MaybePromise<{ toggleVisible: boolean }>;
-  clickDesktopAltToggle(): MaybePromise<DesktopAltWindowState>;
+  /**
+   * Boot the app and report whether the desktop-alt window is reachable for
+   * this user — i.e. what the `desktop_alt_enabled` gate answers.
+   *
+   * Named for the gate rather than for a UI control on purpose: the popover's
+   * `data-testid="desktop-alt-toggle"` launcher was deleted in 3114f6a6, and
+   * `assertGateSourceContracts` below asserts it stays gone, so there is no
+   * toggle for any harness to look at. The live harness asks the running
+   * backend; the scripted harness mirrors the same Rust gate.
+   */
+  bootApp(): MaybePromise<{ desktopAltEnabled: boolean }>;
+  /**
+   * Open (or focus) the desktop-alt window the only way the app itself can:
+   * `invoke('open_desktop_alt_window')` — what App.svelte, the
+   * NotificationFeed deep-links and the tray item all call.
+   */
+  openDesktopAltWindow(): MaybePromise<DesktopAltWindowState>;
   closeDesktopAltWindow(): MaybePromise<void>;
   snapshot(): MaybePromise<DesktopAltSnapshot>;
   navigate(route: 'sync' | 'meetings' | 'company'): MaybePromise<RenderedPage>;
@@ -142,13 +157,13 @@ export class DesktopAltHarness implements DesktopAltTestHarness {
     this.email = email;
   }
 
-  bootPopover(): { toggleVisible: boolean } {
+  bootApp(): { desktopAltEnabled: boolean } {
     reportDriverMode();
     this.assertGateSourceContracts();
-    return { toggleVisible: this.isDesktopAltEnabled() };
+    return { desktopAltEnabled: this.isDesktopAltEnabled() };
   }
 
-  clickDesktopAltToggle(): DesktopAltWindowState {
+  openDesktopAltWindow(): DesktopAltWindowState {
     this.assertWindowLifecycleSourceContracts();
 
     if (!this.isDesktopAltEnabled()) {
