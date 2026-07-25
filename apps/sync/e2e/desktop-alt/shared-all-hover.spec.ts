@@ -78,17 +78,19 @@ describe('US-006 / US-009: V4Sidebar hover mount + CSS reveal', () => {
     expect(sidebar).toContain("import SidebarSyncMode from './SidebarSyncMode.svelte'");
     expect(sidebar).toContain('const REVEAL_INTENT_MS = 140');
     expect(sidebar).toContain('hover-intent delay');
+    // DESKTOP-001: hide Shared/All when the company row is expanded (children
+    // occupy that vertical space); hover still reveals on collapsed rows.
     expect(sidebar).toContain(
-      'onpointerenter={() => row.cloudActivated && queueReveal(row.slug)}',
+      'onpointerenter={() => row.cloudActivated && !row.expanded && queueReveal(row.slug)}',
     );
     expect(sidebar).toContain(
-      'onfocusin={() => row.cloudActivated && reveal(row.slug)}',
+      'onfocusin={() => row.cloudActivated && !row.expanded && reveal(row.slug)}',
     );
     expect(sidebar).toContain(
-      '{#if row.cloudActivated && revealedSlugs.has(row.slug)}',
+      '{#if row.cloudActivated && !row.expanded && revealedSlugs.has(row.slug)}',
     );
     expect(sidebar).toContain('<SidebarSyncMode');
-    expect(sidebar).toContain('class:has-syncmode={row.cloudActivated}');
+    expect(sidebar).toContain('class:has-syncmode={row.cloudActivated && !row.expanded}');
   });
 
   it('CSS reveal uses company-item hover on the syncmode slot', () => {

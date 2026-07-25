@@ -16,6 +16,8 @@
     saveMeetingsCache,
   } from '../lib/meetingsCache';
   import { shouldShowMeetingsLoadingPlaceholder } from '../lib/meetingsLoadingGate';
+  import { humanCompanyLabel } from '../lib/visible-labels';
+  import { safeUnlisten } from '../lib/listener-registry';
   import { isAlreadyScheduledError } from '../lib/invite-errors';
   import {
     botForEvent,
@@ -497,7 +499,7 @@
         if (focused) void refresh();
       })
       .then((fn) => {
-        unlistenFocus = fn;
+        unlistenFocus = safeUnlisten(fn);
       });
 
     // Esc closes the window — feels native on macOS where ⌘W is the
@@ -1331,14 +1333,14 @@
 
   function companyLabel(e: MeetingEvent): string {
     if (!e.sourceCompanyUid) return 'Personal';
-    // Prefer the human-readable name from /membership/me. Fall back to
-    // a UID prefix only when the membership map didn't include this
-    // company (rare: should only happen if the user lost membership
-    // between the calendar mapping save and now).
-    const name = companyNamesByUid.get(e.sourceCompanyUid);
-    if (name) return name;
-    const short = e.sourceCompanyUid.slice(0, 12);
-    return short.length === 12 ? `${short}…` : short;
+    return humanCompanyLabel({ companyName: companyNamesByUid.get(e.sourceCompanyUid) });
+  }
+
+  function recordingCompanyLabel(company: ActiveMembership): string {
+    return humanCompanyLabel(
+      company,
+      humanCompanyLabel({ companyName: companyNamesByUid.get(company.companyUid) }),
+    );
   }
 
   function eventMeetingUrl(e: MeetingEvent): string | null {
@@ -1647,7 +1649,7 @@
             >
               <option value="">Personal</option>
               {#each recordingMemberships as c (c.companyUid)}
-                <option value={c.companyUid}>{c.companyName ?? c.companyUid}</option>
+                <option value={c.companyUid}>{recordingCompanyLabel(c)}</option>
               {/each}
             </select>
             {#if meeting.state === 'recording'}

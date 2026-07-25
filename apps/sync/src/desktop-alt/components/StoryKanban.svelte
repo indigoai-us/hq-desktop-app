@@ -1,22 +1,26 @@
 <script lang="ts">
   /**
-   * StoryKanban — read-only 4-column story board with a Board/List toggle (US-006).
+   * StoryKanban — project task board with Board/List toggle (DESKTOP-005).
    *
-   * Ported from hq-desktop's kanban-board.tsx (KanbanColumn + board grid + list
-   * view + collapse behavior), restyled to the HQ Sync unified desktop token set
-   * (monochrome glass; no hardcoded hex). This component owns the segmented
-   * Board/List toggle and the column container so the board reads as one cohesive
-   * unit; the rows themselves come from StoryList and the cards from StoryCard.
+   * Defaults to four operational columns: Not started · In progress · Active ·
+   * Complete. Active requires a live session signal matched to the task; when
+   * that signal ends, unfinished work returns to In progress. Board columns are
+   * naked (no rounded wells); only task cards / live monitors are rounded.
    *
-   * Presentational only: takes `stories` (+ optional `loading` / `onselect`).
-   * Data loading lives in a parent (US-003's get_local_project_prd), never here.
+   * Presentational only: takes `stories` (+ optional sessions / loading /
+   * onselect). Data loading lives in a parent.
    */
   import {
-    classifyStories,
-    groupByState,
-    STORY_STATES,
+    classifyTasks,
+    groupByTaskColumn,
+    storyLiveRunView,
+    taskStateContext,
+    TASK_COLUMNS,
+    TASK_COLUMN_CAPTION,
+    TASK_COLUMN_LABEL,
+    type PortfolioSessionRef,
     type Story,
-    type StoryState,
+    type TaskColumn,
   } from '../lib/projects-model';
   import StoryCard from './StoryCard.svelte';
   import StoryList from './StoryList.svelte';
@@ -24,41 +28,47 @@
   interface Props {
     /** The stories to render (US-004 Story shape). */
     stories: Story[];
+    /**
+     * Live agent sessions used for Active placement. Only real running /
+     * awaiting_input signals matched to a story id place a card in Active.
+     */
+    sessions?: readonly PortfolioSessionRef[];
     /** When true, render the loading skeleton instead of content. */
     loading?: boolean;
+    /** Compact relative "now" for live elapsed / last-signal labels. */
+    now?: number;
     /** Fired when a story card or row is activated. */
     onselect?: (story: Story) => void;
   }
 
-  let { stories, loading = false, onselect }: Props = $props();
+  let {
+    stories,
+    sessions = [],
+    loading = false,
+    now = Date.now(),
+    onselect,
+  }: Props = $props();
 
   type ViewMode = 'board' | 'list';
   let viewMode = $state<ViewMode>('board');
 
-  // Per-column collapse state, keyed by StoryState. Collapsed hides the body.
-  let collapsed = $state<Record<StoryState, boolean>>({
-    pending: false,
-    blocked: false,
+  // Per-column collapse state, keyed by TaskColumn. Collapsed hides the body.
+  let collapsed = $state<Record<TaskColumn, boolean>>({
+    'not-started': false,
     'in-progress': false,
+    active: false,
     complete: false,
   });
 
-  const COLUMN_LABELS: Record<StoryState, string> = {
-    pending: 'Pending',
-    blocked: 'Blocked',
-    'in-progress': 'In Progress',
-    complete: 'Complete',
-  };
+  const classified = $derived(classifyTasks(stories ?? [], sessions));
+  const grouped = $derived(groupByTaskColumn(classified));
 
-  const classified = $derived(classifyStories(stories ?? []));
-  const grouped = $derived(groupByState(classified));
-
-  function toggleColumn(state: StoryState): void {
-    collapsed[state] = !collapsed[state];
+  function toggleColumn(column: TaskColumn): void {
+    collapsed[column] = !collapsed[column];
   }
 </script>
 
-<section class="story-kanban" aria-label="Story board">
+<section class="story-kanban" aria-label="Task board" data-testid="story-kanban">
   <div class="board-toolbar">
     <div class="view-toggle" role="group" aria-label="Board view mode">
       <button
@@ -85,8 +95,8 @@
   </div>
 
   {#if loading}
-    <div class="board-loading" aria-busy="true" aria-label="Loading stories">
-      {#each STORY_STATES as state (state)}
+    <div class="board-loading" aria-busy="true" aria-label="Loading tasks">
+      {#each TASK_COLUMNS as column (column)}
         <div class="skeleton-column">
           <div class="skeleton-header"></div>
           <div class="skeleton-card"></div>
@@ -95,32 +105,50 @@
       {/each}
     </div>
   {:else if viewMode === 'board'}
-    <div class="board-scroll">
+    <div class="board-scroll" data-testid="task-kanban">
       <div class="board-grid">
-        {#each STORY_STATES as state (state)}
-          {@const columnStories = grouped[state]}
-          <div class="kanban-column">
+        {#each TASK_COLUMNS as column (column)}
+          {@const columnStories = grouped[column]}
+          <div
+            class="kanban-column"
+            data-testid={`task-column-${column}`}
+            aria-labelledby={`task-col-${column}`}
+          >
             <button
               type="button"
               class="column-header"
-              aria-expanded={!collapsed[state]}
-              onclick={() => toggleColumn(state)}
+              aria-expanded={!collapsed[column]}
+              onclick={() => toggleColumn(column)}
             >
-              <span class="status-dot" data-state={state}></span>
-              <span class="column-label">{COLUMN_LABELS[state]}</span>
+              {#if column === 'active'}
+                <span class="live-dot" aria-hidden="true"></span>
+              {:else}
+                <span class="status-dot" data-column={column}></span>
+              {/if}
+              <span class="column-label" id={`task-col-${column}`}>
+                {TASK_COLUMN_LABEL[column]}
+              </span>
               <span class="count-badge">{columnStories.length}</span>
-              <span class="chevron" class:is-open={!collapsed[state]} aria-hidden="true">›</span>
+              <span class="chevron" class:is-open={!collapsed[column]} aria-hidden="true">›</span>
             </button>
+            <span class="column-caption">{TASK_COLUMN_CAPTION[column]}</span>
 
-            {#if !collapsed[state]}
+            {#if !collapsed[column]}
               <div class="column-body">
                 {#if columnStories.length === 0}
                   <div class="column-empty">
-                    <span>No stories</span>
+                    <span>No tasks</span>
                   </div>
                 {:else}
                   {#each columnStories as item (item.story.id)}
-                    <StoryCard story={item.story} {onselect} />
+                    {@const liveRun = storyLiveRunView(item.story, sessions, now)}
+                    <StoryCard
+                      story={item.story}
+                      liveRun={column === 'active' ? liveRun : null}
+                      stateContext={taskStateContext(column, item.story, stories)}
+                      {now}
+                      {onselect}
+                    />
                   {/each}
                 {/if}
               </div>
@@ -131,7 +159,7 @@
     </div>
   {:else}
     <div class="list-scroll">
-      <StoryList {stories} {onselect} />
+      <StoryList {stories} {sessions} {now} {onselect} />
     </div>
   {/if}
 </section>
@@ -144,6 +172,8 @@
     gap: var(--v4-space-3);
     min-width: 0;
     height: 100%;
+    /* Naked canvas — no board chrome. */
+    background: transparent;
   }
 
   .board-toolbar {
@@ -169,7 +199,7 @@
     border-radius: calc(var(--v4-radius-button) - 2px);
     background: transparent;
     color: var(--v4-text-2);
-    font-size: var(--text-base);
+    font-size: var(--type-body, var(--text-base));
     font-weight: 600;
     cursor: pointer;
     transition:
@@ -196,13 +226,14 @@
     min-height: 0;
     overflow-x: auto;
     overflow-y: hidden;
+    background: transparent;
   }
 
   .board-grid {
     display: grid;
-    grid-template-columns: repeat(4, minmax(160px, 1fr));
+    grid-template-columns: repeat(4, minmax(180px, 1fr));
     gap: var(--v4-space-4);
-    min-width: 0;
+    min-width: 720px;
     height: 100%;
   }
 
@@ -210,6 +241,9 @@
     display: flex;
     flex-direction: column;
     min-height: 0;
+    /* Naked columns — no rounded wells, no fills. */
+    border-radius: 0;
+    background: transparent;
   }
 
   .column-header {
@@ -217,10 +251,13 @@
     align-items: center;
     gap: var(--v4-space-2);
     width: 100%;
-    padding: var(--v4-space-2) var(--v4-space-3);
+    padding: var(--v4-space-2) 0;
     border: 0;
-    border-radius: var(--v4-radius-button);
+    border-bottom: 1px solid var(--v4-hairline);
+    border-radius: 0;
     background: transparent;
+    font: inherit;
+    font-size: var(--type-body, var(--text-base));
     text-align: left;
     cursor: pointer;
     transition: background 140ms ease;
@@ -235,7 +272,8 @@
     outline-offset: 2px;
   }
 
-  .status-dot {
+  .status-dot,
+  .live-dot {
     flex: 0 0 auto;
     width: 8px;
     height: 8px;
@@ -243,22 +281,29 @@
     background: var(--v4-text-3);
   }
 
-  .status-dot[data-state='blocked'] {
+  .status-dot[data-column='in-progress'] {
     background: var(--v4-warn);
   }
 
-  .status-dot[data-state='in-progress'] {
-    background: var(--v4-ok);
+  .status-dot[data-column='complete'] {
+    background: var(--v4-text-2);
   }
 
-  .status-dot[data-state='complete'] {
-    background: var(--v4-text-2);
+  .live-dot {
+    background: var(--v4-ok);
   }
 
   .column-label {
     color: var(--v4-text-2);
-    font-size: var(--text-base);
+    font-size: var(--type-body, var(--text-base));
     font-weight: 600;
+  }
+
+  .column-caption {
+    margin-top: 2px;
+    color: var(--v4-text-3);
+    font-size: var(--type-metadata, var(--text-micro));
+    line-height: 1.3;
   }
 
   .count-badge {
@@ -268,7 +313,7 @@
     border-radius: var(--v4-radius-button);
     background: var(--v4-control-faint);
     color: var(--v4-text-3);
-    font-size: var(--text-base);
+    font-size: var(--type-metadata, var(--text-base));
     font-variant-numeric: tabular-nums;
     font-weight: 600;
     line-height: 16px;
@@ -277,7 +322,7 @@
   .chevron {
     margin-left: auto;
     color: var(--v4-text-3);
-    font-size: var(--text-base);
+    font-size: var(--type-body, var(--text-base));
     line-height: 1;
     transition: transform 150ms ease;
   }
@@ -303,12 +348,12 @@
     justify-content: center;
     padding: var(--v4-space-5);
     border: 1px dashed var(--v4-hairline);
-    border-radius: var(--v4-radius-button);
+    border-radius: 0;
   }
 
   .column-empty span {
     color: var(--v4-text-3);
-    font-size: var(--text-base);
+    font-size: var(--type-secondary, var(--text-base));
   }
 
   .list-scroll {
@@ -317,12 +362,11 @@
     overflow-y: auto;
   }
 
-  /* Loading skeleton — neutral shimmer over the row surface. */
   .board-loading {
     display: grid;
-    grid-template-columns: repeat(4, minmax(160px, 1fr));
+    grid-template-columns: repeat(4, minmax(180px, 1fr));
     gap: var(--v4-space-4);
-    min-width: 0;
+    min-width: 720px;
   }
 
   .skeleton-column {
@@ -333,14 +377,14 @@
 
   .skeleton-header {
     height: 28px;
-    border-radius: var(--v4-radius-button);
+    border-radius: 0;
     background: var(--v4-control-faint);
   }
 
   .skeleton-card {
     height: 84px;
     border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-button);
+    border-radius: 6px;
     background: var(--v4-control-faint);
   }
 
@@ -372,20 +416,22 @@
     }
   }
 
+  /* Keep Board/List + column headers visible; board may horizontal-scroll. */
   @container story-kanban (max-width: 760px) {
     .board-toolbar {
       justify-content: flex-start;
     }
 
     .board-scroll {
-      overflow: visible;
+      overflow-x: auto;
+      overflow-y: hidden;
     }
 
     .board-grid,
     .board-loading {
-      grid-template-columns: minmax(0, 1fr);
-      min-width: 0;
-      height: auto;
+      grid-template-columns: repeat(4, minmax(180px, 1fr));
+      min-width: 720px;
+      height: 100%;
     }
 
     .kanban-column {
@@ -393,8 +439,8 @@
     }
 
     .column-body {
-      overflow: visible;
-      padding-right: 0;
+      overflow-y: auto;
+      padding-right: var(--v4-space-1);
     }
   }
 </style>

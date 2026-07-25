@@ -141,7 +141,8 @@ describe('desktop-alt file preview pane + open actions (US-004 file-explorer)', 
 
     // The preview-actions div (containing open buttons) is inside the header,
     // OUTSIDE the preview-body conditional block — it renders regardless.
-    expect(preview).toContain('class="preview-actions"');
+    // DESKTOP-008: also tagged detail-primary-actions for list-detail collapse.
+    expect(preview).toContain('class="preview-actions detail-primary-actions primary-actions"');
     expect(preview).toContain('<header class="preview-header">');
 
     // Verify structural order: header (with actions) comes BEFORE preview-body.
@@ -152,7 +153,7 @@ describe('desktop-alt file preview pane + open actions (US-004 file-explorer)', 
     expect(headerIdx).toBeLessThan(bodyIdx);
 
     // preview-actions is inside the header, before preview-body.
-    const actionsIdx = preview.indexOf('class="preview-actions"');
+    const actionsIdx = preview.indexOf('class="preview-actions detail-primary-actions primary-actions"');
     expect(actionsIdx).toBeGreaterThan(headerIdx);
     expect(actionsIdx).toBeLessThan(bodyIdx);
 

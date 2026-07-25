@@ -13,26 +13,31 @@ describe('desktop-alt company work actions are functional', () => {
   const agentWorkflow = readRepoFile('src/desktop-alt/lib/agent-workflow.ts');
 
   it('wires Projects filtering and unlinked-project Link handoff', () => {
+    // DESKTOP-004 keeps the legacy needs-link cycle alongside portfolio state/owner filters.
     expect(projects).toContain("type ProjectFilter = 'all' | 'active' | 'needs-link'");
     expect(projects).toContain('function cycleFilter()');
     expect(projects).toContain('matchesProjectFilter(project, projectFilter)');
     expect(projects).toContain('onclick={cycleFilter}');
-    expect(projects).toContain('void requestLinkProject(project);');
+    expect(projects).toContain('void requestLinkProject(project)');
     expect(projects).toContain("invoke('open_claude_code_link', { url })");
     expect(projects).toContain('data-testid="filtered-projects-empty-state"');
+    expect(projects).toContain('data-testid="portfolio-state-filter"');
+    expect(projects).toContain('data-testid="portfolio-owner-filter"');
   });
 
   it('absorbs Tasks into Projects (no separate company Tasks tab/page)', () => {
     // company-detail-desktop-ia: CompanyTasksPage removed; stories open from Projects.
     expect(companyPage).not.toContain('CompanyTasksPage');
-    expect(projects).toContain('import StoryPanel from');
     expect(projects).toContain('<ProjectDetailView');
     expect(projects).toContain('onselectStory={openStory}');
-    expect(projectDetail).toContain("tab = $state<Tab>('board')");
+    // DESKTOP-005: Tasks is the primary/default project surface (was "board").
+    expect(projectDetail).toContain("tab = $state<Tab>('tasks')");
   });
 
-  it('wires project story selection into the V4 story detail panel', () => {
-    expect(projects).toContain('<StoryPanel');
+  it('wires project story selection into the in-workspace story detail panel', () => {
+    // DESKTOP-005: StoryPanel is embedded inside ProjectDetailView (no modal sibling).
+    expect(projectDetail).toContain('<StoryPanel');
+    expect(projects).toContain('selectedStory={selectedStory}');
     expect(projects).toContain('onselectDependency={selectStoryById}');
     expect(projects).toContain('{onStoryPassesChange}');
   });
@@ -43,12 +48,14 @@ describe('desktop-alt company work actions are functional', () => {
     expect(projects).toContain('grid-template-columns: minmax(0, 1fr)');
   });
 
-  it('keeps story details legible over the desktop shell', () => {
-    expect(storyPanel).toContain('background: var(--v4-chrome)');
-    expect(storyPanel).toContain('box-shadow: var(--v4-shadow-popover)');
-    expect(storyPanel).toContain('z-index: 100');
+  it('keeps story details legible inside the project workspace (no modal backdrop)', () => {
+    // DESKTOP-006: naked main canvas (transparent), not a raised chrome card.
+    expect(storyPanel).toContain('background: transparent');
+    expect(storyPanel).toContain('data-testid="v4-story-panel"');
+    // DESKTOP-005/006: docked panel — no dimmed backdrop; fixed overlay is non-embedded only.
+    expect(storyPanel).not.toContain('class="story-backdrop"');
+    expect(storyPanel).toContain('is-embedded');
     expect(storyPanel).toContain('@media (max-width: 520px)');
-    expect(storyPanel).toContain('width: 100vw');
     expect(companyPage).not.toContain('will-change: opacity, transform');
   });
 

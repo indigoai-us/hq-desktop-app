@@ -129,12 +129,14 @@ describe('desktop-alt project detail view source contract (US-009)', () => {
     expect(detail).toContain('data-testid="status-option-{status}"');
   });
 
-  it('embeds the StoryKanban (reachable via a tab) and owns the back affordance', () => {
+  it('embeds the StoryKanban (reachable via Tasks tab) and owns the back affordance', () => {
     expect(detail).toContain('import StoryKanban');
-    expect(detail).toContain('<StoryKanban {stories}');
+    expect(detail).toContain('<StoryKanban');
     expect(detail).toContain('data-testid="tab-overview"');
     expect(detail).toContain('data-testid="tab-board"');
     expect(detail).toContain('data-testid="detail-back"');
+    // DESKTOP-005: Tasks is the default primary surface.
+    expect(detail).toContain("tab = $state<Tab>('tasks')");
   });
 
   it('routes the project-open flow through the detail view', () => {
@@ -143,9 +145,10 @@ describe('desktop-alt project detail view source contract (US-009)', () => {
     expect(board).toContain('<ProjectDetailView');
     expect(board).toContain('onback={backToList}');
     expect(board).toContain('onselectStory={openStory}');
-    // Stories still load for the embedded board; V4 story panel still wired.
+    // Stories still load for the embedded board; task panel docks inside detail.
     expect(board).toContain('loadLocalProjectStories');
-    expect(board).toContain('<StoryPanel');
+    expect(board).toContain('selectedStory={selectedStory}');
+    expect(detail).toContain('<StoryPanel');
   });
 
   it('keeps the detail view token-driven (no hardcoded hex except shadow rgba)', () => {

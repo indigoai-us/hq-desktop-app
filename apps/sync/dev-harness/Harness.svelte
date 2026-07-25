@@ -1,6 +1,7 @@
 <script lang="ts">
   import SettingsPage from '../src/desktop-alt/pages/SettingsPage.svelte';
   import Popover from '../src/components/Popover.svelte';
+  import SignInPrompt from '../src/components/SignInPrompt.svelte';
   import BannerNotification from '../src/components/BannerNotification.svelte';
   import CompanyPage from '../src/desktop-alt/pages/CompanyPage.svelte';
   import HomePage from '../src/desktop-alt/pages/HomePage.svelte';
@@ -9,6 +10,7 @@
   import Conversation, {
     type ConversationMessage,
   } from '../src/components/messaging/Conversation.svelte';
+  import MessagesShell from '../src/components/messaging/MessagesShell.svelte';
   import CreateChannel from '../src/components/messaging/CreateChannel.svelte';
   import '../src/desktop-alt/styles/desktop-alt.css';
   import { popoverProps, bannerFixtures, workspaces } from './fixtures';
@@ -72,7 +74,7 @@
   const homeCompanyNames = new Map([['cmp_indigo', 'Indigo']]);
 
   // View + theme driven by URL query so screenshots target a known state:
-  //   ?view=settings|popover|banner   ?theme=light|dark
+  //   ?view=settings|popover|signin|banner   ?theme=light|dark
   //   banner view also takes ?kind=share|meeting|dm|update (default share)
   // For the popover view, size the browser viewport to ~320x440 (the real
   // window size) — the popover root fills 100vw/100vh. For settings, any
@@ -82,12 +84,19 @@
   const theme = params.get('theme') ?? 'dark';
   const bannerKind = params.get('kind') ?? 'share';
   // ?state=error renders the "Sync initialized" notice banner.
+  // ?state=auth-error renders the calm reconnect state without red styling.
   // Otherwise the popover mounts in its idle fixture state.
   // (CLI-update overflow preview retired with US-001 chrome strip.)
   const stateOverride = params.get('state');
   const previewPopoverProps =
     stateOverride === 'error'
       ? { ...popoverProps, syncState: 'error' as const, errorMessage: 'failed to push indigo: exit 1', errorCompany: 'indigo' }
+      : stateOverride === 'auth-error'
+        ? {
+            ...popoverProps,
+            syncState: 'auth-error' as const,
+            errorMessage: 'Sign in once and HQ will resume automatically.',
+          }
       : popoverProps;
 
   // The banner reads its transparent-window CSS off html[data-window=dm-banner]
@@ -101,7 +110,7 @@
         ? 'desktop-alt'
         : view === 'permissions'
           ? 'meeting-permissions'
-          : view === 'conversation' || view === 'createchannel'
+          : view === 'messages' || view === 'conversation' || view === 'createchannel'
             ? 'messages'
             : 'main'
   );
@@ -126,6 +135,9 @@
   <BannerNotification />
 {:else if view === 'popover'}
   <Popover {...previewPopoverProps} />
+{:else if view === 'signin'}
+  <!-- Auth-expiry recovery at the native 320x440 popover size. -->
+  <SignInPrompt reauth={true} />
 {:else if view === 'conversation'}
   <!-- The shared messaging Conversation (desktop Messages styling via
        data-window='messages'). Hover a bubble to reveal the copy-message
@@ -138,6 +150,10 @@
       ontogglereaction={() => {}}
     />
   </div>
+{:else if view === 'messages'}
+  <!-- Full standalone Messages window: unified recency rail with DMs, channels,
+       connection requests, and shared-path notifications. -->
+  <MessagesShell />
 {:else if view === 'createchannel'}
   <!-- The New-channel modal (font-size pass). data-window='messages' so the
        desktop tokens resolve. Companies/contacts come from Tauri commands that
@@ -157,7 +173,7 @@
   <!-- The merged Home in isolation. Resize the viewport to ~1180x760. -->
   <div class="desktop-stage">
     <HomePage
-      syncState="idle"
+      syncState={stateOverride === 'auth-error' ? 'auth-error' : 'idle'}
       ready={true}
       {workspaces}
       progress={null}
@@ -166,7 +182,7 @@
       status={null}
       daemon={null}
       activity={[]}
-      syncErrorMessage=""
+      syncErrorMessage={stateOverride === 'auth-error' ? 'Sign in once and HQ will resume automatically.' : ''}
       syncFilesProgressed={0}
       syncTotalFiles={0}
       transferredBytes={0}

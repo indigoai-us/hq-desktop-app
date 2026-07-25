@@ -6,9 +6,13 @@ import {
   buildRefreshProblemReport,
   buildConnectedCalendarRows,
   calendarEventIdsForBotLookup,
+  companyLabel,
   dayLabel,
+  durationLabel,
+  durationMinutes,
   groupByDay,
   isAuthError,
+  isPlausibleMeetingUrl,
   isRecurringMeeting,
   MEETINGS_STALE_NOTICE_FAILURES,
   meetingsRefreshGate,
@@ -18,6 +22,7 @@ import {
   recurringSeriesId,
   rowButtonKind,
   totalSignalCounts,
+  urlInviteDestinationLabel,
   type MeetingEvent,
   type ScheduledBot,
 } from './meetings-model';
@@ -160,6 +165,55 @@ describe('meetings-model', () => {
     expect(rows).toEqual([]);
   });
 
+  it('formats plausible durations and suppresses all-day / multi-day spans', () => {
+    const base = {
+      id: 'dur',
+      status: 'confirmed',
+      start: { dateTime: '2026-05-27T17:00:00.000Z' },
+    } satisfies Partial<MeetingEvent>;
+
+    expect(
+      durationLabel({
+        ...base,
+        id: 'half-hour',
+        end: { dateTime: '2026-05-27T17:30:00.000Z' },
+      } as MeetingEvent),
+    ).toBe('30m');
+    expect(
+      durationMinutes({
+        ...base,
+        id: 'half-hour',
+        end: { dateTime: '2026-05-27T17:30:00.000Z' },
+      } as MeetingEvent),
+    ).toBe(30);
+
+    // All-day (1440m) and multi-day (21600m) must never render as raw minutes.
+    expect(
+      durationLabel({
+        ...base,
+        id: 'all-day',
+        end: { dateTime: '2026-05-28T17:00:00.000Z' },
+      } as MeetingEvent),
+    ).toBe('duration unavailable');
+    expect(
+      durationLabel({
+        ...base,
+        id: 'multi-day',
+        end: { dateTime: '2026-06-11T17:00:00.000Z' },
+      } as MeetingEvent),
+    ).toBe('duration unavailable');
+
+    // Missing / non-positive → omit (null), not a fabricated zero.
+    expect(
+      durationLabel({
+        id: 'open',
+        status: 'confirmed',
+        start: { dateTime: '2026-05-27T17:00:00.000Z' },
+        end: { dateTime: '2026-05-27T17:00:00.000Z' },
+      }),
+    ).toBeNull();
+  });
+
   it('seeds active Live now rows from cached scheduled recordings', () => {
     const rows = activeRecordingsFromScheduledBots(
       [
@@ -225,6 +279,14 @@ describe('meetings-model', () => {
       end: { dateTime: new Date(local.getTime() + 30 * 60_000).toISOString() },
     };
   }
+
+  it('uses a company name or a graceful fallback, never a raw company UID', () => {
+    const event = eventAt('event-company', new Date(2026, 4, 27, 12, 0, 0));
+    event.sourceCompanyUid = 'cmp_company';
+    expect(companyLabel(event, new Map([['cmp_company', 'Indigo']]))).toBe('Indigo');
+    expect(companyLabel(event, new Map())).toBe('Company');
+    expect(companyLabel(event, new Map())).not.toContain('cmp_');
+  });
 
   it('labels days relative to now as Today / Tomorrow / dated', () => {
     expect(dayLabel(new Date(2026, 4, 27, 15, 0, 0), now)).toBe('Today');
@@ -576,6 +638,44 @@ describe('meetings-model', () => {
       expect(rowButtonKind(bot({ status: 'failed', sourceLanded: false }))).toBe(
         'invite',
       );
+    });
+  });
+
+  // Gate for the paste-a-URL invite bar (parity with the classic MeetingsWindow):
+  // the Invite button + Enter key only fire for a real join link, so a bogus
+  // paste can never schedule a bot.
+  describe('isPlausibleMeetingUrl', () => {
+    it('accepts real Zoom / Google Meet / Teams / Webex links', () => {
+      expect(isPlausibleMeetingUrl('https://us02web.zoom.us/j/8412345678')).toBe(true);
+      expect(isPlausibleMeetingUrl('https://meet.google.com/abc-defg-hij')).toBe(true);
+      expect(
+        isPlausibleMeetingUrl('https://teams.microsoft.com/l/meetup-join/xyz'),
+      ).toBe(true);
+      expect(isPlausibleMeetingUrl('https://acme.webex.com/meet/room')).toBe(true);
+    });
+
+    it('rejects empty, non-meeting, and non-https URLs', () => {
+      expect(isPlausibleMeetingUrl('')).toBe(false);
+      expect(isPlausibleMeetingUrl('   ')).toBe(false);
+      expect(isPlausibleMeetingUrl('https://example.com/not-a-meeting')).toBe(false);
+      expect(isPlausibleMeetingUrl('http://meet.google.com/abc-defg-hij')).toBe(false);
+      expect(isPlausibleMeetingUrl('zoom.us/j/123')).toBe(false);
+    });
+  });
+
+  describe('urlInviteDestinationLabel', () => {
+    const names = new Map<string, string>([['co-1', 'Indigo']]);
+
+    it('returns "Personal" when no company is picked', () => {
+      expect(urlInviteDestinationLabel(null, names)).toBe('Personal');
+    });
+
+    it('returns the company name for a known uid', () => {
+      expect(urlInviteDestinationLabel('co-1', names)).toBe('Indigo');
+    });
+
+    it('falls back to "company" for an unknown uid', () => {
+      expect(urlInviteDestinationLabel('co-unknown', names)).toBe('company');
     });
   });
 });

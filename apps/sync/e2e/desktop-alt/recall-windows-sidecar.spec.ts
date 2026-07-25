@@ -96,10 +96,13 @@ describe('Windows Recall SDK sidecar bundle parity', () => {
   it('builds and verifies the launcher in release before Tauri bundles Windows', () => {
     const buildIdx = releaseWorkflow.indexOf('- name: Build Recall SDK sidecar');
     const bundleIdx = releaseWorkflow.indexOf('- name: Tauri build');
+    const nextStepIdx = releaseWorkflow.indexOf('\n      - name:', bundleIdx + 1);
+    const bundleStep = releaseWorkflow.slice(bundleIdx, nextStepIdx);
 
     expect(buildIdx).toBeGreaterThan(-1);
     expect(bundleIdx).toBeGreaterThan(buildIdx);
     expect(releaseWorkflow).toContain('RECALL_SIDECAR_TARGET: ${{ matrix.target }}');
+    expect(bundleStep).toContain('RECALL_SIDECAR_TARGET: ${{ matrix.target }}');
     expect(releaseWorkflow).toMatch(/pnpm\s+-C\s+sidecar\/recall-sdk-bridge\s+build/);
     expect(releaseWorkflow).toContain('recall-desktop-sdk-${{ matrix.target }}.exe');
     expect(releaseWorkflow).not.toContain('skipping launcher build');
@@ -111,6 +114,15 @@ describe('Windows Recall SDK sidecar bundle parity', () => {
     expect(releaseWorkflow).toContain('windows-aarch64');
     expect(releaseWorkflow).toContain('RECALL_SIDECAR_NODE_EXECUTABLE');
     expect(releaseWorkflow).toContain('Get-FileHash $archive -Algorithm SHA256');
+    // arm64 stays conditionally included in latest.json — gated on its own
+    // artifacts existing — so a missing arm64 build never blocks the release.
+    // (Platform decoupling reworked the guard from a bare fs.existsSync on the
+    // sig to a has(exe) && has(sig) check; the intent — arm64 is optional — is
+    // unchanged.)
+    expect(releaseWorkflow).toContain(
+      'has(process.env.WIN_ARM64_EXE_PATH) && has(process.env.WIN_ARM64_SIG_PATH)',
+    );
+    expect(releaseWorkflow).not.toContain('if (exists(process.env.WIN_ARM64_SIG_PATH))');
     expect(sidecarBuildSource).toContain('["aarch64-pc-windows-msvc", 0xaa64]');
     expect(sidecarBuildSource).toContain('assertTargetArchitecture(launcherRuntime)');
   });

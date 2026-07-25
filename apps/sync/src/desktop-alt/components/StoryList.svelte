@@ -1,37 +1,33 @@
 <script lang="ts">
   /**
-   * StoryList — horizontal-row list view of a project's stories (US-006).
+   * StoryList — horizontal-row list view of a project's tasks (DESKTOP-005).
    *
-   * Ported from hq-desktop's kanban-board.tsx StoryListRow, restyled to the
-   * HQ Sync unified desktop token set (monochrome glass; no hardcoded hex).
-   * Each row reads: state dot · ID · title + labels · state badge · priority ·
-   * AC count. Presentational only — emits onselect(story); does not load data.
+   * Shares the same four operational columns as StoryKanban (Not started ·
+   * In progress · Active · Complete). Presentational only — emits onselect(story).
    */
   import {
-    classifyStories,
+    classifyTasks,
+    TASK_COLUMN_LABEL,
+    type PortfolioSessionRef,
     type Story,
-    type StoryState,
+    type TaskColumn,
   } from '../lib/projects-model';
   import LabelChip from './LabelChip.svelte';
 
   interface Props {
     /** The stories to render (US-004 Story shape). */
     stories: Story[];
+    /** Live sessions for Active column placement. */
+    sessions?: readonly PortfolioSessionRef[];
+    /** Compact relative "now" (reserved for future live list meta). */
+    now?: number;
     /** Fired when a row is activated by click or keyboard. */
     onselect?: (story: Story) => void;
   }
 
-  let { stories, onselect }: Props = $props();
+  let { stories, sessions = [], now: _now = Date.now(), onselect }: Props = $props();
 
-  // Reuse US-004's classifier so the list shares the board's state derivation.
-  const classified = $derived(classifyStories(stories ?? []));
-
-  const STATE_LABELS: Record<StoryState, string> = {
-    pending: 'Pending',
-    blocked: 'Blocked',
-    'in-progress': 'In Progress',
-    complete: 'Complete',
-  };
+  const classified = $derived(classifyTasks(stories ?? [], sessions));
 
   function priorityLabel(priority: number | undefined): string | null {
     return typeof priority === 'number' ? `P${priority}` : null;
@@ -52,13 +48,17 @@
       onselect?.(story);
     }
   }
+
+  function columnOf(column: TaskColumn): string {
+    return TASK_COLUMN_LABEL[column];
+  }
 </script>
 
-<div class="story-list" aria-label="Stories">
+<div class="story-list" aria-label="Tasks" data-testid="story-list">
   {#if classified.length === 0}
     <div class="empty-state">
-      <p>No stories</p>
-      <span>This project has no stories yet.</span>
+      <p>No tasks</p>
+      <span>This project has no tasks yet.</span>
     </div>
   {:else}
     {#each classified as item (item.story.id)}
@@ -71,11 +71,12 @@
         type="button"
         class="story-row"
         class:is-complete={item.story.passes}
+        class:is-active={item.column === 'active'}
         aria-label={`Story ${item.story.id}: ${item.story.title}`}
         onclick={() => activate(item.story)}
         onkeydown={(event) => handleKeydown(event, item.story)}
       >
-        <span class="state-dot" data-state={item.state}></span>
+        <span class="state-dot" data-column={item.column}></span>
         <span class="story-id">{item.story.id}</span>
         <div class="story-main">
           <span class="story-title" title={item.story.title}>{item.story.title}</span>
@@ -90,7 +91,7 @@
             </div>
           {/if}
         </div>
-        <span class="state-badge" data-state={item.state}>{STATE_LABELS[item.state]}</span>
+        <span class="state-badge" data-column={item.column}>{columnOf(item.column)}</span>
         {#if prio}
           <span class="priority-badge" data-priority={prio}>{prio}</span>
         {/if}
@@ -118,8 +119,11 @@
     min-width: 0;
     padding: var(--v4-space-2) var(--v4-space-3);
     border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-button);
+    border-radius: 6px;
     background: var(--v4-raised);
+    color: var(--v4-text-1);
+    font: inherit;
+    font-size: var(--type-body, var(--text-base));
     text-align: left;
     cursor: pointer;
     transition:
@@ -141,6 +145,10 @@
     opacity: 0.6;
   }
 
+  .story-row.is-active {
+    border-color: color-mix(in srgb, var(--v4-ok) 32%, var(--v4-hairline));
+  }
+
   .state-dot {
     flex: 0 0 auto;
     width: 8px;
@@ -149,27 +157,25 @@
     background: var(--v4-text-3);
   }
 
-  /* Status carried by neutral surface layering + the muted/emerald markers the
-     desktop token set permits — no severity palette. */
-  .state-dot[data-state='blocked'] {
+  .state-dot[data-column='in-progress'] {
     background: var(--v4-warn);
   }
 
-  .state-dot[data-state='in-progress'] {
+  .state-dot[data-column='active'] {
     background: var(--v4-ok);
   }
 
-  .state-dot[data-state='complete'] {
+  .state-dot[data-column='complete'] {
     background: var(--v4-text-2);
   }
 
   .story-id {
     flex: 0 0 auto;
-    width: 56px;
+    width: 72px;
     overflow: hidden;
     color: var(--v4-text-2);
     font-family: var(--font-mono);
-    font-size: var(--text-base);
+    font-size: var(--type-secondary, var(--text-base));
     font-weight: 600;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -187,7 +193,7 @@
     flex: 0 1 auto;
     overflow: hidden;
     color: var(--v4-text-1);
-    font-size: var(--text-base);
+    font-size: var(--type-body, var(--text-base));
     font-weight: 600;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -212,20 +218,20 @@
     border-radius: var(--v4-radius-button);
     background: var(--v4-control-faint);
     color: var(--v4-text-2);
-    font-size: var(--text-base);
+    font-size: var(--type-metadata, var(--text-base));
     font-weight: 600;
     line-height: 16px;
   }
 
-  .state-badge[data-state='blocked'] {
+  .state-badge[data-column='in-progress'] {
     color: var(--v4-warn);
   }
 
-  .state-badge[data-state='in-progress'] {
+  .state-badge[data-column='active'] {
     color: var(--v4-ok);
   }
 
-  .state-badge[data-state='complete'] {
+  .state-badge[data-column='complete'] {
     color: var(--v4-text-3);
   }
 
@@ -252,7 +258,7 @@
   .ac-count {
     flex: 0 0 auto;
     color: var(--v4-text-3);
-    font-size: var(--text-base);
+    font-size: var(--type-metadata, var(--text-base));
     font-variant-numeric: tabular-nums;
     font-weight: 600;
   }
@@ -260,8 +266,8 @@
   .empty-state {
     padding: var(--v4-space-6);
     border: 1px dashed var(--v4-control-border);
-    border-radius: var(--v4-radius-button);
-    background: var(--v4-raised);
+    border-radius: 0;
+    background: transparent;
     text-align: center;
   }
 
@@ -273,7 +279,7 @@
 
   .empty-state span {
     color: var(--v4-text-2);
-    font-size: var(--text-base);
+    font-size: var(--type-secondary, var(--text-base));
   }
 
   @media (prefers-reduced-motion: reduce) {

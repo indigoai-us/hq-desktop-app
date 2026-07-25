@@ -4,16 +4,15 @@ import {
   getDesktopSecondarySidebar,
   type DesktopRoute,
 } from '../../src/desktop-alt/route';
+import { getV4SidebarModel } from '../../src/desktop-alt/v4/model';
 import type { Workspace } from '../../src/lib/workspaces';
 import { readRepoFile } from './harness';
 
 /**
- * US-002 — V4 chrome composition (route restructure).
+ * US-002 / DESKTOP-001 — V4 chrome composition.
  *
- * Source-contract + model harness, matching the existing desktop-alt spec
- * style. The story's E2E scenario: given a company row click in the sidebar,
- * when the company page opens, then the secondary sidebar shows the 8 company
- * sections with Overview active.
+ * Source-contract + model harness. Company navigation expands inline in the
+ * primary sidebar; the permanent company secondary column is gone.
  */
 
 function workspace(overrides: Partial<Workspace>): Workspace {
@@ -36,35 +35,31 @@ function workspace(overrides: Partial<Workspace>): Workspace {
   };
 }
 
-describe('desktop-alt V4 chrome (US-002)', () => {
-  it('a company row click opens the company page with the IA sections and Overview active', () => {
+describe('desktop-alt V4 chrome (US-002 / DESKTOP-001)', () => {
+  it('a company row click opens the company page with primary children and Overview active', () => {
     const companies = [workspace({})];
 
-    // The V4Sidebar company row emits { kind: 'company', slug } — the shell
-    // narrows it onto the DesktopRoute union with no section, i.e. Overview.
     const clicked = fromV4Route({ kind: 'company', slug: 'indigo' });
     expect(clicked).toEqual({ kind: 'company', slug: 'indigo' } satisfies DesktopRoute);
 
-    const secondary = getDesktopSecondarySidebar(clicked, companies);
-    expect(secondary?.surface).toBe('company');
-    expect(secondary?.header).toBe('Indigo');
-    // company-detail-desktop-ia: Accounts/Tasks/Library removed; Skills/Workers/Knowledge/Team added.
-    expect(secondary?.items.map((item) => item.label)).toEqual([
+    // DESKTOP-001: no permanent company secondary sidebar.
+    expect(getDesktopSecondarySidebar(clicked, companies)).toBeNull();
+
+    const sidebar = getV4SidebarModel(clicked, companies);
+    const indigo = sidebar.companies.find((row) => row.slug === 'indigo');
+    expect(indigo?.expanded).toBe(true);
+    expect(indigo?.children.map((c) => c.label)).toEqual([
       'Overview',
       'Goals',
       'Projects',
-      'Skills',
-      'Workers',
       'Knowledge',
       'Team',
-      'Activity',
-      'Deployments',
-      'Secrets',
+      'More',
     ]);
-    expect(secondary?.activeId).toBe('overview');
+    expect(indigo?.children.find((c) => c.id === 'overview')?.active).toBe(true);
   });
 
-  it('shows the secondary sidebar only on company / library / settings surfaces', () => {
+  it('shows the secondary sidebar only on library / settings surfaces', () => {
     const companies = [workspace({})];
     for (const route of [
       { kind: 'home' },
@@ -72,17 +67,15 @@ describe('desktop-alt V4 chrome (US-002)', () => {
       { kind: 'inbox' },
       { kind: 'meetings' },
       { kind: 'moderation' },
+      { kind: 'company', slug: 'indigo' },
     ] satisfies DesktopRoute[]) {
       expect(getDesktopSecondarySidebar(route, companies)).toBeNull();
     }
     expect(getDesktopSecondarySidebar({ kind: 'library' }, companies)).not.toBeNull();
     expect(getDesktopSecondarySidebar({ kind: 'settings' }, companies)).not.toBeNull();
-    expect(
-      getDesktopSecondarySidebar({ kind: 'company', slug: 'indigo' }, companies),
-    ).not.toBeNull();
   });
 
-  it('DesktopApp composes the V4 chrome (title bar + both sidebars) and drops the old chrome', () => {
+  it('DesktopApp composes the V4 chrome (title bar + primary sidebar) and drops the old chrome', () => {
     const desktopApp = readRepoFile('src/desktop-alt/DesktopApp.svelte');
 
     expect(desktopApp).toContain('<V4TitleBar');
@@ -99,22 +92,17 @@ describe('desktop-alt V4 chrome (US-002)', () => {
     expect(desktopApp).toContain('renderCompanies = nextCompanies');
     expect(desktopApp).toContain('renderWorkspaceCount = nextCompanies.length');
     expect(desktopApp).toContain('writeCachedWorkspaces(result.workspaces)');
-    // The chrome refreshes reactively from renderCompanies / renderWorkspaceCount,
-    // so the desktop must NOT hard-reload the document or remount the chrome on a
-    // workspace-list change — that mid-paint reload was the blank/freeze
-    // (see desktop-render-stability.spec.ts).
     expect(desktopApp).not.toContain('window.location.reload()');
     expect(desktopApp).toContain('companies={renderCompanies}');
-    expect(desktopApp).toContain('workspaceCount={renderWorkspaceCount}');
     expect(desktopApp).not.toContain('{#key renderWorkspaceCount}');
     expect(desktopApp).not.toContain('chromeReady');
     expect(desktopApp).not.toContain('companies={workspaces}');
-    // The secondary sidebar is composed conditionally; the settings surface is
-    // suppressed until its in-window page (US-013) is wired, so match the guard
-    // by prefix rather than the exact unconditional `{#if secondarySidebar}`.
+    // Secondary remains for library/settings; company secondary is gone.
     expect(desktopApp).toContain('{#if secondarySidebar');
     expect(desktopApp).toContain('<V4SecondarySidebar');
     expect(desktopApp).not.toContain('DesktopSidebar');
+    // DESKTOP-001: bottom status bar removed from the shell.
+    expect(desktopApp).not.toContain('<DesktopStatusBar');
   });
 
   it('the sidebar renders all companies directly instead of using an overflow row', () => {
@@ -136,13 +124,13 @@ describe('desktop-alt V4 chrome (US-002)', () => {
     expect(harnessMocks).toContain("slug: 'archive-labs'");
   });
 
-  it('the status bar derives live fallback values without defaulting dynamic props', () => {
+  it('DesktopStatusBar still exists as a component (version popout host) but is unmounted', () => {
     const statusBar = readRepoFile('src/desktop-alt/DesktopStatusBar.svelte');
+    const desktopApp = readRepoFile('src/desktop-alt/DesktopApp.svelte');
 
     expect(statusBar).toContain('workspaceCount,');
     expect(statusBar).toContain('const currentWorkspaceCount = $derived(workspaceCount ?? 0)');
-    expect(statusBar).toContain('{currentWorkspaceCount}</span> workspace');
-    expect(statusBar).not.toContain('workspaceCount = 0');
+    expect(desktopApp).not.toContain('workspaceCount={renderWorkspaceCount}');
   });
 
   it('the old segmented-control navigation is gone from company and library pages', () => {
@@ -151,8 +139,6 @@ describe('desktop-alt V4 chrome (US-002)', () => {
 
     expect(company).not.toContain('CompanyTabs');
     expect(company).not.toContain('role="tablist"');
-    // The library body forces its tab from the route, which hides
-    // LibraryBrowser's in-body segmented control.
     expect(library).toContain('forcedFilter={tab}');
   });
 

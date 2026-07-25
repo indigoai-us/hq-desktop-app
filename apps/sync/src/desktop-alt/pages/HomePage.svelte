@@ -210,25 +210,27 @@
   </header>
 
   {#if errorModel}
-    <div class="home-section" aria-label="Sync failed">
-      <h2 class="home-label error">
-        <span class="home-label-dot error" aria-hidden="true"></span>
-        Sync failed{syncErrorCompany ? ' · 1 company' : ''}
+    <div class="home-section" aria-label={syncState === 'auth-error' ? 'Keep sync moving' : 'Sync failed'}>
+      <h2 class:warn={syncState === 'auth-error'} class:error={syncState !== 'auth-error'} class="home-label">
+        <span
+          class:ok={syncState === 'auth-error'}
+          class:error={syncState !== 'auth-error'}
+          class="home-label-dot"
+          aria-hidden="true"
+        ></span>
+        {syncState === 'auth-error'
+          ? 'READY TO RESUME'
+          : `Sync failed${syncErrorCompany ? ' · 1 company' : ''}`}
       </h2>
       <NeedsYouCard
         card={{
           title: errorModel.title,
           sub: errorModel.sub,
-          tone: 'error',
+          tone: syncState === 'auth-error' ? 'neutral' : 'error',
           actions: [
             ...(errorModel.showSignIn
               ? [{ id: 'sign-in', label: 'Sign in again', kind: 'primary' as const }]
-              : []),
-            {
-              id: 'retry',
-              label: 'Retry',
-              kind: errorModel.showSignIn ? ('secondary' as const) : ('primary' as const),
-            },
+              : [{ id: 'retry', label: 'Retry', kind: 'primary' as const }]),
           ],
         }}
         onaction={handleErrorAction}

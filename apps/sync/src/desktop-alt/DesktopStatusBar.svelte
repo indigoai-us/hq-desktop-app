@@ -41,7 +41,7 @@
 
   const tone = $derived.by(() => {
     if (currentState === 'syncing') return 'syncing';
-    if (currentState === 'error' || currentState === 'auth-error') return 'error';
+    if (currentState === 'error') return 'error';
     if (currentState === 'conflict' || currentState === 'setup-needed') return 'conflict';
     return 'idle';
   });
@@ -53,8 +53,10 @@
   );
 
   const stateLabel = $derived(
-    currentState === 'error' || currentState === 'auth-error'
+    currentState === 'error'
       ? 'Sync error'
+      : currentState === 'auth-error'
+        ? 'Sign in to keep syncing'
       : currentState === 'conflict'
         ? 'Conflict'
         : currentState === 'setup-needed'

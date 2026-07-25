@@ -1,4 +1,4 @@
-//! Tauri commands for spawning and cancelling `hq-sync-runner --companies`.
+//! Tauri commands for spawning and cancelling `hq-sync-runner` syncs.
 //!
 //! Uses [`crate::commands::process`] for subprocess lifecycle (spawn, stream,
 //! SIGTERM→SIGKILL). Emits typed sync events to the Svelte renderer.
@@ -41,6 +41,7 @@ use std::time::Duration;
 use chrono::SecondsFormat;
 use hq_desktop_core::sync_outcome::{
     classify_error_event, describe_exit, should_alert_on_nonzero_exit,
+    should_synthesize_all_complete, termination_fingerprint_token,
 };
 use tauri::{AppHandle, Emitter};
 
@@ -53,8 +54,8 @@ use crate::commands::process::{
 use crate::commands::status::{journal_for_sync_complete, write_journal};
 use crate::commands::vault_client::VaultClient;
 use crate::events::{
-    SyncAllCompleteEvent, SyncCompanyProvisionedEvent, SyncErrorEvent, SyncEvent,
-    EVENT_SYNC_ALL_COMPLETE, EVENT_SYNC_AUTH_ERROR, EVENT_SYNC_COMPANY_PROVISIONED,
+    SyncAllCompleteEvent, SyncAuthErrorEvent, SyncCompanyProvisionedEvent, SyncErrorEvent,
+    SyncEvent, EVENT_SYNC_ALL_COMPLETE, EVENT_SYNC_AUTH_ERROR, EVENT_SYNC_COMPANY_PROVISIONED,
     EVENT_SYNC_COMPLETE, EVENT_SYNC_DELETE_REFUSED_STALE_ETAG, EVENT_SYNC_ERROR,
     EVENT_SYNC_FANOUT_PLAN, EVENT_SYNC_NEW_FILES, EVENT_SYNC_PLAN, EVENT_SYNC_PROGRESS,
     EVENT_SYNC_SETUP_NEEDED,
@@ -137,8 +138,23 @@ fn capture_sync_error_impl(
     );
 }
 
-fn report_sync_error(app: &AppHandle, payload: SyncErrorEvent) -> tauri::Result<()> {
-    capture_sync_error(payload.company.as_deref(), &payload.path, &payload.message);
+/// Capture and surface the terminal runner error exactly once. The renderer
+/// receives this event for UI state only; it deliberately does not submit a
+/// second Sentry event for the same native capture.
+fn report_runner_exit_error(
+    app: &AppHandle,
+    code: Option<i32>,
+    signal: Option<i32>,
+    payload: SyncErrorEvent,
+) -> tauri::Result<()> {
+    let termination = termination_fingerprint_token(code, signal);
+    let fingerprint = ["sync", "runner-termination", termination.as_str()];
+    capture_sync_error_with_fingerprint(
+        payload.company.as_deref(),
+        &payload.path,
+        &payload.message,
+        &fingerprint,
+    );
     app.emit(EVENT_SYNC_ERROR, payload)
 }
 
@@ -228,25 +244,115 @@ where
     Ok(tokens.access_token)
 }
 
-/// Fetch the current JWT from the on-disk token cache, refreshing if expired.
+#[derive(Debug, PartialEq, Eq)]
+enum ResolveJwtError {
+    NeedsReauth,
+    Other(String),
+}
+
+/// Fetch the current JWT from the on-disk token cache, refreshing and
+/// persisting it if expired. Terminal refresh rejection invalidates only the
+/// rejected token generation; a temporary failure preserves it but still
+/// routes this run to the reauth surface after the built-in retry is exhausted.
+async fn resolve_jwt_classified() -> Result<String, ResolveJwtError> {
+    let tokens = cognito::get_tokens()
+        .await
+        .map_err(ResolveJwtError::Other)?
+        .ok_or(ResolveJwtError::NeedsReauth)?;
+    if !cognito::is_expired(&tokens) {
+        return Ok(tokens.access_token);
+    }
+
+    match cognito::refresh_access_token_classified(&tokens.refresh_token).await {
+        Ok(refreshed) => {
+            let access_token = refreshed.access_token.clone();
+            cognito::set_tokens(&refreshed)
+                .await
+                .map_err(ResolveJwtError::Other)?;
+            Ok(access_token)
+        }
+        Err(err) => {
+            if err.requires_reauth {
+                cognito::invalidate_tokens(&tokens)
+                    .await
+                    .map_err(ResolveJwtError::Other)?;
+            }
+            Err(ResolveJwtError::NeedsReauth)
+        }
+    }
+}
+
+/// Shared auth helper used by non-sync commands. Keep the long-standing
+/// string-error contract while the manual sync path consumes the structured
+/// result above to distinguish handled reauth from an operational failure.
 pub async fn resolve_jwt() -> Result<String, String> {
-    let tokens_result = cognito::get_tokens().await;
-    resolve_jwt_impl(tokens_result, |rt| async move {
-        cognito::refresh_access_token(&rt).await
+    resolve_jwt_classified().await.map_err(|err| match err {
+        ResolveJwtError::NeedsReauth => cognito::REAUTH_MESSAGE.to_string(),
+        ResolveJwtError::Other(message) => message,
     })
-    .await
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SpawnArgs builder (testable)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Build the SpawnArgs for `npx … hq-sync-runner --companies`.
+/// Scope of a single sync run: fan out to every membership (`All`) or restrict
+/// to one company by slug (`Company`). A scoped run emits `--company <slug>`
+/// (mutually exclusive with `--companies` in the runner) and never touches the
+/// personal vault.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SyncRunScope {
+    All,
+    Company(String),
+}
+
+impl SyncRunScope {
+    /// True when this scope includes the given company slug.
+    pub fn includes(&self, slug: &str) -> bool {
+        match self {
+            SyncRunScope::All => true,
+            SyncRunScope::Company(c) => c == slug,
+        }
+    }
+
+    pub fn is_all(&self) -> bool {
+        matches!(self, SyncRunScope::All)
+    }
+}
+
+/// Validate a caller-supplied company slug for a scoped sync. `None` => `All`.
+/// Slugs are lowercase alphanumeric + hyphen, non-empty, and never `personal`
+/// (the personal vault has its own sync path/toggle, not a company scope).
+pub fn parse_sync_scope(company_slug: Option<String>) -> Result<SyncRunScope, String> {
+    match company_slug {
+        None => Ok(SyncRunScope::All),
+        Some(s) => {
+            let slug = s.trim();
+            if slug.is_empty() {
+                return Err("company slug must not be empty".to_string());
+            }
+            if slug == "personal" {
+                return Err("personal vault cannot be company-scoped".to_string());
+            }
+            if !slug
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+            {
+                return Err(format!("invalid company slug: {slug}"));
+            }
+            Ok(SyncRunScope::Company(slug.to_string()))
+        }
+    }
+}
+
+/// Build the SpawnArgs for `npx … hq-sync-runner --companies` or a scoped
+/// `npx … hq-sync-runner --company <slug>` run.
 ///
 /// The command line we spawn looks like:
 /// ```text
 /// npx -y --package=@indigoai-us/hq-cloud@~5.19.0 hq-sync-runner \
-///   --companies --direction both --on-conflict keep --hq-root <path>
+///   <--companies | --company <slug>> --direction both --on-conflict keep \
+///   --hq-root <path>
 /// ```
 ///
 /// npx flags:
@@ -260,6 +366,7 @@ pub async fn resolve_jwt() -> Result<String, String> {
 ///
 /// Runner flags:
 /// - `--companies` — fan out to every membership the caller has
+/// - `--company <slug>` — restrict the run to one company
 /// - `--direction both` — bidirectional sync: push local changes first,
 ///   then pull remote. Added in hq-cloud 5.1.11. Runner default is `pull`
 ///   for back-compat; the menubar explicitly opts into `both` so a single
@@ -273,11 +380,16 @@ pub async fn resolve_jwt() -> Result<String, String> {
 /// `HQ_ROOT` is also set in the child env as defense-in-depth (matches the
 /// pre-Phase-7 pattern).
 ///
-/// `personal_sync_enabled` toggles the personal-vault target in the fanout.
-/// When false, `--skip-personal` is appended so the spawned runner's
-/// `resolveSkipPersonal()` drops the personal slot. Sourced from
-/// `MenubarPrefs.personal_sync_enabled` (defaults to true in get_settings).
-pub fn build_sync_spawn_args(hq_folder_path: &str, personal_sync_enabled: bool) -> SpawnArgs {
+/// `personal_sync_enabled` toggles the personal-vault target in an all-company
+/// fanout. When false, `--skip-personal` is appended so the spawned runner's
+/// `resolveSkipPersonal()` drops the personal slot. Company-scoped runs always
+/// append `--skip-personal`. Sourced from `MenubarPrefs.personal_sync_enabled`
+/// (defaults to true in get_settings).
+pub fn build_sync_spawn_args(
+    hq_folder_path: &str,
+    personal_sync_enabled: bool,
+    scope: &SyncRunScope,
+) -> SpawnArgs {
     let mut env = HashMap::new();
     env.insert("HQ_ROOT".to_string(), hq_folder_path.to_string());
     // The runner is a Node script with `#!/usr/bin/env node`, and npx itself
@@ -290,15 +402,23 @@ pub fn build_sync_spawn_args(hq_folder_path: &str, personal_sync_enabled: bool) 
         "-y".to_string(),
         format!("--package={}@{}", HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION),
         RUNNER_BIN.to_string(),
-        "--companies".to_string(),
+    ];
+    match scope {
+        SyncRunScope::All => args.push("--companies".to_string()),
+        SyncRunScope::Company(slug) => {
+            args.push("--company".to_string());
+            args.push(slug.clone());
+        }
+    }
+    args.extend([
         "--direction".to_string(),
         "both".to_string(),
         "--on-conflict".to_string(),
         "keep".to_string(),
         "--hq-root".to_string(),
         hq_folder_path.to_string(),
-    ];
-    if !personal_sync_enabled {
+    ]);
+    if !personal_sync_enabled || !scope.is_all() {
         // Append rather than insert mid-args so reading the joined command
         // line in logs / Sentry tags is predictable (toggle state shows at
         // the end, after the canonical args).
@@ -493,6 +613,54 @@ fn handle_sync_line(
     }
 }
 
+/// Return the re-authentication signal encoded in a runner stderr line.
+///
+/// The runner's normal protocol is tagged with `type`, but some auth refresh
+/// failures are logged with `level` instead. Both shapes must reach the
+/// renderer: the runner exits successfully after an unrecoverable refresh
+/// failure, so waiting for a non-zero exit drops the sign-in prompt.
+pub(crate) fn runner_stderr_needs_reauth(line: &str) -> Option<SyncAuthErrorEvent> {
+    if let Ok(SyncEvent::AuthError(payload)) = serde_json::from_str(line.trim()) {
+        return Some(payload);
+    }
+
+    let value: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
+    let is_auth_error = ["type", "level"]
+        .iter()
+        .any(|field| value.get(*field).and_then(serde_json::Value::as_str) == Some("auth-error"));
+    if !is_auth_error {
+        return None;
+    }
+
+    Some(SyncAuthErrorEvent {
+        message: value
+            .get("message")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or(cognito::REAUTH_MESSAGE)
+            .to_string(),
+    })
+}
+
+/// Forward runner stderr protocol records that affect sync state.
+///
+/// Error records still feed the exit-alert classifier; auth failures are
+/// emitted immediately because the runner deliberately exits 0 after them.
+pub(crate) fn handle_runner_stderr_line(app: &AppHandle, totals: &Mutex<RunTotals>, line: &str) {
+    if let Some(payload) = runner_stderr_needs_reauth(line) {
+        {
+            let mut t = totals.lock().unwrap_or_else(|e| e.into_inner());
+            t.record_auth_error();
+        }
+        let _ = app.emit(EVENT_SYNC_AUTH_ERROR, payload);
+    } else if let Ok(SyncEvent::Error(payload)) = serde_json::from_str(line.trim()) {
+        let mut t = totals.lock().unwrap_or_else(|e| e.into_inner());
+        t.record_error(&payload);
+    }
+
+    let mut t = totals.lock().unwrap_or_else(|e| e.into_inner());
+    t.record_stderr_line(line);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Tauri commands
 // ─────────────────────────────────────────────────────────────────────────────
@@ -641,7 +809,7 @@ pub(crate) fn preflight_runner_unresolvable() -> Option<String> {
     runner_unresolvable_reason(node_resolves, npx_resolves)
 }
 
-/// Spawn `hq-sync-runner --companies` as a child process.
+/// Spawn `hq-sync-runner` for all companies or one company as a child process.
 ///
 /// - Only one sync can run at a time (singleton handle).
 /// - Emits typed sync events (see `events.rs`) to the Svelte renderer as
@@ -650,7 +818,9 @@ pub(crate) fn preflight_runner_unresolvable() -> Option<String> {
 ///
 /// Returns the handle string on success (always `"hq-sync"`).
 #[tauri::command]
-pub async fn start_sync(app: AppHandle) -> Result<String, String> {
+pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<String, String> {
+    let scope = parse_sync_scope(company_slug)?;
+    log("sync", &format!("scope={scope:?}"));
     log("sync", "start_sync invoked");
     #[cfg(debug_assertions)]
     eprintln!("[sync] start_sync invoked");
@@ -687,6 +857,29 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
         eprintln!("[sync] BAIL: runner unresolvable: {msg}");
         deregister_process(SYNC_HANDLE);
         return Err(msg);
+    }
+
+    // Prewarm runs at launch, but it used to race the first real npx launch
+    // while both were writing the same cache tree. Materialize the exact
+    // runner package under the shared, bounded lock before starting any sync.
+    // A failure here is a positively diagnosed local Node/npm/cache problem:
+    // return it to the popover without a Sentry error, rather than spawning a
+    // process that often terminates as exit 126/127 and floods alerts.
+    match tauri::async_runtime::spawn_blocking(hq_desktop_core::prewarm::materialize_hq_cloud_cache)
+        .await
+    {
+        Ok(Ok(())) => {}
+        Ok(Err(msg)) => {
+            log("sync", &format!("BAIL: npx cache materialization: {msg}"));
+            deregister_process(SYNC_HANDLE);
+            return Err(msg);
+        }
+        Err(err) => {
+            let msg = format!("HQ Sync could not prepare its npm cache: {err}");
+            log("sync", &format!("BAIL: npx cache materialization task: {err}"));
+            deregister_process(SYNC_HANDLE);
+            return Err(msg);
+        }
     }
 
     // Resolve HQ folder — deregister on failure so future syncs aren't blocked
@@ -740,12 +933,26 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
     };
 
     // Fetch (and if needed refresh) the Cognito JWT
-    let jwt = match resolve_jwt().await {
+    let jwt = match resolve_jwt_classified().await {
         Ok(j) => {
             log("sync", "jwt resolved");
             j
         }
-        Err(e) => {
+        Err(ResolveJwtError::NeedsReauth) => {
+            log("sync", "PAUSE: session needs reauth before sync can continue");
+            let _ = app.emit(
+                EVENT_SYNC_AUTH_ERROR,
+                SyncAuthErrorEvent {
+                    message: cognito::REAUTH_MESSAGE.to_string(),
+                },
+            );
+            deregister_process(SYNC_HANDLE);
+            // Auth-required is a handled terminal state, not a process crash.
+            // Returning success keeps the manual path aligned with the
+            // runner's exit-0 auth-error contract and avoids red error UI.
+            return Ok(SYNC_HANDLE.to_string());
+        }
+        Err(ResolveJwtError::Other(e)) => {
             log("sync", &format!("BAIL: resolve_jwt failed: {e}"));
             deregister_process(SYNC_HANDLE);
             return Err(e);
@@ -766,7 +973,11 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
         let prep_root = std::path::PathBuf::from(&hq_folder_path);
         let (local_companies, _) =
             crate::commands::workspaces::discover_local_companies(&prep_root);
-        let slugs: Vec<String> = local_companies.iter().map(|e| e.slug.clone()).collect();
+        let slugs: Vec<String> = local_companies
+            .iter()
+            .map(|e| e.slug.clone())
+            .filter(|s| scope.includes(s))
+            .collect();
         let prep_start = std::time::Instant::now();
         let to_transfer = crate::commands::personal::count_files_to_transfer(&prep_root, &slugs);
         let elapsed = prep_start.elapsed().as_millis();
@@ -810,7 +1021,8 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
             return Err(e);
         }
     };
-    for company in &companies {
+    // Provisioning stays global, but first-push is filtered to this run's scope.
+    for company in companies.iter().filter(|c| scope.includes(&c.slug)) {
         if let Err(_e) = app.emit(
             EVENT_SYNC_COMPANY_PROVISIONED,
             SyncCompanyProvisionedEvent {
@@ -857,11 +1069,10 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
     }
 
     // Personal first-push: provision + upload personal HQ files via /sts/vend-self.
-    // Skipped entirely when the user has flipped off "Sync personal vault" —
-    // running it anyway would auto-provision a bucket the user explicitly
-    // doesn't want populated, then upload everything just for the runner to
-    // immediately re-walk the same tree with `--skip-personal`.
-    if personal_sync_enabled {
+    // Skipped for company-scoped runs and when the user has flipped off "Sync
+    // personal vault". Running it anyway would populate a bucket outside this
+    // run's scope, then re-walk the same tree with `--skip-personal`.
+    if personal_sync_enabled && scope.is_all() {
         log("sync", "phase: personal first-push");
         if let Err(e) = crate::commands::personal::ensure_personal_bucket_and_first_push(
             &app,
@@ -887,14 +1098,19 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
                 },
             );
         }
-    } else {
+    } else if !personal_sync_enabled {
         log(
             "sync",
             "phase: personal first-push skipped (personal_sync_enabled=false)",
         );
+    } else {
+        log(
+            "sync",
+            "phase: personal first-push skipped (company-scoped run)",
+        );
     }
 
-    let spawn_args = build_sync_spawn_args(&hq_folder_path, personal_sync_enabled);
+    let spawn_args = build_sync_spawn_args(&hq_folder_path, personal_sync_enabled, &scope);
     log(
         "sync",
         &format!(
@@ -973,27 +1189,11 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
                     message: Some(line.clone()),
                     ..Default::default()
                 });
-                // …but that move ALSO took error events away from
-                // `handle_sync_line` (stdout-only), which is what fed the
-                // benign-vs-alertable exit classification in RunTotals. Without
-                // re-ingesting them here, `saw_error` stays false for every
-                // post-PR-#34 run, the exit handler treats every non-zero exit
-                // as an "unexplained crash", and the common benign code-2 (ACL-
-                // scope skips / not-provisioned / transient network) floods
-                // Sentry (HQ-SYNC-WEB-6). So parse any ndjson `error` line and
-                // record it toward the alert decision, mirroring the stdout
-                // path. Non-ndjson stderr (reindex/qmd/warning chatter) fails to
-                // parse and is ignored.
-                if let Ok(SyncEvent::Error(payload)) =
-                    serde_json::from_str::<SyncEvent>(line.trim())
-                {
-                    let mut t = totals.lock().unwrap_or_else(|e| e.into_inner());
-                    t.record_error(&payload);
-                }
-                {
-                    let mut t = totals.lock().unwrap_or_else(|e| e.into_inner());
-                    t.record_stderr_line(&line);
-                }
+                // Re-ingest stderr protocol records. Error events feed the
+                // benign-vs-alertable exit classification, while auth-error
+                // emits the re-authentication signal even though the runner
+                // intentionally exits 0 after a failed token refresh.
+                handle_runner_stderr_line(&app_bg, &totals, &line);
                 #[cfg(debug_assertions)]
                 eprintln!("[sync stderr] {}", line);
             }
@@ -1037,8 +1237,10 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
                         saw_alertable,
                         saw_node_too_old,
                     ) {
-                        let _ = report_sync_error(
+                        let _ = report_runner_exit_error(
                             &app_bg,
+                            code,
+                            signal,
                             crate::events::SyncErrorEvent {
                                 company: None,
                                 path: "(runner)".to_string(),
@@ -1083,8 +1285,11 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
                     // sits in "syncing" forever and the top SyncStats card
                     // shows "never" while the personal first-push (which DID
                     // run) updated everything else.
-                    let saw = totals.lock().map(|t| t.all_complete_seen).unwrap_or(false);
-                    if !saw {
+                    let (saw_complete, saw_auth_error) = totals
+                        .lock()
+                        .map(|t| (t.all_complete_seen, t.saw_auth_error))
+                        .unwrap_or((false, false));
+                    if should_synthesize_all_complete(success, saw_complete, saw_auth_error) {
                         log("sync", "runner exited without AllComplete — synthesizing");
                         let synthetic = SyncEvent::AllComplete(SyncAllCompleteEvent {
                             companies_attempted: 0,
@@ -1224,8 +1429,57 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_sync_scope() {
+        assert_eq!(parse_sync_scope(None), Ok(SyncRunScope::All));
+        assert_eq!(
+            parse_sync_scope(Some("indigo".to_string())),
+            Ok(SyncRunScope::Company("indigo".to_string()))
+        );
+        assert_eq!(
+            parse_sync_scope(Some("  indigo  ".to_string())),
+            Ok(SyncRunScope::Company("indigo".to_string()))
+        );
+        assert!(parse_sync_scope(Some(String::new())).is_err());
+        assert!(parse_sync_scope(Some("personal".to_string())).is_err());
+        assert!(parse_sync_scope(Some("Bad_Slug".to_string())).is_err());
+    }
+
+    #[test]
+    fn test_sync_run_scope_helpers() {
+        let all = SyncRunScope::All;
+        assert!(all.includes("indigo"));
+        assert!(all.includes("other"));
+        assert!(all.is_all());
+
+        let company = SyncRunScope::Company("indigo".to_string());
+        assert!(company.includes("indigo"));
+        assert!(!company.includes("other"));
+        assert!(!company.is_all());
+    }
+
+    #[test]
+    fn test_build_sync_spawn_args_company_scope() {
+        let args = build_sync_spawn_args(
+            "/Users/test/HQ",
+            true,
+            &SyncRunScope::Company("indigo".to_string()),
+        );
+        let company_index = args
+            .args
+            .iter()
+            .position(|arg| arg == "--company")
+            .expect("company-scoped args must include `--company`");
+        assert_eq!(
+            args.args.get(company_index + 1).map(String::as_str),
+            Some("indigo")
+        );
+        assert!(!args.args.iter().any(|arg| arg == "--companies"));
+        assert!(args.args.iter().any(|arg| arg == "--skip-personal"));
+    }
+
+    #[test]
     fn test_build_sync_spawn_args_cmd() {
-        let args = build_sync_spawn_args("/Users/test/HQ", true);
+        let args = build_sync_spawn_args("/Users/test/HQ", true, &SyncRunScope::All);
         // `resolve_bin` may return an absolute path or a bare name. Windows
         // resolves npm's command shim (`npx.cmd`); Unix resolves `npx`.
         let expected = if cfg!(target_os = "windows") {
@@ -1246,7 +1500,7 @@ mod tests {
 
     #[test]
     fn test_build_sync_spawn_args_flags() {
-        let args = build_sync_spawn_args("/Users/test/HQ", true);
+        let args = build_sync_spawn_args("/Users/test/HQ", true, &SyncRunScope::All);
         assert_eq!(
             args.args,
             vec![
@@ -1269,7 +1523,7 @@ mod tests {
     /// the flag in the wrong direction (e.g. inverted check) surfaces here.
     #[test]
     fn test_build_sync_spawn_args_omits_skip_personal_when_enabled() {
-        let args = build_sync_spawn_args("/Users/test/HQ", true);
+        let args = build_sync_spawn_args("/Users/test/HQ", true, &SyncRunScope::All);
         assert!(
             !args.args.iter().any(|a| a == "--skip-personal"),
             "expected NO `--skip-personal` when personal_sync_enabled=true, got: {:?}",
@@ -1283,7 +1537,7 @@ mod tests {
     /// the parsed-args path, equivalent to HQ_SYNC_SKIP_PERSONAL=1).
     #[test]
     fn test_build_sync_spawn_args_appends_skip_personal_when_disabled() {
-        let args = build_sync_spawn_args("/Users/test/HQ", false);
+        let args = build_sync_spawn_args("/Users/test/HQ", false, &SyncRunScope::All);
         assert_eq!(
             args.args.last().map(String::as_str),
             Some("--skip-personal"),
@@ -1303,7 +1557,7 @@ mod tests {
     /// every other file's progress on the affected company.
     #[test]
     fn test_build_sync_spawn_args_on_conflict_is_keep() {
-        let args = build_sync_spawn_args("/tmp", true);
+        let args = build_sync_spawn_args("/tmp", true, &SyncRunScope::All);
         let joined = args.args.join(" ");
         assert!(
             joined.contains("--on-conflict keep"),
@@ -1316,7 +1570,7 @@ mod tests {
     /// Guards against a future refactor silently dropping back to pull-only.
     #[test]
     fn test_build_sync_spawn_args_opts_into_direction_both() {
-        let args = build_sync_spawn_args("/tmp", true);
+        let args = build_sync_spawn_args("/tmp", true, &SyncRunScope::All);
         let joined = args.args.join(" ");
         assert!(
             joined.contains("--direction both"),
@@ -1332,7 +1586,7 @@ mod tests {
     /// obvious in CI, not at runtime on users' machines.
     #[test]
     fn test_build_sync_spawn_args_pins_hq_cloud_package() {
-        let args = build_sync_spawn_args("/tmp", true);
+        let args = build_sync_spawn_args("/tmp", true, &SyncRunScope::All);
         let expected_pin = format!("--package={}@{}", HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION);
         assert!(
             args.args.contains(&expected_pin),
@@ -1355,7 +1609,7 @@ mod tests {
 
     #[test]
     fn test_build_sync_spawn_args_env_sets_hq_root() {
-        let args = build_sync_spawn_args("/Users/test/HQ", true);
+        let args = build_sync_spawn_args("/Users/test/HQ", true, &SyncRunScope::All);
         let env = args.env.unwrap();
         assert_eq!(env.get("HQ_ROOT"), Some(&"/Users/test/HQ".to_string()));
         assert_eq!(env.len(), 2);
@@ -1364,7 +1618,7 @@ mod tests {
     #[test]
     #[cfg(not(target_os = "windows"))]
     fn test_build_sync_spawn_args_env_sets_path_with_homebrew() {
-        let args = build_sync_spawn_args("/tmp", true);
+        let args = build_sync_spawn_args("/tmp", true, &SyncRunScope::All);
         let env = args.env.unwrap();
         let path = env
             .get("PATH")
@@ -1380,7 +1634,7 @@ mod tests {
     #[test]
     #[cfg(target_os = "windows")]
     fn test_build_sync_spawn_args_env_sets_windows_path() {
-        let args = build_sync_spawn_args(r"C:\HQ", true);
+        let args = build_sync_spawn_args(r"C:\HQ", true, &SyncRunScope::All);
         let env = args.env.unwrap();
         let path = env
             .get("PATH")
@@ -1393,7 +1647,7 @@ mod tests {
 
     #[test]
     fn test_build_sync_spawn_args_no_cwd() {
-        let args = build_sync_spawn_args("/any/path", true);
+        let args = build_sync_spawn_args("/any/path", true, &SyncRunScope::All);
         assert!(args.cwd.is_none());
     }
 
@@ -1427,6 +1681,27 @@ mod tests {
             SyncEvent::AuthError(e) => assert_eq!(e.message, "Token expired"),
             _ => panic!("Expected AuthError event"),
         }
+    }
+
+    #[test]
+    fn stderr_auth_error_raises_needs_reauth_when_runner_exits_zero() {
+        let stderr_stream = [
+            "runner: refreshing token",
+            r#"{"type":"error","level":"auth-error","message":"Token refresh failed"}"#,
+        ];
+        let exit_code = 0;
+
+        let needs_reauth = stderr_stream
+            .iter()
+            .find_map(|line| runner_stderr_needs_reauth(line));
+
+        assert_eq!(exit_code, 0);
+        assert_eq!(
+            needs_reauth,
+            Some(SyncAuthErrorEvent {
+                message: "Token refresh failed".to_string(),
+            })
+        );
     }
 
     #[test]

@@ -88,17 +88,14 @@ describe('US-016: V4 connective tissue stays complete', () => {
     expect(app).toContain("label: 'Go to Marketplace'"); // Companies page removed (US-007)
   });
 
-  it('keeps the V4 status bar tied to sync summary, watching count, next meeting, and version', () => {
+  it('DESKTOP-001: compact shell removes the bottom status bar and keeps titlebar chrome', () => {
+    // Status bar component still exists (version popout host) but is unmounted.
     expect(statusBar).toContain('filesProgressed?: number;');
-    expect(statusBar).toContain('totalFiles?: number;');
     expect(statusBar).toContain('workspaceCount?: number;');
-    expect(statusBar).toContain('nextMeetingLabel?: string | null;');
-    expect(statusBar).toContain('{currentFilesProgressed}/{currentTotalFiles} files');
-    expect(statusBar).toContain('watching <span class="mono">{currentWorkspaceCount}</span>');
-    expect(statusBar).toContain('next <span class="mono">{currentNextMeetingLabel}</span>');
-    expect(statusBar).toContain('v{version}');
-    expect(desktopApp).toContain('<DesktopStatusBar');
-    expect(desktopApp).toContain('workspaceCount={renderWorkspaceCount}');
-    expect(desktopApp).toContain('{nextMeetingLabel}');
+    expect(desktopApp).not.toContain('<DesktopStatusBar');
+    expect(desktopApp).toContain('<V4TitleBar');
+    expect(desktopApp).toContain('ontogglesidebar={handleToggleSidebar}');
+    expect(desktopApp).toContain('oncommand={handleOpenCommandPalette}');
+    expect(desktopApp).toContain('onaccount={handleAccountMenu}');
   });
 });

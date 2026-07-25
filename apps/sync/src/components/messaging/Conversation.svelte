@@ -12,6 +12,7 @@
   import { copyableText, type CopyKind } from '../../lib/conversation-copy';
   import { renderMessageBodyMarkdown } from '../../lib/messageMarkdown';
   import { shareTitle } from '../../lib/share-path';
+  import { sanitizeVisibleIdentifiers } from '../../lib/visible-labels';
   import type { ShareEvent } from '../../lib/notificationGroups';
 
   // One rendered message in the thread. `direction` is relative to the signed-in
@@ -355,7 +356,9 @@
         />
       {/if}
       {#if msg.pending}
-        <span class="dm-msg-pending">{msg.pendingLabel || 'Pending'}</span>
+        <span class="dm-msg-pending">
+          {sanitizeVisibleIdentifiers(msg.pendingLabel || 'Pending')}
+        </span>
       {:else}
         <span class="dm-msg-time">{formatTime(msg.createdAt)}</span>
         {#if msg.direction === 'out'}
@@ -492,6 +495,7 @@
     cursor: pointer;
     background: var(--pop-bg);
     color: var(--pop-text);
+    font-size: var(--text-base);
     transition: background-color 0.12s ease, color 0.12s ease;
   }
 

@@ -120,13 +120,13 @@ describe('desktop-alt Files mode — explorer sidebar + company switcher (US-009
   });
 
   // -------------------------------------------------------------------------
-  // e2eTest 3: the company secondary sidebar has NO 'Files' item
+  // e2eTest 3: company routes have no permanent secondary sidebar, and Files
+  // remains a global destination rather than a company section.
   // -------------------------------------------------------------------------
-  it("the company secondary sidebar no longer exposes a 'Files' item", () => {
+  it("company routes have no secondary sidebar or company 'Files' item", () => {
     const companies = [workspace({})];
     const secondary = getDesktopSecondarySidebar({ kind: 'company', slug: 'indigo' }, companies);
-    expect(secondary?.surface).toBe('company');
-    expect(secondary?.items.some((item) => item.label === 'Files')).toBe(false);
+    expect(secondary).toBeNull();
     // COMPANY_SECTIONS no longer carries the 'files' tab.
     expect(COMPANY_SECTIONS.some((section) => (section.id as string) === 'files')).toBe(false);
     // route.ts no longer declares the company Files section.

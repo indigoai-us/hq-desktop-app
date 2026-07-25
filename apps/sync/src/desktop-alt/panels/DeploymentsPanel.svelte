@@ -128,14 +128,14 @@
   }
 </script>
 
-<section class="deployments-panel" aria-labelledby="deployments-panel-title">
+<section class="deployments-panel" aria-labelledby="deployments-panel-title" data-testid="company-deployments-panel">
   <header class="deployments-toolbar">
-    <div class="deployments-title">
+    <div class="deployments-title title-stack">
       <h2 id="deployments-panel-title">Deployments</h2>
       <span>{loading ? 'Loading deployments' : error ? "Couldn't load" : `${deployments.length} subdomains`}</span>
     </div>
 
-    <div class="deployments-controls" aria-label="Deployment controls">
+    <div class="deployments-controls detail-primary-actions primary-actions" aria-label="Deployment controls">
       <!-- On a load error `deployments` is cleared, so the counts would read
            "0 active / 0 deploying / 0 paused" — indistinguishable from "no
            deployments". Show em-dashes instead so the header reflects "unknown,
@@ -231,6 +231,7 @@
     display: grid;
     gap: 14px;
     min-width: 0;
+    background: transparent;
   }
 
   .deployments-toolbar {
@@ -245,12 +246,18 @@
     min-width: 0;
   }
 
+  .title-stack {
+    display: grid;
+    gap: var(--v4-row-stack-gap, 3px);
+    min-width: 0;
+  }
+
   .deployments-title h2 {
     margin: 0;
     color: var(--v4-text-1);
-    font-size: var(--text-base);
+    font-size: var(--type-section, 14px);
     font-weight: 600;
-    line-height: 22px;
+    line-height: 1.2;
   }
 
   .deployments-title span,
@@ -258,13 +265,12 @@
   .empty-state,
   .counts {
     color: var(--v4-text-3);
-    font-size: var(--text-base);
-    line-height: 16px;
+    font-size: var(--type-secondary, 11px);
+    line-height: 1.3;
   }
 
   .deployments-title span {
     display: block;
-    margin-top: 2px;
   }
 
   .deployments-controls {
@@ -299,9 +305,16 @@
     background: transparent;
     color: var(--v4-text-1);
     font: inherit;
-    font-size: var(--text-base);
+    font-size: var(--type-body, 12px);
     font-weight: 600;
     white-space: nowrap;
+  }
+
+  .toolbar-button:focus-visible,
+  .deploy-search:focus-visible,
+  .deployments-error button:focus-visible {
+    outline: 2px solid var(--v4-text-1);
+    outline-offset: 2px;
   }
 
   .toolbar-button,
@@ -378,9 +391,8 @@
   .deployments-card {
     min-width: 0;
     border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-card);
-    background: var(--v4-raised);
-    box-shadow: var(--v4-shadow-card);
+    border-radius: 0;
+    background: transparent;
     overflow: hidden;
   }
 
@@ -491,6 +503,13 @@
   @media (prefers-reduced-motion: reduce) {
     .deployment-skeleton span {
       animation: none;
+    }
+  }
+
+  @media (prefers-reduced-transparency: reduce) {
+    .deployments-panel,
+    .deployments-card {
+      background: var(--v4-ground);
     }
   }
 </style>

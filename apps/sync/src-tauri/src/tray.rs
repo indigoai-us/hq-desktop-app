@@ -1,6 +1,6 @@
 //! System tray icon with state-driven icon swapping.
 //!
-//! Four visual states: **idle**, **syncing**, **error**, **conflict**.
+//! Visual states: **idle**, **syncing**, **reauth**, **error**, **conflict**.
 //! Left-click toggles the desktop view (popover is the signed-out fallback);
 //! right-click shows a context menu with "Sync Now", "Settings", and "Quit".
 
@@ -29,6 +29,9 @@ use tauri::Monitor;
 pub enum TrayState {
     Idle,
     Syncing,
+    /// Sync is ready to continue after a quick sign-in. Reuses the neutral
+    /// idle icon so auth expiry never paints the menu bar red.
+    Reauth,
     Error,
     Conflict,
     /// A meeting was detected and the user has not yet acted on it.
@@ -44,6 +47,7 @@ impl TrayState {
         match s.to_lowercase().as_str() {
             "idle" => Some(Self::Idle),
             "syncing" => Some(Self::Syncing),
+            "reauth" => Some(Self::Reauth),
             "error" => Some(Self::Error),
             "conflict" => Some(Self::Conflict),
             "prompt" => Some(Self::Prompt),
@@ -56,6 +60,7 @@ impl TrayState {
         match self {
             Self::Idle => "HQ — Idle",
             Self::Syncing => "HQ — Syncing…",
+            Self::Reauth => "HQ — Sign in to keep syncing",
             Self::Error => "HQ — Error",
             Self::Conflict => "HQ — Conflict",
             Self::Prompt => "HQ — Meeting Detected",
@@ -247,7 +252,7 @@ fn icon_for_state(state: TrayState) -> Image<'static> {
     };
 
     match state {
-        TrayState::Idle => {
+        TrayState::Idle | TrayState::Reauth => {
             ICON_IDLE.get_or_init(|| decode(include_bytes!("../icons/tray-idle@2x.png")))
         }
         TrayState::Syncing => {
@@ -1041,12 +1046,12 @@ pub fn clear_share_badge(app: &AppHandle) {
 
 /// Tauri command: let the frontend explicitly set tray icon state.
 ///
-/// Accepts: "idle", "syncing", "error", "conflict" (case-insensitive).
+/// Accepts: "idle", "syncing", "reauth", "error", "conflict" (case-insensitive).
 #[tauri::command]
 pub fn set_tray_state(app: AppHandle, state: String) -> Result<(), String> {
     let tray_state = TrayState::from_str_loose(&state).ok_or_else(|| {
         format!(
-            "Invalid tray state: '{}'. Expected: idle, syncing, error, conflict, prompt",
+            "Invalid tray state: '{}'. Expected: idle, syncing, reauth, error, conflict, prompt",
             state
         )
     })?;
@@ -1070,6 +1075,7 @@ mod tests {
             Some(TrayState::Syncing)
         );
         assert_eq!(TrayState::from_str_loose("Error"), Some(TrayState::Error));
+        assert_eq!(TrayState::from_str_loose("reauth"), Some(TrayState::Reauth));
         assert_eq!(
             TrayState::from_str_loose("conflict"),
             Some(TrayState::Conflict)
@@ -1084,6 +1090,7 @@ mod tests {
     fn test_tray_state_tooltip() {
         assert_eq!(TrayState::Idle.tooltip(), "HQ — Idle");
         assert_eq!(TrayState::Syncing.tooltip(), "HQ — Syncing…");
+        assert_eq!(TrayState::Reauth.tooltip(), "HQ — Sign in to keep syncing");
         assert_eq!(TrayState::Error.tooltip(), "HQ — Error");
         assert_eq!(TrayState::Conflict.tooltip(), "HQ — Conflict");
         assert_eq!(TrayState::Prompt.tooltip(), "HQ — Meeting Detected");
@@ -1097,11 +1104,14 @@ mod tests {
         for state in &[
             TrayState::Idle,
             TrayState::Syncing,
+            TrayState::Reauth,
             TrayState::Error,
             TrayState::Conflict,
         ] {
             let bytes: &[u8] = match state {
-                TrayState::Idle | TrayState::Prompt => include_bytes!("../icons/tray-idle@2x.png"),
+                TrayState::Idle | TrayState::Reauth | TrayState::Prompt => {
+                    include_bytes!("../icons/tray-idle@2x.png")
+                }
                 TrayState::Syncing => include_bytes!("../icons/tray-syncing@2x.png"),
                 TrayState::Error => include_bytes!("../icons/tray-error@2x.png"),
                 TrayState::Conflict => include_bytes!("../icons/tray-conflict@2x.png"),
@@ -1137,6 +1147,7 @@ mod tests {
         match state {
             TrayState::Idle
             | TrayState::Syncing
+            | TrayState::Reauth
             | TrayState::Error
             | TrayState::Conflict
             | TrayState::Prompt => {}

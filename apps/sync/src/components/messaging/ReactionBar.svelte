@@ -154,6 +154,7 @@
     background: var(--pop-hover);
     color: var(--pop-muted);
     font-family: inherit;
+    font-size: var(--text-base);
     cursor: pointer;
     transition: background-color 0.12s ease, color 0.12s ease;
   }

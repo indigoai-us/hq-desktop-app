@@ -44,10 +44,10 @@ describe('attributionCompanyName', () => {
     ).toBe('Alpha');
   });
 
-  it('falls back to company uid when the membership has no name', () => {
+  it('uses a generic company label when the membership has no name', () => {
     expect(
       attributionCompanyName({ botId: 'bot_1', companyId: 'cmp_c' }, memberships),
-    ).toBe('cmp_c');
+    ).toBe('Company');
   });
 
   it('returns null when unattributed or when the company uid is unknown', () => {
@@ -87,8 +87,9 @@ describe('companyOptions', () => {
     expect(options).toEqual([
       { companyUid: 'cmp_a', label: 'Alpha' },
       { companyUid: 'cmp_b', label: 'beta' },
-      { companyUid: 'cmp_c', label: 'cmp_c' },
+      { companyUid: 'cmp_c', label: 'Company' },
     ]);
+    expect(options.map((option) => option.label).join(' ')).not.toContain('cmp_');
   });
 
   it('ignores empty company ids', () => {

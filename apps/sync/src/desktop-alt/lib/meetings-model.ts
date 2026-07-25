@@ -135,6 +135,25 @@ export function durationMinutes(event: MeetingEvent): number | null {
   return mins > 0 ? mins : null;
 }
 
+/**
+ * Display label for agenda / Up-next duration.
+ *
+ * Plausible single-meeting spans render as `Nm`. Missing/non-positive spans
+ * return null (caller omits the suffix). All-day (1440m), multi-day, and other
+ * implausible lengths return `duration unavailable` — never raw values like
+ * `21600m` or `1440m` (DESKTOP meetings native IA).
+ */
+const MAX_PLAUSIBLE_DURATION_MINUTES = 12 * 60;
+
+export function durationLabel(event: MeetingEvent): string | null {
+  const mins = durationMinutes(event);
+  if (mins == null) return null;
+  if (mins >= 24 * 60 || mins > MAX_PLAUSIBLE_DURATION_MINUTES) {
+    return 'duration unavailable';
+  }
+  return `${mins}m`;
+}
+
 const GOOGLE_RECURRING_EVENT_ID_RE = /^(.*)_(?:\d{8}T\d{6}Z|\d{8})$/;
 
 export function recurringSeriesId(event: MeetingEvent): string | null {
@@ -487,6 +506,20 @@ export function isPlausibleMeetingUrl(url: string): boolean {
     /^https:\/\/teams\.microsoft\.com\/l\/meetup-join\/[^\s]+/i.test(url) ||
     /^https:\/\/[^\s/]*\.webex\.com\/[^\s]+/i.test(url)
   );
+}
+
+/**
+ * Human-readable destination for an ad-hoc URL-invite: the picked company's
+ * name, or "Personal" when no company is chosen (companyId null). Falls back to
+ * the generic "company" when the id has no name in the map. Mirrors the classic
+ * MeetingsWindow url-invite toast copy so both surfaces read identically.
+ */
+export function urlInviteDestinationLabel(
+  companyId: string | null,
+  companyNamesByUid: Map<string, string>,
+): string {
+  if (!companyId) return 'Personal';
+  return companyNamesByUid.get(companyId) ?? 'company';
 }
 
 /**

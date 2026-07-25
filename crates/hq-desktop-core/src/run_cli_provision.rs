@@ -18,10 +18,11 @@
 //! hq cloud provision company <slug> [--name "<name>"]
 //! ```
 //!
-//! Stdout: a single JSON line conforming to `CliProvisionResult`. We capture
-//! the entire stream and parse the LAST non-empty line — chalk colour codes
-//! and progress chatter from the CLI go to stderr, but if anything ever
-//! escapes to stdout before the result line we want to ignore it gracefully.
+//! Stdout: a JSON object conforming to `CliProvisionResult`. We capture the
+//! entire stream and find the last parseable result object. The CLI normally
+//! writes one JSON line, but an `npx` self-heal can append npm notices such as
+//! `npm fund` after it; those non-JSON lines must not turn an exit-0 provision
+//! into a false failure.
 //!
 //! Stderr: free-form progress lines prefixed by the CLI itself (e.g.
 //! `[hq cloud provision] validated slug=acme`). We tee every line into
@@ -71,6 +72,70 @@ use crate::paths;
 /// Last N stderr lines kept in memory so we can attach them to Sentry events.
 /// Capped to keep payloads under Sentry's per-event size limits.
 const STDERR_TAIL_CAP: usize = 50;
+
+/// Remove ANSI colour/control sequences before looking for a JSON result.
+/// npm normally emits plain text, but this makes the stdout contract robust to
+/// a coloured wrapper without pulling a terminal-parsing dependency into core.
+fn strip_ansi(input: &str) -> String {
+    let mut output = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != '\u{1b}' {
+            output.push(ch);
+            continue;
+        }
+        if chars.peek() == Some(&'[') {
+            chars.next();
+            // CSI ends at any byte in the final-byte range 0x40..=0x7e.
+            while let Some(code) = chars.next() {
+                if ('@'..='~').contains(&code) {
+                    break;
+                }
+            }
+        }
+    }
+    output
+}
+
+/// Find the last JSON provision result in stdout, ignoring npm/wrapper noise.
+/// A result must deserialize into the full CLI contract, so an unrelated JSON
+/// diagnostic cannot be mistaken for a successful provision. We also accept a
+/// wrapper prefix before the object (for example a future `npm notice ...`)
+/// but require the object to consume the rest of the line.
+fn parse_provision_stdout(lines: &[String]) -> Result<CliProvisionResult, String> {
+    let mut last_nonempty: Option<String> = None;
+    let mut last_json_error: Option<String> = None;
+
+    for raw in lines.iter().rev() {
+        let line = strip_ansi(raw);
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if last_nonempty.is_none() {
+            last_nonempty = Some(line.to_string());
+        }
+
+        // The result is one JSON object. Searching from the final line upward
+        // tolerates trailing `npm fund` chatter while preserving the CLI's
+        // last-result-wins behaviour if it ever emits more than one result.
+        let Some(json) = line.find('{').map(|start| &line[start..]) else {
+            continue;
+        };
+        match serde_json::from_str::<CliProvisionResult>(json) {
+            Ok(result) => return Ok(result),
+            Err(error) => last_json_error = Some(format!("{error} (line={line:?})")),
+        }
+    }
+
+    match (last_nonempty, last_json_error) {
+        (None, _) => Err("no output on stdout".to_string()),
+        (_, Some(error)) => Err(format!("stdout JSON failed to parse: {error}")),
+        (Some(line), None) => Err(format!(
+            "no provision JSON object in stdout (last_line={line:?})"
+        )),
+    }
+}
 
 /// Capture a provision-cli failure to Sentry with full diagnostic context.
 /// Tags carry the slug + CLI invocation kind + exit code so we can slice
@@ -455,9 +520,9 @@ pub async fn run_cli_provision(
         }
     });
 
-    // Stream stdout line-by-line into a buffer. Final result is the last
-    // non-empty line — anything else (warnings, accidental println) is
-    // tolerated rather than treated as a parse failure.
+    // Stream stdout line-by-line into a buffer. `parse_provision_stdout`
+    // later finds the last complete result object, tolerating wrapper chatter
+    // both before *and after* the JSON (notably npm's `fund` notice).
     let stdout_task = tokio::spawn(async move {
         let mut reader = BufReader::new(stdout).lines();
         let mut lines: Vec<String> = Vec::new();
@@ -487,16 +552,8 @@ pub async fn run_cli_provision(
         );
     }
 
-    let last_json_line = lines
-        .iter()
-        .rev()
-        .find(|l| !l.trim().is_empty())
-        .map(|s| s.as_str());
-
-    let parse_result: Option<Result<CliProvisionResult, serde_json::Error>> =
-        last_json_line.map(serde_json::from_str::<CliProvisionResult>);
-    let parsed: Option<CliProvisionResult> =
-        parse_result.as_ref().and_then(|r| r.as_ref().ok()).cloned();
+    let parse_result = parse_provision_stdout(&lines);
+    let parsed: Option<CliProvisionResult> = parse_result.as_ref().ok().cloned();
 
     let exit_code = status.code();
     log(
@@ -508,23 +565,16 @@ pub async fn run_cli_provision(
         ),
     );
 
-    // Differentiate the failure modes for the exit-0 path so the error message
-    // points at the actual cause: missing stdout vs. parse failure. The previous
-    // single message ("no JSON line on stdout") falsely accused the CLI when
-    // the real culprit was a Rust↔TS schema drift (e.g. CliInitialSync requiring
-    // `ok` while the CLI emitted `{ skipped: true }`).
+    // Preserve the stdout parser's diagnosis on exit 0. This makes a genuine
+    // CLI/Rust schema drift actionable, while `npm fund` noise is ignored by
+    // the parser rather than being misreported as a provision failure.
     let exit0_err = || -> CliProvisionError {
-        match (last_json_line, parse_result.as_ref()) {
-            (None, _) => {
-                CliProvisionError::Other(format!("exit 0 but no output on stdout for slug={slug}"))
-            }
-            (Some(line), Some(Err(e))) => CliProvisionError::Other(format!(
-                "exit 0 but stdout JSON failed to parse for slug={slug}: {e} (last_line={line:?})"
-            )),
-            (Some(_), _) => CliProvisionError::Other(format!(
-                "exit 0 but no JSON line on stdout for slug={slug} (last_line={last_json_line:?})"
-            )),
-        }
+        let detail = parse_result
+            .as_ref()
+            .err()
+            .cloned()
+            .unwrap_or_else(|| "stdout parser returned no result".to_string());
+        CliProvisionError::Other(format!("exit 0 but {detail} for slug={slug}"))
     };
 
     let stderr_tail: Vec<String> = stderr_buffer
@@ -685,6 +735,67 @@ mod tests {
         assert_eq!(r.initial_sync.skipped, Some(true));
         assert_eq!(r.initial_sync.ok, None);
         assert_eq!(r.initial_sync.files_uploaded, None);
+    }
+
+    #[test]
+    fn parse_stdout_finds_result_before_trailing_npm_fund_noise() {
+        let result = json!({
+            "ok": true,
+            "company_slug": "acme",
+            "cloud_uid": "cmp_acme",
+            "bucket_name": "hq-vault-cmp-acme",
+            "vault_api_url": "https://vault.example.com",
+            "created_entity": true,
+            "manifest_patched": true,
+            "config_written": true,
+            "initial_sync": { "skipped": true }
+        })
+        .to_string();
+        let lines = vec![
+            "npm notice 1 package is looking for funding".to_string(),
+            result,
+            "npm notice Run `npm fund` for details".to_string(),
+        ];
+
+        let parsed = parse_provision_stdout(&lines).expect("must ignore npm noise");
+        assert_eq!(parsed.company_slug, "acme");
+        assert_eq!(parsed.cloud_uid, "cmp_acme");
+    }
+
+    #[test]
+    fn parse_stdout_ignores_non_result_json_and_ansi_prefixes() {
+        let result = json!({
+            "ok": true,
+            "company_slug": "acme",
+            "cloud_uid": "cmp_acme",
+            "bucket_name": "hq-vault-cmp-acme",
+            "vault_api_url": "https://vault.example.com",
+            "created_entity": false,
+            "manifest_patched": true,
+            "config_written": true,
+            "initial_sync": { "ok": true }
+        });
+        let lines = vec![
+            "{\"npm\":\"diagnostic only\"}".to_string(),
+            format!("\u{1b}[32mnpm notice result: {}\u{1b}[0m", result),
+            "npm notice Run `npm fund` for details".to_string(),
+        ];
+
+        let parsed = parse_provision_stdout(&lines).expect("must find the provision object");
+        assert_eq!(parsed.company_slug, "acme");
+        assert!(parsed.initial_sync.ok.unwrap());
+    }
+
+    #[test]
+    fn parse_stdout_preserves_a_real_json_schema_error() {
+        let lines = vec![
+            "npm notice Run `npm fund` for details".to_string(),
+            "{\"ok\":true,\"company_slug\":\"acme\"}".to_string(),
+        ];
+
+        let error = parse_provision_stdout(&lines).expect_err("incomplete result must fail");
+        assert!(error.contains("stdout JSON failed to parse"), "{error}");
+        assert!(error.contains("cloud_uid"), "{error}");
     }
 
     #[test]

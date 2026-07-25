@@ -298,7 +298,12 @@ async fn run_once(app: &AppHandle, creds: &RealtimeCredsResponse) -> Result<(), 
     let mut opts = MqttOptions::new(client_id(), url, 443);
     // Bundled webpki roots, not the macOS keychain — avoids the fatal
     // `load_native_certs().expect(...)` panic (Sentry HQ-SYNC-D). See util/mqtt_tls.rs.
-    opts.set_transport(crate::util::mqtt_tls::wss_transport_with_bundled_roots());
+    opts.set_transport(
+        crate::util::mqtt_tls::wss_transport_with_bundled_roots().map_err(|e| {
+            log(LOG_TAG, &format!("DM_MQTT_TLS_CONFIG_FAIL {e}"));
+            format!("TLS configuration: {e}")
+        })?,
+    );
     opts.set_keep_alive(Duration::from_secs(30));
     // AWS IoT requires a clean session for SigV4-WSS connections.
     opts.set_clean_session(true);
@@ -321,10 +326,13 @@ async fn run_once(app: &AppHandle, creds: &RealtimeCredsResponse) -> Result<(), 
     let handle = tokio::task::spawn(drive_eventloop(app, client, eventloop, topic));
     match handle.await {
         Ok(result) => result,
-        Err(join_err) if join_err.is_panic() => Err(format!(
-            "eventloop panicked (send-after-close guarded): {}",
-            panic_payload_message(join_err.into_panic())
-        )),
+        Err(join_err) if join_err.is_panic() => {
+            let panic_message = panic_payload_message(join_err.into_panic());
+            capture_wss_transport_panic(&panic_message);
+            Err(format!(
+                "eventloop panicked (send-after-close guarded): {panic_message}"
+            ))
+        }
         Err(join_err) => Err(format!("eventloop task ended abnormally: {join_err}")),
     }
 }
@@ -381,6 +389,35 @@ fn panic_payload_message(payload: Box<dyn std::any::Any + Send>) -> String {
     } else {
         "non-string panic payload".to_string()
     }
+}
+
+/// Report the last-resort panic boundary without letting the receiver task or
+/// process die. ws_stream_tungstenite 0.15 converts the known
+/// `Sending after closing` path into an I/O error; this capture remains as a
+/// diagnostic guard for any other upstream panic while `run_once` reconnects.
+fn capture_wss_transport_panic(panic_message: &str) {
+    sentry::add_breadcrumb(sentry::Breadcrumb {
+        category: Some("dm-mqtt.websocket".into()),
+        level: sentry::Level::Error,
+        message: Some("WSS transport task panicked; reconnecting receiver".into()),
+        ..Default::default()
+    });
+    sentry::with_scope(
+        |scope| {
+            scope.set_tag("component", "dm-mqtt");
+            scope.set_tag("transport", "wss");
+            scope.set_tag("recovery", "reconnect");
+            scope.set_fingerprint(Some(&["dm-mqtt", "wss-transport-panic"]));
+        },
+        || {
+            sentry::capture_message(
+                &format!(
+                    "[dm-mqtt] WSS transport panicked; receiver will reconnect: {panic_message}"
+                ),
+                sentry::Level::Error,
+            );
+        },
+    );
 }
 
 /// Spawn the instant-DM MQTT receiver. Called from `main.rs` `.setup()`,

@@ -71,13 +71,14 @@ describe('desktop-alt CompanyBoardPanel source contract (US-011)', () => {
     expect(panel).toContain('data-testid="inflight-row"');
   });
 
-  it('renders the V4 in-flight table with goal chips, priority, AC progress, and status', () => {
+  it('renders in-flight rows with goal chips, AC progress, and status (DESKTOP-003 list)', () => {
     expect(panel).toContain('data-testid="inflight-goal-chip"');
     expect(panel).toContain('goalChip(project)');
-    expect(panel).toContain('priorityLabel(detail?.priority)');
     expect(panel).toContain('class="ac-track"');
     expect(panel).toContain('height: 3px');
     expect(panel).toContain('rowStatus(project, detail)');
+    expect(panel).toContain('data-testid="inflight-list"');
+    expect(panel).toContain('data-testid="inflight-row"');
   });
 
   it('feeds the company-filtered projects to ProjectListView (showCompany off)', () => {
@@ -88,19 +89,19 @@ describe('desktop-alt CompanyBoardPanel source contract (US-011)', () => {
 
   it('drills into the detail view → Kanban → story detail with a back affordance', () => {
     expect(panel).toContain("import ProjectDetailView from '../pages/ProjectDetailView.svelte'");
-    expect(panel).toContain("import StoryPanel from '../v4/StoryPanel.svelte'");
     expect(panel).toContain('loadLocalProjectStories');
     expect(panel).toContain('<ProjectDetailView');
     expect(panel).toContain('onback={backToList}');
     expect(panel).toContain('onselectStory={openStory}');
-    expect(panel).toContain('<StoryPanel');
-    expect(panel).toContain('story={selectedStory}');
-    expect(panel).toContain('onclose={closeStory}');
+    // DESKTOP-005: StoryPanel docks inside ProjectDetailView (no modal sibling).
+    expect(panel).toContain('selectedStory={selectedStory}');
+    expect(panel).toContain('oncloseStory={closeStory}');
     expect(panel).toContain('onselectDependency={selectStoryById}');
     expect(panel).toContain('{onStoryPassesChange}');
     // The embedded Kanban (reachable from the detail view) is the drill target.
     const detail = readRepoFile('src/desktop-alt/pages/ProjectDetailView.svelte');
     expect(detail).toContain('import StoryKanban');
+    expect(detail).toContain('<StoryPanel');
   });
 
   it('stays token-driven (no hardcoded hex)', () => {
@@ -129,6 +130,11 @@ describe('desktop-alt board is the default company section (US-011 → V4 US-002
     expect(company).not.toContain('CompanyTabs');
     // Wired as the first branch in the panel switch.
     expect(company).toContain("{#if tab === 'overview'}");
-    expect(company).toContain('<CompanyBoardPanel slug={company.slug} {cloudBacked} />');
+    expect(company).toContain('<CompanyBoardPanel');
+    expect(company).toContain('slug={company.slug}');
+    expect(company).toContain('{cloudBacked}');
+    expect(company).toContain('{onopenprojects}');
+    expect(company).toContain('{onopengoals}');
+    expect(company).toContain('{onopeninbox}');
   });
 });

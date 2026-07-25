@@ -13,11 +13,6 @@ export const WIZARD_STEPS: WizardStep[] = [
   { index: 1, id: 'directory', label: 'Location' },
   { index: 2, id: 'setup', label: 'Setup' },
   { index: 3, id: 'ready', label: 'Ready' },
-  { index: 4, id: 'trust', label: 'Trust' },
-  { index: 5, id: 'settings', label: 'Settings' },
-  { index: 6, id: 'run-setup', label: 'Run setup' },
-  { index: 7, id: 'handoff', label: 'Handoff' },
-  { index: 8, id: 'build', label: 'Build' },
 ];
 
 const FIRST_STEP_INDEX = WIZARD_STEPS[0].index;

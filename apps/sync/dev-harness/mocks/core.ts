@@ -105,6 +105,75 @@ const LIBRARY_COMPANY = {
   skills: LIBRARY_ROOT.skills.filter((skill) => skill.company === 'indigo'),
 };
 
+function meetingFixture(
+  id: string,
+  summary: string,
+  daysFromToday: number,
+  hour: number,
+  minute: number,
+  durationMinutes: number,
+  companyUid = 'cmp_indigo',
+) {
+  const start = new Date();
+  start.setDate(start.getDate() + daysFromToday);
+  start.setHours(hour, minute, 0, 0);
+  const end = new Date(start.getTime() + durationMinutes * 60_000);
+  return {
+    id,
+    summary,
+    start: { dateTime: start.toISOString() },
+    end: { dateTime: end.toISOString() },
+    status: 'confirmed',
+    meetingUrl: `https://meet.google.com/${id}`,
+    sourceCalendarId: 'primary',
+    sourceAccountId: 'acct-indigo',
+    sourceCompanyUid: companyUid,
+  };
+}
+
+function meetingFixtures() {
+  return [
+    {
+      ...meetingFixture('weekly-creative', 'Weekly creative review', 0, 11, 0, 45),
+      signals: [
+        { type: 'action', title: 'Approve the revised storyboard' },
+        { type: 'decision', title: 'Ship the compact shell' },
+      ],
+    },
+    meetingFixture('desktop-standup', 'HQ Desktop standup', 0, 15, 30, 30),
+    meetingFixture('recovery-sync', 'Recovery sync', 1, 10, 0, 30, 'cmp_liverecover'),
+    meetingFixture('platform-review', 'Platform stability review', 2, 13, 0, 60),
+  ];
+}
+
+function meetingBotFixtures() {
+  const events = meetingFixtures();
+  return [
+    {
+      botId: 'bot-weekly-creative',
+      meetingUrl: events[0].meetingUrl,
+      platform: 'google_meet',
+      status: 'scheduled',
+      calendarEventId: events[0].id,
+      meetingTitle: events[0].summary,
+      scheduledStartTime: events[0].start.dateTime,
+      autoScheduled: true,
+      sourceLanded: false,
+    },
+    {
+      botId: 'bot-platform-review',
+      meetingUrl: events[3].meetingUrl,
+      platform: 'google_meet',
+      status: 'scheduled',
+      calendarEventId: events[3].id,
+      meetingTitle: events[3].summary,
+      scheduledStartTime: events[3].start.dateTime,
+      autoScheduled: false,
+      sourceLanded: false,
+    },
+  ];
+}
+
 // PRDs keyed by prdPath — enough stories for classifyStories to surface an
 // in-progress one (its title shows on the in-flight row + drill-in Kanban).
 function prdFor(name: string, current: string, done: number, total: number) {
@@ -262,6 +331,11 @@ const HARNESS_WORKSPACES: Workspace[] = [
 ];
 
 const handlers: Record<string, Handler> = {
+  // Deterministic full-desktop route for visual QA:
+  //   ?view=desktop&route=company:indigo:projects
+  // Mirrors the native pending-route handoff consumed once on mount.
+  desktop_alt_consume_pending_route: () =>
+    new URLSearchParams(window.location.search).get('route'),
   // Company-board path (?view=company)
   list_syncable_workspaces: () => ({
     workspaces: HARNESS_WORKSPACES,
@@ -293,6 +367,18 @@ const handlers: Record<string, Handler> = {
     if (/^companies\/[^/]+\/knowledge\/guides$/.test(rel)) {
       return [
         { name: 'onboarding.md', path: `${rel}/onboarding.md`, isDir: false, hasChildren: false },
+      ];
+    }
+    if (/^companies\/[^/]+\/projects\/[^/]+$/.test(rel)) {
+      return [
+        { name: 'notes', path: `${rel}/notes`, isDir: true, hasChildren: true },
+        { name: 'README.md', path: `${rel}/README.md`, isDir: false, hasChildren: false },
+        { name: 'prd.json', path: `${rel}/prd.json`, isDir: false, hasChildren: false },
+      ];
+    }
+    if (/^companies\/[^/]+\/projects\/[^/]+\/notes$/.test(rel)) {
+      return [
+        { name: 'architecture.md', path: `${rel}/architecture.md`, isDir: false, hasChildren: false },
       ];
     }
     return [];
@@ -348,6 +434,89 @@ const handlers: Record<string, Handler> = {
   }),
   get_local_company_goals: () => COMPANY_GOALS,
   get_local_projects: () => COMPANY_PROJECTS,
+  list_agent_sessions: () => ({
+    sessions: [
+      {
+        id: 'session-event-sync',
+        tool: 'codex',
+        origin: 'local',
+        cwd: '/Users/corey/Documents/HQ/repos/public/hq-desktop-app',
+        project: 'event-driven-hq-cloud-sync',
+        company: 'indigo',
+        model: 'gpt-5',
+        status: 'running',
+        startedAt: new Date(Date.now() - 42 * 60_000).toISOString(),
+        lastActivityAt: new Date(Date.now() - 30_000).toISOString(),
+        source: 'codex-rollout · US-004',
+      },
+      {
+        id: 'session-browse-sync',
+        tool: 'claude',
+        origin: 'local',
+        cwd: '/Users/corey/Documents/HQ',
+        project: 'hq-sync-browse-vs-sync',
+        company: 'indigo',
+        model: 'claude-opus-4-8',
+        status: 'awaiting_input',
+        startedAt: new Date(Date.now() - 18 * 60_000).toISOString(),
+        lastActivityAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+        source: 'claude-jsonl',
+      },
+    ],
+    history: [],
+    outpost: null,
+  }),
+  get_company_team_telemetry: () => ({
+    perMember: [
+      {
+        personUid: 'prs_corey',
+        displayName: 'Corey Epstein',
+        kind: 'human',
+        role: 'Owner',
+        totals: {
+          events: 184,
+          distinctSessions: 31,
+          skills: { bySkill: [{ skill: 'run-project', count: 22 }, { skill: 'storyboard', count: 14 }] },
+        },
+        activeProjects: ['HQ Desktop app', 'Event-driven HQ-Cloud sync'],
+      },
+      {
+        personUid: 'agt_izzy',
+        displayName: 'Izzy',
+        kind: 'agent',
+        role: 'Fleet agent',
+        totals: {
+          events: 143,
+          distinctSessions: 28,
+          skills: { bySkill: [{ skill: 'dm', count: 36 }, { skill: 'hq-sync', count: 19 }] },
+        },
+        activeProjects: ['Instant DM delivery'],
+      },
+      {
+        personUid: 'prs_maya',
+        displayName: 'Maya Chen',
+        kind: 'human',
+        role: 'Member',
+        totals: {
+          events: 88,
+          distinctSessions: 17,
+          skills: { bySkill: [{ skill: 'review', count: 12 }, { skill: 'quality-gate', count: 9 }] },
+        },
+        activeProjects: ['S3-versioned conflict handling'],
+      },
+      {
+        personUid: 'agt_lin',
+        displayName: 'Lin',
+        kind: 'agent',
+        totals: {
+          events: 51,
+          distinctSessions: 9,
+          skills: { bySkill: [{ skill: 'diagnose', count: 11 }] },
+        },
+        activeProjects: [],
+      },
+    ],
+  }),
   get_local_project_prd: (args) =>
     COMPANY_PRDS[(args?.prdPath as string) ?? ''] ?? prdFor('Project', 'Current step in progress', 1, 4),
   get_local_project_readme: () => '# Project\n\nA representative README for the preview harness.',
@@ -448,6 +617,23 @@ const handlers: Record<string, Handler> = {
   get_autostart_enabled: () => true,
   set_autostart_enabled: () => null,
   meetings_feature_enabled: () => true,
+  meetings_list_upcoming: () => meetingFixtures(),
+  meetings_list_memberships: () => [
+    { companyUid: 'cmp_indigo', companyName: 'Indigo', role: 'owner', status: 'active' },
+    { companyUid: 'cmp_liverecover', companyName: 'Liverecover', role: 'member', status: 'active' },
+  ],
+  meetings_list_accounts: () => [
+    { accountId: 'acct-indigo', email: 'corey@getindigo.ai', scope: 'calendar', connectedAt: '2026-06-01T10:00:00Z' },
+  ],
+  meetings_list_calendars_for_account: () => ({
+    calendars: [{ id: 'primary', summary: 'Corey Epstein', primary: true, accessRole: 'owner' }],
+    selectedCalendarIds: ['primary'],
+  }),
+  meetings_list_scheduled_bots: (args) => {
+    const ids = Array.isArray(args?.calendarEventIds) ? args.calendarEventIds : null;
+    const bots = meetingBotFixtures();
+    return ids ? bots.filter((bot) => ids.includes(bot.calendarEventId)) : bots;
+  },
   is_indigo_user: () => true,
   available_channels: () => ['stable', 'beta', 'alpha'],
   notification_permission_state: () => 'prompt',

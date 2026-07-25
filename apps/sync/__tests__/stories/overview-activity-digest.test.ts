@@ -9,12 +9,14 @@ import { describe, expect, it } from 'vitest';
 
 const read = (p: string) => readFileSync(resolve(process.cwd(), p), 'utf8');
 
-describe('company Overview team-activity digest', () => {
+describe('company Overview recent-activity digest (DESKTOP-003)', () => {
   it('is rendered on the company Overview (CompanyBoardPanel)', () => {
     const panel = read('src/desktop-alt/panels/CompanyBoardPanel.svelte');
     expect(panel).toContain("import OverviewActivityDigest from '../components/OverviewActivityDigest.svelte'");
-    // Rendered with the company slug + cloud-backed flag, in the overview body.
-    expect(panel).toMatch(/<OverviewActivityDigest\s+\{slug\}\s+\{cloudBacked\}\s*\/>/);
+    // Rendered with slug, cloud-backed flag, and inbox handoff.
+    expect(panel).toMatch(
+      /<OverviewActivityDigest\s+\{slug\}\s+\{cloudBacked\}\s+\{onopeninbox\}\s*\/>/,
+    );
   });
 
   it('pulls real activity data (no fabricated values) and reuses the shared cache', () => {
@@ -31,5 +33,7 @@ describe('company Overview team-activity digest', () => {
     expect(c).toContain('activity.sparkline');
     // Honest empty state, not a faked filler.
     expect(c).toContain('No activity yet');
+    expect(c).toContain('>Recent activity<');
+    expect(c).toContain('Open inbox');
   });
 });

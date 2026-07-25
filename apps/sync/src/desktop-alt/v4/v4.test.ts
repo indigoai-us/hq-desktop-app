@@ -86,6 +86,26 @@ describe('US-001 V4 sidebar active-state mapping', () => {
     expect(model.companies.filter((row) => row.active).map((row) => row.slug)).toEqual(['hpo']);
     expect(model.settingsActive).toBe(false);
     expect(activeRowCount(model)).toBe(1);
+    // DESKTOP-001: selected company expands primary children; others collapse.
+    const hpo = model.companies.find((row) => row.slug === 'hpo');
+    expect(hpo?.expanded).toBe(true);
+    expect(hpo?.children.map((c) => c.id)).toEqual([
+      'overview',
+      'goals',
+      'projects',
+      'knowledge',
+      'team',
+      'more',
+    ]);
+    expect(hpo?.children.find((c) => c.id === 'overview')?.active).toBe(true);
+    expect(model.companies.filter((row) => row.slug !== 'hpo').every((row) => !row.expanded)).toBe(
+      true,
+    );
+  });
+
+  it('collapses company children on global destinations (DESKTOP-001)', () => {
+    const model = getV4SidebarModel({ kind: 'inbox' }, workspaces);
+    expect(model.companies.every((row) => !row.expanded && row.children.length === 0)).toBe(true);
   });
 
   it('highlights the Settings footer — and nothing else — on the settings route', () => {
@@ -337,7 +357,7 @@ describe('US-001 V4 title bar model', () => {
     expect(model.meta).toBe('indigo · 2/5 companies');
   });
 
-  it('switches the primary action to Retry on sync and auth errors', () => {
+  it('keeps sync errors red but gives auth a calm direct sign-in action', () => {
     const error = getV4TitleBarModel({
       syncState: 'error',
       watchedCount: 3,
@@ -348,8 +368,9 @@ describe('US-001 V4 title bar model', () => {
     expect(error.action).toEqual({ id: 'retry', label: 'Retry' });
 
     const auth = getV4TitleBarModel({ syncState: 'auth-error', watchedCount: 3 });
-    expect(auth.action).toEqual({ id: 'retry', label: 'Retry' });
-    expect(auth.tone).toBe('error');
+    expect(auth.action).toEqual({ id: 'retry', label: 'Sign in' });
+    expect(auth.tone).toBe('idle');
+    expect(auth.sentence).toBe('Ready to reconnect');
   });
 
   it('flags conflicts as a warn state that keeps Sync Now as the action', () => {

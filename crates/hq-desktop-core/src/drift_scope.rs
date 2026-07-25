@@ -1,5 +1,23 @@
 //! Pure drift-scope path and hash helpers shared by the desktop app.
+//!
+//! Drift compares local locked-scope files to the upstream git tree for the
+//! installed (or target) hq-core version. Two classes of false positive matter
+//! across platforms:
+//!
+//! 1. **Line endings** — hq-core ships LF blobs. On Windows, editors / Git
+//!    `core.autocrlf` / some extract paths materialize CRLF on disk. Byte-exact
+//!    git-blob hashing then marks every text file "Modified" even when the
+//!    logical content matches. macOS/Linux installs stay LF and are unaffected
+//!    by EOL normalization (it is a pure no-op when no `\r` is present).
+//! 2. **Pack materializations** — `scan-packages.sh` wires
+//!    `core/packages/hq-pack-*` into locked paths (`.claude/skills/…`,
+//!    `core/policies/…`, …). On Unix those destinations are usually symlinks
+//!    and are skipped by the walk (`follow_links(false)`). On Windows they are
+//!    often real directory copies / junctions that look like "Added" core
+//!    files. We exclude the declared contribute landing paths so pack installs
+//!    are not mistaken for core drift on any OS.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -38,7 +56,7 @@ pub fn read_locked_paths(hq_folder: &Path) -> Vec<String> {
         .collect()
 }
 
-/// Paths excluded from drift detection (both release and staging).
+/// Static paths excluded from drift detection (both release and staging).
 ///
 /// Hardcoded in the app rather than read from `core.yaml` so it survives
 /// every staging overlay (which rewrites `core/core.yaml`). The list covers
@@ -54,6 +72,9 @@ pub fn read_locked_paths(hq_folder: &Path) -> Vec<String> {
 /// Always interpreted as a directory-prefix match (see
 /// `path_in_excluded_scope`), so leaf entries here also cover files under
 /// the same name without needing a trailing slash.
+///
+/// Prefer [`excluded_scope_paths_for`] at call sites that have an HQ folder —
+/// it adds pack materialization landings on top of this static list.
 pub fn excluded_scope_paths() -> Vec<String> {
     [
         ".claude/settings.local.json",
@@ -66,6 +87,7 @@ pub fn excluded_scope_paths() -> Vec<String> {
         ".claude/scheduled_tasks.lock",
         ".claude/audit",     // runtime audit logs; not authored content
         ".claude/worktrees", // Claude Code per-Agent worktree sandboxes
+        ".claude/handoffs",  // session handoff drafts; user/runtime, not core
         ".claude/commands",  // legacy — consolidated into .claude/skills/
         ".agents/skills",
         ".codex/claude",
@@ -87,6 +109,98 @@ pub fn excluded_scope_paths() -> Vec<String> {
     .iter()
     .map(|s| (*s).to_string())
     .collect()
+}
+
+/// Static exclusions plus pack contribute landing paths under `hq_folder`.
+///
+/// Pack landings (skills/policies/knowledge/…) are expected local content from
+/// `hq install` / `scan-packages.sh`, not hq-core release files. Excluding them
+/// keeps Core Drift focused on genuine core edits on every OS — including
+/// Windows, where pack destinations are often real copies rather than symlinks.
+pub fn excluded_scope_paths_for(hq_folder: &Path) -> Vec<String> {
+    let mut out = excluded_scope_paths();
+    out.extend(pack_materialization_scopes(hq_folder));
+    out
+}
+
+/// Landing paths declared by installed packs' `package.yaml` `contributes`
+/// blocks — mirrors `core/scripts/scan-packages.sh` destination mapping.
+///
+/// Returns HQ-root-relative paths suitable for [`path_in_excluded_scope`]
+/// (directory prefixes without a trailing slash, or exact file paths).
+pub fn pack_materialization_scopes(hq_folder: &Path) -> Vec<String> {
+    let packages_dir = hq_folder.join("core").join("packages");
+    let Ok(entries) = std::fs::read_dir(&packages_dir) else {
+        return Vec::new();
+    };
+    let mut scopes = Vec::new();
+    for entry in entries.flatten() {
+        let pkg_dir = entry.path();
+        if !pkg_dir.is_dir() {
+            continue;
+        }
+        let manifest = pkg_dir.join("package.yaml");
+        let Ok(bytes) = std::fs::read(&manifest) else {
+            continue;
+        };
+        let Ok(parsed) = serde_yaml::from_slice::<serde_yaml::Value>(&bytes) else {
+            continue;
+        };
+        let Some(contributes) = parsed.get("contributes") else {
+            continue;
+        };
+        push_pack_contribute_scopes(contributes, &mut scopes);
+    }
+    scopes.sort();
+    scopes.dedup();
+    scopes
+}
+
+fn push_pack_contribute_scopes(contributes: &serde_yaml::Value, scopes: &mut Vec<String>) {
+    let Some(map) = contributes.as_mapping() else {
+        return;
+    };
+    for (key, value) in map {
+        let Some(key) = key.as_str() else {
+            continue;
+        };
+        let Some(items) = value.as_sequence() else {
+            continue;
+        };
+        for item in items {
+            let Some(name) = item.as_str() else {
+                continue;
+            };
+            if name.is_empty() || name.contains("..") {
+                continue;
+            }
+            match key {
+                "workers" => scopes.push(format!("core/workers/public/{name}")),
+                "knowledge" => scopes.push(format!("core/knowledge/public/{name}")),
+                "skills" => scopes.push(format!(".claude/skills/{name}")),
+                "commands" => scopes.push(format!(".claude/commands/{name}.md")),
+                "hooks" => {
+                    // scan-packages: dst=".claude/hooks/$item.sh"
+                    let path = if name.ends_with(".sh") {
+                        format!(".claude/hooks/{name}")
+                    } else {
+                        format!(".claude/hooks/{name}.sh")
+                    };
+                    scopes.push(path);
+                }
+                "policies" => {
+                    let path = if name.ends_with(".md") {
+                        format!("core/policies/{name}")
+                    } else {
+                        format!("core/policies/{name}.md")
+                    };
+                    scopes.push(path);
+                }
+                "scripts" => scopes.push(format!("core/scripts/{name}")),
+                _ => {}
+            }
+        }
+    }
 }
 
 /// True iff the path is an HQ-Sync conflict-resolution artifact
@@ -136,6 +250,9 @@ pub fn path_in_locked_scope(path: &str, locked: &[String]) -> bool {
 /// Compute git's blob SHA-1 for a byte slice. Git's content-addressable
 /// blob hash is `sha1("blob " + content_length_decimal + "\0" + content)`
 /// — matches what the GitHub trees API returns as `sha` for blob entries.
+///
+/// Callers comparing **local working-tree bytes** to upstream should use
+/// [`drift_blob_sha`] instead so Windows CRLF does not false-positive.
 pub fn git_blob_sha(content: &[u8]) -> String {
     let mut hasher = Sha1::new();
     hasher.update(format!("blob {}\0", content.len()).as_bytes());
@@ -148,10 +265,68 @@ pub fn git_blob_sha(content: &[u8]) -> String {
     hex
 }
 
+/// Git-blob SHA used for **drift comparison** of local files.
+///
+/// For probable text, normalizes `\r\n` and bare `\r` to `\n` before hashing
+/// so a CRLF working tree matches upstream LF blobs (hq-core release truth).
+/// Binary / non-text bytes are hashed as-is.
+///
+/// On macOS/Linux (LF on disk) this returns the same digest as [`git_blob_sha`].
+pub fn drift_blob_sha(content: &[u8]) -> String {
+    let normalized = normalize_newlines_for_drift(content);
+    git_blob_sha(normalized.as_ref())
+}
+
+/// Normalize newlines for drift hashing only.
+///
+/// - Leaves binary-looking buffers unchanged (NUL in the sample → binary).
+/// - Leaves buffers with no `\r` unchanged (fast path for mac/Linux LF trees).
+/// - Otherwise maps `\r\n` and lone `\r` → `\n`, matching git's text EOL
+///   canonicalization toward the LF blobs hq-core publishes.
+pub fn normalize_newlines_for_drift(content: &[u8]) -> Cow<'_, [u8]> {
+    if !is_probable_text(content) || !content.contains(&b'\r') {
+        return Cow::Borrowed(content);
+    }
+    let mut out = Vec::with_capacity(content.len());
+    let mut i = 0;
+    while i < content.len() {
+        match content[i] {
+            b'\r' => {
+                if i + 1 < content.len() && content[i + 1] == b'\n' {
+                    out.push(b'\n');
+                    i += 2;
+                } else {
+                    out.push(b'\n');
+                    i += 1;
+                }
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    Cow::Owned(out)
+}
+
+fn is_probable_text(content: &[u8]) -> bool {
+    if content.is_empty() {
+        return true;
+    }
+    // Sample up to 8 KiB — enough for HQ markdown/shell/yaml; avoid scanning
+    // multi‑MB binaries.
+    let sample = &content[..content.len().min(8 * 1024)];
+    !sample.contains(&0)
+}
+
 /// Walk the local HQ folder, restricted to the locked-path scopes, and
-/// return a map of relative-path → (sha1, size). Walks files directly
-/// for leaf scopes; uses walkdir for directory scopes. Symlinks are
-/// followed but never escape the HQ root.
+/// return a map of relative-path → (drift_sha1, on_disk_size).
+///
+/// SHA is [`drift_blob_sha`] (EOL-normalized for text). Size is the raw
+/// on-disk length so the UI still reflects what the user has locally.
+///
+/// Symlink files are skipped; symlink directories are not descended
+/// (`follow_links(false)`), matching Unix pack wire-ups.
 pub fn walk_local_under_scope(
     hq_folder: &Path,
     locked: &[String],
@@ -176,6 +351,11 @@ pub fn walk_local_under_scope(
                 if !entry.file_type().is_file() {
                     continue;
                 }
+                // Skip files reached through a symlinked ancestor that walkdir
+                // still surfaces on some platforms, and skip symlink files.
+                if entry.path_is_symlink() {
+                    continue;
+                }
                 let Ok(rel_path) = entry.path().strip_prefix(hq_folder) else {
                     continue;
                 };
@@ -183,7 +363,7 @@ pub fn walk_local_under_scope(
                     continue;
                 };
                 let size = content.len() as u64;
-                let sha = git_blob_sha(&content);
+                let sha = drift_blob_sha(&content);
                 let rel_str = rel_path.to_string_lossy().replace('\\', "/");
                 out.insert(rel_str, (sha, size));
             }
@@ -204,7 +384,7 @@ pub fn walk_local_under_scope(
             }
             if let Ok(content) = std::fs::read(&abs) {
                 let size = content.len() as u64;
-                let sha = git_blob_sha(&content);
+                let sha = drift_blob_sha(&content);
                 out.insert(rel.clone(), (sha, size));
             }
         }
@@ -212,9 +392,20 @@ pub fn walk_local_under_scope(
     out
 }
 
+/// Resolve a path under `hq_folder` for tests / callers that need the abs form.
+#[cfg(test)]
+fn test_write(root: &Path, rel: &str, bytes: &[u8]) {
+    let path = root.join(rel);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+    }
+    std::fs::write(path, bytes).unwrap();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn git_blob_sha_matches_git_format() {
@@ -225,6 +416,32 @@ mod tests {
         // "hello\n" blob's SHA-1 is ce013625030ba8dba906f756967f9e9ca394464a.
         let hello = git_blob_sha(b"hello\n");
         assert_eq!(hello, "ce013625030ba8dba906f756967f9e9ca394464a");
+    }
+
+    #[test]
+    fn drift_blob_sha_crlf_matches_lf_upstream() {
+        // Upstream hq-core blob is LF; Windows working tree is often CRLF.
+        let lf = b"id: example\ntitle: Hello\n";
+        let crlf = b"id: example\r\ntitle: Hello\r\n";
+        assert_eq!(drift_blob_sha(lf), git_blob_sha(lf));
+        assert_eq!(drift_blob_sha(crlf), git_blob_sha(lf));
+        // Raw git hash of CRLF must still differ (restore path uses raw).
+        assert_ne!(git_blob_sha(crlf), git_blob_sha(lf));
+    }
+
+    #[test]
+    fn drift_blob_sha_lf_is_noop_on_unix_style_trees() {
+        let lf = b"#!/usr/bin/env bash\nset -euo pipefail\n";
+        assert_eq!(drift_blob_sha(lf), git_blob_sha(lf));
+        assert!(matches!(normalize_newlines_for_drift(lf), Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn drift_blob_sha_does_not_rewrite_binary_with_crlf_bytes() {
+        // PNG-ish header + embedded CRLF must not be EOL-normalized.
+        let mut binary = b"\x89PNG\r\n\x1a\n".to_vec();
+        binary.extend_from_slice(&[0, 1, 2, 3, 0x0d, 0x0a, 4, 5]);
+        assert_eq!(drift_blob_sha(&binary), git_blob_sha(&binary));
     }
 
     #[test]
@@ -263,6 +480,7 @@ mod tests {
             ".claude/scheduled-tasks/job-123.json",
             &excluded
         ));
+        assert!(path_in_excluded_scope(".claude/handoffs/foo.md", &excluded));
         // Existing exclusions still hold (guards against list churn).
         assert!(path_in_excluded_scope(
             ".claude/settings.local.json",
@@ -270,5 +488,91 @@ mod tests {
         ));
         // A genuinely-authored locked file is NOT excluded.
         assert!(!path_in_excluded_scope(".claude/CLAUDE.md", &excluded));
+    }
+
+    #[test]
+    fn pack_materialization_scopes_follow_scan_packages_destinations() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let pack = root
+            .join("core")
+            .join("packages")
+            .join("hq-pack-engineering");
+        fs::create_dir_all(&pack).unwrap();
+        fs::write(
+            pack.join("package.yaml"),
+            r#"
+name: hq-pack-engineering
+contributes:
+  skills:
+    - tdd
+    - architect
+  policies:
+    - e2e-testing-standards
+  hooks:
+    - PreToolUse/50-prefer-agent-browser
+  knowledge:
+    - design-styles
+  workers:
+    - qa-tester
+"#,
+        )
+        .unwrap();
+
+        let scopes = pack_materialization_scopes(root);
+        assert!(scopes.iter().any(|s| s == ".claude/skills/tdd"));
+        assert!(scopes.iter().any(|s| s == ".claude/skills/architect"));
+        assert!(scopes
+            .iter()
+            .any(|s| s == "core/policies/e2e-testing-standards.md"));
+        assert!(scopes
+            .iter()
+            .any(|s| s == ".claude/hooks/PreToolUse/50-prefer-agent-browser.sh"));
+        assert!(scopes
+            .iter()
+            .any(|s| s == "core/knowledge/public/design-styles"));
+        assert!(scopes.iter().any(|s| s == "core/workers/public/qa-tester"));
+
+        let excluded = excluded_scope_paths_for(root);
+        assert!(path_in_excluded_scope(
+            ".claude/skills/tdd/SKILL.md",
+            &excluded
+        ));
+        assert!(path_in_excluded_scope(
+            "core/knowledge/public/design-styles/README.md",
+            &excluded
+        ));
+        // Core-authored skill not declared by any pack stays in scope.
+        assert!(!path_in_excluded_scope(
+            ".claude/skills/startwork/SKILL.md",
+            &excluded
+        ));
+    }
+
+    #[test]
+    fn walk_local_hashes_crlf_as_lf_for_text() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        test_write(root, "core/policies/example.md", b"---\nid: x\n---\nbody\n");
+        // Simulate Windows checkout of the same logical file.
+        test_write(
+            root,
+            "core/policies/win.md",
+            b"---\r\nid: x\r\n---\r\nbody\r\n",
+        );
+        let locked = vec!["core/policies/".to_string()];
+        let map = walk_local_under_scope(root, &locked);
+        let lf_sha = &map.get("core/policies/example.md").unwrap().0;
+        let crlf_sha = &map.get("core/policies/win.md").unwrap().0;
+        assert_eq!(lf_sha, crlf_sha);
+        // On-disk size still reflects CRLF bulk for the Windows file.
+        assert_eq!(
+            map.get("core/policies/win.md").unwrap().1,
+            b"---\r\nid: x\r\n---\r\nbody\r\n".len() as u64
+        );
+        assert_eq!(
+            map.get("core/policies/example.md").unwrap().1,
+            b"---\nid: x\n---\nbody\n".len() as u64
+        );
     }
 }

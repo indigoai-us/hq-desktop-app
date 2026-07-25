@@ -16,6 +16,7 @@
     saveMeetingsCache,
   } from '../lib/meetingsCache';
   import { isAlreadyScheduledError } from '../lib/invite-errors';
+  import { humanCompanyLabel } from '../lib/visible-labels';
   import type { ActiveMeeting } from '../lib/activeMeetings';
   import {
     activeMemberships,
@@ -390,7 +391,7 @@
    *  `companyLabel` for calendar events). `null` companyUid = Personal. */
   function activeMeetingCompanyLabel(companyUid: string | null): string {
     if (!companyUid) return 'Personal';
-    return companyNamesByUid.get(companyUid) ?? `${companyUid.slice(0, 12)}…`;
+    return humanCompanyLabel({ companyName: companyNamesByUid.get(companyUid) });
   }
 
   /** Title shown on a live-now row — the calendar summary if we have one, else
@@ -1271,14 +1272,7 @@
 
   function companyLabel(e: MeetingEvent): string {
     if (!e.sourceCompanyUid) return 'Personal';
-    // Prefer the human-readable name from /membership/me. Fall back to
-    // a UID prefix only when the membership map didn't include this
-    // company (rare: should only happen if the user lost membership
-    // between the calendar mapping save and now).
-    const name = companyNamesByUid.get(e.sourceCompanyUid);
-    if (name) return name;
-    const short = e.sourceCompanyUid.slice(0, 12);
-    return short.length === 12 ? `${short}…` : short;
+    return humanCompanyLabel({ companyName: companyNamesByUid.get(e.sourceCompanyUid) });
   }
 
   function eventMeetingUrl(e: MeetingEvent): string | null {
@@ -1454,7 +1448,7 @@
               <option value={null}>Personal</option>
               {#each recordingMemberships as rm (rm.companyUid)}
                 <option value={rm.companyUid}>
-                  {rm.companyName ?? activeMeetingCompanyLabel(rm.companyUid)}
+                  {humanCompanyLabel(rm, activeMeetingCompanyLabel(rm.companyUid))}
                 </option>
               {/each}
             </select>

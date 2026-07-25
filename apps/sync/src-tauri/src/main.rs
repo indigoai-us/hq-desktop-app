@@ -284,6 +284,7 @@ fn main() {
             commands::oauth::oauth_exchange_code,
             commands::auth::get_auth_state,
             commands::auth::has_stored_token,
+            commands::auth::begin_reauth,
             commands::auth::refresh_tokens,
             commands::auth::sign_out,
             commands::config::get_config,
@@ -660,6 +661,7 @@ fn main() {
             // See `commands::version_gate` for the rationale.
             commands::version_gate::setup_version_gate(app.handle());
             updater::setup_update_checker(app.handle());
+            commands::telemetry::setup_daily_active_emit();
             // Surface live progress for ANY sync (auto-sync / CLI), not just
             // a menubar-spawned Sync Now, by watching ~/.hq/sync-progress.json.
             commands::sync_progress_watch::setup_sync_progress_watch(app.handle());

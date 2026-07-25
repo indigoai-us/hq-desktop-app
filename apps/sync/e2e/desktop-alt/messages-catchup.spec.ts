@@ -21,8 +21,8 @@ describe('desktop-alt Messages catch-up digest', () => {
   it('mounts the CatchUp digest in the rail', () => {
     expect(shell).toContain("import CatchUp, { type CatchUpItem } from './v4/CatchUp.svelte'");
     expect(shell).toContain('<CatchUp');
-    // Only on the All segment, only when there are real items, dismissible.
-    expect(shell).toContain("segment === 'all' && catchUpItems.length > 0 && !catchUpDismissed");
+    // DESKTOP-002: no All/People/Requests segments — show when real items exist.
+    expect(shell).toContain('catchUpItems.length > 0 && !catchUpDismissed');
     expect(shell).toContain('ondismiss={() => (catchUpDismissed = true)}');
   });
 

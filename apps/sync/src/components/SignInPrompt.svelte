@@ -6,10 +6,11 @@
   import { emitDesktopTelemetry } from '../lib/desktop-telemetry';
 
   interface Props {
+    reauth?: boolean;
     onsuccess?: (auth: { authenticated: boolean; expiresAt: string }) => void;
   }
 
-  let { onsuccess }: Props = $props();
+  let { reauth = false, onsuccess }: Props = $props();
 
   type SignInProvider = 'Google' | 'Microsoft';
   const providers: { key: SignInProvider; label: string }[] = [
@@ -19,32 +20,64 @@
 
   let loadingProvider = $state<SignInProvider | null>(null);
   let error = $state('');
+  let lastProvider = $state<SignInProvider | null>(null);
+  let activeState = $state<string | null>(null);
+  let signInRun = 0;
+
+  function isCurrentSignInRun(run: number): boolean {
+    return run === signInRun;
+  }
+
+  async function cancelPendingSignIn(state = activeState) {
+    try {
+      await invoke('oauth_cancel_listen', { state });
+    } catch (cancelError) {
+      console.warn('[signin] failed to cancel OAuth listener:', cancelError);
+    }
+  }
 
   async function handleSignIn(provider: SignInProvider) {
+    const run = ++signInRun;
     loadingProvider = provider;
     error = '';
+    lastProvider = provider;
+    activeState = null;
+    console.info('[signin] OAuth runner started', { provider });
 
     try {
-      // Step 1: Start OAuth login to get authorize URL
+      // Step 1: Start OAuth login. This binds both loopback listener families
+      // before the provider URL is returned, so a fast redirect cannot race it.
       const { authorizeUrl, state } = await invoke<{
         authorizeUrl: string;
         state: string;
       }>('start_oauth_login', { provider });
+      if (!isCurrentSignInRun(run)) {
+        await cancelPendingSignIn(state);
+        return;
+      }
+      activeState = state;
 
       // Step 2: Open browser for user to authenticate
+      console.info('[signin] OAuth browser open requested', { provider });
       await open(authorizeUrl);
+      console.info('[signin] OAuth browser opened', { provider });
+      if (!isCurrentSignInRun(run)) return;
 
       // Step 3: Listen for the OAuth callback code
+      console.info('[signin] OAuth runner waiting for callback', { provider });
       const { code } = await invoke<{ code: string }>(
         'oauth_listen_for_code',
         { state }
       );
+      if (!isCurrentSignInRun(run)) return;
 
       // Step 4: Exchange code for tokens
+      console.info('[signin] OAuth token exchange requested', { provider });
       const result = await invoke<{
         authenticated: boolean;
         expiresAt: string;
       }>('oauth_exchange_code', { code });
+      if (!isCurrentSignInRun(run)) return;
 
       // Step 5: Notify parent of success
       if (result.authenticated) {
@@ -65,14 +98,42 @@
           eventName: 'oauth_signin_succeeded',
           properties: { provider },
         });
+        console.info('[signin] OAuth runner succeeded', { provider });
         onsuccess?.(result);
       } else {
-        error = 'Authentication failed. Please try again.';
+        error = 'That sign-in did not finish. Choose your provider and try once more.';
       }
     } catch (err) {
-      error = err instanceof Error ? err.message : String(err);
+      if (!isCurrentSignInRun(run)) return;
+      console.error('[signin] OAuth runner failed:', err);
+      error = 'That sign-in did not finish. Choose your provider and try once more.';
+      await cancelPendingSignIn();
     } finally {
-      loadingProvider = null;
+      if (isCurrentSignInRun(run)) {
+        loadingProvider = null;
+        activeState = null;
+        console.info('[signin] OAuth runner idle', { provider });
+      }
+    }
+  }
+
+  async function handleCancel() {
+    if (!loadingProvider) return;
+
+    const provider = loadingProvider;
+    const state = activeState;
+    ++signInRun;
+    console.info('[signin] OAuth runner cancellation requested', { provider });
+    await cancelPendingSignIn(state);
+    loadingProvider = null;
+    activeState = null;
+    error = 'Sign-in cancelled. Retry when you are ready.';
+    console.info('[signin] OAuth runner cancelled', { provider });
+  }
+
+  function handleRetry() {
+    if (lastProvider && !loadingProvider) {
+      void handleSignIn(lastProvider);
     }
   }
 
@@ -120,8 +181,12 @@
       </svg>
     </div>
 
-    <h1>Sign in to HQ</h1>
-    <p class="description">Use Google or Microsoft to sync your HQ files.</p>
+    <h1>{reauth ? 'Keep sync moving' : 'Sign in to HQ'}</h1>
+    <p class="description">
+      {reauth
+        ? 'Your files are safe. Continue with your provider and HQ will resume syncing.'
+        : 'Use Google or Microsoft to sync your HQ files.'}
+    </p>
 
     <div class="sign-in-actions">
       {#each providers as provider}
@@ -148,8 +213,9 @@
     {#if loadingProvider}
       <p class="loading-hint">
         A browser window opened for {loadingProvider} sign-in. Complete it there and
-        you'll return here automatically. You can quit if sign-in gets stuck.
+        you'll return here automatically. You can cancel, retry, or quit if sign-in gets stuck.
       </p>
+      <button class="cancel-btn" onclick={handleCancel}>Cancel sign-in</button>
     {/if}
 
     <button class="quit-btn" onclick={handleQuit}>Quit HQ Sync</button>
@@ -157,6 +223,11 @@
     {#if error}
       <div class="error-block">
         <p class="error">{error}</p>
+        {#if lastProvider}
+          <button class="retry-btn" onclick={handleRetry}>
+            Retry {lastProvider} sign-in
+          </button>
+        {/if}
         <CopyPromptButton
           variant="inline"
           label="Copy prompt"
@@ -338,7 +409,9 @@
     line-height: 1.4;
   }
 
-  .quit-btn {
+  .cancel-btn,
+  .quit-btn,
+  .retry-btn {
     margin-top: 0.875rem;
     padding: 0.375rem 0.625rem;
     font-size: 0.75rem;
@@ -351,7 +424,9 @@
     transition: background 0.12s ease, color 0.12s ease;
   }
 
-  .quit-btn:hover {
+  .cancel-btn:hover,
+  .quit-btn:hover,
+  .retry-btn:hover {
     background: var(--pop-hover);
     color: var(--pop-text);
   }

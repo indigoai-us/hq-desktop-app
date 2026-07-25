@@ -22,6 +22,7 @@
  */
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { safeUnlisten } from '../../lib/listener-registry';
 
 export async function subscribeLibraryRefresh(
   onRefresh: () => void,
@@ -37,8 +38,13 @@ export async function subscribeLibraryRefresh(
     onRefresh();
   });
 
+  // Each handle is torn down through `safeUnlisten` so a stale/double
+  // teardown of one subscription can neither throw nor skip the other
+  // (Sentry HQ-DESKTOP-39).
+  const safeFocus = safeUnlisten(unlistenFocus);
+  const safeSync = safeUnlisten(unlistenSync);
   return () => {
-    unlistenFocus();
-    unlistenSync();
+    safeFocus();
+    safeSync();
   };
 }

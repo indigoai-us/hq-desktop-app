@@ -25,6 +25,7 @@
   import { renderMessageBodyMarkdown } from '../../lib/messageMarkdown';
   import { type ReactionEvent, dmScope, channelScope } from '../../lib/reactions';
   import { ReactionController } from '../../lib/reactionController.svelte';
+  import { sanitizeVisibleIdentifiers } from '../../lib/visible-labels';
 
   // A thread message (root or reply) as returned by fetch_thread / carried on a
   // thread:new-reply event. Mirrors the Rust `ThreadReply` (camelCase).
@@ -226,7 +227,7 @@
     <button class="thread-close" type="button" onclick={onclose} aria-label="Close thread">
       ‹ Back
     </button>
-    <h2 class="thread-title">{title}</h2>
+    <h2 class="thread-title">{sanitizeVisibleIdentifiers(title)}</h2>
   </header>
 
   <div class="thread-root">

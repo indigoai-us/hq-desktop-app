@@ -4,27 +4,45 @@
  * continue to build, but those names now resolve from the shared prototype
  * primitives in styles/design-system.css: light-default --c-* colors, --pop-*
  * subtle surfaces, Geist, shared radii, and shared shadows.
+ *
+ * DESKTOP-001 light hierarchy: sidebar/chrome are deliberately darker than the
+ * pale content canvas; raised content stays lighter than the canvas (macOS
+ * source-list layering). Liquid Glass materials bind to --v4-chrome only.
+ *
+ * DESKTOP-011: five semantic type sizes; light/dark surface+text pairs stay
+ * coherent; title/meta stacks use an explicit 3px grid gap.
  */
 :root {
-  /* surfaces */
-  --v4-ground: var(--page-bg, #e9ecf1);
-  --v4-raised: var(--c-bg, #fff);
-  --v4-inset: var(--c-field-bg, #0000000d);
-  --v4-chrome: var(--pop-bg, rgba(250, 250, 252, 0.82));
-  --v4-hairline: var(--pop-border, var(--c-divider, #00000010));
-  --v4-rowline: var(--pop-divider, var(--c-divider, #00000010));
+  /* surfaces — light: zinc chrome darker than pale canvas; raised = white */
+  --v4-ground: #f7f8fa;
+  --v4-raised: #ffffff;
+  --v4-inset: #eef1f4;
+  --v4-chrome: rgba(222, 227, 233, 0.94);
+  --v4-sidebar: rgba(222, 227, 233, 0.94);
+  --v4-hairline: rgba(25, 33, 44, 0.12);
+  --v4-rowline: rgba(25, 33, 44, 0.1);
 
-  /* text */
-  --v4-text-1: var(--c-text, #000);
-  --v4-text-2: var(--pop-muted, var(--c-muted, #00000066));
-  --v4-text-3: var(--dot, var(--c-muted, #00000066));
+  /* text — light-theme ink on light surfaces (never light-on-dark here) */
+  --v4-text-1: #0a0c10;
+  --v4-text-2: rgba(10, 12, 16, 0.62);
+  --v4-text-3: rgba(10, 12, 16, 0.45);
+
+  /* DESKTOP-011 semantic type ramp — primary screens use exactly these five */
+  --type-metadata: 10px;
+  --type-secondary: 11px;
+  --type-body: 12px;
+  --type-section: 14px;
+  --type-detail: 18px;
+
+  /* Primary row title + secondary metadata stack */
+  --v4-row-stack-gap: 3px;
 
   /* semantic state */
   --v4-ok: var(--popover-success, #1f9d4d);
   --v4-warn: #b45309;
   --v4-error: var(--popover-danger, #dc2626);
   --v4-unread: #0a6fd6;
-  --v4-idle: var(--dot, #0000003a);
+  --v4-idle: rgba(10, 12, 16, 0.28);
 
   /* controls */
   --v4-control-bg: var(--c-btn2-bg, #0000000d);
@@ -35,6 +53,8 @@
   --v4-primary-fg: var(--c-btn-fg, #fff);
   --v4-secondary-bg: var(--c-btn2-bg, #0000000d);
   --v4-secondary-fg: var(--c-btn2-fg, #000);
+  --v4-focus-ring: var(--v4-control-border, #00000040);
+  --v4-focus-offset: 2px;
 
   /* shared shape + elevation */
   --v4-radius-button: var(--radius-button, 8px);
@@ -61,20 +81,187 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
+    --v4-ground: #0c1016;
+    --v4-raised: rgba(25, 30, 39, 0.92);
+    --v4-inset: rgba(14, 18, 24, 0.92);
+    --v4-chrome: rgba(21, 25, 32, 0.92);
+    --v4-sidebar: rgba(24, 30, 39, 0.94);
+    --v4-hairline: rgba(255, 255, 255, 0.105);
+    --v4-rowline: rgba(255, 255, 255, 0.08);
+    /* dark surfaces always pair with light ink — never light-theme black text */
+    --v4-text-1: #f4f6f8;
+    --v4-text-2: rgba(244, 246, 248, 0.72);
+    --v4-text-3: rgba(244, 246, 248, 0.48);
+    --v4-idle: rgba(244, 246, 248, 0.28);
     --v4-ok: var(--popover-success, #41d870);
     --v4-warn: #f59e0b;
     --v4-error: var(--popover-danger, #ef4444);
     --v4-unread: #60a5fa;
+    --v4-control-bg: rgba(255, 255, 255, 0.1);
+    --v4-control-border: rgba(255, 255, 255, 0.16);
+    --v4-control-faint: rgba(255, 255, 255, 0.08);
+    --v4-active-row: rgba(255, 255, 255, 0.1);
+    --v4-primary-bg: #fff;
+    --v4-primary-fg: #0a0c10;
+    --v4-secondary-bg: rgba(255, 255, 255, 0.12);
+    --v4-secondary-fg: #f4f6f8;
+    --v4-focus-ring: rgba(255, 255, 255, 0.32);
     --v4-shadow-card: var(--v4-shadow-card-dark);
     --v4-shadow-window: var(--shadow-window-dark, 0 40px 100px rgba(0, 0, 0, 0.78));
   }
 }
 
 .dark {
+  --v4-ground: #0c1016;
+  --v4-raised: rgba(25, 30, 39, 0.92);
+  --v4-inset: rgba(14, 18, 24, 0.92);
+  --v4-chrome: rgba(21, 25, 32, 0.92);
+  --v4-sidebar: rgba(24, 30, 39, 0.94);
+  --v4-hairline: rgba(255, 255, 255, 0.105);
+  --v4-rowline: rgba(255, 255, 255, 0.08);
+  --v4-text-1: #f4f6f8;
+  --v4-text-2: rgba(244, 246, 248, 0.72);
+  --v4-text-3: rgba(244, 246, 248, 0.48);
+  --v4-idle: rgba(244, 246, 248, 0.28);
   --v4-ok: var(--popover-success, #41d870);
   --v4-warn: #f59e0b;
   --v4-error: var(--popover-danger, #ef4444);
   --v4-unread: #60a5fa;
+  --v4-control-bg: rgba(255, 255, 255, 0.1);
+  --v4-control-border: rgba(255, 255, 255, 0.16);
+  --v4-control-faint: rgba(255, 255, 255, 0.08);
+  --v4-active-row: rgba(255, 255, 255, 0.1);
+  --v4-primary-bg: #fff;
+  --v4-primary-fg: #0a0c10;
+  --v4-secondary-bg: rgba(255, 255, 255, 0.12);
+  --v4-secondary-fg: #f4f6f8;
+  --v4-focus-ring: rgba(255, 255, 255, 0.32);
   --v4-shadow-card: var(--v4-shadow-card-dark);
   --v4-shadow-window: var(--shadow-window-dark, 0 40px 100px rgba(0, 0, 0, 0.78));
+}
+
+/* Deterministic appearance override for the local visual-QA harness. The
+   production windows never set data-force-theme; they continue to follow the
+   system appearance through prefers-color-scheme. */
+:root[data-force-theme='light'] {
+  --page-bg: #e9ecf1;
+  --c-bg: #fff;
+  --c-text: #000;
+  --c-muted: #00000066;
+  --c-btn-bg: #000;
+  --c-btn-fg: #fff;
+  --c-btn2-bg: #0000000d;
+  --c-btn2-fg: #000;
+  --c-field-bg: #0000000d;
+  --c-field-border: #00000014;
+  --c-divider: #00000010;
+  --dot: #0000003a;
+  --pop-bg: rgba(250, 250, 252, 0.82);
+  --pop-text: #1d1d1f;
+  --pop-muted: rgba(0, 0, 0, 0.5);
+  --pop-border: rgba(0, 0, 0, 0.1);
+  --pop-hover: rgba(0, 0, 0, 0.055);
+  --v4-ground: #f7f8fa;
+  --v4-raised: #ffffff;
+  --v4-inset: #eef1f4;
+  --v4-chrome: rgba(222, 227, 233, 0.94);
+  --v4-sidebar: rgba(222, 227, 233, 0.94);
+  --v4-hairline: rgba(25, 33, 44, 0.12);
+  --v4-rowline: rgba(25, 33, 44, 0.1);
+  --v4-text-1: #0a0c10;
+  --v4-text-2: rgba(10, 12, 16, 0.62);
+  --v4-text-3: rgba(10, 12, 16, 0.45);
+  --v4-idle: rgba(10, 12, 16, 0.28);
+  --v4-ok: var(--popover-success, #1f9d4d);
+  --v4-warn: #b45309;
+  --v4-error: var(--popover-danger, #dc2626);
+  --v4-unread: #0a6fd6;
+  --v4-control-bg: var(--c-btn2-bg, #0000000d);
+  --v4-control-border: var(--c-field-border, #00000014);
+  --v4-control-faint: var(--c-field-bg, #0000000d);
+  --v4-active-row: var(--pop-hover, #0000000e);
+  --v4-primary-bg: var(--c-btn-bg, #000);
+  --v4-primary-fg: var(--c-btn-fg, #fff);
+  --v4-secondary-bg: var(--c-btn2-bg, #0000000d);
+  --v4-secondary-fg: var(--c-btn2-fg, #000);
+  --v4-focus-ring: var(--v4-control-border, #00000040);
+  --v4-shadow-card: var(--v4-shadow-card-light);
+  color-scheme: light;
+}
+
+:root[data-force-theme='dark'] {
+  --page-bg: #0a0a0c;
+  --c-bg: #2b2b2e;
+  --c-text: #fff;
+  --c-muted: #ffffff80;
+  --c-btn-bg: #fff;
+  --c-btn-fg: #000;
+  --c-btn2-bg: #ffffff1f;
+  --c-btn2-fg: #fff;
+  --c-field-bg: #ffffff0d;
+  --c-field-border: #ffffff1a;
+  --c-divider: #ffffff12;
+  --dot: #ffffff3a;
+  --pop-bg: rgba(38, 38, 40, 0.72);
+  --pop-text: #fff;
+  --pop-muted: rgba(255, 255, 255, 0.5);
+  --pop-border: rgba(255, 255, 255, 0.14);
+  --pop-hover: rgba(255, 255, 255, 0.08);
+  --v4-ground: #0c1016;
+  --v4-raised: rgba(25, 30, 39, 0.92);
+  --v4-inset: rgba(14, 18, 24, 0.92);
+  --v4-chrome: rgba(21, 25, 32, 0.92);
+  --v4-sidebar: rgba(24, 30, 39, 0.94);
+  --v4-hairline: rgba(255, 255, 255, 0.105);
+  --v4-rowline: rgba(255, 255, 255, 0.08);
+  --v4-text-1: #f4f6f8;
+  --v4-text-2: rgba(244, 246, 248, 0.72);
+  --v4-text-3: rgba(244, 246, 248, 0.48);
+  --v4-idle: rgba(244, 246, 248, 0.28);
+  --v4-ok: var(--popover-success, #41d870);
+  --v4-warn: #f59e0b;
+  --v4-error: var(--popover-danger, #ef4444);
+  --v4-unread: #60a5fa;
+  --v4-control-bg: rgba(255, 255, 255, 0.1);
+  --v4-control-border: rgba(255, 255, 255, 0.16);
+  --v4-control-faint: rgba(255, 255, 255, 0.08);
+  --v4-active-row: rgba(255, 255, 255, 0.1);
+  --v4-primary-bg: #fff;
+  --v4-primary-fg: #0a0c10;
+  --v4-secondary-bg: rgba(255, 255, 255, 0.12);
+  --v4-secondary-fg: #f4f6f8;
+  --v4-focus-ring: rgba(255, 255, 255, 0.32);
+  --v4-shadow-card: var(--v4-shadow-card-dark);
+  --v4-shadow-window: var(--shadow-window-dark, 0 40px 100px rgba(0, 0, 0, 0.78));
+  color-scheme: dark;
+}
+
+/* Reduced transparency: promote alpha chrome to solid surfaces so text contrast
+   never depends on desktop wallpaper showing through. */
+@media (prefers-reduced-transparency: reduce) {
+  :root {
+    --v4-ground: #f7f8fa;
+    --v4-raised: #ffffff;
+    --v4-inset: #eef1f4;
+    --v4-chrome: #dee3e9;
+    --v4-sidebar: #dee3e9;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --v4-ground: #0c1016;
+      --v4-raised: #191e27;
+      --v4-inset: #0e1218;
+      --v4-chrome: #151920;
+      --v4-sidebar: #181e27;
+    }
+  }
+
+  .dark {
+    --v4-ground: #0c1016;
+    --v4-raised: #191e27;
+    --v4-inset: #0e1218;
+    --v4-chrome: #151920;
+    --v4-sidebar: #181e27;
+  }
 }

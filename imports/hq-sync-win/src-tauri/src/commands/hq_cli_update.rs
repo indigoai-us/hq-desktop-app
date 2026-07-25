@@ -57,6 +57,64 @@ const INITIAL_DELAY: Duration = Duration::from_secs(15);
 /// Re-check cadence. Matches `updater::setup_update_checker` (6h).
 const CHECK_INTERVAL: Duration = Duration::from_secs(21600);
 
+// Windows exposes a child-process NTSTATUS as a signed i32. These are expected
+// local machine interruptions for npm/Node, rather than an HQ service defect.
+const WINDOWS_CONTROL_C_EXIT: i32 = -1_073_741_510; // 0xC000013A
+const WINDOWS_ABORT_EXIT: i32 = -1_073_740_791; // 0xC0000409
+
+fn expected_install_failure_kind(exit_code: Option<i32>, detail: &str) -> Option<&'static str> {
+    if detail.contains("EACCES") || detail.contains("permission denied") {
+        Some("expected-prefix-permission")
+    } else if matches!(exit_code, Some(WINDOWS_CONTROL_C_EXIT | WINDOWS_ABORT_EXIT)) {
+        Some("expected-windows-abort")
+    } else {
+        None
+    }
+}
+
+fn install_failure_detail(exit_code: Option<i32>, detail: &str) -> String {
+    if !detail.trim().is_empty() {
+        return detail.trim().to_string();
+    }
+    if expected_install_failure_kind(exit_code, detail) == Some("expected-windows-abort") {
+        return "npm's Windows child process was interrupted or aborted. Close competing npm/Node terminals, retry the copied command in a fresh terminal, and check endpoint protection if it keeps happening.".to_string();
+    }
+    format!(
+        "npm install exited with status {}",
+        exit_code
+            .map(|code| code.to_string())
+            .unwrap_or_else(|| "signal/none".to_string())
+    )
+}
+
+/// Expected local failures remain visible to the user and the diagnostic log,
+/// but never create a Sentry event. Real updater failures use a stable,
+/// separate fingerprint so they cannot group with user-environment fallout.
+fn report_install_failure(exit_code: Option<i32>, detail: &str) {
+    if expected_install_failure_kind(exit_code, detail).is_some() {
+        return;
+    }
+    let exit = exit_code
+        .map(|code| code.to_string())
+        .unwrap_or_else(|| "signal/none".to_string());
+    sentry::with_scope(
+        |scope| {
+            scope.set_tag("hq_cli_update_kind", "install-failed");
+            scope.set_tag("install_failure_kind", "unexpected");
+            scope.set_tag("exit_code", &exit);
+            let fingerprint = ["hq-cli-update", "install-failed", "unexpected", exit.as_str()];
+            scope.set_fingerprint(Some(&fingerprint));
+            scope.set_extra("npm_stderr", detail.to_string().into());
+        },
+        || {
+            sentry::capture_message(
+                &format!("[hq-cli-update] install failed (exit {exit})"),
+                sentry::Level::Error,
+            );
+        },
+    );
+}
+
 /// Payload emitted to the frontend and returned by `check_hq_cli_update`.
 #[derive(Debug, Clone, Serialize)]
 pub struct HqCliUpdateInfo {
@@ -273,16 +331,19 @@ pub async fn install_hq_cli_update(app: AppHandle) -> Result<HqCliUpdateInfo, St
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let detail = if stderr.is_empty() { stdout } else { stderr };
+        let raw_detail = if stderr.is_empty() { stdout } else { stderr };
+        let kind = expected_install_failure_kind(output.status.code(), &raw_detail)
+            .unwrap_or("unexpected");
+        let detail = install_failure_detail(output.status.code(), &raw_detail);
         log(
             "hq-cli-update",
-            &format!("install failed (exit {:?}): {detail}", output.status.code()),
+            &format!(
+                "install failed (kind={kind}, exit {:?}): {detail}",
+                output.status.code()
+            ),
         );
-        return Err(if detail.is_empty() {
-            format!("npm install exited with status {:?}", output.status.code())
-        } else {
-            detail
-        });
+        report_install_failure(output.status.code(), &raw_detail);
+        return Err(detail);
     }
 
     // npm exit 0 means the @latest tag is now installed at npm's global
@@ -391,5 +452,16 @@ mod tests {
         assert_eq!(cmp_semver("5", "5.0.0"), Ordering::Equal);
         assert_eq!(cmp_semver("", "5.12.0"), Ordering::Less);
         assert_eq!(cmp_semver("not-a-version", "0.0.0"), Ordering::Equal);
+    }
+
+    #[test]
+    fn windows_abort_is_expected_and_actionable() {
+        for code in [WINDOWS_CONTROL_C_EXIT, WINDOWS_ABORT_EXIT] {
+            assert_eq!(
+                expected_install_failure_kind(Some(code), ""),
+                Some("expected-windows-abort")
+            );
+        }
+        assert!(install_failure_detail(Some(WINDOWS_ABORT_EXIT), "").contains("fresh terminal"));
     }
 }

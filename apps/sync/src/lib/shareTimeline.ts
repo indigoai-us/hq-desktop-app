@@ -102,6 +102,23 @@ export interface SharePreviewFields extends PeerIdentity {
 }
 
 /**
+ * True when a contact rail preview is the projection of this exact share.
+ * The unified Messages rail renders the share as its own notification row, so
+ * callers can suppress the duplicate contact row while preserving a newer DM.
+ */
+export function previewRepresentsShare(
+  contact: SharePreviewFields,
+  share: ShareEvent,
+): boolean {
+  const previewAt = parseTs(contact.previewAt ?? contact.lastMessageAt);
+  return (
+    previewAt > 0 &&
+    previewAt === parseTs(share.createdAt) &&
+    contact.previewBody === shareSummary(share)
+  );
+}
+
+/**
  * Overlay "shared a file" previews onto the contact rail: for each contact
  * whose NEWEST matching share is more recent than their current preview, set
  * the preview to the share summary. Returns a NEW array (inputs untouched);

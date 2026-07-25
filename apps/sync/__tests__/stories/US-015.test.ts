@@ -35,7 +35,7 @@ describe('US-015: Meetings in V4 remains gated and action-complete', () => {
     expect(meetingsPage).toContain('meetingsFeatureEnabled = false');
     expect(meetingsPage).toContain('data-testid="meetings-feature-hidden"');
     expect(page).toContain(
-      '<div class="meetings" class:hidden-by-gate={meetingsFeatureEnabled === false} aria-label="Meetings">',
+      'class="meetings" class:hidden-by-gate={meetingsFeatureEnabled === false} aria-label="Meetings"',
     );
     expect(meetingsPage).toContain('.meetings.hidden-by-gate { display: none; }');
   });

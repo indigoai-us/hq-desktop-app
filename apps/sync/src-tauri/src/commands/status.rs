@@ -10,8 +10,8 @@ use crate::util::paths;
 
 #[allow(unused_imports)]
 pub use hq_desktop_core::status::{
-    default_status, journal_for_sync_complete, parse_cli_output, parse_journal, try_journal_status,
-    write_journal, SyncJournal, SyncStatus,
+    default_status, journal_for_daemon_sync_complete, journal_for_sync_complete, parse_cli_output,
+    parse_journal, try_journal_status, write_journal, SyncJournal, SyncStatus,
 };
 
 /// CLI command timeout (5 seconds).

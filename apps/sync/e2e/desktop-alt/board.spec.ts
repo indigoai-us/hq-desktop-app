@@ -105,15 +105,17 @@ describe('desktop-alt story board (US-006)', () => {
   it('wires four collapsible columns, the toggle, StoryCard, and onselect', () => {
     const kanban = readRepoFile('src/desktop-alt/components/StoryKanban.svelte');
 
-    // Reuses US-004's classifier + grouping rather than re-deriving state.
-    expect(kanban).toContain('classifyStories');
-    expect(kanban).toContain('groupByState');
-    expect(kanban).toContain('STORY_STATES');
+    // DESKTOP-005 reuses the shared task classifier and honest live-session
+    // grouping rather than deriving board state inside the component.
+    expect(kanban).toContain('classifyTasks');
+    expect(kanban).toContain('groupByTaskColumn');
+    expect(kanban).toContain('TASK_COLUMNS');
 
     // Four named columns.
-    for (const label of ['Pending', 'Blocked', 'In Progress', 'Complete']) {
-      expect(kanban).toContain(label);
+    for (const column of ['not-started', 'in-progress', 'active', 'complete']) {
+      expect(kanban).toContain(column);
     }
+    expect(kanban).toContain('TASK_COLUMN_LABEL');
 
     // Collapsible columns (chevron toggles a per-column collapse map).
     expect(kanban).toContain('toggleColumn');
@@ -130,11 +132,12 @@ describe('desktop-alt story board (US-006)', () => {
     // Cards are US-005 StoryCard; rows are US-006 StoryList; onselect threads through.
     expect(kanban).toContain('import StoryCard');
     expect(kanban).toContain('import StoryList');
-    expect(kanban).toContain('<StoryCard story={item.story} {onselect}');
-    expect(kanban).toContain('<StoryList {stories} {onselect}');
+    expect(kanban).toContain('<StoryCard');
+    expect(kanban).toContain("liveRun={column === 'active' ? liveRun : null}");
+    expect(kanban).toContain('<StoryList {stories} {sessions} {now} {onselect}');
 
     // Empty + loading states.
-    expect(kanban).toContain('No stories');
+    expect(kanban).toContain('No tasks');
     expect(kanban).toContain('loading');
     expect(kanban).toContain('skeleton-card');
   });
@@ -142,7 +145,8 @@ describe('desktop-alt story board (US-006)', () => {
   it('does not force a 960px-wide board inside V4 shell panes', () => {
     const kanban = readRepoFile('src/desktop-alt/components/StoryKanban.svelte');
 
-    expect(kanban).toContain('grid-template-columns: repeat(4, minmax(160px, 1fr))');
+    expect(kanban).toContain('grid-template-columns: repeat(4, minmax(180px, 1fr))');
+    expect(kanban).toContain('min-width: 720px');
     expect(kanban).toContain('min-width: 0');
     expect(kanban).toContain('@container story-kanban (max-width: 760px)');
     expect(kanban).not.toContain('min-width: 960px');
@@ -151,14 +155,15 @@ describe('desktop-alt story board (US-006)', () => {
   it('renders the list rows with id, state badge, priority, AC count, and onselect', () => {
     const list = readRepoFile('src/desktop-alt/components/StoryList.svelte');
 
-    expect(list).toContain('classifyStories');
+    expect(list).toContain('classifyTasks');
+    expect(list).toContain('TASK_COLUMN_LABEL');
     expect(list).toContain('import LabelChip');
     expect(list).toContain('story-id');
     expect(list).toContain('state-badge');
     expect(list).toContain('priority-badge');
     expect(list).toContain('ac-count');
     expect(list).toContain('onselect?.(story)');
-    expect(list).toContain('No stories'); // empty state
+    expect(list).toContain('No tasks'); // empty state
   });
 
   it('keeps the board token-driven (no hardcoded hex) for light + dark', () => {

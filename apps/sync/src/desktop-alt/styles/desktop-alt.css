@@ -5,8 +5,12 @@
  * `--border`, `--row-hover`, ...) as aliases so lower-priority pages can keep
  * building while the shell and Home move onto Geist, shared radii, subtle
  * surfaces, and black primary controls.
+ *
+ * DESKTOP-011: v4 tokens (surfaces, five-size type ramp, row-stack gap) load
+ * here so both the desktop window and the standalone Messages window share them.
  */
 @import '../../styles/popover.css';
+@import '../v4/tokens.css';
 
 html[data-window='desktop-alt'],
 html[data-window='desktop-alt'] body,
@@ -22,28 +26,29 @@ html[data-window='messages'] body {
    component-scoped CSS owns the message-specific layout. */
 html[data-window='desktop-alt'],
 html[data-window='messages'] {
-  --bg: var(--page-bg);
-  --bg-gradient: var(--page-bg);
-  --bg-subtle: var(--c-field-bg);
-  --bg-body: var(--page-bg);
-  --desktop: var(--c-bg);
+  --bg: var(--v4-ground, var(--page-bg));
+  --bg-gradient: var(--v4-ground, var(--page-bg));
+  --bg-subtle: var(--v4-inset, var(--c-field-bg));
+  --bg-body: var(--v4-ground, var(--page-bg));
+  --desktop: var(--v4-raised, var(--c-bg));
 
-  --surface-rail: var(--pop-bg);
-  --surface-panel: var(--pop-bg);
-  --surface-raise: var(--c-field-bg);
+  /* DESKTOP-011 surface hierarchy: rail/chrome darker than canvas; raise lighter. */
+  --surface-rail: var(--v4-sidebar, var(--v4-chrome, var(--pop-bg)));
+  --surface-panel: var(--v4-ground, var(--pop-bg));
+  --surface-raise: var(--v4-raised, var(--c-bg));
 
-  --fg: var(--c-text);
-  --fg-data: var(--pop-muted);
-  --muted: var(--c-muted);
-  --muted-2: var(--pop-muted);
-  --muted-3: var(--dot);
+  --fg: var(--v4-text-1, var(--c-text));
+  --fg-data: var(--v4-text-2, var(--pop-muted));
+  --muted: var(--v4-text-2, var(--c-muted));
+  --muted-2: var(--v4-text-2, var(--pop-muted));
+  --muted-3: var(--v4-text-3, var(--dot));
 
-  --border: var(--pop-border);
-  --border-strong: var(--c-field-border);
-  --row-hover: var(--pop-hover);
+  --border: var(--v4-hairline, var(--pop-border));
+  --border-strong: var(--v4-control-border, var(--c-field-border));
+  --row-hover: var(--v4-control-faint, var(--pop-hover));
   --row-active: var(--v4-active-row, var(--pop-hover));
-  --scrollbar-thumb: var(--dot);
-  --scrollbar-thumb-hover: var(--c-muted);
+  --scrollbar-thumb: var(--v4-text-3, var(--dot));
+  --scrollbar-thumb-hover: var(--v4-text-2, var(--c-muted));
 
   --emerald: var(--v4-ok, var(--popover-success));
   --amber: var(--v4-warn, #b45309);
@@ -56,12 +61,16 @@ html[data-window='messages'] {
   --accent-fg: var(--v4-primary-fg, var(--c-btn-fg));
   --accent-soft: var(--pop-hover);
 
-  --text-micro: 13px;
-  --text-xs: 13px;
-  --text-sm: 13px;
-  --text-base: 13px;
-  --text-lg: 18px;
-  --text-kpi: 18px;
+  /* DESKTOP-011: normalize legacy --text-* aliases onto the five semantic sizes
+     defined in v4/tokens.css (metadata 10 / secondary 11 / body 12 / section 14 /
+     detail 18). Fallbacks keep the ramp if tokens load order shifts. */
+  --text-micro: var(--type-metadata, 10px);
+  --text-xs: var(--type-secondary, 11px);
+  --text-sm: var(--type-secondary, 11px);
+  --text-base: var(--type-body, 12px);
+  --text-section: var(--type-section, 14px);
+  --text-lg: var(--type-detail, 18px);
+  --text-kpi: var(--type-detail, 18px);
 
   --font-display: var(--font-sans);
   --font-mono: 'Geist Mono Variable', ui-monospace, SFMono-Regular, Menlo,
@@ -97,18 +106,18 @@ html[data-window='desktop-alt'] body {
   background: transparent;
 }
 
-/* Reduced transparency promotes popover-derived alpha surfaces to the solid
-   app primitives while preserving the same alias names. */
+/* Reduced transparency promotes alpha surfaces to solid hierarchy values while
+   preserving the same alias names (DESKTOP-011). */
 @media (prefers-reduced-transparency: reduce) {
   html[data-window='desktop-alt'],
   html[data-window='messages'] {
-    --surface-rail: var(--c-bg);
-    --surface-panel: var(--c-bg);
-    --surface-raise: var(--c-field-bg);
-    --border: var(--c-divider);
-    --border-strong: var(--c-field-border);
-    --row-hover: var(--c-field-bg);
-    --row-active: var(--c-btn2-bg);
+    --surface-rail: var(--v4-sidebar, #dee3e9);
+    --surface-panel: var(--v4-ground, #f7f8fa);
+    --surface-raise: var(--v4-raised, #ffffff);
+    --border: var(--v4-hairline, var(--c-divider));
+    --border-strong: var(--v4-control-border, var(--c-field-border));
+    --row-hover: var(--v4-control-faint, var(--c-field-bg));
+    --row-active: var(--v4-active-row, var(--c-btn2-bg));
   }
 
   html[data-window='desktop-alt'] {
@@ -149,24 +158,24 @@ html[data-window='messages'] ::-webkit-scrollbar-thumb:hover {
 }
 
 .desktop-shell {
+  /* DESKTOP-001: titlebar + body only — bottom status bar grid row removed. */
   display: grid;
   grid-template-rows:
     var(--desktop-titlebar-height, 40px)
-    minmax(0, 1fr)
-    var(--desktop-status-bar-height, 32px);
+    minmax(0, 1fr);
   width: 100%;
   height: 100%;
   min-width: 0;
   /* Single-scroll guarantee: only leaf scrollers (.desktop-main-scroll) may
      scroll — every ancestor clips. */
   overflow: hidden;
-  /* V4 ground (SPEC section 2) — DesktopApp also sets this on the shell. */
+  /* Naked main canvas (DESKTOP-001) — chrome paints its own glass surfaces. */
   background: var(--v4-ground, var(--page-bg));
 }
 
-/* ---- Body: V4 primary sidebar (220px) + optional secondary sidebar (200px)
-   + content, between the title bar and live strip. The sidebars carry fixed
-   flex-basis widths in their own components, so the row is a simple flexbox. */
+/* ---- Body: V4 primary sidebar (220px) + optional secondary sidebar (library /
+   settings only) + naked content canvas. Company routes no longer mount a
+   permanent secondary column (DESKTOP-001). */
 .desktop-body {
   display: flex;
   min-width: 0;
@@ -177,7 +186,7 @@ html[data-window='messages'] ::-webkit-scrollbar-thumb:hover {
 .section-label {
   padding: 0 8px 6px 16px;
   color: var(--muted-3);
-  font-size: var(--text-micro);
+  font-size: var(--type-secondary, var(--text-xs));
   font-weight: 600;
   line-height: 16px;
   letter-spacing: 0.08em;
@@ -210,7 +219,8 @@ html[data-window='messages'] ::-webkit-scrollbar-thumb:hover {
   flex-direction: column;
   width: 100%;
   height: 100%;
-  background: transparent;
+  /* Naked canvas: spacing + hairlines establish structure; no chrome glass. */
+  background: var(--v4-ground, transparent);
 }
 
 .desktop-main-scroll {
@@ -243,6 +253,14 @@ html[data-window='messages'] ::-webkit-scrollbar-thumb:hover {
     animation: none;
     will-change: auto;
   }
+
+  html[data-window='desktop-alt'] *,
+  html[data-window='messages'] * {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 .page-header {
@@ -253,10 +271,132 @@ html[data-window='messages'] ::-webkit-scrollbar-thumb:hover {
   margin: 0;
   color: var(--fg);
   font-family: var(--font-display);
-  font-size: var(--text-lg);
+  font-size: var(--type-detail, var(--text-lg));
   font-weight: 600;
-  line-height: 20px;
+  line-height: 22px;
   letter-spacing: 0;
+}
+
+/* ---- DESKTOP-011 shared patterns ---------------------------------------- */
+
+/* Icon-only controls: always pair with aria-label/title in markup; focus ring. */
+.desktop-icon-btn,
+.v4-icon-btn {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--v4-radius-button, 8px);
+  background: transparent;
+  color: var(--v4-text-2, var(--muted));
+  cursor: pointer;
+}
+
+.desktop-icon-btn:hover,
+.desktop-icon-btn.active,
+.v4-icon-btn:hover,
+.v4-icon-btn.active {
+  border-color: var(--v4-hairline, var(--border));
+  background: var(--v4-control-faint, var(--row-hover));
+  color: var(--v4-text-1, var(--fg));
+}
+
+.desktop-icon-btn:focus-visible,
+.v4-icon-btn:focus-visible {
+  outline: 2px solid var(--v4-focus-ring, var(--v4-control-border, var(--border-strong)));
+  outline-offset: var(--v4-focus-offset, 2px);
+}
+
+/* Primary row title + secondary metadata in separate grid slots, 3px gap. */
+.desktop-row-stack,
+.v4-row-stack {
+  display: grid;
+  grid-template-rows: auto auto;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--v4-row-stack-gap, 3px);
+  min-width: 0;
+}
+
+.desktop-row-title,
+.v4-row-title {
+  min-width: 0;
+  color: var(--v4-text-1, var(--fg));
+  font-size: var(--type-body, var(--text-base));
+  font-weight: 500;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.desktop-row-meta,
+.v4-row-meta {
+  min-width: 0;
+  color: var(--v4-text-3, var(--muted-3));
+  font-size: var(--type-secondary, var(--text-xs));
+  font-weight: 400;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Wide list-detail: list + detail columns; narrow collapses while primary
+   actions stay mounted and unshrunk. */
+.list-detail {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+.list-detail > .list-pane {
+  flex: 0 0 min(300px, 38%);
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.list-detail > .detail-pane {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.list-detail .detail-primary-actions,
+.list-detail .primary-actions {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.list-detail .detail-primary-actions > *,
+.list-detail .primary-actions > * {
+  flex: 0 0 auto;
+}
+
+@media (max-width: 820px) {
+  .list-detail[data-detail-open='true'] > .list-pane {
+    display: none;
+  }
+
+  .list-detail > .list-pane {
+    flex-basis: min(260px, 42%);
+  }
+
+  .list-detail > .detail-pane {
+    flex: 1 1 auto;
+  }
 }
 
 .placeholder-panel {

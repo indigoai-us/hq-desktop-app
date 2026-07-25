@@ -325,10 +325,10 @@ export function buildAttentionItems(args: {
   if (syncState === 'auth-error') {
     items.push({
       key: 'auth-error',
-      title: 'Sign-in expired',
-      detail: syncErrorMessage || 'Reconnect your account before the next sync can run.',
-      tone: 'warn',
-      actionLabel: 'Open settings',
+      title: 'Keep sync moving',
+      detail: syncErrorMessage || 'Sign in once and HQ will resume automatically.',
+      tone: 'paused',
+      actionLabel: 'Sign in',
     });
   }
 

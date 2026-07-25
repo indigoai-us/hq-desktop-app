@@ -5,16 +5,19 @@ import {
   seedActiveMeetingsFromBackend,
 } from '../../lib/activeMeetings';
 import { loadMeetingsCache, saveMeetingsCache } from '../../lib/meetingsCache';
+import { isAlreadyScheduledError } from '../../lib/invite-errors';
 import {
   buildRefreshProblemReport,
   botForEvent,
   calendarEventIdsForBotLookup,
   eventMeetingUrl,
   friendlyError,
+  isPlausibleMeetingUrl,
   MEETINGS_STALE_NOTICE_FAILURES,
   meetingsRefreshGate,
   mergeScheduledBotLookups,
   recurringSeriesId,
+  urlInviteDestinationLabel,
 } from './meetings-model';
 import type {
   CompanyMembership,
@@ -423,6 +426,49 @@ async function joinBotNow(evt: MeetingEvent): Promise<ToastDescriptor | null> {
 }
 
 /**
+ * Ad-hoc "paste a meeting URL" invite — schedules a recording bot for a link
+ * the user pastes, with NO calendar event behind it (calendarEventId +
+ * calendarSeriesId are null, which is exactly what distinguishes this from the
+ * per-row inviteBot). Mirrors the classic MeetingsWindow onUrlInvite, including
+ * its benign-409 path (a sibling instance / the auto-schedule cron / a
+ * double-submit got there first — the bot IS scheduled, so we treat it as a
+ * success rather than surfacing a scary failure).
+ *
+ * The page owns the in-flight guard (button disabled while awaiting), matching
+ * the classic window, so this method has no per-row lock of its own.
+ *
+ * Returns a ToastDescriptor whose kind tells the page what to do with the
+ * input: `info` → the invite landed (success OR already-scheduled), so clear
+ * the row; `warn` → a real failure, so keep what they typed for a retry.
+ * `null` → the URL didn't pass the plausibility gate (the button is disabled in
+ * that state, so this is just belt-and-suspenders).
+ */
+async function inviteBotByUrl(
+  meetingUrl: string,
+  companyId: string | null,
+): Promise<ToastDescriptor | null> {
+  const url = meetingUrl.trim();
+  if (!isPlausibleMeetingUrl(url)) return null;
+  try {
+    await invoke<ScheduledBot>('meetings_invite_bot', {
+      meetingUrl: url,
+      calendarEventId: null,
+      calendarSeriesId: null,
+      companyId,
+    });
+    await refresh();
+    const dest = urlInviteDestinationLabel(companyId, companyNamesByUid);
+    return { kind: 'info', text: `Bot invited — meeting will save to ${dest}.` };
+  } catch (err) {
+    if (isAlreadyScheduledError(err)) {
+      await refresh();
+      return { kind: 'info', text: 'Already invited — refreshing.' };
+    }
+    return { kind: 'warn', text: friendlyError(err, "Couldn't invite the bot.") };
+  }
+}
+
+/**
  * Start the singleton once for the app's lifetime. Called from
  * DesktopApp.onMount at launch so the data is warm before the user ever
  * navigates to Meetings; MeetingsPage.onMount also calls it so the page still
@@ -528,6 +574,7 @@ export const meetingsStore = {
   },
   refresh,
   inviteBot,
+  inviteBotByUrl,
   cancelBot,
   joinBotNow,
   reportRefreshProblem,

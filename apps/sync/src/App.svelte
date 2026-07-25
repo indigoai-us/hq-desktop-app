@@ -1,7 +1,6 @@
 <script lang="ts">
-  import * as Sentry from '@sentry/svelte';
   import { invoke } from '@tauri-apps/api/core';
-  import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event';
+  import { emit, listen } from '@tauri-apps/api/event';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import {
     isPermissionGranted as isNotifyPermissionGranted,
@@ -9,8 +8,10 @@
   } from '@tauri-apps/plugin-notification';
   import {
     type DmRequest,
+    enrichRequestFromContacts,
     requestBannerTitle,
     requestBannerBody,
+    requestHasHumanLabel,
   } from './lib/dmRequests';
   import SignInPrompt from './components/SignInPrompt.svelte';
   import Popover from './components/Popover.svelte';
@@ -21,12 +22,12 @@
   import { shouldRecheckAuthOnFocus } from './lib/authRecheckGate';
   import { isOnboardingState, type LifecycleState } from './lib/lifecycle';
   import { friendlyCompanyLabel } from './lib/company-label';
+  import { ListenerRegistry } from './lib/listener-registry';
   import type { Workspace, WorkspacesResult } from './lib/workspaces';
   import { loadMeetingDetectEligible } from './lib/permissionState.svelte';
   import { buildClaudeCodeUrl } from './lib/claude-code-link';
   import { emitDesktopTelemetry } from './lib/desktop-telemetry';
   import { refreshOnPopoverOpen } from './lib/popover-refresh';
-  import { isTransientSyncTransportError } from './lib/transient-sync-error';
   import {
     handleMeetingDetected,
     type MeetingDetectedPayload,
@@ -44,6 +45,25 @@
     companySlug: string;
     hqFolderPath: string;
     error?: string;
+  }
+
+  interface ContactIdentityResponse {
+    contacts: Array<{
+      personUid: string;
+      email?: string | null;
+      displayName?: string | null;
+    }>;
+  }
+
+  async function enrichIncomingRequest(req: DmRequest): Promise<DmRequest> {
+    if (requestHasHumanLabel(req)) return req;
+    try {
+      const response = await invoke<ContactIdentityResponse>('list_contacts');
+      return enrichRequestFromContacts(req, response.contacts ?? []);
+    } catch (err) {
+      console.warn('dm-request: contact label lookup failed', err);
+      return req;
+    }
   }
 
   let authenticated = $state(false);
@@ -518,8 +538,13 @@
   // instead of silently hiding the row.
   let hqVersion = $state<string | null>(null);
 
-  // Collected unlisten handles for cleanup
-  let unlisteners: UnlistenFn[] = [];
+  // `listen()` and `onFocusChanged()` resolve asynchronously. The app surface
+  // normally stays mounted for the process lifetime, but it can be torn down
+  // during dev reloads or a fast window shutdown. `ListenerRegistry`
+  // (./lib/listener-registry) keeps registration scoped to one mount so an
+  // unlisten handle that resolves late is called immediately, and tears every
+  // handle down through `safeUnlisten` so a stale/double teardown can't crash
+  // the surface (Sentry HQ-DESKTOP-39).
 
   async function loadConfig() {
     try {
@@ -898,7 +923,7 @@
     }
   }
 
-  async function setupTrayListeners() {
+  async function setupTrayListeners(unlisteners: ListenerRegistry) {
     // Refresh workspaces every time the menubar popover gains focus. Cheap
     // (single Tauri command + small vault round-trip) and catches external
     // mutations: a new company added via /newcompany, a manifest patch from
@@ -993,7 +1018,21 @@
         syncProgress = null;
         syncErrorMessage = event.payload.message;
         syncErrorCompany = '';
-        await invoke('set_tray_state', { state: 'error' });
+        // The runner cannot recover from a failed refresh. Route directly to
+        // the sign-in screen instead of leaving an expired session in the
+        // popover, even though the runner exits with code 0.
+        authenticated = false;
+        expiresAt = '';
+        await invoke('set_tray_state', { state: 'reauth' });
+      })
+    );
+
+    unlisteners.push(
+      await listen('auth:reauth-required', async () => {
+        syncState = 'auth-error';
+        authenticated = false;
+        expiresAt = '';
+        await invoke('set_tray_state', { state: 'reauth' });
       })
     );
 
@@ -1280,33 +1319,10 @@
         async (event) => {
           const shouldEmitManualSync = manualSyncTelemetryPending;
           manualSyncTelemetryPending = false;
-          // Defence-in-depth: the Rust side already captures this via
-          // `report_sync_error` in src-tauri/src/commands/sync.rs (which fires
-          // for the same payload that produced this Tauri event). We capture
-          // here too so the renderer-tagged Sentry project (`hq-sync-web`)
-          // still receives the issue when the Rust build is missing
-          // `HQ_SYNC_SENTRY_DSN` or its DSN parses to None at startup. Sentry
-          // groups by message text so duplicate captures merge into one issue.
-          //
-          // EXCEPT a transport-level transient (the reqwest request never
-          // reached a response — DNS/connect/TLS/send dropped): a background
-          // step like the personal first-push is retried by the runner on the
-          // next pass, so it is recoverable noise, not an actionable error
-          // (HQ-SYNC-WEB-18). The user still sees the recoverable error state
-          // below; only the Sentry capture is skipped. Genuine, server-answered
-          // failures (4xx/5xx, parse/logic errors) carry a different message and
-          // still capture.
-          if (!isTransientSyncTransportError(event.payload.message)) {
-            Sentry.captureMessage(`[sync] ${event.payload.message}`, {
-              level: 'error',
-              tags: {
-                path: event.payload.path,
-                ...(event.payload.company
-                  ? { company: event.payload.company }
-                  : {}),
-              },
-            });
-          }
+          // Native owns terminal runner telemetry, including its structured
+          // exit/signal fingerprint and stderr breadcrumbs. This renderer
+          // event is UI-only: capturing here too created a second Sentry event
+          // for the same supervisor failure in a different project.
           manualSyncActive = false;
           externalSyncActive = false;
           syncState = 'error';
@@ -1791,7 +1807,7 @@
     // ("{name} wants to connect") — separate copy from a normal incoming DM.
     unlisteners.push(
       await listen<DmRequest>('dm:request-new', async (e) => {
-        const req = e.payload;
+        const req = await enrichIncomingRequest(e.payload);
         // Bump the popover request-count accent immediately (the poll path emits
         // 0 for requests on dm:unread-summary by design, so we own this count
         // off the request events).
@@ -1916,7 +1932,11 @@
     loadCoreState();
     loadAutoUpdatePref();
     loadUnreadSummary();
-    setupTrayListeners();
+    const listenerRegistry = new ListenerRegistry();
+    void setupTrayListeners(listenerRegistry).catch((err) => {
+      // A failed registration must not turn into an unhandled rejection.
+      console.error('setup tray listeners failed:', err);
+    });
     // Resolve the Phase-0 meeting-detect eligibility flag once on mount.
     // Desktop SettingsPage gates the meeting-detect toggle when this is false.
     // (Per-permission TCC status tracking was removed 2026-05-25 — see
@@ -1944,10 +1964,7 @@
         meetingsEnabled = false;
       });
 
-    return () => {
-      unlisteners.forEach((unlisten) => unlisten());
-      unlisteners = [];
-    };
+    return () => listenerRegistry.dispose();
   });
 
   // ── Silent auto-update (master `autoUpdate` pref) ──────────────────────────
@@ -2026,24 +2043,24 @@
 
   async function checkAuth() {
     try {
-      // Skip the sign-in step when cognito-tokens.json already holds a
-      // non-empty token. See `shouldSkipSignIn` for the ordering: we
-      // prefer `get_auth_state`'s verdict (it tries a silent refresh) and
-      // only fall back to raw token presence when it reports
-      // unauthenticated — a stored token that's actually unusable will
-      // raise `sync:auth-error` on first sync and route back through
-      // sign-in from there.
+      // `get_auth_state` validates freshness and performs the one silent
+      // refresh retry. Raw token-file presence must not override a failed
+      // verdict; it is captured first only to select the friendly reauth copy
+      // after validation clears an expired session.
       lifecycleState = await invoke<string>('get_lifecycle_state').catch(() => null);
-      const [hasToken, state] = await Promise.all([
-        invoke<boolean>('has_stored_token'),
-        invoke<{
-          authenticated: boolean;
-          expiresAt: string | null;
-        }>('get_auth_state'),
-      ]);
+      const hadStoredToken = await invoke<boolean>('has_stored_token');
+      const state = await invoke<{
+        authenticated: boolean;
+        expiresAt: string | null;
+      }>('get_auth_state');
 
-      authenticated = shouldSkipSignIn(hasToken, state);
+      authenticated = shouldSkipSignIn(state);
       expiresAt = state.expiresAt ?? '';
+      if (hadStoredToken && !state.authenticated) {
+        syncState = 'auth-error';
+        syncErrorMessage = 'Sign in once and HQ will resume automatically.';
+        await invoke('set_tray_state', { state: 'reauth' });
+      }
     } catch {
       authenticated = false;
     } finally {
@@ -2057,9 +2074,16 @@
     lifecycleState = null;
   }
 
-  function handleAuthSuccess(auth: { authenticated: boolean; expiresAt: string }) {
+  async function handleAuthSuccess(auth: { authenticated: boolean; expiresAt: string }) {
+    const shouldResumeSync = syncState === 'auth-error';
     authenticated = auth.authenticated;
     expiresAt = auth.expiresAt;
+    syncState = 'idle';
+    syncErrorMessage = '';
+    await invoke('set_tray_state', { state: 'idle' });
+    if (shouldResumeSync) {
+      await handleSyncNow();
+    }
   }
 </script>
 
@@ -2107,7 +2131,7 @@
       bindStatsRefresh={(fn) => (syncStatsRefresh = fn)}
     />
   {:else}
-    <SignInPrompt onsuccess={handleAuthSuccess} />
+    <SignInPrompt reauth={syncState === 'auth-error'} onsuccess={handleAuthSuccess} />
   {/if}
 </main>
 

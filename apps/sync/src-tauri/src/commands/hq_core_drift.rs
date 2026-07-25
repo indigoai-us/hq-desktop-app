@@ -32,15 +32,17 @@
 //!
 //! Scope: `rules.locked` from the user's local `core.yaml`. Reviewable
 //! and auto-generated paths (`core/workers/registry.yaml`, `workspace/`,
-//! `.claude/skills/`) are intentionally excluded — they're expected to
-//! diverge.
+//! pack materialization landings from `core/packages/*/package.yaml`) are
+//! excluded — they're expected to diverge. Local text is hashed with
+//! EOL normalization so Windows CRLF working trees match upstream LF blobs.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 pub use hq_desktop_core::drift_scope::{
-    excluded_scope_paths, git_blob_sha, is_conflict_artifact, path_in_excluded_scope,
-    path_in_locked_scope, read_locked_paths, walk_local_under_scope,
+    drift_blob_sha, excluded_scope_paths, excluded_scope_paths_for, git_blob_sha,
+    is_conflict_artifact, pack_materialization_scopes, path_in_excluded_scope, path_in_locked_scope,
+    read_locked_paths, walk_local_under_scope,
 };
 use serde::{Deserialize, Serialize};
 

@@ -2,6 +2,12 @@
   import type { KeyResult, Objective } from '../lib/local-projects';
   import './tokens.css';
 
+  /**
+   * Compact goal row for company Overview (DESKTOP-003).
+   * Zero-progress with no linked projects explains "No linked work" instead of
+   * empty decorative counts. Progress only from real KR values or linked
+   * project acceptance — never invented.
+   */
   interface Props {
     objective: Objective;
     progress: number;
@@ -14,6 +20,14 @@
   const status = $derived(goalStatus(objective.status));
   const krLine = $derived(keyResultLine(objective.keyResults));
   const title = $derived(objective.title || 'Untitled goal');
+  const noLinkedWork = $derived(projectCount === 0);
+  const footLabel = $derived(
+    noLinkedWork
+      ? 'No linked work'
+      : `${projectCount} ${projectCount === 1 ? 'project' : 'projects'} · ${storyCount} ${
+          storyCount === 1 ? 'story' : 'stories'
+        } in flight`,
+  );
 
   function goalStatus(raw: string): { label: string; tone: 'ok' | 'warn' | 'error' | 'idle' } {
     const normalized = raw.toLowerCase().replace(/[_\s]+/g, '-').trim();
@@ -46,31 +60,33 @@
   function keyResultLine(results: KeyResult[]): string {
     const visible = results.map(keyResultLabel).filter(Boolean);
     if (visible.length > 0) return visible.slice(0, 3).join(' · ');
-    return objective.description || 'No key result defined yet';
+    return objective.description || '';
   }
 </script>
 
-<article class="goal-card" data-testid="goal-card">
-  <header class="goal-header">
-    <h3>{title}</h3>
+<article class="goal-card" data-testid="goal-card" class:zero={noLinkedWork && progress === 0}>
+  <header class="goal-top">
+    <div class="goal-copy">
+      <h3 class="goal-title">{title}</h3>
+      {#if krLine}
+        <p class="goal-kr">{krLine}</p>
+      {/if}
+    </div>
     <span class="goal-status">
       <span class={`status-dot ${status.tone}`} aria-hidden="true"></span>
       <span>{status.label}</span>
     </span>
   </header>
 
-  <p class="goal-kr">{krLine}</p>
-
   <div class="goal-progress" aria-label={`${progress}% progress`}>
     <span class="progress-track" aria-hidden="true">
       <span class="progress-fill" style={`width: ${progress}%`}></span>
     </span>
-    <span class="progress-number">{progress}%</span>
   </div>
 
-  <p class="goal-counts">
-    {projectCount} {projectCount === 1 ? 'project' : 'projects'} · {storyCount}
-    {storyCount === 1 ? ' story' : ' stories'} in flight
+  <p class="goal-foot">
+    <span data-testid="goal-linked-work">{footLabel}</span>
+    <span class="goal-pct">{progress}%</span>
   </p>
 </article>
 
@@ -78,31 +94,42 @@
   .goal-card {
     display: flex;
     min-width: 0;
-    min-height: 118px;
     flex-direction: column;
-    gap: 9px;
-    padding: 16px;
-    border: 1px solid var(--v4-rowline);
-    border-radius: 8px;
-    background: var(--v4-raised);
+    gap: 8px;
+    padding: 10px 0 12px;
+    border: 0;
+    border-bottom: 1px solid var(--v4-rowline);
+    border-radius: 0;
+    background: transparent;
     color: var(--v4-text-1);
     font-family: var(--font-sans);
   }
 
-  .goal-header {
+  .goal-card:last-child {
+    border-bottom: 0;
+  }
+
+  .goal-top {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     justify-content: space-between;
     gap: 12px;
     min-width: 0;
   }
 
-  h3 {
+  .goal-copy {
+    display: grid;
+    min-width: 0;
+    flex: 1 1 auto;
+    gap: var(--v4-row-stack-gap, 3px);
+  }
+
+  .goal-title {
     min-width: 0;
     margin: 0;
     overflow: hidden;
     color: var(--v4-text-1);
-    font-size: var(--text-base);
+    font-size: var(--type-body, var(--text-base));
     font-weight: 500;
     line-height: 1.25;
     text-overflow: ellipsis;
@@ -113,16 +140,18 @@
     display: inline-flex;
     flex: 0 0 auto;
     align-items: center;
-    gap: 7px;
-    color: var(--v4-text-2);
-    font-size: var(--text-base);
+    gap: 6px;
+    color: var(--v4-text-3);
+    font-size: var(--type-metadata, var(--text-micro));
     font-weight: 400;
     line-height: 1.2;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
   }
 
   .status-dot {
-    width: 6px;
-    height: 6px;
+    width: 5px;
+    height: 5px;
     border-radius: 50%;
   }
 
@@ -145,24 +174,20 @@
   .goal-kr {
     margin: 0;
     overflow: hidden;
-    color: var(--v4-text-2);
-    font-size: var(--text-base);
+    color: var(--v4-text-3);
+    font-size: var(--type-metadata, var(--text-micro));
     font-weight: 400;
-    line-height: 1.35;
+    line-height: 1.3;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
   .goal-progress {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 12px;
     min-width: 0;
-    margin-top: auto;
   }
 
   .progress-track {
+    display: block;
     height: 3px;
     overflow: hidden;
     border-radius: 999px;
@@ -176,16 +201,20 @@
     background: var(--v4-text-2);
   }
 
-  .progress-number,
-  .goal-counts {
+  .goal-foot {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    margin: 0;
     color: var(--v4-text-3);
-    font-size: var(--text-base);
+    font-size: var(--type-metadata, var(--text-micro));
     font-weight: 400;
     line-height: 1.25;
-    font-variant-numeric: tabular-nums;
   }
 
-  .goal-counts {
-    margin: 0;
+  .goal-pct {
+    flex: 0 0 auto;
+    font-variant-numeric: tabular-nums;
   }
 </style>

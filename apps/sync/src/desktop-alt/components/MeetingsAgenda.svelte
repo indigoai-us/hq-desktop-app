@@ -2,7 +2,7 @@
   import {
     botForEvent,
     companyLabel,
-    durationMinutes,
+    durationLabel,
     eventMeetingUrl,
     isRecurringMeeting,
     meetingState,
@@ -14,6 +14,7 @@
     type MeetingEvent,
     type ScheduledBot,
   } from '../lib/meetings-model';
+  import '../v4/tokens.css';
 
   interface Props {
     /** Pre-grouped, chronologically ordered day buckets (see groupByDay). */
@@ -58,182 +59,188 @@
   const upNextId = $derived(upNext?.id ?? null);
 </script>
 
-<section class="agenda-panel" aria-labelledby="agenda-title">
+<!-- Naked agenda: hairline day groups, no rounded meeting-card shells. -->
+<section class="agenda-panel" aria-labelledby="agenda-title" data-testid="meetings-agenda">
   <div class="panel-header">
     <h2 id="agenda-title">Upcoming</h2>
     <span>{totalCount} meeting{totalCount === 1 ? '' : 's'}</span>
   </div>
 
   {#each groups as group (group.label)}
-    <h3 class="day-heading">{group.label}</h3>
-    <div class="card meeting-card">
-      {#each group.events as event (event.id)}
-        {@const state = meetingState(event, { liveEventId, upNextId })}
-        {@const dur = durationMinutes(event)}
-        {@const sig = signalSummary(signalCounts(event))}
-        {@const bot = botForEvent(event, botsByEventId, scheduledBots)}
-        {@const pending = pendingEventIds.has(event.id)}
-        {@const kind = rowButtonKind(bot)}
-        {@const url = eventMeetingUrl(event)}
-        {@const recurring = isRecurringMeeting(event)}
-        <div class="meeting-row" class:past={state === 'past'}>
-          <div class="mtime">
-            {timeLabel(event)}{#if dur}<span class="mdur"> &middot; {dur}m</span>{/if}
-          </div>
-          <div class="mmeta">
-            <div class="mname">
-              {#if state === 'live'}<span class="dot-live" aria-hidden="true">&#9679;</span>{:else if state === 'next'}<span
-                  class="arrow-next"
-                  aria-hidden="true">&#8593;</span
-                >{/if}
-              <span class="meeting-title">{event.summary ?? '(no title)'}</span>
-              {#if recurring}
-                <span class="series-chip" title="series" aria-label="series" role="img">
-                  <svg width="12" height="12" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-                    <path d="M3.5 4.5h5.8c.95 0 1.7.76 1.7 1.7v.3" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" />
-                    <path d="M8.8 2.8 11 4.5 8.8 6.2" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" />
-                    <path d="M10.5 9.5H4.7C3.76 9.5 3 8.74 3 7.8v-.3" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" />
-                    <path d="M5.2 11.2 3 9.5l2.2-1.7" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" />
+    <div class="day-section">
+      <h3 class="day-heading">
+        <span>{group.label}</span>
+        <span class="day-count">{group.events.length}</span>
+      </h3>
+      <div class="agenda-list">
+        {#each group.events as event (event.id)}
+          {@const state = meetingState(event, { liveEventId, upNextId })}
+          {@const dur = durationLabel(event)}
+          {@const sig = signalSummary(signalCounts(event))}
+          {@const bot = botForEvent(event, botsByEventId, scheduledBots)}
+          {@const pending = pendingEventIds.has(event.id)}
+          {@const kind = rowButtonKind(bot)}
+          {@const url = eventMeetingUrl(event)}
+          {@const recurring = isRecurringMeeting(event)}
+          <div class="meeting-row" class:past={state === 'past'} class:live={state === 'live'} class:next={state === 'next'}>
+            <div class="mtime">{timeLabel(event)}</div>
+            <div class="mmeta">
+              <div class="mname">
+                {#if state === 'live'}<span class="dot-live" aria-hidden="true">&#9679;</span>{:else if state === 'next'}<span
+                    class="arrow-next"
+                    aria-hidden="true">&#8593;</span
+                  >{/if}
+                <span class="meeting-title">{event.summary ?? '(no title)'}</span>
+                {#if recurring}
+                  <span class="series-chip" title="series" aria-label="series" role="img">
+                    <svg width="12" height="12" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                      <path d="M3.5 4.5h5.8c.95 0 1.7.76 1.7 1.7v.3" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" />
+                      <path d="M8.8 2.8 11 4.5 8.8 6.2" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" />
+                      <path d="M10.5 9.5H4.7C3.76 9.5 3 8.74 3 7.8v-.3" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" />
+                      <path d="M5.2 11.2 3 9.5l2.2-1.7" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" />
+                    </svg>
+                  </span>
+                {/if}
+              </div>
+              <div class="mcompany">
+                {companyLabel(event, companyNames)}{#if dur} · {dur}{/if}
+              </div>
+            </div>
+            <div class="msig">{sig}</div>
+            <div class="mstate">
+              {#if state === 'live'}
+                <span class="pill live">Live</span>
+              {:else if state === 'next'}
+                <span class="pill">Next</span>
+              {:else if state === 'past'}
+                <span class="pill ok"><span class="check" aria-hidden="true">&#10003;</span> Synced</span>
+              {:else}
+                <span class="pill">Scheduled</span>
+              {/if}
+            </div>
+            <!-- Action cluster: Open (browser) + per-state bot button + join-now.
+                 Icon-only; the rich state lives in colour + tooltip so the row
+                 stays dense. The store owns the network call — these are pure
+                 callbacks, keeping this component presentational. -->
+            <div class="mactions detail-primary-actions">
+              {#if url}
+                <button
+                  type="button"
+                  class="row-icon-btn row-icon-join"
+                  title="Open meeting in browser"
+                  aria-label="Open meeting in browser"
+                  onclick={() => onOpenExternal(url)}
+                >
+                  <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                    <path d="M4 2h6v6M10 2L4.5 7.5M2 4v6h6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
+                  </svg>
+                </button>
+              {/if}
+              {#if !url}
+                <span class="row-icon-btn row-icon-empty" title="No meeting URL on this event">—</span>
+              {:else if kind === 'invite'}
+                <button
+                  type="button"
+                  class="row-icon-btn row-icon-invite"
+                  disabled={pending}
+                  title={pending ? 'Inviting…' : recurring ? 'Invite bot to this series' : 'Invite bot to this meeting'}
+                  aria-label="Invite bot"
+                  onclick={() => onInvite(event)}
+                >
+                  {#if pending}
+                    <span class="row-icon-spinner" aria-hidden="true"></span>
+                  {:else}
+                    <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                      <path d="M6 2v8M2 6h8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+                    </svg>
+                  {/if}
+                </button>
+              {:else if kind === 'invited'}
+                <button
+                  type="button"
+                  class="row-icon-btn row-icon-invited"
+                  disabled={pending}
+                  title={pending ? 'Cancelling…' : recurring ? 'Bot scheduled for series — click to uninvite series' : 'Bot scheduled — click to uninvite'}
+                  aria-label={recurring ? 'Uninvite bot from series' : 'Uninvite bot'}
+                  onclick={() => onUninvite(event)}
+                >
+                  {#if pending}
+                    <span class="row-icon-spinner" aria-hidden="true"></span>
+                  {:else}
+                    <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                      <path d="M2.5 6.5L5 9L9.5 3.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+                    </svg>
+                  {/if}
+                </button>
+              {:else if kind === 'in-call'}
+                <button
+                  type="button"
+                  class="row-icon-btn row-icon-incall"
+                  disabled={pending}
+                  title={pending ? 'Removing bot…' : recurring ? 'Bot is in this series — click to remove from series' : 'Bot is in the meeting — click to remove'}
+                  aria-label={recurring ? 'Remove bot from series' : 'Remove bot from meeting'}
+                  onclick={() => onUninvite(event)}
+                >
+                  {#if pending}
+                    <span class="row-icon-spinner" aria-hidden="true"></span>
+                  {:else}
+                    <span class="live-dot" aria-hidden="true"></span>
+                  {/if}
+                </button>
+              {:else if kind === 'joining'}
+                <button
+                  type="button"
+                  class="row-icon-btn row-icon-joining"
+                  disabled={pending}
+                  title={pending ? 'Cancelling…' : recurring ? 'Bot is joining this series — click to cancel series' : 'Bot is joining — click to cancel'}
+                  aria-label={recurring ? 'Cancel bot series join' : 'Cancel bot join'}
+                  onclick={() => onUninvite(event)}
+                >
+                  <span class="row-icon-spinner row-icon-spinner-amber" aria-hidden="true"></span>
+                </button>
+              {:else if kind === 'processing'}
+                <span class="row-icon-btn row-icon-processing" title="Processing transcript">
+                  <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor" aria-hidden="true">
+                    <circle cx="2.5" cy="6" r="1" />
+                    <circle cx="6" cy="6" r="1" />
+                    <circle cx="9.5" cy="6" r="1" />
+                  </svg>
+                </span>
+              {:else}
+                <span class="row-icon-btn row-icon-done" title="Done — transcript saved">
+                  <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                    <path d="M2.5 6.5L5 9L9.5 3.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
                   </svg>
                 </span>
               {/if}
+              {#if url}
+                <button
+                  type="button"
+                  class="row-icon-btn row-icon-bot-now"
+                  disabled={pending}
+                  title={pending ? 'Telling bot to join…' : 'Tell bot to join now'}
+                  aria-label="Tell bot to join now"
+                  onclick={() => onJoinNow(event)}
+                >
+                  {#if pending}
+                    <span class="row-icon-spinner" aria-hidden="true"></span>
+                  {:else}
+                    <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                      <line x1="6" y1="1" x2="6" y2="2.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+                      <rect x="2" y="3" width="8" height="6.5" rx="1.5" stroke="currentColor" stroke-width="1.4" />
+                      <circle cx="4.6" cy="6.5" r="0.7" fill="currentColor" />
+                      <circle cx="7.4" cy="6.5" r="0.7" fill="currentColor" />
+                    </svg>
+                  {/if}
+                </button>
+              {/if}
             </div>
-            <div class="mcompany">{companyLabel(event, companyNames)}</div>
           </div>
-          <div class="msig">{sig}</div>
-          <div class="mstate">
-            {#if state === 'live'}
-              <span class="pill live">Live</span>
-            {:else if state === 'next'}
-              <span class="pill">Next</span>
-            {:else if state === 'past'}
-              <span class="pill ok"><span class="check" aria-hidden="true">&#10003;</span> Synced</span>
-            {:else}
-              <span class="pill">Scheduled</span>
-            {/if}
-          </div>
-          <!-- Action cluster: Open (browser) + per-state bot button + join-now.
-               Icon-only; the rich state lives in colour + tooltip so the row
-               stays dense. The store owns the network call — these are pure
-               callbacks, keeping this component presentational. -->
-          <div class="mactions">
-            {#if url}
-              <button
-                type="button"
-                class="row-icon-btn row-icon-join"
-                title="Open meeting in browser"
-                aria-label="Open meeting in browser"
-                onclick={() => onOpenExternal(url)}
-              >
-                <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
-                  <path d="M4 2h6v6M10 2L4.5 7.5M2 4v6h6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
-                </svg>
-              </button>
-            {/if}
-            {#if !url}
-              <span class="row-icon-btn row-icon-empty" title="No meeting URL on this event">—</span>
-            {:else if kind === 'invite'}
-              <button
-                type="button"
-                class="row-icon-btn row-icon-invite"
-                disabled={pending}
-                title={pending ? 'Inviting…' : recurring ? 'Invite bot to this series' : 'Invite bot to this meeting'}
-                aria-label="Invite bot"
-                onclick={() => onInvite(event)}
-              >
-                {#if pending}
-                  <span class="row-icon-spinner" aria-hidden="true"></span>
-                {:else}
-                  <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
-                    <path d="M6 2v8M2 6h8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
-                  </svg>
-                {/if}
-              </button>
-            {:else if kind === 'invited'}
-              <button
-                type="button"
-                class="row-icon-btn row-icon-invited"
-                disabled={pending}
-                title={pending ? 'Cancelling…' : recurring ? 'Bot scheduled for series — click to uninvite series' : 'Bot scheduled — click to uninvite'}
-                aria-label={recurring ? 'Uninvite bot from series' : 'Uninvite bot'}
-                onclick={() => onUninvite(event)}
-              >
-                {#if pending}
-                  <span class="row-icon-spinner" aria-hidden="true"></span>
-                {:else}
-                  <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
-                    <path d="M2.5 6.5L5 9L9.5 3.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
-                  </svg>
-                {/if}
-              </button>
-            {:else if kind === 'in-call'}
-              <button
-                type="button"
-                class="row-icon-btn row-icon-incall"
-                disabled={pending}
-                title={pending ? 'Removing bot…' : recurring ? 'Bot is in this series — click to remove from series' : 'Bot is in the meeting — click to remove'}
-                aria-label={recurring ? 'Remove bot from series' : 'Remove bot from meeting'}
-                onclick={() => onUninvite(event)}
-              >
-                {#if pending}
-                  <span class="row-icon-spinner" aria-hidden="true"></span>
-                {:else}
-                  <span class="live-dot" aria-hidden="true"></span>
-                {/if}
-              </button>
-            {:else if kind === 'joining'}
-              <button
-                type="button"
-                class="row-icon-btn row-icon-joining"
-                disabled={pending}
-                title={pending ? 'Cancelling…' : recurring ? 'Bot is joining this series — click to cancel series' : 'Bot is joining — click to cancel'}
-                aria-label={recurring ? 'Cancel bot series join' : 'Cancel bot join'}
-                onclick={() => onUninvite(event)}
-              >
-                <span class="row-icon-spinner row-icon-spinner-amber" aria-hidden="true"></span>
-              </button>
-            {:else if kind === 'processing'}
-              <span class="row-icon-btn row-icon-processing" title="Processing transcript">
-                <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor" aria-hidden="true">
-                  <circle cx="2.5" cy="6" r="1" />
-                  <circle cx="6" cy="6" r="1" />
-                  <circle cx="9.5" cy="6" r="1" />
-                </svg>
-              </span>
-            {:else}
-              <span class="row-icon-btn row-icon-done" title="Done — transcript saved">
-                <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
-                  <path d="M2.5 6.5L5 9L9.5 3.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
-                </svg>
-              </span>
-            {/if}
-            {#if url}
-              <button
-                type="button"
-                class="row-icon-btn row-icon-bot-now"
-                disabled={pending}
-                title={pending ? 'Telling bot to join…' : 'Tell bot to join now'}
-                aria-label="Tell bot to join now"
-                onclick={() => onJoinNow(event)}
-              >
-                {#if pending}
-                  <span class="row-icon-spinner" aria-hidden="true"></span>
-                {:else}
-                  <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
-                    <line x1="6" y1="1" x2="6" y2="2.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
-                    <rect x="2" y="3" width="8" height="6.5" rx="1.5" stroke="currentColor" stroke-width="1.4" />
-                    <circle cx="4.6" cy="6.5" r="0.7" fill="currentColor" />
-                    <circle cx="7.4" cy="6.5" r="0.7" fill="currentColor" />
-                  </svg>
-                {/if}
-              </button>
-            {/if}
-          </div>
-        </div>
-      {/each}
+        {/each}
+      </div>
     </div>
   {:else}
-    <div class="card meeting-card">
+    <div class="agenda-list">
       <div class="meeting-row empty-row">No meetings in your synced calendars yet.</div>
     </div>
   {/each}
@@ -242,6 +249,8 @@
 <style>
   .agenda-panel {
     min-width: 0;
+    background: transparent;
+    border-radius: 0;
   }
 
   .panel-header {
@@ -255,39 +264,52 @@
   .panel-header h2 {
     margin: 0;
     color: var(--v4-text-1);
-    font-size: var(--text-base);
+    font-size: var(--type-section, 14px);
     font-weight: 600;
-    line-height: 20px;
+    line-height: 18px;
   }
 
   .panel-header span {
-    color: var(--v4-text-2);
-    font-size: var(--text-base);
+    color: var(--v4-text-3);
+    font-size: var(--type-secondary, 11px);
   }
 
-  /* Day separator above each per-day card. Ported from the classic
-     MeetingsWindow day-heading, retoned to the desktop-alt token palette. */
-  .day-heading {
-    margin: 14px 0 6px;
-    color: var(--v4-text-2);
-    font-size: var(--text-micro);
-    font-weight: 600;
-    letter-spacing: 0;
-    line-height: 16px;
-    text-transform: uppercase;
+  .day-section {
+    margin-top: 14px;
   }
 
-  .day-heading:first-of-type {
+  .day-section:first-of-type {
     margin-top: 0;
   }
 
-  /* Card wrapping a day's rows — mirrors prototype `.card`. */
-  .meeting-card {
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-card);
-    background: var(--v4-raised);
-    box-shadow: var(--v4-shadow-card);
-    overflow: hidden;
+  /* Day separator — uppercase metadata, no card chrome. */
+  .day-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-height: 24px;
+    margin: 0 0 2px;
+    color: var(--v4-text-3);
+    font-size: var(--type-metadata, 10px);
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    line-height: 14px;
+    text-transform: uppercase;
+  }
+
+  .day-count {
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0;
+    text-transform: none;
+    font-weight: 500;
+  }
+
+  /* Naked list — hairline rows only (no rounded meeting-card shell). */
+  .agenda-list {
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
   }
 
   /* `.meeting-row`: 5-col grid — time / name+company / signals / status pill /
@@ -295,16 +317,19 @@
      the informational design row: Open + bot state-machine + join-now. */
   .meeting-row {
     display: grid;
-    grid-template-columns: 100px minmax(0, 1fr) auto auto auto;
-    gap: 14px;
+    grid-template-columns: 72px minmax(0, 1fr) auto auto auto;
+    gap: 12px;
     align-items: center;
-    padding: 9px 16px;
-    border-top: 1px solid var(--v4-hairline);
+    padding: 9px 0;
+    border-top: none;
+    border-bottom: 1px solid var(--v4-rowline);
+    border-radius: 0;
+    background: transparent;
     transition: background-color 140ms ease;
   }
 
-  .meeting-row:first-child {
-    border-top: none;
+  .meeting-row:last-child {
+    border-bottom: none;
   }
 
   .meeting-row:not(.empty-row):hover {
@@ -316,18 +341,16 @@
   }
 
   .mtime {
-    color: var(--v4-text-2);
-    font-family: var(--font-mono);
-    font-size: var(--text-base);
-    white-space: nowrap;
-  }
-
-  .mtime .mdur {
     color: var(--v4-text-3);
+    font-family: var(--font-mono);
+    font-size: var(--type-metadata, 10px);
+    white-space: nowrap;
   }
 
   .mmeta {
     min-width: 0;
+    display: grid;
+    gap: var(--v4-row-stack-gap, 3px);
   }
 
   .mname {
@@ -337,8 +360,8 @@
     min-width: 0;
     overflow: hidden;
     color: var(--v4-text-1);
-    font-size: var(--text-base);
-    line-height: 18px;
+    font-size: var(--type-body, 12px);
+    line-height: 16px;
     white-space: nowrap;
   }
 
@@ -372,40 +395,41 @@
   }
 
   .dot-live {
-    margin-right: 6px;
+    margin-right: 2px;
     color: var(--v4-ok);
   }
 
   .arrow-next {
-    margin-right: 6px;
+    margin-right: 2px;
     color: var(--v4-text-2);
   }
 
   .mcompany {
     overflow: hidden;
-    color: var(--v4-text-2);
-    font-size: var(--text-base);
-    line-height: 16px;
+    color: var(--v4-text-3);
+    font-size: var(--type-secondary, 11px);
+    line-height: 14px;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
   .msig {
     color: var(--v4-text-3);
-    font-size: var(--text-base);
+    font-size: var(--type-metadata, 10px);
     white-space: nowrap;
   }
 
+  /* Discrete status payloads may keep pill radius. */
   .pill {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
+    gap: 5px;
     padding: 2px 8px;
     border: 1px solid var(--v4-hairline);
     border-radius: var(--v4-radius-pill);
-    color: var(--v4-text-2);
-    font-size: var(--text-base);
-    line-height: 16px;
+    color: var(--v4-text-3);
+    font-size: var(--type-metadata, 10px);
+    line-height: 14px;
     white-space: nowrap;
   }
 
@@ -430,7 +454,7 @@
   }
 
   .pill .check {
-    font-size: var(--text-base);
+    font-size: var(--type-metadata, 10px);
   }
 
   /* ── Action cluster (parity 5th column) ───────────────────────────────
@@ -438,7 +462,8 @@
      base neutrals retoned to the desktop-alt token palette. The status
      colour vocabulary (red live / amber joining / neutral processing / green
      done) is preserved; tooltips carry meaning so icon-only stays a11y-safe. */
-  .mactions {
+  .mactions,
+  .detail-primary-actions {
     flex: 0 0 auto;
     display: inline-flex;
     align-items: center;
@@ -458,6 +483,8 @@
     border-radius: var(--v4-radius-button);
     background: var(--v4-active-row);
     color: var(--v4-text-2);
+    font: inherit;
+    font-size: var(--type-body, 12px);
     cursor: pointer;
     transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
   }
@@ -467,7 +494,7 @@
     color: var(--v4-text-1);
   }
   .row-icon-btn:focus-visible {
-    outline: 2px solid var(--v4-control-border);
+    outline: 2px solid var(--v4-text-1);
     outline-offset: 1px;
   }
   .row-icon-btn:disabled {
@@ -481,7 +508,7 @@
     background: transparent;
     border-color: transparent;
     cursor: default;
-    font-size: var(--text-base);
+    font-size: var(--type-body, 12px);
   }
   /* Open-in-browser — discreet so the eye lands on the state button first. */
   .row-icon-join {
@@ -591,8 +618,9 @@
   .empty-row {
     display: block;
     color: var(--v4-text-2);
-    font-size: var(--text-base);
+    font-size: var(--type-body, 12px);
     line-height: 18px;
+    border-bottom: none;
   }
 
   @keyframes livePulse {
@@ -610,8 +638,34 @@
       transition: none;
     }
 
-    .pill.live::before {
+    .pill.live::before,
+    .live-dot,
+    .row-icon-spinner {
       animation: none;
+    }
+
+    .row-icon-btn {
+      transition: none;
+    }
+  }
+
+  @media (max-width: 720px) {
+    .meeting-row {
+      grid-template-columns: 64px minmax(0, 1fr) auto;
+      gap: 8px 10px;
+    }
+
+    .msig {
+      display: none;
+    }
+
+    .mstate {
+      justify-self: end;
+    }
+
+    .mactions {
+      grid-column: 1 / -1;
+      justify-content: flex-start;
     }
   }
 
@@ -635,15 +689,10 @@
       grid-column: 1 / -1;
     }
 
-    .msig {
-      grid-column: 1 / -1;
-      white-space: normal;
-    }
-
-    /* Actions drop to their own full-width row, right-aligned and tappable. */
     .mactions {
       grid-column: 1 / -1;
-      justify-content: flex-end;
+      justify-content: flex-start;
+      flex: 0 0 auto;
     }
   }
 </style>

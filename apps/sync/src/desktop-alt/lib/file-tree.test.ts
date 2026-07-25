@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   dirEntryToLazyNode,
+  filterLazyNodes,
   flattenLazy,
   flattenTree,
+  parentPathOf,
   sortNodes,
   type DirEntry,
   type FileNode,
@@ -303,5 +305,45 @@ describe('file-tree lazy helpers (US-010)', () => {
       { path: 'repos/public', depth: 1 },
       { path: 'repos/public/hq-sync', depth: 2 },
     ]);
+  });
+
+  it('filterLazyNodes keeps matching files and ancestor dirs (DESKTOP-008)', () => {
+    const tree: LazyNode[] = [
+      lazyDir('policies', 'companies/x/knowledge/policies', [
+        lazyFile('security.md', 'companies/x/knowledge/policies/security.md'),
+        lazyFile('readme.md', 'companies/x/knowledge/policies/readme.md'),
+      ]),
+      lazyFile('overview.md', 'companies/x/knowledge/overview.md'),
+    ];
+    const filtered = filterLazyNodes(tree, 'sec');
+    expect(filtered.map((n) => n.path)).toEqual([
+      'companies/x/knowledge/policies',
+    ]);
+    expect(filtered[0]?.children?.map((c) => c.path)).toEqual([
+      'companies/x/knowledge/policies/security.md',
+    ]);
+  });
+
+  it('filterLazyNodes is case-insensitive and empty query is identity', () => {
+    const tree: LazyNode[] = [
+      lazyFile('Brand.md', 'companies/x/knowledge/Brand.md'),
+      lazyFile('notes.txt', 'companies/x/knowledge/notes.txt'),
+    ];
+    expect(filterLazyNodes(tree, '')).toEqual(tree);
+    expect(filterLazyNodes(tree, '  brand  ').map((n) => n.name)).toEqual(['Brand.md']);
+  });
+
+  it('filterLazyNodes does not mutate input', () => {
+    const tree: LazyNode[] = [
+      lazyDir('a', 'a', [lazyFile('hit.md', 'a/hit.md'), lazyFile('miss.md', 'a/miss.md')]),
+    ];
+    const before = JSON.stringify(tree);
+    filterLazyNodes(tree, 'hit');
+    expect(JSON.stringify(tree)).toBe(before);
+  });
+
+  it('parentPathOf returns the parent HQ-relative segment', () => {
+    expect(parentPathOf('companies/x/knowledge/a.md')).toBe('companies/x/knowledge');
+    expect(parentPathOf('readme.md')).toBe('');
   });
 });

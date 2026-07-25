@@ -28,9 +28,20 @@ describe('US-010: Activity panel reads company activity via Tauri command', () =
   it('wires the activity tab to ActivityPanel with the selected company slug', () => {
     const page = normalize(companyPage);
     const panel = normalize(activityPanel);
+    const operations = normalize(
+      readFileSync(
+        resolve(process.cwd(), 'src/desktop-alt/panels/CompanyOperationsPanel.svelte'),
+        'utf8',
+      ),
+    );
 
-    expect(page).toContain("import ActivityPanel from '../panels/ActivityPanel.svelte'");
-    expect(page).toContain('<ActivityPanel slug={company.slug} {cloudBacked} />');
+    // DESKTOP-010: Activity mounts inside the operations workspace under More.
+    expect(page).toContain("import CompanyOperationsPanel from '../panels/CompanyOperationsPanel.svelte'");
+    expect(page).toContain('isCompanyOperationsTab(tab)');
+    expect(page).toContain('<CompanyOperationsPanel');
+    expect(page).toContain('slug={company.slug}');
+    expect(page).toContain('{cloudBacked}');
+    expect(operations).toContain('<ActivityPanel {slug} {cloudBacked} />');
     expect(page).not.toContain('Activity panel - wired in US-010');
     expect(panel).toContain("void invoke<Partial<CompanyActivity>>('get_company_activity', { slug })");
     expect(panel).toContain('return () => { cancelled = true; };');

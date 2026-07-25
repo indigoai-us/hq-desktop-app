@@ -46,10 +46,21 @@ describe('US-012: Secrets panel reads metadata only with no plaintext values', (
   it('wires the secrets tab to get_company_secrets with the selected company slug', () => {
     const page = normalize(companyPage);
     const panel = normalize(secretsPanel);
+    const operations = normalize(
+      readFileSync(
+        resolve(process.cwd(), 'src/desktop-alt/panels/CompanyOperationsPanel.svelte'),
+        'utf8',
+      ),
+    );
 
-    expect(page).toContain("import SecretsPanel from '../panels/SecretsPanel.svelte'");
-    expect(page).toContain('<SecretsPanel slug={company.slug} {cloudBacked} />');
+    // DESKTOP-010: Secrets mounts inside the operations workspace under More.
+    expect(page).toContain("import CompanyOperationsPanel from '../panels/CompanyOperationsPanel.svelte'");
+    expect(page).toContain('isCompanyOperationsTab(tab)');
+    expect(page).toContain('<CompanyOperationsPanel');
+    expect(page).toContain('slug={company.slug}');
+    expect(page).toContain('{cloudBacked}');
     expect(page).toContain('const cloudBacked = $derived');
+    expect(operations).toContain('<SecretsPanel {slug} {cloudBacked} />');
     expect(panel).toContain('if (!slug || !cloudBacked)');
     expect(panel).toContain("void invoke<Partial<SecretEnv>[]>('get_company_secrets', { slug })");
     expect(panel).toContain('return () => { cancelled = true; };');

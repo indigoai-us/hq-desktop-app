@@ -1,6 +1,9 @@
 /**
  * Team telemetry adapter — pure normalization for company Team surface.
  * Wire payload mirrors hq-console / hq-pro GET /v1/telemetry/company (+ optional outcomes).
+ *
+ * DESKTOP-009: mixed humans + agents in one scan-friendly list; kind labels are
+ * honest type markers (Human / Agent). Never invent live status or activity.
  */
 
 export type TeamMemberKind = 'human' | 'agent';
@@ -14,6 +17,8 @@ export interface TeamMember {
   id: string;
   displayName: string;
   kind: TeamMemberKind;
+  /** Company membership role when the payload provides it — never invented. */
+  role?: string;
   topSkills: TeamSkillUsage[];
   /** Active project names when known (from outcomes / local board join). */
   activeProjects: string[];
@@ -22,6 +27,9 @@ export interface TeamMember {
 }
 
 export interface TeamTelemetryView {
+  /** Unified scan list — humans and agents together, ranked. */
+  members: TeamMember[];
+  /** Partition of `members` for callers that still need kind splits. */
   humans: TeamMember[];
   agents: TeamMember[];
   /** Permission / network error message for the UI; empty when ok. */
@@ -30,10 +38,30 @@ export interface TeamTelemetryView {
   empty: boolean;
 }
 
+export interface TeamMemberLabel {
+  email?: string | null;
+  displayName?: string | null;
+}
+
 export function memberKindFromUid(uid: string): TeamMemberKind {
   const id = uid.trim().toLowerCase();
   if (id.startsWith('agt_') || id.startsWith('agent_')) return 'agent';
   return 'human';
+}
+
+/** Honest type label for list/detail chips — not a live status indicator. */
+export function memberKindLabel(kind: TeamMemberKind): string {
+  return kind === 'agent' ? 'Agent' : 'Human';
+}
+
+/**
+ * Role/type line for list meta. Prefer a real payload role when present;
+ * otherwise fall back to the kind label only — never invent admin/owner/etc.
+ */
+export function memberTypeRoleLabel(member: Pick<TeamMember, 'kind' | 'role'>): string {
+  const role = (member.role ?? '').trim();
+  if (role) return role;
+  return memberKindLabel(member.kind);
 }
 
 export function displayNameFromMember(raw: {
@@ -41,13 +69,12 @@ export function displayNameFromMember(raw: {
   email?: string;
   displayName?: string;
   name?: string;
-}): string {
-  const name = (raw.displayName || raw.name || '').trim();
+}, resolved?: TeamMemberLabel): string {
+  const name = (raw.displayName || raw.name || resolved?.displayName || '').trim();
   if (name) return name;
-  const email = (raw.email || '').trim();
+  const email = (raw.email || resolved?.email || '').trim();
   if (email) return email;
-  const uid = (raw.personUid || '').trim();
-  return uid || 'Unknown';
+  return 'Unknown member';
 }
 
 function skillListFromTotals(totals: unknown): TeamSkillUsage[] {
@@ -69,21 +96,49 @@ function skillListFromTotals(totals: unknown): TeamSkillUsage[] {
     .slice(0, 5);
 }
 
+function activeProjectList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => {
+      if (typeof item === 'string') return item.trim();
+      if (!item || typeof item !== 'object') return '';
+      const row = item as { title?: unknown; name?: unknown };
+      if (typeof row.title === 'string') return row.title.trim();
+      if (typeof row.name === 'string') return row.name.trim();
+      return '';
+    })
+    .filter((name): name is string => name.length > 0);
+}
+
+function memberRank(m: TeamMember): number {
+  return (m.sessions ?? 0) * 1000 + (m.events ?? 0);
+}
+
+function sortMembers(list: TeamMember[]): TeamMember[] {
+  return [...list].sort(
+    (a, b) => memberRank(b) - memberRank(a) || a.displayName.localeCompare(b.displayName),
+  );
+}
+
 /**
- * Normalize a company telemetry JSON body into humans vs agents with top skills.
- * Accepts both `perMember` and `members` array keys (console/hq-pro variants).
+ * Normalize a company telemetry JSON body into a mixed member list with kind
+ * labels and top skills. Accepts both `perMember` and `members` array keys
+ * (console/hq-pro variants).
  */
 export function normalizeCompanyTeamTelemetry(
   payload: unknown,
-  options?: { activeProjectsByMemberId?: Record<string, string[]> },
+  options?: {
+    activeProjectsByMemberId?: Record<string, string[]>;
+    memberLabelsById?: Record<string, TeamMemberLabel>;
+  },
 ): TeamTelemetryView {
   if (!payload || typeof payload !== 'object') {
-    return { humans: [], agents: [], error: null, empty: true };
+    return { members: [], humans: [], agents: [], error: null, empty: true };
   }
   const o = payload as Record<string, unknown>;
   const rawMembers = o.perMember ?? o.members;
   if (!Array.isArray(rawMembers)) {
-    return { humans: [], agents: [], error: null, empty: true };
+    return { members: [], humans: [], agents: [], error: null, empty: true };
   }
 
   const projectsMap = options?.activeProjectsByMemberId ?? {};
@@ -93,29 +148,42 @@ export function normalizeCompanyTeamTelemetry(
   for (const row of rawMembers) {
     if (!row || typeof row !== 'object') continue;
     const r = row as Record<string, unknown>;
-    const personUid = typeof r.personUid === 'string' ? r.personUid : typeof r.id === 'string' ? r.id : '';
+    const personUid =
+      typeof r.personUid === 'string' ? r.personUid : typeof r.id === 'string' ? r.id : '';
     if (!personUid) continue;
     const kind =
       typeof r.kind === 'string' && (r.kind === 'agent' || r.kind === 'human')
         ? (r.kind as TeamMemberKind)
         : memberKindFromUid(personUid);
+    const roleRaw =
+      typeof r.role === 'string'
+        ? r.role
+        : typeof r.membershipRole === 'string'
+          ? r.membershipRole
+          : '';
+    const role = roleRaw.trim() || undefined;
     const member: TeamMember = {
       id: personUid,
-      displayName: displayNameFromMember({
-        personUid,
-        email: typeof r.email === 'string' ? r.email : undefined,
-        displayName: typeof r.displayName === 'string' ? r.displayName : undefined,
-        name: typeof r.name === 'string' ? r.name : undefined,
-      }),
+      displayName: displayNameFromMember(
+        {
+          personUid,
+          email: typeof r.email === 'string' ? r.email : undefined,
+          displayName: typeof r.displayName === 'string' ? r.displayName : undefined,
+          name: typeof r.name === 'string' ? r.name : undefined,
+        },
+        options?.memberLabelsById?.[personUid],
+      ),
       kind,
+      role,
       topSkills: skillListFromTotals(r.totals),
-      activeProjects: projectsMap[personUid] ?? [],
+      activeProjects: projectsMap[personUid] ?? activeProjectList(r.activeProjects),
       events:
         typeof (r.totals as { events?: number } | undefined)?.events === 'number'
           ? (r.totals as { events: number }).events
           : undefined,
       sessions:
-        typeof (r.totals as { distinctSessions?: number } | undefined)?.distinctSessions === 'number'
+        typeof (r.totals as { distinctSessions?: number } | undefined)?.distinctSessions ===
+        'number'
           ? (r.totals as { distinctSessions: number }).distinctSessions
           : undefined,
     };
@@ -123,16 +191,17 @@ export function normalizeCompanyTeamTelemetry(
     else humans.push(member);
   }
 
-  // Stable sort: by sessions/events desc then name
-  const rank = (m: TeamMember) => (m.sessions ?? 0) * 1000 + (m.events ?? 0);
-  humans.sort((a, b) => rank(b) - rank(a) || a.displayName.localeCompare(b.displayName));
-  agents.sort((a, b) => rank(b) - rank(a) || a.displayName.localeCompare(b.displayName));
+  const sortedHumans = sortMembers(humans);
+  const sortedAgents = sortMembers(agents);
+  // One ranked list — humans and agents interleaved by activity, not tabs.
+  const members = sortMembers([...sortedHumans, ...sortedAgents]);
 
   return {
-    humans,
-    agents,
+    members,
+    humans: sortedHumans,
+    agents: sortedAgents,
     error: null,
-    empty: humans.length === 0 && agents.length === 0,
+    empty: members.length === 0,
   };
 }
 

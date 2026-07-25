@@ -13,6 +13,7 @@
     requestDisplayName,
     requestInitials,
   } from '../../lib/dmRequests';
+  import { sanitizeVisibleIdentifiers } from '../../lib/visible-labels';
   // A pending connection request, rendered as a bordered CARD (deliberately NOT
   // a chat bubble) so an incoming request reads as something to act on, not a
   // message that silently landed in a thread. Shows the requester's name +
@@ -39,7 +40,7 @@
   let busy = $state<RequestAction | null>(null);
   let error = $state<string | null>(null);
 
-  const name = $derived(requestDisplayName(request));
+  const name = $derived(sanitizeVisibleIdentifiers(requestDisplayName(request)));
   const avatar = $derived(requestInitials(request));
 
   async function respond(action: RequestAction): Promise<void> {
@@ -161,13 +162,15 @@
   }
 
   .request-id {
-    display: flex;
-    flex-direction: column;
+    display: grid;
+    grid-template-rows: auto auto;
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--v4-row-stack-gap, 3px);
     min-width: 0;
   }
 
   .request-name {
-    font-size: var(--text-base);
+    font-size: var(--type-body, var(--text-base));
     font-weight: 600;
     color: var(--fg);
     overflow: hidden;
@@ -177,7 +180,7 @@
 
   .request-email {
     font-family: var(--font-mono);
-    font-size: var(--text-micro);
+    font-size: var(--type-metadata, var(--text-micro));
     color: var(--muted);
     overflow: hidden;
     text-overflow: ellipsis;

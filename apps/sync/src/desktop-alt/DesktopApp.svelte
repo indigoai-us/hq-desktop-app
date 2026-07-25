@@ -6,6 +6,8 @@
   import { loadMeetingsCache } from '../lib/meetingsCache';
   import { MESSAGE_PERSON_EVENT, takePendingConversation } from '../lib/pendingConversation';
   import { effectiveTotalFiles as computeEffectiveTotalFiles } from '../lib/effective-total-files';
+  import { sanitizeVisibleIdentifiers } from '../lib/visible-labels';
+  import { safeUnlisten } from '../lib/listener-registry';
   import type { Workspace, WorkspacesResult } from '../lib/workspaces';
   import HomePage from './pages/HomePage.svelte';
   import MissionControlPage from './pages/MissionControlPage.svelte';
@@ -50,17 +52,11 @@
   import FilesModeSidebar from './v4/FilesModeSidebar.svelte';
   import FilePreviewPane from './components/FilePreviewPane.svelte';
   import V4SecondarySidebar from './v4/V4SecondarySidebar.svelte';
-  import { open as openExternal } from '@tauri-apps/plugin-shell';
-  import { companyConsoleUrl } from './lib/hq-console';
   import V4TitleBar from './v4/V4TitleBar.svelte';
-  import DesktopStatusBar from './DesktopStatusBar.svelte';
   import CommandPalette, {
     type CommandPaletteItem,
   } from './components/CommandPalette.svelte';
   import {
-    eventStart,
-    isToday,
-    sortByStart,
     type GoogleAccount,
     type GoogleCalendar,
     type MeetingEvent,
@@ -210,12 +206,13 @@
   // during the initial fetch window.
   let ready = $state(false);
   let commandPaletteOpen = $state(false);
+  // DESKTOP-001: primary sidebar can collapse; titlebar owns the toggle.
+  let sidebarCollapsed = $state(false);
   let meetingEvents = $state<MeetingEvent[]>([]);
   // Local projects across every company — ONE `get_local_projects` scan (no
   // per-company vault fan-out), feeding the Home portfolio stats + table.
   let homeProjects = $state<Project[]>([]);
   let meetingCompanyNamesByUid = $state<Map<string, string>>(new Map());
-  let meetingStatusNow = $state(Date.now());
   let desktopRenderAuditQueued = false;
 
   let companies = $state<Workspace[]>(cachedCompanies);
@@ -255,8 +252,8 @@
   const filesSelectedPath = $derived<string | null>(
     route.kind === 'files' ? route.path ?? null : null,
   );
-  // Secondary (contextual) sidebar — only on company / library / settings
-  // surfaces (SPEC section 4); null hides the column entirely.
+  // Secondary (contextual) sidebar — Library / Settings only (DESKTOP-001
+  // removed the permanent company secondary column). Null hides the column.
   const secondarySidebar = $derived(
     getDesktopSecondarySidebar(route, shellCompanies, {
       version: __APP_VERSION__,
@@ -270,30 +267,6 @@
       syncTotalFiles,
     }),
   );
-  const observedVaultBytes = $derived.by(() => {
-    const activityBytes = activity.reduce((sum, entry) => sum + entry.bytes, 0);
-    const workspaceBytes = Object.values(statsBySlug).reduce(
-      (sum, stats) => sum + Math.max(stats.transferredBytes, stats.completedBytes),
-      0,
-    );
-    return Math.max(activityBytes, workspaceBytes, syncLastSummary?.bytesDownloaded ?? 0);
-  });
-  const nextMeetingLabel = $derived.by(() => {
-    const now = new Date(meetingStatusNow);
-    const upcoming = meetingEvents
-      .filter((event) => isToday(event, now))
-      .filter((event) => (eventStart(event)?.getTime() ?? 0) >= now.getTime())
-      .sort(sortByStart)[0];
-    const startsAt = upcoming ? eventStart(upcoming) : null;
-    if (!upcoming || !startsAt) return null;
-
-    const company =
-      (upcoming.sourceCompanyUid
-        ? meetingCompanyNamesByUid.get(upcoming.sourceCompanyUid) ?? upcoming.sourceCompanyUid
-        : null) ?? 'Meetings';
-    const minutes = Math.max(0, Math.ceil((startsAt.getTime() - now.getTime()) / 60000));
-    return `${company} · in ${minutes}m`;
-  });
   const commandItems = $derived<CommandPaletteItem[]>([
     {
       id: 'command-sync-now',
@@ -557,7 +530,7 @@
       .filter(Boolean);
     const footer =
       document
-        .querySelector<HTMLElement>('.desktop-status-bar')
+        .querySelector<HTMLElement>('.v4-titlebar')
         ?.textContent?.replace(/\s+/g, ' ')
         .trim() ?? null;
     const hasMoreCompaniesText = (document.body.textContent ?? '').includes('more companies');
@@ -581,13 +554,13 @@
       companies = nextCompanies;
       renderCompanies = nextCompanies;
       renderWorkspaceCount = nextCompanies.length;
-      workspaceError = result.error;
+      workspaceError = sanitizeVisibleIdentifiers(result.error, { companies: result.workspaces });
       writeCachedWorkspaces(result.workspaces);
-      // The chrome (V4Sidebar / V4TitleBar / DesktopStatusBar) consumes
-      // renderCompanies + renderWorkspaceCount reactively ($derived / $props),
-      // so the reassignments above refresh it on their own. We deliberately do
-      // NOT reload the document or remount the chrome on a workspace-list change:
-      // a full reload mid-paint is what blanked/froze the desktop on focus/sync.
+      // The chrome (V4Sidebar / V4TitleBar) consumes renderCompanies +
+      // renderWorkspaceCount reactively ($derived / $props), so the reassignments
+      // above refresh it on their own. We deliberately do NOT reload the document
+      // or remount the chrome on a workspace-list change: a full reload mid-paint
+      // is what blanked/froze the desktop on focus/sync.
       // Warm the company-tab preload cache for every known company once the real
       // slugs resolve. Idempotent + reconciles, so companies that appear on a
       // later refresh still get warmed; the 30s poll + focus listener wire once.
@@ -620,7 +593,7 @@
       landingResolved = true;
     } catch (err) {
       console.error('list_syncable_workspaces failed:', err);
-      workspaceError = String(err);
+      workspaceError = sanitizeVisibleIdentifiers(String(err), { companies: workspaces });
     }
   }
 
@@ -774,17 +747,13 @@
     );
   }
 
-  // "Sign in again" on the Home error card: a silent token refresh fixes the
-  // common expired-session case in place (then retries the sync); if the
-  // refresh itself fails the session is truly gone, so open Settings where
-  // the account surface lives.
+  // One click clears the stale device session and opens the compact provider
+  // picker. App.svelte resumes sync automatically after OAuth succeeds.
   async function handleSignInAgain() {
     try {
-      await invoke('refresh_tokens');
-      await handleSyncAll();
+      await invoke('begin_reauth');
     } catch (err) {
-      console.error('refresh_tokens failed:', err);
-      handleOpenSettings();
+      console.error('begin_reauth failed:', err);
     }
   }
 
@@ -822,21 +791,23 @@
     if (secondarySidebar?.surface === 'library') {
       // "Publish a pack" — the Profile tab hosts publishing today.
       navigate({ kind: 'library', tab: 'profile' });
-      return;
     }
-    // "Company settings" — sync rules, members, roles all live in the HQ web
-    // console, so open the company's console page in the system browser rather
-    // than the in-app Settings route.
-    const slug = activeCompany?.slug;
-    if (slug) {
-      void openExternal(companyConsoleUrl(slug));
-      return;
-    }
-    handleOpenSettings();
   }
 
   function handleOpenSettings(tab?: SettingsTab) {
     navigate({ kind: 'settings', tab });
+  }
+
+  function handleToggleSidebar() {
+    sidebarCollapsed = !sidebarCollapsed;
+  }
+
+  function handleOpenCommandPalette() {
+    commandPaletteOpen = true;
+  }
+
+  function handleAccountMenu() {
+    handleOpenSettings();
   }
 
   // ── Agent-handoff actions (the hq-* ACTIONS in the ⌘K palette) ─────────────
@@ -930,7 +901,6 @@
     let unlistenFocus: UnlistenFn | undefined;
     const unlisteners: UnlistenFn[] = [];
     const meetingStatusInterval = window.setInterval(() => {
-      meetingStatusNow = Date.now();
       hydrateMeetingStatus();
     }, 30_000);
 
@@ -1015,10 +985,11 @@
         }
       })
       .then((unlisten) => {
+        const safe = safeUnlisten(unlisten);
         if (mounted) {
-          unlistenFocus = unlisten;
+          unlistenFocus = safe;
         } else {
-          unlisten();
+          safe();
         }
       });
 
@@ -1232,7 +1203,7 @@
       }),
       // Brand-new account with no person entity / no companies yet: the runner
       // emits sync:setup-needed and bails. The desktop has a purpose-built,
-      // non-alarming "Sync not set up" surface (model.ts + DesktopStatusBar) —
+      // non-alarming "Sync not set up" surface (model.ts + V4TitleBar) —
       // surface it instead of letting all-complete fall through to "Idle · all
       // safe", which falsely told the user the account was ready. Not an error
       // tone (idle), matching the classic popover's "this is normal" framing.
@@ -1244,7 +1215,7 @@
         syncState = 'auth-error';
         syncProgress = null;
         syncErrorMessage = event.payload.message;
-        await invoke('set_tray_state', { state: 'error' }).catch(() => undefined);
+        await invoke('set_tray_state', { state: 'reauth' }).catch(() => undefined);
       }),
       listen<ActivityEntry>('activity:append', (event) => {
         activity = [...activity, event.payload];
@@ -1285,6 +1256,7 @@
 
 <div
   class="desktop-shell"
+  class:sidebar-collapsed={sidebarCollapsed}
   data-workspace-count={renderWorkspaceCount}
   style={`--desktop-titlebar-height: ${V4_CHROME_LAYOUT.titleBarHeightPx}px;`}
 >
@@ -1299,30 +1271,36 @@
     errorMessage={syncErrorMessage}
     errorCompany={syncErrorCompany}
     {hqFolderPath}
+    {sidebarCollapsed}
     onsync={handleSyncAll}
     oncancel={handleCancelSync}
-    onretry={handleSyncAll}
+    onretry={syncState === 'auth-error' ? handleSignInAgain : handleSyncAll}
+    ontogglesidebar={handleToggleSidebar}
+    oncommand={handleOpenCommandPalette}
+    onaccount={handleAccountMenu}
   />
 
   <div class="desktop-body">
-    {#if route.kind === 'files'}
-      <FilesModeSidebar
-        companies={renderCompanies}
-        activeSlug={filesActiveSlug}
-        selectedPath={filesSelectedPath}
-        onselectcompany={(slug) =>
-          navigate({ kind: 'files', slug: slug ?? undefined })}
-        onselectfile={(path) =>
-          navigate({ kind: 'files', slug: filesActiveSlug ?? undefined, path })}
-        onexit={exitFilesMode}
-      />
-    {:else}
-      <V4Sidebar
-        {route}
-        companies={renderCompanies}
-        {cloudReachable}
-        onnavigate={(next) => navigate(fromV4Route(next))}
-      />
+    {#if !sidebarCollapsed}
+      {#if route.kind === 'files'}
+        <FilesModeSidebar
+          companies={renderCompanies}
+          activeSlug={filesActiveSlug}
+          selectedPath={filesSelectedPath}
+          onselectcompany={(slug) =>
+            navigate({ kind: 'files', slug: slug ?? undefined })}
+          onselectfile={(path) =>
+            navigate({ kind: 'files', slug: filesActiveSlug ?? undefined, path })}
+          onexit={exitFilesMode}
+        />
+      {:else}
+        <V4Sidebar
+          {route}
+          companies={renderCompanies}
+          {cloudReachable}
+          onnavigate={(next) => navigate(fromV4Route(next))}
+        />
+      {/if}
     {/if}
 
     {#if secondarySidebar}
@@ -1444,6 +1422,13 @@
                 onopenprojects={() =>
                   navigate({ kind: 'company', slug: activeCompany.slug, tab: 'projects' })
                 }
+                onopengoals={() =>
+                  navigate({ kind: 'company', slug: activeCompany.slug, tab: 'goals' })
+                }
+                onopeninbox={() => navigate({ kind: 'inbox' })}
+                onopenoperations={(destination) =>
+                  navigate({ kind: 'company', slug: activeCompany.slug, tab: destination })
+                }
                 onworkspaceschanged={() => void loadWorkspaces()}
               />
             </div>
@@ -1466,18 +1451,6 @@
     </div>
   </div>
 
-  <DesktopStatusBar
-    version={__APP_VERSION__}
-    state={syncState}
-    progress={syncProgress}
-    filesProgressed={syncFilesProgressed}
-    totalFiles={effectiveTotalFiles}
-    workspaceCount={renderWorkspaceCount}
-    observedBytes={observedVaultBytes}
-    {nextMeetingLabel}
-    onOpenSettings={() => navigate({ kind: 'settings' })}
-  />
-
   {#if commandPaletteOpen}
     <CommandPalette commands={commandItems} onclose={() => (commandPaletteOpen = false)} />
   {/if}
@@ -1492,8 +1465,8 @@
 </div>
 
 <style>
-  /* V4 ground (SPEC section 2): the window + main content background. The V4
-     chrome components (title bar / sidebars) paint their own surfaces. */
+  /* V4 ground (SPEC section 2): naked main canvas. Title bar / sidebars paint
+     their own Liquid Glass chrome (DESKTOP-001). */
   .desktop-shell {
     background: var(--v4-ground);
   }
@@ -1533,13 +1506,13 @@
   }
 
   /* Transient confirmation for the hq-* palette actions (Deploy / Share / Run a
-     worker). Floats above the status bar; status carried by a 6px dot per the
-     V4 convention (green = opened in Claude Code, amber = prompt copied as a
-     fallback). Auto-dismisses; the × dismisses early. */
+     worker). Status is carried by a 6px dot per the V4 convention (green =
+     opened in Claude Code, amber = prompt copied as a fallback). Auto-dismisses;
+     the × dismisses early. */
   .action-toast {
     position: fixed;
     right: 16px;
-    bottom: 38px;
+    bottom: 16px;
     z-index: 60;
     display: flex;
     align-items: center;
@@ -1584,7 +1557,7 @@
     border-radius: 5px;
     background: transparent;
     color: var(--v4-text-3);
-    font-size: 15px;
+    font-size: var(--type-section, 14px);
     line-height: 1;
     cursor: pointer;
   }

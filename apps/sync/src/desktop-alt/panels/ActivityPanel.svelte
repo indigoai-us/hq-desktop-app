@@ -222,9 +222,9 @@
   }
 </script>
 
-<section class="activity-panel" aria-labelledby="activity-panel-title">
+<section class="activity-panel" aria-labelledby="activity-panel-title" data-testid="company-activity-panel">
   <header class="activity-toolbar">
-    <div class="activity-title">
+    <div class="activity-title title-stack">
       <h2 id="activity-panel-title">Activity</h2>
       <span>{loading ? 'Loading activity' : 'Last 14 days'}</span>
     </div>
@@ -408,6 +408,7 @@
     display: grid;
     gap: 14px;
     min-width: 0;
+    background: transparent;
   }
 
   .activity-toolbar {
@@ -422,12 +423,18 @@
     min-width: 0;
   }
 
+  .title-stack {
+    display: grid;
+    gap: var(--v4-row-stack-gap, 3px);
+    min-width: 0;
+  }
+
   .activity-title h2 {
     margin: 0;
     color: var(--v4-text-1);
-    font-size: var(--text-base);
+    font-size: var(--type-section, 14px);
     font-weight: 600;
-    line-height: 22px;
+    line-height: 1.2;
   }
 
   .activity-title span,
@@ -435,13 +442,12 @@
   .chart-scale,
   .empty-state {
     color: var(--v4-text-3);
-    font-size: var(--text-base);
-    line-height: 16px;
+    font-size: var(--type-secondary, 11px);
+    line-height: 1.3;
   }
 
   .activity-title span {
     display: block;
-    margin-top: 2px;
   }
 
   .activity-error {
@@ -516,9 +522,8 @@
   .activity-card {
     min-width: 0;
     border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-card);
-    background: var(--v4-raised);
-    box-shadow: var(--v4-shadow-card);
+    border-radius: 0;
+    background: transparent;
     overflow: hidden;
   }
 
@@ -537,9 +542,9 @@
     margin: 0;
     overflow: hidden;
     color: var(--v4-text-2);
-    font-size: var(--text-base);
+    font-size: var(--type-body, 12px);
     font-weight: 600;
-    line-height: 18px;
+    line-height: 1.25;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -761,7 +766,7 @@
 
   .recent-copy {
     display: grid;
-    gap: 2px;
+    gap: var(--v4-row-stack-gap, 3px);
     min-width: 0;
   }
 
@@ -775,16 +780,16 @@
 
   .recent-copy strong {
     color: var(--v4-text-1);
-    font-size: var(--text-base);
+    font-size: var(--type-body, 12px);
     font-weight: 600;
-    line-height: 18px;
+    line-height: 1.25;
   }
 
   .recent-copy span,
   .date-chip {
     color: var(--v4-text-3);
-    font-size: var(--text-base);
-    line-height: 16px;
+    font-size: var(--type-metadata, 10px);
+    line-height: 1.3;
   }
 
   .date-chip {
@@ -900,6 +905,13 @@
 
     .recent-row :global(.open-claude-btn) {
       transition: none;
+    }
+  }
+
+  @media (prefers-reduced-transparency: reduce) {
+    .activity-panel,
+    .activity-card {
+      background: var(--v4-ground);
     }
   }
 </style>

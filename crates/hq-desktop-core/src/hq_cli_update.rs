@@ -243,25 +243,173 @@ pub fn report_unreadable_version(latest: &str) {
 }
 
 /// Whether an npm install failure is the EXPECTED "global npm prefix needs
-/// sudo" condition — an `EACCES`/permission-denied against a root-owned prefix
-/// (the classic `/usr/local/lib/node_modules`). The menubar app runs as the
-/// user and cannot `sudo`, so `npm install -g` can NEVER succeed on these
-/// machines; it is a client-side environment fault, not an app/server bug.
-pub fn is_prefix_permission_failure(detail: &str) -> bool {
-    detail.contains("EACCES") || detail.contains("permission denied")
+/// sudo" condition. This is deliberately stricter than an `EACCES` string
+/// check: npm and lifecycle scripts can report permission failures for its
+/// cache, a package script, or an unrelated filesystem path. Only a write to
+/// the exact prefix selected for this `hq` update is the known, non-actionable
+/// user-machine setup failure.
+///
+/// npm uses `<prefix>/lib/node_modules` on Unix and `<prefix>/node_modules`
+/// on Windows. It can also fail while linking `<prefix>/bin/hq`. Normalize
+/// separators so an event captured on either platform follows the same rule.
+pub fn is_prefix_permission_failure(detail: &str, prefix: Option<&str>) -> bool {
+    let detail = detail.to_ascii_lowercase().replace('\\', "/");
+    let is_permission_error = detail.contains("eacces") || detail.contains("permission denied");
+    let Some(prefix) = prefix else {
+        return false;
+    };
+    let prefix = prefix
+        .trim()
+        .trim_end_matches(['/', '\\'])
+        .to_ascii_lowercase()
+        .replace('\\', "/");
+    if !is_permission_error || prefix.is_empty() {
+        return false;
+    }
+
+    [
+        format!("{prefix}/lib/node_modules"),
+        format!("{prefix}/node_modules"),
+        format!("{prefix}/bin/hq"),
+    ]
+    .iter()
+    .any(|target| detail.contains(target))
+}
+
+/// Windows reports an aborting child as an NTSTATUS in `ExitStatus::code()`.
+/// Rust exposes the DWORD as a signed `i32`, hence these otherwise-surprising
+/// negative values. They are both normal user-machine interruptions for an
+/// npm subprocess: `STATUS_CONTROL_C_EXIT` means a user/session manager
+/// stopped it, and `STATUS_STACK_BUFFER_OVERRUN` is Node's Windows abort path.
+/// Neither identifies an HQ service or desktop-app defect.
+const WINDOWS_CONTROL_C_EXIT: i32 = -1_073_741_510; // 0xC000013A
+const WINDOWS_ABORT_EXIT: i32 = -1_073_740_791; // 0xC0000409
+
+/// libuv encodes a Windows `EPERM` ("operation not permitted") as this signed
+/// errno, and npm propagates it as the install process's exit code when it
+/// cannot replace the `hq` executable because the file is locked or in use — a
+/// running `hq`/terminal process, or antivirus/endpoint protection holding the
+/// binary open. This is the same value Node surfaces as
+/// `{ errno: -4048, code: 'EPERM' }`. Like the abort codes above, it is a
+/// normal user-machine condition, not an HQ updater defect (HQ-DESKTOP-3N).
+const WINDOWS_EPERM_EXIT: i32 = -4048;
+
+/// Whether a failed npm install is the EXPECTED Windows "the `hq` binary is
+/// locked / in use" condition (libuv `EPERM`). npm bubbles the same underlying
+/// error two ways depending on where it aborts:
+///   * as the install process's exit code — the raw libuv errno `-4048`, or
+///   * in its stderr as `code EPERM` / `errno -4048` / "operation not
+///     permitted" while renaming or unlinking the package it is replacing.
+///
+/// This is the Windows analogue of the `EACCES` sudo case: a local-machine
+/// setup/interference fault the app already handles with the copy-the-command
+/// UI fallback, not an updater defect. `EACCES` is classified by
+/// `is_prefix_permission_failure`, so it is explicitly excluded here to keep the
+/// two buckets disjoint. The `hq-cli` updater only ever runs
+/// `npm install -g @indigoai-us/hq-cli@latest`, so an `EPERM` from that run is
+/// the locked-binary case rather than an unrelated permission fault.
+pub fn is_windows_locked_binary_failure(exit_code: Option<i32>, detail: &str) -> bool {
+    if exit_code == Some(WINDOWS_EPERM_EXIT) {
+        return true;
+    }
+    let detail = detail.to_ascii_lowercase();
+    if detail.contains("eacces") {
+        return false;
+    }
+    detail.contains("eperm")
+        || detail.contains("operation not permitted")
+        || detail.contains("errno -4048")
+}
+
+/// Stable classification for a failed npm install. Expected local-machine
+/// failures stay actionable in the UI/local log but must not page Sentry;
+/// unexpected failures are captured with a separate fingerprint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstallFailureKind {
+    ExpectedPrefixPermission,
+    ExpectedWindowsAbort,
+    ExpectedWindowsLockedBinary,
+    Unexpected,
+}
+
+pub fn classify_install_failure(
+    exit_code: Option<i32>,
+    detail: &str,
+    prefix: Option<&str>,
+) -> InstallFailureKind {
+    if is_prefix_permission_failure(detail, prefix) {
+        InstallFailureKind::ExpectedPrefixPermission
+    } else if matches!(exit_code, Some(WINDOWS_CONTROL_C_EXIT | WINDOWS_ABORT_EXIT)) {
+        InstallFailureKind::ExpectedWindowsAbort
+    } else if is_windows_locked_binary_failure(exit_code, detail) {
+        InstallFailureKind::ExpectedWindowsLockedBinary
+    } else {
+        InstallFailureKind::Unexpected
+    }
+}
+
+impl InstallFailureKind {
+    /// A stable grouping key for diagnostics and Sentry. We intentionally keep
+    /// expected local failures separate from actual updater defects; the former
+    /// are not sent to Sentry at all by `report_install_failure`.
+    pub fn fingerprint_component(self) -> &'static str {
+        match self {
+            Self::ExpectedPrefixPermission => "expected-prefix-permission",
+            Self::ExpectedWindowsAbort => "expected-windows-abort",
+            Self::ExpectedWindowsLockedBinary => "expected-windows-locked-binary",
+            Self::Unexpected => "unexpected",
+        }
+    }
+}
+
+/// User-facing fallback text for an install failure that did not include useful
+/// npm stderr. The desktop UI always offers the copy-command escape hatch; the
+/// Windows abort wording tells the user why retrying after closing competing
+/// terminals/Node processes is worthwhile instead of presenting a raw NTSTATUS.
+pub fn install_failure_detail(
+    exit_code: Option<i32>,
+    detail: &str,
+    prefix: Option<&str>,
+) -> String {
+    if !detail.trim().is_empty() {
+        return detail.trim().to_string();
+    }
+    match classify_install_failure(exit_code, detail, prefix) {
+        InstallFailureKind::ExpectedPrefixPermission => {
+            "npm cannot write its global prefix. Run the copied command in a terminal with a user-owned npm prefix (or use an administrator-approved install).".to_string()
+        }
+        InstallFailureKind::ExpectedWindowsAbort => {
+            "npm's Windows child process was interrupted or aborted. Close competing npm/Node terminals, retry the copied command in a fresh terminal, and check endpoint protection if it keeps happening.".to_string()
+        }
+        InstallFailureKind::ExpectedWindowsLockedBinary => {
+            "npm could not replace the hq program because the file is locked or in use (a running hq command or terminal, or antivirus/endpoint protection). Close any open hq processes and terminals, then retry the copied command in a fresh terminal; if it keeps happening, allow-list hq in your endpoint protection.".to_string()
+        }
+        InstallFailureKind::Unexpected => format!(
+            "npm install exited with status {}",
+            exit_code
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "signal/none".to_string())
+        ),
+    }
 }
 
 /// Decide whether a CLI-install failure should be reported to Sentry, and with
-/// what message. Returns `None` for the expected prefix-permission (EACCES)
-/// case — the app already handles it gracefully (the UI falls back to the
-/// copy-the-command path and the failure is kept in the local diagnostic log
-/// for Connect diagnostics), so an Error-level capture on every auto-update
-/// cycle is pure noise (HQ-SYNC-WEB-Y: exit 243, 180 events / 7 users, all
-/// EACCES). Returns `Some(message)` for every genuine, unexpected failure
-/// (network, disk, npm bugs, any other exit code) — that is the real signal we
-/// want to stay loud at Error level.
-pub fn install_failure_report(exit_code: Option<i32>, detail: &str) -> Option<String> {
-    if is_prefix_permission_failure(detail) {
+/// what message. Returns `None` for every EXPECTED local-machine failure — the
+/// permission failure at the selected npm global prefix (HQ-SYNC-WEB-Y: exit
+/// 243, 180 events / 7 users), the Windows child abort codes, and the Windows
+/// `EPERM` locked-binary condition (HQ-DESKTOP-3N: exit -4048). The app already
+/// handles each gracefully (the UI falls back to the copy-the-command path and
+/// the failure is kept in the local diagnostic log for Connect diagnostics), so
+/// an Error-level capture on every auto-update cycle is pure noise. Returns
+/// `Some(message)` for every genuine, unexpected failure, including permission
+/// errors at another path — that is the real signal we want to stay loud at
+/// Error level.
+pub fn install_failure_report(
+    exit_code: Option<i32>,
+    detail: &str,
+    prefix: Option<&str>,
+) -> Option<String> {
+    if classify_install_failure(exit_code, detail, prefix) != InstallFailureKind::Unexpected {
         return None;
     }
     let exit_str = exit_code
@@ -272,12 +420,14 @@ pub fn install_failure_report(exit_code: Option<i32>, detail: &str) -> Option<St
 
 /// Capture an auto/manual CLI-install failure to Sentry — but only when it is a
 /// genuine, unexpected failure (see `install_failure_report`). The expected
-/// prefix-permission (EACCES) case is deliberately NOT captured: it floods
-/// Sentry with an unactionable Error every auto-update cycle while the user
-/// already has the copy-the-command fallback. The npm stderr tail (scrubbed of
-/// tokens/home paths by `sentry_scrub`) rides along as the useful signal.
-pub fn report_install_failure(exit_code: Option<i32>, detail: &str) {
-    let Some(message) = install_failure_report(exit_code, detail) else {
+/// permission failure at the selected global prefix is deliberately NOT
+/// captured: it floods Sentry with an unactionable Error every auto-update
+/// cycle while the user already has the copy-the-command fallback. The npm
+/// stderr tail (scrubbed of tokens/home paths by `sentry_scrub`) rides along as
+/// the useful signal for every captured failure.
+pub fn report_install_failure(exit_code: Option<i32>, detail: &str, prefix: Option<&str>) {
+    let kind = classify_install_failure(exit_code, detail, prefix);
+    let Some(message) = install_failure_report(exit_code, detail, prefix) else {
         return;
     };
     let exit_str = exit_code
@@ -286,8 +436,16 @@ pub fn report_install_failure(exit_code: Option<i32>, detail: &str) {
     sentry::with_scope(
         |scope| {
             scope.set_tag("hq_cli_update_kind", "install-failed");
+            scope.set_tag("install_failure_kind", kind.fingerprint_component());
             scope.set_tag("exit_code", exit_str.as_str());
             scope.set_tag("eacces", "false");
+            let fingerprint = [
+                "hq-cli-update",
+                "install-failed",
+                kind.fingerprint_component(),
+                exit_str.as_str(),
+            ];
+            scope.set_fingerprint(Some(&fingerprint));
             scope.set_extra("npm_stderr", detail.to_string().into());
         },
         || {
@@ -456,24 +614,42 @@ mod tests {
 
     #[test]
     fn prefix_permission_failure_detects_the_sudo_case() {
-        assert!(is_prefix_permission_failure(REAL_EACCES_STDERR));
-        assert!(is_prefix_permission_failure("npm error EACCES"));
         assert!(is_prefix_permission_failure(
-            "Error: permission denied, mkdir '/opt/homebrew/lib/node_modules'"
+            REAL_EACCES_STDERR,
+            Some("/usr/local"),
+        ));
+        assert!(is_prefix_permission_failure(
+            "Error: permission denied, mkdir 'C:\\Program Files\\nodejs\\node_modules'",
+            Some("C:\\Program Files\\nodejs"),
         ));
     }
 
     #[test]
-    fn prefix_permission_failure_false_for_genuine_failures() {
-        // Genuine, unexpected failures must NOT be mistaken for the expected
-        // sudo case — they are the real signal we keep capturing.
+    fn prefix_permission_failure_requires_the_selected_npm_target_path() {
+        // A bare EACCES and permission errors elsewhere must stay loud. The
+        // previous broad match silently discarded these real failures.
         assert!(!is_prefix_permission_failure(
-            "npm error network request to https://registry.npmjs.org failed: ETIMEDOUT"
+            "npm error EACCES",
+            Some("/usr/local")
         ));
         assert!(!is_prefix_permission_failure(
-            "npm error code ENOSPC: no space left on device"
+            "Error: EACCES: permission denied, open '/Users/me/.npm/_cacache/index-v5'",
+            Some("/usr/local"),
         ));
-        assert!(!is_prefix_permission_failure(""));
+        assert!(!is_prefix_permission_failure(
+            "Error: permission denied, mkdir '/opt/homebrew/lib/node_modules'",
+            Some("/usr/local"),
+        ));
+        assert!(!is_prefix_permission_failure(REAL_EACCES_STDERR, None));
+        assert!(!is_prefix_permission_failure(
+            "npm error network request to https://registry.npmjs.org failed: ETIMEDOUT",
+            Some("/usr/local"),
+        ));
+        assert!(!is_prefix_permission_failure(
+            "npm error code ENOSPC: no space left on device",
+            Some("/usr/local"),
+        ));
+        assert!(!is_prefix_permission_failure("", Some("/usr/local")));
     }
 
     #[test]
@@ -482,7 +658,114 @@ mod tests {
         // Sentry — it's an expected client-side environment fault (root-owned
         // npm prefix needs sudo) with a copy-the-command UI fallback. `None`
         // here is exactly what makes `report_install_failure` skip the capture.
-        assert_eq!(install_failure_report(Some(243), REAL_EACCES_STDERR), None);
+        assert_eq!(
+            install_failure_report(Some(243), REAL_EACCES_STDERR, Some("/usr/local")),
+            None
+        );
+    }
+
+    #[test]
+    fn exit_one_permission_failure_outside_the_selected_prefix_is_captured() {
+        let detail = "npm error code EACCES\nnpm error path /Users/me/.npm/_cacache/index-v5";
+        assert_eq!(
+            classify_install_failure(Some(1), detail, Some("/usr/local")),
+            InstallFailureKind::Unexpected
+        );
+        assert_eq!(
+            install_failure_report(Some(1), detail, Some("/usr/local")),
+            Some("[hq-cli-update] install failed (exit 1)".to_string()),
+        );
+    }
+
+    #[test]
+    fn install_failure_report_skips_expected_windows_abort_codes() {
+        // Windows exposes NTSTATUS as a signed i32. These are local process
+        // interruptions/Node aborts, not an HQ updater incident, and should
+        // remain actionable only through the returned UI error and local log.
+        for code in [WINDOWS_CONTROL_C_EXIT, WINDOWS_ABORT_EXIT] {
+            assert_eq!(
+                classify_install_failure(Some(code), "", None),
+                InstallFailureKind::ExpectedWindowsAbort
+            );
+            assert_eq!(install_failure_report(Some(code), "", None), None);
+            assert_eq!(
+                InstallFailureKind::ExpectedWindowsAbort.fingerprint_component(),
+                "expected-windows-abort"
+            );
+        }
+    }
+
+    #[test]
+    fn empty_windows_abort_output_gets_actionable_recovery_text() {
+        let detail = install_failure_detail(Some(WINDOWS_ABORT_EXIT), "", None);
+        assert!(detail.contains("Windows child process"));
+        assert!(detail.contains("fresh terminal"));
+    }
+
+    // HQ-DESKTOP-3N: a Windows `EPERM` install failure (exit -4048, the libuv
+    // errno) means npm could not replace the locked/in-use `hq` binary. It is a
+    // local-machine condition with the copy-the-command fallback — NOT an
+    // updater defect — so it must classify as expected and never page Sentry.
+    #[test]
+    fn windows_eperm_exit_code_is_an_expected_locked_binary_failure() {
+        // The exact event behind HQ-DESKTOP-3N: install exited -4048 with no
+        // useful stderr tail. Old behavior classified this as Unexpected and
+        // captured "[hq-cli-update] install failed (exit -4048)" at Error level.
+        assert_eq!(
+            classify_install_failure(Some(-4048), "", None),
+            InstallFailureKind::ExpectedWindowsLockedBinary
+        );
+        // Suppressed from Sentry (the regression: this used to return Some(...)).
+        assert_eq!(install_failure_report(Some(-4048), "", None), None);
+        assert_eq!(
+            InstallFailureKind::ExpectedWindowsLockedBinary.fingerprint_component(),
+            "expected-windows-locked-binary"
+        );
+        // Empty stderr falls back to actionable locked-binary recovery text.
+        let detail = install_failure_detail(Some(-4048), "", None);
+        assert!(detail.contains("locked or in use"), "got: {detail}");
+        assert!(detail.contains("retry"), "got: {detail}");
+    }
+
+    #[test]
+    fn windows_eperm_in_stderr_is_also_treated_as_locked_binary() {
+        // npm can bubble the same libuv EPERM through stderr (with a non-4048
+        // process code) while renaming/unlinking the package it is replacing.
+        const EPERM_STDERR: &str = "npm error code EPERM\n\
+            npm error syscall unlink\n\
+            npm error errno -4048\n\
+            npm error EPERM: operation not permitted, unlink \
+            'C:\\Users\\me\\AppData\\Roaming\\npm\\hq.cmd'";
+        assert_eq!(
+            classify_install_failure(Some(1), EPERM_STDERR, None),
+            InstallFailureKind::ExpectedWindowsLockedBinary
+        );
+        assert_eq!(install_failure_report(Some(1), EPERM_STDERR, None), None);
+        assert!(is_windows_locked_binary_failure(Some(1), EPERM_STDERR));
+    }
+
+    #[test]
+    fn locked_binary_detection_excludes_eacces_and_unrelated_failures() {
+        // EACCES (the root-owned-prefix sudo case) is a DIFFERENT expected kind,
+        // classified by prefix-permission — it must not read as locked-binary.
+        assert!(!is_windows_locked_binary_failure(
+            Some(243),
+            REAL_EACCES_STDERR
+        ));
+        assert_eq!(
+            classify_install_failure(Some(243), REAL_EACCES_STDERR, Some("/usr/local")),
+            InstallFailureKind::ExpectedPrefixPermission
+        );
+        // Genuine unexpected failures (network, ENOSPC) stay loud.
+        assert!(!is_windows_locked_binary_failure(
+            Some(1),
+            "npm error network request to https://registry.npmjs.org failed: ETIMEDOUT"
+        ));
+        assert_eq!(
+            classify_install_failure(Some(1), "npm error network ETIMEDOUT", None),
+            InstallFailureKind::Unexpected
+        );
+        assert!(!is_windows_locked_binary_failure(Some(1), ""));
     }
 
     #[test]
@@ -490,13 +773,21 @@ mod tests {
         // A real, unexpected failure stays loud — `Some(message)` drives the
         // Error-level capture.
         assert_eq!(
-            install_failure_report(Some(1), "npm error network ETIMEDOUT"),
+            install_failure_report(Some(1), "npm error network ETIMEDOUT", None),
             Some("[hq-cli-update] install failed (exit 1)".to_string()),
         );
         // Killed by signal (no exit code) still reports, with the signal label.
         assert_eq!(
-            install_failure_report(None, "npm error network ETIMEDOUT"),
+            install_failure_report(None, "npm error network ETIMEDOUT", None),
             Some("[hq-cli-update] install failed (exit signal/none)".to_string()),
+        );
+        assert_eq!(
+            classify_install_failure(Some(1), "npm error network ETIMEDOUT", None),
+            InstallFailureKind::Unexpected
+        );
+        assert_eq!(
+            InstallFailureKind::Unexpected.fingerprint_component(),
+            "unexpected"
         );
     }
 

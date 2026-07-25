@@ -10,6 +10,8 @@
   import { joinableMemberships, type Workspace } from '../lib/workspaces';
   import { liveProgressCaption } from '../lib/live-progress-caption';
   import { isCorePath, CORE_SETUP_LABEL } from '../lib/progressLabel';
+  import { sanitizeVisibleIdentifiers } from '../lib/visible-labels';
+  import { safeUnlisten } from '../lib/listener-registry';
   import {
     POPOVER_MIN_HEIGHT,
     POPOVER_WIDTH,
@@ -109,6 +111,9 @@
   let syncStatusLoading = $state(true);
   let syncStatusError = $state('');
   let lastWindowHeight = $state(0);
+  const visibleCloudError = $derived(
+    sanitizeVisibleIdentifiers(cloudError, { companies: workspaces ?? [] }),
+  );
 
   // Notifications is the sole panel body (US-001 chrome strip). Unread count
   // lives next to the section label; Mark all read remains.
@@ -361,8 +366,9 @@
         if (focused) restartOpeningMotion();
       })
       .then((unlisten) => {
-        if (cancelled) unlisten();
-        else unlistenFocus = unlisten;
+        const safe = safeUnlisten(unlisten);
+        if (cancelled) safe();
+        else unlistenFocus = safe;
       })
       .catch(() => {
         // Non-Tauri / test environment.
@@ -370,8 +376,9 @@
 
     void listen('popover:opened', () => restartOpeningMotion())
       .then((unlisten) => {
-        if (cancelled) unlisten();
-        else unlistenOpened = unlisten;
+        const safe = safeUnlisten(unlisten);
+        if (cancelled) safe();
+        else unlistenOpened = safe;
       })
       .catch(() => {
         // Non-Tauri / test environment.
@@ -522,17 +529,10 @@
 
       {#if syncState === 'auth-error'}
         <div class="snr" data-testid="popover-system-notice" data-kind="auth">
-          <span class="snr-icon alert" aria-hidden="true">{@render noticeGlyph('alert')}</span>
+          <span class="snr-icon action" aria-hidden="true">{@render noticeGlyph('action')}</span>
           <span class="snr-text">
-            <b>Session expired</b>
-            {errorMessage || 'Sign in again to keep syncing.'}
-          </span>
-          <span class="snr-actions">
-            <CopyPromptButton
-              variant="compact"
-              label="Copy prompt"
-              issue={{ kind: 'auth-expired', payload: { message: errorMessage } }}
-            />
+            <b>Keep sync moving</b>
+            {errorMessage || 'Sign in once and HQ will resume automatically.'}
           </span>
         </div>
       {:else if syncState === 'error' && errorMessage}
@@ -576,7 +576,7 @@
       {/if}
 
       {#if !cloudReachable}
-        <div class="snr" data-testid="popover-system-notice" data-kind="cloud" title={cloudError ?? ''}>
+        <div class="snr" data-testid="popover-system-notice" data-kind="cloud" title={visibleCloudError}>
           <span class="snr-icon warn" aria-hidden="true">{@render noticeGlyph('warn')}</span>
           <span class="snr-text">
             <b>Cloud unreachable</b>

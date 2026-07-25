@@ -246,10 +246,6 @@ fn is_safe_label_value(value: &str) -> bool {
             .all(|b| matches!(b, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-' | b'.'))
 }
 
-fn is_safe_company_uid(value: &str) -> bool {
-    (value.starts_with("co_") || value.starts_with("cmp_")) && is_safe_label_value(value)
-}
-
 fn allowed_desktop_property_key(key: &str) -> bool {
     matches!(
         key,
@@ -267,27 +263,18 @@ fn allowed_desktop_property_key(key: &str) -> bool {
             | "stageCount"
             | "failedStageCount"
             | "detectedToolCount"
-            | "companyUid"
     )
 }
 
-fn sanitize_desktop_properties(properties: Option<Value>) -> (Option<String>, Value) {
+fn sanitize_desktop_properties(properties: Option<Value>) -> Value {
     let Some(Value::Object(input)) = properties else {
-        return (None, Value::Object(Map::new()));
+        return Value::Object(Map::new());
     };
 
-    let mut company_uid: Option<String> = None;
     let mut out = Map::new();
 
     for (key, value) in input {
         if !allowed_desktop_property_key(&key) {
-            continue;
-        }
-
-        if key == "companyUid" {
-            if let Some(uid) = value.as_str().filter(|uid| is_safe_company_uid(uid)) {
-                company_uid = Some(uid.to_string());
-            }
             continue;
         }
 
@@ -302,26 +289,22 @@ fn sanitize_desktop_properties(properties: Option<Value>) -> (Option<String>, Va
         }
     }
 
-    (company_uid, Value::Object(out))
+    Value::Object(out)
 }
 
 fn build_desktop_telemetry_event(
     event_name: String,
-    machine_id: String,
-    app_version: String,
     properties: Option<Value>,
 ) -> RawTelemetryEvent {
-    let (company_uid, properties) = sanitize_desktop_properties(properties);
+    let properties = sanitize_desktop_properties(properties);
     RawTelemetryEvent {
         event_name,
         app: "hq-desktop-app".to_string(),
         source: "desktop".to_string(),
         occurred_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-        machine_id,
-        app_version,
         consent_basis: "desktop-opt-in".to_string(),
         schema_version: 1,
-        company_uid,
+        idempotency_key: None,
         properties,
     }
 }
@@ -339,12 +322,7 @@ async fn emit_desktop_telemetry_with_vault(
         return Ok(());
     }
 
-    let event = build_desktop_telemetry_event(
-        event_name,
-        read_machine_id(),
-        env!("APP_VERSION").to_string(),
-        properties,
-    );
+    let event = build_desktop_telemetry_event(event_name, properties);
     let batch = TelemetryEventsBatch {
         events: vec![event],
     };
@@ -364,6 +342,65 @@ pub async fn emit_desktop_telemetry_if_opted_in(
     let api_url = resolve_vault_api_url()?;
     let vault = VaultClient::new(&api_url, &access_token);
     emit_desktop_telemetry_with_vault(&vault, event_name, properties).await
+}
+
+fn build_daily_active_event(utc_day: chrono::NaiveDate) -> RawTelemetryEvent {
+    let day = utc_day.format("%Y-%m-%d");
+    let occurred_at = utc_day
+        .and_hms_opt(0, 0, 0)
+        .expect("midnight is a valid UTC time")
+        .and_utc()
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+
+    RawTelemetryEvent {
+        event_name: "desktop_app_daily_active".to_string(),
+        app: "hq-desktop-app".to_string(),
+        source: "desktop".to_string(),
+        occurred_at,
+        consent_basis: "desktop-opt-in".to_string(),
+        schema_version: 1,
+        idempotency_key: Some(format!("hq-desktop-app:daily-active:{day}")),
+        properties: Value::Object(Map::new()),
+    }
+}
+
+async fn emit_daily_active_with_vault(
+    vault: &VaultClient,
+    utc_day: chrono::NaiveDate,
+) -> Result<(), String> {
+    if !resolve_telemetry_enabled(vault).await {
+        return Ok(());
+    }
+
+    let batch = TelemetryEventsBatch {
+        events: vec![build_daily_active_event(utc_day)],
+    };
+    vault
+        .post_telemetry_events(&batch)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+async fn emit_daily_active_for_utc_day(utc_day: chrono::NaiveDate) {
+    let result = async {
+        let access_token = crate::commands::cognito::get_valid_access_token().await?;
+        let api_url = resolve_vault_api_url()?;
+        let vault = VaultClient::new(&api_url, &access_token);
+        emit_daily_active_with_vault(&vault, utc_day).await
+    }
+    .await;
+
+    if result.is_err() {
+        eprintln!("[telemetry] desktop-app-daily-active-failed");
+    }
+}
+
+/// Start a best-effort daily-active emit without delaying application startup.
+pub fn setup_daily_active_emit() {
+    let utc_day = chrono::Utc::now().date_naive();
+    tauri::async_runtime::spawn(async move {
+        emit_daily_active_for_utc_day(utc_day).await;
+    });
 }
 
 fn read_machine_id() -> String {
@@ -669,6 +706,19 @@ mod tests {
         fs::write(home.join(".hq/menubar.json"), content).unwrap();
     }
 
+    fn write_valid_access_token(home: &std::path::Path) {
+        fs::write(
+            home.join(".hq/cognito-tokens.json"),
+            serde_json::to_string(&json!({
+                "accessToken": "test-access-token",
+                "refreshToken": "test-refresh-token",
+                "expiresAt": 4_102_444_800_000_i64,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+
     fn read_cursor(home: &std::path::Path) -> TelemetryCursor {
         let body = fs::read_to_string(home.join(".hq/telemetry-cursor.json")).unwrap();
         serde_json::from_str(&body).unwrap()
@@ -817,6 +867,7 @@ mod tests {
                 "enabled": true,
                 "surface": "settings-popover",
                 "filesDownloaded": 2,
+                "companyUid": "cmp_private-company",
                 "path": "/Users/alice/HQ",
                 "email": "alice@example.com",
                 "message": "free text should not leave the client"
@@ -838,13 +889,30 @@ mod tests {
         assert_eq!(event["eventName"], "telemetry_preference_changed");
         assert_eq!(event["app"], "hq-desktop-app");
         assert_eq!(event["source"], "desktop");
-        assert_eq!(event["machineId"], "mid-desktop-on");
         assert_eq!(event["consentBasis"], "desktop-opt-in");
         assert_eq!(event["schemaVersion"], 1);
-        assert!(
-            event.get("personUid").is_none(),
-            "personUid must not be sent"
-        );
+        assert!(event["occurredAt"].as_str().is_some());
+
+        let allowed_event_keys = [
+            "eventName",
+            "app",
+            "source",
+            "occurredAt",
+            "consentBasis",
+            "schemaVersion",
+            "idempotencyKey",
+            "properties",
+        ];
+        let event_keys = event.as_object().unwrap();
+        assert!(event_keys
+            .keys()
+            .all(|key| allowed_event_keys.contains(&key.as_str())));
+        for unexpected_key in ["machineId", "appVersion", "companyUid", "personUid"] {
+            assert!(
+                event.get(unexpected_key).is_none(),
+                "{unexpected_key} must not be sent"
+            );
+        }
 
         let props = event["properties"].as_object().unwrap();
         assert_eq!(props.get("enabled").and_then(|v| v.as_bool()), Some(true));
@@ -859,6 +927,115 @@ mod tests {
         assert!(!props.contains_key("path"));
         assert!(!props.contains_key("email"));
         assert!(!props.contains_key("message"));
+        assert!(!props.contains_key("companyUid"));
+    }
+
+    #[test]
+    fn test_daily_active_event_uses_stable_utc_day_values() {
+        let utc_day = chrono::NaiveDate::from_ymd_opt(2026, 7, 15).unwrap();
+
+        let first = build_daily_active_event(utc_day);
+        let retry = build_daily_active_event(utc_day);
+
+        assert_eq!(first.occurred_at, "2026-07-15T00:00:00.000Z");
+        assert_eq!(
+            first.idempotency_key.as_deref(),
+            Some("hq-desktop-app:daily-active:2026-07-15")
+        );
+        assert_eq!(first.occurred_at, retry.occurred_at);
+        assert_eq!(first.idempotency_key, retry.idempotency_key);
+        assert_eq!(first.properties, json!({}));
+
+        let serialized = serde_json::to_value(&first).unwrap();
+        assert_eq!(serialized["eventName"], "desktop_app_daily_active");
+        assert_eq!(serialized["app"], "hq-desktop-app");
+        assert_eq!(serialized["source"], "desktop");
+        assert_eq!(
+            serialized["idempotencyKey"],
+            "hq-desktop-app:daily-active:2026-07-15"
+        );
+        assert_eq!(serialized["properties"], json!({}));
+        for unexpected_key in ["machineId", "appVersion", "companyUid", "personUid"] {
+            assert!(serialized.get(unexpected_key).is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_daily_active_opt_out_sends_no_event() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/usage/opt-in"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({"enabled": false})))
+            .mount(&server)
+            .await;
+
+        let vault = VaultClient::new(server.uri(), "test-jwt");
+        let utc_day = chrono::NaiveDate::from_ymd_opt(2026, 7, 15).unwrap();
+
+        let result = emit_daily_active_with_vault(&vault, utc_day).await;
+
+        assert!(result.is_ok());
+        let reqs = server.received_requests().await.unwrap();
+        assert!(reqs
+            .iter()
+            .all(|request| request.method != wiremock::http::Method::POST));
+    }
+
+    #[tokio::test]
+    async fn test_daily_active_missing_or_invalid_token_does_not_fail_startup() {
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let server = MockServer::start().await;
+        let utc_day = chrono::NaiveDate::from_ymd_opt(2026, 7, 15).unwrap();
+
+        for token_contents in [None, Some("{not valid json")] {
+            let home = setup_home();
+            if let Some(token_contents) = token_contents {
+                fs::write(home.path().join(".hq/cognito-tokens.json"), token_contents).unwrap();
+            }
+
+            std::env::set_var("HQ_TEST_HOME", home.path());
+            std::env::set_var("HQ_VAULT_API_URL", server.uri());
+            emit_daily_active_for_utc_day(utc_day).await;
+            std::env::remove_var("HQ_TEST_HOME");
+            std::env::remove_var("HQ_VAULT_API_URL");
+        }
+
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_daily_active_non_success_response_is_swallowed() {
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/usage/opt-in"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({"enabled": true})))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/telemetry/events"))
+            .respond_with(ResponseTemplate::new(503).set_body_string("unavailable"))
+            .mount(&server)
+            .await;
+
+        let home = setup_home();
+        write_valid_access_token(home.path());
+        std::env::set_var("HQ_TEST_HOME", home.path());
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+
+        let utc_day = chrono::NaiveDate::from_ymd_opt(2026, 7, 15).unwrap();
+        emit_daily_active_for_utc_day(utc_day).await;
+
+        std::env::remove_var("HQ_TEST_HOME");
+        std::env::remove_var("HQ_VAULT_API_URL");
+
+        let reqs = server.received_requests().await.unwrap();
+        assert_eq!(
+            reqs.iter()
+                .filter(|request| request.method == wiremock::http::Method::POST)
+                .count(),
+            1
+        );
     }
 
     // ── (a) opt-in=false → 0 bytes sent ──────────────────────────────────────
