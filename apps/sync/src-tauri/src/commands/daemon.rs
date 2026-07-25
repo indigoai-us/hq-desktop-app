@@ -13,8 +13,8 @@ use tauri::{AppHandle, Emitter};
 
 use crate::commands::process::{
     cancel_process_for, cancel_process_impl, deregister_process, is_cancelled_for, is_registered,
-    process_identity_for, registration_for_handle, run_process_impl, try_register_handle,
-    CancellationAttempt, ProcessEvent, ProcessRegistration,
+    deregister_process_for, process_identity_for, registration_for_handle, run_process_impl,
+    try_register_handle, CancellationAttempt, ProcessEvent, ProcessRegistration,
 };
 use crate::commands::status::{journal_for_daemon_sync_complete, write_journal};
 use crate::commands::sync::RunTotals;
@@ -303,11 +303,18 @@ fn daemon_appears_alive() -> bool {
         .unwrap_or(false)
 }
 
-/// Release the guard on a failed start: clear the stamp, then deregister so the
-/// next start can acquire it. Paired with every `start_daemon` preflight bail
-/// (all synchronous, before the spawn thread — no other start can hold the
-/// handle yet, so the unconditional clear is safe).
-fn release_daemon_guard() {
+/// Release a start that failed during preflight without touching a replacement
+/// that may have registered after a bounded force-release. Both the guard stamp
+/// and process entry are scoped to this start's ownership.
+fn release_failed_daemon_start(registration: ProcessRegistration, guard_generation: u64) {
+    clear_daemon_guard_stamp_for(guard_generation);
+    deregister_process_for(DAEMON_HANDLE, registration);
+}
+
+/// Force-release a guard already declared wedged. This is the one exceptional,
+/// token-invalidating recovery path; delayed cancellation remains scoped to the
+/// old registration and cannot affect the next owner.
+fn force_release_daemon_guard() {
     clear_daemon_guard_stamp();
     deregister_process(DAEMON_HANDLE);
 }
@@ -358,7 +365,7 @@ fn force_clear_daemon_guard_impl(daemon_alive_recheck: bool) {
         ..Default::default()
     });
     cancel_process_impl(DAEMON_HANDLE, SIGKILL_DELAY);
-    release_daemon_guard();
+    force_release_daemon_guard();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -394,11 +401,11 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
     match crate::commands::cognito::read_tokens_from_file() {
         Ok(Some(_)) => {}
         Ok(None) => {
-            release_daemon_guard();
+            release_failed_daemon_start(daemon_registration, guard_generation);
             return Err(crate::commands::cognito::REAUTH_MESSAGE.to_string());
         }
         Err(err) => {
-            release_daemon_guard();
+            release_failed_daemon_start(daemon_registration, guard_generation);
             return Err(err);
         }
     }
@@ -406,7 +413,7 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
     let hq_folder_path = match resolve_hq_folder_path() {
         Ok(p) => p,
         Err(e) => {
-            release_daemon_guard();
+            release_failed_daemon_start(daemon_registration, guard_generation);
             return Err(e);
         }
     };
@@ -414,7 +421,7 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
     // Pre-flight: check if daemon is already running from a previous session
     if let Some(pid) = read_pid_file(&hq_folder_path) {
         if is_pid_alive(pid) {
-            release_daemon_guard();
+            release_failed_daemon_start(daemon_registration, guard_generation);
             return Err(format!("Daemon is already running (PID {})", pid));
         }
     }
@@ -431,7 +438,7 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
                 &format!("runner unresolvable — local-only preflight: {msg}"),
             ),
         }
-        release_daemon_guard();
+        release_failed_daemon_start(daemon_registration, guard_generation);
         return Err(msg);
     }
 
@@ -443,7 +450,7 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
     if let Err(msg) = hq_desktop_core::prewarm::materialize_hq_cloud_cache() {
         log("daemon", &format!("npx cache materialization preflight failed: {msg}"));
         note_environment_preflight_failure();
-        release_daemon_guard();
+        release_failed_daemon_start(daemon_registration, guard_generation);
         return Err(msg);
     }
 
@@ -1150,23 +1157,57 @@ mod tests {
 
     #[test]
     fn failed_start_releases_guard_immediately() {
-        use crate::commands::process::{deregister_process, try_register_handle};
+        use crate::commands::process::{
+            deregister_process, registration_for_handle, try_register_handle,
+        };
         let _serial = GUARD_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         clear_daemon_guard_stamp();
 
         // Simulate a start that acquired the guard then bailed a preflight.
         assert!(try_register_handle(DAEMON_HANDLE));
-        mark_daemon_guard_acquired();
+        let registration = registration_for_handle(DAEMON_HANDLE).unwrap();
+        let generation = mark_daemon_guard_acquired();
         assert!(daemon_guard_age().is_some());
 
         // The preflight-bail path releases the guard on the spot — no deadline,
         // no wedge — so the next start is free to proceed.
-        release_daemon_guard();
+        release_failed_daemon_start(registration, generation);
         assert!(daemon_guard_age().is_none());
         assert!(try_register_handle(DAEMON_HANDLE));
 
         deregister_process(DAEMON_HANDLE);
         clear_daemon_guard_stamp();
+    }
+
+    #[test]
+    fn stale_preflight_cleanup_cannot_release_a_replacement() {
+        use crate::commands::process::{
+            deregister_process, registration_for_handle, try_register_handle,
+        };
+        let _serial = GUARD_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        clear_daemon_guard_stamp();
+        deregister_process(DAEMON_HANDLE);
+
+        assert!(try_register_handle(DAEMON_HANDLE));
+        let registration_a = registration_for_handle(DAEMON_HANDLE).unwrap();
+        let generation_a = mark_daemon_guard_acquired();
+
+        // Bounded recovery invalidates A and lets B start while A is still
+        // blocked in a preflight operation.
+        force_release_daemon_guard();
+        assert!(try_register_handle(DAEMON_HANDLE));
+        let registration_b = registration_for_handle(DAEMON_HANDLE).unwrap();
+        let generation_b = mark_daemon_guard_acquired();
+
+        // A's delayed preflight error path must not remove B's process entry or
+        // guard stamp.
+        release_failed_daemon_start(registration_a, generation_a);
+        assert_eq!(registration_for_handle(DAEMON_HANDLE), Some(registration_b));
+        assert!(daemon_guard_age().is_some(), "B's guard stamp survives A's cleanup");
+
+        release_failed_daemon_start(registration_b, generation_b);
+        assert!(daemon_guard_age().is_none());
+        assert!(!crate::commands::process::is_registered(DAEMON_HANDLE));
     }
 
     // Major review finding: the acquisition stamp used to live for the daemon's
