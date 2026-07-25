@@ -5,6 +5,8 @@ target/
 src-tauri/helper/hq-tray-helper
 # Windows Recall SDK sidecar launcher - produced by sidecar/recall-sdk-bridge/build.mjs.
 src-tauri/binaries/*.exe
+# Tauri emits this platform alias on Windows; desktop-schema.json is the tracked canonical schema.
+src-tauri/gen/schemas/windows-schema.json
 .DS_Store
 *.log
 .env
