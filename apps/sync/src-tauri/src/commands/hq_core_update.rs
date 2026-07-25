@@ -308,6 +308,25 @@ pub async fn install_hq_core_update(
         .map_err(|e| format!("spawn rescue script: {e}"))?;
 
     let exit_code = status.code().unwrap_or(-1);
+    if exit_code == 0 {
+        let client = reqwest::Client::builder()
+            .default_headers(crate::util::client_info::client_headers())
+            .timeout(std::time::Duration::from_secs(15))
+            .build()
+            .map_err(|e| format!("build baseline client: {e}"))?;
+        let commit = crate::commands::hq_core_state::persist_remote_baseline(
+            &hq_folder,
+            &client,
+            PROD_HQ_CORE_REPO,
+            &git_ref,
+        )
+        .await
+        .map_err(|e| format!("core update applied but baseline persistence failed: {e}"))?;
+        log(
+            "hq-core-update",
+            &format!("persisted normalized drift baseline {PROD_HQ_CORE_REPO}@{commit}"),
+        );
+    }
     let log_tail = crate::commands::hq_core_staging::tail_log(&log_path, 40)
         .unwrap_or_else(|e| format!("(log tail unavailable: {e})"));
 

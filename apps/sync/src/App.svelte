@@ -493,6 +493,8 @@
     gitShaUpstream: string | null;
   };
   type DriftReport = {
+    baselineStatus: 'Available' | 'BaselineUnavailable';
+    updateRequired: boolean;
     count: number;
     modified: DriftEntry[];
     missing: DriftEntry[];

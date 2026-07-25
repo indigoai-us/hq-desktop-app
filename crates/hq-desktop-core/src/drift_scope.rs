@@ -21,7 +21,75 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
+
+const BASELINE_SCHEMA_VERSION: u32 = 1;
+const BASELINE_DIR: &str = "core/workspace/core-drift-baselines";
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CoreDriftBaseline {
+    pub schema_version: u32,
+    pub source_repo: String,
+    pub commit: String,
+    pub normalized_blobs: BTreeMap<String, String>,
+}
+
+fn baseline_key(source_repo: &str, commit: &str) -> String {
+    format!(
+        "{}.json",
+        git_blob_sha(format!("{source_repo}\n{commit}").as_bytes())
+    )
+}
+
+pub fn persist_core_drift_baseline(
+    hq_folder: &Path,
+    source_repo: &str,
+    commit: &str,
+    normalized_blobs: BTreeMap<String, String>,
+) -> Result<(), String> {
+    if source_repo.trim().is_empty() || commit.trim().len() < 7 {
+        return Err("refusing to persist an unkeyed core drift baseline".into());
+    }
+    let baseline = CoreDriftBaseline {
+        schema_version: BASELINE_SCHEMA_VERSION,
+        source_repo: source_repo.to_string(),
+        commit: commit.to_string(),
+        normalized_blobs,
+    };
+    let dir = hq_folder.join(BASELINE_DIR);
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("create baseline directory {}: {e}", dir.display()))?;
+    let path = dir.join(baseline_key(source_repo, commit));
+    let temp = path.with_extension(format!("json.tmp-{}", std::process::id()));
+    let bytes = serde_json::to_vec_pretty(&baseline)
+        .map_err(|e| format!("serialize core drift baseline: {e}"))?;
+    std::fs::write(&temp, bytes)
+        .map_err(|e| format!("write baseline temp {}: {e}", temp.display()))?;
+    if path.exists() {
+        std::fs::remove_file(&path)
+            .map_err(|e| format!("replace existing baseline {}: {e}", path.display()))?;
+    }
+    std::fs::rename(&temp, &path)
+        .map_err(|e| format!("commit baseline {}: {e}", path.display()))
+}
+
+pub fn load_core_drift_baseline(
+    hq_folder: &Path,
+    source_repo: &str,
+    commit: &str,
+) -> Option<CoreDriftBaseline> {
+    let path = hq_folder
+        .join(BASELINE_DIR)
+        .join(baseline_key(source_repo, commit));
+    let bytes = std::fs::read(path).ok()?;
+    let baseline: CoreDriftBaseline = serde_json::from_slice(&bytes).ok()?;
+    (baseline.schema_version == BASELINE_SCHEMA_VERSION
+        && baseline.source_repo == source_repo
+        && baseline.commit == commit)
+        .then_some(baseline)
+}
 
 /// Read `rules.locked` from the user's local `core.yaml`. Returns an empty
 /// vec if the file is missing/unparseable — same fail-quiet posture as
@@ -120,7 +188,57 @@ pub fn excluded_scope_paths() -> Vec<String> {
 pub fn excluded_scope_paths_for(hq_folder: &Path) -> Vec<String> {
     let mut out = excluded_scope_paths();
     out.extend(pack_materialization_scopes(hq_folder));
+    out.extend(personal_materialization_paths(hq_folder));
     out
+}
+
+/// Exact locked destinations materialized from a Personal overlay. Exclude a
+/// destination only while its normalized bytes still match the source; direct
+/// edits in locked core therefore remain visible.
+pub fn personal_materialization_paths(hq_folder: &Path) -> Vec<String> {
+    let mappings = [
+        ("personal/skills", ".claude/skills"),
+        ("personal/commands", ".claude/commands"),
+        ("personal/hooks", ".claude/hooks"),
+        ("personal/policies", "core/policies"),
+        ("personal/scripts", "core/scripts"),
+        ("personal/knowledge", "core/knowledge/public"),
+        ("personal/workers", "core/workers/public"),
+    ];
+    let mut paths = Vec::new();
+    for (source_root, destination_root) in mappings {
+        let source = hq_folder.join(source_root);
+        if !source.is_dir() {
+            continue;
+        }
+        for entry in walkdir::WalkDir::new(&source)
+            .follow_links(false)
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().is_file() && !entry.path_is_symlink())
+        {
+            let Ok(suffix) = entry.path().strip_prefix(&source) else {
+                continue;
+            };
+            let destination = hq_folder.join(destination_root).join(suffix);
+            let (Ok(source_bytes), Ok(destination_bytes)) =
+                (std::fs::read(entry.path()), std::fs::read(&destination))
+            else {
+                continue;
+            };
+            if drift_blob_sha(&source_bytes) == drift_blob_sha(&destination_bytes) {
+                paths.push(
+                    Path::new(destination_root)
+                        .join(suffix)
+                        .to_string_lossy()
+                        .replace('\\', "/"),
+                );
+            }
+        }
+    }
+    paths.sort();
+    paths.dedup();
+    paths
 }
 
 /// Landing paths declared by installed packs' `package.yaml` `contributes`
@@ -547,6 +665,76 @@ contributes:
             ".claude/skills/startwork/SKILL.md",
             &excluded
         ));
+    }
+
+    #[test]
+    fn baseline_round_trips_by_source_and_commit_and_rejects_other_identity() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut blobs = BTreeMap::new();
+        blobs.insert("core/policies/example.md".into(), git_blob_sha(b"hello\n"));
+        persist_core_drift_baseline(
+            tmp.path(),
+            "indigoai-us/hq-core-staging",
+            "0123456789abcdef",
+            blobs.clone(),
+        )
+        .unwrap();
+        let loaded = load_core_drift_baseline(
+            tmp.path(),
+            "indigoai-us/hq-core-staging",
+            "0123456789abcdef",
+        )
+        .unwrap();
+        assert_eq!(loaded.normalized_blobs, blobs);
+        assert!(load_core_drift_baseline(
+            tmp.path(),
+            "indigoai-us/hq-core",
+            "0123456789abcdef"
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn baseline_persistence_replaces_existing_same_identity_payload() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut first = BTreeMap::new();
+        first.insert("core/policies/example.md".into(), git_blob_sha(b"hello\n"));
+        persist_core_drift_baseline(
+            tmp.path(),
+            "indigoai-us/hq-core",
+            "0123456789abcdef",
+            first,
+        )
+        .unwrap();
+
+        let mut second = BTreeMap::new();
+        second.insert("core/policies/example.md".into(), git_blob_sha(b"goodbye\n"));
+        persist_core_drift_baseline(
+            tmp.path(),
+            "indigoai-us/hq-core",
+            "0123456789abcdef",
+            second.clone(),
+        )
+        .unwrap();
+
+        let loaded =
+            load_core_drift_baseline(tmp.path(), "indigoai-us/hq-core", "0123456789abcdef")
+                .unwrap();
+        assert_eq!(loaded.normalized_blobs, second);
+    }
+
+    #[test]
+    fn personal_materialization_is_excluded_only_while_content_matches() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        test_write(root, "personal/policies/mine.md", b"personal\r\n");
+        test_write(root, "core/policies/mine.md", b"personal\n");
+        let excluded = excluded_scope_paths_for(root);
+        assert!(path_in_excluded_scope("core/policies/mine.md", &excluded));
+
+        test_write(root, "core/policies/mine.md", b"locked core edit\n");
+        let excluded = excluded_scope_paths_for(root);
+        assert!(!path_in_excluded_scope("core/policies/mine.md", &excluded));
     }
 
     #[test]

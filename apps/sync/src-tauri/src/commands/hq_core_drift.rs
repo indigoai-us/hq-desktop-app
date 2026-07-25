@@ -40,9 +40,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 pub use hq_desktop_core::drift_scope::{
-    drift_blob_sha, excluded_scope_paths, excluded_scope_paths_for, git_blob_sha,
-    is_conflict_artifact, pack_materialization_scopes, path_in_excluded_scope, path_in_locked_scope,
-    read_locked_paths, walk_local_under_scope,
+    excluded_scope_paths_for, git_blob_sha, is_conflict_artifact, path_in_excluded_scope,
+    path_in_locked_scope, read_locked_paths, walk_local_under_scope,
 };
 use serde::{Deserialize, Serialize};
 
@@ -99,6 +98,12 @@ pub struct DriftEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DriftReport {
+    /// Whether file counts were produced from a trustworthy installed-tree
+    /// baseline. `BaselineUnavailable` always carries empty lists.
+    pub baseline_status: BaselineStatus,
+    /// Fail-closed signal used by every frontend: the user must update before
+    /// drift counts can be trusted.
+    pub update_required: bool,
     /// Total number of drifted files (modified + missing + added).
     pub count: usize,
     /// Files present in both but with differing content.
@@ -140,6 +145,12 @@ pub struct DriftReport {
     /// reports this is the `v`-prefixed tag (e.g. `"v14.2.1"`); for
     /// staging it's the 40-char SHA of `main`'s HEAD at scan time.
     pub target_ref: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum BaselineStatus {
+    Available,
+    BaselineUnavailable,
 }
 
 /// Tauri command — restore a single file from upstream by overwriting
