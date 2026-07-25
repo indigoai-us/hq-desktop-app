@@ -65,3 +65,5 @@ npm run test:e2e:desktop-alt
 ```
 
 `npm run test:e2e:desktop-alt` runs a scripted source-contract harness by default. To exercise a live app through `tauri-driver`, set `HQ_SYNC_DESKTOP_ALT_LIVE=1` and `HQ_SYNC_DESKTOP_ALT_APP` or `HQ_SYNC_DESKTOP_ALT_APP_PATH`; `HQ_SYNC_DESKTOP_ALT_WEBDRIVER_URL` defaults to `http://127.0.0.1:4444`.
+
+Live mode is strict: when `HQ_SYNC_DESKTOP_ALT_LIVE` is set and the `tauri-driver` harness cannot be resolved, the run **fails** with the resolution reason rather than quietly falling back to the scripted harness. A silent fallback would let the Windows installer job report a pass without ever launching the installed binary.

@@ -303,9 +303,59 @@ export class DesktopAltHarness implements DesktopAltTestHarness {
   }
 }
 
+const DEFAULT_WINDOWS_PATHEXT = '.COM;.EXE;.BAT;.CMD';
+
+/**
+ * Candidate on-disk file names for a bare command name.
+ *
+ * On Windows an executable is almost never stored under its bare name —
+ * `cargo install tauri-driver` produces `tauri-driver.exe` — so a bare
+ * `existsSync` probe never matches and every caller silently concludes the tool
+ * is missing. Mirror the shell and expand the command with PATHEXT.
+ */
+export function executableCandidates(
+  command: string,
+  platform: NodeJS.Platform = process.platform,
+  pathExt: string | undefined = process.env.PATHEXT,
+): string[] {
+  if (platform !== 'win32') return [command];
+
+  // PATHEXT is always ';'-separated (it is a Windows-only variable), so this
+  // must not use path.delimiter — that would follow the *host* platform.
+  const extensions = (pathExt ?? DEFAULT_WINDOWS_PATHEXT)
+    .split(';')
+    .map((extension) => extension.trim())
+    .filter(Boolean)
+    .map((extension) => (extension.startsWith('.') ? extension : `.${extension}`));
+
+  // An explicitly-suffixed command (`tauri-driver.exe`) is already a file name.
+  if (extensions.some((extension) => command.toLowerCase().endsWith(extension.toLowerCase()))) {
+    return [command];
+  }
+
+  // PATHEXT is conventionally upper-case (`.EXE`) while installed binaries are
+  // lower-case (`tauri-driver.exe`). NTFS does not care, but `existsSync` on a
+  // case-sensitive filesystem does — so probe both spellings.
+  const candidates = new Set<string>([command]);
+  for (const extension of extensions) {
+    candidates.add(`${command}${extension}`);
+    candidates.add(`${command}${extension.toLowerCase()}`);
+    candidates.add(`${command}${extension.toUpperCase()}`);
+  }
+
+  return [...candidates];
+}
+
 export function commandOnPath(command: string): boolean {
   const paths = process.env.PATH?.split(delimiter) ?? [];
-  return paths.some((dir) => existsSync(join(dir, command)));
+  const candidates = executableCandidates(command);
+
+  return paths.some((dir) => {
+    // Windows PATH entries are frequently quoted; `join` would keep the quote.
+    const directory = dir.trim().replace(/^"(.*)"$/, '$1');
+    if (!directory) return false;
+    return candidates.some((candidate) => existsSync(join(directory, candidate)));
+  });
 }
 
 function sourceText(path: string, markers: string[]): string[] {

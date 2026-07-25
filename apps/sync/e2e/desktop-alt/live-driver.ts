@@ -66,6 +66,20 @@ export async function createDesktopAltHarness(email: string): Promise<DesktopAlt
   const resolution = await resolveLiveConfig();
 
   if (!resolution.config) {
+    // Live mode is opt-in and always explicit (CI sets HQ_SYNC_DESKTOP_ALT_LIVE
+    // before the Windows smoke steps). Degrading to the scripted source-contract
+    // harness there would turn a ~20-minute "test the installed application" job
+    // into a 68ms regex pass over .svelte files that never launches the binary —
+    // a green check asserting nothing. Fail loudly instead; only the implicit
+    // (unset) case is allowed to fall back.
+    if (isTruthy(process.env.HQ_SYNC_DESKTOP_ALT_LIVE)) {
+      throw new Error(
+        `[desktop-alt-e2e] HQ_SYNC_DESKTOP_ALT_LIVE was requested but the live tauri-driver ` +
+          `harness could not be resolved: ${resolution.reason}. Refusing to fall back to the ` +
+          `scripted harness — that would report a pass without exercising the application.`,
+      );
+    }
+
     reportDriverMode(resolution.reason);
     return new DesktopAltHarness(email);
   }
@@ -512,16 +526,34 @@ async function startOrReuseDriver(config: LiveConfig): Promise<DriverStart> {
     ['--port', String(new URL(config.webdriverUrl).port || 4444)],
     {
       env: { ...process.env, TAURI_WEBVIEW_AUTOMATION: 'true' },
-      stdio: 'ignore',
+      // Inherit rather than ignore: when the native driver (msedgedriver /
+      // WebKitWebDriver) cannot start, tauri-driver's stderr is the only
+      // explanation, and swallowing it leaves a bare connection timeout.
+      stdio: 'inherit',
     },
   );
 
+  // `spawn` reports a missing/unlaunchable binary asynchronously; without this
+  // the failure surfaces only as an unhandled 'error' event plus an opaque
+  // connection timeout below.
+  const spawnErrors: Error[] = [];
+  driverProcess.on('error', (error) => {
+    spawnErrors.push(error);
+  });
+
   try {
-    await client.waitUntil(() => client.status().catch(() => false), 10_000);
+    await client.waitUntil(() => client.status().catch(() => false), 30_000);
     await client.createSession(config.appPath);
     return { client, process: driverProcess };
   } catch (error) {
     driverProcess.kill();
+    const [spawnError] = spawnErrors;
+    if (spawnError) {
+      throw new Error(
+        `Failed to launch tauri-driver: ${spawnError.message}. ` +
+          'Install it with `cargo install tauri-driver --locked`.',
+      );
+    }
     throw error;
   }
 }

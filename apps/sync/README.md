@@ -66,4 +66,4 @@ Before each release (v1.0.0 and every minor/patch):
 
 ### Desktop-Alt E2E
 
-`npm run test:e2e:desktop-alt` defaults to a scripted source-contract harness, so it can run in CI without booting a signed app. For live Tauri-driver coverage, set `HQ_SYNC_DESKTOP_ALT_LIVE=1` with `HQ_SYNC_DESKTOP_ALT_APP` or `HQ_SYNC_DESKTOP_ALT_APP_PATH`. `HQ_SYNC_DESKTOP_ALT_WEBDRIVER_URL` defaults to `http://127.0.0.1:4444`.
+`npm run test:e2e:desktop-alt` defaults to a scripted source-contract harness, so it can run in CI without booting a signed app. For live Tauri-driver coverage, set `HQ_SYNC_DESKTOP_ALT_LIVE=1` with `HQ_SYNC_DESKTOP_ALT_APP` or `HQ_SYNC_DESKTOP_ALT_APP_PATH`. `HQ_SYNC_DESKTOP_ALT_WEBDRIVER_URL` defaults to `http://127.0.0.1:4444`. Once `HQ_SYNC_DESKTOP_ALT_LIVE` is set the run fails if the live harness cannot be resolved — it never degrades to the scripted harness.
