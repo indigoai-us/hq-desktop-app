@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { invoke } from '@tauri-apps/api/core';
   import { onDestroy } from 'svelte';
   import NotificationFeed from '../../components/NotificationFeed.svelte';
   import { markAllNotificationsRead } from '../../lib/notificationFeedData';
@@ -43,23 +42,6 @@
     markAllNotificationsRead();
   }
 
-  async function openMessagesWindow(): Promise<void> {
-    try {
-      await invoke('open_messages_window');
-    } catch (e) {
-      console.error('inbox: open_messages_window failed', e);
-    }
-  }
-
-  /** Open the two-pane Inbox quick window (side pane + reply canvas). */
-  async function openInboxQuickWindow(): Promise<void> {
-    try {
-      await invoke('open_inbox_window');
-    } catch (e) {
-      console.error('inbox: open_inbox_window failed', e);
-    }
-  }
-
   const subtitle = $derived.by(() => {
     if (total === 0 && unread === 0) return 'All caught up';
     const unreadPart =
@@ -84,32 +66,6 @@
       <p class="inbox-subtitle" data-testid="inbox-unread-count">
         {subtitle}
       </p>
-    </div>
-    <div class="inbox-actions">
-      <button
-        type="button"
-        class="inbox-btn"
-        data-testid="inbox-open-quick"
-        onclick={() => void openInboxQuickWindow()}
-      >
-        Open Inbox window
-      </button>
-      <button
-        type="button"
-        class="inbox-btn"
-        data-testid="inbox-open-messages"
-        onclick={() => void openMessagesWindow()}
-      >
-        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-          <path
-            d="M2.5 3h11a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H6l-3.5 2.6V11h0a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z"
-            stroke="currentColor"
-            stroke-width="1.3"
-            stroke-linejoin="round"
-          />
-        </svg>
-        Open Messages
-      </button>
     </div>
   </header>
 
@@ -164,44 +120,6 @@
     font-size: var(--type-secondary, var(--text-base, 13px));
     line-height: 1.4;
     color: var(--v4-text-3, var(--muted));
-  }
-
-  .inbox-actions {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex-shrink: 0;
-  }
-
-  .inbox-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 7px;
-    min-height: 30px;
-    padding: 0 12px;
-    border: 1px solid var(--v4-control-border, var(--border-strong, rgba(0, 0, 0, 0.1)));
-    border-radius: var(--v4-radius-button, 8px);
-    background: var(--v4-raised, var(--c-bg, #fff));
-    color: var(--v4-text-1, var(--fg));
-    font: inherit;
-    font-size: var(--type-body, 12px);
-    font-weight: 600;
-    cursor: pointer;
-    box-shadow: var(--v4-shadow-card-light, 0 1px 1.5px rgba(0, 0, 0, 0.06));
-  }
-
-  .inbox-btn:hover {
-    background: var(--v4-active-row, var(--row-hover));
-  }
-
-  .inbox-btn:focus-visible {
-    outline: 2px solid var(--v4-unread, #0a6fd6);
-    outline-offset: 2px;
-  }
-
-  .inbox-btn svg {
-    flex-shrink: 0;
-    color: var(--v4-text-2, var(--muted));
   }
 
   /* Feed sits flush on the page canvas — no card chrome around the list. */
@@ -260,9 +178,4 @@
     padding-right: 0;
   }
 
-  @media (prefers-color-scheme: dark) {
-    .inbox-btn {
-      box-shadow: none;
-    }
-  }
 </style>

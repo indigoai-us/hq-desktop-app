@@ -66,13 +66,14 @@ describe('US-006 / US-008: InboxPage surface', () => {
     expect(inbox).toContain('shared one-line NotificationRow');
   });
 
-  it('unified unread header + Open Messages jump (no tabs / sync chrome)', () => {
+  it('unified unread header, no detached-window buttons (no tabs / sync chrome)', () => {
     expect(inbox).toContain('data-testid="inbox-unread-count"');
     expect(inbox).toContain('All caught up');
     expect(inbox).toContain('<h1 id="desktop-page-title">Inbox</h1>');
-    // Jump to the dedicated Messages window — not tabs/sync/overflow chrome.
-    expect(inbox).toContain('data-testid="inbox-open-messages"');
-    expect(inbox).toContain("invoke('open_messages_window')");
+    expect(inbox).not.toContain('data-testid="inbox-open-messages"');
+    expect(inbox).not.toContain('data-testid="inbox-open-quick"');
+    expect(inbox).not.toContain("open_messages_window");
+    expect(inbox).not.toContain("open_inbox_window");
     expect(inbox).toContain('No tabs, no sync button, no overflow menus (US-008).');
     expect(inbox).not.toContain('data-testid="desktop-alt-toggle"');
     expect(inbox).not.toContain('Sync Now');

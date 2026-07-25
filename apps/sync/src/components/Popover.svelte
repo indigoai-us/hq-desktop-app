@@ -124,13 +124,11 @@
     feedEl?.markAllRead();
   }
 
-  /** Open the two-pane Inbox quick window (side pane + reply/detail canvas).
-   *  Not the full desktop-alt app — that stays behind explicit Open desktop. */
-  async function openDesktopInbox() {
+  async function openHQ() {
     try {
-      await invoke('open_inbox_window');
+      await invoke('open_desktop_alt_window', { route: 'inbox' });
     } catch (e) {
-      console.error('popover: open_inbox_window failed', e);
+      console.error('popover: open_desktop_alt_window failed', e);
     }
   }
 
@@ -436,10 +434,10 @@
           <button
             class="mbp-sec-action mbp-sec-action-primary"
             type="button"
-            data-testid="popover-open-inbox"
-            onclick={() => void openDesktopInbox()}
+            data-testid="popover-open-hq"
+            onclick={() => void openHQ()}
           >
-            Open Inbox
+            Open HQ
           </button>
         </div>
       </div>
