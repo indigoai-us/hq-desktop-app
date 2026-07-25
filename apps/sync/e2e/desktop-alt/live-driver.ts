@@ -18,7 +18,6 @@ interface LiveConfig {
 
 interface DriverStart {
   client: WebDriverClient;
-  process: ChildProcess | null;
 }
 
 interface WebDriverResponse<T> {
@@ -87,13 +86,15 @@ export async function createDesktopAltHarness(email: string): Promise<DesktopAlt
   const start = await startOrReuseDriver(resolution.config);
 
   try {
-    const live = await LiveDesktopAltHarness.create(start.client, start.process);
+    const live = await LiveDesktopAltHarness.create(start.client);
     console.log(
       `[desktop-alt-e2e] live tauri-driver harness active at ${resolution.config.webdriverUrl}.`,
     );
     return live;
   } catch (error) {
-    start.process?.kill();
+    // Release the session so the next spec can create one against the shared
+    // driver; the driver process itself outlives individual harnesses.
+    await start.client.deleteSession().catch(() => undefined);
     throw error;
   }
 }
@@ -101,17 +102,11 @@ export async function createDesktopAltHarness(email: string): Promise<DesktopAlt
 class LiveDesktopAltHarness implements DesktopAltTestHarness {
   readonly mode = 'live';
 
-  private constructor(
-    private readonly driver: WebDriverClient,
-    private readonly driverProcess: ChildProcess | null,
-  ) {}
+  private constructor(private readonly driver: WebDriverClient) {}
 
-  static async create(
-    driver: WebDriverClient,
-    driverProcess: ChildProcess | null,
-  ): Promise<LiveDesktopAltHarness> {
+  static async create(driver: WebDriverClient): Promise<LiveDesktopAltHarness> {
     await driver.waitForWindow();
-    const harness = new LiveDesktopAltHarness(driver, driverProcess);
+    const harness = new LiveDesktopAltHarness(driver);
     await harness.installErrorCaptureForAllWindows();
     return harness;
   }
@@ -197,8 +192,8 @@ class LiveDesktopAltHarness implements DesktopAltTestHarness {
   }
 
   async dispose(): Promise<void> {
+    // Only the session: the tauri-driver server is shared across the spec file.
     await this.driver.deleteSession().catch(() => undefined);
-    this.driverProcess?.kill();
   }
 
   private async openDesktopAltWindow(): Promise<void> {
@@ -512,13 +507,30 @@ async function resolveLiveConfig(): Promise<{ config: LiveConfig | null; reason:
   };
 }
 
+/**
+ * One tauri-driver server per test process.
+ *
+ * `dispose()` used to kill the driver it was handed, so a multi-case spec
+ * (smoke-pages runs three routes) tore the server down and immediately raced to
+ * rebind port 4444 for the next case — the losing case reported
+ * `session not created`. The driver is a server: keep it up for the module
+ * lifetime, let each case create and delete its own session against it, and
+ * reap it when the test process exits.
+ */
+let sharedDriverProcess: ChildProcess | null = null;
+
+function reapSharedDriver(): void {
+  sharedDriverProcess?.kill();
+  sharedDriverProcess = null;
+}
+
 async function startOrReuseDriver(config: LiveConfig): Promise<DriverStart> {
   const client = new WebDriverClient(config.webdriverUrl);
   const driverRunning = await client.status().catch(() => false);
 
   if (driverRunning) {
     await client.createSession(config.appPath);
-    return { client, process: null };
+    return { client };
   }
 
   const driverProcess = spawn(
@@ -541,12 +553,15 @@ async function startOrReuseDriver(config: LiveConfig): Promise<DriverStart> {
     spawnErrors.push(error);
   });
 
+  sharedDriverProcess = driverProcess;
+  process.once('exit', reapSharedDriver);
+
   try {
     await client.waitUntil(() => client.status().catch(() => false), 30_000);
     await client.createSession(config.appPath);
-    return { client, process: driverProcess };
+    return { client };
   } catch (error) {
-    driverProcess.kill();
+    reapSharedDriver();
     const [spawnError] = spawnErrors;
     if (spawnError) {
       throw new Error(
