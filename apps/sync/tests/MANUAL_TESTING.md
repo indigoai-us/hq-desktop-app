@@ -980,6 +980,46 @@ Windows release gate or before committing capability edits.
 
 ---
 
+## Local Windows dogfood install (hq-desktop-windows-reliability / US-009)
+
+Local **unsigned** installable build for on-machine smoke testing. Authenticode
+signing, updater `latest.json`, and production soak remain **CI / release
+workflow** responsibilities — do not block this checklist on those.
+
+### Build (this machine)
+
+```powershell
+cd apps/sync
+pnpm run sidecar:install
+# Dogfood overlay: NSIS only, no updater artifacts (no TAURI_SIGNING_* required)
+pnpm exec tauri build --config src-tauri/tauri.local-dogfood.conf.json
+```
+
+Installer lands under:
+
+`apps/sync/src-tauri/target/release/bundle/nsis/`
+
+SmartScreen may warn on first open (unsigned) — click through for internal dogfood.
+
+### Smoke checklist after install
+
+- [ ] App launches; tray icon appears; no visible console flash for background work
+- [ ] Tray / taskbar activation toggles the compact popover (does not spawn duplicate desktops)
+- [ ] **Open HQ** shows one full desktop with native Windows title bar
+- [ ] Light / dark OS theme: popover + desktop remain legible
+- [ ] Meetings list shows invite / already-invited states without false error banners
+- [ ] Company + Personal sync enabled toggles persist and match Settings
+- [ ] Core Drift: no phantom hundreds of edits; BaselineUnavailable / update-required when no baseline
+- [ ] Optional: leave running ~30 minutes — one watch-runner tree, no repeated startup warning
+
+### Out of scope here
+
+- Azure Trusted Signing / Authenticode
+- Updater manifest canary (`latest.json`)
+- Formal release evidence for GitHub Releases
+
+---
+
 ## Policy Deviation
 
 ### Reference
