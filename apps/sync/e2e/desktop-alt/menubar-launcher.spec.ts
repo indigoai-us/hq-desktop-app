@@ -16,10 +16,10 @@ describe('US-006: menubar launcher opens desktop view', () => {
   const tray = readRepoFile('src-tauri/src/tray.rs');
   const popover = readRepoFile('src/components/Popover.svelte');
 
-  it('menu-bar click "show" routes to toggle_desktop_window on the main thread', () => {
+  it('menu-bar click "show" routes to the compact popover on the main thread', () => {
     expect(trayHelper).toContain('if let Some(rest) = cmd.strip_prefix("show")');
     expect(trayHelper).toContain(
-      'app.run_on_main_thread(move || crate::tray::toggle_desktop_window(&app_main))',
+      'app.run_on_main_thread(move || crate::tray::toggle_popover_window(&app_main))',
     );
   });
 

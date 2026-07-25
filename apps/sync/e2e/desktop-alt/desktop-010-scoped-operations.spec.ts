@@ -102,14 +102,14 @@ describe('DESKTOP-010: scoped company operations', () => {
     // Activity: direction, date chips, open-in-claude, load/error/retry.
     expect(activity).toContain("let activityDirection = $state<ActivityDirection>('all')");
     expect(activity).toContain('dateChip(entry.when)');
-    expect(activity).toContain("invoke<Partial<CompanyActivity>>('get_company_activity', { slug })");
+    expect(activity).toContain('companyStore.loadActivity<Partial<CompanyActivity>>(slug');
     expect(activity).toContain('function retry()');
     expect(activity).toContain('Activity unavailable');
     expect(activity).toContain('No activity yet');
     expect(activity).toContain('OpenFileInClaudeCode');
 
     // Deployments: open, deploy workflow, search, counts, error/empty.
-    expect(deployments).toContain("invoke<Partial<DeploymentEntry>[]>('get_company_deployments', { slug })");
+    expect(deployments).toContain('companyStore.loadDeployments(slug');
     expect(deployments).toContain("openAgentWorkflow(prompt, 'deploy workflow')");
     expect(deployments).toContain('bind:value={deploymentQuery}');
     expect(deployments).toContain('Deployments unavailable');
@@ -121,7 +121,7 @@ describe('DESKTOP-010: scoped company operations', () => {
     expect(deploymentRow).not.toContain('rollbackConfirm');
 
     // Secrets: export / new key workflows, empty, error.
-    expect(secrets).toContain("invoke<Partial<SecretEnv>[]>('get_company_secrets', { slug })");
+    expect(secrets).toContain('companyStore.loadSecrets(slug');
     expect(secrets).toContain("onclick={() => void openSecretsPrompt('export')}");
     expect(secrets).toContain("onclick={() => void openSecretsPrompt('new')}");
     expect(secrets).toContain('Secrets unavailable');
@@ -234,9 +234,9 @@ describe('DESKTOP-010: scoped company operations', () => {
   it('preserves tenant slug scoping and backend commands', () => {
     expect(ops).toContain('slug: string');
     expect(activity).toContain('let { slug, cloudBacked = true }: Props = $props()');
-    expect(activity).toContain("'get_company_activity'");
-    expect(deployments).toContain("'get_company_deployments'");
-    expect(secrets).toContain("'get_company_secrets'");
+    expect(activity).toContain('companyStore.loadActivity');
+    expect(deployments).toContain('companyStore.loadDeployments');
+    expect(secrets).toContain('companyStore.loadSecrets');
     expect(activity).toContain('if (!slug || !cloudBacked)');
     expect(deployments).toContain('if (!slug || !cloudBacked)');
     expect(secrets).toContain('if (!slug || !cloudBacked)');

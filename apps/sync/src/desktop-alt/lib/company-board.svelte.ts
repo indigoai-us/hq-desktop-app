@@ -1,4 +1,3 @@
-import { invoke } from '@tauri-apps/api/core';
 import { companyStore } from './company-store.svelte';
 
 export interface CompanyBoardCard {
@@ -63,18 +62,17 @@ export function useCompanyBoard(options: { slug: () => string | null; enabled?: 
     board = warm ? shapeBoard(warm) : emptyCompanyBoard();
     loading = warm === null;
 
-    void invoke<CompanyBoard>('get_company_board', { slug })
+    void companyStore.loadBoard(slug, reloadToken > 0)
       .then((result) => {
         if (!cancelled) {
           board = shapeBoard(result);
-          companyStore.setBoard(slug, result);
         }
       })
       .catch((err) => {
         console.error('get_company_board failed:', err);
         if (!cancelled) {
           error = String(err);
-          board = emptyCompanyBoard();
+          if (companyStore.board(slug) === null) board = emptyCompanyBoard();
         }
       })
       .finally(() => {

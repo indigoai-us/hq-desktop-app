@@ -22,7 +22,12 @@
   import { loadLocalProjects } from './lib/local-projects';
   import type { Project } from './lib/projects-model';
   import { emitDesktopTelemetry } from '../lib/desktop-telemetry';
-  import { startCompanyStore, setActiveCompany } from './lib/company-store.svelte';
+  import {
+    invalidateCompanyResources,
+    setActiveCompanyResource,
+    startCompanyStore,
+    type CompanyResource,
+  } from './lib/company-store.svelte';
   import { openAgentWorkflow } from './lib/agent-workflow';
   import {
     COMPANY_SECTIONS,
@@ -232,17 +237,22 @@
   const watchedWorkspaceCount = $derived(shellCompanies.length);
   const routeKey = $derived(getDesktopRouteKey(route));
   const activeCompany = $derived(getDesktopActiveCompany(route, shellCompanies));
-  // Point the company-store's background poll at whichever company is on screen,
-  // so it re-fetches only the open company instead of all of them every 30s.
-  $effect(() => {
-    setActiveCompany(activeCompany?.slug ?? null);
-  });
   const libraryTab = $derived<LibraryTab>(
     route.kind === 'library' ? route.tab ?? DEFAULT_LIBRARY_TAB : DEFAULT_LIBRARY_TAB,
   );
   const companyTab = $derived<CompanyTab>(
     route.kind === 'company' ? route.tab ?? DEFAULT_COMPANY_TAB : DEFAULT_COMPANY_TAB,
   );
+  const polledCompanyResource = $derived<CompanyResource | null>(
+    companyTab === 'activity' || companyTab === 'deployments' || companyTab === 'secrets'
+      ? companyTab
+      : companyTab === 'overview'
+        ? 'summary'
+        : null,
+  );
+  $effect(() => {
+    setActiveCompanyResource(activeCompany?.slug ?? null, polledCompanyResource);
+  });
   // Files mode (US-009): the active company + selected file live IN THE ROUTE,
   // so they survive a reload (persisted below) and reactive updates don't
   // remount the shell (routeKey is 'files' regardless of slug/path).
@@ -561,17 +571,9 @@
       // above refresh it on their own. We deliberately do NOT reload the document
       // or remount the chrome on a workspace-list change: a full reload mid-paint
       // is what blanked/froze the desktop on focus/sync.
-      // Warm the company-tab preload cache for every known company once the real
-      // slugs resolve. Idempotent + reconciles, so companies that appear on a
-      // later refresh still get warmed; the 30s poll + focus listener wire once.
-      startCompanyStore(
-        nextCompanies
-          .filter(
-            (company) =>
-              company.state === 'synced' || company.state === 'cloud-only' || Boolean(company.cloudUid),
-          )
-          .map((company) => company.slug),
-      );
+      // Launch owns cheap workspace/sidebar metadata only. Company resources
+      // are loaded lazily by the selected route and shared across its consumers.
+      startCompanyStore();
       if (nextCompanies.length > 0) queueDesktopRenderAudit();
       // Re-resolve the default landing on the FIRST live workspace load
       // (US-007): a cold/partial cache may have landed on Home or on a
@@ -1095,6 +1097,7 @@
         conflicts: number;
         aborted: boolean;
       }>('sync:complete', async (event) => {
+        invalidateCompanyResources(event.payload.company);
         syncFanoutDoneCount += 1;
         syncFanoutFilesSkipped += event.payload.filesSkipped;
         updateWorkspaceStats(event.payload.company, (stats) => ({

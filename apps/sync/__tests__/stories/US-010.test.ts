@@ -43,7 +43,7 @@ describe('US-010: Activity panel reads company activity via Tauri command', () =
     expect(page).toContain('{cloudBacked}');
     expect(operations).toContain('<ActivityPanel {slug} {cloudBacked} />');
     expect(page).not.toContain('Activity panel - wired in US-010');
-    expect(panel).toContain("void invoke<Partial<CompanyActivity>>('get_company_activity', { slug })");
+    expect(panel).toContain('void companyStore.loadActivity<Partial<CompanyActivity>>(slug');
     expect(panel).toContain('return () => { cancelled = true; };');
     expect(panel).toContain('function retry() { reloadToken += 1; }');
     expect(panel).toContain("console.error('get_company_activity failed:', err)");

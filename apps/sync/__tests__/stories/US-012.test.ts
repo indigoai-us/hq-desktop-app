@@ -62,7 +62,7 @@ describe('US-012: Secrets panel reads metadata only with no plaintext values', (
     expect(page).toContain('const cloudBacked = $derived');
     expect(operations).toContain('<SecretsPanel {slug} {cloudBacked} />');
     expect(panel).toContain('if (!slug || !cloudBacked)');
-    expect(panel).toContain("void invoke<Partial<SecretEnv>[]>('get_company_secrets', { slug })");
+    expect(panel).toContain('void companyStore.loadSecrets(slug');
     expect(panel).toContain('return () => { cancelled = true; };');
     expect(panel).toContain('function retry() { reloadToken += 1; }');
     expect(panel).toContain("console.error('get_company_secrets failed:', err)");

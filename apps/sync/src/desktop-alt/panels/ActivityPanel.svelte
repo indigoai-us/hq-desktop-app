@@ -108,18 +108,17 @@
     activity = warm != null ? normalizeActivity(warm as Partial<CompanyActivity>) : emptyActivity();
     loading = warm == null;
 
-    void invoke<Partial<CompanyActivity>>('get_company_activity', { slug })
+    void companyStore.loadActivity<Partial<CompanyActivity>>(slug, reloadToken > 0)
       .then((result) => {
         if (!cancelled) {
           activity = normalizeActivity(result);
-          companyStore.setActivity(slug, result);
         }
       })
       .catch((err) => {
         console.error('get_company_activity failed:', err);
         if (!cancelled) {
           error = String(err);
-          activity = emptyActivity();
+          if (companyStore.activity(slug) == null) activity = emptyActivity();
         }
       })
       .finally(() => {

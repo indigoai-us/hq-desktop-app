@@ -36,18 +36,17 @@
     secrets = warm ? warm.map(normalizeSecretEnv) : [];
     loading = warm === null;
 
-    void invoke<Partial<SecretEnv>[]>('get_company_secrets', { slug })
+    void companyStore.loadSecrets(slug, reloadToken > 0)
       .then((result) => {
         if (!cancelled) {
           secrets = Array.isArray(result) ? result.map(normalizeSecretEnv) : [];
-          companyStore.setSecrets(slug, Array.isArray(result) ? result : []);
         }
       })
       .catch((err) => {
         console.error('get_company_secrets failed:', err);
         if (!cancelled) {
           error = String(err);
-          secrets = [];
+          if (companyStore.secrets(slug) === null) secrets = [];
         }
       })
       .finally(() => {

@@ -29,7 +29,7 @@ describe('Windows settings follow-up regressions', () => {
   });
 
   it('themes native select option surfaces for the Windows dark UI', () => {
-    expect(settings).toMatch(/select\s*\{[\s\S]*?color-scheme:\s*dark/);
+    expect(settings).toMatch(/select\s*\{[\s\S]*?color-scheme:\s*light dark/);
     expect(settings).toMatch(/select option\s*\{[\s\S]*?background:/);
     expect(settings).toMatch(/select option\s*\{[\s\S]*?color:/);
   });

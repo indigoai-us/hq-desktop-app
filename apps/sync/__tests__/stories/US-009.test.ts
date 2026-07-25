@@ -93,7 +93,7 @@ describe('US-009: the standalone Packages destination is removed', () => {
     // The legacy command names exist only as thin shims to the unified Library
     // surface, so older automation does not hit an unknown IPC command.
     expect(rust).toContain('pub async fn open_packages_window');
-    expect(rust).toContain('Some("library:installed")');
+    expect(rust).toContain('DesktopDestination::LibraryInstalled');
     expect(rust).toContain('pub fn packages_window_ready');
     expect(rust).toContain('None');
 

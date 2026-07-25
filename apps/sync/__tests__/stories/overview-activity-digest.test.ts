@@ -22,10 +22,10 @@ describe('company Overview recent-activity digest (DESKTOP-003)', () => {
   it('pulls real activity data (no fabricated values) and reuses the shared cache', () => {
     const c = read('src/desktop-alt/components/OverviewActivityDigest.svelte');
     // Real source: the same command the Activity tab uses.
-    expect(c).toContain("invoke<Partial<CompanyActivity>>('get_company_activity'");
+    expect(c).toContain('companyStore.loadActivity<Partial<CompanyActivity>>');
     // Warmed/shared through companyStore so it does not double-fetch.
     expect(c).toContain('companyStore.activity(slug)');
-    expect(c).toContain('companyStore.setActivity(slug, result)');
+    expect(c).not.toContain('companyStore.setActivity');
     // Surfaces the real fields.
     expect(c).toContain('activity.stats.edits7');
     expect(c).toContain('activity.stats.vaultSize');

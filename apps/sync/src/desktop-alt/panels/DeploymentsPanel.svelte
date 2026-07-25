@@ -45,18 +45,17 @@
     deployments = warm ? warm.map(normalizeDeployment) : [];
     loading = warm === null;
 
-    void invoke<Partial<DeploymentEntry>[]>('get_company_deployments', { slug })
+    void companyStore.loadDeployments(slug, reloadToken > 0)
       .then((result) => {
         if (!cancelled) {
           deployments = Array.isArray(result) ? result.map(normalizeDeployment) : [];
-          companyStore.setDeployments(slug, Array.isArray(result) ? result : []);
         }
       })
       .catch((err) => {
         console.error('get_company_deployments failed:', err);
         if (!cancelled) {
           error = String(err);
-          deployments = [];
+          if (companyStore.deployments(slug) === null) deployments = [];
         }
       })
       .finally(() => {
