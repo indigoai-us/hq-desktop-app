@@ -12,8 +12,9 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
 use crate::commands::process::{
-    cancel_process_impl, deregister_process, is_registered, run_process_impl, try_register_handle,
-    ProcessEvent,
+    cancel_process_for, cancel_process_impl, deregister_process, is_cancelled_for, is_registered,
+    process_identity_for, registration_for_handle, run_process_impl, try_register_handle,
+    CancellationAttempt, ProcessEvent, ProcessRegistration,
 };
 use crate::commands::status::{journal_for_daemon_sync_complete, write_journal};
 use crate::commands::sync::RunTotals;
@@ -120,7 +121,11 @@ fn handle_watch_stdout_line(
     true
 }
 
-fn start_daemon_heartbeat_watchdog(last_heartbeat: Arc<Mutex<Instant>>, finished: Arc<AtomicBool>) {
+fn start_daemon_heartbeat_watchdog(
+    last_heartbeat: Arc<Mutex<Instant>>,
+    finished: Arc<AtomicBool>,
+    registration: ProcessRegistration,
+) {
     thread::spawn(move || loop {
         thread::sleep(DAEMON_HEARTBEAT_CHECK_INTERVAL);
         if finished.load(Ordering::Acquire) {
@@ -130,22 +135,61 @@ fn start_daemon_heartbeat_watchdog(last_heartbeat: Arc<Mutex<Instant>>, finished
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .elapsed();
-        if should_cancel_stalled_daemon(
-            is_registered(DAEMON_HANDLE),
-            heartbeat_age,
-            DAEMON_HEARTBEAT_TIMEOUT,
-        ) {
+        if let Some(attempt) = watchdog_cancellation_attempt(registration, heartbeat_age) {
+            let expected_pid = process_identity_for(DAEMON_HANDLE, registration)
+                .and_then(|identity| identity.pid);
+            let current_registration = attempt.current.map(|identity| identity.registration.id());
+            let current_pid = attempt.current.and_then(|identity| identity.pid);
+            let outcome = if attempt.executed { "executed" } else { "skipped" };
             log(
                 "daemon.watchdog",
                 &format!(
-                    "no sync protocol heartbeat for {}s; cancelling stalled watch daemon",
-                    heartbeat_age.as_secs()
+                    "no sync protocol heartbeat for {}s; watchdog cancellation {} \
+                     (expected_registration={} expected_pid={:?} current_registration={:?} current_pid={:?})",
+                    heartbeat_age.as_secs(),
+                    outcome,
+                    registration.id(),
+                    expected_pid,
+                    current_registration,
+                    current_pid,
                 ),
             );
-            cancel_process_impl(DAEMON_HANDLE, SIGKILL_DELAY);
+            sentry::add_breadcrumb(sentry::Breadcrumb {
+                category: Some("daemon.watchdog".into()),
+                level: if attempt.executed {
+                    sentry::Level::Warning
+                } else {
+                    sentry::Level::Info
+                },
+                message: Some(format!(
+                    "watchdog cancellation reason=no-protocol-heartbeat outcome={} \
+                     expected_registration={} expected_pid={:?} current_registration={:?} current_pid={:?}",
+                    outcome,
+                    registration.id(),
+                    expected_pid,
+                    current_registration,
+                    current_pid,
+                )),
+                ..Default::default()
+            });
             return;
         }
     });
+}
+
+/// A timeout remains actionable when a daemon handle exists, but its effect is
+/// scoped to the watchdog's exact process registration. An obsolete watchdog
+/// therefore records a skipped attempt instead of cancelling a replacement.
+fn watchdog_cancellation_attempt(
+    registration: ProcessRegistration,
+    heartbeat_age: Duration,
+) -> Option<CancellationAttempt> {
+    should_cancel_stalled_daemon(
+        is_registered(DAEMON_HANDLE),
+        heartbeat_age,
+        DAEMON_HEARTBEAT_TIMEOUT,
+    )
+    .then(|| cancel_process_for(DAEMON_HANDLE, registration, SIGKILL_DELAY))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -336,6 +380,8 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
     if !try_register_handle(DAEMON_HANDLE) {
         return Err("Daemon is already starting".to_string());
     }
+    let daemon_registration = registration_for_handle(DAEMON_HANDLE)
+        .expect("a successfully registered daemon handle must have an identity");
     // Stamp the guard acquisition so the supervisor can bound how long a start
     // may hold it with no live daemon before treating it as wedged. The
     // generation lets this start's exit clear only its own stamp, never a
@@ -415,12 +461,16 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
     let hq_folder = hq_folder_path.clone();
     let last_heartbeat = Arc::new(Mutex::new(Instant::now()));
     let daemon_finished = Arc::new(AtomicBool::new(false));
-    start_daemon_heartbeat_watchdog(last_heartbeat.clone(), daemon_finished.clone());
+    start_daemon_heartbeat_watchdog(
+        last_heartbeat.clone(),
+        daemon_finished.clone(),
+        daemon_registration,
+    );
 
     thread::spawn(move || {
         let process_heartbeat = last_heartbeat.clone();
         let process_finished = daemon_finished.clone();
-        let result = run_process_impl(DAEMON_HANDLE, &spawn_args, move |event| {
+        let result = run_process_impl(DAEMON_HANDLE, daemon_registration, &spawn_args, move |event| {
             // Surface stderr and non-success exits unconditionally — they
             // are the only signals the user has when the watcher dies
             // (e.g. "Unknown argument: --watch" on a stale runner pin).
@@ -471,7 +521,7 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
                     // from cancel_process_impl on app-quit / auto-sync-off /
                     // re-spawn), and rate-limit a crash-loop to ~log2(N) events
                     // instead of one per 30s respawn (HQ-SYNC-4 / HQ-SYNC-5).
-                    let cancelled = crate::commands::process::is_cancelled(DAEMON_HANDLE);
+                    let cancelled = is_cancelled_for(DAEMON_HANDLE, daemon_registration);
                     if is_unexpected_watcher_exit(success, signal, cancelled) {
                         let consecutive = note_watcher_crashed();
                         if is_benign_watcher_exit(code, signal) {
@@ -1228,6 +1278,38 @@ mod tests {
         // gen2's own clear still works.
         clear_daemon_guard_stamp_for(gen2);
         assert!(daemon_guard_age().is_none());
+    }
+
+    // HQ-DESKTOP-3J: a watchdog created by force-released watcher A must not
+    // resolve the shared handle to and kill replacement B at its timeout.
+    #[test]
+    fn stale_watchdog_skips_a_replacement_registration() {
+        use crate::commands::process::{
+            is_cancelled_for, pre_register_handle, registration_for_handle,
+        };
+
+        let _serial = GUARD_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        deregister_process(DAEMON_HANDLE);
+
+        let watcher_a = pre_register_handle(DAEMON_HANDLE);
+        deregister_process(DAEMON_HANDLE);
+        let watcher_b = pre_register_handle(DAEMON_HANDLE);
+
+        let attempt = watchdog_cancellation_attempt(watcher_a, DAEMON_HEARTBEAT_TIMEOUT)
+            .expect("a replacement keeps the watchdog timeout actionable");
+        assert!(!attempt.executed, "stale watchdog A must not cancel B");
+        assert_eq!(
+            attempt.current.map(|identity| identity.registration),
+            Some(watcher_b),
+            "the skip records the replacement identity for watchdog provenance"
+        );
+        assert!(
+            !is_cancelled_for(DAEMON_HANDLE, watcher_b),
+            "replacement B remains uncancelled"
+        );
+        assert_eq!(registration_for_handle(DAEMON_HANDLE), Some(watcher_b));
+
+        deregister_process(DAEMON_HANDLE);
     }
 
     // ── Constants ────────────────────────────────────────────────────────

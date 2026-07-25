@@ -61,7 +61,8 @@ use tauri::{AppHandle, Emitter};
 
 use crate::commands::cognito;
 use crate::commands::process::{
-    cancel_process_impl, run_process_with_stdin_impl, try_register_handle, ProcessEvent, SpawnArgs,
+    cancel_process_impl, registration_for_handle, run_process_with_stdin_impl, try_register_handle,
+    ProcessEvent, SpawnArgs,
 };
 use crate::commands::sync::resolve_vault_api_url;
 use crate::events::{
@@ -274,6 +275,8 @@ pub async fn start_recall_sdk(app: AppHandle) -> Result<(), String> {
         log(LOG_TAG, "start_recall_sdk: already running (no-op)");
         return Ok(());
     }
+    let sdk_registration = registration_for_handle(SDK_HANDLE)
+        .expect("a successfully registered SDK handle must have an identity");
 
     // ── 2. Find the SDK binary ───────────────────────────────────────────────
     let bin_path = match find_sdk_binary() {
@@ -315,6 +318,7 @@ pub async fn start_recall_sdk(app: AppHandle) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         let result = run_process_with_stdin_impl(
             SDK_HANDLE,
+            sdk_registration,
             &spawn_args,
             |event| match event {
                 ProcessEvent::Stdout(line) => {
@@ -485,7 +489,10 @@ pub async fn start_recall_sdk(app: AppHandle) -> Result<(), String> {
                     // genuinely in-flight recording is recovered by the launch
                     // reconcile instead. `success` covers a clean exit(0); the
                     // cancelled flag covers a SIGTERM'd one (non-zero/​signalled).
-                    let cancelled = crate::commands::process::is_cancelled(SDK_HANDLE);
+                    let cancelled = crate::commands::process::is_cancelled_for(
+                        SDK_HANDLE,
+                        sdk_registration,
+                    );
                     if success || cancelled {
                         log(
                             LOG_TAG,

@@ -10,6 +10,7 @@ use std::io::{BufRead, BufReader};
 use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::mpsc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
@@ -45,25 +46,76 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 // Process registry
 // ─────────────────────────────────────────────────────────────────────────────
 
-#[derive(Default)]
+/// Opaque identity for one ownership period of a reusable process handle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProcessRegistration(u64);
+
+impl ProcessRegistration {
+    pub fn id(self) -> u64 {
+        self.0
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProcessIdentity {
+    pub registration: ProcessRegistration,
+    pub pid: Option<u32>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CancellationAttempt {
+    pub executed: bool,
+    pub current: Option<ProcessIdentity>,
+}
+
 struct ProcessEntry {
+    registration: ProcessRegistration,
     pid: Option<u32>,
     cancelled: bool,
     #[cfg(target_os = "windows")]
     job_handle: Option<isize>,
 }
 
+impl ProcessEntry {
+    fn new(registration: ProcessRegistration) -> Self {
+        Self {
+            registration,
+            pid: None,
+            cancelled: false,
+            #[cfg(target_os = "windows")]
+            job_handle: None,
+        }
+    }
+
+    fn identity(&self) -> ProcessIdentity {
+        ProcessIdentity {
+            registration: self.registration,
+            pid: self.pid,
+        }
+    }
+}
+
 static PROCESS_REGISTRY: OnceLock<Arc<Mutex<HashMap<String, ProcessEntry>>>> = OnceLock::new();
+static NEXT_PROCESS_REGISTRATION: AtomicU64 = AtomicU64::new(0);
 
 fn process_registry() -> &'static Arc<Mutex<HashMap<String, ProcessEntry>>> {
     PROCESS_REGISTRY.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
 }
 
-pub fn pre_register_handle(handle: &str) {
+fn next_process_registration() -> ProcessRegistration {
+    let prior = NEXT_PROCESS_REGISTRATION
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |id| id.checked_add(1))
+        .expect("process registration IDs exhausted");
+    ProcessRegistration(prior + 1)
+}
+
+pub fn pre_register_handle(handle: &str) -> ProcessRegistration {
+    let registration = next_process_registration();
     process_registry()
         .lock()
         .unwrap()
-        .insert(handle.to_string(), ProcessEntry::default());
+        .insert(handle.to_string(), ProcessEntry::new(registration));
+    registration
 }
 
 /// Atomically check-and-register a handle. Returns `true` if the handle was
@@ -75,26 +127,41 @@ pub fn try_register_handle(handle: &str) -> bool {
     match reg.entry(handle.to_string()) {
         Entry::Occupied(_) => false,
         Entry::Vacant(v) => {
-            v.insert(ProcessEntry::default());
+            v.insert(ProcessEntry::new(next_process_registration()));
             true
         }
     }
 }
 
-pub fn register_process(handle: &str, pid: u32) {
+pub fn registration_for_handle(handle: &str) -> Option<ProcessRegistration> {
+    process_registry()
+        .lock()
+        .unwrap()
+        .get(handle)
+        .map(|entry| entry.registration)
+}
+
+pub fn process_identity_for(
+    handle: &str,
+    registration: ProcessRegistration,
+) -> Option<ProcessIdentity> {
+    process_registry()
+        .lock()
+        .unwrap()
+        .get(handle)
+        .filter(|entry| entry.registration == registration)
+        .map(ProcessEntry::identity)
+}
+
+/// Attach a child only if its owner still holds the registration. Returns
+/// whether a matching registration had already been cancelled.
+fn register_process(handle: &str, registration: ProcessRegistration, pid: u32) -> Option<bool> {
     let mut reg = process_registry().lock().unwrap();
-    if let Some(entry) = reg.get_mut(handle) {
+    if let Some(entry) = reg.get_mut(handle).filter(|e| e.registration == registration) {
         entry.pid = Some(pid);
+        Some(entry.cancelled)
     } else {
-        reg.insert(
-            handle.to_string(),
-            ProcessEntry {
-                pid: Some(pid),
-                cancelled: false,
-                #[cfg(target_os = "windows")]
-                job_handle: None,
-            },
-        );
+        None
     }
 }
 
@@ -121,6 +188,42 @@ pub fn deregister_process(handle: &str) {
     #[cfg(not(target_os = "windows"))]
     {
         process_registry().lock().unwrap().remove(handle);
+    }
+}
+
+/// Remove only the exact registration that owns this wait path. A stale
+/// runner must never erase a newer process that reused the public handle.
+pub fn deregister_process_for(handle: &str, registration: ProcessRegistration) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        let mut reg = process_registry().lock().unwrap();
+        if reg
+            .get(handle)
+            .map(|entry| entry.registration != registration)
+            .unwrap_or(true)
+        {
+            return false;
+        }
+        if let Some(entry) = reg.remove(handle) {
+            if let Some(job) = entry.job_handle {
+                unsafe {
+                    let _ = CloseHandle(HANDLE(job as *mut std::ffi::c_void));
+                }
+            }
+        }
+        true
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let mut reg = process_registry().lock().unwrap();
+        let matches = reg
+            .get(handle)
+            .map(|entry| entry.registration == registration)
+            .unwrap_or(false);
+        if matches {
+            reg.remove(handle);
+        }
+        matches
     }
 }
 
@@ -154,14 +257,14 @@ pub fn is_cancelled(handle: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn mark_cancelled(handle: &str) -> bool {
-    let mut reg = process_registry().lock().unwrap();
-    if let Some(entry) = reg.get_mut(handle) {
-        entry.cancelled = true;
-        true
-    } else {
-        false
-    }
+pub fn is_cancelled_for(handle: &str, registration: ProcessRegistration) -> bool {
+    process_registry()
+        .lock()
+        .unwrap()
+        .get(handle)
+        .filter(|entry| entry.registration == registration)
+        .map(|entry| entry.cancelled)
+        .unwrap_or(false)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -200,6 +303,20 @@ fn exit_signal(status: &ExitStatus) -> Option<i32> {
 #[cfg(not(unix))]
 fn exit_signal(_status: &ExitStatus) -> Option<i32> {
     None
+}
+
+/// A force-release can invalidate an owner while it is between spawn and
+/// registry attachment. Do not let that obsolete owner leave a child behind.
+#[cfg(unix)]
+fn terminate_unregistered_child(child: &mut std::process::Child) {
+    let _ = signal::kill(Pid::from_raw(-(child.id() as i32)), Signal::SIGKILL);
+    let _ = child.wait();
+}
+
+#[cfg(not(unix))]
+fn terminate_unregistered_child(child: &mut std::process::Child) {
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 #[cfg(target_os = "windows")]
@@ -250,7 +367,26 @@ fn assign_child_to_job(_handle: &str, _child: &std::process::Child) {}
 // Pure impl
 // ─────────────────────────────────────────────────────────────────────────────
 
-pub fn run_process_impl<F>(handle: &str, spawn: &SpawnArgs, on_event: F) -> Result<(), String>
+/// Deliver Exit before the matching wait owner releases its registry entry so
+/// handlers can inspect cancellation provenance without a replacement race.
+fn emit_exit_then_deregister<F>(
+    handle: &str,
+    registration: ProcessRegistration,
+    event: ProcessEvent,
+    on_event: &mut F,
+) where
+    F: FnMut(ProcessEvent),
+{
+    on_event(event);
+    deregister_process_for(handle, registration);
+}
+
+pub fn run_process_impl<F>(
+    handle: &str,
+    registration: ProcessRegistration,
+    spawn: &SpawnArgs,
+    on_event: F,
+) -> Result<(), String>
 where
     F: FnMut(ProcessEvent),
 {
@@ -270,13 +406,30 @@ where
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
-            deregister_process(handle);
+            deregister_process_for(handle, registration);
             return Err(format!("spawn '{}': {}", spawn.cmd, e));
         }
     };
 
     let pid = child.id();
-    register_process(handle, pid);
+    match register_process(handle, registration, pid) {
+        Some(false) => {}
+        Some(true) => {
+            terminate_unregistered_child(&mut child);
+            deregister_process_for(handle, registration);
+            return Err(format!(
+                "process registration was cancelled before '{}' could start",
+                spawn.cmd
+            ));
+        }
+        None => {
+            terminate_unregistered_child(&mut child);
+            return Err(format!(
+                "process registration expired before '{}' could start",
+                spawn.cmd
+            ));
+        }
+    }
     assign_child_to_job(handle, &child);
 
     let stdout = child.stdout.take().expect("stdout pipe");
@@ -366,23 +519,38 @@ where
     }
 
     let wait_result = child.wait().map_err(|e| e.to_string());
-    deregister_process(handle);
 
     if let Some(err) = first_stream_err {
-        on_event_mut(ProcessEvent::Exit {
-            code: None,
-            signal: None,
-            success: false,
-        });
+        emit_exit_then_deregister(
+            handle,
+            registration,
+            ProcessEvent::Exit {
+                code: None,
+                signal: None,
+                success: false,
+            },
+            &mut on_event_mut,
+        );
         return Err(err);
     }
 
-    let status = wait_result?;
-    on_event_mut(ProcessEvent::Exit {
-        code: status.code(),
-        signal: exit_signal(&status),
-        success: status.success(),
-    });
+    let status = match wait_result {
+        Ok(status) => status,
+        Err(err) => {
+            deregister_process_for(handle, registration);
+            return Err(err);
+        }
+    };
+    emit_exit_then_deregister(
+        handle,
+        registration,
+        ProcessEvent::Exit {
+            code: status.code(),
+            signal: exit_signal(&status),
+            success: status.success(),
+        },
+        &mut on_event_mut,
+    );
 
     Ok(())
 }
@@ -405,6 +573,7 @@ where
 /// reads-from-stdin-on-an-unwriter-pipe surprises.
 pub fn run_process_with_stdin_impl<F, S>(
     handle: &str,
+    registration: ProcessRegistration,
     spawn: &SpawnArgs,
     on_event: F,
     on_spawn: S,
@@ -431,13 +600,30 @@ where
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
-            deregister_process(handle);
+            deregister_process_for(handle, registration);
             return Err(format!("spawn '{}': {}", spawn.cmd, e));
         }
     };
 
     let pid = child.id();
-    register_process(handle, pid);
+    match register_process(handle, registration, pid) {
+        Some(false) => {}
+        Some(true) => {
+            terminate_unregistered_child(&mut child);
+            deregister_process_for(handle, registration);
+            return Err(format!(
+                "process registration was cancelled before '{}' could start",
+                spawn.cmd
+            ));
+        }
+        None => {
+            terminate_unregistered_child(&mut child);
+            return Err(format!(
+                "process registration expired before '{}' could start",
+                spawn.cmd
+            ));
+        }
+    }
     assign_child_to_job(handle, &child);
 
     // Let the caller take stdin (and stash the handle) before we start
@@ -532,23 +718,38 @@ where
     }
 
     let wait_result = child.wait().map_err(|e| e.to_string());
-    deregister_process(handle);
 
     if let Some(err) = first_stream_err {
-        on_event_mut(ProcessEvent::Exit {
-            code: None,
-            signal: None,
-            success: false,
-        });
+        emit_exit_then_deregister(
+            handle,
+            registration,
+            ProcessEvent::Exit {
+                code: None,
+                signal: None,
+                success: false,
+            },
+            &mut on_event_mut,
+        );
         return Err(err);
     }
 
-    let status = wait_result?;
-    on_event_mut(ProcessEvent::Exit {
-        code: status.code(),
-        signal: exit_signal(&status),
-        success: status.success(),
-    });
+    let status = match wait_result {
+        Ok(status) => status,
+        Err(err) => {
+            deregister_process_for(handle, registration);
+            return Err(err);
+        }
+    };
+    emit_exit_then_deregister(
+        handle,
+        registration,
+        ProcessEvent::Exit {
+            code: status.code(),
+            signal: exit_signal(&status),
+            success: status.success(),
+        },
+        &mut on_event_mut,
+    );
 
     Ok(())
 }
@@ -557,10 +758,54 @@ where
 // Cancellation
 // ─────────────────────────────────────────────────────────────────────────────
 
-pub fn cancel_process_impl(handle: &str, sigkill_delay: Duration) -> bool {
-    if !mark_cancelled(handle) {
-        return false;
-    }
+/// Check the exact handle owner immediately before a delayed escalation. A
+/// replacement must match both opaque registration and PID, not just handle.
+fn should_escalate_cancellation(
+    handle: &str,
+    registration: ProcessRegistration,
+    pid: u32,
+) -> bool {
+    process_registry()
+        .lock()
+        .unwrap()
+        .get(handle)
+        .map(|entry| {
+            entry.registration == registration && entry.pid == Some(pid) && entry.cancelled
+        })
+        .unwrap_or(false)
+}
+
+fn cancel_process_matching(
+    handle: &str,
+    expected_registration: Option<ProcessRegistration>,
+    sigkill_delay: Duration,
+) -> CancellationAttempt {
+    let (attempt, pid) = {
+        let mut reg = process_registry().lock().unwrap();
+        let Some(entry) = reg.get_mut(handle) else {
+            return CancellationAttempt {
+                executed: false,
+                current: None,
+            };
+        };
+        let current = entry.identity();
+        if expected_registration.is_some_and(|expected| expected != entry.registration) {
+            return CancellationAttempt {
+                executed: false,
+                current: Some(current),
+            };
+        }
+        entry.cancelled = true;
+        (
+            CancellationAttempt {
+                executed: true,
+                current: Some(current),
+            },
+            entry.pid,
+        )
+    };
+
+    let registration = attempt.current.expect("a successful cancellation has an owner").registration;
 
     #[cfg(target_os = "windows")]
     {
@@ -568,7 +813,8 @@ pub fn cancel_process_impl(handle: &str, sigkill_delay: Duration) -> bool {
             .lock()
             .unwrap()
             .get(handle)
-            .and_then(|e| e.job_handle);
+            .filter(|entry| entry.registration == registration)
+            .and_then(|entry| entry.job_handle);
 
         if let Some(job) = job_isize {
             unsafe {
@@ -577,36 +823,47 @@ pub fn cancel_process_impl(handle: &str, sigkill_delay: Duration) -> bool {
             }
         }
         let _ = sigkill_delay;
-        return true;
+        return attempt;
     }
 
     #[cfg(unix)]
     {
-        let pid = match lookup_pid(handle) {
-            Some(p) => p,
-            None => return true,
+        let Some(pid) = pid else {
+            return attempt;
         };
 
-        let pgid = Pid::from_raw(-(pid as i32));
-        let _ = signal::kill(pgid, Signal::SIGTERM);
-
+        let _ = signal::kill(Pid::from_raw(-(pid as i32)), Signal::SIGTERM);
         let handle_owned = handle.to_string();
         thread::spawn(move || {
             thread::sleep(sigkill_delay);
-            if is_registered(&handle_owned) {
+            if should_escalate_cancellation(&handle_owned, registration, pid) {
                 let _ = signal::kill(Pid::from_raw(-(pid as i32)), Signal::SIGKILL);
-                deregister_process(&handle_owned);
             }
         });
-
-        return true;
+        return attempt;
     }
 
     #[cfg(not(any(unix, target_os = "windows")))]
     {
         let _ = sigkill_delay;
-        true
+        attempt
     }
+}
+
+/// Attempt cancellation only if this exact registration still owns the handle.
+/// A stale deferred action becomes an observable no-op.
+pub fn cancel_process_for(
+    handle: &str,
+    registration: ProcessRegistration,
+    sigkill_delay: Duration,
+) -> CancellationAttempt {
+    cancel_process_matching(handle, Some(registration), sigkill_delay)
+}
+
+/// Cancel whichever process currently owns the handle. Immediate user and app
+/// teardown use this; deferred watchdogs must use [`cancel_process_for`].
+pub fn cancel_process_impl(handle: &str, sigkill_delay: Duration) -> bool {
+    cancel_process_matching(handle, None, sigkill_delay).executed
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -672,12 +929,12 @@ pub fn terminate_all_for_exit(grace: Duration) {
 pub fn spawn_process(app: AppHandle, args: SpawnArgs) -> Result<String, String> {
     let handle = Uuid::new_v4().to_string();
 
-    pre_register_handle(&handle);
+    let registration = pre_register_handle(&handle);
 
     let handle_bg = handle.clone();
     thread::spawn(move || {
-        if is_cancelled(&handle_bg) {
-            deregister_process(&handle_bg);
+        if is_cancelled_for(&handle_bg, registration) {
+            deregister_process_for(&handle_bg, registration);
             let _ = app.emit(
                 &format!("process://{}/exit", handle_bg),
                 ExitEvent {
@@ -689,7 +946,7 @@ pub fn spawn_process(app: AppHandle, args: SpawnArgs) -> Result<String, String> 
             return;
         }
 
-        let result = run_process_impl(&handle_bg, &args, |event| match event {
+        let result = run_process_impl(&handle_bg, registration, &args, |event| match event {
             ProcessEvent::Stdout(line) => {
                 let _ = app.emit(
                     &format!("process://{}/stdout", handle_bg),
@@ -736,6 +993,86 @@ pub fn spawn_process(app: AppHandle, args: SpawnArgs) -> Result<String, String> 
 #[tauri::command]
 pub fn cancel_process(handle: String) -> bool {
     cancel_process_impl(&handle, Duration::from_secs(5))
+}
+
+#[cfg(test)]
+mod registry_tests {
+    use super::*;
+
+    #[test]
+    fn stale_registration_cannot_cancel_or_escalate_against_a_replacement() {
+        let handle = "test-process-stale-registration";
+        let old = pre_register_handle(handle);
+        assert_eq!(register_process(handle, old, 41), Some(false));
+
+        // This mirrors a bounded start-guard recovery: owner A is released,
+        // then replacement B takes the same public handle.
+        assert!(deregister_process_for(handle, old));
+        let replacement = pre_register_handle(handle);
+        assert_eq!(register_process(handle, replacement, 42), Some(false));
+
+        let attempt = cancel_process_for(handle, old, Duration::ZERO);
+        assert!(!attempt.executed, "the old owner must be a no-op");
+        assert_eq!(
+            attempt.current,
+            Some(ProcessIdentity {
+                registration: replacement,
+                pid: Some(42),
+            })
+        );
+        assert!(
+            !is_cancelled_for(handle, replacement),
+            "the replacement must not inherit cancellation state"
+        );
+        assert!(
+            !should_escalate_cancellation(handle, old, 41),
+            "a stale five-second escalation must not target the replacement"
+        );
+        assert!(deregister_process_for(handle, replacement));
+    }
+
+    #[test]
+    fn matching_exit_observes_cancellation_before_single_owner_deregisters() {
+        let handle = "test-process-exit-cancellation-provenance";
+        let registration = pre_register_handle(handle);
+        assert!(cancel_process_for(handle, registration, Duration::ZERO).executed);
+
+        let mut observed_cancelled = false;
+        emit_exit_then_deregister(
+            handle,
+            registration,
+            ProcessEvent::Exit {
+                code: None,
+                signal: Some(15),
+                success: false,
+            },
+            &mut |_| observed_cancelled = is_cancelled_for(handle, registration),
+        );
+
+        assert!(
+            observed_cancelled,
+            "Exit must see matching cancellation provenance before deregistration"
+        );
+        assert!(
+            !is_registered(handle),
+            "the wait owner deregisters immediately after Exit delivery"
+        );
+    }
+
+    #[test]
+    fn stale_wait_owner_cannot_deregister_a_replacement() {
+        let handle = "test-process-stale-owner-deregister";
+        let old = pre_register_handle(handle);
+        assert!(deregister_process_for(handle, old));
+        let replacement = pre_register_handle(handle);
+
+        assert!(
+            !deregister_process_for(handle, old),
+            "an old wait thread must not remove a replacement"
+        );
+        assert_eq!(registration_for_handle(handle), Some(replacement));
+        assert!(deregister_process_for(handle, replacement));
+    }
 }
 
 #[cfg(all(test, target_os = "windows"))]

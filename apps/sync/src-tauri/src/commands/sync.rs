@@ -48,8 +48,8 @@ use tauri::{AppHandle, Emitter};
 use crate::commands::cognito;
 use crate::commands::config::{ensure_machine_id, HqConfig, MenubarPrefs};
 use crate::commands::process::{
-    cancel_process_impl, deregister_process, is_registered, run_process_impl, try_register_handle,
-    ProcessEvent, SpawnArgs,
+    cancel_process_for, cancel_process_impl, deregister_process, registration_for_handle,
+    run_process_impl, try_register_handle, ProcessEvent, SpawnArgs,
 };
 use crate::commands::status::{journal_for_sync_complete, write_journal};
 use crate::commands::vault_client::VaultClient;
@@ -832,6 +832,8 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
         eprintln!("[sync] BAIL: already running");
         return Err("Sync is already running".to_string());
     }
+    let sync_registration = registration_for_handle(SYNC_HANDLE)
+        .expect("a successfully registered sync handle must have an identity");
 
     // Best-effort machineId bootstrap — log on failure but do not abort sync.
     if let Err(e) = ensure_machine_id() {
@@ -1127,11 +1129,10 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
     // Timeout watchdog — cancels sync after SYNC_TIMEOUT
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(SYNC_TIMEOUT).await;
-        if is_registered(SYNC_HANDLE) {
+        if cancel_process_for(SYNC_HANDLE, sync_registration, SIGKILL_DELAY).executed {
             log("sync", "timeout reached, cancelling");
             #[cfg(debug_assertions)]
             eprintln!("[sync] timeout reached, cancelling");
-            cancel_process_impl(SYNC_HANDLE, SIGKILL_DELAY);
         }
     });
 
@@ -1148,7 +1149,7 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
         log("sync", "bg task: entering run_process_impl");
         #[cfg(debug_assertions)]
         eprintln!("[sync] bg task: entering run_process_impl");
-        let result = run_process_impl(SYNC_HANDLE, &spawn_args, |event| match event {
+        let result = run_process_impl(SYNC_HANDLE, sync_registration, &spawn_args, |event| match event {
             ProcessEvent::Stdout(line) => {
                 // Always mirror runner stdout to the log file — this is the
                 // ndjson protocol stream and the only durable record of what
