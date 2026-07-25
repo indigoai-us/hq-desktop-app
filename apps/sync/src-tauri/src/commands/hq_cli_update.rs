@@ -67,15 +67,18 @@ use crate::util::paths;
 #[allow(unused_imports)]
 pub use hq_desktop_core::hq_cli_update::{
     auto_update_enabled, classify_install_failure, cli_auto_update_enabled, cmp_semver,
-    dismissed_cli_version, get_local_version, hq_version_string, install_argv, install_converged,
-    install_failure_detail, install_failure_report, is_cli_update_dismissed,
-    is_prefix_permission_failure, is_windows_locked_binary_failure, non_convergent_cli_version,
-    non_convergent_detail, npm_prefix_from_hq_bin, read_installed_version, redact_home,
-    redact_home_in, report_install_failure, report_non_convergent_install,
-    report_npm_cache_setup_failure, report_unreadable_version, resolved_hq_version,
-    should_auto_install, suppress_for_dismissal, version_from_hq_binary, version_if_hq_cli,
-    HqCliUpdateInfo, InstallFailureKind, NpmLatest, DISMISSED_VERSION_KEY, HQ_CLI_PACKAGE,
-    NON_CONVERGENT_ERROR_PREFIX, NON_CONVERGENT_VERSION_KEY,
+    dismissed_cli_version, get_local_version, get_local_version_diagnostics, hq_version_string,
+    install_argv, install_converged, install_failure_detail, install_failure_report,
+    is_cli_update_dismissed, is_prefix_permission_failure, is_windows_locked_binary_failure,
+    non_convergent_cli_version, non_convergent_detail, npm_prefix_from_hq_bin,
+    read_installed_version, redact_home, redact_home_in, report_install_failure,
+    report_non_convergent_install, report_npm_cache_setup_failure, report_unreadable_version,
+    resolved_hq_version,
+    should_auto_install, should_report_unreadable_version, suppress_for_dismissal,
+    version_from_hq_binary, version_if_hq_cli, HqCliUpdateInfo, InstallFailureKind,
+    LocalVersionProbeDiagnostics, LocalVersionProbeResult, NpmLatest, VersionProbeOutcome,
+    DISMISSED_VERSION_KEY, HQ_CLI_PACKAGE, NON_CONVERGENT_ERROR_PREFIX,
+    NON_CONVERGENT_VERSION_KEY,
 };
 
 /// npm registry endpoint that returns the dist-tag `latest` manifest. Cheap,
@@ -129,7 +132,8 @@ async fn fetch_latest() -> Result<String, String> {
 /// — we don't pester users who don't have the CLI).
 pub async fn check_once(app: &AppHandle) -> Result<Option<HqCliUpdateInfo>, String> {
     let latest = fetch_latest().await?;
-    let local = get_local_version();
+    let local_version = get_local_version_diagnostics();
+    let local = local_version.local.clone();
     let update_available = match local.as_deref() {
         Some(l) => cmp_semver(l, &latest) == std::cmp::Ordering::Less,
         None => false,
@@ -145,8 +149,8 @@ pub async fn check_once(app: &AppHandle) -> Result<Option<HqCliUpdateInfo>, Stri
     // This is the silent-failure class that hid a stale CLI behind a missing
     // banner — surface it so we can see how often detection degrades in the
     // field (vs. the benign "user simply has no CLI" case, which stays quiet).
-    if local.is_none() && paths::resolve_bin("hq") != "hq" {
-        report_unreadable_version(&latest);
+    if should_report_unreadable_version(&local_version) {
+        report_unreadable_version(&latest, &local_version.probes);
     }
     if !update_available {
         return Ok(None);
@@ -898,6 +902,49 @@ exit 0
             format!("{}|{}", home.display(), app_cache.display()),
             "npm must receive the app-owned cache, never HOME/.npm"
         );
+    }
+
+    #[test]
+    fn unreadable_version_event_keeps_closed_diagnostics_after_scrubbing() {
+        let probes = hq_desktop_core::hq_cli_update::LocalVersionProbeDiagnostics {
+            binary_anchor: hq_desktop_core::hq_cli_update::VersionProbeOutcome::PackageNotFound,
+            npm_root: hq_desktop_core::hq_cli_update::VersionProbeOutcome::NonzeroExit,
+            hq_version: hq_desktop_core::hq_cli_update::VersionProbeOutcome::InvalidUtf8,
+        };
+        let events = sentry::test::with_captured_events(|| {
+            sentry::configure_scope(|scope| {
+                scope.set_extra("token", "fixture-token".into());
+            });
+            report_unreadable_version("5.77.7", &probes);
+        });
+
+        assert_eq!(events.len(), 1);
+        let event = hq_telemetry::before_send(events.into_iter().next().unwrap()).unwrap();
+        assert_eq!(event.level, sentry::Level::Warning);
+        assert_eq!(
+            event.message.as_deref(),
+            Some(
+                "[hq-cli-update] hq is installed but its version could not be read \
+                 (binary-anchor, npm root, and hq --version all failed)"
+            )
+        );
+        assert_eq!(event.tags["hq_cli_update_kind"], "version-unreadable");
+        assert_eq!(event.tags["latest"], "5.77.7");
+        assert_eq!(
+            event.extra["hq_cli_version_probes"],
+            serde_json::json!({
+                "binary_anchor": "package_not_found",
+                "npm_root": "nonzero_exit",
+                "hq_version": "invalid_utf8",
+            })
+        );
+        assert_eq!(event.extra["token"], serde_json::json!("[Filtered]"));
+
+        let serialized = serde_json::to_string(&event).unwrap();
+        assert!(!serialized.contains("fixture-token"));
+        assert!(!serialized.contains("/Users/fixture-home"));
+        assert!(!serialized.contains("fixture-stdout"));
+        assert!(!serialized.contains("fixture-stderr"));
     }
 
     // HQ-SYNC-B: an EEXIST bin collision (a stale `<prefix>/bin/hq` npm didn't

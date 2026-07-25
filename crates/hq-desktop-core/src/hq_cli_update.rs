@@ -24,6 +24,54 @@ pub struct NpmLatest {
     pub version: String,
 }
 
+/// A closed, privacy-safe outcome for one installed-version probe. These
+/// values are deliberately the only probe data allowed into Sentry: they
+/// identify the failed stage without carrying a path, command output, account
+/// name, environment value, or other machine-specific data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VersionProbeOutcome {
+    NotAttempted,
+    Succeeded,
+    CanonicalizeFailed,
+    PackageNotFound,
+    ManifestReadOrParseFailed,
+    ProcessSpawnFailed,
+    NonzeroExit,
+    InvalidUtf8,
+    EmptyOutput,
+}
+
+/// The three ordered probes used to discover an installed hq CLI version.
+/// The shape remains fixed even when a successful earlier probe means a later
+/// one must not execute.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LocalVersionProbeDiagnostics {
+    pub binary_anchor: VersionProbeOutcome,
+    pub npm_root: VersionProbeOutcome,
+    pub hq_version: VersionProbeOutcome,
+}
+
+impl LocalVersionProbeDiagnostics {
+    fn not_attempted() -> Self {
+        Self {
+            binary_anchor: VersionProbeOutcome::NotAttempted,
+            npm_root: VersionProbeOutcome::NotAttempted,
+            hq_version: VersionProbeOutcome::NotAttempted,
+        }
+    }
+}
+
+/// The result of one version-discovery pass. `hq_installed` preserves the
+/// absent-hq distinction so callers can stay quiet for people who do not have
+/// the CLI while still reporting an installed-but-unreadable CLI.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalVersionProbeResult {
+    pub local: Option<String>,
+    pub hq_installed: bool,
+    pub probes: LocalVersionProbeDiagnostics,
+}
+
 /// Three-segment numeric semver compare ("X.Y.Z[-pre]"). Pre-release
 /// suffixes are dropped before comparison since the npm `latest` tag is
 /// always stable. Anything that fails to parse compares as zero — we'd
@@ -45,15 +93,37 @@ pub fn cmp_semver(a: &str, b: &str) -> std::cmp::Ordering {
 /// binary's ancestor chain and stop only at the *right* package — never a
 /// parent workspace's `package.json` that happens to sit above the install.
 pub fn version_if_hq_cli(pkg: &Path) -> Option<String> {
-    let bytes = std::fs::read(pkg).ok()?;
-    let parsed: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
-    if parsed.get("name").and_then(|n| n.as_str()) != Some("@indigoai-us/hq-cli") {
-        return None;
+    match read_hq_cli_package_version(pkg) {
+        Ok(version) => version,
+        Err(()) => None,
+    }
+}
+
+/// Read an hq-cli manifest while retaining enough information for the caller
+/// to distinguish an absent package from an unreadable or malformed one. A
+/// package for a different npm module is a normal ancestor-walk miss.
+fn read_hq_cli_package_version(pkg: &Path) -> Result<Option<String>, ()> {
+    let bytes = match std::fs::read(pkg) {
+        Ok(bytes) => bytes,
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
+            return Ok(None)
+        }
+        Err(_) => return Err(()),
+    };
+    let parsed: serde_json::Value = serde_json::from_slice(&bytes).map_err(|_| ())?;
+    if parsed.get("name").and_then(|name| name.as_str()) != Some("@indigoai-us/hq-cli") {
+        return Ok(None);
     }
     parsed
         .get("version")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
+        .and_then(|version| version.as_str())
+        .map(|version| Some(version.to_string()))
+        .ok_or(())
 }
 
 /// Resolve the installed version by anchoring to the *actual `hq` binary the
@@ -68,26 +138,43 @@ pub fn version_if_hq_cli(pkg: &Path) -> Option<String> {
 /// `npm` the app resolved or what `npm root -g` reports — it reads the
 /// version of the binary that's literally on the user's PATH.
 pub fn version_from_hq_binary(hq_bin: &Path) -> Option<String> {
-    let real = std::fs::canonicalize(hq_bin).ok()?;
+    version_from_hq_binary_probe(hq_bin).0
+}
+
+fn version_from_hq_binary_probe(hq_bin: &Path) -> (Option<String>, VersionProbeOutcome) {
+    let real = match std::fs::canonicalize(hq_bin) {
+        Ok(real) => real,
+        Err(_) => return (None, VersionProbeOutcome::CanonicalizeFailed),
+    };
+    let mut saw_manifest_failure = false;
     for ancestor in real.ancestors() {
-        if let Some(v) = version_if_hq_cli(&ancestor.join("package.json")) {
-            return Some(v);
+        match read_hq_cli_package_version(&ancestor.join("package.json")) {
+            Ok(Some(version)) => return (Some(version), VersionProbeOutcome::Succeeded),
+            Ok(None) => {}
+            Err(()) => saw_manifest_failure = true,
         }
     }
-
     // Windows npm does not create a symlink into the package tree. It writes
     // `<prefix>\hq.cmd` beside `<prefix>\node_modules`, so canonicalizing the
     // shim can never reach package.json through its ancestors. Anchor the
     // fallback to that exact shim's prefix instead of asking npm for its
     // unrelated default global root.
     let hq_bin_str = hq_bin.to_string_lossy();
-    let prefix = npm_prefix_from_hq_bin(&hq_bin_str)?;
-    for package_json in hq_cli_package_json_candidates(Path::new(&prefix), hq_bin) {
-        if let Some(v) = version_if_hq_cli(&package_json) {
-            return Some(v);
+    if let Some(prefix) = npm_prefix_from_hq_bin(&hq_bin_str) {
+        for package_json in hq_cli_package_json_candidates(Path::new(&prefix), hq_bin) {
+            match read_hq_cli_package_version(&package_json) {
+                Ok(Some(version)) => return (Some(version), VersionProbeOutcome::Succeeded),
+                Ok(None) => {}
+                Err(()) => saw_manifest_failure = true,
+            }
         }
     }
-    None
+    let outcome = if saw_manifest_failure {
+        VersionProbeOutcome::ManifestReadOrParseFailed
+    } else {
+        VersionProbeOutcome::PackageNotFound
+    };
+    (None, outcome)
 }
 
 /// Parse `hq --version` output into a bare version string. Last-resort only:
@@ -96,19 +183,32 @@ pub fn version_from_hq_binary(hq_bin: &Path) -> Option<String> {
 /// `util::hq_resolver`), so this may be stale. We still prefer a possibly-
 /// stale number over returning None and silently disabling the nag.
 pub fn hq_version_string(bin: &Path) -> Option<String> {
+    hq_version_string_probe(bin).0
+}
+
+fn hq_version_string_probe(bin: &Path) -> (Option<String>, VersionProbeOutcome) {
     let bin = bin.to_string_lossy();
     let mut cmd = paths::spawn_command(&bin, &[]);
-    let out = cmd.arg("--version").output().ok()?;
+    let out = match cmd.arg("--version").output() {
+        Ok(output) => output,
+        Err(_) => return (None, VersionProbeOutcome::ProcessSpawnFailed),
+    };
     if !out.status.success() {
-        return None;
+        return (None, VersionProbeOutcome::NonzeroExit);
     }
-    let s = String::from_utf8(out.stdout).ok()?;
-    let line = s.lines().next()?.trim().to_string();
+    let s = match String::from_utf8(out.stdout) {
+        Ok(stdout) => stdout,
+        Err(_) => return (None, VersionProbeOutcome::InvalidUtf8),
+    };
+    let Some(line) = s.lines().next() else {
+        return (None, VersionProbeOutcome::EmptyOutput);
+    };
+    let line = line.trim();
     let cleaned = line.trim_start_matches('v').trim();
     if cleaned.is_empty() {
-        None
+        (None, VersionProbeOutcome::EmptyOutput)
     } else {
-        Some(cleaned.to_string())
+        (Some(cleaned.to_string()), VersionProbeOutcome::Succeeded)
     }
 }
 
@@ -122,35 +222,116 @@ pub fn hq_version_string(bin: &Path) -> Option<String> {
 ///   2. `npm root -g` package.json — retained for non-symlink layouts.
 ///   3. `hq --version` — last resort (may lag; see `hq_version_string`).
 pub fn get_local_version() -> Option<String> {
-    // 1. Binary-anchored read — the primary path; fixes the prefix-mismatch
-    //    silent-None bug by reading the version of the binary actually on PATH.
+    get_local_version_diagnostics().local
+}
+
+/// Discover the local version once and retain the bounded outcomes needed to
+/// diagnose the otherwise-undifferentiated None result.
+pub fn get_local_version_diagnostics() -> LocalVersionProbeResult {
+    // Keep the resolver call order unchanged: do not look up npm when the
+    // binary-anchored package probe has already succeeded.
     let hq = paths::resolve_bin("hq");
-    let hq_installed = hq != "hq";
-    if hq_installed {
-        if let Some(v) = version_from_hq_binary(Path::new(&hq)) {
-            return Some(v);
+    if hq != "hq" {
+        let hq_path = Path::new(&hq);
+        let (local, binary_anchor) = version_from_hq_binary_probe(hq_path);
+        if let Some(local) = local {
+            return LocalVersionProbeResult {
+                local: Some(local),
+                hq_installed: true,
+                probes: LocalVersionProbeDiagnostics {
+                    binary_anchor,
+                    ..LocalVersionProbeDiagnostics::not_attempted()
+                },
+            };
         }
+        let npm = paths::resolve_bin("npm");
+        let npm = (npm != "npm").then_some(npm.as_str());
+        return probe_local_version_after_binary(
+            Some(hq_path),
+            binary_anchor,
+            npm,
+            &paths::child_path(),
+        );
     }
 
-    // 2. npm global package.json — same canonical source, located via
-    //    `npm root -g`. Covers layouts where `hq` isn't a symlink into the
-    //    package tree (e.g. a wrapper script).
+    // Preserve the legacy npm-root fallback even when `hq` is absent: an npm
+    // package may exist before its bin-link is created. The result still marks
+    // hq as absent, so an all-fail check remains a quiet no-op.
     let npm = paths::resolve_bin("npm");
-    if npm != "npm" {
-        if let Some(v) = read_installed_version(&npm, &paths::child_path()) {
-            return Some(v);
-        }
+    let npm = (npm != "npm").then_some(npm.as_str());
+    probe_local_version_after_binary(
+        None,
+        VersionProbeOutcome::NotAttempted,
+        npm,
+        &paths::child_path(),
+    )
+}
+
+#[cfg(test)]
+fn probe_local_version(
+    hq: Option<&Path>,
+    npm: Option<&str>,
+    path: &str,
+) -> LocalVersionProbeResult {
+    let (local, binary_anchor) = match hq {
+        Some(hq) => version_from_hq_binary_probe(hq),
+        None => (None, VersionProbeOutcome::NotAttempted),
+    };
+    if let Some(local) = local {
+        return LocalVersionProbeResult {
+            local: Some(local),
+            hq_installed: hq.is_some(),
+            probes: LocalVersionProbeDiagnostics {
+                binary_anchor,
+                ..LocalVersionProbeDiagnostics::not_attempted()
+            },
+        };
+    }
+    probe_local_version_after_binary(hq, binary_anchor, npm, path)
+}
+
+fn probe_local_version_after_binary(
+    hq: Option<&Path>,
+    binary_anchor: VersionProbeOutcome,
+    npm: Option<&str>,
+    path: &str,
+) -> LocalVersionProbeResult {
+    let hq_installed = hq.is_some();
+    let (npm_local, npm_root) = match npm {
+        Some(npm) => read_installed_version_probe(npm, path),
+        None => (None, VersionProbeOutcome::NotAttempted),
+    };
+    if let Some(local) = npm_local {
+        return LocalVersionProbeResult {
+            local: Some(local),
+            hq_installed,
+            probes: LocalVersionProbeDiagnostics {
+                binary_anchor,
+                npm_root,
+                hq_version: VersionProbeOutcome::NotAttempted,
+            },
+        };
     }
 
-    // 3. `hq --version` — last resort, but better than silent None for a
-    //    user who clearly has the CLI on PATH.
-    if hq_installed {
-        if let Some(v) = hq_version_string(Path::new(&hq)) {
-            return Some(v);
-        }
+    let (local, hq_version) = match hq {
+        Some(hq) => hq_version_string_probe(hq),
+        None => (None, VersionProbeOutcome::NotAttempted),
+    };
+    LocalVersionProbeResult {
+        local,
+        hq_installed,
+        probes: LocalVersionProbeDiagnostics {
+            binary_anchor,
+            npm_root,
+            hq_version,
+        },
     }
+}
 
-    None
+/// An unreadable version is actionable only when the hq resolver found a
+/// binary. A missing hq remains a deliberate quiet no-op.
+pub fn should_report_unreadable_version(result: &LocalVersionProbeResult) -> bool {
+    result.local.is_none() && result.hq_installed
 }
 
 /// Read `cliAutoUpdate` directly from menubar.json (untyped) so the background
@@ -389,14 +570,23 @@ pub fn report_non_convergent_install(
 }
 
 /// Capture a Sentry event when `hq` is installed but every version probe
-/// failed. Scrubbed by `sentry_scrub.rs` before send. This is the
+/// failed. Scrubbed by `hq_telemetry::before_send` before send. This is the
 /// "detection silently degraded" signal the team triages immediately —
 /// the exact class that hid a stale CLI behind a missing banner.
-pub fn report_unreadable_version(latest: &str) {
+pub fn report_unreadable_version(latest: &str, probes: &LocalVersionProbeDiagnostics) {
     sentry::with_scope(
         |scope| {
             scope.set_tag("hq_cli_update_kind", "version-unreadable");
             scope.set_tag("latest", latest);
+            scope.set_extra(
+                "hq_cli_version_probes",
+                serde_json::json!({
+                    "binary_anchor": probes.binary_anchor,
+                    "npm_root": probes.npm_root,
+                    "hq_version": probes.hq_version,
+                })
+                .into(),
+            );
         },
         || {
             sentry::capture_message(
@@ -842,25 +1032,47 @@ pub fn install_argv(prefix: Option<&str>) -> Vec<String> {
 /// default global prefix and is only a fallback for version detection layouts
 /// that cannot be resolved from the `hq` binary itself.
 pub fn read_installed_version(npm_bin: &str, path: &str) -> Option<String> {
+    read_installed_version_probe(npm_bin, path).0
+}
+
+fn read_installed_version_probe(
+    npm_bin: &str,
+    path: &str,
+) -> (Option<String>, VersionProbeOutcome) {
     let mut cmd = paths::spawn_command(npm_bin, &[]);
-    let out = cmd.args(["root", "-g"]).env("PATH", path).output().ok()?;
+    let out = match cmd.args(["root", "-g"]).env("PATH", path).output() {
+        Ok(output) => output,
+        Err(_) => return (None, VersionProbeOutcome::ProcessSpawnFailed),
+    };
     if !out.status.success() {
-        return None;
+        return (None, VersionProbeOutcome::NonzeroExit);
     }
-    let root = String::from_utf8(out.stdout).ok()?.trim().to_string();
+    let root = match String::from_utf8(out.stdout) {
+        Ok(stdout) => stdout.trim().to_string(),
+        Err(_) => return (None, VersionProbeOutcome::InvalidUtf8),
+    };
     if root.is_empty() {
-        return None;
+        return (None, VersionProbeOutcome::EmptyOutput);
     }
     let pkg_json = std::path::Path::new(&root)
         .join("@indigoai-us")
         .join("hq-cli")
         .join("package.json");
-    let bytes = std::fs::read(&pkg_json).ok()?;
-    let parsed: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
-    parsed
-        .get("version")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
+    let bytes = match std::fs::read(&pkg_json) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return (None, VersionProbeOutcome::PackageNotFound)
+        }
+        Err(_) => return (None, VersionProbeOutcome::ManifestReadOrParseFailed),
+    };
+    let parsed: serde_json::Value = match serde_json::from_slice(&bytes) {
+        Ok(parsed) => parsed,
+        Err(_) => return (None, VersionProbeOutcome::ManifestReadOrParseFailed),
+    };
+    match parsed.get("version").and_then(|v| v.as_str()) {
+        Some(version) => (Some(version.to_string()), VersionProbeOutcome::Succeeded),
+        None => (None, VersionProbeOutcome::ManifestReadOrParseFailed),
+    }
 }
 
 #[cfg(test)]
@@ -1559,5 +1771,237 @@ mod tests {
             version_from_hq_binary(&tmp.path().join("does-not-exist/hq")),
             None
         );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn unreadable_version_result_keeps_probe_failures_distinct() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let hq = tmp.path().join("bin/hq");
+        let npm = tmp.path().join("bin/npm");
+        std::fs::create_dir_all(hq.parent().unwrap()).unwrap();
+        write_executable(&hq, "#!/bin/sh\nexit 9\n");
+        write_executable(&npm, "#!/bin/sh\nexit 8\n");
+
+        let result = probe_local_version(Some(&hq), Some(npm.to_str().unwrap()), "");
+
+        assert_eq!(result.local, None);
+        assert!(result.hq_installed);
+        assert_eq!(
+            result.probes.binary_anchor,
+            VersionProbeOutcome::PackageNotFound
+        );
+        assert_eq!(result.probes.npm_root, VersionProbeOutcome::NonzeroExit);
+        assert_eq!(result.probes.hq_version, VersionProbeOutcome::NonzeroExit);
+        assert!(should_report_unreadable_version(&result));
+    }
+
+    #[test]
+    fn absent_hq_remains_quiet_even_when_no_probes_can_run() {
+        let result = probe_local_version(None, None, "");
+
+        assert_eq!(result.local, None);
+        assert!(!result.hq_installed);
+        assert_eq!(result.probes, LocalVersionProbeDiagnostics::not_attempted());
+        assert!(!should_report_unreadable_version(&result));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn binary_anchor_success_short_circuits_later_probes() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let pkg_dir = tmp.path().join("lib/node_modules/@indigoai-us/hq-cli");
+        std::fs::create_dir_all(pkg_dir.join("bin")).unwrap();
+        std::fs::write(
+            pkg_dir.join("package.json"),
+            br#"{"name":"@indigoai-us/hq-cli","version":"5.77.7"}"#,
+        )
+        .unwrap();
+        let real_hq = pkg_dir.join("bin/hq.js");
+        write_executable(&real_hq, "#!/bin/sh\nexit 99\n");
+        let bin_dir = tmp.path().join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let hq = bin_dir.join("hq");
+        std::os::unix::fs::symlink(&real_hq, &hq).unwrap();
+
+        let result = probe_local_version(Some(&hq), None, "");
+
+        assert_eq!(result.local.as_deref(), Some("5.77.7"));
+        assert_eq!(result.probes.binary_anchor, VersionProbeOutcome::Succeeded);
+        assert_eq!(result.probes.npm_root, VersionProbeOutcome::NotAttempted);
+        assert_eq!(result.probes.hq_version, VersionProbeOutcome::NotAttempted);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn npm_root_fallback_preserves_precedence_over_hq_version() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let bin_dir = tmp.path().join("bin");
+        let hq = bin_dir.join("hq");
+        let npm = bin_dir.join("npm");
+        let npm_root = tmp.path().join("npm-root");
+        let package = npm_root.join("@indigoai-us/hq-cli/package.json");
+        std::fs::create_dir_all(package.parent().unwrap()).unwrap();
+        std::fs::write(
+            &package,
+            br#"{"name":"@indigoai-us/hq-cli","version":"5.77.8"}"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        write_executable(&hq, "#!/bin/sh\nexit 99\n");
+        write_executable(
+            &npm,
+            &format!("#!/bin/sh\nprintf '%s\\n' '{}'\n", npm_root.display()),
+        );
+
+        let result = probe_local_version(Some(&hq), Some(npm.to_str().unwrap()), "");
+
+        assert_eq!(result.local.as_deref(), Some("5.77.8"));
+        assert_eq!(
+            result.probes.binary_anchor,
+            VersionProbeOutcome::PackageNotFound
+        );
+        assert_eq!(result.probes.npm_root, VersionProbeOutcome::Succeeded);
+        assert_eq!(result.probes.hq_version, VersionProbeOutcome::NotAttempted);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn hq_version_fallback_runs_only_after_earlier_probes_fail() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let bin_dir = tmp.path().join("bin");
+        let hq = bin_dir.join("hq");
+        let npm = bin_dir.join("npm");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        write_executable(&hq, "#!/bin/sh\nprintf 'v5.77.9\\n'\n");
+        write_executable(&npm, "#!/bin/sh\nexit 7\n");
+
+        let result = probe_local_version(Some(&hq), Some(npm.to_str().unwrap()), "");
+
+        assert_eq!(result.local.as_deref(), Some("5.77.9"));
+        assert_eq!(
+            result.probes.binary_anchor,
+            VersionProbeOutcome::PackageNotFound
+        );
+        assert_eq!(result.probes.npm_root, VersionProbeOutcome::NonzeroExit);
+        assert_eq!(result.probes.hq_version, VersionProbeOutcome::Succeeded);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn binary_anchor_diagnostics_classify_canonicalize_package_and_manifest_failures() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let missing = tmp.path().join("missing/hq");
+        assert_eq!(
+            version_from_hq_binary_probe(&missing).1,
+            VersionProbeOutcome::CanonicalizeFailed
+        );
+
+        let standalone = tmp.path().join("standalone-hq");
+        write_executable(&standalone, "#!/bin/sh\nexit 0\n");
+        assert_eq!(
+            version_from_hq_binary_probe(&standalone).1,
+            VersionProbeOutcome::PackageNotFound
+        );
+
+        let bad_package = tmp.path().join("package.json");
+        std::fs::write(&bad_package, b"not json").unwrap();
+        assert_eq!(
+            version_from_hq_binary_probe(&standalone).1,
+            VersionProbeOutcome::ManifestReadOrParseFailed
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn command_probe_diagnostics_classify_spawn_status_utf8_and_empty_output() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let missing = tmp.path().join("missing-hq");
+        assert_eq!(
+            hq_version_string_probe(&missing).1,
+            VersionProbeOutcome::ProcessSpawnFailed
+        );
+
+        let nonzero = tmp.path().join("nonzero-hq");
+        let invalid_utf8 = tmp.path().join("invalid-utf8-hq");
+        let empty = tmp.path().join("empty-hq");
+        write_executable(&nonzero, "#!/bin/sh\nexit 5\n");
+        write_executable(&invalid_utf8, "#!/bin/sh\nprintf '\\377'\n");
+        write_executable(&empty, "#!/bin/sh\nprintf '\\n'\n");
+        assert_eq!(
+            hq_version_string_probe(&nonzero).1,
+            VersionProbeOutcome::NonzeroExit
+        );
+        assert_eq!(
+            hq_version_string_probe(&invalid_utf8).1,
+            VersionProbeOutcome::InvalidUtf8
+        );
+        assert_eq!(
+            hq_version_string_probe(&empty).1,
+            VersionProbeOutcome::EmptyOutput
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn npm_root_probe_diagnostics_classify_output_and_manifest_failures() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let missing = tmp.path().join("missing-npm");
+        assert_eq!(
+            read_installed_version_probe(missing.to_str().unwrap(), "").1,
+            VersionProbeOutcome::ProcessSpawnFailed
+        );
+
+        let nonzero = tmp.path().join("nonzero-npm");
+        let invalid_utf8 = tmp.path().join("invalid-utf8-npm");
+        let empty = tmp.path().join("empty-npm");
+        let absent_package = tmp.path().join("absent-package-npm");
+        let malformed_package = tmp.path().join("malformed-package-npm");
+        write_executable(&nonzero, "#!/bin/sh\nexit 5\n");
+        write_executable(&invalid_utf8, "#!/bin/sh\nprintf '\\377'\n");
+        write_executable(&empty, "#!/bin/sh\nprintf '\\n'\n");
+        write_executable(
+            &absent_package,
+            &format!("#!/bin/sh\nprintf '%s\\n' '{}'\n", tmp.path().display()),
+        );
+        let npm_root = tmp.path().join("npm-root");
+        let package = npm_root.join("@indigoai-us/hq-cli/package.json");
+        std::fs::create_dir_all(package.parent().unwrap()).unwrap();
+        std::fs::write(&package, b"not json").unwrap();
+        write_executable(
+            &malformed_package,
+            &format!("#!/bin/sh\nprintf '%s\\n' '{}'\n", npm_root.display()),
+        );
+
+        assert_eq!(
+            read_installed_version_probe(nonzero.to_str().unwrap(), "").1,
+            VersionProbeOutcome::NonzeroExit
+        );
+        assert_eq!(
+            read_installed_version_probe(invalid_utf8.to_str().unwrap(), "").1,
+            VersionProbeOutcome::InvalidUtf8
+        );
+        assert_eq!(
+            read_installed_version_probe(empty.to_str().unwrap(), "").1,
+            VersionProbeOutcome::EmptyOutput
+        );
+        assert_eq!(
+            read_installed_version_probe(absent_package.to_str().unwrap(), "").1,
+            VersionProbeOutcome::PackageNotFound
+        );
+        assert_eq!(
+            read_installed_version_probe(malformed_package.to_str().unwrap(), "").1,
+            VersionProbeOutcome::ManifestReadOrParseFailed
+        );
+    }
+
+    #[cfg(unix)]
+    fn write_executable(path: &Path, contents: &str) {
+        use std::os::unix::fs::PermissionsExt;
+
+        std::fs::write(path, contents).unwrap();
+        let mut permissions = std::fs::metadata(path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(path, permissions).unwrap();
     }
 }
