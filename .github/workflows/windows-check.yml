@@ -126,8 +126,11 @@ jobs:
           HQ_SYNC_DESKTOP_ALT_DRIVER_LOG_DIR: ${{ runner.temp }}\desktop-alt-driver-logs
         run: pnpm vitest run --config e2e/desktop-alt/vitest.config.ts e2e/desktop-alt/smoke-pages.spec.ts
 
-      - name: Upload WebDriver diagnostics on failure
-        if: failure()
+      # always(), not failure(): the captured msedgewebview2.exe command line is
+      # the evidence that the WebView2 automation switches landed, and a green
+      # run is exactly when that evidence is worth keeping.
+      - name: Upload WebDriver diagnostics
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: windows-check-webdriver-logs
@@ -260,15 +263,25 @@ jobs:
             Get-ChildItem -LiteralPath $installDir -Recurse | Select-Object FullName, Length, LastWriteTime | Format-Table -AutoSize
           }
 
+      # Two steps, not one path list: upload-artifact derives a single root
+      # directory from the paths it is given, and these two live on different
+      # roots (the runner's home vs. RUNNER_TEMP). Listing both under one step
+      # fails with "The rootDirectory ... is not a parent directory of the file".
       - name: Upload application logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: windows-installer-e2e-logs
+          name: windows-installer-e2e-app-logs
           if-no-files-found: warn
-          path: |
-            ~/.hq/logs/**
-            ${{ runner.temp }}/desktop-alt-driver-logs/**
+          path: ~/.hq/logs/**
+
+      - name: Upload WebDriver diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer-e2e-webdriver-logs
+          if-no-files-found: warn
+          path: ${{ runner.temp }}/desktop-alt-driver-logs/**
 
       - name: Uninstall production package
         if: always()

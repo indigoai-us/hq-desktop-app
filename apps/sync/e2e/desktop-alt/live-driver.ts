@@ -573,9 +573,12 @@ function writeNativeDriverShim(logDir: string): { shim: string; nativeLog: strin
  * to whether the remote debugging port msedgedriver injects actually reached
  * the WebView2 browser process, and which user data folder that process is
  * using — which is where it would write the DevToolsActivePort file.
+ *
+ * Resolves with the captured text (empty string when the probe could not run)
+ * so callers can assert on it, not just archive it.
  */
-function snapshotWindowsProcesses(appPath: string, outFile: string): void {
-  if (process.platform !== 'win32') return;
+function snapshotWindowsProcesses(appPath: string, outFile: string): Promise<string> {
+  if (process.platform !== 'win32') return Promise.resolve('');
 
   const app = basename(appPath);
   const query =
@@ -583,16 +586,72 @@ function snapshotWindowsProcesses(appPath: string, outFile: string): void {
     `or Name='msedgedriver.exe' or Name='tauri-driver.exe'" | ` +
     'Select-Object ProcessId,ParentProcessId,Name,CommandLine | Format-List | Out-String -Width 8000';
 
-  execFile(
-    'powershell',
-    ['-NoProfile', '-NonInteractive', '-Command', query],
-    { timeout: 30_000 },
-    (error, stdout) => {
-      const header = `\n=== ${new Date().toISOString()} ===\n`;
-      const body = error ? `probe failed: ${error.message}\n` : stdout;
-      appendFileSync(outFile, `${header}${body}`);
-    },
+  return new Promise((resolve) => {
+    execFile(
+      'powershell',
+      ['-NoProfile', '-NonInteractive', '-Command', query],
+      { timeout: 30_000, maxBuffer: 8 * 1024 * 1024 },
+      (error, stdout) => {
+        const header = `\n=== ${new Date().toISOString()} ===\n`;
+        const body = error ? `probe failed: ${error.message}\n` : stdout;
+        appendFileSync(outFile, `${header}${body}`);
+        resolve(error ? '' : stdout);
+      },
+    );
+  });
+}
+
+/**
+ * One probe per test process — the answer cannot change once the WebView2
+ * environment for this app instance exists.
+ */
+let automationSwitchesVerified = false;
+
+/**
+ * Prove the driver's switches reached the WebView2 browser process.
+ *
+ * msedgedriver can only inject `--remote-debugging-port` through the
+ * `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` environment variable, and wry sets
+ * `AdditionalBrowserArguments` unconditionally, which makes the WebView2
+ * Runtime drop that variable on the floor. The app compensates in
+ * `src-tauri/src/util/webview2_automation.rs`. If that forwarding is ever lost,
+ * the only symptom is a 60s stall ending in `session not created:
+ * DevToolsActivePort file doesn't exist` — a message that names the symptom and
+ * not the cause. Checking the browser process's own command line turns that
+ * into an immediate, self-explaining failure, and leaves the captured tree in
+ * the uploaded artifact either way.
+ */
+async function assertWebviewAutomationSwitches(config: LiveConfig, logDir: string): Promise<void> {
+  if (process.platform !== 'win32' || automationSwitchesVerified) return;
+
+  const snapshot = await snapshotWindowsProcesses(
+    config.appPath,
+    join(logDir, 'processes-postsession.log'),
   );
+  if (!snapshot) return; // probe itself failed; it is diagnostics, not a gate
+
+  const browserProcesses = snapshot
+    .split(/\r?\n/)
+    .filter((line) => line.includes('--embedded-browser-webview=1'));
+
+  if (browserProcesses.length === 0) {
+    throw new Error(
+      'No WebView2 browser process was found after the WebDriver session was created. ' +
+        `Captured process tree:\n${snapshot}`,
+    );
+  }
+
+  if (!browserProcesses.some((line) => line.includes('--remote-debugging-port'))) {
+    throw new Error(
+      'The WebView2 browser process started without --remote-debugging-port, so WebDriver ' +
+        'cannot attach to it. msedgedriver injects that switch via ' +
+        'WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS, which the WebView2 Runtime ignores unless the ' +
+        'app forwards it through additionalBrowserArgs — see ' +
+        `src-tauri/src/util/webview2_automation.rs. Captured process tree:\n${snapshot}`,
+    );
+  }
+
+  automationSwitchesVerified = true;
 }
 
 /**
@@ -615,7 +674,11 @@ function describeDriverFailure(
 
   sections.push(`application: ${config.appPath} (exists: ${existsSync(config.appPath)})`);
 
-  const files = [join(logDir, 'tauri-driver.log'), join(logDir, 'processes-midflight.log')];
+  const files = [
+    join(logDir, 'tauri-driver.log'),
+    join(logDir, 'processes-midflight.log'),
+    join(logDir, 'processes-postsession.log'),
+  ];
   if (nativeLog) files.push(nativeLog);
 
   for (const file of files) {
@@ -636,6 +699,7 @@ async function startOrReuseDriver(config: LiveConfig): Promise<DriverStart> {
 
   if (driverRunning) {
     await client.createSession(config.appPath);
+    await assertWebviewAutomationSwitches(config, driverLogDir());
     return { client };
   }
 
@@ -682,13 +746,14 @@ async function startOrReuseDriver(config: LiveConfig): Promise<DriverStart> {
     // the app on the way out, so snapshot the process tree mid-flight while the
     // WebView2 browser process is still up.
     const midFlight = setTimeout(() => {
-      snapshotWindowsProcesses(config.appPath, join(logDir, 'processes-midflight.log'));
+      void snapshotWindowsProcesses(config.appPath, join(logDir, 'processes-midflight.log'));
     }, 20_000);
     try {
       await client.createSession(config.appPath);
     } finally {
       clearTimeout(midFlight);
     }
+    await assertWebviewAutomationSwitches(config, logDir);
     return { client };
   } catch (error) {
     // Read the logs before reaping: msedgedriver is still alive here.

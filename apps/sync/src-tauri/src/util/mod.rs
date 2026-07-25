@@ -15,5 +15,12 @@ pub mod journal;
 // App-local because it's specific to this app's rumqttc usage.
 pub mod mqtt_tls;
 
+// Forwards a WebView2 automation host's browser switches into every window this
+// process creates. Windows-only: wry only reads `additionalBrowserArgs` on the
+// WebView2 backend, and no other platform severs the environment-variable
+// channel the way WebView2 does.
+#[cfg(target_os = "windows")]
+pub mod webview2_automation;
+
 #[cfg(test)]
 pub(crate) mod test_support;
