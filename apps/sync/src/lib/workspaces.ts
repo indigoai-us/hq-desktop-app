@@ -15,6 +15,11 @@ export interface Workspace {
   localPath: string | null;
   membershipStatus: string | null;
   role: string | null;
+  // Per-workspace local sync gate. Distinct from the cloud footprint
+  // (`get_sync_mode` shared/all/custom): when false this workspace stays
+  // browsable in the desktop UI but is removed from watched/polled sync work
+  // on this Mac. Absent in older fixtures/tests => treated as enabled.
+  syncEnabled?: boolean;
   lastSyncedAt: string | null;
   // Diagnostic when state is 'broken'. Surfaced in the row tooltip + Connect
   // button hint. Always null for non-broken states.
@@ -25,6 +30,12 @@ export interface Workspace {
   // NOT CONNECTED invite row from them.
   invitedBy: string | null;
   invitedAt: string | null;
+}
+
+export function isWorkspaceSyncEnabled(
+  workspace: Pick<Workspace, 'syncEnabled'> | null | undefined,
+): boolean {
+  return workspace?.syncEnabled !== false;
 }
 
 // Mirrors src-tauri/src/commands/workspaces.rs::WorkspacesResult.

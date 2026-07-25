@@ -3,13 +3,14 @@
   import * as Sentry from '@sentry/svelte';
 
   /**
-   * Per-company Shared/All segmented control for V4 sidebar row hover (US-009).
+   * Per-workspace sync controls for the V4 sidebar row chrome.
    *
-   * Self-contained: lazily fetches `get_sync_mode` on mount (parent only mounts
-   * after first hover/focus), writes via `set_sync_mode` with optimistic flip +
-   * revert. Mode is a LOCAL FOOTPRINT control, never access. `custom` is
-   * CLI-only and rendered read-only. V4 styling: neutral active fill, no status
-   * colour on the control (dots carry status).
+   * Two policies are intentionally separate:
+   *   - `enabled`: local on/off switch for this Mac
+   *   - `mode`: remembered cloud-backed company footprint (`shared` / `all`)
+   *
+   * Disabling a company must not overwrite its remembered footprint. Re-enable
+   * simply reuses the existing server-side mode.
    */
 
   interface MembershipSyncConfig {
@@ -20,52 +21,125 @@
     updatedBy?: string | null;
   }
 
-  interface Props {
-    slug: string;
-    /** Display name for user-facing copy; slug stays the invoke key. */
-    label?: string;
-    /** Vault unreachable: the control stays visible (so the current footprint
-     *  reads) but is read-only until the cloud comes back. */
-    disabled?: boolean;
+  interface SettingsWire {
+    personalSyncEnabled?: boolean | null;
+    [key: string]: unknown;
   }
 
-  let { slug, label, disabled = false }: Props = $props();
+  interface Props {
+    slug: string;
+    label?: string;
+    isPersonal?: boolean;
+    syncEnabled?: boolean;
+    cloudReachable?: boolean;
+    onenabledchange?: (enabled: boolean) => void;
+  }
 
-  // null = not yet loaded; otherwise the resolved mode.
+  let {
+    slug,
+    label,
+    isPersonal = false,
+    syncEnabled = true,
+    cloudReachable = true,
+    onenabledchange,
+  }: Props = $props();
+
+  let enabledState = $state(syncEnabled);
   let mode = $state<'all' | 'shared' | 'custom' | null>(null);
   let saving = $state(false);
-  let error = $state<string | null>(null);
+  let modeError = $state<string | null>(null);
 
-  async function load() {
-    error = null;
+  $effect(() => {
+    enabledState = syncEnabled;
+  });
+
+  async function loadMode() {
+    if (isPersonal) return;
+    modeError = null;
     try {
       const cfg = await invoke<MembershipSyncConfig>('get_sync_mode', {
         companySlug: slug,
       });
       mode = cfg.syncMode;
     } catch (err) {
-      // Don't Sentry-spam read failures — a freshly-connected company with no
-      // sync-config row, or a transient vault blip, both land here.
       console.warn(`get_sync_mode(${slug}) failed:`, err);
-      error = 'mode unavailable';
+      modeError = 'mode unavailable';
     }
   }
 
-  // Lazily resolve on mount. Parent only mounts after first hover/focus, so
-  // mount = first reveal; do not fetch eagerly at module scope.
+  async function loadPersonalEnabled() {
+    try {
+      const settings = await invoke<SettingsWire>('get_settings');
+      enabledState = settings.personalSyncEnabled ?? true;
+    } catch (err) {
+      console.warn('get_settings(personalSyncEnabled) failed:', err);
+      enabledState = true;
+    }
+  }
+
   $effect(() => {
-    if (mode === null && error === null) {
-      void load();
+    if (isPersonal) {
+      void loadPersonalEnabled();
+      return;
+    }
+    if (mode === null && modeError === null) {
+      void loadMode();
     }
   });
 
+  async function persistEnabled(next: boolean) {
+    if (isPersonal) {
+      const prefs = await invoke<Record<string, unknown>>('get_settings').catch(() => ({}));
+      await invoke('save_settings', {
+        prefs: {
+          ...prefs,
+          personalSyncEnabled: next,
+        },
+      });
+      window.dispatchEvent(
+        new CustomEvent('hq:workspace-sync-enabled-changed', {
+          detail: { slug: 'personal', enabled: next },
+        }),
+      );
+      return;
+    }
+
+    await invoke<boolean>('set_workspace_sync_enabled', { slug, enabled: next });
+    window.dispatchEvent(
+      new CustomEvent('hq:workspace-sync-enabled-changed', {
+        detail: { slug, enabled: next },
+      }),
+    );
+  }
+
+  async function toggleEnabled(event: Event) {
+    event.stopPropagation();
+    if (saving) return;
+    const next = !enabledState;
+    const prev = enabledState;
+    saving = true;
+    enabledState = next;
+    try {
+      await persistEnabled(next);
+      onenabledchange?.(next);
+    } catch (err) {
+      enabledState = prev;
+      const msg = String(err);
+      console.error(`set_workspace_sync_enabled(${slug}, ${next}) failed:`, msg);
+      Sentry.captureException(err instanceof Error ? err : new Error(msg), {
+        tags: { slug, action: 'set-workspace-sync-enabled', enabled: String(next) },
+      });
+    } finally {
+      saving = false;
+    }
+  }
+
   async function setMode(next: 'all' | 'shared', event: MouseEvent) {
     event.stopPropagation();
-    if (disabled || saving || mode === next) return;
+    if (!cloudReachable || saving || mode === next) return;
     const prev = mode;
     saving = true;
-    error = null;
-    // Optimistic flip — revert on failure.
+    modeError = null;
     mode = next;
     try {
       const cfg = await invoke<MembershipSyncConfig>('set_sync_mode', {
@@ -80,67 +154,71 @@
       Sentry.captureException(err instanceof Error ? err : new Error(msg), {
         tags: { slug, action: 'set-sync-mode', mode: next, source: 'frontend' },
       });
-      error = 'save failed';
+      modeError = 'save failed';
     } finally {
       saving = false;
     }
   }
 
-  // A failed read (transient vault blip, offline moment) must not dead-end the
-  // control for the whole session — the "—" state is a retry button: clearing
-  // `error` re-arms the lazy-load $effect.
   function retryLoad(event: MouseEvent) {
     event.stopPropagation();
-    error = null;
+    modeError = null;
   }
 
   const wrapperTitle = $derived(
-    disabled
-      ? 'Cloud unreachable — sync mode can\u2019t be changed right now'
-      : `Controls what ${label ?? slug} downloads to THIS Mac — not who can access it. Shared = only files shared with you; All = the whole company. Files you've changed but not yet synced are never removed.`,
+    isPersonal
+      ? 'Turns Personal sync on or off for this Mac. The Settings toggle writes the same value.'
+      : `Controls whether ${label ?? slug} syncs on this Mac. Shared/All still only changes the remembered local footprint, not access.`,
   );
 </script>
 
 <span class="sidebar-sync-mode" class:saving title={wrapperTitle} data-testid="sidebar-sync-mode">
-  {#if mode === null && !error}
-    <span class="sidebar-sync-mode-loading" aria-hidden="true">…</span>
-  {:else if mode === 'custom'}
-    <span
-      class="sidebar-sync-mode-custom"
-      title="Custom paths — managed via `hq sync mode custom`"
-    >
-      custom
-    </span>
-  {:else if error}
-    <button
-      type="button"
-      class="sidebar-sync-mode-error"
-      title={`${error} — click to retry`}
-      onclick={retryLoad}
-    >
-      —
-    </button>
-  {:else if mode !== null}
-    <button
-      type="button"
-      class="sidebar-sync-mode-opt"
-      class:active={mode === 'shared'}
-      disabled={disabled || saving}
-      aria-pressed={mode === 'shared'}
-      onclick={(e) => setMode('shared', e)}
-    >
-      Shared
-    </button>
-    <button
-      type="button"
-      class="sidebar-sync-mode-opt"
-      class:active={mode === 'all'}
-      disabled={disabled || saving}
-      aria-pressed={mode === 'all'}
-      onclick={(e) => setMode('all', e)}
-    >
-      All
-    </button>
+  <label class="sidebar-sync-enabled" class:off={!enabledState}>
+    <input type="checkbox" checked={enabledState} onchange={toggleEnabled} />
+    <span>{enabledState ? 'On' : 'Off'}</span>
+  </label>
+
+  {#if !isPersonal && enabledState}
+    {#if mode === null && !modeError}
+      <span class="sidebar-sync-mode-loading" aria-hidden="true">...</span>
+    {:else if mode === 'custom'}
+      <span
+        class="sidebar-sync-mode-custom"
+        title="Custom paths - managed via `hq sync mode custom`"
+      >
+        custom
+      </span>
+    {:else if modeError}
+      <button
+        type="button"
+        class="sidebar-sync-mode-error"
+        title={`${modeError} - click to retry`}
+        onclick={retryLoad}
+      >
+        -
+      </button>
+    {:else if mode !== null}
+      <button
+        type="button"
+        class="sidebar-sync-mode-opt"
+        class:active={mode === 'shared'}
+        disabled={!cloudReachable || saving}
+        aria-pressed={mode === 'shared'}
+        onclick={(e) => setMode('shared', e)}
+      >
+        Shared
+      </button>
+      <button
+        type="button"
+        class="sidebar-sync-mode-opt"
+        class:active={mode === 'all'}
+        disabled={!cloudReachable || saving}
+        aria-pressed={mode === 'all'}
+        onclick={(e) => setMode('all', e)}
+      >
+        All
+      </button>
+    {/if}
   {/if}
 </span>
 
@@ -151,15 +229,36 @@
     gap: 1px;
     padding: 2px;
     border-radius: var(--v4-radius-pill);
-    /* Opaque-ish glass, not --v4-control-faint: the control overlays the row
-       (whose hover fill IS control-faint) and the company name, so it needs
-       its own legible surface (US-009 review). */
     background: var(--v4-chrome);
     backdrop-filter: blur(8px);
     -webkit-backdrop-filter: blur(8px);
     border: 1px solid var(--v4-hairline);
     flex-shrink: 0;
     font-family: var(--font-sans);
+  }
+
+  .sidebar-sync-enabled {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 2px 7px;
+    border-radius: var(--v4-radius-pill);
+    color: var(--v4-text-2);
+    font-size: var(--text-sm);
+    line-height: 1;
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .sidebar-sync-enabled.off {
+    color: var(--v4-text-3);
+  }
+
+  .sidebar-sync-enabled input {
+    width: 12px;
+    height: 12px;
+    margin: 0;
+    accent-color: var(--v4-primary-fg);
   }
 
   .sidebar-sync-mode.saving {
@@ -197,8 +296,6 @@
     cursor: default;
   }
 
-  /* A disabled-but-inactive option dims; the active one keeps its fill so the
-     current footprint stays legible while the cloud is unreachable. */
   .sidebar-sync-mode-opt:disabled:not(.active) {
     opacity: 0.55;
   }

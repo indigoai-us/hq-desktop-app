@@ -8,7 +8,11 @@
   import { effectiveTotalFiles as computeEffectiveTotalFiles } from '../lib/effective-total-files';
   import { sanitizeVisibleIdentifiers } from '../lib/visible-labels';
   import { safeUnlisten } from '../lib/listener-registry';
-  import type { Workspace, WorkspacesResult } from '../lib/workspaces';
+  import {
+    isWorkspaceSyncEnabled,
+    type Workspace,
+    type WorkspacesResult,
+  } from '../lib/workspaces';
   import HomePage from './pages/HomePage.svelte';
   import MissionControlPage from './pages/MissionControlPage.svelte';
   import MeetingsPage from './pages/MeetingsPage.svelte';
@@ -234,9 +238,11 @@
         : getDesktopCompanies(workspaces),
   );
   const orderedCompanies = $derived(sortV4CompaniesConnectedFirst(shellCompanies));
-  const watchedWorkspaceCount = $derived(shellCompanies.length);
+  const watchedCompanies = $derived(shellCompanies.filter((workspace) => isWorkspaceSyncEnabled(workspace)));
+  const watchedWorkspaceCount = $derived(watchedCompanies.length);
   const routeKey = $derived(getDesktopRouteKey(route));
   const activeCompany = $derived(getDesktopActiveCompany(route, shellCompanies));
+  const activeCompanySyncEnabled = $derived(isWorkspaceSyncEnabled(activeCompany));
   const libraryTab = $derived<LibraryTab>(
     route.kind === 'library' ? route.tab ?? DEFAULT_LIBRARY_TAB : DEFAULT_LIBRARY_TAB,
   );
@@ -251,7 +257,10 @@
         : null,
   );
   $effect(() => {
-    setActiveCompanyResource(activeCompany?.slug ?? null, polledCompanyResource);
+    setActiveCompanyResource(
+      activeCompanySyncEnabled ? activeCompany?.slug ?? null : null,
+      activeCompanySyncEnabled ? polledCompanyResource : null,
+    );
   });
   // Files mode (US-009): the active company + selected file live IN THE ROUTE,
   // so they survive a reload (persisted below) and reactive updates don't
@@ -643,6 +652,20 @@
     ]);
   }
 
+  function isSyncEnabledSlug(slug: string): boolean {
+    return isWorkspaceSyncEnabled(workspaces.find((workspace) => workspace.slug === slug));
+  }
+
+  function applyWorkspaceSyncEnabled(slug: string, enabled: boolean) {
+    const patch = (items: Workspace[]) =>
+      items.map((workspace) =>
+        workspace.slug === slug ? { ...workspace, syncEnabled: enabled } : workspace,
+      );
+    workspaces = patch(workspaces);
+    companies = patch(companies);
+    renderCompanies = patch(renderCompanies);
+  }
+
   async function handleSyncAll() {
     if (syncState === 'syncing') return;
     resetRunState();
@@ -978,6 +1001,15 @@
     // stashed a pending conversation (lib/pendingConversation) — route to the
     // combined Inbox, the in-desktop messaging surface now (US-008).
     window.addEventListener(MESSAGE_PERSON_EVENT, handleMessagePerson);
+    const handleWorkspaceSyncEnabledChanged = (event: Event) => {
+      const detail = (event as CustomEvent<{ slug?: string; enabled?: boolean }>).detail;
+      if (!detail?.slug || typeof detail.enabled !== 'boolean') return;
+      applyWorkspaceSyncEnabled(detail.slug, detail.enabled);
+    };
+    window.addEventListener(
+      'hq:workspace-sync-enabled-changed',
+      handleWorkspaceSyncEnabledChanged as EventListener,
+    );
 
     void getCurrentWindow()
       .onFocusChanged(({ payload: focused }) => {
@@ -1029,9 +1061,10 @@
         if (syncState !== 'syncing') {
           resetRunState({ preserveTotalFiles: true });
         }
-        syncFanoutTotal = event.payload.companies.length;
+        const companies = event.payload.companies.filter((company) => isSyncEnabledSlug(company.slug));
+        syncFanoutTotal = companies.length;
         syncFanoutDoneCount = 0;
-        syncCompanies = event.payload.companies;
+        syncCompanies = companies;
         await invoke('set_tray_state', { state: 'syncing' }).catch(() => undefined);
       }),
       listen<{ company: string; path: string; bytes: number; message?: string }>(
@@ -1098,7 +1131,9 @@
         aborted: boolean;
       }>('sync:complete', async (event) => {
         invalidateCompanyResources(event.payload.company);
-        syncFanoutDoneCount += 1;
+        if (isSyncEnabledSlug(event.payload.company)) {
+          syncFanoutDoneCount += 1;
+        }
         syncFanoutFilesSkipped += event.payload.filesSkipped;
         updateWorkspaceStats(event.payload.company, (stats) => ({
           ...stats,
@@ -1253,6 +1288,10 @@
       window.removeEventListener('focus', hydrateMeetingStatus);
       window.removeEventListener('storage', hydrateMeetingStatus);
       window.removeEventListener(MESSAGE_PERSON_EVENT, handleMessagePerson);
+      window.removeEventListener(
+        'hq:workspace-sync-enabled-changed',
+        handleWorkspaceSyncEnabledChanged as EventListener,
+      );
     };
   });
 </script>
@@ -1265,7 +1304,7 @@
 >
   <V4TitleBar
     {syncState}
-    watchedCount={renderWorkspaceCount}
+    watchedCount={watchedWorkspaceCount}
     {lastSyncLabel}
     syncingCompany={syncProgress?.company ?? null}
     fanoutDone={syncFanoutDoneCount}
@@ -1301,6 +1340,7 @@
           {route}
           companies={renderCompanies}
           {cloudReachable}
+          onworkspaceenabledchange={(slug, enabled) => applyWorkspaceSyncEnabled(slug, enabled)}
           onnavigate={(next) => navigate(fromV4Route(next))}
         />
       {/if}

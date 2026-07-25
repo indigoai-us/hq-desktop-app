@@ -65,9 +65,10 @@
   let inviteBusy = $state(false);
 
   const cloudBacked = $derived(
-    company.state === 'synced' ||
-      company.state === 'cloud-only' ||
-      (company.kind === 'company' && Boolean(company.cloudUid)),
+    company.syncEnabled !== false &&
+      (company.state === 'synced' ||
+        company.state === 'cloud-only' ||
+        (company.kind === 'company' && Boolean(company.cloudUid))),
   );
 
   /** Active operations destination when the company tab is under More. */

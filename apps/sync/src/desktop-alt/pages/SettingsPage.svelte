@@ -327,6 +327,11 @@
           telemetryEnabled,
         },
       });
+      window.dispatchEvent(
+        new CustomEvent('hq:workspace-sync-enabled-changed', {
+          detail: { slug: 'personal', enabled: personalSyncEnabled },
+        }),
+      );
       saved = true;
       window.setTimeout(() => (saved = false), 1000);
     } catch (err) {
