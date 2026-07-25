@@ -82,11 +82,39 @@ jobs:
       - name: Install Tauri WebDriver bridge
         run: cargo install tauri-driver --locked
 
-      - name: Verify Microsoft Edge WebDriver
+      # TEMPORARY DIAGNOSTIC — strip once the WebView2 automation handshake is
+      # fixed. msedgedriver drives the app through the Evergreen WebView2
+      # Runtime, not through installed Edge, and none of those versions were
+      # recorded, so a driver/runtime skew was indistinguishable from an
+      # app-side failure. tauri-driver has no --version flag (it rejects unknown
+      # arguments), so its version comes from cargo.
+      - name: Verify WebDriver and WebView2 stack
         shell: pwsh
         run: |
           $driver = Get-Command msedgedriver.exe -ErrorAction Stop
-          Write-Host "Using $($driver.Source)"
+          Write-Host "msedgedriver: $($driver.Source)"
+          & $driver.Source --version
+
+          $edge = "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
+          if (Test-Path -LiteralPath $edge) {
+            Write-Host "Edge: $((Get-Item -LiteralPath $edge).VersionInfo.ProductVersion)"
+          } else {
+            Write-Host "Edge: not installed at $edge"
+          }
+
+          $client = '{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
+          foreach ($hive in @(
+            "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\$client",
+            "HKLM:\SOFTWARE\Microsoft\EdgeUpdate\Clients\$client",
+            "HKCU:\SOFTWARE\Microsoft\EdgeUpdate\Clients\$client"
+          )) {
+            $pv = (Get-ItemProperty -Path $hive -Name pv -ErrorAction SilentlyContinue).pv
+            if ($pv) { Write-Host "WebView2 Runtime [$hive]: $pv" }
+            else { Write-Host "WebView2 Runtime [$hive]: (absent)" }
+          }
+
+          cargo install --list | Select-String -Pattern 'tauri-driver'
+          tauri-driver --help
 
       - name: Build launchable Windows app
         run: pnpm tauri build --debug --no-bundle --target x86_64-pc-windows-msvc --config src-tauri/tauri.windows.conf.json
@@ -95,7 +123,16 @@ jobs:
         env:
           HQ_SYNC_DESKTOP_ALT_LIVE: "1"
           HQ_SYNC_DESKTOP_ALT_APP: ${{ github.workspace }}\apps\sync\src-tauri\target\x86_64-pc-windows-msvc\debug\hq-sync-menubar.exe
+          HQ_SYNC_DESKTOP_ALT_DRIVER_LOG_DIR: ${{ runner.temp }}\desktop-alt-driver-logs
         run: pnpm vitest run --config e2e/desktop-alt/vitest.config.ts e2e/desktop-alt/smoke-pages.spec.ts
+
+      - name: Upload WebDriver diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-check-webdriver-logs
+          if-no-files-found: warn
+          path: ${{ runner.temp }}/desktop-alt-driver-logs/**
 
       # Enabled after the existing warning backlog is cleaned up:
       # - name: Clippy (deny warnings)
@@ -149,11 +186,39 @@ jobs:
       - name: Install Tauri WebDriver bridge
         run: cargo install tauri-driver --locked
 
-      - name: Verify Microsoft Edge WebDriver
+      # TEMPORARY DIAGNOSTIC — strip once the WebView2 automation handshake is
+      # fixed. msedgedriver drives the app through the Evergreen WebView2
+      # Runtime, not through installed Edge, and none of those versions were
+      # recorded, so a driver/runtime skew was indistinguishable from an
+      # app-side failure. tauri-driver has no --version flag (it rejects unknown
+      # arguments), so its version comes from cargo.
+      - name: Verify WebDriver and WebView2 stack
         shell: pwsh
         run: |
           $driver = Get-Command msedgedriver.exe -ErrorAction Stop
-          Write-Host "Using $($driver.Source)"
+          Write-Host "msedgedriver: $($driver.Source)"
+          & $driver.Source --version
+
+          $edge = "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
+          if (Test-Path -LiteralPath $edge) {
+            Write-Host "Edge: $((Get-Item -LiteralPath $edge).VersionInfo.ProductVersion)"
+          } else {
+            Write-Host "Edge: not installed at $edge"
+          }
+
+          $client = '{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
+          foreach ($hive in @(
+            "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\$client",
+            "HKLM:\SOFTWARE\Microsoft\EdgeUpdate\Clients\$client",
+            "HKCU:\SOFTWARE\Microsoft\EdgeUpdate\Clients\$client"
+          )) {
+            $pv = (Get-ItemProperty -Path $hive -Name pv -ErrorAction SilentlyContinue).pv
+            if ($pv) { Write-Host "WebView2 Runtime [$hive]: $pv" }
+            else { Write-Host "WebView2 Runtime [$hive]: (absent)" }
+          }
+
+          cargo install --list | Select-String -Pattern 'tauri-driver'
+          tauri-driver --help
 
       - name: Build production NSIS installer
         run: >-
@@ -183,6 +248,7 @@ jobs:
         env:
           HQ_SYNC_DESKTOP_ALT_LIVE: "1"
           HQ_SYNC_DESKTOP_ALT_APP: ${{ steps.install.outputs.app }}
+          HQ_SYNC_DESKTOP_ALT_DRIVER_LOG_DIR: ${{ runner.temp }}\desktop-alt-driver-logs
         run: pnpm vitest run --config e2e/desktop-alt/vitest.config.ts e2e/desktop-alt/smoke-pages.spec.ts
 
       - name: List installed files on failure
@@ -200,7 +266,9 @@ jobs:
         with:
           name: windows-installer-e2e-logs
           if-no-files-found: warn
-          path: ~/.hq/logs/**
+          path: |
+            ~/.hq/logs/**
+            ${{ runner.temp }}/desktop-alt-driver-logs/**
 
       - name: Uninstall production package
         if: always()

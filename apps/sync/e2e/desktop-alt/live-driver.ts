@@ -1,4 +1,7 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execFile, spawn, type ChildProcess } from 'node:child_process';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { basename, join } from 'node:path';
 import {
   commandOnPath,
   DesktopAltHarness,
@@ -462,7 +465,13 @@ class WebDriverClient {
         typeof payload.value?.message === 'string'
           ? payload.value.message
           : `${method} ${path} failed with HTTP ${response.status}`;
-      throw new Error(message);
+      // `message` is only a one-line summary ("session not created: ..."); the
+      // driver-specific `stacktrace`/`data` fields next to it are where the
+      // actual cause lives. Keep the whole payload on the thrown error.
+      throw Object.assign(new Error(message), {
+        webdriverStatus: response.status,
+        webdriverPayload: payload,
+      });
     }
 
     return payload as WebDriverResponse<T>;
@@ -524,6 +533,103 @@ function reapSharedDriver(): void {
   sharedDriverProcess = null;
 }
 
+/**
+ * Where tauri-driver's own output and the native WebDriver's verbose log land.
+ * CI uploads this directory when the smoke fails; locally it defaults under the
+ * OS temp dir. Override with HQ_SYNC_DESKTOP_ALT_DRIVER_LOG_DIR.
+ */
+function driverLogDir(): string {
+  const dir =
+    process.env.HQ_SYNC_DESKTOP_ALT_DRIVER_LOG_DIR ??
+    join(process.env.RUNNER_TEMP ?? tmpdir(), 'desktop-alt-driver-logs');
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+/**
+ * tauri-driver spawns `msedgedriver.exe` itself with only `--port`/`--host` and
+ * exposes no flag for the native driver's own logging — `--native-driver PATH`
+ * is the only hook it offers, and it rejects unknown arguments outright. So
+ * point it at a shim that adds `--verbose --log-path` and forwards whatever
+ * tauri-driver appends. Without this the WebView2 handshake is entirely opaque:
+ * the only thing that ever surfaces is the one-line `session not created`
+ * summary, which names a symptom rather than a cause.
+ */
+function writeNativeDriverShim(logDir: string): { shim: string; nativeLog: string } | null {
+  if (process.platform !== 'win32') return null;
+
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const shim = join(logDir, `msedgedriver-verbose-${stamp}.cmd`);
+  const nativeLog = join(logDir, `msedgedriver-${stamp}.log`);
+  writeFileSync(
+    shim,
+    ['@echo off', `msedgedriver.exe --verbose --log-path="${nativeLog}" %*`, ''].join('\r\n'),
+  );
+  return { shim, nativeLog };
+}
+
+/**
+ * Windows-only probe. `msedgewebview2.exe`'s command line is the direct answer
+ * to whether the remote debugging port msedgedriver injects actually reached
+ * the WebView2 browser process, and which user data folder that process is
+ * using — which is where it would write the DevToolsActivePort file.
+ */
+function snapshotWindowsProcesses(appPath: string, outFile: string): void {
+  if (process.platform !== 'win32') return;
+
+  const app = basename(appPath);
+  const query =
+    `Get-CimInstance Win32_Process -Filter "Name='${app}' or Name='msedgewebview2.exe' ` +
+    `or Name='msedgedriver.exe' or Name='tauri-driver.exe'" | ` +
+    'Select-Object ProcessId,ParentProcessId,Name,CommandLine | Format-List | Out-String -Width 8000';
+
+  execFile(
+    'powershell',
+    ['-NoProfile', '-NonInteractive', '-Command', query],
+    { timeout: 30_000 },
+    (error, stdout) => {
+      const header = `\n=== ${new Date().toISOString()} ===\n`;
+      const body = error ? `probe failed: ${error.message}\n` : stdout;
+      appendFileSync(outFile, `${header}${body}`);
+    },
+  );
+}
+
+/**
+ * Fold the full WebDriver error payload and the driver logs into the thrown
+ * message so the failing CI step explains itself without downloading the
+ * artifact first.
+ */
+function describeDriverFailure(
+  config: LiveConfig,
+  logDir: string,
+  nativeLog: string | null,
+  error: unknown,
+): string {
+  const sections: string[] = [];
+
+  const payload = (error as { webdriverPayload?: unknown } | null)?.webdriverPayload;
+  if (payload !== undefined) {
+    sections.push(`WebDriver error payload:\n${JSON.stringify(payload, null, 2)}`);
+  }
+
+  sections.push(`application: ${config.appPath} (exists: ${existsSync(config.appPath)})`);
+
+  const files = [join(logDir, 'tauri-driver.log'), join(logDir, 'processes-midflight.log')];
+  if (nativeLog) files.push(nativeLog);
+
+  for (const file of files) {
+    if (!existsSync(file)) {
+      sections.push(`${file}: (not written)`);
+      continue;
+    }
+    const tail = readFileSync(file, 'utf8').split('\n').slice(-150).join('\n');
+    sections.push(`${file} (last 150 lines):\n${tail}`);
+  }
+
+  return `\n\n--- live desktop-alt driver diagnostics ---\n${sections.join('\n\n')}\n--- end diagnostics ---`;
+}
+
 async function startOrReuseDriver(config: LiveConfig): Promise<DriverStart> {
   const client = new WebDriverClient(config.webdriverUrl);
   const driverRunning = await client.status().catch(() => false);
@@ -533,17 +639,31 @@ async function startOrReuseDriver(config: LiveConfig): Promise<DriverStart> {
     return { client };
   }
 
-  const driverProcess = spawn(
-    'tauri-driver',
-    ['--port', String(new URL(config.webdriverUrl).port || 4444)],
-    {
-      env: { ...process.env, TAURI_WEBVIEW_AUTOMATION: 'true' },
-      // Inherit rather than ignore: when the native driver (msedgedriver /
-      // WebKitWebDriver) cannot start, tauri-driver's stderr is the only
-      // explanation, and swallowing it leaves a bare connection timeout.
-      stdio: 'inherit',
-    },
+  const logDir = driverLogDir();
+  const native = writeNativeDriverShim(logDir);
+  const driverArgs = ['--port', String(new URL(config.webdriverUrl).port || 4444)];
+  if (native) driverArgs.push('--native-driver', native.shim);
+
+  const driverProcess = spawn('tauri-driver', driverArgs, {
+    env: { ...process.env, TAURI_WEBVIEW_AUTOMATION: 'true' },
+    // Pipe rather than inherit: when the native driver cannot start,
+    // tauri-driver's stderr is the only explanation, and it has to reach both
+    // the CI console (for the failing step) and a file (for the artifact).
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  const tauriDriverLog = join(logDir, 'tauri-driver.log');
+  appendFileSync(
+    tauriDriverLog,
+    `\n=== tauri-driver ${driverArgs.join(' ')} @ ${new Date().toISOString()} ===\n`,
   );
+  for (const stream of [driverProcess.stdout, driverProcess.stderr]) {
+    stream?.on('data', (chunk: Buffer) => {
+      const text = chunk.toString();
+      appendFileSync(tauriDriverLog, text);
+      process.stdout.write(text.replace(/^/gm, '[tauri-driver] '));
+    });
+  }
 
   // `spawn` reports a missing/unlaunchable binary asynchronously; without this
   // the failure surfaces only as an unhandled 'error' event plus an opaque
@@ -558,18 +678,34 @@ async function startOrReuseDriver(config: LiveConfig): Promise<DriverStart> {
 
   try {
     await client.waitUntil(() => client.status().catch(() => false), 30_000);
-    await client.createSession(config.appPath);
+    // msedgedriver waits ~60s for the app's DevToolsActivePort file and kills
+    // the app on the way out, so snapshot the process tree mid-flight while the
+    // WebView2 browser process is still up.
+    const midFlight = setTimeout(() => {
+      snapshotWindowsProcesses(config.appPath, join(logDir, 'processes-midflight.log'));
+    }, 20_000);
+    try {
+      await client.createSession(config.appPath);
+    } finally {
+      clearTimeout(midFlight);
+    }
     return { client };
   } catch (error) {
+    // Read the logs before reaping: msedgedriver is still alive here.
+    const report = describeDriverFailure(config, logDir, native?.nativeLog ?? null, error);
     reapSharedDriver();
     const [spawnError] = spawnErrors;
     if (spawnError) {
       throw new Error(
         `Failed to launch tauri-driver: ${spawnError.message}. ` +
-          'Install it with `cargo install tauri-driver --locked`.',
+          `Install it with \`cargo install tauri-driver --locked\`.${report}`,
       );
     }
-    throw error;
+    if (error instanceof Error) {
+      error.message = `${error.message}${report}`;
+      throw error;
+    }
+    throw new Error(`${String(error)}${report}`);
   }
 }
 
