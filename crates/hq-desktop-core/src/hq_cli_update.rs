@@ -442,6 +442,32 @@ pub fn is_prefix_permission_failure(detail: &str, prefix: Option<&str>) -> bool 
     .any(|target| detail.contains(target))
 }
 
+/// Whether npm reported a permission failure. Keep this parsing separate from
+/// the selected-prefix classifier: npm may fail at its cache, a package script,
+/// or another filesystem location, and those locations have different
+/// remediation paths.
+fn is_npm_permission_failure(detail: &str) -> bool {
+    let detail = detail.to_ascii_lowercase();
+    detail.contains("eacces") || detail.contains("permission denied")
+}
+
+/// Return a scrub-safe category for a permission failure without retaining the
+/// reported filesystem path. npm's cache errors consistently name its
+/// `_cacache` directory; selected-prefix errors take precedence so the two
+/// categories remain disjoint.
+fn npm_failure_site(detail: &str, prefix: Option<&str>) -> &'static str {
+    if !is_npm_permission_failure(detail) {
+        return "other";
+    }
+    if is_prefix_permission_failure(detail, prefix) {
+        return "prefix";
+    }
+    if detail.to_ascii_lowercase().contains("_cacache") {
+        return "cache";
+    }
+    "other"
+}
+
 /// Windows reports an aborting child as an NTSTATUS in `ExitStatus::code()`.
 /// Rust exposes the DWORD as a signed `i32`, hence these otherwise-surprising
 /// negative values. They are both normal user-machine interruptions for an
@@ -607,7 +633,15 @@ pub fn report_install_failure(exit_code: Option<i32>, detail: &str, prefix: Opti
             scope.set_tag("hq_cli_update_kind", "install-failed");
             scope.set_tag("install_failure_kind", kind.fingerprint_component());
             scope.set_tag("exit_code", exit_str.as_str());
-            scope.set_tag("eacces", "false");
+            scope.set_tag(
+                "eacces",
+                if is_npm_permission_failure(detail) {
+                    "true"
+                } else {
+                    "false"
+                },
+            );
+            scope.set_tag("npm_failure_site", npm_failure_site(detail, prefix));
             let fingerprint = [
                 "hq-cli-update",
                 "install-failed",
@@ -619,6 +653,24 @@ pub fn report_install_failure(exit_code: Option<i32>, detail: &str, prefix: Opti
         },
         || {
             sentry::capture_message(&message, sentry::Level::Error);
+        },
+    );
+}
+
+/// Report a failure to prepare the updater's app-owned npm cache without
+/// sending the local cache path or the raw filesystem error to Sentry.
+pub fn report_npm_cache_setup_failure(category: &'static str) {
+    sentry::with_scope(
+        |scope| {
+            scope.set_tag("hq_cli_update_kind", "cache-setup-failed");
+            scope.set_tag("npm_cache_setup_failure", category);
+            scope.set_fingerprint(Some(&["hq-cli-update", "cache-setup-failed", category]));
+        },
+        || {
+            sentry::capture_message(
+                "[hq-cli-update] app-owned npm cache could not be prepared",
+                sentry::Level::Error,
+            );
         },
     );
 }
@@ -1123,6 +1175,26 @@ mod tests {
         assert_eq!(
             install_failure_report(Some(1), detail, Some("/usr/local")),
             Some("[hq-cli-update] install failed (exit 1)".to_string()),
+        );
+    }
+
+    #[test]
+    fn npm_permission_tags_classify_cache_prefix_and_other_without_paths() {
+        let cache_detail = "npm error code EACCES\nnpm error path /Users/me/.npm/_cacache/tmp";
+        let prefix_detail =
+            "npm error code EACCES\nnpm error path /usr/local/lib/node_modules/@indigoai-us";
+        let other_detail = "npm error code EACCES\nnpm error path /tmp/unrelated-file";
+
+        assert!(is_npm_permission_failure(cache_detail));
+        assert_eq!(npm_failure_site(cache_detail, Some("/usr/local")), "cache");
+        assert_eq!(
+            npm_failure_site(prefix_detail, Some("/usr/local")),
+            "prefix"
+        );
+        assert_eq!(npm_failure_site(other_detail, Some("/usr/local")), "other");
+        assert_eq!(
+            npm_failure_site("npm error network ETIMEDOUT", None),
+            "other"
         );
     }
 
