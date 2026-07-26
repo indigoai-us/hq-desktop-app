@@ -1,4 +1,7 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execFile, spawn, type ChildProcess } from 'node:child_process';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { basename, join } from 'node:path';
 import {
   commandOnPath,
   DesktopAltHarness,
@@ -18,7 +21,6 @@ interface LiveConfig {
 
 interface DriverStart {
   client: WebDriverClient;
-  process: ChildProcess | null;
 }
 
 interface WebDriverResponse<T> {
@@ -37,7 +39,12 @@ interface WebDriverLogEntry {
 }
 
 const DESKTOP_ALT_SELECTOR = '#desktop-alt, html[data-window="desktop-alt"]';
-const POPOVER_TOGGLE_SELECTOR = '[data-testid="desktop-alt-toggle"]';
+// `src/main.ts` stamps every webview with its own Tauri window label
+// (`document.documentElement.dataset.window`), so the classic popover is
+// identifiable without depending on any markup that a redesign could move.
+const MAIN_WINDOW_PREDICATE = `
+  return document.documentElement?.dataset?.window === 'main';
+`;
 const ERROR_CAPTURE_SCRIPT = `
   if (!window.__desktopAltE2eErrors) {
     window.__desktopAltE2eErrors = [];
@@ -66,53 +73,127 @@ export async function createDesktopAltHarness(email: string): Promise<DesktopAlt
   const resolution = await resolveLiveConfig();
 
   if (!resolution.config) {
+    // Live mode is opt-in and always explicit (CI sets HQ_SYNC_DESKTOP_ALT_LIVE
+    // before the Windows smoke steps). Degrading to the scripted source-contract
+    // harness there would turn a ~20-minute "test the installed application" job
+    // into a 68ms regex pass over .svelte files that never launches the binary —
+    // a green check asserting nothing. Fail loudly instead; only the implicit
+    // (unset) case is allowed to fall back.
+    if (isTruthy(process.env.HQ_SYNC_DESKTOP_ALT_LIVE)) {
+      throw new Error(
+        `[desktop-alt-e2e] HQ_SYNC_DESKTOP_ALT_LIVE was requested but the live tauri-driver ` +
+          `harness could not be resolved: ${resolution.reason}. Refusing to fall back to the ` +
+          `scripted harness — that would report a pass without exercising the application.`,
+      );
+    }
+
     reportDriverMode(resolution.reason);
     return new DesktopAltHarness(email);
   }
 
-  const start = await startOrReuseDriver(resolution.config);
+  return startLiveHarness(resolution.config);
+}
+
+/**
+ * Low-level live handle for the signed-out Windows smoke.
+ *
+ * `DesktopAltTestHarness` is deliberately the *scripted* contract — it can only
+ * express things both harnesses can answer, and every one of its verbs
+ * (`openDesktopAltWindow`, `navigate`) assumes a signed-in user. The live
+ * pre-auth smoke needs the opposite: read the real DOM of the classic popover,
+ * and observe how the backend gate *refuses*. That is live-only by
+ * construction, so it gets its own narrow surface instead of widening the
+ * shared interface with methods the scripted harness would have to fake.
+ */
+export interface LiveDesktopAltProbe {
+  /** Focus the classic popover webview (`html[data-window="main"]`). */
+  switchToMainWindow(): Promise<void>;
+  /** Evaluate a synchronous script in the focused webview. */
+  evaluate<T>(script: string, args?: unknown[]): Promise<T>;
+  /** Block until the focused webview's rendered text matches; returns it. */
+  waitForBodyText(pattern: RegExp, timeoutMs?: number): Promise<string>;
+  /** Rendered (not source) text of the focused webview. */
+  bodyText(): Promise<string>;
+  /** console.error + uncaught errors + unhandled rejections + driver log. */
+  consoleErrors(): Promise<string[]>;
+  /** invoke() in the focused webview; rejects with the backend's own error. */
+  invokeCommand<T>(command: string, args?: Record<string, unknown>): Promise<T>;
+  /** Whether a desktop-alt webview exists. Restores focus to the popover. */
+  hasDesktopAltWindow(): Promise<boolean>;
+  dispose(): Promise<void>;
+}
+
+/**
+ * Live-only factory: never degrades to the scripted harness.
+ *
+ * The pre-auth smoke exists to exercise a real installed binary, so "the driver
+ * could not be resolved" has to be a red test, not a silent downgrade to a
+ * regex pass over .svelte sources.
+ */
+export async function createLivePreAuthProbe(): Promise<LiveDesktopAltProbe> {
+  const resolution = await resolveLiveConfig();
+
+  if (!resolution.config) {
+    throw new Error(
+      `[desktop-alt-e2e] the live pre-auth smoke requires a real tauri-driver harness, but it ` +
+        `could not be resolved: ${resolution.reason}. Refusing to fall back to the scripted ` +
+        `harness — that would report a pass without launching the application.`,
+    );
+  }
+
+  const live = await startLiveHarness(resolution.config);
+  await live.switchToMainWindow();
+  return live;
+}
+
+async function startLiveHarness(config: LiveConfig): Promise<LiveDesktopAltHarness> {
+  const start = await startOrReuseDriver(config);
 
   try {
-    const live = await LiveDesktopAltHarness.create(start.client, start.process);
-    console.log(
-      `[desktop-alt-e2e] live tauri-driver harness active at ${resolution.config.webdriverUrl}.`,
-    );
+    const live = await LiveDesktopAltHarness.create(start.client);
+    console.log(`[desktop-alt-e2e] live tauri-driver harness active at ${config.webdriverUrl}.`);
     return live;
   } catch (error) {
-    start.process?.kill();
+    // Release the session so the next spec can create one against the shared
+    // driver; the driver process itself outlives individual harnesses.
+    await start.client.deleteSession().catch(() => undefined);
     throw error;
   }
 }
 
-class LiveDesktopAltHarness implements DesktopAltTestHarness {
+class LiveDesktopAltHarness implements DesktopAltTestHarness, LiveDesktopAltProbe {
   readonly mode = 'live';
 
-  private constructor(
-    private readonly driver: WebDriverClient,
-    private readonly driverProcess: ChildProcess | null,
-  ) {}
+  private constructor(private readonly driver: WebDriverClient) {}
 
-  static async create(
-    driver: WebDriverClient,
-    driverProcess: ChildProcess | null,
-  ): Promise<LiveDesktopAltHarness> {
+  static async create(driver: WebDriverClient): Promise<LiveDesktopAltHarness> {
     await driver.waitForWindow();
-    const harness = new LiveDesktopAltHarness(driver, driverProcess);
+    const harness = new LiveDesktopAltHarness(driver);
     await harness.installErrorCaptureForAllWindows();
     return harness;
   }
 
-  async bootPopover(): Promise<{ toggleVisible: boolean }> {
+  async bootApp(): Promise<{ desktopAltEnabled: boolean }> {
     await this.installErrorCaptureForAllWindows();
-    const popover = await this.findWindowWithSelector(POPOVER_TOGGLE_SELECTOR);
-    if (popover) await this.driver.switchToWindow(popover);
-    return { toggleVisible: Boolean(popover) };
+
+    // There is no in-popover launcher to find: the popover's
+    // `data-testid="desktop-alt-toggle"` button was removed in 3114f6a6 and
+    // `harness.ts` asserts it stays removed. Looking for it here returned null
+    // on every live run, so this method reported `toggleVisible: false`
+    // unconditionally while claiming to describe a visible control. The honest
+    // live answer to "is the desktop view reachable for this user" is the gate
+    // the app itself calls, asked of the running backend.
+    return { desktopAltEnabled: await this.invokeTauriCommand<boolean>('desktop_alt_enabled') };
   }
 
-  async clickDesktopAltToggle(): Promise<DesktopAltWindowState> {
+  async openDesktopAltWindow(): Promise<DesktopAltWindowState> {
     const existingDesktop = await this.findDesktopAltWindow();
 
-    await this.openDesktopAltWindow();
+    // The only way the app opens this window — App.svelte, the
+    // NotificationFeed deep-links and the tray item all invoke exactly this.
+    // It re-enters the Rust gate, so a signed-out run fails here, which is
+    // where that failure belongs.
+    await this.invokeTauriCommand('open_desktop_alt_window');
 
     const desktop = await this.waitForDesktopAltWindow();
     await this.driver.switchToWindow(desktop);
@@ -140,7 +221,9 @@ class LiveDesktopAltHarness implements DesktopAltTestHarness {
   async snapshot(): Promise<DesktopAltSnapshot> {
     const desktop = await this.findDesktopAltWindow();
     const popoverAlive = Boolean(await this.findResponsiveNonDesktopWindow(desktop));
-    const trayAlive = await this.invokeTauriCommand('set_tray_state', { state: 'idle' });
+    const trayAlive = await this.invokeTauriCommand('set_tray_state', { state: 'idle' }).then(
+      () => true,
+    );
 
     return {
       popoverAlive,
@@ -183,20 +266,62 @@ class LiveDesktopAltHarness implements DesktopAltTestHarness {
   }
 
   async dispose(): Promise<void> {
+    // Only the session: the tauri-driver server is shared across the spec file.
     await this.driver.deleteSession().catch(() => undefined);
-    this.driverProcess?.kill();
   }
 
-  private async openDesktopAltWindow(): Promise<void> {
-    const popover = await this.findWindowWithSelector(POPOVER_TOGGLE_SELECTOR);
-    if (popover) {
-      await this.driver.switchToWindow(popover);
-      const toggle = await this.driver.findElement(POPOVER_TOGGLE_SELECTOR);
-      await this.driver.clickElement(toggle);
-      return;
-    }
+  // ── LiveDesktopAltProbe ────────────────────────────────────────────────────
 
-    await this.invokeTauriCommand('open_desktop_alt_window', {});
+  async switchToMainWindow(): Promise<void> {
+    const main = await this.findWindowWithPredicate(MAIN_WINDOW_PREDICATE);
+    if (!main) {
+      const handles = await this.driver.getWindowHandles();
+      throw new Error(
+        `The app exposed ${handles.length} webview(s) to WebDriver but none of them is the ` +
+          `classic popover (html[data-window="main"]).`,
+      );
+    }
+    await this.driver.switchToWindow(main);
+    await this.installErrorCapture();
+  }
+
+  async evaluate<T>(script: string, args: unknown[] = []): Promise<T> {
+    return this.driver.execute<T>(script, args);
+  }
+
+  async bodyText(): Promise<string> {
+    return this.driver.execute<string>('return document.body?.innerText || "";');
+  }
+
+  async waitForBodyText(pattern: RegExp, timeoutMs = 20_000): Promise<string> {
+    let seen = '';
+    await this.driver
+      .waitUntil(async () => {
+        seen = await this.bodyText().catch(() => '');
+        return pattern.test(seen);
+      }, timeoutMs)
+      .catch(() => {
+        throw new Error(
+          `The window never rendered text matching ${pattern}. Last rendered text was:\n${seen}`,
+        );
+      });
+    return seen;
+  }
+
+  async consoleErrors(): Promise<string[]> {
+    return this.collectConsoleErrors();
+  }
+
+  async invokeCommand<T>(command: string, args: Record<string, unknown> = {}): Promise<T> {
+    return this.invokeTauriCommand<T>(command, args);
+  }
+
+  async hasDesktopAltWindow(): Promise<boolean> {
+    const desktop = await this.findDesktopAltWindow();
+    // `findDesktopAltWindow` walks every handle to probe it, so the focused
+    // window is wherever the walk stopped. Put the caller back on the popover.
+    await this.switchToMainWindow();
+    return Boolean(desktop);
   }
 
   private async clickButtonWithText(label: string): Promise<void> {
@@ -280,12 +405,6 @@ class LiveDesktopAltHarness implements DesktopAltTestHarness {
     return desktop;
   }
 
-  private async findWindowWithSelector(selector: string): Promise<string | null> {
-    return this.findWindowWithPredicate('return Boolean(document.querySelector(arguments[0]));', [
-      selector,
-    ]);
-  }
-
   private async findResponsiveNonDesktopWindow(desktop: string | null): Promise<string | null> {
     const handles = await this.driver.getWindowHandles();
     for (const handle of handles) {
@@ -311,8 +430,16 @@ class LiveDesktopAltHarness implements DesktopAltTestHarness {
     return null;
   }
 
-  private async invokeTauriCommand(command: string, args: Record<string, unknown>): Promise<boolean> {
-    const result = await this.driver.executeAsync<{ ok: boolean; error?: string }>(
+  /**
+   * Call a Tauri command in the current window and return what it resolved
+   * with, so a caller can assert on a command's *answer* (`desktop_alt_enabled`)
+   * and not merely on it having not thrown.
+   */
+  private async invokeTauriCommand<T = unknown>(
+    command: string,
+    args: Record<string, unknown> = {},
+  ): Promise<T> {
+    const result = await this.driver.executeAsync<{ ok: boolean; value?: T; error?: string }>(
       `
         const command = arguments[0];
         const payload = arguments[1];
@@ -323,14 +450,14 @@ class LiveDesktopAltHarness implements DesktopAltTestHarness {
           return;
         }
         Promise.resolve(invoke(command, payload))
-          .then(() => done({ ok: true }))
+          .then((value) => done({ ok: true, value }))
           .catch((error) => done({ ok: false, error: String(error?.message || error) }));
       `,
       [command, args],
     );
 
     if (!result.ok) throw new Error(result.error ?? `Tauri command failed: ${command}`);
-    return true;
+    return result.value as T;
   }
 }
 
@@ -453,7 +580,13 @@ class WebDriverClient {
         typeof payload.value?.message === 'string'
           ? payload.value.message
           : `${method} ${path} failed with HTTP ${response.status}`;
-      throw new Error(message);
+      // `message` is only a one-line summary ("session not created: ..."); the
+      // driver-specific `stacktrace`/`data` fields next to it are where the
+      // actual cause lives. Keep the whole payload on the thrown error.
+      throw Object.assign(new Error(message), {
+        webdriverStatus: response.status,
+        webdriverPayload: payload,
+      });
     }
 
     return payload as WebDriverResponse<T>;
@@ -498,32 +631,280 @@ async function resolveLiveConfig(): Promise<{ config: LiveConfig | null; reason:
   };
 }
 
+/**
+ * One tauri-driver server per test process.
+ *
+ * `dispose()` used to kill the driver it was handed, so a multi-case spec
+ * (smoke-pages runs three routes) tore the server down and immediately raced to
+ * rebind port 4444 for the next case — the losing case reported
+ * `session not created`. The driver is a server: keep it up for the module
+ * lifetime, let each case create and delete its own session against it, and
+ * reap it when the test process exits.
+ */
+let sharedDriverProcess: ChildProcess | null = null;
+
+function reapSharedDriver(): void {
+  sharedDriverProcess?.kill();
+  sharedDriverProcess = null;
+}
+
+/**
+ * Where tauri-driver's own output and the native WebDriver's verbose log land.
+ * CI uploads this directory when the smoke fails; locally it defaults under the
+ * OS temp dir. Override with HQ_SYNC_DESKTOP_ALT_DRIVER_LOG_DIR.
+ */
+function driverLogDir(): string {
+  const dir =
+    process.env.HQ_SYNC_DESKTOP_ALT_DRIVER_LOG_DIR ??
+    join(process.env.RUNNER_TEMP ?? tmpdir(), 'desktop-alt-driver-logs');
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+/**
+ * tauri-driver spawns `msedgedriver.exe` itself with only `--port`/`--host` and
+ * exposes no flag for the native driver's own logging — `--native-driver PATH`
+ * is the only hook it offers, and it rejects unknown arguments outright. So
+ * point it at a shim that adds `--verbose --log-path` and forwards whatever
+ * tauri-driver appends. Without this the WebView2 handshake is entirely opaque:
+ * the only thing that ever surfaces is the one-line `session not created`
+ * summary, which names a symptom rather than a cause.
+ */
+function writeNativeDriverShim(logDir: string): { shim: string; nativeLog: string } | null {
+  if (process.platform !== 'win32') return null;
+
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const shim = join(logDir, `msedgedriver-verbose-${stamp}.cmd`);
+  const nativeLog = join(logDir, `msedgedriver-${stamp}.log`);
+  writeFileSync(
+    shim,
+    ['@echo off', `msedgedriver.exe --verbose --log-path="${nativeLog}" %*`, ''].join('\r\n'),
+  );
+  return { shim, nativeLog };
+}
+
+/**
+ * Windows-only probe. `msedgewebview2.exe`'s command line is the direct answer
+ * to whether the remote debugging port msedgedriver injects actually reached
+ * the WebView2 browser process, and which user data folder that process is
+ * using — which is where it would write the DevToolsActivePort file.
+ *
+ * Resolves with the captured text (empty string when the probe could not run)
+ * so callers can assert on it, not just archive it.
+ */
+function snapshotWindowsProcesses(appPath: string, outFile: string): Promise<string> {
+  if (process.platform !== 'win32') return Promise.resolve('');
+
+  const app = basename(appPath);
+  const query =
+    `Get-CimInstance Win32_Process -Filter "Name='${app}' or Name='msedgewebview2.exe' ` +
+    `or Name='msedgedriver.exe' or Name='tauri-driver.exe'" | ` +
+    'Select-Object ProcessId,ParentProcessId,Name,CommandLine | Format-List | Out-String -Width 8000';
+
+  return new Promise((resolve) => {
+    execFile(
+      'powershell',
+      ['-NoProfile', '-NonInteractive', '-Command', query],
+      { timeout: 30_000, maxBuffer: 8 * 1024 * 1024 },
+      (error, stdout) => {
+        const header = `\n=== ${new Date().toISOString()} ===\n`;
+        const body = error ? `probe failed: ${error.message}\n` : stdout;
+        appendFileSync(outFile, `${header}${body}`);
+        resolve(error ? '' : stdout);
+      },
+    );
+  });
+}
+
+/**
+ * One probe per test process — the answer cannot change once the WebView2
+ * environment for this app instance exists.
+ */
+let automationSwitchesVerified = false;
+
+/**
+ * Prove the driver's switches reached the WebView2 browser process.
+ *
+ * msedgedriver can only inject `--remote-debugging-port` through the
+ * `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` environment variable, and wry sets
+ * `AdditionalBrowserArguments` unconditionally, which makes the WebView2
+ * Runtime drop that variable on the floor. The app compensates in
+ * `src-tauri/src/util/webview2_automation.rs`. If that forwarding is ever lost,
+ * the only symptom is a 60s stall ending in `session not created:
+ * DevToolsActivePort file doesn't exist` — a message that names the symptom and
+ * not the cause. Checking the browser process's own command line turns that
+ * into an immediate, self-explaining failure, and leaves the captured tree in
+ * the uploaded artifact either way.
+ */
+async function assertWebviewAutomationSwitches(config: LiveConfig, logDir: string): Promise<void> {
+  if (process.platform !== 'win32' || automationSwitchesVerified) return;
+
+  const snapshot = await snapshotWindowsProcesses(
+    config.appPath,
+    join(logDir, 'processes-postsession.log'),
+  );
+  if (!snapshot) return; // probe itself failed; it is diagnostics, not a gate
+
+  const browserProcesses = snapshot
+    .split(/\r?\n/)
+    .filter((line) => line.includes('--embedded-browser-webview=1'));
+
+  if (browserProcesses.length === 0) {
+    throw new Error(
+      'No WebView2 browser process was found after the WebDriver session was created. ' +
+        `Captured process tree:\n${snapshot}`,
+    );
+  }
+
+  if (!browserProcesses.some((line) => line.includes('--remote-debugging-port'))) {
+    throw new Error(
+      'The WebView2 browser process started without --remote-debugging-port, so WebDriver ' +
+        'cannot attach to it. msedgedriver injects that switch via ' +
+        'WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS, which the WebView2 Runtime ignores unless the ' +
+        'app forwards it through additionalBrowserArgs — see ' +
+        `src-tauri/src/util/webview2_automation.rs. Captured process tree:\n${snapshot}`,
+    );
+  }
+
+  automationSwitchesVerified = true;
+}
+
+/**
+ * Fold the full WebDriver error payload and the driver logs into the thrown
+ * message so the failing CI step explains itself without downloading the
+ * artifact first.
+ */
+function describeDriverFailure(
+  config: LiveConfig,
+  logDir: string,
+  nativeLog: string | null,
+  error: unknown,
+): string {
+  const sections: string[] = [];
+
+  const payload = (error as { webdriverPayload?: unknown } | null)?.webdriverPayload;
+  if (payload !== undefined) {
+    sections.push(`WebDriver error payload:\n${JSON.stringify(payload, null, 2)}`);
+  }
+
+  sections.push(`application: ${config.appPath} (exists: ${existsSync(config.appPath)})`);
+
+  const files = [
+    join(logDir, 'tauri-driver.log'),
+    join(logDir, 'processes-midflight.log'),
+    join(logDir, 'processes-postsession.log'),
+  ];
+  if (nativeLog) files.push(nativeLog);
+
+  for (const file of files) {
+    if (!existsSync(file)) {
+      sections.push(`${file}: (not written)`);
+      continue;
+    }
+    const tail = readFileSync(file, 'utf8').split('\n').slice(-150).join('\n');
+    sections.push(`${file} (last 150 lines):\n${tail}`);
+  }
+
+  return `\n\n--- live desktop-alt driver diagnostics ---\n${sections.join('\n\n')}\n--- end diagnostics ---`;
+}
+
 async function startOrReuseDriver(config: LiveConfig): Promise<DriverStart> {
   const client = new WebDriverClient(config.webdriverUrl);
   const driverRunning = await client.status().catch(() => false);
 
   if (driverRunning) {
-    await client.createSession(config.appPath);
-    return { client, process: null };
+    // Reusing a driver this process did not spawn, so there is no
+    // tauri-driver.log or native driver log of our own — but the WebDriver
+    // error payload and the process snapshots still are the whole story, and
+    // not wrapping here silently dropped every diagnostic on exactly the path
+    // a developer re-running against a warm driver takes.
+    const logDir = driverLogDir();
+    try {
+      await client.createSession(config.appPath);
+      await assertWebviewAutomationSwitches(config, logDir);
+      return { client };
+    } catch (error) {
+      throw withDriverDiagnostics(describeDriverFailure(config, logDir, null, error), error);
+    }
   }
 
-  const driverProcess = spawn(
-    'tauri-driver',
-    ['--port', String(new URL(config.webdriverUrl).port || 4444)],
-    {
-      env: { ...process.env, TAURI_WEBVIEW_AUTOMATION: 'true' },
-      stdio: 'ignore',
-    },
+  const logDir = driverLogDir();
+  const native = writeNativeDriverShim(logDir);
+  const driverArgs = ['--port', String(new URL(config.webdriverUrl).port || 4444)];
+  if (native) driverArgs.push('--native-driver', native.shim);
+
+  const driverProcess = spawn('tauri-driver', driverArgs, {
+    env: { ...process.env, TAURI_WEBVIEW_AUTOMATION: 'true' },
+    // Pipe rather than inherit: when the native driver cannot start,
+    // tauri-driver's stderr is the only explanation, and it has to reach both
+    // the CI console (for the failing step) and a file (for the artifact).
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  const tauriDriverLog = join(logDir, 'tauri-driver.log');
+  appendFileSync(
+    tauriDriverLog,
+    `\n=== tauri-driver ${driverArgs.join(' ')} @ ${new Date().toISOString()} ===\n`,
   );
+  for (const stream of [driverProcess.stdout, driverProcess.stderr]) {
+    stream?.on('data', (chunk: Buffer) => {
+      const text = chunk.toString();
+      appendFileSync(tauriDriverLog, text);
+      process.stdout.write(text.replace(/^/gm, '[tauri-driver] '));
+    });
+  }
+
+  // `spawn` reports a missing/unlaunchable binary asynchronously; without this
+  // the failure surfaces only as an unhandled 'error' event plus an opaque
+  // connection timeout below.
+  const spawnErrors: Error[] = [];
+  driverProcess.on('error', (error) => {
+    spawnErrors.push(error);
+  });
+
+  sharedDriverProcess = driverProcess;
+  process.once('exit', reapSharedDriver);
 
   try {
-    await client.waitUntil(() => client.status().catch(() => false), 10_000);
-    await client.createSession(config.appPath);
-    return { client, process: driverProcess };
+    await client.waitUntil(() => client.status().catch(() => false), 30_000);
+    // msedgedriver waits ~60s for the app's DevToolsActivePort file and kills
+    // the app on the way out, so snapshot the process tree mid-flight while the
+    // WebView2 browser process is still up.
+    const midFlight = setTimeout(() => {
+      void snapshotWindowsProcesses(config.appPath, join(logDir, 'processes-midflight.log'));
+    }, 20_000);
+    try {
+      await client.createSession(config.appPath);
+    } finally {
+      clearTimeout(midFlight);
+    }
+    await assertWebviewAutomationSwitches(config, logDir);
+    return { client };
   } catch (error) {
-    driverProcess.kill();
-    throw error;
+    // Read the logs before reaping: msedgedriver is still alive here.
+    const report = describeDriverFailure(config, logDir, native?.nativeLog ?? null, error);
+    reapSharedDriver();
+    const [spawnError] = spawnErrors;
+    if (spawnError) {
+      throw new Error(
+        `Failed to launch tauri-driver: ${spawnError.message}. ` +
+          `Install it with \`cargo install tauri-driver --locked\`.${report}`,
+      );
+    }
+    throw withDriverDiagnostics(report, error);
   }
+}
+
+/**
+ * Attach a diagnostics report to whatever was thrown, without losing the
+ * original error's type or stack.
+ */
+function withDriverDiagnostics(report: string, error: unknown): Error {
+  if (error instanceof Error) {
+    error.message = `${error.message}${report}`;
+    return error;
+  }
+  return new Error(`${String(error)}${report}`);
 }
 
 function isTruthy(value: string | undefined): boolean {

@@ -76,28 +76,176 @@ jobs:
         working-directory: apps/sync/src-tauri
         run: |
           cargo test --target x86_64-pc-windows-msvc --bins
+          # Both sides of the `e2e-automation` gate are covered: the default
+          # run above proves a shipped build cannot read
+          # WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS at all, and this run proves
+          # the CI build still forwards it. Testing one configuration would
+          # leave the other free to rot.
+          cargo test --target x86_64-pc-windows-msvc --bins --features e2e-automation
           cargo test --manifest-path ../../../crates/hq-desktop-core/Cargo.toml paths::tests::test_windows
           cargo test --manifest-path ../../../crates/hq-desktop-core/Cargo.toml hq_resolver::tests
 
       - name: Install Tauri WebDriver bridge
         run: cargo install tauri-driver --locked
 
-      - name: Verify Microsoft Edge WebDriver
-        shell: pwsh
-        run: |
-          $driver = Get-Command msedgedriver.exe -ErrorAction Stop
-          Write-Host "Using $($driver.Source)"
-
+      # `--features e2e-automation` compiles in the WebView2 automation bridge
+      # (src-tauri/src/util/webview2_automation.rs) that forwards msedgedriver's
+      # WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS into the app's webviews. It is off
+      # in every shipped build — honouring that user-writable variable in a
+      # release would let any local process turn the next launch into a CDP
+      # listener reaching the Tauri command surface — so the binary driven below
+      # differs from the one users install by exactly that gate.
       - name: Build launchable Windows app
-        run: pnpm tauri build --debug --no-bundle --target x86_64-pc-windows-msvc --config src-tauri/tauri.windows.conf.json
+        run: pnpm tauri build --debug --no-bundle --target x86_64-pc-windows-msvc --config src-tauri/tauri.windows.conf.json --features e2e-automation
 
-      - name: Live Windows desktop smoke test
+      # Signed-out by design: a GitHub runner has no Cognito session, and the
+      # honest alternatives (a fabricated token, a CI login secret, or loosening
+      # the gate) would each destroy the thing under test. The spec asserts what
+      # a signed-out machine really reaches — the app boots, the popover paints,
+      # and the desktop-alt gate refuses. The signed-in surfaces stay covered by
+      # the scripted `Desktop-alt E2E` job (smoke-pages.spec.ts).
+      - name: Live Windows pre-auth smoke test
         env:
           HQ_SYNC_DESKTOP_ALT_LIVE: "1"
           HQ_SYNC_DESKTOP_ALT_APP: ${{ github.workspace }}\apps\sync\src-tauri\target\x86_64-pc-windows-msvc\debug\hq-sync-menubar.exe
-        run: pnpm vitest run --config e2e/desktop-alt/vitest.config.ts e2e/desktop-alt/smoke-pages.spec.ts
+          HQ_SYNC_DESKTOP_ALT_DRIVER_LOG_DIR: ${{ runner.temp }}\desktop-alt-driver-logs
+        run: pnpm vitest run --config e2e/desktop-alt/vitest.config.ts e2e/desktop-alt/live-preauth.spec.ts
+
+      # always(), not failure(): the captured msedgewebview2.exe command line is
+      # the evidence that the WebView2 automation switches landed, and a green
+      # run is exactly when that evidence is worth keeping.
+      - name: Upload WebDriver diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-check-webdriver-logs
+          if-no-files-found: warn
+          path: ${{ runner.temp }}/desktop-alt-driver-logs/**
 
       # Enabled after the existing warning backlog is cleaned up:
       # - name: Clippy (deny warnings)
       #   working-directory: apps/sync/src-tauri
       #   run: cargo clippy --target x86_64-pc-windows-msvc -- -D warnings
+
+  windows-installer-e2e:
+    name: installer E2E (x64 NSIS)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: apps/sync
+    env:
+      RUST_BACKTRACE: 1
+      HQ_SYNC_SENTRY_DSN: ""
+      RECALL_SIDECAR_TARGET: x86_64-pc-windows-msvc
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - uses: pnpm/action-setup@v4
+
+      - name: Install Rust (stable, x86_64-pc-windows-msvc)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            apps/sync/src-tauri/target
+          key: ${{ runner.os }}-installer-cargo-${{ hashFiles('apps/sync/src-tauri/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-installer-cargo-
+            ${{ runner.os }}-cargo-
+
+      - name: Install JS deps
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Install Recall sidecar deps
+        run: pnpm run sidecar:install
+
+      - name: Install Tauri WebDriver bridge
+        run: cargo install tauri-driver --locked
+
+      # Same flag as the windows-check job: `e2e-automation` is what lets
+      # msedgedriver attach, and it is never on in a shipped build. The honest
+      # consequence is that this job packages and installs a binary that is NOT
+      # byte-identical to the released one — it differs by that one feature.
+      # `cfg!(debug_assertions)` could not have been the gate instead: this is a
+      # release build.
+      - name: Build production NSIS installer
+        run: >-
+          pnpm tauri build
+          --target x86_64-pc-windows-msvc
+          --bundles nsis
+          --config src-tauri/tauri.windows.conf.json
+          --config src-tauri/tauri.windows.release.conf.json
+          --config src-tauri/tauri.windows.ci.conf.json
+          --features e2e-automation
+
+      - name: Install production package
+        id: install
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem "src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis" -Filter '*-setup.exe' -File -ErrorAction Stop | Select-Object -First 1
+          if (-not $installer) {
+            throw "NSIS installer was not produced"
+          }
+
+          $installDir = Join-Path $env:RUNNER_TEMP "hq-installer-e2e"
+          $app = & "scripts\windows-installer-e2e.ps1" -Action install -InstallerPath $installer.FullName -InstallDir $installDir
+
+          "app=$app" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "Installed application: $app"
+
+      # Same pre-auth scope as the windows-check job, against the installed
+      # production package rather than a debug build.
+      - name: Live pre-auth smoke test of the installed application
+        env:
+          HQ_SYNC_DESKTOP_ALT_LIVE: "1"
+          HQ_SYNC_DESKTOP_ALT_APP: ${{ steps.install.outputs.app }}
+          HQ_SYNC_DESKTOP_ALT_DRIVER_LOG_DIR: ${{ runner.temp }}\desktop-alt-driver-logs
+        run: pnpm vitest run --config e2e/desktop-alt/vitest.config.ts e2e/desktop-alt/live-preauth.spec.ts
+
+      - name: List installed files on failure
+        if: failure()
+        shell: pwsh
+        run: |
+          $installDir = Join-Path $env:RUNNER_TEMP "hq-installer-e2e"
+          if (Test-Path -LiteralPath $installDir) {
+            Get-ChildItem -LiteralPath $installDir -Recurse | Select-Object FullName, Length, LastWriteTime | Format-Table -AutoSize
+          }
+
+      # Two steps, not one path list: upload-artifact derives a single root
+      # directory from the paths it is given, and these two live on different
+      # roots (the runner's home vs. RUNNER_TEMP). Listing both under one step
+      # fails with "The rootDirectory ... is not a parent directory of the file".
+      - name: Upload application logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer-e2e-app-logs
+          if-no-files-found: warn
+          path: ~/.hq/logs/**
+
+      - name: Upload WebDriver diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer-e2e-webdriver-logs
+          if-no-files-found: warn
+          path: ${{ runner.temp }}/desktop-alt-driver-logs/**
+
+      - name: Uninstall production package
+        if: always()
+        shell: pwsh
+        run: |
+          $installDir = Join-Path $env:RUNNER_TEMP "hq-installer-e2e"
+          & "scripts\windows-installer-e2e.ps1" -Action uninstall -InstallDir $installDir

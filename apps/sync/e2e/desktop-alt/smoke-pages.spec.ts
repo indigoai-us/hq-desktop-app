@@ -11,7 +11,7 @@ describe('desktop-alt smoke pages', () => {
     const app = await createDesktopAltHarness('qa@getindigo.ai');
 
     try {
-      await app.clickDesktopAltToggle();
+      await app.openDesktopAltWindow();
 
       const page = await app.navigate(route);
 
