@@ -16,6 +16,7 @@ import type { SyncState } from '../lib/sync-model';
  */
 export type V4NavId =
   | 'inbox'
+  | 'rooms'
   | 'meetings'
   | 'marketplace'
   | 'library'
@@ -56,6 +57,8 @@ export const V4_COMPANY_PRIMARY_ITEMS: ReadonlyArray<{
 
 export const V4_NAV_ITEMS: ReadonlyArray<{ id: V4NavId; label: string }> = [
   { id: 'inbox', label: 'Inbox' },
+  // hq-rooms: shared human+agent channels — a first-class destination.
+  { id: 'rooms', label: 'Rooms' },
   { id: 'meetings', label: 'Meetings' },
   { id: 'marketplace', label: 'Marketplace' },
   { id: 'library', label: 'Library' },

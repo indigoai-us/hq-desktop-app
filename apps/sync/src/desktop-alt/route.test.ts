@@ -202,33 +202,33 @@ describe('US-008 hotkeys — ⌘1..9 renumbered after Inbox merge, no dead slots
     company({ slug: 'second', displayName: 'Second', state: 'synced' }),
   ]);
 
-  it('maps ⌘1–⌘4 to the four primary destinations in sidebar order (Inbox merged; no Home / Mission Control / Companies slots)', () => {
+  it('maps ⌘1–⌘5 to the five primary destinations in sidebar order (Rooms added — hq-rooms renumber)', () => {
     const meta = (key: string) => getDesktopHotkeyRoute({ key, metaKey: true, ctrlKey: false }, companies);
     expect(meta('1')).toEqual({ kind: 'inbox' });
-    expect(meta('2')).toEqual({ kind: 'meetings' });
-    expect(meta('3')).toEqual({ kind: 'marketplace' });
-    expect(meta('4')).toEqual({ kind: 'library' });
+    expect(meta('2')).toEqual({ kind: 'rooms' });
+    expect(meta('3')).toEqual({ kind: 'meetings' });
+    expect(meta('4')).toEqual({ kind: 'marketplace' });
+    expect(meta('5')).toEqual({ kind: 'library' });
   });
 
-  it('maps ⌘5+ to companies in sidebar (connected-first) order, ctrl works too, and unmodified keys do nothing', () => {
+  it('maps ⌘6+ to companies in sidebar (connected-first) order, ctrl works too, and unmodified keys do nothing', () => {
     expect(
-      getDesktopHotkeyRoute({ key: '5', metaKey: true, ctrlKey: false }, companies),
+      getDesktopHotkeyRoute({ key: '6', metaKey: true, ctrlKey: false }, companies),
     ).toEqual({ kind: 'company', slug: 'first' });
     expect(
-      getDesktopHotkeyRoute({ key: '6', metaKey: false, ctrlKey: true }, companies),
+      getDesktopHotkeyRoute({ key: '7', metaKey: false, ctrlKey: true }, companies),
     ).toEqual({ kind: 'company', slug: 'second' });
-    // Only two companies exist — ⌘7+ stay quiet rather than misfiring.
-    expect(getDesktopHotkeyRoute({ key: '7', metaKey: true, ctrlKey: false }, companies)).toBeNull();
+    // Only two companies exist — ⌘8+ stay quiet rather than misfiring.
+    expect(getDesktopHotkeyRoute({ key: '8', metaKey: true, ctrlKey: false }, companies)).toBeNull();
     expect(getDesktopHotkeyRoute({ key: '1', metaKey: false, ctrlKey: false }, companies)).toBeNull();
   });
 
-  it('leaves no dead slot: with five companies every ⌘1–⌘9 key resolves', () => {
+  it('leaves no dead slot: with four companies every ⌘1–⌘9 key resolves', () => {
     const five = getDesktopCompanies([
       company({ slug: 'a', displayName: 'A', state: 'synced' }),
       company({ slug: 'b', displayName: 'B', state: 'synced' }),
       company({ slug: 'c', displayName: 'C', state: 'synced' }),
       company({ slug: 'd', displayName: 'D', state: 'synced' }),
-      company({ slug: 'e', displayName: 'E', state: 'synced' }),
     ]);
     for (const key of ['1', '2', '3', '4', '5', '6', '7', '8', '9']) {
       expect(getDesktopHotkeyRoute({ key, metaKey: true, ctrlKey: false }, five)).not.toBeNull();
@@ -242,14 +242,14 @@ describe('US-008 hotkeys — ⌘1..9 renumbered after Inbox merge, no dead slots
     ]);
     // Alpha (connected) is the first sidebar row even though Zeta leads the list.
     expect(
-      getDesktopHotkeyRoute({ key: '5', metaKey: true, ctrlKey: false }, unsorted),
+      getDesktopHotkeyRoute({ key: '6', metaKey: true, ctrlKey: false }, unsorted),
     ).toEqual({ kind: 'company', slug: 'alpha' });
   });
 
-  it('labels company hotkeys ⌘5–⌘9 and none past the ninth slot (US-008 renumber)', () => {
-    expect(companyHotkey(0)).toBe('⌘5');
-    expect(companyHotkey(4)).toBe('⌘9');
-    expect(companyHotkey(5)).toBeUndefined();
+  it('labels company hotkeys ⌘6–⌘9 and none past the ninth slot (hq-rooms renumber)', () => {
+    expect(companyHotkey(0)).toBe('⌘6');
+    expect(companyHotkey(3)).toBe('⌘9');
+    expect(companyHotkey(4)).toBeUndefined();
   });
 });
 
@@ -264,6 +264,7 @@ describe('US-002 pending-route aliases (desktop_alt_consume_pending_route)', () 
     expect(resolvePendingDesktopRoute('messages')).toEqual({ kind: 'inbox' });
     expect(resolvePendingDesktopRoute('notifications')).toEqual({ kind: 'inbox' });
     expect(resolvePendingDesktopRoute('inbox')).toEqual({ kind: 'inbox' });
+    expect(resolvePendingDesktopRoute('rooms')).toEqual({ kind: 'rooms' });
     expect(resolvePendingDesktopRoute('home')).toEqual({ kind: 'home' });
     expect(resolvePendingDesktopRoute('mission-control')).toEqual({ kind: 'mission-control' });
     expect(resolvePendingDesktopRoute('marketplace')).toEqual({ kind: 'marketplace' });
@@ -333,6 +334,7 @@ describe('US-002 V4Sidebar payload narrowing', () => {
     expect(fromV4Route({ kind: 'companies' })).toEqual({ kind: 'home' });
     // Inbox + legacy V4 payload kinds land on the combined surface (US-008).
     expect(fromV4Route({ kind: 'inbox' })).toEqual({ kind: 'inbox' });
+    expect(fromV4Route({ kind: 'rooms' })).toEqual({ kind: 'rooms' });
     expect(fromV4Route({ kind: 'messages' })).toEqual({ kind: 'inbox' });
     expect(fromV4Route({ kind: 'notifications' })).toEqual({ kind: 'inbox' });
     // Unknown kinds land on Home, mirroring the sidebar model's fallback.

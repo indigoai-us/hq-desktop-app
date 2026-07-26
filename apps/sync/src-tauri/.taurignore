@@ -1,0 +1,7 @@
+# The build script (build.rs) compiles helper/hq-tray-helper.swift into
+# helper/hq-tray-helper INSIDE this watched directory. Without this ignore,
+# `tauri dev` sees that write as a source change and restarts the build,
+# which reruns the build script, which rewrites the helper — an infinite
+# rebuild loop (772 cycles observed before this file existed; `tauri dev`
+# never completed a single build on this repo).
+helper/hq-tray-helper

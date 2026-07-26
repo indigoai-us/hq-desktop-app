@@ -6,13 +6,19 @@ The release workflow builds a signed and notarized macOS universal app/DMG, sign
 
 ## Cut a Release
 
-1. Bump the release version in all four files:
-   - `apps/sync/package.json`
-   - `apps/sync/src-tauri/tauri.conf.json`
-   - `apps/sync/src-tauri/Cargo.toml`
-   - `apps/sync/src-tauri/Cargo.lock`
-2. Commit the version bump.
-3. Create and push a `vX.Y.Z` tag:
+1. Set `[product].version` in `versions.toml`.
+2. Stamp and verify the app version files:
+
+   ```bash
+   corepack pnpm version:app
+   corepack pnpm version:check
+   ```
+
+   This updates `apps/sync/package.json`, `apps/sync/src-tauri/tauri.conf.json`,
+   `apps/sync/src-tauri/Cargo.toml`, and `apps/sync/src-tauri/Cargo.lock` from the
+   canonical version.
+3. Commit `versions.toml` and the four stamped files.
+4. Create and push a `vX.Y.Z` tag:
 
    ```bash
    git tag vX.Y.Z
@@ -114,3 +120,20 @@ The publish job attaches these assets to the GitHub Release:
 - `windows-aarch64`
 
 Both macOS entries point at the universal `HQ.app.tar.gz` updater archive.
+
+## Post-release Monitoring
+
+`.github/workflows/onboarding-release-monitor.yml` runs every six hours and can
+also be started with `workflow_dispatch`. It verifies the final-step onboarding
+tests, then checks that:
+
+- the version in `versions.toml` matches the published `latest.json`;
+- all four updater targets have signatures and version-pinned artifact URLs;
+- the stable macOS and Windows links are present on `hqforwork.com/install`; and
+- every updater artifact and advertised installer responds successfully.
+
+Run the public release checks locally with:
+
+```bash
+corepack pnpm exec tsx scripts/onboarding-release-monitor.ts
+```

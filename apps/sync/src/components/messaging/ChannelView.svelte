@@ -21,6 +21,15 @@
   } from '../../lib/channels';
   import { type ReactionEvent, channelScope } from '../../lib/reactions';
   import { ReactionController } from '../../lib/reactionController.svelte';
+  import {
+    mentionCandidates,
+    resolveMentions,
+    isAgentUid,
+    agentStateFrom,
+    agentStateLabel,
+    AGENT_WORKING_STALE_MS,
+    type MentionCandidate,
+  } from '../../lib/roomMentions';
 
   interface Props {
     channel: Channel;
@@ -76,6 +85,98 @@
 
   let rosterOpen = $state(false);
   let memberCount = $state<number | null>(channel.memberCount ?? null);
+  // HQ Rooms: the roster powers @mention autocomplete AND mention resolution on
+  // send. Loaded lazily alongside the thread; a failure degrades to "no
+  // autocomplete" rather than blocking the room (a typed name still resolves
+  // server-side when it matches exactly).
+  let roomMentionOptions = $state<MentionCandidate[]>([]);
+  // agentUid → display name, so a working row can name the agent a human is
+  // waiting on ("Izzy is working…") instead of showing a raw uid.
+  let agentNames = $state<Record<string, string>>({});
+  // agentUid → owning person's display name — the "run by <owner>" provenance
+  // chip on agent bubbles and mention rows (hq-rooms). Sourced from the
+  // roster's ownerDisplayName enrichment.
+  let agentOwners = $state<Record<string, string>>({});
+
+  /**
+   * The live "…is working" line under the thread.
+   *
+   * Derived from the claim reactions the agent box already posts (👀 on
+   * pickup, 💬 while running) — no new subsystem. A claim on the newest
+   * message with no agent reply after it means someone is still waiting, and
+   * the room says so rather than sitting silent.
+   */
+  // Re-evaluate staleness on a slow tick so "working" can degrade to "still
+  // working" without any new data arriving ("never go dark" — a stale signal
+  // reads as stalled, never as silence).
+  let nowTick = $state(Date.now());
+  $effect(() => {
+    const t = setInterval(() => {
+      nowTick = Date.now();
+    }, 30_000);
+    return () => clearInterval(t);
+  });
+
+  const workingNote = $derived.by(() => {
+    const map = reactionsCtl?.map ?? {};
+    const last = messages[messages.length - 1];
+    if (!last || isAgentUid(last.fromPersonUid)) return null;
+    const rx = map[last.eventId] ?? [];
+    const seen = rx.some((r) => r.emoji === '👀');
+    const working = rx.some((r) => r.emoji === '💬');
+    if (!seen && !working) return null;
+    // Reactions don't carry timestamps on the wire; the triggering message's
+    // createdAt is a sound floor (the claim can only happen after it), so
+    // staleness is measured from there. An agent reply after `last` makes the
+    // agent's message the newest → early return above (the 'replied' state).
+    const lastMs = Date.parse(last.createdAt ?? '') || nowTick;
+    const state = agentStateFrom(
+      {
+        seenAt: seen ? lastMs : null,
+        workingAt: working ? lastMs : null,
+        repliedAt: null,
+      },
+      nowTick,
+      AGENT_WORKING_STALE_MS,
+    );
+    if (state === 'idle' || state === 'replied') return null;
+    const names = Object.values(agentNames);
+    const who = names.length === 1 ? names[0] : 'An agent';
+    return `${who} ${agentStateLabel(state)}…`;
+  });
+
+  async function loadRoster(): Promise<void> {
+    try {
+      const res = await invoke<{ members?: Array<Record<string, unknown>> }>(
+        'list_channel_members',
+        { channelId: current.channelId },
+      );
+      const members = (res?.members ?? []) as Array<{
+        personUid: string;
+        displayName: string;
+        email: string;
+        role: string;
+        ownerDisplayName?: string;
+      }>;
+      const ownerNames = Object.fromEntries(
+        members
+          .filter((m) => isAgentUid(m.personUid) && (m.ownerDisplayName ?? '').trim())
+          .map((m) => [m.personUid, (m.ownerDisplayName as string).trim()]),
+      );
+      agentOwners = ownerNames;
+      roomMentionOptions = mentionCandidates(members, selfPersonUid ?? '', ownerNames);
+      agentNames = Object.fromEntries(
+        members
+          .filter((m) => isAgentUid(m.personUid) && (m.displayName ?? '').trim())
+          .map((m) => [m.personUid, m.displayName.trim()]),
+      );
+    } catch (err) {
+      roomMentionOptions = [];
+      agentNames = {};
+      agentOwners = {};
+      console.error('channel-view: list_channel_members failed', err);
+    }
+  }
 
   // Reactions (US-025) for the open channel. Recreated when the selected channel
   // changes (each channel is its own messageScope), kept in step with the visible
@@ -112,7 +213,11 @@
         onchannelchange?.(current);
       }
       // Opening a joined channel marks it read.
-      if (!invited) void markRead();
+      if (!invited) {
+        void markRead();
+        // Roster drives @mention autocomplete (HQ Rooms) — best-effort.
+        void loadRoster();
+      }
     } catch (err) {
       threadError = typeof err === 'string' ? err : 'Could not load this channel';
       messages = [];
@@ -137,7 +242,15 @@
     sending = true;
     sendError = null;
     try {
-      await invoke('send_channel_message', { channelId: current.channelId, body: text });
+      // HQ Rooms: resolve "@Name" against the roster into the structured
+      // mentions the server gates agent delivery on. Unresolvable names are
+      // dropped here rather than failing silently server-side.
+      const mentions = resolveMentions(text, roomMentionOptions);
+      await invoke('send_channel_message', {
+        channelId: current.channelId,
+        body: text,
+        mentions: mentions.length > 0 ? mentions : null,
+      });
       messages = [
         ...messages,
         {
@@ -318,6 +431,9 @@
     {activeRootEventId}
     reactions={reactionsCtl?.map ?? {}}
     ontogglereaction={reactionsCtl ? reactionsCtl.toggle : undefined}
+    mentionOptions={roomMentionOptions}
+    {agentOwners}
+    {workingNote}
   />
 {/if}
 

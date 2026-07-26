@@ -55,12 +55,13 @@ const workspaces: Workspace[] = [
 ];
 
 describe('US-007: sidebar has no Home / Mission Control / Companies rows and lands on a company', () => {
-  it('renders only Inbox / Meetings / Marketplace / Library / Files nav rows', () => {
-    // US-008 later merged Messages + Notifications into Inbox — the US-007
-    // invariants (no Home/Mission Control/Companies rows, no dead hotkey slots)
-    // still hold with the renumbered map.
+  it('renders only Inbox / Rooms / Meetings / Marketplace / Library / Files nav rows', () => {
+    // US-008 later merged Messages + Notifications into Inbox, and hq-rooms
+    // added Rooms — the US-007 invariants (no Home/Mission Control/Companies
+    // rows, no dead hotkey slots) still hold with the renumbered map.
     expect(V4_NAV_ITEMS.map((item) => item.label)).toEqual([
       'Inbox',
+      'Rooms',
       'Meetings',
       'Marketplace',
       'Library',
@@ -143,11 +144,11 @@ describe('US-007: last-visited company landing (persisted)', () => {
 });
 
 describe('US-007: Marketplace is a top-level destination', () => {
-  it('has a sidebar row, the ⌘3 hotkey, and its own route key', () => {
+  it('has a sidebar row, the ⌘4 hotkey, and its own route key', () => {
     expect(V4_NAV_ITEMS.some((item) => item.id === 'marketplace')).toBe(true);
     expect(
       getDesktopHotkeyRoute(
-        { key: '3', metaKey: true, ctrlKey: false },
+        { key: '4', metaKey: true, ctrlKey: false },
         getDesktopCompanies(workspaces),
       ),
     ).toEqual({ kind: 'marketplace' });
@@ -180,7 +181,7 @@ describe('US-007: Marketplace is a top-level destination', () => {
 });
 
 describe('US-007: hotkeys and palette rebalance with no dead slots', () => {
-  it('⌘1..⌘4 cover the four primaries (Inbox merged) and ⌘5..⌘8 cover companies in sidebar order', () => {
+  it('⌘1..⌘5 cover the five primaries (Rooms added) and ⌘6..⌘9 cover companies in sidebar order', () => {
     const companies = getDesktopCompanies([
       ...workspaces,
       workspace({ slug: 'zed', displayName: 'Zed', state: 'synced' }),
@@ -188,15 +189,14 @@ describe('US-007: hotkeys and palette rebalance with no dead slots', () => {
     const meta = (key: string) =>
       getDesktopHotkeyRoute({ key, metaKey: true, ctrlKey: false }, companies);
     expect(meta('1')).toEqual({ kind: 'inbox' });
-    expect(meta('2')).toEqual({ kind: 'meetings' });
-    expect(meta('3')).toEqual({ kind: 'marketplace' });
-    expect(meta('4')).toEqual({ kind: 'library' });
+    expect(meta('2')).toEqual({ kind: 'rooms' });
+    expect(meta('3')).toEqual({ kind: 'meetings' });
+    expect(meta('4')).toEqual({ kind: 'marketplace' });
+    expect(meta('5')).toEqual({ kind: 'library' });
     // Connected-first + alpha: Acme, Indigo, Zed, then the local-only row.
-    expect(meta('5')).toEqual({ kind: 'company', slug: 'acme' });
-    expect(meta('6')).toEqual({ kind: 'company', slug: 'indigo' });
-    expect(meta('7')).toEqual({ kind: 'company', slug: 'zed' });
-    expect(meta('8')).toEqual({ kind: 'company', slug: 'local-co' });
-    // Only four companies — ⌘9 stays quiet.
-    expect(meta('9')).toBeNull();
+    expect(meta('6')).toEqual({ kind: 'company', slug: 'acme' });
+    expect(meta('7')).toEqual({ kind: 'company', slug: 'indigo' });
+    expect(meta('8')).toEqual({ kind: 'company', slug: 'zed' });
+    expect(meta('9')).toEqual({ kind: 'company', slug: 'local-co' });
   });
 });

@@ -55,7 +55,7 @@ const workspaces: Workspace[] = [
 ];
 
 describe('US-003: Desktop-alt app shell — sidebar, route state, ⌘ hotkeys (V4 IA since US-002)', () => {
-  it('shows the V4 sidebar with the five nav destinations and the COMPANIES section on mount', () => {
+  it('shows the V4 sidebar with the six nav destinations and the COMPANIES section on mount', () => {
     // The V4 window redesign (US-001/US-002) replaced the 216px rail + 42px
     // titlebar with the 220px raised sidebar + 40px title bar + 200px
     // contextual secondary sidebar. hq-desktop-widget US-007 later removed the
@@ -74,6 +74,7 @@ describe('US-003: Desktop-alt app shell — sidebar, route state, ⌘ hotkeys (V
     // hq-desktop-widget US-008 merged Messages + Notifications into Inbox.
     expect(model.nav.map((row) => row.label)).toEqual([
       'Inbox',
+      'Rooms',
       'Meetings',
       'Marketplace',
       'Library',
@@ -96,10 +97,10 @@ describe('US-003: Desktop-alt app shell — sidebar, route state, ⌘ hotkeys (V
     ).toMatchObject({ slug: 'acme' });
   });
 
-  it('switches the main pane to Meetings when the user presses ⌘2 (US-008 renumber)', () => {
+  it('switches the main pane to Meetings when the user presses ⌘3 (hq-rooms renumber)', () => {
     const companies = getDesktopCompanies(workspaces);
     const nextRoute = getDesktopHotkeyRoute(
-      { key: '2', metaKey: true, ctrlKey: false },
+      { key: '3', metaKey: true, ctrlKey: false },
       companies,
     );
 
@@ -112,14 +113,14 @@ describe('US-003: Desktop-alt app shell — sidebar, route state, ⌘ hotkeys (V
   it('gives personal a navigable page and marks a clicked company row active', () => {
     const companies = getDesktopCompanies(workspaces);
 
-    // Company hotkeys start at ⌘5 (US-008 renumber after the Inbox merge) and
+    // Company hotkeys start at ⌘6 (hq-rooms renumber — Rooms took ⌘2) and
     // follow the rendered sidebar order (connected-first + alphabetical):
     // Acme Corp, Globex, Personal.
     expect(
-      getDesktopHotkeyRoute({ key: '5', metaKey: true, ctrlKey: false }, companies),
+      getDesktopHotkeyRoute({ key: '6', metaKey: true, ctrlKey: false }, companies),
     ).toEqual({ kind: 'company', slug: 'acme' });
     expect(
-      getDesktopHotkeyRoute({ key: '7', metaKey: true, ctrlKey: false }, companies),
+      getDesktopHotkeyRoute({ key: '8', metaKey: true, ctrlKey: false }, companies),
     ).toEqual({ kind: 'company', slug: 'personal' });
 
     const nextRoute: DesktopRoute = { kind: 'company', slug: 'acme' };

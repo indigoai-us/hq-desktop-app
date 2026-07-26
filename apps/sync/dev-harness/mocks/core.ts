@@ -667,6 +667,114 @@ const handlers: Record<string, Handler> = {
   // pending requests so the Messages window renders populated in the harness.
   // -------------------------------------------------------------------------
   get_unread_summary: () => ({ unreadDms: 2, pendingRequests: 2 }),
+
+  // -------------------------------------------------------------------------
+  // HQ Rooms fixtures — a shared room with two humans and two agents so the
+  // multiplayer surface (agent badges, owner provenance, @mention
+  // autocomplete, the working row) renders in the browser harness.
+  // -------------------------------------------------------------------------
+  list_channels: () => ({
+    channels: [
+      {
+        channelId: 'chn_q3',
+        name: 'q3-planning',
+        scope: 'company',
+        companyUid: 'cmp_indigo',
+        companyName: 'Indigo',
+        postPolicy: 'all',
+        visibility: 'company',
+        membership: 'joined',
+        unread: 0,
+        memberCount: 4,
+        lastActivityAt: '2026-07-26T09:26:00.000Z',
+        createdAt: '2026-07-20T09:00:00.000Z',
+      },
+      {
+        channelId: 'chn_delivery',
+        name: 'delivery',
+        scope: 'company',
+        companyUid: 'cmp_indigo',
+        companyName: 'Indigo',
+        postPolicy: 'all',
+        visibility: 'company',
+        membership: 'joined',
+        unread: 2,
+        memberCount: 3,
+        lastActivityAt: '2026-07-26T08:10:00.000Z',
+        createdAt: '2026-07-18T09:00:00.000Z',
+      },
+    ],
+  }),
+  fetch_channel: (args) => {
+    const id = String(args?.channelId ?? 'chn_q3');
+    if (id !== 'chn_q3') {
+      return { messages: [] };
+    }
+    // Newest-first: ChannelView reverses for render.
+    return {
+      messages: [
+        {
+          eventId: 'evt_3',
+          fromPersonUid: 'agt_iris',
+          fromEmail: 'iris@agents.getindigo.ai',
+          fromDisplayName: 'Iris',
+          body: 'Numbers are in the doc. Net revenue retention landed at 112%, up 4 points. @Jacob one gap: the April cohort is still incomplete.',
+          details: null,
+          prompt: null,
+          createdAt: '2026-07-26T09:26:00.000Z',
+          direction: 'in',
+          rootEventId: 'evt_1',
+        },
+        {
+          eventId: 'evt_2',
+          fromPersonUid: 'agt_izzy',
+          fromEmail: 'izzy@agents.getindigo.ai',
+          fromDisplayName: 'Izzy',
+          body: 'On it — pulling retention from the absorption marts now.',
+          details: null,
+          prompt: null,
+          createdAt: '2026-07-26T09:24:30.000Z',
+          direction: 'in',
+          rootEventId: 'evt_1',
+        },
+        {
+          eventId: 'evt_1',
+          fromPersonUid: 'prs_me',
+          fromEmail: 'jacob@getindigo.ai',
+          fromDisplayName: 'You',
+          body: '@Izzy can you pull the Q3 retention numbers into the plan doc?',
+          details: null,
+          prompt: null,
+          createdAt: '2026-07-26T09:24:00.000Z',
+          direction: 'out',
+          replyCount: 2,
+        },
+      ],
+    };
+  },
+  list_channel_members: (args) => {
+    const id = String(args?.channelId ?? 'chn_q3');
+    if (id !== 'chn_q3') return { members: [] };
+    return {
+      members: [
+        { personUid: 'prs_me', email: 'jacob@getindigo.ai', displayName: 'Jacob', role: 'owner' },
+        { personUid: 'prs_corey', email: 'corey@getindigo.ai', displayName: 'Corey', role: 'member' },
+        { personUid: 'agt_izzy', email: 'izzy@agents.getindigo.ai', displayName: 'Izzy', role: 'bot', ownerDisplayName: 'Jacob' },
+        { personUid: 'agt_iris', email: 'iris@agents.getindigo.ai', displayName: 'Iris', role: 'bot', ownerDisplayName: 'Corey' },
+      ],
+    };
+  },
+  send_channel_message: () => null,
+  mark_channel_read: () => null,
+  join_channel: (args) => ({ channelId: String(args?.channelId ?? ''), membership: 'joined' }),
+  set_active_conversation: () => null,
+  // The newest human message carries the agent claim reaction, so the room
+  // shows its live "Izzy is working on this…" row in the harness.
+  fetch_reactions: (args) =>
+    String(args?.messageId) === 'evt_1'
+      ? [{ emoji: '👀', count: 1, reactedByMe: false }]
+      : [],
+  toggle_reaction: () => null,
   list_contacts: () => ({
     contacts: [
       { personUid: 'prs_ada', email: 'ada@getindigo.ai', displayName: 'Ada Lovelace', companyUid: 'cmp_indigo', source: 'company', lastMessageAt: '2026-06-09T19:43:10.000Z', lastMessageBody: 'Please do — I’m restyling it to match the desktop view right now.', lastMessageDirection: 'out' },

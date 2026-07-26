@@ -76,6 +76,12 @@ export interface ChannelMember {
   displayName: string;
   /** "owner" | "member" — owners can remove members + invite. */
   role: 'owner' | 'member' | string;
+  /**
+   * hq-rooms: for agt_* members, the owning person's display name (the
+   * "run by <owner>" provenance). Absent for humans and when the server
+   * couldn't resolve an owner.
+   */
+  ownerDisplayName?: string;
 }
 
 /** A group of channels under one header (Personal, or a company name). */

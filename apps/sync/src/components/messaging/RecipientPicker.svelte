@@ -22,6 +22,7 @@
     type SuggestionGroup,
     type SuggestionRow,
   } from '../../lib/recipientPicker';
+  import { isAgentUid } from '../../lib/roomMentions';
 
   interface ContactsResponse {
     contacts: ContactLike[];
@@ -202,6 +203,11 @@
               }}
             >
               <span class="suggestion-primary">{row.primary}</span>
+              {#if !row.freeText && isAgentUid(row.recipient.personUid ?? '')}
+                <!-- hq-rooms: agents are invitable members — badge them so a
+                     picker full of names makes clear who answers automatically. -->
+                <span class="suggestion-agent">agent</span>
+              {/if}
               {#if row.secondary}
                 <span class="suggestion-secondary">{row.secondary}</span>
               {/if}
@@ -334,6 +340,16 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+
+  .suggestion-agent {
+    flex-shrink: 0;
+    font-size: var(--text-micro);
+    font-weight: 400;
+    padding: 1px var(--space-1);
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    color: var(--muted-2);
   }
 
   .suggestion-tag {

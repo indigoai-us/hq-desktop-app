@@ -132,7 +132,7 @@ export type SettingsTab = 'sync' | 'notifications' | 'widget' | 'updates' | 'gen
 export const DEFAULT_SETTINGS_TAB: SettingsTab = 'sync';
 
 export type DesktopRoute =
-  | { kind: 'home' | 'mission-control' | 'inbox' | 'meetings' | 'marketplace' | 'moderation' }
+  | { kind: 'home' | 'mission-control' | 'inbox' | 'rooms' | 'meetings' | 'marketplace' | 'moderation' }
   | { kind: 'library'; tab?: LibraryTab }
   | { kind: 'settings'; tab?: SettingsTab }
   | { kind: 'files'; slug?: string; path?: string }
@@ -284,13 +284,14 @@ export function getDesktopActiveCompany(
 }
 
 /** First ⌘ hotkey assigned to a company row (after the four primary destinations). */
-const COMPANY_HOTKEY_BASE = 5;
+const COMPANY_HOTKEY_BASE = 6;
 
 /**
- * ⌘1–⌘4 map to the four primary destinations (Inbox / Meetings / Marketplace /
- * Library); ⌘5–⌘9 map to the first five companies in sidebar (connected-first)
- * order (US-008 renumber, no dead slots). Home / Mission Control have no hotkey
- * (palette-only, US-007). Mirrors `companyHotkey` below for the palette labels.
+ * ⌘1–⌘5 map to the five primary destinations (Inbox / Rooms / Meetings /
+ * Marketplace / Library — hq-rooms renumber); ⌘6–⌘9 map to the first four
+ * companies in sidebar (connected-first) order (no dead slots). Home / Mission
+ * Control have no hotkey (palette-only, US-007). Mirrors `companyHotkey`
+ * below for the palette labels.
  */
 export function getDesktopHotkeyRoute(
   event: Pick<KeyboardEvent, 'key' | 'metaKey' | 'ctrlKey'>,
@@ -299,9 +300,10 @@ export function getDesktopHotkeyRoute(
   if (!(event.metaKey || event.ctrlKey)) return null;
 
   if (event.key === '1') return { kind: 'inbox' };
-  if (event.key === '2') return { kind: 'meetings' };
-  if (event.key === '3') return { kind: 'marketplace' };
-  if (event.key === '4') return { kind: 'library' };
+  if (event.key === '2') return { kind: 'rooms' };
+  if (event.key === '3') return { kind: 'meetings' };
+  if (event.key === '4') return { kind: 'marketplace' };
+  if (event.key === '5') return { kind: 'library' };
 
   const companyIndex = Number.parseInt(event.key, 10) - COMPANY_HOTKEY_BASE;
   if (companyIndex >= 0 && companyIndex <= 9 - COMPANY_HOTKEY_BASE) {
@@ -377,6 +379,8 @@ export function resolvePendingDesktopRoute(name: string | null | undefined): Des
     case 'messages':
     case 'notifications':
       return { kind: 'inbox' };
+    case 'rooms':
+      return { kind: 'rooms' };
     case 'meetings':
       return { kind: 'meetings' };
     case 'marketplace':
@@ -423,6 +427,8 @@ export function fromV4Route(route: V4Route): DesktopRoute {
     case 'messages':
     case 'notifications':
       return { kind: 'inbox' };
+    case 'rooms':
+      return { kind: 'rooms' };
     case 'meetings':
       return { kind: 'meetings' };
     case 'marketplace':

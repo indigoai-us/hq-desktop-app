@@ -14,6 +14,15 @@
   import { shareTitle } from '../../lib/share-path';
   import { sanitizeVisibleIdentifiers } from '../../lib/visible-labels';
   import type { ShareEvent } from '../../lib/notificationGroups';
+  import {
+    activeMentionQuery,
+    applyMention,
+    filterCandidates,
+    isAgentUid,
+    mentionsAnyAgent,
+    resolveMentions,
+    type MentionCandidate,
+  } from '../../lib/roomMentions';
 
   // One rendered message in the thread. `direction` is relative to the signed-in
   // user: "out" = I sent it, "in" = the other person sent it. Extra fields
@@ -87,6 +96,19 @@
     // place. Used for read-only history or preview panes that have no writable
     // recipient yet.
     readonly?: boolean;
+    // HQ Rooms: roster entries the composer can @mention. When non-empty an
+    // autocomplete opens on "@". Mention RESOLUTION stays with the parent (it
+    // owns the roster and the send call) — this component only helps the user
+    // type a name that will actually resolve, which is what makes an agent
+    // answer at all (the server mention-gates agent delivery).
+    mentionOptions?: MentionCandidate[];
+    // HQ Rooms: agentUid → owner display name, for the "run by <owner>"
+    // provenance line beside an agent's messages.
+    agentOwners?: Record<string, string>;
+    // HQ Rooms: a live "<agent> is working…" row pinned under the thread while
+    // an agent has picked up a message but not yet replied. Never go dark on a
+    // human who is waiting — silence with no explanation reads as broken.
+    workingNote?: string | null;
   }
 
   // `onreact` is part of the public API for a later story (reactions) but unused
@@ -107,9 +129,47 @@
     ontogglereaction,
     onopenshareinclaude,
     readonly = false,
+    mentionOptions = [],
+    agentOwners = {},
+    workingNote = null,
   }: Props = $props();
 
   let replyText = $state('');
+  // ── @mention autocomplete ────────────────────────────────────────────────
+  let replyEl = $state<HTMLTextAreaElement | null>(null);
+  let caret = $state(0);
+  let mentionIndex = $state(0);
+  const mentionQuery = $derived(
+    mentionOptions.length > 0 ? activeMentionQuery(replyText, caret) : null,
+  );
+  const mentionMatches = $derived(
+    mentionQuery ? filterCandidates(mentionOptions, mentionQuery.query).slice(0, 6) : [],
+  );
+  const mentionOpen = $derived(mentionMatches.length > 0);
+
+  // The composer affordance: when the draft's resolved mentions include an
+  // agent, say plainly that sending will put that agent to work in the room —
+  // the "@agent will answer here" cue, derived from the same resolution the
+  // send path uses so it can never disagree with what actually happens.
+  const draftWakesAgent = $derived(
+    mentionOptions.length > 0 &&
+      replyText.includes('@') &&
+      mentionsAnyAgent(resolveMentions(replyText, mentionOptions)),
+  );
+
+  function syncCaret(): void {
+    caret = replyEl?.selectionStart ?? replyText.length;
+    mentionIndex = 0;
+  }
+
+  async function chooseMention(candidate: MentionCandidate): Promise<void> {
+    const next = applyMention(replyText, caret, candidate);
+    replyText = next.text;
+    caret = next.caret;
+    await tick();
+    replyEl?.focus();
+    replyEl?.setSelectionRange(next.caret, next.caret);
+  }
   // Tracks the last successful copy so the "Copied!" feedback stays scoped to
   // the exact affordance the user clicked — a bubble can offer both a
   // copy-message and a copy-prompt action.
@@ -143,6 +203,31 @@
   }
 
   function onReplyKeydown(e: KeyboardEvent): void {
+    // The mention list owns the arrow/enter/escape keys while it is open, so
+    // picking a name never accidentally sends a half-typed message.
+    if (mentionOpen) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        mentionIndex = (mentionIndex + 1) % mentionMatches.length;
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        mentionIndex = (mentionIndex - 1 + mentionMatches.length) % mentionMatches.length;
+        return;
+      }
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault();
+        void chooseMention(mentionMatches[mentionIndex] ?? mentionMatches[0]!);
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        // Close by collapsing the token: move the caret past it.
+        caret = replyText.length;
+        return;
+      }
+    }
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
       e.preventDefault();
       void send();
@@ -247,7 +332,18 @@
     {/if}
     <div class="dm-msg dm-msg-{msg.direction}">
       {#if showAuthors && msg.direction === 'in'}
-        <span class="dm-msg-author">{msg.fromDisplayName}</span>
+        <span class="dm-msg-author">
+          {msg.fromDisplayName}
+          {#if isAgentUid(msg.fromPersonUid)}
+            <!-- Quietly badged, never a loud robot treatment: an agent is a
+                 teammate here. The owner line is provenance, not authorship —
+                 the agent wrote it, the owner authorized it. -->
+            <span class="agent-chip">agent</span>
+            {#if agentOwners[msg.fromPersonUid]}
+              <span class="agent-owner">run by {agentOwners[msg.fromPersonUid]}</span>
+            {/if}
+          {/if}
+        </span>
       {/if}
       <div
         class="dm-bubble"
@@ -367,6 +463,12 @@
       {/if}
     </div>
   {/each}
+  {#if workingNote}
+    <div class="agent-working" aria-live="polite">
+      <span class="agent-working-dot" aria-hidden="true"></span>
+      <span>{workingNote}</span>
+    </div>
+  {/if}
 </div>
 
 {#if readonly}
@@ -375,10 +477,39 @@
   </div>
 {:else}
   <div class="dm-reply">
+    {#if mentionOpen}
+      <div class="mention-pop" role="listbox" aria-label="Mention a teammate or agent">
+        {#each mentionMatches as candidate, i (candidate.personUid)}
+          <button
+            type="button"
+            class="mention-row"
+            class:active={i === mentionIndex}
+            role="option"
+            aria-selected={i === mentionIndex}
+            onmousedown={(e) => {
+              e.preventDefault();
+              void chooseMention(candidate);
+            }}
+          >
+            <span class="mention-name">{candidate.displayName}</span>
+            {#if candidate.participantType === 'agent'}
+              <span class="mention-badge">agent</span>
+              {#if candidate.ownerDisplayName}
+                <span class="mention-owner">run by {candidate.ownerDisplayName}</span>
+              {/if}
+            {/if}
+          </button>
+        {/each}
+      </div>
+    {/if}
     <textarea
       class="dm-reply-input"
       bind:value={replyText}
+      bind:this={replyEl}
       onkeydown={onReplyKeydown}
+      oninput={syncCaret}
+      onclick={syncCaret}
+      onkeyup={syncCaret}
       {placeholder}
       rows="3"
       disabled={sending}
@@ -387,6 +518,8 @@
     <div class="dm-reply-footer">
       {#if sendError}
         <span class="dm-reply-error" role="alert">{sendError}</span>
+      {:else if draftWakesAgent}
+        <span class="dm-reply-hint dm-reply-hint-agent">Mentioned agents will reply here · ⌘↵ to send</span>
       {:else}
         <span class="dm-reply-hint">⌘↵ to send</span>
       {/if}
@@ -451,6 +584,58 @@
     font-weight: 600;
     color: var(--pop-muted);
     margin: 0 0.25rem 0.125rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+  }
+
+  .agent-chip {
+    font-size: 0.6875rem;
+    font-weight: 400;
+    padding: 0.05rem 0.35rem;
+    border-radius: 5px;
+    border: 1px solid var(--pop-border);
+    color: var(--pop-muted);
+  }
+
+  .agent-owner {
+    font-size: 0.6875rem;
+    font-weight: 400;
+    color: var(--pop-muted);
+  }
+
+  .agent-working {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0.25rem 0.5rem 0.5rem;
+    font-size: var(--text-base);
+    color: var(--pop-muted);
+  }
+
+  .agent-working-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+    animation: agent-pulse 1.4s ease-in-out infinite;
+  }
+
+  @keyframes agent-pulse {
+    0%,
+    100% {
+      opacity: 0.35;
+    }
+    50% {
+      opacity: 1;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .agent-working-dot {
+      animation: none;
+      opacity: 0.7;
+    }
   }
 
   .dm-bubble {
@@ -771,6 +956,57 @@
     gap: 0.5rem;
     padding: 0.875rem 1.25rem 1rem;
     border-top: 1px solid var(--pop-divider);
+    position: relative;
+  }
+
+  /* ── @mention autocomplete (HQ Rooms) ───────────────────────────────────── */
+  .mention-pop {
+    position: absolute;
+    bottom: calc(100% - 0.5rem);
+    left: 1.25rem;
+    right: 1.25rem;
+    max-height: 13rem;
+    overflow-y: auto;
+    background: var(--pop-bg, var(--c-bg));
+    border: 1px solid var(--pop-border);
+    border-radius: var(--radius-popover, 12px);
+    box-shadow: var(--pop-shadow);
+    padding: 0.25rem;
+    z-index: 20;
+  }
+
+  .mention-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    width: 100%;
+    padding: 0.4rem 0.5rem;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--pop-text);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .mention-row:hover,
+  .mention-row.active {
+    background: var(--pop-hover);
+  }
+
+  .mention-badge {
+    font-size: 0.6875rem;
+    padding: 0.05rem 0.35rem;
+    border-radius: 5px;
+    border: 1px solid var(--pop-border);
+    color: var(--pop-muted);
+  }
+
+  .mention-owner {
+    font-size: 0.6875rem;
+    color: var(--pop-muted);
+    margin-left: auto;
   }
 
   .dm-reply-input {

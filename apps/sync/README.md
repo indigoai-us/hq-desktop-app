@@ -9,6 +9,28 @@ npm install
 npm run tauri dev
 ```
 
+Dev-run gotchas (each of these has burned a real session):
+
+- **Quit every installed HQ first** (`/Applications/HQ.app` etc.). The
+  single-instance plugin keys on the bundle identifier alone, so a dev launch
+  while any HQ is running calls `std::process::exit(0)` before setup — no
+  window, no error, and the *existing* app pops to the front, which looks
+  exactly like a successful dev launch. Check
+  `/tmp/ai_indigo_hq_sync_menubar_si.sock` is gone after quitting.
+- **The dev app has no menu bar icon** (the native tray helper only resolves
+  inside an `.app` bundle) and runs as an accessory with a hidden window.
+  Launch with `HQ_DEV_OPEN_DESKTOP_ON_LAUNCH=1` (or
+  `HQ_DEV_SHOW_ON_LAUNCH=1`) or it is running and completely invisible.
+- **`src-tauri/.taurignore` is load-bearing.** `build.rs` compiles the Swift
+  tray helper into `src-tauri/helper/`, which the dev watcher watches —
+  without the ignore entry the build restarts itself forever (772 observed
+  cycles; `tauri dev` never completed once).
+- **A dev run rewrites your login item** (`ensure_autostart_on_launch` runs
+  on every launch and falls back to a nonexistent path when there's no `.app`
+  ancestor). Relaunching the installed HQ.app afterwards self-heals it.
+- The dev build shares `~/.hq` (settings, session token) and the production
+  vault API with your installed HQ — there is no isolation.
+
 ## Indigo Desktop View
 
 Indigo dogfood users see an **Open desktop view** icon in the popover header. It opens a separate decorated Tauri window with Sync, Meetings, and per-company Board / Activity / Deployments / Secrets panels. The surface is hidden from non-`@getindigo.ai` users in the UI and rejected again by the backend command gate.

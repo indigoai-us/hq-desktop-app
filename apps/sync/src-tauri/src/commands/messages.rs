@@ -49,9 +49,10 @@ use crate::util::logfile::log;
 #[allow(unused_imports)]
 pub use hq_desktop_core::messages::{
     build_create_payload, build_group_payload, build_reaction_payload, build_reactions_url,
-    esc_seg, invite_member_payload, Channel, ChannelDetail, ChannelMember,
-    ChannelMembersResponse, ChannelMessage, ChannelParticipant, ChannelsResponse, Contact,
-    ContactsResponse, MessageReactions, ReactionAggregate, RequestsResponse, UnreadSummary,
+    channel_message_payload, esc_seg, invite_member_payload, Channel, ChannelDetail, ChannelMember,
+    ChannelMembersResponse, ChannelMentionInput, ChannelMessage, ChannelParticipant,
+    ChannelsResponse, Contact, ContactsResponse, MessageReactions, ReactionAggregate,
+    RequestsResponse, UnreadSummary,
 };
 
 /// POST `url` with the bearer + JSON `payload`, parsing the response body into
@@ -631,7 +632,11 @@ pub async fn invite_to_channel(
 /// /v1/notify/channels/{id}/messages` with `{ body }`. Surfaces failures to the
 /// caller (e.g. an owner-only post policy rejection) for composer feedback.
 #[tauri::command]
-pub async fn send_channel_message(channel_id: String, body: String) -> Result<(), String> {
+pub async fn send_channel_message(
+    channel_id: String,
+    body: String,
+    mentions: Option<Vec<ChannelMentionInput>>,
+) -> Result<(), String> {
     let id = channel_id.trim();
     if id.is_empty() {
         return Err("channelId must not be empty".to_string());
@@ -642,9 +647,15 @@ pub async fn send_channel_message(channel_id: String, body: String) -> Result<()
     }
     let (base, token) = auth_and_base("MESSAGES_CHANNEL_SEND").await?;
     let url = format!("{base}/v1/notify/channels/{}/messages", esc_seg(id));
-    let payload = serde_json::json!({ "body": text });
+    // hq-rooms: structured mentions are what make an agent member answer — the
+    // server mention-gates its room→agent-inbox delivery on them.
+    let mentions = mentions.unwrap_or_default();
+    let payload = channel_message_payload(text, &mentions, None);
     let _: serde_json::Value = post_json(&url, &token, &payload, "MESSAGES_CHANNEL_SEND").await?;
-    log(LOG_TAG, &format!("MESSAGES_CHANNEL_SEND_OK id={id}"));
+    log(
+        LOG_TAG,
+        &format!("MESSAGES_CHANNEL_SEND_OK id={id} mentions={}", mentions.len()),
+    );
     Ok(())
 }
 

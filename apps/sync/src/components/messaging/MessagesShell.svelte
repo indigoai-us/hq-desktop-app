@@ -1599,8 +1599,11 @@
 
   .messages-window {
     display: flex;
-    width: 100vw;
-    height: 100vh;
+    /* 100% (not 100vw/vh): the shell now mounts inside the desktop window's
+       content area (RoomsPage) as well as full-window in the harness — in a
+       nested mount viewport units would overflow the pane. */
+    width: 100%;
+    height: 100%;
     box-sizing: border-box;
     background: var(--v4-ground, var(--bg-gradient));
     color: var(--fg);
