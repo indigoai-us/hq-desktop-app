@@ -31,10 +31,11 @@
 
   $effect(() => {
     reloadToken;
-    deployments = [];
+    void companyStore.revision;
     error = null;
 
     if (!slug || !cloudBacked) {
+      deployments = [];
       loading = false;
       return;
     }
@@ -42,8 +43,13 @@
     let cancelled = false;
 
     const warm = companyStore.deployments(slug);
-    deployments = warm ? warm.map(normalizeDeployment) : [];
-    loading = warm === null;
+    if (warm) {
+      deployments = warm.map(normalizeDeployment);
+      loading = false;
+    } else {
+      deployments = [];
+      loading = true;
+    }
 
     void companyStore.loadDeployments(slug, reloadToken > 0)
       .then((result) => {

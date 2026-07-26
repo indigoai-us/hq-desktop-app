@@ -14,6 +14,13 @@ export function createResourceCache(options: ResourceCacheOptions = {}) {
   const ttlMs = options.ttlMs ?? 30_000;
   const now = options.now ?? Date.now;
   const entries = new Map<string, ResourceCacheEntry<unknown>>();
+  // Svelte rune so mounted consumers can `$effect` on cache writes/invalidations
+  // instead of only painting their own initial Promise result.
+  let revision = $state(0);
+
+  function bump(): void {
+    revision += 1;
+  }
 
   function entry<T>(key: string): ResourceCacheEntry<T> {
     let value = entries.get(key);
@@ -29,6 +36,9 @@ export function createResourceCache(options: ResourceCacheOptions = {}) {
   }
 
   return {
+    get revision() {
+      return revision;
+    },
     read<T>(key: string): T | null {
       return entry<T>(key).data;
     },
@@ -45,6 +55,7 @@ export function createResourceCache(options: ResourceCacheOptions = {}) {
           value.data = data;
           value.error = null;
           value.updatedAt = now();
+          bump();
           return data;
         })
         .catch((error) => {
@@ -58,12 +69,18 @@ export function createResourceCache(options: ResourceCacheOptions = {}) {
       return request;
     },
     invalidate(predicate: (key: string) => boolean): void {
+      let changed = false;
       for (const [key, value] of entries) {
-        if (predicate(key)) value.updatedAt = null;
+        if (predicate(key)) {
+          value.updatedAt = null;
+          changed = true;
+        }
       }
+      if (changed) bump();
     },
     clear(): void {
       entries.clear();
+      bump();
     },
   };
 }

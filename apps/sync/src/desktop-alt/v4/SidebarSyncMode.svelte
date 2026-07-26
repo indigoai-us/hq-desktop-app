@@ -11,6 +11,9 @@
    *
    * Disabling a company must not overwrite its remembered footprint. Re-enable
    * simply reuses the existing server-side mode.
+   *
+   * lazily fetches `get_sync_mode` on mount (parent only mounts
+   * after first hover/focus) and writes via `set_sync_mode`.
    */
 
   interface MembershipSyncConfig {

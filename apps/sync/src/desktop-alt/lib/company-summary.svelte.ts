@@ -41,6 +41,8 @@ export function useCompanySummary(options: { slug: () => string | null; enabled?
   $effect(() => {
     const slug = options.slug();
     const enabled = options.enabled?.() ?? true;
+    // Subscribe to background cache refreshes (interval / focus / invalidate).
+    const revision = companyStore.revision;
     if (!enabled) {
       activeSlug = slug;
       requestId += 1;
@@ -50,7 +52,13 @@ export function useCompanySummary(options: { slug: () => string | null; enabled?
       return;
     }
     if (slug === activeSlug) {
-      return; // same company — keep the loaded summary, don't refetch/cancel
+      // Same company — apply any newer cache entry from a background poll.
+      if (slug) {
+        const warm = companyStore.summary(slug);
+        if (warm) summary = warm;
+      }
+      void revision;
+      return;
     }
     activeSlug = slug;
     const myRequest = ++requestId;

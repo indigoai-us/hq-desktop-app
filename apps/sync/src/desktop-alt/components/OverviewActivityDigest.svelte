@@ -62,16 +62,22 @@
   }
 
   $effect(() => {
-    activity = emptyActivity();
+    void companyStore.revision;
     if (!slug || !cloudBacked) {
+      activity = emptyActivity();
       loading = false;
       return;
     }
     let cancelled = false;
 
     const warm = companyStore.activity(slug);
-    activity = warm != null ? normalize(warm as Partial<CompanyActivity>) : emptyActivity();
-    loading = warm == null;
+    if (warm != null) {
+      activity = normalize(warm as Partial<CompanyActivity>);
+      loading = false;
+    } else {
+      activity = emptyActivity();
+      loading = true;
+    }
 
     void companyStore.loadActivity<Partial<CompanyActivity>>(slug)
       .then((result) => {

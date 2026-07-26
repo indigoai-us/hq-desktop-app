@@ -394,8 +394,44 @@ pub fn write_workspace_sync_enabled(slug: &str, enabled: bool) -> Result<(), Str
         .map_err(|e| format!("serialize menubar.json: {e}"))?;
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, serialized).map_err(|e| format!("write tmp menubar.json: {e}"))?;
-    std::fs::rename(&tmp, &path).map_err(|e| format!("rename menubar.json: {e}"))?;
+    replace_file(&tmp, &path).map_err(|e| format!("rename menubar.json: {e}"))?;
     Ok(())
+}
+
+/// Atomically replace `dest` with `src` (sibling temp → final).
+///
+/// On Windows, `std::fs::rename` fails with `AlreadyExists` when the
+/// destination exists — the common case for `menubar.json` toggles. Use
+/// delete-then-rename there; Unix rename replaces atomically.
+fn replace_file(src: &Path, dest: &Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        match std::fs::rename(src, dest) {
+            Ok(()) => Ok(()),
+            Err(err)
+                if err.kind() == std::io::ErrorKind::AlreadyExists
+                    || err.raw_os_error() == Some(183) =>
+            {
+                let _ = std::fs::remove_file(dest);
+                std::fs::rename(src, dest)
+            }
+            Err(err) => Err(err),
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        std::fs::rename(src, dest)
+    }
+}
+
+/// Slugs the user has explicitly paused for local sync (`workspaceSyncEnabled=false`).
+/// Missing / true entries are omitted — fail-open matches the runner default.
+pub fn disabled_workspace_sync_slugs() -> Vec<String> {
+    read_workspace_sync_enabled_map()
+        .into_iter()
+        .filter(|(_, enabled)| !*enabled)
+        .map(|(slug, _)| slug)
+        .collect()
 }
 
 // ── Manifest patching ─────────────────────────────────────────────────────────
@@ -1028,5 +1064,30 @@ companies:
 
         let (entries, _) = discover_local_companies(tmp.path());
         assert!(entries.iter().any(|e| e.slug == "fresh"));
+    }
+
+    #[test]
+    fn write_workspace_sync_enabled_replaces_existing_menubar_json() {
+        use crate::test_support::ENV_MUTEX;
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".hq")).unwrap();
+        std::fs::write(
+            tmp.path().join(".hq/menubar.json"),
+            r#"{"hqPath":"/tmp/HQ","workspaceSyncEnabled":{"acme":true}}"#,
+        )
+        .unwrap();
+
+        std::env::set_var("HOME", tmp.path());
+        write_workspace_sync_enabled("acme", false).expect("first toggle");
+        write_workspace_sync_enabled("acme", true).expect("second toggle over existing file");
+        write_workspace_sync_enabled("zeta", false).expect("add second slug");
+        let map = read_workspace_sync_enabled_map();
+        let disabled = disabled_workspace_sync_slugs();
+        std::env::remove_var("HOME");
+
+        assert_eq!(map.get("acme"), Some(&true));
+        assert_eq!(map.get("zeta"), Some(&false));
+        assert_eq!(disabled, vec!["zeta".to_string()]);
     }
 }

@@ -84,7 +84,9 @@ describe('desktop-alt V4 chrome (US-002 / DESKTOP-001)', () => {
     expect(desktopApp).toContain('const nextCompanies = getDesktopCompanies(result.workspaces)');
     expect(desktopApp).toContain('companies = nextCompanies');
     expect(desktopApp).toContain('const shellCompanies = $derived');
-    expect(desktopApp).toContain('const watchedWorkspaceCount = $derived(shellCompanies.length)');
+    expect(desktopApp).toContain(
+      'const watchedWorkspaceCount = $derived(watchedCompanies.length)',
+    );
     expect(desktopApp).toContain(
       'let renderCompanies = $state<Workspace[]>(cachedCompanies)',
     );

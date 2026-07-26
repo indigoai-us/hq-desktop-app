@@ -31,6 +31,7 @@ describe('company-store scopes the background poll to the active company', () =>
 
   it('DesktopApp tells the store which company is on screen', () => {
     expect(app).toContain('setActiveCompanyResource');
-    expect(app).toContain('setActiveCompanyResource(activeCompany?.slug ?? null, polledCompanyResource)');
+    expect(app).toContain('activeCompanySyncEnabled ? activeCompany?.slug ?? null : null');
+    expect(app).toContain('activeCompanySyncEnabled ? polledCompanyResource : null');
   });
 });

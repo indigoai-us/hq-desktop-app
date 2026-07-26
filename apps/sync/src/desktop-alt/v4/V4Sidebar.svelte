@@ -17,6 +17,16 @@
   import SidebarSyncMode from './SidebarSyncMode.svelte';
   import './tokens.css';
 
+  /**
+   * V4 primary sidebar (US-007 removed Home / Mission Control / Companies page rows) →
+   * Workspaces (Personal) + Companies section (selected company expands Overview /
+   * Goals / Projects / Knowledge / Team / More inline) → Settings footer.
+   *
+   * Pointer reveal waits a short hover-intent delay so sweeping the mouse down
+   * the list doesn't mount every control and fan out one get_sync_mode vault
+   * round-trip per row. Focus reveals immediately.
+   */
+
   interface Props {
     route: V4Route;
     companies?: Workspace[] | null;
@@ -192,12 +202,12 @@
         {#each companyRows as row (row.slug)}
           <div
             class="v4-company-item"
-            class:has-syncmode={!row.expanded}
+            class:has-syncmode={row.cloudActivated && !row.expanded}
             class:expanded={row.expanded}
             role="group"
-            onpointerenter={() => !row.expanded && queueReveal(row.slug)}
+            onpointerenter={() => row.cloudActivated && !row.expanded && queueReveal(row.slug)}
             onpointerleave={cancelPendingReveal}
-            onfocusin={() => !row.expanded && reveal(row.slug)}
+            onfocusin={() => row.cloudActivated && !row.expanded && reveal(row.slug)}
           >
             <button
               type="button"
@@ -220,7 +230,7 @@
                 <span class="v4-disclosure" aria-hidden="true">⌄</span>
               {/if}
             </button>
-            {#if !row.expanded && revealedSlugs.has(row.slug)}
+            {#if row.cloudActivated && !row.expanded && revealedSlugs.has(row.slug)}
               <span class="v4-syncmode-slot">
                 <SidebarSyncMode
                   slug={row.slug}
@@ -307,6 +317,7 @@
     gap: 8px;
     box-sizing: border-box;
     width: 100%;
+    height: var(--v4-row-h);
     min-height: var(--v4-row-h);
     max-height: var(--v4-row-h);
     flex: 0 0 auto;
@@ -371,9 +382,21 @@
   }
 
   .v4-company-nav {
+    flex: 1 1 auto;
     min-height: 0;
     overflow-y: auto;
     padding-bottom: 12px;
+    scrollbar-color: var(--v4-hairline) transparent;
+    scrollbar-width: thin;
+  }
+
+  .v4-company-nav::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  .v4-company-nav::-webkit-scrollbar-thumb {
+    border-radius: var(--v4-radius-pill);
+    background: var(--v4-hairline);
   }
 
   .v4-company-item {
@@ -403,10 +426,18 @@
   }
 
   .v4-company-name {
+    flex: 1 1 auto;
     min-width: 0;
     overflow: hidden;
     white-space: nowrap;
-    text-overflow: ellipsis;
+    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent 100%);
+    mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent 100%);
+  }
+
+  .v4-company-item.has-syncmode:hover .v4-company-name,
+  .v4-company-item.has-syncmode:focus-within .v4-company-name {
+    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 96px), transparent calc(100% - 78px));
+    mask-image: linear-gradient(to right, #000 calc(100% - 96px), transparent calc(100% - 78px));
   }
 
   .v4-company-meta {
@@ -422,18 +453,29 @@
     top: 50%;
     right: 6px;
     transform: translateY(-50%);
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .v4-company-item:hover .v4-syncmode-slot,
+  .v4-company-item:focus-within .v4-syncmode-slot {
+    opacity: 1;
+    pointer-events: auto;
   }
 
   .v4-syncmode-slot.always-visible {
     position: static;
     transform: none;
+    opacity: 1;
+    pointer-events: auto;
   }
 
   .v4-dot {
+    flex: 0 0 6px;
+    align-self: center;
     width: 6px;
     height: 6px;
     border-radius: 999px;
-    flex: 0 0 auto;
     background: var(--v4-idle);
   }
 
@@ -495,14 +537,17 @@
   }
 
   .v4-spacer {
-    flex: 1 1 auto;
+    flex: 0 0 auto;
   }
 
   .v4-footer {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 4px;
+    /* Pinned: never shrink under list pressure so the footer stays on-screen
+       and the overflow goes to .v4-company-nav instead (US-007).
+       DESKTOP-011: title + meta use separate grid slots with explicit 3px gap. */
+    display: grid;
+    grid-template-rows: auto auto;
+    gap: var(--v4-row-stack-gap, 3px);
+    justify-items: start;
     width: 100%;
     margin: 0 0 12px;
     padding: 8px;
@@ -521,8 +566,33 @@
     color: var(--v4-text-1);
   }
 
+  .v4-footer:focus-visible {
+    outline: 2px solid var(--v4-focus-ring, var(--v4-control-border));
+    outline-offset: -4px;
+  }
+
+  .v4-footer:hover .v4-footer-label,
+  .v4-footer:focus-visible .v4-footer-label,
+  .v4-footer.active .v4-footer-label {
+    color: var(--v4-text-1);
+  }
+
+  .v4-footer.active .v4-footer-label {
+    font-weight: 500;
+  }
+
+  .v4-footer-label {
+    color: var(--v4-text-2);
+    font-size: var(--type-body, var(--text-base));
+    font-weight: 400;
+  }
+
   .v4-footer-meta {
+    overflow: hidden;
+    max-width: 100%;
     color: var(--v4-text-3);
     font-size: var(--text-sm);
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 </style>

@@ -53,20 +53,22 @@ function conflict(overrides: Partial<HomeConflict> = {}): HomeConflict {
 }
 
 function coreState(overrides: Partial<HomeCoreState['driftReport']> = {}): HomeCoreState {
+  const driftReport: HomeCoreState['driftReport'] = {
+    baselineStatus: overrides.baselineStatus ?? 'Available',
+    updateRequired: overrides.updateRequired ?? false,
+    count: overrides.count ?? 1,
+    modified: overrides.modified ?? [
+      { path: 'core/hooks/hook-gate.sh', size: 10, gitShaLocal: 'aaa', gitShaUpstream: 'bbb' },
+    ],
+    missing: overrides.missing ?? [],
+    added: overrides.added ?? [],
+    hqVersion: overrides.hqVersion ?? '15.0.15',
+    targetRepo: overrides.targetRepo ?? 'indigoai-us/hq-core',
+    targetRef: overrides.targetRef ?? 'v15.0.15',
+  };
   return {
     targetVersion: '15.0.15',
-    driftReport: {
-      count: 1,
-      modified: [
-        { path: 'core/hooks/hook-gate.sh', size: 10, gitShaLocal: 'aaa', gitShaUpstream: 'bbb' },
-      ],
-      missing: [],
-      added: [],
-      hqVersion: '15.0.15',
-      targetRepo: 'indigoai-us/hq-core',
-      targetRef: 'v15.0.15',
-      ...overrides,
-    },
+    driftReport,
   };
 }
 

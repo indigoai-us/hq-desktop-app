@@ -1005,6 +1005,13 @@
       const detail = (event as CustomEvent<{ slug?: string; enabled?: boolean }>).detail;
       if (!detail?.slug || typeof detail.enabled !== 'boolean') return;
       applyWorkspaceSyncEnabled(detail.slug, detail.enabled);
+      // Watch spawn args read workspaceSyncEnabled at start — bounce so Off
+      // companies leave the fanout immediately (mirrors Instant-sync bounce).
+      if (autoSyncOn) {
+        void invoke('stop_daemon')
+          .then(() => invoke('start_daemon'))
+          .catch((err) => console.error('workspace-sync daemon bounce failed:', err));
+      }
     };
     window.addEventListener(
       'hq:workspace-sync-enabled-changed',

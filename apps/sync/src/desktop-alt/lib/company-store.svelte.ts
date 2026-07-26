@@ -71,6 +71,10 @@ export function stopCompanyStore(): void {
 }
 
 export const companyStore = {
+  /** Bumps when cache entries are written or invalidated — panels subscribe via `$effect`. */
+  get revision() {
+    return cache.revision;
+  },
   summary: (slug: string) => cache.read<CompanySummary>(key('summary', slug)),
   board: (slug: string) => cache.read<CompanyBoard>(key('board', slug)),
   activity: (slug: string) => cache.read<unknown>(key('activity', slug)),

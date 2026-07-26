@@ -83,6 +83,8 @@ describe('US-007: Per-workspace sync controls and Personal taxonomy', () => {
     expect(coreWorkspaces).toContain('pub sync_enabled: bool,');
     expect(coreWorkspaces).toContain('WORKSPACE_SYNC_ENABLED_KEY');
     expect(coreWorkspaces).toContain('write_workspace_sync_enabled');
+    expect(coreWorkspaces).toContain('disabled_workspace_sync_slugs');
+    expect(coreWorkspaces).toContain('fn replace_file');
 
     expect(tauriWorkspaces).toContain('pub fn set_workspace_sync_enabled');
     expect(tauriWorkspaces).toContain('personal_sync_enabled = crate::commands::settings::get_settings()');
@@ -117,6 +119,8 @@ describe('US-007: Per-workspace sync controls and Personal taxonomy', () => {
     expect(desktop).toContain('watchedCount={watchedWorkspaceCount}');
     expect(desktop).toContain('isSyncEnabledSlug(company.slug)');
     expect(desktop).toContain('activeCompanySyncEnabled ? activeCompany?.slug ?? null : null');
+    expect(desktop).toContain("invoke('stop_daemon')");
+    expect(desktop).toContain("invoke('start_daemon')");
 
     expect(companyPage).toContain('company.syncEnabled !== false');
   });

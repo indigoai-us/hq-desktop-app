@@ -94,10 +94,11 @@
 
   $effect(() => {
     reloadToken;
-    activity = emptyActivity();
+    void companyStore.revision;
     error = null;
 
     if (!slug || !cloudBacked) {
+      activity = emptyActivity();
       loading = false;
       return;
     }
@@ -105,8 +106,13 @@
     let cancelled = false;
 
     const warm = companyStore.activity(slug);
-    activity = warm != null ? normalizeActivity(warm as Partial<CompanyActivity>) : emptyActivity();
-    loading = warm == null;
+    if (warm != null) {
+      activity = normalizeActivity(warm as Partial<CompanyActivity>);
+      loading = false;
+    } else {
+      activity = emptyActivity();
+      loading = true;
+    }
 
     void companyStore.loadActivity<Partial<CompanyActivity>>(slug, reloadToken > 0)
       .then((result) => {

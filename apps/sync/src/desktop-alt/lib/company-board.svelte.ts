@@ -48,10 +48,11 @@ export function useCompanyBoard(options: { slug: () => string | null; enabled?: 
     const slug = options.slug();
     const enabled = options.enabled?.() ?? true;
     reloadToken;
-    board = emptyCompanyBoard();
+    void companyStore.revision;
     error = null;
 
     if (!slug || !enabled) {
+      board = emptyCompanyBoard();
       loading = false;
       return;
     }
@@ -59,8 +60,13 @@ export function useCompanyBoard(options: { slug: () => string | null; enabled?: 
     let cancelled = false;
 
     const warm = companyStore.board(slug);
-    board = warm ? shapeBoard(warm) : emptyCompanyBoard();
-    loading = warm === null;
+    if (warm) {
+      board = shapeBoard(warm);
+      loading = false;
+    } else {
+      board = emptyCompanyBoard();
+      loading = true;
+    }
 
     void companyStore.loadBoard(slug, reloadToken > 0)
       .then((result) => {

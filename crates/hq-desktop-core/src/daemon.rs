@@ -130,6 +130,12 @@ pub fn build_watch_runner_args(hq_folder_path: &str) -> SpawnArgs {
     // GUI-launched Tauri apps inherit a minimal launchd PATH and otherwise
     // can't find node/npx. See paths::child_path.
     env.insert("PATH".to_string(), paths::child_path());
+    // Mirror Sync Now: paused companies (workspaceSyncEnabled=false) must not
+    // keep uploading/downloading under Auto-sync / watch.
+    let disabled = crate::workspaces::disabled_workspace_sync_slugs();
+    if !disabled.is_empty() {
+        env.insert("HQ_SYNC_SKIP_COMPANIES".to_string(), disabled.join(","));
+    }
 
     // Remote-pull cadence, fixed at 15 seconds. event-push + event-sync handle
     // real-time propagation; this poll is only the correctness backstop. It is

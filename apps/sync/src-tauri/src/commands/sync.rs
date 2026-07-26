@@ -345,6 +345,19 @@ pub fn parse_sync_scope(company_slug: Option<String>) -> Result<SyncRunScope, St
     }
 }
 
+/// Inject `HQ_SYNC_SKIP_COMPANIES` for All-scope runs so the runner drops
+/// companies the user paused via per-workspace Off toggles.
+fn apply_skip_companies_env(env: &mut HashMap<String, String>, scope: &SyncRunScope) {
+    if !scope.is_all() {
+        return;
+    }
+    let disabled = hq_desktop_core::workspaces::disabled_workspace_sync_slugs();
+    if disabled.is_empty() {
+        return;
+    }
+    env.insert("HQ_SYNC_SKIP_COMPANIES".to_string(), disabled.join(","));
+}
+
 /// Build the SpawnArgs for `npx … hq-sync-runner --companies` or a scoped
 /// `npx … hq-sync-runner --company <slug>` run.
 ///
@@ -397,6 +410,9 @@ pub fn build_sync_spawn_args(
     // Dock-launched apps and either process exits with code 127. See
     // `paths::child_path`.
     env.insert("PATH".to_string(), paths::child_path());
+    // Per-company Off toggles persist in menubar.json; honor them on All-scope
+    // fanout so Sync Now does not upload/download paused companies.
+    apply_skip_companies_env(&mut env, scope);
 
     let mut args = vec![
         "-y".to_string(),
@@ -1549,6 +1565,40 @@ mod tests {
         assert!(args.args.contains(&"--companies".to_string()));
         assert!(args.args.contains(&"--direction".to_string()));
         assert!(args.args.contains(&"both".to_string()));
+    }
+
+    #[test]
+    fn test_build_sync_spawn_args_sets_skip_companies_env_for_all_scope() {
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".hq")).unwrap();
+        std::fs::write(
+            tmp.path().join(".hq/menubar.json"),
+            r#"{"workspaceSyncEnabled":{"acme":false,"zeta":true}}"#,
+        )
+        .unwrap();
+        std::env::set_var("HOME", tmp.path());
+        let args = build_sync_spawn_args("/Users/test/HQ", true, &SyncRunScope::All);
+        let scoped = build_sync_spawn_args(
+            "/Users/test/HQ",
+            true,
+            &SyncRunScope::Company("zeta".into()),
+        );
+        std::env::remove_var("HOME");
+
+        let env = args.env.expect("env");
+        assert_eq!(
+            env.get("HQ_SYNC_SKIP_COMPANIES").map(String::as_str),
+            Some("acme")
+        );
+        assert!(
+            scoped
+                .env
+                .as_ref()
+                .and_then(|e| e.get("HQ_SYNC_SKIP_COMPANIES"))
+                .is_none(),
+            "company-scoped runs must not set HQ_SYNC_SKIP_COMPANIES"
+        );
     }
 
     /// Sync Now must use `--on-conflict keep` so a divergent local file

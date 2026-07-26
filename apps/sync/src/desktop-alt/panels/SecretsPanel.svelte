@@ -22,10 +22,11 @@
 
   $effect(() => {
     reloadToken;
-    secrets = [];
+    void companyStore.revision;
     error = null;
 
     if (!slug || !cloudBacked) {
+      secrets = [];
       loading = false;
       return;
     }
@@ -33,8 +34,13 @@
     let cancelled = false;
 
     const warm = companyStore.secrets(slug);
-    secrets = warm ? warm.map(normalizeSecretEnv) : [];
-    loading = warm === null;
+    if (warm) {
+      secrets = warm.map(normalizeSecretEnv);
+      loading = false;
+    } else {
+      secrets = [];
+      loading = true;
+    }
 
     void companyStore.loadSecrets(slug, reloadToken > 0)
       .then((result) => {
