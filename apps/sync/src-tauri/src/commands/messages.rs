@@ -149,6 +149,9 @@ pub async fn open_messages_window(
             *state.0.lock().unwrap_or_else(|p| p.into_inner()) = Some(t.clone());
         }
     }
+    // Warm vs cold: an already-mounted desktop has live listeners; a freshly
+    // created one drains via take_pending_messages_target on mount.
+    let desktop_already_mounted = app.get_webview_window(DESKTOP_ALT_LABEL).is_some();
     log(LOG_TAG, "MESSAGES_WINDOW_OPEN → desktop destination inbox");
     crate::commands::desktop_alt::open_destination(
         app.clone(),
@@ -162,6 +165,11 @@ pub async fn open_messages_window(
         let _ = app.emit_to(DESKTOP_ALT_LABEL, EVENT_MESSAGES_OPEN_CONVERSATION, &t);
         let _ = app.emit(EVENT_MESSAGES_OPEN_CONVERSATION, &t);
         log(LOG_TAG, "MESSAGES_WINDOW_TARGET_EMIT_DESKTOP");
+        if desktop_already_mounted {
+            if let Some(state) = app.try_state::<PendingMessagesTarget>() {
+                *state.0.lock().unwrap_or_else(|p| p.into_inner()) = None;
+            }
+        }
     }
     Ok(())
 }

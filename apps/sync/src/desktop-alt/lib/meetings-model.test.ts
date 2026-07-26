@@ -535,6 +535,21 @@ describe('meetings-model', () => {
       ).toBe(true);
     });
 
+    it('keeps Teams meetup-join identity when a trailing /0 path segment is present', () => {
+      const id = '19%3ameeting_AbCd%40thread.v2';
+      expect(
+        normalizeMeetingUrl(
+          `https://teams.microsoft.com/l/meetup-join/${id}/0?context=%7B%22Tid%22%3A%22x%22%7D`,
+        ),
+      ).toBe(`https://teams.microsoft.com/l/meetup-join/${id}`);
+      expect(
+        meetingUrlsMatch(
+          `https://teams.microsoft.com/l/meetup-join/${id}/0?context=x`,
+          `https://teams.microsoft.com/l/meetup-join/${id}`,
+        ),
+      ).toBe(true);
+    });
+
     it('returns null for unsupported or malformed URLs', () => {
       expect(normalizeMeetingUrl('')).toBeNull();
       expect(normalizeMeetingUrl('not a url')).toBeNull();

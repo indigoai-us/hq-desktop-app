@@ -197,6 +197,16 @@ describe('US-005: Meeting bot identity and duplicate-invite recovery', () => {
       expect(page).not.toMatch(/fetchError\s*=\s*['"`]/);
       expect(page).not.toMatch(/meetingsStore\.fetchError\s*=/);
     });
+
+    it('MeetingsPage consumes open_meetings_window focus handoff', () => {
+      const page = readRepo('src/desktop-alt/pages/MeetingsPage.svelte');
+      const agenda = readRepo('src/desktop-alt/components/MeetingsAgenda.svelte');
+      expect(page).toContain("listen<{ meetingId?: string }>('meetings:focus-meeting'");
+      expect(page).toContain("invoke<string | null>('meetings_take_pending_focus')");
+      expect(page).toContain('{focusedMeetingId}');
+      expect(agenda).toContain('data-meeting-id={event.id}');
+      expect(agenda).toContain('class:focused={focusedMeetingId === event.id}');
+    });
   });
 
   describe('AC5: list distinguishes lifecycle states before interaction', () => {

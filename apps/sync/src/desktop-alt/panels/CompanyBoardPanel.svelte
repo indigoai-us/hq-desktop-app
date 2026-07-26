@@ -43,6 +43,8 @@
     slug: string;
     /** False for local folders that are not cloud-backed yet. */
     cloudBacked?: boolean;
+    /** Local sync Off — pause resource fetches without rewriting connectivity. */
+    syncEnabled?: boolean;
     /** Navigate to company Projects (toolbar + overview links). */
     onopenprojects?: () => void;
     /** Navigate to company Goals. */
@@ -54,6 +56,7 @@
   let {
     slug,
     cloudBacked = true,
+    syncEnabled = true,
     onopenprojects,
     onopengoals,
     onopeninbox,
@@ -71,8 +74,9 @@
     tone: 'ok' | 'warn' | 'error' | 'idle';
   }
 
-  const summaryState = useCompanySummary({ slug: () => slug, enabled: () => cloudBacked });
-  const boardState = useCompanyBoard({ slug: () => slug, enabled: () => cloudBacked });
+  const resourcesEnabled = $derived(cloudBacked && syncEnabled);
+  const summaryState = useCompanySummary({ slug: () => slug, enabled: () => resourcesEnabled });
+  const boardState = useCompanyBoard({ slug: () => slug, enabled: () => resourcesEnabled });
 
   // ---- data (projects + goals), scoped to `slug` ---------------------------
   let projects = $state<Project[]>([]);
@@ -143,6 +147,7 @@
   /** Honest cloud label — never invents health beyond backed/error state. */
   const cloudPulse = $derived.by((): { label: string; tone: 'ok' | 'warn' | 'error' | 'idle' } => {
     if (!cloudBacked) return { label: 'local only', tone: 'idle' };
+    if (!syncEnabled) return { label: 'sync paused', tone: 'warn' };
     if (error || boardState.error || summaryState.error) {
       return { label: 'cloud issue', tone: 'error' };
     }
@@ -185,6 +190,14 @@
         sub: 'Connect to cloud so synced board activity can appear',
         tone: 'warn',
         actions: [{ id: 'inspect-local', label: 'Inspect', kind: 'secondary' }],
+      });
+    } else if (!syncEnabled) {
+      cards.push({
+        id: 'sync-paused',
+        title: 'Sync is paused on this device',
+        sub: 'Cloud membership is still connected — turn sync On to refresh board data',
+        tone: 'warn',
+        actions: [{ id: 'inspect-paused', label: 'Inspect', kind: 'secondary' }],
       });
     }
     if (!loading && unlinkedGoals.length > 0) {
@@ -709,7 +722,7 @@
 
           <!-- 5. Recent activity -->
           <section class="overview-section" data-testid="overview-activity-section">
-            <OverviewActivityDigest {slug} {cloudBacked} {onopeninbox} />
+            <OverviewActivityDigest {slug} {cloudBacked} {syncEnabled} {onopeninbox} />
           </section>
         </div>
       </div>

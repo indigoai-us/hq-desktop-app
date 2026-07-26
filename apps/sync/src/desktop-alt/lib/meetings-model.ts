@@ -221,9 +221,11 @@ export function normalizeMeetingUrl(raw: string | null | undefined): string | nu
     return `https://meet.google.com/${m[1].toLowerCase()}`;
   }
 
-  // Teams: https://teams.microsoft.com/l/meetup-join/{id}
+  // Teams: https://teams.microsoft.com/l/meetup-join/{id}[/…]
+  // Real calendar links often append `/0` (or similar) after the encoded
+  // meeting id — keep the identity segment, drop trailing path + query/hash.
   if (host === 'teams.microsoft.com' || host.endsWith('.teams.microsoft.com')) {
-    const m = path.match(/^\/l\/meetup-join\/([^/]+)$/i);
+    const m = path.match(/^\/l\/meetup-join\/([^/]+)(?:\/.*)?$/i);
     if (!m) return null;
     return `https://teams.microsoft.com/l/meetup-join/${m[1]}`;
   }

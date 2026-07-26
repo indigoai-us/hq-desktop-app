@@ -11,6 +11,8 @@
   interface Props {
     slug: string;
     cloudBacked?: boolean;
+    /** Local sync Off — pause fetches without treating the company as disconnected. */
+    syncEnabled?: boolean;
     /** Open the global Inbox for full notification chronology. */
     onopeninbox?: () => void;
   }
@@ -31,7 +33,8 @@
     top: ActivityContributor[];
   }
 
-  let { slug, cloudBacked = true, onopeninbox }: Props = $props();
+  let { slug, cloudBacked = true, syncEnabled = true, onopeninbox }: Props = $props();
+  const resourcesEnabled = $derived(cloudBacked && syncEnabled);
 
   const emptyStats = (): ActivityStats => ({ files7: 0, edits7: 0, members: 0, vaultSize: '' });
   const emptyActivity = (): CompanyActivity => ({ stats: emptyStats(), sparkline: [], top: [] });
@@ -63,7 +66,7 @@
 
   $effect(() => {
     void companyStore.revision;
-    if (!slug || !cloudBacked) {
+    if (!slug || !resourcesEnabled) {
       activity = emptyActivity();
       loading = false;
       return;

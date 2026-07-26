@@ -8,6 +8,8 @@
   interface Props {
     slug: string;
     cloudBacked?: boolean;
+    /** Local sync Off — pause fetches without treating the company as disconnected. */
+    syncEnabled?: boolean;
   }
 
   interface ActivityStats {
@@ -43,7 +45,8 @@
     top: ActivityContributor[];
   }
 
-  let { slug, cloudBacked = true }: Props = $props();
+  let { slug, cloudBacked = true, syncEnabled = true }: Props = $props();
+  const resourcesEnabled = $derived(cloudBacked && syncEnabled);
 
   const emptyStats = (): ActivityStats => ({
     files7: 0,
@@ -101,7 +104,7 @@
     if (force) appliedReloadToken = token;
     error = null;
 
-    if (!slug || !cloudBacked) {
+    if (!slug || !resourcesEnabled) {
       activity = emptyActivity();
       loading = false;
       return;
@@ -254,6 +257,13 @@
       <div>
         <strong>Activity will appear after connect</strong>
         <span>This company is local only, so there is no synced activity feed yet.</span>
+      </div>
+    </div>
+  {:else if !syncEnabled}
+    <div class="activity-error activity-note" role="status">
+      <div>
+        <strong>Sync is paused on this device</strong>
+        <span>Cloud membership is still connected — turn sync On to refresh activity.</span>
       </div>
     </div>
   {/if}

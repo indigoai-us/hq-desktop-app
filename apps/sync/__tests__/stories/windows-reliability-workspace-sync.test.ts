@@ -128,5 +128,12 @@ describe('US-007: Per-workspace sync controls and Personal taxonomy', () => {
     expect(desktop).toContain("invoke('start_daemon')");
 
     expect(companyPage).toContain('company.syncEnabled !== false');
+    // Sync Off must not rewrite cloud connectivity (Codex: separate syncEnabled).
+    expect(companyPage).toContain('const syncEnabled = $derived(company.syncEnabled !== false)');
+    expect(companyPage).not.toMatch(/cloudBacked[\s\S]{0,120}syncEnabled !== false/);
+
+    const board = read('src/desktop-alt/panels/CompanyBoardPanel.svelte');
+    expect(board).toContain('resourcesEnabled');
+    expect(board).toContain('sync paused');
   });
 });

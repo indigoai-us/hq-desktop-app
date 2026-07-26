@@ -7,9 +7,12 @@
   interface Props {
     slug: string;
     cloudBacked?: boolean;
+    /** Local sync Off — pause fetches without treating the company as disconnected. */
+    syncEnabled?: boolean;
   }
 
-  let { slug, cloudBacked = true }: Props = $props();
+  let { slug, cloudBacked = true, syncEnabled = true }: Props = $props();
+  const resourcesEnabled = $derived(cloudBacked && syncEnabled);
 
   let secrets = $state<SecretEnv[]>([]);
   let loading = $state(false);
@@ -29,7 +32,7 @@
     if (force) appliedReloadToken = token;
     error = null;
 
-    if (!slug || !cloudBacked) {
+    if (!slug || !resourcesEnabled) {
       secrets = [];
       loading = false;
       return;
@@ -157,7 +160,7 @@
       class="toolbar-button"
       type="button"
       onclick={() => void openSecretsPrompt('export')}
-      disabled={actionBusy !== null || !cloudBacked}
+      disabled={actionBusy !== null || !resourcesEnabled}
       title="Export via HQ secrets workflow"
     >
       {actionBusy === 'export' ? 'Opening…' : 'Export .env'}
@@ -166,7 +169,7 @@
       class="toolbar-button"
       type="button"
       onclick={() => void openSecretsPrompt('new')}
-      disabled={actionBusy !== null || !cloudBacked}
+      disabled={actionBusy !== null || !resourcesEnabled}
       title="Create via HQ secrets workflow"
     >
       {actionBusy === 'new' ? 'Opening…' : 'New key'}
@@ -182,6 +185,13 @@
       <div>
         <strong>Connect this company to manage secrets</strong>
         <span>Secret metadata is available after the local company is cloud-backed.</span>
+      </div>
+    </div>
+  {:else if !syncEnabled}
+    <div class="secrets-error secrets-note" role="status">
+      <div>
+        <strong>Sync is paused on this device</strong>
+        <span>Cloud membership is still connected — turn sync On to refresh secret metadata.</span>
       </div>
     </div>
   {/if}
