@@ -134,6 +134,43 @@ pub struct ChannelMember {
     pub role: String,
 }
 
+/// One structured @mention on an outgoing room message (hq-rooms).
+///
+/// The server resolves these into stored mentions and, for `agent`
+/// participants, mention-gates its room→agent-inbox delivery on them — so an
+/// agent only answers when it was actually addressed. `participant_type` is
+/// "human" | "agent"; the server rejects anything else.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelMentionInput {
+    pub participant_uid: String,
+    pub participant_type: String,
+    #[serde(default)]
+    pub display_name: String,
+}
+
+/// Build the POST body for a room message, attaching structured mentions only
+/// when at least one survives trimming. An empty mention list is omitted
+/// entirely so the request stays byte-identical to the pre-rooms shape.
+pub fn channel_message_payload(
+    body: &str,
+    mentions: &[ChannelMentionInput],
+    root_event_id: Option<&str>,
+) -> serde_json::Value {
+    let mut payload = serde_json::json!({ "body": body });
+    let cleaned: Vec<&ChannelMentionInput> = mentions
+        .iter()
+        .filter(|m| !m.participant_uid.trim().is_empty())
+        .collect();
+    if !cleaned.is_empty() {
+        payload["mentions"] = serde_json::json!(cleaned);
+    }
+    if let Some(root) = root_event_id.map(str::trim).filter(|r| !r.is_empty()) {
+        payload["rootEventId"] = serde_json::json!(root);
+    }
+    payload
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChannelMembersResponse {
@@ -627,5 +664,52 @@ mod tests {
         assert_eq!(v["messageScope"], "dm:prs_x");
         assert_eq!(v["messageId"], "evt_1");
         assert_eq!(v["reactions"][0]["reactedByMe"], true);
+    }
+
+    fn mention(uid: &str, kind: &str, name: &str) -> ChannelMentionInput {
+        ChannelMentionInput {
+            participant_uid: uid.to_string(),
+            participant_type: kind.to_string(),
+            display_name: name.to_string(),
+        }
+    }
+
+    #[test]
+    fn channel_message_payload_omits_empty_mentions() {
+        // Byte-identical to the pre-rooms shape when nobody is mentioned.
+        let v = channel_message_payload("hello", &[], None);
+        assert_eq!(v["body"], "hello");
+        assert!(v.get("mentions").is_none());
+        assert!(v.get("rootEventId").is_none());
+    }
+
+    #[test]
+    fn channel_message_payload_serializes_agent_mentions_camel_case() {
+        let v = channel_message_payload(
+            "@Izzy take a look",
+            &[mention("agt_01ABC", "agent", "Izzy")],
+            None,
+        );
+        assert_eq!(v["mentions"][0]["participantUid"], "agt_01ABC");
+        assert_eq!(v["mentions"][0]["participantType"], "agent");
+        assert_eq!(v["mentions"][0]["displayName"], "Izzy");
+    }
+
+    #[test]
+    fn channel_message_payload_drops_blank_uids_and_carries_thread_root() {
+        let v = channel_message_payload(
+            "reply",
+            &[mention("  ", "agent", "Ghost"), mention("prs_1", "human", "Jacob")],
+            Some("evt_root"),
+        );
+        assert_eq!(v["mentions"].as_array().unwrap().len(), 1);
+        assert_eq!(v["mentions"][0]["participantUid"], "prs_1");
+        assert_eq!(v["rootEventId"], "evt_root");
+    }
+
+    #[test]
+    fn channel_message_payload_omits_blank_root_event_id() {
+        let v = channel_message_payload("top level", &[], Some("   "));
+        assert!(v.get("rootEventId").is_none());
     }
 }

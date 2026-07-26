@@ -21,6 +21,11 @@
   } from '../../lib/channels';
   import { type ReactionEvent, channelScope } from '../../lib/reactions';
   import { ReactionController } from '../../lib/reactionController.svelte';
+  import {
+    mentionCandidates,
+    resolveMentions,
+    type MentionCandidate,
+  } from '../../lib/roomMentions';
 
   interface Props {
     channel: Channel;
@@ -76,6 +81,30 @@
 
   let rosterOpen = $state(false);
   let memberCount = $state<number | null>(channel.memberCount ?? null);
+  // HQ Rooms: the roster powers @mention autocomplete AND mention resolution on
+  // send. Loaded lazily alongside the thread; a failure degrades to "no
+  // autocomplete" rather than blocking the room (a typed name still resolves
+  // server-side when it matches exactly).
+  let roomMentionOptions = $state<MentionCandidate[]>([]);
+
+  async function loadRoster(): Promise<void> {
+    try {
+      const res = await invoke<{ members?: Array<Record<string, unknown>> }>(
+        'list_channel_members',
+        { channelId: current.channelId },
+      );
+      const members = (res?.members ?? []) as Array<{
+        personUid: string;
+        displayName: string;
+        email: string;
+        role: string;
+      }>;
+      roomMentionOptions = mentionCandidates(members, selfPersonUid ?? '');
+    } catch (err) {
+      roomMentionOptions = [];
+      console.error('channel-view: list_channel_members failed', err);
+    }
+  }
 
   // Reactions (US-025) for the open channel. Recreated when the selected channel
   // changes (each channel is its own messageScope), kept in step with the visible
@@ -112,7 +141,11 @@
         onchannelchange?.(current);
       }
       // Opening a joined channel marks it read.
-      if (!invited) void markRead();
+      if (!invited) {
+        void markRead();
+        // Roster drives @mention autocomplete (HQ Rooms) — best-effort.
+        void loadRoster();
+      }
     } catch (err) {
       threadError = typeof err === 'string' ? err : 'Could not load this channel';
       messages = [];
@@ -137,7 +170,15 @@
     sending = true;
     sendError = null;
     try {
-      await invoke('send_channel_message', { channelId: current.channelId, body: text });
+      // HQ Rooms: resolve "@Name" against the roster into the structured
+      // mentions the server gates agent delivery on. Unresolvable names are
+      // dropped here rather than failing silently server-side.
+      const mentions = resolveMentions(text, roomMentionOptions);
+      await invoke('send_channel_message', {
+        channelId: current.channelId,
+        body: text,
+        mentions: mentions.length > 0 ? mentions : null,
+      });
       messages = [
         ...messages,
         {
@@ -318,6 +359,7 @@
     {activeRootEventId}
     reactions={reactionsCtl?.map ?? {}}
     ontogglereaction={reactionsCtl ? reactionsCtl.toggle : undefined}
+    mentionOptions={roomMentionOptions}
   />
 {/if}
 
