@@ -15,7 +15,7 @@ describe('company Overview recent-activity digest (DESKTOP-003)', () => {
     expect(panel).toContain("import OverviewActivityDigest from '../components/OverviewActivityDigest.svelte'");
     // Rendered with slug, cloud-backed flag, and inbox handoff.
     expect(panel).toMatch(
-      /<OverviewActivityDigest\s+\{slug\}\s+\{cloudBacked\}\s+\{onopeninbox\}\s*\/>/,
+      /<OverviewActivityDigest\s+\{slug\}\s+\{cloudBacked\}\s+\{syncEnabled\}\s+\{onopeninbox\}\s*\/>/,
     );
   });
 

@@ -55,9 +55,9 @@ describe('DESKTOP-010: scoped company operations', () => {
     expect(ops).toContain('data-testid="operations-nav-item"');
     expect(ops).toContain('data-testid="operations-content"');
     expect(ops).toContain('COMPANY_OPERATIONS_SECTIONS');
-    expect(ops).toContain('<ActivityPanel {slug} {cloudBacked} />');
-    expect(ops).toContain('<DeploymentsPanel {slug} {cloudBacked} />');
-    expect(ops).toContain('<SecretsPanel {slug} {cloudBacked} />');
+    expect(ops).toContain('<ActivityPanel {slug} {cloudBacked} {syncEnabled} />');
+    expect(ops).toContain('<DeploymentsPanel {slug} {cloudBacked} {syncEnabled} />');
+    expect(ops).toContain('<SecretsPanel {slug} {cloudBacked} {syncEnabled} />');
     expect(ops).toContain('data-testid="operations-settings"');
     expect(companyPage).toContain('CompanyOperationsPanel');
     expect(companyPage).toContain('isCompanyOperationsTab(tab)');
@@ -233,14 +233,15 @@ describe('DESKTOP-010: scoped company operations', () => {
 
   it('preserves tenant slug scoping and backend commands', () => {
     expect(ops).toContain('slug: string');
-    expect(activity).toContain('let { slug, cloudBacked = true }: Props = $props()');
+    expect(activity).toContain('let { slug, cloudBacked = true, syncEnabled = true }: Props = $props()');
     expect(activity).toContain('companyStore.loadActivity');
     expect(deployments).toContain('companyStore.loadDeployments');
     expect(secrets).toContain('companyStore.loadSecrets');
-    expect(activity).toContain('if (!slug || !cloudBacked)');
-    expect(deployments).toContain('if (!slug || !cloudBacked)');
-    expect(secrets).toContain('if (!slug || !cloudBacked)');
+    expect(activity).toContain('if (!slug || !resourcesEnabled)');
+    expect(deployments).toContain('if (!slug || !resourcesEnabled)');
+    expect(secrets).toContain('if (!slug || !resourcesEnabled)');
     expect(companyPage).toContain('slug={company.slug}');
     expect(companyPage).toContain('{cloudBacked}');
+    expect(companyPage).toContain('{syncEnabled}');
   });
 });

@@ -54,8 +54,8 @@ describe('US-011: Deployments panel reads hq-deploy subdomains via Tauri command
     expect(page).toContain('slug={company.slug}');
     expect(page).toContain('{cloudBacked}');
     expect(page).toContain('const cloudBacked = $derived');
-    expect(operations).toContain('<DeploymentsPanel {slug} {cloudBacked} />');
-    expect(panel).toContain('if (!slug || !cloudBacked)');
+    expect(operations).toContain('<DeploymentsPanel {slug} {cloudBacked} {syncEnabled} />');
+    expect(panel).toContain('if (!slug || !resourcesEnabled)');
     expect(panel).toContain('void companyStore.loadDeployments(slug');
     expect(panel).toContain('return () => { cancelled = true; };');
     expect(panel).toContain('function retry() { reloadToken += 1; }');
