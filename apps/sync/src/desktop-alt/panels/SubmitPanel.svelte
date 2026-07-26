@@ -323,11 +323,12 @@
     align-items: center;
     justify-content: space-between;
     gap: var(--v4-space-3);
-    padding: var(--v4-space-3);
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-card);
-    background: var(--v4-raised);
-    box-shadow: var(--v4-shadow-card);
+    padding: var(--v4-space-3) 0 0;
+    border: 0;
+    border-top: 1px solid var(--v4-hairline);
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
   }
 
   .picker-row {
@@ -404,10 +405,11 @@
 
   /* ---- progress ---------------------------------------------------------- */
   .progress {
-    padding: var(--v4-space-2) var(--v4-space-3);
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-field);
-    background: var(--v4-raised);
+    padding: var(--v4-space-2) 0;
+    border: 0;
+    border-top: 1px solid var(--v4-hairline);
+    border-radius: 0;
+    background: transparent;
     max-height: 220px;
     overflow: auto;
   }
@@ -427,10 +429,11 @@
     display: flex;
     flex-direction: column;
     gap: var(--v4-space-1);
-    padding: var(--v4-space-3);
-    border: 1px solid color-mix(in srgb, var(--v4-ok) 45%, transparent);
-    border-radius: var(--v4-radius-field);
-    background: color-mix(in srgb, var(--v4-ok) 10%, var(--v4-raised));
+    padding: var(--v4-space-3) 0;
+    border: 0;
+    border-top: 1px solid var(--v4-rowline);
+    border-radius: 0;
+    background: transparent;
   }
 
   .success-line {
@@ -463,8 +466,8 @@
   }
 
   .status-pending {
-    background: color-mix(in srgb, var(--v4-warn) 22%, transparent);
-    color: var(--v4-warn);
+    background: var(--v4-control-faint);
+    color: var(--v4-text-2);
   }
 
   /* ---- error ------------------------------------------------------------- */
@@ -472,15 +475,16 @@
     display: flex;
     flex-direction: column;
     gap: var(--v4-space-1);
-    padding: var(--v4-space-3);
-    border: 1px solid color-mix(in srgb, var(--v4-error) 45%, var(--v4-hairline));
-    border-radius: var(--v4-radius-field);
-    background: color-mix(in srgb, var(--v4-error) 10%, var(--v4-raised));
+    padding: var(--v4-space-3) 0;
+    border: 0;
+    border-top: 1px solid var(--v4-rowline);
+    border-radius: 0;
+    background: transparent;
   }
 
   .error-title {
     margin: 0;
-    color: var(--v4-text-1);
+    color: var(--v4-error);
     font-size: var(--text-base);
     font-weight: 600;
   }
@@ -499,11 +503,12 @@
     flex-direction: column;
     gap: var(--v4-space-2);
     align-items: stretch;
-    padding: var(--v4-space-4);
-    border: 1px solid var(--v4-control-border);
-    border-radius: var(--v4-radius-card);
-    background: var(--v4-raised);
-    box-shadow: var(--v4-shadow-card);
+    padding: var(--v4-space-4) 0;
+    border: 0;
+    border-top: 1px solid var(--v4-hairline);
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
   }
 
   .request-access .btn-primary {
@@ -533,7 +538,7 @@
 
   .ra-pending {
     margin: 0;
-    color: var(--v4-warn);
+    color: var(--v4-text-2);
     font-size: var(--text-base);
     font-weight: 600;
   }

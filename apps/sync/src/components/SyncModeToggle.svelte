@@ -130,11 +130,11 @@
     z-index: 1;
     display: inline-flex;
     align-items: center;
-    gap: 1px;
-    padding: 1px;
-    border-radius: 999px;
-    background: var(--popover-surface, var(--pop-hover));
-    border: 1px solid var(--popover-border, var(--pop-border));
+    gap: 4px;
+    padding: 0;
+    border-radius: 0;
+    background: transparent;
+    border: 0;
     flex-shrink: 0;
   }
 
@@ -146,26 +146,28 @@
   .sync-mode-opt {
     appearance: none;
     border: 0;
+    border-bottom: 1px solid transparent;
     background: transparent;
     color: var(--popover-text-muted, var(--pop-muted));
     font: inherit;
     font-size: 0.625rem;
     font-weight: 600;
     line-height: 1;
-    padding: 0.1875rem 0.4375rem;
-    border-radius: 999px;
+    padding: 0.1875rem 0.25rem;
+    border-radius: 0;
     cursor: pointer;
-    transition: background-color 0.1s ease, color 0.1s ease;
+    transition: border-color 0.1s ease, color 0.1s ease;
   }
 
   .sync-mode-opt:hover:not(:disabled):not(.active) {
-    background: var(--popover-action-hover, var(--pop-hover));
+    background: transparent;
     color: var(--popover-text, var(--pop-text));
   }
 
   .sync-mode-opt.active {
-    background: var(--popover-primary, var(--pop-accent));
-    color: var(--popover-primary-text, var(--pop-acc-fg));
+    border-bottom-color: var(--popover-text-muted, var(--pop-muted));
+    background: transparent;
+    color: var(--popover-text, var(--pop-text));
   }
 
   .sync-mode-opt:focus-visible {
@@ -185,13 +187,13 @@
     font-size: 0.625rem;
     font-weight: 600;
     color: var(--popover-text-muted, var(--pop-muted));
-    padding: 0.1875rem 0.4375rem;
-    border-radius: 999px;
-    background: var(--popover-surface, var(--pop-hover));
+    padding: 0.1875rem 0;
+    border-radius: 0;
+    background: transparent;
   }
 
   .sync-mode-custom {
-    border: 1px solid var(--popover-border, var(--pop-border));
+    border: 0;
   }
 
   .sync-mode-error {

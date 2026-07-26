@@ -7,14 +7,20 @@ import { readRepoFile } from './harness';
 // fast without a macOS build. Mirrors the US-* / cli-update-notice story tests.
 
 describe('audit batch 2: confirmed-finding fixes', () => {
-  it('desktop shell listens for sync:setup-needed and does not let all-complete clobber it', () => {
+  it('treats setup-needed as a normal zero-company run and lets all-complete settle idle', () => {
     const app = readRepoFile('src/desktop-alt/DesktopApp.svelte');
-    // The listener that was missing — without it the status bar showed
-    // "Idle · all safe" for an un-provisioned brand-new account.
+    // The current runner emits setup-needed only after personal provisioning,
+    // when a brand-new account simply has no companies yet. Rust then emits a
+    // synthetic all-complete, so this stays in progress until that event and
+    // must not strand the desktop behind a fake setup problem.
     expect(app).toContain("listen('sync:setup-needed'");
-    expect(app).toContain("syncState = 'setup-needed'");
-    // all-complete must preserve the setup-needed state (not reset to idle).
-    expect(app).toContain("syncState !== 'setup-needed'");
+    const setupListener = app.slice(
+      app.indexOf("listen('sync:setup-needed'"),
+      app.indexOf("listen<{ message: string }>('sync:auth-error'"),
+    );
+    expect(setupListener).toContain("syncState = 'syncing'");
+    expect(setupListener).not.toContain("syncState = 'setup-needed'");
+    expect(app).not.toContain("syncState !== 'setup-needed'");
   });
 
   it('invited channel renders a read-only preview, not a fake working composer', () => {

@@ -1,6 +1,6 @@
-// US-008: Merge Messages + Notifications into one simplified 'Inbox' surface.
-// Pure-model assertions + readFileSync source contracts lock the IA merge,
-// combined page wiring, unified unread state, and legacy-intent aliases.
+// US-008: Keep a simplified Inbox notification chronology while restoring the
+// complete Messages workspace as a first-class destination. Pure-model
+// assertions + source contracts lock both surfaces and their intent routing.
 
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -24,6 +24,7 @@ const inboxPage = read('src/desktop-alt/pages/InboxPage.svelte');
 const v4Sidebar = read('src/desktop-alt/v4/V4Sidebar.svelte');
 const notificationFeed = read('src/components/NotificationFeed.svelte');
 const notificationRow = read('src/components/NotificationRow.svelte');
+const messagesShell = read('src/components/messaging/MessagesShell.svelte');
 
 function workspace(overrides: Partial<Workspace>): Workspace {
   return {
@@ -50,12 +51,13 @@ const workspaces: Workspace[] = [
   workspace({ slug: 'acme', displayName: 'Acme', state: 'synced' }),
 ];
 
-describe('US-008: exactly one combined Messages/Notifications sidebar destination', () => {
-  it("V4_NAV_ITEMS has exactly one 'inbox' row and no Messages/Notifications labels", () => {
+describe('US-008: Inbox chronology plus first-class Messages', () => {
+  it("V4_NAV_ITEMS has one Inbox row, one Messages row, and no Notifications row", () => {
     const inboxItems = V4_NAV_ITEMS.filter((item) => item.id === 'inbox');
+    const messagesItems = V4_NAV_ITEMS.filter((item) => item.id === 'messages');
     expect(inboxItems).toHaveLength(1);
     expect(inboxItems[0]?.label).toBe('Inbox');
-    expect(V4_NAV_ITEMS.some((item) => item.label === 'Messages')).toBe(false);
+    expect(messagesItems).toEqual([{ id: 'messages', label: 'Messages' }]);
     expect(V4_NAV_ITEMS.some((item) => item.label === 'Notifications')).toBe(false);
   });
 
@@ -139,16 +141,16 @@ describe('US-008: combined Inbox page shows both streams as one-line rows with u
     expect(inboxPage).toContain('if (!feedLoaded) return');
   });
 
-  it('the message-person deep link consumes the conversation stash before routing to Inbox (review fix)', () => {
-    // No MessagesShell mounts in the desktop window anymore; an unconsumed
-    // stash would leak into the next standalone Messages-window mount and open
-    // an unexpected conversation there. The recipient is handed to Inbox compose.
-    expect(desktopApp).toContain('takePendingConversation()');
-    expect(desktopApp).toContain('openInboxWithComposeTarget');
+  it('message-person targets preserve warm/cold handoff for the routed Messages shell', () => {
+    // DesktopApp owns routing while MessagesShell owns target consumption.
+    // Keep both Windows/Tauri delivery paths so a warm event and a cold-start
+    // pending target reach the same first-class Messages workspace.
+    expect(desktopApp).not.toContain('takePendingConversation()');
+    expect(desktopApp).toContain("navigate({ kind: 'messages' })");
     expect(desktopApp).toContain("messages:open-conversation");
     expect(desktopApp).toContain('take_pending_messages_target');
-    expect(inboxPage).toContain('inbox-compose-target');
-    expect(inboxPage).toContain('composeTarget');
+    expect(desktopApp).toContain('requestConversation');
+    expect(messagesShell).toContain('takePendingConversation()');
   });
 
   it('NotificationFeed wires message rows with reply/react and share rows as share type', () => {
@@ -175,19 +177,20 @@ describe('US-008: combined Inbox page shows both streams as one-line rows with u
     }
   });
 
-  it('DesktopApp mounts InboxPage for the inbox route and drops Messages/Notifications pages', () => {
+  it('DesktopApp mounts Inbox chronology and the complete embedded Messages shell', () => {
     expect(desktopApp).toContain("route.kind === 'inbox'");
     expect(desktopApp).toContain('<InboxPage');
-    expect(desktopApp).toContain('composeTarget={inboxComposeTarget}');
+    expect(desktopApp).toContain("route.kind === 'messages'");
+    expect(desktopApp).toContain('<MessagesShell embedded={true} />');
     expect(desktopApp).not.toContain('MessagesPage');
     expect(desktopApp).not.toContain('NotificationsPage');
   });
 });
 
-describe('US-008: legacy navigation intents resolve to the combined surface', () => {
-  it('resolvePendingDesktopRoute aliases messages/notifications/inbox to inbox; settings:notifications stays settings', () => {
+describe('US-008: navigation intents resolve to their complete surfaces', () => {
+  it('routes messages to Messages and notifications/inbox to Inbox', () => {
     expect(resolvePendingDesktopRoute('notifications')).toEqual({ kind: 'inbox' });
-    expect(resolvePendingDesktopRoute('messages')).toEqual({ kind: 'inbox' });
+    expect(resolvePendingDesktopRoute('messages')).toEqual({ kind: 'messages' });
     expect(resolvePendingDesktopRoute('inbox')).toEqual({ kind: 'inbox' });
     expect(resolvePendingDesktopRoute('settings:notifications')).toEqual({
       kind: 'settings',
@@ -195,8 +198,8 @@ describe('US-008: legacy navigation intents resolve to the combined surface', ()
     });
   });
 
-  it('fromV4Route maps inbox + legacy kinds onto inbox', () => {
-    expect(fromV4Route({ kind: 'messages' })).toEqual({ kind: 'inbox' });
+  it('fromV4Route preserves Messages while mapping notifications onto Inbox', () => {
+    expect(fromV4Route({ kind: 'messages' })).toEqual({ kind: 'messages' });
     expect(fromV4Route({ kind: 'notifications' })).toEqual({ kind: 'inbox' });
     expect(fromV4Route({ kind: 'inbox' })).toEqual({ kind: 'inbox' });
   });

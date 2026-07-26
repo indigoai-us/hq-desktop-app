@@ -10,35 +10,35 @@ import {
 /**
  * V4 information architecture (docs/design/v4/SPEC.md section 4 + DESKTOP-001).
  *
- * Global destinations — Inbox, Meetings, Marketplace, Library, Files — plus
- * companies as first-class sidebar rows and a Settings footer. US-008 merged
- * Messages + Notifications into Inbox. Home / Mission Control / Moderation are
- * palette-only. DESKTOP-001 expands the selected company inline (Overview /
- * Goals / Projects / Knowledge / Team / More) and removes the permanent company
- * secondary sidebar; Library and Settings keep their contextual secondary
- * columns. DESKTOP-010 groups Activity / Deployments / Secrets / company
- * Settings under More as one operations workspace; skills / workers remain
- * route-supported deep links without a primary child.
+ * Global destinations — Inbox, Messages, Meetings, Marketplace, Library, Files
+ * — plus companies as first-class sidebar rows and a Settings footer. Inbox is
+ * notification chronology; Messages is the full conversation workspace. Home /
+ * Mission Control / Moderation are palette-only. DESKTOP-001 expands the
+ * selected company inline (Overview /
+ * Goals / Projects / Skills / Workers / Knowledge / Team / More) and removes
+ * the permanent company secondary sidebar; Library and Settings keep their
+ * contextual secondary columns. DESKTOP-010 groups Activity / Deployments /
+ * Secrets / company Settings under More as one operations workspace.
  */
 
 /**
- * Library sub-surfaces — rows of the Library secondary sidebar. They all share
+ * Library routed sub-surfaces. The normal rows live in the Library secondary
+ * sidebar; `submit` is owned by its persistent Publish footer. They all share
  * the `library` page + LibraryBrowser body, differing only by which tab is
  * forced. Defaults to 'skills' when a library route carries no tab.
  * Marketplace is top-level now (US-007), not a Library tab.
  */
-export type LibraryTab = 'skills' | 'workers' | 'installed' | 'profile';
+export type LibraryTab = 'skills' | 'workers' | 'installed' | 'submit' | 'profile';
 
 export const DEFAULT_LIBRARY_TAB: LibraryTab = 'skills';
 
 /**
  * Company page sections — all route-supported company surfaces.
  * DESKTOP-001 primary sidebar shows a compact subset (see
- * COMPANY_PRIMARY_SECTIONS); skills / workers remain deep-linkable without a
- * primary child. DESKTOP-010 operational tabs (activity / deployments /
- * secrets / settings) open under More. Defaults to 'overview' when a company
- * route carries no tab. Legacy deep-links remap in resolvePendingDesktopRoute
- * / normalizeCompanyTab.
+ * COMPANY_PRIMARY_SECTIONS), including the existing Skills and Workers panels.
+ * DESKTOP-010 operational tabs (activity / deployments / secrets / settings)
+ * open under More. Defaults to 'overview' when a company route carries no tab.
+ * Legacy deep-links remap in resolvePendingDesktopRoute / normalizeCompanyTab.
  */
 export type CompanyTab =
   | 'overview'
@@ -64,6 +64,8 @@ export type CompanyPrimarySectionId =
   | 'overview'
   | 'goals'
   | 'projects'
+  | 'skills'
+  | 'workers'
   | 'knowledge'
   | 'team'
   | 'more';
@@ -96,8 +98,7 @@ export function isCompanyOperationsTab(
 
 /**
  * Map a routed company tab onto the primary sidebar child that should light.
- * All four operations destinations highlight More; skills/workers have no
- * primary child.
+ * All four operations destinations highlight More.
  */
 export function companyPrimarySectionForTab(
   tab: CompanyTab | undefined | null,
@@ -107,6 +108,8 @@ export function companyPrimarySectionForTab(
     case 'overview':
     case 'goals':
     case 'projects':
+    case 'skills':
+    case 'workers':
     case 'knowledge':
     case 'team':
       return resolved;
@@ -132,7 +135,7 @@ export type SettingsTab = 'sync' | 'notifications' | 'widget' | 'updates' | 'gen
 export const DEFAULT_SETTINGS_TAB: SettingsTab = 'sync';
 
 export type DesktopRoute =
-  | { kind: 'home' | 'mission-control' | 'inbox' | 'meetings' | 'marketplace' | 'moderation' }
+  | { kind: 'home' | 'mission-control' | 'inbox' | 'messages' | 'meetings' | 'marketplace' | 'moderation' }
   | { kind: 'library'; tab?: LibraryTab }
   | { kind: 'settings'; tab?: SettingsTab }
   | { kind: 'files'; slug?: string; path?: string }
@@ -159,10 +162,9 @@ export function getDesktopLandingRoute(
 
 /**
  * All route-supported company sections (deep links, command palette, CompanyPage).
- * company-detail-desktop-ia + DESKTOP-001: Skills/Workers remain route-supported
- * but are not permanent primary-sidebar children (Library owns those concepts).
- * DESKTOP-010: activity / deployments / secrets / settings are the operations
- * destinations under More.
+ * company-detail-desktop-ia + DESKTOP-001: Skills/Workers stay visible as
+ * company-scoped primary children. DESKTOP-010: activity / deployments /
+ * secrets / settings are the operations destinations under More.
  */
 export const COMPANY_SECTIONS: ReadonlyArray<{ id: CompanyTab; label: string }> = [
   { id: 'overview', label: 'Overview' },
@@ -206,6 +208,8 @@ export const COMPANY_PRIMARY_SECTIONS: ReadonlyArray<{
   { id: 'overview', label: 'Overview' },
   { id: 'goals', label: 'Goals' },
   { id: 'projects', label: 'Projects' },
+  { id: 'skills', label: 'Skills' },
+  { id: 'workers', label: 'Workers' },
   { id: 'knowledge', label: 'Knowledge' },
   { id: 'team', label: 'Team' },
   { id: 'more', label: 'More' },
@@ -219,7 +223,7 @@ export const LIBRARY_SECTIONS: ReadonlyArray<{ id: LibraryTab; label: string }> 
   { id: 'profile', label: 'Profile' },
 ];
 
-/** Settings secondary-sidebar rows; Meetings carries the muted gated note. */
+/** Settings secondary-sidebar rows in the desktop section index. */
 export const SETTINGS_SECTIONS: ReadonlyArray<{
   id: SettingsTab;
   label: string;
@@ -230,7 +234,7 @@ export const SETTINGS_SECTIONS: ReadonlyArray<{
   { id: 'widget', label: 'Widget' },
   { id: 'updates', label: 'Updates' },
   { id: 'general', label: 'General' },
-  { id: 'meetings', label: 'Meetings', note: 'gated' },
+  { id: 'meetings', label: 'Meetings' },
 ];
 
 export function getDesktopCompanies(workspaces: Workspace[]): Workspace[] {
@@ -373,14 +377,18 @@ export function resolvePendingDesktopRoute(name: string | null | undefined): Des
     case 'mission-control':
       return { kind: 'mission-control' };
     case 'inbox':
-    // legacy aliases — Messages and Notifications merged into Inbox (US-008)
+      return { kind: 'inbox' };
     case 'messages':
+      return { kind: 'messages' };
+    // Notifications remain the chronological Inbox feed.
     case 'notifications':
       return { kind: 'inbox' };
     case 'meetings':
       return { kind: 'meetings' };
     case 'marketplace':
       return { kind: 'marketplace' };
+    case 'moderation':
+      return { kind: 'moderation' };
     case 'library':
       return { kind: 'library' };
     case 'settings':
@@ -395,7 +403,9 @@ function isCompanyTab(value: string | undefined): value is CompanyTab {
 }
 
 function isLibraryTab(value: string | undefined): value is LibraryTab {
-  return LIBRARY_SECTIONS.some((section) => section.id === value);
+  // Submit is a routed sub-screen owned by the persistent "Publish a pack"
+  // footer, not a duplicate row in the Library section list.
+  return value === 'submit' || LIBRARY_SECTIONS.some((section) => section.id === value);
 }
 
 function isSettingsTab(value: string | undefined): value is SettingsTab {
@@ -420,9 +430,10 @@ export function fromV4Route(route: V4Route): DesktopRoute {
     case 'mission-control':
       return { kind: 'mission-control' };
     case 'inbox':
-    case 'messages':
     case 'notifications':
       return { kind: 'inbox' };
+    case 'messages':
+      return { kind: 'messages' };
     case 'meetings':
       return { kind: 'meetings' };
     case 'marketplace':
@@ -462,7 +473,8 @@ export interface DesktopSecondarySidebarOptions {
  * SPEC section 4 + DESKTOP-001: the secondary sidebar exists ONLY on Library
  * and Settings. Company navigation expands inline in the primary sidebar, so
  * company routes never render a permanent secondary column. Home, Mission
- * Control, Marketplace, Meetings, Inbox, Files, and Moderation have none.
+ * Control, Marketplace, Meetings, Inbox, Messages, Files, and Moderation have
+ * none.
  */
 export function getDesktopSecondarySidebar(
   route: DesktopRoute,
@@ -482,7 +494,7 @@ export function getDesktopSecondarySidebar(
       meta: formatHqFolderMeta(options.hqFolderPath),
       items: LIBRARY_SECTIONS.map(({ id, label }) => ({ id, label })),
       activeId: route.tab ?? DEFAULT_LIBRARY_TAB,
-      footer: { label: 'Publish a pack' },
+      footer: { label: 'Publish a pack', active: route.tab === 'submit' },
     };
   }
 

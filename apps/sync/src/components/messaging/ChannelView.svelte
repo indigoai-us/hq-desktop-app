@@ -11,6 +11,7 @@
   // live `channel:new-message` refresh for the channel it's showing.
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
+  import { untrack } from 'svelte';
   import Conversation, { type ConversationMessage } from './Conversation.svelte';
   import ChannelRoster from './ChannelRoster.svelte';
   import {
@@ -63,7 +64,7 @@
 
   // Local mutable copy of the channel metadata (membership/member-count can
   // change in place via join/roster actions).
-  let current = $state<Channel>(channel);
+  let current = $state<Channel>(untrack(() => channel));
   let messages = $state<ChannelMessageRow[]>([]);
   let loading = $state(false);
   let threadError = $state<string | null>(null);
@@ -75,7 +76,9 @@
   let joinError = $state<string | null>(null);
 
   let rosterOpen = $state(false);
-  let memberCount = $state<number | null>(channel.memberCount ?? null);
+  let memberCount = $state<number | null>(
+    untrack(() => channel.memberCount ?? null),
+  );
 
   // Reactions (US-025) for the open channel. Recreated when the selected channel
   // changes (each channel is its own messageScope), kept in step with the visible

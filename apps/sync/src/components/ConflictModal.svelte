@@ -164,7 +164,7 @@
     background: none;
     border: none;
     border-radius: 6px;
-    color: var(--popover-text-muted, #a0a0b0);
+    color: var(--popover-text-muted, #a0a0a0);
     cursor: pointer;
     transition: background-color 0.1s ease, color 0.1s ease;
   }
@@ -238,7 +238,7 @@
   }
 
   .bulk-local {
-    color: var(--popover-primary-text, #111113);
+    color: var(--popover-primary-text, #111111);
     background: var(--popover-primary, #ffffff);
   }
 
@@ -263,13 +263,13 @@
     }
 
     .bulk-remote {
-      color: var(--popover-text, #374151);
+      color: var(--popover-text, #333333);
       background: rgba(0, 0, 0, 0.06);
     }
 
     .bulk-remote:hover:not(:disabled) {
       background: rgba(0, 0, 0, 0.1);
-      color: var(--popover-text-heading, #111113);
+      color: var(--popover-text-heading, #111111);
     }
   }
 </style>

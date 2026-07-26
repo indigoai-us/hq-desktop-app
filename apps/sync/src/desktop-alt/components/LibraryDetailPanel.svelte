@@ -226,8 +226,6 @@
     inset: 0;
     z-index: 40;
     background: color-mix(in srgb, var(--pop-bg) 46%, transparent);
-    backdrop-filter: blur(4px) saturate(1.1);
-    -webkit-backdrop-filter: blur(4px) saturate(1.1);
     animation: backdrop-fade 160ms ease;
   }
 
@@ -241,8 +239,10 @@
     width: 520px;
     max-width: 94vw;
     border-left: 1px solid var(--v4-hairline);
-    background: var(--v4-chrome);
-    box-shadow: var(--v4-shadow-popover);
+    background: var(--v4-popover);
+    backdrop-filter: var(--v4-glass-filter);
+    -webkit-backdrop-filter: var(--v4-glass-filter);
+    box-shadow: var(--v4-shadow-popover), inset 1px 0 0 var(--v4-glass-highlight);
     animation: panel-slide-in 200ms cubic-bezier(0.2, 0.7, 0.2, 1);
   }
 
@@ -338,11 +338,12 @@
   }
 
   .detail-error {
-    padding: var(--v4-space-3);
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-button);
-    background: var(--v4-control-faint);
-    color: var(--v4-warn);
+    padding: var(--v4-space-3) 0;
+    border: 0;
+    border-top: 1px solid var(--v4-hairline);
+    border-radius: 0;
+    background: transparent;
+    color: var(--v4-error);
     font-size: var(--text-base);
   }
 
@@ -376,7 +377,7 @@
   .skill-list {
     display: flex;
     flex-direction: column;
-    gap: var(--v4-space-2);
+    gap: 0;
     margin: 0;
     padding: 0;
     list-style: none;
@@ -387,10 +388,11 @@
     flex-direction: column;
     gap: 2px;
     min-width: 0;
-    padding: var(--v4-space-2) var(--v4-space-3);
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-button);
-    background: var(--v4-control-faint);
+    padding: var(--v4-space-2) 0;
+    border: 0;
+    border-top: 1px solid var(--v4-hairline);
+    border-radius: 0;
+    background: transparent;
   }
 
   .skill-name {
@@ -471,9 +473,31 @@
     margin: var(--v4-space-1) 0;
   }
 
+  .markdown-body :global(.task-list) {
+    padding-left: 0;
+    list-style: none;
+  }
+
+  .markdown-body :global(.task-list-item) {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--v4-space-2);
+  }
+
+  .markdown-body :global(.task-list-item input) {
+    flex: 0 0 auto;
+    margin: 0.3em 0 0;
+    accent-color: var(--v4-text-2);
+  }
+
+  .markdown-body :global(.task-list-content) {
+    min-width: 0;
+  }
+
   .markdown-body :global(a) {
     color: var(--v4-text-1);
-    text-decoration: none;
+    text-decoration-color: var(--v4-control-border);
+    text-underline-offset: 0.14em;
   }
 
   .markdown-body :global(a:hover) {
@@ -494,7 +518,7 @@
     padding: var(--v4-space-3);
     overflow-x: auto;
     border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-field);
+    border-radius: 0;
     background: var(--v4-inset);
   }
 
@@ -519,6 +543,74 @@
   .markdown-body :global(strong) {
     color: var(--v4-text-1);
     font-weight: 600;
+  }
+
+  .markdown-body :global(del) {
+    color: var(--v4-text-3);
+  }
+
+  .markdown-body :global(img) {
+    display: block;
+    max-width: 100%;
+    height: auto;
+    margin: var(--v4-space-3) 0;
+  }
+
+  .markdown-body :global(.markdown-table-scroll) {
+    max-width: 100%;
+    margin: var(--v4-space-3) 0;
+    overflow-x: auto;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    scrollbar-color: var(--v4-control-border) transparent;
+  }
+
+  .markdown-body :global(table) {
+    width: 100%;
+    min-width: max-content;
+    border-spacing: 0;
+    border-collapse: collapse;
+    color: var(--v4-text-2);
+    font-size: var(--text-base);
+    line-height: 1.45;
+  }
+
+  .markdown-body :global(th),
+  .markdown-body :global(td) {
+    padding: var(--v4-space-2) var(--v4-space-3);
+    border-right: 1px solid var(--v4-hairline);
+    border-bottom: 1px solid var(--v4-hairline);
+    text-align: left;
+    vertical-align: top;
+  }
+
+  .markdown-body :global(th:first-child),
+  .markdown-body :global(td:first-child) {
+    padding-left: 0;
+  }
+
+  .markdown-body :global(th:last-child),
+  .markdown-body :global(td:last-child) {
+    padding-right: 0;
+    border-right: 0;
+  }
+
+  .markdown-body :global(tbody tr:last-child td) {
+    border-bottom: 0;
+  }
+
+  .markdown-body :global(th) {
+    color: var(--v4-text-1);
+    font-weight: 600;
+  }
+
+  .markdown-body :global(.markdown-align-center) {
+    text-align: center;
+  }
+
+  .markdown-body :global(.markdown-align-right) {
+    text-align: right;
   }
 
   @keyframes backdrop-fade {
@@ -551,6 +643,11 @@
   @media (prefers-reduced-transparency: reduce) {
     .detail-backdrop {
       background: color-mix(in srgb, var(--c-bg) 74%, transparent);
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
+    }
+
+    .detail-panel {
       backdrop-filter: none;
       -webkit-backdrop-filter: none;
     }

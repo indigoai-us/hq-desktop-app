@@ -153,13 +153,13 @@ describe('US-011: Deployments panel reads hq-deploy subdomains via Tauri command
     expect(row).toContain('Managed via');
   });
 
-  it('pulses deploying rows blue and counts deploying deployments in the toolbar', () => {
+  it('pulses deploying rows neutrally and counts deploying deployments in the toolbar', () => {
     const panel = normalize(deploymentsPanel);
     const row = normalize(deploymentRow);
 
     expect(panel).toContain("return deployments.filter((deployment) => deployment.state === state).length;");
     expect(panel).toContain("<span><strong>{error ? '—' : deployingCount}</strong> deploying</span>");
-    expect(row).toContain(".status-dot.deploying { background: var(--blue); animation: pulse 1.4s ease-in-out infinite; }");
+    expect(row).toContain(".status-dot.deploying { background: var(--v4-text-2); animation: pulse 1.4s ease-in-out infinite; }");
     expect(row).toContain('@keyframes pulse');
     expect(row).toContain('@media (prefers-reduced-motion: reduce) { .status-dot.deploying { animation: none; } }');
   });

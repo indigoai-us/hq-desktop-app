@@ -143,9 +143,9 @@ describe('statusTone', () => {
       expect(statusTone(s)).toBe('error');
     }
   });
-  it('maps in-flight states to warn (amber)', () => {
+  it('keeps in-flight states neutral instead of presenting routine progress as a warning', () => {
     for (const s of ['sent', 'open', 'pending', 'draft', 'demo']) {
-      expect(statusTone(s)).toBe('warn');
+      expect(statusTone(s)).toBe('idle');
     }
   });
   it('maps unknown / empty to idle (grey)', () => {

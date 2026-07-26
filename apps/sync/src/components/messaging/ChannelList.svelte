@@ -261,7 +261,7 @@
     text-align: left;
     padding: 0.375rem 0.5rem;
     border: none;
-    border-radius: 8px;
+    border-radius: 0;
     background: transparent;
     color: inherit;
     font-family: inherit;
@@ -322,10 +322,10 @@
     font-weight: 600;
     letter-spacing: 0.02em;
     text-transform: uppercase;
-    padding: 0.0625rem 0.375rem;
-    border-radius: 999px;
-    background: color-mix(in srgb, var(--v4-warn, #b45309) 16%, transparent);
-    color: var(--v4-warn, #b45309);
+    padding: 0;
+    border-radius: 0;
+    background: transparent;
+    color: var(--pop-muted);
   }
 
   .unread-badge {

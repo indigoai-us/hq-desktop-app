@@ -156,12 +156,12 @@ describe('DESKTOP-010: scoped company operations', () => {
     expect(ops).toContain('{dest.meta}');
   });
 
-  it('uses a naked hairline operations canvas; rounded only for controls and selection', () => {
+  it('uses a naked hairline operations canvas; rounded only for controls', () => {
     expect(ops).toContain('border: 1px solid var(--v4-hairline)');
     expect(ops).toContain('border-right: 1px solid var(--v4-hairline)');
     expect(ops).toContain('border-radius: 0');
     expect(ops).toContain('background: transparent');
-    expect(ops).toMatch(/\.ops-nav-item\.is-selected\s*\{[\s\S]*?border-radius:\s*6px;/);
+    expect(ops).toMatch(/\.ops-nav-item\.is-selected\s*\{[\s\S]*?border-radius:\s*0;/);
     expect(ops).toContain('border-radius: var(--v4-radius-button)');
     expect(ops).not.toContain('var(--v4-radius-card');
     expect(ops).not.toContain('var(--v4-shadow-card)');
@@ -173,11 +173,11 @@ describe('DESKTOP-010: scoped company operations', () => {
 
   it('uses five semantic type roles and 3px title/meta stacks', () => {
     expect(V4_TYPE_SCALE).toEqual({
-      metadata: 10,
-      secondary: 11,
-      body: 12,
+      metadata: 13,
+      secondary: 13,
+      body: 14,
       section: 14,
-      detail: 18,
+      detail: 14,
     });
     expect(V4_ROW_STACK_GAP_PX).toBe(3);
     expect(tokens).toContain('--v4-row-stack-gap: 3px');
@@ -218,9 +218,9 @@ describe('DESKTOP-010: scoped company operations', () => {
   });
 
   it('honors light/dark and reduced motion/transparency', () => {
-    expect(tokens).toContain('--v4-text-1: #0a0c10');
+    expect(tokens).toContain('--v4-text-1: #111111');
     expect(tokens).toMatch(
-      /@media \(prefers-color-scheme: dark\)\s*\{\s*:root\s*\{[\s\S]*?--v4-text-1:\s*#f4f6f8/,
+      /@media \(prefers-color-scheme: dark\)\s*\{\s*:root\s*\{[\s\S]*?--v4-text-1:\s*#f2f2f2/,
     );
     expect(ops).toContain('@media (prefers-reduced-motion: reduce)');
     expect(ops).toContain('@media (prefers-reduced-transparency: reduce)');

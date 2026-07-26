@@ -260,13 +260,14 @@ describe('US-002 pending-route aliases (desktop_alt_consume_pending_route)', () 
 
   it('resolves the V4 destinations and rejects unknown intents', () => {
     expect(resolvePendingDesktopRoute('meetings')).toEqual({ kind: 'meetings' });
-    // Legacy intents resolve to the combined Inbox surface (US-008).
-    expect(resolvePendingDesktopRoute('messages')).toEqual({ kind: 'inbox' });
+    // Messages is the complete conversation surface; Notifications stays Inbox.
+    expect(resolvePendingDesktopRoute('messages')).toEqual({ kind: 'messages' });
     expect(resolvePendingDesktopRoute('notifications')).toEqual({ kind: 'inbox' });
     expect(resolvePendingDesktopRoute('inbox')).toEqual({ kind: 'inbox' });
     expect(resolvePendingDesktopRoute('home')).toEqual({ kind: 'home' });
     expect(resolvePendingDesktopRoute('mission-control')).toEqual({ kind: 'mission-control' });
     expect(resolvePendingDesktopRoute('marketplace')).toEqual({ kind: 'marketplace' });
+    expect(resolvePendingDesktopRoute('moderation')).toEqual({ kind: 'moderation' });
     expect(resolvePendingDesktopRoute('library')).toEqual({ kind: 'library' });
     expect(resolvePendingDesktopRoute('settings')).toEqual({ kind: 'settings' });
     // US-004 WindowRouter: Activity + Core Drift land on Home (no top-level windows).
@@ -302,6 +303,10 @@ describe('US-002 pending-route aliases (desktop_alt_consume_pending_route)', () 
       kind: 'library',
       tab: 'installed',
     });
+    expect(resolvePendingDesktopRoute('library:submit')).toEqual({
+      kind: 'library',
+      tab: 'submit',
+    });
     expect(resolvePendingDesktopRoute('settings:meetings')).toEqual({
       kind: 'settings',
       tab: 'meetings',
@@ -331,9 +336,9 @@ describe('US-002 V4Sidebar payload narrowing', () => {
     // Marketplace is a top-level destination (US-007); the Companies kind is gone.
     expect(fromV4Route({ kind: 'marketplace' })).toEqual({ kind: 'marketplace' });
     expect(fromV4Route({ kind: 'companies' })).toEqual({ kind: 'home' });
-    // Inbox + legacy V4 payload kinds land on the combined surface (US-008).
+    // Messages remains distinct; notification payloads land on Inbox.
     expect(fromV4Route({ kind: 'inbox' })).toEqual({ kind: 'inbox' });
-    expect(fromV4Route({ kind: 'messages' })).toEqual({ kind: 'inbox' });
+    expect(fromV4Route({ kind: 'messages' })).toEqual({ kind: 'messages' });
     expect(fromV4Route({ kind: 'notifications' })).toEqual({ kind: 'inbox' });
     // Unknown kinds land on Home, mirroring the sidebar model's fallback.
     expect(fromV4Route({ kind: 'mystery' })).toEqual({ kind: 'home' });
@@ -356,11 +361,13 @@ describe('DESKTOP-001 secondary sidebar — library / settings only (no company 
     expect(getDesktopSecondarySidebar({ kind: 'company', slug: 'ghost' }, companies)).toBeNull();
   });
 
-  it('declares compact primary company children (More, not Skills/Workers/Activity…)', () => {
+  it('declares visible primary company children, including Skills and Workers', () => {
     expect(COMPANY_PRIMARY_SECTIONS.map((s) => s.id)).toEqual([
       'overview',
       'goals',
       'projects',
+      'skills',
+      'workers',
       'knowledge',
       'team',
       'more',
@@ -369,8 +376,11 @@ describe('DESKTOP-001 secondary sidebar — library / settings only (no company 
     expect(companyPrimarySectionForTab('activity')).toBe('more');
     expect(companyPrimarySectionForTab('deployments')).toBe('more');
     expect(companyPrimarySectionForTab('secrets')).toBe('more');
-    expect(companyPrimarySectionForTab('skills')).toBeNull();
+    expect(companyPrimarySectionForTab('skills')).toBe('skills');
+    expect(companyPrimarySectionForTab('workers')).toBe('workers');
     expect(companyTabForPrimarySection('more')).toBe('activity');
+    expect(companyTabForPrimarySection('skills')).toBe('skills');
+    expect(companyTabForPrimarySection('workers')).toBe('workers');
     expect(companyTabForPrimarySection('knowledge')).toBe('knowledge');
   });
 
@@ -387,25 +397,33 @@ describe('DESKTOP-001 secondary sidebar — library / settings only (no company 
     expect(model?.items.some((item) => item.label === 'Marketplace')).toBe(false);
     expect(model?.activeId).toBe('installed');
     expect(getDesktopSecondarySidebar({ kind: 'library' }, companies)?.activeId).toBe('skills');
+
+    const submitModel = getDesktopSecondarySidebar(
+      { kind: 'library', tab: 'submit' },
+      companies,
+    );
+    expect(submitModel?.activeId).toBe('submit');
+    expect(submitModel?.footer).toEqual({ label: 'Publish a pack', active: true });
   });
 
-  it('shows the settings sections with the gated Meetings note and a version meta', () => {
+  it('shows the generally available settings sections and a version meta', () => {
     const model = getDesktopSecondarySidebar({ kind: 'settings' }, companies, {
       version: '1.2.3',
     });
     expect(model?.surface).toBe('settings');
     expect(model?.meta).toBe('HQ v1.2.3');
     expect(model?.items.map((item) => item.id)).toEqual(SETTINGS_SECTIONS.map((s) => s.id));
-    expect(model?.items.find((item) => item.id === 'meetings')?.note).toBe('gated');
+    expect(model?.items.find((item) => item.id === 'meetings')?.note).toBeNull();
     expect(model?.activeId).toBe('sync');
   });
 
-  it('has no secondary sidebar on Home, Mission Control, Marketplace, Inbox, Meetings, or Moderation', () => {
+  it('has no secondary sidebar on full-width global surfaces', () => {
     for (const kind of [
       'home',
       'mission-control',
       'marketplace',
       'inbox',
+      'messages',
       'meetings',
       'moderation',
     ] as const) {
@@ -514,6 +532,7 @@ describe('US-012 Mission Control destination — routing coverage gate', () => {
       { kind: 'home' },
       { kind: 'marketplace' },
       { kind: 'inbox' },
+      { kind: 'messages' },
       { kind: 'meetings' },
       { kind: 'library' },
       { kind: 'settings' },

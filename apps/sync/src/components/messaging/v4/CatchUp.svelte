@@ -49,20 +49,16 @@
     display: grid;
     gap: 10px;
     width: min(460px, 100%);
-    padding: 12px;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: var(--surface-raise);
-  }
-
-  header,
-  .ranked-card {
-    display: flex;
-    align-items: center;
-    min-width: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
   }
 
   header {
+    display: flex;
+    align-items: center;
+    min-width: 0;
     justify-content: space-between;
   }
 
@@ -108,15 +104,19 @@
 
   .ranked-list {
     display: grid;
-    gap: 6px;
+    gap: 0;
   }
 
   .ranked-card {
+    display: flex;
+    align-items: center;
+    min-width: 0;
     gap: 9px;
     width: 100%;
-    padding: 9px;
-    border: 1px solid var(--border);
-    border-radius: 7px;
+    padding: 9px 0;
+    border: 0;
+    border-top: 1px solid var(--border);
+    border-radius: 0;
     background: transparent;
     color: inherit;
     font: inherit;
@@ -125,7 +125,6 @@
   }
 
   .ranked-card:hover {
-    border-color: var(--border-strong);
     background: var(--row-hover);
   }
 

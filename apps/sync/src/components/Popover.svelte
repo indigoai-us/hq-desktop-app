@@ -398,7 +398,8 @@
     <div
       class="mbp-status"
       class:syncing={syncState === 'syncing'}
-      class:attention={syncState === 'auth-error' || syncState === 'error' || syncState === 'conflict'}
+      class:attention={syncState === 'auth-error' || syncState === 'conflict'}
+      class:error={syncState === 'error'}
       data-testid="popover-status-row"
     >
       <span class="gd" aria-hidden="true"></span>
@@ -644,10 +645,10 @@
   .mbpop {
     color: var(--pop-text);
     background: var(--pop-bg);
-    backdrop-filter: blur(32px) saturate(1.7);
-    -webkit-backdrop-filter: blur(32px) saturate(1.7);
+    backdrop-filter: var(--glass-filter, blur(28px) saturate(0%));
+    -webkit-backdrop-filter: var(--glass-filter, blur(28px) saturate(0%));
     border: 0.5px solid var(--pop-border);
-    border-radius: 12px;
+    border-radius: var(--radius-popover);
     box-shadow: var(--pop-shadow), inset 0 1px 0 var(--pop-highlight);
     overflow: hidden;
   }
@@ -737,7 +738,7 @@
     gap: 10px;
     min-height: 30px;
     padding: 0 11px;
-    border-radius: 9px;
+    border-radius: 0;
     font-size: 12px;
     color: var(--pop-text);
     transition: background-color 0.15s ease;
@@ -760,6 +761,11 @@
 
   .snr-icon.alert {
     color: var(--popover-warning);
+  }
+
+  .snr[data-kind='error'] .snr-icon.alert,
+  .snr[data-kind='manifest'] .snr-icon.alert {
+    color: var(--popover-danger);
   }
 
   .snr-text {
@@ -822,6 +828,11 @@
   .mbp-status.attention .gd {
     background: var(--popover-warning);
     box-shadow: 0 0 7px var(--popover-warning-glow);
+  }
+
+  .mbp-status.error .gd {
+    background: var(--popover-danger);
+    box-shadow: 0 0 7px var(--popover-danger-bg);
   }
 
   .mbp-s1 {

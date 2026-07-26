@@ -14,7 +14,9 @@
     loadCompanyGoals,
     loadLocalProjects,
     loadLocalProjectStories,
+    projectIdentity,
     type Objective,
+    withProjectStatus,
   } from '../lib/local-projects';
   import {
     compareProjectsByRecency,
@@ -269,7 +271,10 @@
         objectives = goals.objectives;
         projects = allProjects;
         if (!companyChanged && selected) {
-          selected = allProjects.find((project) => project.id === selected?.id) ?? selected;
+          const selectedIdentity = projectIdentity(selected);
+          selected =
+            allProjects.find((project) => projectIdentity(project) === selectedIdentity) ??
+            selected;
         }
       } catch (err) {
         console.error('CompanyProjectsPage load failed:', err);
@@ -304,7 +309,7 @@
     ]
       .filter((line): line is string => Boolean(line))
       .join('\n');
-    actionBusy = `link-${project.id}`;
+    actionBusy = `link-${projectIdentity(project)}`;
     actionMessage = null;
     try {
       const config: { hqFolderPath?: string } = await invoke<{ hqFolderPath?: string }>(
@@ -395,12 +400,13 @@
     selectedStoryId = null;
   }
 
-  function onProjectStatusChange(projectId: string, status: string): void {
-    if (selected && selected.id === projectId) {
-      selected = { ...selected, status };
+  function onProjectStatusChange(changedIdentity: string, status: string): void {
+    if (selected) {
+      const nextSelected = withProjectStatus(selected, changedIdentity, status);
+      if (nextSelected !== selected) selected = nextSelected;
     }
     projects = projects.map((project) =>
-      project.id === projectId ? { ...project, status } : project,
+      withProjectStatus(project, changedIdentity, status),
     );
   }
 
@@ -409,12 +415,15 @@
       story.id === storyId ? { ...story, passes } : story,
     );
     if (selected) {
+      const selectedIdentity = projectIdentity(selected);
       const nextComplete = stories.filter((story) =>
         story.id === storyId ? passes : story.passes,
       ).length;
       selected = { ...selected, storiesComplete: nextComplete };
       projects = projects.map((project) =>
-        project.id === selected?.id ? { ...project, storiesComplete: nextComplete } : project,
+        projectIdentity(project) === selectedIdentity
+          ? { ...project, storiesComplete: nextComplete }
+          : project,
       );
     }
   }
@@ -592,7 +601,7 @@
                     <span>No projects</span>
                   </div>
                 {:else}
-                  {#each columnProjects as project (project.id)}
+                  {#each columnProjects as project (projectIdentity(project))}
                     {@const liveRun = projectLiveRunView(project, sessions, now)}
                     {@const goal = linkedGoalLabel(project)}
                     <ProjectRow
@@ -605,7 +614,7 @@
                       {now}
                       onselect={(p) => void openProject(p)}
                       onlinkgoal={!goal ? requestLinkProject : undefined}
-                      linkBusy={actionBusy === `link-${project.id}`}
+                      linkBusy={actionBusy === `link-${projectIdentity(project)}`}
                     />
                   {/each}
                 {/if}
@@ -629,7 +638,7 @@
                 <span>{PORTFOLIO_COLUMN_LABEL[column]}</span>
                 <span class="group-count">{columnProjects.length}</span>
               </div>
-              {#each columnProjects as project (project.id)}
+              {#each columnProjects as project (projectIdentity(project))}
                 {@const progress = projectProgress(project.storiesComplete, project.storiesTotal)}
                 {@const goal = linkedGoalLabel(project)}
                 <div
@@ -657,7 +666,7 @@
                           }}
                           disabled={actionBusy !== null}
                         >
-                          {actionBusy === `link-${project.id}` ? 'Opening…' : 'Link'}
+                          {actionBusy === `link-${projectIdentity(project)}` ? 'Opening…' : 'Link'}
                         </button>
                       {/if}
                     </span>
@@ -798,12 +807,12 @@
 
   .view-toggle {
     display: inline-flex;
-    gap: 2px;
+    gap: var(--v4-space-2);
     margin-left: auto;
-    padding: 2px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-button);
-    background: var(--v4-control-faint);
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
   }
 
   .toggle-segment {
@@ -811,22 +820,28 @@
     align-items: center;
     padding: 4px 10px;
     border: 0;
-    border-radius: calc(var(--v4-radius-button) - 2px);
+    border-bottom: 1px solid transparent;
+    border-radius: 0;
     background: transparent;
     color: var(--v4-text-2);
     font: inherit;
     font-size: var(--type-body, 12px);
     font-weight: 600;
     cursor: pointer;
+    transition:
+      border-color 140ms ease,
+      color 140ms ease;
   }
 
   .toggle-segment:hover {
+    border-bottom-color: var(--v4-rowline);
     color: var(--v4-text-1);
   }
 
   .toggle-segment.is-active {
-    background: var(--v4-primary-bg);
-    color: var(--v4-primary-fg);
+    border-bottom-color: var(--v4-text-2);
+    background: transparent;
+    color: var(--v4-text-1);
   }
 
   .toggle-segment:focus-visible,
@@ -919,6 +934,17 @@
     white-space: nowrap;
   }
 
+  @media (max-width: 1040px) {
+    .kanban-board {
+      grid-template-columns: repeat(4, minmax(160px, 1fr));
+      gap: 8px;
+    }
+
+    .kanban-column {
+      min-width: 160px;
+    }
+  }
+
   .live-dot {
     width: 6px;
     height: 6px;
@@ -944,8 +970,9 @@
     justify-content: center;
     min-height: 64px;
     padding: 12px;
-    border: 1px dashed var(--v4-hairline);
+    border: 0;
     border-radius: 0;
+    background: transparent;
     color: var(--v4-text-3);
     font-size: var(--type-secondary, 11px);
   }
@@ -1093,10 +1120,19 @@
     opacity: 0.52;
   }
 
-  .projects-error,
+  .projects-error {
+    padding: 12px 0;
+    border: 0;
+    border-top: 1px solid var(--v4-hairline);
+    border-radius: 0;
+    background: transparent;
+    color: var(--v4-error);
+    font-size: var(--type-body, 12px);
+  }
+
   .empty-state {
     padding: 12px;
-    border: 1px solid var(--v4-hairline);
+    border: 0;
     border-radius: 0;
     background: transparent;
     color: var(--v4-text-2);

@@ -156,7 +156,10 @@
     overflow: hidden;
     padding: 14px 10px 0;
     border-right: 1px solid var(--v4-hairline);
-    background: var(--v4-chrome);
+    background: var(--v4-sidebar, var(--v4-chrome));
+    backdrop-filter: var(--v4-glass-filter);
+    -webkit-backdrop-filter: var(--v4-glass-filter);
+    box-shadow: inset 1px 0 0 var(--v4-glass-highlight);
     font-family: var(--font-sans);
   }
 
@@ -263,7 +266,7 @@
     flex: 0 0 auto;
     padding: 0 8px;
     border: none;
-    border-radius: var(--v4-radius-button);
+    border-radius: 0;
     background: transparent;
     color: var(--v4-text-2);
     font: inherit;
@@ -280,7 +283,8 @@
   }
 
   .fs-company-row.active {
-    background: var(--v4-active-row);
+    background: transparent;
+    box-shadow: inset 0 -1px 0 var(--v4-hairline);
     color: var(--v4-text-1);
     font-weight: 500;
   }
@@ -401,5 +405,13 @@
   .fs-tree-area::-webkit-scrollbar-thumb {
     border-radius: var(--v4-radius-pill);
     background: var(--v4-hairline);
+  }
+
+  @media (prefers-reduced-transparency: reduce) {
+    .files-sidebar {
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
+      box-shadow: none;
+    }
   }
 </style>

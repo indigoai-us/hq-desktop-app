@@ -477,7 +477,7 @@
     width: 100vw;
     height: 100vh;
     box-sizing: border-box;
-    background: var(--popover-bg, rgba(18, 18, 20, 0.68));
+    background: var(--popover-bg, rgba(18, 18, 18, 0.68));
     color: var(--popover-text, #e0e0e0);
     font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
     overflow: hidden;
@@ -588,7 +588,7 @@
     flex: 1;
     gap: 0.75rem;
     padding: 2rem;
-    color: var(--popover-text-muted, #a0a0b0);
+    color: var(--popover-text-muted, #a0a0a0);
     font-size: var(--fs-lg);
     text-align: center;
   }
@@ -623,7 +623,7 @@
      (consistent with the menubar's no-severity-colour stance). The
      ring's lower opacity carries the "calm, just confirming" tone. */
   .drift-empty-check {
-    color: var(--popover-text-muted, #a0a0b0);
+    color: var(--popover-text-muted, #a0a0a0);
   }
 
   .drift-body {
@@ -658,13 +658,13 @@
     border-radius: 999px;
     line-height: 1;
     background: var(--popover-surface, rgba(255, 255, 255, 0.08));
-    color: var(--popover-text-muted, #a0a0b0);
+    color: var(--popover-text-muted, #a0a0a0);
   }
 
   .drift-section-desc {
     margin: 0 0 0.125rem 0;
     font-size: var(--fs-sm);
-    color: var(--popover-text-muted, #a0a0b0);
+    color: var(--popover-text-muted, #a0a0a0);
     line-height: 1.4;
   }
 
@@ -718,42 +718,51 @@
     align-items: center;
     gap: 0.4375rem;
     font-size: var(--fs-md);
-    color: var(--popover-text-muted, #a0a0b0);
+    color: var(--popover-text-muted, #a0a0a0);
   }
 
   .drift-row-size {
     font-variant-numeric: tabular-nums;
   }
 
-  /* Staging-classification badge. Tinted by pipeline state so the eye can
-     triage at a glance: green = settled on staging main, blue = in an open
-     PR, amber = unaccounted (the only real action item). Low-saturation
-     fills tuned for the dark glass backdrop. */
+  /* Staging classification stays inline and open. A 5px dot carries the
+     compact state cue without turning metadata into a filled pill. */
   .drift-staging-badge {
+    --status-dot: var(--popover-text-muted, #a0a0a0);
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
     font-size: var(--fs-md);
     font-weight: 600;
-    padding: 0.125rem 0.5rem;
-    border-radius: 999px;
+    padding: 0;
+    border-radius: 0;
     line-height: 1;
     letter-spacing: 0.01em;
     white-space: nowrap;
-    background: var(--popover-surface, rgba(255, 255, 255, 0.08));
-    color: var(--popover-text-muted, #a0a0b0);
+    background: transparent;
+    color: var(--popover-text-muted, #a0a0a0);
+  }
+
+  .drift-staging-badge::before {
+    width: 5px;
+    height: 5px;
+    flex: 0 0 auto;
+    border-radius: 50%;
+    background: var(--status-dot);
+    content: '';
   }
 
   .drift-staging-badge.is-main {
-    color: #7ee0b8;
-    background: rgba(52, 211, 153, 0.14);
+    --status-dot: #7ee0b8;
   }
 
   .drift-staging-badge.is-pr {
-    color: #9cc7ff;
-    background: rgba(96, 165, 250, 0.16);
+    color: var(--popover-text);
+    --status-dot: var(--popover-text-muted, #a0a0a0);
   }
 
   .drift-staging-badge.is-unaccounted {
-    color: #f6c560;
-    background: rgba(245, 180, 70, 0.16);
+    --status-dot: #f6c560;
   }
 
   /* Actions sit inline at the right edge, dim at rest and lift to full on

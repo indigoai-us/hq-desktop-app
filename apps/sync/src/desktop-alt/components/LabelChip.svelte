@@ -8,10 +8,9 @@
 
   let { label }: Props = $props();
 
-  // Deterministic monochrome-glass color from the US-004 label palette. Same
-  // string always resolves to the same shade. We feed the resolved hsla() values
-  // into inline CSS custom properties so the chip stays token/identity-driven
-  // (no hardcoded hex, no indigo/Tailwind palette) while still being per-label.
+  // Deterministic monochrome-glass shade from the US-004 label palette. The
+  // same string always resolves to the same token mix; inline custom properties
+  // keep the chip theme-aware without hardcoded hues or a Tailwind palette.
   const color = $derived(labelColor(label));
 </script>
 

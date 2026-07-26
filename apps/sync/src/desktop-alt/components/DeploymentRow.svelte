@@ -184,12 +184,12 @@
   }
 
   .status-dot.deploying {
-    background: var(--blue);
+    background: var(--v4-text-2);
     animation: pulse 1.4s ease-in-out infinite;
   }
 
   .status-dot.paused {
-    background: var(--amber);
+    background: var(--v4-idle);
   }
 
   .subdomain-cell {
@@ -202,7 +202,7 @@
     margin: -4px -6px;
     padding: 4px 6px;
     border: 0;
-    border-radius: 6px;
+    border-radius: 0;
     background: transparent;
     color: inherit;
     font: inherit;
@@ -216,7 +216,7 @@
 
   .subdomain-cell:focus-visible,
   .detail-link:focus-visible {
-    outline: 2px solid var(--blue);
+    outline: 2px solid var(--v4-focus-ring, var(--v4-text-1));
     outline-offset: 2px;
   }
 

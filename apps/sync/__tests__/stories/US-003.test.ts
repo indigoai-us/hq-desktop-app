@@ -55,7 +55,7 @@ const workspaces: Workspace[] = [
 ];
 
 describe('US-003: Desktop-alt app shell — sidebar, route state, ⌘ hotkeys (V4 IA since US-002)', () => {
-  it('shows the V4 sidebar with the five nav destinations and the COMPANIES section on mount', () => {
+  it('shows the V4 sidebar with six nav destinations and the COMPANIES section on mount', () => {
     // The V4 window redesign (US-001/US-002) replaced the 216px rail + 42px
     // titlebar with the 220px raised sidebar + 40px title bar + 200px
     // contextual secondary sidebar. hq-desktop-widget US-007 later removed the
@@ -71,9 +71,10 @@ describe('US-003: Desktop-alt app shell — sidebar, route state, ⌘ hotkeys (V
     const landing = getDesktopLandingRoute(workspaces, null);
     expect(landing).toEqual({ kind: 'company', slug: 'acme' });
     const model = getV4SidebarModel(landing, workspaces);
-    // hq-desktop-widget US-008 merged Messages + Notifications into Inbox.
+    // Inbox owns chronology; the complete Messages workspace is first-class.
     expect(model.nav.map((row) => row.label)).toEqual([
       'Inbox',
+      'Messages',
       'Meetings',
       'Marketplace',
       'Library',

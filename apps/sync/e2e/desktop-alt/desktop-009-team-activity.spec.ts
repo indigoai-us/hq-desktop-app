@@ -73,6 +73,16 @@ describe('DESKTOP-009: team activity and access', () => {
     expect(adapter).toContain('activeProjects: string[]');
   });
 
+  it('normalizes the production telemetry contract and shows resolved identity', () => {
+    expect(adapter).toContain('email?: string');
+    expect(adapter).toContain('r.skills ?? totals?.skills');
+    expect(adapter).toContain('r.events ?? totals?.events');
+    expect(adapter).toContain('r.distinctSessions ?? totals?.distinctSessions');
+    expect(adapter).toContain('Object.entries(source as Record<string, unknown>)');
+    expect(panel).toContain('data-testid="team-detail-email"');
+    expect(panel).toContain('selectedMember.email');
+  });
+
   it('keeps invite accessible and does not imply unsupported mutations', () => {
     expect(panel).toContain('data-testid="team-invite"');
     expect(panel).toContain('data-testid="team-open-console"');
@@ -116,13 +126,18 @@ describe('DESKTOP-009: team activity and access', () => {
     expect(route).not.toMatch(/id:\s*['"]people['"]/);
   });
 
-  it('uses naked hairline list/detail; rounded only for controls, selection, chips', () => {
+  it('uses naked hairline list/detail with square open selection rows', () => {
     expect(panel).toContain('border: 1px solid var(--v4-hairline)');
     expect(panel).toContain('border-right: 1px solid var(--v4-hairline)');
     expect(panel).toContain('border-radius: 0');
     expect(panel).toContain('background: transparent');
-    // Selection / controls / chips may round.
-    expect(panel).toMatch(/\.team-member-row\.is-selected\s*\{[\s\S]*?border-radius:\s*6px;/);
+    expect(panel).toMatch(
+      /\.team-member-row\s*\{[\s\S]*?border:\s*0;[\s\S]*?border-radius:\s*0;[\s\S]*?background:\s*transparent;/,
+    );
+    expect(panel).toMatch(
+      /\.team-member-row\.is-selected\s*\{[\s\S]*?border-radius:\s*0;/,
+    );
+    // True controls and compact chips may retain a compact radius.
     expect(panel).toContain('border-radius: var(--v4-radius-button)');
     expect(panel).toContain('border-radius: var(--v4-radius-pill');
     expect(panel).toMatch(/\.skill-chip,[\s\S]*?border-radius:\s*6px;/);
@@ -135,11 +150,11 @@ describe('DESKTOP-009: team activity and access', () => {
 
   it('uses five semantic type roles and 3px title/meta stacks', () => {
     expect(V4_TYPE_SCALE).toEqual({
-      metadata: 10,
-      secondary: 11,
-      body: 12,
+      metadata: 13,
+      secondary: 13,
+      body: 14,
       section: 14,
-      detail: 18,
+      detail: 14,
     });
     expect(V4_ROW_STACK_GAP_PX).toBe(3);
     expect(tokens).toContain('--v4-row-stack-gap: 3px');
@@ -177,9 +192,9 @@ describe('DESKTOP-009: team activity and access', () => {
   });
 
   it('honors light/dark and reduced motion/transparency', () => {
-    expect(tokens).toContain('--v4-text-1: #0a0c10');
+    expect(tokens).toContain('--v4-text-1: #111111');
     expect(tokens).toMatch(
-      /@media \(prefers-color-scheme: dark\)\s*\{\s*:root\s*\{[\s\S]*?--v4-text-1:\s*#f4f6f8/,
+      /@media \(prefers-color-scheme: dark\)\s*\{\s*:root\s*\{[\s\S]*?--v4-text-1:\s*#f2f2f2/,
     );
     expect(panel).toContain('@media (prefers-reduced-motion: reduce)');
     expect(panel).toContain('@media (prefers-reduced-transparency: reduce)');

@@ -169,7 +169,11 @@ describe('US-007: Company page shell — V4 sections + crumb (sections moved to 
     expect(page).toContain('onopenprojects?: () => void;');
     expect(page).toContain("const settings = await invoke<SettingsWire>('get_settings').catch(() => ({ hqPath: null }));");
 
-    expect(desktop).toContain("invoke<WorkspacesResult>('list_syncable_workspaces')");
+    expect(desktop).toContain('invoke<Partial<WorkspacesResult> | null>(');
+    expect(desktop).toContain("'list_syncable_workspaces'");
+    expect(desktop).toContain(
+      'const nextWorkspaces = Array.isArray(result?.workspaces) ? result.workspaces : []',
+    );
     expect(workspaceSrc).toContain('role: string | null;');
     expect(rustWorkspaces).toContain('pub role: Option<String>');
     // US-004 (V4) hoisted the per-slug membership lookup so role + invite

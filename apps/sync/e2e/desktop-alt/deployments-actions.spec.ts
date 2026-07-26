@@ -26,6 +26,15 @@ import { readRepoFile } from './harness';
  */
 
 describe('desktop-alt Deployments panel actions (US-011)', () => {
+  it('aligns the Status header with the full-width status row track', () => {
+    const panel = readRepoFile('src/desktop-alt/panels/DeploymentsPanel.svelte');
+    const row = readRepoFile('src/desktop-alt/components/DeploymentRow.svelte');
+
+    expect(panel).toContain('grid-template-columns: 82px 1.4fr 1fr auto auto auto');
+    expect(row).toContain('grid-template-columns: 82px 1.4fr 1fr auto auto auto');
+    expect(panel).not.toContain('grid-template-columns: 14px 1.4fr');
+  });
+
   it('opens the live deployment URL in the browser via plugin-shell (US-001 pattern)', () => {
     const row = readRepoFile('src/desktop-alt/components/DeploymentRow.svelte');
 

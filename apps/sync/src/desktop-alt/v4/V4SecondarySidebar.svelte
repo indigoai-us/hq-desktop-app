@@ -68,7 +68,13 @@
   <div class="v4-spacer"></div>
 
   {#if footer}
-    <button type="button" class="v4-footer" onclick={() => onfooterselect?.()}>
+    <button
+      type="button"
+      class="v4-footer"
+      class:active={footer.active}
+      aria-current={footer.active ? 'page' : undefined}
+      onclick={() => onfooterselect?.()}
+    >
       <span class="v4-footer-label">{footer.label}</span>
       {#if footer.meta}
         <span class="v4-footer-meta">{footer.meta}</span>
@@ -87,9 +93,10 @@
     height: 100%;
     padding: 16px 10px 0;
     border-right: 1px solid var(--v4-hairline);
-    background: var(--v4-inset);
-    backdrop-filter: blur(18px) saturate(160%);
-    -webkit-backdrop-filter: blur(18px) saturate(160%);
+    background: var(--v4-secondary-sidebar);
+    backdrop-filter: var(--v4-glass-filter);
+    -webkit-backdrop-filter: var(--v4-glass-filter);
+    box-shadow: inset 1px 0 0 var(--v4-glass-highlight);
     font-family: var(--font-sans);
   }
 
@@ -165,7 +172,7 @@
     height: var(--v4-row-h);
     padding: 0 8px;
     border: none;
-    border-radius: var(--v4-radius-button);
+    border-radius: 0;
     background: transparent;
     color: var(--v4-text-2);
     font: inherit;
@@ -189,7 +196,8 @@
   }
 
   .v4-row.active {
-    background: var(--v4-active-row);
+    background: transparent;
+    box-shadow: inset 0 -1px 0 var(--v4-hairline);
     color: var(--v4-text-1);
     font-weight: 500;
   }
@@ -231,8 +239,18 @@
   }
 
   .v4-footer:hover .v4-footer-label,
-  .v4-footer:focus-visible .v4-footer-label {
+  .v4-footer:focus-visible .v4-footer-label,
+  .v4-footer.active .v4-footer-label {
     color: var(--v4-text-1);
+  }
+
+  .v4-footer.active {
+    background: transparent;
+    box-shadow: inset 0 -1px 0 var(--v4-hairline);
+  }
+
+  .v4-footer.active .v4-footer-label {
+    font-weight: 500;
   }
 
   .v4-footer:focus-visible {
@@ -261,6 +279,7 @@
     .v4-secondary {
       backdrop-filter: none;
       -webkit-backdrop-filter: none;
+      box-shadow: none;
     }
   }
 </style>

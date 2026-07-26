@@ -344,8 +344,10 @@
     width: 520px;
     max-width: 92vw;
     border-left: 1px solid var(--border);
-    background: var(--bg);
-    box-shadow: -8px 0 32px rgba(0, 0, 0, 0.45);
+    background: var(--v4-popover);
+    backdrop-filter: var(--v4-glass-filter);
+    -webkit-backdrop-filter: var(--v4-glass-filter);
+    box-shadow: var(--v4-shadow-popover), inset 1px 0 0 var(--v4-glass-highlight);
     animation: panel-slide-in 200ms cubic-bezier(0.2, 0.7, 0.2, 1);
   }
 
@@ -409,7 +411,7 @@
   }
 
   .state-badge.tone-active {
-    color: var(--amber);
+    color: var(--v4-text-2);
   }
 
   .state-badge.tone-todo {
@@ -433,7 +435,7 @@
     font-variant-numeric: tabular-nums;
   }
 
-  /* Color-coded priority (hq-desktop parity): P1 red · P2 amber · P3 blue. */
+  /* Only urgent P1 remains semantic; routine priorities stay neutral. */
   .priority-badge[data-priority='P1'] {
     border-color: transparent;
     background: rgba(248, 113, 113, 0.15);
@@ -441,13 +443,13 @@
   }
   .priority-badge[data-priority='P2'] {
     border-color: transparent;
-    background: rgba(245, 158, 11, 0.15);
-    color: var(--amber);
+    background: var(--v4-control-faint);
+    color: var(--v4-text-2);
   }
   .priority-badge[data-priority='P3'] {
     border-color: transparent;
-    background: rgba(96, 165, 250, 0.15);
-    color: var(--blue);
+    background: var(--v4-control-faint);
+    color: var(--v4-text-2);
   }
 
   .close-button {
@@ -517,7 +519,7 @@
     margin: 0;
     padding: var(--space-3) var(--space-4);
     border: 1px solid var(--border);
-    border-radius: var(--radius-md);
+    border-radius: var(--v4-radius-structure);
     background: var(--surface-raise);
   }
 

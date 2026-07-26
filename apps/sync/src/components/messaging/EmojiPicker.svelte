@@ -87,8 +87,8 @@
     background: var(--pop-bg);
     border: 1px solid var(--pop-border);
     box-shadow: var(--pop-shadow), inset 0 1px 0 var(--pop-highlight);
-    backdrop-filter: blur(32px) saturate(1.7);
-    -webkit-backdrop-filter: blur(32px) saturate(1.7);
+    backdrop-filter: var(--glass-filter-soft, blur(12px) saturate(0%));
+    -webkit-backdrop-filter: var(--glass-filter-soft, blur(12px) saturate(0%));
   }
 
   .emoji-picker:focus {

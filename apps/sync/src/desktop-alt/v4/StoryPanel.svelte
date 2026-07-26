@@ -461,8 +461,10 @@
     z-index: 100;
     width: min(420px, 100vw);
     border-left: 1px solid var(--v4-hairline);
-    background: var(--v4-ground);
-    box-shadow: var(--v4-shadow-popover);
+    background: var(--v4-popover);
+    backdrop-filter: var(--v4-glass-filter);
+    -webkit-backdrop-filter: var(--v4-glass-filter);
+    box-shadow: var(--v4-shadow-popover), inset 1px 0 0 var(--v4-glass-highlight);
   }
 
   .panel-header,
@@ -566,7 +568,7 @@
     color: var(--v4-error);
   }
   .priority[data-priority='P2'] {
-    color: var(--v4-warn);
+    color: var(--v4-text-2);
   }
 
   .icon-button {
@@ -594,12 +596,12 @@
   .status-control {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 4px;
+    gap: 8px;
     margin: var(--v4-space-3) var(--v4-space-4) 0;
-    padding: 3px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-button);
-    background: var(--v4-inset);
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
   }
 
   .status-control button,
@@ -614,8 +616,14 @@
     cursor: pointer;
   }
 
+  .status-control button {
+    border-bottom: 1px solid transparent;
+    border-radius: 0;
+  }
+
   .status-control button.active {
-    background: var(--v4-control-bg);
+    border-bottom-color: var(--v4-text-2);
+    background: transparent;
     color: var(--v4-text-1);
   }
 
@@ -677,17 +685,18 @@
     margin: 0;
   }
 
-  /* Live monitor may be rounded as a distinct payload */
+  /* Live state is an open status row, not another card inside the task. */
   .live-monitor {
     display: flex;
     flex-direction: column;
     gap: var(--v4-row-stack-gap, 3px);
     min-width: 0;
     margin-top: var(--v4-space-3);
-    padding: var(--v4-space-3);
-    border: 1px solid color-mix(in srgb, var(--v4-ok) 28%, var(--v4-hairline));
-    border-radius: 6px;
-    background: color-mix(in srgb, var(--v4-ok) 8%, var(--v4-raised));
+    padding: var(--v4-space-3) 0;
+    border: 0;
+    border-top: 1px solid var(--v4-rowline);
+    border-radius: 0;
+    background: transparent;
   }
 
   .live-run-head,
@@ -818,7 +827,7 @@
     gap: var(--v4-space-2);
     min-width: 0;
     padding: 2px 4px;
-    border-radius: var(--v4-radius-button);
+    border-radius: 0;
   }
 
   .file-item:hover {
@@ -888,8 +897,9 @@
   }
 
   @media (prefers-reduced-transparency: reduce) {
-    .live-monitor {
-      background: var(--v4-raised);
+    .story-panel:not(.is-embedded) {
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
     }
   }
 

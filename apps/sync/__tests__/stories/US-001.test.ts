@@ -32,6 +32,11 @@ const rowSource = readFileSync(
   'utf8',
 );
 
+function styleRule(source: string, selector: string): string {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return source.match(new RegExp(`${escaped}\\s*\\{([\\s\\S]*?)\\}`))?.[1] ?? '';
+}
+
 let host: HTMLElement;
 let component: ReturnType<typeof mount> | null = null;
 
@@ -120,21 +125,28 @@ describe('US-001: One-line minimal notification row component', () => {
     expect(openBtn?.textContent?.trim()).toBe('Open');
     expect(dismissBtn).toBeTruthy();
 
-    // CSS contract: default hidden, hover/focus reveals
-    expect(rowSource).toMatch(/\.nr-actions\s*\{[^}]*display:\s*none/s);
+    // Keep the controls in the keyboard tab order while visually quiet.
+    expect(rowSource).toMatch(/\.nr-actions\s*\{[^}]*display:\s*inline-flex/s);
+    expect(rowSource).toMatch(/\.nr-actions\s*\{[^}]*opacity:\s*0/s);
+    expect(rowSource).toMatch(/\.nr-actions\s*\{[^}]*width:\s*0/s);
     expect(rowSource).toMatch(
-      /\.nr:not\(\.nr-message\):hover \.nr-actions[\s\S]*?display:\s*inline-flex/,
+      /\.nr:not\(\.nr-message\):hover \.nr-actions[\s\S]*?opacity:\s*1/,
     );
     expect(rowSource).toMatch(
-      /\.nr:not\(\.nr-message\):focus-within \.nr-actions[\s\S]*?display:\s*inline-flex/,
+      /\.nr:not\(\.nr-message\):focus-within \.nr-actions[\s\S]*?width:\s*auto/,
     );
 
     // Hover still sets the hover state on the interaction surface.
     row.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
     flushSync();
 
-    openBtn!.click();
+    // The row's content remains the primary pointer target; the small hover
+    // action is an alternate affordance, not the only way to open the item.
+    row.querySelector<HTMLElement>('.nr-text')!.click();
     expect(onopen).toHaveBeenCalledTimes(1);
+
+    openBtn!.click();
+    expect(onopen).toHaveBeenCalledTimes(2);
 
     dismissBtn!.click();
     expect(ondismiss).toHaveBeenCalledTimes(1);
@@ -172,10 +184,23 @@ describe('US-001: One-line minimal notification row component', () => {
     expect(body).toBeTruthy();
     expect(body?.textContent).toBe(longText);
 
-    // Bare click on expanded body opens (mouse path for DMs / onopen)
+    // The body is inside a native primary button, while reply/react controls
+    // remain siblings. This preserves full-row pointer activation without
+    // nesting interactive controls.
+    const primaryAction = row.querySelector<HTMLButtonElement>(
+      'button.nr-primary-action',
+    );
+    expect(primaryAction).toBeTruthy();
+    expect(primaryAction?.tabIndex).toBe(0);
     body!.click();
     flushSync();
     expect(onopen).toHaveBeenCalledTimes(1);
+
+    // Native button semantics provide keyboard focus + Enter/Space activation.
+    primaryAction!.focus();
+    expect(document.activeElement).toBe(primaryAction);
+    primaryAction!.click();
+    expect(onopen).toHaveBeenCalledTimes(2);
 
     const replyInput = row.querySelector<HTMLInputElement>('input.nr-reply');
     expect(replyInput).toBeTruthy();
@@ -202,12 +227,45 @@ describe('US-001: One-line minimal notification row component', () => {
     flushSync();
     expect(onreply).toHaveBeenCalledWith('On it');
 
-    // Collapse on mouse-out
+    // Keyboard focus keeps the row expanded across mouse-out.
     row.dispatchEvent(new MouseEvent('mouseleave', { bubbles: true }));
+    flushSync();
+    expect(row.getAttribute('data-expanded')).toBe('true');
+
+    // Releasing focus collapses once there is no hover or reply hold.
+    primaryAction!.blur();
     flushSync();
     expect(row.getAttribute('data-expanded')).toBe('false');
     expect(row.querySelector('.nr-body')).toBeNull();
     expect(row.querySelector('input.nr-reply')).toBeNull();
+  });
+
+  it('Given a selected conversation row, then selection stays open with a neutral baseline and no side rail.', () => {
+    mountRow({
+      type: 'message',
+      actor: 'Corey',
+      text: 'Selected conversation',
+      ts: Date.now(),
+      selected: true,
+      onopen: vi.fn(),
+    });
+
+    const row = host.querySelector<HTMLElement>('[data-testid="notification-row"]')!;
+    expect(row.classList.contains('nr-selected')).toBe(true);
+
+    const selectedRule =
+      rowSource.match(/\.nr-selected\s*\{([\s\S]*?)\}/)?.[1] ?? '';
+    expect(selectedRule).toContain('background: transparent');
+    expect(selectedRule).toContain(
+      'box-shadow: inset 0 -1px 0 var(--popover-divider)',
+    );
+    expect(selectedRule).not.toMatch(/border-(?:left|right)/);
+    expect(rowSource).not.toMatch(/\.nr-selected::(?:before|after)/);
+  });
+
+  it('keeps notification and pinned system-notice rows square because they are structural rows, not cards.', () => {
+    expect(styleRule(rowSource, '.nr')).toContain('border-radius: 0');
+    expect(styleRule(popoverSource, '.snr')).toContain('border-radius: 0');
   });
 
   it('Given the notification panel, when rendered, then no tab selector, sync button, overflow menu, hq icon, or desktop-view button is present.', () => {

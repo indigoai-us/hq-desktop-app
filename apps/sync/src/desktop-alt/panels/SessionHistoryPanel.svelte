@@ -226,30 +226,43 @@
 
   .hi-seg {
     display: inline-flex;
-    padding: 2px;
-    border-radius: var(--v4-radius-field);
-    background: var(--v4-control-faint);
+    gap: var(--v4-space-2);
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
   }
 
   .hi-seg-btn {
     padding: 3px 10px;
-    border: none;
-    border-radius: var(--v4-radius-button);
+    border: 0;
+    border-bottom: 1px solid transparent;
+    border-radius: 0;
     background: transparent;
     color: var(--v4-text-2);
     font: inherit;
     font-size: 11px;
     cursor: pointer;
+    transition:
+      border-color 140ms ease,
+      color 140ms ease;
   }
 
   .hi-seg-btn:hover {
+    border-bottom-color: var(--v4-rowline);
     color: var(--v4-text-1);
   }
 
   .hi-seg-btn.active {
-    background: var(--v4-active-row);
+    border-bottom-color: var(--v4-text-2);
+    background: transparent;
     color: var(--v4-text-1);
     font-weight: 500;
+  }
+
+  .hi-seg-btn:focus-visible {
+    outline: 2px solid var(--v4-control-border);
+    outline-offset: 2px;
   }
 
   .hi-company {

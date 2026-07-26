@@ -148,7 +148,7 @@
      primary fill with an inverted glyph, mirroring the selected/primary
      language used across the popover. Still monochrome — no red. */
   .meeting-icon-btn[data-state='recording'] {
-    color: var(--popover-primary-text, #111113);
+    color: var(--popover-primary-text, #111111);
     background: var(--popover-primary, #ffffff);
     border-color: var(--popover-primary, #ffffff);
   }
@@ -165,7 +165,7 @@
     padding: 0 3px;
     border-radius: 7px;
     background: var(--popover-primary, #ffffff);
-    color: var(--popover-primary-text, #111113);
+    color: var(--popover-primary-text, #111111);
     font-size: 9px;
     font-weight: 600;
     line-height: 14px;

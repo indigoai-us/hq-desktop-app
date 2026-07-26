@@ -11,6 +11,7 @@
   import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { open as openExternal } from '@tauri-apps/plugin-shell';
+  import { untrack } from 'svelte';
   import {
     loadMeetingsCache,
     saveMeetingsCache,
@@ -473,7 +474,11 @@
   });
 
   $effect(() => {
-    void refresh();
+    // `refresh()` synchronously reads and writes the reactive `loading` flag
+    // before its first await. Run the lifecycle kick-off untracked so the
+    // effect remains mount-only instead of re-running every time loading
+    // returns to false.
+    untrack(() => void refresh());
 
     // Poll every 30s while the window is open. Bots transition states
     // server-side (scheduled → joining → recording → processing) and the
@@ -1188,24 +1193,23 @@
    *  the controls row to also surface meetings without a join URL. */
   let showOnlyWithUrl = $state(true);
 
-  /** Fixed colour palette assigned to calendars in stable sorted order.
-   *  Chosen for legibility on the shared page background — saturated enough
-   *  to scan-distinguish, muted enough not to vibrate. Repeats once the
-   *  user has >12 enabled calendars, which is rare and acceptable since
-   *  the dropdown still labels each one. */
+  /** Fixed neutral palette assigned to calendars in stable sorted order.
+   *  Attribution remains discoverable in the filter without tinting the
+   *  otherwise grayscale window. Repeats once the user has >12 enabled
+   *  calendars; the dropdown label remains the authoritative identifier. */
   const CAL_PALETTE = [
-    '#60a5fa', // blue
-    '#f87171', // red
-    '#34d399', // green
-    '#fbbf24', // amber
-    '#a78bfa', // purple
-    '#f472b6', // pink
-    '#2dd4bf', // teal
-    '#fb923c', // orange
-    '#93c5fd', // sky
-    '#c084fc', // violet
-    '#fcd34d', // yellow
-    '#4ade80', // lime
+    '#737373',
+    '#8b8b8b',
+    '#a3a3a3',
+    '#5f5f5f',
+    '#949494',
+    '#6c6c6c',
+    '#b0b0b0',
+    '#7d7d7d',
+    '#9d9d9d',
+    '#595959',
+    '#858585',
+    '#bababa',
   ] as const;
 
   /** Stable colour-per-calendar map. Sorted by key so a calendar keeps
@@ -1233,8 +1237,8 @@
    *  the event predates BE-4 (no sourceAccountId/sourceCalendarId) or
    *  references a calendar the user has since disabled. */
   function eventCalColor(e: MeetingEvent): string {
-    if (!e.sourceAccountId || !e.sourceCalendarId) return '#3f3f46';
-    return calendarColors.get(calKey(e.sourceAccountId, e.sourceCalendarId)) ?? '#3f3f46';
+    if (!e.sourceAccountId || !e.sourceCalendarId) return '#3f3f3f';
+    return calendarColors.get(calKey(e.sourceAccountId, e.sourceCalendarId)) ?? '#3f3f3f';
   }
 
   /** Composite tooltip for the title — surfaces what the now-removed
@@ -1471,7 +1475,7 @@
   </div>
 
   {#if toast}
-    <p class="toast" class:toast-warn={toast.kind === 'warn'}>
+    <p class="toast" class:toast-warn={toast.kind === 'warn'} role="status">
       {toast.text}
     </p>
   {/if}
@@ -1583,12 +1587,11 @@
                       checked={isCalKeySelected(key)}
                       onchange={() => toggleCalKey(key)}
                     />
-                    <!-- Colour swatch matches the row's left bar so users
-                         can map "this blue line in the list" back to
-                         "this calendar" without reading the label. -->
+                    <!-- Neutral swatch matches the row marker so users can map
+                         the calendar without tinting the surrounding surface. -->
                     <span
                       class="filter-swatch"
-                      style="background:{calendarColors.get(key) ?? '#3f3f46'}"
+                      style="background:{calendarColors.get(key) ?? '#3f3f3f'}"
                       aria-hidden="true"
                     ></span>
                     <span class="filter-option-label">
@@ -1784,12 +1787,10 @@
               class:event-row-focused={bot?.botId === focusedMeetingId}
               use:trackEventRow={bot?.botId ?? evt.id}
             >
-              <!-- Calendar colour bar — encodes which (account, calendar)
-                   the event came from. Replaces the multi-row badge
-                   block; the same colour shows next to the matching
-                   calendar in the filter dropdown so the mapping is
-                   self-explanatory. -->
-              <span class="event-cal-bar" style="background:{eventCalColor(evt)}" aria-hidden="true"></span>
+              <!-- Compact neutral calendar marker. The matching dot in the
+                   filter keeps attribution discoverable without drawing a
+                   decorative rail down the event row. -->
+              <span class="event-cal-dot" style="background:{eventCalColor(evt)}" aria-hidden="true"></span>
               <div class="event-meta">
                 <span class="event-time">{timeLabel(evt)}</span>
                 <span class="event-title-row">
@@ -2065,22 +2066,32 @@
   }
 
   .toast {
+    --toast-dot: var(--dot);
+    display: flex;
+    align-items: baseline;
+    gap: 7px;
     margin: 8px 18px 0;
-    padding: 7px 10px;
-    border-radius: 6px;
-    background: var(--c-field-bg);
-    border: 1px solid var(--c-field-border);
-    color: var(--c-text);
+    padding: 8px 0 0;
+    border: 0;
+    border-top: 1px solid var(--c-divider);
+    border-radius: 0;
+    background: transparent;
+    color: var(--c-muted);
     font-size: var(--text-base);
   }
-  /* Warn — yellow, used for recoverable user-facing failures (per HQ
-     policy: avoid red error states for things the user can retry). Same
-     amber palette as the cross-account conflict warning in hq-console
-     for a consistent failure-vocabulary across the suite. */
+  .toast::before {
+    width: 5px;
+    height: 5px;
+    flex: 0 0 auto;
+    border-radius: 50%;
+    background: var(--toast-dot);
+    content: '';
+    transform: translateY(-1px);
+  }
+  /* Recoverable failures keep one compact amber dot; the message remains
+     neutral and open instead of turning the entire row yellow. */
   .toast-warn {
-    background: color-mix(in srgb, var(--v4-warn, #b45309) 12%, transparent);
-    border-color: color-mix(in srgb, var(--v4-warn, #b45309) 38%, transparent);
-    color: var(--v4-warn, #b45309);
+    --toast-dot: var(--v4-warn, #b45309);
   }
 
   .refresh-notice {
@@ -2105,7 +2116,7 @@
     cursor: pointer;
   }
   .refresh-report:hover:not(:disabled) {
-    color: #bfdbfe;
+    color: var(--c-text);
   }
   .refresh-report:disabled {
     opacity: 0.55;
@@ -2147,19 +2158,19 @@
     display: flex;
     align-items: center;
     gap: 10px;
-    padding: 9px 11px;
-    background: var(--c-field-bg);
-    border: 1px solid var(--c-divider);
-    border-radius: 8px;
-    transition: background 120ms ease, border-color 120ms ease;
+    padding: 9px 0;
+    background: transparent;
+    border: 0;
+    border-top: 1px solid var(--c-divider);
+    border-radius: 0;
   }
   .active-row[data-state='recording'] {
-    background: rgba(239, 68, 68, 0.07);
-    border-color: rgba(239, 68, 68, 0.22);
+    background: transparent;
+    border-color: var(--c-divider);
   }
   .active-row[data-state='error'] {
-    background: rgba(239, 68, 68, 0.05);
-    border-color: rgba(239, 68, 68, 0.18);
+    background: transparent;
+    border-color: var(--c-divider);
   }
   .active-info {
     display: flex;
@@ -2305,15 +2316,15 @@
     gap: 6px;
     padding: 6px 4px;
     border-bottom: 1px solid var(--c-field-bg);
-    border-radius: 6px;
+    border-radius: 0;
     transition: background 140ms ease, box-shadow 140ms ease;
   }
   .event-row:last-child {
     border-bottom: 0;
   }
   .event-row-focused {
-    background: rgba(250, 204, 21, 0.10);
-    box-shadow: inset 0 0 0 1px rgba(250, 204, 21, 0.30);
+    background: var(--pop-hover);
+    box-shadow: none;
   }
   .event-meta {
     flex: 1 1 auto;
@@ -2363,19 +2374,12 @@
     color: var(--c-muted);
     opacity: 1;
   }
-  /* Per-calendar colour bar at the row's left edge. Replaces the
-     calendar/account/company/platform text chips that used to occupy
-     a second row inside .event-meta. Same colour is drawn next to the
-     calendar in the filter dropdown (.filter-swatch) so the encoding
-     is discoverable. */
-  .event-cal-bar {
+  /* A compact marker replaces the former full-height edge strip. */
+  .event-cal-dot {
     flex: 0 0 auto;
-    align-self: stretch;
-    width: 3px;
-    border-radius: 2px;
-    /* Small inset so the bar reads as a coloured marker rather than
-       filling the row's full vertical padding region. */
-    margin: 2px 0;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
   }
 
   .attribution-control {
@@ -2436,13 +2440,13 @@
     border: 0;
     padding: 0;
     margin-left: 4px;
-    color: #93c5fd;
+    color: var(--c-text);
     text-decoration: underline;
     cursor: pointer;
     font: inherit;
   }
   .meetings-inline-link:hover {
-    color: #bfdbfe;
+    color: var(--c-text);
   }
 
   /* Empty-state CTA shown when the user has zero connected calendar
@@ -2559,8 +2563,8 @@
     border: 1px solid var(--pop-border);
     background: var(--pop-bg);
     box-shadow: var(--pop-shadow), inset 0 1px 0 var(--pop-highlight);
-    backdrop-filter: blur(32px) saturate(1.7);
-    -webkit-backdrop-filter: blur(32px) saturate(1.7);
+    backdrop-filter: var(--glass-filter-soft, blur(12px) saturate(0%));
+    -webkit-backdrop-filter: var(--glass-filter-soft, blur(12px) saturate(0%));
   }
   .filter-actions {
     display: flex;
@@ -2613,7 +2617,7 @@
     align-items: center;
     gap: 8px;
     padding: 4px 6px;
-    border-radius: 4px;
+    border-radius: 0;
     cursor: pointer;
   }
   .filter-option:hover {
@@ -2642,10 +2646,8 @@
     text-transform: uppercase;
     letter-spacing: 0.06em;
   }
-  /* Colour swatch in the filter dropdown — matches the per-row left bar
-     so users can map "the blue line over there" to "this calendar"
-     without reading the label. 10x10 keeps it visible next to the
-     checkbox without crowding the calendar name. */
+  /* Neutral swatch matches the compact row dot. 10x10 keeps it visible
+     beside the checkbox without tinting the calendar row or surface. */
   .filter-swatch {
     flex: 0 0 auto;
     width: 10px;
@@ -2748,51 +2750,51 @@
   }
   .row-icon-invited:hover:not(:disabled) {
     color: #fca5a5;
-    background: rgba(220, 38, 38, 0.12);
-    border-color: rgba(220, 38, 38, 0.40);
+    background: var(--c-field-border);
+    border-color: var(--c-field-border);
   }
-  /* In-call — red tint to broadcast "live" at a glance. The live-dot
-     animation does the pulsing. */
+  /* In-call keeps red on the tiny glyph only; the control material stays
+     neutral and the live-dot animation carries the state. */
   .row-icon-incall {
     color: #fca5a5;
-    background: rgba(220, 38, 38, 0.12);
-    border-color: rgba(220, 38, 38, 0.40);
+    background: var(--c-field-bg);
+    border-color: var(--c-field-border);
   }
   .row-icon-incall:hover:not(:disabled) {
-    background: rgba(220, 38, 38, 0.22);
+    background: var(--c-field-border);
   }
-  /* Joining — amber spinner; transient state. */
+  /* Joining is normal workflow, so its pending control stays neutral. */
   .row-icon-joining {
-    color: #fcd34d;
-    background: rgba(202, 138, 4, 0.10);
-    border-color: rgba(202, 138, 4, 0.40);
+    color: var(--c-muted);
+    background: var(--c-field-bg);
+    border-color: var(--c-field-border);
   }
   /* Processing — neutral muted; non-interactive (no hover lift). */
   .row-icon-processing {
     color: var(--c-muted);
-    background: var(--c-field-bg);
-    border-color: var(--c-field-border);
+    background: transparent;
+    border-color: transparent;
+    border-radius: 0;
     cursor: default;
   }
-  /* Done — green muted; non-interactive. */
+  /* Done — a compact green glyph, without a filled status box. */
   .row-icon-done {
     color: #86efac;
-    background: rgba(34, 197, 94, 0.08);
-    border-color: rgba(34, 197, 94, 0.30);
+    background: transparent;
+    border-color: transparent;
+    border-radius: 0;
     cursor: default;
   }
-  /* Bot-join-now — amber-accented "act now" affordance. Distinct from
-     the green of `invite` / red of `incall` so users learn to read it
-     as a separate, always-available control rather than confusing it
-     with a state indicator. */
+  /* Bot-join-now is a routine action and uses the same neutral vocabulary
+     as peer row controls. */
   .row-icon-bot-now {
-    color: #fcd34d;
-    background: rgba(202, 138, 4, 0.08);
-    border-color: rgba(202, 138, 4, 0.32);
+    color: var(--c-text);
+    background: var(--c-field-bg);
+    border-color: var(--c-field-border);
   }
   .row-icon-bot-now:hover:not(:disabled) {
-    background: rgba(202, 138, 4, 0.18);
-    border-color: rgba(202, 138, 4, 0.55);
+    background: var(--c-field-border);
+    border-color: var(--c-field-border);
   }
 
   /* Inline spinner — used inside row-icon-btn while a request is pending.
@@ -2808,7 +2810,7 @@
     opacity: 0.85;
   }
   .row-icon-spinner-amber {
-    color: #fcd34d;
+    color: var(--c-muted);
   }
   @keyframes row-icon-spin {
     to {
@@ -2821,11 +2823,11 @@
      "filled" when active so the user sees at a glance that the list is
      filtered. Click toggles, tooltip explains. */
   .filter-link-active {
-    color: #bfdbfe;
-    background: rgba(96, 165, 250, 0.12);
-    border-color: rgba(96, 165, 250, 0.35);
+    color: var(--c-text);
+    background: var(--c-btn2-bg);
+    border-color: var(--c-field-border);
   }
   .filter-link-active:hover {
-    background: rgba(96, 165, 250, 0.20);
+    background: var(--c-field-border);
   }
 </style>

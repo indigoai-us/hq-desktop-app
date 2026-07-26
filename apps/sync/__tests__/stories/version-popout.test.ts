@@ -51,21 +51,26 @@ describe('US-017: version pop-out in desktop status bar', () => {
     // Hydrates an update the background checker already found (get_pending_update),
     // and the Rust command is registered.
     expect(popout).toContain("'get_pending_update'");
-    expect(harness).toContain('check_for_updates: () => null');
-    expect(harness).toContain('install_update: () => null');
+    expect(harness).toContain('check_for_updates: () =>');
+    expect(harness).toContain('function hasSettingsUpdates(');
+    expect(harness).toContain("scenario === 'update-available'");
+    expect(harness).toContain(
+      'get_pending_update: () => (hasSettingsUpdates() ? HARNESS_UPDATE : null)',
+    );
+    expect(harness).toContain('install_update: () => {');
   });
 
-  it('Automatic updates toggle persists full prefs and settings link calls onOpenSettings', () => {
+  it('Automatic updates toggle uses the shared serialized patch path and opens Settings', () => {
     const p = normalize(popout);
 
     expect(popout).toContain('data-testid="version-popout-auto-toggle"');
     expect(popout).toContain('data-testid="version-popout-settings-link"');
-    expect(popout).toContain("'get_settings'");
-    expect(popout).toContain("'save_settings'");
     expect(popout).toContain('autoUpdate');
-    // Read FULL settings, flip autoUpdate, pass the full prefs object back.
-    expect(p).toContain("invoke<Record<string, unknown>>('get_settings')");
-    expect(p).toContain("invoke('save_settings', { prefs: { ...prefs, autoUpdate: next } })");
+    expect(popout).toContain(
+      "import { updateSettings } from '../../lib/settings-mutations'",
+    );
+    expect(p).toContain('await updateSettings({ autoUpdate: next })');
+    expect(popout).not.toMatch(/invoke\(['"]save_settings['"]/);
     expect(popout).toContain('onOpenSettings');
     expect(popout).toContain('All update settings');
   });

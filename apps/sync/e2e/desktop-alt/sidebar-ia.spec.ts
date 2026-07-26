@@ -17,7 +17,8 @@ import { readRepoFile } from './harness';
  * Locks the V4 primary-nav shape and landing rules:
  *  - ⌘1–⌘4 = Inbox / Meetings / Marketplace / Library; company digits map
  *    connected-first order.
- *  - Legacy intents resolve (messages/notifications → inbox, home/sync → home,
+ *  - Legacy intents resolve (messages → Messages, notifications → Inbox,
+ *    home/sync → home,
  *    mission-control palette-only, library:marketplace → top-level marketplace).
  *  - getDesktopLandingRoute uses last-visited company then first sidebar row.
  *  - Source: no Home / Mission Control / Companies primary rows; Marketplace
@@ -81,10 +82,10 @@ describe('US-006 / US-007: sidebar IA — hotkeys (behavioral)', () => {
 });
 
 describe('US-006 / US-007: sidebar IA — legacy intent resolution (behavioral)', () => {
-  it("messages / notifications → inbox", () => {
-    expect(resolvePendingDesktopRoute('messages')).toEqual({ kind: 'inbox' });
+  it("messages → Messages; notifications → Inbox", () => {
+    expect(resolvePendingDesktopRoute('messages')).toEqual({ kind: 'messages' });
     expect(resolvePendingDesktopRoute('notifications')).toEqual({ kind: 'inbox' });
-    expect(fromV4Route({ kind: 'messages' })).toEqual({ kind: 'inbox' });
+    expect(fromV4Route({ kind: 'messages' })).toEqual({ kind: 'messages' });
     expect(fromV4Route({ kind: 'notifications' })).toEqual({ kind: 'inbox' });
   });
 
@@ -140,7 +141,7 @@ describe('US-006 / US-007: sidebar IA — landing route (behavioral)', () => {
 describe('US-006 / US-007: sidebar IA — source contracts', () => {
   it('primary nav has Marketplace and no Home / Mission Control / Companies rows', () => {
     const navIds = V4_NAV_ITEMS.map((item) => item.id);
-    expect(navIds).toEqual(['inbox', 'meetings', 'marketplace', 'library', 'files']);
+    expect(navIds).toEqual(['inbox', 'messages', 'meetings', 'marketplace', 'library', 'files']);
     expect(navIds).not.toContain('home');
     expect(navIds).not.toContain('mission-control');
     expect(navIds).not.toContain('companies');
@@ -148,12 +149,12 @@ describe('US-006 / US-007: sidebar IA — source contracts', () => {
     const model = readRepoFile('src/desktop-alt/v4/model.ts');
     expect(model).toContain("{ id: 'marketplace', label: 'Marketplace' }");
     expect(model).toContain("{ id: 'inbox', label: 'Inbox' }");
+    expect(model).toContain("{ id: 'messages', label: 'Messages' }");
 
     const sidebar = readRepoFile('src/desktop-alt/v4/V4Sidebar.svelte');
     // Comment contract: US-007 removed Home / Mission Control / Companies page rows.
-    expect(sidebar).toContain(
-      'US-007 removed Home / Mission Control / Companies page rows',
-    );
+    expect(sidebar).toContain('US-007 removed Home / Mission');
+    expect(sidebar).toContain('Control / Companies page rows');
     // Companies is a section label for company rows, not a primary nav destination.
     expect(sidebar).toContain('id="v4-companies-label">Companies</div>');
   });
@@ -172,8 +173,9 @@ describe('US-006 / US-007: sidebar IA — source contracts', () => {
 
     const libraryPage = readRepoFile('src/desktop-alt/pages/LibraryPage.svelte');
     expect(libraryPage).toContain(
-      'Skills / Workers / Installed / Profile tabs (Marketplace is',
+      'Skills / Workers / Installed / Profile tabs plus the routed',
     );
+    expect(libraryPage).toContain('Publish-a-pack footer surface (Marketplace is');
     expect(libraryPage).toContain('top-level now — US-007)');
   });
 

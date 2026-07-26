@@ -320,28 +320,17 @@
 
   .chip {
     padding: 0.25rem 0.625rem;
-    border-radius: 7px;
+    border-radius: var(--radius-button, 6px);
     border: none;
     font-size: 0.6875rem;
     font-weight: 500;
     font-family: inherit;
     cursor: pointer;
-    background: rgba(120, 170, 255, 0.22);
-    color: #dce8ff;
+    background: var(--popover-primary);
+    color: var(--popover-primary-text);
     transition: background-color 0.12s ease;
   }
-  .chip:hover { background: rgba(120, 170, 255, 0.34); }
+  .chip:hover { background: var(--popover-primary-hover); }
 
   .hint { font-size: 0.625rem; color: var(--popover-text-muted); }
-
-  /* Light Mode: the near-white chip text is illegible on a light frost — give
-     the action chip a darker blue text + a touch more fill so it stays the
-     accent affordance while remaining readable. */
-  @media (prefers-color-scheme: light) {
-    .chip {
-      background: rgba(40, 90, 200, 0.16);
-      color: #1c3d80;
-    }
-    .chip:hover { background: rgba(40, 90, 200, 0.26); }
-  }
 </style>

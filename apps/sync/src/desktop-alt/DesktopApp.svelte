@@ -6,9 +6,10 @@
   import { loadMeetingsCache } from '../lib/meetingsCache';
   import {
     MESSAGE_PERSON_EVENT,
-    takePendingConversation,
+    requestConversation,
     type ConversationTarget,
   } from '../lib/pendingConversation';
+  import { buildPrompt } from '../lib/copy-prompts';
   import { effectiveTotalFiles as computeEffectiveTotalFiles } from '../lib/effective-total-files';
   import { sanitizeVisibleIdentifiers } from '../lib/visible-labels';
   import { safeUnlisten } from '../lib/listener-registry';
@@ -23,11 +24,13 @@
   import LibraryPage from './pages/LibraryPage.svelte';
   import MarketplacePage from './pages/MarketplacePage.svelte';
   import InboxPage from './pages/InboxPage.svelte';
+  import MessagesShell from '../components/messaging/MessagesShell.svelte';
   import CompanyPage from './pages/CompanyPage.svelte';
   import SettingsPage from './pages/SettingsPage.svelte';
   import ModerationPanel from './panels/ModerationPanel.svelte';
   import { startMeetingsStore } from './lib/meetings-store.svelte';
   import { loadLocalProjects } from './lib/local-projects';
+  import { LatestRequestCoordinator, type LatestRequestCheck } from './lib/latest-request';
   import type { Project } from './lib/projects-model';
   import { emitDesktopTelemetry } from '../lib/desktop-telemetry';
   import {
@@ -59,8 +62,17 @@
     type LibraryTab,
     type SettingsTab,
   } from './route';
-  import { sortV4CompaniesConnectedFirst, V4_CHROME_LAYOUT } from './v4/model';
-  import type { HomeConflict, HomeCoreState } from './v4/home-model';
+  import {
+    accountIdentityFromWorkspaces,
+    sortV4CompaniesConnectedFirst,
+    type V4HydrationIssue,
+    V4_CHROME_LAYOUT,
+  } from './v4/model';
+  import type {
+    HomeConflict,
+    HomeCoreState,
+    HomeDeleteRefusal,
+  } from './v4/home-model';
   import V4Sidebar from './v4/V4Sidebar.svelte';
   import FilesModeSidebar from './v4/FilesModeSidebar.svelte';
   import FilePreviewPane from './components/FilePreviewPane.svelte';
@@ -170,6 +182,8 @@
   let isAdmin = $state(false);
   let workspaces = $state<Workspace[]>(cachedWorkspaces);
   let workspaceError = $state<string | null>(null);
+  let workspaceManifestError = $state<string | null>(null);
+  let syncStatusError = $state<string | null>(null);
   let syncState = $state<SyncState>('idle');
   let manualSyncTelemetryPending = $state(false);
   let syncProgress = $state<SyncProgress | null>(null);
@@ -198,6 +212,12 @@
   // queue (Keep mine / Take theirs / Compare). Cleared when a new run starts —
   // the runner re-emits anything still conflicted.
   let homeConflicts = $state<HomeConflict[]>([]);
+  // Current runners report conflicts only as an aggregate on sync:complete.
+  // Keep the deprecated per-file queue above for older backends, but never let
+  // the modern event contract produce a silent conflict state.
+  let syncConflictCount = $state(0);
+  let syncConflictCompany = $state<string | null>(null);
+  let syncDeleteRefusals = $state<HomeDeleteRefusal[]>([]);
   // Core drift snapshot (`check_core_state` + `core-state:changed`) → Home's
   // drift card (Restore / Keep edit / View diff). `driftDismissed` is the
   // session-local "Keep edit" ack; a fresh scan re-surfaces the card.
@@ -214,10 +234,11 @@
   let activity = $state<ActivityEntry[]>([]);
   let status = $state<SyncStatus | null>(null);
   let daemon = $state<DaemonStatus | null>(null);
-  // Flips true once the first real-state load (workspaces + status + activity)
-  // resolves, so the Sync surface shows skeletons instead of a 0/empty flash
-  // during the initial fetch window.
+  // Flips true once the newest real-state load (workspaces + status + activity)
+  // resolves, so a superseded mount request cannot keep the shell skeletonized.
   let ready = $state(false);
+  let refreshingRealState = $state(false);
+  const refreshCoordinator = new LatestRequestCoordinator();
   let commandPaletteOpen = $state(false);
   // DESKTOP-001: primary sidebar can collapse; titlebar owns the toggle.
   let sidebarCollapsed = $state(false);
@@ -242,8 +263,11 @@
         : getDesktopCompanies(workspaces),
   );
   const orderedCompanies = $derived(sortV4CompaniesConnectedFirst(shellCompanies));
-  const watchedCompanies = $derived(shellCompanies.filter((workspace) => isWorkspaceSyncEnabled(workspace)));
+  const watchedCompanies = $derived(
+    shellCompanies.filter((workspace) => isWorkspaceSyncEnabled(workspace)),
+  );
   const watchedWorkspaceCount = $derived(watchedCompanies.length);
+  const accountIdentity = $derived(accountIdentityFromWorkspaces(shellCompanies));
   const routeKey = $derived(getDesktopRouteKey(route));
   const activeCompany = $derived(getDesktopActiveCompany(route, shellCompanies));
   const activeCompanySyncEnabled = $derived(isWorkspaceSyncEnabled(activeCompany));
@@ -336,9 +360,15 @@
     {
       id: 'command-go-inbox',
       label: 'Go to Inbox',
-      detail: 'Messages, mentions, shares, and activity in one place',
+      detail: 'Notifications, mentions, shares, and activity',
       shortcut: '⌘1',
       action: () => navigate({ kind: 'inbox' }),
+    },
+    {
+      id: 'command-go-messages',
+      label: 'Go to Messages',
+      detail: 'Conversations, channels, requests, and shared paths',
+      action: () => navigate({ kind: 'messages' }),
     },
     {
       id: 'command-go-meetings',
@@ -426,6 +456,15 @@
   const titleBarErrorSummary = $derived(
     syncErrorMessage ? friendlySyncError(syncErrorMessage).summary : null,
   );
+  const titleBarHydrationIssue = $derived<V4HydrationIssue | null>(
+    workspaceError
+      ? { kind: 'workspace-list', detail: workspaceError }
+      : workspaceManifestError
+        ? { kind: 'manifest', detail: workspaceManifestError }
+        : syncStatusError
+          ? { kind: 'sync-status', detail: syncStatusError }
+          : null,
+  );
 
   const lastSyncLabel = $derived(formatRelativeTime(status?.lastSyncAt ?? null));
 
@@ -439,10 +478,6 @@
   // navigation AWAY from a non-files route (US-010).
   let routeBeforeFiles = $state<DesktopRoute>({ kind: 'home' });
 
-  // Deep-link compose recipient for Inbox ("Message the sharer"). Cleared when
-  // the user dismisses/sends, or when a new target arrives.
-  let inboxComposeTarget = $state<ConversationTarget | null>(null);
-
   function mapMessagesTarget(payload: {
     personUid?: string;
     email?: string;
@@ -455,18 +490,10 @@
     };
   }
 
-  function openInboxWithComposeTarget(target: ConversationTarget | null): void {
-    const uid = target?.personUid?.trim() ?? '';
-    const email = target?.email?.trim() ?? '';
-    inboxComposeTarget = uid || email ? target : null;
-    navigate({ kind: 'inbox' });
-  }
-
   function handleMessagePerson(): void {
-    // Consume (and clear) the browser stash: no MessagesShell mounts inside
-    // the desktop window anymore (US-008). Hand the recipient to Inbox compose
-    // instead of discarding it.
-    openInboxWithComposeTarget(takePendingConversation());
+    // Leave the stashed target intact: the Messages shell consumes it after
+    // this navigation mounts the full conversation workspace.
+    navigate({ kind: 'messages' });
   }
 
   function navigate(nextRoute: DesktopRoute) {
@@ -542,6 +569,9 @@
     // The runner re-emits anything still conflicted; stale cards would offer
     // actions against files the new run may have already reconciled.
     homeConflicts = [];
+    syncConflictCount = 0;
+    syncConflictCompany = null;
+    syncDeleteRefusals = [];
     statsBySlug = {};
   }
 
@@ -588,17 +618,26 @@
     }).catch(() => undefined);
   }
 
-  async function loadWorkspaces() {
+  async function loadWorkspaces(isLatest: LatestRequestCheck) {
     try {
-      const result = await invoke<WorkspacesResult>('list_syncable_workspaces');
-      const nextCompanies = getDesktopCompanies(result.workspaces);
-      workspaces = result.workspaces;
-      cloudReachable = result.cloudReachable;
+      const result = await invoke<Partial<WorkspacesResult> | null>(
+        'list_syncable_workspaces',
+      );
+      const nextWorkspaces = Array.isArray(result?.workspaces) ? result.workspaces : [];
+      if (!isLatest()) return;
+      const nextCompanies = getDesktopCompanies(nextWorkspaces);
+      workspaces = nextWorkspaces;
+      cloudReachable = result?.cloudReachable === true;
       companies = nextCompanies;
       renderCompanies = nextCompanies;
       renderWorkspaceCount = nextCompanies.length;
-      workspaceError = sanitizeVisibleIdentifiers(result.error, { companies: result.workspaces });
-      writeCachedWorkspaces(result.workspaces);
+      workspaceError =
+        sanitizeVisibleIdentifiers(result?.error, { companies: nextWorkspaces }).trim() || null;
+      workspaceManifestError =
+        sanitizeVisibleIdentifiers(result?.manifestError, {
+          companies: nextWorkspaces,
+        }).trim() || null;
+      writeCachedWorkspaces(nextWorkspaces);
       // The chrome (V4Sidebar / V4TitleBar) consumes renderCompanies +
       // renderWorkspaceCount reactively ($derived / $props), so the reassignments
       // above refresh it on their own. We deliberately do NOT reload the document
@@ -615,7 +654,7 @@
       // on later background refreshes — only this one confirmation pass may
       // move the route, and only when the resolved landing actually differs.
       if (!userNavigated && !landingResolved) {
-        const landing = getDesktopLandingRoute(result.workspaces, initialLastCompanySlug);
+        const landing = getDesktopLandingRoute(nextWorkspaces, initialLastCompanySlug);
         const current = route;
         const alreadyThere =
           current.kind === landing.kind &&
@@ -627,39 +666,62 @@
       }
       landingResolved = true;
     } catch (err) {
+      if (!isLatest()) return;
       console.error('list_syncable_workspaces failed:', err);
-      workspaceError = sanitizeVisibleIdentifiers(String(err), { companies: workspaces });
+      cloudReachable = false;
+      workspaceError =
+        sanitizeVisibleIdentifiers(String(err), { companies: workspaces }).trim() ||
+        'Workspace status unavailable';
     }
   }
 
-  async function loadSyncStatus() {
+  async function loadSyncStatus(isLatest: LatestRequestCheck) {
     try {
-      status = await invoke<SyncStatus>('get_sync_status');
+      const nextStatus = await invoke<SyncStatus>('get_sync_status');
+      if (!isLatest()) return;
+      status = nextStatus;
+      syncStatusError = null;
     } catch (err) {
+      if (!isLatest()) return;
       console.error('get_sync_status failed:', err);
+      syncStatusError =
+        sanitizeVisibleIdentifiers(String(err), { companies: workspaces }).trim() ||
+        'Could not read the latest sync status';
     }
   }
 
-  async function loadDaemonStatus() {
+  async function loadDaemonStatus(isLatest: LatestRequestCheck) {
     try {
-      daemon = await invoke<DaemonStatus>('daemon_status');
+      const nextDaemon = await invoke<DaemonStatus>('daemon_status');
+      if (!isLatest()) return;
+      daemon = nextDaemon;
     } catch (err) {
+      if (!isLatest()) return;
       console.error('daemon_status failed:', err);
     }
   }
 
-  async function loadActivity() {
+  async function loadActivity(isLatest: LatestRequestCheck) {
     try {
-      activity = await invoke<ActivityEntry[]>('get_activity_log');
+      const activityResponse = await invoke<unknown>('get_activity_log');
+      const nextActivity = Array.isArray(activityResponse)
+        ? (activityResponse as ActivityEntry[])
+        : [];
+      if (!isLatest()) return;
+      activity = nextActivity;
     } catch (err) {
+      if (!isLatest()) return;
       console.error('get_activity_log failed:', err);
     }
   }
 
-  async function loadHomeProjects() {
+  async function loadHomeProjects(isLatest: LatestRequestCheck) {
     try {
-      homeProjects = await loadLocalProjects();
+      const nextProjects = await loadLocalProjects();
+      if (!isLatest()) return;
+      homeProjects = nextProjects;
     } catch (err) {
+      if (!isLatest()) return;
       // A missing/locked HQ tree leaves the portfolio table empty rather than
       // breaking Home — the stats simply read 0 / "—".
       console.error('get_local_projects failed:', err);
@@ -667,13 +729,26 @@
   }
 
   async function refreshRealState() {
-    await Promise.all([
-      loadWorkspaces(),
-      loadSyncStatus(),
-      loadDaemonStatus(),
-      loadActivity(),
-      loadHomeProjects(),
-    ]);
+    await refreshCoordinator.run(
+      async (isLatest) => {
+        await Promise.all([
+          loadWorkspaces(isLatest),
+          loadSyncStatus(isLatest),
+          loadDaemonStatus(isLatest),
+          loadActivity(isLatest),
+          loadHomeProjects(isLatest),
+        ]);
+      },
+      (active) => {
+        refreshingRealState = active;
+        if (!active) ready = true;
+      },
+    );
+  }
+
+  async function handleRetryHydration() {
+    if (refreshingRealState) return;
+    await refreshRealState();
   }
 
   function isSyncEnabledSlug(slug: string): boolean {
@@ -729,7 +804,7 @@
       console.error(`claim_pending_company_invite(${slug}) failed:`, err);
       flashToast(
         err instanceof Error ? err.message : String(err) || 'Could not accept invite',
-        'warn',
+        'error',
       );
       throw err;
     }
@@ -744,6 +819,16 @@
     try {
       await invoke('resolve_conflict', { path, strategy });
       homeConflicts = homeConflicts.filter((entry) => entry.path !== path);
+      syncConflictCount = Math.max(0, syncConflictCount - 1);
+      if (syncConflictCount === 0) syncConflictCompany = null;
+      if (
+        homeConflicts.length === 0 &&
+        syncConflictCount === 0 &&
+        syncState === 'conflict'
+      ) {
+        syncState = 'idle';
+        await invoke('set_tray_state', { state: 'idle' }).catch(() => undefined);
+      }
     } catch (err) {
       homeConflicts = homeConflicts.map((entry) =>
         entry.path === path
@@ -756,6 +841,21 @@
   function handleCompareConflict(path: string) {
     void invoke('open_in_editor', { path }).catch((err) =>
       console.error('open_in_editor failed:', err),
+    );
+  }
+
+  async function handleResolveAggregateConflicts() {
+    const prompt = buildPrompt({
+      kind: 'sync-conflict',
+      payload: {
+        count: syncConflictCount,
+        company: syncConflictCompany,
+      },
+    });
+    const result = await openAgentWorkflow(prompt, 'conflict resolution');
+    flashToast(
+      result.message,
+      result.outcome === 'opened' ? 'ok' : result.outcome === 'copied' ? 'neutral' : 'error',
     );
   }
 
@@ -838,8 +938,7 @@
 
   function handleSecondaryFooter() {
     if (secondarySidebar?.surface === 'library') {
-      // "Publish a pack" — the Profile tab hosts publishing today.
-      navigate({ kind: 'library', tab: 'profile' });
+      navigate({ kind: 'library', tab: 'submit' });
     }
   }
 
@@ -856,7 +955,7 @@
   }
 
   function handleAccountMenu() {
-    handleOpenSettings();
+    handleOpenSettings('general');
   }
 
   // ── Agent-handoff actions (the hq-* ACTIONS in the ⌘K palette) ─────────────
@@ -868,10 +967,12 @@
 
   type DesktopWorkflow = 'deploy' | 'share' | 'run-worker';
 
-  let actionToast = $state<{ text: string; tone: 'ok' | 'warn' } | null>(null);
+  type ActionToastTone = 'ok' | 'neutral' | 'warn' | 'error';
+
+  let actionToast = $state<{ text: string; tone: ActionToastTone } | null>(null);
   let actionToastTimer: ReturnType<typeof setTimeout> | null = null;
 
-  function flashToast(text: string, tone: 'ok' | 'warn') {
+  function flashToast(text: string, tone: ActionToastTone) {
     actionToast = { text, tone };
     if (actionToastTimer !== null) clearTimeout(actionToastTimer);
     actionToastTimer = setTimeout(() => {
@@ -926,7 +1027,10 @@
   async function runDesktopWorkflow(kind: DesktopWorkflow) {
     const { prompt, label } = desktopWorkflowPrompt(kind);
     const result = await openAgentWorkflow(prompt, label);
-    flashToast(result.message, result.ok ? 'ok' : 'warn');
+    flashToast(
+      result.message,
+      result.outcome === 'opened' ? 'ok' : result.outcome === 'copied' ? 'neutral' : 'error',
+    );
   }
 
   function handleKeydown(event: KeyboardEvent) {
@@ -954,9 +1058,7 @@
     }, 30_000);
 
     if (renderCompanies.length > 0) queueDesktopRenderAudit();
-    void refreshRealState().finally(() => {
-      if (mounted) ready = true;
-    });
+    void refreshRealState();
     // Resolve the admin gate for the Moderation nav entry (default-deny: only an
     // explicit `true` unlocks it; any error leaves it hidden). This MUST use the
     // admin gate (`desktop_alt_is_admin` → @getindigo.ai), NOT `desktop_alt_enabled`
@@ -1023,12 +1125,12 @@
     window.addEventListener('storage', hydrateMeetingStatus);
     // "Message the sharer" (and future message-person deep links): a page
     // stashed a pending conversation (lib/pendingConversation) — route to the
-    // combined Inbox, the in-desktop messaging surface now (US-008).
+    // first-class desktop Messages surface, whose shell consumes the target.
     window.addEventListener(MESSAGE_PERSON_EVENT, handleMessagePerson);
     // Rust path: ShareMainPane → open_messages_window(target) emits here.
     void listen<ConversationTarget>('messages:open-conversation', (event) => {
       if (!mounted) return;
-      openInboxWithComposeTarget(mapMessagesTarget(event.payload ?? {}));
+      requestConversation(mapMessagesTarget(event.payload ?? {}));
     }).then((unlisten) => {
       if (!mounted) {
         unlisten();
@@ -1044,7 +1146,7 @@
     } | null>('take_pending_messages_target')
       .then((pending) => {
         if (mounted && pending) {
-          openInboxWithComposeTarget(mapMessagesTarget(pending));
+          requestConversation(mapMessagesTarget(pending));
         }
       })
       .catch(() => undefined);
@@ -1198,10 +1300,43 @@
           aborted: stats.aborted || event.payload.aborted,
           lastEventAt: Date.now(),
         }));
-        if (event.payload.aborted) {
+        if (event.payload.conflicts > 0) {
+          const previousConflictCount = syncConflictCount;
+          syncConflictCount += event.payload.conflicts;
+          if (previousConflictCount === 0) {
+            syncConflictCompany = event.payload.company;
+          } else if (syncConflictCompany !== event.payload.company) {
+            syncConflictCompany = null;
+          }
+        }
+        if (event.payload.conflicts > 0 || event.payload.aborted) {
           syncState = 'conflict';
           await invoke('set_tray_state', { state: 'conflict' }).catch(() => undefined);
         }
+      }),
+      listen<{
+        company: string;
+        path: string;
+        journalEtag: string;
+        remoteEtag: string;
+        reason: string;
+      }>('sync:delete-refused-stale-etag', (event) => {
+        const refusal: HomeDeleteRefusal = {
+          company: event.payload.company,
+          path: event.payload.path,
+          reason: event.payload.reason,
+          at: Date.now(),
+        };
+        // Keep the latest event for each company/path and cap the session list.
+        // ETags stay protocol-internal and are never copied into visible state.
+        syncDeleteRefusals = [
+          ...syncDeleteRefusals.filter(
+            (entry) =>
+              entry.company !== refusal.company || entry.path !== refusal.path,
+          ),
+          refusal,
+        ].slice(-8);
+        flashToast(`Kept on remote: ${event.payload.path}`, 'warn');
       }),
       listen<{
         companiesAttempted: number;
@@ -1218,11 +1353,11 @@
           filesSkipped: syncFanoutFilesSkipped,
         };
         syncProgress = null;
-        // Don't clobber an attention state set mid-run. 'setup-needed' is added
-        // here alongside conflict/error: the runner bails on setup-needed and
-        // still fires all-complete, so without this guard the status would snap
-        // back to "Idle · all safe" and hide that the account isn't provisioned.
-        if (syncState !== 'conflict' && syncState !== 'error' && syncState !== 'setup-needed') {
+        // Don't clobber a real attention state set mid-run. setup-needed is not
+        // one: current runners emit it after personal provisioning when a new
+        // account simply has zero companies, then synthesize all-complete so
+        // the valid no-op run can settle back to idle.
+        if (syncState !== 'conflict' && syncState !== 'error') {
           syncState = event.payload.errors.length > 0 ? 'error' : 'idle';
           await invoke('set_tray_state', { state: syncState === 'idle' ? 'idle' : 'error' }).catch(
             () => undefined,
@@ -1254,6 +1389,8 @@
       listen<{ path: string; localHash: string; remoteHash: string; canAutoResolve: boolean }>(
         'sync:conflict',
         (event) => {
+          syncState = 'conflict';
+          void invoke('set_tray_state', { state: 'conflict' }).catch(() => undefined);
           if (homeConflicts.some((entry) => entry.path === event.payload.path)) return;
           homeConflicts = [
             ...homeConflicts,
@@ -1293,14 +1430,12 @@
           });
         }
       }),
-      // Brand-new account with no person entity / no companies yet: the runner
-      // emits sync:setup-needed and bails. The desktop has a purpose-built,
-      // non-alarming "Sync not set up" surface (model.ts + V4TitleBar) —
-      // surface it instead of letting all-complete fall through to "Idle · all
-      // safe", which falsely told the user the account was ready. Not an error
-      // tone (idle), matching the classic popover's "this is normal" framing.
+      // Current runners emit this only after the personal workspace is already
+      // provisioned, when a brand-new account has no company memberships yet.
+      // Keep the live run state until Rust's synthetic all-complete arrives;
+      // presenting a setup error here would strand a completely valid account.
       listen('sync:setup-needed', () => {
-        syncState = 'setup-needed';
+        syncState = 'syncing';
         syncProgress = null;
       }),
       listen<{ message: string }>('sync:auth-error', async (event) => {
@@ -1357,6 +1492,7 @@
   style={`--desktop-titlebar-height: ${V4_CHROME_LAYOUT.titleBarHeightPx}px;`}
 >
   <V4TitleBar
+    version={__APP_VERSION__}
     {syncState}
     watchedCount={watchedWorkspaceCount}
     {lastSyncLabel}
@@ -1364,16 +1500,24 @@
     fanoutDone={syncFanoutDoneCount}
     fanoutTotal={syncFanoutTotal}
     errorSummary={titleBarErrorSummary}
+    hydrationIssue={titleBarHydrationIssue}
+    hydrationRefreshing={refreshingRealState}
     errorMessage={syncErrorMessage}
     errorCompany={syncErrorCompany}
+    conflictCount={syncConflictCount}
+    conflictCompany={syncConflictCompany}
     {hqFolderPath}
+    accountInitials={accountIdentity.initials}
     {sidebarCollapsed}
     onsync={handleSyncAll}
     oncancel={handleCancelSync}
     onretry={syncState === 'auth-error' ? handleSignInAgain : handleSyncAll}
+    onretryhydration={handleRetryHydration}
+    onresolveconflicts={handleResolveAggregateConflicts}
     ontogglesidebar={handleToggleSidebar}
     oncommand={handleOpenCommandPalette}
     onaccount={handleAccountMenu}
+    onOpenSettings={handleOpenSettings}
   />
 
   <div class="desktop-body">
@@ -1393,6 +1537,7 @@
         <V4Sidebar
           {route}
           companies={renderCompanies}
+          accountLabel={accountIdentity.label}
           {cloudReachable}
           onworkspaceenabledchange={(slug, enabled) => applyWorkspaceSyncEnabled(slug, enabled)}
           onnavigate={(next) => navigate(fromV4Route(next))}
@@ -1438,6 +1583,9 @@
                 {autoSyncOn}
                 {hqVersion}
                 conflicts={homeConflicts}
+                aggregateConflictCount={syncConflictCount}
+                aggregateConflictCompany={syncConflictCompany}
+                deleteRefusals={syncDeleteRefusals}
                 {coreState}
                 {driftDismissed}
                 {driftRestoring}
@@ -1447,6 +1595,7 @@
                 onopencompany={(slug) => navigate({ kind: 'company', slug })}
                 onresolveconflict={handleResolveConflict}
                 oncompareconflict={handleCompareConflict}
+                onresolveaggregateconflicts={handleResolveAggregateConflicts}
                 onacceptinvite={handleAcceptInvite}
                 onrestoredrift={handleRestoreDrift}
                 onkeepdrift={handleKeepDrift}
@@ -1478,13 +1627,10 @@
             </div>
           {:else if route.kind === 'inbox'}
             <div class="page">
-              <InboxPage
-                composeTarget={inboxComposeTarget}
-                oncomposedismiss={() => {
-                  inboxComposeTarget = null;
-                }}
-              />
+              <InboxPage />
             </div>
+          {:else if route.kind === 'messages'}
+            <MessagesShell embedded={true} />
           {:else if route.kind === 'moderation'}
             <!-- Admin-only. Rendered only when the admin gate is satisfied
                  (default-deny); ModerationPanel ALSO re-checks + locks itself, and
@@ -1531,7 +1677,7 @@
                 onopenoperations={(destination) =>
                   navigate({ kind: 'company', slug: activeCompany.slug, tab: destination })
                 }
-                onworkspaceschanged={() => void loadWorkspaces()}
+                onworkspaceschanged={() => void refreshRealState()}
               />
             </div>
           {:else}
@@ -1567,10 +1713,10 @@
 </div>
 
 <style>
-  /* V4 ground (SPEC section 2): naked main canvas. Title bar / sidebars paint
-     their own Liquid Glass chrome (DESKTOP-001). */
+  /* Keep the shell itself clear: the main canvas and each glass chrome region
+     paint exactly one material layer. */
   .desktop-shell {
-    background: var(--v4-ground);
+    background: transparent;
   }
 
   /* Files mode main area: full-height host so the preview pane fills it and
@@ -1607,10 +1753,8 @@
     line-height: 1.4;
   }
 
-  /* Transient confirmation for the hq-* palette actions (Deploy / Share / Run a
-     worker). Status is carried by a 6px dot per the V4 convention (green =
-     opened in Claude Code, amber = prompt copied as a fallback). Auto-dismisses;
-     the × dismisses early. */
+  /* Transient confirmation for desktop actions. A copied prompt is a neutral,
+     usable fallback; amber is reserved for real safety warnings. */
   .action-toast {
     position: fixed;
     right: 16px;
@@ -1641,6 +1785,10 @@
 
   .action-toast.warn .toast-dot {
     background: var(--v4-warn);
+  }
+
+  .action-toast.error .toast-dot {
+    background: var(--v4-error);
   }
 
   .toast-text {

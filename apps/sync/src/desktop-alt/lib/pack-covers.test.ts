@@ -80,6 +80,13 @@ describe('coverFallback — deterministic branded placeholder', () => {
     expect(a.gradient).not.toBe(b.gradient);
   });
 
+  it('uses neutral desktop tokens instead of arbitrary generated hues', () => {
+    const fallback = coverFallback(listing({ slug: 'community-pack' }));
+    expect(fallback.gradient).toContain('var(--v4-text-2)');
+    expect(fallback.gradient).toContain('var(--v4-ground)');
+    expect(fallback.gradient).not.toMatch(/hsla?\(|#[0-9a-f]{3,8}/i);
+  });
+
   it('falls back to a placeholder monogram when name and slug are empty', () => {
     const fb = coverFallback(listing({ slug: '', name: '' }));
     expect(fb.monogram).toBe('?');

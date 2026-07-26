@@ -7,50 +7,51 @@ import { V4_NAV_ITEMS } from '../../src/desktop-alt/v4/model';
 import { readRepoFile } from './harness';
 
 /**
- * US-006 — US-008 combined Inbox (source contracts + route resolution).
+ * US-006 — US-008 Inbox chronology + first-class Messages (source contracts
+ * + route resolution).
  *
- * Locks the Messages + Notifications merge:
- *  - Exactly one combined primary destination (`inbox`).
- *  - Legacy `messages` / `notifications` resolve to inbox at both switch sites.
+ * Locks the restored split:
+ *  - Inbox and Messages are distinct primary destinations.
+ *  - `messages` resolves to Messages; `notifications` resolves to Inbox.
  *  - InboxPage hosts shared NotificationFeed / one-line NotificationRow with
  *    a title + unread-only header (no tabs / sync / overflow / chrome).
  *  - Message hover-expand + quick-reply + emoji react live in NotificationRow.
  */
 
-describe('US-006 / US-008: combined Inbox route', () => {
+describe('US-006 / US-008: Inbox chronology and Messages route', () => {
   const route = readRepoFile('src/desktop-alt/route.ts');
 
-  it('exactly one combined inbox destination in primary nav', () => {
+  it('has one Inbox chronology row and one full Messages row', () => {
     const inboxRows = V4_NAV_ITEMS.filter((item) => item.id === 'inbox');
+    const messagesRows = V4_NAV_ITEMS.filter((item) => item.id === 'messages');
     expect(inboxRows).toHaveLength(1);
     expect(inboxRows[0]).toEqual({ id: 'inbox', label: 'Inbox' });
-    // No separate messages / notifications primary rows.
-    expect(V4_NAV_ITEMS.map((i) => i.id)).not.toContain('messages');
+    expect(messagesRows).toEqual([{ id: 'messages', label: 'Messages' }]);
+    // Notifications are chronology content, not a third destination.
     expect(V4_NAV_ITEMS.map((i) => i.id)).not.toContain('notifications');
 
-    // Combined destination is also named in the route module's DesktopRoute union.
+    // Both destinations are named in the DesktopRoute union.
     expect(route).toContain("'inbox'");
-    // Comment is line-wrapped in route.ts — assert the US-008 merge intent
-    // without requiring a single contiguous phrase.
-    expect(route).toContain('US-008 merged');
-    expect(route).toContain('Messages + Notifications into Inbox');
+    expect(route).toContain("'messages'");
+    expect(route).toContain('Inbox is');
+    expect(route).toContain('notification chronology; Messages is the full conversation workspace');
   });
 
-  it('legacy messages / notifications → inbox at both resolution sites', () => {
+  it('messages → Messages while notifications → Inbox at both resolution sites', () => {
     // resolvePendingDesktopRoute switch
-    expect(resolvePendingDesktopRoute('messages')).toEqual({ kind: 'inbox' });
+    expect(resolvePendingDesktopRoute('messages')).toEqual({ kind: 'messages' });
     expect(resolvePendingDesktopRoute('notifications')).toEqual({ kind: 'inbox' });
     expect(resolvePendingDesktopRoute('inbox')).toEqual({ kind: 'inbox' });
 
     // fromV4Route switch
-    expect(fromV4Route({ kind: 'messages' })).toEqual({ kind: 'inbox' });
+    expect(fromV4Route({ kind: 'messages' })).toEqual({ kind: 'messages' });
     expect(fromV4Route({ kind: 'notifications' })).toEqual({ kind: 'inbox' });
     expect(fromV4Route({ kind: 'inbox' })).toEqual({ kind: 'inbox' });
 
     // Both switch sites keep the legacy case arms.
     expect(route).toContain("case 'messages':");
     expect(route).toContain("case 'notifications':");
-    expect(route).toContain("return { kind: 'inbox' }");
+    expect(route).toContain("return { kind: 'messages' }");
   });
 });
 
@@ -117,5 +118,17 @@ describe('US-006 / US-008: NotificationRow message hover-expand', () => {
     expect(feed).toContain('import NotificationRow from \'./NotificationRow.svelte\'');
     expect(feed).toContain('onreply={(text) => void replyDm(it, text)}');
     expect(feed).toContain('onreact={(emoji) => void reactDm(it, emoji)}');
+  });
+
+  it('does not nest action buttons inside a focusable role=button row', () => {
+    expect(row).not.toContain("role={interactive ? 'button' : undefined}");
+    expect(row).not.toContain('tabindex={interactive ? 0 : undefined}');
+    expect(row).toContain('role="group"');
+    expect(row).toContain('class="nr-primary-action"');
+    expect(row).toContain('aria-label={primaryActionLabel}');
+    expect(row).toMatch(/\.nr-actions\s*\{[\s\S]*?display:\s*inline-flex;[\s\S]*?opacity:\s*0;/);
+    expect(row).toMatch(
+      /\.nr:not\(\.nr-message\):focus-within \.nr-actions[\s\S]*?opacity:\s*1;/,
+    );
   });
 });

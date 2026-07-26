@@ -55,18 +55,18 @@ const workspaces: Workspace[] = [
 ];
 
 describe('US-007: sidebar has no Home / Mission Control / Companies rows and lands on a company', () => {
-  it('renders only Inbox / Meetings / Marketplace / Library / Files nav rows', () => {
-    // US-008 later merged Messages + Notifications into Inbox — the US-007
-    // invariants (no Home/Mission Control/Companies rows, no dead hotkey slots)
-    // still hold with the renumbered map.
+  it('renders Inbox / Messages / Meetings / Marketplace / Library / Files nav rows', () => {
+    // The restored Messages workspace is first-class; the US-007 invariants
+    // (no Home/Mission Control/Companies rows, no dead hotkey slots) still hold.
     expect(V4_NAV_ITEMS.map((item) => item.label)).toEqual([
       'Inbox',
+      'Messages',
       'Meetings',
       'Marketplace',
       'Library',
       'Files',
     ]);
-    for (const gone of ['Home', 'Mission Control', 'Companies', 'Messages', 'Notifications']) {
+    for (const gone of ['Home', 'Mission Control', 'Companies', 'Notifications']) {
       expect(V4_NAV_ITEMS.some((item) => item.label === gone)).toBe(false);
     }
   });
@@ -137,7 +137,7 @@ describe('US-007: last-visited company landing (persisted)', () => {
     // list arrives, without clobbering an explicit navigation.
     expect(desktopApp).toContain('!userNavigated && !landingResolved');
     expect(desktopApp).toContain(
-      'getDesktopLandingRoute(result.workspaces, initialLastCompanySlug)',
+      'getDesktopLandingRoute(nextWorkspaces, initialLastCompanySlug)',
     );
   });
 });

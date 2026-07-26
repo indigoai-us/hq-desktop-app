@@ -125,10 +125,10 @@
 
   .v4-digest-empty {
     padding: 14px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-card);
-    background: var(--v4-raised);
-    box-shadow: var(--v4-shadow-card);
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
   }
 
   .v4-digest-empty p {
@@ -139,18 +139,22 @@
 
   .v4-digest-list {
     display: grid;
-    gap: var(--v4-space-2);
+    gap: 0;
     margin: 0;
     padding: 0;
     list-style: none;
   }
 
   .v4-digest-group {
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-card);
-    background: var(--v4-raised);
-    box-shadow: var(--v4-shadow-card);
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
     overflow: hidden;
+  }
+
+  .v4-digest-group + .v4-digest-group {
+    border-top: 1px solid var(--v4-hairline);
   }
 
   .v4-digest-head {

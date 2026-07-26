@@ -306,7 +306,7 @@
     flex: 1 1 auto;
     min-height: 0;
     min-width: 0;
-    border: 1px solid var(--v4-hairline);
+    border: 0;
     border-radius: 0;
     background: transparent;
     overflow: hidden;
@@ -355,9 +355,10 @@
   }
 
   .ops-nav-item.is-selected {
-    background: var(--v4-active-row);
+    background: transparent;
+    box-shadow: inset 0 -1px 0 var(--v4-hairline);
     color: var(--v4-text-1);
-    border-radius: 6px;
+    border-radius: 0;
   }
 
   .ops-nav-item:focus-visible,
@@ -454,7 +455,8 @@
   .ops-settings-list {
     display: grid;
     min-width: 0;
-    border: 1px solid var(--v4-hairline);
+    border: 0;
+    border-top: 1px solid var(--v4-hairline);
     border-radius: 0;
     background: transparent;
     overflow: hidden;

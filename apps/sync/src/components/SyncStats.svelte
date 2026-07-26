@@ -177,7 +177,7 @@
   .stats-error {
     /* Snapped to canonical 11px (v0.1.85) — was 0.7rem (11.2px). */
     font-size: 0.6875rem;
-    color: #a0a0b0;
+    color: var(--popover-text-muted, #a0a0a0);
     margin: 0;
     text-align: center;
   }
@@ -192,11 +192,11 @@
 
   .stat-icon {
     flex-shrink: 0;
-    color: #a0a0b0;
+    color: var(--popover-text-muted, #a0a0a0);
   }
 
   .stat-label {
-    color: #a0a0b0;
+    color: var(--popover-text-muted, #a0a0a0);
   }
 
   .stat-value {
@@ -219,19 +219,19 @@
 
   @media (prefers-color-scheme: light) {
     .stat-icon {
-      color: #6b7280;
+      color: var(--popover-text-muted, #6c6c6c);
     }
 
     .stat-label {
-      color: #6b7280;
+      color: var(--popover-text-muted, #6c6c6c);
     }
 
     .stat-value {
-      color: #111113;
+      color: #111111;
     }
 
     .stats-error {
-      color: #6b7280;
+      color: var(--popover-text-muted, #6c6c6c);
     }
   }
 </style>

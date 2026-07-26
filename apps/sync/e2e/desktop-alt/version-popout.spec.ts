@@ -9,24 +9,24 @@ import { readRepoFile } from './harness';
  */
 
 describe('desktop-alt version pop-out (US-017)', () => {
-  it('status bar component still hosts the version pop-out (unmounted from DESKTOP-001 shell)', () => {
+  it('compact titlebar hosts the version pop-out without restoring the bottom status bar', () => {
     const statusBar = readRepoFile('src/desktop-alt/DesktopStatusBar.svelte');
     const desktopApp = readRepoFile('src/desktop-alt/DesktopApp.svelte');
+    const titleBar = readRepoFile('src/desktop-alt/v4/V4TitleBar.svelte');
 
+    // The retired footer keeps its implementation for older entry points, but
+    // the mounted titlebar must expose the same updater in the redesign.
     expect(statusBar).toContain("import VersionPopout from './components/VersionPopout.svelte'");
-    expect(statusBar).toContain('data-testid="version-label"');
-    expect(statusBar).toContain('aria-expanded={versionOpen}');
-    expect(statusBar).toContain('<VersionPopout');
-    expect(statusBar).toContain('onOpenSettings?: () => void');
-    // Anchored upward above the bottom footer, right-aligned.
-    expect(statusBar).toContain('position: relative');
-    // Click-away + Escape while open.
-    expect(statusBar).toContain("window.addEventListener('mousedown'");
-    expect(statusBar).toContain("event.key === 'Escape'");
-
-    // DESKTOP-001 removed the bottom status bar from the shell; account/settings
-    // moved into the titlebar. Version popout remains implemented on the bar.
     expect(desktopApp).not.toContain('<DesktopStatusBar');
+    expect(titleBar).toContain("import VersionPopout from '../components/VersionPopout.svelte'");
+    expect(titleBar).toContain('data-testid="version-label"');
+    expect(titleBar).toContain('aria-expanded={versionOpen}');
+    expect(titleBar).toContain('<VersionPopout');
+    expect(titleBar).toContain("onOpenSettings?: (tab?: SettingsTab) => void");
+    expect(titleBar).toContain('placement="below"');
+    expect(titleBar).toContain("window.addEventListener('mousedown'");
+    expect(titleBar).toContain("event.key === 'Escape'");
+    expect(desktopApp).toContain('version={__APP_VERSION__}');
     expect(desktopApp).toContain('onaccount={handleAccountMenu}');
   });
 
@@ -60,20 +60,48 @@ describe('desktop-alt version pop-out (US-017)', () => {
     expect(popout).toContain('Restart to apply');
 
     const harness = readRepoFile('dev-harness/mocks/core.ts');
-    expect(harness).toContain('install_update: () => null');
+    expect(harness).toContain('install_update: () => {');
+    expect(harness).toContain("harnessScenario() === 'settings-errors'");
   });
 
-  it('Automatic updates toggle persists via full-prefs save_settings and settings link calls onOpenSettings', () => {
+  it('Automatic updates persists via the shared serialized patch queue and opens Updates', () => {
     const popout = readRepoFile('src/desktop-alt/components/VersionPopout.svelte');
+    const desktopApp = readRepoFile('src/desktop-alt/DesktopApp.svelte');
 
     expect(popout).toContain('data-testid="version-popout-auto-toggle"');
     expect(popout).toContain('data-testid="version-popout-settings-link"');
-    expect(popout).toContain("'get_settings'");
-    expect(popout).toContain("'save_settings'");
     expect(popout).toContain('autoUpdate');
-    // Full prefs object — never a partial save.
-    expect(popout).toContain('prefs: { ...prefs, autoUpdate: next }');
-    expect(popout).toContain('onOpenSettings');
+    expect(popout).toContain(
+      "import { updateSettings } from '../../lib/settings-mutations'",
+    );
+    expect(popout).toContain('await updateSettings({ autoUpdate: next })');
+    expect(popout).not.toMatch(/invoke\(['"]save_settings['"]/);
+    expect(popout).toContain("onOpenSettings('updates')");
+    expect(desktopApp).toContain('function handleOpenSettings(tab?: SettingsTab)');
     expect(popout).toContain('All update settings');
+  });
+
+  it('Settings can install and restart when its app update check finds a newer version', () => {
+    const settings = readRepoFile('src/desktop-alt/pages/SettingsPage.svelte');
+
+    expect(settings).toContain("let appUpdate = $state<UpdateInfo | null>(null)");
+    expect(settings).toContain("await invoke('install_update')");
+    expect(settings).toContain('data-testid="settings-install-app-update"');
+    expect(settings).toContain("appUpdate ? `v${appUpdate.version} ready` : 'Background checks run every 6 hours'");
+    expect(settings).toContain("appUpdateInstalling ? 'Installing…' : 'Restart to Update'");
+  });
+
+  it('the preview harness exposes a deterministic update-available scenario', () => {
+    const harness = readRepoFile('dev-harness/mocks/core.ts');
+
+    expect(harness).toContain('const HARNESS_UPDATE');
+    expect(harness).toContain('function hasSettingsUpdates(');
+    expect(harness).toContain("scenario === 'update-available'");
+    expect(harness).toContain(
+      'check_for_updates: () => (hasSettingsUpdates() ? HARNESS_UPDATE : null)',
+    );
+    expect(harness).toContain(
+      'get_pending_update: () => (hasSettingsUpdates() ? HARNESS_UPDATE : null)',
+    );
   });
 });

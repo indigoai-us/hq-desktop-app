@@ -179,7 +179,7 @@
       <span class="ls-count">{totalActive} across {typeCount} {typeCount === 1 ? 'type' : 'types'}</span>
       <span class="ls-group-ctl" aria-hidden="true">Group: Type ▾</span>
       <span class="ls-besteffort" title="Liveness is sampled from on-disk activity, not a live connection.">
-        <span class="ls-dot warn" aria-hidden="true"></span>
+        <span class="ls-dot idle" aria-hidden="true"></span>
         best-effort · {POLL_CADENCE_SECONDS}s
       </span>
     </div>
@@ -320,10 +320,10 @@
   }
 
   .ls-group-ctl {
-    padding: 2px 8px;
-    border: 1px solid var(--v4-control-border);
-    border-radius: var(--v4-radius-button);
-    background: var(--v4-control-faint);
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
     color: var(--v4-text-2);
     font-size: 11px;
   }
@@ -332,10 +332,11 @@
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    padding: 2px 8px;
-    border-radius: 999px;
-    background: color-mix(in srgb, var(--v4-warn) 12%, transparent);
-    color: var(--v4-warn);
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: var(--v4-text-3);
     font-size: 11px;
   }
 
@@ -351,7 +352,9 @@
   .ls-dot.running {
     background: var(--v4-ok);
   }
-  .ls-dot.awaiting_input,
+  .ls-dot.awaiting_input {
+    background: var(--v4-text-2);
+  }
   .ls-dot.warn {
     background: var(--v4-warn);
   }
@@ -366,7 +369,7 @@
   .ls-groups {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 0;
     overflow-y: auto;
     min-height: 0;
   }
@@ -376,7 +379,11 @@
     flex-direction: column;
   }
 
-  /* Group header — raised, 8px radius, 36px tall, caret + name + chip + pips. */
+  .ls-group + .ls-group {
+    border-top: 1px solid var(--v4-hairline);
+  }
+
+  /* Open accordion header — caret + name + chip + pips. */
   .ls-group-head {
     display: flex;
     align-items: center;
@@ -384,9 +391,9 @@
     width: 100%;
     height: 36px;
     padding: 8px 12px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-field);
-    background: var(--v4-raised);
+    border: 0;
+    border-radius: 0;
+    background: transparent;
     color: var(--v4-text-1);
     font: inherit;
     text-align: left;
@@ -564,30 +571,30 @@
     background: var(--v4-inset);
   }
 
-  /* ── Outpost status card (US-011) ────────────────────────────────────────
-     Box-level card heading the outpost group: raised surface, 10px radius,
-     hairline tinted by state (green up / red down). design.md "Outpost status
-     card (US-011)". */
+  /* ── Outpost status summary (US-011) ─────────────────────────────────────
+     Infrastructure status sits in the normal flow; compact glyphs and text
+     communicate state without another card around the group. */
   .ls-outpost-card {
     display: flex;
     flex-direction: column;
     gap: 10px;
-    padding: 12px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-card);
-    background: var(--v4-raised);
-    box-shadow: var(--v4-shadow-card);
+    margin: 8px 0;
+    padding: 12px 0;
+    border: 0;
+    border-top: 1px solid var(--v4-hairline);
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
   }
 
-  /* Up = green-tinted card; down = red card. Tints reference the status tokens
-     so light/reduced-transparency branches still resolve. */
+  /* The card stays neutral; state is carried by the glyph, pill, and metrics. */
   .ls-outpost-card.up {
-    border-color: color-mix(in srgb, var(--v4-ok) 18%, var(--v4-hairline));
-    background: color-mix(in srgb, var(--v4-ok) 5%, var(--v4-raised));
+    border-color: var(--v4-hairline);
+    background: transparent;
   }
   .ls-outpost-card.down {
-    border-color: color-mix(in srgb, var(--v4-error) 22%, var(--v4-hairline));
-    background: color-mix(in srgb, var(--v4-error) 6%, var(--v4-raised));
+    border-color: var(--v4-hairline);
+    background: transparent;
   }
 
   .ls-outpost-main {
@@ -675,14 +682,16 @@
     color: var(--v4-error);
   }
 
-  /* Down-state stale-timeout note: amber dot + message. */
+  /* Down-state stale-timeout note: compact dot + open message row. */
   .ls-outpost-note {
     display: flex;
     align-items: center;
     gap: 6px;
-    padding: 6px 8px;
-    border-radius: var(--v4-radius-field);
-    background: color-mix(in srgb, var(--v4-warn) 10%, transparent);
+    padding: 6px 0;
+    border: 0;
+    border-top: 1px solid var(--v4-rowline);
+    border-radius: 0;
+    background: transparent;
     color: var(--v4-text-2);
     font-size: 11px;
     line-height: 1.4;

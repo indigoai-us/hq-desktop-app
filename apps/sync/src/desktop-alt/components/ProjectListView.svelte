@@ -18,6 +18,7 @@
     type ProjectGroupMode,
     type StatusFilter,
   } from '../lib/projects-model';
+  import { projectIdentity } from '../lib/local-projects';
   import ProjectRow from './ProjectRow.svelte';
 
   interface Props {
@@ -172,7 +173,7 @@
 
           {#if !collapsed[section.key]}
             <div class="section-rows">
-              {#each section.projects as project (`${project.company}:${project.id}`)}
+              {#each section.projects as project (projectIdentity(project))}
                 <ProjectRow
                   {project}
                   showCompany={groupMode !== 'company'}
@@ -237,54 +238,17 @@
     display: flex;
     flex-wrap: wrap;
     gap: var(--space-2);
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
   }
 
   .status-pill {
     padding: var(--space-1) var(--space-3);
-    border: 1px solid transparent;
-    border-radius: 999px;
-    background: var(--row-hover);
-    color: var(--muted);
-    font: inherit;
-    font-size: var(--text-base);
-    font-weight: 600;
-    cursor: pointer;
-    transition:
-      background 140ms ease,
-      color 140ms ease,
-      border-color 140ms ease;
-  }
-
-  .status-pill:hover {
-    color: var(--fg);
-    background: var(--row-active);
-  }
-
-  .status-pill.is-active {
-    border-color: var(--border-strong);
-    background: var(--row-active);
-    color: var(--fg);
-  }
-
-  .status-pill:focus-visible {
-    outline: 2px solid var(--blue);
-    outline-offset: 2px;
-  }
-
-  .group-toggle {
-    display: inline-flex;
-    align-self: flex-start;
-    gap: 2px;
-    padding: 2px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--row-active);
-  }
-
-  .group-segment {
-    padding: var(--space-1) var(--space-3);
     border: 0;
-    border-radius: calc(var(--radius-sm) - 2px);
+    border-bottom: 1px solid transparent;
+    border-radius: 0;
     background: transparent;
     color: var(--muted);
     font: inherit;
@@ -292,30 +256,75 @@
     font-weight: 600;
     cursor: pointer;
     transition:
-      background 140ms ease,
+      color 140ms ease,
+      border-color 140ms ease;
+  }
+
+  .status-pill:hover {
+    border-bottom-color: var(--border);
+    color: var(--fg);
+  }
+
+  .status-pill.is-active {
+    border-bottom-color: var(--border-strong);
+    background: transparent;
+    color: var(--fg);
+  }
+
+  .status-pill:focus-visible {
+    outline: 2px solid var(--border-strong);
+    outline-offset: 2px;
+  }
+
+  .group-toggle {
+    display: inline-flex;
+    align-self: flex-start;
+    gap: var(--space-2);
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+  }
+
+  .group-segment {
+    padding: var(--space-1) var(--space-3);
+    border: 0;
+    border-bottom: 1px solid transparent;
+    border-radius: 0;
+    background: transparent;
+    color: var(--muted);
+    font: inherit;
+    font-size: var(--text-base);
+    font-weight: 600;
+    cursor: pointer;
+    transition:
+      border-color 140ms ease,
       color 140ms ease;
   }
 
   .group-segment:hover {
+    border-bottom-color: var(--border);
     color: var(--fg);
   }
 
   .group-segment.is-active {
-    background: var(--popover-primary);
-    color: var(--popover-primary-text);
+    border-bottom-color: var(--border-strong);
+    background: transparent;
+    color: var(--fg);
   }
 
   .group-segment:focus-visible {
-    outline: 2px solid var(--blue);
+    outline: 2px solid var(--border-strong);
     outline-offset: 2px;
   }
 
   .list-error {
-    padding: var(--space-3);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--row-active);
-    color: var(--amber);
+    padding: var(--space-3) 0;
+    border: 0;
+    border-top: 1px solid var(--border);
+    border-radius: 0;
+    background: transparent;
+    color: var(--v4-error);
     font-size: var(--text-base);
   }
 
@@ -336,7 +345,7 @@
     width: 100%;
     padding: var(--space-2);
     border: 0;
-    border-radius: var(--radius-sm);
+    border-radius: 0;
     background: transparent;
     text-align: left;
     cursor: pointer;
@@ -348,7 +357,7 @@
   }
 
   .section-header:focus-visible {
-    outline: 2px solid var(--blue);
+    outline: 2px solid var(--border-strong);
     outline-offset: 2px;
   }
 
@@ -372,9 +381,9 @@
   }
 
   .section-count {
-    padding: 0 6px;
-    border-radius: var(--radius-sm);
-    background: var(--row-active);
+    padding: 0;
+    border-radius: 0;
+    background: transparent;
     color: var(--muted-3);
     font-size: var(--text-base);
     font-variant-numeric: tabular-nums;
@@ -402,9 +411,12 @@
 
   .skeleton-row {
     height: 64px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-md);
-    background: var(--row-active);
+    border: 0;
+    border-bottom: 1px solid var(--border);
+    border-radius: 0;
+    background:
+      linear-gradient(var(--row-active), var(--row-active)) 0 16px / 42% 10px no-repeat,
+      linear-gradient(var(--row-active), var(--row-active)) 0 36px / 68% 8px no-repeat;
     animation: skeleton-pulse 1.3s ease-in-out infinite;
   }
 
@@ -431,9 +443,11 @@
   .link-button {
     border: 0;
     background: transparent;
-    color: var(--blue);
+    color: var(--fg);
     font: inherit;
     font-size: var(--text-base);
+    text-decoration: underline;
+    text-underline-offset: 2px;
     cursor: pointer;
   }
 

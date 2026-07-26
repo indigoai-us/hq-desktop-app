@@ -251,15 +251,15 @@
     line-height: 1.25;
   }
 
-  /* Discrete live monitor — rounded is intentional for object identity. */
+  /* Sparkline is summary content, not a separate card. */
   .digest-monitor {
     display: inline-flex;
     flex: 0 0 auto;
     align-items: center;
-    padding: 4px 6px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-button);
-    background: var(--v4-inset);
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
   }
 
   .digest-list {

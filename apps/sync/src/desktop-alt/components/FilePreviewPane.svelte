@@ -404,7 +404,7 @@
   }
 
   .reveal-btn.error {
-    color: var(--v4-warn, var(--amber));
+    color: var(--v4-error, var(--red));
     opacity: 0.9;
   }
 
@@ -447,7 +447,7 @@
     width: auto;
     height: auto;
     object-fit: contain;
-    border-radius: var(--v4-radius-button, var(--radius-md, 8px));
+    border-radius: var(--v4-radius-structure);
     border: 1px solid var(--v4-hairline, var(--border));
     background: var(--v4-inset, var(--bg-subtle, transparent));
   }
@@ -457,7 +457,7 @@
     height: 100%;
     min-height: 420px;
     border: 1px solid var(--v4-hairline, var(--border));
-    border-radius: var(--v4-radius-button, var(--radius-md, 8px));
+    border-radius: var(--v4-radius-structure);
     background: var(--v4-inset, var(--bg-subtle, transparent));
   }
 
@@ -564,9 +564,31 @@
     margin: var(--space-1, 4px) 0;
   }
 
+  .markdown-body :global(.task-list) {
+    padding-left: 0;
+    list-style: none;
+  }
+
+  .markdown-body :global(.task-list-item) {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-2, 6px);
+  }
+
+  .markdown-body :global(.task-list-item input) {
+    flex: 0 0 auto;
+    margin: 0.3em 0 0;
+    accent-color: var(--v4-text-2, var(--muted));
+  }
+
+  .markdown-body :global(.task-list-content) {
+    min-width: 0;
+  }
+
   .markdown-body :global(a) {
-    color: var(--v4-unread, var(--blue));
-    text-decoration: none;
+    color: var(--v4-text-1, var(--fg));
+    text-decoration-color: var(--v4-control-border, var(--border-strong));
+    text-underline-offset: 0.14em;
   }
 
   .markdown-body :global(a:hover) {
@@ -587,7 +609,7 @@
     padding: var(--space-3, 10px);
     overflow-x: auto;
     border: 1px solid var(--v4-hairline, var(--border));
-    border-radius: var(--v4-radius-button, var(--radius-md, 8px));
+    border-radius: 0;
     background: var(--v4-inset, var(--bg-subtle));
   }
 
@@ -612,6 +634,74 @@
   .markdown-body :global(strong) {
     color: var(--v4-text-1, var(--fg));
     font-weight: 600;
+  }
+
+  .markdown-body :global(del) {
+    color: var(--v4-text-3, var(--muted-3));
+  }
+
+  .markdown-body :global(img) {
+    display: block;
+    max-width: 100%;
+    height: auto;
+    margin: var(--space-3, 10px) 0;
+  }
+
+  .markdown-body :global(.markdown-table-scroll) {
+    max-width: 100%;
+    margin: var(--space-3, 10px) 0;
+    overflow-x: auto;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    scrollbar-color: var(--v4-control-border, var(--border-strong)) transparent;
+  }
+
+  .markdown-body :global(table) {
+    width: 100%;
+    min-width: max-content;
+    border-spacing: 0;
+    border-collapse: collapse;
+    color: var(--v4-text-2, var(--muted));
+    font-size: var(--type-secondary, var(--text-sm, var(--text-base)));
+    line-height: 1.45;
+  }
+
+  .markdown-body :global(th),
+  .markdown-body :global(td) {
+    padding: var(--space-2, 6px) var(--space-3, 10px);
+    border-right: 1px solid var(--v4-hairline, var(--border));
+    border-bottom: 1px solid var(--v4-hairline, var(--border));
+    text-align: left;
+    vertical-align: top;
+  }
+
+  .markdown-body :global(th:first-child),
+  .markdown-body :global(td:first-child) {
+    padding-left: 0;
+  }
+
+  .markdown-body :global(th:last-child),
+  .markdown-body :global(td:last-child) {
+    padding-right: 0;
+    border-right: 0;
+  }
+
+  .markdown-body :global(tbody tr:last-child td) {
+    border-bottom: 0;
+  }
+
+  .markdown-body :global(th) {
+    color: var(--v4-text-1, var(--fg));
+    font-weight: 600;
+  }
+
+  .markdown-body :global(.markdown-align-center) {
+    text-align: center;
+  }
+
+  .markdown-body :global(.markdown-align-right) {
+    text-align: right;
   }
 
   @keyframes preview-skeleton {

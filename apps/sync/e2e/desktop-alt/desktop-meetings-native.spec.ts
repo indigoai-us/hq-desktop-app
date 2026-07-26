@@ -91,11 +91,11 @@ describe('Meetings native: compact IA and preserved actions', () => {
 
   it('uses the five type roles and 3px title/meta slots', () => {
     expect(V4_TYPE_SCALE).toEqual({
-      metadata: 10,
-      secondary: 11,
-      body: 12,
+      metadata: 13,
+      secondary: 13,
+      body: 14,
       section: 14,
-      detail: 18,
+      detail: 14,
     });
     expect(V4_ROW_STACK_GAP_PX).toBe(3);
 
@@ -167,7 +167,8 @@ describe('Meetings native: compact IA and preserved actions', () => {
     // Errors use semantic tokens, not alarm chrome.
     expect(page).toContain('class="error-pill"');
     expect(page).toContain('Refresh issue');
-    expect(page).toMatch(/\.error-pill\s*\{[\s\S]*?color:\s*var\(--v4-warn\)/);
+    expect(page).toMatch(/\.error-pill\s*\{[\s\S]*?color:\s*var\(--v4-error\)/);
+    expect(page).not.toMatch(/\.error-pill\s*\{[\s\S]*?color:\s*var\(--v4-warn\)/);
     expect(live).toMatch(/\.live-error\s*\{[\s\S]*?color:\s*var\(--v4-error\)/);
     expect(page).not.toContain('🚨');
     expect(page).not.toContain('alarm');

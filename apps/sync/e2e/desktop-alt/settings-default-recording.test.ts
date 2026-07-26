@@ -126,6 +126,7 @@ vi.mock('@tauri-apps/api/app', () => ({
 
 vi.mock('@tauri-apps/api/event', () => ({
   emit: vi.fn(async () => {}),
+  listen: vi.fn(async () => () => {}),
 }));
 
 vi.mock('@tauri-apps/plugin-shell', () => ({

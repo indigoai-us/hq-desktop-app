@@ -163,7 +163,9 @@ describe('US-003: Notification takeover with queue-on-occlusion', () => {
       // Frost wrapper present around each NotificationRow
       expect(frostRows[0]?.querySelector('[data-testid="notification-row"]')).toBeTruthy();
       expect(widgetSource).toMatch(/\.frost\s*\{/);
-      expect(widgetSource).toMatch(/backdrop-filter:\s*blur/);
+      expect(widgetSource).toMatch(
+        /backdrop-filter:\s*var\(--glass-filter,\s*blur\(28px\)\s*saturate\(0%\)\)/,
+      );
     });
   });
 

@@ -80,6 +80,56 @@ export function toProject(wire: LocalProjectWire): Project {
   };
 }
 
+/**
+ * Stable frontend identity for project rows.
+ *
+ * Project ids distinguish board entries even when two entries point at the same
+ * PRD, while the PRD path distinguishes legacy entries that reuse an id. Use
+ * the combined company + id + path identity for keyed lists and frontend caches
+ * rather than the display-oriented `project.id`.
+ */
+export function projectIdentity(
+  project: Pick<Project, 'company' | 'id' | 'prdPath'>,
+): string {
+  const company = project.company.trim();
+  const projectId = project.id.trim();
+  const prdPath = project.prdPath
+    .trim()
+    .replaceAll('\\', '/')
+    .replace(/\/+/g, '/')
+    .replace(/^\.\//, '');
+  return prdPath
+    ? `${company}:id:${projectId}:path:${prdPath}`
+    : `${company}:id:${projectId}`;
+}
+
+/** Collapse exact duplicate scan results while preserving distinct board entries. */
+export function dedupeProjects(projects: Project[]): Project[] {
+  const seen = new Set<string>();
+  return projects.filter((project) => {
+    const identity = projectIdentity(project);
+    if (seen.has(identity)) return false;
+    seen.add(identity);
+    return true;
+  });
+}
+
+/**
+ * Apply a status result only when it belongs to the project still being shown.
+ *
+ * Returning the original object for a non-match lets async callers cheaply
+ * ignore a late completion from another project that happens to reuse the id.
+ */
+export function withProjectStatus(
+  project: Project,
+  changedIdentity: string,
+  status: string,
+): Project {
+  return projectIdentity(project) === changedIdentity
+    ? { ...project, status }
+    : project;
+}
+
 /** Map one `LocalStory` wire object into the US-004 `Story` shape. */
 export function toStory(wire: LocalStoryWire): Story {
   return {
@@ -99,8 +149,9 @@ export function toStory(wire: LocalStoryWire): Story {
 
 /** Load + normalise every local project across companies. */
 export async function loadLocalProjects(): Promise<Project[]> {
-  const wire = await invoke<LocalProjectWire[]>('get_local_projects');
-  return (wire ?? []).map(toProject);
+  const response = await invoke<unknown>('get_local_projects');
+  const wire = Array.isArray(response) ? (response as LocalProjectWire[]) : [];
+  return dedupeProjects(wire.map(toProject));
 }
 
 // ---------------------------------------------------------------------------
@@ -223,17 +274,19 @@ export async function loadLocalProjectReadme(prdPath: string): Promise<string | 
 
 /**
  * Persist a project's status to its company `board.json` (US-010). The Rust
- * command params are `board_path` / `project_id` / `status`; Tauri v2 exposes
- * them camelCased. Rejects (throws) on a path-escape, a non-board.json target,
- * an unknown project id, or any write failure — the caller treats a throw as the
- * optimistic-update rollback signal.
+ * command params are `board_path` / `project_id` / `prd_path` / `status`; Tauri
+ * v2 exposes them camelCased. The PRD path disambiguates legacy same-ID board
+ * entries. Rejects (throws) on a path escape, a non-board.json target, an
+ * unknown/ambiguous project identity, or any write failure — the caller treats
+ * a throw as the optimistic-update rollback signal.
  */
 export async function saveLocalProjectStatus(
   boardPath: string,
   projectId: string,
+  prdPath: string | null,
   status: string,
 ): Promise<void> {
-  await invoke('set_local_project_status', { boardPath, projectId, status });
+  await invoke('set_local_project_status', { boardPath, projectId, prdPath, status });
 }
 
 /**
