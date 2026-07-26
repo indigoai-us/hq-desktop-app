@@ -288,14 +288,13 @@
 /// `~6.14.15` -> `~6.14.18`: floor the pin at hq-cloud 6.14.18, which
 /// ships the DEV-1974 core-mirror convergence fix (hq-cloud#218).
 ///
-/// `~6.14.18` -> `~6.14.19`: floor the pin at hq-cloud 6.14.19. It wires
-/// watcher delete intent through so watched local deletes/renames propagate
-/// instead of resurrecting (hq-cloud#227); also picks up Windows
-/// symlink-to-junction materialization (hq-cloud#219) and qmd-reindex
-/// serialization/quarantine (hq-cloud#225). Raising the tilde floor changes
-/// the npx cache key so an existing `~6.14.18` resolution cannot keep serving
-/// 6.14.18.
-pub const HQ_CLOUD_VERSION: &str = "~6.14.19";
+/// `~6.14.19` -> `~6.14.24`: floor the pin at hq-cloud 6.14.24. It honors
+/// `HQ_SYNC_SKIP_COMPANIES` in fanout/watch (hq-cloud#241) so desktop
+/// per-workspace Off toggles actually pause sync and event-push; also keeps
+/// the prior delete-intent / Windows materialization / qmd-reindex floors.
+/// Raising the tilde floor changes the npx cache key so an existing
+/// `~6.14.19` resolution cannot keep serving 6.14.19.
+pub const HQ_CLOUD_VERSION: &str = "~6.14.24";
 
 /// Package name for the runner. Used by both the spawn site below and the
 /// startup prewarm. Paired with `HQ_CLOUD_VERSION` to form the full
