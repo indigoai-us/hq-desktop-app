@@ -64,10 +64,11 @@ describe('US-001 V4 sidebar active-state mapping', () => {
     }
   });
 
-  it('renders nav rows in the US-008 order Inbox/Meetings/Marketplace/Library/Files', () => {
+  it('renders nav rows in order Inbox/Rooms/Meetings/Marketplace/Library/Files (hq-rooms)', () => {
     const model = getV4SidebarModel({ kind: 'inbox' }, workspaces);
     expect(model.nav.map((row) => row.label)).toEqual([
       'Inbox',
+      'Rooms',
       'Meetings',
       'Marketplace',
       'Library',

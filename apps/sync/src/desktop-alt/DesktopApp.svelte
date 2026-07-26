@@ -14,6 +14,7 @@
   import LibraryPage from './pages/LibraryPage.svelte';
   import MarketplacePage from './pages/MarketplacePage.svelte';
   import InboxPage from './pages/InboxPage.svelte';
+  import RoomsPage from './pages/RoomsPage.svelte';
   import CompanyPage from './pages/CompanyPage.svelte';
   import SettingsPage from './pages/SettingsPage.svelte';
   import ModerationPanel from './panels/ModerationPanel.svelte';
@@ -317,24 +318,31 @@
       action: () => navigate({ kind: 'inbox' }),
     },
     {
+      id: 'command-go-rooms',
+      label: 'Go to Rooms',
+      detail: 'Shared channels where your team and agents work together',
+      shortcut: '⌘2',
+      action: () => navigate({ kind: 'rooms' }),
+    },
+    {
       id: 'command-go-meetings',
       label: 'Go to Meetings',
       detail: 'Show calendar and recordings',
-      shortcut: '⌘2',
+      shortcut: '⌘3',
       action: () => navigate({ kind: 'meetings' }),
     },
     {
       id: 'command-go-marketplace',
       label: 'Go to Marketplace',
       detail: 'Discover and install skills and workers',
-      shortcut: '⌘3',
+      shortcut: '⌘4',
       action: () => navigate({ kind: 'marketplace' }),
     },
     {
       id: 'command-go-library',
       label: 'Go to Library',
       detail: 'Skills, workers, and installed packs',
-      shortcut: '⌘4',
+      shortcut: '⌘5',
       action: () => navigate({ kind: 'library' }),
     },
     ...LIBRARY_SECTIONS.filter((section) => section.id !== DEFAULT_LIBRARY_TAB).map(
@@ -1381,6 +1389,10 @@
             <div class="page">
               <InboxPage />
             </div>
+          {:else if route.kind === 'rooms'}
+            <!-- Full-bleed like Files: the shell owns its own columns and
+                 scrolling, so no .page padding/scroll wrapper. -->
+            <RoomsPage />
           {:else if route.kind === 'moderation'}
             <!-- Admin-only. Rendered only when the admin gate is satisfied
                  (default-deny); ModerationPanel ALSO re-checks + locks itself, and

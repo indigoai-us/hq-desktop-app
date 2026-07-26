@@ -8,8 +8,14 @@
       html, body {
         margin: 0;
         padding: 0;
+        /* MessagesShell sizes with 100% (it also mounts nested in the desktop
+           shell), so the harness must give the chain a real height. */
+        height: 100%;
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
           Oxygen, Ubuntu, Cantarell, sans-serif;
+      }
+      #app {
+        height: 100%;
       }
     </style>
   </head>
