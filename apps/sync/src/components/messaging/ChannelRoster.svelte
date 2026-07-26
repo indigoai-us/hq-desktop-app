@@ -198,6 +198,9 @@
                 <!-- Agents are members here, not tooling: same row shape, one
                      quiet chip so you can tell who answers automatically. -->
                 <span class="member-agent">agent</span>
+                {#if (m.ownerDisplayName ?? '').trim()}
+                  <span class="member-owner">run by {m.ownerDisplayName}</span>
+                {/if}
               {/if}
               <span class="member-role" class:owner={m.role === 'owner'}>{m.role}</span>
             </span>
@@ -382,6 +385,14 @@
     padding: 0.05rem 0.35rem;
     border-radius: 5px;
     border: 1px solid var(--pop-border);
+    color: var(--pop-muted);
+  }
+
+  /* "run by <owner>" provenance — quiet text next to the agent chip, same
+     muted tone: information, not decoration. */
+  .member-owner {
+    font-size: 0.6875rem;
+    font-weight: 400;
     color: var(--pop-muted);
   }
 

@@ -19,6 +19,8 @@
     applyMention,
     filterCandidates,
     isAgentUid,
+    mentionsAnyAgent,
+    resolveMentions,
     type MentionCandidate,
   } from '../../lib/roomMentions';
 
@@ -144,6 +146,16 @@
     mentionQuery ? filterCandidates(mentionOptions, mentionQuery.query).slice(0, 6) : [],
   );
   const mentionOpen = $derived(mentionMatches.length > 0);
+
+  // The composer affordance: when the draft's resolved mentions include an
+  // agent, say plainly that sending will put that agent to work in the room —
+  // the "@agent will answer here" cue, derived from the same resolution the
+  // send path uses so it can never disagree with what actually happens.
+  const draftWakesAgent = $derived(
+    mentionOptions.length > 0 &&
+      replyText.includes('@') &&
+      mentionsAnyAgent(resolveMentions(replyText, mentionOptions)),
+  );
 
   function syncCaret(): void {
     caret = replyEl?.selectionStart ?? replyText.length;
@@ -506,6 +518,8 @@
     <div class="dm-reply-footer">
       {#if sendError}
         <span class="dm-reply-error" role="alert">{sendError}</span>
+      {:else if draftWakesAgent}
+        <span class="dm-reply-hint dm-reply-hint-agent">Mentioned agents will reply here · ⌘↵ to send</span>
       {:else}
         <span class="dm-reply-hint">⌘↵ to send</span>
       {/if}

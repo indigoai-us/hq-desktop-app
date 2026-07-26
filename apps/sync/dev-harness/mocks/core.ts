@@ -759,8 +759,8 @@ const handlers: Record<string, Handler> = {
       members: [
         { personUid: 'prs_me', email: 'jacob@getindigo.ai', displayName: 'Jacob', role: 'owner' },
         { personUid: 'prs_corey', email: 'corey@getindigo.ai', displayName: 'Corey', role: 'member' },
-        { personUid: 'agt_izzy', email: 'izzy@agents.getindigo.ai', displayName: 'Izzy', role: 'bot' },
-        { personUid: 'agt_iris', email: 'iris@agents.getindigo.ai', displayName: 'Iris', role: 'bot' },
+        { personUid: 'agt_izzy', email: 'izzy@agents.getindigo.ai', displayName: 'Izzy', role: 'bot', ownerDisplayName: 'Jacob' },
+        { personUid: 'agt_iris', email: 'iris@agents.getindigo.ai', displayName: 'Iris', role: 'bot', ownerDisplayName: 'Corey' },
       ],
     };
   },
