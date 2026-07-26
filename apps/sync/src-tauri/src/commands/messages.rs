@@ -173,11 +173,12 @@ pub async fn open_messages_window(
 #[tauri::command]
 pub fn take_pending_messages_target(app: AppHandle) -> Option<MessagesTarget> {
     let state = app.try_state::<PendingMessagesTarget>()?;
-    state
+    let target = state
         .0
         .lock()
         .unwrap_or_else(|p| p.into_inner())
-        .take()
+        .take();
+    target
 }
 
 /// Tauri command: called by MessagesShell.svelte once its listeners are
