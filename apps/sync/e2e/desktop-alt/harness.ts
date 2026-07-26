@@ -311,7 +311,7 @@ export class DesktopAltHarness implements DesktopAltTestHarness {
     expect(secretItemStruct).toContain('pub upd: String');
     expect(secretItemStruct).toContain('pub rot: String');
     expect(secretItemStruct).not.toMatch(/pub (value|secret):|serde\(flatten\)/);
-    expect(panel).toContain("invoke<Partial<SecretEnv>[]>('get_company_secrets'");
+    expect(panel).toContain('companyStore.loadSecrets(slug');
     expect(panel).toContain('key: stringOrFallback(item.key');
     expect(panel).toContain('upd: stringOrFallback(item.upd');
     expect(panel).toContain('rot: stringOrFallback(item.rot');

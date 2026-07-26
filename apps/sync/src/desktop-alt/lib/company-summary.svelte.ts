@@ -1,4 +1,3 @@
-import { invoke } from '@tauri-apps/api/core';
 import { companyStore } from './company-store.svelte';
 
 export interface CompanySummary {
@@ -42,6 +41,8 @@ export function useCompanySummary(options: { slug: () => string | null; enabled?
   $effect(() => {
     const slug = options.slug();
     const enabled = options.enabled?.() ?? true;
+    // Subscribe to background cache refreshes (interval / focus / invalidate).
+    const revision = companyStore.revision;
     if (!enabled) {
       activeSlug = slug;
       requestId += 1;
@@ -51,7 +52,13 @@ export function useCompanySummary(options: { slug: () => string | null; enabled?
       return;
     }
     if (slug === activeSlug) {
-      return; // same company — keep the loaded summary, don't refetch/cancel
+      // Same company — apply any newer cache entry from a background poll.
+      if (slug) {
+        const warm = companyStore.summary(slug);
+        if (warm) summary = warm;
+      }
+      void revision;
+      return;
     }
     activeSlug = slug;
     const myRequest = ++requestId;
@@ -68,18 +75,17 @@ export function useCompanySummary(options: { slug: () => string | null; enabled?
     summary = warm ?? emptyCompanySummary();
     loading = warm === null;
 
-    void invoke<CompanySummary>('get_company_summary', { slug })
+    void companyStore.loadSummary(slug)
       .then((result) => {
         if (myRequest === requestId) {
           summary = result;
-          companyStore.setSummary(slug, result);
         }
       })
       .catch((err) => {
         console.error('get_company_summary failed:', err);
         if (myRequest === requestId) {
           error = String(err);
-          summary = emptyCompanySummary();
+          if (companyStore.summary(slug) === null) summary = emptyCompanySummary();
         }
       })
       .finally(() => {

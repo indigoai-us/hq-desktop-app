@@ -26,6 +26,8 @@
   interface Props {
     slug: string;
     cloudBacked?: boolean;
+    /** Local sync Off — pause resource fetches without rewriting connectivity. */
+    syncEnabled?: boolean;
     /** Active internal destination — driven by the company route tab. */
     destination?: CompanyOperationsTab;
     /** Navigate to another operations destination (parent updates the route). */
@@ -35,6 +37,7 @@
   let {
     slug,
     cloudBacked = true,
+    syncEnabled = true,
     destination = 'activity',
     ondestinationchange,
   }: Props = $props();
@@ -164,11 +167,11 @@
       tabindex="-1"
     >
       {#if activeDestination === 'activity'}
-        <ActivityPanel {slug} {cloudBacked} />
+        <ActivityPanel {slug} {cloudBacked} {syncEnabled} />
       {:else if activeDestination === 'deployments'}
-        <DeploymentsPanel {slug} {cloudBacked} />
+        <DeploymentsPanel {slug} {cloudBacked} {syncEnabled} />
       {:else if activeDestination === 'secrets'}
-        <SecretsPanel {slug} {cloudBacked} />
+        <SecretsPanel {slug} {cloudBacked} {syncEnabled} />
       {:else}
         <section
           class="ops-settings"

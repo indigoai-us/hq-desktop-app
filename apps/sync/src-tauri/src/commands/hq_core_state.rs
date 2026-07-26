@@ -18,8 +18,9 @@
 //!     Eligible @getindigo.ai user with `stagingChannel != false`, or any
 //!     user with an explicit `driftStagingRepo`.
 //!
-//! Per-file classification mirrors the rescue script (head_compare fallback
-//! when `last_sync_sha` is missing or unreachable):
+//! Per-file classification mirrors the rescue script when a trustworthy
+//! installed baseline exists. When it does not, Core Drift now fails closed
+//! instead of inventing counts from target HEAD:
 //!   * `USER-EDIT` — local blob ≠ floor:<path>. This is THE drift list.
 //!   * `USER-ONLY` — path unknown to floor AND to target tree. Surfaces in
 //!     `userOnlyCount` but does NOT count toward the pill.
@@ -46,7 +47,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::commands::config::{read_hq_config_lenient, MenubarPrefs};
 use crate::commands::hq_core_drift::{
     excluded_scope_paths_for, is_conflict_artifact, path_in_excluded_scope, path_in_locked_scope,
-    read_locked_paths, walk_local_under_scope, DriftEntry, DriftReport,
+    read_locked_paths, walk_local_under_scope, BaselineStatus, DriftEntry, DriftReport,
 };
 use crate::commands::hq_core_staging;
 use crate::commands::hq_core_update::get_local_version;
@@ -88,10 +89,10 @@ pub struct CoreState {
     /// Locally-installed `hqVersion` from `core.yaml`. `None` when the HQ
     /// folder has no usable `core.yaml`.
     pub local_version: Option<String>,
-    /// `replaced_from_source.last_sync_sha` from local `core/core.yaml`,
-    /// only when the stamped `source` matches `target_repo`. `None` means
-    /// we ran in head_compare mode (compared local vs target HEAD, no
-    /// floor available).
+    /// `replaced_from_source.last_sync_sha` from local `core/core.yaml`, or
+    /// a release-tag-derived fallback when no stamp exists. Carries the
+    /// installed source commit even across channel/repo switches so the
+    /// local baseline identity remains inspectable in diagnostics.
     pub floor_sha: Option<String>,
     /// True when the signed-in user has an `@getindigo.ai` email. Drives
     /// frontend gating: only eligible users see the drift count + can
@@ -291,6 +292,24 @@ async fn fetch_tree(
     Ok(out)
 }
 
+pub(crate) async fn persist_remote_baseline(
+    hq_folder: &std::path::Path,
+    client: &reqwest::Client,
+    repo: &str,
+    git_ref: &str,
+) -> Result<String, String> {
+    let commit = fetch_commit_sha(client, repo, git_ref).await?;
+    let blobs = fetch_tree(client, repo, &commit)
+        .await?
+        .into_iter()
+        .map(|(path, (sha, _))| (path, sha))
+        .collect();
+    hq_desktop_core::drift_scope::persist_core_drift_baseline(
+        hq_folder, repo, &commit, blobs,
+    )?;
+    Ok(commit)
+}
+
 // ─── Floor SHA reader ────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
@@ -309,30 +328,17 @@ struct LocalSourceStamp {
     last_sync_sha: Option<String>,
 }
 
-/// Read `last_sync_sha` from local `core/core.yaml` iff the stamped
-/// `source` matches `expected_source`. Honours both the canonical key
-/// (`replaced_from_source`, v0.1.104+) and the legacy one
-/// (`replaced_from_staging`, ≤v0.1.103).
-fn local_last_sync_sha(hq_folder: &std::path::Path, expected_source: &str) -> Option<String> {
+fn local_source_stamp(hq_folder: &std::path::Path) -> Option<(String, String)> {
     let canonical = hq_folder.join("core").join("core.yaml");
     let legacy = hq_folder.join("core.yaml");
-    let core_yaml = if canonical.is_file() {
-        canonical
-    } else {
-        legacy
-    };
-
-    let bytes = std::fs::read(&core_yaml).ok()?;
+    let bytes = std::fs::read(if canonical.is_file() { canonical } else { legacy }).ok()?;
     let parsed: LocalCoreYaml = serde_yaml::from_slice(&bytes).ok()?;
-    let rfs = parsed
+    let stamp = parsed
         .replaced_from_source
         .or(parsed.replaced_from_staging)?;
-    if rfs.source.as_deref() != Some(expected_source) {
-        return None;
-    }
-    rfs.last_sync_sha
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+    let source = stamp.source?.trim().to_string();
+    let commit = stamp.last_sync_sha?.trim().to_string();
+    (!source.is_empty() && !commit.is_empty()).then_some((source, commit))
 }
 
 // ─── Version compare ─────────────────────────────────────────────────────────
@@ -443,21 +449,21 @@ pub async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, String> {
         }
     };
 
-    // Floor. Only honoured if the stamped source matches our target repo;
-    // mismatched stamps mean the user last rescued from a different source
-    // and the SHA tells us nothing about the current channel's history.
+    // Floor identity. Keep the installed source/commit even when the user has
+    // switched channels: the local persisted baseline remains authoritative for
+    // classifying already-installed content across repo changes.
     //
     // Codex P2 review on PR #110: when the stamp is empty (pre-rescue
     // install — common for prod users seeing the new Update pill for the
     // first time), fall through to `v{local_version}`'s SHA on the
-    // release channel. Without this fallback the classifier baselines
-    // against the latest tag's blobs, so every upstream file changed
-    // since the user's installed version reads as USER-EDIT and the pill
-    // shows phantom drift before they've touched anything. Mirrors the
-    // spawn-side `--floor-sha` derivation in `install_hq_core_update` so
-    // the popover count and the rescue behavior agree.
-    let floor_sha: Option<String> = match local_last_sync_sha(&hq_folder, &target_repo) {
-        Some(sha) => Some(sha),
+    // release channel. Without this fallback the classifier would have no
+    // trustworthy installed baseline for pre-rescue prod users and would
+    // otherwise need to fail closed immediately. Mirrors the spawn-side
+    // `--floor-sha` derivation in `install_hq_core_update` so the popover
+    // count and the rescue behavior agree.
+    let installed_stamp = local_source_stamp(&hq_folder);
+    let floor_identity: Option<(String, String)> = match installed_stamp.clone() {
+        Some(identity) => Some(identity),
         None => match (channel, local_version.as_deref()) {
             (Channel::Release, Some(ver)) => {
                 let tag = format!("v{ver}");
@@ -469,13 +475,13 @@ pub async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, String> {
                                 "no stamp; using {tag} as derived floor (sha={sha}) for {target_repo}"
                             ),
                         );
-                        Some(sha)
+                        Some((target_repo.clone(), sha))
                     }
                     Err(e) => {
                         log(
                             "hq-core-state",
                             &format!(
-                                "no stamp + {tag} lookup failed ({e}); falling back to head_compare"
+                                "no stamp + {tag} lookup failed ({e}); no trustworthy installed baseline, failing closed"
                             ),
                         );
                         None
@@ -485,27 +491,50 @@ pub async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, String> {
             _ => None,
         },
     };
+    let floor_sha = floor_identity.as_ref().map(|(_, sha)| sha.clone());
 
     // Fetch trees. Target only if we're actually going to scan drift.
     // Floor only if available + matches source.
-    let (target_tree, floor_tree) = if drift_scan_possible {
+    let (target_tree, floor_blobs) = if drift_scan_possible {
         let target_tree = fetch_tree(&client, &target_repo, &target_ref).await?;
-        let floor_tree = match floor_sha.as_deref() {
-            Some(sha) => match fetch_tree(&client, &target_repo, sha).await {
-                Ok(t) => Some(t),
-                Err(e) => {
-                    // Fall back to head_compare. Floor unreachable
-                    // (force-push, git-gc, repo rename) is a soft failure.
+        let floor_blobs = match floor_identity.as_ref() {
+            Some((source, commit)) => {
+                let local = hq_desktop_core::drift_scope::load_core_drift_baseline(
+                    &hq_folder, source, commit,
+                )
+                .map(|baseline| baseline.normalized_blobs);
+                if local.is_some() {
+                    local
+                } else if source == &target_repo {
+                    match fetch_tree(&client, source, commit).await {
+                        Ok(tree) => Some(
+                            tree.into_iter()
+                                .map(|(path, (sha, _))| (path, sha))
+                                .collect(),
+                        ),
+                        Err(e) => {
+                            log(
+                                "hq-core-state",
+                                &format!(
+                                    "baseline {source}@{commit} unavailable locally and remotely ({e}); failing closed"
+                                ),
+                            );
+                            None
+                        }
+                    }
+                } else {
                     log(
                         "hq-core-state",
-                        &format!("floor tree unreachable ({e}); falling back to head_compare"),
+                        &format!(
+                            "source switched from {source} to {target_repo}, but local baseline {commit} is missing; failing closed"
+                        ),
                     );
                     None
                 }
-            },
+            }
             None => None,
         };
-        (Some(target_tree), floor_tree)
+        (Some(target_tree), floor_blobs)
     } else {
         log(
             "hq-core-state",
@@ -514,13 +543,12 @@ pub async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, String> {
         (None, None)
     };
 
-    // Drift classification — only when `rules.locked` was non-empty AND
-    // the target tree fetched. Otherwise we surface an empty drift
-    // report and rely on the `version_behind` half below to still render
-    // the Update pill (the legacy `check_hq_core_update` codepath did
-    // exactly this).
+    // Drift classification — fail closed only when a scan was possible but no
+    // trustworthy installed baseline existed. When there is no locked scope,
+    // keep the legacy "empty drift report, version-only update signal"
+    // behavior instead of forcing an update-required state.
     let (drift_report, unchanged_count, user_only_count): (DriftReport, u32, u32) =
-        if let Some(target_tree) = target_tree {
+        if let (Some(target_tree), Some(floor_blobs)) = (target_tree, floor_blobs) {
             // Local files under locked scopes.
             // Pack landings + static runtime excludes (see drift_scope).
             let excluded = excluded_scope_paths_for(&hq_folder);
@@ -537,13 +565,11 @@ pub async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, String> {
                 .filter(|(p, _)| !path_in_excluded_scope(p, &excluded))
                 .collect();
 
-            let floor_in_scope: Option<BTreeMap<String, String>> = floor_tree.map(|t| {
-                t.into_iter()
-                    .filter(|(p, _)| path_in_locked_scope(p, &locked))
-                    .filter(|(p, _)| !path_in_excluded_scope(p, &excluded))
-                    .map(|(p, (sha, _))| (p, sha))
-                    .collect()
-            });
+            let floor_in_scope: BTreeMap<String, String> = floor_blobs
+                .into_iter()
+                .filter(|(p, _)| path_in_locked_scope(p, &locked))
+                .filter(|(p, _)| !path_in_excluded_scope(p, &excluded))
+                .collect();
 
             // Three-way classify each path (USER-EDIT goes to `modified`,
             // MISSING goes to `missing`, USER-ONLY goes to `added` —
@@ -561,13 +587,12 @@ pub async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, String> {
                 let (sha_target, _) = &target_in_scope[*path];
                 let (sha_local, size_local) = &local[*path];
 
-                let classification_sha = match &floor_in_scope {
-                    Some(floor) => floor
-                        .get(*path)
-                        .cloned()
-                        .unwrap_or_else(|| sha_target.clone()),
-                    None => sha_target.clone(),
-                };
+                // A path introduced after the installed baseline is not a
+                // local edit. Compare it to target only for this new-file case.
+                let classification_sha = floor_in_scope
+                    .get(*path)
+                    .cloned()
+                    .unwrap_or_else(|| sha_target.clone());
 
                 if sha_local == &classification_sha {
                     unchanged_count += 1;
@@ -616,7 +641,7 @@ pub async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, String> {
                 //   * floor doesn't know this path → genuinely
                 //     locally-authored under a locked scope. USER-ONLY,
                 //     same as before.
-                let floor_sha_at_path = floor_in_scope.as_ref().and_then(|f| f.get(*path));
+                let floor_sha_at_path = floor_in_scope.get(*path);
                 match floor_sha_at_path {
                     Some(fsha) if sha_local == fsha => {
                         unchanged_count += 1;
@@ -665,6 +690,8 @@ pub async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, String> {
             let user_only_count = user_only.len() as u32;
 
             let report = DriftReport {
+                baseline_status: BaselineStatus::Available,
+                update_required: false,
                 // PILL TOTAL is USER-EDIT only — drift = work the user has done.
                 // Missing files (overlay would install) + user-only files (overlay
                 // would leave alone) are listed in the detail window but don't
@@ -696,11 +723,13 @@ pub async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, String> {
                 },
             };
             (report, unchanged_count, user_only_count)
-        } else {
-            // No `rules.locked` → no drift to scan. Empty report. Caller
-            // sees `count=0`, but `version_behind` (computed below) still
-            // surfaces the Update pill so the user isn't stranded.
+        } else if drift_scan_possible {
+            // A locked scope exists, but there is no trustworthy baseline for
+            // the installed source/commit. Do not compare against the latest
+            // channel head: surface an explicit fail-closed state instead.
             let report = DriftReport {
+                baseline_status: BaselineStatus::BaselineUnavailable,
+                update_required: true,
                 count: 0,
                 modified: Vec::new(),
                 missing: Vec::new(),
@@ -728,9 +757,29 @@ pub async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, String> {
                 },
             };
             (report, 0, 0)
+        } else {
+            let report = DriftReport {
+                baseline_status: BaselineStatus::Available,
+                update_required: false,
+                count: 0,
+                modified: Vec::new(),
+                missing: Vec::new(),
+                added: Vec::new(),
+                scanned_at: chrono::Utc::now().to_rfc3339(),
+                hq_version: match channel {
+                    Channel::Release => target_version.clone(),
+                    Channel::Staging => format!("{target_repo}@{target_ref}"),
+                },
+                target_repo: target_repo.clone(),
+                target_ref: match channel {
+                    Channel::Release => target_ref.clone(),
+                    Channel::Staging => target_ref.clone(),
+                },
+            };
+            (report, 0, 0)
         };
 
-    let version_behind = match channel {
+    let version_behind = drift_report.update_required || match channel {
         Channel::Release => {
             // Trust the rescue stamp's SHA over the in-file `hqVersion` string:
             // upstream releases sometimes ship a stale `hqVersion` in

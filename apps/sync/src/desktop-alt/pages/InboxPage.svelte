@@ -2,6 +2,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { onDestroy } from 'svelte';
   import NotificationFeed from '../../components/NotificationFeed.svelte';
+  import type { ConversationTarget } from '../../lib/pendingConversation';
   import { markAllNotificationsRead } from '../../lib/notificationFeedData';
   import '../v4/tokens.css';
 
@@ -13,11 +14,24 @@
   // through the shared one-line NotificationRow (message rows hover-expand to
   // full text with quick-reply + emoji reacts).
   //
-  // Header: title + unread/total subtitle + jump to the dedicated Messages
-  // window. No tabs, no sync button, no overflow menus (US-008).
+  // Header: title + unread/total subtitle. No tabs, no sync button, no overflow menus (US-008).
+  // Deep-link compose ("Message the sharer"): DesktopApp passes a
+  // ConversationTarget so the recipient is not lost after US-008 removed the
+  // standalone Messages shell.
+
+  interface Props {
+    composeTarget?: ConversationTarget | null;
+    oncomposedismiss?: () => void;
+  }
+
+  let { composeTarget = null, oncomposedismiss }: Props = $props();
 
   let unread = $state(0);
   let total = $state(0);
+  let composeBody = $state('');
+  let composeBusy = $state(false);
+  let composeError = $state<string | null>(null);
+  let composeSent = $state(false);
 
   // Viewing the Inbox counts as reading it (notification-center pattern): the
   // read watermark advances when the user LEAVES the surface — navigate-away
@@ -43,23 +57,6 @@
     markAllNotificationsRead();
   }
 
-  async function openMessagesWindow(): Promise<void> {
-    try {
-      await invoke('open_messages_window');
-    } catch (e) {
-      console.error('inbox: open_messages_window failed', e);
-    }
-  }
-
-  /** Open the two-pane Inbox quick window (side pane + reply canvas). */
-  async function openInboxQuickWindow(): Promise<void> {
-    try {
-      await invoke('open_inbox_window');
-    } catch (e) {
-      console.error('inbox: open_inbox_window failed', e);
-    }
-  }
-
   const subtitle = $derived.by(() => {
     if (total === 0 && unread === 0) return 'All caught up';
     const unreadPart =
@@ -68,6 +65,56 @@
     const noun = total === 1 ? 'notification' : 'notifications';
     return `${unreadPart} · ${total} ${noun}`;
   });
+
+  const composeLabel = $derived.by(() => {
+    if (!composeTarget) return '';
+    const name = composeTarget.displayName?.trim();
+    if (name) return name;
+    const email = composeTarget.email?.trim();
+    if (email) return email;
+    return composeTarget.personUid?.trim() || 'contact';
+  });
+
+  $effect(() => {
+    // Reset local compose state whenever the deep-link recipient changes.
+    void composeTarget;
+    composeBody = '';
+    composeError = null;
+    composeSent = false;
+    composeBusy = false;
+  });
+
+  async function sendCompose(): Promise<void> {
+    if (!composeTarget || composeBusy) return;
+    const text = composeBody.trim();
+    if (!text) return;
+    composeBusy = true;
+    composeError = null;
+    try {
+      const uid = composeTarget.personUid?.trim() ?? '';
+      const email = composeTarget.email?.trim() ?? '';
+      if (uid && !uid.startsWith('email:')) {
+        await invoke('send_dm', { toPersonUid: uid, body: text });
+      } else if (email) {
+        await invoke('send_dm_to_email', { toEmail: email, body: text });
+      } else {
+        throw new Error('No recipient uid or email');
+      }
+      composeSent = true;
+      composeBody = '';
+    } catch (err) {
+      composeError = String(err);
+    } finally {
+      composeBusy = false;
+    }
+  }
+
+  function dismissCompose(): void {
+    composeBody = '';
+    composeError = null;
+    composeSent = false;
+    oncomposedismiss?.();
+  }
 
   onDestroy(commitRead);
 
@@ -85,33 +132,42 @@
         {subtitle}
       </p>
     </div>
-    <div class="inbox-actions">
-      <button
-        type="button"
-        class="inbox-btn"
-        data-testid="inbox-open-quick"
-        onclick={() => void openInboxQuickWindow()}
-      >
-        Open Inbox window
-      </button>
-      <button
-        type="button"
-        class="inbox-btn"
-        data-testid="inbox-open-messages"
-        onclick={() => void openMessagesWindow()}
-      >
-        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-          <path
-            d="M2.5 3h11a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H6l-3.5 2.6V11h0a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z"
-            stroke="currentColor"
-            stroke-width="1.3"
-            stroke-linejoin="round"
-          />
-        </svg>
-        Open Messages
-      </button>
-    </div>
   </header>
+
+  {#if composeTarget}
+    <div class="inbox-compose" data-testid="inbox-compose-target">
+      <div class="inbox-compose-head">
+        <strong>Message {composeLabel}</strong>
+        <button type="button" class="inbox-compose-dismiss" onclick={dismissCompose}>
+          Dismiss
+        </button>
+      </div>
+      {#if composeSent}
+        <p class="inbox-compose-sent">Sent.</p>
+      {:else}
+        <textarea
+          class="inbox-compose-input"
+          rows="3"
+          placeholder={`Write to ${composeLabel}…`}
+          bind:value={composeBody}
+          disabled={composeBusy}
+        ></textarea>
+        {#if composeError}
+          <p class="inbox-compose-error">{composeError}</p>
+        {/if}
+        <div class="inbox-compose-actions">
+          <button
+            type="button"
+            class="inbox-compose-send"
+            disabled={composeBusy || !composeBody.trim()}
+            onclick={() => void sendCompose()}
+          >
+            {composeBusy ? 'Sending…' : 'Send'}
+          </button>
+        </div>
+      {/if}
+    </div>
+  {/if}
 
   <div class="inbox-feed notif-host">
     <NotificationFeed
@@ -166,42 +222,79 @@
     color: var(--v4-text-3, var(--muted));
   }
 
-  .inbox-actions {
+  .inbox-compose {
+    display: grid;
+    gap: 8px;
+    padding: 12px 0;
+    border-top: 1px solid var(--v4-rowline, var(--border));
+    border-bottom: 1px solid var(--v4-rowline, var(--border));
+  }
+
+  .inbox-compose-head {
     display: flex;
     align-items: center;
-    gap: 8px;
-    flex-shrink: 0;
+    justify-content: space-between;
+    gap: 12px;
   }
 
-  .inbox-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 7px;
-    min-height: 30px;
-    padding: 0 12px;
-    border: 1px solid var(--v4-control-border, var(--border-strong, rgba(0, 0, 0, 0.1)));
-    border-radius: var(--v4-radius-button, 8px);
-    background: var(--v4-raised, var(--c-bg, #fff));
+  .inbox-compose-head strong {
+    font-size: var(--type-body, 13px);
+    color: var(--v4-text-1, var(--fg));
+  }
+
+  .inbox-compose-dismiss {
+    border: 0;
+    background: transparent;
+    color: var(--v4-text-3, var(--muted));
+    font: inherit;
+    font-size: var(--type-secondary, 12px);
+    cursor: pointer;
+    padding: 0;
+  }
+
+  .inbox-compose-input {
+    width: 100%;
+    resize: vertical;
+    min-height: 72px;
+    border: 1px solid var(--v4-rowline, var(--border));
+    background: var(--v4-control-faint, var(--c-field-bg));
     color: var(--v4-text-1, var(--fg));
     font: inherit;
-    font-size: var(--type-body, 12px);
-    font-weight: 600;
+    font-size: var(--type-body, 13px);
+    padding: 8px 10px;
+    border-radius: 0;
+  }
+
+  .inbox-compose-actions {
+    display: flex;
+    justify-content: flex-end;
+  }
+
+  .inbox-compose-send {
+    border: 1px solid var(--v4-rowline, var(--border));
+    background: var(--v4-control-faint, var(--c-field-bg));
+    color: var(--v4-text-1, var(--fg));
+    font: inherit;
+    font-size: var(--type-body, 13px);
+    padding: 6px 12px;
     cursor: pointer;
-    box-shadow: var(--v4-shadow-card-light, 0 1px 1.5px rgba(0, 0, 0, 0.06));
   }
 
-  .inbox-btn:hover {
-    background: var(--v4-active-row, var(--row-hover));
+  .inbox-compose-send:disabled {
+    opacity: 0.5;
+    cursor: default;
   }
 
-  .inbox-btn:focus-visible {
-    outline: 2px solid var(--v4-unread, #0a6fd6);
-    outline-offset: 2px;
+  .inbox-compose-error {
+    margin: 0;
+    color: var(--v4-error, #b00020);
+    font-size: var(--type-secondary, 12px);
   }
 
-  .inbox-btn svg {
-    flex-shrink: 0;
-    color: var(--v4-text-2, var(--muted));
+  .inbox-compose-sent {
+    margin: 0;
+    color: var(--v4-text-3, var(--muted));
+    font-size: var(--type-secondary, 12px);
   }
 
   /* Feed sits flush on the page canvas — no card chrome around the list. */
@@ -260,9 +353,4 @@
     padding-right: 0;
   }
 
-  @media (prefers-color-scheme: dark) {
-    .inbox-btn {
-      box-shadow: none;
-    }
-  }
 </style>

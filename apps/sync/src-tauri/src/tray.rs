@@ -1,8 +1,9 @@
 //! System tray icon with state-driven icon swapping.
 //!
 //! Visual states: **idle**, **syncing**, **reauth**, **error**, **conflict**.
-//! Left-click toggles the desktop view (popover is the signed-out fallback);
-//! right-click shows a context menu with "Sync Now", "Settings", and "Quit".
+//! Left-click toggles the compact notification popover (US-004 WindowRouter);
+//! right-click shows a context menu with "Sync Now", "Open desktop view", and
+//! "Quit". Full desktop opens only via the explicit menu action / shortcut.
 
 use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -409,7 +410,12 @@ fn build_tray_icon(app: &AppHandle) -> Result<tauri::tray::TrayIcon, Box<dyn std
                     ..
                 } = event
                 {
-                    toggle_desktop_window(&app_handle);
+                    // US-004: tray left-click toggles the compact popover only.
+                    // Full desktop is reserved for "Open desktop view" / shortcut.
+                    let _ = crate::commands::desktop_alt::activation_policy(
+                        crate::commands::desktop_alt::ActivationSource::TrayLeftClick,
+                    );
+                    toggle_popover_window(&app_handle);
                 }
             }
         })
@@ -699,11 +705,14 @@ pub fn show_window_centered(app: &AppHandle) {
 // Popover ↔ desktop window management (toggle + single-window-at-a-time)
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// Only one HQ window is ever on-screen at a time: the classic popover (`main`)
-// OR the desktop window (`desktop-alt`). Showing one hides the other.
-// Menu-bar click toggles the desktop window (popover only as signed-out
-// fallback). Opt+Shift+H still toggles the popover; Opt+Shift+O toggles
-// desktop. Press again with the target open and it hides.
+// Only one primary HQ surface is ever on-screen at a time: the classic popover
+// (`main`) OR the desktop window (`desktop-alt`). Showing one hides the other.
+//
+// US-004 WindowRouter activation policy:
+//   Tray left-click / taskbar second-process → compact popover
+//   Explicit "Open desktop view" / Opt+Shift+O → full desktop
+//   Opt+Shift+H → toggle compact popover
+// Press again with the target open and it hides (toggle sources only).
 
 /// Hide the desktop window if it's open — enforces "only one HQ window at a
 /// time" whenever the popover is summoned.
@@ -713,15 +722,14 @@ pub fn hide_desktop_alt(app: &AppHandle) {
     }
 }
 
-/// Toggle the desktop view from a menubar click.
+/// Toggle the desktop view (explicit Open HQ / Opt+Shift+O path).
 ///
-/// US-005 — menubar click is a launcher for the desktop view; the popover
-/// remains only as the sign-in/notification surface.
+/// Not used for tray left-click anymore (US-004 routes that to the compact
+/// popover). Kept for the global desktop shortcut which still toggles.
 ///
-/// If `desktop-alt` is already visible, hide it (toggle-off, matching the old
-/// popover toggle semantics). Otherwise open it asynchronously; when the GA
-/// gate rejects a signed-out user, fall back to the classic popover so they
-/// still reach the SignInPrompt.
+/// If `desktop-alt` is already visible, hide it. Otherwise open it
+/// asynchronously; when the GA gate rejects a signed-out user, fall back to
+/// the classic popover so they still reach the SignInPrompt.
 pub fn toggle_desktop_window(app: &AppHandle) {
     if let Some(win) = app.get_webview_window("desktop-alt") {
         if win.is_visible().unwrap_or(false) {
@@ -862,9 +870,8 @@ fn set_dwm_small_corner(window: &tauri::WebviewWindow) {
 }
 
 /// Toggle the popover: hide it if it's already visible, otherwise show it
-/// (which also hides the desktop window). Used by the Opt+Shift+H shortcut so
-/// pressing again dismisses the window. (Menu-bar click now toggles desktop;
-/// see [`toggle_desktop_window`].)
+/// (which also hides the desktop window). Used by tray left-click (US-004)
+/// and the Opt+Shift+H shortcut so pressing again dismisses the window.
 pub fn toggle_popover_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         if window.is_visible().unwrap_or(false) {

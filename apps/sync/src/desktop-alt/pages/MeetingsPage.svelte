@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
+  import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { open as openExternal } from '@tauri-apps/plugin-shell';
   import { onMount } from 'svelte';
   import {
@@ -57,6 +58,21 @@
   // Per-row in-flight set for bot actions, owned by the store. Passed to the
   // agenda so each row can disable its buttons + spin while its invoke runs.
   const pendingEventIds = $derived(meetingsStore.pendingEventIds);
+
+  /** Deep-link focus from open_meetings_window / notification (US-004 routing). */
+  let focusedMeetingId = $state<string | null>(null);
+  let focusClearTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function focusMeetingRow(meetingId: string) {
+    const id = meetingId.trim();
+    if (!id) return;
+    focusedMeetingId = id;
+    if (focusClearTimer) clearTimeout(focusClearTimer);
+    focusClearTimer = setTimeout(() => {
+      if (focusedMeetingId === id) focusedMeetingId = null;
+      focusClearTimer = null;
+    }, 1800);
+  }
 
   // Recordings inferred from the calendar snapshot's scheduled bots. Derived
   // (not manually assigned) so it recomputes whenever the cache-first paint or
@@ -173,6 +189,11 @@
 
   // Thin wrappers: delegate the invoke to the store, surface its toast (if any).
   // The agenda calls these via callback props so it stays 'invoke'-free.
+  //
+  // US-005: invite HTTP 409 is recovered inside the store (already-invited row
+  // state + background refresh). The returned toast is always kind:'info' for
+  // that path — never a warn — so this page must not promote it to the
+  // refresh-error banner (fetchError is store-owned and left untouched).
   async function onInvite(evt: MeetingEvent): Promise<void> {
     const t = await meetingsStore.inviteBot(evt);
     if (t) flashToast(t.kind, t.text);
@@ -253,6 +274,37 @@
     // all live in the store now — this remount just reads the already-warm
     // singleton, which is what makes the nav instant instead of 5-10s.
     startMeetingsStore();
+
+    // Focus handoff: open_meetings_window emits meetings:focus-meeting for a
+    // warm desktop, and stashes the id for cold mounts via take_pending_focus.
+    let cancelled = false;
+    let unlisten: UnlistenFn | null = null;
+    void (async () => {
+      try {
+        unlisten = await listen<{ meetingId?: string }>('meetings:focus-meeting', (event) => {
+          const id = event.payload?.meetingId;
+          if (id) focusMeetingRow(id);
+        });
+        if (cancelled) {
+          unlisten?.();
+          return;
+        }
+        try {
+          const pending = await invoke<string | null>('meetings_take_pending_focus');
+          if (!cancelled && pending) focusMeetingRow(pending);
+        } catch (err) {
+          console.warn('meetings_take_pending_focus failed', err);
+        }
+      } catch (err) {
+        console.warn('meetings:focus-meeting subscribe failed', err);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+      if (focusClearTimer) clearTimeout(focusClearTimer);
+    };
   });
 </script>
 
@@ -421,6 +473,7 @@
       {botsByEventId}
       {scheduledBots}
       {pendingEventIds}
+      {focusedMeetingId}
       {onInvite}
       {onUninvite}
       {onJoinNow}

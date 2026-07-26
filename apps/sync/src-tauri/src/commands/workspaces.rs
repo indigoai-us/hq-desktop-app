@@ -63,9 +63,10 @@ use crate::util::logfile::log;
 pub use hq_desktop_core::workspaces::{
     add_manifest_entry_for_synced_company, discover_local_companies, folder_enumeration_fallback,
     humanize_slug, last_synced_at, list_local_company_folders, patch_manifest_with_cloud_info,
-    read_local_company_name, read_manifest, resolve_hq_folder_path, strip_manifest_cloud_info,
-    CompaniesManifest, CompanyManifestEntry, LocalCompanyEntry, ManifestLoad, Workspace,
-    WorkspaceKind, WorkspaceState, WorkspacesResult,
+    read_local_company_name, read_manifest, read_workspace_sync_enabled_map, resolve_hq_folder_path,
+    strip_manifest_cloud_info, workspace_sync_enabled_for_slug, write_workspace_sync_enabled,
+    CompaniesManifest, CompanyManifestEntry, LocalCompanyEntry, ManifestLoad, Workspace, WorkspaceKind,
+    WorkspaceState, WorkspacesResult,
 };
 
 /// Detect manifest entries whose `cloud_uid` points at an entity that's no
@@ -360,6 +361,7 @@ where
                 local_path: local_path_str,
                 membership_status,
                 role,
+                sync_enabled: true,
                 last_synced_at: last_synced_lookup(&entry.slug),
                 broken_reason,
                 invited_by,
@@ -410,6 +412,7 @@ where
                 local_path: None,
                 membership_status: Some(mem.status.clone()),
                 role: mem.role.clone(),
+                sync_enabled: true,
                 last_synced_at: last_synced_lookup(&entity.slug),
                 broken_reason: None,
                 invited_by: mem.invited_by.clone(),
@@ -439,6 +442,7 @@ where
         local_path: personal_local.then(|| hq_root.to_string_lossy().to_string()),
         membership_status: None,
         role: None,
+        sync_enabled: true,
         // The personal vault's journal is sharded under the reserved slug
         // PERSONAL_VAULT_JOURNAL_SLUG ("__hq_personal_vault__"), NOT "personal".
         // The engine migrated off the colliding "personal" slug, so reading
@@ -603,6 +607,13 @@ pub async fn list_syncable_workspaces() -> Result<WorkspacesResult, String> {
     // pointers lets the entry render as LocalOnly instead of Broken.
     prune_dangling_cloud_uids(&hq_root, &mut local_companies, &entities, cloud_reachable);
 
+    let company_sync_enabled = read_workspace_sync_enabled_map();
+    let personal_sync_enabled = crate::commands::settings::get_settings()
+        .await
+        .ok()
+        .and_then(|prefs| prefs.personal_sync_enabled)
+        .unwrap_or(true);
+
     let workspaces = assemble_workspaces(
         &hq_root,
         person.as_ref(),
@@ -611,7 +622,20 @@ pub async fn list_syncable_workspaces() -> Result<WorkspacesResult, String> {
         &local_companies,
         cloud_reachable,
         last_synced_at,
-    );
+    )
+    .into_iter()
+    .map(|mut workspace| {
+        workspace.sync_enabled = if workspace.kind == WorkspaceKind::Personal {
+            personal_sync_enabled
+        } else {
+            company_sync_enabled
+                .get(&workspace.slug)
+                .copied()
+                .unwrap_or_else(|| workspace_sync_enabled_for_slug(&workspace.slug))
+        };
+        workspace
+    })
+    .collect();
 
     Ok(WorkspacesResult {
         workspaces,
@@ -620,6 +644,18 @@ pub async fn list_syncable_workspaces() -> Result<WorkspacesResult, String> {
         hq_folder_path,
         manifest_error,
     })
+}
+
+#[tauri::command]
+pub fn set_workspace_sync_enabled(slug: String, enabled: bool) -> Result<bool, String> {
+    if slug.trim().is_empty() {
+        return Err("workspace slug must not be empty".to_string());
+    }
+    if slug == "personal" {
+        return Err("personal sync is managed through settings".to_string());
+    }
+    write_workspace_sync_enabled(&slug, enabled)?;
+    Ok(enabled)
 }
 
 /// Result of `claim_pending_company_invite`.

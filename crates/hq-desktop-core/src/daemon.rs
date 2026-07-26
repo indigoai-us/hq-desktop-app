@@ -130,6 +130,17 @@ pub fn build_watch_runner_args(hq_folder_path: &str) -> SpawnArgs {
     // GUI-launched Tauri apps inherit a minimal launchd PATH and otherwise
     // can't find node/npx. See paths::child_path.
     env.insert("PATH".to_string(), paths::child_path());
+    // Mirror Sync Now: paused companies (workspaceSyncEnabled=false) must not
+    // keep uploading/downloading under Auto-sync / watch.
+    let disabled = crate::workspaces::disabled_workspace_sync_slugs();
+    if !disabled.is_empty() {
+        env.insert("HQ_SYNC_SKIP_COMPANIES".to_string(), disabled.join(","));
+    }
+    // Mirror Sync Now: Personal Off must suppress the personal vault target.
+    let personal_sync_enabled = is_personal_sync_enabled();
+    if !personal_sync_enabled {
+        env.insert("HQ_SYNC_SKIP_PERSONAL".to_string(), "1".to_string());
+    }
 
     // Remote-pull cadence, fixed at 15 seconds. event-push + event-sync handle
     // real-time propagation; this poll is only the correctness backstop. It is
@@ -156,6 +167,11 @@ pub fn build_watch_runner_args(hq_folder_path: &str) -> SpawnArgs {
     // appending here is safe for both spawn paths below.
     if should_event_push(event_push_eligible(), is_instant_sync_enabled()) {
         runner_args.push("--event-push".to_string());
+    }
+
+    // Personal Off — same CLI surface Sync Now uses (`--skip-personal`).
+    if !personal_sync_enabled {
+        runner_args.push("--skip-personal".to_string());
     }
 
     // Dev override: HQ_CLOUD_LOCAL_RUNNER points at a built sync-runner.js
@@ -286,6 +302,14 @@ pub fn is_instant_sync_enabled() -> bool {
     read_menubar_bool(|p| p.instant_sync, true)
 }
 
+/// Check if personal-vault sync is enabled in menubar.json.
+///
+/// Defaults to true (matches Settings + Sync Now). When false, the watch
+/// runner must pass `--skip-personal` so Auto-sync honors the Off toggle.
+pub fn is_personal_sync_enabled() -> bool {
+    read_menubar_bool(|p| p.personal_sync_enabled, true)
+}
+
 pub fn read_menubar_bool<F: FnOnce(&MenubarPrefs) -> Option<bool>>(
     field: F,
     default: bool,
@@ -301,6 +325,131 @@ pub fn read_menubar_bool<F: FnOnce(&MenubarPrefs) -> Option<bool>>(
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok());
     prefs.and_then(|p| field(&p)).unwrap_or(default)
+}
+
+/// Explicit watch-daemon lifecycle states used by the supervisor.
+///
+/// The live Windows defect was a boolean mismatch: the supervisor treated a
+/// healthy long-lived runner as "down" whenever `.hq-sync.pid` was absent, then
+/// force-cleared the still-registered child after the start deadline. These
+/// states make the phases explicit so the app-owned child handle can be
+/// authoritative after spawn, while the PID file remains a recovery signal for
+/// runners inherited from a previous app session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WatchDaemonState {
+    Stopped,
+    Starting,
+    Running,
+    Backoff,
+}
+
+/// Failure categories for content-safe lifecycle diagnostics (no argv, tokens,
+/// paths, or file contents).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DaemonFailureCategory {
+    None,
+    SpawnFailed,
+    Crash,
+    HeartbeatStall,
+    Cancelled,
+    ForceClear,
+    Backoff,
+    Preflight,
+}
+
+impl WatchDaemonState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Stopped => "stopped",
+            Self::Starting => "starting",
+            Self::Running => "running",
+            Self::Backoff => "backoff",
+        }
+    }
+}
+
+impl DaemonFailureCategory {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::SpawnFailed => "spawn_failed",
+            Self::Crash => "crash",
+            Self::HeartbeatStall => "heartbeat_stall",
+            Self::Cancelled => "cancelled",
+            Self::ForceClear => "force_clear",
+            Self::Backoff => "backoff",
+            Self::Preflight => "preflight",
+        }
+    }
+}
+
+/// Derive the supervisor lifecycle state from app-owned registration, the
+/// registered child's liveness, an inherited PID-file runner, and backoff.
+///
+/// After spawn the process-registry handle is authoritative: a live registered
+/// child is `Running` even when no HQ PID file exists. The PID file is only
+/// consulted when this app holds no handle (previous-session recovery).
+pub fn derive_watch_daemon_state(
+    app_owned_registered: bool,
+    registered_child_alive: bool,
+    pid_file_alive: bool,
+    within_backoff: bool,
+) -> WatchDaemonState {
+    if app_owned_registered {
+        if registered_child_alive {
+            WatchDaemonState::Running
+        } else {
+            // Handle held but child not yet observed live (or mid-teardown) →
+            // Starting until the start deadline force-clears a wedge.
+            WatchDaemonState::Starting
+        }
+    } else if pid_file_alive {
+        WatchDaemonState::Running
+    } else if within_backoff {
+        WatchDaemonState::Backoff
+    } else {
+        WatchDaemonState::Stopped
+    }
+}
+
+/// Supervisor liveness: true only when a runner should not be respawned and
+/// must not be force-cleared.
+///
+/// App-owned registered child is authoritative after spawn. PID-file liveness
+/// is a fallback for an inherited daemon this process did not start.
+pub fn is_daemon_alive_for_supervisor(
+    app_owned_registered: bool,
+    registered_child_alive: bool,
+    pid_file_alive: bool,
+) -> bool {
+    if app_owned_registered {
+        registered_child_alive
+    } else {
+        pid_file_alive
+    }
+}
+
+/// Whether teardown should terminate the Windows Job Object / process group.
+/// Idempotent cancel relies on the process registry's cancelled flag; callers
+/// should invoke cancel at most once per generation. This pure helper encodes
+/// which lifecycle paths are allowed to request termination.
+pub fn should_terminate_job_on_path(
+    already_cancelled: bool,
+    path: DaemonFailureCategory,
+) -> bool {
+    if already_cancelled {
+        return false;
+    }
+    matches!(
+        path,
+        DaemonFailureCategory::Crash
+            | DaemonFailureCategory::HeartbeatStall
+            | DaemonFailureCategory::Cancelled
+            | DaemonFailureCategory::ForceClear
+            | DaemonFailureCategory::Backoff
+    )
 }
 
 /// Pure decision for the supervisor: respawn the watch daemon iff auto-sync
@@ -326,20 +475,19 @@ pub fn should_cancel_stalled_daemon(
 /// Pure decision for the supervisor: force-clear a wedged daemon-start guard.
 ///
 /// The supervisor guards respawns behind an in-process "starting" singleton
-/// (the process registry entry), but measures liveness from the PID file. When a
-/// start acquires that guard yet never yields a live watcher — a hung runner the
-/// watchdog cancelled but whose `run_process_impl` never returned to deregister,
-/// or a stale/never-written PID file — the two signals disagree indefinitely:
+/// (the process registry entry). Liveness is measured from the **app-owned
+/// child handle** after spawn (and only falls back to the PID file for an
+/// inherited runner). When a start acquires that guard yet never yields a live
+/// registered child — a hung runner the watchdog cancelled but whose
+/// `run_process_impl` never returned to deregister — the two signals disagree:
 /// every tick sees the daemon down, calls `start_daemon`, and is refused with
 /// "Daemon is already starting". Without a bound the supervisor loops on that
-/// forever (observed: 7.5+ hours, respawn firing every 30s but never completing).
+/// forever (observed: 7.5+ hours).
 ///
-/// A bounded start deadline breaks the deadlock: once a start has held the guard
-/// past `deadline` with no live daemon, the guard is stale and must be cleared so
-/// a fresh spawn can proceed. A legitimately in-flight start goes live (writes its
-/// PID) within seconds, so `daemon_alive` flips true long before the deadline and
-/// this never force-clears a healthy startup. `start_age` is `None` when no start
-/// is in flight (nothing to clear).
+/// A bounded start deadline breaks the deadlock for a *true* wedge. A healthy
+/// long-lived runner with no HQ PID file keeps `daemon_alive == true` via the
+/// registered child, so this never force-clears a live app-owned generation.
+/// `start_age` is `None` when no start is in flight (nothing to clear).
 pub fn should_force_clear_stalled_start(
     daemon_alive: bool,
     start_age: Option<Duration>,
@@ -426,6 +574,132 @@ mod tests {
             deadline
         ));
         assert!(!should_force_clear_stalled_start(true, None, deadline));
+    }
+
+    // ── App-owned handle is authoritative (US-002) ───────────────────────
+
+    #[test]
+    fn healthy_registered_child_without_pid_file_stays_running() {
+        // The live Windows defect: registered child is alive, no .hq-sync.pid.
+        let state = derive_watch_daemon_state(
+            /* app_owned_registered */ true,
+            /* registered_child_alive */ true,
+            /* pid_file_alive */ false,
+            /* within_backoff */ false,
+        );
+        assert_eq!(state, WatchDaemonState::Running);
+        assert!(is_daemon_alive_for_supervisor(true, true, false));
+        // Must never force-clear a live app-owned runner after many start deadlines.
+        let deadline = Duration::from_secs(2 * 60);
+        assert!(!should_force_clear_stalled_start(
+            true,
+            Some(deadline * 10),
+            deadline
+        ));
+        assert!(!should_respawn_daemon(true, false, true));
+    }
+
+    #[test]
+    fn derive_watch_daemon_state_covers_stopped_starting_running_backoff() {
+        assert_eq!(
+            derive_watch_daemon_state(false, false, false, false),
+            WatchDaemonState::Stopped
+        );
+        assert_eq!(
+            derive_watch_daemon_state(true, false, false, false),
+            WatchDaemonState::Starting
+        );
+        assert_eq!(
+            derive_watch_daemon_state(true, true, false, false),
+            WatchDaemonState::Running
+        );
+        assert_eq!(
+            derive_watch_daemon_state(false, false, true, false),
+            WatchDaemonState::Running
+        );
+        assert_eq!(
+            derive_watch_daemon_state(false, false, false, true),
+            WatchDaemonState::Backoff
+        );
+    }
+
+    #[test]
+    fn supervisor_liveness_prefers_app_owned_handle_over_pid_file() {
+        // Live registered child, missing PID file → alive.
+        assert!(is_daemon_alive_for_supervisor(true, true, false));
+        // Registered but child dead, PID file still claims alive → not alive
+        // for this generation (handle is authoritative; inherited PID would
+        // only apply when unregistered).
+        assert!(!is_daemon_alive_for_supervisor(true, false, true));
+        // No app handle, PID file alive → inherited runner.
+        assert!(is_daemon_alive_for_supervisor(false, false, true));
+        // Nothing → down.
+        assert!(!is_daemon_alive_for_supervisor(false, false, false));
+    }
+
+    #[test]
+    fn job_termination_paths_are_idempotent_once_cancelled() {
+        for path in [
+            DaemonFailureCategory::Crash,
+            DaemonFailureCategory::HeartbeatStall,
+            DaemonFailureCategory::Cancelled,
+            DaemonFailureCategory::ForceClear,
+            DaemonFailureCategory::Backoff,
+        ] {
+            assert!(
+                should_terminate_job_on_path(false, path),
+                "first {path:?} must terminate"
+            );
+            assert!(
+                !should_terminate_job_on_path(true, path),
+                "second {path:?} must not re-terminate"
+            );
+        }
+        // Non-teardown categories never terminate the job.
+        assert!(!should_terminate_job_on_path(
+            false,
+            DaemonFailureCategory::None
+        ));
+        assert!(!should_terminate_job_on_path(
+            false,
+            DaemonFailureCategory::SpawnFailed
+        ));
+        assert!(!should_terminate_job_on_path(
+            false,
+            DaemonFailureCategory::Preflight
+        ));
+    }
+
+    #[test]
+    fn force_clear_after_two_start_deadlines_does_not_fire_when_registered_child_live() {
+        let deadline = Duration::from_secs(2 * 60);
+        // Simulate supervisor checks across ≥2 start deadlines with a healthy
+        // registered child and no PID file.
+        for _ in 0..3 {
+            let alive = is_daemon_alive_for_supervisor(true, true, false);
+            assert!(alive);
+            assert!(!should_force_clear_stalled_start(
+                alive,
+                Some(deadline * 2),
+                deadline
+            ));
+        }
+    }
+
+    #[test]
+    fn lifecycle_state_and_failure_category_serialize_without_sensitive_fields() {
+        let state = WatchDaemonState::Running;
+        let category = DaemonFailureCategory::HeartbeatStall;
+        let payload = serde_json::json!({
+            "state": state,
+            "failureCategory": category,
+        });
+        let text = payload.to_string();
+        assert!(text.contains("running"));
+        assert!(text.contains("heartbeat_stall"));
+        assert!(!text.contains("argv"));
+        assert!(!text.contains("token"));
+        assert!(!text.contains("command"));
     }
 
     // ── DaemonStatus serialization ───────────────────────────────────────
@@ -651,6 +925,36 @@ mod tests {
         assert!(
             env.get("PATH").map(|p| !p.is_empty()).unwrap_or(false),
             "PATH must be set so Dock-launched Tauri apps can find node/npx"
+        );
+    }
+
+    #[test]
+    fn test_build_watch_runner_args_appends_skip_personal_when_disabled() {
+        use crate::test_support::ENV_MUTEX;
+        use tempfile::TempDir;
+
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".hq")).unwrap();
+        std::fs::write(
+            tmp.path().join(".hq/menubar.json"),
+            r#"{"personalSyncEnabled":false}"#,
+        )
+        .unwrap();
+        std::env::set_var("HOME", tmp.path());
+        let args = build_watch_runner_args("/Users/test/HQ");
+        let env = args.env.clone().expect("env");
+        std::env::remove_var("HOME");
+
+        assert_eq!(
+            args.args.last().map(String::as_str),
+            Some("--skip-personal"),
+            "expected --skip-personal when personalSyncEnabled=false, got: {:?}",
+            args.args
+        );
+        assert_eq!(
+            env.get("HQ_SYNC_SKIP_PERSONAL").map(String::as_str),
+            Some("1")
         );
     }
 

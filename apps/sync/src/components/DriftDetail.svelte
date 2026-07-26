@@ -18,6 +18,8 @@
     stagingStatus?: string | null;
   }
   interface DriftReport {
+    baselineStatus: 'Available' | 'BaselineUnavailable';
+    updateRequired: boolean;
     count: number;
     modified: DriftEntry[];
     missing: DriftEntry[];
@@ -379,6 +381,11 @@
       <span class="drift-spinner" aria-hidden="true"></span>
       <p>Scanning locked core files…</p>
     </div>
+  {:else if report.baselineStatus === 'BaselineUnavailable'}
+    <div class="drift-empty">
+      <p>Core Drift baseline unavailable. Update HQ Core before trusting file counts.</p>
+      <p>No modified, missing, or added counts were inferred from the latest channel head.</p>
+    </div>
   {:else if report.modified.length === 0 && report.missing.length === 0 && report.added.length === 0}
     <!-- Empty state must consider ALL three list lengths, not just
          `report.count` — `count` is USER-EDIT only by design (it
@@ -500,6 +507,12 @@
     /* Header is draggable so users can move the window by grabbing the
        title-bar zone — matches native macOS behaviour. */
     -webkit-app-region: drag;
+  }
+
+  /* Windows: native decorated title bar owns system controls — drop the
+     macOS traffic-light gutter so content aligns under the OS chrome. */
+  :global(html[data-platform='windows']) .drift-header {
+    padding-left: 1rem;
   }
 
   /* Re-enable click capture on anything interactive inside the draggable

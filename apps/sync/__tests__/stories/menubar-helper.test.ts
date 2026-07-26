@@ -117,13 +117,15 @@ describe('macOS menu-bar helper process (HQ status item)', () => {
   it('tray_helper polls the command file and dispatches show/sync/quit', () => {
     const helper = read('src-tauri/src/tray_helper.rs');
     expect(helper).toContain('.tray-cmd');
-    // US-005: menu-bar click toggles the DESKTOP window (show if hidden, hide if
-    // up). Popover is only the signed-out fallback inside toggle_desktop_window.
-    // The "show" command still carries the icon anchor for that fallback.
+    // US-004 retarget: menu-bar click toggles the COMPACT popover. Full desktop
+    // is reserved for the right-click "desktop" command. The "show" command
+    // still carries the icon anchor for popover positioning.
     expect(helper).toContain('strip_prefix("show")');
     expect(helper).toContain('set_tray_anchor_x');
-    expect(helper).toContain('toggle_desktop_window');
-    expect(helper).not.toContain('toggle_popover_window');
+    expect(helper).toContain('toggle_popover_window');
+    expect(helper).not.toMatch(
+      /strip_prefix\("show"\)[\s\S]*?toggle_desktop_window/,
+    );
     expect(helper).toContain('"quit" => app.exit(0)');
   });
 
@@ -159,7 +161,7 @@ describe('macOS menu-bar helper process (HQ status item)', () => {
   it('marshals the menu-bar click toggle onto the main thread (no poll-thread deadlock)', () => {
     const helper = read('src-tauri/src/tray_helper.rs');
     // The poll thread must NOT call window ops directly — it marshals them.
-    // US-005: show → toggle_desktop_window (same no-deadlock contract as before).
-    expect(helper).toMatch(/run_on_main_thread\([\s\S]*?toggle_desktop_window/);
+    // US-004: show → toggle_popover_window (same no-deadlock contract).
+    expect(helper).toMatch(/run_on_main_thread\([\s\S]*?toggle_popover_window/);
   });
 });

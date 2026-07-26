@@ -18,9 +18,10 @@ describe('company-store scopes the background poll to the active company', () =>
   const app = readRepoFile('src/desktop-alt/DesktopApp.svelte');
 
   it('polls + focus-refreshes only the active slug, not all warmed slugs', () => {
-    expect(store).toContain('export function setActiveCompany');
+    expect(store).toContain('export function setActiveCompanyResource');
     expect(store).toContain('function refreshActive');
-    expect(store).toContain('if (activeSlug)');
+    expect(store).toContain('if (active)');
+    expect(store).toContain('load(active.resource, active.slug');
     expect(store).toContain('setInterval(refreshActive');
     expect(store).toContain("addEventListener('focus', refreshActive)");
     // the old "refresh every warmed company" loop must be gone from the poll path
@@ -29,7 +30,8 @@ describe('company-store scopes the background poll to the active company', () =>
   });
 
   it('DesktopApp tells the store which company is on screen', () => {
-    expect(app).toContain('setActiveCompany');
-    expect(app).toContain('setActiveCompany(activeCompany?.slug ?? null)');
+    expect(app).toContain('setActiveCompanyResource');
+    expect(app).toContain('activeCompanySyncEnabled ? activeCompany?.slug ?? null : null');
+    expect(app).toContain('activeCompanySyncEnabled ? polledCompanyResource : null');
   });
 });

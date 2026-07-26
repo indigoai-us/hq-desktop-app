@@ -535,6 +535,21 @@ pub async fn run_replace_from_staging() -> Result<RescueRunResult, String> {
         .map_err(|e| format!("spawn rescue script: {e}"))?;
 
     let exit_code = status.code().unwrap_or(-1);
+    if exit_code == 0 {
+        let client = authed_client(&token)?;
+        let commit = crate::commands::hq_core_state::persist_remote_baseline(
+            &hq_folder,
+            &client,
+            &repo,
+            "main",
+        )
+        .await
+        .map_err(|e| format!("staging update applied but baseline persistence failed: {e}"))?;
+        log(
+            "hq-core-staging",
+            &format!("persisted normalized drift baseline {repo}@{commit}"),
+        );
+    }
     let log_tail =
         tail_log(&log_path, 40).unwrap_or_else(|e| format!("(log tail unavailable: {e})"));
 

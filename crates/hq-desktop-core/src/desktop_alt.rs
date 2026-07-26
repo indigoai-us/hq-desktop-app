@@ -2451,6 +2451,7 @@ mod tests {
             local_path: None,
             membership_status: None,
             role: None,
+            sync_enabled: true,
             last_synced_at: None,
             broken_reason: broken_reason.map(str::to_string),
             invited_by: None,

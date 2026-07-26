@@ -1,4 +1,4 @@
-import type { Workspace } from '../../lib/workspaces';
+import { isWorkspaceSyncEnabled, type Workspace } from '../../lib/workspaces';
 import { CORE_SETUP_LABEL, isCorePath } from '../../lib/progressLabel';
 
 export type SyncState = 'idle' | 'syncing' | 'error' | 'conflict' | 'setup-needed' | 'auth-error';
@@ -64,6 +64,7 @@ export interface SourceViewModel {
   kind: Workspace['kind'];
   state: Workspace['state'];
   isPersonal: boolean;
+  syncEnabled: boolean;
   showSyncMode: boolean;
   /** Local-only or broken rows can be reconciled to the cloud in place via
    *  `connect_workspace_to_cloud` (mirrors the menubar WorkspaceList Connect
@@ -231,10 +232,14 @@ export function buildSourceRows(args: {
 
   return ordered.map((workspace) => {
     const stats = statsBySlug[workspace.slug] ?? emptyWorkspaceStats();
+    const syncEnabled = isWorkspaceSyncEnabled(workspace);
     const syncing = syncState === 'syncing' && progress?.company === workspace.slug;
     const reauth = needsReauthWorkspace(workspace, syncState);
     const sourceAttention = Boolean(stats.errorMessage) || stats.aborted || stats.conflicts > 0;
-    const paused = !reauth && !sourceAttention && isPausedWorkspace(workspace, cloudReachable);
+    const paused =
+      !reauth &&
+      !sourceAttention &&
+      (!syncEnabled || isPausedWorkspace(workspace, cloudReachable));
     const plannedFiles = Math.max(stats.plannedFiles, 0);
     const progressPct =
       syncing && plannedFiles > 0
@@ -264,10 +269,11 @@ export function buildSourceRows(args: {
       kind: workspace.kind,
       state: workspace.state,
       isPersonal: workspace.kind === 'personal',
-      showSyncMode: showSyncModeFor(workspace),
+      syncEnabled,
+      showSyncMode: syncEnabled && showSyncModeFor(workspace),
       connectable: workspace.state === 'local-only' || workspace.state === 'broken',
       name: workspace.displayName,
-      detail,
+      detail: !syncEnabled ? 'Sync disabled on this Mac' : detail,
       liveState: syncing
         ? 'syncing'
         : reauth || sourceAttention
@@ -281,7 +287,7 @@ export function buildSourceRows(args: {
           ? 'Reauth'
           : sourceAttention
             ? 'Needs attention'
-            : paused
+            : !syncEnabled || paused
               ? 'Paused'
               : 'Up to date',
       lastSyncLabel:

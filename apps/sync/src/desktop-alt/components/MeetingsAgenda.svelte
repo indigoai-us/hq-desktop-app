@@ -1,5 +1,6 @@
 <script lang="ts">
   import {
+    botAttachmentState,
     botForEvent,
     companyLabel,
     durationLabel,
@@ -33,6 +34,8 @@
     scheduledBots?: ScheduledBot[];
     /** event ids with an in-flight bot action — disables + spins that row. */
     pendingEventIds?: Set<string>;
+    /** Deep-link focus from notification / open_meetings_window. */
+    focusedMeetingId?: string | null;
     /** Bot-action callbacks. The store owns the network call; this stays presentational. */
     onInvite?: (evt: MeetingEvent) => void;
     onUninvite?: (evt: MeetingEvent) => void;
@@ -50,6 +53,7 @@
     botsByEventId = new Map(),
     scheduledBots = [],
     pendingEventIds = new Set(),
+    focusedMeetingId = null,
     onInvite = () => {},
     onUninvite = () => {},
     onJoinNow = () => {},
@@ -57,6 +61,18 @@
   }: Props = $props();
 
   const upNextId = $derived(upNext?.id ?? null);
+
+  $effect(() => {
+    const id = focusedMeetingId?.trim();
+    if (!id) return;
+    const frame = requestAnimationFrame(() => {
+      const row = document.querySelector<HTMLElement>(
+        `[data-testid="meeting-row"][data-meeting-id="${CSS.escape(id)}"]`,
+      );
+      row?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    });
+    return () => cancelAnimationFrame(frame);
+  });
 </script>
 
 <!-- Naked agenda: hairline day groups, no rounded meeting-card shells. -->
@@ -80,9 +96,19 @@
           {@const bot = botForEvent(event, botsByEventId, scheduledBots)}
           {@const pending = pendingEventIds.has(event.id)}
           {@const kind = rowButtonKind(bot)}
+          {@const attachment = botAttachmentState(bot)}
           {@const url = eventMeetingUrl(event)}
           {@const recurring = isRecurringMeeting(event)}
-          <div class="meeting-row" class:past={state === 'past'} class:live={state === 'live'} class:next={state === 'next'}>
+          <div
+            class="meeting-row"
+            class:past={state === 'past'}
+            class:live={state === 'live'}
+            class:next={state === 'next'}
+            class:focused={focusedMeetingId === event.id}
+            data-bot-state={attachment}
+            data-meeting-id={event.id}
+            data-testid="meeting-row"
+          >
             <div class="mtime">{timeLabel(event)}</div>
             <div class="mmeta">
               <div class="mname">
@@ -338,6 +364,11 @@
 
   .meeting-row.past {
     opacity: 0.62;
+  }
+
+  .meeting-row.focused {
+    background: color-mix(in srgb, var(--v4-accent, #c9a227) 12%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--v4-accent, #c9a227) 35%, transparent);
   }
 
   .mtime {

@@ -53,12 +53,10 @@ describe('US-004 / US-001: chrome-free menubar notification panel', () => {
     expect(compactSource).toContain('class="mbp-unread-count"');
   });
 
-  it('offers Open Inbox jump to the two-pane Inbox quick window', () => {
-    expect(popoverSource).toContain('data-testid="popover-open-inbox"');
-    // Side pane + detail canvas — not the full desktop-alt Company OS shell.
-    expect(popoverSource).toContain("open_inbox_window");
-    expect(popoverSource).not.toContain("route: 'inbox'");
-    // Still chrome-free: no full desktop-view toggle or footer bar.
+  it('offers Open HQ jump to the full desktop window at the inbox route', () => {
+    expect(popoverSource).toContain('data-testid="popover-open-hq"');
+    expect(popoverSource).toContain("open_desktop_alt_window");
+    expect(popoverSource).toContain("route: 'inbox'");
     expect(popoverSource).not.toContain('Open desktop view');
     expect(popoverSource).not.toContain('data-testid="desktop-alt-toggle"');
   });

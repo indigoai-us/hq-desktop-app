@@ -1,4 +1,3 @@
-import { invoke } from '@tauri-apps/api/core';
 import { companyStore } from './company-store.svelte';
 
 export interface CompanyBoardCard {
@@ -44,15 +43,21 @@ export function useCompanyBoard(options: { slug: () => string | null; enabled?: 
   let loading = $state(false);
   let error = $state<string | null>(null);
   let reloadToken = $state(0);
+  // One-shot: Retry bumps reloadToken; consume it so a successful force-load's
+  // revision bump does not re-enter force mode and loop forever.
+  let appliedReloadToken = 0;
 
   $effect(() => {
     const slug = options.slug();
     const enabled = options.enabled?.() ?? true;
-    reloadToken;
-    board = emptyCompanyBoard();
+    const token = reloadToken;
+    void companyStore.revision;
+    const force = token > appliedReloadToken;
+    if (force) appliedReloadToken = token;
     error = null;
 
     if (!slug || !enabled) {
+      board = emptyCompanyBoard();
       loading = false;
       return;
     }
@@ -60,21 +65,25 @@ export function useCompanyBoard(options: { slug: () => string | null; enabled?: 
     let cancelled = false;
 
     const warm = companyStore.board(slug);
-    board = warm ? shapeBoard(warm) : emptyCompanyBoard();
-    loading = warm === null;
+    if (warm) {
+      board = shapeBoard(warm);
+      loading = false;
+    } else {
+      board = emptyCompanyBoard();
+      loading = true;
+    }
 
-    void invoke<CompanyBoard>('get_company_board', { slug })
+    void companyStore.loadBoard(slug, force)
       .then((result) => {
         if (!cancelled) {
           board = shapeBoard(result);
-          companyStore.setBoard(slug, result);
         }
       })
       .catch((err) => {
         console.error('get_company_board failed:', err);
         if (!cancelled) {
           error = String(err);
-          board = emptyCompanyBoard();
+          if (companyStore.board(slug) === null) board = emptyCompanyBoard();
         }
       })
       .finally(() => {

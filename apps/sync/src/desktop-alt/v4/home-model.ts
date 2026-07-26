@@ -53,6 +53,8 @@ export interface HomeDriftEntry {
 }
 
 export interface HomeDriftReport {
+  baselineStatus: 'Available' | 'BaselineUnavailable';
+  updateRequired: boolean;
   /** USER-EDIT drift count — THE drift number (missing/added don't count). */
   count: number;
   modified: HomeDriftEntry[];

@@ -219,6 +219,11 @@
     flex-shrink: 0;
   }
 
+  /* Windows uses a native decorated title bar — no overlay traffic lights. */
+  :global(html[data-platform='windows']) .detail-header {
+    padding-top: 0.75rem;
+  }
+
   .detail-header h1 {
     margin: 0;
     font-size: 1rem;

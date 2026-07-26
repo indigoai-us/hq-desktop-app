@@ -1883,28 +1883,19 @@ fn show_focus_inbox_window(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// Open the two-pane Inbox quick window (side pane + detail canvas) without
-/// forcing a specific DM. Used by menubar "Open Inbox", widget menu, etc.
-/// Does **not** open the full desktop-alt app.
+/// Open Inbox as a typed desktop destination (US-004 WindowRouter).
+///
+/// Legacy name kept for frontend IPC; no longer creates a top-level Inbox
+/// webview. Specific DM threads still use [`open_dm_detail`] (detachable
+/// short-lived detail surface).
 #[tauri::command]
 pub async fn open_inbox_window(app: AppHandle) -> Result<(), String> {
-    log(LOG_TAG, "INBOX_WINDOW_OPEN");
-    // Clear any stashed single-DM open so ready-handshake doesn't re-open a
-    // stale thread when the window is first created.
-    if let Some(state) = app.try_state::<PendingDmEvents>() {
-        *state.0.lock().unwrap_or_else(|p| p.into_inner()) = vec![];
-    }
-
-    let existed = ensure_inbox_window(&app)?;
-    if existed {
-        show_focus_inbox_window(&app)?;
-        // Reset main canvas to "pick a conversation" (side pane stays loaded).
-        app.emit_to(DM_DETAIL_LABEL, EVENT_DM_INBOX_OPEN, serde_json::json!({}))
-            .map_err(|e| e.to_string())?;
-        return Ok(());
-    }
-    // New window: ready-handshake shows it; no pending DM to emit.
-    Ok(())
+    log(LOG_TAG, "INBOX_WINDOW_OPEN → desktop destination inbox");
+    crate::commands::desktop_alt::open_destination(
+        app,
+        crate::commands::desktop_alt::DesktopDestination::Inbox,
+    )
+    .await
 }
 
 /// Tauri command: open (or focus) the DM detail window for a single DM event.

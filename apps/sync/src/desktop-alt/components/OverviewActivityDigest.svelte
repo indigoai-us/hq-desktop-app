@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { invoke } from '@tauri-apps/api/core';
   import { companyStore } from '../lib/company-store.svelte';
   import Sparkline from './Sparkline.svelte';
 
@@ -12,6 +11,8 @@
   interface Props {
     slug: string;
     cloudBacked?: boolean;
+    /** Local sync Off — pause fetches without treating the company as disconnected. */
+    syncEnabled?: boolean;
     /** Open the global Inbox for full notification chronology. */
     onopeninbox?: () => void;
   }
@@ -32,7 +33,8 @@
     top: ActivityContributor[];
   }
 
-  let { slug, cloudBacked = true, onopeninbox }: Props = $props();
+  let { slug, cloudBacked = true, syncEnabled = true, onopeninbox }: Props = $props();
+  const resourcesEnabled = $derived(cloudBacked && syncEnabled);
 
   const emptyStats = (): ActivityStats => ({ files7: 0, edits7: 0, members: 0, vaultSize: '' });
   const emptyActivity = (): CompanyActivity => ({ stats: emptyStats(), sparkline: [], top: [] });
@@ -63,22 +65,27 @@
   }
 
   $effect(() => {
-    activity = emptyActivity();
-    if (!slug || !cloudBacked) {
+    void companyStore.revision;
+    if (!slug || !resourcesEnabled) {
+      activity = emptyActivity();
       loading = false;
       return;
     }
     let cancelled = false;
 
     const warm = companyStore.activity(slug);
-    activity = warm != null ? normalize(warm as Partial<CompanyActivity>) : emptyActivity();
-    loading = warm == null;
+    if (warm != null) {
+      activity = normalize(warm as Partial<CompanyActivity>);
+      loading = false;
+    } else {
+      activity = emptyActivity();
+      loading = true;
+    }
 
-    void invoke<Partial<CompanyActivity>>('get_company_activity', { slug })
+    void companyStore.loadActivity<Partial<CompanyActivity>>(slug)
       .then((result) => {
         if (!cancelled) {
           activity = normalize(result);
-          companyStore.setActivity(slug, result);
         }
       })
       .catch((err) => {

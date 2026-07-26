@@ -4,11 +4,19 @@
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { onMount, tick } from 'svelte';
   import { loadMeetingsCache } from '../lib/meetingsCache';
-  import { MESSAGE_PERSON_EVENT, takePendingConversation } from '../lib/pendingConversation';
+  import {
+    MESSAGE_PERSON_EVENT,
+    takePendingConversation,
+    type ConversationTarget,
+  } from '../lib/pendingConversation';
   import { effectiveTotalFiles as computeEffectiveTotalFiles } from '../lib/effective-total-files';
   import { sanitizeVisibleIdentifiers } from '../lib/visible-labels';
   import { safeUnlisten } from '../lib/listener-registry';
-  import type { Workspace, WorkspacesResult } from '../lib/workspaces';
+  import {
+    isWorkspaceSyncEnabled,
+    type Workspace,
+    type WorkspacesResult,
+  } from '../lib/workspaces';
   import HomePage from './pages/HomePage.svelte';
   import MissionControlPage from './pages/MissionControlPage.svelte';
   import MeetingsPage from './pages/MeetingsPage.svelte';
@@ -22,7 +30,12 @@
   import { loadLocalProjects } from './lib/local-projects';
   import type { Project } from './lib/projects-model';
   import { emitDesktopTelemetry } from '../lib/desktop-telemetry';
-  import { startCompanyStore, setActiveCompany } from './lib/company-store.svelte';
+  import {
+    invalidateCompanyResources,
+    setActiveCompanyResource,
+    startCompanyStore,
+    type CompanyResource,
+  } from './lib/company-store.svelte';
   import { openAgentWorkflow } from './lib/agent-workflow';
   import {
     COMPANY_SECTIONS,
@@ -229,20 +242,30 @@
         : getDesktopCompanies(workspaces),
   );
   const orderedCompanies = $derived(sortV4CompaniesConnectedFirst(shellCompanies));
-  const watchedWorkspaceCount = $derived(shellCompanies.length);
+  const watchedCompanies = $derived(shellCompanies.filter((workspace) => isWorkspaceSyncEnabled(workspace)));
+  const watchedWorkspaceCount = $derived(watchedCompanies.length);
   const routeKey = $derived(getDesktopRouteKey(route));
   const activeCompany = $derived(getDesktopActiveCompany(route, shellCompanies));
-  // Point the company-store's background poll at whichever company is on screen,
-  // so it re-fetches only the open company instead of all of them every 30s.
-  $effect(() => {
-    setActiveCompany(activeCompany?.slug ?? null);
-  });
+  const activeCompanySyncEnabled = $derived(isWorkspaceSyncEnabled(activeCompany));
   const libraryTab = $derived<LibraryTab>(
     route.kind === 'library' ? route.tab ?? DEFAULT_LIBRARY_TAB : DEFAULT_LIBRARY_TAB,
   );
   const companyTab = $derived<CompanyTab>(
     route.kind === 'company' ? route.tab ?? DEFAULT_COMPANY_TAB : DEFAULT_COMPANY_TAB,
   );
+  const polledCompanyResource = $derived<CompanyResource | null>(
+    companyTab === 'activity' || companyTab === 'deployments' || companyTab === 'secrets'
+      ? companyTab
+      : companyTab === 'overview'
+        ? 'summary'
+        : null,
+  );
+  $effect(() => {
+    setActiveCompanyResource(
+      activeCompanySyncEnabled ? activeCompany?.slug ?? null : null,
+      activeCompanySyncEnabled ? polledCompanyResource : null,
+    );
+  });
   // Files mode (US-009): the active company + selected file live IN THE ROUTE,
   // so they survive a reload (persisted below) and reactive updates don't
   // remount the shell (routeKey is 'files' regardless of slug/path).
@@ -416,14 +439,34 @@
   // navigation AWAY from a non-files route (US-010).
   let routeBeforeFiles = $state<DesktopRoute>({ kind: 'home' });
 
-  function handleMessagePerson(): void {
-    // Consume (and clear) the stashed conversation target: no MessagesShell
-    // mounts inside the desktop window anymore (US-008), so an unconsumed
-    // stash would leak into the next standalone Messages-window shell mount
-    // and open an unexpected conversation there. The Inbox is the in-desktop
-    // messaging surface — the sender's DM rows carry quick-reply inline.
-    takePendingConversation();
+  // Deep-link compose recipient for Inbox ("Message the sharer"). Cleared when
+  // the user dismisses/sends, or when a new target arrives.
+  let inboxComposeTarget = $state<ConversationTarget | null>(null);
+
+  function mapMessagesTarget(payload: {
+    personUid?: string;
+    email?: string;
+    displayName?: string;
+  }): ConversationTarget {
+    return {
+      personUid: payload.personUid?.trim() ?? '',
+      email: payload.email?.trim() ?? '',
+      displayName: payload.displayName?.trim() ?? '',
+    };
+  }
+
+  function openInboxWithComposeTarget(target: ConversationTarget | null): void {
+    const uid = target?.personUid?.trim() ?? '';
+    const email = target?.email?.trim() ?? '';
+    inboxComposeTarget = uid || email ? target : null;
     navigate({ kind: 'inbox' });
+  }
+
+  function handleMessagePerson(): void {
+    // Consume (and clear) the browser stash: no MessagesShell mounts inside
+    // the desktop window anymore (US-008). Hand the recipient to Inbox compose
+    // instead of discarding it.
+    openInboxWithComposeTarget(takePendingConversation());
   }
 
   function navigate(nextRoute: DesktopRoute) {
@@ -561,17 +604,9 @@
       // above refresh it on their own. We deliberately do NOT reload the document
       // or remount the chrome on a workspace-list change: a full reload mid-paint
       // is what blanked/froze the desktop on focus/sync.
-      // Warm the company-tab preload cache for every known company once the real
-      // slugs resolve. Idempotent + reconciles, so companies that appear on a
-      // later refresh still get warmed; the 30s poll + focus listener wire once.
-      startCompanyStore(
-        nextCompanies
-          .filter(
-            (company) =>
-              company.state === 'synced' || company.state === 'cloud-only' || Boolean(company.cloudUid),
-          )
-          .map((company) => company.slug),
-      );
+      // Launch owns cheap workspace/sidebar metadata only. Company resources
+      // are loaded lazily by the selected route and shared across its consumers.
+      startCompanyStore();
       if (nextCompanies.length > 0) queueDesktopRenderAudit();
       // Re-resolve the default landing on the FIRST live workspace load
       // (US-007): a cold/partial cache may have landed on Home or on a
@@ -639,6 +674,20 @@
       loadActivity(),
       loadHomeProjects(),
     ]);
+  }
+
+  function isSyncEnabledSlug(slug: string): boolean {
+    return isWorkspaceSyncEnabled(workspaces.find((workspace) => workspace.slug === slug));
+  }
+
+  function applyWorkspaceSyncEnabled(slug: string, enabled: boolean) {
+    const patch = (items: Workspace[]) =>
+      items.map((workspace) =>
+        workspace.slug === slug ? { ...workspace, syncEnabled: enabled } : workspace,
+      );
+    workspaces = patch(workspaces);
+    companies = patch(companies);
+    renderCompanies = patch(renderCompanies);
   }
 
   async function handleSyncAll() {
@@ -976,6 +1025,45 @@
     // stashed a pending conversation (lib/pendingConversation) — route to the
     // combined Inbox, the in-desktop messaging surface now (US-008).
     window.addEventListener(MESSAGE_PERSON_EVENT, handleMessagePerson);
+    // Rust path: ShareMainPane → open_messages_window(target) emits here.
+    void listen<ConversationTarget>('messages:open-conversation', (event) => {
+      if (!mounted) return;
+      openInboxWithComposeTarget(mapMessagesTarget(event.payload ?? {}));
+    }).then((unlisten) => {
+      if (!mounted) {
+        unlisten();
+        return;
+      }
+      unlisteners.push(safeUnlisten(unlisten));
+    });
+    // Cold start: target may have been stashed before listeners mounted.
+    void invoke<{
+      personUid?: string;
+      email?: string;
+      displayName?: string;
+    } | null>('take_pending_messages_target')
+      .then((pending) => {
+        if (mounted && pending) {
+          openInboxWithComposeTarget(mapMessagesTarget(pending));
+        }
+      })
+      .catch(() => undefined);
+    const handleWorkspaceSyncEnabledChanged = (event: Event) => {
+      const detail = (event as CustomEvent<{ slug?: string; enabled?: boolean }>).detail;
+      if (!detail?.slug || typeof detail.enabled !== 'boolean') return;
+      applyWorkspaceSyncEnabled(detail.slug, detail.enabled);
+      // Watch spawn args read workspaceSyncEnabled at start — bounce so Off
+      // companies leave the fanout immediately (mirrors Instant-sync bounce).
+      if (autoSyncOn) {
+        void invoke('stop_daemon')
+          .then(() => invoke('start_daemon'))
+          .catch((err) => console.error('workspace-sync daemon bounce failed:', err));
+      }
+    };
+    window.addEventListener(
+      'hq:workspace-sync-enabled-changed',
+      handleWorkspaceSyncEnabledChanged as EventListener,
+    );
 
     void getCurrentWindow()
       .onFocusChanged(({ payload: focused }) => {
@@ -1027,9 +1115,10 @@
         if (syncState !== 'syncing') {
           resetRunState({ preserveTotalFiles: true });
         }
-        syncFanoutTotal = event.payload.companies.length;
+        const companies = event.payload.companies.filter((company) => isSyncEnabledSlug(company.slug));
+        syncFanoutTotal = companies.length;
         syncFanoutDoneCount = 0;
-        syncCompanies = event.payload.companies;
+        syncCompanies = companies;
         await invoke('set_tray_state', { state: 'syncing' }).catch(() => undefined);
       }),
       listen<{ company: string; path: string; bytes: number; message?: string }>(
@@ -1095,7 +1184,10 @@
         conflicts: number;
         aborted: boolean;
       }>('sync:complete', async (event) => {
-        syncFanoutDoneCount += 1;
+        invalidateCompanyResources(event.payload.company);
+        if (isSyncEnabledSlug(event.payload.company)) {
+          syncFanoutDoneCount += 1;
+        }
         syncFanoutFilesSkipped += event.payload.filesSkipped;
         updateWorkspaceStats(event.payload.company, (stats) => ({
           ...stats,
@@ -1250,6 +1342,10 @@
       window.removeEventListener('focus', hydrateMeetingStatus);
       window.removeEventListener('storage', hydrateMeetingStatus);
       window.removeEventListener(MESSAGE_PERSON_EVENT, handleMessagePerson);
+      window.removeEventListener(
+        'hq:workspace-sync-enabled-changed',
+        handleWorkspaceSyncEnabledChanged as EventListener,
+      );
     };
   });
 </script>
@@ -1262,7 +1358,7 @@
 >
   <V4TitleBar
     {syncState}
-    watchedCount={renderWorkspaceCount}
+    watchedCount={watchedWorkspaceCount}
     {lastSyncLabel}
     syncingCompany={syncProgress?.company ?? null}
     fanoutDone={syncFanoutDoneCount}
@@ -1298,6 +1394,7 @@
           {route}
           companies={renderCompanies}
           {cloudReachable}
+          onworkspaceenabledchange={(slug, enabled) => applyWorkspaceSyncEnabled(slug, enabled)}
           onnavigate={(next) => navigate(fromV4Route(next))}
         />
       {/if}
@@ -1381,7 +1478,12 @@
             </div>
           {:else if route.kind === 'inbox'}
             <div class="page">
-              <InboxPage />
+              <InboxPage
+                composeTarget={inboxComposeTarget}
+                oncomposedismiss={() => {
+                  inboxComposeTarget = null;
+                }}
+              />
             </div>
           {:else if route.kind === 'moderation'}
             <!-- Admin-only. Rendered only when the admin gate is satisfied

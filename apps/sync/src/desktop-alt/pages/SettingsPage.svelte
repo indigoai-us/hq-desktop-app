@@ -50,6 +50,8 @@
     gitShaUpstream: string | null;
   };
   type DriftReport = {
+    baselineStatus: 'Available' | 'BaselineUnavailable';
+    updateRequired: boolean;
     count: number;
     modified: DriftEntry[];
     missing: DriftEntry[];
@@ -325,6 +327,11 @@
           telemetryEnabled,
         },
       });
+      window.dispatchEvent(
+        new CustomEvent('hq:workspace-sync-enabled-changed', {
+          detail: { slug: 'personal', enabled: personalSyncEnabled },
+        }),
+      );
       saved = true;
       window.setTimeout(() => (saved = false), 1000);
     } catch (err) {
@@ -1118,7 +1125,8 @@
   }
 
   select {
-    color-scheme: dark;
+    /* Follow OS appearance — never lock the native control to dark (US-003). */
+    color-scheme: light dark;
   }
 
   select option {

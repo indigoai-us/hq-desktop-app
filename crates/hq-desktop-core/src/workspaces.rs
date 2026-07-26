@@ -48,6 +48,9 @@ pub struct Workspace {
     pub local_path: Option<String>,
     pub membership_status: Option<String>,
     pub role: Option<String>,
+    /// Local per-workspace sync gate on this machine. Distinct from the cloud
+    /// footprint (`shared` / `all` / `custom`), which remains server-side.
+    pub sync_enabled: bool,
     pub last_synced_at: Option<String>,
     /// Human-readable diagnostic when state is Broken. UI surfaces in the tooltip.
     pub broken_reason: Option<String>,
@@ -321,6 +324,114 @@ pub fn humanize_slug(slug: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+const WORKSPACE_SYNC_ENABLED_KEY: &str = "workspaceSyncEnabled";
+
+/// Read the local per-company sync-enabled map from `~/.hq/menubar.json`.
+/// Missing / malformed data fails open to the legacy default-on behavior.
+pub fn read_workspace_sync_enabled_map() -> BTreeMap<String, bool> {
+    let path = match paths::menubar_json_path() {
+        Ok(path) => path,
+        Err(_) => return BTreeMap::new(),
+    };
+    let parsed: serde_json::Value = match std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+    {
+        Some(value) => value,
+        None => return BTreeMap::new(),
+    };
+
+    parsed
+        .get(WORKSPACE_SYNC_ENABLED_KEY)
+        .and_then(|value| value.as_object())
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|(slug, value)| value.as_bool().map(|enabled| (slug.clone(), enabled)))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+pub fn workspace_sync_enabled_for_slug(slug: &str) -> bool {
+    read_workspace_sync_enabled_map()
+        .get(slug)
+        .copied()
+        .unwrap_or(true)
+}
+
+/// Persist one company's local sync-enabled state to `~/.hq/menubar.json`
+/// without dropping unrelated top-level keys.
+pub fn write_workspace_sync_enabled(slug: &str, enabled: bool) -> Result<(), String> {
+    let path = paths::menubar_json_path()?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("create menubar config directory: {e}"))?;
+    }
+
+    let mut root = if path.exists() {
+        std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+            .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()))
+    } else {
+        serde_json::Value::Object(serde_json::Map::new())
+    };
+
+    let obj = root
+        .as_object_mut()
+        .ok_or_else(|| "menubar.json root is not an object".to_string())?;
+    let map = obj
+        .entry(WORKSPACE_SYNC_ENABLED_KEY.to_string())
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()))
+        .as_object_mut()
+        .ok_or_else(|| "workspaceSyncEnabled is not an object".to_string())?;
+    map.insert(slug.to_string(), serde_json::Value::Bool(enabled));
+
+    let serialized = serde_json::to_string_pretty(&root)
+        .map_err(|e| format!("serialize menubar.json: {e}"))?;
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, serialized).map_err(|e| format!("write tmp menubar.json: {e}"))?;
+    replace_file(&tmp, &path).map_err(|e| format!("rename menubar.json: {e}"))?;
+    Ok(())
+}
+
+/// Atomically replace `dest` with `src` (sibling temp → final).
+///
+/// On Windows, `std::fs::rename` fails with `AlreadyExists` when the
+/// destination exists — the common case for `menubar.json` toggles. Use
+/// delete-then-rename there; Unix rename replaces atomically.
+fn replace_file(src: &Path, dest: &Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        match std::fs::rename(src, dest) {
+            Ok(()) => Ok(()),
+            Err(err)
+                if err.kind() == std::io::ErrorKind::AlreadyExists
+                    || err.raw_os_error() == Some(183) =>
+            {
+                let _ = std::fs::remove_file(dest);
+                std::fs::rename(src, dest)
+            }
+            Err(err) => Err(err),
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        std::fs::rename(src, dest)
+    }
+}
+
+/// Slugs the user has explicitly paused for local sync (`workspaceSyncEnabled=false`).
+/// Missing / true entries are omitted — fail-open matches the runner default.
+pub fn disabled_workspace_sync_slugs() -> Vec<String> {
+    read_workspace_sync_enabled_map()
+        .into_iter()
+        .filter(|(_, enabled)| !*enabled)
+        .map(|(slug, _)| slug)
+        .collect()
 }
 
 // ── Manifest patching ─────────────────────────────────────────────────────────
@@ -953,5 +1064,30 @@ companies:
 
         let (entries, _) = discover_local_companies(tmp.path());
         assert!(entries.iter().any(|e| e.slug == "fresh"));
+    }
+
+    #[test]
+    fn write_workspace_sync_enabled_replaces_existing_menubar_json() {
+        use crate::test_support::ENV_MUTEX;
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".hq")).unwrap();
+        std::fs::write(
+            tmp.path().join(".hq/menubar.json"),
+            r#"{"hqPath":"/tmp/HQ","workspaceSyncEnabled":{"acme":true}}"#,
+        )
+        .unwrap();
+
+        std::env::set_var("HOME", tmp.path());
+        write_workspace_sync_enabled("acme", false).expect("first toggle");
+        write_workspace_sync_enabled("acme", true).expect("second toggle over existing file");
+        write_workspace_sync_enabled("zeta", false).expect("add second slug");
+        let map = read_workspace_sync_enabled_map();
+        let disabled = disabled_workspace_sync_slugs();
+        std::env::remove_var("HOME");
+
+        assert_eq!(map.get("acme"), Some(&true));
+        assert_eq!(map.get("zeta"), Some(&false));
+        assert_eq!(disabled, vec!["zeta".to_string()]);
     }
 }

@@ -64,11 +64,14 @@
   let connectBusy = $state(false);
   let inviteBusy = $state(false);
 
+  // Connectivity (vault/membership) — independent of the local Off toggle.
   const cloudBacked = $derived(
     company.state === 'synced' ||
       company.state === 'cloud-only' ||
       (company.kind === 'company' && Boolean(company.cloudUid)),
   );
+  // Local runner pause — suppress resource polling without rewriting connectivity.
+  const syncEnabled = $derived(company.syncEnabled !== false);
 
   /** Active operations destination when the company tab is under More. */
   const operationsDestination = $derived<CompanyOperationsTab>(
@@ -233,6 +236,7 @@
         <CompanyBoardPanel
           slug={company.slug}
           {cloudBacked}
+          {syncEnabled}
           {onopenprojects}
           {onopengoals}
           {onopeninbox}
@@ -254,6 +258,7 @@
         <CompanyOperationsPanel
           slug={company.slug}
           {cloudBacked}
+          {syncEnabled}
           destination={operationsDestination}
           ondestinationchange={(destination) => onopenoperations?.(destination)}
         />

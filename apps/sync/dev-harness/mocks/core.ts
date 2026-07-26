@@ -742,6 +742,7 @@ const handlers: Record<string, Handler> = {
   respond_dm_request: () => null,
   messages_window_ready: () => null,
   open_messages_window: () => null,
+  take_pending_messages_target: () => null,
 };
 
 export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {

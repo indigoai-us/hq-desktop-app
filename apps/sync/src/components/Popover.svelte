@@ -124,13 +124,11 @@
     feedEl?.markAllRead();
   }
 
-  /** Open the two-pane Inbox quick window (side pane + reply/detail canvas).
-   *  Not the full desktop-alt app — that stays behind explicit Open desktop. */
-  async function openDesktopInbox() {
+  async function openHQ() {
     try {
-      await invoke('open_inbox_window');
+      await invoke('open_desktop_alt_window', { route: 'inbox' });
     } catch (e) {
-      console.error('popover: open_inbox_window failed', e);
+      console.error('popover: open_desktop_alt_window failed', e);
     }
   }
 
@@ -436,10 +434,10 @@
           <button
             class="mbp-sec-action mbp-sec-action-primary"
             type="button"
-            data-testid="popover-open-inbox"
-            onclick={() => void openDesktopInbox()}
+            data-testid="popover-open-hq"
+            onclick={() => void openHQ()}
           >
-            Open Inbox
+            Open HQ
           </button>
         </div>
       </div>
@@ -654,15 +652,28 @@
     overflow: hidden;
   }
 
-  /* Windows has no NSVisualEffectView behind the transparent webview. Give
-     the tray popup a fully opaque surface so other windows never bleed
-     through its content; macOS keeps the native glass treatment above. */
+  /* Windows: Mica/Acrylic is applied natively (window_effects). Keep an
+     opaque theme-matched CSS surface so content never bleeds through when
+     composition fails — but never hard-code dark (#18181b). Tokens follow
+     prefers-color-scheme / live OS theme (US-003). */
   :global(html[data-platform='windows']) .mbpop {
-    background: #18181b;
+    background: var(--pop-bg, #f7f7f8);
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
-    border-color: rgba(255, 255, 255, 0.16);
-    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
+    border-color: var(--pop-border);
+    box-shadow: var(--pop-shadow, 0 16px 40px rgba(0, 0, 0, 0.22));
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :global(html[data-platform='windows']) .mbpop {
+      background: var(--pop-bg, #262628);
+    }
+  }
+
+  @media (prefers-reduced-transparency: reduce) {
+    :global(html[data-platform='windows']) .mbpop {
+      background: var(--pop-bg, #f7f7f8);
+    }
   }
 
   .mbpop-content {

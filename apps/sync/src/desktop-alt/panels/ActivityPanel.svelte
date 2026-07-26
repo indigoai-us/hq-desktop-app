@@ -8,6 +8,8 @@
   interface Props {
     slug: string;
     cloudBacked?: boolean;
+    /** Local sync Off — pause fetches without treating the company as disconnected. */
+    syncEnabled?: boolean;
   }
 
   interface ActivityStats {
@@ -43,7 +45,8 @@
     top: ActivityContributor[];
   }
 
-  let { slug, cloudBacked = true }: Props = $props();
+  let { slug, cloudBacked = true, syncEnabled = true }: Props = $props();
+  const resourcesEnabled = $derived(cloudBacked && syncEnabled);
 
   const emptyStats = (): ActivityStats => ({
     files7: 0,
@@ -63,6 +66,8 @@
   let loading = $state(false);
   let error = $state<string | null>(null);
   let reloadToken = $state(0);
+  // One-shot force flag — see company-board.svelte.ts (Codex P1 reload loop).
+  let appliedReloadToken = 0;
   let activityDirection = $state<ActivityDirection>('all');
 
   // HQ root for the Claude Code drill-in (US-012). Loaded lazily via get_config
@@ -93,11 +98,14 @@
   const recentCount = $derived(filteredRecent.length);
 
   $effect(() => {
-    reloadToken;
-    activity = emptyActivity();
+    const token = reloadToken;
+    void companyStore.revision;
+    const force = token > appliedReloadToken;
+    if (force) appliedReloadToken = token;
     error = null;
 
-    if (!slug || !cloudBacked) {
+    if (!slug || !resourcesEnabled) {
+      activity = emptyActivity();
       loading = false;
       return;
     }
@@ -105,21 +113,25 @@
     let cancelled = false;
 
     const warm = companyStore.activity(slug);
-    activity = warm != null ? normalizeActivity(warm as Partial<CompanyActivity>) : emptyActivity();
-    loading = warm == null;
+    if (warm != null) {
+      activity = normalizeActivity(warm as Partial<CompanyActivity>);
+      loading = false;
+    } else {
+      activity = emptyActivity();
+      loading = true;
+    }
 
-    void invoke<Partial<CompanyActivity>>('get_company_activity', { slug })
+    void companyStore.loadActivity<Partial<CompanyActivity>>(slug, force)
       .then((result) => {
         if (!cancelled) {
           activity = normalizeActivity(result);
-          companyStore.setActivity(slug, result);
         }
       })
       .catch((err) => {
         console.error('get_company_activity failed:', err);
         if (!cancelled) {
           error = String(err);
-          activity = emptyActivity();
+          if (companyStore.activity(slug) == null) activity = emptyActivity();
         }
       })
       .finally(() => {
@@ -245,6 +257,13 @@
       <div>
         <strong>Activity will appear after connect</strong>
         <span>This company is local only, so there is no synced activity feed yet.</span>
+      </div>
+    </div>
+  {:else if !syncEnabled}
+    <div class="activity-error activity-note" role="status">
+      <div>
+        <strong>Sync is paused on this device</strong>
+        <span>Cloud membership is still connected — turn sync On to refresh activity.</span>
       </div>
     </div>
   {/if}

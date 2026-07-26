@@ -113,7 +113,7 @@ describe('DESKTOP-003: actionable company overview', () => {
     expect(desktopApp).toContain("tab: 'goals'");
     expect(desktopApp).toContain("navigate({ kind: 'inbox' })");
     expect(digest).toContain('data-testid="overview-open-inbox"');
-    expect(digest).toContain("invoke<Partial<CompanyActivity>>('get_company_activity'");
+    expect(digest).toContain('companyStore.loadActivity<Partial<CompanyActivity>>');
     // No fabricated live state.
     expect(panel).not.toContain('cloud healthy');
     expect(goalCard).not.toContain('agent proposed');

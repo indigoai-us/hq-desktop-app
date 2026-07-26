@@ -364,6 +364,11 @@ export function resolvePendingDesktopRoute(name: string | null | undefined): Des
   switch (normalized) {
     case 'home':
     case 'sync':
+    // US-004 WindowRouter: Activity digest + Core Drift card live on Home.
+    // Top-level open_* wrappers land here instead of spawning windows.
+    case 'activity':
+    case 'core-drift':
+    case 'drift':
       return { kind: 'home' };
     case 'mission-control':
       return { kind: 'mission-control' };

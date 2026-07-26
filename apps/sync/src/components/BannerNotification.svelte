@@ -185,14 +185,15 @@
     gap: 0.75rem;
     align-items: center;
     padding: 0.875rem;
-    /* Pure liquid glass — let the native Popover-material frost (banner.rs)
-       dominate. NO CSS backdrop-filter (native vibrancy does the blur; a CSS
-       one renders a square ignoring border-radius). Tint + border + sheen reuse
-       the SAME popover.css tokens as the main menubar window so the frost reads
-       identically (the window applies the identical apply_vibrancy call). */
-    background:
+    /* Solid theme-matched base first so text stays legible when native
+       vibrancy / desktop composition is unavailable (Windows Server, reduced
+       transparency, failed DWM). Glass tint layers on top when composition
+       works. NO CSS backdrop-filter (native vibrancy does the blur; a CSS one
+       renders a square ignoring border-radius). Tokens match the menubar. */
+    background-color: #f7f7f8;
+    background-image:
       linear-gradient(180deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0) 42%),
-      var(--popover-bg);
+      linear-gradient(var(--popover-bg), var(--popover-bg));
     border: 0.5px solid var(--popover-border);
     border-radius: 18px;
     box-shadow:
@@ -204,6 +205,35 @@
     overflow: hidden;
     animation: slide-in 0.28s cubic-bezier(0.16, 1, 0.3, 1);
     transition: transform 0.18s ease, opacity 0.18s ease;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .banner {
+      background-color: #262628;
+    }
+  }
+
+  /* Reduced transparency / forced solid: drop glass overlays so contrast is
+     deterministic against the opaque base (US-003 banner fallback). */
+  @media (prefers-reduced-transparency: reduce) {
+    .banner {
+      background-image: none;
+      background-color: var(--popover-bg, #f7f7f8);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+    }
+  }
+
+  @media (prefers-color-scheme: dark) and (prefers-reduced-transparency: reduce) {
+    .banner {
+      background-color: var(--popover-bg, #262628);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .banner {
+      animation: none;
+      transition: none;
+    }
   }
 
   .banner.leaving {

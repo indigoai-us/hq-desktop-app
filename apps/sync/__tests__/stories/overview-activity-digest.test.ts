@@ -15,17 +15,17 @@ describe('company Overview recent-activity digest (DESKTOP-003)', () => {
     expect(panel).toContain("import OverviewActivityDigest from '../components/OverviewActivityDigest.svelte'");
     // Rendered with slug, cloud-backed flag, and inbox handoff.
     expect(panel).toMatch(
-      /<OverviewActivityDigest\s+\{slug\}\s+\{cloudBacked\}\s+\{onopeninbox\}\s*\/>/,
+      /<OverviewActivityDigest\s+\{slug\}\s+\{cloudBacked\}\s+\{syncEnabled\}\s+\{onopeninbox\}\s*\/>/,
     );
   });
 
   it('pulls real activity data (no fabricated values) and reuses the shared cache', () => {
     const c = read('src/desktop-alt/components/OverviewActivityDigest.svelte');
     // Real source: the same command the Activity tab uses.
-    expect(c).toContain("invoke<Partial<CompanyActivity>>('get_company_activity'");
+    expect(c).toContain('companyStore.loadActivity<Partial<CompanyActivity>>');
     // Warmed/shared through companyStore so it does not double-fetch.
     expect(c).toContain('companyStore.activity(slug)');
-    expect(c).toContain('companyStore.setActivity(slug, result)');
+    expect(c).not.toContain('companyStore.setActivity');
     // Surfaces the real fields.
     expect(c).toContain('activity.stats.edits7');
     expect(c).toContain('activity.stats.vaultSize');

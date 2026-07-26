@@ -159,20 +159,12 @@ fn main() {
         // menubar process. Here the callback surfaces the existing instance and
         // the second process exits instead of becoming a ghost duplicate.
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            // Prefer the detached "HQ Meetings" (desktop-alt) window when it's
-            // open. Otherwise Windows must route through the tray helper so the
-            // popover is positioned above the taskbar tray and gets its DWM
-            // always-on-top/corner treatment, matching the legacy Windows app.
-            if let Some(window) = app.get_webview_window("desktop-alt") {
-                let _ = window.show();
-                let _ = window.unminimize();
-                let _ = window.set_focus();
-                crate::util::logfile::log(
-                    "app",
-                    "single-instance: focused existing window on second launch",
-                );
-                return;
-            }
+            // US-004 WindowRouter: taskbar / second-process activation always
+            // shows the compact notification popover — never auto-focuses the
+            // full desktop. Desktop opens only via explicit Open HQ / shortcut.
+            let _ = commands::desktop_alt::activation_policy(
+                commands::desktop_alt::ActivationSource::TaskbarSecondProcess,
+            );
 
             #[cfg(target_os = "windows")]
             {
@@ -284,6 +276,16 @@ fn main() {
                     let _ = window.hide();
                 }
             }
+            // Windows: reapply Mica/Acrylic when the OS theme flips so light
+            // mode never keeps a forced-dark backdrop (US-003). Theme is left
+            // unset on window builders so ThemeChanged keeps firing.
+            #[cfg(target_os = "windows")]
+            if let tauri::WindowEvent::ThemeChanged(theme) = event {
+                let appearance = hq_platform::window_effects::WindowAppearance::from_dark(
+                    matches!(theme, tauri::Theme::Dark),
+                );
+                hq_platform::window_effects::apply_windows_window_style(window, appearance);
+            }
         })
         .invoke_handler(tauri::generate_handler![
             commands::app::quit_app,
@@ -319,6 +321,7 @@ fn main() {
             commands::workspaces::list_syncable_workspaces,
             commands::workspaces::connect_workspace_to_cloud,
             commands::workspaces::claim_pending_company_invite,
+            commands::workspaces::set_workspace_sync_enabled,
             commands::sync_mode::get_sync_mode,
             commands::sync_mode::set_sync_mode,
             commands::conflicts::resolve_conflict,
@@ -518,6 +521,7 @@ fn main() {
             commands::dm_notify::respond_dm_request,
             commands::messages::open_messages_window,
             commands::messages::messages_window_ready,
+            commands::messages::take_pending_messages_target,
             commands::messages::list_contacts,
             commands::messages::list_company_members,
             commands::messages::get_unread_summary,

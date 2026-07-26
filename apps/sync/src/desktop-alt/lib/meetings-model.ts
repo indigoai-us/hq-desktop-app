@@ -177,6 +177,81 @@ export function isActiveBotStatus(status: string): boolean {
   );
 }
 
+/**
+ * Conservatively normalize a supported meeting URL for identity matching
+ * (US-005). Strips non-identity query/fragment noise while keeping near-match
+ * meetings distinct:
+ *
+ * - Zoom: meeting number only (`/j/{id}`); region hosts collapse to zoom.us;
+ *   pwd/tracking query and fragments are dropped.
+ * - Google Meet: lowercase room code only; authuser/hs query dropped.
+ * - Teams: meetup-join path segment only; context/tenant query dropped.
+ *
+ * Returns null for unrecognized / unsupported URLs so callers never join bots
+ * across unrelated links. Webex is intentionally out of scope for identity.
+ */
+export function normalizeMeetingUrl(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== 'https:') return null;
+
+  const host = url.hostname.toLowerCase();
+  // Drop trailing slashes so `/j/123/` and `/j/123` match.
+  const path = url.pathname.replace(/\/+$/, '') || '/';
+
+  // Zoom: https://{region.}zoom.us/j/{meetingId}[?pwd=…]
+  if (/(?:^|\.)zoom\.us$/i.test(host)) {
+    const m = path.match(/^\/j\/(\d+)$/i);
+    if (!m) return null;
+    return `https://zoom.us/j/${m[1]}`;
+  }
+
+  // Google Meet: https://meet.google.com/{xxx-xxxx-xxx}
+  if (host === 'meet.google.com') {
+    const m = path.match(/^\/([a-z0-9]{3}-[a-z0-9]{4}-[a-z0-9]{3})$/i);
+    if (!m) return null;
+    return `https://meet.google.com/${m[1].toLowerCase()}`;
+  }
+
+  // Teams: https://teams.microsoft.com/l/meetup-join/{id}[/…]
+  // Real calendar links often append `/0` (or similar) after the encoded
+  // meeting id — keep the identity segment, drop trailing path + query/hash.
+  if (host === 'teams.microsoft.com' || host.endsWith('.teams.microsoft.com')) {
+    const m = path.match(/^\/l\/meetup-join\/([^/]+)(?:\/.*)?$/i);
+    if (!m) return null;
+    return `https://teams.microsoft.com/l/meetup-join/${m[1]}`;
+  }
+
+  return null;
+}
+
+/** True when both URLs normalize to the same supported meeting identity. */
+export function meetingUrlsMatch(
+  a: string | null | undefined,
+  b: string | null | undefined,
+): boolean {
+  const left = normalizeMeetingUrl(a);
+  const right = normalizeMeetingUrl(b);
+  return left !== null && right !== null && left === right;
+}
+
+/**
+ * Join bot state to a calendar event (US-005 priority order):
+ *   1. exact calendar event ID
+ *   2. recurring series ID
+ *   3. normalized meeting URL (covers missing/stale calendar IDs)
+ *
+ * Only active lifecycle statuses match so a failed/cancelled bot never blocks
+ * re-invite.
+ */
 export function botForEvent(
   event: MeetingEvent,
   botsByEventId: Map<string, ScheduledBot>,
@@ -186,12 +261,80 @@ export function botForEvent(
   if (exact && isActiveBotStatus(exact.status)) return exact;
 
   const seriesId = recurringSeriesId(event);
-  if (!seriesId) return undefined;
+  if (seriesId) {
+    const seriesBot = scheduledBots.find((bot) => {
+      if (!isActiveBotStatus(bot.status)) return false;
+      return bot.calendarSeriesId?.trim() === seriesId;
+    });
+    if (seriesBot) return seriesBot;
+  }
+
+  const eventUrl = normalizeMeetingUrl(eventMeetingUrl(event));
+  if (!eventUrl) return undefined;
 
   return scheduledBots.find((bot) => {
     if (!isActiveBotStatus(bot.status)) return false;
-    return bot.calendarSeriesId?.trim() === seriesId;
+    return normalizeMeetingUrl(bot.meetingUrl) === eventUrl;
   });
+}
+
+/**
+ * Optimistic bot row seeded on HTTP 409 invite conflicts so the agenda flips
+ * to "already invited" immediately while a background refresh reconciles the
+ * real bot id/status from the server.
+ */
+export function optimisticAlreadyInvitedBot(
+  event: MeetingEvent,
+  meetingUrl: string,
+): ScheduledBot {
+  return {
+    botId: `local-already-invited:${event.id}`,
+    meetingUrl,
+    platform: platformKeyFromUrl(meetingUrl),
+    status: 'scheduled',
+    calendarEventId: event.id,
+    calendarSeriesId: recurringSeriesId(event),
+    meetingTitle: event.summary ?? null,
+    autoScheduled: false,
+  };
+}
+
+function platformKeyFromUrl(url: string): string {
+  const normalized = normalizeMeetingUrl(url) ?? url;
+  if (normalized.includes('zoom.us')) return 'zoom';
+  if (normalized.includes('meet.google.com')) return 'google_meet';
+  if (normalized.includes('teams.microsoft.com')) return 'microsoft_teams';
+  return 'unknown';
+}
+
+/**
+ * Visible attachment lifecycle for agenda rows (US-005 AC language).
+ * Maps the richer row-button kind onto the five user-facing states the list
+ * must distinguish before interaction, plus processing (in-flight ingest).
+ */
+export type BotAttachmentState =
+  | 'available-to-invite'
+  | 'invited'
+  | 'joining'
+  | 'recording'
+  | 'processing'
+  | 'completed';
+
+export function botAttachmentState(bot: ScheduledBot | undefined): BotAttachmentState {
+  switch (rowButtonKind(bot)) {
+    case 'invite':
+      return 'available-to-invite';
+    case 'invited':
+      return 'invited';
+    case 'joining':
+      return 'joining';
+    case 'in-call':
+      return 'recording';
+    case 'processing':
+      return 'processing';
+    case 'done':
+      return 'completed';
+  }
 }
 
 export function calendarEventIdsForBotLookup(events: MeetingEvent[]): string[] {

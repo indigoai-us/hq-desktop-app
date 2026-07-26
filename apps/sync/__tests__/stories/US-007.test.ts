@@ -154,7 +154,7 @@ describe('US-007: Company page shell — V4 sections + crumb (sections moved to 
       deployments: 0,
       secrets: 0,
     });
-    expect(summary).toContain("void invoke<CompanySummary>('get_company_summary', { slug })");
+    expect(summary).toContain('void companyStore.loadSummary(slug)');
     expect(summary).toContain('summary = emptyCompanySummary();');
     // company-summary was refactored from an effect-cleanup `cancelled` flag to
     // a monotonic request id that discards out-of-order completions.

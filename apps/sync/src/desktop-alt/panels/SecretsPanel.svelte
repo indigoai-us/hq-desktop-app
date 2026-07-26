@@ -7,25 +7,33 @@
   interface Props {
     slug: string;
     cloudBacked?: boolean;
+    /** Local sync Off — pause fetches without treating the company as disconnected. */
+    syncEnabled?: boolean;
   }
 
-  let { slug, cloudBacked = true }: Props = $props();
+  let { slug, cloudBacked = true, syncEnabled = true }: Props = $props();
+  const resourcesEnabled = $derived(cloudBacked && syncEnabled);
 
   let secrets = $state<SecretEnv[]>([]);
   let loading = $state(false);
   let error = $state<string | null>(null);
   let reloadToken = $state(0);
+  // One-shot force flag — see company-board.svelte.ts (Codex P1 reload loop).
+  let appliedReloadToken = 0;
   let actionBusy = $state<'export' | 'new' | null>(null);
   let actionMessage = $state<string | null>(null);
 
   const totalCount = $derived(secrets.reduce((total, secretEnv) => total + secretEnv.count, 0));
 
   $effect(() => {
-    reloadToken;
-    secrets = [];
+    const token = reloadToken;
+    void companyStore.revision;
+    const force = token > appliedReloadToken;
+    if (force) appliedReloadToken = token;
     error = null;
 
-    if (!slug || !cloudBacked) {
+    if (!slug || !resourcesEnabled) {
+      secrets = [];
       loading = false;
       return;
     }
@@ -33,21 +41,25 @@
     let cancelled = false;
 
     const warm = companyStore.secrets(slug);
-    secrets = warm ? warm.map(normalizeSecretEnv) : [];
-    loading = warm === null;
+    if (warm) {
+      secrets = warm.map(normalizeSecretEnv);
+      loading = false;
+    } else {
+      secrets = [];
+      loading = true;
+    }
 
-    void invoke<Partial<SecretEnv>[]>('get_company_secrets', { slug })
+    void companyStore.loadSecrets(slug, force)
       .then((result) => {
         if (!cancelled) {
           secrets = Array.isArray(result) ? result.map(normalizeSecretEnv) : [];
-          companyStore.setSecrets(slug, Array.isArray(result) ? result : []);
         }
       })
       .catch((err) => {
         console.error('get_company_secrets failed:', err);
         if (!cancelled) {
           error = String(err);
-          secrets = [];
+          if (companyStore.secrets(slug) === null) secrets = [];
         }
       })
       .finally(() => {
@@ -148,7 +160,7 @@
       class="toolbar-button"
       type="button"
       onclick={() => void openSecretsPrompt('export')}
-      disabled={actionBusy !== null || !cloudBacked}
+      disabled={actionBusy !== null || !resourcesEnabled}
       title="Export via HQ secrets workflow"
     >
       {actionBusy === 'export' ? 'Opening…' : 'Export .env'}
@@ -157,7 +169,7 @@
       class="toolbar-button"
       type="button"
       onclick={() => void openSecretsPrompt('new')}
-      disabled={actionBusy !== null || !cloudBacked}
+      disabled={actionBusy !== null || !resourcesEnabled}
       title="Create via HQ secrets workflow"
     >
       {actionBusy === 'new' ? 'Opening…' : 'New key'}
@@ -173,6 +185,13 @@
       <div>
         <strong>Connect this company to manage secrets</strong>
         <span>Secret metadata is available after the local company is cloud-backed.</span>
+      </div>
+    </div>
+  {:else if !syncEnabled}
+    <div class="secrets-error secrets-note" role="status">
+      <div>
+        <strong>Sync is paused on this device</strong>
+        <span>Cloud membership is still connected — turn sync On to refresh secret metadata.</span>
       </div>
     </div>
   {/if}

@@ -9,6 +9,11 @@ import DesktopApp from './DesktopApp.svelte';
 
 const windowLabel = getCurrentWindow().label;
 document.documentElement.dataset.window = windowLabel;
+// Platform marker before first paint so title-bar / chrome CSS can drop the
+// macOS traffic-light inset on Windows (native decorated title bar + Snap
+// Layouts; HQ toolbar sits below — US-003).
+const isWindows = /Windows/i.test(navigator.userAgent);
+document.documentElement.dataset.platform = isWindows ? 'windows' : 'other';
 
 const target = document.getElementById('desktop-alt');
 

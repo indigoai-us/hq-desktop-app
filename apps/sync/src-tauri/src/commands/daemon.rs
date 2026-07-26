@@ -12,14 +12,17 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
 use crate::commands::process::{
-    cancel_process_impl, deregister_process, is_registered, run_process_impl, try_register_handle,
-    ProcessEvent,
+    cancel_process_impl, deregister_process, is_cancelled, is_registered, lookup_pid,
+    run_process_impl, try_register_handle, ProcessEvent,
 };
 use crate::commands::status::{journal_for_daemon_sync_complete, write_journal};
 use crate::commands::sync::RunTotals;
 use crate::events::{SyncEvent, EVENT_SYNC_ALL_COMPLETE};
 use crate::util::logfile::log;
 use crate::util::paths;
+use hq_desktop_core::daemon::{
+    derive_watch_daemon_state, is_daemon_alive_for_supervisor, should_terminate_job_on_path,
+};
 use hq_desktop_core::sync_outcome::termination_fingerprint_token;
 
 #[allow(unused_imports)]
@@ -27,7 +30,8 @@ pub use hq_desktop_core::daemon::{
     build_watch_runner_args, event_push_eligible, is_autostart_enabled, is_instant_sync_enabled,
     is_pid_alive, is_realtime_sync_enabled, read_daemon_json, read_menubar_bool, read_pid_file,
     resolve_hq_folder_path, should_cancel_stalled_daemon, should_event_push,
-    should_force_clear_stalled_start, should_respawn_daemon, DaemonJson, DaemonStatus,
+    should_force_clear_stalled_start, should_respawn_daemon, DaemonFailureCategory, DaemonJson,
+    DaemonStatus, WatchDaemonState,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -142,10 +146,143 @@ fn start_daemon_heartbeat_watchdog(last_heartbeat: Arc<Mutex<Instant>>, finished
                     heartbeat_age.as_secs()
                 ),
             );
-            cancel_process_impl(DAEMON_HANDLE, SIGKILL_DELAY);
+            // Exactly-once Job Object / process-group teardown for this generation.
+            terminate_daemon_once(DaemonFailureCategory::HeartbeatStall);
             return;
         }
     });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Lifecycle state + content-safe Sentry diagnostics (US-002)
+// ─────────────────────────────────────────────────────────────────────────────
+
+static LIFECYCLE_STATE: OnceLock<Mutex<WatchDaemonState>> = OnceLock::new();
+
+fn lifecycle_state_lock() -> &'static Mutex<WatchDaemonState> {
+    LIFECYCLE_STATE.get_or_init(|| Mutex::new(WatchDaemonState::Stopped))
+}
+
+fn current_lifecycle_state() -> WatchDaemonState {
+    *lifecycle_state_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+}
+
+/// Transition the watch-daemon lifecycle state and emit content-safe diagnostics
+/// (state names + failure category only — never argv, tokens, or file contents).
+fn set_lifecycle_state(next: WatchDaemonState, category: DaemonFailureCategory) {
+    let mut guard = lifecycle_state_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let prev = *guard;
+    if prev == next && category == DaemonFailureCategory::None {
+        return;
+    }
+    *guard = next;
+    drop(guard);
+
+    log(
+        "daemon.lifecycle",
+        &format!(
+            "state {} → {} category={}",
+            prev.as_str(),
+            next.as_str(),
+            category.as_str()
+        ),
+    );
+
+    let mut data = std::collections::BTreeMap::new();
+    data.insert(
+        "from".to_string(),
+        sentry::protocol::Value::String(prev.as_str().to_string()),
+    );
+    data.insert(
+        "to".to_string(),
+        sentry::protocol::Value::String(next.as_str().to_string()),
+    );
+    data.insert(
+        "category".to_string(),
+        sentry::protocol::Value::String(category.as_str().to_string()),
+    );
+    sentry::add_breadcrumb(sentry::Breadcrumb {
+        category: Some("daemon.lifecycle".into()),
+        level: match category {
+            DaemonFailureCategory::None | DaemonFailureCategory::Cancelled => {
+                sentry::Level::Info
+            }
+            DaemonFailureCategory::Backoff | DaemonFailureCategory::Preflight => {
+                sentry::Level::Warning
+            }
+            _ => sentry::Level::Error,
+        },
+        message: Some(format!(
+            "watch daemon {} → {} ({})",
+            prev.as_str(),
+            next.as_str(),
+            category.as_str()
+        )),
+        data,
+        ..Default::default()
+    });
+}
+
+/// Terminate the daemon process tree at most once per generation.
+/// Uses the process-registry cancelled flag so crash / stall / cancel /
+/// force-clear / backoff paths never double-`TerminateJobObject`.
+fn terminate_daemon_once(category: DaemonFailureCategory) -> bool {
+    let already = is_cancelled(DAEMON_HANDLE);
+    if !should_terminate_job_on_path(already, category) {
+        return false;
+    }
+    let cancelled = cancel_process_impl(DAEMON_HANDLE, SIGKILL_DELAY);
+    if cancelled {
+        match category {
+            DaemonFailureCategory::HeartbeatStall => {
+                set_lifecycle_state(WatchDaemonState::Stopped, category);
+            }
+            DaemonFailureCategory::ForceClear => {
+                set_lifecycle_state(WatchDaemonState::Stopped, category);
+            }
+            DaemonFailureCategory::Cancelled => {
+                set_lifecycle_state(WatchDaemonState::Stopped, category);
+            }
+            DaemonFailureCategory::Backoff => {
+                set_lifecycle_state(WatchDaemonState::Backoff, category);
+            }
+            DaemonFailureCategory::Crash => {
+                set_lifecycle_state(WatchDaemonState::Stopped, category);
+            }
+            _ => {}
+        }
+    }
+    cancelled
+}
+
+/// Observe app-owned registry + optional inherited PID file.
+/// After spawn the registered child PID is authoritative; the HQ PID file is
+/// only a recovery signal when this process holds no handle.
+fn observe_daemon_liveness() -> (bool, bool, bool, Option<u32>) {
+    let app_owned_registered = is_registered(DAEMON_HANDLE);
+    let app_pid = lookup_pid(DAEMON_HANDLE);
+    let registered_child_alive = app_pid.map(is_pid_alive).unwrap_or(false);
+    let pid_file_pid = resolve_hq_folder_path()
+        .ok()
+        .and_then(|p| read_pid_file(&p));
+    let pid_file_alive = pid_file_pid.map(is_pid_alive).unwrap_or(false);
+    let alive = is_daemon_alive_for_supervisor(
+        app_owned_registered,
+        registered_child_alive,
+        pid_file_alive,
+    );
+    // Prefer the app-owned PID for RSS sampling; fall back to the PID file.
+    let sample_pid = app_pid.or(pid_file_pid);
+    (
+        app_owned_registered,
+        registered_child_alive,
+        alive,
+        sample_pid,
+    )
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -248,15 +385,13 @@ fn daemon_guard_age() -> Option<Duration> {
 }
 
 /// Best-effort liveness re-probe used right before the destructive force-clear.
-/// Mirrors the supervisor's own `daemon_alive` computation (pid file → process
-/// check) so a force-clear can bail if a liveness *flake* made the supervisor
-/// briefly believe a healthy daemon was down.
+/// Mirrors the supervisor's own `daemon_alive` computation: app-owned registered
+/// child is authoritative after spawn; PID file is only a recovery fallback.
+/// A force-clear can bail if a liveness *flake* made the supervisor briefly
+/// believe a healthy daemon was down.
 fn daemon_appears_alive() -> bool {
-    resolve_hq_folder_path()
-        .ok()
-        .and_then(|p| read_pid_file(&p))
-        .map(is_pid_alive)
-        .unwrap_or(false)
+    let (_reg, _child, alive, _pid) = observe_daemon_liveness();
+    alive
 }
 
 /// Release the guard on a failed start: clear the stamp, then deregister so the
@@ -313,7 +448,8 @@ fn force_clear_daemon_guard_impl(daemon_alive_recheck: bool) {
         message: Some("force-clearing wedged start guard (no live daemon on re-check)".into()),
         ..Default::default()
     });
-    cancel_process_impl(DAEMON_HANDLE, SIGKILL_DELAY);
+    // Exactly-once Job Object teardown for this generation, then release the guard.
+    let _ = terminate_daemon_once(DaemonFailureCategory::ForceClear);
     release_daemon_guard();
 }
 
@@ -341,6 +477,7 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
     // generation lets this start's exit clear only its own stamp, never a
     // respawn's fresher one.
     let guard_generation = mark_daemon_guard_acquired();
+    set_lifecycle_state(WatchDaemonState::Starting, DaemonFailureCategory::None);
 
     // A signed-out watcher can only emit auth-error and exit 0. Refuse that
     // known-dead loop up front; after a terminal auth event clears the token,
@@ -349,10 +486,12 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
         Ok(Some(_)) => {}
         Ok(None) => {
             release_daemon_guard();
+            set_lifecycle_state(WatchDaemonState::Stopped, DaemonFailureCategory::Preflight);
             return Err(crate::commands::cognito::REAUTH_MESSAGE.to_string());
         }
         Err(err) => {
             release_daemon_guard();
+            set_lifecycle_state(WatchDaemonState::Stopped, DaemonFailureCategory::Preflight);
             return Err(err);
         }
     }
@@ -361,6 +500,7 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
         Ok(p) => p,
         Err(e) => {
             release_daemon_guard();
+            set_lifecycle_state(WatchDaemonState::Stopped, DaemonFailureCategory::Preflight);
             return Err(e);
         }
     };
@@ -369,6 +509,8 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
     if let Some(pid) = read_pid_file(&hq_folder_path) {
         if is_pid_alive(pid) {
             release_daemon_guard();
+            // Inherited runner is live — surface Running without taking ownership.
+            set_lifecycle_state(WatchDaemonState::Running, DaemonFailureCategory::None);
             return Err(format!("Daemon is already running (PID {})", pid));
         }
     }
@@ -386,6 +528,7 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
             ),
         }
         release_daemon_guard();
+        set_lifecycle_state(WatchDaemonState::Stopped, DaemonFailureCategory::Preflight);
         return Err(msg);
     }
 
@@ -398,6 +541,7 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
         log("daemon", &format!("npx cache materialization preflight failed: {msg}"));
         note_environment_preflight_failure();
         release_daemon_guard();
+        set_lifecycle_state(WatchDaemonState::Backoff, DaemonFailureCategory::Preflight);
         return Err(msg);
     }
 
@@ -471,9 +615,23 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
                     // from cancel_process_impl on app-quit / auto-sync-off /
                     // re-spawn), and rate-limit a crash-loop to ~log2(N) events
                     // instead of one per 30s respawn (HQ-SYNC-4 / HQ-SYNC-5).
-                    let cancelled = crate::commands::process::is_cancelled(DAEMON_HANDLE);
-                    if is_unexpected_watcher_exit(success, signal, cancelled) {
+                    let cancelled = is_cancelled(DAEMON_HANDLE);
+                    if cancelled {
+                        // Deliberate stop path already recorded lifecycle.
+                    } else if is_unexpected_watcher_exit(success, signal, cancelled) {
                         let consecutive = note_watcher_crashed();
+                        set_lifecycle_state(
+                            if within_respawn_backoff() {
+                                WatchDaemonState::Backoff
+                            } else {
+                                WatchDaemonState::Stopped
+                            },
+                            if is_benign_watcher_exit(code, signal) {
+                                DaemonFailureCategory::None
+                            } else {
+                                DaemonFailureCategory::Crash
+                            },
+                        );
                         if is_benign_watcher_exit(code, signal) {
                             log(
                                 "daemon",
@@ -519,6 +677,8 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
                                 ),
                             );
                         }
+                    } else {
+                        set_lifecycle_state(WatchDaemonState::Stopped, DaemonFailureCategory::None);
                     }
                 }
             }
@@ -538,6 +698,7 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
 
         if let Err(e) = result {
             log("daemon", &format!("spawn failed: {e}"));
+            set_lifecycle_state(WatchDaemonState::Stopped, DaemonFailureCategory::SpawnFailed);
             // The watcher never started — Sync is silently dead until restart.
             crate::commands::sync::capture_sync_error(
                 None,
@@ -835,19 +996,38 @@ const SUPERVISOR_INTERVAL: Duration = Duration::from_secs(30);
 /// is running whenever auto-sync is enabled — respawning it if it died (crash,
 /// OOM, external kill, or a failed initial spawn). Without this a dead daemon
 /// left sync silently quiet until a manual restart; the only tell was a stale
-/// "Last synced N minutes ago". `run_process_impl` deregisters `DAEMON_HANDLE`
-/// on exit, and `start_daemon`'s live-pid pre-flight makes a respawn a clean
-/// no-op when the daemon is already healthy — so this is safe to poll.
+/// "Last synced N minutes ago".
+///
+/// **US-002:** After spawn the app-owned process-registry handle is
+/// authoritative. A healthy long-lived runner that never writes `.hq-sync.pid`
+/// stays `Running` and is not force-cleared. The PID file is only used to
+/// recover a runner inherited from a previous app session.
 pub fn setup_daemon_supervisor(app: &AppHandle) {
     let handle = app.clone();
     thread::spawn(move || {
         thread::sleep(SUPERVISOR_SETTLE);
         loop {
-            let watcher_pid = resolve_hq_folder_path()
+            let (app_owned, registered_child_alive, daemon_alive, sample_pid) =
+                observe_daemon_liveness();
+            let within_backoff = within_respawn_backoff();
+            let pid_file_alive = resolve_hq_folder_path()
                 .ok()
-                .and_then(|p| read_pid_file(&p));
-            let daemon_alive = watcher_pid.map(is_pid_alive).unwrap_or(false);
+                .and_then(|p| read_pid_file(&p))
+                .map(is_pid_alive)
+                .unwrap_or(false);
+            let _state = derive_watch_daemon_state(
+                app_owned,
+                registered_child_alive,
+                pid_file_alive,
+                within_backoff,
+            );
+
             if daemon_alive {
+                // Promote Starting → Running once the registered child is live
+                // (no HQ PID file required).
+                if current_lifecycle_state() != WatchDaemonState::Running {
+                    set_lifecycle_state(WatchDaemonState::Running, DaemonFailureCategory::None);
+                }
                 // Once the watcher has survived the fast-fail window, clear the
                 // crash-loop state so backoff + capture rate-limiting reset for
                 // the next failure episode (HQ-SYNC-4).
@@ -862,7 +1042,7 @@ pub fn setup_daemon_supervisor(app: &AppHandle) {
                 // Sample the live watcher's RSS so if it is later killed by
                 // signal=9, the crash capture can report the footprint it had
                 // shortly before death (jetsam/OOM vs kill -9). Best-effort.
-                if let Some(pid) = watcher_pid {
+                if let Some(pid) = sample_pid {
                     if let Some(kb) = sample_pid_rss_kb(pid) {
                         note_watcher_rss(kb);
                     }
@@ -875,7 +1055,13 @@ pub fn setup_daemon_supervisor(app: &AppHandle) {
                 // Crash-loop dampening: hold off respawning a watcher that just
                 // crashed until its exponential backoff elapses, instead of
                 // hot-respawning every 30s (HQ-SYNC-4).
-                if within_respawn_backoff() {
+                if within_backoff {
+                    if current_lifecycle_state() != WatchDaemonState::Backoff {
+                        set_lifecycle_state(
+                            WatchDaemonState::Backoff,
+                            DaemonFailureCategory::Backoff,
+                        );
+                    }
                     log(
                         "daemon.supervisor",
                         "watch daemon down but within crash-loop backoff — holding off respawn",
@@ -896,12 +1082,11 @@ pub fn setup_daemon_supervisor(app: &AppHandle) {
                             // deadline it is wedged (a hung, un-reaped watcher),
                             // and every future tick would loop on the same skip
                             // forever. Force-clear the stale guard so the NEXT
-                            // tick's normal respawn can proceed. We deliberately
-                            // don't respawn inline here: `force_clear_daemon_guard`
-                            // may have just scheduled an async SIGKILL/deregister
-                            // of the old watcher (Unix `cancel_process_impl`), and
-                            // a same-tick re-register could be torn down by it.
-                            // The next tick (≤30s) is well clear of that window.
+                            // tick's normal respawn can proceed.
+                            //
+                            // US-002: `daemon_alive` is true for a healthy
+                            // app-owned child without a PID file, so force-clear
+                            // does not fire against a live registered runner.
                             if should_force_clear_stalled_start(
                                 daemon_alive,
                                 daemon_guard_age(),
@@ -931,8 +1116,9 @@ pub fn stop_daemon() -> Result<bool, String> {
     let hq_folder_path = resolve_hq_folder_path()?;
 
     // Cancel via the process registry first — this signals the spawned
-    // runner from `start_daemon` and cleans up the handle.
-    let cancelled = cancel_process_impl(DAEMON_HANDLE, SIGKILL_DELAY);
+    // runner from `start_daemon` and cleans up the handle. Exactly-once
+    // Job Object teardown for this generation.
+    let cancelled = terminate_daemon_once(DaemonFailureCategory::Cancelled);
     if cancelled {
         return Ok(true);
     }
@@ -1037,6 +1223,78 @@ mod tests {
         // After cleanup, register succeeds again
         assert!(try_register_handle(handle));
         deregister_process(handle);
+    }
+
+    // ── US-002: app-owned handle authoritative without PID file ──────────
+
+    #[test]
+    fn app_owned_live_child_without_pid_file_is_not_force_cleared() {
+        use crate::commands::process::{
+            deregister_process, register_process, try_register_handle,
+        };
+        let _serial = GUARD_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        clear_daemon_guard_stamp();
+
+        // Simulate a spawned watch runner that never wrote .hq-sync.pid.
+        assert!(try_register_handle(DAEMON_HANDLE));
+        register_process(DAEMON_HANDLE, std::process::id());
+        mark_daemon_guard_acquired();
+
+        let (app_owned, child_alive, daemon_alive, sample_pid) = observe_daemon_liveness();
+        assert!(app_owned, "handle is registered");
+        assert!(child_alive, "current process is alive");
+        assert!(daemon_alive, "app-owned live child is authoritative");
+        assert_eq!(sample_pid, Some(std::process::id()));
+
+        // Even past the start deadline, force-clear must not fire.
+        assert!(
+            !should_force_clear_stalled_start(
+                daemon_alive,
+                Some(DAEMON_START_DEADLINE * 10),
+                DAEMON_START_DEADLINE
+            ),
+            "healthy registered child without PID file must never be force-cleared"
+        );
+
+        deregister_process(DAEMON_HANDLE);
+        clear_daemon_guard_stamp();
+        set_lifecycle_state(WatchDaemonState::Stopped, DaemonFailureCategory::None);
+    }
+
+    #[test]
+    fn lifecycle_transitions_stopped_starting_running() {
+        let _serial = GUARD_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        set_lifecycle_state(WatchDaemonState::Stopped, DaemonFailureCategory::None);
+        assert_eq!(current_lifecycle_state(), WatchDaemonState::Stopped);
+
+        set_lifecycle_state(WatchDaemonState::Starting, DaemonFailureCategory::None);
+        assert_eq!(current_lifecycle_state(), WatchDaemonState::Starting);
+
+        set_lifecycle_state(WatchDaemonState::Running, DaemonFailureCategory::None);
+        assert_eq!(current_lifecycle_state(), WatchDaemonState::Running);
+
+        set_lifecycle_state(WatchDaemonState::Backoff, DaemonFailureCategory::Crash);
+        assert_eq!(current_lifecycle_state(), WatchDaemonState::Backoff);
+
+        set_lifecycle_state(WatchDaemonState::Stopped, DaemonFailureCategory::None);
+    }
+
+    #[test]
+    fn terminate_daemon_once_is_idempotent() {
+        use crate::commands::process::{deregister_process, try_register_handle};
+        let _serial = GUARD_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        clear_daemon_guard_stamp();
+
+        assert!(try_register_handle(DAEMON_HANDLE));
+        // First cancel path succeeds (marks cancelled); second is a no-op.
+        let first = terminate_daemon_once(DaemonFailureCategory::Cancelled);
+        assert!(first, "first termination should mark cancelled");
+        let second = terminate_daemon_once(DaemonFailureCategory::HeartbeatStall);
+        assert!(!second, "second termination must not re-fire Job Object kill");
+
+        deregister_process(DAEMON_HANDLE);
+        clear_daemon_guard_stamp();
+        set_lifecycle_state(WatchDaemonState::Stopped, DaemonFailureCategory::None);
     }
 
     // ── Respawn-deadlock recovery (start-guard wedge) ────────────────────

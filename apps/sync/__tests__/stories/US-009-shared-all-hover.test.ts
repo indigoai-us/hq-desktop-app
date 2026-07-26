@@ -140,7 +140,7 @@ describe('US-009: SidebarSyncMode source contracts', () => {
   it('optimistic-reverts on write failure, renders custom read-only, and stopPropagates clicks', () => {
     expect(syncModeSrc).toContain('mode = prev');
     expect(syncModeSrc).toContain("mode === 'custom'");
-    expect(syncModeSrc).toContain('Custom paths — managed via `hq sync mode custom`');
+    expect(syncModeSrc).toContain('Custom paths - managed via `hq sync mode custom`');
     expect(syncModeSrc).toContain('event.stopPropagation()');
     expect(syncModeSrc).toContain('data-testid="sidebar-sync-mode"');
   });
@@ -152,12 +152,10 @@ describe('US-009: SidebarSyncMode source contracts', () => {
   });
 
   it('stays read-only while the cloud is unreachable (offline guard preserved from the classic toggle)', () => {
-    expect(syncModeSrc).toContain('disabled = false');
-    expect(syncModeSrc).toContain('disabled={disabled || saving}');
-    expect(syncModeSrc).toContain('if (disabled || saving || mode === next) return;');
-    expect(syncModeSrc).toContain('Cloud unreachable');
-    // The sidebar wires the guard from list_syncable_workspaces.cloudReachable.
-    expect(sidebarSrc).toContain('disabled={!effectiveCloudReachable}');
+    // US-007: offline is a prop (`cloudReachable`) rather than a local `disabled` alias.
+    expect(syncModeSrc).toContain('disabled={!cloudReachable || saving}');
+    expect(syncModeSrc).toContain('if (!cloudReachable || saving || mode === next) return;');
+    expect(sidebarSrc).toContain('cloudReachable={effectiveCloudReachable}');
   });
 });
 

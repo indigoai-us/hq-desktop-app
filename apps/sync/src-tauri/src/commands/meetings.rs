@@ -103,76 +103,30 @@ async fn fetch_participants_best_effort(
 
 // ── Detail window (Upcoming Meetings) ────────────────────────────────────────
 
-/// Open or focus the standalone Upcoming Meetings window. Mirrors the
-/// `new-files-detail` pattern — the modal-on-popover UX squeezed the existing
-/// sync UI and made the list cramped. The detached window can grow, decorations
-/// give the user a proper close affordance, and the popover stays untouched.
+/// Open Meetings as a typed desktop destination (US-004 WindowRouter).
 ///
-/// Unlike `open_new_files_detail`, there's no payload handshake — the window
-/// fetches its own data via `meetings_list_upcoming` + `meetings_list_scheduled_bots`
-/// directly on mount.
+/// Legacy name kept for frontend IPC; no longer creates a top-level
+/// `meetings-window` webview. Optional `focus_meeting_id` is stashed and
+/// broadcast so an already-mounted desktop Meetings page can still deep-link.
 #[tauri::command]
 pub async fn open_meetings_window(
     app: AppHandle,
     focus_meeting_id: Option<String>,
 ) -> Result<(), String> {
-    const LABEL: &str = "meetings-window";
-
-    if let Some(window) = app.get_webview_window(LABEL) {
-        window.show().map_err(|e| e.to_string())?;
-        window.set_focus().map_err(|e| e.to_string())?;
-        // Warm path: the window already exists, so its `meetings:focus-meeting`
-        // listener is mounted — a live emit is delivered immediately. (Global
-        // `emit` per the codebase convention; only this window listens for it.)
-        if let Some(id) = focus_meeting_id.filter(|s| !s.trim().is_empty()) {
-            app.emit(
-                "meetings:focus-meeting",
-                serde_json::json!({ "meetingId": id }),
-            )
-            .map_err(|e| e.to_string())?;
-        }
-        return Ok(());
-    }
-
-    // Use the bundled HQ app icon for this window's macOS dock / Cmd-Tab /
-    // window-switcher representation. Without an explicit `.icon(...)` the
-    // detached webview window falls back to the generic file-folder icon,
-    // which reads as "some random app's window" in the switcher. The PNG
-    // is baked into the binary at compile time so we don't depend on any
-    // runtime filesystem path being correct.
-    //
-    // Future polish: composite a small calendar badge in the lower-right
-    // corner so this window's icon is distinguishable from the main HQ
-    // Sync window at a glance. Skipped here because (a) it requires an
-    // image-processing step in the build pipeline and (b) the window-
-    // switcher icon is rendered very small, so the badge would likely be
-    // illegible at that scale anyway.
-    const HQ_ICON_PNG: &[u8] = include_bytes!("../../icons/128x128@2x.png");
-    let icon = tauri::image::Image::from_bytes(HQ_ICON_PNG)
-        .map_err(|e| format!("load window icon: {e}"))?;
-
-    tauri::WebviewWindowBuilder::new(&app, LABEL, tauri::WebviewUrl::App("index.html".into()))
-        .title("Upcoming Meetings")
-        .inner_size(460.0, 600.0)
-        .min_inner_size(380.0, 400.0)
-        .resizable(true)
-        .decorations(true)
-        .icon(icon)
-        .map_err(|e| format!("attach window icon: {e}"))?
-        .visible(true)
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    // Cold path: the window was just built, so its JS `meetings:focus-meeting`
-    // listener is NOT yet mounted — a timed emit would race the webview and be
-    // lost (see the "Multi-window ready handshake" gotcha in CLAUDE.md). Instead
-    // stash the id; the meetings view drains it via `meetings_take_pending_focus`
-    // on mount, after its listener + row refs are ready.
     if let Some(id) = focus_meeting_id.filter(|s| !s.trim().is_empty()) {
-        set_pending_focus(Some(id));
+        set_pending_focus(Some(id.clone()));
+        // Warm path: desktop may already listen for this global event.
+        let _ = app.emit(
+            "meetings:focus-meeting",
+            serde_json::json!({ "meetingId": id }),
+        );
     }
 
-    Ok(())
+    crate::commands::desktop_alt::open_destination(
+        app,
+        crate::commands::desktop_alt::DesktopDestination::Meetings,
+    )
+    .await
 }
 
 /// One-shot "focus this meeting when the window mounts" hand-off. Set by

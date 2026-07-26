@@ -1,4 +1,4 @@
-import type { Workspace } from '../../lib/workspaces';
+import { isWorkspaceSyncEnabled, type Workspace } from '../../lib/workspaces';
 import type { SyncState } from '../lib/sync-model';
 
 /**
@@ -102,6 +102,9 @@ export interface V4SidebarCompanyChild {
 export interface V4SidebarCompanyRow {
   slug: string;
   label: string;
+  ownerLabel?: string | null;
+  isPersonal: boolean;
+  syncEnabled: boolean;
   tone: V4DotTone;
   active: boolean;
   /**
@@ -162,6 +165,7 @@ export function v4CompanyPrimaryForTab(tab: string | undefined | null): V4Compan
  * not yet connected (SPEC: "gray dot = paused").
  */
 export function v4CompanyDotTone(workspace: Workspace): V4DotTone {
+  if (!isWorkspaceSyncEnabled(workspace)) return 'idle';
   if (workspace.kind === 'personal') return 'ok';
   // Pending invites must stand out in the Companies list (desktop view chrome).
   if (workspace.kind === 'company' && workspace.membershipStatus === 'pending') return 'warn';
@@ -180,9 +184,10 @@ export function v4CompanyDotTone(workspace: Workspace): V4DotTone {
  */
 export function v4CompanyConnected(workspace: Workspace): boolean {
   return (
-    workspace.kind === 'personal' ||
-    workspace.state === 'synced' ||
-    workspace.state === 'cloud-only'
+    isWorkspaceSyncEnabled(workspace) &&
+    (workspace.kind === 'personal' ||
+      workspace.state === 'synced' ||
+      workspace.state === 'cloud-only')
   );
 }
 
@@ -224,7 +229,13 @@ export function sortV4CompaniesConnectedFirst(
       connected: v4CompanyConnected(workspace),
       row: {
         slug: workspace.slug,
-        label: workspace.displayName,
+        label: workspace.kind === 'personal' ? 'Personal' : workspace.displayName,
+        ownerLabel:
+          workspace.kind === 'personal' && workspace.displayName !== 'Personal'
+            ? workspace.displayName
+            : null,
+        isPersonal: workspace.kind === 'personal',
+        syncEnabled: isWorkspaceSyncEnabled(workspace),
         tone: v4CompanyDotTone(workspace),
         active,
         // DESKTOP-001: only the selected company expands; global destinations
