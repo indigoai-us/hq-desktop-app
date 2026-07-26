@@ -1343,16 +1343,6 @@
     color: var(--v4-text-1);
   }
 
-  @media (prefers-color-scheme: dark) {
-    select {
-      color-scheme: dark;
-    }
-  }
-
-  :global(html[data-force-theme='dark']) select {
-    color-scheme: dark;
-  }
-
   :global(html[data-force-theme='light']) select {
     color-scheme: light;
   }

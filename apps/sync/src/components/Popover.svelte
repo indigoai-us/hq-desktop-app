@@ -655,7 +655,7 @@
 
   /* Windows: Mica/Acrylic is applied natively (window_effects). Keep an
      opaque theme-matched CSS surface so content never bleeds through when
-     composition fails — but never hard-code dark (#18181b). Tokens follow
+     composition fails — without restoring the old hard-dark fallback. Tokens follow
      prefers-color-scheme / live OS theme (US-003). */
   :global(html[data-platform='windows']) .mbpop {
     background: var(--pop-bg, #f7f7f8);

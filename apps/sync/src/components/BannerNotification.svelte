@@ -332,5 +332,17 @@
   }
   .chip:hover { background: var(--popover-primary-hover); }
 
+  /* Shared tokens keep the actual action neutral in both appearances. Retain a
+     complete neutral fallback so a partially loaded auxiliary webview still
+     has deterministic contrast without falling back to a brand-blue chip. */
+  @media (prefers-color-scheme: light) {
+    .chip {
+      background: var(--popover-primary, #2c2c2e);
+      color: var(--popover-primary-text, #ffffff);
+    }
+
+    .chip:hover { background: var(--popover-primary-hover, #3a3a3c); }
+  }
+
   .hint { font-size: 0.625rem; color: var(--popover-text-muted); }
 </style>

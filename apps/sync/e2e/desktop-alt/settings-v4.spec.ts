@@ -127,9 +127,10 @@ describe('desktop-alt V4 settings and first-run (US-013 / US-005)', () => {
     expect(page).toContain('var(--v4-ok)');
   });
 
-  it('scopes the native select palette to the active system or forced theme', () => {
-    expect(page).toContain('@media (prefers-color-scheme: dark)');
-    expect(page).toContain(":global(html[data-force-theme='dark']) select");
+  it('lets native selects follow the active system palette without a dark lock', () => {
+    expect(page).toContain('color-scheme: light dark');
+    expect(page).not.toMatch(/select\s*\{[^}]*color-scheme:\s*dark/);
+    expect(page).not.toContain(":global(html[data-force-theme='dark']) select");
     expect(page).toContain(":global(html[data-force-theme='light']) select");
     expect(page).toContain('color-scheme: light');
   });

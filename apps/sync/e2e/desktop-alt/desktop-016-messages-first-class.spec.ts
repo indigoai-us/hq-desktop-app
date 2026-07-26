@@ -61,7 +61,9 @@ describe('DESKTOP-016: Messages is a first-class desktop destination', () => {
     expect(shell).toMatch(
       /\.messages-window\.embedded\s*\{[\s\S]*?width:\s*100%;[\s\S]*?height:\s*100%;[\s\S]*?background:\s*transparent;/,
     );
-    expect(shell).toContain("if (!embedded) void invoke('messages_window_ready')");
+    expect(shell).toContain(
+      "invoke(embedded ? 'mark_messages_viewed' : 'messages_window_ready')",
+    );
   });
 
   it('routes message-person handoffs without consuming the target before the shell mounts', () => {
@@ -77,18 +79,15 @@ describe('DESKTOP-016: Messages is a first-class desktop destination', () => {
     expect(pending).toContain('desktop Messages destination');
   });
 
-  it('exposes command and Inbox jump access inside the desktop', () => {
+  it('exposes sidebar and command access without duplicating an Inbox jump card', () => {
     const app = readRepoFile('src/desktop-alt/DesktopApp.svelte');
     const inbox = readRepoFile('src/desktop-alt/pages/InboxPage.svelte');
 
     expect(app).toContain("id: 'command-go-messages'");
     expect(app).toContain("label: 'Go to Messages'");
     expect(app).toContain("action: () => navigate({ kind: 'messages' })");
-    expect(app).toContain(
-      "<InboxPage onopenmessages={() => navigate({ kind: 'messages' })} />",
-    );
-    expect(inbox).toContain('onopenmessages?: () => void');
-    expect(inbox).toContain('if (onopenmessages)');
+    expect(app).toContain('<InboxPage />');
+    expect(inbox).not.toContain('onopenmessages');
   });
 
   it('keeps the dedicated native Messages window mounted as a supported fallback', () => {

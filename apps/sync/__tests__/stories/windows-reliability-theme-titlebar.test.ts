@@ -127,8 +127,8 @@ describe('US-003: Windows theme, notification, and native title-bar policy', () 
       expect(banner).toMatch(/prefers-reduced-transparency:\s*reduce/);
       expect(banner).toMatch(/background-image:\s*none/);
 
-      // Light-mode action chip remains readable.
-      expect(banner).toMatch(/prefers-color-scheme:\s*light[\s\S]{0,120}#1c3d80/);
+      // Light-mode action chip remains readable without reintroducing brand blue.
+      expect(banner).toMatch(/prefers-color-scheme:\s*light[\s\S]{0,180}#2c2c2e/);
 
       // Reduced motion respected.
       expect(banner).toMatch(/prefers-reduced-motion:\s*reduce/);
