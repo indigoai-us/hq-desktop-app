@@ -39,6 +39,12 @@ interface WebDriverLogEntry {
 }
 
 const DESKTOP_ALT_SELECTOR = '#desktop-alt, html[data-window="desktop-alt"]';
+// `src/main.ts` stamps every webview with its own Tauri window label
+// (`document.documentElement.dataset.window`), so the classic popover is
+// identifiable without depending on any markup that a redesign could move.
+const MAIN_WINDOW_PREDICATE = `
+  return document.documentElement?.dataset?.window === 'main';
+`;
 const ERROR_CAPTURE_SCRIPT = `
   if (!window.__desktopAltE2eErrors) {
     window.__desktopAltE2eErrors = [];
@@ -85,13 +91,67 @@ export async function createDesktopAltHarness(email: string): Promise<DesktopAlt
     return new DesktopAltHarness(email);
   }
 
-  const start = await startOrReuseDriver(resolution.config);
+  return startLiveHarness(resolution.config);
+}
+
+/**
+ * Low-level live handle for the signed-out Windows smoke.
+ *
+ * `DesktopAltTestHarness` is deliberately the *scripted* contract — it can only
+ * express things both harnesses can answer, and every one of its verbs
+ * (`openDesktopAltWindow`, `navigate`) assumes a signed-in user. The live
+ * pre-auth smoke needs the opposite: read the real DOM of the classic popover,
+ * and observe how the backend gate *refuses*. That is live-only by
+ * construction, so it gets its own narrow surface instead of widening the
+ * shared interface with methods the scripted harness would have to fake.
+ */
+export interface LiveDesktopAltProbe {
+  /** Focus the classic popover webview (`html[data-window="main"]`). */
+  switchToMainWindow(): Promise<void>;
+  /** Evaluate a synchronous script in the focused webview. */
+  evaluate<T>(script: string, args?: unknown[]): Promise<T>;
+  /** Block until the focused webview's rendered text matches; returns it. */
+  waitForBodyText(pattern: RegExp, timeoutMs?: number): Promise<string>;
+  /** Rendered (not source) text of the focused webview. */
+  bodyText(): Promise<string>;
+  /** console.error + uncaught errors + unhandled rejections + driver log. */
+  consoleErrors(): Promise<string[]>;
+  /** invoke() in the focused webview; rejects with the backend's own error. */
+  invokeCommand<T>(command: string, args?: Record<string, unknown>): Promise<T>;
+  /** Whether a desktop-alt webview exists. Restores focus to the popover. */
+  hasDesktopAltWindow(): Promise<boolean>;
+  dispose(): Promise<void>;
+}
+
+/**
+ * Live-only factory: never degrades to the scripted harness.
+ *
+ * The pre-auth smoke exists to exercise a real installed binary, so "the driver
+ * could not be resolved" has to be a red test, not a silent downgrade to a
+ * regex pass over .svelte sources.
+ */
+export async function createLivePreAuthProbe(): Promise<LiveDesktopAltProbe> {
+  const resolution = await resolveLiveConfig();
+
+  if (!resolution.config) {
+    throw new Error(
+      `[desktop-alt-e2e] the live pre-auth smoke requires a real tauri-driver harness, but it ` +
+        `could not be resolved: ${resolution.reason}. Refusing to fall back to the scripted ` +
+        `harness — that would report a pass without launching the application.`,
+    );
+  }
+
+  const live = await startLiveHarness(resolution.config);
+  await live.switchToMainWindow();
+  return live;
+}
+
+async function startLiveHarness(config: LiveConfig): Promise<LiveDesktopAltHarness> {
+  const start = await startOrReuseDriver(config);
 
   try {
     const live = await LiveDesktopAltHarness.create(start.client);
-    console.log(
-      `[desktop-alt-e2e] live tauri-driver harness active at ${resolution.config.webdriverUrl}.`,
-    );
+    console.log(`[desktop-alt-e2e] live tauri-driver harness active at ${config.webdriverUrl}.`);
     return live;
   } catch (error) {
     // Release the session so the next spec can create one against the shared
@@ -101,7 +161,7 @@ export async function createDesktopAltHarness(email: string): Promise<DesktopAlt
   }
 }
 
-class LiveDesktopAltHarness implements DesktopAltTestHarness {
+class LiveDesktopAltHarness implements DesktopAltTestHarness, LiveDesktopAltProbe {
   readonly mode = 'live';
 
   private constructor(private readonly driver: WebDriverClient) {}
@@ -208,6 +268,60 @@ class LiveDesktopAltHarness implements DesktopAltTestHarness {
   async dispose(): Promise<void> {
     // Only the session: the tauri-driver server is shared across the spec file.
     await this.driver.deleteSession().catch(() => undefined);
+  }
+
+  // ── LiveDesktopAltProbe ────────────────────────────────────────────────────
+
+  async switchToMainWindow(): Promise<void> {
+    const main = await this.findWindowWithPredicate(MAIN_WINDOW_PREDICATE);
+    if (!main) {
+      const handles = await this.driver.getWindowHandles();
+      throw new Error(
+        `The app exposed ${handles.length} webview(s) to WebDriver but none of them is the ` +
+          `classic popover (html[data-window="main"]).`,
+      );
+    }
+    await this.driver.switchToWindow(main);
+    await this.installErrorCapture();
+  }
+
+  async evaluate<T>(script: string, args: unknown[] = []): Promise<T> {
+    return this.driver.execute<T>(script, args);
+  }
+
+  async bodyText(): Promise<string> {
+    return this.driver.execute<string>('return document.body?.innerText || "";');
+  }
+
+  async waitForBodyText(pattern: RegExp, timeoutMs = 20_000): Promise<string> {
+    let seen = '';
+    await this.driver
+      .waitUntil(async () => {
+        seen = await this.bodyText().catch(() => '');
+        return pattern.test(seen);
+      }, timeoutMs)
+      .catch(() => {
+        throw new Error(
+          `The window never rendered text matching ${pattern}. Last rendered text was:\n${seen}`,
+        );
+      });
+    return seen;
+  }
+
+  async consoleErrors(): Promise<string[]> {
+    return this.collectConsoleErrors();
+  }
+
+  async invokeCommand<T>(command: string, args: Record<string, unknown> = {}): Promise<T> {
+    return this.invokeTauriCommand<T>(command, args);
+  }
+
+  async hasDesktopAltWindow(): Promise<boolean> {
+    const desktop = await this.findDesktopAltWindow();
+    // `findDesktopAltWindow` walks every handle to probe it, so the focused
+    // window is wherever the walk stopped. Put the caller back on the popover.
+    await this.switchToMainWindow();
+    return Boolean(desktop);
   }
 
   private async clickButtonWithText(label: string): Promise<void> {

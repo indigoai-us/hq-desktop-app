@@ -88,40 +88,6 @@ jobs:
       - name: Install Tauri WebDriver bridge
         run: cargo install tauri-driver --locked
 
-      # TEMPORARY DIAGNOSTIC — strip once the WebView2 automation handshake is
-      # fixed. msedgedriver drives the app through the Evergreen WebView2
-      # Runtime, not through installed Edge, and none of those versions were
-      # recorded, so a driver/runtime skew was indistinguishable from an
-      # app-side failure. tauri-driver has no --version flag (it rejects unknown
-      # arguments), so its version comes from cargo.
-      - name: Verify WebDriver and WebView2 stack
-        shell: pwsh
-        run: |
-          $driver = Get-Command msedgedriver.exe -ErrorAction Stop
-          Write-Host "msedgedriver: $($driver.Source)"
-          & $driver.Source --version
-
-          $edge = "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
-          if (Test-Path -LiteralPath $edge) {
-            Write-Host "Edge: $((Get-Item -LiteralPath $edge).VersionInfo.ProductVersion)"
-          } else {
-            Write-Host "Edge: not installed at $edge"
-          }
-
-          $client = '{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
-          foreach ($hive in @(
-            "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\$client",
-            "HKLM:\SOFTWARE\Microsoft\EdgeUpdate\Clients\$client",
-            "HKCU:\SOFTWARE\Microsoft\EdgeUpdate\Clients\$client"
-          )) {
-            $pv = (Get-ItemProperty -Path $hive -Name pv -ErrorAction SilentlyContinue).pv
-            if ($pv) { Write-Host "WebView2 Runtime [$hive]: $pv" }
-            else { Write-Host "WebView2 Runtime [$hive]: (absent)" }
-          }
-
-          cargo install --list | Select-String -Pattern 'tauri-driver'
-          tauri-driver --help
-
       # `--features e2e-automation` compiles in the WebView2 automation bridge
       # (src-tauri/src/util/webview2_automation.rs) that forwards msedgedriver's
       # WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS into the app's webviews. It is off
@@ -132,12 +98,18 @@ jobs:
       - name: Build launchable Windows app
         run: pnpm tauri build --debug --no-bundle --target x86_64-pc-windows-msvc --config src-tauri/tauri.windows.conf.json --features e2e-automation
 
-      - name: Live Windows desktop smoke test
+      # Signed-out by design: a GitHub runner has no Cognito session, and the
+      # honest alternatives (a fabricated token, a CI login secret, or loosening
+      # the gate) would each destroy the thing under test. The spec asserts what
+      # a signed-out machine really reaches — the app boots, the popover paints,
+      # and the desktop-alt gate refuses. The signed-in surfaces stay covered by
+      # the scripted `Desktop-alt E2E` job (smoke-pages.spec.ts).
+      - name: Live Windows pre-auth smoke test
         env:
           HQ_SYNC_DESKTOP_ALT_LIVE: "1"
           HQ_SYNC_DESKTOP_ALT_APP: ${{ github.workspace }}\apps\sync\src-tauri\target\x86_64-pc-windows-msvc\debug\hq-sync-menubar.exe
           HQ_SYNC_DESKTOP_ALT_DRIVER_LOG_DIR: ${{ runner.temp }}\desktop-alt-driver-logs
-        run: pnpm vitest run --config e2e/desktop-alt/vitest.config.ts e2e/desktop-alt/smoke-pages.spec.ts
+        run: pnpm vitest run --config e2e/desktop-alt/vitest.config.ts e2e/desktop-alt/live-preauth.spec.ts
 
       # always(), not failure(): the captured msedgewebview2.exe command line is
       # the evidence that the WebView2 automation switches landed, and a green
@@ -202,40 +174,6 @@ jobs:
       - name: Install Tauri WebDriver bridge
         run: cargo install tauri-driver --locked
 
-      # TEMPORARY DIAGNOSTIC — strip once the WebView2 automation handshake is
-      # fixed. msedgedriver drives the app through the Evergreen WebView2
-      # Runtime, not through installed Edge, and none of those versions were
-      # recorded, so a driver/runtime skew was indistinguishable from an
-      # app-side failure. tauri-driver has no --version flag (it rejects unknown
-      # arguments), so its version comes from cargo.
-      - name: Verify WebDriver and WebView2 stack
-        shell: pwsh
-        run: |
-          $driver = Get-Command msedgedriver.exe -ErrorAction Stop
-          Write-Host "msedgedriver: $($driver.Source)"
-          & $driver.Source --version
-
-          $edge = "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
-          if (Test-Path -LiteralPath $edge) {
-            Write-Host "Edge: $((Get-Item -LiteralPath $edge).VersionInfo.ProductVersion)"
-          } else {
-            Write-Host "Edge: not installed at $edge"
-          }
-
-          $client = '{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
-          foreach ($hive in @(
-            "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\$client",
-            "HKLM:\SOFTWARE\Microsoft\EdgeUpdate\Clients\$client",
-            "HKCU:\SOFTWARE\Microsoft\EdgeUpdate\Clients\$client"
-          )) {
-            $pv = (Get-ItemProperty -Path $hive -Name pv -ErrorAction SilentlyContinue).pv
-            if ($pv) { Write-Host "WebView2 Runtime [$hive]: $pv" }
-            else { Write-Host "WebView2 Runtime [$hive]: (absent)" }
-          }
-
-          cargo install --list | Select-String -Pattern 'tauri-driver'
-          tauri-driver --help
-
       # Same flag as the windows-check job: `e2e-automation` is what lets
       # msedgedriver attach, and it is never on in a shipped build. The honest
       # consequence is that this job packages and installs a binary that is NOT
@@ -267,12 +205,14 @@ jobs:
           "app=$app" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           Write-Host "Installed application: $app"
 
-      - name: Live smoke test installed application
+      # Same pre-auth scope as the windows-check job, against the installed
+      # production package rather than a debug build.
+      - name: Live pre-auth smoke test of the installed application
         env:
           HQ_SYNC_DESKTOP_ALT_LIVE: "1"
           HQ_SYNC_DESKTOP_ALT_APP: ${{ steps.install.outputs.app }}
           HQ_SYNC_DESKTOP_ALT_DRIVER_LOG_DIR: ${{ runner.temp }}\desktop-alt-driver-logs
-        run: pnpm vitest run --config e2e/desktop-alt/vitest.config.ts e2e/desktop-alt/smoke-pages.spec.ts
+        run: pnpm vitest run --config e2e/desktop-alt/vitest.config.ts e2e/desktop-alt/live-preauth.spec.ts
 
       - name: List installed files on failure
         if: failure()
