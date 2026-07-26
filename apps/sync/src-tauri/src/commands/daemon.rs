@@ -12,8 +12,10 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
 use crate::commands::process::{
-    cancel_process_impl, deregister_process, is_cancelled, is_registered, lookup_pid,
-    run_process_impl, try_register_handle, ProcessEvent,
+    cancel_process_for, cancel_process_impl, deregister_process, deregister_process_for,
+    is_cancelled, is_cancelled_for, is_registered, lookup_pid, process_identity_for,
+    registration_for_handle, run_process_impl, try_register_handle, CancellationAttempt,
+    ProcessEvent, ProcessRegistration,
 };
 use crate::commands::status::{journal_for_daemon_sync_complete, write_journal};
 use crate::commands::sync::RunTotals;
@@ -124,7 +126,11 @@ fn handle_watch_stdout_line(
     true
 }
 
-fn start_daemon_heartbeat_watchdog(last_heartbeat: Arc<Mutex<Instant>>, finished: Arc<AtomicBool>) {
+fn start_daemon_heartbeat_watchdog(
+    last_heartbeat: Arc<Mutex<Instant>>,
+    finished: Arc<AtomicBool>,
+    registration: ProcessRegistration,
+) {
     thread::spawn(move || loop {
         thread::sleep(DAEMON_HEARTBEAT_CHECK_INTERVAL);
         if finished.load(Ordering::Acquire) {
@@ -134,23 +140,75 @@ fn start_daemon_heartbeat_watchdog(last_heartbeat: Arc<Mutex<Instant>>, finished
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .elapsed();
-        if should_cancel_stalled_daemon(
-            is_registered(DAEMON_HANDLE),
-            heartbeat_age,
-            DAEMON_HEARTBEAT_TIMEOUT,
-        ) {
+        if let Some(attempt) = watchdog_cancellation_attempt(registration, heartbeat_age) {
+            let expected_pid =
+                process_identity_for(DAEMON_HANDLE, registration).and_then(|identity| identity.pid);
+            let current_registration = attempt.current.map(|identity| identity.registration.id());
+            let current_pid = attempt.current.and_then(|identity| identity.pid);
+            let outcome = if attempt.executed {
+                "executed"
+            } else {
+                "skipped"
+            };
             log(
                 "daemon.watchdog",
                 &format!(
-                    "no sync protocol heartbeat for {}s; cancelling stalled watch daemon",
-                    heartbeat_age.as_secs()
+                    "no sync protocol heartbeat for {}s; watchdog cancellation {} \
+                     (expected_registration={} expected_pid={:?} current_registration={:?} current_pid={:?})",
+                    heartbeat_age.as_secs(),
+                    outcome,
+                    registration.id(),
+                    expected_pid,
+                    current_registration,
+                    current_pid,
                 ),
             );
-            // Exactly-once Job Object / process-group teardown for this generation.
-            terminate_daemon_once(DaemonFailureCategory::HeartbeatStall);
+            if attempt.executed {
+                // The registration-scoped cancellation above has already torn
+                // down this generation. Preserve the lifecycle transition
+                // without issuing a second, handle-scoped cancellation that
+                // could target a replacement.
+                set_lifecycle_state(
+                    WatchDaemonState::Stopped,
+                    DaemonFailureCategory::HeartbeatStall,
+                );
+            }
+            sentry::add_breadcrumb(sentry::Breadcrumb {
+                category: Some("daemon.watchdog".into()),
+                level: if attempt.executed {
+                    sentry::Level::Warning
+                } else {
+                    sentry::Level::Info
+                },
+                message: Some(format!(
+                    "watchdog cancellation reason=no-protocol-heartbeat outcome={} \
+                     expected_registration={} expected_pid={:?} current_registration={:?} current_pid={:?}",
+                    outcome,
+                    registration.id(),
+                    expected_pid,
+                    current_registration,
+                    current_pid,
+                )),
+                ..Default::default()
+            });
             return;
         }
     });
+}
+
+/// A timeout remains actionable when a daemon handle exists, but its effect is
+/// scoped to the watchdog's exact process registration. An obsolete watchdog
+/// therefore records a skipped attempt instead of cancelling a replacement.
+fn watchdog_cancellation_attempt(
+    registration: ProcessRegistration,
+    heartbeat_age: Duration,
+) -> Option<CancellationAttempt> {
+    should_cancel_stalled_daemon(
+        is_registered(DAEMON_HANDLE),
+        heartbeat_age,
+        DAEMON_HEARTBEAT_TIMEOUT,
+    )
+    .then(|| cancel_process_for(DAEMON_HANDLE, registration, SIGKILL_DELAY))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -208,9 +266,7 @@ fn set_lifecycle_state(next: WatchDaemonState, category: DaemonFailureCategory) 
     sentry::add_breadcrumb(sentry::Breadcrumb {
         category: Some("daemon.lifecycle".into()),
         level: match category {
-            DaemonFailureCategory::None | DaemonFailureCategory::Cancelled => {
-                sentry::Level::Info
-            }
+            DaemonFailureCategory::None | DaemonFailureCategory::Cancelled => sentry::Level::Info,
             DaemonFailureCategory::Backoff | DaemonFailureCategory::Preflight => {
                 sentry::Level::Warning
             }
@@ -394,13 +450,12 @@ fn daemon_appears_alive() -> bool {
     alive
 }
 
-/// Release the guard on a failed start: clear the stamp, then deregister so the
-/// next start can acquire it. Paired with every `start_daemon` preflight bail
-/// (all synchronous, before the spawn thread — no other start can hold the
-/// handle yet, so the unconditional clear is safe).
-fn release_daemon_guard() {
-    clear_daemon_guard_stamp();
-    deregister_process(DAEMON_HANDLE);
+/// Release a failed start only when its registration and guard generation still
+/// own the corresponding resources. A stale preflight cleanup must not erase a
+/// replacement that acquired the public handle after exceptional recovery.
+fn release_daemon_guard_for(registration: ProcessRegistration, guard_generation: u64) {
+    clear_daemon_guard_stamp_for(guard_generation);
+    let _ = deregister_process_for(DAEMON_HANDLE, registration);
 }
 
 /// Force-clear a guard the supervisor has judged wedged: terminate any lingering
@@ -448,9 +503,12 @@ fn force_clear_daemon_guard_impl(daemon_alive_recheck: bool) {
         message: Some("force-clearing wedged start guard (no live daemon on re-check)".into()),
         ..Default::default()
     });
-    // Exactly-once Job Object teardown for this generation, then release the guard.
+    // This is an intentional, immediate recovery action against the current
+    // owner. The stale wait/watchdog paths retain their old registrations and
+    // cannot affect the replacement that follows.
     let _ = terminate_daemon_once(DaemonFailureCategory::ForceClear);
-    release_daemon_guard();
+    clear_daemon_guard_stamp();
+    deregister_process(DAEMON_HANDLE);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -472,6 +530,8 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
     if !try_register_handle(DAEMON_HANDLE) {
         return Err("Daemon is already starting".to_string());
     }
+    let daemon_registration = registration_for_handle(DAEMON_HANDLE)
+        .expect("a successfully registered daemon handle must have an identity");
     // Stamp the guard acquisition so the supervisor can bound how long a start
     // may hold it with no live daemon before treating it as wedged. The
     // generation lets this start's exit clear only its own stamp, never a
@@ -485,12 +545,12 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
     match crate::commands::cognito::read_tokens_from_file() {
         Ok(Some(_)) => {}
         Ok(None) => {
-            release_daemon_guard();
+            release_daemon_guard_for(daemon_registration, guard_generation);
             set_lifecycle_state(WatchDaemonState::Stopped, DaemonFailureCategory::Preflight);
             return Err(crate::commands::cognito::REAUTH_MESSAGE.to_string());
         }
         Err(err) => {
-            release_daemon_guard();
+            release_daemon_guard_for(daemon_registration, guard_generation);
             set_lifecycle_state(WatchDaemonState::Stopped, DaemonFailureCategory::Preflight);
             return Err(err);
         }
@@ -499,7 +559,7 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
     let hq_folder_path = match resolve_hq_folder_path() {
         Ok(p) => p,
         Err(e) => {
-            release_daemon_guard();
+            release_daemon_guard_for(daemon_registration, guard_generation);
             set_lifecycle_state(WatchDaemonState::Stopped, DaemonFailureCategory::Preflight);
             return Err(e);
         }
@@ -508,7 +568,7 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
     // Pre-flight: check if daemon is already running from a previous session
     if let Some(pid) = read_pid_file(&hq_folder_path) {
         if is_pid_alive(pid) {
-            release_daemon_guard();
+            release_daemon_guard_for(daemon_registration, guard_generation);
             // Inherited runner is live — surface Running without taking ownership.
             set_lifecycle_state(WatchDaemonState::Running, DaemonFailureCategory::None);
             return Err(format!("Daemon is already running (PID {})", pid));
@@ -527,7 +587,7 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
                 &format!("runner unresolvable — local-only preflight: {msg}"),
             ),
         }
-        release_daemon_guard();
+        release_daemon_guard_for(daemon_registration, guard_generation);
         set_lifecycle_state(WatchDaemonState::Stopped, DaemonFailureCategory::Preflight);
         return Err(msg);
     }
@@ -538,9 +598,12 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
     // diagnosis only: an npx cache/permission failure is environmental, while
     // an unexplained later runner exit remains alertable below.
     if let Err(msg) = hq_desktop_core::prewarm::materialize_hq_cloud_cache() {
-        log("daemon", &format!("npx cache materialization preflight failed: {msg}"));
+        log(
+            "daemon",
+            &format!("npx cache materialization preflight failed: {msg}"),
+        );
         note_environment_preflight_failure();
-        release_daemon_guard();
+        release_daemon_guard_for(daemon_registration, guard_generation);
         set_lifecycle_state(WatchDaemonState::Backoff, DaemonFailureCategory::Preflight);
         return Err(msg);
     }
@@ -559,105 +622,114 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
     let hq_folder = hq_folder_path.clone();
     let last_heartbeat = Arc::new(Mutex::new(Instant::now()));
     let daemon_finished = Arc::new(AtomicBool::new(false));
-    start_daemon_heartbeat_watchdog(last_heartbeat.clone(), daemon_finished.clone());
+    start_daemon_heartbeat_watchdog(
+        last_heartbeat.clone(),
+        daemon_finished.clone(),
+        daemon_registration,
+    );
 
     thread::spawn(move || {
         let process_heartbeat = last_heartbeat.clone();
         let process_finished = daemon_finished.clone();
-        let result = run_process_impl(DAEMON_HANDLE, &spawn_args, move |event| {
-            // Surface stderr and non-success exits unconditionally — they
-            // are the only signals the user has when the watcher dies
-            // (e.g. "Unknown argument: --watch" on a stale runner pin).
-            // Stdout is parsed for ndjson SyncEvents so each watcher pass
-            // updates `.hq-sync-journal.json` and refreshes the popover's
-            // "Last synced" stat — without that, the UI only ever showed
-            // the timestamp of the last manual `Sync Now` click.
-            match event {
-                ProcessEvent::Stdout(line) => {
-                    if handle_watch_stdout_line(&app, &hq_folder, &totals, &line) {
-                        *process_heartbeat
-                            .lock()
-                            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Instant::now();
+        let result = run_process_impl(
+            DAEMON_HANDLE,
+            daemon_registration,
+            &spawn_args,
+            move |event| {
+                // Surface stderr and non-success exits unconditionally — they
+                // are the only signals the user has when the watcher dies
+                // (e.g. "Unknown argument: --watch" on a stale runner pin).
+                // Stdout is parsed for ndjson SyncEvents so each watcher pass
+                // updates `.hq-sync-journal.json` and refreshes the popover's
+                // "Last synced" stat — without that, the UI only ever showed
+                // the timestamp of the last manual `Sync Now` click.
+                match event {
+                    ProcessEvent::Stdout(line) => {
+                        if handle_watch_stdout_line(&app, &hq_folder, &totals, &line) {
+                            *process_heartbeat
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Instant::now();
+                        }
                     }
-                }
-                ProcessEvent::Stderr(line) => {
-                    log("daemon.stderr", &line);
-                    // Accumulate as a Sentry breadcrumb so a crash capture at
-                    // the Exit arm below ships with the runner's last words.
-                    sentry::add_breadcrumb(sentry::Breadcrumb {
-                        category: Some("daemon.stderr".into()),
-                        level: sentry::Level::Warning,
-                        message: Some(line.clone()),
-                        ..Default::default()
-                    });
-                    crate::commands::sync::handle_runner_stderr_line(&app, &totals, &line);
-                }
-                ProcessEvent::Exit {
-                    code,
-                    signal,
-                    success,
-                } => {
-                    // Mark this generation complete before the process helper
-                    // deregisters its shared handle. That prevents this
-                    // generation's watchdog from ever cancelling a newly
-                    // registered replacement during the restart handoff.
-                    process_finished.store(true, Ordering::Release);
-                    log(
-                        "daemon",
-                        &format!(
-                            "exited: code={:?} signal={:?} success={}",
-                            code, signal, success
-                        ),
-                    );
-                    // Auto-sync runs unattended, so a crashed watcher was
-                    // previously invisible (log-only). Capture genuine crashes
-                    // to #hq-alerts — but NOT a deliberate stop (a bare SIGTERM
-                    // from cancel_process_impl on app-quit / auto-sync-off /
-                    // re-spawn), and rate-limit a crash-loop to ~log2(N) events
-                    // instead of one per 30s respawn (HQ-SYNC-4 / HQ-SYNC-5).
-                    let cancelled = is_cancelled(DAEMON_HANDLE);
-                    if cancelled {
-                        // Deliberate stop path already recorded lifecycle.
-                    } else if is_unexpected_watcher_exit(success, signal, cancelled) {
-                        let consecutive = note_watcher_crashed();
-                        set_lifecycle_state(
-                            if within_respawn_backoff() {
-                                WatchDaemonState::Backoff
-                            } else {
-                                WatchDaemonState::Stopped
-                            },
-                            if is_benign_watcher_exit(code, signal) {
-                                DaemonFailureCategory::None
-                            } else {
-                                DaemonFailureCategory::Crash
-                            },
+                    ProcessEvent::Stderr(line) => {
+                        log("daemon.stderr", &line);
+                        // Accumulate as a Sentry breadcrumb so a crash capture at
+                        // the Exit arm below ships with the runner's last words.
+                        sentry::add_breadcrumb(sentry::Breadcrumb {
+                            category: Some("daemon.stderr".into()),
+                            level: sentry::Level::Warning,
+                            message: Some(line.clone()),
+                            ..Default::default()
+                        });
+                        crate::commands::sync::handle_runner_stderr_line(&app, &totals, &line);
+                    }
+                    ProcessEvent::Exit {
+                        code,
+                        signal,
+                        success,
+                    } => {
+                        // Mark this generation complete before the process helper
+                        // deregisters its shared handle. That prevents this
+                        // generation's watchdog from ever cancelling a newly
+                        // registered replacement during the restart handoff.
+                        process_finished.store(true, Ordering::Release);
+                        log(
+                            "daemon",
+                            &format!(
+                                "exited: code={:?} signal={:?} success={}",
+                                code, signal, success
+                            ),
                         );
-                        if is_benign_watcher_exit(code, signal) {
-                            log(
-                                "daemon",
-                                &format!(
-                                    "benign watcher exit #{consecutive} — capture skipped \
-                                     (code={:?} signal={:?})",
-                                    code, signal
-                                ),
+                        // Auto-sync runs unattended, so a crashed watcher was
+                        // previously invisible (log-only). Capture genuine crashes
+                        // to #hq-alerts — but NOT a deliberate stop (a bare SIGTERM
+                        // from cancel_process_impl on app-quit / auto-sync-off /
+                        // re-spawn), and rate-limit a crash-loop to ~log2(N) events
+                        // instead of one per 30s respawn (HQ-SYNC-4 / HQ-SYNC-5).
+                        let cancelled = is_cancelled_for(DAEMON_HANDLE, daemon_registration);
+                        if is_unexpected_watcher_exit(success, signal, cancelled) {
+                            let consecutive = note_watcher_crashed();
+                            set_lifecycle_state(
+                                if within_respawn_backoff() {
+                                    WatchDaemonState::Backoff
+                                } else {
+                                    WatchDaemonState::Stopped
+                                },
+                                if is_benign_watcher_exit(code, signal) {
+                                    DaemonFailureCategory::None
+                                } else {
+                                    DaemonFailureCategory::Crash
+                                },
                             );
-                            sentry::add_breadcrumb(sentry::Breadcrumb {
-                                category: Some("daemon.exit".into()),
-                                level: sentry::Level::Info,
-                                message: Some(format!(
-                                    "benign auto-sync watcher exit #{consecutive}: \
+                            if is_benign_watcher_exit(code, signal) {
+                                log(
+                                    "daemon",
+                                    &format!(
+                                        "benign watcher exit #{consecutive} — capture skipped \
+                                     (code={:?} signal={:?})",
+                                        code, signal
+                                    ),
+                                );
+                                sentry::add_breadcrumb(sentry::Breadcrumb {
+                                    category: Some("daemon.exit".into()),
+                                    level: sentry::Level::Info,
+                                    message: Some(format!(
+                                        "benign auto-sync watcher exit #{consecutive}: \
                                      code={:?} signal={:?}",
-                                    code, signal
-                                )),
-                                ..Default::default()
-                            });
-                        } else if should_capture_crash(consecutive) {
-                            let (uptime, rss_kb, rss_age) = watcher_exit_diagnostics();
-                            let diag = exit_diagnostic_suffix(uptime, rss_kb, rss_age);
-                            let fingerprint_token = termination_fingerprint_token(code, signal);
-                            let fingerprint =
-                                ["sync", "auto-sync-watcher-termination", fingerprint_token.as_str()];
-                            crate::commands::sync::capture_sync_error_with_fingerprint(
+                                        code, signal
+                                    )),
+                                    ..Default::default()
+                                });
+                            } else if should_capture_crash(consecutive) {
+                                let (uptime, rss_kb, rss_age) = watcher_exit_diagnostics();
+                                let diag = exit_diagnostic_suffix(uptime, rss_kb, rss_age);
+                                let fingerprint_token = termination_fingerprint_token(code, signal);
+                                let fingerprint = [
+                                    "sync",
+                                    "auto-sync-watcher-termination",
+                                    fingerprint_token.as_str(),
+                                ];
+                                crate::commands::sync::capture_sync_error_with_fingerprint(
                                 None,
                                 "(auto-sync)",
                                 &format!(
@@ -667,22 +739,26 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
                                 ),
                                 &fingerprint,
                             );
-                        } else {
-                            log(
-                                "daemon",
-                                &format!(
-                                    "watcher crash #{consecutive} — capture rate-limited \
+                            } else {
+                                log(
+                                    "daemon",
+                                    &format!(
+                                        "watcher crash #{consecutive} — capture rate-limited \
                                      (code={:?} signal={:?})",
-                                    code, signal
-                                ),
+                                        code, signal
+                                    ),
+                                );
+                            }
+                        } else {
+                            set_lifecycle_state(
+                                WatchDaemonState::Stopped,
+                                DaemonFailureCategory::None,
                             );
                         }
-                    } else {
-                        set_lifecycle_state(WatchDaemonState::Stopped, DaemonFailureCategory::None);
                     }
                 }
-            }
-        });
+            },
+        );
 
         daemon_finished.store(true, Ordering::Release);
         // `run_process_impl` has returned, so it already deregistered the
@@ -698,7 +774,10 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
 
         if let Err(e) = result {
             log("daemon", &format!("spawn failed: {e}"));
-            set_lifecycle_state(WatchDaemonState::Stopped, DaemonFailureCategory::SpawnFailed);
+            set_lifecycle_state(
+                WatchDaemonState::Stopped,
+                DaemonFailureCategory::SpawnFailed,
+            );
             // The watcher never started — Sync is silently dead until restart.
             crate::commands::sync::capture_sync_error(
                 None,
@@ -1230,14 +1309,19 @@ mod tests {
     #[test]
     fn app_owned_live_child_without_pid_file_is_not_force_cleared() {
         use crate::commands::process::{
-            deregister_process, register_process, try_register_handle,
+            deregister_process, register_process, registration_for_handle, try_register_handle,
         };
         let _serial = GUARD_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         clear_daemon_guard_stamp();
 
         // Simulate a spawned watch runner that never wrote .hq-sync.pid.
         assert!(try_register_handle(DAEMON_HANDLE));
-        register_process(DAEMON_HANDLE, std::process::id());
+        let registration = registration_for_handle(DAEMON_HANDLE)
+            .expect("registered daemon test handle has an identity");
+        assert_eq!(
+            register_process(DAEMON_HANDLE, registration, std::process::id()),
+            Some(false)
+        );
         mark_daemon_guard_acquired();
 
         let (app_owned, child_alive, daemon_alive, sample_pid) = observe_daemon_liveness();
@@ -1290,7 +1374,10 @@ mod tests {
         let first = terminate_daemon_once(DaemonFailureCategory::Cancelled);
         assert!(first, "first termination should mark cancelled");
         let second = terminate_daemon_once(DaemonFailureCategory::HeartbeatStall);
-        assert!(!second, "second termination must not re-fire Job Object kill");
+        assert!(
+            !second,
+            "second termination must not re-fire Job Object kill"
+        );
 
         deregister_process(DAEMON_HANDLE);
         clear_daemon_guard_stamp();
@@ -1315,7 +1402,8 @@ mod tests {
 
         // A prior start took the guard and stamped its acquisition…
         assert!(try_register_handle(DAEMON_HANDLE));
-        mark_daemon_guard_acquired();
+        let registration = registration_for_handle(DAEMON_HANDLE).expect("test guard registration");
+        let generation = mark_daemon_guard_acquired();
 
         // …then wedged. The supervisor's respawn calls `start_daemon`, whose
         // `try_register_handle` is refused — this IS the "Daemon is already
@@ -1364,17 +1452,46 @@ mod tests {
 
         // Simulate a start that acquired the guard then bailed a preflight.
         assert!(try_register_handle(DAEMON_HANDLE));
-        mark_daemon_guard_acquired();
+        let registration = registration_for_handle(DAEMON_HANDLE).expect("test guard registration");
+        let generation = mark_daemon_guard_acquired();
         assert!(daemon_guard_age().is_some());
 
         // The preflight-bail path releases the guard on the spot — no deadline,
         // no wedge — so the next start is free to proceed.
-        release_daemon_guard();
+        release_daemon_guard_for(registration, generation);
         assert!(daemon_guard_age().is_none());
         assert!(try_register_handle(DAEMON_HANDLE));
 
         deregister_process(DAEMON_HANDLE);
         clear_daemon_guard_stamp();
+    }
+
+    #[test]
+    fn stale_failed_start_cleanup_preserves_a_replacement() {
+        use crate::commands::process::{
+            deregister_process_for, pre_register_handle, registration_for_handle,
+        };
+
+        let _serial = GUARD_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        clear_daemon_guard_stamp();
+        deregister_process(DAEMON_HANDLE);
+
+        let watcher_a = pre_register_handle(DAEMON_HANDLE);
+        let guard_a = mark_daemon_guard_acquired();
+        assert!(deregister_process_for(DAEMON_HANDLE, watcher_a));
+
+        let watcher_b = pre_register_handle(DAEMON_HANDLE);
+        let guard_b = mark_daemon_guard_acquired();
+        release_daemon_guard_for(watcher_a, guard_a);
+
+        assert_eq!(registration_for_handle(DAEMON_HANDLE), Some(watcher_b));
+        assert!(
+            daemon_guard_age().is_some(),
+            "stale cleanup must not clear replacement B's guard stamp"
+        );
+
+        assert!(deregister_process_for(DAEMON_HANDLE, watcher_b));
+        clear_daemon_guard_stamp_for(guard_b);
     }
 
     // Major review finding: the acquisition stamp used to live for the daemon's
@@ -1486,6 +1603,57 @@ mod tests {
         // gen2's own clear still works.
         clear_daemon_guard_stamp_for(gen2);
         assert!(daemon_guard_age().is_none());
+    }
+
+    // HQ-DESKTOP-3J: a watchdog created by force-released watcher A must not
+    // resolve the shared handle to and kill replacement B at its timeout.
+    #[test]
+    fn stale_watchdog_skips_a_replacement_registration() {
+        use crate::commands::process::{
+            is_cancelled_for, pre_register_handle, registration_for_handle,
+        };
+
+        let _serial = GUARD_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        deregister_process(DAEMON_HANDLE);
+
+        let watcher_a = pre_register_handle(DAEMON_HANDLE);
+        deregister_process(DAEMON_HANDLE);
+        let watcher_b = pre_register_handle(DAEMON_HANDLE);
+
+        let attempt = watchdog_cancellation_attempt(watcher_a, DAEMON_HEARTBEAT_TIMEOUT)
+            .expect("a replacement keeps the watchdog timeout actionable");
+        assert!(!attempt.executed, "stale watchdog A must not cancel B");
+        assert_eq!(
+            attempt.current.map(|identity| identity.registration),
+            Some(watcher_b),
+            "the skip records the replacement identity for watchdog provenance"
+        );
+        assert!(
+            !is_cancelled_for(DAEMON_HANDLE, watcher_b),
+            "replacement B remains uncancelled"
+        );
+        assert_eq!(registration_for_handle(DAEMON_HANDLE), Some(watcher_b));
+
+        deregister_process(DAEMON_HANDLE);
+    }
+
+    #[test]
+    fn current_watchdog_cancels_its_matching_registration() {
+        use crate::commands::process::{
+            deregister_process_for, is_cancelled_for, pre_register_handle,
+        };
+
+        let _serial = GUARD_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        deregister_process(DAEMON_HANDLE);
+
+        let watcher = pre_register_handle(DAEMON_HANDLE);
+        let attempt = watchdog_cancellation_attempt(watcher, DAEMON_HEARTBEAT_TIMEOUT)
+            .expect("the matching watchdog timeout must remain actionable");
+        assert!(attempt.executed);
+        assert!(is_cancelled_for(DAEMON_HANDLE, watcher));
+
+        assert!(deregister_process_for(DAEMON_HANDLE, watcher));
+        set_lifecycle_state(WatchDaemonState::Stopped, DaemonFailureCategory::None);
     }
 
     // ── Constants ────────────────────────────────────────────────────────

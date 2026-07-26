@@ -48,8 +48,8 @@ use tauri::{AppHandle, Emitter};
 use crate::commands::cognito;
 use crate::commands::config::{ensure_machine_id, HqConfig, MenubarPrefs};
 use crate::commands::process::{
-    cancel_process_impl, deregister_process, is_registered, run_process_impl, try_register_handle,
-    ProcessEvent, SpawnArgs,
+    cancel_process_for, cancel_process_impl, deregister_process_for, registration_for_handle,
+    run_process_impl, try_register_handle, ProcessEvent, SpawnArgs,
 };
 use crate::commands::status::{journal_for_sync_complete, write_journal};
 use crate::commands::vault_client::VaultClient;
@@ -848,6 +848,8 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
         eprintln!("[sync] BAIL: already running");
         return Err("Sync is already running".to_string());
     }
+    let sync_registration = registration_for_handle(SYNC_HANDLE)
+        .expect("a successfully registered sync handle must have an identity");
 
     // Best-effort machineId bootstrap — log on failure but do not abort sync.
     if let Err(e) = ensure_machine_id() {
@@ -864,14 +866,14 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
         log("sync", &format!("BAIL: node too old (v{current_major})"));
         #[cfg(debug_assertions)]
         eprintln!("[sync] BAIL: node too old (v{current_major})");
-        deregister_process(SYNC_HANDLE);
+        let _ = deregister_process_for(SYNC_HANDLE, sync_registration);
         return Err(node_too_old_message(current_major));
     }
     if let Some(msg) = preflight_runner_unresolvable() {
         log("sync", &format!("BAIL: runner unresolvable: {msg}"));
         #[cfg(debug_assertions)]
         eprintln!("[sync] BAIL: runner unresolvable: {msg}");
-        deregister_process(SYNC_HANDLE);
+        let _ = deregister_process_for(SYNC_HANDLE, sync_registration);
         return Err(msg);
     }
 
@@ -887,13 +889,16 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
         Ok(Ok(())) => {}
         Ok(Err(msg)) => {
             log("sync", &format!("BAIL: npx cache materialization: {msg}"));
-            deregister_process(SYNC_HANDLE);
+            let _ = deregister_process_for(SYNC_HANDLE, sync_registration);
             return Err(msg);
         }
         Err(err) => {
             let msg = format!("HQ Sync could not prepare its npm cache: {err}");
-            log("sync", &format!("BAIL: npx cache materialization task: {err}"));
-            deregister_process(SYNC_HANDLE);
+            log(
+                "sync",
+                &format!("BAIL: npx cache materialization task: {err}"),
+            );
+            let _ = deregister_process_for(SYNC_HANDLE, sync_registration);
             return Err(msg);
         }
     }
@@ -908,7 +913,7 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
             log("sync", &format!("BAIL: resolve_hq_folder_path failed: {e}"));
             #[cfg(debug_assertions)]
             eprintln!("[sync] BAIL: resolve_hq_folder_path failed: {}", e);
-            deregister_process(SYNC_HANDLE);
+            let _ = deregister_process_for(SYNC_HANDLE, sync_registration);
             return Err(e);
         }
     };
@@ -943,7 +948,7 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
         }
         Err(e) => {
             log("sync", &format!("BAIL: resolve_vault_api_url failed: {e}"));
-            deregister_process(SYNC_HANDLE);
+            let _ = deregister_process_for(SYNC_HANDLE, sync_registration);
             return Err(e);
         }
     };
@@ -955,14 +960,17 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
             j
         }
         Err(ResolveJwtError::NeedsReauth) => {
-            log("sync", "PAUSE: session needs reauth before sync can continue");
+            log(
+                "sync",
+                "PAUSE: session needs reauth before sync can continue",
+            );
             let _ = app.emit(
                 EVENT_SYNC_AUTH_ERROR,
                 SyncAuthErrorEvent {
                     message: cognito::REAUTH_MESSAGE.to_string(),
                 },
             );
-            deregister_process(SYNC_HANDLE);
+            let _ = deregister_process_for(SYNC_HANDLE, sync_registration);
             // Auth-required is a handled terminal state, not a process crash.
             // Returning success keeps the manual path aligned with the
             // runner's exit-0 auth-error contract and avoids red error UI.
@@ -970,7 +978,7 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
         }
         Err(ResolveJwtError::Other(e)) => {
             log("sync", &format!("BAIL: resolve_jwt failed: {e}"));
-            deregister_process(SYNC_HANDLE);
+            let _ = deregister_process_for(SYNC_HANDLE, sync_registration);
             return Err(e);
         }
     };
@@ -1033,7 +1041,7 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
                 "sync",
                 &format!("BAIL: provision_missing_companies failed: {e}"),
             );
-            deregister_process(SYNC_HANDLE);
+            let _ = deregister_process_for(SYNC_HANDLE, sync_registration);
             return Err(e);
         }
     };
@@ -1143,11 +1151,10 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
     // Timeout watchdog — cancels sync after SYNC_TIMEOUT
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(SYNC_TIMEOUT).await;
-        if is_registered(SYNC_HANDLE) {
+        if cancel_process_for(SYNC_HANDLE, sync_registration, SIGKILL_DELAY).executed {
             log("sync", "timeout reached, cancelling");
             #[cfg(debug_assertions)]
             eprintln!("[sync] timeout reached, cancelling");
-            cancel_process_impl(SYNC_HANDLE, SIGKILL_DELAY);
         }
     });
 
@@ -1164,126 +1171,127 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
         log("sync", "bg task: entering run_process_impl");
         #[cfg(debug_assertions)]
         eprintln!("[sync] bg task: entering run_process_impl");
-        let result = run_process_impl(SYNC_HANDLE, &spawn_args, |event| match event {
-            ProcessEvent::Stdout(line) => {
-                // Always mirror runner stdout to the log file — this is the
-                // ndjson protocol stream and the only durable record of what
-                // the runner did. The eprintln! is dev-only / verbose.
-                log("runner.stdout", &line);
-                #[cfg(debug_assertions)]
-                eprintln!("[sync stdout] {}", line);
-                handle_sync_line(
-                    &app_bg,
-                    &hq_folder_for_handler,
-                    &totals,
-                    &jwt_for_handler,
-                    &line,
-                );
-            }
-            ProcessEvent::Stderr(line) => {
-                // Always log runner stderr — when sync gets stuck this is the
-                // most likely place the cause shows up (npx download retry,
-                // node uncaught exception, runner panic, etc.).
-                log("runner.stderr", &line);
-                // Catch-all error pipeline: every runner stderr line becomes
-                // a Sentry breadcrumb attached to the current scope. If the
-                // runner exits non-zero, the `report_sync_error` capture at
-                // the exit site below will publish a single Sentry event with
-                // these breadcrumbs as the trail of "what the runner was
-                // doing right before it died". This is the design intent —
-                // breadcrumbs accumulate noise for free, exit-time capture
-                // converts that into a single alertable issue with context.
-                //
-                // PROTOCOL NOTE (2026-04-25): the runner originally emitted
-                // structured per-file error events on STDOUT as ndjson; the
-                // planned protocol change (@indigoai-us/hq-cloud PR #34) moved
-                // all error-class events to STDERR so each becomes a breadcrumb
-                // here automatically.
-                sentry::add_breadcrumb(sentry::Breadcrumb {
-                    category: Some("runner.stderr".into()),
-                    level: sentry::Level::Warning,
-                    message: Some(line.clone()),
-                    ..Default::default()
-                });
-                // Re-ingest stderr protocol records. Error events feed the
-                // benign-vs-alertable exit classification, while auth-error
-                // emits the re-authentication signal even though the runner
-                // intentionally exits 0 after a failed token refresh.
-                handle_runner_stderr_line(&app_bg, &totals, &line);
-                #[cfg(debug_assertions)]
-                eprintln!("[sync stderr] {}", line);
-            }
-            ProcessEvent::Exit {
-                code,
-                signal,
-                success,
-            } => {
-                let exit_desc = describe_exit(code, signal);
-                log(
-                    "sync",
-                    &format!("runner exited: success={} {}", success, exit_desc),
-                );
-                // The runner exits 0 for recoverable conditions (setup-needed,
-                // auth-error) — those surface as ndjson events before exit, so
-                // the frontend already knows. A non-zero exit means the runner
-                // bailed before emitting a useful protocol stream.
-                if !success {
-                    // Not every non-zero exit is an actionable defect. The
-                    // runner exits 2 whenever ANY error event was emitted mid-
-                    // fanout — including the vault's correct 404 for a not-yet-
-                    // provisioned company, transient network resets the next
-                    // cycle recovers from, and expected per-file ACL-scope skips
-                    // (403 SCOPE_EXCEEDS_PARENT) — and exit 17 when another sync
-                    // already holds the lock. Those flooded this Sentry issue
-                    // with un-actionable noise. Consult the run's error
-                    // classification (accumulated from `error` events on EITHER
-                    // channel — stdout via `handle_sync_line`, stderr via the
-                    // arm above) and only capture a genuine defect. Every error
-                    // event + stderr breadcrumb was already surfaced to the UI
-                    // and the local sync log, so suppression loses no
-                    // diagnostics — only the Sentry alert.
-                    let (saw_error, saw_alertable, saw_node_too_old) = totals
-                        .lock()
-                        .map(|t| (t.saw_error, t.saw_alertable_error, t.saw_node_too_old))
-                        .unwrap_or((false, false, false));
-                    if should_alert_on_nonzero_exit(
-                        code,
-                        signal,
-                        saw_error,
-                        saw_alertable,
-                        saw_node_too_old,
-                    ) {
-                        let _ = report_runner_exit_error(
-                            &app_bg,
+        let result = run_process_impl(SYNC_HANDLE, sync_registration, &spawn_args, |event| {
+            match event {
+                ProcessEvent::Stdout(line) => {
+                    // Always mirror runner stdout to the log file — this is the
+                    // ndjson protocol stream and the only durable record of what
+                    // the runner did. The eprintln! is dev-only / verbose.
+                    log("runner.stdout", &line);
+                    #[cfg(debug_assertions)]
+                    eprintln!("[sync stdout] {}", line);
+                    handle_sync_line(
+                        &app_bg,
+                        &hq_folder_for_handler,
+                        &totals,
+                        &jwt_for_handler,
+                        &line,
+                    );
+                }
+                ProcessEvent::Stderr(line) => {
+                    // Always log runner stderr — when sync gets stuck this is the
+                    // most likely place the cause shows up (npx download retry,
+                    // node uncaught exception, runner panic, etc.).
+                    log("runner.stderr", &line);
+                    // Catch-all error pipeline: every runner stderr line becomes
+                    // a Sentry breadcrumb attached to the current scope. If the
+                    // runner exits non-zero, the `report_sync_error` capture at
+                    // the exit site below will publish a single Sentry event with
+                    // these breadcrumbs as the trail of "what the runner was
+                    // doing right before it died". This is the design intent —
+                    // breadcrumbs accumulate noise for free, exit-time capture
+                    // converts that into a single alertable issue with context.
+                    //
+                    // PROTOCOL NOTE (2026-04-25): the runner originally emitted
+                    // structured per-file error events on STDOUT as ndjson; the
+                    // planned protocol change (@indigoai-us/hq-cloud PR #34) moved
+                    // all error-class events to STDERR so each becomes a breadcrumb
+                    // here automatically.
+                    sentry::add_breadcrumb(sentry::Breadcrumb {
+                        category: Some("runner.stderr".into()),
+                        level: sentry::Level::Warning,
+                        message: Some(line.clone()),
+                        ..Default::default()
+                    });
+                    // Re-ingest stderr protocol records. Error events feed the
+                    // benign-vs-alertable exit classification, while auth-error
+                    // emits the re-authentication signal even though the runner
+                    // intentionally exits 0 after a failed token refresh.
+                    handle_runner_stderr_line(&app_bg, &totals, &line);
+                    #[cfg(debug_assertions)]
+                    eprintln!("[sync stderr] {}", line);
+                }
+                ProcessEvent::Exit {
+                    code,
+                    signal,
+                    success,
+                } => {
+                    let exit_desc = describe_exit(code, signal);
+                    log(
+                        "sync",
+                        &format!("runner exited: success={} {}", success, exit_desc),
+                    );
+                    // The runner exits 0 for recoverable conditions (setup-needed,
+                    // auth-error) — those surface as ndjson events before exit, so
+                    // the frontend already knows. A non-zero exit means the runner
+                    // bailed before emitting a useful protocol stream.
+                    if !success {
+                        // Not every non-zero exit is an actionable defect. The
+                        // runner exits 2 whenever ANY error event was emitted mid-
+                        // fanout — including the vault's correct 404 for a not-yet-
+                        // provisioned company, transient network resets the next
+                        // cycle recovers from, and expected per-file ACL-scope skips
+                        // (403 SCOPE_EXCEEDS_PARENT) — and exit 17 when another sync
+                        // already holds the lock. Those flooded this Sentry issue
+                        // with un-actionable noise. Consult the run's error
+                        // classification (accumulated from `error` events on EITHER
+                        // channel — stdout via `handle_sync_line`, stderr via the
+                        // arm above) and only capture a genuine defect. Every error
+                        // event + stderr breadcrumb was already surfaced to the UI
+                        // and the local sync log, so suppression loses no
+                        // diagnostics — only the Sentry alert.
+                        let (saw_error, saw_alertable, saw_node_too_old) = totals
+                            .lock()
+                            .map(|t| (t.saw_error, t.saw_alertable_error, t.saw_node_too_old))
+                            .unwrap_or((false, false, false));
+                        if should_alert_on_nonzero_exit(
                             code,
                             signal,
-                            crate::events::SyncErrorEvent {
-                                company: None,
-                                path: "(runner)".to_string(),
-                                message: format!("hq-sync-runner exited {}", exit_desc),
-                            },
-                        );
-                    } else if saw_node_too_old {
-                        log(
+                            saw_error,
+                            saw_alertable,
+                            saw_node_too_old,
+                        ) {
+                            let _ = report_runner_exit_error(
+                                &app_bg,
+                                code,
+                                signal,
+                                crate::events::SyncErrorEvent {
+                                    company: None,
+                                    path: "(runner)".to_string(),
+                                    message: format!("hq-sync-runner exited {}", exit_desc),
+                                },
+                            );
+                        } else if saw_node_too_old {
+                            log(
                             "sync",
                             &format!(
                                 "runner exited non-zero ({}) due to Node too old — surfacing update-Node message, not alerting",
                                 exit_desc
                             ),
                         );
-                        let _ = app_bg.emit(
-                            EVENT_SYNC_ERROR,
-                            crate::events::SyncErrorEvent {
-                                company: None,
-                                path: "(node)".to_string(),
-                                message: format!(
-                                    "HQ Sync needs Node {MIN_NODE_MAJOR} or newer to sync. \
+                            let _ = app_bg.emit(
+                                EVENT_SYNC_ERROR,
+                                crate::events::SyncErrorEvent {
+                                    company: None,
+                                    path: "(node)".to_string(),
+                                    message: format!(
+                                        "HQ Sync needs Node {MIN_NODE_MAJOR} or newer to sync. \
                                      Please update Node (https://nodejs.org), then try Sync again."
-                                ),
-                            },
-                        );
-                    } else {
-                        log(
+                                    ),
+                                },
+                            );
+                        } else {
+                            log(
                             "sync",
                             &format!(
                                 "runner exited non-zero ({}) but fully explained by benign/transient conditions \
@@ -1291,37 +1299,38 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
                                 exit_desc
                             ),
                         );
-                    }
-                } else {
-                    // Successful exit but no AllComplete observed (e.g.
-                    // runner bailed on setup-needed for a brand-new account
-                    // with no companies yet). Emit a synthetic AllComplete
-                    // so the UI returns to idle and the local sync-state.json
-                    // gets stamped with "just now" — otherwise the popover
-                    // sits in "syncing" forever and the top SyncStats card
-                    // shows "never" while the personal first-push (which DID
-                    // run) updated everything else.
-                    let (saw_complete, saw_auth_error) = totals
-                        .lock()
-                        .map(|t| (t.all_complete_seen, t.saw_auth_error))
-                        .unwrap_or((false, false));
-                    if should_synthesize_all_complete(success, saw_complete, saw_auth_error) {
-                        log("sync", "runner exited without AllComplete — synthesizing");
-                        let synthetic = SyncEvent::AllComplete(SyncAllCompleteEvent {
-                            companies_attempted: 0,
-                            files_downloaded: 0,
-                            bytes_downloaded: 0,
-                            errors: Vec::new(),
-                        });
-                        let line =
-                            serde_json::to_string(&synthetic).unwrap_or_else(|_| "{}".to_string());
-                        handle_sync_line(
-                            &app_bg,
-                            &hq_folder_for_handler,
-                            &totals,
-                            &jwt_for_handler,
-                            &line,
-                        );
+                        }
+                    } else {
+                        // Successful exit but no AllComplete observed (e.g.
+                        // runner bailed on setup-needed for a brand-new account
+                        // with no companies yet). Emit a synthetic AllComplete
+                        // so the UI returns to idle and the local sync-state.json
+                        // gets stamped with "just now" — otherwise the popover
+                        // sits in "syncing" forever and the top SyncStats card
+                        // shows "never" while the personal first-push (which DID
+                        // run) updated everything else.
+                        let (saw_complete, saw_auth_error) = totals
+                            .lock()
+                            .map(|t| (t.all_complete_seen, t.saw_auth_error))
+                            .unwrap_or((false, false));
+                        if should_synthesize_all_complete(success, saw_complete, saw_auth_error) {
+                            log("sync", "runner exited without AllComplete — synthesizing");
+                            let synthetic = SyncEvent::AllComplete(SyncAllCompleteEvent {
+                                companies_attempted: 0,
+                                files_downloaded: 0,
+                                bytes_downloaded: 0,
+                                errors: Vec::new(),
+                            });
+                            let line = serde_json::to_string(&synthetic)
+                                .unwrap_or_else(|_| "{}".to_string());
+                            handle_sync_line(
+                                &app_bg,
+                                &hq_folder_for_handler,
+                                &totals,
+                                &jwt_for_handler,
+                                &line,
+                            );
+                        }
                     }
                 }
             }
