@@ -13,6 +13,7 @@
   import RecipientPicker from './RecipientPicker.svelte';
   import type { SelectedRecipient } from '../../lib/recipientPicker';
   import type { ChannelMember } from '../../lib/channels';
+  import { isAgentUid } from '../../lib/roomMentions';
 
   interface Props {
     channelId: string;
@@ -193,6 +194,11 @@
           <li class="member-row">
             <span class="member-meta">
               <span class="member-name">{memberLabel(m)}</span>
+              {#if isAgentUid(m.personUid)}
+                <!-- Agents are members here, not tooling: same row shape, one
+                     quiet chip so you can tell who answers automatically. -->
+                <span class="member-agent">agent</span>
+              {/if}
               <span class="member-role" class:owner={m.role === 'owner'}>{m.role}</span>
             </span>
             {#if isOwner && m.role !== 'owner' && m.personUid !== selfPersonUid}
@@ -367,6 +373,15 @@
     font-weight: 600;
     letter-spacing: 0.03em;
     text-transform: uppercase;
+    color: var(--pop-muted);
+  }
+
+  .member-agent {
+    font-size: 0.6875rem;
+    font-weight: 400;
+    padding: 0.05rem 0.35rem;
+    border-radius: 5px;
+    border: 1px solid var(--pop-border);
     color: var(--pop-muted);
   }
 

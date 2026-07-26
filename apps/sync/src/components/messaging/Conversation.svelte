@@ -18,6 +18,7 @@
     activeMentionQuery,
     applyMention,
     filterCandidates,
+    isAgentUid,
     type MentionCandidate,
   } from '../../lib/roomMentions';
 
@@ -99,6 +100,13 @@
     // type a name that will actually resolve, which is what makes an agent
     // answer at all (the server mention-gates agent delivery).
     mentionOptions?: MentionCandidate[];
+    // HQ Rooms: agentUid → owner display name, for the "run by <owner>"
+    // provenance line beside an agent's messages.
+    agentOwners?: Record<string, string>;
+    // HQ Rooms: a live "<agent> is working…" row pinned under the thread while
+    // an agent has picked up a message but not yet replied. Never go dark on a
+    // human who is waiting — silence with no explanation reads as broken.
+    workingNote?: string | null;
   }
 
   // `onreact` is part of the public API for a later story (reactions) but unused
@@ -120,6 +128,8 @@
     onopenshareinclaude,
     readonly = false,
     mentionOptions = [],
+    agentOwners = {},
+    workingNote = null,
   }: Props = $props();
 
   let replyText = $state('');
@@ -310,7 +320,18 @@
     {/if}
     <div class="dm-msg dm-msg-{msg.direction}">
       {#if showAuthors && msg.direction === 'in'}
-        <span class="dm-msg-author">{msg.fromDisplayName}</span>
+        <span class="dm-msg-author">
+          {msg.fromDisplayName}
+          {#if isAgentUid(msg.fromPersonUid)}
+            <!-- Quietly badged, never a loud robot treatment: an agent is a
+                 teammate here. The owner line is provenance, not authorship —
+                 the agent wrote it, the owner authorized it. -->
+            <span class="agent-chip">agent</span>
+            {#if agentOwners[msg.fromPersonUid]}
+              <span class="agent-owner">run by {agentOwners[msg.fromPersonUid]}</span>
+            {/if}
+          {/if}
+        </span>
       {/if}
       <div
         class="dm-bubble"
@@ -430,6 +451,12 @@
       {/if}
     </div>
   {/each}
+  {#if workingNote}
+    <div class="agent-working" aria-live="polite">
+      <span class="agent-working-dot" aria-hidden="true"></span>
+      <span>{workingNote}</span>
+    </div>
+  {/if}
 </div>
 
 {#if readonly}
@@ -543,6 +570,58 @@
     font-weight: 600;
     color: var(--pop-muted);
     margin: 0 0.25rem 0.125rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+  }
+
+  .agent-chip {
+    font-size: 0.6875rem;
+    font-weight: 400;
+    padding: 0.05rem 0.35rem;
+    border-radius: 5px;
+    border: 1px solid var(--pop-border);
+    color: var(--pop-muted);
+  }
+
+  .agent-owner {
+    font-size: 0.6875rem;
+    font-weight: 400;
+    color: var(--pop-muted);
+  }
+
+  .agent-working {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0.25rem 0.5rem 0.5rem;
+    font-size: var(--text-base);
+    color: var(--pop-muted);
+  }
+
+  .agent-working-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+    animation: agent-pulse 1.4s ease-in-out infinite;
+  }
+
+  @keyframes agent-pulse {
+    0%,
+    100% {
+      opacity: 0.35;
+    }
+    50% {
+      opacity: 1;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .agent-working-dot {
+      animation: none;
+      opacity: 0.7;
+    }
   }
 
   .dm-bubble {

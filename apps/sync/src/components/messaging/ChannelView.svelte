@@ -24,6 +24,7 @@
   import {
     mentionCandidates,
     resolveMentions,
+    isAgentUid,
     type MentionCandidate,
   } from '../../lib/roomMentions';
 
@@ -86,6 +87,30 @@
   // autocomplete" rather than blocking the room (a typed name still resolves
   // server-side when it matches exactly).
   let roomMentionOptions = $state<MentionCandidate[]>([]);
+  // agentUid → display name, so a working row can name the agent a human is
+  // waiting on ("Izzy is working…") instead of showing a raw uid.
+  let agentNames = $state<Record<string, string>>({});
+
+  /**
+   * The live "…is working" line under the thread.
+   *
+   * Derived from the claim reactions the agent box already posts (👀 on
+   * pickup, 💬 while running) — no new subsystem. A claim on the newest
+   * message with no agent reply after it means someone is still waiting, and
+   * the room says so rather than sitting silent.
+   */
+  const workingNote = $derived.by(() => {
+    const map = reactionsCtl?.map ?? {};
+    const last = messages[messages.length - 1];
+    if (!last || isAgentUid(last.fromPersonUid)) return null;
+    const claimed = (map[last.eventId] ?? []).some(
+      (r) => r.emoji === '👀' || r.emoji === '💬',
+    );
+    if (!claimed) return null;
+    const names = Object.values(agentNames);
+    const who = names.length === 1 ? names[0] : 'An agent';
+    return `${who} is working on this…`;
+  });
 
   async function loadRoster(): Promise<void> {
     try {
@@ -100,8 +125,14 @@
         role: string;
       }>;
       roomMentionOptions = mentionCandidates(members, selfPersonUid ?? '');
+      agentNames = Object.fromEntries(
+        members
+          .filter((m) => isAgentUid(m.personUid) && (m.displayName ?? '').trim())
+          .map((m) => [m.personUid, m.displayName.trim()]),
+      );
     } catch (err) {
       roomMentionOptions = [];
+      agentNames = {};
       console.error('channel-view: list_channel_members failed', err);
     }
   }
@@ -360,6 +391,7 @@
     reactions={reactionsCtl?.map ?? {}}
     ontogglereaction={reactionsCtl ? reactionsCtl.toggle : undefined}
     mentionOptions={roomMentionOptions}
+    {workingNote}
   />
 {/if}
 
