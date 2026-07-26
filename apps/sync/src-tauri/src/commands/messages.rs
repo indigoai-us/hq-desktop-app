@@ -130,27 +130,54 @@ impl PendingMessagesTarget {
 /// Tauri event carrying the pending conversation target to the Messages shell.
 const EVENT_MESSAGES_OPEN_CONVERSATION: &str = "messages:open-conversation";
 
+/// Desktop-alt window label — Messages deep-links land here (US-008 Inbox).
+const DESKTOP_ALT_LABEL: &str = "desktop-alt";
+
 /// Tauri command: open Messages as a typed desktop destination (US-004).
 ///
 /// Legacy name kept for frontend IPC. Messages merges into the desktop Inbox
 /// surface (US-008); no longer creates a top-level Messages webview.
-/// Optional `target` is stashed for any still-mounted legacy shell listeners.
+/// Optional `target` is stashed and emitted to the desktop host so Inbox can
+/// open a compose recipient ("Message the sharer").
 #[tauri::command]
 pub async fn open_messages_window(
     app: AppHandle,
     target: Option<MessagesTarget>,
 ) -> Result<(), String> {
-    if let Some(t) = target {
+    if let Some(ref t) = target {
         if let Some(state) = app.try_state::<PendingMessagesTarget>() {
-            *state.0.lock().unwrap_or_else(|p| p.into_inner()) = Some(t);
+            *state.0.lock().unwrap_or_else(|p| p.into_inner()) = Some(t.clone());
         }
     }
     log(LOG_TAG, "MESSAGES_WINDOW_OPEN → desktop destination inbox");
     crate::commands::desktop_alt::open_destination(
-        app,
+        app.clone(),
         crate::commands::desktop_alt::DesktopDestination::Messages,
     )
-    .await
+    .await?;
+    // Deliver the deep-link to the desktop Inbox host. `messages_window_ready`
+    // only runs for a legacy standalone Messages shell — after US-008 that
+    // path never drains PendingMessagesTarget, so emit here as well.
+    if let Some(t) = target {
+        let _ = app.emit_to(DESKTOP_ALT_LABEL, EVENT_MESSAGES_OPEN_CONVERSATION, &t);
+        let _ = app.emit(EVENT_MESSAGES_OPEN_CONVERSATION, &t);
+        log(LOG_TAG, "MESSAGES_WINDOW_TARGET_EMIT_DESKTOP");
+    }
+    Ok(())
+}
+
+/// Drain a stashed Messages deep-link for the desktop Inbox (cold-start path).
+///
+/// `open_messages_window` may stash a target before the desktop webview has
+/// listeners; the host calls this once on mount to avoid losing the recipient.
+#[tauri::command]
+pub fn take_pending_messages_target(app: AppHandle) -> Option<MessagesTarget> {
+    let state = app.try_state::<PendingMessagesTarget>()?;
+    state
+        .0
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .take()
 }
 
 /// Tauri command: called by MessagesShell.svelte once its listeners are

@@ -4,7 +4,11 @@
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { onMount, tick } from 'svelte';
   import { loadMeetingsCache } from '../lib/meetingsCache';
-  import { MESSAGE_PERSON_EVENT, takePendingConversation } from '../lib/pendingConversation';
+  import {
+    MESSAGE_PERSON_EVENT,
+    takePendingConversation,
+    type ConversationTarget,
+  } from '../lib/pendingConversation';
   import { effectiveTotalFiles as computeEffectiveTotalFiles } from '../lib/effective-total-files';
   import { sanitizeVisibleIdentifiers } from '../lib/visible-labels';
   import { safeUnlisten } from '../lib/listener-registry';
@@ -435,14 +439,34 @@
   // navigation AWAY from a non-files route (US-010).
   let routeBeforeFiles = $state<DesktopRoute>({ kind: 'home' });
 
-  function handleMessagePerson(): void {
-    // Consume (and clear) the stashed conversation target: no MessagesShell
-    // mounts inside the desktop window anymore (US-008), so an unconsumed
-    // stash would leak into the next standalone Messages-window shell mount
-    // and open an unexpected conversation there. The Inbox is the in-desktop
-    // messaging surface — the sender's DM rows carry quick-reply inline.
-    takePendingConversation();
+  // Deep-link compose recipient for Inbox ("Message the sharer"). Cleared when
+  // the user dismisses/sends, or when a new target arrives.
+  let inboxComposeTarget = $state<ConversationTarget | null>(null);
+
+  function mapMessagesTarget(payload: {
+    personUid?: string;
+    email?: string;
+    displayName?: string;
+  }): ConversationTarget {
+    return {
+      personUid: payload.personUid?.trim() ?? '',
+      email: payload.email?.trim() ?? '',
+      displayName: payload.displayName?.trim() ?? '',
+    };
+  }
+
+  function openInboxWithComposeTarget(target: ConversationTarget | null): void {
+    const uid = target?.personUid?.trim() ?? '';
+    const email = target?.email?.trim() ?? '';
+    inboxComposeTarget = uid || email ? target : null;
     navigate({ kind: 'inbox' });
+  }
+
+  function handleMessagePerson(): void {
+    // Consume (and clear) the browser stash: no MessagesShell mounts inside
+    // the desktop window anymore (US-008). Hand the recipient to Inbox compose
+    // instead of discarding it.
+    openInboxWithComposeTarget(takePendingConversation());
   }
 
   function navigate(nextRoute: DesktopRoute) {
@@ -1001,6 +1025,29 @@
     // stashed a pending conversation (lib/pendingConversation) — route to the
     // combined Inbox, the in-desktop messaging surface now (US-008).
     window.addEventListener(MESSAGE_PERSON_EVENT, handleMessagePerson);
+    // Rust path: ShareMainPane → open_messages_window(target) emits here.
+    void listen<ConversationTarget>('messages:open-conversation', (event) => {
+      if (!mounted) return;
+      openInboxWithComposeTarget(mapMessagesTarget(event.payload ?? {}));
+    }).then((unlisten) => {
+      if (!mounted) {
+        unlisten();
+        return;
+      }
+      unlisteners.push(safeUnlisten(unlisten));
+    });
+    // Cold start: target may have been stashed before listeners mounted.
+    void invoke<{
+      personUid?: string;
+      email?: string;
+      displayName?: string;
+    } | null>('take_pending_messages_target')
+      .then((pending) => {
+        if (mounted && pending) {
+          openInboxWithComposeTarget(mapMessagesTarget(pending));
+        }
+      })
+      .catch(() => undefined);
     const handleWorkspaceSyncEnabledChanged = (event: Event) => {
       const detail = (event as CustomEvent<{ slug?: string; enabled?: boolean }>).detail;
       if (!detail?.slug || typeof detail.enabled !== 'boolean') return;
@@ -1431,7 +1478,12 @@
             </div>
           {:else if route.kind === 'inbox'}
             <div class="page">
-              <InboxPage />
+              <InboxPage
+                composeTarget={inboxComposeTarget}
+                oncomposedismiss={() => {
+                  inboxComposeTarget = null;
+                }}
+              />
             </div>
           {:else if route.kind === 'moderation'}
             <!-- Admin-only. Rendered only when the admin gate is satisfied

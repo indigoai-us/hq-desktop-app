@@ -15,14 +15,18 @@
   let loading = $state(false);
   let error = $state<string | null>(null);
   let reloadToken = $state(0);
+  // One-shot force flag — see company-board.svelte.ts (Codex P1 reload loop).
+  let appliedReloadToken = 0;
   let actionBusy = $state<'export' | 'new' | null>(null);
   let actionMessage = $state<string | null>(null);
 
   const totalCount = $derived(secrets.reduce((total, secretEnv) => total + secretEnv.count, 0));
 
   $effect(() => {
-    reloadToken;
+    const token = reloadToken;
     void companyStore.revision;
+    const force = token > appliedReloadToken;
+    if (force) appliedReloadToken = token;
     error = null;
 
     if (!slug || !cloudBacked) {
@@ -42,7 +46,7 @@
       loading = true;
     }
 
-    void companyStore.loadSecrets(slug, reloadToken > 0)
+    void companyStore.loadSecrets(slug, force)
       .then((result) => {
         if (!cancelled) {
           secrets = Array.isArray(result) ? result.map(normalizeSecretEnv) : [];

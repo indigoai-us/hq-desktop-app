@@ -503,6 +503,7 @@ fn main() {
             commands::dm_notify::respond_dm_request,
             commands::messages::open_messages_window,
             commands::messages::messages_window_ready,
+            commands::messages::take_pending_messages_target,
             commands::messages::list_contacts,
             commands::messages::list_company_members,
             commands::messages::get_unread_summary,

@@ -63,6 +63,8 @@
   let loading = $state(false);
   let error = $state<string | null>(null);
   let reloadToken = $state(0);
+  // One-shot force flag — see company-board.svelte.ts (Codex P1 reload loop).
+  let appliedReloadToken = 0;
   let activityDirection = $state<ActivityDirection>('all');
 
   // HQ root for the Claude Code drill-in (US-012). Loaded lazily via get_config
@@ -93,8 +95,10 @@
   const recentCount = $derived(filteredRecent.length);
 
   $effect(() => {
-    reloadToken;
+    const token = reloadToken;
     void companyStore.revision;
+    const force = token > appliedReloadToken;
+    if (force) appliedReloadToken = token;
     error = null;
 
     if (!slug || !cloudBacked) {
@@ -114,7 +118,7 @@
       loading = true;
     }
 
-    void companyStore.loadActivity<Partial<CompanyActivity>>(slug, reloadToken > 0)
+    void companyStore.loadActivity<Partial<CompanyActivity>>(slug, force)
       .then((result) => {
         if (!cancelled) {
           activity = normalizeActivity(result);

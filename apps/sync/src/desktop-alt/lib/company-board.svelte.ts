@@ -43,12 +43,17 @@ export function useCompanyBoard(options: { slug: () => string | null; enabled?: 
   let loading = $state(false);
   let error = $state<string | null>(null);
   let reloadToken = $state(0);
+  // One-shot: Retry bumps reloadToken; consume it so a successful force-load's
+  // revision bump does not re-enter force mode and loop forever.
+  let appliedReloadToken = 0;
 
   $effect(() => {
     const slug = options.slug();
     const enabled = options.enabled?.() ?? true;
-    reloadToken;
+    const token = reloadToken;
     void companyStore.revision;
+    const force = token > appliedReloadToken;
+    if (force) appliedReloadToken = token;
     error = null;
 
     if (!slug || !enabled) {
@@ -68,7 +73,7 @@ export function useCompanyBoard(options: { slug: () => string | null; enabled?: 
       loading = true;
     }
 
-    void companyStore.loadBoard(slug, reloadToken > 0)
+    void companyStore.loadBoard(slug, force)
       .then((result) => {
         if (!cancelled) {
           board = shapeBoard(result);

@@ -142,9 +142,13 @@ describe('US-008: combined Inbox page shows both streams as one-line rows with u
   it('the message-person deep link consumes the conversation stash before routing to Inbox (review fix)', () => {
     // No MessagesShell mounts in the desktop window anymore; an unconsumed
     // stash would leak into the next standalone Messages-window mount and open
-    // an unexpected conversation there.
+    // an unexpected conversation there. The recipient is handed to Inbox compose.
     expect(desktopApp).toContain('takePendingConversation()');
-    expect(desktopApp).toContain("navigate({ kind: 'inbox' })");
+    expect(desktopApp).toContain('openInboxWithComposeTarget');
+    expect(desktopApp).toContain("messages:open-conversation");
+    expect(desktopApp).toContain('take_pending_messages_target');
+    expect(inboxPage).toContain('inbox-compose-target');
+    expect(inboxPage).toContain('composeTarget');
   });
 
   it('NotificationFeed wires message rows with reply/react and share rows as share type', () => {
@@ -173,7 +177,8 @@ describe('US-008: combined Inbox page shows both streams as one-line rows with u
 
   it('DesktopApp mounts InboxPage for the inbox route and drops Messages/Notifications pages', () => {
     expect(desktopApp).toContain("route.kind === 'inbox'");
-    expect(desktopApp).toContain('<InboxPage />');
+    expect(desktopApp).toContain('<InboxPage');
+    expect(desktopApp).toContain('composeTarget={inboxComposeTarget}');
     expect(desktopApp).not.toContain('MessagesPage');
     expect(desktopApp).not.toContain('NotificationsPage');
   });

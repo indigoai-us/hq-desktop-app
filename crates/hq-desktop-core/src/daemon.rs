@@ -136,6 +136,11 @@ pub fn build_watch_runner_args(hq_folder_path: &str) -> SpawnArgs {
     if !disabled.is_empty() {
         env.insert("HQ_SYNC_SKIP_COMPANIES".to_string(), disabled.join(","));
     }
+    // Mirror Sync Now: Personal Off must suppress the personal vault target.
+    let personal_sync_enabled = is_personal_sync_enabled();
+    if !personal_sync_enabled {
+        env.insert("HQ_SYNC_SKIP_PERSONAL".to_string(), "1".to_string());
+    }
 
     // Remote-pull cadence, fixed at 15 seconds. event-push + event-sync handle
     // real-time propagation; this poll is only the correctness backstop. It is
@@ -162,6 +167,11 @@ pub fn build_watch_runner_args(hq_folder_path: &str) -> SpawnArgs {
     // appending here is safe for both spawn paths below.
     if should_event_push(event_push_eligible(), is_instant_sync_enabled()) {
         runner_args.push("--event-push".to_string());
+    }
+
+    // Personal Off — same CLI surface Sync Now uses (`--skip-personal`).
+    if !personal_sync_enabled {
+        runner_args.push("--skip-personal".to_string());
     }
 
     // Dev override: HQ_CLOUD_LOCAL_RUNNER points at a built sync-runner.js
@@ -290,6 +300,14 @@ pub fn is_realtime_sync_enabled() -> bool {
 /// `event_push_eligible()` users — see `should_event_push`.
 pub fn is_instant_sync_enabled() -> bool {
     read_menubar_bool(|p| p.instant_sync, true)
+}
+
+/// Check if personal-vault sync is enabled in menubar.json.
+///
+/// Defaults to true (matches Settings + Sync Now). When false, the watch
+/// runner must pass `--skip-personal` so Auto-sync honors the Off toggle.
+pub fn is_personal_sync_enabled() -> bool {
+    read_menubar_bool(|p| p.personal_sync_enabled, true)
 }
 
 pub fn read_menubar_bool<F: FnOnce(&MenubarPrefs) -> Option<bool>>(
@@ -907,6 +925,36 @@ mod tests {
         assert!(
             env.get("PATH").map(|p| !p.is_empty()).unwrap_or(false),
             "PATH must be set so Dock-launched Tauri apps can find node/npx"
+        );
+    }
+
+    #[test]
+    fn test_build_watch_runner_args_appends_skip_personal_when_disabled() {
+        use crate::test_support::ENV_MUTEX;
+        use tempfile::TempDir;
+
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".hq")).unwrap();
+        std::fs::write(
+            tmp.path().join(".hq/menubar.json"),
+            r#"{"personalSyncEnabled":false}"#,
+        )
+        .unwrap();
+        std::env::set_var("HOME", tmp.path());
+        let args = build_watch_runner_args("/Users/test/HQ");
+        let env = args.env.clone().expect("env");
+        std::env::remove_var("HOME");
+
+        assert_eq!(
+            args.args.last().map(String::as_str),
+            Some("--skip-personal"),
+            "expected --skip-personal when personalSyncEnabled=false, got: {:?}",
+            args.args
+        );
+        assert_eq!(
+            env.get("HQ_SYNC_SKIP_PERSONAL").map(String::as_str),
+            Some("1")
         );
     }
 

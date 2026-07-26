@@ -18,6 +18,8 @@
   let loading = $state(false);
   let error = $state<string | null>(null);
   let reloadToken = $state(0);
+  // One-shot force flag — see company-board.svelte.ts (Codex P1 reload loop).
+  let appliedReloadToken = 0;
   let deploymentQuery = $state('');
   let deployBusy = $state(false);
   let actionMessage = $state<string | null>(null);
@@ -30,8 +32,10 @@
   );
 
   $effect(() => {
-    reloadToken;
+    const token = reloadToken;
     void companyStore.revision;
+    const force = token > appliedReloadToken;
+    if (force) appliedReloadToken = token;
     error = null;
 
     if (!slug || !cloudBacked) {
@@ -51,7 +55,7 @@
       loading = true;
     }
 
-    void companyStore.loadDeployments(slug, reloadToken > 0)
+    void companyStore.loadDeployments(slug, force)
       .then((result) => {
         if (!cancelled) {
           deployments = Array.isArray(result) ? result.map(normalizeDeployment) : [];

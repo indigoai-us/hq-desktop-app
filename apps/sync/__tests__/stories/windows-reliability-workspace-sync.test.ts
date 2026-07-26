@@ -86,6 +86,11 @@ describe('US-007: Per-workspace sync controls and Personal taxonomy', () => {
     expect(coreWorkspaces).toContain('disabled_workspace_sync_slugs');
     expect(coreWorkspaces).toContain('fn replace_file');
 
+    const daemon = read('../../crates/hq-desktop-core/src/daemon.rs');
+    expect(daemon).toContain('is_personal_sync_enabled');
+    expect(daemon).toContain('--skip-personal');
+    expect(daemon).toContain('HQ_SYNC_SKIP_PERSONAL');
+
     expect(tauriWorkspaces).toContain('pub fn set_workspace_sync_enabled');
     expect(tauriWorkspaces).toContain('personal_sync_enabled = crate::commands::settings::get_settings()');
     expect(tauriWorkspaces).toContain('workspace.sync_enabled = if workspace.kind == WorkspaceKind::Personal');
