@@ -18,6 +18,26 @@ fn main() {
         .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
     println!("cargo:rustc-env=APP_VERSION={}", version);
 
+    // Pin the `wry` version this crate actually resolves to.
+    //
+    // `util::webview2_automation::WRY_DEFAULT_BROWSER_ARGS` is a hand
+    // transcription of a string that lives inside wry's private
+    // `create_environment`; wry exports nothing to diff it against, so no
+    // assertion can check the transcription itself. What can be checked is its
+    // input — that the wry in the dependency graph is still the version the
+    // string was read out of. Emitting the resolved version here lets
+    // `wry_default_args_match_the_reviewed_wry_version` fail on a `cargo
+    // update` that moves wry, instead of every automated run silently getting
+    // the wrong browser switches.
+    let lockfile = nearest_cargo_lock();
+    println!("cargo:rerun-if-changed={}", lockfile.display());
+    let lock_text = std::fs::read_to_string(&lockfile)
+        .unwrap_or_else(|e| panic!("build.rs: failed to read {}: {e}", lockfile.display()));
+    println!(
+        "cargo:rustc-env=RESOLVED_WRY_VERSIONS={}",
+        locked_versions(&lock_text, "wry").join(",")
+    );
+
     // Compile the native menu-bar helper (`hq-tray-helper`) on macOS so the
     // bundler can copy it into Contents/Resources. The helper is a tiny separate
     // AppKit process that owns the "HQ" status item — Tauri's tao runtime parks
@@ -37,6 +57,57 @@ fn main() {
     }
 
     tauri_build::build()
+}
+
+/// The nearest `Cargo.lock` at or above this crate's manifest directory.
+///
+/// `apps/sync/src-tauri` is currently excluded from the root workspace and so
+/// carries its own lockfile; walking upwards keeps this correct if it is later
+/// folded in as a workspace member (MIGRATION.md, Phase 4).
+fn nearest_cargo_lock() -> std::path::PathBuf {
+    let mut dir = std::path::PathBuf::from(
+        std::env::var("CARGO_MANIFEST_DIR").expect("build.rs: CARGO_MANIFEST_DIR is unset"),
+    );
+    loop {
+        let candidate = dir.join("Cargo.lock");
+        if candidate.is_file() {
+            return candidate;
+        }
+        if !dir.pop() {
+            panic!("build.rs: no Cargo.lock found at or above CARGO_MANIFEST_DIR");
+        }
+    }
+}
+
+/// Every resolved version of `name` in a Cargo.lock, sorted and de-duplicated.
+///
+/// Plural on purpose: two resolved copies of a crate mean part of the graph is
+/// on a version nothing was checked against, which is just as wrong as one
+/// unexpected version. Returning both makes the assertion fail rather than
+/// pick a winner.
+fn locked_versions(lock: &str, name: &str) -> Vec<String> {
+    let mut versions = Vec::new();
+    let mut in_package = false;
+
+    for line in lock.lines() {
+        let line = line.trim();
+        if line == "[[package]]" {
+            in_package = false;
+        } else if let Some(value) = line.strip_prefix("name = ") {
+            // Only `[[package]]` entries have a bare `name = "..."` key;
+            // `dependencies = [...]` members are plain quoted strings.
+            in_package = value.trim_matches('"') == name;
+        } else if in_package {
+            if let Some(value) = line.strip_prefix("version = ") {
+                versions.push(value.trim_matches('"').to_string());
+                in_package = false;
+            }
+        }
+    }
+
+    versions.sort();
+    versions.dedup();
+    versions
 }
 
 // Tiny ad-hoc parse for top-level string fields in package.json. Avoids

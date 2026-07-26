@@ -480,7 +480,10 @@ pub async fn open_desktop_alt_window_inner(
     // `desktop_alt_consume_pending_route`.
     set_pending_route(route);
 
-    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+    #[cfg_attr(
+        not(any(target_os = "macos", target_os = "windows")),
+        allow(unused_mut)
+    )]
     let mut builder = tauri::WebviewWindowBuilder::new(
         &app,
         WINDOW_LABEL,
@@ -504,6 +507,20 @@ pub async fn open_desktop_alt_window_inner(
     #[cfg(target_os = "macos")]
     {
         builder = builder.title_bar_style(tauri::TitleBarStyle::Overlay);
+    }
+
+    // This window is built here rather than from `tauri.conf.json` (it is
+    // declared `create: false`), so the WebView2 automation switches `main.rs`
+    // folds into the config never reach it. They must match: wry creates one
+    // WebView2 environment per webview and the Runtime rejects a second
+    // environment whose browser arguments differ from the one already running
+    // against the same user data folder. `None` on a normal launch, so
+    // production keeps wry's own defaults. See `util::webview2_automation`.
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(args) = crate::util::webview2_automation::automation_browser_args() {
+            builder = builder.additional_browser_args(&args);
+        }
     }
 
     let _window = builder.build().map_err(|e| e.to_string())?;

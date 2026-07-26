@@ -132,6 +132,24 @@ fn main() {
     let show_shortcut = Shortcut::new(Some(Modifiers::ALT | Modifiers::SHIFT), Code::KeyH);
     let desktop_shortcut = Shortcut::new(Some(Modifiers::ALT | Modifiers::SHIFT), Code::KeyO);
 
+    // The `main` popover is created from `tauri.conf.json`, so its WebView2
+    // browser arguments have to be folded into the config before the app is
+    // built — there is no builder to reach for. See
+    // `util::webview2_automation`: a WebDriver host's switches can only reach
+    // `msedgewebview2.exe` through `additionalBrowserArgs`, and this is the
+    // first webview the process creates, so it decides the browser process the
+    // driver has to find. Untouched (and `None`) on a normal launch.
+    #[cfg_attr(not(target_os = "windows"), allow(unused_mut))]
+    let mut context = tauri::generate_context!();
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(args) = util::webview2_automation::automation_browser_args() {
+            for window in &mut context.config_mut().app.windows {
+                window.additional_browser_args = Some(args.clone());
+            }
+        }
+    }
+
     tauri::Builder::default()
         // single-instance MUST be the first plugin: it runs before any other
         // plugin can create a window or spawn a process, so a second launch is
@@ -899,7 +917,7 @@ fn main() {
 
             Ok(())
         })
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building tauri application")
         .run(|_app_handle, event| {
             // On exit, tear down every spawned child (the `--watch` sync daemon,

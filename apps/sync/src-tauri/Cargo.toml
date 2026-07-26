@@ -178,6 +178,19 @@ objc2-core-foundation = "0.3"
 [features]
 journal-cli = []
 
+# Compiles the WebView2 automation bridge (`util::webview2_automation`), which
+# forwards a WebDriver host's WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS into this
+# app's own webviews so msedgedriver can attach to them.
+#
+# OFF by default and never enabled for a shipped build. That environment
+# variable is user-writable and persistent (`setx` writes HKCU\Environment), so
+# a released binary that honoured it would let any local process turn the next
+# launch into a CDP listener with reach into window.__TAURI__.core.invoke —
+# i.e. the whole Rust command surface. Only the two Windows jobs in
+# .github/workflows/windows-check.yml pass it. `debug_assertions` was not
+# usable as the gate: the installer E2E job drives a release build.
+e2e-automation = []
+
 # Lives in examples/ (auto-discovered) rather than src/bin/. Cargo's auto-bin
 # detection registers any src/bin/*.rs as kind= ["bin"] regardless of
 # required-features; Tauri's bundler then walks all bins and tries to copy

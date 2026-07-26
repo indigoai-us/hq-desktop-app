@@ -1,5 +1,34 @@
-import { defineConfig } from 'vitest/config';
+import { configDefaults, defineConfig } from 'vitest/config';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
+
+// Live mode boots a real Tauri binary through tauri-driver -> msedgedriver.
+// On a GitHub Windows runner the app alone takes ~5s to reach first paint, so
+// vitest's 5s default kills WebDriver session creation mid-flight (and leaves a
+// half-started app that poisons the following tests). The scripted
+// source-contract suite keeps the tight default so genuine hangs still surface
+// fast — only the opt-in live path gets the larger budget.
+const LIVE = /^(1|true|yes)$/i.test(process.env.HQ_SYNC_DESKTOP_ALT_LIVE ?? '');
+
+// The two modes exercise genuinely different things and are not
+// interchangeable, so each mode's specs are excluded from the other's run
+// rather than left to fail or — worse — to no-op.
+//
+// `live-preauth.spec.ts` drives a real Windows binary through tauri-driver and
+// asserts the signed-out reality of that binary. It cannot run scripted: there
+// is no application to boot, and its harness deliberately throws instead of
+// degrading.
+const LIVE_ONLY_SPECS = ['e2e/desktop-alt/live-preauth.spec.ts'];
+
+// These assert the *signed-in* desktop-alt surfaces. The scripted harness
+// mirrors the Rust gate for a signed-in email, which is exactly what a CI
+// machine with no Cognito session cannot reproduce live — and fabricating a
+// session, or weakening the gate so a signed-out runner slips through, would
+// destroy the thing under test. They stay scripted-only; the live job runs
+// `live-preauth.spec.ts` instead.
+const SCRIPTED_ONLY_SPECS = [
+  'e2e/desktop-alt/smoke-pages.spec.ts',
+  'e2e/desktop-alt/window-lifecycle.spec.ts',
+];
 
 export default defineConfig({
   // The real component-mount E2E (mission-control.test.ts) imports
@@ -22,7 +51,13 @@ export default defineConfig({
     environment: 'node',
     globals: true,
     include: ['e2e/desktop-alt/**/*.spec.ts', 'e2e/desktop-alt/**/*.test.ts'],
+    exclude: [...configDefaults.exclude, ...(LIVE ? SCRIPTED_ONLY_SPECS : LIVE_ONLY_SPECS)],
     passWithNoTests: false,
     reporters: ['default'],
+    testTimeout: LIVE ? 120_000 : 5_000,
+    hookTimeout: LIVE ? 120_000 : 10_000,
+    // One app instance at a time: the driver serves a single WebDriver session,
+    // and two live specs racing for port 4444 cannot both win.
+    fileParallelism: !LIVE,
   },
 });

@@ -231,6 +231,12 @@ Documented in `tests/PERF.md`:
 
 Classic popover release testing still uses `tests/MANUAL_TESTING.md` plus Loom proof. Rust unit tests cover serialization, config parsing, process management. Frontend and story tests run with `npm test`. Desktop-alt gate/window/page/secrets coverage runs with `npm run test:e2e:desktop-alt`; it uses a scripted source-contract harness by default and can switch to live `tauri-driver` with `HQ_SYNC_DESKTOP_ALT_LIVE=1` plus `HQ_SYNC_DESKTOP_ALT_APP` or `HQ_SYNC_DESKTOP_ALT_APP_PATH`.
 
+The two harness modes run disjoint spec sets, enforced in `e2e/desktop-alt/vitest.config.ts`:
+
+- **Scripted** (default, `Desktop-alt E2E` in ci.yml) owns everything that assumes a signed-in user — including `smoke-pages.spec.ts` and `window-lifecycle.spec.ts`, which mirror the Rust gate for an authenticated email.
+- **Live** (`HQ_SYNC_DESKTOP_ALT_LIVE=1`, the two Windows jobs in windows-check.yml) runs only `live-preauth.spec.ts`. A CI runner has no Cognito session and must not be given a fake one, so the live smoke asserts signed-out reality against a real binary: the app boots, the popover paints its sign-in surface with zero console errors, and `open_desktop_alt_window` is refused by `feature_gate::desktop_features_enabled` with `desktop-alt requires a signed-in user`. It shares ONE WebDriver session across the file (`beforeAll`) because `tauri_plugin_single_instance` folds a second launch into the running process, leaving later sessions attached to a webview with no Tauri bridge.
+- Live mode on Windows additionally requires the app to be built `--features e2e-automation` (see `src-tauri/src/util/webview2_automation.rs`); without it msedgedriver's `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` never reaches the WebView2 browser process and session creation dies with `DevToolsActivePort file doesn't exist`.
+
 ## Gotchas
 
 - `tauri_plugin_updater::Update` is not `Clone` -- must call `updater.check()` again in `install_update`. This is a plugin constraint, not redundant.
