@@ -14,6 +14,7 @@
   // through the shared one-line NotificationRow (message rows hover-expand to
   // full text with quick-reply + emoji reacts).
   //
+  // Header: title + unread/total subtitle. No tabs, no sync button, no overflow menus (US-008).
   // Deep-link compose ("Message the sharer"): DesktopApp passes a
   // ConversationTarget so the recipient is not lost after US-008 removed the
   // standalone Messages shell.
