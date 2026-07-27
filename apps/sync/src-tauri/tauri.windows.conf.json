@@ -4,6 +4,7 @@
   "bundle": {
     "targets": ["msi", "nsis"],
     "windows": {
+      "allowDowngrades": false,
       "webviewInstallMode": {
         "type": "embedBootstrapper",
         "silent": true
