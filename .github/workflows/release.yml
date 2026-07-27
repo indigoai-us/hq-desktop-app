@@ -37,6 +37,7 @@ jobs:
       channel: ${{ steps.classify.outputs.channel }}
       prerelease: ${{ steps.classify.outputs.prerelease }}
       make_latest: ${{ steps.classify.outputs.make_latest }}
+      msi_version: ${{ steps.msi-version.outputs.version }}
 
     steps:
       # Keep these strict shapes aligned with
@@ -177,6 +178,17 @@ jobs:
 
           console.log(`Release ${tag} matches versions.toml and all four stamped app version files`);
           NODE
+
+      - name: Validate Windows MSI ProductVersion
+        id: msi-version
+        env:
+          APP_VERSION: ${{ steps.classify.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          MSI_VERSION="$(node scripts/windows-msi-version.mjs --version "$APP_VERSION")"
+          echo "version=$MSI_VERSION" >> "$GITHUB_OUTPUT"
+          echo "App version $APP_VERSION maps to Windows MSI ProductVersion $MSI_VERSION"
 
       - name: Reject stable release rollback
         if: ${{ steps.classify.outputs.channel == 'stable' }}
@@ -594,6 +606,26 @@ jobs:
             throw "Recall sidecar launcher was not produced for ${{ matrix.target }} at $launcher"
           }
 
+      - name: Generate Windows MSI version overlay
+        shell: pwsh
+        env:
+          APP_VERSION: ${{ needs.validate.outputs.version }}
+          EXPECTED_MSI_VERSION: ${{ needs.validate.outputs.msi_version }}
+        run: |
+          $configPath = Join-Path $env:RUNNER_TEMP "tauri.windows.msi-version.conf.json"
+          node ../../scripts/windows-msi-version.mjs --version $env:APP_VERSION --output $configPath
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to generate Windows MSI version overlay"
+          }
+
+          $actual = (Get-Content $configPath -Raw | ConvertFrom-Json).bundle.windows.wix.version
+          if ($actual -ne $env:EXPECTED_MSI_VERSION) {
+            throw "Generated MSI ProductVersion $actual does not match validated $env:EXPECTED_MSI_VERSION"
+          }
+
+          "TAURI_MSI_VERSION_CONFIG=$configPath" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Host "Windows MSI ProductVersion: $actual"
+
       - name: Tauri build (${{ matrix.target }})
         # The release-only overlay carries the Recall externalBin (a per-target PE
         # launcher built by the step above). It is kept out of the auto-merged
@@ -603,7 +635,7 @@ jobs:
           # Tauri runs the overlay's beforeBuildCommand, which builds the launcher
           # again. Keep that nested build on the matrix architecture as well.
           RECALL_SIDECAR_TARGET: ${{ matrix.target }}
-        run: pnpm tauri build --target ${{ matrix.target }} --bundles msi nsis updater --config src-tauri/tauri.windows.conf.json --config src-tauri/tauri.windows.release.conf.json
+        run: pnpm tauri build --target ${{ matrix.target }} --bundles msi nsis updater --config src-tauri/tauri.windows.conf.json --config src-tauri/tauri.windows.release.conf.json --config $env:TAURI_MSI_VERSION_CONFIG
 
       - name: Azure login (OIDC)
         if: ${{ vars.AZURE_CLIENT_ID != '' && env.UNVERIFIED_RELEASE != 'true' }}
@@ -682,10 +714,11 @@ jobs:
 
           foreach ($source in @($nsis, $msi)) {
             $sig = "$($source.FullName).sig"
-            if (Test-Path $sig) {
-              $destName = if ($source.Extension -eq ".msi") { "$msiName.sig" } else { "$nsisName.sig" }
-              Copy-Item $sig (Join-Path $stage $destName)
+            if (-not (Test-Path $sig)) {
+              throw "Required updater signature is missing: $sig"
             }
+            $destName = if ($source.Extension -eq ".msi") { "$msiName.sig" } else { "$nsisName.sig" }
+            Copy-Item $sig (Join-Path $stage $destName)
           }
 
           Get-ChildItem -Path $stage | ForEach-Object { Write-Host "Staged: $($_.Name)" }
@@ -700,14 +733,10 @@ jobs:
   publish:
     name: Publish GitHub release
     needs: [validate, macos, windows]
-    # Platform decoupling: macOS and Windows must not block each other. Publish
-    # runs as long as the run wasn't cancelled and at least one platform build
-    # reached a terminal state that could have produced artifacts — macOS
-    # succeeded, or the Windows matrix ran (fully green OR partially/fully failed,
-    # in which case the succeeding legs still uploaded). The latest.json step
-    # below only includes the platforms whose artifacts actually landed, so a
-    # failed Windows sign no longer skips the macOS release (and vice versa).
-    if: ${{ !cancelled() && needs.validate.result == 'success' && (needs.macos.result == 'success' || needs.windows.result == 'success' || needs.windows.result == 'failure') }}
+    # A desktop release is one cross-platform product. Never publish a partial
+    # release or updater manifest: macOS and the complete Windows matrix must
+    # both finish successfully.
+    if: ${{ !cancelled() && needs.validate.result == 'success' && needs.macos.result == 'success' && needs.windows.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -731,6 +760,48 @@ jobs:
           find artifacts -type f -print0 | xargs -0 -I {} cp {} release/
           ls -la release
 
+      - name: Validate complete release artifact set
+        env:
+          TAG: ${{ needs.validate.outputs.tag }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          VERSION="$VERSION" node --input-type=module <<'NODE'
+          import fs from "node:fs";
+
+          const version = process.env.VERSION;
+          const expected = [
+            `HQ_${version}_arm64-setup.exe`,
+            `HQ_${version}_arm64-setup.exe.sig`,
+            `HQ_${version}_arm64.msi`,
+            `HQ_${version}_arm64.msi.sig`,
+            `HQ_${version}_universal.app.tar.gz`,
+            `HQ_${version}_universal.app.tar.gz.sig`,
+            `HQ_${version}_universal.dmg`,
+            `HQ_${version}_x64-setup.exe`,
+            `HQ_${version}_x64-setup.exe.sig`,
+            `HQ_${version}_x64.msi`,
+            `HQ_${version}_x64.msi.sig`,
+          ].sort();
+          const actual = fs.readdirSync("release").sort();
+          const missing = expected.filter((name) => !actual.includes(name));
+          const unexpected = actual.filter((name) => !expected.includes(name));
+
+          if (missing.length || unexpected.length) {
+            console.error(`::error::Incomplete release artifact set. Missing: ${missing.join(", ") || "none"}; unexpected: ${unexpected.join(", ") || "none"}`);
+            process.exit(1);
+          }
+
+          for (const name of expected.filter((entry) => entry.endsWith(".sig"))) {
+            if (!fs.readFileSync(`release/${name}`, "utf8").trim()) {
+              console.error(`::error::Updater signature is empty: ${name}`);
+              process.exit(1);
+            }
+          }
+
+          console.log(`Validated all ${expected.length} versioned release artifacts for ${version}`);
+          NODE
+
       - name: Generate latest.json
         env:
           TAG: ${{ needs.validate.outputs.tag }}
@@ -740,13 +811,8 @@ jobs:
           VERSION="${TAG#v}"
           BASE="https://github.com/${REPOSITORY}/releases/download/${TAG}"
 
-          # Include only the platforms whose build actually produced artifacts.
-          # A failed Windows (or macOS) build no longer blocks the release — the
-          # surviving platform still ships. Missing platforms are loudly
-          # annotated (::warning::) and simply omitted; the Tauri updater treats
-          # an absent platform key as "no update", so those users stay on their
-          # current version until a later release covers them. Fail only if
-          # NOTHING built (an empty manifest would be a broken release).
+          # The preceding completeness gate guarantees one signed universal
+          # macOS archive and both signed Windows updater installers.
           MAC_TAR_PATH="release/HQ_${VERSION}_universal.app.tar.gz" \
           MAC_SIG_PATH="release/HQ_${VERSION}_universal.app.tar.gz.sig" \
           WIN_X64_EXE_PATH="release/HQ_${VERSION}_x64-setup.exe" \
@@ -759,49 +825,32 @@ jobs:
           node --input-type=module <<'NODE'
           import fs from "node:fs";
 
-          const readSig = (path) => fs.readFileSync(path, "utf8").trim();
-          const has = (path) => !!path && fs.existsSync(path);
-          const warn = (m) => console.log(`::warning::${m}`);
+          const readSig = (path) => {
+            const signature = fs.readFileSync(path, "utf8").trim();
+            if (!signature) {
+              throw new Error(`Updater signature is empty: ${path}`);
+            }
+            return signature;
+          };
           const version = process.env.VERSION;
           const tag = process.env.TAG;
           const base = process.env.BASE;
 
-          const platforms = {};
-
           // macOS — one universal archive serves both arches.
-          if (has(process.env.MAC_TAR_PATH) && has(process.env.MAC_SIG_PATH)) {
-            const macSig = readSig(process.env.MAC_SIG_PATH);
-            const macUrl = `${base}/HQ_${version}_universal.app.tar.gz`;
-            platforms["darwin-aarch64"] = { signature: macSig, url: macUrl };
-            platforms["darwin-x86_64"] = { signature: macSig, url: macUrl };
-          } else {
-            warn("macOS artifacts missing — darwin-aarch64 / darwin-x86_64 omitted from latest.json (macOS users will not auto-update from this release).");
-          }
-
-          // Windows x86_64.
-          if (has(process.env.WIN_X64_EXE_PATH) && has(process.env.WIN_X64_SIG_PATH)) {
-            platforms["windows-x86_64"] = {
+          const macSig = readSig(process.env.MAC_SIG_PATH);
+          const macUrl = `${base}/HQ_${version}_universal.app.tar.gz`;
+          const platforms = {
+            "darwin-aarch64": { signature: macSig, url: macUrl },
+            "darwin-x86_64": { signature: macSig, url: macUrl },
+            "windows-x86_64": {
               signature: readSig(process.env.WIN_X64_SIG_PATH),
               url: `${base}/HQ_${version}_x64-setup.exe`,
-            };
-          } else {
-            warn("Windows x64 artifacts missing — windows-x86_64 omitted from latest.json (x64 users will not auto-update from this release).");
-          }
-
-          // Windows aarch64.
-          if (has(process.env.WIN_ARM64_EXE_PATH) && has(process.env.WIN_ARM64_SIG_PATH)) {
-            platforms["windows-aarch64"] = {
+            },
+            "windows-aarch64": {
               signature: readSig(process.env.WIN_ARM64_SIG_PATH),
               url: `${base}/HQ_${version}_arm64-setup.exe`,
-            };
-          } else {
-            warn("Windows arm64 artifacts missing — windows-aarch64 omitted from latest.json.");
-          }
-
-          if (Object.keys(platforms).length === 0) {
-            console.error("::error::No platform artifacts were produced — refusing to publish an empty latest.json.");
-            process.exit(1);
-          }
+            },
+          };
 
           const manifest = {
             version,
@@ -830,13 +879,9 @@ jobs:
           set -euo pipefail
           VERSION="${TAG#v}"
           cd release
-          for pair in \
-            "HQ_${VERSION}_universal.dmg:HQ.dmg" \
-            "HQ_${VERSION}_x64-setup.exe:HQ_x64-setup.exe" \
-            "HQ_${VERSION}_arm64-setup.exe:HQ_arm64-setup.exe"; do
-            src="${pair%%:*}"; dst="${pair##*:}"
-            if [ -f "$src" ]; then cp "$src" "$dst"; echo "alias $dst -> $src"; else echo "skip (missing) $src"; fi
-          done
+          cp "HQ_${VERSION}_universal.dmg" HQ.dmg
+          cp "HQ_${VERSION}_x64-setup.exe" HQ_x64-setup.exe
+          cp "HQ_${VERSION}_arm64-setup.exe" HQ_arm64-setup.exe
 
       - name: Create or update GitHub release
         uses: softprops/action-gh-release@v2

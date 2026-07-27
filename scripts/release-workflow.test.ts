@@ -8,12 +8,16 @@ const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 let workflow = "";
 let clientClassifier = "";
 let syncCargoToml = "";
+let windowsConfig = "";
+let windowsCheckWorkflow = "";
 
 beforeAll(async () => {
-  [workflow, clientClassifier, syncCargoToml] = await Promise.all([
+  [workflow, clientClassifier, syncCargoToml, windowsConfig, windowsCheckWorkflow] = await Promise.all([
     readFile(resolve(rootDir, ".github/workflows/release.yml"), "utf8"),
     readFile(resolve(rootDir, "crates/hq-desktop-core/src/release_channel.rs"), "utf8"),
     readFile(resolve(rootDir, "apps/sync/src-tauri/Cargo.toml"), "utf8"),
+    readFile(resolve(rootDir, "apps/sync/src-tauri/tauri.windows.conf.json"), "utf8"),
+    readFile(resolve(rootDir, ".github/workflows/windows-check.yml"), "utf8"),
   ]);
 });
 
@@ -143,9 +147,18 @@ describe("release workflow channel contract", () => {
       /CHANNEL="alpha"[\s\S]*?PRERELEASE="true"[\s\S]*?MAKE_LATEST="false"/,
     );
 
-    for (const output of ["tag", "version", "channel", "prerelease", "make_latest"]) {
+    for (const output of [
+      "tag",
+      "version",
+      "channel",
+      "prerelease",
+      "make_latest",
+      "msi_version",
+    ]) {
       expect(workflow).toContain(
-        `${output}: \${{ steps.classify.outputs.${output} }}`,
+        output === "msi_version"
+          ? "msi_version: ${{ steps.msi-version.outputs.version }}"
+          : `${output}: \${{ steps.classify.outputs.${output} }}`,
       );
     }
   });
@@ -182,6 +195,29 @@ describe("release workflow channel contract", () => {
 
     expect(publish).toContain("needs: [validate, macos, windows]");
     expect(publish).toContain(
+      "needs.macos.result == 'success' && needs.windows.result == 'success'",
+    );
+    expect(publish).not.toContain("needs.windows.result == 'failure'");
+    expect(publish).toContain("Validate complete release artifact set");
+    expect(publish).not.toContain("simply omitted");
+    expect(publish).not.toContain("skip (missing)");
+    expect(publish).toContain('VERSION="${TAG#v}"');
+    for (const artifact of [
+      "arm64-setup.exe",
+      "arm64-setup.exe.sig",
+      "arm64.msi",
+      "arm64.msi.sig",
+      "universal.app.tar.gz",
+      "universal.app.tar.gz.sig",
+      "universal.dmg",
+      "x64-setup.exe",
+      "x64-setup.exe.sig",
+      "x64.msi",
+      "x64.msi.sig",
+    ]) {
+      expect(publish).toContain(artifact);
+    }
+    expect(publish).toContain(
       "tag_name: ${{ needs.validate.outputs.tag }}",
     );
     expect(publish).toContain(
@@ -189,6 +225,37 @@ describe("release workflow channel contract", () => {
     );
     expect(publish).toContain(
       "make_latest: ${{ needs.validate.outputs.make_latest }}",
+    );
+  });
+
+  it("gives WiX a numeric MSI ProductVersion while preserving app SemVer", () => {
+    const windows = jobBody("windows");
+
+    expect(windows).toContain("Generate Windows MSI version overlay");
+    expect(windows).toContain(
+      "node ../../scripts/windows-msi-version.mjs",
+    );
+    expect(windows).toContain(
+      "--config $env:TAURI_MSI_VERSION_CONFIG",
+    );
+    expect(windows).toContain("--bundles msi nsis updater");
+    expect(windows).toContain("Required updater signature is missing");
+    expect(windows.indexOf("--config src-tauri/tauri.windows.release.conf.json")).toBeLessThan(
+      windows.indexOf("--config $env:TAURI_MSI_VERSION_CONFIG"),
+    );
+    expect(JSON.parse(windowsConfig).bundle.windows.allowDowngrades).toBe(false);
+  });
+
+  it("builds a prerelease MSI in the regular Windows installer gate", () => {
+    expect(windowsCheckWorkflow).toContain("installer E2E (x64 MSI + NSIS)");
+    expect(windowsCheckWorkflow).toContain("Generate Windows MSI version overlay");
+    expect(windowsCheckWorkflow).toContain(
+      "node ../../scripts/windows-msi-version.mjs",
+    );
+    expect(windowsCheckWorkflow).toContain("--bundles msi nsis");
+    expect(windowsCheckWorkflow).toContain("Verify prerelease MSI package");
+    expect(windowsCheckWorkflow).toContain(
+      "--config $env:TAURI_MSI_VERSION_CONFIG",
     );
   });
 });
