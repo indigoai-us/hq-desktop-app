@@ -102,7 +102,7 @@ fn force_foreground_hwnd(hwnd_raw: isize) {
     };
 
     let hwnd = hwnd_raw as windows_sys::Win32::Foundation::HWND;
-    if hwnd == 0 {
+    if hwnd.is_null() {
         return;
     }
 
