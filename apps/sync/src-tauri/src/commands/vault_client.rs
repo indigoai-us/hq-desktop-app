@@ -624,6 +624,27 @@ impl VaultClient {
         self.handle_response(resp).await
     }
 
+    /// The Cognito `sub` carried by THIS client's bearer token, i.e. the account
+    /// its requests are actually authenticated as.
+    ///
+    /// Deliberately derived from the client's own token rather than from
+    /// whatever is currently on disk: signing out does not cancel an in-flight
+    /// sync, so a long-running operation can still be holding account A's token
+    /// after account B has signed in. Anything that compares a local record
+    /// against "who am I" must use the identity the requests will carry, or it
+    /// can apply one account's decision under another's credentials.
+    ///
+    /// The bearer here is a Cognito ACCESS token; the decoder is named for the
+    /// id_token but only base64-decodes the JWT payload, and `sub` is present on
+    /// both. A malformed/opaque token yields `None`, which callers treat as
+    /// "cannot prove identity" — the safe direction.
+    pub fn caller_subject(&self) -> Option<String> {
+        hq_desktop_core::cognito::decode_id_token_claims(&self.auth_token)
+            .ok()
+            .and_then(|c| c.sub)
+            .filter(|s| !s.is_empty())
+    }
+
     /// `GET /v1/usage/opt-in` — check whether the authenticated user has opted in to telemetry.
     pub async fn get_telemetry_opt_in(&self) -> Result<TelemetryOptInResponse, VaultClientError> {
         let resp = self

@@ -273,9 +273,13 @@ pub async fn reassert_consent_for_person(vault: &VaultClient, person_uid: &str) 
         return;
     }
 
-    // Guards 1-3. Keyed on the Cognito subject, which is what the answer was
-    // bound to at the moment it was given.
-    let Some(subject) = current_cognito_subject() else {
+    // Guards 1-3. Keyed on the Cognito subject the answer was bound to when it
+    // was given — and read from the VAULT CLIENT'S OWN token, not from whatever
+    // is on disk right now. Signing out does not cancel an in-flight sync, so
+    // this code can run holding account A's token after account B has signed in
+    // and answered; checking against B's on-disk record while POSTing as A
+    // would apply B's choice to A.
+    let Some(subject) = vault.caller_subject() else {
         return;
     };
     let Some(enabled) = record.replayable_for(&subject) else {
