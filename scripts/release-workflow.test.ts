@@ -329,4 +329,17 @@ describe("release workflow channel contract", () => {
       "--config $env:TAURI_MSI_VERSION_CONFIG",
     );
   });
+
+  it("runs the required Windows gate for release-control changes", () => {
+    for (const path of [
+      '"versions.toml"',
+      '"scripts/release-*.mjs"',
+      '"scripts/release-*.test.ts"',
+      '"scripts/windows-msi-version.mjs"',
+      '"scripts/windows-msi-version.test.ts"',
+      '".github/workflows/release.yml"',
+    ]) {
+      expect(windowsCheckWorkflow).toContain(path);
+    }
+  });
 });
