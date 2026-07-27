@@ -78,15 +78,11 @@
 <button
   type="button"
   class="project-card"
-  class:is-live={isLive}
-  class:has-live-run={liveRun !== null}
   data-status={status}
   data-testid="project-row"
   aria-label={`Project ${projectDisplayName(project)}`}
   onclick={activate}
 >
-  <span class="accent" data-status={status} class:live-run={liveRun !== null} aria-hidden="true"></span>
-
   <div class="card-head">
     {#if ownerLabel}
       <span class="owner-chip" title={ownerLabel}>{ownerLabel}</span>
@@ -206,8 +202,7 @@
     gap: var(--space-2, 8px);
     width: 100%;
     min-width: 0;
-    padding: var(--space-3, 10px) var(--space-3, 10px) var(--space-3, 10px)
-      calc(var(--space-3, 10px) + 4px);
+    padding: var(--space-3, 10px);
     overflow: hidden;
     border: 1px solid var(--border, var(--v4-hairline));
     /* Movable work objects may be rounded; columns stay naked. */
@@ -236,37 +231,6 @@
   .project-card:focus-visible {
     outline: 2px solid var(--blue, var(--v4-control-border));
     outline-offset: 2px;
-  }
-
-  .project-card.has-live-run {
-    border-color: color-mix(in srgb, var(--blue, var(--v4-ok)) 32%, var(--border, var(--v4-hairline)));
-  }
-
-  .accent {
-    position: absolute;
-    inset-block: 0;
-    inset-inline-start: 0;
-    width: 3px;
-    background: var(--muted-3, var(--v4-idle));
-    opacity: 0.55;
-    transition: opacity 140ms ease;
-  }
-  .accent[data-status='live'],
-  .accent.live-run {
-    background: var(--emerald, var(--v4-ok));
-  }
-  .accent[data-status='in-progress'] {
-    background: var(--blue, var(--v4-ok));
-  }
-  .accent[data-status='complete'] {
-    background: var(--muted-2, var(--v4-text-2));
-  }
-  .project-card:hover .accent {
-    opacity: 1;
-  }
-  .project-card.is-live .accent {
-    opacity: 1;
-    animation: accent-pulse 1.8s ease-in-out infinite;
   }
 
   .card-head {
@@ -463,10 +427,11 @@
   .live-run {
     display: grid;
     gap: 6px;
-    padding: 8px;
-    border: 1px solid color-mix(in srgb, var(--blue, var(--v4-ok)) 22%, var(--border, var(--v4-hairline)));
-    border-radius: 6px;
-    background: color-mix(in srgb, var(--blue, var(--v4-ok)) 6%, transparent);
+    padding: 8px 0 0;
+    border: 0;
+    border-top: 1px solid var(--v4-rowline);
+    border-radius: 0;
+    background: transparent;
   }
 
   .live-run-head,
@@ -555,20 +520,9 @@
     }
   }
 
-  @keyframes accent-pulse {
-    0%,
-    100% {
-      opacity: 1;
-    }
-    50% {
-      opacity: 0.5;
-    }
-  }
-
   @media (prefers-reduced-motion: reduce) {
     .project-card,
-    .progress-fill,
-    .accent {
+    .progress-fill {
       transition: none;
     }
 
@@ -578,7 +532,6 @@
     }
 
     .status-dot.is-live,
-    .project-card.is-live .accent,
     .live-dot {
       animation: none;
     }

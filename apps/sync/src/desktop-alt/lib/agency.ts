@@ -53,15 +53,14 @@ export interface AgencyMessage {
 
 /** Map a worker status to a status-dot tone (tokens.css `--v4-*`). */
 export function statusTone(status: string, ready: boolean): 'ok' | 'warn' | 'idle' {
-  if (status === 'running') return ready ? 'ok' : 'warn';
+  if (status === 'running') return ready ? 'ok' : 'idle';
   if (status === 'crash-loop') return 'warn';
   return 'idle';
 }
 
 /** Accent tone for a chat message sender (tokens.css `--v4-*`). */
-export function senderTone(from: string): 'ok' | 'warn' | 'unread' | 'idle' {
+export function senderTone(from: string): 'ok' | 'unread' | 'idle' {
   if (from === 'manager') return 'ok';
-  if (from === 'liaison') return 'warn';
   if (from === 'operator') return 'unread';
   return 'idle';
 }

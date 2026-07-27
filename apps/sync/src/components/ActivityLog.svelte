@@ -199,8 +199,8 @@
     height: 100vh;
     box-sizing: border-box;
     background: var(--pop-bg);
-    backdrop-filter: blur(32px) saturate(1.7);
-    -webkit-backdrop-filter: blur(32px) saturate(1.7);
+    backdrop-filter: var(--glass-filter, blur(28px) saturate(0%));
+    -webkit-backdrop-filter: var(--glass-filter, blur(28px) saturate(0%));
     border: 1px solid var(--pop-border);
     box-shadow: inset 0 1px 0 var(--pop-highlight);
     color: var(--pop-text);
@@ -284,8 +284,8 @@
     /* Slightly more opaque than the body so rows scrolling under it stay
        legible; same hue as the window surface to avoid a seam. */
     background: var(--pop-bg);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
+    backdrop-filter: var(--glass-filter-soft, blur(12px) saturate(0%));
+    -webkit-backdrop-filter: var(--glass-filter-soft, blur(12px) saturate(0%));
   }
 
   .detail-row {

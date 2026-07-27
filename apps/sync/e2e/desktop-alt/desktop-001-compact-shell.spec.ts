@@ -51,9 +51,10 @@ describe('DESKTOP-001: compact native shell', () => {
     workspace({ slug: 'liverecover', displayName: 'LiveRecover' }),
   ];
 
-  it('primary nav remains Inbox / Meetings / Marketplace / Library / Files', () => {
+  it('primary nav exposes Inbox / Messages / Meetings / Marketplace / Library / Files', () => {
     expect(V4_NAV_ITEMS.map((item) => item.id)).toEqual([
       'inbox',
+      'messages',
       'meetings',
       'marketplace',
       'library',
@@ -61,11 +62,13 @@ describe('DESKTOP-001: compact native shell', () => {
     ]);
   });
 
-  it('selected company expands Overview / Goals / Projects / Knowledge / Team / More', () => {
+  it('selected company expands Overview / Goals / Projects / Skills / Workers / Knowledge / Team / More', () => {
     expect(COMPANY_PRIMARY_SECTIONS.map((s) => s.id)).toEqual([
       'overview',
       'goals',
       'projects',
+      'skills',
+      'workers',
       'knowledge',
       'team',
       'more',
@@ -81,6 +84,8 @@ describe('DESKTOP-001: compact native shell', () => {
       'overview',
       'goals',
       'projects',
+      'skills',
+      'workers',
       'knowledge',
       'team',
       'more',
@@ -93,21 +98,24 @@ describe('DESKTOP-001: compact native shell', () => {
   });
 
   it('collapses company children on global destinations', () => {
-    for (const kind of ['inbox', 'meetings', 'marketplace', 'library', 'files'] as const) {
+    for (const kind of ['inbox', 'messages', 'meetings', 'marketplace', 'library', 'files'] as const) {
       const model = getV4SidebarModel({ kind }, companies);
       expect(model.companies.every((row) => !row.expanded)).toBe(true);
       expect(model.companies.every((row) => row.children.length === 0)).toBe(true);
     }
   });
 
-  it('operational tabs light More; skills/workers remain route-supported without a primary child', () => {
+  it('operational tabs light More while Skills and Workers light visible primary children', () => {
     expect(v4CompanyPrimaryForTab('activity')).toBe('more');
     expect(v4CompanyPrimaryForTab('deployments')).toBe('more');
     expect(v4CompanyPrimaryForTab('secrets')).toBe('more');
     expect(v4CompanyPrimaryForTab('settings')).toBe('more');
-    expect(v4CompanyPrimaryForTab('skills')).toBeNull();
+    expect(v4CompanyPrimaryForTab('skills')).toBe('skills');
+    expect(v4CompanyPrimaryForTab('workers')).toBe('workers');
     expect(companyPrimarySectionForTab('secrets')).toBe('more');
     expect(companyPrimarySectionForTab('settings')).toBe('more');
+    expect(companyPrimarySectionForTab('skills')).toBe('skills');
+    expect(companyPrimarySectionForTab('workers')).toBe('workers');
     expect(companyTabForPrimarySection('more')).toBe('activity');
 
     const model = getV4SidebarModel(
@@ -117,7 +125,7 @@ describe('DESKTOP-001: compact native shell', () => {
     expect(model.companies.find((r) => r.slug === 'indigo')?.children.find((c) => c.id === 'more')
       ?.active).toBe(true);
 
-    // Full operational + skills/workers deep links still resolve.
+    // Full operational + skills/workers routes resolve.
     for (const tab of ['skills', 'workers', 'activity', 'deployments', 'secrets', 'settings'] as const) {
       expect(resolvePendingDesktopRoute(`company:indigo:${tab}`)).toEqual({
         kind: 'company',
@@ -147,6 +155,9 @@ describe('DESKTOP-001: compact native shell', () => {
     expect(app).toContain('ontogglesidebar={handleToggleSidebar}');
     expect(app).toContain('oncommand={handleOpenCommandPalette}');
     expect(app).toContain('onaccount={handleAccountMenu}');
+    expect(app).toContain("handleOpenSettings('general')");
+    expect(app).toContain('accountInitials={accountIdentity.initials}');
+    expect(app).toContain('accountLabel={accountIdentity.label}');
     expect(app).toContain('let sidebarCollapsed = $state(false)');
     expect(app).toContain('class:sidebar-collapsed={sidebarCollapsed}');
     expect(app).toContain('<V4Sidebar');
@@ -187,12 +198,12 @@ describe('DESKTOP-001: compact native shell', () => {
     expect(sidebar).toContain("child.id === 'more'");
   });
 
-  it('light-mode tokens keep chrome darker than canvas and raised lighter than canvas', () => {
+  it('light-mode tokens keep translucent chrome darker than canvas and raised lighter than canvas', () => {
     const tokens = readRepoFile('src/desktop-alt/v4/tokens.css');
-    expect(tokens).toContain('--v4-ground: #f7f8fa');
-    expect(tokens).toContain('--v4-chrome: rgba(222, 227, 233, 0.94)');
-    expect(tokens).toContain('--v4-sidebar: rgba(222, 227, 233, 0.94)');
-    expect(tokens).toContain('--v4-raised: #ffffff');
-    expect(tokens).toContain('DESKTOP-001 light hierarchy');
+    expect(tokens).toContain('--v4-ground: rgba(242, 242, 242, 0.82)');
+    expect(tokens).toContain('--v4-chrome: rgba(232, 232, 232, 0.66)');
+    expect(tokens).toContain('--v4-sidebar: rgba(224, 224, 224, 0.6)');
+    expect(tokens).toContain('--v4-raised: rgba(255, 255, 255, 0.62)');
+    expect(tokens).toContain('DESKTOP-012');
   });
 });

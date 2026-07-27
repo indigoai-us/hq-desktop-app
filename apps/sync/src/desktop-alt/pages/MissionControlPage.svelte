@@ -67,12 +67,12 @@
   const SUMMARY_TILES: ReadonlyArray<{
     id: string;
     label: string;
-    tone: 'ok' | 'warn' | 'idle';
+    tone: 'ok' | 'idle';
     hint: () => string;
     value: () => number;
   }> = [
     { id: 'running', label: 'RUNNING', tone: 'ok', hint: () => 'live now', value: () => statusCounts.running },
-    { id: 'awaiting', label: 'AWAITING INPUT', tone: 'warn', hint: () => 'needs you', value: () => statusCounts.awaiting_input },
+    { id: 'awaiting', label: 'AWAITING INPUT', tone: 'idle', hint: () => 'needs you', value: () => statusCounts.awaiting_input },
     { id: 'idle', label: 'IDLE', tone: 'idle', hint: () => 'quiet', value: () => statusCounts.idle },
     { id: 'outpost', label: 'OUTPOST', tone: 'idle', hint: () => (outpostTotal > 0 ? 'reporting' : 'not connected'), value: () => outpostTotal },
   ];
@@ -149,7 +149,7 @@
   .mc-summary {
     display: grid;
     grid-template-columns: repeat(4, 1fr);
-    gap: var(--v4-space-3);
+    gap: 0;
   }
 
   .mc-tile {
@@ -157,10 +157,14 @@
     flex-direction: column;
     gap: 6px;
     padding: 12px 14px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-card);
-    background: var(--v4-raised);
-    box-shadow: var(--v4-shadow-card);
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .mc-tile + .mc-tile {
+    border-left: 1px solid var(--v4-hairline);
   }
 
   .mc-tile-label {
@@ -200,10 +204,6 @@
     background: var(--v4-ok);
   }
 
-  .mc-dot.warn {
-    background: var(--v4-warn);
-  }
-
   .mc-dot.idle {
     background: var(--v4-idle);
   }
@@ -211,19 +211,31 @@
   /* Agency row — questions (wider) left, teams right. */
   .mc-agency {
     display: flex;
-    gap: var(--v4-space-5);
+    gap: 0;
   }
-  .mc-agency-q { flex: 3 1 0; }
-  .mc-agency-t { flex: 2 1 0; }
+  .mc-col.mc-agency-q {
+    flex: 3 1 0;
+    padding-right: var(--v4-space-5);
+  }
+  .mc-col.mc-agency-t {
+    flex: 2 1 0;
+    padding-left: var(--v4-space-5);
+    border-left: 1px solid var(--v4-hairline);
+  }
 
   /* Manager ⇄ Liaison conversation — full width below the agency row. */
-  .mc-agency-chat { display: flex; flex-direction: column; }
+  .mc-col.mc-agency-chat {
+    display: flex;
+    flex-direction: column;
+    padding-top: var(--v4-space-4);
+    border-top: 1px solid var(--v4-hairline);
+  }
 
   /* Two columns — Live (flex-grow 5) left, History (flex-grow 3) right. */
   .mc-columns {
     display: flex;
     flex: 1 1 auto;
-    gap: var(--v4-space-5);
+    gap: 0;
     min-height: 0;
   }
 
@@ -233,24 +245,35 @@
     gap: var(--v4-space-3);
     min-width: 0;
     min-height: 220px;
-    padding: 14px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-card);
-    background: var(--v4-raised);
-    box-shadow: var(--v4-shadow-card);
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
   }
 
   .mc-col-live {
     flex: 5 1 0;
+    padding-right: var(--v4-space-5);
   }
 
   .mc-col-history {
     flex: 3 1 0;
+    padding-left: var(--v4-space-5);
+    border-left: 1px solid var(--v4-hairline);
   }
 
   @media (max-width: 720px) {
     .mc-summary {
       grid-template-columns: repeat(2, 1fr);
+    }
+
+    .mc-tile:nth-child(odd) {
+      border-left: 0;
+    }
+
+    .mc-tile:nth-child(n + 3) {
+      border-top: 1px solid var(--v4-hairline);
     }
 
     .mc-columns {
@@ -259,6 +282,20 @@
 
     .mc-agency {
       flex-direction: column;
+    }
+
+    .mc-agency-q,
+    .mc-col-live {
+      padding-right: 0;
+    }
+
+    .mc-agency-t,
+    .mc-col-history {
+      margin-top: var(--v4-space-5);
+      padding-top: var(--v4-space-5);
+      padding-left: 0;
+      border-top: 1px solid var(--v4-hairline);
+      border-left: 0;
     }
   }
 </style>

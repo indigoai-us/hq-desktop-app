@@ -113,7 +113,7 @@
   }
 
   /* Highlighted when the caller is among the reactors. Count color is
-     token-driven — the old #dce8ff literal vanished on light-mode hosts
+     token-driven so the selected state remains neutral on light-mode hosts
      (popover feed / desktop notifications). */
   .reaction-pill.reacted {
     background: var(--c-field-bg);

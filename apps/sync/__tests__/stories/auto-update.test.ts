@@ -29,9 +29,13 @@ describe('master automatic-updates switch', () => {
     expect(settings).not.toContain('id="toggle-cli-auto-update"');
     expect(settings).not.toContain('handleToggleCliAutoUpdate');
     expect(settings).not.toContain('bind:checked={cliAutoUpdate}');
-    // The pref round-trips through get/save_settings.
+    // The pref round-trips as a minimal patch through the shared serialized
+    // settings helper, so it cannot overwrite Widget/titlebar changes.
     expect(s).toContain('autoUpdate = settings.autoUpdate ?? true');
-    expect(s).toContain('autoUpdate,');
+    expect(settings).toContain(
+      "import { updateSettings, type SettingsPatch } from '../../lib/settings-mutations'",
+    );
+    expect(s).toContain('saveSettings({ autoUpdate })');
   });
 
   it('App silently installs app + core updates when autoUpdate is on, guarded', () => {

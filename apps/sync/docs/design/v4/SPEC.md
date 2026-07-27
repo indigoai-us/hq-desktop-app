@@ -1,6 +1,14 @@
-# HQ Sync Desktop V4 — Design Specification
+# HQ Sync Desktop V4 — Historical Design Specification
 
-Source of truth for the V4 desktop-window redesign. Approved by Corey on 2026-06-11.
+This document records the 2026-06-11 Paper direction. It is no longer the
+authoritative route, typography, or screen inventory. The accepted live product
+contract is `src/desktop-alt/route.ts` plus `IMPLEMENTATION-NOTES.md`; later
+decisions combined Messages with Inbox entry points, moved tasks into Projects,
+made companies first-class sidebar rows, moved updates into the titlebar and
+Settings, and adopted the 14px/400 central-canvas policy. Auditors must not
+restore retired standalone screens from the historical PNG set.
+
+Approved as the original direction by Corey on 2026-06-11.
 Visual reference: the PNG exports in this directory (one per view, exported from the Paper file "HQ Desktop").
 Design project: `companies/indigo/projects/hq-sync-desktop-redesign/` (HQ-side, 12/12 stories passed) plus two approved follow-on revisions (double-sidebar chrome with companies in the sidebar; Linear-style goal/project/task model; agent-native messaging surfaces).
 

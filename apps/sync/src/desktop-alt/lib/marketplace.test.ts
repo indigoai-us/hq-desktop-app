@@ -24,6 +24,7 @@ import {
   isPublishError,
   listingDisplayName,
   listingHaystack,
+  loadMarketplaceListings,
   prettifyPackName,
   loadCreatorApplications,
   loadModerationQueue,
@@ -128,6 +129,19 @@ describe('filterListings', () => {
     // the display name now folded into the haystack.
     const items = [listing({ id: 'lst_p', name: 'hq-pack-pocock-skills', slug: 'pocock-skills', author: 'mattpocock' })];
     expect(filterListings(items, 'matt pocock skills')).toHaveLength(1);
+  });
+});
+
+describe('loadMarketplaceListings', () => {
+  beforeEach(() => {
+    vi.mocked(invoke).mockReset();
+  });
+
+  it('normalizes a null backend or preview response to an empty listing set', async () => {
+    vi.mocked(invoke).mockResolvedValue(null);
+
+    await expect(loadMarketplaceListings()).resolves.toEqual([]);
+    expect(invoke).toHaveBeenCalledWith('list_marketplace_listings', { query: null });
   });
 });
 
@@ -371,6 +385,14 @@ describe('loadModerationQueue / decideModerationListing — invoke shapes', () =
     expect(invoke).toHaveBeenCalledWith('list_moderation_queue');
   });
 
+  it('normalizes malformed queue payloads to an empty list', async () => {
+    vi.mocked(invoke).mockResolvedValue(null);
+    await expect(loadModerationQueue()).resolves.toEqual([]);
+
+    vi.mocked(invoke).mockResolvedValue({ items: [] });
+    await expect(loadModerationQueue()).resolves.toEqual([]);
+  });
+
   it('forwards a non-admin server rejection so the panel can lock', async () => {
     vi.mocked(invoke).mockRejectedValue(
       new Error('not authorized to view the moderation queue (admin only)'),
@@ -424,6 +446,14 @@ describe('loadCreatorApplications / decideCreatorApplication — invoke shapes',
     vi.mocked(invoke).mockResolvedValue([]);
     await loadCreatorApplications();
     expect(invoke).toHaveBeenCalledWith('list_creator_applications');
+  });
+
+  it('normalizes malformed application payloads to an empty list', async () => {
+    vi.mocked(invoke).mockResolvedValue(null);
+    await expect(loadCreatorApplications()).resolves.toEqual([]);
+
+    vi.mocked(invoke).mockResolvedValue({ applications: [] });
+    await expect(loadCreatorApplications()).resolves.toEqual([]);
   });
 
   it('forwards a non-admin server rejection so the Requests view can lock', async () => {

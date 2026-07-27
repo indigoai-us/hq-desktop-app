@@ -14,6 +14,7 @@
     loadCompanyGoals,
     loadLocalProjects,
     loadLocalProjectStories,
+    projectIdentity,
     type KeyResult,
     type Objective,
   } from '../lib/local-projects';
@@ -61,7 +62,7 @@
   const linkedProjectCount = $derived.by(() => {
     const ids = new Set<string>();
     for (const objective of objectives) {
-      for (const project of linkedProjects(objective)) ids.add(project.id);
+      for (const project of linkedProjects(objective)) ids.add(projectIdentity(project));
     }
     return ids.size;
   });
@@ -635,7 +636,7 @@
                   {#if selectedLinked.length === 0}
                     <span class="muted-chip">None</span>
                   {:else}
-                    {#each selectedLinked.slice(0, 3) as project (project.id)}
+                    {#each selectedLinked.slice(0, 3) as project (projectIdentity(project))}
                       <button
                         type="button"
                         class="project-chip"
@@ -771,11 +772,12 @@
 
   .goals-error {
     flex: 0 0 auto;
-    padding: 10px 12px;
-    border: 1px solid var(--v4-warn);
-    border-radius: var(--v4-radius-field);
+    padding: 10px 0;
+    border: 0;
+    border-top: 1px solid var(--v4-rowline);
+    border-radius: 0;
     background: transparent;
-    color: var(--v4-warn);
+    color: var(--v4-error);
     font-size: var(--type-body, var(--text-base));
     font-weight: 400;
     line-height: 1.35;
@@ -786,7 +788,7 @@
     flex: 1 1 auto;
     min-height: 0;
     min-width: 0;
-    border: 1px solid var(--v4-hairline);
+    border: 0;
     border-radius: 0;
     background: transparent;
   }
@@ -818,7 +820,7 @@
     min-height: 48px;
     padding: 8px 10px;
     border: 0;
-    border-radius: 6px;
+    border-radius: 0;
     background: transparent;
     color: var(--v4-text-2);
     font: inherit;
@@ -833,7 +835,8 @@
   }
 
   .goal-list-row.is-selected {
-    background: var(--v4-active-row);
+    background: transparent;
+    box-shadow: inset 0 -1px 0 var(--v4-hairline);
     color: var(--v4-text-1);
   }
 
@@ -1192,7 +1195,9 @@
   }
 
   .empty-state {
-    border: 1px dashed var(--v4-hairline);
+    border: 0;
+    border-radius: 0;
+    background: transparent;
   }
 
   .goal-detail-empty span,
@@ -1218,8 +1223,9 @@
   .goal-skeleton {
     height: 48px;
     border: 0;
-    border-radius: 6px;
-    background: var(--v4-control-faint);
+    border-bottom: 1px solid var(--v4-rowline);
+    border-radius: 0;
+    background: transparent;
     animation: goals-skeleton-pulse 1.3s ease-in-out infinite;
   }
 
@@ -1293,9 +1299,12 @@
       background: var(--v4-ground);
     }
 
-    .goal-list-row.is-selected,
     .goal-list-row:hover {
       background: var(--v4-control-faint);
+    }
+
+    .goal-list-row.is-selected {
+      background: transparent;
     }
   }
 </style>

@@ -24,7 +24,7 @@
     unread?: boolean;
     /**
      * Currently-selected row in a list (quick-window side pane). Persistent
-     * accent bar + hover-tint background; independent of hover/expand.
+     * neutral hover-tint background; independent of hover/expand.
      */
     selected?: boolean;
     /**
@@ -32,7 +32,7 @@
      * Default true preserves existing popover/widget/inbox behavior.
      */
     hoverExpand?: boolean;
-    /** Hover "Open" (non-message) + Enter/Space when focused. */
+    /** Explicit accessible Open action. */
     onopen?: () => void;
     /** Hover dismiss (×). */
     ondismiss?: () => void;
@@ -88,7 +88,9 @@
   const expanded = $derived(
     isMessage && hoverExpand && (hovered || focusWithin || replyHold),
   );
-  const interactive = $derived(Boolean(onopen));
+  const primaryActionLabel = $derived(
+    actor ? `Open notification from ${actor}` : `Open ${type} notification`,
+  );
 
   // Non-reactive last-notified value — only fire onholdchange on transitions.
   let lastHold = false;
@@ -129,26 +131,6 @@
     onopen?.();
   }
 
-  function handleKeydown(e: KeyboardEvent): void {
-    if (!onopen) return;
-    // Don't steal keys from the reply input / action buttons.
-    const t = e.target as HTMLElement | null;
-    if (t && (t.tagName === 'INPUT' || t.tagName === 'BUTTON')) return;
-    if (e.key === 'Enter' || e.key === ' ') {
-      e.preventDefault();
-      onopen();
-    }
-  }
-
-  function handleRowClick(e: MouseEvent): void {
-    if (!onopen) return;
-    // Action buttons / reply input: ignore so reply/react never opens.
-    // (Foot also stopPropagations; this covers any bare button/input.)
-    const t = e.target as HTMLElement | null;
-    if (t?.closest('button, input')) return;
-    onopen();
-  }
-
   function submitReply(): void {
     const value = replyText.trim();
     if (!value || !onreply) return;
@@ -174,29 +156,9 @@
   const REACT_EMOJI = ['👍', '❤️', '👀'] as const;
 </script>
 
-<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-<!-- svelte-ignore a11y_no_static_element_interactions -->
-<div
-  class="nr"
-  class:nr-message={isMessage}
-  class:nr-expanded={expanded}
-  class:nr-interactive={interactive}
-  class:nr-selected={selected}
-  data-testid="notification-row"
-  data-type={type}
-  data-expanded={expanded}
-  role={interactive ? 'button' : undefined}
-  tabindex={interactive ? 0 : undefined}
-  aria-current={selected ? 'true' : undefined}
-  onmouseenter={onMouseEnter}
-  onmouseleave={onMouseLeave}
-  onfocusin={onFocusIn}
-  onfocusout={onFocusOut}
-  onclick={handleRowClick}
-  onkeydown={handleKeydown}
->
+{#snippet primaryContent()}
   {#if expanded}
-    <div class="nr-head">
+    <span class="nr-head">
       <span class="nr-icon" aria-hidden="true">
         {@render typeIcon(type)}
       </span>
@@ -209,13 +171,62 @@
       <span class="nr-trail">
         <span class="nr-ts">{relativeTime(ts)}</span>
       </span>
+    </span>
+    <span class="nr-body">{text}</span>
+  {:else}
+    <span class="nr-icon" aria-hidden="true">
+      {@render typeIcon(type)}
+    </span>
+    {#if unread && badgeCount === 0}
+      <span class="nr-unread" aria-label="Unread"></span>
+    {/if}
+    <span class="nr-text">
+      {#if actor}<b>{actor}</b>{#if agentActor}<span class="nr-agent" data-testid="agent-badge" title="Agent" aria-label="Agent sender"><svg width="10" height="10" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M5 6.5h6v5.5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6.5Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M8 2.5v2M5.5 4.5 4 3.5M10.5 4.5 12 3.5M6.5 9h3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></span>{/if}{' '}{/if}{text}
+    </span>
+    <span class="nr-trail">
+      {#if badgeCount > 0}<span class="nr-count" data-testid="unread-count" aria-label="{badgeCount} unread">{badgeCount}</span>{/if}
+      <span class="nr-ts">
+        {relativeTime(ts)}
+      </span>
+    </span>
+  {/if}
+{/snippet}
+
+<div
+  class="nr"
+  class:nr-message={isMessage}
+  class:nr-expanded={expanded}
+  class:nr-selected={selected}
+  role="group"
+  aria-label={actor ? `${actor} ${type} notification` : `${type} notification`}
+  data-testid="notification-row"
+  data-type={type}
+  data-expanded={expanded}
+  aria-current={selected ? 'true' : undefined}
+  onmouseenter={onMouseEnter}
+  onmouseleave={onMouseLeave}
+  onfocusin={onFocusIn}
+  onfocusout={onFocusOut}
+>
+  {#if onopen}
+    <button
+      class="nr-primary-action"
+      class:nr-primary-expanded={expanded}
+      type="button"
+      aria-label={primaryActionLabel}
+      onclick={handleOpen}
+    >
+      {@render primaryContent()}
+    </button>
+  {:else}
+    <div class="nr-primary-content" class:nr-primary-expanded={expanded}>
+      {@render primaryContent()}
     </div>
-    <div class="nr-body">{text}</div>
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
+  {/if}
+
+  {#if expanded}
     <div
       class="nr-foot"
-      onclick={(e) => e.stopPropagation()}
-      onkeydown={(e) => e.stopPropagation()}
     >
       <input
         class="nr-reply"
@@ -242,51 +253,39 @@
         </button>
       {/each}
     </div>
-  {:else}
-    <span class="nr-icon" aria-hidden="true">
-      {@render typeIcon(type)}
-    </span>
-    {#if unread && badgeCount === 0}
-      <span class="nr-unread" aria-label="Unread"></span>
-    {/if}
-    <span class="nr-text">
-      {#if actor}<b>{actor}</b>{#if agentActor}<span class="nr-agent" data-testid="agent-badge" title="Agent" aria-label="Agent sender"><svg width="10" height="10" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M5 6.5h6v5.5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6.5Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M8 2.5v2M5.5 4.5 4 3.5M10.5 4.5 12 3.5M6.5 9h3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></span>{/if}{' '}{/if}{text}
-    </span>
-    <span class="nr-trail">
-      {#if badgeCount > 0}<span class="nr-count" data-testid="unread-count" aria-label="{badgeCount} unread">{badgeCount}</span>{/if}
-      <span class="nr-ts">
-        {relativeTime(ts)}
-      </span>
-      {#if !isMessage && (onopen || ondismiss)}
-        <span class="nr-actions">
-          {#if onopen}
-            <button class="nr-open" type="button" onclick={(e) => (e.stopPropagation(), handleOpen())}>
-              {actionLabel ?? 'Open'}
-            </button>
+  {:else if !isMessage && (onopen || ondismiss)}
+    <span class="nr-actions">
+      {#if onopen}
+        <button
+          class="nr-open"
+          type="button"
+          aria-label={primaryActionLabel}
+          onclick={handleOpen}
+        >
+          {actionLabel ?? 'Open'}
+        </button>
+      {/if}
+      {#if ondismiss}
+        <button
+          class="nr-dismiss"
+          class:nr-dismiss-text={textDismiss}
+          type="button"
+          aria-label="Dismiss"
+          onclick={() => ondismiss?.()}
+        >
+          {#if textDismiss}
+            Dismiss
+          {:else}
+            <svg width="10" height="10" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path
+                d="M4 4l8 8M12 4l-8 8"
+                stroke="currentColor"
+                stroke-width="1.3"
+                stroke-linecap="round"
+              />
+            </svg>
           {/if}
-          {#if ondismiss}
-            <button
-              class="nr-dismiss"
-              class:nr-dismiss-text={textDismiss}
-              type="button"
-              aria-label="Dismiss"
-              onclick={(e) => (e.stopPropagation(), ondismiss?.())}
-            >
-              {#if textDismiss}
-                Dismiss
-              {:else}
-                <svg width="10" height="10" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                  <path
-                    d="M4 4l8 8M12 4l-8 8"
-                    stroke="currentColor"
-                    stroke-width="1.3"
-                    stroke-linecap="round"
-                  />
-                </svg>
-              {/if}
-            </button>
-          {/if}
-        </span>
+        </button>
       {/if}
     </span>
   {/if}
@@ -364,24 +363,20 @@
   .nr {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 0;
     min-height: 30px;
     padding: 0 11px;
-    border-radius: 9px;
+    border-radius: 0;
     font-size: 12px;
     color: var(--popover-text);
     transition: background-color 0.15s ease;
     box-sizing: border-box;
   }
 
-  .nr-interactive {
-    cursor: pointer;
-  }
-
   /* Selected row in a list (quick-window side pane) — persistent, not hover. */
   .nr-selected {
-    background: var(--popover-action-hover);
-    box-shadow: inset 2px 0 0 var(--popover-unread);
+    background: transparent;
+    box-shadow: inset 0 -1px 0 var(--popover-divider);
   }
 
   .nr-message.nr-expanded {
@@ -389,8 +384,47 @@
     align-items: stretch;
     gap: 7px;
     padding: 9px 11px 10px;
-    background: var(--popover-action-hover);
+    background: transparent;
+    box-shadow: inset 0 -1px 0 var(--popover-divider);
     min-height: 0;
+  }
+
+  .nr-primary-action,
+  .nr-primary-content {
+    align-self: stretch;
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 30px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-radius: inherit;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+  }
+
+  .nr-primary-action {
+    appearance: none;
+    cursor: pointer;
+  }
+
+  .nr-primary-action:focus-visible {
+    outline: 2px solid var(--popover-text-muted);
+    outline-offset: -2px;
+  }
+
+  .nr-primary-expanded {
+    flex: 0 0 auto;
+    width: 100%;
+    min-height: 0;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 7px;
   }
 
   /* Non-message hover / keyboard focus: tint + swap ts for actions */
@@ -480,9 +514,14 @@
   }
 
   .nr-actions {
-    display: none;
+    display: inline-flex;
     align-items: center;
     gap: 4px;
+    width: 0;
+    overflow: hidden;
+    opacity: 0;
+    pointer-events: none;
+    margin-left: 0;
   }
 
   .nr:not(.nr-message):hover .nr-ts,
@@ -492,7 +531,11 @@
 
   .nr:not(.nr-message):hover .nr-actions,
   .nr:not(.nr-message):focus-within .nr-actions {
-    display: inline-flex;
+    width: auto;
+    overflow: visible;
+    opacity: 1;
+    pointer-events: auto;
+    margin-left: 6px;
   }
 
   .nr-open,
@@ -527,7 +570,8 @@
   .nr-dismiss:hover,
   .nr-open:focus-visible,
   .nr-dismiss:focus-visible {
-    outline: none;
+    outline: 1.5px solid var(--popover-text-muted);
+    outline-offset: 1px;
   }
 
   /* Expanded message layout */

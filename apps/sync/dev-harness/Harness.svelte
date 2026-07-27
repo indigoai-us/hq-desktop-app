@@ -6,12 +6,25 @@
   import CompanyPage from '../src/desktop-alt/pages/CompanyPage.svelte';
   import HomePage from '../src/desktop-alt/pages/HomePage.svelte';
   import DesktopApp from '../src/desktop-alt/DesktopApp.svelte';
+  import ActivityLog from '../src/components/ActivityLog.svelte';
+  import DriftDetail from '../src/components/DriftDetail.svelte';
+  import ShareDetail from '../src/components/ShareDetail.svelte';
+  import DmDetail from '../src/components/DmDetail.svelte';
+  import Widget from '../src/components/Widget.svelte';
+  import MeetingsWindow from '../src/components/MeetingsWindow.svelte';
   import MeetingPermissionsWindow from '../src/components/MeetingPermissionsWindow.svelte';
+  import OnboardingWizard from '../src/components/onboarding/OnboardingWizard.svelte';
+  import GlobalErrorBoundary from '../src/components/GlobalErrorBoundary.svelte';
+  import GlobalErrorPreview from './GlobalErrorPreview.svelte';
   import Conversation, {
     type ConversationMessage,
   } from '../src/components/messaging/Conversation.svelte';
   import MessagesShell from '../src/components/messaging/MessagesShell.svelte';
   import CreateChannel from '../src/components/messaging/CreateChannel.svelte';
+  import {
+    WIDGET_RECENT_STORAGE_KEY,
+    type WidgetStackItem,
+  } from '../src/stores/widgetNotifications';
   import '../src/desktop-alt/styles/desktop-alt.css';
   import { popoverProps, bannerFixtures, workspaces } from './fixtures';
   import { emit } from '@tauri-apps/api/event';
@@ -73,6 +86,98 @@
   ];
   const homeCompanyNames = new Map([['cmp_indigo', 'Indigo']]);
 
+  const driftPreviewReport = {
+    count: 3,
+    modified: [
+      {
+        path: 'core/policies/desktop-design.md',
+        size: 1840,
+        gitShaLocal: 'local-design',
+        gitShaUpstream: 'upstream-design',
+        stagingStatus: 'unaccounted',
+      },
+    ],
+    missing: [
+      {
+        path: 'core/knowledge/public/hq-core/desktop.md',
+        size: 2650,
+        gitShaLocal: null,
+        gitShaUpstream: 'upstream-desktop',
+      },
+    ],
+    added: [
+      {
+        path: 'core/workers/public/desktop-auditor.md',
+        size: 1320,
+        gitShaLocal: 'local-auditor',
+        gitShaUpstream: null,
+        stagingStatus: 'pr:412',
+      },
+    ],
+    scannedAt: '2026-07-26T12:00:00.000Z',
+    hqVersion: '15.0.16',
+    targetRepo: 'indigoai-us/hq-core',
+    targetRef: 'v15.0.16',
+  };
+
+  const sharePreviewEvents = [
+    {
+      eventId: 'share-preview-1',
+      issuerEmail: 'maya@getindigo.ai',
+      issuerDisplayName: 'Maya Chen',
+      issuerPersonUid: 'prs_maya',
+      paths: [
+        'companies/indigo/projects/hq-desktop-app/README.md',
+        'companies/indigo/projects/hq-desktop-app/prd.json',
+      ],
+      note: 'The desktop recovery notes and acceptance criteria are ready for review.',
+      permission: 'read',
+      createdAt: '2026-07-26T17:30:00.000Z',
+    },
+  ];
+
+  const dmPreviewEvent = {
+    eventId: 'dm-preview-1',
+    fromPersonUid: 'prs_maya',
+    fromEmail: 'maya@getindigo.ai',
+    fromDisplayName: 'Maya Chen',
+    body: 'The auxiliary desktop pass is ready for a final visual review.',
+    details: 'Includes recovery, permissions, meetings, shares, and the widget.',
+    prompt: '/review hq-desktop-app --surface auxiliary',
+    createdAt: '2026-07-26T17:42:00.000Z',
+  };
+
+  const widgetPreviewItems: WidgetStackItem[] = [
+    {
+      id: 'widget-preview-message',
+      type: 'message',
+      actor: 'Maya',
+      text: 'The desktop recovery pass is ready for review.',
+      ts: Date.now() - 90_000,
+      kind: 'dm',
+      clickActionId: 'open',
+      actionId: 'open',
+      actionLabel: 'Open',
+      data: { fromPersonUid: 'prs_maya' },
+      expiresAt: Date.now() + 60 * 60_000,
+      unread: true,
+    },
+    {
+      id: 'widget-preview-share',
+      type: 'share',
+      actor: 'Indigo',
+      text: 'Shared the HQ Desktop acceptance criteria.',
+      ts: Date.now() - 8 * 60_000,
+      kind: 'share',
+      clickActionId: 'open',
+      actionId: 'open',
+      actionLabel: 'Open',
+      data: {},
+      expiresAt: Date.now() + 60 * 60_000,
+      unread: false,
+    },
+  ];
+
   // View + theme driven by URL query so screenshots target a known state:
   //   ?view=settings|popover|signin|banner   ?theme=light|dark
   //   banner view also takes ?kind=share|meeting|dm|update (default share)
@@ -83,11 +188,22 @@
   const view = params.get('view') ?? 'settings';
   const theme = params.get('theme') ?? 'dark';
   const bannerKind = params.get('kind') ?? 'share';
+  const scenario = params.get('scenario');
+  const requestedOnboardingStep = Number.parseInt(params.get('step') ?? '0', 10);
+  const onboardingStep =
+    Number.isInteger(requestedOnboardingStep) &&
+    requestedOnboardingStep >= 0 &&
+    requestedOnboardingStep <= 3
+      ? requestedOnboardingStep
+      : 0;
   // ?state=error renders the "Sync initialized" notice banner.
   // ?state=auth-error renders the calm reconnect state without red styling.
   // Otherwise the popover mounts in its idle fixture state.
   // (CLI-update overflow preview retired with US-001 chrome strip.)
   const stateOverride = params.get('state');
+  if (view === 'widget') {
+    localStorage.removeItem(WIDGET_RECENT_STORAGE_KEY);
+  }
   const previewPopoverProps =
     stateOverride === 'error'
       ? { ...popoverProps, syncState: 'error' as const, errorMessage: 'failed to push indigo: exit 1', errorCompany: 'indigo' }
@@ -108,6 +224,18 @@
       ? 'dm-banner'
       : view === 'company' || view === 'desktop' || view === 'home'
         ? 'desktop-alt'
+        : view === 'meetings'
+          ? 'meetings-window'
+          : view === 'drift'
+            ? 'drift-detail'
+            : view === 'activity'
+              ? 'activity-log'
+              : view === 'share-detail'
+                ? 'share-detail'
+                : view === 'dm-detail'
+                  ? 'dm-detail'
+                  : view === 'widget'
+                    ? 'widget'
         : view === 'permissions'
           ? 'meeting-permissions'
           : view === 'messages' || view === 'conversation' || view === 'createchannel'
@@ -120,11 +248,70 @@
     const payload = bannerFixtures[bannerKind] ?? bannerFixtures.share;
     setTimeout(() => void emit('banner:event', payload), 50);
   }
+
+  if (view === 'drift') {
+    setTimeout(() => void emit('drift:report', driftPreviewReport), 75);
+  } else if (view === 'share-detail') {
+    setTimeout(() => void emit('share:events-list', sharePreviewEvents), 75);
+  } else if (view === 'dm-detail') {
+    setTimeout(() => void emit('dm:detail-event', dmPreviewEvent), 75);
+  }
+
+  // Deterministic safety-state previews for the full desktop shell. The delay
+  // lets DesktopApp register native-event listeners before the fixture fires.
+  if (view === 'desktop') {
+    setTimeout(() => {
+      if (scenario === 'conflict') {
+        void emit('sync:conflict', {
+          path: 'companies/indigo/projects/hq-desktop-app/prd.json',
+          localHash: 'local-preview',
+          remoteHash: 'remote-preview',
+          canAutoResolve: false,
+        });
+      } else if (scenario === 'sync-error') {
+        void emit('sync:error', {
+          company: 'indigo',
+          path: 'companies/indigo/projects/hq-desktop-app/prd.json',
+          message: 'The cloud connection closed before the desktop audit could finish.',
+        });
+      }
+    }, 250);
+  }
 </script>
 
-{#if view === 'permissions'}
+{#if view === 'activity'}
+  <!-- Recent Changes at its native 560x460 size. -->
+  <ActivityLog />
+{:else if view === 'drift'}
+  <!-- Core Drift at its native 560x480 size. -->
+  <DriftDetail />
+{:else if view === 'share-detail'}
+  <!-- Shared-with-me quick window at its native 640x560 size. -->
+  <ShareDetail />
+{:else if view === 'dm-detail'}
+  <!-- Inbox / direct-message quick window at its native 820x640 size. -->
+  <DmDetail />
+{:else if view === 'widget'}
+  <!-- Floating widget: inspect idle at 66x43, or use ?state=stack at
+       the dynamic 340x480 maximum to exercise notification + mini-inbox UI. -->
+  <Widget
+    queued={stateOverride === 'idle' ? 0 : 2}
+    initialItems={stateOverride === 'idle' ? [] : widgetPreviewItems}
+  />
+{:else if view === 'meetings'}
+  <!-- Upcoming Meetings at its native 460x600 size. -->
+  <MeetingsWindow />
+{:else if view === 'permissions'}
   <!-- The Meeting Permissions wizard. Resize the preview viewport to ~620x720. -->
   <MeetingPermissionsWindow />
+{:else if view === 'onboarding'}
+  <!-- First-run onboarding at its real 780x620 transparent-window size.
+       Pass ?step=0..3 to inspect every reachable lifecycle screen directly. -->
+  <OnboardingWizard initialStep={onboardingStep} onfinish={() => {}} />
+{:else if view === 'global-error'}
+  <!-- Deterministic render failure for visually verifying the production
+       Svelte error boundary without breaking any other harness route. -->
+  <GlobalErrorBoundary component={GlobalErrorPreview} windowLabel="preview" />
 {:else if view === 'desktop'}
   <!-- The full desktop-alt window shell (title bar verdict, sidebar, pages,
        live strip). Resize the preview viewport to ~1180x720. -->
@@ -159,7 +346,7 @@
        desktop tokens resolve. Companies/contacts come from Tauri commands that
        the harness doesn't fully mock, so the dropdown + picker may be empty —
        the type scale is what this view is for. -->
-  <div class="conversation-stage" style="justify-content: center; background: var(--bg, #161618);">
+  <div class="conversation-stage" style="justify-content: center; background: var(--bg, #161616);">
     <CreateChannel onclose={() => {}} oncreated={() => {}} />
   </div>
 {:else if view === 'company'}
@@ -205,19 +392,38 @@
 {/if}
 
 <style>
+  :global(html[data-window='desktop-alt']),
+  :global(html[data-window='desktop-alt'] body) {
+    width: 100%;
+    height: 100vh;
+    min-height: 0;
+    margin: 0;
+  }
+
+  :global(html[data-window='desktop-alt'] body) {
+    overflow: hidden;
+  }
+
+  :global(html[data-window='desktop-alt'] #app) {
+    width: 100%;
+    height: 100vh;
+    min-height: 0;
+    overflow: hidden;
+  }
+
   .stage {
     min-height: 100vh;
     display: grid;
     place-items: start center;
     padding: 32px;
     box-sizing: border-box;
-    background: radial-gradient(120% 120% at 30% 10%, #3a3a52 0%, #1a1a24 55%, #0c0c12 100%);
+    background: radial-gradient(120% 120% at 30% 10%, #3a3a3a 0%, #1a1a1a 55%, #0c0c0c 100%);
   }
   .stage.light {
-    background: radial-gradient(120% 120% at 30% 10%, #e9e9f2 0%, #d2d2e0 55%, #b9b9cc 100%);
+    background: radial-gradient(120% 120% at 30% 10%, #ededed 0%, #d4d4d4 55%, #bcbcbc 100%);
   }
   .window {
-    border-radius: 18px;
+    border-radius: var(--radius-popover, 8px);
     box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45), 0 2px 8px rgba(0, 0, 0, 0.3);
   }
 
@@ -240,7 +446,7 @@
     margin: 0 auto;
     display: flex;
     flex-direction: column;
-    background: var(--bg, #161618);
+    background: var(--bg, #161616);
   }
 
   /* Banner preview: the real window is 366x104, pinned top-right over the
@@ -249,7 +455,7 @@
      (True liquid glass must be confirmed in the Tauri runtime.) */
   :global(html[data-window='dm-banner']),
   :global(html[data-window='dm-banner'] body) {
-    background: radial-gradient(120% 120% at 75% 10%, #4a5a7a 0%, #232838 55%, #0c0c12 100%) !important;
+    background: radial-gradient(120% 120% at 75% 10%, #565656 0%, #292929 55%, #0c0c0c 100%) !important;
   }
   .banner-stage {
     width: 366px;

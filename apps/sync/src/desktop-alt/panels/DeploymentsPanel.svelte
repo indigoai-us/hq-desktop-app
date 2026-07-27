@@ -372,16 +372,17 @@
     justify-content: space-between;
     gap: 14px;
     min-width: 0;
-    padding: 12px;
-    border: 1px solid color-mix(in srgb, var(--v4-warn) 32%, var(--v4-hairline));
-    border-radius: var(--v4-radius-field);
-    background: color-mix(in srgb, var(--v4-warn) 10%, var(--v4-raised));
-    color: var(--v4-warn);
+    padding: 12px 0;
+    border: 0;
+    border-top: 1px solid var(--v4-rowline);
+    border-radius: 0;
+    background: transparent;
+    color: var(--v4-error);
   }
 
   .deployments-note {
-    border-color: var(--v4-hairline);
-    background: var(--v4-raised);
+    border-top-color: var(--v4-rowline);
+    background: transparent;
     color: var(--v4-text-3);
   }
 
@@ -409,7 +410,8 @@
 
   .deployments-card {
     min-width: 0;
-    border: 1px solid var(--v4-hairline);
+    border: 0;
+    border-top: 1px solid var(--v4-hairline);
     border-radius: 0;
     background: transparent;
     overflow: hidden;
@@ -443,7 +445,7 @@
 
   .table-head {
     display: grid;
-    grid-template-columns: 14px 1.4fr 1fr auto auto auto;
+    grid-template-columns: 82px 1.4fr 1fr auto auto auto;
     align-items: center;
     gap: 12px;
     min-width: 0;
@@ -509,7 +511,7 @@
     }
 
     .table-head {
-      grid-template-columns: 14px minmax(0, 1fr) auto;
+      grid-template-columns: 82px minmax(0, 1fr) auto;
     }
 
     .table-head span:nth-child(3),

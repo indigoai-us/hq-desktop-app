@@ -2,6 +2,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { buildClaudeCodeUrl } from '../../lib/claude-code-link';
 
 export interface AgentWorkflowResult {
+  /** Whether the handoff opened, fell back to a usable clipboard prompt, or failed. */
+  outcome: 'opened' | 'copied' | 'failed';
   /** True when the Claude Code deep-link was dispatched; false when we fell
    *  back to copying the prompt (or couldn't even do that). */
   ok: boolean;
@@ -34,14 +36,26 @@ export async function openAgentWorkflow(
     }));
     const url = buildClaudeCodeUrl({ folder: config.hqFolderPath ?? '', prompt });
     await invoke('open_claude_code_link', { url });
-    return { ok: true, message: `Opened the ${label} in Claude Code.` };
+    return {
+      outcome: 'opened',
+      ok: true,
+      message: `Opened the ${label} in Claude Code.`,
+    };
   } catch (err) {
     console.error('openAgentWorkflow: open_claude_code_link failed:', err);
     try {
       await navigator.clipboard.writeText(prompt);
-      return { ok: false, message: `Prompt copied — paste it into Claude Code to start the ${label}.` };
+      return {
+        outcome: 'copied',
+        ok: false,
+        message: `Prompt copied — paste it into Claude Code to start the ${label}.`,
+      };
     } catch {
-      return { ok: false, message: 'Could not open Claude Code or copy the prompt.' };
+      return {
+        outcome: 'failed',
+        ok: false,
+        message: 'Could not open Claude Code or copy the prompt.',
+      };
     }
   }
 }

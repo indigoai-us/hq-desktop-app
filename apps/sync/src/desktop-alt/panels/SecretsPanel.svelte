@@ -334,16 +334,17 @@
     justify-content: space-between;
     gap: 14px;
     min-width: 0;
-    padding: 12px;
-    border: 1px solid color-mix(in srgb, var(--v4-warn) 32%, var(--v4-hairline));
-    border-radius: var(--v4-radius-field);
-    background: color-mix(in srgb, var(--v4-warn) 10%, var(--v4-raised));
-    color: var(--v4-warn);
+    padding: 12px 0;
+    border: 0;
+    border-top: 1px solid var(--v4-rowline);
+    border-radius: 0;
+    background: transparent;
+    color: var(--v4-error);
   }
 
   .secrets-note {
-    border-color: var(--v4-hairline);
-    background: var(--v4-raised);
+    border-top-color: var(--v4-rowline);
+    background: transparent;
     color: var(--v4-text-3);
   }
 
@@ -371,7 +372,8 @@
 
   .secrets-card {
     min-width: 0;
-    border: 1px solid var(--v4-hairline);
+    border: 0;
+    border-top: 1px solid var(--v4-hairline);
     border-radius: 0;
     background: transparent;
     overflow: hidden;

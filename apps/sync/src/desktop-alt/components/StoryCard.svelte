@@ -259,7 +259,7 @@
   .priority-badge[data-priority='P2'] {
     border-color: var(--v4-control-border);
     background: var(--v4-control-faint);
-    color: var(--v4-warn);
+    color: var(--v4-text-2);
   }
   .priority-badge[data-priority='P3'] {
     border-color: var(--v4-control-border);
@@ -319,10 +319,11 @@
     flex-direction: column;
     gap: var(--v4-row-stack-gap, 3px);
     min-width: 0;
-    padding: var(--v4-space-2);
-    border: 1px solid color-mix(in srgb, var(--v4-ok) 28%, var(--v4-hairline));
-    border-radius: 6px;
-    background: color-mix(in srgb, var(--v4-ok) 8%, var(--v4-raised));
+    padding: var(--v4-space-2) 0;
+    border: 0;
+    border-top: 1px solid var(--v4-rowline);
+    border-radius: 0;
+    background: transparent;
   }
 
   .live-run-head,

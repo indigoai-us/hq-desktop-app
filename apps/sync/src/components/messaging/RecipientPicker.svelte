@@ -267,8 +267,8 @@
     border-radius: var(--radius-md);
     border: 1px solid var(--pop-border);
     background: var(--pop-bg);
-    backdrop-filter: var(--popover-blur, blur(32px) saturate(1.7));
-    -webkit-backdrop-filter: var(--popover-blur, blur(32px) saturate(1.7));
+    backdrop-filter: var(--glass-filter-soft, blur(12px) saturate(0%));
+    -webkit-backdrop-filter: var(--glass-filter-soft, blur(12px) saturate(0%));
     box-shadow: var(--pop-shadow), inset 0 1px 0 var(--pop-highlight);
     scrollbar-width: thin;
     scrollbar-color: var(--scrollbar-thumb) transparent;
@@ -292,16 +292,20 @@
     text-align: left;
     padding: var(--space-2);
     border: none;
-    border-radius: var(--radius-sm);
+    border-radius: 0;
     background: transparent;
     color: inherit;
     font-family: var(--font-sans);
     cursor: pointer;
   }
 
-  .suggestion:hover,
-  .suggestion.active {
+  .suggestion:hover {
     background: var(--accent-soft);
+  }
+
+  .suggestion.active {
+    background: transparent;
+    box-shadow: inset 0 -1px 0 var(--border-strong);
   }
 
   .suggestion:focus-visible {

@@ -16,6 +16,8 @@ export interface TeamSkillUsage {
 export interface TeamMember {
   id: string;
   displayName: string;
+  /** Resolved contact email when available. */
+  email?: string;
   kind: TeamMemberKind;
   /** Company membership role when the payload provides it — never invented. */
   role?: string;
@@ -77,23 +79,46 @@ export function displayNameFromMember(raw: {
   return 'Unknown member';
 }
 
-function skillListFromTotals(totals: unknown): TeamSkillUsage[] {
-  if (!totals || typeof totals !== 'object') return [];
-  const skills = (totals as { skills?: { bySkill?: unknown } }).skills;
-  const bySkill = skills?.bySkill;
-  if (!Array.isArray(bySkill)) return [];
-  return bySkill
-    .map((row) => {
-      if (!row || typeof row !== 'object') return null;
-      const r = row as { skill?: unknown; count?: unknown };
-      const skill = typeof r.skill === 'string' ? r.skill : '';
-      const count = typeof r.count === 'number' ? r.count : Number(r.count) || 0;
-      if (!skill) return null;
-      return { skill, count };
-    })
-    .filter((x): x is TeamSkillUsage => x !== null)
-    .sort((a, b) => b.count - a.count)
-    .slice(0, 5);
+function finiteNumber(value: unknown): number | undefined {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : undefined;
+  if (typeof value !== 'string' || value.trim() === '') return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+/**
+ * Production company telemetry returns a raw skill-count record. Older
+ * harnesses and console-shaped payloads used `{ bySkill: [{ skill, count }] }`.
+ * Accept both at this boundary so the view model stays stable.
+ */
+function skillListFromValue(value: unknown): TeamSkillUsage[] {
+  if (!value || typeof value !== 'object') return [];
+  const record = value as Record<string, unknown>;
+  const source = record.bySkill ?? value;
+  let usages: TeamSkillUsage[] = [];
+
+  if (Array.isArray(source)) {
+    usages = source
+      .map((row) => {
+        if (!row || typeof row !== 'object') return null;
+        const r = row as { skill?: unknown; count?: unknown };
+        const skill = typeof r.skill === 'string' ? r.skill.trim() : '';
+        const count = finiteNumber(r.count);
+        if (!skill || count == null) return null;
+        return { skill, count };
+      })
+      .filter((item): item is TeamSkillUsage => item !== null);
+  } else if (source && typeof source === 'object') {
+    usages = Object.entries(source as Record<string, unknown>)
+      .map(([skill, countValue]) => {
+        const count = finiteNumber(countValue);
+        if (!skill.trim() || count == null) return null;
+        return { skill: skill.trim(), count };
+      })
+      .filter((item): item is TeamSkillUsage => item !== null);
+  }
+
+  return usages.sort((a, b) => b.count - a.count || a.skill.localeCompare(b.skill)).slice(0, 5);
 }
 
 function activeProjectList(value: unknown): string[] {
@@ -122,8 +147,9 @@ function sortMembers(list: TeamMember[]): TeamMember[] {
 
 /**
  * Normalize a company telemetry JSON body into a mixed member list with kind
- * labels and top skills. Accepts both `perMember` and `members` array keys
- * (console/hq-pro variants).
+ * labels and top skills. Production uses `members` with top-level `skills`,
+ * `events`, and `distinctSessions`; the legacy console/harness shape used
+ * `perMember` with a nested `totals` object.
  */
 export function normalizeCompanyTeamTelemetry(
   payload: unknown,
@@ -162,30 +188,36 @@ export function normalizeCompanyTeamTelemetry(
           ? r.membershipRole
           : '';
     const role = roleRaw.trim() || undefined;
+    const resolvedLabel = options?.memberLabelsById?.[personUid];
+    const emailRaw =
+      typeof r.email === 'string'
+        ? r.email
+        : typeof resolvedLabel?.email === 'string'
+          ? resolvedLabel.email
+          : '';
+    const email = emailRaw.trim() || undefined;
+    const totals =
+      r.totals && typeof r.totals === 'object'
+        ? (r.totals as Record<string, unknown>)
+        : undefined;
     const member: TeamMember = {
       id: personUid,
       displayName: displayNameFromMember(
         {
           personUid,
-          email: typeof r.email === 'string' ? r.email : undefined,
+          email,
           displayName: typeof r.displayName === 'string' ? r.displayName : undefined,
           name: typeof r.name === 'string' ? r.name : undefined,
         },
-        options?.memberLabelsById?.[personUid],
+        resolvedLabel,
       ),
+      email,
       kind,
       role,
-      topSkills: skillListFromTotals(r.totals),
+      topSkills: skillListFromValue(r.skills ?? totals?.skills),
       activeProjects: projectsMap[personUid] ?? activeProjectList(r.activeProjects),
-      events:
-        typeof (r.totals as { events?: number } | undefined)?.events === 'number'
-          ? (r.totals as { events: number }).events
-          : undefined,
-      sessions:
-        typeof (r.totals as { distinctSessions?: number } | undefined)?.distinctSessions ===
-        'number'
-          ? (r.totals as { distinctSessions: number }).distinctSessions
-          : undefined,
+      events: finiteNumber(r.events ?? totals?.events),
+      sessions: finiteNumber(r.distinctSessions ?? totals?.distinctSessions),
     };
     if (kind === 'agent') agents.push(member);
     else humans.push(member);

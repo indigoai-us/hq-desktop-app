@@ -103,7 +103,7 @@ describe('US-002: Floating widget window (wordmark, translucent, appearance-reac
   it('Given macOS switches between light and dark appearance, when the system appearance changes, then the wordmark color updates without restart', () => {
     // prefers-color-scheme drives --wm-fg (no screen-recording APIs)
     expect(widgetSource).toMatch(/@media\s*\(\s*prefers-color-scheme:\s*dark\s*\)/);
-    expect(widgetSource).toMatch(/--wm-fg:\s*#1d1d1f/);
+    expect(widgetSource).toMatch(/--wm-fg:\s*#1d1d1d/);
     expect(widgetSource).toMatch(
       /@media\s*\(\s*prefers-color-scheme:\s*dark\s*\)[\s\S]*?--wm-fg:\s*#fff/,
     );

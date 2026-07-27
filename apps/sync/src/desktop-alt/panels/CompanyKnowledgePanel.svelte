@@ -171,7 +171,7 @@
     min-width: 0;
     min-height: 0;
     height: 100%;
-    border: 1px solid var(--v4-hairline);
+    border: 0;
     border-radius: 0;
     background: transparent;
     overflow: hidden;
@@ -219,7 +219,7 @@
   }
 
   .knowledge-search:focus-visible {
-    outline: 2px solid var(--v4-unread, var(--blue, #0a6fd6));
+    outline: 2px solid var(--v4-focus-ring, var(--v4-text-1));
     outline-offset: 1px;
   }
 
@@ -285,7 +285,7 @@
   }
 
   .knowledge-detail-back:focus-visible {
-    outline: 2px solid var(--v4-unread, var(--blue, #0a6fd6));
+    outline: 2px solid var(--v4-focus-ring, var(--v4-text-1));
     outline-offset: 2px;
   }
 
@@ -362,7 +362,7 @@
     .knowledge-workspace,
     .knowledge-tree-pane,
     .knowledge-preview-pane {
-      background: var(--v4-ground, #f7f8fa);
+      background: var(--v4-ground, #f2f2f2);
     }
 
     .knowledge-search {

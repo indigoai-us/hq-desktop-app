@@ -128,6 +128,35 @@ describe('normalizeCompanyTeamTelemetry', () => {
     expect(view.humans[0].displayName).toBe('ada@example.com');
     expect(view.humans[0].displayName).not.toContain('prs_');
   });
+
+  it('normalizes the production company telemetry member shape', () => {
+    const view = normalizeCompanyTeamTelemetry(
+      {
+        members: [
+          {
+            personUid: 'prs_ada',
+            skills: { plan: 5, deploy: '3', ignored: 'not-a-number' },
+            events: 20,
+            distinctSessions: '4',
+          },
+        ],
+      },
+      {
+        memberLabelsById: {
+          prs_ada: { email: 'ada@example.com', displayName: 'Ada Lovelace' },
+        },
+      },
+    );
+
+    expect(view.humans[0].displayName).toBe('Ada Lovelace');
+    expect(view.humans[0].email).toBe('ada@example.com');
+    expect(view.humans[0].sessions).toBe(4);
+    expect(view.humans[0].events).toBe(20);
+    expect(view.humans[0].topSkills).toEqual([
+      { skill: 'plan', count: 5 },
+      { skill: 'deploy', count: 3 },
+    ]);
+  });
 });
 
 describe('teamTelemetryErrorMessage', () => {

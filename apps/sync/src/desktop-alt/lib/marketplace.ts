@@ -114,9 +114,10 @@ export async function loadMarketplaceListings(
   query?: string,
 ): Promise<MarketplaceListing[]> {
   const trimmed = query?.trim();
-  return invoke<MarketplaceListing[]>('list_marketplace_listings', {
+  const response = await invoke<unknown>('list_marketplace_listings', {
     query: trimmed ? trimmed : null,
   });
+  return Array.isArray(response) ? (response as MarketplaceListing[]) : [];
 }
 
 /** Fetch one listing's public detail (incl. the presigned download URL). */
@@ -364,7 +365,8 @@ export type ModerationDecision = 'approve' | 'reject';
  * admin gate (`isAdminGate`) is UX only — this is not the authorization boundary.
  */
 export async function loadModerationQueue(): Promise<ModerationQueueItem[]> {
-  return invoke<ModerationQueueItem[]>('list_moderation_queue');
+  const queue = await invoke<unknown>('list_moderation_queue');
+  return Array.isArray(queue) ? (queue as ModerationQueueItem[]) : [];
 }
 
 /**
@@ -669,7 +671,8 @@ export type ApplicationDecision = 'approve' | 'deny';
  * admin gate (`isAdminGate`) is UX only — this is not the authorization boundary.
  */
 export async function loadCreatorApplications(): Promise<CreatorApplication[]> {
-  return invoke<CreatorApplication[]>('list_creator_applications');
+  const applications = await invoke<unknown>('list_creator_applications');
+  return Array.isArray(applications) ? (applications as CreatorApplication[]) : [];
 }
 
 /**

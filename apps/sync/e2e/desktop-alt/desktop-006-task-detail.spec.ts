@@ -172,24 +172,41 @@ describe('DESKTOP-006: stable task detail', () => {
     expect(detail).toContain('position: sticky');
   });
 
-  it('uses a naked detail canvas with hairline sections; rounded only for controls/selection/live', () => {
+  it('uses a naked detail canvas with hairline sections and square open selection rows', () => {
     expect(panel).toContain('background: transparent');
     expect(panel).toContain('border-top: 1px solid var(--v4-hairline)');
     expect(panel).toContain('.live-monitor');
-    expect(panel).toContain('border-radius: 6px');
+    expect(panel).toMatch(
+      /\.live-monitor\s*\{[\s\S]*?border-top:\s*1px solid var\(--v4-rowline\);[\s\S]*?border-radius:\s*0;[\s\S]*?background:\s*transparent;/,
+    );
+    expect(panel).not.toMatch(
+      /\.live-monitor\s*\{[\s\S]*?border-left:\s*[^;]*(?:--v4-ok|--v4-warn|--v4-error)/,
+    );
     expect(panel).toContain('border-radius: var(--v4-radius-button)');
-    // Selection rounding lives on the rail row, not section cards.
-    expect(detail).toContain('.task-rail-row');
-    expect(detail).toMatch(/\.task-rail-row\s*\{[\s\S]*?border-radius:\s*6px;/);
+    expect(detail).toMatch(
+      /\.task-rail-row\s*\{[\s\S]*?border:\s*0;[\s\S]*?border-radius:\s*0;[\s\S]*?background:\s*transparent;/,
+    );
+  });
+
+  it('renders task status as an open underline selector, never a framed segmented track', () => {
+    expect(panel).toMatch(
+      /\.status-control\s*\{[\s\S]*?padding:\s*0;[\s\S]*?border:\s*0;[\s\S]*?border-radius:\s*0;[\s\S]*?background:\s*transparent;/,
+    );
+    expect(panel).toMatch(
+      /\.status-control button\s*\{[\s\S]*?border-bottom:\s*1px solid transparent;[\s\S]*?border-radius:\s*0;/,
+    );
+    expect(panel).toMatch(
+      /\.status-control button\.active\s*\{[\s\S]*?border-bottom-color:\s*var\(--v4-text-2\);[\s\S]*?background:\s*transparent;/,
+    );
   });
 
   it('uses five type roles and 3px title/meta slots; preserves reduced motion/transparency', () => {
     expect(V4_TYPE_SCALE).toEqual({
-      metadata: 10,
-      secondary: 11,
-      body: 12,
+      metadata: 13,
+      secondary: 13,
+      body: 14,
       section: 14,
-      detail: 18,
+      detail: 14,
     });
     expect(V4_ROW_STACK_GAP_PX).toBe(3);
     expect(panel).toContain('--type-detail');

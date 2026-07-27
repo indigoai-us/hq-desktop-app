@@ -67,10 +67,13 @@ describe('desktop-alt command palette coverage', () => {
 
   it('surfaces a transient toast for action feedback (no silent clipboard fallback)', () => {
     expect(desktopApp).toContain('function flashToast');
-    expect(desktopApp).toContain('result.ok ?');
+    expect(desktopApp).toContain("result.outcome === 'opened'");
+    expect(desktopApp).toContain("result.outcome === 'copied' ? 'neutral' : 'error'");
     expect(desktopApp).toContain('class={`action-toast ${actionToast.tone}`}');
-    // Status carried by a dot using the V4 status tokens (green ok / amber warn).
+    // Routine clipboard fallback stays neutral; amber is retained only for
+    // the separate safety-warning path.
     expect(desktopApp).toContain('var(--v4-ok)');
+    expect(desktopApp).toContain('background: var(--v4-idle)');
     expect(desktopApp).toContain('var(--v4-warn)');
   });
 

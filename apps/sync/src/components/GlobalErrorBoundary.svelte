@@ -125,8 +125,8 @@
     display: grid;
     place-items: center;
     padding: 24px;
-    background: #09090b;
-    color: #fafafa;
+    background: var(--page-bg);
+    color: var(--c-text);
     font-family: var(--font-sans, ui-sans-serif, system-ui, sans-serif);
   }
 
@@ -141,16 +141,18 @@
     display: flex;
     flex-direction: column;
     gap: 18px;
-    border: 1px solid rgba(255, 255, 255, 0.12);
-    border-radius: 12px;
-    background: rgba(255, 255, 255, 0.06);
-    padding: 22px;
-    box-shadow: 0 24px 70px rgba(0, 0, 0, 0.42);
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    padding: 0;
+    box-shadow: none;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
   }
 
   h1 {
     margin: 0;
-    color: #ffffff;
+    color: var(--c-text);
     font-size: 24px;
     font-weight: 600;
     line-height: 32px;
@@ -159,21 +161,22 @@
 
   p {
     margin: 6px 0 0;
-    color: #d4d4d8;
+    color: var(--c-muted);
     font-size: 14px;
     line-height: 20px;
   }
 
   .error-detail {
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 8px;
-    background: rgba(0, 0, 0, 0.26);
-    padding: 10px 12px;
+    border: 0;
+    border-top: 1px solid var(--c-divider);
+    border-radius: 0;
+    background: transparent;
+    padding: 10px 0 0;
   }
 
   .error-detail span {
     display: block;
-    color: #a1a1aa;
+    color: var(--c-muted);
     font-size: 12px;
     line-height: 16px;
   }
@@ -181,7 +184,7 @@
   .error-detail p {
     margin-top: 4px;
     overflow-wrap: anywhere;
-    color: #f4f4f5;
+    color: var(--c-text);
   }
 
   .error-detail .path {
@@ -206,9 +209,9 @@
   button {
     appearance: none;
     border: 0;
-    border-radius: 8px;
-    background: rgba(255, 255, 255, 0.12);
-    color: #f4f4f5;
+    border-radius: var(--radius-button, 6px);
+    background: var(--c-btn2-bg);
+    color: var(--c-btn2-fg);
     cursor: pointer;
     font: inherit;
     font-size: 14px;
@@ -217,8 +220,8 @@
   }
 
   button.primary {
-    background: #ffffff;
-    color: #09090b;
+    background: var(--c-btn-bg);
+    color: var(--c-btn-fg);
   }
 
   button:hover {
@@ -226,7 +229,7 @@
   }
 
   button:focus-visible {
-    outline: 2px solid #ffffff;
-    outline-offset: 2px;
+    outline: 2px solid var(--c-focus-ring);
+    outline-offset: var(--c-focus-offset);
   }
 </style>

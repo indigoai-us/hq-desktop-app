@@ -119,21 +119,18 @@
 </article>
 
 <style>
-  /* Desktop "Company OS" language: a hairline-bordered card (deliberately NOT a
-     chat bubble) over a low-fill surface, one 13px body size with monospace caps
-     for the avatar + email, accent reserved for the primary Accept CTA + focus
-     ring. Decline is neutral; Block carries --red only to MARK the destructive
-     action, never decoration. No side-stripe borders. Tokens come from the
-     shared desktop alias layer (desktop-alt.css). */
+  /* Connection requests are open action rows. Identity and copy carry the
+     hierarchy; only the actual action controls are bounded. */
 
   .request-card {
     display: flex;
     flex-direction: column;
     gap: var(--space-3);
-    padding: var(--space-3);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--surface-raise);
+    padding: var(--space-3) 0;
+    border: 0;
+    border-top: 1px solid var(--border);
+    border-radius: 0;
+    background: transparent;
     font-family: var(--font-sans);
     letter-spacing: -0.006em;
   }
@@ -200,10 +197,10 @@
 
   .request-message {
     margin: 0;
-    padding: var(--space-2) var(--space-3);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--surface-panel);
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
     font-size: var(--text-base);
     line-height: 1.45;
     color: var(--muted-2);

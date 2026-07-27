@@ -51,9 +51,9 @@ export function coverForListing(listing: MarketplaceListing): string | null {
 }
 
 /**
- * A deterministic, branded fallback for a listing with no cover art: a hue
- * derived from the slug (so a given pack always gets the same placeholder color)
- * plus the pack's leading initial. Pure + DOM-free so it's unit-testable.
+ * A deterministic, branded fallback for a listing with no cover art: neutral
+ * theme-token proportions derived from the slug plus the pack's leading initial.
+ * Pure + DOM-free so it is unit-testable.
  */
 export interface CoverFallback {
   /** A CSS `linear-gradient(...)` background derived from the slug. */
@@ -62,7 +62,7 @@ export interface CoverFallback {
   monogram: string;
 }
 
-/** FNV-1a-ish string hash → stable non-negative integer (for hue selection). */
+/** FNV-1a-ish string hash → stable non-negative integer (for shade selection). */
 function hashString(value: string): number {
   let h = 2166136261;
   for (let i = 0; i < value.length; i += 1) {
@@ -75,10 +75,10 @@ function hashString(value: string): number {
 /** Build the deterministic gradient + monogram placeholder for a listing. */
 export function coverFallback(listing: MarketplaceListing): CoverFallback {
   const key = listing.slug || listing.name || '';
-  const hue = hashString(key) % 360;
-  const hue2 = (hue + 38) % 360;
-  // Warm, low-saturation duotone in the moodboard family — never garish.
-  const gradient = `linear-gradient(135deg, hsl(${hue} 42% 32%), hsl(${hue2} 38% 18%))`;
+  const hash = hashString(key);
+  const lightMix = 14 + (hash % 9);
+  const darkMix = 4 + ((hash >>> 4) % 8);
+  const gradient = `linear-gradient(135deg, color-mix(in srgb, var(--v4-text-2) ${lightMix}%, var(--v4-ground)), color-mix(in srgb, var(--v4-text-2) ${darkMix}%, var(--v4-ground)))`;
   const source = (listing.name || listing.slug || '?').trim();
   const monogram = (source.charAt(0) || '?').toUpperCase();
   return { gradient, monogram };

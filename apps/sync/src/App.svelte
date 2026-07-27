@@ -2139,7 +2139,7 @@
 
 <style>
   /* Scoped to the main popover window via `data-window` (set in main.ts)
-     so MeetingsWindow's opaque #18181b body bg can't bleed across CSS
+     so MeetingsWindow's opaque dark body background can't bleed across CSS
      bundle order and turn the transparent popover into a black box. */
   :global(html[data-window='main']),
   :global(html[data-window='main'] body) {

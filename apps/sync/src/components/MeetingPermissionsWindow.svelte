@@ -353,11 +353,12 @@
 
   .why-card {
     margin: 14px 22px 0;
-    padding: 14px 16px;
-    background: var(--c-bg);
-    border: 1px solid var(--c-field-border);
-    border-radius: var(--radius-field);
-    box-shadow: var(--c-choose-shadow);
+    padding: 14px 0 0;
+    background: transparent;
+    border: 0;
+    border-top: 1px solid var(--c-divider);
+    border-radius: 0;
+    box-shadow: none;
   }
   .why-card h2 {
     margin: 0 0 6px;
@@ -402,10 +403,11 @@
 
   .quick-prompt {
     margin: 14px 22px 0;
-    padding: 12px 14px;
-    background: var(--pop-hover);
-    border: 1px solid var(--pop-border);
-    border-radius: 8px;
+    padding: 12px 0 0;
+    background: transparent;
+    border: 0;
+    border-top: 1px solid var(--c-divider);
+    border-radius: 0;
     display: flex;
     align-items: center;
     gap: 14px;
@@ -469,9 +471,9 @@
     text-transform: uppercase;
     letter-spacing: 0.06em;
     color: var(--dot);
-    background: var(--c-divider);
-    padding: 2px 6px;
-    border-radius: 3px;
+    background: transparent;
+    padding: 0;
+    border-radius: 0;
   }
   .perm-reason {
     margin: 4px 0 0;
@@ -486,29 +488,37 @@
   }
 
   .pill {
+    --status-dot: var(--dot);
     display: inline-flex;
     align-items: center;
-    padding: 3px 8px;
-    border-radius: 999px;
+    gap: 6px;
+    padding: 0;
+    border-radius: 0;
+    background: transparent;
+    color: var(--c-muted);
     font-size: 11px;
     font-weight: 500;
     letter-spacing: 0.01em;
   }
+  .pill::before {
+    width: 5px;
+    height: 5px;
+    flex: 0 0 auto;
+    border-radius: 50%;
+    background: var(--status-dot);
+    content: '';
+  }
   .pill-ok {
-    background: color-mix(in srgb, var(--popover-success, #1f9d4d) 14%, transparent);
-    color: var(--popover-success, #1f9d4d);
+    --status-dot: var(--popover-success, #1f9d4d);
   }
   .pill-needs {
-    background: color-mix(in srgb, var(--popover-danger, #dc2626) 14%, transparent);
-    color: var(--popover-danger, #dc2626);
+    --status-dot: var(--popover-danger, #dc2626);
   }
   .pill-prompt {
-    background: color-mix(in srgb, var(--v4-warn, #b45309) 16%, transparent);
-    color: var(--v4-warn, #b45309);
+    --status-dot: var(--dot);
   }
   .pill-unknown {
-    background: var(--c-btn2-bg);
-    color: var(--c-muted);
+    --status-dot: var(--dot);
   }
 
   .open-btn {
@@ -534,8 +544,8 @@
     align-items: center;
     justify-content: space-between;
     padding: 12px 22px;
-    border-top: 1px solid var(--c-btn2-bg);
-    background: var(--c-field-bg);
+    border-top: 1px solid var(--c-divider);
+    background: transparent;
   }
   .footer-meta {
     font-size: 11.5px;

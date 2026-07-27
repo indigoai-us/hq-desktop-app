@@ -6,7 +6,9 @@ import type { Project } from '../lib/projects-model';
 import type { MeetingEvent } from '../lib/meetings-model';
 import {
   activityFileVerb,
+  getAggregateConflictCardModel,
   getConflictCardModel,
+  getDeleteRefusalCopy,
   getDriftCardModel,
   getInviteCardModel,
   getHomeCompanyRows,
@@ -133,6 +135,17 @@ describe('US-003 Home meta line', () => {
 });
 
 describe('US-003 NEEDS YOU queue', () => {
+  it('turns aggregate runner conflicts into one actionable recovery card', () => {
+    const card = getAggregateConflictCardModel(3, 'indigo');
+    expect(card.title).toBe('3 file conflicts need review');
+    expect(card.sub).toContain('indigo');
+    expect(card.sub).toContain('local files were preserved');
+    expect(card.tone).toBe('warn');
+    expect(card.actions.map((action) => [action.id, action.label])).toEqual([
+      ['resolve-conflicts', 'Resolve conflicts'],
+    ]);
+  });
+
   it('conflict card offers Keep mine / Take theirs / Compare', () => {
     const card = getConflictCardModel(conflict());
     expect(card.title).toContain('policies/slack-channel.md');
@@ -192,6 +205,11 @@ describe('US-003 NEEDS YOU queue', () => {
     expect(getNeedsYouCount([conflict()], coreState(), false, 1)).toBe(3);
   });
 
+  it('counts one aggregate recovery workflow when detailed conflict rows are unavailable', () => {
+    expect(getNeedsYouCount([], null, false, 0, true)).toBe(1);
+    expect(getNeedsYouCount([conflict()], null, false, 0, false)).toBe(1);
+  });
+
   it('invite card offers Accept for a pending company membership', () => {
     const card = getInviteCardModel({
       slug: 'sender-agency',
@@ -211,8 +229,36 @@ describe('US-003 NEEDS YOU queue', () => {
     });
     expect(card.title).toBe('Invite — join Sender Agency');
     expect(card.sub).toContain('teammate@example.com');
-    expect(card.tone).toBe('warn');
+    expect(card.tone).toBe('neutral');
     expect(card.actions.map((a) => [a.id, a.label])).toEqual([['accept-invite', 'Accept']]);
+  });
+});
+
+describe('safe-delete notices', () => {
+  it('explains peer drift without exposing internal etags', () => {
+    expect(
+      getDeleteRefusalCopy({
+        company: 'indigo',
+        path: 'knowledge/launch.md',
+        reason: 'stale-etag',
+        at: Date.now(),
+      }),
+    ).toEqual({
+      title: 'Kept on remote — knowledge/launch.md',
+      sub: 'indigo · another device changed this file, so the remote copy was preserved and pulled safely',
+    });
+  });
+
+  it('explains legacy journal protection as a safe reevaluation', () => {
+    const copy = getDeleteRefusalCopy({
+      company: 'indigo',
+      path: 'knowledge/legacy.md',
+      reason: 'legacy-no-etag',
+      at: Date.now(),
+    });
+    expect(copy.title).toBe('Kept on remote — knowledge/legacy.md');
+    expect(copy.sub).toContain('could not yet verify that the remote copy was unchanged');
+    expect(copy.sub).toContain('a later sync can reevaluate it');
   });
 });
 

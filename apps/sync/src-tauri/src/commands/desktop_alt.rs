@@ -490,7 +490,7 @@ pub enum DesktopDestination {
     /// Default landing / activity digest + Core Drift card surface.
     Home,
     Inbox,
-    /// Legacy Messages surface — resolves to Inbox on the frontend.
+    /// First-class embedded conversation workspace.
     Messages,
     Meetings,
     /// Session activity digest lives on Home (no separate top-level page).
@@ -509,7 +509,8 @@ impl DesktopDestination {
     pub fn route_str(&self) -> &str {
         match self {
             Self::Home | Self::Activity | Self::CoreDrift => "home",
-            Self::Inbox | Self::Messages => "inbox",
+            Self::Inbox => "inbox",
+            Self::Messages => "messages",
             Self::Meetings => "meetings",
             Self::Library => "library",
             Self::LibraryInstalled => "library:installed",
@@ -528,7 +529,8 @@ impl DesktopDestination {
         let normalized = trimmed.replace('/', ":");
         Some(match normalized.as_str() {
             "home" | "sync" | "activity" | "core-drift" | "drift" => Self::Home,
-            "inbox" | "messages" | "notifications" => Self::Inbox,
+            "inbox" | "notifications" => Self::Inbox,
+            "messages" => Self::Messages,
             "meetings" => Self::Meetings,
             "library" => Self::Library,
             "library:installed" => Self::LibraryInstalled,
@@ -777,7 +779,7 @@ mod window_router_tests {
         assert_eq!(DesktopDestination::Activity.route_str(), "home");
         assert_eq!(DesktopDestination::CoreDrift.route_str(), "home");
         assert_eq!(DesktopDestination::Inbox.route_str(), "inbox");
-        assert_eq!(DesktopDestination::Messages.route_str(), "inbox");
+        assert_eq!(DesktopDestination::Messages.route_str(), "messages");
         assert_eq!(DesktopDestination::Meetings.route_str(), "meetings");
         assert_eq!(DesktopDestination::Library.route_str(), "library");
         assert_eq!(
@@ -799,7 +801,7 @@ mod window_router_tests {
         );
         assert_eq!(
             DesktopDestination::from_route_name("messages"),
-            Some(DesktopDestination::Inbox)
+            Some(DesktopDestination::Messages)
         );
         assert_eq!(
             DesktopDestination::from_route_name("meetings"),

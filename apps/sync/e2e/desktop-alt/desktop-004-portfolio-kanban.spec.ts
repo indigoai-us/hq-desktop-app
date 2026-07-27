@@ -65,6 +65,7 @@ describe('DESKTOP-004: project portfolio Kanban', () => {
     expect(page).toContain('data-testid={`portfolio-column-${column}`}');
     expect(page).toContain('PORTFOLIO_COLUMNS');
     expect(page).toContain('PORTFOLIO_COLUMN_LABEL');
+    expect(page).toContain('(projectIdentity(project))');
     // Exactly the four labels appear as column titles (no Planned/Running/Archived headers).
     expect(page).not.toContain("'{PORTFOLIO_COLUMN_LABEL[column]}'");
     expect(model).toContain("export type PortfolioColumn = 'not-started' | 'in-progress' | 'active' | 'complete'");
@@ -173,13 +174,22 @@ describe('DESKTOP-004: project portfolio Kanban', () => {
     expect(page).not.toContain('linear-gradient(180deg');
   });
 
+  it('keeps all four board columns reachable at the supported 960px window width', () => {
+    expect(page).toMatch(
+      /@media \(max-width:\s*1040px\)\s*\{[\s\S]*?\.kanban-board\s*\{[\s\S]*?grid-template-columns:\s*repeat\(4,\s*minmax\(160px,\s*1fr\)\);/,
+    );
+    expect(page).toMatch(
+      /@media \(max-width:\s*1040px\)\s*\{[\s\S]*?\.kanban-column\s*\{[\s\S]*?min-width:\s*160px;/,
+    );
+  });
+
   it('uses five type roles and title/meta 3px stack', () => {
     expect(V4_TYPE_SCALE).toEqual({
-      metadata: 10,
-      secondary: 11,
-      body: 12,
+      metadata: 13,
+      secondary: 13,
+      body: 14,
       section: 14,
-      detail: 18,
+      detail: 14,
     });
     expect(V4_ROW_STACK_GAP_PX).toBe(3);
     expect(page).toContain('--type-detail');

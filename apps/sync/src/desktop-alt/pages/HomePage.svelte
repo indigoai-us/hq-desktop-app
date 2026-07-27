@@ -17,7 +17,9 @@
   import { pendingInviteWorkspaces } from '../../lib/workspaces';
   import {
     formatClock,
+    getAggregateConflictCardModel,
     getConflictCardModel,
+    getDeleteRefusalCopy,
     getDriftCardModel,
     getHomeCompanyRows,
     getHomeDigestGroups,
@@ -30,6 +32,7 @@
     getNeedsYouCount,
     type HomeConflict,
     type HomeCoreState,
+    type HomeDeleteRefusal,
   } from '../v4/home-model';
 
   /**
@@ -64,6 +67,10 @@
     /** Local hq-core version ("15.0.15"); null when unreadable. */
     hqVersion?: string | null;
     conflicts: HomeConflict[];
+    /** Aggregate fallback from sync:complete when no per-file events exist. */
+    aggregateConflictCount?: number;
+    aggregateConflictCompany?: string | null;
+    deleteRefusals?: HomeDeleteRefusal[];
     coreState?: HomeCoreState | null;
     driftDismissed?: boolean;
     driftRestoring?: boolean;
@@ -77,6 +84,7 @@
     onopencompany?: (slug: string) => void;
     onresolveconflict?: (path: string, strategy: 'keep-local' | 'keep-remote') => void;
     oncompareconflict?: (path: string) => void;
+    onresolveaggregateconflicts?: () => void;
     onrestoredrift?: () => void;
     onkeepdrift?: () => void;
     onviewdrift?: () => void;
@@ -106,6 +114,9 @@
     autoSyncOn = null,
     hqVersion = null,
     conflicts,
+    aggregateConflictCount = 0,
+    aggregateConflictCompany = null,
+    deleteRefusals = [],
     coreState = null,
     driftDismissed = false,
     driftRestoring = false,
@@ -115,6 +126,7 @@
     onopencompany,
     onresolveconflict,
     oncompareconflict,
+    onresolveaggregateconflicts,
     onrestoredrift,
     onkeepdrift,
     onviewdrift,
@@ -155,8 +167,17 @@
     coreState && !driftDismissed ? getDriftCardModel(coreState, driftRestoring) : null,
   );
   const inviteWorkspaces = $derived(pendingInviteWorkspaces(workspaces));
+  const showAggregateConflict = $derived(
+    syncState === 'conflict' && conflicts.length === 0,
+  );
   const needsYouCount = $derived(
-    getNeedsYouCount(conflicts, coreState, driftDismissed, inviteWorkspaces.length),
+    getNeedsYouCount(
+      conflicts,
+      coreState,
+      driftDismissed,
+      inviteWorkspaces.length,
+      showAggregateConflict,
+    ),
   );
   const progressModel = $derived(
     getHomeProgressModel({
@@ -179,6 +200,10 @@
   function handleConflictAction(path: string, actionId: string) {
     if (actionId === 'compare') oncompareconflict?.(path);
     else onresolveconflict?.(path, actionId as 'keep-local' | 'keep-remote');
+  }
+
+  function handleAggregateConflictAction(actionId: string) {
+    if (actionId === 'resolve-conflicts') onresolveaggregateconflicts?.();
   }
 
   function handleDriftAction(actionId: string) {
@@ -259,7 +284,7 @@
   {#if syncing}
     <div class="home-section" aria-label="Sync in progress">
       <h2 class="home-label">
-        <span class="home-label-dot ok" aria-hidden="true"></span>
+        <span class="home-label-dot idle" aria-hidden="true"></span>
         Sync in progress
       </h2>
       <div class="home-progress" data-testid="home-progress-card">
@@ -309,8 +334,8 @@
 
   {#if !syncing && !errorModel && needsYouCount > 0}
     <div class="home-section" aria-label="Needs you">
-      <h2 class="home-label warn">
-        <span class="home-label-dot warn" aria-hidden="true"></span>
+      <h2 class="home-label">
+        <span class="home-label-dot idle" aria-hidden="true"></span>
         Needs you · {needsYouCount}
       </h2>
       <div class="home-queue">
@@ -320,6 +345,15 @@
             onaction={(id) => void handleInviteAction(invite.slug, id)}
           />
         {/each}
+        {#if showAggregateConflict}
+          <NeedsYouCard
+            card={getAggregateConflictCardModel(
+              aggregateConflictCount,
+              aggregateConflictCompany,
+            )}
+            onaction={handleAggregateConflictAction}
+          />
+        {/if}
         {#each conflicts as conflict (conflict.path)}
           <NeedsYouCard
             card={getConflictCardModel(conflict)}
@@ -329,6 +363,24 @@
         {#if driftCard}
           <NeedsYouCard card={driftCard} onaction={handleDriftAction} />
         {/if}
+      </div>
+    </div>
+  {/if}
+
+  {#if deleteRefusals.length > 0}
+    <div class="home-section" aria-label="Files kept safely on remote">
+      <h2 class="home-label warn">
+        <span class="home-label-dot warn" aria-hidden="true"></span>
+        Kept safely on remote · {deleteRefusals.length}
+      </h2>
+      <div class="home-safety-notices" data-testid="home-safe-delete-notices">
+        {#each deleteRefusals as refusal (`${refusal.company}:${refusal.path}`)}
+          {@const copy = getDeleteRefusalCopy(refusal)}
+          <div class="home-safety-row">
+            <span class="home-safety-title">{copy.title}</span>
+            <span class="home-safety-sub">{copy.sub}</span>
+          </div>
+        {/each}
       </div>
     </div>
   {/if}
@@ -422,11 +474,11 @@
   /* ── Portfolio stat strip ──────────────────────────────────────────────── */
   .home-stats {
     display: flex;
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-card);
-    background: var(--v4-raised);
-    box-shadow: var(--v4-shadow-card);
-    overflow: hidden;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+    overflow: visible;
   }
 
   .home-stat {
@@ -479,11 +531,11 @@
   /* ── Portfolio table ───────────────────────────────────────────────────── */
   .home-table {
     display: grid;
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-card);
-    background: var(--v4-raised);
-    box-shadow: var(--v4-shadow-card);
-    overflow: hidden;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+    overflow: visible;
   }
 
   .home-table-head,
@@ -497,7 +549,7 @@
 
   .home-table-head {
     border-bottom: 1px solid var(--v4-hairline);
-    background: var(--v4-inset);
+    background: transparent;
     color: var(--v4-text-3);
     font-size: var(--text-base);
     font-weight: 400;
@@ -604,11 +656,11 @@
   /* ── Today agenda ──────────────────────────────────────────────────────── */
   .home-agenda {
     display: grid;
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-card);
-    background: var(--v4-raised);
-    box-shadow: var(--v4-shadow-card);
-    overflow: hidden;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+    overflow: visible;
   }
 
   .home-agenda-row {
@@ -648,11 +700,11 @@
 
   .home-empty {
     margin: 0;
-    padding: 12px 14px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-card);
-    background: var(--v4-raised);
-    box-shadow: var(--v4-shadow-card);
+    padding: 12px 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
     color: var(--v4-text-3);
     font-size: var(--text-base);
   }
@@ -705,6 +757,10 @@
     background: var(--v4-ok);
   }
 
+  .home-label-dot.idle {
+    background: var(--v4-idle);
+  }
+
   .home-label-dot.warn {
     background: var(--v4-warn);
   }
@@ -718,15 +774,47 @@
     gap: var(--v4-space-2);
   }
 
-  /* ── Syncing progress card ─────────────────────────────────────────────── */
+  .home-safety-notices {
+    display: grid;
+    border: 0;
+    border-top: 1px solid var(--v4-rowline);
+    border-radius: 0;
+    background: transparent;
+  }
+
+  .home-safety-row {
+    display: grid;
+    gap: 3px;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--v4-rowline);
+  }
+
+  .home-safety-row:last-child {
+    border-bottom: 0;
+  }
+
+  .home-safety-title {
+    color: var(--v4-text-1);
+    font-size: var(--text-base);
+    line-height: 1.35;
+  }
+
+  .home-safety-sub {
+    color: var(--v4-text-3);
+    font-size: var(--text-base);
+    line-height: 1.45;
+  }
+
+  /* ── Syncing progress row ──────────────────────────────────────────────── */
   .home-progress {
     display: grid;
     gap: 10px;
-    padding: 14px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-card);
-    background: var(--v4-raised);
-    box-shadow: var(--v4-shadow-card);
+    padding: 14px 0;
+    border: 0;
+    border-top: 1px solid var(--v4-rowline);
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
   }
 
   .home-progress-head {
@@ -865,10 +953,11 @@
     display: grid;
     gap: 4px;
     margin-top: 8px;
-    padding: 10px 12px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-field);
-    background: var(--v4-inset);
+    padding: 10px 0 0;
+    border: 0;
+    border-top: 1px solid var(--v4-hairline);
+    border-radius: 0;
+    background: transparent;
   }
 
   .home-tech-line {
@@ -883,11 +972,11 @@
   .home-skeleton {
     display: grid;
     gap: 10px;
-    padding: 14px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-card);
-    background: var(--v4-raised);
-    box-shadow: var(--v4-shadow-card);
+    padding: 14px 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
   }
 
   .home-skeleton-bar {

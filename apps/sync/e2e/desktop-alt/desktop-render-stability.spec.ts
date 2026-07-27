@@ -16,6 +16,7 @@ import { readRepoFile } from './harness';
  */
 describe('desktop render stability', () => {
   const app = readRepoFile('src/desktop-alt/DesktopApp.svelte');
+  const harness = readRepoFile('dev-harness/Harness.svelte');
 
   it('never reloads the document to refresh the workspace list', () => {
     expect(app).not.toContain('window.location.reload');
@@ -32,5 +33,49 @@ describe('desktop render stability', () => {
     expect(at).toBeGreaterThan(-1);
     const fn = app.slice(at, at + 500);
     expect(fn).toContain('import.meta.env.DEV');
+  });
+
+  it('pins the preview mount chain to the viewport so leaf panes own scrolling', () => {
+    expect(harness).toContain(":global(html[data-window='desktop-alt'] #app)");
+    expect(harness).toMatch(
+      /:global\(html\[data-window='desktop-alt'\] #app\)\s*\{[\s\S]*?height:\s*100vh;[\s\S]*?min-height:\s*0;/,
+    );
+    expect(harness).toMatch(
+      /:global\(html\[data-window='desktop-alt'\] body\)\s*\{[\s\S]*?overflow:\s*hidden;/,
+    );
+  });
+
+  it('provides deterministic conflict, sync-error, and core-drift safety states', () => {
+    const mocks = readRepoFile('dev-harness/mocks/core.ts');
+
+    expect(harness).toContain("scenario === 'conflict'");
+    expect(harness).toContain("scenario === 'sync-error'");
+    expect(harness).toContain("emit('sync:conflict'");
+    expect(harness).toContain("emit('sync:error'");
+    expect(mocks).toContain("harnessScenario() === 'drift'");
+    expect(mocks).toContain('check_core_state: () =>');
+  });
+
+  it('keeps the moderation harness populated and interactive', () => {
+    const mocks = readRepoFile('dev-harness/mocks/core.ts');
+
+    expect(mocks).toContain('list_moderation_queue: () =>');
+    expect(mocks).toContain('decide_moderation_listing:');
+    expect(mocks).toContain('list_creator_applications: () =>');
+    expect(mocks).toContain('decide_creator_application:');
+    expect(mocks).toContain('yank_marketplace_listing:');
+  });
+
+  it('mocks every always-on full-shell hydration command without fallback nulls', () => {
+    const mocks = readRepoFile('dev-harness/mocks/core.ts');
+
+    for (const command of [
+      'get_company_board',
+      'meetings_list_active_detections',
+      'meetings_list_active_recordings',
+      'desktop_alt_dev_audit_render',
+    ]) {
+      expect(mocks).toContain(`${command}:`);
+    }
   });
 });

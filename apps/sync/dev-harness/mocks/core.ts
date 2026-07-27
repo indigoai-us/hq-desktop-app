@@ -13,9 +13,74 @@ const settings = {
   instantSync: true,
   shareNotifications: true,
   dmNotifications: true,
+  cliAutoUpdate: true,
+  autoUpdate: true,
   stagingChannel: true,
   releaseChannel: null as string | null,
+  meetingDetectNotify: {
+    enabled: true,
+    platforms: ['zoom', 'meet', 'teams', 'slack', 'webex'],
+  },
+  defaultRecordingCompanyUid: 'cmp_indigo' as string | null,
+  telemetryEnabled: true,
+  widgetEnabled: true,
+  widgetDisplay: null as string | null,
 };
+
+function harnessScenario(): string | null {
+  return new URLSearchParams(window.location.search).get('scenario');
+}
+
+const HARNESS_UPDATE = {
+  version: '0.10.34',
+  body: 'Desktop surface repairs and updater recovery.',
+  date: '2026-07-26',
+};
+
+const HARNESS_DRIFT = {
+  channel: 'release',
+  targetRepo: 'indigoai-us/hq-core',
+  targetVersion: '15.0.17',
+  targetRef: 'v15.0.17',
+  localVersion: '15.0.16',
+  floorSha: 'floor-preview',
+  isEligible: true,
+  versionBehind: true,
+  driftReport: {
+    count: 2,
+    modified: [
+      {
+        path: 'core/policies/desktop-design.md',
+        size: 1840,
+        gitShaLocal: 'local-design',
+        gitShaUpstream: 'upstream-design',
+      },
+      {
+        path: 'core/workers/registry.yaml',
+        size: 3920,
+        gitShaLocal: 'local-registry',
+        gitShaUpstream: 'upstream-registry',
+      },
+    ],
+    missing: [],
+    added: [],
+    scannedAt: '2026-07-26T12:00:00.000Z',
+    hqVersion: '15.0.16',
+    targetRepo: 'indigoai-us/hq-core',
+    targetRef: 'v15.0.17',
+  },
+  unchangedCount: 842,
+  userOnlyCount: 17,
+  scannedAt: '2026-07-26T12:00:00.000Z',
+};
+
+function hasSettingsUpdates(scenario = harnessScenario()): boolean {
+  return (
+    scenario === 'settings-updates' ||
+    scenario === 'settings-errors' ||
+    scenario === 'update-available'
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Company-board fixtures (representative Indigo data) — for the ?view=company
@@ -104,6 +169,81 @@ const LIBRARY_COMPANY = {
   workers: LIBRARY_ROOT.workers.filter((worker) => worker.company === 'indigo'),
   skills: LIBRARY_ROOT.skills.filter((skill) => skill.company === 'indigo'),
 };
+
+const MARKETPLACE_LISTINGS = [
+  {
+    id: 'lst_engineering',
+    type: 'worker',
+    name: 'hq-pack-engineering',
+    slug: 'engineering',
+    version: '2.4.1',
+    author: 'indigo',
+    summary: 'A focused software-delivery team for planning, implementation, review, and release.',
+    contributes: 'Workers and skills for end-to-end product engineering.',
+    createdAt: '2026-07-18T12:00:00.000Z',
+  },
+  {
+    id: 'lst_impeccable',
+    type: 'skill',
+    name: 'hq-pack-impeccable',
+    slug: 'impeccable',
+    version: '1.3.0',
+    author: 'indigo',
+    summary: 'Systematic visual design critique and interface polish.',
+    contributes: 'Design-review and refinement skills.',
+    createdAt: '2026-07-15T12:00:00.000Z',
+  },
+  {
+    id: 'lst_gstack',
+    type: 'worker',
+    name: 'hq-pack-gstack',
+    slug: 'gstack',
+    version: '1.9.2',
+    author: 'garry',
+    summary: 'A pragmatic generalist stack for shipping web products.',
+    contributes: 'Planning, browser QA, review, and release workflows.',
+    createdAt: '2026-07-12T12:00:00.000Z',
+  },
+];
+
+let HARNESS_MODERATION_QUEUE = [
+  {
+    id: 'lst_pending_engineering',
+    type: 'worker',
+    name: 'hq-pack-engineering-next',
+    slug: 'engineering-next',
+    version: '2.5.0',
+    author: 'indigo',
+    summary: 'The next engineering pack release, awaiting reviewer approval.',
+    contributes: 'Planning, implementation, quality, and release workers.',
+    submittedAt: '2026-07-25T16:30:00.000Z',
+    files: ['package.yaml', 'workers/engineer.md', 'skills/review/SKILL.md'],
+    instructions: [
+      {
+        path: 'skills/review/SKILL.md',
+        text: 'Inspect the complete change and report every actionable issue before release.',
+      },
+      {
+        path: 'package.yaml#initialization.prompt',
+        text: 'Read the installed pack instructions and confirm the active company before use.',
+      },
+    ],
+    injectionScan: [],
+    versionLock: 'preview-v1',
+  },
+];
+
+let HARNESS_CREATOR_APPLICATIONS = [
+  {
+    applicationId: 'app_preview_creator',
+    applicantUid: 'prs_preview_creator',
+    applicantEmail: 'alex@example.com',
+    handle: 'alex-builds',
+    reason: 'I publish tested desktop workflow packs for small product teams.',
+    status: 'pending',
+    submittedAt: '2026-07-24T14:10:00.000Z',
+  },
+];
 
 function meetingFixture(
   id: string,
@@ -344,6 +484,30 @@ const handlers: Record<string, Handler> = {
     hqFolderPath: '/Users/corey/Documents/HQ',
     manifestError: null,
   }),
+  get_company_board: (args) => ({
+    inbox: [
+      {
+        id: `${String(args?.slug ?? 'company')}-board-inbox`,
+        title: 'Review desktop recovery notes',
+        subtitle: 'New signal from the latest sync',
+        labels: ['desktop'],
+        assigneeInitials: 'CE',
+        age: '12m',
+      },
+    ],
+    doing: [
+      {
+        id: `${String(args?.slug ?? 'company')}-board-doing`,
+        title: 'Deep settings verification',
+        subtitle: 'Updater, permissions, and display states',
+        labels: ['in progress'],
+        assigneeInitials: 'MC',
+        age: 'now',
+      },
+    ],
+    review: [],
+    done: [],
+  }),
   connect_workspace_to_cloud: () => null,
   get_sync_mode: (args) => ({
     syncMode: args?.companySlug === 'liverecover' ? 'shared' : 'all',
@@ -353,11 +517,54 @@ const handlers: Record<string, Handler> = {
   // set_sync_mode, which returns the resulting MembershipSyncConfig).
   set_sync_mode: (args) => ({ syncMode: args?.mode ?? 'all' }),
   get_config: () => ({ hqFolderPath: '/Users/corey/Documents/HQ', companySlug: 'indigo', configured: true }),
+  check_core_state: () =>
+    harnessScenario() === 'drift' || hasSettingsUpdates() ? HARNESS_DRIFT : null,
   // Lazy HQ file tree (?view=desktop → company Knowledge tab / Files mode).
   // Serves a small knowledge subtree for any company so the inline
   // CompanyKnowledgePanel (US-014) is drivable in the browser harness.
   list_hq_dir: (args) => {
     const rel = String(args?.relPath ?? '');
+    if (rel === '') {
+      return [
+        { name: 'companies', path: 'companies', isDir: true, hasChildren: true },
+        { name: 'personal', path: 'personal', isDir: true, hasChildren: true },
+        { name: 'repos', path: 'repos', isDir: true, hasChildren: true },
+        { name: 'core', path: 'core', isDir: true, hasChildren: true },
+        { name: 'README.md', path: 'README.md', isDir: false, hasChildren: false },
+      ];
+    }
+    if (rel === 'companies') {
+      return [
+        { name: 'indigo', path: 'companies/indigo', isDir: true, hasChildren: true },
+        { name: 'liverecover', path: 'companies/liverecover', isDir: true, hasChildren: true },
+      ];
+    }
+    if (rel === 'personal') {
+      return [
+        { name: 'projects', path: 'personal/projects', isDir: true, hasChildren: true },
+        { name: 'notes.md', path: 'personal/notes.md', isDir: false, hasChildren: false },
+      ];
+    }
+    if (rel === 'repos') {
+      return [
+        { name: 'public', path: 'repos/public', isDir: true, hasChildren: true },
+        { name: 'private', path: 'repos/private', isDir: true, hasChildren: true },
+      ];
+    }
+    if (rel === 'core') {
+      return [
+        { name: 'docs', path: 'core/docs', isDir: true, hasChildren: true },
+        { name: 'policies', path: 'core/policies', isDir: true, hasChildren: true },
+        { name: 'VERSION', path: 'core/VERSION', isDir: false, hasChildren: false },
+      ];
+    }
+    if (/^companies\/[^/]+$/.test(rel)) {
+      return [
+        { name: 'knowledge', path: `${rel}/knowledge`, isDir: true, hasChildren: true },
+        { name: 'projects', path: `${rel}/projects`, isDir: true, hasChildren: true },
+        { name: 'policies', path: `${rel}/policies`, isDir: true, hasChildren: true },
+      ];
+    }
     if (/^companies\/[^/]+\/knowledge$/.test(rel)) {
       return [
         { name: 'guides', path: `${rel}/guides`, isDir: true, hasChildren: true },
@@ -412,6 +619,48 @@ const handlers: Record<string, Handler> = {
       body: `# ${skill.name}\n\nRepresentative harness detail for ${skill.description}`,
     };
   },
+  list_marketplace_listings: () => MARKETPLACE_LISTINGS,
+  list_moderation_queue: () => HARNESS_MODERATION_QUEUE,
+  decide_moderation_listing: (args) => {
+    const id = String(args?.id ?? '');
+    const decision = String(args?.decision ?? 'reject');
+    HARNESS_MODERATION_QUEUE = HARNESS_MODERATION_QUEUE.filter((item) => item.id !== id);
+    return {
+      id,
+      status: decision === 'approve' ? 'approved' : 'rejected',
+      note: String(args?.note ?? ''),
+    };
+  },
+  list_creator_applications: () => HARNESS_CREATOR_APPLICATIONS,
+  decide_creator_application: (args) => {
+    const applicationId = String(args?.id ?? '');
+    const decision = String(args?.decision ?? 'deny');
+    HARNESS_CREATOR_APPLICATIONS = HARNESS_CREATOR_APPLICATIONS.filter(
+      (item) => item.applicationId !== applicationId,
+    );
+    return {
+      applicationId,
+      status: decision === 'approve' ? 'approved' : 'denied',
+      reviewedBy: 'corey@getindigo.ai',
+      reviewedAt: '2026-07-26T12:00:00.000Z',
+    };
+  },
+  yank_marketplace_listing: (args) => ({
+    id: String(args?.id ?? ''),
+    status: 'yanked',
+    note: 'Already-installed users are NOT auto-removed in v1.',
+  }),
+  get_company_deployments: () => [
+    { sub: 'app', url: 'app.hq.computer', state: 'active', lastDeploy: '8m ago', size: '18.4 MB', ver: 'v0.10.33', pwd: false },
+    { sub: 'preview', url: 'preview.hq.computer', state: 'deploying', lastDeploy: 'just now', size: '18.3 MB', ver: 'v0.10.34-rc.1', pwd: true },
+    { sub: 'docs', url: 'docs.hq.computer', state: 'paused', lastDeploy: '3d ago', size: '6.8 MB', ver: 'v4.2.0', pwd: false },
+  ],
+  get_company_secrets: () => [
+    { env: 'production', key: 'DATABASE_URL', upd: '2d ago', rot: '21d' },
+    { env: 'production', key: 'SENTRY_AUTH_TOKEN', upd: '8d ago', rot: '90d' },
+    { env: 'staging', key: 'API_BASE_URL', upd: '1d ago', rot: '—' },
+  ],
+  desktop_alt_is_admin: () => true,
   get_company_summary: () => ({ board: 7, activity: { last7d: 34 }, deployments: 3, secrets: 12 }),
   // Creator per project (from the cloud board's S3 created-by). Some projects
   // intentionally omitted → they stay honestly "Unassigned" in the Lead column.
@@ -520,7 +769,16 @@ const handlers: Record<string, Handler> = {
   get_local_project_prd: (args) =>
     COMPANY_PRDS[(args?.prdPath as string) ?? ''] ?? prdFor('Project', 'Current step in progress', 1, 4),
   get_local_project_readme: () => '# Project\n\nA representative README for the preview harness.',
-  get_settings: () => ({ ...settings }),
+  get_settings: () => {
+    const scenario = harnessScenario();
+    if (scenario === 'settings-load-error') {
+      throw new Error('Preview: menubar.json could not be read');
+    }
+    return {
+      ...settings,
+      widgetDisplay: scenario === 'widget-disconnected' ? 'Studio Display' : settings.widgetDisplay,
+    };
+  },
   save_settings: (args) => {
     const prefs = (args?.prefs ?? {}) as Partial<typeof settings>;
     Object.assign(settings, prefs);
@@ -634,20 +892,111 @@ const handlers: Record<string, Handler> = {
     const bots = meetingBotFixtures();
     return ids ? bots.filter((bot) => ids.includes(bot.calendarEventId)) : bots;
   },
+  meetings_list_active_detections: () => [
+    {
+      windowId: 'preview-meeting-window',
+      detectionId: 'preview-meeting-detection',
+      platform: 'meet',
+      meetingUrl: 'https://meet.google.com/preview-audit',
+      detectedAt: '2026-07-26T14:00:00.000Z',
+      source: 'preview',
+    },
+  ],
+  meetings_list_active_recordings: () => [],
   is_indigo_user: () => true,
   available_channels: () => ['stable', 'beta', 'alpha'],
-  notification_permission_state: () => 'prompt',
+  notification_permission_state: () =>
+    harnessScenario() === 'permission-denied' ? 'denied' : 'prompt',
   notification_request_permission: () => 'granted',
+  resolve_hq_path: () => '/Users/corey/Documents/HQ',
+  detect_ai_tools: () => ({
+    claude_cli: true,
+    claude_desktop: true,
+    codex_cli: true,
+    codex_desktop: true,
+    grok_cli: false,
+    any: true,
+  }),
+  set_hq_install_path: () => null,
+  start_initial_cloud_sync: () =>
+    harnessScenario() === 'onboarding-progress'
+      ? new Promise<never>(() => {})
+      : null,
   pick_folder: () => null,
-  check_for_updates: () => null,
-  get_pending_update: () => null,
-  install_update: () => null,
+  check_for_updates: () => (hasSettingsUpdates() ? HARNESS_UPDATE : null),
+  get_pending_update: () => (hasSettingsUpdates() ? HARNESS_UPDATE : null),
+  install_update: () => {
+    if (harnessScenario() === 'settings-errors') {
+      throw new Error('Preview: app update signature verification failed');
+    }
+    return null;
+  },
+  check_hq_cli_update: () =>
+    hasSettingsUpdates() ? { local: '0.19.4', latest: '0.20.0' } : null,
+  install_hq_cli_update: () => {
+    if (harnessScenario() === 'settings-errors') {
+      throw new Error('Preview: hq CLI update failed');
+    }
+    return { local: '0.20.0', latest: '0.20.0' };
+  },
+  set_hq_cli_update_dismissed: () => null,
+  check_pack_update: () =>
+    hasSettingsUpdates()
+      ? { count: 2, names: ['hq-pack-engineering', 'hq-pack-parker'] }
+      : null,
+  update_packs: () => {
+    if (harnessScenario() === 'settings-errors') {
+      throw new Error('Preview: pack registry unavailable');
+    }
+    return null;
+  },
+  get_hq_version: () => '15.0.16',
+  install_hq_core_update: () => {
+    const scenario = harnessScenario();
+    return {
+      exit_code: scenario === 'settings-errors' ? 1 : 0,
+      log_tail:
+        scenario === 'settings-errors'
+          ? 'Preview: rescue validation failed before replacement'
+          : 'Preview: HQ Core replacement complete',
+      log_path:
+        scenario === 'settings-errors'
+          ? '/tmp/hq-rescue-preview.log'
+          : '/tmp/hq-rescue-preview-success.log',
+    };
+  },
+  run_replace_from_staging: () => {
+    const scenario = harnessScenario();
+    return {
+      exit_code: scenario === 'settings-errors' ? 1 : 0,
+      log_tail:
+        scenario === 'settings-errors'
+          ? 'Preview: staging rescue validation failed'
+          : 'Preview: staging replacement complete',
+      log_path:
+        scenario === 'settings-errors'
+          ? '/tmp/hq-staging-rescue-preview.log'
+          : '/tmp/hq-staging-rescue-preview-success.log',
+    };
+  },
+  list_displays: () =>
+    harnessScenario() === 'widget-disconnected'
+      ? [
+          { name: 'Built-in Retina Display', primary: true },
+          { name: 'Projector', primary: false },
+        ]
+      : [
+          { name: 'Built-in Retina Display', primary: true },
+          { name: 'Studio Display', primary: false },
+        ],
+  apply_widget_settings: () => null,
   start_daemon: () => null,
   stop_daemon: () => null,
   daemon_status: () => ({ running: true }),
   open_activity_log: () => null,
   open_meetings_window: () => null,
   open_drift_detail: () => null,
+  desktop_alt_dev_audit_render: () => null,
   quit_app: () => null,
   // Meeting-permissions wizard (?view=permissions) — a representative
   // not-yet-granted snapshot so the friendly "why we ask" notice is exercised.

@@ -908,17 +908,17 @@
     background: transparent;
     overflow: hidden;
     /* Stack/row appearance tokens — light default; dark overrides below. */
-    --row-bg: rgba(250, 250, 252, 0.6);
-    --row-bg-hover: rgba(250, 250, 252, 0.92);
+    --row-bg: rgba(250, 250, 250, 0.6);
+    --row-bg-hover: rgba(250, 250, 250, 0.92);
     --row-border: rgba(255, 255, 255, 0.6);
-    --row-fg: #1d1d1f;
+    --row-fg: #1d1d1d;
     --row-muted: rgba(0, 0, 0, 0.45);
-    --row-shadow: 0 8px 22px rgba(20, 22, 40, 0.16);
+    --row-shadow: 0 8px 22px rgba(0, 0, 0, 0.16);
     --row-highlight: rgba(255, 255, 255, 0.75);
     --row-hover-bg: rgba(0, 0, 0, 0.06);
     --reply-bg: rgba(0, 0, 0, 0.05);
     --reply-border: rgba(0, 0, 0, 0.14);
-    --qd-fg: #0064d6;
+    --qd-fg: #333333;
   }
 
   /* Notification stack — column of one-line rows ABOVE the wordmark. */
@@ -934,10 +934,10 @@
   /* Frosted glass shell around NotificationRow (mockup .row chrome). */
   .frost {
     width: 244px;
-    border-radius: 9px;
+    border-radius: var(--radius-popover, 8px);
     background: var(--row-bg);
-    -webkit-backdrop-filter: blur(26px) saturate(1.7);
-    backdrop-filter: blur(26px) saturate(1.7);
+    -webkit-backdrop-filter: var(--glass-filter, blur(28px) saturate(0%));
+    backdrop-filter: var(--glass-filter, blur(28px) saturate(0%));
     border: 0.5px solid var(--row-border);
     box-shadow: var(--row-shadow), inset 0 1px 0 var(--row-highlight);
     animation: widget-slide 0.4s cubic-bezier(0.34, 1.3, 0.64, 1) backwards;
@@ -947,7 +947,7 @@
     --popover-text: var(--row-fg);
     --popover-text-muted: var(--row-muted);
     --popover-action-hover: var(--row-hover-bg);
-    --popover-unread: var(--qd-fg, #0064d6);
+    --popover-unread: var(--qd-fg, #333333);
     --popover-surface: var(--reply-bg);
     --popover-divider: var(--reply-border);
   }
@@ -955,14 +955,14 @@
   /* Hover recent-notification list — single frosted panel above the mark. */
   .hover-list {
     width: 264px;
-    border-radius: 12px;
+    border-radius: var(--radius-popover, 8px);
     padding: 6px 6px 4px;
     display: flex;
     flex-direction: column;
     gap: 0;
     background: var(--row-bg);
-    -webkit-backdrop-filter: blur(30px) saturate(1.8);
-    backdrop-filter: blur(30px) saturate(1.8);
+    -webkit-backdrop-filter: var(--glass-filter, blur(28px) saturate(0%));
+    backdrop-filter: var(--glass-filter, blur(28px) saturate(0%));
     border: 0.5px solid var(--row-border);
     box-shadow: var(--row-shadow), inset 0 1px 0 var(--row-highlight);
     margin-bottom: 12px;
@@ -974,7 +974,7 @@
     --popover-text: var(--row-fg);
     --popover-text-muted: var(--row-muted);
     --popover-action-hover: var(--row-hover-bg);
-    --popover-unread: var(--qd-fg, #0064d6);
+    --popover-unread: var(--qd-fg, #333333);
     --popover-surface: var(--reply-bg);
     --popover-divider: var(--reply-border);
   }
@@ -1005,7 +1005,7 @@
     color: var(--row-muted);
     width: 28px;
     height: 28px;
-    border-radius: 7px;
+    border-radius: var(--radius-button, 6px);
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -1023,14 +1023,14 @@
   /* Wordmark right-click menu — same frost chrome as the mini inbox. */
   .ctx-menu {
     width: 200px;
-    border-radius: 12px;
+    border-radius: var(--radius-popover, 8px);
     padding: 4px;
     display: flex;
     flex-direction: column;
     gap: 1px;
     background: var(--row-bg);
-    -webkit-backdrop-filter: blur(30px) saturate(1.8);
-    backdrop-filter: blur(30px) saturate(1.8);
+    -webkit-backdrop-filter: var(--glass-filter, blur(28px) saturate(0%));
+    backdrop-filter: var(--glass-filter, blur(28px) saturate(0%));
     border: 0.5px solid var(--row-border);
     box-shadow: var(--row-shadow), inset 0 1px 0 var(--row-highlight);
     margin-bottom: 12px;
@@ -1050,7 +1050,7 @@
     font-weight: 500;
     text-align: left;
     padding: 8px 12px;
-    border-radius: 8px;
+    border-radius: var(--radius-button, 6px);
     cursor: pointer;
     line-height: 1.25;
   }
@@ -1085,7 +1085,7 @@
   .hl-row :global(.nr) {
     min-height: 28px;
     font-size: 12px;
-    border-radius: 7px;
+    border-radius: 0;
     background: transparent;
     color: var(--row-fg);
     width: 100%;
@@ -1093,9 +1093,13 @@
   }
 
   .hl-row :global(.nr:not(.nr-message):hover),
-  .hl-row :global(.nr:not(.nr-message):focus-within),
-  .hl-row :global(.nr-message.nr-expanded) {
+  .hl-row :global(.nr:not(.nr-message):focus-within) {
     background: var(--row-hover-bg);
+  }
+
+  .hl-row :global(.nr-message.nr-expanded) {
+    background: transparent;
+    box-shadow: inset 0 -1px 0 var(--row-border);
   }
 
   .hl-row :global(.nr-open),
@@ -1120,7 +1124,8 @@
   }
 
   .frost :global(.nr-message.nr-expanded) {
-    background: var(--row-bg-hover);
+    background: transparent;
+    box-shadow: inset 0 -1px 0 var(--row-border);
   }
 
   .frost :global(.nr:not(.nr-message):hover),
@@ -1172,9 +1177,9 @@
     flex-shrink: 0;
     cursor: pointer;
     /* Light default; dark overrides below. */
-    --wm-fg: #1d1d1f;
+    --wm-fg: #1d1d1d;
     --wm-shadow: drop-shadow(0 1px 4px rgba(255, 255, 255, 0.5));
-    --qd-fg: #0064d6;
+    --qd-fg: #333333;
   }
 
   .wg:hover .wm {
@@ -1203,8 +1208,8 @@
 
   @media (prefers-color-scheme: dark) {
     .wg {
-      --row-bg: rgba(30, 30, 34, 0.55);
-      --row-bg-hover: rgba(38, 38, 42, 0.85);
+      --row-bg: rgba(30, 30, 30, 0.55);
+      --row-bg-hover: rgba(38, 38, 38, 0.85);
       --row-border: rgba(255, 255, 255, 0.14);
       --row-fg: #fff;
       --row-muted: rgba(255, 255, 255, 0.48);
@@ -1213,14 +1218,57 @@
       --row-hover-bg: rgba(255, 255, 255, 0.1);
       --reply-bg: rgba(255, 255, 255, 0.08);
       --reply-border: rgba(255, 255, 255, 0.18);
-      --qd-fg: #6cb2ff;
+      --qd-fg: #d4d4d4;
     }
 
     .wm {
       --wm-fg: #fff;
       --wm-shadow: drop-shadow(0 1px 6px rgba(0, 0, 0, 0.45));
-      --qd-fg: #6cb2ff;
+      --qd-fg: #d4d4d4;
     }
+  }
+
+  /* The design harness can force either theme independently of the host OS.
+     Override the whole material stack, not only the idle mark, so populated
+     notification, mini-inbox, reply, and context-menu states stay coherent. */
+  :global(html[data-force-theme='light']) .wg {
+    --row-bg: rgba(250, 250, 250, 0.6);
+    --row-bg-hover: rgba(250, 250, 250, 0.92);
+    --row-border: rgba(255, 255, 255, 0.6);
+    --row-fg: #1d1d1d;
+    --row-muted: rgba(0, 0, 0, 0.45);
+    --row-shadow: 0 8px 22px rgba(0, 0, 0, 0.16);
+    --row-highlight: rgba(255, 255, 255, 0.75);
+    --row-hover-bg: rgba(0, 0, 0, 0.06);
+    --reply-bg: rgba(0, 0, 0, 0.05);
+    --reply-border: rgba(0, 0, 0, 0.14);
+    --qd-fg: #333333;
+  }
+
+  :global(html[data-force-theme='dark']) .wg {
+    --row-bg: rgba(30, 30, 30, 0.55);
+    --row-bg-hover: rgba(38, 38, 38, 0.85);
+    --row-border: rgba(255, 255, 255, 0.14);
+    --row-fg: #fff;
+    --row-muted: rgba(255, 255, 255, 0.48);
+    --row-shadow: 0 8px 22px rgba(0, 0, 0, 0.32);
+    --row-highlight: rgba(255, 255, 255, 0.16);
+    --row-hover-bg: rgba(255, 255, 255, 0.1);
+    --reply-bg: rgba(255, 255, 255, 0.08);
+    --reply-border: rgba(255, 255, 255, 0.18);
+    --qd-fg: #d4d4d4;
+  }
+
+  :global(html[data-force-theme='light']) .wm {
+    --wm-fg: #1d1d1d;
+    --wm-shadow: drop-shadow(0 1px 4px rgba(255, 255, 255, 0.5));
+    --qd-fg: #333333;
+  }
+
+  :global(html[data-force-theme='dark']) .wm {
+    --wm-fg: #fff;
+    --wm-shadow: drop-shadow(0 1px 6px rgba(0, 0, 0, 0.45));
+    --qd-fg: #d4d4d4;
   }
 
   @media (prefers-reduced-motion: reduce) {

@@ -17,9 +17,9 @@ The desktop-alt UX is the GA desktop surface for signed-in HQ Sync users. It add
 | Tauri capability | `src-tauri/capabilities/desktop-alt.json` |
 | Rust command module | `src-tauri/src/commands/desktop_alt.rs` |
 | Vite entry | `desktop-alt.html`, `src/desktop-alt/main.ts`, `vite.config.ts` `desktopAlt` input |
-| Shell + route state | `src/desktop-alt/DesktopApp.svelte`, `src/desktop-alt/route.ts`, `src/desktop-alt/v4/V4Sidebar.svelte`, `src/desktop-alt/v4/V4SecondarySidebar.svelte`, `src/desktop-alt/v4/V4TitleBar.svelte`, `src/desktop-alt/DesktopStatusBar.svelte` |
-| Pages | `src/desktop-alt/pages/HomePage.svelte`, `CompanyPage.svelte`, `CompanyGoalsPage.svelte`, `CompanyProjectsPage.svelte`, `CompanyTasksPage.svelte` (legacy, not in company nav), `InboxPage.svelte`, `MeetingsPage.svelte`, `LibraryPage.svelte`, `SettingsPage.svelte`, `ConflictResolutionPage.svelte`, `DriftDetailPage.svelte`, `ProjectDetailView.svelte` |
-| Company secondary nav | Overview · Goals · Projects · Skills · Workers · Knowledge (→ files mode) · Team · Activity · Deployments · Secrets |
+| Shell + route state | `src/desktop-alt/DesktopApp.svelte`, `src/desktop-alt/route.ts`, `src/desktop-alt/v4/V4Sidebar.svelte`, `src/desktop-alt/v4/V4SecondarySidebar.svelte`, `src/desktop-alt/v4/V4TitleBar.svelte` |
+| Pages | `src/desktop-alt/pages/HomePage.svelte`, `MissionControlPage.svelte`, `CompanyPage.svelte`, `CompanyGoalsPage.svelte`, `CompanyProjectsPage.svelte`, `InboxPage.svelte`, `MeetingsPage.svelte`, `MarketplacePage.svelte`, `LibraryPage.svelte`, `SettingsPage.svelte`, `ProjectDetailView.svelte` |
+| Company secondary nav | Overview · Goals · Projects · Skills · Workers · Knowledge (→ files mode) · Team · Activity · Deployments · Secrets · Settings |
 | Company panels | `src/desktop-alt/panels/CompanyBoardPanel.svelte`, `ActivityPanel.svelte`, `DeploymentsPanel.svelte`, `SecretsPanel.svelte`, `CompanyLibraryPanel.svelte` (Skills/Workers), `TeamPanel.svelte` |
 | Global command surface | `src/desktop-alt/components/CommandPalette.svelte`, opened by command-K and grouped into actions/navigation rows |
 
@@ -53,7 +53,10 @@ Company slugs are normalized in Rust, resolved through `list_syncable_workspaces
 
 - **Liquid Glass window (0.8.1-beta.1).** The desktop window is built `transparent(true)`; `src-tauri/src/glass.rs::apply_liquid_glass_window` inserts a native `NSGlassEffectView` at the very back of the content view on macOS 26 (Tahoe) so the window reads as real Liquid Glass over the desktop. On older macOS the class is resolved at runtime as absent and the code falls back to the same `NSVisualEffectView` `UnderWindowBackground` vibrancy the menubar popover uses, so every supported OS still gets a translucent window. AppKit is main-thread-only, so this runs via `run_on_main_thread`. The native material backs the *window*; in-window panels get matched translucent styling in CSS (the material cannot refract the webview's own DOM).
 - **Light-mode adaptivity (0.8.2-beta.1).** The V4 surface follows the OS appearance. `src/desktop-alt/v4/tokens.css` carries a light token set under `prefers-color-scheme: light`, and `src/desktop-alt/styles/desktop-alt.css` carries matching light glass/surface overrides. Previously the desktop window was dark-only.
+- **Updater surfaces.** The titlebar version control opens `VersionPopout.svelte`, which reads `get_pending_update` and can run `install_update`; **All update settings** opens the `updates` section of `SettingsPage.svelte`, where the same restart/install action is available after a successful check.
 - **HQ console links.** Every external link the desktop window opens into the HQ web console is centralized in `src/desktop-alt/lib/hq-console.ts` (base `https://hq.computer`) — Company Settings (the console company page), invite, integrations, and creator profiles. Links open in the system browser via `@tauri-apps/plugin-shell`.
+
+The accepted route and UI contract is recorded in `docs/design/v4/IMPLEMENTATION-NOTES.md`. `docs/design/v4/SPEC.md` is retained as a historical design input rather than the current screen inventory.
 
 ## Tests
 

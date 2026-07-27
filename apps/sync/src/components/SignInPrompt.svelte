@@ -291,8 +291,8 @@
     box-sizing: border-box;
     padding: 1rem;
     background: var(--pop-bg);
-    backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
-    -webkit-backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
+    backdrop-filter: var(--glass-filter, blur(28px) saturate(0%));
+    -webkit-backdrop-filter: var(--glass-filter, blur(28px) saturate(0%));
     color: var(--pop-text);
     font-family: var(--font-sans);
     overflow: hidden;

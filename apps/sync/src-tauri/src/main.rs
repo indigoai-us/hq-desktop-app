@@ -522,6 +522,7 @@ fn main() {
             commands::messages::open_messages_window,
             commands::messages::messages_window_ready,
             commands::messages::take_pending_messages_target,
+            commands::messages::mark_messages_viewed,
             commands::messages::list_contacts,
             commands::messages::list_company_members,
             commands::messages::get_unread_summary,

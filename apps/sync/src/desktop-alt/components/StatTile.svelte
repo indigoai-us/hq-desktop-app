@@ -29,9 +29,9 @@
     gap: var(--space-1);
     min-width: 0;
     padding: var(--space-3) var(--space-3) calc(var(--space-3) - 1px);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: var(--row-active);
+    border: 0;
+    border-radius: 0;
+    background: transparent;
   }
 
   .stat-label,
@@ -104,4 +104,5 @@
       animation: none;
     }
   }
+
 </style>

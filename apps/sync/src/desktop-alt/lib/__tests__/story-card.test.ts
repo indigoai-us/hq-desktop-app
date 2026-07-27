@@ -86,10 +86,11 @@ describe('US-005 LabelChip color contract (US-004 palette)', () => {
     expect(labelColor('frontend')).toEqual(labelColor('frontend'));
   });
 
-  it('uses translucent monochrome hsla tones, not indigo/Tailwind classes', () => {
+  it('uses theme-aware neutral tokens, not generated hues or Tailwind classes', () => {
     const color = labelColor('security');
-    expect(color.background).toMatch(/^hsla\(/);
-    expect(color.foreground).toMatch(/^hsla\(/);
+    expect(color.background).toContain('var(--v4-text-2)');
+    expect(color.foreground).toBe('var(--v4-text-1)');
+    expect(`${color.background}${color.foreground}`).not.toMatch(/hsla?\(/);
   });
 });
 

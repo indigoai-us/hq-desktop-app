@@ -760,6 +760,7 @@ pub fn read_crm_projection(
 /// Inputs (HQ-relative, validated):
 ///   * `board_path` — HQ-folder-relative path ending in `board.json`.
 ///   * `project_id` — the `id` of the project entry to mutate.
+///   * `prd_path`    — the linked PRD path that disambiguates legacy duplicate IDs.
 ///   * `status`     — the new status string (an editable-status value).
 ///
 /// Safety/correctness (AC #1, #2):
@@ -771,18 +772,21 @@ pub fn read_crm_projection(
 ///     sibling temp file, then rename over the original. A parse/serialize
 ///     failure aborts before any rename, so a bad write can never corrupt the
 ///     file in place.
+///
 /// Pure body for `set_local_project_status` — explicit HQ root for testing.
 pub fn write_project_status(
     hq_root: &Path,
     board_path: &str,
     project_id: &str,
+    prd_path: Option<&str>,
     status: &str,
 ) -> Result<(), String> {
     let rel = board_path.trim();
     if rel.is_empty() {
         return Err("board_path is required".to_string());
     }
-    if project_id.trim().is_empty() {
+    let project_id = project_id.trim();
+    if project_id.is_empty() {
         return Err("project_id is required".to_string());
     }
     let abs = hq_root.join(rel);
@@ -805,10 +809,35 @@ pub fn write_project_status(
         .and_then(|p| p.as_array_mut())
         .ok_or_else(|| "board.json has no `projects` array".to_string())?;
 
+    let expected_prd_path = normalize_project_identity_path(prd_path);
+    let matching_indices: Vec<usize> = projects
+        .iter()
+        .enumerate()
+        .filter(|(_, project)| {
+            project.get("id").and_then(|value| value.as_str()) == Some(project_id)
+                && normalize_project_identity_path(
+                    project.get("prd_path").and_then(|value| value.as_str()),
+                ) == expected_prd_path
+        })
+        .map(|(index, _)| index)
+        .collect();
+
+    let target_index = match matching_indices.as_slice() {
+        [index] => *index,
+        [] => {
+            return Err(format!(
+                "no project with id {project_id:?} and prd_path {expected_prd_path:?} in board.json"
+            ))
+        }
+        _ => {
+            return Err(format!(
+                "multiple projects with id {project_id:?} and prd_path {expected_prd_path:?} in board.json"
+            ))
+        }
+    };
     let target = projects
-        .iter_mut()
-        .find(|p| p.get("id").and_then(|v| v.as_str()) == Some(project_id))
-        .ok_or_else(|| format!("no project with id {project_id:?} in board.json"))?;
+        .get_mut(target_index)
+        .ok_or_else(|| "matched project index disappeared".to_string())?;
 
     let obj = target
         .as_object_mut()
@@ -823,6 +852,26 @@ pub fn write_project_status(
     );
 
     atomic_write_json(&abs, &tree)
+}
+
+/// Match the frontend's project identity normalization: trim whitespace,
+/// normalize separators, collapse duplicate slashes, and treat an empty path
+/// as the explicit board-only (`None`) discriminator.
+fn normalize_project_identity_path(prd_path: Option<&str>) -> Option<String> {
+    let raw = prd_path?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let normalized = normalize_rel(raw)
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("/");
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized)
+    }
 }
 
 /// Persist a story's `passes` toggle back to the project's `prd.json` (optional
@@ -1631,8 +1680,14 @@ mod tests {
         assert_eq!(p0.status, "active");
 
         // Mutate → reread → assert the new status persisted.
-        write_project_status(&root, board_rel, "in-proj-001", "completed")
-            .expect("status write succeeds");
+        write_project_status(
+            &root,
+            board_rel,
+            "in-proj-001",
+            Some("companies/indigo/projects/flagship/prd.json"),
+            "completed",
+        )
+        .expect("status write succeeds");
 
         let after_bytes = fs::read(root.join(board_rel)).unwrap();
         let after: serde_json::Value =
@@ -1670,7 +1725,14 @@ mod tests {
         // Path traversal / absolute escape is rejected.
         for evil in ["../../../etc/board.json", "/etc/board.json"] {
             assert!(
-                write_project_status(&root, evil, "in-proj-001", "completed").is_err(),
+                write_project_status(
+                    &root,
+                    evil,
+                    "in-proj-001",
+                    Some("companies/indigo/projects/flagship/prd.json"),
+                    "completed",
+                )
+                .is_err(),
                 "traversal {evil:?} must be rejected"
             );
         }
@@ -1680,6 +1742,7 @@ mod tests {
                 &root,
                 "companies/indigo/projects/flagship/prd.json",
                 "in-proj-001",
+                Some("companies/indigo/projects/flagship/prd.json"),
                 "completed",
             )
             .is_err(),
@@ -1688,12 +1751,62 @@ mod tests {
         // An unknown project id is rejected (and the file is left untouched).
         let before = fs::read(root.join("companies/indigo/board.json")).unwrap();
         assert!(
-            write_project_status(&root, "companies/indigo/board.json", "nope-id", "completed")
-                .is_err(),
+            write_project_status(
+                &root,
+                "companies/indigo/board.json",
+                "nope-id",
+                Some("companies/indigo/projects/flagship/prd.json"),
+                "completed",
+            )
+            .is_err(),
             "unknown project id must Err"
         );
         let after = fs::read(root.join("companies/indigo/board.json")).unwrap();
         assert_eq!(before, after, "rejected write must not mutate the file");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn write_project_status_uses_prd_path_to_disambiguate_duplicate_ids() {
+        let root = make_fixture_tree();
+        let board_rel = "companies/indigo/board.json";
+        fs::write(
+            root.join(board_rel),
+            r#"{
+                "company": "indigo",
+                "projects": [
+                    {
+                        "id": "duplicate-id",
+                        "title": "First",
+                        "status": "active",
+                        "prd_path": "companies/indigo/projects/first/prd.json"
+                    },
+                    {
+                        "id": "duplicate-id",
+                        "title": "Second",
+                        "status": "planned",
+                        "prd_path": "companies/indigo/projects/second/prd.json"
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        write_project_status(
+            &root,
+            board_rel,
+            "duplicate-id",
+            Some(r#".\companies\indigo//projects/second/prd.json"#),
+            "completed",
+        )
+        .expect("the PRD path selects the second duplicate");
+
+        let after: serde_json::Value =
+            serde_json::from_slice(&fs::read(root.join(board_rel)).unwrap()).unwrap();
+        let projects = after["projects"].as_array().unwrap();
+        assert_eq!(projects[0]["status"], "active");
+        assert_eq!(projects[1]["status"], "completed");
 
         let _ = fs::remove_dir_all(&root);
     }

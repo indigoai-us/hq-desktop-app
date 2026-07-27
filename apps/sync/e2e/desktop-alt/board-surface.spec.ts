@@ -156,7 +156,7 @@ describe('desktop-alt Board surface (US-007)', () => {
     // home / mission-control / moderation surfaces, and per-company routes
     // — see route.ts).
     expect(route).toContain(
-      "{ kind: 'home' | 'mission-control' | 'inbox' | 'meetings' | 'marketplace' | 'moderation' }",
+      "{ kind: 'home' | 'mission-control' | 'inbox' | 'messages' | 'meetings' | 'marketplace' | 'moderation' }",
     );
     expect(route).not.toContain("'board'");
     expect(desktopApp).not.toContain("import BoardPage from './pages/BoardPage.svelte'");

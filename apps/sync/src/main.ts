@@ -9,6 +9,7 @@ import MeetingPermissionsWindow from './components/MeetingPermissionsWindow.svel
 import DmDetail from './components/DmDetail.svelte';
 import BannerNotification from './components/BannerNotification.svelte';
 import Widget from './components/Widget.svelte';
+import MessagesShell from './components/messaging/MessagesShell.svelte';
 import GlobalErrorBoundary from './components/GlobalErrorBoundary.svelte';
 import { mount } from 'svelte';
 import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -49,6 +50,8 @@ if (windowLabel === 'meetings-window') {
   Component = BannerNotification as unknown as typeof App;
 } else if (windowLabel === 'widget') {
   Component = Widget as unknown as typeof App;
+} else if (windowLabel === 'messages') {
+  Component = MessagesShell as unknown as typeof App;
 } else {
   Component = App;
 }

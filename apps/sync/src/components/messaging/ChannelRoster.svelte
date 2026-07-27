@@ -222,8 +222,6 @@
     justify-content: center;
     padding: 3.5rem 1.5rem 1.5rem;
     background: color-mix(in srgb, var(--pop-bg) 48%, transparent);
-    backdrop-filter: blur(8px) saturate(1.2);
-    -webkit-backdrop-filter: blur(8px) saturate(1.2);
   }
 
   .roster-sheet {
@@ -237,8 +235,8 @@
     border-radius: var(--radius-popover);
     border: 1px solid var(--pop-border);
     background: var(--pop-bg);
-    backdrop-filter: var(--popover-blur, blur(32px) saturate(1.7));
-    -webkit-backdrop-filter: var(--popover-blur, blur(32px) saturate(1.7));
+    backdrop-filter: var(--glass-filter, blur(28px) saturate(0%));
+    -webkit-backdrop-filter: var(--glass-filter, blur(28px) saturate(0%));
     box-shadow: var(--pop-shadow), inset 0 1px 0 var(--pop-highlight);
     color: var(--pop-text);
     overflow: hidden;
@@ -294,10 +292,11 @@
     display: flex;
     flex-direction: column;
     gap: 0.5rem;
-    padding: 0.625rem;
-    border: 1px solid var(--pop-border);
-    border-radius: 10px;
-    background: var(--pop-hover);
+    padding: 0.625rem 0;
+    border: 0;
+    border-top: 1px solid var(--pop-border);
+    border-radius: 0;
+    background: transparent;
   }
 
   .invite-actions {
@@ -339,7 +338,7 @@
     align-items: center;
     gap: 0.5rem;
     padding: 0.4375rem 0.5rem;
-    border-radius: 8px;
+    border-radius: 0;
   }
 
   .member-row:hover {
@@ -371,7 +370,7 @@
   }
 
   .member-role.owner {
-    color: var(--amber, var(--v4-warn));
+    color: var(--pop-muted);
   }
 
   .member-remove {

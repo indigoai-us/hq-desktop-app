@@ -10,12 +10,14 @@ import type { SyncState } from '../lib/sync-model';
  */
 
 /**
- * The primary-nav destinations, in display order. Inbox is the single combined
- * messages + notifications destination (US-008). Home, Mission Control, and the
- * Companies page are palette-only / company-row surfaces — not sidebar nav items.
+ * The primary-nav destinations, in display order. Inbox owns notification
+ * chronology; Messages owns complete conversations, channels, requests, and
+ * shares. Home, Mission Control, and the Companies page are palette-only /
+ * company-row surfaces — not sidebar nav items.
  */
 export type V4NavId =
   | 'inbox'
+  | 'messages'
   | 'meetings'
   | 'marketplace'
   | 'library'
@@ -38,6 +40,8 @@ export type V4CompanyPrimaryId =
   | 'overview'
   | 'goals'
   | 'projects'
+  | 'skills'
+  | 'workers'
   | 'knowledge'
   | 'team'
   | 'more';
@@ -49,6 +53,8 @@ export const V4_COMPANY_PRIMARY_ITEMS: ReadonlyArray<{
   { id: 'overview', label: 'Overview' },
   { id: 'goals', label: 'Goals' },
   { id: 'projects', label: 'Projects' },
+  { id: 'skills', label: 'Skills' },
+  { id: 'workers', label: 'Workers' },
   { id: 'knowledge', label: 'Knowledge' },
   { id: 'team', label: 'Team' },
   { id: 'more', label: 'More' },
@@ -56,6 +62,7 @@ export const V4_COMPANY_PRIMARY_ITEMS: ReadonlyArray<{
 
 export const V4_NAV_ITEMS: ReadonlyArray<{ id: V4NavId; label: string }> = [
   { id: 'inbox', label: 'Inbox' },
+  { id: 'messages', label: 'Messages' },
   { id: 'meetings', label: 'Meetings' },
   { id: 'marketplace', label: 'Marketplace' },
   { id: 'library', label: 'Library' },
@@ -74,11 +81,11 @@ export const V4_CHROME_LAYOUT = {
  * computed sizes. CSS mirrors them as `--type-*` in `tokens.css`.
  */
 export const V4_TYPE_SCALE = {
-  metadata: 10,
-  secondary: 11,
-  body: 12,
+  metadata: 13,
+  secondary: 13,
+  body: 14,
   section: 14,
-  detail: 18,
+  detail: 14,
 } as const;
 
 /** Explicit gap between primary row title and secondary metadata (grid slots). */
@@ -133,7 +140,7 @@ export interface V4SidebarModel {
 
 /**
  * Map a company route tab onto the primary sidebar child that should light.
- * Operational tabs highlight More; skills/workers have no primary child.
+ * Operational tabs highlight More; content tabs light their matching child.
  */
 export function v4CompanyPrimaryForTab(tab: string | undefined | null): V4CompanyPrimaryId | null {
   switch (tab) {
@@ -144,6 +151,8 @@ export function v4CompanyPrimaryForTab(tab: string | undefined | null): V4Compan
       return 'overview';
     case 'goals':
     case 'projects':
+    case 'skills':
+    case 'workers':
     case 'knowledge':
     case 'team':
       return tab;
@@ -167,8 +176,9 @@ export function v4CompanyPrimaryForTab(tab: string | undefined | null): V4Compan
 export function v4CompanyDotTone(workspace: Workspace): V4DotTone {
   if (!isWorkspaceSyncEnabled(workspace)) return 'idle';
   if (workspace.kind === 'personal') return 'ok';
-  // Pending invites must stand out in the Companies list (desktop view chrome).
-  if (workspace.kind === 'company' && workspace.membershipStatus === 'pending') return 'warn';
+  // A pending invite is routine membership metadata, not a warning. The row
+  // already carries explicit "Invite" copy, so keep its dot neutral.
+  if (workspace.kind === 'company' && workspace.membershipStatus === 'pending') return 'idle';
   if (workspace.state === 'synced') return 'ok';
   if (workspace.state === 'broken') return 'error';
   return 'idle';
@@ -202,6 +212,33 @@ export function v4CompanyCloudActivated(workspace: Workspace): boolean {
     (workspace.state === 'synced' || workspace.state === 'cloud-only') &&
     workspace.membershipStatus !== 'pending'
   );
+}
+
+export interface V4AccountIdentity {
+  label: string | null;
+  initials: string;
+}
+
+/**
+ * Resolve the account chrome from the personal workspace already returned by
+ * list_syncable_workspaces. This avoids another identity/token boundary while
+ * replacing the generic "HQ" placeholder whenever the user's name is known.
+ */
+export function accountIdentityFromWorkspaces(workspaces: Workspace[]): V4AccountIdentity {
+  const personalLabel =
+    workspaces.find((workspace) => workspace.kind === 'personal')?.displayName.trim() || null;
+  // Rust uses "Personal" as a workspace-kind sentinel when no profile name is
+  // available. It is not an account identity and must not surface as PE.
+  const label =
+    personalLabel && personalLabel.toLocaleLowerCase() !== 'personal' ? personalLabel : null;
+  if (!label) return { label: null, initials: 'HQ' };
+
+  const parts = label.split(/\s+/).filter(Boolean);
+  const initials =
+    parts.length >= 2
+      ? `${parts[0][0] ?? ''}${parts.at(-1)?.[0] ?? ''}`
+      : label.slice(0, 2);
+  return { label, initials: initials.toUpperCase() || 'HQ' };
 }
 
 /**
@@ -322,12 +359,14 @@ export interface V4SecondaryItem {
 export interface V4SecondaryFooter {
   label: string;
   meta?: string | null;
+  /** True when the footer itself owns the current routed sub-screen. */
+  active?: boolean;
 }
 
 /** Title-bar primary action — contextual, always exactly one. */
 export interface V4TitleBarAction {
-  id: 'sync' | 'cancel' | 'retry';
-  label: 'Sync Now' | 'Cancel' | 'Retry' | 'Sign in';
+  id: 'sync' | 'cancel' | 'retry' | 'resolve';
+  label: 'Sync Now' | 'Cancel' | 'Retry' | 'Sign in' | 'Resolve';
 }
 
 export interface V4TitleBarModel {
@@ -337,6 +376,16 @@ export interface V4TitleBarModel {
   /** Trailing text-3 detail ("12 watched · just now"), null when empty. */
   meta: string | null;
   action: V4TitleBarAction;
+  /** Present only when Retry must re-run desktop hydration, not start sync. */
+  recovery?: 'hydration';
+}
+
+export type V4HydrationIssueKind = 'workspace-list' | 'manifest' | 'sync-status';
+
+export interface V4HydrationIssue {
+  kind: V4HydrationIssueKind;
+  /** Sanitized diagnostic retained from the failed hydration command. */
+  detail: string;
 }
 
 export interface V4TitleBarInput {
@@ -351,14 +400,37 @@ export interface V4TitleBarInput {
   fanoutTotal?: number;
   /** Plain-language error summary, for error states. */
   errorSummary?: string | null;
+  /** Independent desktop-state hydration failure; cached data may still render. */
+  hydrationIssue?: V4HydrationIssue | null;
 }
 
 /**
  * Title-bar render model: 6px dot + status sentence + text-3 meta + ONE
- * contextual primary action (Sync Now / Cancel / Retry) per SPEC section 4.
+ * contextual primary action (Sync Now / Cancel / Retry / Resolve) per SPEC
+ * section 4.
  */
 export function getV4TitleBarModel(input: V4TitleBarInput): V4TitleBarModel {
   const syncNow: V4TitleBarAction = { id: 'sync', label: 'Sync Now' };
+  const hasAuthoritativeOperationalState =
+    input.syncState === 'syncing' ||
+    input.syncState === 'error' ||
+    input.syncState === 'auth-error' ||
+    input.syncState === 'conflict';
+
+  if (input.hydrationIssue && !hasAuthoritativeOperationalState) {
+    const sentenceByKind: Record<V4HydrationIssueKind, string> = {
+      'workspace-list': 'Workspace status unavailable',
+      manifest: 'Workspace setup needs attention',
+      'sync-status': 'Sync status unavailable',
+    };
+    return {
+      tone: 'error',
+      sentence: sentenceByKind[input.hydrationIssue.kind],
+      meta: input.hydrationIssue.detail,
+      action: { id: 'retry', label: 'Retry' },
+      recovery: 'hydration',
+    };
+  }
 
   switch (input.syncState) {
     case 'syncing': {
@@ -393,7 +465,7 @@ export function getV4TitleBarModel(input: V4TitleBarInput): V4TitleBarModel {
         tone: 'warn',
         sentence: 'Needs your review',
         meta: 'resolve conflicts to continue',
-        action: syncNow,
+        action: { id: 'resolve', label: 'Resolve' },
       };
     case 'setup-needed':
       return {

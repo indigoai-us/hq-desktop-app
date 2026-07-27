@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Workspace } from '../../lib/workspaces';
 import {
+  accountIdentityFromWorkspaces,
   getV4SidebarModel,
   getV4TitleBarModel,
   sortV4CompaniesConnectedFirst,
@@ -48,6 +49,32 @@ function activeRowCount(model: V4SidebarModel): number {
   );
 }
 
+describe('V4 account identity', () => {
+  it('derives the visible account label and initials from the personal workspace', () => {
+    expect(
+      accountIdentityFromWorkspaces([
+        company({ slug: 'indigo', displayName: 'Indigo' }),
+        { ...personal, displayName: 'Corey Epstein' },
+      ]),
+    ).toEqual({ label: 'Corey Epstein', initials: 'CE' });
+  });
+
+  it('handles one-word names and falls back cleanly without a personal workspace', () => {
+    expect(accountIdentityFromWorkspaces([{ ...personal, displayName: 'Prince' }])).toEqual({
+      label: 'Prince',
+      initials: 'PR',
+    });
+    expect(accountIdentityFromWorkspaces([company({})])).toEqual({
+      label: null,
+      initials: 'HQ',
+    });
+    expect(accountIdentityFromWorkspaces([personal])).toEqual({
+      label: null,
+      initials: 'HQ',
+    });
+  });
+});
+
 describe('US-001 V4 sidebar active-state mapping', () => {
   const workspaces = [
     company({ slug: 'indigo', displayName: 'Indigo' }),
@@ -64,18 +91,18 @@ describe('US-001 V4 sidebar active-state mapping', () => {
     }
   });
 
-  it('renders nav rows in the US-008 order Inbox/Meetings/Marketplace/Library/Files', () => {
+  it('renders nav rows in the restored Inbox/Messages/Meetings/Marketplace/Library/Files order', () => {
     const model = getV4SidebarModel({ kind: 'inbox' }, workspaces);
     expect(model.nav.map((row) => row.label)).toEqual([
       'Inbox',
+      'Messages',
       'Meetings',
       'Marketplace',
       'Library',
       'Files',
     ]);
-    // Home, Mission Control, Companies, and the pre-merge Messages/Notifications
-    // rows are gone from the sidebar.
-    for (const gone of ['Home', 'Mission Control', 'Companies', 'Messages', 'Notifications']) {
+    // Home, Mission Control, Companies, and Notifications are not nav rows.
+    for (const gone of ['Home', 'Mission Control', 'Companies', 'Notifications']) {
       expect(model.nav.some((row) => row.label === gone)).toBe(false);
     }
   });
@@ -93,6 +120,8 @@ describe('US-001 V4 sidebar active-state mapping', () => {
       'overview',
       'goals',
       'projects',
+      'skills',
+      'workers',
       'knowledge',
       'team',
       'more',
@@ -101,6 +130,15 @@ describe('US-001 V4 sidebar active-state mapping', () => {
     expect(model.companies.filter((row) => row.slug !== 'hpo').every((row) => !row.expanded)).toBe(
       true,
     );
+  });
+
+  it('keeps Skills and Workers visible and highlights their company child routes', () => {
+    for (const tab of ['skills', 'workers'] as const) {
+      const model = getV4SidebarModel({ kind: 'company', slug: 'hpo', tab }, workspaces);
+      const activeCompany = model.companies.find((row) => row.slug === 'hpo');
+      expect(activeCompany?.children.some((child) => child.id === tab)).toBe(true);
+      expect(activeCompany?.children.find((child) => child.id === tab)?.active).toBe(true);
+    }
   });
 
   it('collapses company children on global destinations (DESKTOP-001)', () => {
@@ -178,6 +216,11 @@ describe('US-001 V4 sidebar companies-list rendering', () => {
     expect(v4CompanyDotTone(company({ state: 'broken' }))).toBe('error');
     expect(v4CompanyDotTone(company({ state: 'local-only' }))).toBe('idle');
     expect(v4CompanyDotTone(company({ state: 'cloud-only' }))).toBe('idle');
+    expect(
+      v4CompanyDotTone(
+        company({ state: 'cloud-only', membershipStatus: 'pending' }),
+      ),
+    ).toBe('idle');
   });
 
   it('renders every workspace directly instead of truncating behind an overflow row', () => {
@@ -373,9 +416,9 @@ describe('US-001 V4 title bar model', () => {
     expect(auth.sentence).toBe('Ready to reconnect');
   });
 
-  it('flags conflicts as a warn state that keeps Sync Now as the action', () => {
+  it('flags conflicts as a warn state with a direct resolution action', () => {
     const model = getV4TitleBarModel({ syncState: 'conflict', watchedCount: 3 });
     expect(model.tone).toBe('warn');
-    expect(model.action).toEqual({ id: 'sync', label: 'Sync Now' });
+    expect(model.action).toEqual({ id: 'resolve', label: 'Resolve' });
   });
 });

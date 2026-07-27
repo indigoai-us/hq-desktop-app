@@ -5,13 +5,10 @@
  * The standalone Messages window gets its target via the Rust ready-handshake
  * (`open_messages_window(target)` → `messages:open-conversation` Tauri event);
  * inside ONE window a Rust round-trip is unnecessary — the sender stashes the
- * target here and dispatches `hq:message-person`. Since US-008 the desktop
- * window hosts no MessagesShell (Messages + Notifications merged into the
- * Inbox): DesktopApp consumes-and-clears the stash on the event and routes to
- * the Inbox, where the sender's DM rows carry quick-reply inline — an
- * unconsumed stash must never leak into the next standalone-window shell
- * mount. A mounted MessagesShell (standalone window) still consumes the stash
- * on mount or on the window event.
+ * target here and dispatches `hq:message-person`. DesktopApp routes to the
+ * desktop Messages destination without consuming the target; the mounted
+ * MessagesShell then takes it and opens the requested conversation. The
+ * standalone Messages window uses the same take-on-mount/event behavior.
  */
 
 export interface ConversationTarget {

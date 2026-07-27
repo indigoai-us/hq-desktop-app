@@ -22,10 +22,11 @@
   import {
     loadLocalProjectPrd,
     loadLocalProjectReadme,
+    projectIdentity,
     type LocalProjectPrdWire,
     type Objective,
   } from '../lib/local-projects';
-  import { setProjectStatus } from '../lib/projects-store.svelte';
+  import { projectsStore, setProjectStatus } from '../lib/projects-store.svelte';
   import { renderMarkdown } from '../lib/markdown';
   import {
     classifyTasks,
@@ -74,7 +75,7 @@
      * Notify the caller a status persisted (US-010) so it can refresh its list.
      * Optional — the detail view persists + paints optimistically on its own.
      */
-    onStatusChange?: (projectId: string, status: EditableProjectStatus) => void;
+    onStatusChange?: (projectIdentity: string, status: EditableProjectStatus) => void;
     /**
      * Currently selected story for in-workspace task detail. When set, the
      * docked StoryPanel opens without a modal backdrop.
@@ -230,40 +231,54 @@
 
   // ---- status control (WRITABLE — US-010 optimistic persist) ---------------
   let statusOverride = $state<EditableProjectStatus | null>(null);
+  let statusOpen = $state(false);
+  let statusError = $state<string | null>(null);
+  let statusSaving = $state(false);
   $effect(() => {
-    void project.id;
+    void projectIdentity(project);
     void project.status;
-    statusOverride = null;
+    const cachedStatus = projectsStore.statusOverride(project);
+    statusOverride = cachedStatus === null ? null : toEditableStatus(cachedStatus);
+    statusOpen = false;
+    statusError = null;
+    statusSaving = projectsStore.statusPending(project);
   });
   const currentStatus = $derived(
     statusOverride ?? toEditableStatus(project.status),
   );
-  let statusOpen = $state(false);
-  let statusError = $state<string | null>(null);
-  let statusSaving = $state(false);
+
+  function rehydrateCurrentStatus(identity: string): void {
+    if (projectIdentity(project) !== identity) return;
+    const cachedStatus = projectsStore.statusOverride(project);
+    statusOverride = cachedStatus === null ? null : toEditableStatus(cachedStatus);
+    statusSaving = projectsStore.statusPending(project);
+  }
 
   async function selectStatus(next: EditableProjectStatus) {
     statusOpen = false;
     const previous = currentStatus;
     if (next === previous) return;
 
+    const mutationIdentity = projectIdentity(project);
     statusOverride = next;
     statusError = null;
     statusSaving = true;
     try {
       const result = await setProjectStatus(
-        { id: project.id, company: project.company },
+        { id: project.id, company: project.company, prdPath: project.prdPath },
         previous,
         next,
       );
       if (result.ok) {
-        onStatusChange?.(project.id, next);
-      } else {
-        statusOverride = previous;
+        onStatusChange?.(mutationIdentity, next);
+      } else if (
+        projectIdentity(project) === mutationIdentity &&
+        !projectsStore.statusPending(project)
+      ) {
         statusError = result.error;
       }
     } finally {
-      statusSaving = false;
+      rehydrateCurrentStatus(mutationIdentity);
     }
   }
 
@@ -281,7 +296,7 @@
   const projectFilesRoot = $derived(projectFilesRootFromPrdPath(project.prdPath));
 
   $effect(() => {
-    void project.id;
+    void projectIdentity(project);
     selectedFilePath = null;
   });
 
@@ -1059,8 +1074,7 @@
   }
 
   .badge,
-  .status-badge,
-  .toolbar-action {
+  .status-badge {
     display: inline-flex;
     align-items: center;
     gap: var(--v4-space-1);
@@ -1139,7 +1153,7 @@
   }
   .status-in_progress .status-dot,
   .status-dot.status-in_progress {
-    background: var(--v4-warn);
+    background: var(--v4-text-2);
   }
   .status-completed .status-dot,
   .status-dot.status-completed {
@@ -1161,8 +1175,10 @@
     list-style: none;
     border: 1px solid var(--v4-hairline);
     border-radius: var(--v4-radius-popover);
-    background: var(--v4-raised);
-    box-shadow: var(--v4-shadow-popover);
+    background: var(--v4-popover);
+    backdrop-filter: var(--v4-glass-filter);
+    -webkit-backdrop-filter: var(--v4-glass-filter);
+    box-shadow: var(--v4-shadow-popover), inset 0 1px 0 var(--v4-glass-highlight);
   }
 
   .status-option {
@@ -1204,11 +1220,11 @@
   .status-error {
     display: inline-flex;
     align-items: center;
-    padding: 3px 10px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-pill);
-    background: var(--v4-raised);
-    color: var(--v4-warn);
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: var(--v4-error);
     font-size: var(--type-secondary, var(--text-sm));
     font-weight: 500;
   }
@@ -1222,23 +1238,26 @@
   }
 
   .kpi-strip {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--v4-space-3);
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 0;
     margin-top: var(--v4-space-4);
     max-width: 760px;
   }
 
   .kpi-tile {
     display: flex;
-    flex: 1 1 110px;
     flex-direction: column;
     gap: var(--v4-row-stack-gap, 3px);
     min-width: 0;
     padding: 11px 14px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: 6px;
-    background: var(--v4-raised);
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+  }
+
+  .kpi-tile + .kpi-tile {
+    border-left: 1px solid var(--v4-hairline);
   }
 
   .kpi-label {
@@ -1298,12 +1317,12 @@
   .tabs {
     display: inline-flex;
     flex-wrap: wrap;
-    gap: var(--v4-space-1);
+    gap: var(--v4-space-2);
     margin-top: var(--v4-space-4);
-    padding: var(--v4-space-1);
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-field);
-    background: var(--v4-control-faint);
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
   }
 
   .tab {
@@ -1312,7 +1331,8 @@
     gap: 6px;
     padding: var(--v4-space-1) var(--v4-space-3);
     border: 0;
-    border-radius: var(--v4-radius-button);
+    border-bottom: 1px solid transparent;
+    border-radius: 0;
     background: transparent;
     color: var(--v4-text-2);
     font: inherit;
@@ -1320,16 +1340,18 @@
     font-weight: 500;
     cursor: pointer;
     transition:
-      background 140ms ease,
+      border-color 140ms ease,
       color 140ms ease;
   }
 
   .tab:hover {
+    border-bottom-color: var(--v4-rowline);
     color: var(--v4-text-1);
   }
 
   .tab.active {
-    background: var(--v4-raised);
+    border-bottom-color: var(--v4-text-2);
+    background: transparent;
     color: var(--v4-text-1);
   }
 
@@ -1367,7 +1389,7 @@
     flex: 1 1 auto;
     min-height: 0;
     min-width: 0;
-    border: 1px solid var(--v4-hairline);
+    border: 0;
     border-radius: 0;
     background: transparent;
   }
@@ -1454,7 +1476,7 @@
     min-height: 48px;
     padding: 6px 8px;
     border: 0;
-    border-radius: 6px;
+    border-radius: 0;
     background: transparent;
     color: var(--v4-text-2);
     font: inherit;
@@ -1469,7 +1491,8 @@
   }
 
   .task-rail-row.is-selected {
-    background: var(--v4-active-row);
+    background: transparent;
+    box-shadow: inset 0 -1px 0 var(--v4-hairline);
   }
 
   .task-rail-row:focus-visible {
@@ -1554,10 +1577,11 @@
   }
 
   .info-card {
-    padding: var(--v4-space-4);
-    border: 1px solid var(--v4-hairline);
-    border-radius: 6px;
-    background: var(--v4-control-faint);
+    padding: var(--v4-space-4) 0;
+    border: 0;
+    border-top: 1px solid var(--v4-hairline);
+    border-radius: 0;
+    background: transparent;
   }
 
   .info-card h2 {
@@ -1609,11 +1633,12 @@
   }
 
   .drill-error {
-    padding: var(--v4-space-3);
-    border: 1px solid var(--v4-hairline);
-    border-radius: 6px;
-    background: var(--v4-control-faint);
-    color: var(--v4-warn);
+    padding: var(--v4-space-3) 0;
+    border: 0;
+    border-top: 1px solid var(--v4-hairline);
+    border-radius: 0;
+    background: transparent;
+    color: var(--v4-error);
     font-size: var(--type-body, var(--text-base));
   }
 
@@ -1622,8 +1647,9 @@
     align-items: center;
     justify-content: center;
     padding: var(--v4-space-6);
-    border: 1px dashed var(--v4-hairline);
+    border: 0;
     border-radius: 0;
+    background: transparent;
     color: var(--v4-text-3);
     font-size: var(--type-body, var(--text-base));
   }
@@ -1636,8 +1662,9 @@
     display: flex;
     min-height: 0;
     height: 100%;
-    border: 1px solid var(--v4-hairline);
+    border: 0;
     border-radius: 0;
+    background: transparent;
     overflow: hidden;
   }
 
@@ -1692,9 +1719,10 @@
   .session-list {
     display: flex;
     flex-direction: column;
-    gap: var(--v4-space-2);
+    gap: 0;
     margin: 0;
     padding: 0;
+    border-top: 1px solid var(--v4-hairline);
     list-style: none;
   }
 
@@ -1703,10 +1731,14 @@
     flex-direction: column;
     gap: var(--v4-row-stack-gap, 3px);
     min-width: 0;
-    padding: var(--v4-space-3);
-    border: 1px solid var(--v4-hairline);
-    border-radius: 6px;
-    background: var(--v4-raised);
+    padding: var(--v4-space-3) 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+  }
+
+  .session-row + .session-row {
+    border-top: 1px solid var(--v4-rowline);
   }
 
   .session-main {
@@ -1803,9 +1835,31 @@
     margin: var(--v4-space-1) 0;
   }
 
+  .markdown-body :global(.task-list) {
+    padding-left: 0;
+    list-style: none;
+  }
+
+  .markdown-body :global(.task-list-item) {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--v4-space-2);
+  }
+
+  .markdown-body :global(.task-list-item input) {
+    flex: 0 0 auto;
+    margin: 0.3em 0 0;
+    accent-color: var(--v4-text-2);
+  }
+
+  .markdown-body :global(.task-list-content) {
+    min-width: 0;
+  }
+
   .markdown-body :global(a) {
     color: var(--v4-text-1);
-    text-decoration: none;
+    text-decoration-color: var(--v4-control-border);
+    text-underline-offset: 0.14em;
   }
 
   .markdown-body :global(a:hover) {
@@ -1826,7 +1880,7 @@
     padding: var(--v4-space-3);
     overflow-x: auto;
     border: 1px solid var(--v4-hairline);
-    border-radius: 6px;
+    border-radius: 0;
     background: var(--v4-inset);
   }
 
@@ -1853,6 +1907,74 @@
     font-weight: 600;
   }
 
+  .markdown-body :global(del) {
+    color: var(--v4-text-3);
+  }
+
+  .markdown-body :global(img) {
+    display: block;
+    max-width: 100%;
+    height: auto;
+    margin: var(--v4-space-3) 0;
+  }
+
+  .markdown-body :global(.markdown-table-scroll) {
+    max-width: 100%;
+    margin: var(--v4-space-3) 0;
+    overflow-x: auto;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    scrollbar-color: var(--v4-control-border) transparent;
+  }
+
+  .markdown-body :global(table) {
+    width: 100%;
+    min-width: max-content;
+    border-spacing: 0;
+    border-collapse: collapse;
+    color: var(--v4-text-2);
+    font-size: var(--type-secondary, var(--text-base));
+    line-height: 1.45;
+  }
+
+  .markdown-body :global(th),
+  .markdown-body :global(td) {
+    padding: var(--v4-space-2) var(--v4-space-3);
+    border-right: 1px solid var(--v4-hairline);
+    border-bottom: 1px solid var(--v4-hairline);
+    text-align: left;
+    vertical-align: top;
+  }
+
+  .markdown-body :global(th:first-child),
+  .markdown-body :global(td:first-child) {
+    padding-left: 0;
+  }
+
+  .markdown-body :global(th:last-child),
+  .markdown-body :global(td:last-child) {
+    padding-right: 0;
+    border-right: 0;
+  }
+
+  .markdown-body :global(tbody tr:last-child td) {
+    border-bottom: 0;
+  }
+
+  .markdown-body :global(th) {
+    color: var(--v4-text-1);
+    font-weight: 600;
+  }
+
+  .markdown-body :global(.markdown-align-center) {
+    text-align: center;
+  }
+
+  .markdown-body :global(.markdown-align-right) {
+    text-align: right;
+  }
+
   .detail-layout {
     display: grid;
     grid-template-columns: minmax(0, 1fr) 220px;
@@ -1871,10 +1993,19 @@
   .info-card,
   .overview-task-rail {
     min-width: 0;
-    padding: 14px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: 6px;
-    background: var(--v4-raised);
+    padding: 14px 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+  }
+
+  .detail-main > .info-card {
+    border-top: 1px solid var(--v4-hairline);
+  }
+
+  .detail-layout > .overview-task-rail {
+    padding-left: 16px;
+    border-left: 1px solid var(--v4-hairline);
   }
 
   .info-card h2,
@@ -1982,6 +2113,13 @@
       grid-template-columns: minmax(0, 1fr);
     }
 
+    .detail-layout > .overview-task-rail {
+      padding-top: 14px;
+      padding-left: 0;
+      border-top: 1px solid var(--v4-hairline);
+      border-left: 0;
+    }
+
     .task-workspace {
       grid-template-columns: minmax(160px, 220px) minmax(0, 1fr);
     }
@@ -2001,6 +2139,18 @@
   }
 
   @container project-detail (max-width: 560px) {
+    .kpi-strip {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .kpi-tile:nth-child(odd) {
+      border-left: 0;
+    }
+
+    .kpi-tile:nth-child(n + 3) {
+      border-top: 1px solid var(--v4-hairline);
+    }
+
     .task-workspace {
       grid-template-columns: minmax(0, 1fr);
       grid-template-rows: minmax(140px, 32%) minmax(0, 1fr);
@@ -2017,6 +2167,17 @@
       top: 0;
       z-index: 1;
       background: var(--v4-chrome);
+    }
+  }
+
+  @container project-detail (max-width: 340px) {
+    .kpi-strip {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .kpi-tile + .kpi-tile {
+      border-top: 1px solid var(--v4-hairline);
+      border-left: 0;
     }
   }
 </style>

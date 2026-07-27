@@ -217,17 +217,16 @@ export function normalizeProjection(raw: unknown): CrmProjection {
   };
 }
 
-// ── Status-dot tone (the only color on the surface, per indigo-no-purple) ────
+// ── Status-dot tone (compact semantic color only) ────────────────────────────
 
-/** A status-dot tone from the V4 palette — maps to `--v4-ok/warn/error/idle`. */
-export type DotTone = 'ok' | 'warn' | 'error' | 'idle';
+/** A status-dot tone from the V4 palette — maps to `--v4-ok/error/idle`. */
+export type DotTone = 'ok' | 'error' | 'idle';
 
 /**
  * Map a free-form source/contract/billing status string onto a V4 status-dot
- * tone. Affirmative states (paid/signed/active/won) → green `ok`; in-flight
- * (sent/open/pending/draft) → amber `warn`; failed (overdue/past_due/failed) →
- * red `error`; unknown/empty → grey `idle`. Monochrome elsewhere — the dot is
- * the ONLY color, never purple (hard policy indigo-no-purple).
+ * tone. Affirmative states (paid/signed/active/won) → green `ok`; failed
+ * (overdue/past_due/failed) → red `error`; in-flight and unknown states → grey
+ * `idle`. Routine progress stays neutral so warning color remains high-signal.
  */
 export function statusTone(status: string | undefined): DotTone {
   const s = (status ?? '').trim().toLowerCase();
@@ -239,7 +238,7 @@ export function statusTone(status: string | undefined): DotTone {
     return 'error';
   }
   if (/(sent|open|pending|draft|proposal|review|demo|processing|in_progress)/.test(s)) {
-    return 'warn';
+    return 'idle';
   }
   return 'idle';
 }

@@ -5,10 +5,15 @@ describe('desktop-alt V4 settings and first-run (US-013 / US-005)', () => {
   // US-005: classic popover Settings.svelte is retired. SettingsPage is the
   // single settings surface — every assertion below targets that page only.
   const page = readRepoFile('src/desktop-alt/pages/SettingsPage.svelte');
+  const harness = readRepoFile('dev-harness/mocks/core.ts');
 
-  it('groups every menubar setting knob and persists through get_settings/save_settings', () => {
+  it('groups every menubar setting knob and persists through the serialized settings queue', () => {
     expect(page).toContain("invoke<SettingsWire>('get_settings')");
-    expect(page).toContain("await invoke('save_settings', {");
+    expect(page).toContain(
+      "import { updateSettings, type SettingsPatch } from '../../lib/settings-mutations'",
+    );
+    expect(page).toContain('await updateSettings(patch)');
+    expect(page).not.toMatch(/invoke\(['"]save_settings['"]/);
     for (const key of [
       'hqPath',
       'syncOnLaunch',
@@ -103,10 +108,15 @@ describe('desktop-alt V4 settings and first-run (US-013 / US-005)', () => {
       expect(page).toContain(`id="${id}"`);
       expect(page).toContain(`<h2>${label}</h2>`);
     }
-    expect(page).toContain("scrollIntoView({ behavior: 'smooth', block: 'start' })");
+    expect(page).toContain("closest<HTMLElement>('.desktop-main-scroll')");
+    expect(page).toContain("scroller.scrollTo({ top: Math.max(0, top), behavior: 'smooth' })");
     expect(page).toContain('class="setting-row gated-row"');
     expect(page).toContain('@getindigo.ai only');
     expect(page).toContain('<em>Gated</em>');
+    expect(page).toContain('{#if !meetingsEnabled}<em>Unavailable</em>{/if}');
+    expect(page).not.toMatch(
+      /<strong>Meeting detection<\/strong>[\s\S]{0,400}<em>Gated<\/em>/,
+    );
   });
 
   it('styles toggles as macOS green-fill pills (the one sanctioned control color)', () => {
@@ -115,5 +125,51 @@ describe('desktop-alt V4 settings and first-run (US-013 / US-005)', () => {
     expect(page).toContain("input[type='checkbox']");
     expect(page).toContain('appearance: none');
     expect(page).toContain('var(--v4-ok)');
+  });
+
+  it('lets native selects follow the active system palette without a dark lock', () => {
+    expect(page).toContain('color-scheme: light dark');
+    expect(page).not.toMatch(/select\s*\{[^}]*color-scheme:\s*dark/);
+    expect(page).not.toContain(":global(html[data-force-theme='dark']) select");
+    expect(page).toContain(":global(html[data-force-theme='light']) select");
+    expect(page).toContain('color-scheme: light');
+  });
+
+  it('lets the shell leaf scroller own section navigation', () => {
+    const settingsMainCss = page.match(/\.settings-main\s*\{([\s\S]*?)\}/)?.[1] ?? '';
+    expect(settingsMainCss).not.toContain('overflow: auto');
+    expect(settingsMainCss).toContain('overflow: visible');
+  });
+
+  it('provides deterministic harness coverage for every high-risk settings edge state', () => {
+    for (const scenario of [
+      'settings-updates',
+      'settings-errors',
+      'settings-load-error',
+      'permission-denied',
+      'widget-disconnected',
+    ]) {
+      expect(harness).toContain(`'${scenario}'`);
+    }
+
+    for (const command of [
+      'check_hq_cli_update',
+      'install_hq_cli_update',
+      'check_pack_update',
+      'update_packs',
+      'get_hq_version',
+      'install_hq_core_update',
+      'run_replace_from_staging',
+      'list_displays',
+      'apply_widget_settings',
+    ]) {
+      expect(harness).toContain(`${command}:`);
+    }
+
+    // Core rescue succeeds with the real result shape in the normal/update
+    // scenario, while the explicit error scenario returns a nonzero rescue
+    // result so the log-path recovery UI can be inspected without a null crash.
+    expect(harness).toContain("exit_code: scenario === 'settings-errors' ? 1 : 0");
+    expect(harness).toMatch(/log_path:\s*scenario === 'settings-errors'/);
   });
 });

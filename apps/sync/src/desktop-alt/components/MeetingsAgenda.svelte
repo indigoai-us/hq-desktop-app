@@ -574,9 +574,9 @@
   .row-icon-incall:hover:not(:disabled) {
     background: var(--v4-active-row);
   }
-  /* Joining — amber spinner; transient. */
+  /* Joining — quiet transient progress. */
   .row-icon-joining {
-    color: var(--v4-warn);
+    color: var(--v4-text-2);
     background: var(--v4-control-faint);
     border-color: var(--v4-control-border);
   }
@@ -594,9 +594,9 @@
     border-color: var(--v4-control-border);
     cursor: default;
   }
-  /* Join-now — amber-accented "act now", distinct from state colours. */
+  /* Join-now — high-contrast neutral action, distinct from state colours. */
   .row-icon-bot-now {
-    color: var(--v4-warn);
+    color: var(--v4-text-1);
     background: var(--v4-control-faint);
     border-color: var(--v4-control-border);
   }
@@ -638,7 +638,7 @@
     opacity: 0.85;
   }
   .row-icon-spinner-amber {
-    color: var(--v4-warn);
+    color: var(--v4-text-2);
   }
   @keyframes row-icon-spin {
     to {

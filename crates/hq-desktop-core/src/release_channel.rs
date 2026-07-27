@@ -121,13 +121,18 @@ impl ReleaseChannel {
 ///   - `vX.Y.Z-alpha.N`    → Alpha
 ///
 /// Other pre-release shapes are rejected:
+///   - `X.Y.Z`               — missing the mandatory release-tag `v` prefix
 ///   - `vX.Y.Z-rc.1`, `-pre.1`, `-dev` — unknown channel identifier
 ///   - `vX.Y.Z-beta`        — missing the numeric `.N` suffix (CI rejects
 ///     this; a manually-pushed unnumbered tag must NOT be picked up)
 ///   - `vX.Y.Z-beta.1.2`    — extra identifier past the build number
+///   - `vX.Y.Z+build`        — build metadata is outside the release contract
 pub fn parse_channel_from_tag(tag: &str) -> Option<(ReleaseChannel, semver::Version)> {
-    let stripped = tag.strip_prefix('v').unwrap_or(tag);
+    let stripped = tag.strip_prefix('v')?;
     let version = semver::Version::parse(stripped).ok()?;
+    if !version.build.is_empty() {
+        return None;
+    }
 
     if version.pre.is_empty() {
         return Some((ReleaseChannel::Stable, version));
@@ -325,10 +330,17 @@ mod tests {
     }
 
     #[test]
-    fn parse_tag_without_v_prefix() {
-        // `v` is stripped but optional — `0.1.109` parses too.
-        let (channel, _) = parse_channel_from_tag("0.1.109").unwrap();
-        assert_eq!(channel, ReleaseChannel::Stable);
+    fn parse_tag_without_v_prefix_rejected() {
+        assert!(parse_channel_from_tag("0.1.109").is_none());
+        assert!(parse_channel_from_tag("0.1.109-beta.1").is_none());
+        assert!(parse_channel_from_tag("0.1.109-alpha.1").is_none());
+    }
+
+    #[test]
+    fn parse_tag_with_build_metadata_rejected() {
+        assert!(parse_channel_from_tag("v1.0.0+manual").is_none());
+        assert!(parse_channel_from_tag("v1.0.0-beta.1+manual").is_none());
+        assert!(parse_channel_from_tag("v1.0.0-alpha.1+manual").is_none());
     }
 
     // --- ReleaseChannel::includes ---------------------------------------

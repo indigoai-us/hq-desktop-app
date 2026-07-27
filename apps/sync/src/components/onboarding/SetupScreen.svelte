@@ -956,7 +956,7 @@
     border: 1px solid rgba(255, 255, 255, 0.72);
     border-radius: 999px;
     background: rgba(255, 255, 255, 0.92);
-    color: #111113;
+    color: #111111;
     font: inherit;
     font-weight: 700;
     cursor: pointer;

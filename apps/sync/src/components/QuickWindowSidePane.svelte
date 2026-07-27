@@ -167,7 +167,7 @@
     min-height: 0;
   }
 
-  /* US-016: subtle type hierarchy — share accent tint; system muted. */
-  .qw-side-list :global(.nr[data-type='share'] .nr-icon) { color: var(--pop-accent, #6aa1ff); }
+  /* US-016: subtle type hierarchy without spending a colored accent. */
+  .qw-side-list :global(.nr[data-type='share'] .nr-icon) { color: var(--pop-text, #e8e8e8); }
   .qw-side-list :global(.nr[data-type='system'] .nr-icon) { color: var(--pop-muted); }
 </style>

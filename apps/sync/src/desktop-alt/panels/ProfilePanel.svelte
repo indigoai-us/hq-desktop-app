@@ -538,10 +538,10 @@
     align-items: center;
     gap: var(--v4-space-2);
     padding: var(--v4-space-4);
-    border: 1px dashed var(--v4-control-border);
-    border-radius: var(--v4-radius-card);
-    background: var(--v4-raised);
-    box-shadow: var(--v4-shadow-card);
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
     color: var(--v4-text-3);
     font-size: var(--text-base);
   }
@@ -640,7 +640,7 @@
     font-size: var(--text-micro);
   }
   .field-hint.warn {
-    color: var(--v4-warn);
+    color: var(--v4-text-2);
   }
   .field-hint.ok {
     color: var(--v4-ok);
@@ -652,11 +652,12 @@
     display: flex;
     flex-direction: column;
     gap: var(--v4-space-3);
-    padding: var(--v4-space-4);
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-card);
-    background: var(--v4-raised);
-    box-shadow: var(--v4-shadow-card);
+    padding: var(--v4-space-4) 0 0;
+    border: 0;
+    border-top: 1px solid var(--v4-hairline);
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
   }
 
   .handle-row {
@@ -681,7 +682,7 @@
     font-size: var(--text-base);
   }
   .claim-status.taken {
-    color: var(--v4-warn);
+    color: var(--v4-text-2);
   }
   .claim-status.error {
     color: var(--v4-error);
@@ -856,10 +857,10 @@
   .preview-empty {
     margin: 0;
     padding: var(--v4-space-4);
-    border: 1px dashed var(--v4-control-border);
-    border-radius: var(--v4-radius-card);
-    background: var(--v4-raised);
-    box-shadow: var(--v4-shadow-card);
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
     color: var(--v4-text-3);
     font-size: var(--text-base);
     text-align: center;
@@ -945,7 +946,7 @@
     align-self: flex-start;
     padding: 4px 12px;
     border: 1px solid color-mix(in srgb, var(--v4-error) 40%, transparent);
-    border-radius: 999px;
+    border-radius: var(--v4-radius-button);
     background: color-mix(in srgb, var(--v4-error) 10%, transparent);
     color: var(--v4-error);
     font-size: var(--text-base);

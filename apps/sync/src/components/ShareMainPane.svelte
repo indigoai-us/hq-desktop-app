@@ -331,9 +331,10 @@
     margin: 0;
     font-size: var(--type-body, 0.8125rem);
     color: var(--pop-text, var(--fg));
-    background: var(--pop-hover, var(--row-hover));
-    border-left: 2px solid var(--c-field-border, var(--border));
-    padding: 0.375rem 0.625rem;
+    background: transparent;
+    border: 0;
+    border-top: 1px solid var(--pop-border, var(--border));
+    padding: 0.5rem 0 0;
     border-radius: 0;
     white-space: pre-wrap;
     word-break: break-word;
@@ -379,7 +380,7 @@
   }
 
   .btn:focus-visible {
-    outline: 2px solid var(--v4-unread, #0a6fd6);
+    outline: 2px solid var(--v4-focus-ring, var(--v4-text-1, var(--c-text)));
     outline-offset: 2px;
   }
 </style>

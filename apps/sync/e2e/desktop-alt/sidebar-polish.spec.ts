@@ -85,9 +85,11 @@ describe('US-005: balanced spacing + fixed-height company names with fade', () =
     expect(css).toMatch(/\.v4-spacer\s*\{[^}]*flex:\s*0 0/);
   });
 
-  it('keeps the active-row highlight (no regression)', () => {
+  it('keeps active rows visible as an open neutral baseline', () => {
     const css = normalize(sidebar);
-    expect(css).toMatch(/\.v4-row\.active\s*\{[^}]*background:\s*var\(--v4-active-row\)/);
+    expect(css).toMatch(
+      /\.v4-row\.active\s*\{[^}]*background:\s*transparent;[^}]*box-shadow:\s*inset 0 -1px 0 var\(--v4-hairline\)/,
+    );
   });
 
   it('applies the shared row-height + gap tokens across the secondary sidebar and list rows', () => {

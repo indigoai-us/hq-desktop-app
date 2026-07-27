@@ -348,7 +348,7 @@
   }
 
   .thread-root-body :global(a) {
-    color: #bcd4ff;
+    color: var(--popover-text, #e8e8e8);
     text-decoration: underline;
     text-underline-offset: 0.125rem;
   }
@@ -366,10 +366,11 @@
     font-size: var(--text-base);
     line-height: 1.5;
     color: var(--fg, var(--pop-text));
-    background: var(--surface-raise, var(--c-field-bg));
-    border-left: 2px solid var(--border-strong, var(--c-field-border));
-    padding: 0.5rem 0.625rem;
-    border-radius: 0 6px 6px 0;
+    background: transparent;
+    border: 0;
+    border-top: 1px solid var(--border-strong, var(--c-field-border));
+    padding: 0.5rem 0 0;
+    border-radius: 0;
     white-space: pre-wrap;
     word-break: break-word;
   }
