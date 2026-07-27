@@ -263,6 +263,20 @@ pub struct VendSelfResult {
 pub struct TelemetryOptInResponse {
     pub enabled: bool,
     pub updated_at: Option<String>,
+    /// `Some(true)` when the server has NO recorded consent for this caller —
+    /// distinct from `enabled: false`, which is a real opt-out.
+    ///
+    /// `None` means the server never sent the field, i.e. it predates the
+    /// conditional-write rollout. That is load-bearing: such a server also
+    /// IGNORES `onlyIfUnset` and writes unconditionally, so a replay against it
+    /// could overwrite a real choice. Treating `None` as "do not replay" makes
+    /// this field double as the capability probe.
+    #[serde(default)]
+    pub unset: Option<bool>,
+    /// The `prs_*` this answer belongs to, so a client can refuse to replay a
+    /// cached answer that belongs to a different account.
+    #[serde(default)]
+    pub person_uid: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

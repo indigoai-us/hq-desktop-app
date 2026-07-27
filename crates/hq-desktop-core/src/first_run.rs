@@ -120,30 +120,67 @@ pub fn merge_menubar_flags(path: &Path, updates: &[(&str, Value)]) -> Result<(),
     Ok(())
 }
 
-/// The telemetry consent cached in `menubar.json`: the answer (tri-state) and
-/// the account that gave it.
+/// A telemetry consent answer we can PROVE the user gave.
 ///
-/// `None` for the answer means "we hold no answer" — deliberately DISTINCT from
-/// `Some(false)`, which is a real opt-out. Anything replaying this record must
-/// not conflate the two: it replays an answer the user gave, it never invents
-/// one.
+/// Deliberately not just `telemetryEnabled`. That key is also a settings field:
+/// `get_settings` supplies `true` when it is absent, and the settings mutation
+/// queue then persists the whole defaulted object the next time any unrelated
+/// preference changes. So its mere presence proves nothing — replaying it would
+/// manufacture consent out of a default.
 ///
-/// `telemetryOptInPersonUid` binds the answer to the `prs_*` that gave it.
-/// `menubar.json` is a per-MACHINE file, so when two people sign in under the
-/// same OS user it holds whoever answered LAST — without the binding, replaying
-/// it could opt in an account that never consented.
+/// `telemetryOptInAnsweredAt` is the provenance marker, written only at the
+/// moment the user actually answers (the onboarding prompt or the settings
+/// toggle, both of which funnel through `write_menubar_telemetry_pref`). No
+/// marker, no answer, no replay.
+///
+/// `person_uid` binds the answer to the `prs_*` that gave it. `menubar.json` is
+/// a per-MACHINE file and sign-out does not clear it, so if one person signs
+/// out and another signs in it still holds the FIRST person's answer. A binding
+/// naming someone else must never be replayed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MenubarConsent {
+    /// The recorded answer. `None` when the user has not answered.
+    pub enabled: Option<bool>,
+    /// Present only when the answer has provenance (was actually given).
+    pub answered_at: Option<String>,
+    /// The account the answer belongs to, when known.
+    pub person_uid: Option<String>,
+}
+
+impl MenubarConsent {
+    /// Whether this record may be replayed on behalf of `person_uid`.
+    ///
+    /// Requires all three: a recorded answer, proof it was actually given, and
+    /// that it is not someone else's. An UNBOUND answer is replayable — it
+    /// predates binding and belongs to the only account that could have written
+    /// it on this machine at the time.
+    pub fn replayable_for(&self, person_uid: &str) -> Option<bool> {
+        let enabled = self.enabled?;
+        self.answered_at.as_ref()?;
+        match self.person_uid.as_deref() {
+            Some(bound) if bound != person_uid => None,
+            _ => Some(enabled),
+        }
+    }
+}
+
+/// Read the consent record out of `menubar.json`.
 ///
 /// Lives here rather than in the Tauri crate so it is testable on any host: the
 /// desktop crate needs the full GTK/WebKit stack to build, this does not.
-pub fn read_menubar_consent(path: &Path) -> (Option<bool>, Option<String>) {
+pub fn read_menubar_consent(path: &Path) -> MenubarConsent {
     let obj = read_menubar_obj(path);
-    let enabled = obj.get("telemetryEnabled").and_then(|v| v.as_bool());
-    let person = obj
-        .get("telemetryOptInPersonUid")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string());
-    (enabled, person)
+    let str_field = |key: &str| {
+        obj.get(key)
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+    };
+    MenubarConsent {
+        enabled: obj.get("telemetryEnabled").and_then(|v| v.as_bool()),
+        answered_at: str_field("telemetryOptInAnsweredAt"),
+        person_uid: str_field("telemetryOptInPersonUid"),
+    }
 }
 
 #[cfg(test)]
@@ -163,7 +200,7 @@ mod tests {
     // in production that left 22 of 33 active Indigo members with no consent
     // attribute at all, against only 2 genuine opt-outs. The desktop app
     // repairs it once the entity is provisioned; these pin the record parsing
-    // that decides whether it should act, and on whose behalf.
+    // and the guards that decide whether a replay is allowed at all.
 
     fn write_menubar_json(dir: &TempDir, body: &str) -> std::path::PathBuf {
         let path = dir.path().join("menubar.json");
@@ -171,31 +208,78 @@ mod tests {
         path
     }
 
+    const ME: &str = "prs_01ME";
+
     #[test]
-    fn consent_record_reads_answer_and_binding() {
+    fn consent_record_reads_answer_provenance_and_binding() {
         let dir = TempDir::new().unwrap();
         let path = write_menubar_json(
             &dir,
-            r#"{"telemetryEnabled":true,"telemetryOptInPersonUid":"prs_01ABC"}"#,
+            r#"{"telemetryEnabled":true,"telemetryOptInAnsweredAt":"2026-07-27T10:00:00Z","telemetryOptInPersonUid":"prs_01ME"}"#,
         );
 
-        let (enabled, person) = read_menubar_consent(&path);
-        assert_eq!(enabled, Some(true));
-        assert_eq!(person.as_deref(), Some("prs_01ABC"));
+        let c = read_menubar_consent(&path);
+        assert_eq!(c.enabled, Some(true));
+        assert_eq!(c.answered_at.as_deref(), Some("2026-07-27T10:00:00Z"));
+        assert_eq!(c.person_uid.as_deref(), Some(ME));
+        assert_eq!(c.replayable_for(ME), Some(true));
     }
 
     #[test]
-    fn consent_record_distinguishes_opt_out_from_no_answer() {
+    fn an_explicit_opt_out_is_an_answer_and_replays_as_false() {
+        // Conflating "opted out" with "unanswered" is how a real opt-out gets
+        // silently converted into an opt-in.
         let dir = TempDir::new().unwrap();
+        let path = write_menubar_json(
+            &dir,
+            r#"{"telemetryEnabled":false,"telemetryOptInAnsweredAt":"2026-07-27T10:00:00Z"}"#,
+        );
 
-        // An explicit opt-out is an ANSWER. Conflating it with "unanswered" is
-        // how a real opt-out gets silently overwritten by a replay.
-        let path = write_menubar_json(&dir, r#"{"telemetryEnabled":false}"#);
-        assert_eq!(read_menubar_consent(&path).0, Some(false));
+        let c = read_menubar_consent(&path);
+        assert_eq!(c.enabled, Some(false));
+        assert_eq!(c.replayable_for(ME), Some(false));
+    }
 
-        // No key at all: we hold no answer and must not invent one.
-        let path = write_menubar_json(&dir, r#"{"machineId":"mid"}"#);
-        assert_eq!(read_menubar_consent(&path).0, None);
+    #[test]
+    fn a_defaulted_setting_without_provenance_is_not_consent() {
+        // `telemetryEnabled` is ALSO a settings field: `get_settings` defaults
+        // it to true and the settings queue persists the whole object on any
+        // unrelated change. Without the answered-at marker its presence proves
+        // nothing, and replaying it would manufacture consent from a default.
+        let dir = TempDir::new().unwrap();
+        let path = write_menubar_json(&dir, r#"{"telemetryEnabled":true,"syncOnLaunch":false}"#);
+
+        let c = read_menubar_consent(&path);
+        assert_eq!(c.enabled, Some(true));
+        assert_eq!(c.answered_at, None);
+        assert_eq!(c.replayable_for(ME), None);
+    }
+
+    #[test]
+    fn an_answer_bound_to_another_account_is_never_replayable() {
+        // Sign-out does not clear menubar.json, so after A signs out and B
+        // signs in this file still holds A's answer. Replaying it would opt B
+        // in without B ever seeing the prompt.
+        let dir = TempDir::new().unwrap();
+        let path = write_menubar_json(
+            &dir,
+            r#"{"telemetryEnabled":true,"telemetryOptInAnsweredAt":"2026-07-27T10:00:00Z","telemetryOptInPersonUid":"prs_01SOMEONE_ELSE"}"#,
+        );
+
+        assert_eq!(read_menubar_consent(&path).replayable_for(ME), None);
+    }
+
+    #[test]
+    fn an_unbound_answer_is_replayable() {
+        // Written before binding existed: on that machine only one account
+        // could have produced it.
+        let dir = TempDir::new().unwrap();
+        let path = write_menubar_json(
+            &dir,
+            r#"{"telemetryEnabled":true,"telemetryOptInAnsweredAt":"2026-07-27T10:00:00Z"}"#,
+        );
+
+        assert_eq!(read_menubar_consent(&path).replayable_for(ME), Some(true));
     }
 
     #[test]
@@ -203,24 +287,28 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = write_menubar_json(
             &dir,
-            r#"{"telemetryEnabled":"yes","telemetryOptInPersonUid":""}"#,
+            r#"{"telemetryEnabled":"yes","telemetryOptInPersonUid":"","telemetryOptInAnsweredAt":""}"#,
         );
 
-        let (enabled, person) = read_menubar_consent(&path);
-        assert_eq!(enabled, None);
-        assert_eq!(person, None);
+        let c = read_menubar_consent(&path);
+        assert_eq!(c.enabled, None);
+        assert_eq!(c.answered_at, None);
+        assert_eq!(c.person_uid, None);
+        assert_eq!(c.replayable_for(ME), None);
     }
 
     #[test]
     fn consent_record_survives_a_missing_or_corrupt_file() {
         let dir = TempDir::new().unwrap();
-        assert_eq!(
-            read_menubar_consent(&dir.path().join("nope.json")),
-            (None, None)
-        );
+        let empty = MenubarConsent {
+            enabled: None,
+            answered_at: None,
+            person_uid: None,
+        };
+        assert_eq!(read_menubar_consent(&dir.path().join("nope.json")), empty);
 
         let path = write_menubar_json(&dir, "{not json");
-        assert_eq!(read_menubar_consent(&path), (None, None));
+        assert_eq!(read_menubar_consent(&path), empty);
     }
 
     #[test]
@@ -231,21 +319,16 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = write_menubar_json(
             &dir,
-            r#"{"machineId":"mid-keep","telemetryEnabled":true,"someFutureKey":42}"#,
+            r#"{"machineId":"mid-keep","telemetryEnabled":true,"telemetryOptInAnsweredAt":"2026-07-27T10:00:00Z","someFutureKey":42}"#,
         );
 
         merge_menubar_flags(
             &path,
-            &[(
-                "telemetryOptInPersonUid",
-                Value::String("prs_01ABC".to_string()),
-            )],
+            &[("telemetryOptInPersonUid", Value::String(ME.to_string()))],
         )
         .unwrap();
 
-        let (enabled, person) = read_menubar_consent(&path);
-        assert_eq!(enabled, Some(true));
-        assert_eq!(person.as_deref(), Some("prs_01ABC"));
+        assert_eq!(read_menubar_consent(&path).replayable_for(ME), Some(true));
 
         let v: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(v["machineId"], "mid-keep");

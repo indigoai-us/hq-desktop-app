@@ -174,9 +174,25 @@ fn read_local_telemetry_enabled() -> bool {
 }
 
 fn write_menubar_telemetry_pref_to(path: &Path, enabled: bool) -> Result<(), String> {
+    // `telemetryOptInAnsweredAt` is the PROVENANCE marker. `telemetryEnabled`
+    // alone cannot stand in for an answer: it is also a settings field that
+    // `get_settings` defaults to `true` when absent, and the settings mutation
+    // queue then persists the whole defaulted object the next time any
+    // unrelated preference changes. Replaying that would manufacture consent
+    // out of a default.
+    //
+    // This function is the single chokepoint a real answer flows through — both
+    // the onboarding prompt and the settings toggle call it — so stamping here
+    // means exactly "the user answered, at this moment".
     hq_desktop_core::first_run::merge_menubar_flags(
         path,
-        &[("telemetryEnabled", Value::Bool(enabled))],
+        &[
+            ("telemetryEnabled", Value::Bool(enabled)),
+            (
+                "telemetryOptInAnsweredAt",
+                Value::String(chrono::Utc::now().to_rfc3339()),
+            ),
+        ],
     )
 }
 
@@ -199,25 +215,48 @@ fn write_menubar_telemetry_pref_to(path: &Path, enabled: bool) -> Result<(), Str
 /// person, there is nothing left to repair and this returns immediately, so the
 /// steady-state sync path pays nothing. Entirely best-effort — a failure here
 /// must never disturb provisioning or sync.
+///
+/// FOUR guards, each closing a way this could otherwise create consent the user
+/// never gave:
+///   1. A recorded answer must exist (`enabled`).
+///   2. It must carry provenance (`telemetryOptInAnsweredAt`) — a bare
+///      `telemetryEnabled` may just be a persisted settings default.
+///   3. It must not be bound to a DIFFERENT account. Sign-out does not clear
+///      `menubar.json`, so after A signs out and B signs in it still holds A's
+///      answer; replaying that would opt B in without B ever being asked.
+///   4. The server must report `unset` — proving both that no answer is
+///      recorded AND that this server understands `onlyIfUnset`. An older
+///      server silently ignores that flag and writes unconditionally, so
+///      without this probe the "conditional" replay could clobber a real
+///      choice.
 pub async fn reassert_consent_for_person(vault: &VaultClient, person_uid: &str) {
     let Ok(path) = crate::util::paths::menubar_json_path() else {
         return;
     };
-    let (enabled, bound_person) = hq_desktop_core::first_run::read_menubar_consent(&path);
+    let record = hq_desktop_core::first_run::read_menubar_consent(&path);
 
     // Already repaired for this account — nothing to do.
-    if bound_person.as_deref() == Some(person_uid) {
+    if record.person_uid.as_deref() == Some(person_uid) {
         return;
     }
 
-    let Some(enabled) = enabled else {
-        // No stored answer: we have nothing to replay and will not invent one.
+    // Guards 1-3.
+    let Some(enabled) = record.replayable_for(person_uid) else {
         return;
     };
 
-    // `only_if_unset` keeps this safe even though the cached copy may be stale:
-    // the server writes only while the consent has never been recorded, so an
-    // explicit opt-out made elsewhere is never overwritten.
+    // Guard 4: only act when the server itself says there is no recorded answer.
+    // `unset: None` means the server predates this field — and therefore also
+    // ignores `onlyIfUnset` — so we must not write at all.
+    match vault.get_telemetry_opt_in().await {
+        Ok(resp) if resp.unset == Some(true) => {}
+        Ok(_) => return,
+        Err(err) => {
+            eprintln!("[telemetry] consent state unreadable, skipping re-assert: {err}");
+            return;
+        }
+    }
+
     match vault.post_telemetry_opt_in_opts(enabled, true).await {
         Ok(()) => {
             // Bind the record to this account so we do not repeat the work, and
