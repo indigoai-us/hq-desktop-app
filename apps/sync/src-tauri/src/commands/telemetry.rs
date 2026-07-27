@@ -180,6 +180,63 @@ fn write_menubar_telemetry_pref_to(path: &Path, enabled: bool) -> Result<(), Str
     )
 }
 
+/// Re-send the onboarding consent once the caller's person entity exists, and
+/// record which account it belongs to.
+///
+/// THE RACE THIS FIXES: onboarding posts the consent immediately after
+/// `oauth_exchange_code` succeeds (`OnboardingWizard.svelte`), but
+/// `/v1/usage/opt-in` resolves the caller's `prs_*` person entity and 404s with
+/// `no-person-entity` when none exists yet. On a fresh install that entity is
+/// only created later, during personal provisioning — so the early POST
+/// reliably fails, its error is only `console.error`'d, and the consent is
+/// never persisted. The server then reads absence as "opted out", the telemetry
+/// collector goes quiet, and the person shows as "not opted in" forever.
+///
+/// Measured in production before this fix: 22 of 33 active Indigo members had
+/// NO `telemetryOptIn` attribute at all, against only 2 genuine opt-outs.
+///
+/// Runs at most once per (machine, person): once the local record names this
+/// person, there is nothing left to repair and this returns immediately, so the
+/// steady-state sync path pays nothing. Entirely best-effort — a failure here
+/// must never disturb provisioning or sync.
+pub async fn reassert_consent_for_person(vault: &VaultClient, person_uid: &str) {
+    let Ok(path) = crate::util::paths::menubar_json_path() else {
+        return;
+    };
+    let (enabled, bound_person) = hq_desktop_core::first_run::read_menubar_consent(&path);
+
+    // Already repaired for this account — nothing to do.
+    if bound_person.as_deref() == Some(person_uid) {
+        return;
+    }
+
+    let Some(enabled) = enabled else {
+        // No stored answer: we have nothing to replay and will not invent one.
+        return;
+    };
+
+    // `only_if_unset` keeps this safe even though the cached copy may be stale:
+    // the server writes only while the consent has never been recorded, so an
+    // explicit opt-out made elsewhere is never overwritten.
+    match vault.post_telemetry_opt_in_opts(enabled, true).await {
+        Ok(()) => {
+            // Bind the record to this account so we do not repeat the work, and
+            // so the hq-cloud sync runner can safely replay it later (it refuses
+            // to replay an answer that is not bound to the signed-in account).
+            let _ = hq_desktop_core::first_run::merge_menubar_flags(
+                &path,
+                &[(
+                    "telemetryOptInPersonUid",
+                    Value::String(person_uid.to_string()),
+                )],
+            );
+        }
+        Err(err) => {
+            eprintln!("[telemetry] consent re-assert failed (non-fatal): {err}");
+        }
+    }
+}
+
 #[tauri::command]
 pub fn write_menubar_telemetry_pref(enabled: bool) -> Result<(), String> {
     let path = crate::util::paths::menubar_json_path()?;

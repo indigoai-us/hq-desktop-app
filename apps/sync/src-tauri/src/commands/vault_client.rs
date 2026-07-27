@@ -622,12 +622,36 @@ impl VaultClient {
     }
 
     /// `POST /v1/usage/opt-in` — persist the authenticated user's telemetry preference.
+    ///
+    /// The DELIBERATE-CHOICE form: writes unconditionally, because an explicit
+    /// answer from the onboarding prompt or the settings toggle must always win.
     pub async fn post_telemetry_opt_in(&self, enabled: bool) -> Result<(), VaultClientError> {
+        self.post_telemetry_opt_in_opts(enabled, false).await
+    }
+
+    /// `POST /v1/usage/opt-in` with an optional "only if never answered" guard.
+    ///
+    /// `only_if_unset` is for REPLAYING an answer the user already gave, where
+    /// the cached copy may be stale. The server then writes only while the
+    /// consent has never been recorded, so a real opt-out made from another
+    /// device can never be clobbered. Losing that race answers 200 with
+    /// `applied: false` — a success, because someone recorded a real answer
+    /// first and it stands.
+    pub async fn post_telemetry_opt_in_opts(
+        &self,
+        enabled: bool,
+        only_if_unset: bool,
+    ) -> Result<(), VaultClientError> {
+        let payload = if only_if_unset {
+            serde_json::json!({ "enabled": enabled, "onlyIfUnset": true })
+        } else {
+            serde_json::json!({ "enabled": enabled })
+        };
         let resp = self
             .client
             .post(format!("{}{}", self.base_url, "/v1/usage/opt-in"))
             .bearer_auth(&self.auth_token)
-            .json(&serde_json::json!({ "enabled": enabled }))
+            .json(&payload)
             .send()
             .await?;
         let status = resp.status();

@@ -120,6 +120,32 @@ pub fn merge_menubar_flags(path: &Path, updates: &[(&str, Value)]) -> Result<(),
     Ok(())
 }
 
+/// The telemetry consent cached in `menubar.json`: the answer (tri-state) and
+/// the account that gave it.
+///
+/// `None` for the answer means "we hold no answer" — deliberately DISTINCT from
+/// `Some(false)`, which is a real opt-out. Anything replaying this record must
+/// not conflate the two: it replays an answer the user gave, it never invents
+/// one.
+///
+/// `telemetryOptInPersonUid` binds the answer to the `prs_*` that gave it.
+/// `menubar.json` is a per-MACHINE file, so when two people sign in under the
+/// same OS user it holds whoever answered LAST — without the binding, replaying
+/// it could opt in an account that never consented.
+///
+/// Lives here rather than in the Tauri crate so it is testable on any host: the
+/// desktop crate needs the full GTK/WebKit stack to build, this does not.
+pub fn read_menubar_consent(path: &Path) -> (Option<bool>, Option<String>) {
+    let obj = read_menubar_obj(path);
+    let enabled = obj.get("telemetryEnabled").and_then(|v| v.as_bool());
+    let person = obj
+        .get("telemetryOptInPersonUid")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+    (enabled, person)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -128,6 +154,102 @@ mod tests {
 
     fn map(v: Value) -> Map<String, Value> {
         v.as_object().cloned().unwrap()
+    }
+
+    // ── Telemetry consent record ────────────────────────────────────────────
+    //
+    // Onboarding posts the consent right after sign-in, before the caller's
+    // person entity exists, so `/v1/usage/opt-in` 404s and the answer is lost —
+    // in production that left 22 of 33 active Indigo members with no consent
+    // attribute at all, against only 2 genuine opt-outs. The desktop app
+    // repairs it once the entity is provisioned; these pin the record parsing
+    // that decides whether it should act, and on whose behalf.
+
+    fn write_menubar_json(dir: &TempDir, body: &str) -> std::path::PathBuf {
+        let path = dir.path().join("menubar.json");
+        fs::write(&path, body).unwrap();
+        path
+    }
+
+    #[test]
+    fn consent_record_reads_answer_and_binding() {
+        let dir = TempDir::new().unwrap();
+        let path = write_menubar_json(
+            &dir,
+            r#"{"telemetryEnabled":true,"telemetryOptInPersonUid":"prs_01ABC"}"#,
+        );
+
+        let (enabled, person) = read_menubar_consent(&path);
+        assert_eq!(enabled, Some(true));
+        assert_eq!(person.as_deref(), Some("prs_01ABC"));
+    }
+
+    #[test]
+    fn consent_record_distinguishes_opt_out_from_no_answer() {
+        let dir = TempDir::new().unwrap();
+
+        // An explicit opt-out is an ANSWER. Conflating it with "unanswered" is
+        // how a real opt-out gets silently overwritten by a replay.
+        let path = write_menubar_json(&dir, r#"{"telemetryEnabled":false}"#);
+        assert_eq!(read_menubar_consent(&path).0, Some(false));
+
+        // No key at all: we hold no answer and must not invent one.
+        let path = write_menubar_json(&dir, r#"{"machineId":"mid"}"#);
+        assert_eq!(read_menubar_consent(&path).0, None);
+    }
+
+    #[test]
+    fn consent_record_ignores_unusable_values() {
+        let dir = TempDir::new().unwrap();
+        let path = write_menubar_json(
+            &dir,
+            r#"{"telemetryEnabled":"yes","telemetryOptInPersonUid":""}"#,
+        );
+
+        let (enabled, person) = read_menubar_consent(&path);
+        assert_eq!(enabled, None);
+        assert_eq!(person, None);
+    }
+
+    #[test]
+    fn consent_record_survives_a_missing_or_corrupt_file() {
+        let dir = TempDir::new().unwrap();
+        assert_eq!(
+            read_menubar_consent(&dir.path().join("nope.json")),
+            (None, None)
+        );
+
+        let path = write_menubar_json(&dir, "{not json");
+        assert_eq!(read_menubar_consent(&path), (None, None));
+    }
+
+    #[test]
+    fn consent_binding_merges_without_disturbing_other_keys() {
+        // The binding is what lets the hq-cloud sync runner safely replay this
+        // answer later — it refuses to replay one not bound to the signed-in
+        // account. Writing it must leave the rest of the file intact.
+        let dir = TempDir::new().unwrap();
+        let path = write_menubar_json(
+            &dir,
+            r#"{"machineId":"mid-keep","telemetryEnabled":true,"someFutureKey":42}"#,
+        );
+
+        merge_menubar_flags(
+            &path,
+            &[(
+                "telemetryOptInPersonUid",
+                Value::String("prs_01ABC".to_string()),
+            )],
+        )
+        .unwrap();
+
+        let (enabled, person) = read_menubar_consent(&path);
+        assert_eq!(enabled, Some(true));
+        assert_eq!(person.as_deref(), Some("prs_01ABC"));
+
+        let v: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(v["machineId"], "mid-keep");
+        assert_eq!(v["someFutureKey"], 42);
     }
 
     #[test]
