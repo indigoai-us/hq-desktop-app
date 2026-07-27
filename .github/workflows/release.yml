@@ -101,6 +101,21 @@ jobs:
           ref: refs/tags/${{ steps.classify.outputs.tag }}
           fetch-depth: 0
 
+      # workflow_dispatch may intentionally retry a historical tag that
+      # predates the current publication helpers. Keep immutable build inputs
+      # at the tag root while loading the reviewed control plane from the exact
+      # commit that defines this workflow run.
+      - name: Checkout release control plane
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .release-control
+          sparse-checkout: |
+            scripts/release-asset-contract.mjs
+            scripts/release-stable-order.mjs
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
       - name: Require release tag commit on main
         env:
           TAG: ${{ steps.classify.outputs.tag }}
@@ -193,92 +208,15 @@ jobs:
       - name: Reject stable release rollback
         if: ${{ steps.classify.outputs.channel == 'stable' }}
         env:
-          RELEASE_API_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
           TARGET_REPOSITORY: ${{ github.repository }}
           TARGET_TAG: ${{ steps.classify.outputs.tag }}
         shell: bash
         run: |
           set -euo pipefail
-          node --input-type=module <<'NODE'
-          const targetTag = process.env.TARGET_TAG;
-          const repository = process.env.TARGET_REPOSITORY;
-          const token = process.env.RELEASE_API_TOKEN;
-          const stablePattern =
-            /^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
-
-          function stableParts(tag) {
-            const match = stablePattern.exec(tag);
-            if (!match) {
-              throw new Error(`Expected a strict stable tag, got ${tag}`);
-            }
-            return match.slice(1);
-          }
-
-          function compareNumericText(left, right) {
-            if (left.length !== right.length) {
-              return left.length < right.length ? -1 : 1;
-            }
-            return left === right ? 0 : left < right ? -1 : 1;
-          }
-
-          function compareStableTags(left, right) {
-            const leftParts = stableParts(left);
-            const rightParts = stableParts(right);
-            for (let index = 0; index < leftParts.length; index += 1) {
-              const comparison = compareNumericText(
-                leftParts[index],
-                rightParts[index],
-              );
-              if (comparison !== 0) return comparison;
-            }
-            return 0;
-          }
-
-          const response = await fetch(
-            `https://api.github.com/repos/${repository}/releases/latest`,
-            {
-              headers: {
-                accept: "application/vnd.github+json",
-                authorization: `Bearer ${token}`,
-                "user-agent": "hq-desktop-release-validation",
-                "x-github-api-version": "2022-11-28",
-              },
-            },
-          );
-
-          if (response.status === 404) {
-            console.log(`No existing stable release; ${targetTag} establishes stable latest.`);
-            process.exit(0);
-          }
-          if (!response.ok) {
-            console.error(
-              `::error::Could not read public stable latest: HTTP ${response.status}`,
-            );
-            process.exit(1);
-          }
-
-          const latest = await response.json();
-          const latestTag = latest?.tag_name;
-          if (typeof latestTag !== "string" || !stablePattern.test(latestTag)) {
-            console.error(
-              `::error::Public latest release has unsupported stable tag: ${String(latestTag)}`,
-            );
-            process.exit(1);
-          }
-
-          const comparison = compareStableTags(targetTag, latestTag);
-          if (comparison < 0) {
-            console.error(
-              `::error::Refusing stable rollback: ${targetTag} is older than public latest ${latestTag}.`,
-            );
-            process.exit(1);
-          }
-          if (comparison === 0) {
-            console.log(`Stable ${targetTag} matches public latest; allowing intentional rerun.`);
-          } else {
-            console.log(`Stable ${targetTag} advances public latest from ${latestTag}.`);
-          }
-          NODE
+          node .release-control/scripts/release-stable-order.mjs stable-order \
+            --repository "$TARGET_REPOSITORY" \
+            --tag "$TARGET_TAG"
 
   macos:
     name: Build macOS universal
@@ -733,6 +671,11 @@ jobs:
   publish:
     name: Publish GitHub release
     needs: [validate, macos, windows]
+    concurrency:
+      # Serialize all tags, not only reruns of one tag. Otherwise two stable
+      # builds can finish out of order and the older one can replace latest.
+      group: release-publication
+      cancel-in-progress: false
     # A desktop release is one cross-platform product. Never publish a partial
     # release or updater manifest: macOS and the complete Windows matrix must
     # both finish successfully.
@@ -740,6 +683,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
 
     steps:
       - name: Checkout exact release tag
@@ -747,6 +692,17 @@ jobs:
         with:
           ref: refs/tags/${{ needs.validate.outputs.tag }}
           fetch-depth: 0
+
+      - name: Checkout release control plane
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .release-control
+          sparse-checkout: |
+            scripts/release-asset-contract.mjs
+            scripts/release-stable-order.mjs
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -883,13 +839,270 @@ jobs:
           cp "HQ_${VERSION}_x64-setup.exe" HQ_x64-setup.exe
           cp "HQ_${VERSION}_arm64-setup.exe" HQ_arm64-setup.exe
 
-      - name: Create or update GitHub release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ needs.validate.outputs.tag }}
-          name: HQ ${{ needs.validate.outputs.tag }}
-          prerelease: ${{ needs.validate.outputs.prerelease }}
-          make_latest: ${{ needs.validate.outputs.make_latest }}
-          files: release/*
-          fail_on_unmatched_files: true
-          generate_release_notes: true
+      # Creating a public release before all files finish uploading can expose
+      # a partial product if the runner dies mid-upload. Resolve the tag across
+      # authenticated paginated release results (which include drafts), then
+      # mutate only a missing or hidden-draft release.
+      - name: Resolve atomic release state
+        id: release-plan
+        env:
+          TAG: ${{ needs.validate.outputs.tag }}
+          PRERELEASE: ${{ needs.validate.outputs.prerelease }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          releases_json="${RUNNER_TEMP}/github-releases.json"
+          plan_json="${RUNNER_TEMP}/release-plan.json"
+
+          gh api --paginate --slurp \
+            "repos/${REPOSITORY}/releases?per_page=100" \
+            > "$releases_json"
+          node .release-control/scripts/release-asset-contract.mjs plan \
+            --releases "$releases_json" \
+            --directory release \
+            --tag "$TAG" \
+            --prerelease "$PRERELEASE" \
+            > "$plan_json"
+          cat "$plan_json"
+
+          action="$(jq -r '.action' "$plan_json")"
+          release_id="$(jq -r '.releaseId // ""' "$plan_json")"
+          case "$action" in
+            create-draft)
+              test -z "$release_id"
+              ;;
+            reset-draft|already-published)
+              [[ "$release_id" =~ ^[0-9]+$ ]]
+              ;;
+            *)
+              echo "::error::Invalid release plan action: ${action}"
+              exit 1
+              ;;
+          esac
+
+          echo "action=${action}" >> "$GITHUB_OUTPUT"
+          echo "release_id=${release_id}" >> "$GITHUB_OUTPUT"
+
+      - name: Create or reset hidden draft GitHub release
+        id: draft-release
+        if: ${{ steps.release-plan.outputs.action != 'already-published' }}
+        env:
+          TAG: ${{ needs.validate.outputs.tag }}
+          PRERELEASE: ${{ needs.validate.outputs.prerelease }}
+          REPOSITORY: ${{ github.repository }}
+          RELEASE_ACTION: ${{ steps.release-plan.outputs.action }}
+          PLANNED_RELEASE_ID: ${{ steps.release-plan.outputs.release_id }}
+        run: |
+          set -euo pipefail
+          if [ "$RELEASE_ACTION" = "create-draft" ]; then
+            release_json="$(
+              jq -n \
+                --arg tag "$TAG" \
+                --arg name "HQ ${TAG}" \
+                --argjson prerelease "$PRERELEASE" \
+                '{
+                  tag_name: $tag,
+                  name: $name,
+                  draft: true,
+                  prerelease: $prerelease,
+                  generate_release_notes: true
+                }' |
+                gh api --method POST "repos/${REPOSITORY}/releases" --input -
+            )"
+            release_id="$(jq -r '.id' <<<"$release_json")"
+            echo "Created hidden draft release ${TAG} (${release_id})."
+          elif [ "$RELEASE_ACTION" = "reset-draft" ]; then
+            release_id="$PLANNED_RELEASE_ID"
+            release_json="$(
+              gh api "repos/${REPOSITORY}/releases/${release_id}"
+            )"
+            echo "Reusing hidden draft release ${TAG} (${release_id})."
+          else
+            echo "::error::Refusing unsupported draft action ${RELEASE_ACTION}."
+            exit 1
+          fi
+
+          if ! [[ "$release_id" =~ ^[0-9]+$ ]]; then
+            echo "::error::GitHub returned an invalid release id: ${release_id}"
+            exit 1
+          fi
+          jq -e \
+            --arg tag "$TAG" \
+            --arg name "HQ ${TAG}" \
+            --argjson prerelease "$PRERELEASE" \
+            '.tag_name == $tag and .name == $name and
+             .draft == true and .prerelease == $prerelease' \
+            <<<"$release_json" >/dev/null
+
+          # A failed prior attempt may have left a partial hidden draft. Empty
+          # it before retrying so the remote exact-set check is deterministic.
+          asset_ids="$(
+            gh api --paginate \
+              "repos/${REPOSITORY}/releases/${release_id}/assets?per_page=100" \
+              --jq '.[].id'
+          )"
+          if [ -n "$asset_ids" ]; then
+            while IFS= read -r asset_id; do
+              gh api --method DELETE \
+                "repos/${REPOSITORY}/releases/assets/${asset_id}"
+            done <<<"$asset_ids"
+          fi
+
+          echo "release_id=${release_id}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload complete asset set to draft
+        if: ${{ steps.release-plan.outputs.action != 'already-published' }}
+        env:
+          TAG: ${{ needs.validate.outputs.tag }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" release/* -R "$REPOSITORY"
+
+      - name: Verify exact draft release asset set
+        if: ${{ steps.release-plan.outputs.action != 'already-published' }}
+        env:
+          TAG: ${{ needs.validate.outputs.tag }}
+          PRERELEASE: ${{ needs.validate.outputs.prerelease }}
+          RELEASE_ID: ${{ steps.draft-release.outputs.release_id }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          release_json="${RUNNER_TEMP}/draft-release.json"
+          asset_json="${RUNNER_TEMP}/release-assets.json"
+
+          verified="false"
+          for attempt in 1 2 3 4 5; do
+            if gh api "repos/${REPOSITORY}/releases/${RELEASE_ID}" \
+                 > "$release_json" &&
+               gh api --paginate --slurp \
+                 "repos/${REPOSITORY}/releases/${RELEASE_ID}/assets?per_page=100" \
+                 > "$asset_json" &&
+               node .release-control/scripts/release-asset-contract.mjs verify \
+                 --release "$release_json" \
+                 --assets "$asset_json" \
+                 --directory release \
+                 --tag "$TAG" \
+                 --prerelease "$PRERELEASE" \
+                 --draft true \
+                 --match-bytes true; then
+              verified="true"
+              break
+            fi
+            if [ "$attempt" -lt 5 ]; then
+              sleep 2
+            fi
+          done
+          if [ "$verified" != "true" ]; then
+            echo "::error::Hidden draft never reached the complete uploaded asset contract."
+            exit 1
+          fi
+
+      # The early validation protects against obvious rollbacks before the
+      # expensive native builds. This second check runs inside the global
+      # publication lock immediately before the only public-state mutation.
+      - name: Revalidate stable publication order
+        if: ${{ needs.validate.outputs.channel == 'stable' && steps.release-plan.outputs.action != 'already-published' }}
+        env:
+          TARGET_REPOSITORY: ${{ github.repository }}
+          TARGET_TAG: ${{ needs.validate.outputs.tag }}
+        run: |
+          set -euo pipefail
+          node .release-control/scripts/release-stable-order.mjs stable-order \
+            --repository "$TARGET_REPOSITORY" \
+            --tag "$TARGET_TAG"
+
+      - name: Publish verified GitHub release
+        if: ${{ steps.release-plan.outputs.action != 'already-published' }}
+        env:
+          TAG: ${{ needs.validate.outputs.tag }}
+          PRERELEASE: ${{ needs.validate.outputs.prerelease }}
+          MAKE_LATEST: ${{ needs.validate.outputs.make_latest }}
+          RELEASE_ID: ${{ steps.draft-release.outputs.release_id }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          release_json="$(
+            jq -n \
+              --argjson prerelease "$PRERELEASE" \
+              --arg make_latest "$MAKE_LATEST" \
+              '{
+                draft: false,
+                prerelease: $prerelease,
+                make_latest: $make_latest
+              }' |
+              gh api --method PATCH \
+                "repos/${REPOSITORY}/releases/${RELEASE_ID}" \
+                --input -
+          )"
+
+          jq -e \
+            --arg tag "$TAG" \
+            --argjson prerelease "$PRERELEASE" \
+            '.tag_name == $tag and .draft == false and .prerelease == $prerelease' \
+            <<<"$release_json" >/dev/null
+          echo "Published verified release ${TAG} (prerelease=${PRERELEASE}, make_latest=${MAKE_LATEST})."
+
+      # This also makes an ambiguous rerun idempotent: if GitHub published but
+      # the previous runner lost the PATCH response, the resolver accepts the
+      # already-public release only after its remote-only contract is healthy.
+      - name: Confirm public release and channel isolation
+        env:
+          TAG: ${{ needs.validate.outputs.tag }}
+          VERSION: ${{ needs.validate.outputs.version }}
+          PRERELEASE: ${{ needs.validate.outputs.prerelease }}
+          MAKE_LATEST: ${{ needs.validate.outputs.make_latest }}
+          REPOSITORY: ${{ github.repository }}
+          PLANNED_RELEASE_ID: ${{ steps.release-plan.outputs.release_id }}
+          DRAFT_RELEASE_ID: ${{ steps.draft-release.outputs.release_id }}
+          RELEASE_ACTION: ${{ steps.release-plan.outputs.action }}
+        run: |
+          set -euo pipefail
+          if [ "$RELEASE_ACTION" = "already-published" ]; then
+            release_id="$PLANNED_RELEASE_ID"
+            match_bytes="false"
+          else
+            release_id="$DRAFT_RELEASE_ID"
+            match_bytes="true"
+          fi
+          if ! [[ "$release_id" =~ ^[0-9]+$ ]]; then
+            echo "::error::Cannot confirm invalid release id ${release_id}."
+            exit 1
+          fi
+
+          release_json="${RUNNER_TEMP}/public-release.json"
+          asset_json="${RUNNER_TEMP}/public-release-assets.json"
+          verified="false"
+          for attempt in 1 2 3 4 5; do
+            if gh api "repos/${REPOSITORY}/releases/${release_id}" \
+                 > "$release_json" &&
+               gh api --paginate --slurp \
+                 "repos/${REPOSITORY}/releases/${release_id}/assets?per_page=100" \
+                 > "$asset_json" &&
+               node .release-control/scripts/release-asset-contract.mjs verify \
+                 --release "$release_json" \
+                 --assets "$asset_json" \
+                 --directory release \
+                 --tag "$TAG" \
+                 --prerelease "$PRERELEASE" \
+                 --draft false \
+                 --match-bytes "$match_bytes"; then
+              verified="true"
+              break
+            fi
+            if [ "$attempt" -lt 5 ]; then
+              sleep 2
+            fi
+          done
+          if [ "$verified" != "true" ]; then
+            echo "::error::Public release never reached the verified asset contract."
+            exit 1
+          fi
+          node .release-control/scripts/release-asset-contract.mjs manifest \
+            --repository "$REPOSITORY" \
+            --tag "$TAG" \
+            --version "$VERSION"
+          node .release-control/scripts/release-stable-order.mjs confirm-channel \
+            --repository "$REPOSITORY" \
+            --tag "$TAG" \
+            --make-latest "$MAKE_LATEST"

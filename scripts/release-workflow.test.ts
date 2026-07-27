@@ -9,13 +9,15 @@ let workflow = "";
 let clientClassifier = "";
 let windowsConfig = "";
 let windowsCheckWorkflow = "";
+let versionsToml = "";
 
 beforeAll(async () => {
-  [workflow, clientClassifier, windowsConfig, windowsCheckWorkflow] = await Promise.all([
+  [workflow, clientClassifier, windowsConfig, windowsCheckWorkflow, versionsToml] = await Promise.all([
     readFile(resolve(rootDir, ".github/workflows/release.yml"), "utf8"),
     readFile(resolve(rootDir, "crates/hq-desktop-core/src/release_channel.rs"), "utf8"),
     readFile(resolve(rootDir, "apps/sync/src-tauri/tauri.windows.conf.json"), "utf8"),
     readFile(resolve(rootDir, ".github/workflows/windows-check.yml"), "utf8"),
+    readFile(resolve(rootDir, "versions.toml"), "utf8"),
   ]);
 });
 
@@ -121,15 +123,10 @@ describe("release workflow channel contract", () => {
       "if: ${{ steps.classify.outputs.channel == 'stable' }}",
     );
     expect(validate).toContain(
-      "`https://api.github.com/repos/${repository}/releases/latest`",
+      "node .release-control/scripts/release-stable-order.mjs stable-order",
     );
-    expect(validate).toContain(
-      "const comparison = compareStableTags(targetTag, latestTag)",
-    );
-    expect(validate).toContain("if (comparison < 0)");
-    expect(validate).toContain("Refusing stable rollback");
-    expect(validate).toContain("if (comparison === 0)");
-    expect(validate).toContain("allowing intentional rerun");
+    expect(validate).toContain('--repository "$TARGET_REPOSITORY"');
+    expect(validate).toContain('--tag "$TARGET_TAG"');
   });
 
   it("classifies stable separately from beta and alpha", () => {
@@ -206,14 +203,99 @@ describe("release workflow channel contract", () => {
     ]) {
       expect(publish).toContain(artifact);
     }
+  });
+
+  it("uploads and verifies a hidden draft before making a release public", () => {
+    const publish = jobBody("publish");
+    const resolveState = publish.indexOf("- name: Resolve atomic release state");
+    const create = publish.indexOf("- name: Create or reset hidden draft GitHub release");
+    const upload = publish.indexOf("- name: Upload complete asset set to draft");
+    const verify = publish.indexOf("- name: Verify exact draft release asset set");
+    const makePublic = publish.indexOf("- name: Publish verified GitHub release");
+    const confirm = publish.indexOf("- name: Confirm public release and channel isolation");
+
+    expect(resolveState).toBeGreaterThan(-1);
+    expect(create).toBeGreaterThan(resolveState);
+    expect(upload).toBeGreaterThan(create);
+    expect(verify).toBeGreaterThan(upload);
+    expect(makePublic).toBeGreaterThan(verify);
+    expect(confirm).toBeGreaterThan(makePublic);
+    expect(publish).not.toContain("softprops/action-gh-release");
+    expect(publish).toContain("group: release-publication");
+    expect(publish).not.toContain("group: release-publish-${{");
+    expect(publish).toContain("cancel-in-progress: false");
     expect(publish).toContain(
-      "tag_name: ${{ needs.validate.outputs.tag }}",
+      '"repos/${REPOSITORY}/releases?per_page=100"',
+    );
+    expect(publish).not.toContain(
+      '"repos/${REPOSITORY}/releases/tags/${TAG}"',
     );
     expect(publish).toContain(
-      "prerelease: ${{ needs.validate.outputs.prerelease }}",
+      ".release-control/scripts/release-asset-contract.mjs plan",
+    );
+    expect(publish).toContain("create-draft");
+    expect(publish).toContain("reset-draft|already-published");
+    expect(publish).toContain("draft: true");
+    expect(publish.match(/action != 'already-published'/g)).toHaveLength(5);
+    expect(publish).toContain('gh release upload "$TAG" release/* -R "$REPOSITORY"');
+    expect(publish).toContain(
+      ".release-control/scripts/release-asset-contract.mjs verify",
+    );
+    expect(publish).toContain("--draft true");
+    expect(publish).toContain("--match-bytes true");
+    expect(publish).toContain("draft: false");
+    expect(publish).toContain(
+      "PRERELEASE: ${{ needs.validate.outputs.prerelease }}",
     );
     expect(publish).toContain(
-      "make_latest: ${{ needs.validate.outputs.make_latest }}",
+      "MAKE_LATEST: ${{ needs.validate.outputs.make_latest }}",
+    );
+    expect(publish).toContain(
+      ".release-control/scripts/release-asset-contract.mjs manifest",
+    );
+    expect(publish).toContain('match_bytes="false"');
+    const revalidate = publish.indexOf(
+      "- name: Revalidate stable publication order",
+    );
+    expect(revalidate).toBeGreaterThan(verify);
+    expect(revalidate).toBeLessThan(makePublic);
+    expect(publish).toContain(
+      "needs.validate.outputs.channel == 'stable' && steps.release-plan.outputs.action != 'already-published'",
+    );
+    expect(publish).toContain(
+      "node .release-control/scripts/release-stable-order.mjs stable-order",
+    );
+    expect(publish).toContain(
+      "node .release-control/scripts/release-stable-order.mjs confirm-channel",
+    );
+    expect(publish).toContain('--make-latest "$MAKE_LATEST"');
+    expect(publish).not.toContain('releases/latest" 2>/dev/null || true');
+  });
+
+  it("loads retry-safe publication helpers from the exact workflow commit", () => {
+    const validate = jobBody("validate");
+    const publish = jobBody("publish");
+
+    for (const job of [validate, publish]) {
+      expect(job).toContain("- name: Checkout release control plane");
+      expect(job).toContain("ref: ${{ github.workflow_sha }}");
+      expect(job).toContain("path: .release-control");
+      expect(job).toContain("scripts/release-asset-contract.mjs");
+      expect(job).toContain("scripts/release-stable-order.mjs");
+      expect(job).toContain("sparse-checkout-cone-mode: false");
+      expect(job).toContain("persist-credentials: false");
+    }
+  });
+
+  it("documents the release hosts and native targets the workflow actually ships", () => {
+    expect(versionsToml).toContain(
+      'manifest_base = "https://github.com/indigoai-us/hq-desktop-app/releases"',
+    );
+    expect(versionsToml).toContain(
+      'macos = ["aarch64-apple-darwin", "x86_64-apple-darwin"]',
+    );
+    expect(versionsToml).toContain(
+      'windows = ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"]',
     );
   });
 
@@ -246,5 +328,18 @@ describe("release workflow channel contract", () => {
     expect(windowsCheckWorkflow).toContain(
       "--config $env:TAURI_MSI_VERSION_CONFIG",
     );
+  });
+
+  it("runs the required Windows gate for release-control changes", () => {
+    for (const path of [
+      '"versions.toml"',
+      '"scripts/release-*.mjs"',
+      '"scripts/release-*.test.ts"',
+      '"scripts/windows-msi-version.mjs"',
+      '"scripts/windows-msi-version.test.ts"',
+      '".github/workflows/release.yml"',
+    ]) {
+      expect(windowsCheckWorkflow).toContain(path);
+    }
   });
 });
