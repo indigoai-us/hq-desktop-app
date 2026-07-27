@@ -1,7 +1,6 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { open } from '@tauri-apps/plugin-shell';
-  import { getCurrentWindow } from '@tauri-apps/api/window';
   import CopyPromptButton from './CopyPromptButton.svelte';
   import { emitDesktopTelemetry } from '../lib/desktop-telemetry';
 
@@ -81,15 +80,12 @@
 
       // Step 5: Notify parent of success
       if (result.authenticated) {
-        // Pull focus back from the browser to the menubar popover so the
-        // user sees the post-sign-in UI transition immediately. `.show()`
-        // is defensive — the popover should still be open from the tray
-        // click that started this flow, but the OAuth redirect can take a
-        // while and users occasionally dismiss the window in the meantime.
+        // Pull focus back from the browser on macOS and Windows. JS setFocus
+        // is often ignored while the browser holds activation — Rust raises
+        // via AppKit / Win32. oauth_listen_for_code also raises on callback;
+        // this is the renderer-side belt-and-suspenders path.
         try {
-          const win = getCurrentWindow();
-          await win.show();
-          await win.setFocus();
+          await invoke('bring_main_window_to_front');
         } catch (focusErr) {
           // Focus-stealing isn't critical; log but don't block success.
           console.warn('[signin] failed to refocus window:', focusErr);

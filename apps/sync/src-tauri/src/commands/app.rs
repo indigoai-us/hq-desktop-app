@@ -1,3 +1,5 @@
+use tauri::Manager;
+
 /// Terminate the app from the renderer. Used by the in-popover Quit
 /// button — the menubar-app close handler intercepts plain window-close
 /// events and only hides, so the renderer needs an explicit exit path
@@ -5,6 +7,20 @@
 #[tauri::command]
 pub fn quit_app(app: tauri::AppHandle) {
     app.exit(0);
+}
+
+/// Raise the main installer / popover window above other apps (macOS + Windows).
+///
+/// Used after browser OAuth returns: JS `setFocus()` alone is often ignored
+/// while the browser holds activation/foreground. Also used when the tray
+/// icon is clicked and the window is already visible but buried.
+#[tauri::command]
+pub fn bring_main_window_to_front(app: tauri::AppHandle) -> Result<(), String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "Main window is not available.".to_string())?;
+    crate::util::window_focus::bring_webview_to_front(&window);
+    Ok(())
 }
 
 /// Ask the main menubar window to show its existing Settings surface.
@@ -15,11 +31,10 @@ pub fn quit_app(app: tauri::AppHandle) {
 /// window, then emits the same event path the tray menu already uses.
 #[tauri::command]
 pub fn open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
-    use tauri::{Emitter, Manager};
+    use tauri::Emitter;
 
     if let Some(window) = app.get_webview_window("main") {
-        window.show().map_err(|e| e.to_string())?;
-        window.set_focus().map_err(|e| e.to_string())?;
+        crate::util::window_focus::bring_webview_to_front(&window);
     }
 
     app.emit_to("main", "tray:open-settings", ())

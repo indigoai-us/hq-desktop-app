@@ -1,7 +1,6 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-  import { getCurrentWindow } from '@tauri-apps/api/window';
   import { open as openExternal } from '@tauri-apps/plugin-shell';
   import { onDestroy, onMount, tick } from 'svelte';
   import onboardingBg from '../../assets/onboarding/onboarding-bg.jpg';
@@ -300,9 +299,9 @@
 
   async function refocusWindow(): Promise<void> {
     try {
-      const win = getCurrentWindow();
-      await win.show();
-      await win.setFocus();
+      // macOS/Windows ignore JS setFocus after browser OAuth; Rust raises via
+      // AppKit activateIgnoringOtherApps / Win32 SetForegroundWindow.
+      await invokeCommand('bring_main_window_to_front');
     } catch (err) {
       console.warn('[onboarding-signin] failed to refocus window:', err);
     }
