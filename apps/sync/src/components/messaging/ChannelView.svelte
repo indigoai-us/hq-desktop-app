@@ -206,7 +206,21 @@
         channelId: current.channelId,
       });
       // Server returns newest-first; render oldest → newest.
-      messages = [...(detail.messages ?? [])].reverse();
+      //
+      // Wire compat: current prod omits the caller-relative `direction` tag
+      // on channel messages (the Rust struct defaults it to ""), which made
+      // every fetched message render as neither-mine-nor-theirs — no author
+      // row, no own-side alignment. Derive it from the sender when absent:
+      // the caller's own uid → 'out', everything else → 'in'.
+      messages = [...(detail.messages ?? [])].reverse().map((m) => ({
+        ...m,
+        direction:
+          m.direction === 'in' || m.direction === 'out'
+            ? m.direction
+            : m.fromPersonUid && m.fromPersonUid === selfPersonUid
+              ? 'out'
+              : 'in',
+      }));
       if (detail.channel) {
         current = { ...current, ...detail.channel };
         memberCount = current.memberCount ?? memberCount;
