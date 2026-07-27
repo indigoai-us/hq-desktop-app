@@ -289,6 +289,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::app::quit_app,
+            commands::app::bring_main_window_to_front,
             commands::app::open_settings_window,
             commands::app::open_claude_code_link,
             commands::ai_tools::detect_ai_tools,
