@@ -139,6 +139,8 @@ describe('US-008: combined Inbox page shows both streams as one-line rows with u
     expect(inboxPage).toContain('onDestroy(commitRead)');
     expect(inboxPage).toContain("window.addEventListener('pagehide', commitRead)");
     expect(inboxPage).toContain('if (!feedLoaded) return');
+    expect(inboxPage).toContain('onloadstatechange={(loaded) => (feedLoaded = loaded)}');
+    expect(inboxPage).not.toContain('feedLoaded = true');
   });
 
   it('message-person targets preserve warm/cold handoff for the routed Messages shell', () => {

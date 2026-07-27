@@ -1355,6 +1355,12 @@
         }
       )
     );
+    unlisteners.push(
+      await listen('update:cleared', () => {
+        updateAvailable = null;
+        updateInstalling = false;
+      })
+    );
 
     // --- hq CLI updater event listener ---
     // Protocol (see src-tauri/src/commands/hq_cli_update.rs):

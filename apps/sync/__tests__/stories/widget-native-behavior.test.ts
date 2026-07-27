@@ -19,6 +19,7 @@ vi.mock('@tauri-apps/api/event', () => ({ listen: tauri.listen }));
 
 import { flushSync, mount, unmount } from 'svelte';
 import Widget from '../../src/components/Widget.svelte';
+import { WIDGET_RECENT_STORAGE_KEY } from '../../src/stores/widgetNotifications';
 
 type BannerPayload = {
   kind: string;
@@ -38,6 +39,29 @@ type NotificationHistory = {
   files: Array<Record<string, unknown>>;
 };
 
+type PendingUpdateWire =
+  | { status: 'unchecked' }
+  | { status: 'absent' }
+  | {
+      status: 'pending';
+      update: {
+        version: string;
+        body?: string;
+        date?: string;
+        detectedAt?: string;
+      };
+    };
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 const originalGlobalStorage = Object.getOwnPropertyDescriptor(
   globalThis,
   'localStorage',
@@ -48,6 +72,12 @@ let component: ReturnType<typeof mount> | null = null;
 let listeners: Map<string, Listener>;
 let unlisteners: Map<string, ReturnType<typeof vi.fn>>;
 let history: NotificationHistory;
+let pendingUpdate: {
+  version: string;
+  body?: string;
+  date?: string;
+  detectedAt?: string;
+} | null;
 let failedCommands: Set<string>;
 let designSystemStyle: HTMLStyleElement;
 let popoverStyle: HTMLStyleElement;
@@ -105,6 +135,7 @@ function defaultInvoke(command: string): unknown {
   }
   if (command === 'fetch_notification_history') return history;
   if (command === 'get_activity_log') return [];
+  if (command === 'get_pending_update') return pendingUpdate;
   return undefined;
 }
 
@@ -120,6 +151,8 @@ async function waitForNativeReady(): Promise<void> {
       [
         'dm:unread-summary',
         'sync:complete',
+        'update:available',
+        'update:cleared',
         'widget:click-away',
         'widget:notification',
         'widget:occlusion',
@@ -197,6 +230,7 @@ beforeEach(() => {
   listeners = new Map();
   unlisteners = new Map();
   history = { dms: [], shares: [], files: [] };
+  pendingUpdate = null;
   failedCommands = new Set();
   installLocalStorage();
   installTauriWindow();
@@ -351,7 +385,7 @@ describe('Widget restored native standalone behavior', () => {
 
     await unmount(component!);
     component = null;
-    expect([...unlisteners.values()]).toHaveLength(5);
+    expect([...unlisteners.values()]).toHaveLength(7);
     for (const unlisten of unlisteners.values()) {
       expect(unlisten).toHaveBeenCalledOnce();
     }
@@ -512,17 +546,42 @@ describe('Widget restored native standalone behavior', () => {
         kind: 'update',
         title: 'HQ 0.10.34',
         body: 'Ready',
-        clickActionId: 'update',
+        clickActionId: 'open',
         actionId: 'update',
+        actionLabel: 'Update now',
       }),
     );
+    expect(
+      tauri.invoke.mock.calls.some(([command]) => command === 'open_inbox_window'),
+    ).toBe(true);
+
+    emitNative(
+      'widget:notification',
+      notification({
+        kind: 'update',
+        title: 'HQ 0.10.34',
+        body: 'Ready',
+        clickActionId: 'open',
+        actionId: 'update',
+        actionLabel: 'Update now',
+      }),
+    );
+    const updateAction = host.querySelector<HTMLButtonElement>(
+      '[data-testid="widget-stack"] .nr-open',
+    );
+    expect(updateAction?.textContent?.trim()).toBe('Update now');
+    updateAction!.click();
+    await vi.waitFor(() => {
+      flushSync();
+      expect(host.querySelector('[data-testid="widget-stack"]')).toBeNull();
+    });
     expect(tauri.invoke).toHaveBeenCalledWith(
       'banner_action',
       expect.objectContaining({
         action: 'update',
         payload: expect.objectContaining({
           kind: 'update',
-          clickActionId: 'update',
+          clickActionId: 'open',
         }),
       }),
     );
@@ -574,6 +633,155 @@ describe('Widget restored native standalone behavior', () => {
     expect(
       tauri.invoke.mock.calls.some(([command]) => command === 'open_inbox_window'),
     ).toBe(true);
+  });
+
+  it('rehydrates a persisted update from trusted pending state with separate actions', async () => {
+    const detectedAt = '2026-07-27T15:00:00Z';
+    pendingUpdate = {
+      version: '0.10.36-beta.1',
+      body: 'Inbox notification repair',
+      date: '2026-07-27T14:00:00Z',
+      detectedAt,
+    };
+    localStorage.setItem(
+      WIDGET_RECENT_STORAGE_KEY,
+      JSON.stringify([
+        {
+          id: 'wn-restored-update',
+          type: 'system',
+          text: 'HQ 0.10.36-beta.1 — Ready',
+          ts: Date.parse(detectedAt),
+          kind: 'update',
+          clickActionId: 'update',
+          data: { version: 'untrusted' },
+          actionId: 'update',
+          actionLabel: 'Update now',
+          expiresAt: 0,
+          unread: true,
+        },
+      ]),
+    );
+
+    mountWidget();
+    await waitForNativeReady();
+
+    host
+      .querySelector<HTMLElement>('.wm')!
+      .dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    flushSync();
+
+    const rows = [
+      ...host.querySelectorAll<HTMLElement>(
+        '[data-testid="widget-hover-list"] [data-testid="notification-row"]',
+      ),
+    ].filter((row) => row.textContent?.includes('0.10.36-beta.1'));
+    expect(rows).toHaveLength(1);
+    const row = rows[0]!;
+    expect(row.querySelector<HTMLButtonElement>('.nr-open')?.textContent?.trim()).toBe(
+      'Update now',
+    );
+
+    row.querySelector<HTMLButtonElement>('.nr-primary-action')!.click();
+    await vi.waitFor(() => {
+      expect(
+        tauri.invoke.mock.calls.some(([command]) => command === 'open_inbox_window'),
+      ).toBe(true);
+    });
+
+    row.querySelector<HTMLButtonElement>('.nr-open')!.click();
+    await vi.waitFor(() => {
+      expect(tauri.invoke).toHaveBeenCalledWith(
+        'banner_action',
+        expect.objectContaining({
+          action: 'update',
+          payload: expect.objectContaining({
+            data: expect.objectContaining({ version: '0.10.36-beta.1' }),
+          }),
+        }),
+      );
+    });
+  });
+
+  it('preserves a safe persisted update while native state is still unchecked', async () => {
+    localStorage.setItem(
+      WIDGET_RECENT_STORAGE_KEY,
+      JSON.stringify([
+        {
+          id: 'wn-persisted-update',
+          type: 'system',
+          actor: 'HQ',
+          text: 'Version 0.10.36-beta.1 is ready to install.',
+          ts: Date.parse('2026-07-27T15:00:00Z'),
+          kind: 'update',
+          clickActionId: 'open',
+          data: null,
+          expiresAt: 0,
+          unread: true,
+        },
+      ]),
+    );
+    tauri.invoke.mockImplementation(async (command: string) => {
+      if (command === 'get_pending_update') {
+        return { status: 'unchecked' } satisfies PendingUpdateWire;
+      }
+      return defaultInvoke(command);
+    });
+
+    mountWidget();
+    await waitForNativeReady();
+    host.querySelector<HTMLButtonElement>('.wm')!.click();
+    flushSync();
+
+    expect(
+      host.querySelector('[data-testid="widget-hover-list"]')?.textContent,
+    ).toContain('0.10.36-beta.1');
+    expect(
+      host
+        .querySelector('[data-testid="widget-hover-list"] .nr-open')
+        ?.textContent?.trim(),
+    ).toBe('Open');
+    expect(
+      host.querySelector('[data-testid="widget-hover-list"]')?.textContent,
+    ).not.toContain('Update now');
+  });
+
+  it('does not resurrect a cleared update when an older refresh resolves last', async () => {
+    const older = deferred<PendingUpdateWire>();
+    const newer = deferred<PendingUpdateWire>();
+    let pendingCalls = 0;
+    tauri.invoke.mockImplementation((command: string) => {
+      if (command === 'get_pending_update') {
+        pendingCalls += 1;
+        return pendingCalls === 1 ? older.promise : newer.promise;
+      }
+      return Promise.resolve(defaultInvoke(command));
+    });
+
+    mountWidget();
+    await waitForNativeReady();
+    vi.useFakeTimers();
+    emitNative('update:cleared');
+    await vi.advanceTimersByTimeAsync(300);
+    expect(pendingCalls).toBe(2);
+
+    newer.resolve({ status: 'absent' });
+    await Promise.resolve();
+    older.resolve({
+      status: 'pending',
+      update: {
+        version: '0.10.99',
+        detectedAt: '2026-07-27T15:00:00Z',
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    flushSync();
+
+    host.querySelector<HTMLButtonElement>('.wm')!.click();
+    flushSync();
+    expect(
+      host.querySelector('[data-testid="widget-hover-list"]')?.textContent ?? '',
+    ).not.toContain('0.10.99');
   });
 
   it('sends a trimmed DM quick reply and emoji reaction through the native bridge', async () => {

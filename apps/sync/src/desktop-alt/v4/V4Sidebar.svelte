@@ -79,19 +79,21 @@
   });
 
   let notifUnread = $state(0);
+  let unreadLoadGeneration = 0;
 
   async function refreshUnread() {
+    const generation = ++unreadLoadGeneration;
     try {
       const items = await loadNotificationItems();
+      if (generation !== unreadLoadGeneration) return;
       notifUnread = countUnread(items, getLastReadTs());
     } catch {
+      if (generation !== unreadLoadGeneration) return;
       notifUnread = 0;
     }
   }
 
   $effect(() => {
-    void refreshUnread();
-
     const onread = () => void refreshUnread();
     window.addEventListener('hq:notifications-read', onread);
 
@@ -101,11 +103,21 @@
       if (disposed) unlisten();
       else unlisteners.push(unlisten);
     };
-    void listen('dm:unread-summary', onread).then(track);
-    void listen('sync:complete', onread).then(track);
+    // Hydrate only after every native listener has settled. An event that
+    // lands during registration is recovered by this authoritative first
+    // refresh instead of falling through a mount gap.
+    void Promise.allSettled([
+      listen('dm:unread-summary', onread).then(track),
+      listen('sync:complete', onread).then(track),
+      listen('update:available', onread).then(track),
+      listen('update:cleared', onread).then(track),
+    ]).then(() => {
+      if (!disposed) void refreshUnread();
+    });
 
     return () => {
       disposed = true;
+      unreadLoadGeneration += 1;
       window.removeEventListener('hq:notifications-read', onread);
       for (const u of unlisteners) u();
     };

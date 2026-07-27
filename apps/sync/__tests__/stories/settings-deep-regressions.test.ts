@@ -34,11 +34,19 @@ type InvokeOptions = {
   settings?: Record<string, unknown>;
   getSettings?: () => Promise<Record<string, unknown>> | Record<string, unknown>;
   memberships?: Membership[] | (() => Membership[]);
-  pendingUpdate?: { version: string; body?: string; date?: string } | null;
+  pendingUpdate?:
+    | { version: string; body?: string; date?: string }
+    | { status: 'unchecked' | 'absent' }
+    | {
+        status: 'pending';
+        update: { version: string; body?: string; date?: string };
+      }
+    | null;
   settingsDeferred?: Promise<Record<string, unknown>>;
   save?: (prefs: Record<string, unknown>) => Promise<void>;
   cliUpdate?: { local: string | null; latest: string } | null;
   installCli?: () => Promise<{ local: string | null; latest: string }>;
+  installApp?: () => Promise<void>;
 };
 
 function deferred<T>() {
@@ -78,6 +86,7 @@ const defaultSettings = {
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
 let updateListener: ((event: { payload: { version: string } }) => void) | null = null;
+let updateClearedListener: ((event: { payload: unknown }) => void) | null = null;
 
 function stubInvoke(options: InvokeOptions = {}): void {
   let settings = { ...defaultSettings, ...(options.settings ?? {}) };
@@ -112,6 +121,8 @@ function stubInvoke(options: InvokeOptions = {}): void {
         return options.cliUpdate ?? null;
       case 'install_hq_cli_update':
         return options.installCli?.();
+      case 'install_update':
+        return options.installApp?.();
       case 'get_hq_version':
         return '15.0.16';
       case 'get_pending_update':
@@ -163,8 +174,14 @@ beforeEach(() => {
   host = document.createElement('div');
   document.body.appendChild(host);
   updateListener = null;
-  tauri.listen.mockImplementation(async (event: string, callback: typeof updateListener) => {
-    if (event === 'update:available') updateListener = callback;
+  updateClearedListener = null;
+  tauri.listen.mockImplementation(async (event: string, callback: unknown) => {
+    if (event === 'update:available') {
+      updateListener = callback as typeof updateListener;
+    }
+    if (event === 'update:cleared') {
+      updateClearedListener = callback as typeof updateClearedListener;
+    }
     return vi.fn();
   });
 });
@@ -178,7 +195,12 @@ afterEach(async () => {
 
 describe('Settings deep regressions', () => {
   it('hydrates a pending app update and reacts to later background update events', async () => {
-    stubInvoke({ pendingUpdate: { version: '0.10.34' } });
+    stubInvoke({
+      pendingUpdate: {
+        status: 'pending',
+        update: { version: '0.10.34' },
+      },
+    });
     await mountSettings();
     await waitForSettingsReady();
 
@@ -191,6 +213,42 @@ describe('Settings deep regressions', () => {
     updateListener?.({ payload: { version: '0.10.35' } });
     flushSync();
     expect(host.textContent).toContain('v0.10.35 ready');
+
+    expect(updateClearedListener).toBeTypeOf('function');
+    updateClearedListener?.({ payload: undefined });
+    flushSync();
+    expect(host.textContent).not.toContain('v0.10.35 ready');
+    expect(host.querySelector('[data-testid="settings-install-app-update"]')).toBeNull();
+  });
+
+  it('clears a stale app-install failure when native update state clears', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    stubInvoke({
+      pendingUpdate: {
+        status: 'pending',
+        update: { version: '0.10.34' },
+      },
+      installApp: async () => {
+        throw new Error('signature rejected');
+      },
+    });
+    await mountSettings();
+    await waitForSettingsReady();
+    const install = await vi.waitFor(() => {
+      const match = host.querySelector<HTMLButtonElement>(
+        '[data-testid="settings-install-app-update"]',
+      );
+      expect(match).toBeTruthy();
+      return match!;
+    });
+
+    install.click();
+    await vi.waitFor(() => expect(host.textContent).toContain('Install failed'));
+    updateClearedListener?.({ payload: undefined });
+    flushSync();
+
+    expect(host.textContent).not.toContain('Install failed');
+    consoleError.mockRestore();
   });
 
   it('revalidates the default recording company when memberships change on focus', async () => {
