@@ -16,12 +16,14 @@ const ciOverlay = JSON.parse(
 );
 
 describe('Windows production installer E2E', () => {
-  it('builds an unsigned production NSIS package with the release sidecar overlay', () => {
+  it('builds MSI and NSIS packages with the release and MSI version overlays', () => {
     expect(workflow).toContain('windows-installer-e2e:');
-    expect(workflow).toContain('installer E2E (x64 NSIS)');
-    expect(workflow).toContain('--bundles nsis');
+    expect(workflow).toContain('installer E2E (x64 MSI + NSIS)');
+    expect(workflow).toContain('--bundles msi nsis');
     expect(workflow).toContain('--config src-tauri/tauri.windows.release.conf.json');
     expect(workflow).toContain('--config src-tauri/tauri.windows.ci.conf.json');
+    expect(workflow).toContain('--config $env:TAURI_MSI_VERSION_CONFIG');
+    expect(workflow).toContain('Verify prerelease MSI package');
     expect(ciOverlay.bundle?.createUpdaterArtifacts).toBe(false);
   });
 
