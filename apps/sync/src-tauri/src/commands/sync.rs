@@ -48,8 +48,8 @@ use tauri::{AppHandle, Emitter};
 use crate::commands::cognito;
 use crate::commands::config::{ensure_machine_id, HqConfig, MenubarPrefs};
 use crate::commands::process::{
-    cancel_process_for, cancel_process_impl, deregister_process_for, registration_for_handle,
-    run_process_impl, try_register_handle, ProcessEvent, SpawnArgs,
+    cancel_process_for, cancel_process_impl, deregister_process_for, is_expected_start_abort,
+    run_process_impl, try_acquire_handle, ProcessEvent, SpawnArgs,
 };
 use crate::commands::status::{journal_for_sync_complete, write_journal};
 use crate::commands::vault_client::VaultClient;
@@ -842,14 +842,12 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
     eprintln!("[sync] start_sync invoked");
 
     // Atomically check-and-register to prevent concurrent syncs (TOCTOU-safe)
-    if !try_register_handle(SYNC_HANDLE) {
+    let Some(sync_registration) = try_acquire_handle(SYNC_HANDLE) else {
         log("sync", "BAIL: already running");
         #[cfg(debug_assertions)]
         eprintln!("[sync] BAIL: already running");
         return Err("Sync is already running".to_string());
-    }
-    let sync_registration = registration_for_handle(SYNC_HANDLE)
-        .expect("a successfully registered sync handle must have an identity");
+    };
 
     // Best-effort machineId bootstrap — log on failure but do not abort sync.
     if let Err(e) = ensure_machine_id() {
@@ -1337,22 +1335,26 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
         });
 
         if let Err(e) = result {
-            log("sync", &format!("run_process_impl error: {e}"));
-            // Spawn failures happen before the runner produces any
-            // stderr/stdout, so there are no breadcrumbs to attach — capture an
-            // explicit event (e.g. `npx` failing to resolve
-            // `@indigoai-us/hq-cloud@<ver>`, a broken toolchain). Otherwise the
-            // user clicks Sync Now, nothing happens, and nothing reaches
-            // #hq-alerts.
-            capture_sync_error(None, "(spawn)", &e);
-            let _ = app_bg.emit(
-                EVENT_SYNC_ERROR,
-                crate::events::SyncErrorEvent {
-                    company: None,
-                    path: "(spawn)".to_string(),
-                    message: e,
-                },
-            );
+            if is_expected_start_abort(&e) {
+                log("sync", &format!("runner start aborted: {e}"));
+            } else {
+                log("sync", &format!("run_process_impl error: {e}"));
+                // Spawn failures happen before the runner produces any
+                // stderr/stdout, so there are no breadcrumbs to attach — capture an
+                // explicit event (e.g. `npx` failing to resolve
+                // `@indigoai-us/hq-cloud@<ver>`, a broken toolchain). Otherwise the
+                // user clicks Sync Now, nothing happens, and nothing reaches
+                // #hq-alerts.
+                capture_sync_error(None, "(spawn)", &e);
+                let _ = app_bg.emit(
+                    EVENT_SYNC_ERROR,
+                    crate::events::SyncErrorEvent {
+                        company: None,
+                        path: "(spawn)".to_string(),
+                        message: e,
+                    },
+                );
+            }
         }
     });
 

@@ -47,7 +47,7 @@ use windows::Win32::System::{
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Opaque identity for one ownership period of a reusable process handle.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ProcessRegistration(u64);
 
 impl ProcessRegistration {
@@ -97,9 +97,17 @@ impl ProcessEntry {
 
 static PROCESS_REGISTRY: OnceLock<Arc<Mutex<HashMap<String, ProcessEntry>>>> = OnceLock::new();
 static NEXT_PROCESS_REGISTRATION: AtomicU64 = AtomicU64::new(0);
+#[cfg(unix)]
+static PENDING_ESCALATIONS: OnceLock<Arc<Mutex<HashMap<(String, ProcessRegistration), u32>>>> =
+    OnceLock::new();
 
 fn process_registry() -> &'static Arc<Mutex<HashMap<String, ProcessEntry>>> {
     PROCESS_REGISTRY.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
+}
+
+#[cfg(unix)]
+fn pending_escalations() -> &'static Arc<Mutex<HashMap<(String, ProcessRegistration), u32>>> {
+    PENDING_ESCALATIONS.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
 }
 
 fn next_process_registration() -> ProcessRegistration {
@@ -118,19 +126,27 @@ pub fn pre_register_handle(handle: &str) -> ProcessRegistration {
     registration
 }
 
-/// Atomically check-and-register a handle. Returns `true` if the handle was
-/// newly registered, `false` if it was already present (i.e. a process is
-/// already running under this handle).
-pub fn try_register_handle(handle: &str) -> bool {
+/// Atomically acquire a public handle and return the opaque registration that
+/// identifies this ownership period. Callers must keep this token instead of
+/// looking it up after release/reuse can race them.
+pub fn try_acquire_handle(handle: &str) -> Option<ProcessRegistration> {
     use std::collections::hash_map::Entry;
     let mut reg = process_registry().lock().unwrap();
     match reg.entry(handle.to_string()) {
-        Entry::Occupied(_) => false,
+        Entry::Occupied(_) => None,
         Entry::Vacant(v) => {
-            v.insert(ProcessEntry::new(next_process_registration()));
-            true
+            let registration = next_process_registration();
+            v.insert(ProcessEntry::new(registration));
+            Some(registration)
         }
     }
+}
+
+/// Compatibility wrapper for callers that only need a singleton check. New
+/// process owners should use [`try_acquire_handle`] so identity acquisition is
+/// atomic with registration.
+pub fn try_register_handle(handle: &str) -> bool {
+    try_acquire_handle(handle).is_some()
 }
 
 pub fn registration_for_handle(handle: &str) -> Option<ProcessRegistration> {
@@ -278,6 +294,14 @@ pub fn is_cancelled_for(handle: &str, registration: ProcessRegistration) -> bool
         .filter(|entry| entry.registration == registration)
         .map(|entry| entry.cancelled)
         .unwrap_or(false)
+}
+
+/// A run that was cancelled or superseded between preflight and attachment is
+/// expected control flow. Callers must not turn it into a Sentry capture or a
+/// user-facing spawn failure.
+pub fn is_expected_start_abort(error: &str) -> bool {
+    error.starts_with("process registration was cancelled before")
+        || error.starts_with("process registration expired before")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -786,17 +810,52 @@ where
 // Cancellation
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Record a cancelled process group until its bounded SIGKILL escalation has
+/// run. The active registry can then be released for a replacement without
+/// losing the old generation's escalation authority.
+#[cfg(unix)]
+fn arm_pending_escalation(handle: &str, registration: ProcessRegistration, pid: u32) {
+    pending_escalations()
+        .lock()
+        .unwrap()
+        .insert((handle.to_string(), registration), pid);
+}
+
+#[cfg(unix)]
+fn clear_pending_escalation(handle: &str, registration: ProcessRegistration) {
+    pending_escalations()
+        .lock()
+        .unwrap()
+        .remove(&(handle.to_string(), registration));
+}
+
 /// Check the exact handle owner immediately before a delayed escalation. A
 /// replacement must match both opaque registration and PID, not just handle.
+/// If the matching owner was deliberately released before the grace expires,
+/// a registration-scoped pending escalation preserves authority over only its
+/// original process group.
 fn should_escalate_cancellation(handle: &str, registration: ProcessRegistration, pid: u32) -> bool {
-    process_registry()
+    let active_owner_matches = process_registry()
         .lock()
         .unwrap()
         .get(handle)
         .map(|entry| {
             entry.registration == registration && entry.pid == Some(pid) && entry.cancelled
         })
-        .unwrap_or(false)
+        .unwrap_or(false);
+    if active_owner_matches {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        return pending_escalations()
+            .lock()
+            .unwrap()
+            .get(&(handle.to_string(), registration))
+            .is_some_and(|pending_pid| *pending_pid == pid);
+    }
+    #[cfg(not(unix))]
+    false
 }
 
 fn cancel_process_matching(
@@ -869,6 +928,7 @@ fn cancel_process_matching(
             return attempt;
         };
 
+        arm_pending_escalation(handle, registration, pid);
         let _ = signal::kill(Pid::from_raw(-(pid as i32)), Signal::SIGTERM);
         let handle_owned = handle.to_string();
         thread::spawn(move || {
@@ -876,6 +936,7 @@ fn cancel_process_matching(
             if should_escalate_cancellation(&handle_owned, registration, pid) {
                 let _ = signal::kill(Pid::from_raw(-(pid as i32)), Signal::SIGKILL);
             }
+            clear_pending_escalation(&handle_owned, registration);
         });
         return attempt;
     }
@@ -1037,6 +1098,34 @@ mod registry_tests {
     use super::*;
 
     #[test]
+    fn acquire_handle_returns_its_registration_without_a_follow_up_lookup() {
+        let handle = "test-process-atomic-acquire";
+
+        let registration = try_acquire_handle(handle).expect("first acquisition succeeds");
+        assert_eq!(registration_for_handle(handle), Some(registration));
+        assert!(
+            try_acquire_handle(handle).is_none(),
+            "a concurrent owner cannot acquire the same handle"
+        );
+
+        assert!(deregister_process_for(handle, registration));
+    }
+
+    #[test]
+    fn cancelled_or_expired_pre_attach_runs_are_expected_start_aborts() {
+        assert!(is_expected_start_abort(
+            "process registration was cancelled before 'fixture' could start"
+        ));
+        assert!(is_expected_start_abort(
+            "process registration expired before 'fixture' could start"
+        ));
+        assert!(
+            !is_expected_start_abort("failed to spawn fixture"),
+            "real spawn failures must remain reportable"
+        );
+    }
+
+    #[test]
     fn stale_registration_cannot_cancel_or_escalate_against_a_replacement() {
         let handle = "test-process-stale-registration";
         let old = pre_register_handle(handle);
@@ -1152,6 +1241,37 @@ mod registry_tests {
         assert!(!should_escalate_cancellation(handle, registration, 41));
         assert!(should_escalate_cancellation(handle, registration, 42));
         assert!(deregister_process_for(handle, registration));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pending_escalation_survives_handle_release_without_authorizing_replacement() {
+        let handle = "test-process-pending-escalation-tombstone";
+        let original = pre_register_handle(handle);
+        assert_eq!(register_process(handle, original, 41), Some(false));
+        arm_pending_escalation(handle, original, 41);
+
+        // Force-clear can release A's active handle while its bounded Unix
+        // SIGKILL escalation is still pending. B is free to acquire the public
+        // handle, but the pending action may still target only A's old process
+        // group and PID.
+        assert!(deregister_process_for(handle, original));
+        let replacement = pre_register_handle(handle);
+        assert_eq!(register_process(handle, replacement, 42), Some(false));
+
+        assert!(should_escalate_cancellation(handle, original, 41));
+        assert!(
+            !should_escalate_cancellation(handle, original, 42),
+            "the tombstone is bound to A's original PID"
+        );
+        assert!(
+            !should_escalate_cancellation(handle, replacement, 42),
+            "A's pending escalation never grants authority to B"
+        );
+
+        clear_pending_escalation(handle, original);
+        assert!(!should_escalate_cancellation(handle, original, 41));
+        assert!(deregister_process_for(handle, replacement));
     }
 
     #[test]

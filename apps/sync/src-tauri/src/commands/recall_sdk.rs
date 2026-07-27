@@ -61,8 +61,8 @@ use tauri::{AppHandle, Emitter};
 
 use crate::commands::cognito;
 use crate::commands::process::{
-    cancel_process_impl, deregister_process_for, registration_for_handle,
-    run_process_with_stdin_impl, try_register_handle, ProcessEvent, SpawnArgs,
+    cancel_process_impl, deregister_process_for, is_expected_start_abort,
+    run_process_with_stdin_impl, try_acquire_handle, ProcessEvent, SpawnArgs,
 };
 use crate::commands::sync::resolve_vault_api_url;
 use crate::events::{
@@ -245,7 +245,7 @@ pub async fn meeting_detect_feature_enabled() -> Result<bool, String> {
 /// the user grants those permissions — so meeting-detect starts working
 /// immediately without waiting for the next app launch.
 ///
-/// Idempotent: the singleton handle check (`try_register_handle`) makes a
+/// Idempotent: the singleton handle acquisition (`try_acquire_handle`) makes a
 /// second call a no-op while the SDK is already running.
 ///
 /// On any failure (binary missing, spawn error) the function logs
@@ -271,12 +271,10 @@ pub async fn start_recall_sdk(app: AppHandle) -> Result<(), String> {
     }
 
     // ── 1. Check the singleton — don't double-start ──────────────────────────
-    if !try_register_handle(SDK_HANDLE) {
+    let Some(sdk_registration) = try_acquire_handle(SDK_HANDLE) else {
         log(LOG_TAG, "start_recall_sdk: already running (no-op)");
         return Ok(());
-    }
-    let sdk_registration = registration_for_handle(SDK_HANDLE)
-        .expect("a successfully registered SDK handle must have an identity");
+    };
 
     // ── 2. Find the SDK binary ───────────────────────────────────────────────
     let bin_path = match find_sdk_binary() {
@@ -528,10 +526,14 @@ pub async fn start_recall_sdk(app: AppHandle) -> Result<(), String> {
         );
 
         if let Err(e) = result {
-            log(
-                LOG_TAG,
-                &format!("RECALL_SDK_UNAVAILABLE: spawn failed: {e}"),
-            );
+            if is_expected_start_abort(&e) {
+                log(LOG_TAG, &format!("SDK start aborted: {e}"));
+            } else {
+                log(
+                    LOG_TAG,
+                    &format!("RECALL_SDK_UNAVAILABLE: spawn failed: {e}"),
+                );
+            }
         }
     });
 
