@@ -237,7 +237,21 @@ pub async fn check_once(app: &AppHandle) -> Result<(), String> {
 /// Spawn the background loop. First check fires 5s after launch (before the
 /// soft updater's 10s), then every 6h. Errors are logged but never propagate
 /// — a flaky network must not break the loop.
+///
+/// Debug builds never arm the gate: a `tauri dev` binary reports the repo's
+/// package version, which routinely trails the fleet minimum, so the gate's
+/// hard-yank (download latest + restart) silently killed every dev run a few
+/// minutes in — four consecutive runs before this was root-caused
+/// (2026-07-27). The gate exists to yank known-bad *releases*; a local dev
+/// build is not a release.
 pub fn setup_version_gate(app: &AppHandle) {
+    if cfg!(debug_assertions) {
+        log(
+            "version-gate",
+            "debug build — hard version gate disarmed (dev binaries trail the fleet minimum by design)",
+        );
+        return;
+    }
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(INITIAL_DELAY).await;

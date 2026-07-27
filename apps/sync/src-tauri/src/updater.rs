@@ -217,6 +217,18 @@ pub async fn is_indigo_user() -> bool {
 /// and every 6 hours thereafter. Emits `update:available` events but does NOT
 /// auto-install — the user must initiate installation.
 pub fn setup_update_checker(app: &AppHandle) {
+    // Debug builds never check or nag: a dev binary always trails the release
+    // channel, so the nag fires within seconds — and one click on the banner's
+    // "Update now" replaces the dev bundle IN PLACE with the store build and
+    // restarts (observed live 2026-07-27: a review build silently became
+    // v0.10.35-beta.2 mid-session). Pairs with the version_gate debug disarm.
+    if cfg!(debug_assertions) {
+        log(
+            "updater",
+            "debug build — update checker disarmed (dev binaries always trail the release channel)",
+        );
+        return;
+    }
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
         // Wait 10 seconds for app to settle

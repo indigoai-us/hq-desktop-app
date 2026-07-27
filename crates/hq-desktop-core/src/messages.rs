@@ -88,9 +88,20 @@ pub struct Channel {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub visibility: Option<String>,
     /// Caller's membership: "joined" | "invited" | "none".
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ///
+    /// Wire compat: newer servers send a membership OBJECT
+    /// (`{joined, following, muted, role, source, lastReadAt}`) where older
+    /// ones sent the plain string. The deserializer accepts both and folds
+    /// the object down to the string this client's gating logic expects —
+    /// without this, `list_channels` fails to parse against current prod and
+    /// the entire channels rail silently renders empty.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_membership"
+    )]
     pub membership: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, alias = "unreadCount", skip_serializing_if = "Option::is_none")]
     pub unread: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub member_count: Option<u32>,
@@ -102,6 +113,32 @@ pub struct Channel {
     /// unnamed group DM by its people. Present only for group-scoped channels.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub members: Option<Vec<ChannelParticipant>>,
+}
+
+/// Accept the caller-membership field in BOTH wire shapes: the legacy plain
+/// string ("joined" | "invited" | "none") and the newer object
+/// (`{joined: bool, ...}`), folded to the string form. `joined: false` maps to
+/// "invited" so the rail shows the join CTA rather than a dead room.
+fn de_membership<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum MembershipWire {
+        Legacy(String),
+        Object {
+            #[serde(default)]
+            joined: bool,
+        },
+    }
+    let wire: Option<MembershipWire> = Option::deserialize(deserializer)?;
+    Ok(wire.map(|w| match w {
+        MembershipWire::Legacy(s) => s,
+        MembershipWire::Object { joined } => {
+            if joined { "joined" } else { "invited" }.to_string()
+        }
+    }))
 }
 
 /// A group-DM participant as returned on the channels list — enough to label the
@@ -481,6 +518,34 @@ mod tests {
         assert_eq!(c.membership.as_deref(), Some("invited"));
         assert_eq!(c.unread, Some(3));
         assert_eq!(c.member_count, Some(12));
+    }
+
+    #[test]
+    fn channel_membership_accepts_the_object_wire_shape() {
+        // Newer servers send a membership OBJECT; it folds to the legacy
+        // string so the rail's gating logic is untouched.
+        let c: Channel = serde_json::from_value(serde_json::json!({
+            "channelId": "chn_1",
+            "name": "hq-rooms-pilot",
+            "scope": "company",
+            "unreadCount": 8,
+            "membership": {
+                "joined": true, "following": true, "muted": false,
+                "role": "owner", "source": "explicit", "lastReadAt": null
+            }
+        }))
+        .unwrap();
+        assert_eq!(c.membership.as_deref(), Some("joined"));
+        assert_eq!(c.unread, Some(8));
+
+        let invited: Channel = serde_json::from_value(serde_json::json!({
+            "channelId": "chn_2",
+            "name": "browse-only",
+            "scope": "company",
+            "membership": { "joined": false }
+        }))
+        .unwrap();
+        assert_eq!(invited.membership.as_deref(), Some("invited"));
     }
 
     #[test]
