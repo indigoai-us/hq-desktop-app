@@ -13,9 +13,9 @@ use tauri::{AppHandle, Emitter};
 
 use crate::commands::process::{
     cancel_process_for, cancel_process_impl, deregister_process, deregister_process_for,
-    is_cancelled, is_cancelled_for, is_registered, lookup_pid, process_identity_for,
-    registration_for_handle, run_process_impl, try_register_handle, CancellationAttempt,
-    ProcessEvent, ProcessRegistration,
+    is_cancelled, is_cancelled_for, is_expected_start_abort, is_registered, lookup_pid,
+    process_identity_for, run_process_impl, try_acquire_handle, CancellationAttempt, ProcessEvent,
+    ProcessRegistration,
 };
 use crate::commands::status::{journal_for_daemon_sync_complete, write_journal};
 use crate::commands::sync::RunTotals;
@@ -527,11 +527,9 @@ fn force_clear_daemon_guard_impl(daemon_alive_recheck: bool) {
 /// Returns the handle string on success.
 #[tauri::command]
 pub fn start_daemon(app: AppHandle) -> Result<String, String> {
-    if !try_register_handle(DAEMON_HANDLE) {
+    let Some(daemon_registration) = try_acquire_handle(DAEMON_HANDLE) else {
         return Err("Daemon is already starting".to_string());
-    }
-    let daemon_registration = registration_for_handle(DAEMON_HANDLE)
-        .expect("a successfully registered daemon handle must have an identity");
+    };
     // Stamp the guard acquisition so the supervisor can bound how long a start
     // may hold it with no live daemon before treating it as wedged. The
     // generation lets this start's exit clear only its own stamp, never a
@@ -773,17 +771,21 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
         clear_daemon_guard_stamp_for(guard_generation);
 
         if let Err(e) = result {
-            log("daemon", &format!("spawn failed: {e}"));
-            set_lifecycle_state(
-                WatchDaemonState::Stopped,
-                DaemonFailureCategory::SpawnFailed,
-            );
-            // The watcher never started — Sync is silently dead until restart.
-            crate::commands::sync::capture_sync_error(
-                None,
-                "(auto-sync)",
-                &format!("auto-sync watcher failed to spawn: {e}"),
-            );
+            if is_expected_start_abort(&e) {
+                log("daemon", &format!("watcher start aborted: {e}"));
+            } else {
+                log("daemon", &format!("spawn failed: {e}"));
+                set_lifecycle_state(
+                    WatchDaemonState::Stopped,
+                    DaemonFailureCategory::SpawnFailed,
+                );
+                // The watcher never started — Sync is silently dead until restart.
+                crate::commands::sync::capture_sync_error(
+                    None,
+                    "(auto-sync)",
+                    &format!("auto-sync watcher failed to spawn: {e}"),
+                );
+            }
         }
     });
 
@@ -1396,7 +1398,9 @@ mod tests {
 
     #[test]
     fn wedged_start_guard_is_cleared_so_respawn_proceeds() {
-        use crate::commands::process::{deregister_process, try_register_handle};
+        use crate::commands::process::{
+            deregister_process, registration_for_handle, try_register_handle,
+        };
         let _serial = GUARD_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         clear_daemon_guard_stamp();
 
@@ -1446,7 +1450,9 @@ mod tests {
 
     #[test]
     fn failed_start_releases_guard_immediately() {
-        use crate::commands::process::{deregister_process, try_register_handle};
+        use crate::commands::process::{
+            deregister_process, registration_for_handle, try_register_handle,
+        };
         let _serial = GUARD_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         clear_daemon_guard_stamp();
 
