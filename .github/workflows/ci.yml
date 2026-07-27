@@ -239,7 +239,7 @@ jobs:
           git worktree add --detach "$BASE_DIR" "$BASE_SHA"
           node scripts/process-identity-base-hook.mjs "$BASE_DIR"
           cp -R apps/sync/dist "$BASE_DIR/apps/sync/dist"
-          cp -R apps/sync/src-tauri/resources/recall/node_modules "$BASE_DIR/apps/sync/src-tauri/resources/recall/node_modules"
+          cp -R apps/sync/sidecar/recall-sdk-bridge/node_modules "$BASE_DIR/apps/sync/sidecar/recall-sdk-bridge/"
           cd "$BASE_DIR/apps/sync/src-tauri"
           cargo build --bin hq-sync-menubar
       - name: Run exact-base wrong-owner reproduction
