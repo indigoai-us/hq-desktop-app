@@ -263,6 +263,20 @@ pub struct VendSelfResult {
 pub struct TelemetryOptInResponse {
     pub enabled: bool,
     pub updated_at: Option<String>,
+    /// `Some(true)` when the server has NO recorded consent for this caller —
+    /// distinct from `enabled: false`, which is a real opt-out.
+    ///
+    /// `None` means the server never sent the field, i.e. it predates the
+    /// conditional-write rollout. That is load-bearing: such a server also
+    /// IGNORES `onlyIfUnset` and writes unconditionally, so a replay against it
+    /// could overwrite a real choice. Treating `None` as "do not replay" makes
+    /// this field double as the capability probe.
+    #[serde(default)]
+    pub unset: Option<bool>,
+    /// The `prs_*` this answer belongs to, so a client can refuse to replay a
+    /// cached answer that belongs to a different account.
+    #[serde(default)]
+    pub person_uid: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -610,6 +624,27 @@ impl VaultClient {
         self.handle_response(resp).await
     }
 
+    /// The Cognito `sub` carried by THIS client's bearer token, i.e. the account
+    /// its requests are actually authenticated as.
+    ///
+    /// Deliberately derived from the client's own token rather than from
+    /// whatever is currently on disk: signing out does not cancel an in-flight
+    /// sync, so a long-running operation can still be holding account A's token
+    /// after account B has signed in. Anything that compares a local record
+    /// against "who am I" must use the identity the requests will carry, or it
+    /// can apply one account's decision under another's credentials.
+    ///
+    /// The bearer here is a Cognito ACCESS token; the decoder is named for the
+    /// id_token but only base64-decodes the JWT payload, and `sub` is present on
+    /// both. A malformed/opaque token yields `None`, which callers treat as
+    /// "cannot prove identity" — the safe direction.
+    pub fn caller_subject(&self) -> Option<String> {
+        hq_desktop_core::cognito::decode_id_token_claims(&self.auth_token)
+            .ok()
+            .and_then(|c| c.sub)
+            .filter(|s| !s.is_empty())
+    }
+
     /// `GET /v1/usage/opt-in` — check whether the authenticated user has opted in to telemetry.
     pub async fn get_telemetry_opt_in(&self) -> Result<TelemetryOptInResponse, VaultClientError> {
         let resp = self
@@ -622,12 +657,36 @@ impl VaultClient {
     }
 
     /// `POST /v1/usage/opt-in` — persist the authenticated user's telemetry preference.
+    ///
+    /// The DELIBERATE-CHOICE form: writes unconditionally, because an explicit
+    /// answer from the onboarding prompt or the settings toggle must always win.
     pub async fn post_telemetry_opt_in(&self, enabled: bool) -> Result<(), VaultClientError> {
+        self.post_telemetry_opt_in_opts(enabled, false).await
+    }
+
+    /// `POST /v1/usage/opt-in` with an optional "only if never answered" guard.
+    ///
+    /// `only_if_unset` is for REPLAYING an answer the user already gave, where
+    /// the cached copy may be stale. The server then writes only while the
+    /// consent has never been recorded, so a real opt-out made from another
+    /// device can never be clobbered. Losing that race answers 200 with
+    /// `applied: false` — a success, because someone recorded a real answer
+    /// first and it stands.
+    pub async fn post_telemetry_opt_in_opts(
+        &self,
+        enabled: bool,
+        only_if_unset: bool,
+    ) -> Result<(), VaultClientError> {
+        let payload = if only_if_unset {
+            serde_json::json!({ "enabled": enabled, "onlyIfUnset": true })
+        } else {
+            serde_json::json!({ "enabled": enabled })
+        };
         let resp = self
             .client
             .post(format!("{}{}", self.base_url, "/v1/usage/opt-in"))
             .bearer_auth(&self.auth_token)
-            .json(&serde_json::json!({ "enabled": enabled }))
+            .json(&payload)
             .send()
             .await?;
         let status = resp.status();

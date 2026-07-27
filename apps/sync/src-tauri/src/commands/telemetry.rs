@@ -174,10 +174,166 @@ fn read_local_telemetry_enabled() -> bool {
 }
 
 fn write_menubar_telemetry_pref_to(path: &Path, enabled: bool) -> Result<(), String> {
+    // `telemetryOptInAnsweredAt` is the PROVENANCE marker. `telemetryEnabled`
+    // alone cannot stand in for an answer: it is also a settings field that
+    // `get_settings` defaults to `true` when absent, and the settings mutation
+    // queue then persists the whole defaulted object the next time any
+    // unrelated preference changes. Replaying that would manufacture consent
+    // out of a default.
+    //
+    // This function is the single chokepoint a real answer flows through — both
+    // the onboarding prompt and the settings toggle call it — so stamping here
+    // means exactly "the user answered, at this moment".
+    // The Cognito `sub` binds the answer to the account giving it. It is
+    // available the instant the user answers, unlike the `prs_*` person entity,
+    // which may not exist yet — that gap is the whole reason the repair below
+    // exists.
+    //
+    // Writing it here also INVALIDATES any previous account's binding: if A
+    // answered on this machine and B later toggles the setting, B's answer
+    // overwrites the subject and the stale `prs_*` from A, so B's own answer is
+    // never rejected as someone else's.
+    let subject = current_cognito_subject();
     hq_desktop_core::first_run::merge_menubar_flags(
         path,
-        &[("telemetryEnabled", Value::Bool(enabled))],
+        &[
+            ("telemetryEnabled", Value::Bool(enabled)),
+            (
+                "telemetryOptInAnsweredAt",
+                Value::String(chrono::Utc::now().to_rfc3339()),
+            ),
+            (
+                "telemetryOptInSub",
+                subject.map(Value::String).unwrap_or(Value::Null),
+            ),
+            // Cleared, not carried over: this record now belongs to whoever is
+            // signed in, and the person uid is re-established by the repair.
+            ("telemetryOptInPersonUid", Value::Null),
+        ],
     )
+}
+
+/// Cognito `sub` of the signed-in account, if one can be read.
+///
+/// Best-effort: with no readable token the answer is stored unbound, which the
+/// replay guard treats as non-replayable — the safe direction.
+fn current_cognito_subject() -> Option<String> {
+    hq_desktop_core::cognito::read_tokens_from_file()
+        .ok()
+        .flatten()
+        .and_then(|t| t.id_token)
+        .and_then(|tok| hq_desktop_core::cognito::decode_id_token_claims(&tok).ok())
+        .and_then(|c| c.sub)
+        .filter(|s| !s.is_empty())
+}
+
+/// Re-send the onboarding consent once the caller's person entity exists, and
+/// record which account it belongs to.
+///
+/// THE RACE THIS FIXES: onboarding posts the consent immediately after
+/// `oauth_exchange_code` succeeds (`OnboardingWizard.svelte`), but
+/// `/v1/usage/opt-in` resolves the caller's `prs_*` person entity and 404s with
+/// `no-person-entity` when none exists yet. On a fresh install that entity is
+/// only created later, during personal provisioning — so the early POST
+/// reliably fails, its error is only `console.error`'d, and the consent is
+/// never persisted. The server then reads absence as "opted out", the telemetry
+/// collector goes quiet, and the person shows as "not opted in" forever.
+///
+/// Measured in production before this fix: 22 of 33 active Indigo members had
+/// NO `telemetryOptIn` attribute at all, against only 2 genuine opt-outs.
+///
+/// Runs at most once per (machine, person): once the local record names this
+/// person, there is nothing left to repair and this returns immediately, so the
+/// steady-state sync path pays nothing. Entirely best-effort — a failure here
+/// must never disturb provisioning or sync.
+///
+/// FOUR guards, each closing a way this could otherwise create consent the user
+/// never gave:
+///   1. A recorded answer must exist (`enabled`).
+///   2. It must carry provenance (`telemetryOptInAnsweredAt`) — a bare
+///      `telemetryEnabled` may just be a persisted settings default.
+///   3. It must be bound to EXACTLY this account. Sign-out does not clear
+///      `menubar.json`, so after A signs out and B signs in it still holds A's
+///      answer; replaying that would opt B in without B ever being asked. An
+///      UNBOUND record is not replayable either — unbound records are produced
+///      routinely, not just by older versions, so "unbound" proves nothing.
+///   4. The server must report `unset` — proving both that no answer is
+///      recorded AND that this server understands `onlyIfUnset`. An older
+///      server silently ignores that flag and writes unconditionally, so
+///      without this probe the "conditional" replay could clobber a real
+///      choice.
+pub async fn reassert_consent_for_person(vault: &VaultClient, person_uid: &str) {
+    let Ok(path) = crate::util::paths::menubar_json_path() else {
+        return;
+    };
+    let record = hq_desktop_core::first_run::read_menubar_consent(&path);
+
+    // Already repaired for this account — nothing to do.
+    if record.person_uid.as_deref() == Some(person_uid) {
+        return;
+    }
+
+    // Guards 1-3. Keyed on the Cognito subject the answer was bound to when it
+    // was given — and read from the VAULT CLIENT'S OWN token, not from whatever
+    // is on disk right now. Signing out does not cancel an in-flight sync, so
+    // this code can run holding account A's token after account B has signed in
+    // and answered; checking against B's on-disk record while POSTing as A
+    // would apply B's choice to A.
+    let Some(subject) = vault.caller_subject() else {
+        return;
+    };
+    let Some(enabled) = record.replayable_for(&subject) else {
+        return;
+    };
+
+    // Guard 4: only act when the server itself says there is no recorded answer.
+    // `unset: None` means the server predates this field — and therefore also
+    // ignores `onlyIfUnset` — so we must not write at all.
+    match vault.get_telemetry_opt_in().await {
+        Ok(resp) if resp.unset == Some(true) => {}
+        Ok(resp) => {
+            // Consent IS recorded — nothing to repair. Record that fact so this
+            // stops re-checking: `write_menubar_telemetry_pref` clears the
+            // person binding on every deliberate answer, so without this the
+            // early return never fires again and each sync repeats this GET
+            // forever (twice, on the cache-miss path).
+            //
+            // Only bind when the server names the same person we resolved, so
+            // a mismatched response can never mislabel the record.
+            if resp.person_uid.as_deref() == Some(person_uid) {
+                let _ = hq_desktop_core::first_run::merge_menubar_flags(
+                    &path,
+                    &[(
+                        "telemetryOptInPersonUid",
+                        Value::String(person_uid.to_string()),
+                    )],
+                );
+            }
+            return;
+        }
+        Err(err) => {
+            eprintln!("[telemetry] consent state unreadable, skipping re-assert: {err}");
+            return;
+        }
+    }
+
+    match vault.post_telemetry_opt_in_opts(enabled, true).await {
+        Ok(()) => {
+            // Bind the record to this account so we do not repeat the work, and
+            // so the hq-cloud sync runner can safely replay it later (it refuses
+            // to replay an answer that is not bound to the signed-in account).
+            let _ = hq_desktop_core::first_run::merge_menubar_flags(
+                &path,
+                &[(
+                    "telemetryOptInPersonUid",
+                    Value::String(person_uid.to_string()),
+                )],
+            );
+        }
+        Err(err) => {
+            eprintln!("[telemetry] consent re-assert failed (non-fatal): {err}");
+        }
+    }
 }
 
 #[tauri::command]
