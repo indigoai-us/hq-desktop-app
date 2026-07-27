@@ -232,7 +232,10 @@ jobs:
       - name: Build exact-base artifact with test-only probe hook
         timeout-minutes: 15
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          # This hook intentionally compiles against the known buggy parent.
+          # Using the moving PR base would eventually run the legacy hook
+          # against a registration-aware API and block unrelated pull requests.
+          BASE_SHA: 1b9802face87e7ded36186fea79272153efd95d8
           BASE_DIR: ${{ runner.temp }}/process-identity-base
           CARGO_TARGET_DIR: ${{ runner.temp }}/process-identity-base-target
         run: |

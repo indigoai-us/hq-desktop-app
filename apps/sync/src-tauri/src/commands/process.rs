@@ -34,6 +34,10 @@ use windows::core::PCWSTR;
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 #[cfg(target_os = "windows")]
 use windows::Win32::System::{
+    Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    },
     JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
         SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
@@ -304,6 +308,27 @@ pub fn is_expected_start_abort(error: &str) -> bool {
         || error.starts_with("process registration expired before")
 }
 
+/// Return every descendant of `root_pid` represented by a process-parent
+/// snapshot. Keeping this traversal platform-neutral makes the Windows
+/// pre-Job-Object cancellation path testable without a Windows fixture.
+#[cfg(any(target_os = "windows", test))]
+fn process_tree_descendants(root_pid: u32, parent_pairs: &[(u32, u32)]) -> Vec<u32> {
+    let mut descendants = Vec::new();
+    let mut frontier = vec![root_pid];
+
+    while let Some(parent_pid) = frontier.pop() {
+        for &(pid, observed_parent_pid) in parent_pairs {
+            if observed_parent_pid == parent_pid && pid != root_pid && !descendants.contains(&pid) {
+                descendants.push(pid);
+                frontier.push(pid);
+            }
+        }
+    }
+
+    descendants.sort_unstable();
+    descendants
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Platform helpers
 // ─────────────────────────────────────────────────────────────────────────────
@@ -348,7 +373,63 @@ fn terminate_unregistered_child(child: &mut std::process::Child) {
     let _ = child.wait();
 }
 
-#[cfg(not(unix))]
+#[cfg(target_os = "windows")]
+unsafe fn terminate_windows_process(pid: u32) {
+    if let Ok(process) = OpenProcess(PROCESS_TERMINATE, false, pid) {
+        let _ = TerminateProcess(process, 1);
+        let _ = CloseHandle(process);
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_process_descendants(root_pid: u32) -> Vec<u32> {
+    unsafe {
+        let Ok(snapshot) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
+            return Vec::new();
+        };
+        let mut entry = PROCESSENTRY32W {
+            dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+            ..Default::default()
+        };
+        let mut parent_pairs = Vec::new();
+        if Process32FirstW(snapshot, &mut entry).is_ok() {
+            loop {
+                parent_pairs.push((entry.th32ProcessID, entry.th32ParentProcessID));
+                entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+                if Process32NextW(snapshot, &mut entry).is_err() {
+                    break;
+                }
+            }
+        }
+        let _ = CloseHandle(snapshot);
+        process_tree_descendants(root_pid, &parent_pairs)
+    }
+}
+
+/// A cancellation can race Job Object attachment immediately after spawn. In
+/// that short interval, terminate the registered root and every descendant
+/// visible in two ToolHelp snapshots instead of killing only the launcher.
+/// The second snapshot is taken after terminating the root so it captures a
+/// descendant the launcher created while the first snapshot was in progress.
+#[cfg(target_os = "windows")]
+fn terminate_windows_process_tree(root_pid: u32) {
+    let mut descendants = windows_process_descendants(root_pid);
+    unsafe { terminate_windows_process(root_pid) };
+    descendants.extend(windows_process_descendants(root_pid));
+    descendants.sort_unstable();
+    descendants.dedup();
+    for pid in descendants.into_iter().rev() {
+        unsafe { terminate_windows_process(pid) };
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn terminate_unregistered_child(child: &mut std::process::Child) {
+    terminate_windows_process_tree(child.id());
+    let _ = child.wait();
+}
+
+#[cfg(not(any(unix, target_os = "windows")))]
 fn terminate_unregistered_child(child: &mut std::process::Child) {
     let _ = child.kill();
     let _ = child.wait();
@@ -390,8 +471,9 @@ fn assign_child_to_job(
                     if !register_job_handle(handle, registration, job.0 as isize) {
                         // The owner expired between spawning and attaching its
                         // Job Object. Closing this kill-on-close job terminates
-                        // that stale child instead of transferring ownership to
-                        // a replacement using the same public handle.
+                        // that stale child. The tree sweep also catches a
+                        // launcher descendant created before Job attachment.
+                        terminate_windows_process_tree(child.id());
                         let _ = CloseHandle(job);
                     }
                 }
@@ -914,14 +996,9 @@ fn cancel_process_matching(
             }
         } else if let Some(pid) = pid {
             // A cancellation can race the post-spawn Job Object attachment.
-            // Preserve bounded teardown for that exact registered child rather
-            // than letting a just-spawned process outlive its cancelled owner.
-            unsafe {
-                if let Ok(process) = OpenProcess(PROCESS_TERMINATE, false, pid) {
-                    let _ = TerminateProcess(process, 1);
-                    let _ = CloseHandle(process);
-                }
-            }
+            // Sweep the exact registered root and its current descendants so a
+            // launcher such as npx.cmd cannot leave Node outside containment.
+            terminate_windows_process_tree(pid);
         }
         let _ = sigkill_delay;
         return attempt;
@@ -1534,6 +1611,16 @@ mod registry_tests {
             })
         );
         assert!(deregister_process_for(handle, registration));
+    }
+
+    #[test]
+    fn process_tree_descendants_include_every_nested_child_once() {
+        let descendants = process_tree_descendants(
+            10,
+            &[(11, 10), (12, 11), (13, 10), (14, 99), (15, 12), (12, 11)],
+        );
+
+        assert_eq!(descendants, vec![11, 12, 13, 15]);
     }
 }
 

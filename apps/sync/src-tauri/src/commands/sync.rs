@@ -75,6 +75,18 @@ const SIGKILL_DELAY: Duration = Duration::from_secs(5);
 pub use hq_desktop_core::hq_cloud::{HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION, RUNNER_BIN};
 pub use hq_desktop_core::sync_outcome::RunTotals;
 
+/// A cancellation or supersession before the runner attaches is controlled
+/// flow, but the frontend still needs the same terminal signal as a completed
+/// runner so it can leave the syncing state.
+fn expected_start_abort_completion(error: &str) -> Option<SyncAllCompleteEvent> {
+    is_expected_start_abort(error).then_some(SyncAllCompleteEvent {
+        companies_attempted: 0,
+        files_downloaded: 0,
+        bytes_downloaded: 0,
+        errors: Vec::new(),
+    })
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Error reporting
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1335,8 +1347,14 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
         });
 
         if let Err(e) = result {
-            if is_expected_start_abort(&e) {
+            if let Some(completion) = expected_start_abort_completion(&e) {
                 log("sync", &format!("runner start aborted: {e}"));
+                if let Err(emit_err) = app_bg.emit(EVENT_SYNC_ALL_COMPLETE, completion) {
+                    log(
+                        "sync",
+                        &format!("failed to emit aborted-run all-complete: {emit_err}"),
+                    );
+                }
             } else {
                 log("sync", &format!("run_process_impl error: {e}"));
                 // Spawn failures happen before the runner produces any
@@ -1482,6 +1500,20 @@ mod tests {
         assert!(company.includes("indigo"));
         assert!(!company.includes("other"));
         assert!(!company.is_all());
+    }
+
+    #[test]
+    fn expected_start_abort_has_a_terminal_all_complete_event() {
+        let event = expected_start_abort_completion(
+            "process registration was cancelled before 'npx' could start",
+        )
+        .expect("a cancelled pre-attach run must settle the renderer");
+
+        assert_eq!(event.companies_attempted, 0);
+        assert_eq!(event.files_downloaded, 0);
+        assert_eq!(event.bytes_downloaded, 0);
+        assert!(event.errors.is_empty());
+        assert!(expected_start_abort_completion("spawn 'npx': not found").is_none());
     }
 
     #[test]
