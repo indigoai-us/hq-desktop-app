@@ -7,7 +7,9 @@
 //!
 //! Platform strategies:
 //! - **Windows:** Show/Restore, AttachThreadInput, brief TOPMOST pulse,
-//!   SetForegroundWindow, then sticky `always_on_top` for the session.
+//!   SetForegroundWindow. Sticky `always_on_top` is reserved for the
+//!   post-OAuth path only (see `bring_webview_to_front_after_oauth`) so
+//!   first-run onboarding does not cover the system browser.
 //! - **macOS:** `NSApplication.activateIgnoringOtherApps` +
 //!   `NSWindow.makeKeyAndOrderFront` / `orderFrontRegardless`.
 //! - Other targets: show + set_focus.
@@ -15,7 +17,26 @@
 use tauri::WebviewWindow;
 
 /// Show `window` and pull it above other apps (best-effort on every OS).
+///
+/// Does **not** leave the window sticky-topmost — first-run onboarding calls
+/// this before OAuth, and a sticky raise would cover the provider login page.
 pub fn bring_webview_to_front(window: &WebviewWindow) {
+    raise_webview(window, /*keep_on_top=*/ false);
+}
+
+/// Raise after a successful OAuth callback and keep the window above the
+/// browser for the rest of the onboarding / popover session (Windows).
+pub fn bring_webview_to_front_after_oauth(window: &WebviewWindow) {
+    raise_webview(window, /*keep_on_top=*/ true);
+}
+
+/// Clear sticky topmost before opening the system browser for OAuth so a
+/// previously raised popover cannot intercept clicks on the provider page.
+pub fn clear_sticky_topmost(window: &WebviewWindow) {
+    let _ = window.set_always_on_top(false);
+}
+
+fn raise_webview(window: &WebviewWindow, keep_on_top: bool) {
     let _ = window.unminimize();
     let _ = window.show();
 
@@ -24,15 +45,20 @@ pub fn bring_webview_to_front(window: &WebviewWindow) {
         if let Ok(hwnd) = window.hwnd() {
             force_foreground_hwnd(hwnd.0 as isize);
         }
-        // Keep the raised surface above the browser for the rest of the
-        // onboarding / popover session. Tray/popover paths already set this;
-        // repeating it here is idempotent and covers first-run OAuth return.
-        let _ = window.set_always_on_top(true);
+        if keep_on_top {
+            let _ = window.set_always_on_top(true);
+        }
     }
 
     #[cfg(target_os = "macos")]
     {
+        let _ = keep_on_top;
         force_foreground_macos(window);
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        let _ = keep_on_top;
     }
 
     let _ = window.set_focus();
@@ -106,8 +132,8 @@ fn force_foreground_hwnd(hwnd_raw: isize) {
             SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
         );
         let _ = SetForegroundWindow(hwnd);
-        // Drop temporary TOPMOST; callers that need a sticky raise set
-        // always_on_top via Tauri (see bring_webview_to_front).
+        // Drop temporary TOPMOST; sticky raise is applied separately via
+        // `set_always_on_top` only on the post-OAuth path.
         let _ = SetWindowPos(
             hwnd,
             HWND_NOTOPMOST,

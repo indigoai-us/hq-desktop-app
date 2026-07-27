@@ -9,17 +9,16 @@ pub fn quit_app(app: tauri::AppHandle) {
     app.exit(0);
 }
 
-/// Raise the main installer / popover window above other apps (macOS + Windows).
-///
-/// Used after browser OAuth returns: JS `setFocus()` alone is often ignored
-/// while the browser holds activation/foreground. Also used when the tray
-/// icon is clicked and the window is already visible but buried.
+/// Raise the main installer / popover window above other apps after OAuth
+/// (macOS + Windows). Uses the sticky post-OAuth raise so the wizard stays
+/// above the browser for the next step — not the generic show path used by
+/// first-run launch (which must not cover the provider login page).
 #[tauri::command]
 pub fn bring_main_window_to_front(app: tauri::AppHandle) -> Result<(), String> {
     let window = app
         .get_webview_window("main")
         .ok_or_else(|| "Main window is not available.".to_string())?;
-    crate::util::window_focus::bring_webview_to_front(&window);
+    crate::util::window_focus::bring_webview_to_front_after_oauth(&window);
     Ok(())
 }
 

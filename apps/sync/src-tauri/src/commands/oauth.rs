@@ -420,11 +420,23 @@ fn write_response(stream: &mut TcpStream, status: &str, body: &str) {
 /// It also surfaces a port-in-use conflict immediately, instead of after
 /// the user has already been sent to the provider's sign-in page.
 #[tauri::command]
-pub async fn start_oauth_login(provider: String) -> Result<OAuthFlowInit, String> {
+pub async fn start_oauth_login(
+    app: AppHandle,
+    provider: String,
+) -> Result<OAuthFlowInit, String> {
     let identity_provider = cognito_identity_provider(&provider)?;
     let state = uuid::Uuid::new_v4().to_string();
     let verifier = generate_code_verifier();
     let challenge = compute_code_challenge(&verifier);
+
+    // Drop sticky topmost before the system browser opens so a raised
+    // popover / earlier post-OAuth raise cannot cover the provider page.
+    if let Some(window) = app.get_webview_window("main") {
+        let win = window.clone();
+        let _ = app.run_on_main_thread(move || {
+            crate::util::window_focus::clear_sticky_topmost(&win);
+        });
+    }
 
     // A Retry replaces any preceding browser attempt. Wait for the old
     // listener thread to relinquish its sockets before binding the new one so
@@ -620,9 +632,11 @@ pub async fn oauth_listen_for_code(app: AppHandle, state: String) -> Result<OAut
     if result.is_ok() {
         if let Some(window) = app.get_webview_window("main") {
             // AppKit / WebView2 window ops must run on the UI thread.
+            // Sticky topmost is intentional here (post-OAuth only) so the
+            // wizard stays above the browser for the next step.
             let win = window.clone();
             let _ = app.run_on_main_thread(move || {
-                crate::util::window_focus::bring_webview_to_front(&win);
+                crate::util::window_focus::bring_webview_to_front_after_oauth(&win);
             });
             eprintln!("[oauth] raised main window after successful callback");
         }

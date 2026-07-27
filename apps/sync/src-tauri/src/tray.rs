@@ -673,6 +673,7 @@ pub fn show_window_at_tray(app: &AppHandle) {
     {
         position_above_tray_fallback(&window);
         set_dwm_small_corner(&window);
+        let _ = window.set_always_on_top(true);
     }
     #[cfg(not(target_os = "windows"))]
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
@@ -685,6 +686,9 @@ pub fn show_window_at_tray(app: &AppHandle) {
 }
 
 /// Show + focus the main window centered on screen for first-run onboarding.
+///
+/// Must not leave the window sticky-topmost — OAuth opens a normal browser
+/// afterward, and a permanently topmost installer would cover the provider UI.
 pub fn show_window_centered(app: &AppHandle) {
     let Some(window) = app.get_webview_window("main") else {
         return;
