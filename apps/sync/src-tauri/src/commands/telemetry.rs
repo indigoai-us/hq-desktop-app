@@ -184,6 +184,16 @@ fn write_menubar_telemetry_pref_to(path: &Path, enabled: bool) -> Result<(), Str
     // This function is the single chokepoint a real answer flows through — both
     // the onboarding prompt and the settings toggle call it — so stamping here
     // means exactly "the user answered, at this moment".
+    // The Cognito `sub` binds the answer to the account giving it. It is
+    // available the instant the user answers, unlike the `prs_*` person entity,
+    // which may not exist yet — that gap is the whole reason the repair below
+    // exists.
+    //
+    // Writing it here also INVALIDATES any previous account's binding: if A
+    // answered on this machine and B later toggles the setting, B's answer
+    // overwrites the subject and the stale `prs_*` from A, so B's own answer is
+    // never rejected as someone else's.
+    let subject = current_cognito_subject();
     hq_desktop_core::first_run::merge_menubar_flags(
         path,
         &[
@@ -192,8 +202,29 @@ fn write_menubar_telemetry_pref_to(path: &Path, enabled: bool) -> Result<(), Str
                 "telemetryOptInAnsweredAt",
                 Value::String(chrono::Utc::now().to_rfc3339()),
             ),
+            (
+                "telemetryOptInSub",
+                subject.map(Value::String).unwrap_or(Value::Null),
+            ),
+            // Cleared, not carried over: this record now belongs to whoever is
+            // signed in, and the person uid is re-established by the repair.
+            ("telemetryOptInPersonUid", Value::Null),
         ],
     )
+}
+
+/// Cognito `sub` of the signed-in account, if one can be read.
+///
+/// Best-effort: with no readable token the answer is stored unbound, which the
+/// replay guard treats as non-replayable — the safe direction.
+fn current_cognito_subject() -> Option<String> {
+    hq_desktop_core::cognito::read_tokens_from_file()
+        .ok()
+        .flatten()
+        .and_then(|t| t.id_token)
+        .and_then(|tok| hq_desktop_core::cognito::decode_id_token_claims(&tok).ok())
+        .and_then(|c| c.sub)
+        .filter(|s| !s.is_empty())
 }
 
 /// Re-send the onboarding consent once the caller's person entity exists, and
@@ -221,9 +252,11 @@ fn write_menubar_telemetry_pref_to(path: &Path, enabled: bool) -> Result<(), Str
 ///   1. A recorded answer must exist (`enabled`).
 ///   2. It must carry provenance (`telemetryOptInAnsweredAt`) — a bare
 ///      `telemetryEnabled` may just be a persisted settings default.
-///   3. It must not be bound to a DIFFERENT account. Sign-out does not clear
+///   3. It must be bound to EXACTLY this account. Sign-out does not clear
 ///      `menubar.json`, so after A signs out and B signs in it still holds A's
-///      answer; replaying that would opt B in without B ever being asked.
+///      answer; replaying that would opt B in without B ever being asked. An
+///      UNBOUND record is not replayable either — unbound records are produced
+///      routinely, not just by older versions, so "unbound" proves nothing.
 ///   4. The server must report `unset` — proving both that no answer is
 ///      recorded AND that this server understands `onlyIfUnset`. An older
 ///      server silently ignores that flag and writes unconditionally, so
@@ -240,8 +273,12 @@ pub async fn reassert_consent_for_person(vault: &VaultClient, person_uid: &str) 
         return;
     }
 
-    // Guards 1-3.
-    let Some(enabled) = record.replayable_for(person_uid) else {
+    // Guards 1-3. Keyed on the Cognito subject, which is what the answer was
+    // bound to at the moment it was given.
+    let Some(subject) = current_cognito_subject() else {
+        return;
+    };
+    let Some(enabled) = record.replayable_for(&subject) else {
         return;
     };
 

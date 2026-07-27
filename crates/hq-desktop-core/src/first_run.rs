@@ -133,34 +133,44 @@ pub fn merge_menubar_flags(path: &Path, updates: &[(&str, Value)]) -> Result<(),
 /// toggle, both of which funnel through `write_menubar_telemetry_pref`). No
 /// marker, no answer, no replay.
 ///
-/// `person_uid` binds the answer to the `prs_*` that gave it. `menubar.json` is
-/// a per-MACHINE file and sign-out does not clear it, so if one person signs
-/// out and another signs in it still holds the FIRST person's answer. A binding
-/// naming someone else must never be replayed.
+/// `subject` binds the answer to the Cognito `sub` that gave it.
+/// `menubar.json` is a per-MACHINE file and sign-out does NOT clear it, so if
+/// one person signs out and another signs in it still holds the first person's
+/// answer. Replaying an answer for a different account would opt that person in
+/// without them ever seeing the prompt.
+///
+/// The binding is the Cognito subject rather than the `prs_*` person uid
+/// specifically because the subject is known the instant the user answers — the
+/// person entity may not exist yet, which is the whole reason this repair
+/// exists. Binding on something unknowable at answer time would make every new
+/// record unbound, and "unbound" cannot be treated as replayable: unbound
+/// records are produced routinely, not just by legacy versions.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MenubarConsent {
     /// The recorded answer. `None` when the user has not answered.
     pub enabled: Option<bool>,
     /// Present only when the answer has provenance (was actually given).
     pub answered_at: Option<String>,
-    /// The account the answer belongs to, when known.
+    /// Cognito `sub` of the account that gave the answer.
+    pub subject: Option<String>,
+    /// The `prs_*` this record has been reconciled to, once known. Consumed by
+    /// the hq-cloud sync runner, which does its own account check.
     pub person_uid: Option<String>,
 }
 
 impl MenubarConsent {
-    /// Whether this record may be replayed on behalf of `person_uid`.
+    /// Whether this record may be replayed on behalf of the Cognito `subject`.
     ///
     /// Requires all three: a recorded answer, proof it was actually given, and
-    /// that it is not someone else's. An UNBOUND answer is replayable — it
-    /// predates binding and belongs to the only account that could have written
-    /// it on this machine at the time.
-    pub fn replayable_for(&self, person_uid: &str) -> Option<bool> {
+    /// a binding that names EXACTLY this account. An unbound record is not
+    /// replayable — see the type docs.
+    pub fn replayable_for(&self, subject: &str) -> Option<bool> {
         let enabled = self.enabled?;
         self.answered_at.as_ref()?;
-        match self.person_uid.as_deref() {
-            Some(bound) if bound != person_uid => None,
-            _ => Some(enabled),
+        if self.subject.as_deref()? != subject {
+            return None;
         }
+        Some(enabled)
     }
 }
 
@@ -179,6 +189,7 @@ pub fn read_menubar_consent(path: &Path) -> MenubarConsent {
     MenubarConsent {
         enabled: obj.get("telemetryEnabled").and_then(|v| v.as_bool()),
         answered_at: str_field("telemetryOptInAnsweredAt"),
+        subject: str_field("telemetryOptInSub"),
         person_uid: str_field("telemetryOptInPersonUid"),
     }
 }
@@ -208,20 +219,20 @@ mod tests {
         path
     }
 
-    const ME: &str = "prs_01ME";
+    const ME: &str = "sub-me";
 
     #[test]
     fn consent_record_reads_answer_provenance_and_binding() {
         let dir = TempDir::new().unwrap();
         let path = write_menubar_json(
             &dir,
-            r#"{"telemetryEnabled":true,"telemetryOptInAnsweredAt":"2026-07-27T10:00:00Z","telemetryOptInPersonUid":"prs_01ME"}"#,
+            r#"{"telemetryEnabled":true,"telemetryOptInAnsweredAt":"2026-07-27T10:00:00Z","telemetryOptInSub":"sub-me"}"#,
         );
 
         let c = read_menubar_consent(&path);
         assert_eq!(c.enabled, Some(true));
         assert_eq!(c.answered_at.as_deref(), Some("2026-07-27T10:00:00Z"));
-        assert_eq!(c.person_uid.as_deref(), Some(ME));
+        assert_eq!(c.subject.as_deref(), Some(ME));
         assert_eq!(c.replayable_for(ME), Some(true));
     }
 
@@ -232,7 +243,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = write_menubar_json(
             &dir,
-            r#"{"telemetryEnabled":false,"telemetryOptInAnsweredAt":"2026-07-27T10:00:00Z"}"#,
+            r#"{"telemetryEnabled":false,"telemetryOptInAnsweredAt":"2026-07-27T10:00:00Z","telemetryOptInSub":"sub-me"}"#,
         );
 
         let c = read_menubar_consent(&path);
@@ -263,23 +274,24 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = write_menubar_json(
             &dir,
-            r#"{"telemetryEnabled":true,"telemetryOptInAnsweredAt":"2026-07-27T10:00:00Z","telemetryOptInPersonUid":"prs_01SOMEONE_ELSE"}"#,
+            r#"{"telemetryEnabled":true,"telemetryOptInAnsweredAt":"2026-07-27T10:00:00Z","telemetryOptInSub":"sub-someone-else"}"#,
         );
 
         assert_eq!(read_menubar_consent(&path).replayable_for(ME), None);
     }
 
     #[test]
-    fn an_unbound_answer_is_replayable() {
-        // Written before binding existed: on that machine only one account
-        // could have produced it.
+    fn an_unbound_answer_is_not_replayable() {
         let dir = TempDir::new().unwrap();
         let path = write_menubar_json(
             &dir,
             r#"{"telemetryEnabled":true,"telemetryOptInAnsweredAt":"2026-07-27T10:00:00Z"}"#,
         );
 
-        assert_eq!(read_menubar_consent(&path).replayable_for(ME), Some(true));
+        // Unbound records are produced routinely (an answer is stamped before
+        // the person entity exists), so "unbound" proves nothing about WHOSE
+        // answer it is and must never be replayed.
+        assert_eq!(read_menubar_consent(&path).replayable_for(ME), None);
     }
 
     #[test]
@@ -287,13 +299,13 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = write_menubar_json(
             &dir,
-            r#"{"telemetryEnabled":"yes","telemetryOptInPersonUid":"","telemetryOptInAnsweredAt":""}"#,
+            r#"{"telemetryEnabled":"yes","telemetryOptInSub":"","telemetryOptInAnsweredAt":""}"#,
         );
 
         let c = read_menubar_consent(&path);
         assert_eq!(c.enabled, None);
         assert_eq!(c.answered_at, None);
-        assert_eq!(c.person_uid, None);
+        assert_eq!(c.subject, None);
         assert_eq!(c.replayable_for(ME), None);
     }
 
@@ -303,6 +315,7 @@ mod tests {
         let empty = MenubarConsent {
             enabled: None,
             answered_at: None,
+            subject: None,
             person_uid: None,
         };
         assert_eq!(read_menubar_consent(&dir.path().join("nope.json")), empty);
@@ -319,7 +332,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = write_menubar_json(
             &dir,
-            r#"{"machineId":"mid-keep","telemetryEnabled":true,"telemetryOptInAnsweredAt":"2026-07-27T10:00:00Z","someFutureKey":42}"#,
+            r#"{"machineId":"mid-keep","telemetryEnabled":true,"telemetryOptInAnsweredAt":"2026-07-27T10:00:00Z","telemetryOptInSub":"sub-me","someFutureKey":42}"#,
         );
 
         merge_menubar_flags(

@@ -879,6 +879,14 @@ async fn resolve_or_provision<R: tauri::Runtime + 'static>(
         }
     };
 
+    // The person entity now exists, which is the ONLY precondition
+    // `/v1/usage/opt-in` has — and the one onboarding could not satisfy when it
+    // first posted the consent. Repair it here, BEFORE bucket provisioning,
+    // which can fail and return early: gating the consent repair on the bucket
+    // would leave the original race unfixed for exactly the users whose
+    // provisioning is having a bad day.
+    crate::commands::telemetry::reassert_consent_for_person(vault, &pick.uid).await;
+
     if pick.bucket_name.is_none() {
         let bucket_info = vault
             .provision_bucket(&pick.uid)
@@ -946,14 +954,6 @@ pub(crate) async fn ensure_impl<R: tauri::Runtime + 'static>(
             return Ok(());
         }
     };
-
-    // The person entity is now guaranteed to exist, which is the precondition
-    // `/v1/usage/opt-in` requires and which onboarding could not satisfy when it
-    // first posted the consent (it fires right after sign-in, before this runs).
-    // Repair that here. Self-limiting: once the local record names this person
-    // it returns immediately, so the steady-state path pays nothing. Best-effort
-    // by construction — it cannot fail provisioning.
-    crate::commands::telemetry::reassert_consent_for_person(vault, &person_uid).await;
 
     // ── Steady-state gate ──────────────────────────────────────────────────
     // The warm-up first-push exists ONLY to seed a brand-new personal vault
