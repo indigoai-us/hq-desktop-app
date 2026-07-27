@@ -135,6 +135,169 @@ jobs:
         working-directory: apps/sync/src-tauri
         run: cargo clippy --all-targets -- -D warnings
 
+  process-identity-artifact:
+    name: Process-identity executable proof (macOS)
+    if: github.event_name == 'pull_request'
+    runs-on: macos-latest
+    timeout-minutes: 35
+    env:
+      HQ_SYNC_SENTRY_DSN: ""
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install frontend dependencies
+        timeout-minutes: 8
+        run: pnpm install --no-frozen-lockfile
+      - name: Install Recall sidecar deps
+        timeout-minutes: 8
+        working-directory: apps/sync
+        run: pnpm run sidecar:install
+      - name: Build Svelte bundle
+        timeout-minutes: 8
+        working-directory: apps/sync
+        env:
+          SENTRY_AUTH_TOKEN: ""
+          VITE_SENTRY_DSN: ""
+        run: pnpm build
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: apps/sync/src-tauri
+      - name: Build hq-sync-menubar with the non-default probe
+        timeout-minutes: 15
+        working-directory: apps/sync/src-tauri
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/process-identity-candidate-target
+        run: cargo build --bin hq-sync-menubar --features process-identity-probe
+      - name: Run process-registration ownership probe
+        timeout-minutes: 1
+        env:
+          PROBE_BINARY: ${{ runner.temp }}/process-identity-candidate-target/debug/hq-sync-menubar
+          PROBE_OUTPUT: ${{ runner.temp }}/process-identity-candidate-probe.json
+          PROBE_SOURCE_DIR: ${{ github.workspace }}
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import subprocess
+
+          binary = os.environ["PROBE_BINARY"]
+          output = os.environ["PROBE_OUTPUT"]
+          completed = subprocess.run(
+              [binary, "--process-identity-probe"],
+              capture_output=True,
+              text=True,
+              timeout=30,
+              check=False,
+          )
+          transcript = {
+              "source_sha": subprocess.check_output(
+                  ["git", "rev-parse", "HEAD"],
+                  cwd=os.environ["PROBE_SOURCE_DIR"],
+                  text=True,
+              ).strip(),
+              "binary_sha256": hashlib.sha256(open(binary, "rb").read()).hexdigest(),
+              "exit_code": completed.returncode,
+              "stdout": completed.stdout.strip(),
+              "stderr": completed.stderr.strip(),
+          }
+          with open(output, "w", encoding="utf-8") as handle:
+              json.dump(transcript, handle, sort_keys=True)
+              handle.write("\n")
+          if completed.returncode != 0:
+              raise SystemExit(completed.returncode)
+          probe = json.loads(completed.stdout)
+          assert probe["stale"] == {
+              "executed": False,
+              "replacement_alive": True,
+              "replacement_registered": True,
+              "replacement_cancelled": False,
+              "actor_alive": True,
+          }
+          assert probe["current"]["executed"] is True
+          assert probe["current"]["cancellation_visible_before_cleanup"] is True
+          assert probe["current"]["replacement_signal"] == 9
+          assert probe["external"] == {"cancelled": False, "signal": 9}
+          PY
+      - name: Build exact-base artifact with test-only probe hook
+        timeout-minutes: 15
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_DIR: ${{ runner.temp }}/process-identity-base
+          CARGO_TARGET_DIR: ${{ runner.temp }}/process-identity-base-target
+        run: |
+          git worktree add --detach "$BASE_DIR" "$BASE_SHA"
+          node scripts/process-identity-base-hook.mjs "$BASE_DIR"
+          cp -R apps/sync/dist "$BASE_DIR/apps/sync/dist"
+          cp -R apps/sync/src-tauri/resources/recall/node_modules "$BASE_DIR/apps/sync/src-tauri/resources/recall/node_modules"
+          cd "$BASE_DIR/apps/sync/src-tauri"
+          cargo build --bin hq-sync-menubar
+      - name: Run exact-base wrong-owner reproduction
+        timeout-minutes: 1
+        env:
+          PROBE_BINARY: ${{ runner.temp }}/process-identity-base-target/debug/hq-sync-menubar
+          PROBE_OUTPUT: ${{ runner.temp }}/process-identity-base-probe.json
+          PROBE_SOURCE_DIR: ${{ runner.temp }}/process-identity-base
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import subprocess
+
+          binary = os.environ["PROBE_BINARY"]
+          output = os.environ["PROBE_OUTPUT"]
+          completed = subprocess.run(
+              [binary, "--process-identity-base-probe"],
+              capture_output=True,
+              text=True,
+              timeout=30,
+              check=False,
+          )
+          transcript = {
+              "source_sha": subprocess.check_output(
+                  ["git", "rev-parse", "HEAD"],
+                  cwd=os.environ["PROBE_SOURCE_DIR"],
+                  text=True,
+              ).strip(),
+              "binary_sha256": hashlib.sha256(open(binary, "rb").read()).hexdigest(),
+              "exit_code": completed.returncode,
+              "stdout": completed.stdout.strip(),
+              "stderr": completed.stderr.strip(),
+          }
+          with open(output, "w", encoding="utf-8") as handle:
+              json.dump(transcript, handle, sort_keys=True)
+              handle.write("\n")
+          if completed.returncode != 1:
+              raise SystemExit(f"expected base probe exit 1, got {completed.returncode}")
+          probe = json.loads(completed.stdout)
+          assert probe == {
+              "schema_version": "hq-sync.process-identity-base-probe.v1",
+              "stale_executed": True,
+              "replacement_signal": 9,
+              "actor_alive": True,
+          }
+          PY
+      - name: Upload process-identity proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: process-identity-proof-macos
+          path: |
+            ${{ runner.temp }}/process-identity-candidate-probe.json
+            ${{ runner.temp }}/process-identity-base-probe.json
+          if-no-files-found: error
+
   e2e-desktop-alt:
     name: Desktop-alt E2E
     runs-on: ubuntu-latest

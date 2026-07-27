@@ -430,6 +430,11 @@ fn emit_exit_then_deregister<F>(
     F: FnMut(ProcessEvent),
 {
     on_event(event);
+    // If the matching process has already exited, its delayed SIGKILL has no
+    // remaining authority. Clearing the tombstone here keeps an old PID from
+    // surviving until the grace timer after normal wait-owner cleanup.
+    #[cfg(unix)]
+    clear_pending_escalation(handle, registration);
     deregister_process_for(handle, registration);
 }
 
@@ -964,6 +969,218 @@ pub fn cancel_process_impl(handle: &str, sigkill_delay: Duration) -> bool {
     cancel_process_matching(handle, None, sigkill_delay).executed
 }
 
+/// Execute the artifact-level ownership probe through the real application
+/// executable. This is feature-gated and never compiled into release builds.
+/// It deliberately calls the production registration, cancellation, and Unix
+/// process-group code; only the fixture command and the bounded observation
+/// deadline are test-specific.
+#[cfg(all(feature = "process-identity-probe", unix))]
+pub fn run_process_identity_probe() -> Result<String, String> {
+    use std::io::{BufRead, BufReader};
+    use std::time::Instant;
+
+    const STALE_HANDLE: &str = "process-identity-probe-stale";
+    const EXTERNAL_HANDLE: &str = "process-identity-probe-external";
+    const PROBE_DEADLINE: Duration = Duration::from_secs(5);
+
+    fn spawn_term_ignoring_fixture() -> Result<std::process::Child, String> {
+        let mut command = Command::new("/bin/sh");
+        command
+            .args([
+                "-c",
+                "trap '' TERM; printf 'ready\\n'; while :; do sleep 1; done",
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        put_in_own_process_group(&mut command);
+
+        let mut child = command
+            .spawn()
+            .map_err(|error| format!("spawn TERM-ignoring fixture: {error}"))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| "fixture stdout pipe was unavailable".to_string())?;
+        let mut ready = String::new();
+        BufReader::new(stdout)
+            .read_line(&mut ready)
+            .map_err(|error| format!("read fixture readiness: {error}"))?;
+        if ready != "ready\n" {
+            terminate_probe_child(&mut child);
+            return Err("fixture did not confirm TERM handler readiness".to_string());
+        }
+        Ok(child)
+    }
+
+    fn terminate_probe_child(child: &mut std::process::Child) {
+        let _ = signal::kill(Pid::from_raw(-(child.id() as i32)), Signal::SIGKILL);
+        let _ = child.wait();
+    }
+
+    fn wait_for_exit(
+        child: &mut std::process::Child,
+        deadline: Duration,
+    ) -> Result<ExitStatus, String> {
+        let started = Instant::now();
+        loop {
+            if let Some(status) = child
+                .try_wait()
+                .map_err(|error| format!("observe fixture exit: {error}"))?
+            {
+                return Ok(status);
+            }
+            if started.elapsed() >= deadline {
+                return Err(format!(
+                    "fixture did not exit within {}s",
+                    deadline.as_secs()
+                ));
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn pid_is_alive(pid: u32) -> bool {
+        signal::kill(Pid::from_raw(pid as i32), None).is_ok()
+    }
+
+    let owner_a = try_acquire_handle(STALE_HANDLE)
+        .ok_or_else(|| "fixture A could not acquire its public handle".to_string())?;
+    let mut child_a = spawn_term_ignoring_fixture()?;
+    if register_process(STALE_HANDLE, owner_a, child_a.id()) != Some(false) {
+        terminate_probe_child(&mut child_a);
+        let _ = deregister_process_for(STALE_HANDLE, owner_a);
+        return Err("fixture A could not attach its registration".to_string());
+    }
+
+    // This mirrors exceptional recovery: A remains alive, but its public
+    // handle becomes available before a deferred watchdog fires.
+    if !deregister_process_for(STALE_HANDLE, owner_a) {
+        terminate_probe_child(&mut child_a);
+        return Err("fixture A could not be force-released".to_string());
+    }
+
+    let owner_b = match try_acquire_handle(STALE_HANDLE) {
+        Some(registration) => registration,
+        None => {
+            terminate_probe_child(&mut child_a);
+            return Err("fixture B could not reuse the released public handle".to_string());
+        }
+    };
+    let mut child_b = match spawn_term_ignoring_fixture() {
+        Ok(child) => child,
+        Err(error) => {
+            terminate_probe_child(&mut child_a);
+            let _ = deregister_process_for(STALE_HANDLE, owner_b);
+            return Err(error);
+        }
+    };
+    if register_process(STALE_HANDLE, owner_b, child_b.id()) != Some(false) {
+        terminate_probe_child(&mut child_a);
+        terminate_probe_child(&mut child_b);
+        let _ = deregister_process_for(STALE_HANDLE, owner_b);
+        return Err("fixture B could not attach its replacement registration".to_string());
+    }
+
+    let stale_attempt = cancel_process_for(STALE_HANDLE, owner_a, Duration::ZERO);
+    let replacement_alive_after_stale = pid_is_alive(child_b.id());
+    let replacement_registered_after_stale = process_identity_for(STALE_HANDLE, owner_b)
+        .is_some_and(|identity| identity.pid == Some(child_b.id()));
+    let replacement_cancelled_after_stale = is_cancelled_for(STALE_HANDLE, owner_b);
+    if stale_attempt.executed
+        || !replacement_alive_after_stale
+        || !replacement_registered_after_stale
+        || replacement_cancelled_after_stale
+    {
+        terminate_probe_child(&mut child_a);
+        terminate_probe_child(&mut child_b);
+        let _ = deregister_process_for(STALE_HANDLE, owner_b);
+        return Err("stale owner changed its replacement instead of being skipped".to_string());
+    }
+
+    let current_attempt = cancel_process_for(STALE_HANDLE, owner_b, Duration::ZERO);
+    let cancellation_visible_before_cleanup = is_cancelled_for(STALE_HANDLE, owner_b);
+    let replacement_status = match wait_for_exit(&mut child_b, PROBE_DEADLINE) {
+        Ok(status) => status,
+        Err(error) => {
+            terminate_probe_child(&mut child_a);
+            terminate_probe_child(&mut child_b);
+            let _ = deregister_process_for(STALE_HANDLE, owner_b);
+            return Err(error);
+        }
+    };
+    let replacement_signal = exit_signal(&replacement_status);
+    let _ = deregister_process_for(STALE_HANDLE, owner_b);
+
+    let external_owner = try_acquire_handle(EXTERNAL_HANDLE)
+        .ok_or_else(|| "external fixture could not acquire its public handle".to_string())?;
+    let mut external_child = match spawn_term_ignoring_fixture() {
+        Ok(child) => child,
+        Err(error) => {
+            terminate_probe_child(&mut child_a);
+            return Err(error);
+        }
+    };
+    if register_process(EXTERNAL_HANDLE, external_owner, external_child.id()) != Some(false) {
+        terminate_probe_child(&mut child_a);
+        terminate_probe_child(&mut external_child);
+        let _ = deregister_process_for(EXTERNAL_HANDLE, external_owner);
+        return Err("external fixture could not attach its registration".to_string());
+    }
+    let _ = signal::kill(
+        Pid::from_raw(-(external_child.id() as i32)),
+        Signal::SIGKILL,
+    );
+    let external_status = match wait_for_exit(&mut external_child, PROBE_DEADLINE) {
+        Ok(status) => status,
+        Err(error) => {
+            terminate_probe_child(&mut child_a);
+            terminate_probe_child(&mut external_child);
+            let _ = deregister_process_for(EXTERNAL_HANDLE, external_owner);
+            return Err(error);
+        }
+    };
+    let external_cancelled = is_cancelled_for(EXTERNAL_HANDLE, external_owner);
+    let _ = deregister_process_for(EXTERNAL_HANDLE, external_owner);
+
+    let stale_actor_alive_before_cleanup = pid_is_alive(child_a.id());
+    terminate_probe_child(&mut child_a);
+
+    if !current_attempt.executed
+        || !cancellation_visible_before_cleanup
+        || replacement_signal != Some(Signal::SIGKILL as i32)
+        || external_cancelled
+        || exit_signal(&external_status) != Some(Signal::SIGKILL as i32)
+        || !stale_actor_alive_before_cleanup
+    {
+        return Err(
+            "current-owner or external-signal control did not preserve expected provenance"
+                .to_string(),
+        );
+    }
+
+    Ok(serde_json::json!({
+        "schema_version": "hq-sync.process-identity-probe.v1",
+        "stale": {
+            "executed": stale_attempt.executed,
+            "replacement_alive": replacement_alive_after_stale,
+            "replacement_registered": replacement_registered_after_stale,
+            "replacement_cancelled": replacement_cancelled_after_stale,
+            "actor_alive": stale_actor_alive_before_cleanup
+        },
+        "current": {
+            "executed": current_attempt.executed,
+            "cancellation_visible_before_cleanup": cancellation_visible_before_cleanup,
+            "replacement_signal": replacement_signal
+        },
+        "external": {
+            "cancelled": external_cancelled,
+            "signal": exit_signal(&external_status)
+        }
+    })
+    .to_string())
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // App-exit teardown
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1182,6 +1399,31 @@ mod registry_tests {
         assert!(
             !is_registered(handle),
             "the wait owner deregisters immediately after Exit delivery"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn matching_exit_clears_its_pending_escalation() {
+        let handle = "test-process-exit-clears-escalation";
+        let registration = pre_register_handle(handle);
+        assert_eq!(register_process(handle, registration, 41), Some(false));
+        arm_pending_escalation(handle, registration, 41);
+
+        emit_exit_then_deregister(
+            handle,
+            registration,
+            ProcessEvent::Exit {
+                code: None,
+                signal: Some(15),
+                success: false,
+            },
+            &mut |_| {},
+        );
+
+        assert!(
+            !should_escalate_cancellation(handle, registration, 41),
+            "a completed wait owner must remove its delayed SIGKILL authority"
         );
     }
 

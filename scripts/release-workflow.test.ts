@@ -7,11 +7,13 @@ const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 let workflow = "";
 let clientClassifier = "";
+let syncCargoToml = "";
 
 beforeAll(async () => {
-  [workflow, clientClassifier] = await Promise.all([
+  [workflow, clientClassifier, syncCargoToml] = await Promise.all([
     readFile(resolve(rootDir, ".github/workflows/release.yml"), "utf8"),
     readFile(resolve(rootDir, "crates/hq-desktop-core/src/release_channel.rs"), "utf8"),
+    readFile(resolve(rootDir, "apps/sync/src-tauri/Cargo.toml"), "utf8"),
   ]);
 });
 
@@ -164,6 +166,15 @@ describe("release workflow channel contract", () => {
     expect(jobBody("macos")).toContain("needs: validate");
     expect(jobBody("windows")).toContain("needs: validate");
     expect(workflow.match(/ref: refs\/tags\//g)).toHaveLength(4);
+  });
+
+  it("keeps the process-identity executable probe out of release artifacts", () => {
+    expect(syncCargoToml).toContain("process-identity-probe = []");
+    expect(syncCargoToml).not.toMatch(
+      /default\s*=\s*\[[^\]]*process-identity-probe/,
+    );
+    expect(jobBody("macos")).not.toContain("process-identity-probe");
+    expect(jobBody("windows")).not.toContain("process-identity-probe");
   });
 
   it("publishes prereleases without advancing the stable latest alias", () => {

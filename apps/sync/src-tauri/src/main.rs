@@ -94,6 +94,26 @@ const SENTRY_IDENTITY: hq_telemetry::SentryIdentity<'static> = hq_telemetry::Sen
 };
 
 fn main() {
+    // The artifact gate invokes the real application executable with this
+    // non-default feature. Keep it before telemetry, Tauri initialization, and
+    // every user-machine side effect; normal builds do not compile this path.
+    #[cfg(all(feature = "process-identity-probe", unix))]
+    if std::env::args()
+        .skip(1)
+        .any(|arg| arg == "--process-identity-probe")
+    {
+        match commands::process::run_process_identity_probe() {
+            Ok(transcript) => {
+                println!("{transcript}");
+                return;
+            }
+            Err(error) => {
+                eprintln!("process-identity probe failed: {error}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     // Sentry init + the PII/secret scrubber live in the hq-telemetry crate. The
     // build-time values (DSN/version/environment, emitted by build.rs) are read
     // here in the binary and passed in, so the crate carries no build-env coupling.
