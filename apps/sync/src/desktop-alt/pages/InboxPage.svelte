@@ -27,12 +27,10 @@
   let feedLoaded = false;
 
   function handleUnreadChange(count: number): void {
-    feedLoaded = true;
     unread = count;
   }
 
   function handleItemsChange(count: number): void {
-    feedLoaded = true;
     total = count;
   }
 
@@ -74,6 +72,7 @@
       density="comfortable"
       onunreadchange={handleUnreadChange}
       onitemschange={handleItemsChange}
+      onloadstatechange={(loaded) => (feedLoaded = loaded)}
     />
   </div>
 </section>

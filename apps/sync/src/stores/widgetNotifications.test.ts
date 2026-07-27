@@ -95,6 +95,8 @@ describe('bannerToStackItem', () => {
     );
     expect(withActions.actionId).toBe('install-update');
     expect(withActions.actionLabel).toBe('Update now');
+    expect(withActions.id).toBe('update:0.9.9');
+    expect(withActions.updateVersion).toBe('0.9.9');
 
     const without = bannerToStackItem(
       {
@@ -724,10 +726,41 @@ describe('historyFeedItemToStackItem', () => {
       unread: false,
     });
   });
+
+  it('maps trusted pending update → system with separate Open and Update now actions', () => {
+    const update = {
+      version: '0.10.36-beta.1',
+      body: 'Inbox notification repair',
+      date: '2026-07-27T15:00:00Z',
+    };
+    const row = historyFeedItemToStackItem(
+      {
+        id: 'update:0.10.36-beta.1',
+        kind: 'update',
+        actor: 'HQ',
+        summary: 'Version 0.10.36-beta.1 is ready to install.',
+        ts: 6_000,
+        update,
+      },
+      lastRead,
+    );
+    expect(row).toMatchObject({
+      id: 'update:0.10.36-beta.1',
+      type: 'system',
+      actor: 'HQ',
+      text: 'Version 0.10.36-beta.1 is ready to install.',
+      kind: 'update',
+      clickActionId: 'open',
+      data: update,
+      actionId: 'update',
+      actionLabel: 'Update now',
+      unread: true,
+    });
+  });
 });
 
 describe('mergeRecentWithHistory', () => {
-  it('prefers openable history over display-only local twin', () => {
+  it('prefers trusted history and replaces a display-only local update', () => {
     const local: WidgetStackItem[] = [
       item({
         id: 'dm:e1',
@@ -771,16 +804,137 @@ describe('mergeRecentWithHistory', () => {
         },
         0,
       ),
+      historyFeedItemToStackItem(
+        {
+          id: 'update:0.10.36-beta.1',
+          kind: 'update',
+          actor: 'HQ',
+          summary: 'Version 0.10.36-beta.1 is ready to install.',
+          ts: 9_100,
+          update: {
+            version: '0.10.36-beta.1',
+            body: 'Inbox notification repair',
+            date: '2026-07-27T15:00:00Z',
+          },
+        },
+        0,
+      ),
     ];
 
     const merged = mergeRecentWithHistory(local, history);
-    expect(merged.map((r) => r.id)).toEqual(['wn-update', 'share:s1', 'dm:e1']);
+    expect(merged.map((r) => r.id)).toEqual([
+      'update:0.10.36-beta.1',
+      'share:s1',
+      'dm:e1',
+    ]);
     expect(merged.find((r) => r.id === 'dm:e1')).toMatchObject({
       clickActionId: 'open',
       data: { eventId: 'e1' },
       unread: true,
     });
-    expect(merged.find((r) => r.id === 'wn-update')?.kind).toBe('update');
+    expect(merged.filter((r) => r.kind === 'update')).toEqual([
+      expect.objectContaining({
+        id: 'update:0.10.36-beta.1',
+        clickActionId: 'open',
+        actionId: 'update',
+        actionLabel: 'Update now',
+        data: expect.objectContaining({ version: '0.10.36-beta.1' }),
+      }),
+    ]);
+  });
+
+  it('drops a stale persisted update when native state has no pending update', () => {
+    const restored = deserializeRecent(
+      JSON.stringify([
+        item({
+          id: 'wn-stale-update',
+          kind: 'update',
+          text: 'HQ 0.10.35 — Ready to install',
+          clickActionId: 'update',
+          data: { version: 'tampered' },
+          actionId: 'update',
+          actionLabel: 'Update now',
+          unread: true,
+        }),
+      ]),
+    );
+
+    expect(restored[0]).toMatchObject({
+      kind: 'update',
+      clickActionId: '',
+      data: null,
+      actionId: undefined,
+      actionLabel: undefined,
+    });
+    expect(
+      mergeRecentWithHistory(restored, [], { updatesAuthoritative: true }),
+    ).toEqual([]);
+  });
+
+  it('preserves read state only for the matching trusted update version', () => {
+    const version = '0.10.36-beta.1';
+    const local = [
+      item({
+        id: `update:${version}`,
+        kind: 'update',
+        updateVersion: version,
+        unread: false,
+        clickActionId: '',
+        data: null,
+      }),
+    ];
+    const trusted = [
+      historyFeedItemToStackItem(
+        {
+          id: `update:${version}`,
+          kind: 'update',
+          actor: 'HQ',
+          summary: `Version ${version} is ready to install.`,
+          ts: 9_100,
+          update: { version },
+        },
+        0,
+      ),
+    ];
+
+    const refreshed = mergeRecentWithHistory(local, trusted, {
+      updatesAuthoritative: true,
+    });
+    expect(refreshed).toEqual([
+      expect.objectContaining({
+        id: `update:${version}`,
+        updateVersion: version,
+        unread: false,
+        actionId: 'update',
+        actionLabel: 'Update now',
+      }),
+    ]);
+
+    const nextVersion = '0.10.37-beta.1';
+    const changed = mergeRecentWithHistory(
+      local,
+      [
+        historyFeedItemToStackItem(
+          {
+            id: `update:${nextVersion}`,
+            kind: 'update',
+            actor: 'HQ',
+            summary: `Version ${nextVersion} is ready to install.`,
+            ts: 9_200,
+            update: { version: nextVersion },
+          },
+          0,
+        ),
+      ],
+      { updatesAuthoritative: true },
+    );
+    expect(changed).toEqual([
+      expect.objectContaining({
+        id: `update:${nextVersion}`,
+        updateVersion: nextVersion,
+        unread: true,
+      }),
+    ]);
   });
 
   it('caps at WIDGET_RECENT_MAX newest-first', () => {

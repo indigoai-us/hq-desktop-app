@@ -34,10 +34,14 @@
     hoverExpand?: boolean;
     /** Explicit accessible Open action. */
     onopen?: () => void;
+    /** Optional secondary action, distinct from opening the row destination. */
+    onaction?: () => void;
     /** Hover dismiss (×). */
     ondismiss?: () => void;
     /** Text for the hover open pill; when absent keep 'Open'. */
     actionLabel?: string;
+    /** Disable the secondary action while it is already in flight. */
+    actionDisabled?: boolean;
     /** When true the dismiss button renders as a text pill reading 'Dismiss'. */
     textDismiss?: boolean;
     /** Message rows: quick-reply submit. */
@@ -64,8 +68,10 @@
     selected = false,
     hoverExpand = true,
     onopen,
+    onaction,
     ondismiss,
     actionLabel,
+    actionDisabled = false,
     textDismiss = false,
     onreply,
     onreact,
@@ -129,6 +135,10 @@
 
   function handleOpen(): void {
     onopen?.();
+  }
+
+  function handleAction(): void {
+    (onaction ?? onopen)?.();
   }
 
   function submitReply(): void {
@@ -253,14 +263,15 @@
         </button>
       {/each}
     </div>
-  {:else if !isMessage && (onopen || ondismiss)}
+  {:else if !isMessage && (onopen || onaction || ondismiss)}
     <span class="nr-actions">
-      {#if onopen}
+      {#if onopen || onaction}
         <button
           class="nr-open"
           type="button"
-          aria-label={primaryActionLabel}
-          onclick={handleOpen}
+          aria-label={actionLabel ?? primaryActionLabel}
+          onclick={handleAction}
+          disabled={actionDisabled}
         >
           {actionLabel ?? 'Open'}
         </button>
@@ -572,6 +583,11 @@
   .nr-dismiss:focus-visible {
     outline: 1.5px solid var(--popover-text-muted);
     outline-offset: 1px;
+  }
+
+  .nr-open:disabled {
+    cursor: default;
+    opacity: 0.55;
   }
 
   /* Expanded message layout */

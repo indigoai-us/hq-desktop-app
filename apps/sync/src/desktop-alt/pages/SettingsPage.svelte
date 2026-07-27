@@ -9,6 +9,10 @@
   import { postOptIn } from '../../lib/onboarding-telemetry';
   import { permissionState, loadMeetingPermissions } from '../../lib/permissionState.svelte';
   import { packUpdateTitle } from '../../lib/packUpdate';
+  import {
+    resolvePendingUpdateState,
+    type PendingUpdateState,
+  } from '../../lib/notificationFeedData';
   import { updateSettings, type SettingsPatch } from '../../lib/settings-mutations';
   import WidgetSettings from '../../components/WidgetSettings.svelte';
   import '../v4/tokens.css';
@@ -166,6 +170,7 @@
   let updateResultTimeout: ReturnType<typeof setTimeout> | null = null;
   let appUpdate = $state<UpdateInfo | null>(null);
   let appUpdateInstalling = $state(false);
+  let appUpdateLoadGeneration = 0;
 
   // hq CLI update notice — loaded via check_hq_cli_update; null = hide card.
   let hqCliUpdate = $state<{ local: string | null; latest: string } | null>(null);
@@ -210,23 +215,40 @@
   onMount(() => {
     let cancelled = false;
     let unlistenUpdate: UnlistenFn | undefined;
+    let unlistenUpdateCleared: UnlistenFn | undefined;
 
     // Register before hydration so a background checker event cannot race
     // get_pending_update while Settings is mounting.
     void (async () => {
       try {
-        const fn = await listen<UpdateInfo>('update:available', (event) => {
-          if (cancelled || !event.payload?.version) return;
-          appUpdate = event.payload;
-          updateResult = null;
-        });
+        const [availableFn, clearedFn] = await Promise.all([
+          listen<UpdateInfo>('update:available', (event) => {
+            if (cancelled || !event.payload?.version) return;
+            appUpdateLoadGeneration += 1;
+            appUpdate = event.payload;
+            updateResult = null;
+          }),
+          listen('update:cleared', () => {
+            if (cancelled) return;
+            appUpdateLoadGeneration += 1;
+            appUpdate = null;
+            appUpdateInstalling = false;
+            updateResult = null;
+            if (updateResultTimeout) {
+              clearTimeout(updateResultTimeout);
+              updateResultTimeout = null;
+            }
+          }),
+        ]);
         if (cancelled) {
-          fn();
+          availableFn();
+          clearedFn();
           return;
         }
-        unlistenUpdate = fn;
+        unlistenUpdate = availableFn;
+        unlistenUpdateCleared = clearedFn;
       } catch (err) {
-        console.error('settings: failed to listen for update:available', err);
+        console.error('settings: failed to listen for updater state', err);
       }
     })();
 
@@ -248,7 +270,9 @@
     window.addEventListener('focus', onFocus);
     return () => {
       cancelled = true;
+      appUpdateLoadGeneration += 1;
       unlistenUpdate?.();
+      unlistenUpdateCleared?.();
       window.removeEventListener('focus', onFocus);
       if (updateResultTimeout) clearTimeout(updateResultTimeout);
       if (coreInstallResultTimeout) clearTimeout(coreInstallResultTimeout);
@@ -558,10 +582,18 @@
 
   async function refreshPendingAppUpdate() {
     if (appUpdateInstalling) return;
+    const generation = ++appUpdateLoadGeneration;
     try {
-      const pending = await invoke<UpdateInfo | null>('get_pending_update');
-      if (pending?.version) appUpdate = pending;
+      const pending = await invoke<PendingUpdateState | UpdateInfo | null>(
+        'get_pending_update',
+      );
+      if (generation !== appUpdateLoadGeneration) return;
+      const resolved = resolvePendingUpdateState(pending);
+      if (resolved.state === 'resolved') {
+        appUpdate = resolved.value;
+      }
     } catch (err) {
+      if (generation !== appUpdateLoadGeneration) return;
       console.error('get_pending_update failed:', err);
     }
   }

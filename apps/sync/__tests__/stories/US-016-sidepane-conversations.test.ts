@@ -135,6 +135,9 @@ describe('US-016: side pane conversation grouping', () => {
       );
       expect(paneSource).toContain('conversationRows');
       expect(paneSource).toContain('No conversations');
+      expect(paneSource).toContain('includeUpdates: false');
+      expect(paneSource).not.toContain('markAllNotificationsRead');
+      expect(paneSource).not.toContain("window.addEventListener('pagehide'");
     });
 
     it('NotificationRow exposes unread-count pill and type icons via data-type', () => {

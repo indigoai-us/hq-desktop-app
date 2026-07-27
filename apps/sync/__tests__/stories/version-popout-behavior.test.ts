@@ -33,10 +33,12 @@ type UpdateInfo = {
 };
 
 type UpdateListener = (event: { payload: UpdateInfo }) => void;
+type ClearListener = (event: { payload: unknown }) => void;
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
 let updateListener: UpdateListener | null = null;
+let clearListener: ClearListener | null = null;
 
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -110,10 +112,16 @@ beforeEach(() => {
   host = document.createElement('div');
   document.body.appendChild(host);
   updateListener = null;
+  clearListener = null;
   tauri.listen.mockImplementation(
-    async (event: string, callback: UpdateListener) => {
-      expect(event).toBe('update:available');
-      updateListener = callback;
+    async (event: string, callback: UpdateListener | ClearListener) => {
+      if (event === 'update:available') {
+        updateListener = callback as UpdateListener;
+      } else if (event === 'update:cleared') {
+        clearListener = callback as ClearListener;
+      } else {
+        throw new Error(`Unexpected event: ${event}`);
+      }
       return tauri.unlisten;
     },
   );
@@ -181,6 +189,50 @@ describe('VersionPopout restored updater behavior', () => {
     prefs.resolve({ autoUpdate: true });
     await waitForHydration();
     expect(latest()).toBe('v0.10.35');
+  });
+
+  it('clears stale available UI and ignores an older hydration result', async () => {
+    const pending = deferred<UpdateInfo | null>();
+    tauri.invoke.mockImplementation((command: string) => {
+      if (command === 'get_pending_update') return pending.promise;
+      if (command === 'get_settings') return Promise.resolve({ autoUpdate: true });
+      return Promise.reject(new Error(`Unexpected invoke: ${command}`));
+    });
+
+    mountPopout();
+    await vi.waitFor(() => {
+      expect(updateListener).toBeTypeOf('function');
+      expect(clearListener).toBeTypeOf('function');
+    });
+
+    updateListener?.({ payload: { version: '0.10.35' } });
+    flushSync();
+    expect(latest()).toBe('v0.10.35');
+
+    clearListener?.({ payload: undefined });
+    flushSync();
+    expect(status()).toBe('Up to date');
+    expect(latest()).toBe('v0.10.33');
+
+    pending.resolve({ version: '0.10.34' });
+    await Promise.resolve();
+    flushSync();
+    expect(latest()).toBe('v0.10.33');
+  });
+
+  it('does not treat native unchecked state as authoritative absence', async () => {
+    const pending = deferred<{ status: 'unchecked' }>();
+    tauri.invoke.mockImplementation((command: string) => {
+      if (command === 'get_pending_update') return pending.promise;
+      if (command === 'get_settings') return Promise.resolve({ autoUpdate: true });
+      return Promise.reject(new Error(`Unexpected invoke: ${command}`));
+    });
+
+    mountPopout();
+    await vi.waitFor(() => expect(updateListener).toBeTypeOf('function'));
+    updateListener?.({ payload: { version: '0.10.35' } });
+    pending.resolve({ status: 'unchecked' });
+    await vi.waitFor(() => expect(latest()).toBe('v0.10.35'));
   });
 
   it('checks for updates and switches between current and available states', async () => {
@@ -323,7 +375,7 @@ describe('VersionPopout restored updater behavior', () => {
     expect(toggle().checked).toBe(true);
     expect(button('version-popout-check').disabled).toBe(false);
     expect(consoleError).toHaveBeenCalledWith(
-      'version-popout: failed to listen for update:available',
+      'version-popout: failed to listen for updater state',
       expect.any(Error),
     );
     expect(consoleError).toHaveBeenCalledWith(
@@ -341,7 +393,7 @@ describe('VersionPopout restored updater behavior', () => {
     component = null;
     listener.resolve(tauri.unlisten);
 
-    await vi.waitFor(() => expect(tauri.unlisten).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(tauri.unlisten).toHaveBeenCalledTimes(2));
   });
 
   it('opens the Updates settings tab, closes the popout, and releases its listener', async () => {
@@ -356,6 +408,6 @@ describe('VersionPopout restored updater behavior', () => {
 
     await unmount(component!);
     component = null;
-    expect(tauri.unlisten).toHaveBeenCalledOnce();
+    expect(tauri.unlisten).toHaveBeenCalledTimes(2);
   });
 });
