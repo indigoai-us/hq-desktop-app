@@ -2,6 +2,10 @@
   import { invoke } from '@tauri-apps/api/core';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { updateSettings } from '../../lib/settings-mutations';
+  import {
+    resolvePendingUpdateState,
+    type PendingUpdateState,
+  } from '../../lib/notificationFeedData';
   import type { SettingsTab } from '../route';
 
   interface Props {
@@ -27,6 +31,7 @@
   let autoUpdate = $state(true);
   let autoUpdateLoading = $state(true);
   let autoUpdateSaving = $state(false);
+  let updateLoadGeneration = 0;
 
   const statusLabel = $derived.by(() => {
     if (phase === 'checking') return 'Checking…';
@@ -44,30 +49,45 @@
 
   $effect(() => {
     let cancelled = false;
-    let unlisten: UnlistenFn | undefined;
+    let unlistenAvailable: UnlistenFn | undefined;
+    let unlistenCleared: UnlistenFn | undefined;
 
     // Register the listener FIRST (no awaits before it) so an
     // `update:available` fired while other hydration calls are in flight
     // is never missed.
     void (async () => {
       try {
-        const fn = await listen<UpdateInfo>('update:available', (event) => {
-          if (cancelled) return;
-          const next = event.payload?.version;
-          if (!next) return;
-          latestVersion = next;
-          if (phase === 'error') {
-            phase = 'idle';
-            errorMessage = null;
-          }
-        });
+        const [availableFn, clearedFn] = await Promise.all([
+          listen<UpdateInfo>('update:available', (event) => {
+            if (cancelled) return;
+            const next = event.payload?.version;
+            if (!next) return;
+            updateLoadGeneration += 1;
+            latestVersion = next;
+            if (phase === 'error') {
+              phase = 'idle';
+              errorMessage = null;
+            }
+          }),
+          listen('update:cleared', () => {
+            if (cancelled) return;
+            updateLoadGeneration += 1;
+            latestVersion = null;
+            if (phase === 'error') {
+              phase = 'idle';
+              errorMessage = null;
+            }
+          }),
+        ]);
         if (cancelled) {
-          fn();
+          availableFn();
+          clearedFn();
           return;
         }
-        unlisten = fn;
+        unlistenAvailable = availableFn;
+        unlistenCleared = clearedFn;
       } catch (err) {
-        console.error('version-popout: failed to listen for update:available', err);
+        console.error('version-popout: failed to listen for updater state', err);
       }
     })();
 
@@ -75,12 +95,18 @@
     // this, an update detected before the pop-out opened would read
     // "Up to date" until a manual check.
     void (async () => {
+      const generation = ++updateLoadGeneration;
       try {
-        const pending = await invoke<UpdateInfo | null>('get_pending_update');
-        if (!cancelled && pending?.version) {
-          latestVersion = pending.version;
+        const pending = await invoke<PendingUpdateState | UpdateInfo | null>(
+          'get_pending_update',
+        );
+        if (cancelled || generation !== updateLoadGeneration) return;
+        const resolved = resolvePendingUpdateState(pending);
+        if (resolved.state === 'resolved') {
+          latestVersion = resolved.value?.version ?? null;
         }
       } catch (err) {
+        if (cancelled || generation !== updateLoadGeneration) return;
         console.error('get_pending_update failed:', err);
       }
     })();
@@ -100,7 +126,9 @@
 
     return () => {
       cancelled = true;
-      unlisten?.();
+      updateLoadGeneration += 1;
+      unlistenAvailable?.();
+      unlistenCleared?.();
     };
   });
 

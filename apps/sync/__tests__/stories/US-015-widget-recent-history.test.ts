@@ -291,7 +291,7 @@ describe('US-015: widget popup shows recent history (not just unviewed)', () => 
         resolve(process.cwd(), 'src/components/Widget.svelte'),
         'utf8',
       );
-      expect(src).toContain('loadNotificationItems');
+      expect(src).toContain('loadNotificationTimeline');
       expect(src).toContain('mergeRecentWithHistory');
       expect(src).toContain('historyFeedItemToStackItem');
       expect(src).toContain('refreshRecentFromHistory');

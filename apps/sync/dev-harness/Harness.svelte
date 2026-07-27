@@ -178,6 +178,28 @@
     },
   ];
 
+  const widgetUpdatePreviewItems: WidgetStackItem[] = [
+    {
+      id: 'widget-preview-update',
+      type: 'system',
+      actor: 'HQ',
+      text: 'Version 0.10.34 is ready to install.',
+      ts: Date.now() - 30_000,
+      kind: 'update',
+      clickActionId: 'open',
+      actionId: 'update',
+      actionLabel: 'Update now',
+      data: {
+        version: '0.10.34',
+        body: 'Desktop surface repairs and updater recovery.',
+        date: '2026-07-26',
+        detectedAt: new Date(Date.now() - 30_000).toISOString(),
+      },
+      expiresAt: Date.now() + 60 * 60_000,
+      unread: true,
+    },
+  ];
+
   // View + theme driven by URL query so screenshots target a known state:
   //   ?view=settings|popover|signin|banner   ?theme=light|dark
   //   banner view also takes ?kind=share|meeting|dm|update (default share)
@@ -295,8 +317,12 @@
   <!-- Floating widget: inspect idle at 66x43, or use ?state=stack at
        the dynamic 340x480 maximum to exercise notification + mini-inbox UI. -->
   <Widget
-    queued={stateOverride === 'idle' ? 0 : 2}
-    initialItems={stateOverride === 'idle' ? [] : widgetPreviewItems}
+    queued={scenario === 'update-available' || stateOverride === 'idle' ? 0 : 2}
+    initialItems={scenario === 'update-available'
+      ? widgetUpdatePreviewItems
+      : stateOverride === 'idle'
+        ? []
+        : widgetPreviewItems}
   />
 {:else if view === 'meetings'}
   <!-- Upcoming Meetings at its native 460x600 size. -->

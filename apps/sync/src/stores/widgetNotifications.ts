@@ -119,15 +119,16 @@ export interface WidgetStackItem {
   clickActionId: string;
   data: unknown;
   /**
-   * Optional chip action id from the banner payload. Preserved for open-routing
-   * and future stories — the locked one-line widget row does not render a chip.
+   * Optional chip action id from the banner payload. Kept separate from the
+   * row-body Open destination.
    */
   actionId?: string | null;
   /**
-   * Optional chip action label from the banner payload. Preserved for open-routing
-   * and future stories — the locked one-line widget row does not render a chip.
+   * Optional chip action label from the banner payload.
    */
   actionLabel?: string | null;
+  /** Non-privileged identity used to preserve read state across trusted refreshes. */
+  updateVersion?: string;
   /** Epoch ms — visible items with `expiresAt <= now` are dropped. */
   expiresAt: number;
   /** Unread marker for recent/hover list (set true on addItem). */
@@ -224,8 +225,17 @@ export function bannerToStackItem(
       break;
   }
 
+  const updateVersion =
+    kind === 'update' &&
+    payload.data !== null &&
+    typeof payload.data === 'object' &&
+    'version' in payload.data &&
+    typeof payload.data.version === 'string'
+      ? payload.data.version
+      : undefined;
+
   return {
-    id,
+    id: updateVersion ? `update:${updateVersion}` : id,
     type,
     actor,
     text,
@@ -235,6 +245,7 @@ export function bannerToStackItem(
     data: payload.data,
     actionId: payload.actionId,
     actionLabel: payload.actionLabel,
+    updateVersion,
     expiresAt: now + WIDGET_ROW_TIMEOUT_MS,
   };
 }
@@ -258,19 +269,36 @@ function prependRecent(recent: WidgetStackItem[], item: WidgetStackItem): Widget
  * Always also prepends into `recent` (unread, deduped, capped).
  */
 export function addItem(state: WidgetStackState, item: WidgetStackItem): WidgetStackState {
-  const recent = prependRecent(state.recent, item);
-  if (state.occluded) {
+  // The updater may rediscover the same version every six hours. Keep one
+  // current update row instead of accumulating random banner ids.
+  const isActionableUpdate =
+    item.kind === 'update' &&
+    (item.actionId === 'update' ||
+      (item.data !== null &&
+        typeof item.data === 'object' &&
+        'version' in item.data));
+  const base =
+    isActionableUpdate
+      ? {
+          ...state,
+          visible: state.visible.filter((entry) => entry.kind !== 'update'),
+          queued: state.queued.filter((entry) => entry.kind !== 'update'),
+          recent: state.recent.filter((entry) => entry.kind !== 'update'),
+        }
+      : state;
+  const recent = prependRecent(base.recent, item);
+  if (base.occluded) {
     return {
-      ...state,
-      visible: state.visible.slice(),
-      queued: [item, ...state.queued],
+      ...base,
+      visible: base.visible.slice(),
+      queued: [item, ...base.queued],
       recent,
     };
   }
   return {
-    ...state,
-    queued: state.queued.slice(),
-    visible: [item, ...state.visible].slice(0, WIDGET_STACK_MAX),
+    ...base,
+    queued: base.queued.slice(),
+    visible: [item, ...base.visible].slice(0, WIDGET_STACK_MAX),
     recent,
   };
 }
@@ -421,6 +449,7 @@ type SerializedRecentItem = {
   data: unknown;
   actionId?: string | null;
   actionLabel?: string | null;
+  updateVersion?: string;
   expiresAt: number;
   unread: boolean;
 };
@@ -441,6 +470,7 @@ export function serializeRecent(state: WidgetStackState): string {
     data: item.data,
     actionId: item.actionId,
     actionLabel: item.actionLabel,
+    updateVersion: item.updateVersion,
     expiresAt: item.expiresAt,
     unread: item.unread === true,
   }));
@@ -492,13 +522,18 @@ export function deserializeRecent(
       e.type === 'system'
         ? e.type
         : 'system';
+    const kind = typeof e.kind === 'string' ? e.kind : 'system';
+    const updateVersion =
+      kind === 'update' && typeof e.updateVersion === 'string'
+        ? e.updateVersion
+        : undefined;
     out.push({
-      id: e.id,
+      id: updateVersion ? `update:${updateVersion}` : e.id,
       type,
       actor: typeof e.actor === 'string' ? e.actor : undefined,
       text: e.text,
       ts: e.ts,
-      kind: typeof e.kind === 'string' ? e.kind : 'system',
+      kind,
       // Display-only restore — action surface never rehydrated from
       // untrusted storage (see doc comment above). Open is restored by
       // mergeRecentWithHistory after fetch_notification_history on mount.
@@ -506,6 +541,7 @@ export function deserializeRecent(
       data: null,
       actionId: undefined,
       actionLabel: undefined,
+      updateVersion,
       expiresAt: typeof e.expiresAt === 'number' ? e.expiresAt : 0,
       unread: e.unread === true,
     });
@@ -523,7 +559,7 @@ export function deserializeRecent(
  */
 export type HistoryFeedItem = {
   id: string;
-  kind: 'dm' | 'share' | 'new-file';
+  kind: 'dm' | 'share' | 'new-file' | 'update';
   actor: string;
   summary: string;
   /** Epoch ms. */
@@ -531,6 +567,7 @@ export type HistoryFeedItem = {
   dm?: unknown;
   share?: unknown;
   file?: { company: string; path: string };
+  update?: unknown;
 };
 
 /** Basename of a path for compact share/file previews (Lizzie one-line). */
@@ -578,11 +615,19 @@ export function historyFeedItemToStackItem(
       break;
     }
     case 'new-file':
-    default:
       type = 'sync';
       kind = 'new-file';
       text = item.file?.path ? pathBasename(item.file.path) : item.summary;
       data = item.file ?? null;
+      break;
+    case 'update':
+      type = 'system';
+      text = item.summary;
+      data = item.update ?? null;
+      break;
+    default:
+      type = 'system';
+      text = item.summary;
       break;
   }
 
@@ -595,6 +640,16 @@ export function historyFeedItemToStackItem(
     kind,
     clickActionId: 'open',
     data,
+    actionId: item.kind === 'update' ? 'update' : undefined,
+    actionLabel: item.kind === 'update' ? 'Update now' : undefined,
+    updateVersion:
+      item.kind === 'update' &&
+      item.update !== null &&
+      typeof item.update === 'object' &&
+      'version' in item.update &&
+      typeof item.update.version === 'string'
+        ? item.update.version
+        : undefined,
     expiresAt: 0,
     unread: item.ts > lastReadTs,
   };
@@ -603,20 +658,42 @@ export function historyFeedItemToStackItem(
 /**
  * Merge local widget recent history with server notification history.
  *
- * History rows carry openable data (dm/share/file). Local-only rows (update
- * banners, meetings) that never appear in the server feed are kept. Prefer a
- * history row over a display-only local twin when ids collide so Open works
- * after relaunch (localStorage strips action surface by design).
+ * History rows carry openable trusted data. When native update state was
+ * resolved, all random-id local update rows are replaced by the single trusted
+ * pending row (or removed after a confirmed null). On IPC failure callers leave
+ * `updatesAuthoritative` false so a safe display-only local row survives.
  *
  * Newest-first, capped at {@link WIDGET_RECENT_MAX}.
  */
 export function mergeRecentWithHistory(
   localRecent: WidgetStackItem[],
   historyItems: WidgetStackItem[],
+  options: { updatesAuthoritative?: boolean } = {},
 ): WidgetStackItem[] {
   const byId = new Map<string, WidgetStackItem>();
+  const updatesAuthoritative =
+    options.updatesAuthoritative ??
+    historyItems.some((item) => item.kind === 'update');
+  const trustedUpdates = new Map(
+    historyItems
+      .filter(
+        (item): item is WidgetStackItem & { updateVersion: string } =>
+          item.kind === 'update' && typeof item.updateVersion === 'string',
+      )
+      .map((item) => [item.updateVersion, item]),
+  );
 
   for (const item of localRecent) {
+    if (updatesAuthoritative && item.kind === 'update') {
+      const trusted =
+        typeof item.updateVersion === 'string'
+          ? trustedUpdates.get(item.updateVersion)
+          : undefined;
+      if (trusted) {
+        byId.set(trusted.id, { ...item, id: trusted.id });
+      }
+      continue;
+    }
     byId.set(item.id, item);
   }
 
@@ -627,7 +704,10 @@ export function mergeRecentWithHistory(
       continue;
     }
     // Prefer openable history data; preserve unread if either side is unread.
-    const unread = existing.unread === true || item.unread === true;
+    const unread =
+      item.kind === 'update'
+        ? existing.unread === true
+        : existing.unread === true || item.unread === true;
     const preferHistory =
       (item.data != null && existing.data == null) ||
       (Boolean(item.clickActionId) && !existing.clickActionId) ||

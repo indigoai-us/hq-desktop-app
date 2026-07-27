@@ -41,7 +41,7 @@
   } from '../stores/widgetNotifications';
   import {
     getLastReadTs,
-    loadNotificationItems,
+    loadNotificationTimeline,
   } from '../lib/notificationFeedData';
 
   let {
@@ -102,6 +102,10 @@
   let pointerHold = $state(false);
   /** Per-row reply focus/draft holds (ids of rows currently holding). */
   let replyHolds = $state(new Set<string>());
+  /** Secondary actions currently in flight; prevents duplicate install taps. */
+  let actioningIds = $state(new Set<string>());
+  /** Last-request-wins guard for history/update hydration across native events. */
+  let historyLoadGeneration = 0;
 
   /**
    * Apply hold to the pure stack. Plain function (not an $effect writing stack)
@@ -408,24 +412,9 @@
           await invoke('open_inbox_window');
         }
       } else if (item.kind === 'update') {
-        // Install chip still goes through banner_action (guarded install path
-        // in App.svelte). Body Open → two-pane Inbox (not menubar / desktop-alt).
-        const install =
-          item.clickActionId === 'update' || item.actionId === 'update';
-        if (install) {
-          const payload: BannerPayloadLike = {
-            kind: item.kind,
-            title: item.actor ?? '',
-            body: item.text,
-            clickActionId: item.clickActionId || 'update',
-            data: item.data,
-            actionId: item.actionId,
-            actionLabel: item.actionLabel,
-          };
-          await invoke('banner_action', { action: 'update', payload });
-        } else {
-          await invoke('open_inbox_window');
-        }
+        // The row body is navigation, never a surprise restart. Inbox owns the
+        // first-class update notification and its explicit Update now action.
+        await invoke('open_inbox_window');
       } else if (item.kind === 'meeting') {
         await invoke('show_main_window');
       } else if (item.clickActionId) {
@@ -458,20 +447,66 @@
     }
   }
 
+  async function handleAction(item: WidgetStackItem): Promise<void> {
+    if (!item.actionId || actioningIds.has(item.id)) {
+      if (!item.actionId) await handleOpen(item);
+      return;
+    }
+    if (!hasTauri()) return;
+
+    actioningIds = new Set(actioningIds).add(item.id);
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const payload: BannerPayloadLike = {
+        kind: item.kind,
+        title: item.actor ?? '',
+        body: item.text,
+        clickActionId: item.clickActionId || 'open',
+        data: item.data,
+        actionId: item.actionId,
+        actionLabel: item.actionLabel,
+      };
+      await invoke('banner_action', { action: item.actionId, payload });
+    } catch (err) {
+      console.error('widget: action failed', err);
+    } finally {
+      const next = new Set(actioningIds);
+      next.delete(item.id);
+      actioningIds = next;
+      applyStack(dismissItem(stack, item.id));
+      if (stack.visible.length === 0) setPointerHold(false);
+    }
+  }
+
   /**
-   * Seed/refresh recent from server notification history so the hover/click
-   * popup shows real DMs/shares/files (Lizzie ~10-row history), not only
-   * in-session update banners. Merges with local recent (keeps update rows).
+   * Seed/refresh recent from trusted notification history and pending updater
+   * state. Confirmed native absence removes stale persisted update rows; an IPC
+   * failure preserves their safe display-only form.
    */
   async function refreshRecentFromHistory(): Promise<void> {
     if (!hasTauri()) return;
+    const generation = ++historyLoadGeneration;
     try {
-      const items = await loadNotificationItems();
+      const timeline = await loadNotificationTimeline();
+      if (generation !== historyLoadGeneration) return;
+      const items = timeline.items;
       const lastRead = getLastReadTs();
       const historyRows = items.map((it) => historyFeedItemToStackItem(it, lastRead));
+      const updatesAuthoritative = timeline.updateState === 'resolved';
+      const hasPendingUpdate = items.some((it) => it.kind === 'update');
       applyStack({
         ...stack,
-        recent: mergeRecentWithHistory(stack.recent, historyRows),
+        visible:
+          updatesAuthoritative && !hasPendingUpdate
+            ? stack.visible.filter((it) => it.kind !== 'update')
+            : stack.visible,
+        queued:
+          updatesAuthoritative && !hasPendingUpdate
+            ? stack.queued.filter((it) => it.kind !== 'update')
+            : stack.queued,
+        recent: mergeRecentWithHistory(stack.recent, historyRows, {
+          updatesAuthoritative,
+        }),
       });
     } catch (err) {
       console.error('widget: fetch_notification_history failed', err);
@@ -573,10 +608,15 @@
     let unlistenClickAway: (() => void) | undefined;
     let unlistenDm: (() => void) | undefined;
     let unlistenSync: (() => void) | undefined;
+    let unlistenUpdate: (() => void) | undefined;
+    let unlistenUpdateCleared: (() => void) | undefined;
     let historyReloadTimer: ReturnType<typeof setTimeout> | undefined;
     let cancelled = false;
 
     const scheduleHistoryRefresh = () => {
+      // Invalidate an in-flight response as soon as the native state changes;
+      // the debounced replacement load will receive a newer generation.
+      historyLoadGeneration += 1;
       if (historyReloadTimer !== undefined) clearTimeout(historyReloadTimer);
       historyReloadTimer = setTimeout(() => {
         historyReloadTimer = undefined;
@@ -611,10 +651,12 @@
         if (pinned) closePinned();
       });
 
-      // Keep recent history in sync with the real notification feed (DMs,
-      // shares, files) so the popup isn't stuck on local update banners only.
+      // Keep recent history in sync with the real notification feed and native
+      // pending updater state.
       unlistenDm = await listen('dm:unread-summary', scheduleHistoryRefresh);
       unlistenSync = await listen('sync:complete', scheduleHistoryRefresh);
+      unlistenUpdate = await listen('update:available', scheduleHistoryRefresh);
+      unlistenUpdateCleared = await listen('update:cleared', scheduleHistoryRefresh);
 
       const { invoke } = await import('@tauri-apps/api/core');
       if (cancelled) return;
@@ -628,6 +670,7 @@
 
     return () => {
       cancelled = true;
+      historyLoadGeneration += 1;
       document.removeEventListener('pointerdown', handleClickAway, true);
       window.removeEventListener('blur', handleWindowBlur);
       unlistenNotif?.();
@@ -635,6 +678,8 @@
       unlistenClickAway?.();
       unlistenDm?.();
       unlistenSync?.();
+      unlistenUpdate?.();
+      unlistenUpdateCleared?.();
       if (historyReloadTimer !== undefined) {
         clearTimeout(historyReloadTimer);
         historyReloadTimer = undefined;
@@ -762,8 +807,12 @@
                 ts={row.item.ts}
                 unread={row.item.unread ?? false}
                 actionLabel={row.item.actionLabel ?? undefined}
+                actionDisabled={actioningIds.has(row.item.id)}
                 textDismiss
                 onopen={() => void handleOpen(row.item)}
+                onaction={row.item.actionId
+                  ? () => void handleAction(row.item)
+                  : undefined}
                 ondismiss={() => handleHoverDismiss(row.item.id)}
                 onreply={row.item.kind === 'dm'
                   ? (text) => void replyDm(row.item, text)
@@ -840,7 +889,10 @@
             actor={item.actor}
             text={item.text}
             ts={item.ts}
+            actionLabel={item.actionLabel ?? undefined}
+            actionDisabled={actioningIds.has(item.id)}
             onopen={() => void handleOpen(item)}
+            onaction={item.actionId ? () => void handleAction(item) : undefined}
             ondismiss={() => handleDismiss(item.id)}
             onreply={item.kind === 'dm' ? (text) => void replyDm(item, text) : undefined}
             onreact={item.kind === 'dm' ? (emoji) => void reactDm(item, emoji) : undefined}

@@ -247,7 +247,7 @@ fn main() {
                 })
                 .build(),
         )
-        .manage(updater::PendingUpdate(Mutex::new(None)))
+        .manage(updater::PendingUpdate::default())
         .manage(commands::drift_detail::PendingDrift(Mutex::new(None)))
         .manage(commands::activity::SessionActivity::new())
         .manage(commands::share_notify::PendingShareEvents(Mutex::new(Vec::new())))

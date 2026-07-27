@@ -594,6 +594,7 @@
       <NotificationFeed
         bind:this={feedEl}
         showDayLabels={false}
+        includeUpdates={false}
         hideEmptyState={hasSystemNotices}
         onunreadchange={(n) => (unreadCount = n)}
       />
