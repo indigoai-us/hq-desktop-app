@@ -7,10 +7,14 @@ boundaries, the sync fork reunification, unified build/release/signing/updater, 
 phased migration with verifiable done-criteria, and open questions — is
 [`../MIGRATION.md`](../MIGRATION.md).
 
-Planned dedicated docs (extracted from `MIGRATION.md` as the work lands):
+Current operational docs:
+
+- [`RELEASE.md`](RELEASE.md) — the unified, channel-isolated, atomic release
+  workflow.
+
+Planned dedicated docs (to be extracted from `MIGRATION.md` as the work lands):
 
 - `architecture.md`
 - `signing.md` — macOS notarization + Windows Azure Trusted Signing.
 - `updater.md` — channel manifests, `.sig` regeneration after Authenticode.
-- `release.md` — the unified release workflow.
 - `sync-fork-reunification.md` — the macOS/Windows sync merge and its `cfg(target_os)` seam.
