@@ -164,16 +164,15 @@ export function groupByState(
 }
 
 // ---------------------------------------------------------------------------
-// Deterministic label color (monochrome-glass adaptation of kanban-board.tsx)
+// Deterministic label shade (monochrome-glass adaptation of kanban-board.tsx)
 // ---------------------------------------------------------------------------
 
 /**
  * A label chip's resolved color, expressed against HQ Sync's monochrome-glass
  * identity. Rather than the indigo Tailwind palette used in hq-desktop, we map
  * each label to one entry of a small neutral/translucent palette plus a stable
- * index. All values are CSS-var-friendly translucent monochrome tones with a
- * single controlled-saturation hue, preserving the monochrome look while still
- * giving each label a stable, distinguishable shade.
+ * index. All values derive from V4 semantic tokens, preserving contrast in both
+ * themes without reintroducing arbitrary brand hues.
  */
 export interface LabelColor {
   /** Stable palette index (0..LABEL_PALETTE_SIZE-1). */
@@ -186,24 +185,20 @@ export interface LabelColor {
   foreground: string;
 }
 
-/** Number of distinct hues a label can resolve to. */
+/** Number of distinct neutral shades a label can resolve to. */
 export const LABEL_PALETTE_SIZE = 8;
 
 /**
- * The label palette — a low-saturation 8-hue set mirroring hq-desktop's
- * blue/purple/teal/pink/orange/cyan/lime/rose chips, tuned for the dark desktop
- * surface (translucent fill + matching border + a brighter readable foreground).
- * Hues are spaced around the wheel so adjacent labels stay distinguishable. The
- * deterministic hash (below) maps each label string to a stable entry.
+ * Eight stable neutral shades. `color-mix` keeps the chips theme-aware while
+ * the small percentage steps remain visibly distinct on dense kanban surfaces.
  */
-const LABEL_HUES = [217, 270, 173, 330, 25, 190, 84, 350];
-
-export const LABEL_PALETTE: LabelColor[] = LABEL_HUES.map(
-  (hue, i): LabelColor => ({
+export const LABEL_PALETTE: LabelColor[] = Array.from(
+  { length: LABEL_PALETTE_SIZE },
+  (_, i): LabelColor => ({
     index: i,
-    background: `hsla(${hue}, 65%, 58%, 0.15)`,
-    border: `hsla(${hue}, 65%, 60%, 0.30)`,
-    foreground: `hsla(${hue}, 70%, 74%, 0.92)`,
+    background: `color-mix(in srgb, var(--v4-text-2) ${6 + i}%, transparent)`,
+    border: `color-mix(in srgb, var(--v4-text-2) ${14 + i * 2}%, transparent)`,
+    foreground: 'var(--v4-text-1)',
   }),
 );
 

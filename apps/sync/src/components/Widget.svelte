@@ -41,7 +41,7 @@
   } from '../stores/widgetNotifications';
   import {
     getLastReadTs,
-    loadNotificationItems,
+    loadNotificationTimeline,
   } from '../lib/notificationFeedData';
 
   let {
@@ -102,6 +102,10 @@
   let pointerHold = $state(false);
   /** Per-row reply focus/draft holds (ids of rows currently holding). */
   let replyHolds = $state(new Set<string>());
+  /** Secondary actions currently in flight; prevents duplicate install taps. */
+  let actioningIds = $state(new Set<string>());
+  /** Last-request-wins guard for history/update hydration across native events. */
+  let historyLoadGeneration = 0;
 
   /**
    * Apply hold to the pure stack. Plain function (not an $effect writing stack)
@@ -408,24 +412,9 @@
           await invoke('open_inbox_window');
         }
       } else if (item.kind === 'update') {
-        // Install chip still goes through banner_action (guarded install path
-        // in App.svelte). Body Open → two-pane Inbox (not menubar / desktop-alt).
-        const install =
-          item.clickActionId === 'update' || item.actionId === 'update';
-        if (install) {
-          const payload: BannerPayloadLike = {
-            kind: item.kind,
-            title: item.actor ?? '',
-            body: item.text,
-            clickActionId: item.clickActionId || 'update',
-            data: item.data,
-            actionId: item.actionId,
-            actionLabel: item.actionLabel,
-          };
-          await invoke('banner_action', { action: 'update', payload });
-        } else {
-          await invoke('open_inbox_window');
-        }
+        // The row body is navigation, never a surprise restart. Inbox owns the
+        // first-class update notification and its explicit Update now action.
+        await invoke('open_inbox_window');
       } else if (item.kind === 'meeting') {
         await invoke('show_main_window');
       } else if (item.clickActionId) {
@@ -458,20 +447,66 @@
     }
   }
 
+  async function handleAction(item: WidgetStackItem): Promise<void> {
+    if (!item.actionId || actioningIds.has(item.id)) {
+      if (!item.actionId) await handleOpen(item);
+      return;
+    }
+    if (!hasTauri()) return;
+
+    actioningIds = new Set(actioningIds).add(item.id);
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const payload: BannerPayloadLike = {
+        kind: item.kind,
+        title: item.actor ?? '',
+        body: item.text,
+        clickActionId: item.clickActionId || 'open',
+        data: item.data,
+        actionId: item.actionId,
+        actionLabel: item.actionLabel,
+      };
+      await invoke('banner_action', { action: item.actionId, payload });
+    } catch (err) {
+      console.error('widget: action failed', err);
+    } finally {
+      const next = new Set(actioningIds);
+      next.delete(item.id);
+      actioningIds = next;
+      applyStack(dismissItem(stack, item.id));
+      if (stack.visible.length === 0) setPointerHold(false);
+    }
+  }
+
   /**
-   * Seed/refresh recent from server notification history so the hover/click
-   * popup shows real DMs/shares/files (Lizzie ~10-row history), not only
-   * in-session update banners. Merges with local recent (keeps update rows).
+   * Seed/refresh recent from trusted notification history and pending updater
+   * state. Confirmed native absence removes stale persisted update rows; an IPC
+   * failure preserves their safe display-only form.
    */
   async function refreshRecentFromHistory(): Promise<void> {
     if (!hasTauri()) return;
+    const generation = ++historyLoadGeneration;
     try {
-      const items = await loadNotificationItems();
+      const timeline = await loadNotificationTimeline();
+      if (generation !== historyLoadGeneration) return;
+      const items = timeline.items;
       const lastRead = getLastReadTs();
       const historyRows = items.map((it) => historyFeedItemToStackItem(it, lastRead));
+      const updatesAuthoritative = timeline.updateState === 'resolved';
+      const hasPendingUpdate = items.some((it) => it.kind === 'update');
       applyStack({
         ...stack,
-        recent: mergeRecentWithHistory(stack.recent, historyRows),
+        visible:
+          updatesAuthoritative && !hasPendingUpdate
+            ? stack.visible.filter((it) => it.kind !== 'update')
+            : stack.visible,
+        queued:
+          updatesAuthoritative && !hasPendingUpdate
+            ? stack.queued.filter((it) => it.kind !== 'update')
+            : stack.queued,
+        recent: mergeRecentWithHistory(stack.recent, historyRows, {
+          updatesAuthoritative,
+        }),
       });
     } catch (err) {
       console.error('widget: fetch_notification_history failed', err);
@@ -573,10 +608,15 @@
     let unlistenClickAway: (() => void) | undefined;
     let unlistenDm: (() => void) | undefined;
     let unlistenSync: (() => void) | undefined;
+    let unlistenUpdate: (() => void) | undefined;
+    let unlistenUpdateCleared: (() => void) | undefined;
     let historyReloadTimer: ReturnType<typeof setTimeout> | undefined;
     let cancelled = false;
 
     const scheduleHistoryRefresh = () => {
+      // Invalidate an in-flight response as soon as the native state changes;
+      // the debounced replacement load will receive a newer generation.
+      historyLoadGeneration += 1;
       if (historyReloadTimer !== undefined) clearTimeout(historyReloadTimer);
       historyReloadTimer = setTimeout(() => {
         historyReloadTimer = undefined;
@@ -611,10 +651,12 @@
         if (pinned) closePinned();
       });
 
-      // Keep recent history in sync with the real notification feed (DMs,
-      // shares, files) so the popup isn't stuck on local update banners only.
+      // Keep recent history in sync with the real notification feed and native
+      // pending updater state.
       unlistenDm = await listen('dm:unread-summary', scheduleHistoryRefresh);
       unlistenSync = await listen('sync:complete', scheduleHistoryRefresh);
+      unlistenUpdate = await listen('update:available', scheduleHistoryRefresh);
+      unlistenUpdateCleared = await listen('update:cleared', scheduleHistoryRefresh);
 
       const { invoke } = await import('@tauri-apps/api/core');
       if (cancelled) return;
@@ -628,6 +670,7 @@
 
     return () => {
       cancelled = true;
+      historyLoadGeneration += 1;
       document.removeEventListener('pointerdown', handleClickAway, true);
       window.removeEventListener('blur', handleWindowBlur);
       unlistenNotif?.();
@@ -635,6 +678,8 @@
       unlistenClickAway?.();
       unlistenDm?.();
       unlistenSync?.();
+      unlistenUpdate?.();
+      unlistenUpdateCleared?.();
       if (historyReloadTimer !== undefined) {
         clearTimeout(historyReloadTimer);
         historyReloadTimer = undefined;
@@ -762,8 +807,12 @@
                 ts={row.item.ts}
                 unread={row.item.unread ?? false}
                 actionLabel={row.item.actionLabel ?? undefined}
+                actionDisabled={actioningIds.has(row.item.id)}
                 textDismiss
                 onopen={() => void handleOpen(row.item)}
+                onaction={row.item.actionId
+                  ? () => void handleAction(row.item)
+                  : undefined}
                 ondismiss={() => handleHoverDismiss(row.item.id)}
                 onreply={row.item.kind === 'dm'
                   ? (text) => void replyDm(row.item, text)
@@ -840,7 +889,10 @@
             actor={item.actor}
             text={item.text}
             ts={item.ts}
+            actionLabel={item.actionLabel ?? undefined}
+            actionDisabled={actioningIds.has(item.id)}
             onopen={() => void handleOpen(item)}
+            onaction={item.actionId ? () => void handleAction(item) : undefined}
             ondismiss={() => handleDismiss(item.id)}
             onreply={item.kind === 'dm' ? (text) => void replyDm(item, text) : undefined}
             onreact={item.kind === 'dm' ? (emoji) => void reactDm(item, emoji) : undefined}
@@ -908,17 +960,17 @@
     background: transparent;
     overflow: hidden;
     /* Stack/row appearance tokens — light default; dark overrides below. */
-    --row-bg: rgba(250, 250, 252, 0.6);
-    --row-bg-hover: rgba(250, 250, 252, 0.92);
+    --row-bg: rgba(250, 250, 250, 0.6);
+    --row-bg-hover: rgba(250, 250, 250, 0.92);
     --row-border: rgba(255, 255, 255, 0.6);
-    --row-fg: #1d1d1f;
+    --row-fg: #1d1d1d;
     --row-muted: rgba(0, 0, 0, 0.45);
-    --row-shadow: 0 8px 22px rgba(20, 22, 40, 0.16);
+    --row-shadow: 0 8px 22px rgba(0, 0, 0, 0.16);
     --row-highlight: rgba(255, 255, 255, 0.75);
     --row-hover-bg: rgba(0, 0, 0, 0.06);
     --reply-bg: rgba(0, 0, 0, 0.05);
     --reply-border: rgba(0, 0, 0, 0.14);
-    --qd-fg: #0064d6;
+    --qd-fg: #333333;
   }
 
   /* Notification stack — column of one-line rows ABOVE the wordmark. */
@@ -934,10 +986,10 @@
   /* Frosted glass shell around NotificationRow (mockup .row chrome). */
   .frost {
     width: 244px;
-    border-radius: 9px;
+    border-radius: var(--radius-popover, 8px);
     background: var(--row-bg);
-    -webkit-backdrop-filter: blur(26px) saturate(1.7);
-    backdrop-filter: blur(26px) saturate(1.7);
+    -webkit-backdrop-filter: var(--glass-filter, blur(28px) saturate(0%));
+    backdrop-filter: var(--glass-filter, blur(28px) saturate(0%));
     border: 0.5px solid var(--row-border);
     box-shadow: var(--row-shadow), inset 0 1px 0 var(--row-highlight);
     animation: widget-slide 0.4s cubic-bezier(0.34, 1.3, 0.64, 1) backwards;
@@ -947,7 +999,7 @@
     --popover-text: var(--row-fg);
     --popover-text-muted: var(--row-muted);
     --popover-action-hover: var(--row-hover-bg);
-    --popover-unread: var(--qd-fg, #0064d6);
+    --popover-unread: var(--qd-fg, #333333);
     --popover-surface: var(--reply-bg);
     --popover-divider: var(--reply-border);
   }
@@ -955,14 +1007,14 @@
   /* Hover recent-notification list — single frosted panel above the mark. */
   .hover-list {
     width: 264px;
-    border-radius: 12px;
+    border-radius: var(--radius-popover, 8px);
     padding: 6px 6px 4px;
     display: flex;
     flex-direction: column;
     gap: 0;
     background: var(--row-bg);
-    -webkit-backdrop-filter: blur(30px) saturate(1.8);
-    backdrop-filter: blur(30px) saturate(1.8);
+    -webkit-backdrop-filter: var(--glass-filter, blur(28px) saturate(0%));
+    backdrop-filter: var(--glass-filter, blur(28px) saturate(0%));
     border: 0.5px solid var(--row-border);
     box-shadow: var(--row-shadow), inset 0 1px 0 var(--row-highlight);
     margin-bottom: 12px;
@@ -974,7 +1026,7 @@
     --popover-text: var(--row-fg);
     --popover-text-muted: var(--row-muted);
     --popover-action-hover: var(--row-hover-bg);
-    --popover-unread: var(--qd-fg, #0064d6);
+    --popover-unread: var(--qd-fg, #333333);
     --popover-surface: var(--reply-bg);
     --popover-divider: var(--reply-border);
   }
@@ -1005,7 +1057,7 @@
     color: var(--row-muted);
     width: 28px;
     height: 28px;
-    border-radius: 7px;
+    border-radius: var(--radius-button, 6px);
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -1023,14 +1075,14 @@
   /* Wordmark right-click menu — same frost chrome as the mini inbox. */
   .ctx-menu {
     width: 200px;
-    border-radius: 12px;
+    border-radius: var(--radius-popover, 8px);
     padding: 4px;
     display: flex;
     flex-direction: column;
     gap: 1px;
     background: var(--row-bg);
-    -webkit-backdrop-filter: blur(30px) saturate(1.8);
-    backdrop-filter: blur(30px) saturate(1.8);
+    -webkit-backdrop-filter: var(--glass-filter, blur(28px) saturate(0%));
+    backdrop-filter: var(--glass-filter, blur(28px) saturate(0%));
     border: 0.5px solid var(--row-border);
     box-shadow: var(--row-shadow), inset 0 1px 0 var(--row-highlight);
     margin-bottom: 12px;
@@ -1050,7 +1102,7 @@
     font-weight: 500;
     text-align: left;
     padding: 8px 12px;
-    border-radius: 8px;
+    border-radius: var(--radius-button, 6px);
     cursor: pointer;
     line-height: 1.25;
   }
@@ -1085,7 +1137,7 @@
   .hl-row :global(.nr) {
     min-height: 28px;
     font-size: 12px;
-    border-radius: 7px;
+    border-radius: 0;
     background: transparent;
     color: var(--row-fg);
     width: 100%;
@@ -1093,9 +1145,13 @@
   }
 
   .hl-row :global(.nr:not(.nr-message):hover),
-  .hl-row :global(.nr:not(.nr-message):focus-within),
-  .hl-row :global(.nr-message.nr-expanded) {
+  .hl-row :global(.nr:not(.nr-message):focus-within) {
     background: var(--row-hover-bg);
+  }
+
+  .hl-row :global(.nr-message.nr-expanded) {
+    background: transparent;
+    box-shadow: inset 0 -1px 0 var(--row-border);
   }
 
   .hl-row :global(.nr-open),
@@ -1120,7 +1176,8 @@
   }
 
   .frost :global(.nr-message.nr-expanded) {
-    background: var(--row-bg-hover);
+    background: transparent;
+    box-shadow: inset 0 -1px 0 var(--row-border);
   }
 
   .frost :global(.nr:not(.nr-message):hover),
@@ -1172,9 +1229,9 @@
     flex-shrink: 0;
     cursor: pointer;
     /* Light default; dark overrides below. */
-    --wm-fg: #1d1d1f;
+    --wm-fg: #1d1d1d;
     --wm-shadow: drop-shadow(0 1px 4px rgba(255, 255, 255, 0.5));
-    --qd-fg: #0064d6;
+    --qd-fg: #333333;
   }
 
   .wg:hover .wm {
@@ -1203,8 +1260,8 @@
 
   @media (prefers-color-scheme: dark) {
     .wg {
-      --row-bg: rgba(30, 30, 34, 0.55);
-      --row-bg-hover: rgba(38, 38, 42, 0.85);
+      --row-bg: rgba(30, 30, 30, 0.55);
+      --row-bg-hover: rgba(38, 38, 38, 0.85);
       --row-border: rgba(255, 255, 255, 0.14);
       --row-fg: #fff;
       --row-muted: rgba(255, 255, 255, 0.48);
@@ -1213,14 +1270,57 @@
       --row-hover-bg: rgba(255, 255, 255, 0.1);
       --reply-bg: rgba(255, 255, 255, 0.08);
       --reply-border: rgba(255, 255, 255, 0.18);
-      --qd-fg: #6cb2ff;
+      --qd-fg: #d4d4d4;
     }
 
     .wm {
       --wm-fg: #fff;
       --wm-shadow: drop-shadow(0 1px 6px rgba(0, 0, 0, 0.45));
-      --qd-fg: #6cb2ff;
+      --qd-fg: #d4d4d4;
     }
+  }
+
+  /* The design harness can force either theme independently of the host OS.
+     Override the whole material stack, not only the idle mark, so populated
+     notification, mini-inbox, reply, and context-menu states stay coherent. */
+  :global(html[data-force-theme='light']) .wg {
+    --row-bg: rgba(250, 250, 250, 0.6);
+    --row-bg-hover: rgba(250, 250, 250, 0.92);
+    --row-border: rgba(255, 255, 255, 0.6);
+    --row-fg: #1d1d1d;
+    --row-muted: rgba(0, 0, 0, 0.45);
+    --row-shadow: 0 8px 22px rgba(0, 0, 0, 0.16);
+    --row-highlight: rgba(255, 255, 255, 0.75);
+    --row-hover-bg: rgba(0, 0, 0, 0.06);
+    --reply-bg: rgba(0, 0, 0, 0.05);
+    --reply-border: rgba(0, 0, 0, 0.14);
+    --qd-fg: #333333;
+  }
+
+  :global(html[data-force-theme='dark']) .wg {
+    --row-bg: rgba(30, 30, 30, 0.55);
+    --row-bg-hover: rgba(38, 38, 38, 0.85);
+    --row-border: rgba(255, 255, 255, 0.14);
+    --row-fg: #fff;
+    --row-muted: rgba(255, 255, 255, 0.48);
+    --row-shadow: 0 8px 22px rgba(0, 0, 0, 0.32);
+    --row-highlight: rgba(255, 255, 255, 0.16);
+    --row-hover-bg: rgba(255, 255, 255, 0.1);
+    --reply-bg: rgba(255, 255, 255, 0.08);
+    --reply-border: rgba(255, 255, 255, 0.18);
+    --qd-fg: #d4d4d4;
+  }
+
+  :global(html[data-force-theme='light']) .wm {
+    --wm-fg: #1d1d1d;
+    --wm-shadow: drop-shadow(0 1px 4px rgba(255, 255, 255, 0.5));
+    --qd-fg: #333333;
+  }
+
+  :global(html[data-force-theme='dark']) .wm {
+    --wm-fg: #fff;
+    --wm-shadow: drop-shadow(0 1px 6px rgba(0, 0, 0, 0.45));
+    --qd-fg: #d4d4d4;
   }
 
   @media (prefers-reduced-motion: reduce) {

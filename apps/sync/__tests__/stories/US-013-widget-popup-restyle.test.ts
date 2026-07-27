@@ -131,7 +131,9 @@ describe('US-013: pinned popup matches locked design (scenes 8-10)', () => {
       });
       const list = pinOpen();
       const row = list.querySelector('[data-testid="notification-row"]')!;
-      const kids = [...row.children];
+      const primaryAction = row.querySelector<HTMLButtonElement>('button.nr-primary-action');
+      expect(primaryAction).toBeTruthy();
+      const kids = [...primaryAction!.children];
       const iconIdx = kids.findIndex((el) => el.classList.contains('nr-icon'));
       const dotIdx = kids.findIndex((el) => el.classList.contains('nr-unread'));
       const textIdx = kids.findIndex((el) => el.classList.contains('nr-text'));
@@ -235,9 +237,11 @@ describe('US-013: pinned popup matches locked design (scenes 8-10)', () => {
       expect(panelIdx).toBeGreaterThan(-1);
       const panel = style.slice(panelIdx, style.indexOf('}', panelIdx));
       expect(panel).toContain('width: 264px');
-      expect(panel).toContain('border-radius: 12px');
+      expect(panel).toContain('border-radius: var(--radius-popover, 8px)');
       expect(panel).toContain('padding: 6px 6px 4px');
-      expect(panel).toContain('backdrop-filter: blur(30px) saturate(1.8)');
+      expect(panel).toContain(
+        'backdrop-filter: var(--glass-filter, blur(28px) saturate(0%))',
+      );
       expect(panel).toContain('transform-origin: bottom right');
       expect(panel).toContain('widget-bloom');
       // Row gap lives on the body; footer is a separate icon toolbar.
@@ -253,7 +257,7 @@ describe('US-013: pinned popup matches locked design (scenes 8-10)', () => {
       const row = style.slice(rowIdx, style.indexOf('}', rowIdx));
       expect(row).toContain('background: transparent');
       expect(row).toContain('min-height: 28px');
-      expect(row).toContain('border-radius: 7px');
+      expect(row).toContain('border-radius: 0');
       expect(row).not.toContain('backdrop-filter');
       expect(row).not.toContain('box-shadow');
     });

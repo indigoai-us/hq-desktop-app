@@ -65,7 +65,8 @@ describe('US-004: Single-window activation and navigation', () => {
       const src = readDesktopAlt();
       // route_str arms for the top-level destinations.
       expect(src).toMatch(/Self::Home\s*\|\s*Self::Activity\s*\|\s*Self::CoreDrift\s*=>\s*"home"/);
-      expect(src).toMatch(/Self::Inbox\s*\|\s*Self::Messages\s*=>\s*"inbox"/);
+      expect(src).toMatch(/Self::Inbox\s*=>\s*"inbox"/);
+      expect(src).toMatch(/Self::Messages\s*=>\s*"messages"/);
       expect(src).toMatch(/Self::Meetings\s*=>\s*"meetings"/);
       expect(src).toMatch(/Self::Library\s*=>\s*"library"/);
       expect(src).toMatch(/Self::LibraryInstalled\s*=>\s*"library:installed"/);
@@ -73,7 +74,7 @@ describe('US-004: Single-window activation and navigation', () => {
 
     it('frontend resolvePendingDesktopRoute accepts WindowRouter aliases', () => {
       expect(resolvePendingDesktopRoute('inbox')).toEqual({ kind: 'inbox' });
-      expect(resolvePendingDesktopRoute('messages')).toEqual({ kind: 'inbox' });
+      expect(resolvePendingDesktopRoute('messages')).toEqual({ kind: 'messages' });
       expect(resolvePendingDesktopRoute('meetings')).toEqual({ kind: 'meetings' });
       expect(resolvePendingDesktopRoute('library')).toEqual({ kind: 'library' });
       expect(resolvePendingDesktopRoute('library:installed')).toEqual({

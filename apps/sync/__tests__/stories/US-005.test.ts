@@ -61,8 +61,24 @@ describe('US-005: Alt Home surface wires to real sync state and events', () => {
       expect(desktopApp).toContain(`'${eventName}'`);
     }
 
-    expect(desktopApp).toContain("invoke<WorkspacesResult>('list_syncable_workspaces')");
-    expect(desktopApp).toContain("invoke<ActivityEntry[]>('get_activity_log')");
+    expect(desktopApp).toContain('invoke<Partial<WorkspacesResult> | null>(');
+    expect(desktopApp).toContain("'list_syncable_workspaces'");
+    expect(desktopApp).toContain(
+      'const nextWorkspaces = Array.isArray(result?.workspaces) ? result.workspaces : []',
+    );
+    expect(desktopApp).toContain("invoke<unknown>('get_activity_log')");
+    expect(desktopApp).toContain('const nextActivity = Array.isArray(activityResponse)');
+  });
+
+  it('moves the titlebar into review state when a conflict event arrives', () => {
+    const conflictListener = desktopApp.slice(
+      desktopApp.indexOf("listen<{ path: string; localHash: string; remoteHash: string; canAutoResolve: boolean }>("),
+      desktopApp.indexOf("listen<HomeCoreState | null>('core-state:changed'"),
+    );
+
+    expect(conflictListener).toContain("'sync:conflict'");
+    expect(conflictListener).toContain("syncState = 'conflict'");
+    expect(conflictListener).toContain("invoke('set_tray_state', { state: 'conflict' })");
   });
 
   it('wires the Home inline actions to real Tauri commands', () => {

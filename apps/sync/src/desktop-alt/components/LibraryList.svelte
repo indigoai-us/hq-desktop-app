@@ -78,8 +78,6 @@
         onclick={() => activate(item)}
         onkeydown={(event) => handleKeydown(event, item)}
       >
-        <span class="accent" aria-hidden="true"></span>
-
         <div class="card-head">
           <span class="kind-tag">
             <span class="kind-dot" aria-hidden="true"></span>
@@ -135,7 +133,7 @@
     flex-direction: column;
     gap: var(--v4-space-2);
     min-width: 0;
-    padding: var(--v4-space-3) var(--v4-space-3) var(--v4-space-3) calc(var(--v4-space-3) + 4px);
+    padding: var(--v4-space-3);
     overflow: hidden;
     border: 1px solid var(--v4-hairline);
     border-radius: var(--v4-radius-card);
@@ -158,24 +156,6 @@
   .lib-card:focus-visible {
     outline: 2px solid var(--v4-control-border);
     outline-offset: 2px;
-  }
-
-  .accent {
-    position: absolute;
-    inset-block: 0;
-    inset-inline-start: 0;
-    width: 3px;
-    opacity: 0.55;
-    transition: opacity 140ms ease;
-  }
-  .lib-card.is-worker .accent {
-    background: var(--v4-text-3);
-  }
-  .lib-card.is-skill .accent {
-    background: var(--v4-text-1);
-  }
-  .lib-card:hover .accent {
-    opacity: 1;
   }
 
   .card-head {
@@ -294,10 +274,10 @@
 
   .empty-state {
     padding: var(--v4-space-6);
-    border: 1px dashed var(--v4-control-border);
-    border-radius: var(--v4-radius-card);
-    background: var(--v4-raised);
-    box-shadow: var(--v4-shadow-card);
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
     text-align: center;
   }
 
@@ -313,8 +293,7 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .lib-card,
-    .accent {
+    .lib-card {
       transition: none;
     }
     .lib-card:hover {

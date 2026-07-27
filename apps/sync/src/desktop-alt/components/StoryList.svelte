@@ -158,7 +158,7 @@
   }
 
   .state-dot[data-column='in-progress'] {
-    background: var(--v4-warn);
+    background: var(--v4-text-2);
   }
 
   .state-dot[data-column='active'] {
@@ -224,7 +224,7 @@
   }
 
   .state-badge[data-column='in-progress'] {
-    color: var(--v4-warn);
+    color: var(--v4-text-2);
   }
 
   .state-badge[data-column='active'] {
@@ -247,7 +247,7 @@
   .priority-badge[data-priority='P2'] {
     border-color: var(--v4-control-border);
     background: var(--v4-control-faint);
-    color: var(--v4-warn);
+    color: var(--v4-text-2);
   }
   .priority-badge[data-priority='P3'] {
     border-color: var(--v4-control-border);
@@ -265,7 +265,7 @@
 
   .empty-state {
     padding: var(--v4-space-6);
-    border: 1px dashed var(--v4-control-border);
+    border: 0;
     border-radius: 0;
     background: transparent;
     text-align: center;

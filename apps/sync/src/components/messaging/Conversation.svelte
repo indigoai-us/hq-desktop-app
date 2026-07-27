@@ -532,7 +532,7 @@
   }
 
   .dm-bubble-body :global(a) {
-    color: #bcd4ff;
+    color: var(--popover-text, #e8e8e8);
     text-decoration: underline;
     text-underline-offset: 0.125rem;
   }
@@ -549,10 +549,11 @@
     font-size: var(--text-base);
     line-height: 1.5;
     color: var(--pop-text);
-    background: var(--c-field-bg);
-    border-left: 2px solid var(--c-field-border);
-    padding: 0.5rem 0.625rem;
-    border-radius: 0 6px 6px 0;
+    background: transparent;
+    border: 0;
+    border-top: 1px solid var(--c-field-border);
+    padding: 0.5rem 0 0;
+    border-radius: 0;
     white-space: pre-wrap;
     word-break: break-word;
   }
@@ -566,10 +567,10 @@
   .dm-msg-pending {
     font-size: var(--text-base);
     font-weight: 600;
-    color: var(--amber, var(--v4-warn, #b45309));
-    background: color-mix(in srgb, var(--amber, var(--v4-warn, #b45309)) 16%, transparent);
-    padding: 0.0625rem 0.4375rem;
-    border-radius: 999px;
+    color: var(--pop-muted);
+    background: transparent;
+    padding: 0;
+    border-radius: 0;
     margin: 0.1875rem 0.25rem 0;
   }
 
@@ -683,13 +684,13 @@
 
   .share-card-icon {
     display: inline-flex;
-    color: var(--popover-text-muted, #a0a0b0);
+    color: var(--popover-text-muted, #a0a0a0);
   }
 
   .share-card-label {
     font-size: var(--text-base);
     font-weight: 600;
-    color: var(--popover-text, #e8e8ee);
+    color: var(--popover-text, #e8e8e8);
   }
 
   .share-card-permission {
@@ -698,7 +699,7 @@
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.05em;
-    color: var(--popover-text-muted, #a0a0b0);
+    color: var(--popover-text-muted, #a0a0a0);
     border: 1px solid rgba(255, 255, 255, 0.14);
     border-radius: 999px;
     padding: 0.0625rem 0.375rem;
@@ -725,12 +726,11 @@
     margin: 0;
     font-size: var(--text-base);
     color: var(--popover-text, #e0e0e0);
-    /* Token-driven so the note chip adapts in the light-mode desktop host
-       (a dark-tuned rgba(0,0,0,.18) literal read as a heavy grey band). */
-    background: var(--popover-surface, rgba(0, 0, 0, 0.18));
-    border-left: 2px solid var(--popover-divider, rgba(255, 255, 255, 0.15));
-    padding: 0.375rem 0.625rem;
-    border-radius: 0 4px 4px 0;
+    background: transparent;
+    border: 0;
+    border-top: 1px solid var(--popover-divider, rgba(255, 255, 255, 0.15));
+    padding: 0.375rem 0 0;
+    border-radius: 0;
     white-space: pre-wrap;
     word-break: break-word;
   }
@@ -757,9 +757,9 @@
   :global([data-window='messages']) .share-card-note {
     font-size: var(--text-base);
     color: var(--fg);
-    background: var(--surface-panel);
-    border-left: 1px solid var(--border-strong);
-    border-radius: var(--radius-sm);
+    background: transparent;
+    border-top-color: var(--border-strong);
+    border-radius: 0;
   }
 
   /* ── Reply composer ───────────────────────────────────────────────────── */
@@ -896,10 +896,10 @@
     font-size: var(--text-xs);
     line-height: 1.5;
     color: var(--fg-data);
-    background: var(--surface-panel);
-    border-left: 1px solid var(--border-strong);
-    border-radius: var(--radius-sm);
-    padding: var(--space-2) var(--space-3);
+    background: transparent;
+    border-top-color: var(--border-strong);
+    border-radius: 0;
+    padding: var(--space-2) 0 0;
   }
 
   :global([data-window='messages']) .dm-msg-time {
@@ -916,9 +916,9 @@
     text-transform: uppercase;
     letter-spacing: 0.04em;
     color: var(--muted-2);
-    background: var(--surface-raise);
-    border-radius: var(--radius-sm);
-    padding: 2px var(--space-2);
+    background: transparent;
+    border-radius: 0;
+    padding: 0;
     margin: var(--space-1) var(--space-1) 0;
   }
 

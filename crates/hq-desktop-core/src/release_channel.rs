@@ -20,13 +20,14 @@
 //! GitHub Releases API (`/repos/indigoai-us/hq-desktop-app/releases?per_page=30`),
 //! filters by channel, picks the highest semver, and returns the
 //! per-release `latest.json` URL the Tauri updater can poll. On any failure
-//! (network down, rate limit, malformed body, no eligible release) the
-//! resolver falls back to the static stable endpoint —
+//! (network down, rate limit, malformed body, no eligible prerelease) the
+//! resolver falls back to the static stable endpoint and marks that endpoint
+//! as non-authoritative for absence —
 //! `https://github.com/indigoai-us/hq-desktop-app/releases/latest/download/latest.json`
 //! — which GitHub's `releases/latest/` alias already filters to
 //! non-prereleases. This means a Beta user behind a corporate proxy that
-//! blocks api.github.com still gets stable updates rather than an empty
-//! response.
+//! blocks api.github.com can still receive a stable update without allowing a
+//! fallback null result to erase a previously discovered prerelease.
 //!
 //! Rationale for tag-suffix as the channel signal (vs. GitHub's
 //! `prerelease` flag on the release object): the CI workflow controls the
@@ -59,6 +60,28 @@ const PER_RELEASE_MANIFEST_PATTERN: &str =
 /// when the API is unreachable.
 pub const STABLE_FALLBACK_ENDPOINT: &str =
     "https://github.com/indigoai-us/hq-desktop-app/releases/latest/download/latest.json";
+
+/// Why a channel endpoint was selected. Only direct stable checks and a
+/// successfully resolved prerelease-channel release are authoritative proof
+/// that a null updater result means no applicable update exists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EndpointProvenance {
+    StableChannel,
+    ChannelRelease,
+    StableFallback,
+}
+
+impl EndpointProvenance {
+    pub fn absence_is_authoritative(self) -> bool {
+        matches!(self, Self::StableChannel | Self::ChannelRelease)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedChannelEndpoint {
+    pub url: String,
+    pub provenance: EndpointProvenance,
+}
 
 /// HTTP timeout for the GitHub API call. Tight on purpose — the updater
 /// runs on a 6h background loop and a slow API must not stall it.
@@ -121,13 +144,18 @@ impl ReleaseChannel {
 ///   - `vX.Y.Z-alpha.N`    → Alpha
 ///
 /// Other pre-release shapes are rejected:
+///   - `X.Y.Z`               — missing the mandatory release-tag `v` prefix
 ///   - `vX.Y.Z-rc.1`, `-pre.1`, `-dev` — unknown channel identifier
 ///   - `vX.Y.Z-beta`        — missing the numeric `.N` suffix (CI rejects
 ///     this; a manually-pushed unnumbered tag must NOT be picked up)
 ///   - `vX.Y.Z-beta.1.2`    — extra identifier past the build number
+///   - `vX.Y.Z+build`        — build metadata is outside the release contract
 pub fn parse_channel_from_tag(tag: &str) -> Option<(ReleaseChannel, semver::Version)> {
-    let stripped = tag.strip_prefix('v').unwrap_or(tag);
+    let stripped = tag.strip_prefix('v')?;
     let version = semver::Version::parse(stripped).ok()?;
+    if !version.build.is_empty() {
+        return None;
+    }
 
     if version.pre.is_empty() {
         return Some((ReleaseChannel::Stable, version));
@@ -205,29 +233,57 @@ pub fn pick_release_for_channel(channel: ReleaseChannel, tags: &[String]) -> Opt
         .map(|(tag, _)| tag)
 }
 
-/// Resolve the per-channel `latest.json` URL the Tauri updater should
-/// poll. On any failure returns the static stable fallback —
-/// callers can hand the result directly to
-/// `app.updater_builder().endpoints(...)` without further error
-/// handling.
+fn stable_fallback() -> ResolvedChannelEndpoint {
+    ResolvedChannelEndpoint {
+        url: STABLE_FALLBACK_ENDPOINT.to_string(),
+        provenance: EndpointProvenance::StableFallback,
+    }
+}
+
+fn resolve_endpoint_from_tags(channel: ReleaseChannel, tags: &[String]) -> ResolvedChannelEndpoint {
+    let has_eligible_prerelease = tags.iter().any(|tag| {
+        parse_channel_from_tag(tag)
+            .map(|(tag_channel, _)| {
+                tag_channel != ReleaseChannel::Stable && channel.includes(tag_channel)
+            })
+            .unwrap_or(false)
+    });
+
+    if !has_eligible_prerelease {
+        return stable_fallback();
+    }
+
+    match pick_release_for_channel(channel, tags) {
+        Some(tag) => ResolvedChannelEndpoint {
+            url: PER_RELEASE_MANIFEST_PATTERN.replace("{tag}", &tag),
+            provenance: EndpointProvenance::ChannelRelease,
+        },
+        None => stable_fallback(),
+    }
+}
+
+/// Resolve the per-channel `latest.json` URL and retain whether a null result
+/// is authoritative. Prerelease channels still receive a stable fallback when
+/// GitHub resolution fails, but callers must preserve trusted pending state if
+/// that fallback reports no update.
 ///
 /// `channel` MUST already be the effective channel (see
 /// [`effective_channel`]). This fn does not re-gate against indigo
 /// identity.
-pub async fn resolve_channel_endpoint(channel: ReleaseChannel) -> String {
+pub async fn resolve_channel_endpoint(channel: ReleaseChannel) -> ResolvedChannelEndpoint {
     // Stable always uses the static `/releases/latest/download/` alias.
     // No API call, no rate-limit risk, no extra hop — GitHub already
     // filters that URL to non-prereleases.
     if channel == ReleaseChannel::Stable {
-        return STABLE_FALLBACK_ENDPOINT.to_string();
+        return ResolvedChannelEndpoint {
+            url: STABLE_FALLBACK_ENDPOINT.to_string(),
+            provenance: EndpointProvenance::StableChannel,
+        };
     }
 
     match fetch_release_tags().await {
-        Ok(tags) => match pick_release_for_channel(channel, &tags) {
-            Some(tag) => PER_RELEASE_MANIFEST_PATTERN.replace("{tag}", &tag),
-            None => STABLE_FALLBACK_ENDPOINT.to_string(),
-        },
-        Err(_) => STABLE_FALLBACK_ENDPOINT.to_string(),
+        Ok(tags) => resolve_endpoint_from_tags(channel, &tags),
+        Err(_) => stable_fallback(),
     }
 }
 
@@ -325,10 +381,17 @@ mod tests {
     }
 
     #[test]
-    fn parse_tag_without_v_prefix() {
-        // `v` is stripped but optional — `0.1.109` parses too.
-        let (channel, _) = parse_channel_from_tag("0.1.109").unwrap();
-        assert_eq!(channel, ReleaseChannel::Stable);
+    fn parse_tag_without_v_prefix_rejected() {
+        assert!(parse_channel_from_tag("0.1.109").is_none());
+        assert!(parse_channel_from_tag("0.1.109-beta.1").is_none());
+        assert!(parse_channel_from_tag("0.1.109-alpha.1").is_none());
+    }
+
+    #[test]
+    fn parse_tag_with_build_metadata_rejected() {
+        assert!(parse_channel_from_tag("v1.0.0+manual").is_none());
+        assert!(parse_channel_from_tag("v1.0.0-beta.1+manual").is_none());
+        assert!(parse_channel_from_tag("v1.0.0-alpha.1+manual").is_none());
     }
 
     // --- ReleaseChannel::includes ---------------------------------------
@@ -570,8 +633,33 @@ mod tests {
         // path that survives a corporate proxy, a rate-limited GH API,
         // or an offline cold start. Asserting this also keeps test
         // execution deterministic in CI.
-        let url = resolve_channel_endpoint(ReleaseChannel::Stable).await;
-        assert_eq!(url, STABLE_FALLBACK_ENDPOINT);
+        let resolved = resolve_channel_endpoint(ReleaseChannel::Stable).await;
+        assert_eq!(resolved.url, STABLE_FALLBACK_ENDPOINT);
+        assert_eq!(resolved.provenance, EndpointProvenance::StableChannel);
+        assert!(resolved.provenance.absence_is_authoritative());
+    }
+
+    #[test]
+    fn prerelease_channel_without_eligible_prerelease_is_non_authoritative_fallback() {
+        let tags = vec!["v0.10.35".to_string()];
+        let resolved = resolve_endpoint_from_tags(ReleaseChannel::Beta, &tags);
+
+        assert_eq!(resolved.url, STABLE_FALLBACK_ENDPOINT);
+        assert_eq!(resolved.provenance, EndpointProvenance::StableFallback);
+        assert!(!resolved.provenance.absence_is_authoritative());
+    }
+
+    #[test]
+    fn resolved_prerelease_channel_is_authoritative() {
+        let tags = vec!["v0.10.35".to_string(), "v0.10.36-beta.1".to_string()];
+        let resolved = resolve_endpoint_from_tags(ReleaseChannel::Beta, &tags);
+
+        assert_eq!(
+            resolved.url,
+            "https://github.com/indigoai-us/hq-desktop-app/releases/download/v0.10.36-beta.1/latest.json"
+        );
+        assert_eq!(resolved.provenance, EndpointProvenance::ChannelRelease);
+        assert!(resolved.provenance.absence_is_authoritative());
     }
 
     #[test]

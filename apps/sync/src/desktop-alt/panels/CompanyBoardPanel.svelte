@@ -17,7 +17,9 @@
     loadLocalProjects,
     loadLocalProjectStories,
     loadCompanyGoals,
+    projectIdentity,
     type Objective,
+    withProjectStatus,
   } from '../lib/local-projects';
   import {
     classifyStories,
@@ -85,7 +87,7 @@
   let error = $state<string | null>(null);
 
   // ---- in-flight story details, loaded lazily per project ------------------
-  // Keyed by project id. Best-effort: a failed load omits story metadata and
+  // Keyed by stable project identity. Best-effort: a failed load omits story metadata and
   // the table falls back to project-level progress.
   let inFlightStory = $state<Record<string, InFlightDetail>>({});
 
@@ -270,8 +272,9 @@
 
     let cancelled = false;
     for (const project of targets) {
+      const identity = projectIdentity(project);
       // Skip projects we've already resolved.
-      if (project.id in inFlightStory) continue;
+      if (identity in inFlightStory) continue;
       void (async () => {
         try {
           const projectStories = await loadLocalProjectStories(project.prdPath);
@@ -284,7 +287,7 @@
             null;
           inFlightStory = {
             ...inFlightStory,
-            [project.id]: {
+            [identity]: {
               storyTitle: current?.story.title ?? null,
               priority: current?.story.priority ?? null,
               labels: current?.story.labels ?? [],
@@ -296,7 +299,7 @@
           if (!cancelled) {
             inFlightStory = {
               ...inFlightStory,
-              [project.id]: { storyTitle: null, priority: null, labels: [], state: null },
+              [identity]: { storyTitle: null, priority: null, labels: [], state: null },
             };
           }
         }
@@ -414,11 +417,11 @@
       return { label: 'Gated', tone: 'idle' };
     }
     if (raw.includes('review')) {
-      return { label: 'Review', tone: 'warn' };
+      return { label: 'Review', tone: 'idle' };
     }
     const status = projectListStatus(project);
     if (status === 'live') return { label: 'Running', tone: 'ok' };
-    if (status === 'in-progress') return { label: 'Review', tone: 'warn' };
+    if (status === 'in-progress') return { label: 'In progress', tone: 'idle' };
     return { label: 'Gated', tone: 'idle' };
   }
 
@@ -524,17 +527,17 @@
 
   // A persisted status change updates the open project + its list row so the
   // new status survives a back-navigation without a full reload.
-  function onProjectStatusChange(projectId: string, status: string): void {
-    if (selected && selected.id === projectId) {
-      selected = { ...selected, status };
+  function onProjectStatusChange(changedIdentity: string, status: string): void {
+    if (selected) {
+      const nextSelected = withProjectStatus(selected, changedIdentity, status);
+      if (nextSelected !== selected) selected = nextSelected;
     }
     projects = projects.map((project) =>
-      project.id === projectId ? { ...project, status } : project,
+      withProjectStatus(project, changedIdentity, status),
     );
-    // The in-flight set may change; drop the cached story so it reloads.
-    if (projectId in inFlightStory) {
+    if (changedIdentity in inFlightStory) {
       const next = { ...inFlightStory };
-      delete next[projectId];
+      delete next[changedIdentity];
       inFlightStory = next;
     }
   }
@@ -646,8 +649,8 @@
               <p class="empty-inline">Nothing in flight</p>
             {:else}
               <div class="work-list" data-testid="inflight-list">
-                {#each inFlightProjects as project (project.id)}
-                  {@const detail = inFlightStory[project.id]}
+                {#each inFlightProjects as project (projectIdentity(project))}
+                  {@const detail = inFlightStory[projectIdentity(project)]}
                   {@const progress = projectProgress(project.storiesComplete, project.storiesTotal)}
                   {@const status = rowStatus(project, detail)}
                   <div class="work-row" data-testid="inflight-row">
@@ -773,16 +776,17 @@
     line-height: 1.35;
   }
 
-  /* Compact pulse — discrete live monitor; modest radius only on the strip. */
+  /* Compact pulse — open summary content separated from the work list. */
   .pulse-row {
     display: flex;
     align-items: center;
     min-height: 34px;
     min-width: 0;
     overflow: auto hidden;
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-field);
-    background: var(--v4-inset);
+    border: 0;
+    border-top: 1px solid var(--v4-hairline);
+    border-radius: 0;
+    background: transparent;
   }
 
   .pulse-item {

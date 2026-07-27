@@ -18,9 +18,14 @@
   import './tokens.css';
 
   /**
-   * V4 primary sidebar (US-007 removed Home / Mission Control / Companies page rows) →
-   * Workspaces (Personal) + Companies section (selected company expands Overview /
-   * Goals / Projects / Knowledge / Team / More inline) → Settings footer.
+   * V4 primary sidebar (SPEC section 4 + DESKTOP-001): 220px Liquid Glass
+   * chrome, hairline right border. Nav is Inbox / Messages / Meetings /
+   * Marketplace / Library / Files (Inbox is notification chronology; Messages
+   * is the complete conversation workspace; US-007 removed Home / Mission
+   * Control / Companies page rows) →
+   * COMPANIES section (selected company expands Overview / Goals / Projects /
+   * Knowledge / Team / More inline; children collapse on global destinations)
+   * → Settings footer.
    *
    * Pointer reveal waits a short hover-intent delay so sweeping the mouse down
    * the list doesn't mount every control and fan out one get_sync_mode vault
@@ -30,7 +35,11 @@
   interface Props {
     route: V4Route;
     companies?: Workspace[] | null;
-    accountEmail?: string | null;
+    /** Signed-in account label for the Settings footer. */
+    accountLabel?: string | null;
+    /** Vault reachability from list_syncable_workspaces — gates sync-mode
+     *  writes (control renders read-only while offline). Omit to let the
+     *  sidebar resolve it from its own self-load; defaults to reachable. */
     cloudReachable?: boolean | null;
     onworkspaceenabledchange?: (slug: string, enabled: boolean) => void;
     onnavigate?: (route: V4Route) => void;
@@ -39,7 +48,7 @@
   let {
     route,
     companies,
-    accountEmail,
+    accountLabel,
     cloudReachable = null,
     onworkspaceenabledchange,
     onnavigate,
@@ -49,17 +58,19 @@
   const effectiveCloudReachable = $derived(cloudReachable ?? fetchedCloudReachable);
 
   let fetched = $state<Workspace[]>([]);
+  // An explicitly supplied empty list is authoritative: it represents the
+  // parent's hydrated empty/error state. Only an omitted value may self-load.
   const model = $derived(
-    getV4SidebarModel(route, companies && companies.length > 0 ? companies : fetched),
+    getV4SidebarModel(route, companies ?? fetched),
   );
   const personalRows = $derived(model.companies.filter((row) => row.isPersonal));
   const companyRows = $derived(model.companies.filter((row) => !row.isPersonal));
 
   onMount(() => {
-    if (companies && companies.length > 0) return;
+    if (companies != null) return;
     void invoke<WorkspacesResult>('list_syncable_workspaces')
       .then((result) => {
-        fetched = result.workspaces;
+        fetched = Array.isArray(result.workspaces) ? result.workspaces : [];
         fetchedCloudReachable = result.cloudReachable;
       })
       .catch((err) => {
@@ -68,19 +79,21 @@
   });
 
   let notifUnread = $state(0);
+  let unreadLoadGeneration = 0;
 
   async function refreshUnread() {
+    const generation = ++unreadLoadGeneration;
     try {
       const items = await loadNotificationItems();
+      if (generation !== unreadLoadGeneration) return;
       notifUnread = countUnread(items, getLastReadTs());
     } catch {
+      if (generation !== unreadLoadGeneration) return;
       notifUnread = 0;
     }
   }
 
   $effect(() => {
-    void refreshUnread();
-
     const onread = () => void refreshUnread();
     window.addEventListener('hq:notifications-read', onread);
 
@@ -90,11 +103,21 @@
       if (disposed) unlisten();
       else unlisteners.push(unlisten);
     };
-    void listen('dm:unread-summary', onread).then(track);
-    void listen('sync:complete', onread).then(track);
+    // Hydrate only after every native listener has settled. An event that
+    // lands during registration is recovered by this authoritative first
+    // refresh instead of falling through a mount gap.
+    void Promise.allSettled([
+      listen('dm:unread-summary', onread).then(track),
+      listen('sync:complete', onread).then(track),
+      listen('update:available', onread).then(track),
+      listen('update:cleared', onread).then(track),
+    ]).then(() => {
+      if (!disposed) void refreshUnread();
+    });
 
     return () => {
       disposed = true;
+      unreadLoadGeneration += 1;
       window.removeEventListener('hq:notifications-read', onread);
       for (const u of unlisteners) u();
     };
@@ -280,8 +303,8 @@
     onclick={() => go('settings')}
   >
     <span class="v4-footer-label">Settings</span>
-    {#if accountEmail}
-      <span class="v4-footer-meta">{accountEmail}</span>
+    {#if accountLabel}
+      <span class="v4-footer-meta">{accountLabel}</span>
     {/if}
   </button>
 </aside>
@@ -298,9 +321,9 @@
     padding: 14px 10px 0;
     border-right: 1px solid var(--v4-hairline);
     background: var(--v4-sidebar, var(--v4-chrome));
-    backdrop-filter: blur(22px) saturate(180%);
-    -webkit-backdrop-filter: blur(22px) saturate(180%);
-    box-shadow: inset 1px 0 0 var(--pop-highlight);
+    backdrop-filter: var(--v4-glass-filter);
+    -webkit-backdrop-filter: var(--v4-glass-filter);
+    box-shadow: inset 1px 0 0 var(--v4-glass-highlight);
     font-family: var(--font-sans);
   }
 
@@ -323,7 +346,7 @@
     flex: 0 0 auto;
     padding: 0 8px;
     border: none;
-    border-radius: var(--v4-radius-button);
+    border-radius: 0;
     background: transparent;
     color: var(--v4-text-2);
     font: inherit;
@@ -347,7 +370,8 @@
   }
 
   .v4-row.active {
-    background: var(--v4-active-row);
+    background: transparent;
+    box-shadow: inset 0 -1px 0 var(--v4-hairline);
     color: var(--v4-text-1);
     font-weight: 500;
   }
@@ -360,6 +384,37 @@
     text-overflow: ellipsis;
   }
 
+  .v4-unread-badge {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 5px;
+    box-sizing: border-box;
+    border-radius: 999px;
+    background: var(--v4-unread);
+    color: var(--v4-primary-fg);
+    font-size: var(--type-metadata, 10px);
+    font-weight: 700;
+    line-height: 1;
+  }
+
+  .v4-invite-badge {
+    flex: 0 0 auto;
+    margin-left: auto;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: var(--v4-text-2);
+    font-size: var(--type-metadata, 10px);
+    font-weight: 500;
+    line-height: 14px;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+  }
   .v4-companies-area {
     display: flex;
     flex: 1 1 auto;
@@ -370,10 +425,13 @@
   }
 
   .v4-section-label {
+    flex: 0 0 auto;
+    margin: 0 0 6px;
     padding: 0 8px;
     color: var(--v4-text-3);
-    font-size: var(--text-sm);
-    letter-spacing: 0.04em;
+    font-size: var(--type-secondary, var(--text-xs));
+    font-weight: 400;
+    letter-spacing: 0.06em;
     text-transform: uppercase;
   }
 

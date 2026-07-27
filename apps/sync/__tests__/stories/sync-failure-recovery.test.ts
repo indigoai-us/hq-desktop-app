@@ -21,9 +21,11 @@ describe('desktop sync failure recovery', () => {
   const titleBar = normalize(read('src/desktop-alt/v4/V4TitleBar.svelte'));
   const desktop = normalize(read('src/desktop-alt/DesktopApp.svelte'));
 
-  it('replaces the failed title bar with the established recovery message and actions', () => {
-    expect(titleBar).toContain("syncState === 'error' ? 'Sync initialized' : model.sentence");
-    expect(titleBar).toContain('Click the button to finish sync in Claude Code.');
+  it('renders the actual failure model alongside the established recovery actions', () => {
+    expect(titleBar).toContain('{model.sentence}');
+    expect(titleBar).toContain('{model.meta}');
+    expect(titleBar).not.toContain('Sync initialized');
+    expect(titleBar).not.toContain('Click the button to finish sync in Claude Code.');
     expect(titleBar).toContain('label="Finish sync in Claude Code"');
     expect(titleBar).toContain('label="Copy prompt"');
   });
@@ -96,8 +98,8 @@ describe('rendered desktop sync failure recovery', () => {
 
   it('renders Retry alongside both agent-assisted recovery actions', () => {
     renderFailure();
-    expect(host.textContent).toContain('Sync initialized');
-    expect(host.textContent).toContain('Click the button to finish sync in Claude Code.');
+    expect(host.textContent).toContain('Sync failed');
+    expect(host.textContent).toContain('Runner exited with code 2');
     expect(host.textContent).toContain('Finish sync in Claude Code');
     expect(host.textContent).toContain('Copy prompt');
     expect(host.textContent).toContain('Retry');

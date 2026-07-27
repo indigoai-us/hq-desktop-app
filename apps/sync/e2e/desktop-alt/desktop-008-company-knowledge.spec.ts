@@ -108,10 +108,12 @@ describe('DESKTOP-008: company knowledge workspace', () => {
     expect(panel).toContain('border-radius: 0');
     expect(panel).toContain('background: transparent');
     expect(panel).toContain('border-right: 1px solid var(--v4-hairline)');
-    // Rounded only for controls / selection / discrete payload — not the outer workspace.
+    // Search/actions are controls; tree selection remains an open, square row.
     expect(panel).not.toContain('border-radius: var(--v4-radius-card');
     expect(panel).toMatch(/\.knowledge-search\s*\{[\s\S]*?border-radius:\s*6px;/);
-    expect(tree).toMatch(/\.ft-row\s*\{[\s\S]*?border-radius:\s*6px;/);
+    expect(tree).toMatch(
+      /\.ft-row\s*\{[\s\S]*?border:\s*(?:0|none);[\s\S]*?border-radius:\s*0;[\s\S]*?background:\s*transparent;/,
+    );
     expect(preview).toContain('border-radius: var(--v4-radius-button');
     // No card chrome / shadow on the workspace shell.
     expect(panel).not.toContain('var(--v4-shadow-card)');
@@ -121,11 +123,11 @@ describe('DESKTOP-008: company knowledge workspace', () => {
 
   it('uses five semantic type roles and 3px title/meta stacks', () => {
     expect(V4_TYPE_SCALE).toEqual({
-      metadata: 10,
-      secondary: 11,
-      body: 12,
+      metadata: 13,
+      secondary: 13,
+      body: 14,
       section: 14,
-      detail: 18,
+      detail: 14,
     });
     expect(V4_ROW_STACK_GAP_PX).toBe(3);
     expect(tokens).toContain('--v4-row-stack-gap: 3px');
@@ -177,14 +179,19 @@ describe('DESKTOP-008: company knowledge workspace', () => {
   });
 
   it('honors light/dark and reduced motion/transparency', () => {
-    expect(tokens).toContain('--v4-text-1: #0a0c10');
+    expect(tokens).toContain('--v4-text-1: #111111');
     expect(tokens).toMatch(
-      /@media \(prefers-color-scheme: dark\)\s*\{\s*:root\s*\{[\s\S]*?--v4-text-1:\s*#f4f6f8/,
+      /@media \(prefers-color-scheme: dark\)\s*\{\s*:root\s*\{[\s\S]*?--v4-text-1:\s*#f2f2f2/,
     );
     expect(panel).toContain('@media (prefers-reduced-motion: reduce)');
     expect(panel).toContain('@media (prefers-reduced-transparency: reduce)');
     expect(tree).toContain('@media (prefers-reduced-motion: reduce)');
-    expect(tree).toContain('@media (prefers-reduced-transparency: reduce)');
+    expect(tree).not.toMatch(
+      /@media \(prefers-reduced-transparency: reduce\)[\s\S]*?\.ft-row\.selected/,
+    );
+    expect(tree).toMatch(
+      /\.ft-row\.selected\s*\{[\s\S]*?background:\s*transparent;[\s\S]*?box-shadow:\s*inset 0 -1px 0 var\(--v4-hairline\)/,
+    );
     expect(preview).toContain('@media (prefers-reduced-motion: reduce)');
     expect(preview).toContain('@media (prefers-reduced-transparency: reduce)');
     expect(tree).toContain('animation: none');

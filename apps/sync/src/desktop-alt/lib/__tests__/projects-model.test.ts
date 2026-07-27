@@ -185,17 +185,18 @@ describe('labelColor determinism', () => {
     }
   });
 
-  it('emits CSS-var-friendly hsla tokens across a multi-hue palette', () => {
-    const hues = new Set<string>();
+  it('emits token-driven neutral shades without generated brand hues', () => {
+    const shades = new Set<string>();
     for (const entry of LABEL_PALETTE) {
-      // Each token is a well-formed hsla() string.
-      expect(entry.background).toMatch(/^hsla\(\d+, \d+%, \d+%, [\d.]+\)$/);
-      expect(entry.border).toMatch(/^hsla\(\d+, \d+%, \d+%, [\d.]+\)$/);
-      expect(entry.foreground).toMatch(/^hsla\(\d+, \d+%, \d+%, [\d.]+\)$/);
-      hues.add(entry.background.split(',')[0]);
+      expect(entry.background).toContain('var(--v4-text-2)');
+      expect(entry.border).toContain('var(--v4-text-2)');
+      expect(entry.foreground).toBe('var(--v4-text-1)');
+      expect(`${entry.background}${entry.border}${entry.foreground}`).not.toMatch(
+        /hsla?\(|#[0-9a-f]{3,8}/i,
+      );
+      shades.add(entry.background);
     }
-    // The palette spans multiple distinct hues (not a single monochrome shade).
-    expect(hues.size).toBeGreaterThan(1);
+    expect(shades.size).toBe(LABEL_PALETTE_SIZE);
   });
 
   it('distributes a realistic label set across multiple shades', () => {

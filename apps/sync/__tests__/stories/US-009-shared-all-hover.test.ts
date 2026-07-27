@@ -157,6 +157,14 @@ describe('US-009: SidebarSyncMode source contracts', () => {
     expect(syncModeSrc).toContain('if (!cloudReachable || saving || mode === next) return;');
     expect(sidebarSrc).toContain('cloudReachable={effectiveCloudReachable}');
   });
+
+  it('confirms the locally destructive All to Shared footprint reduction', () => {
+    expect(syncModeSrc).toContain("mode === 'all' && next === 'shared'");
+    expect(syncModeSrc).toContain('window.confirm(');
+    expect(syncModeSrc).toContain('may be removed from this Mac');
+    expect(syncModeSrc).toContain('Unsynced edits are preserved');
+    expect(syncModeSrc).toContain('if (!confirmed) return;');
+  });
 });
 
 describe('US-009: CompanyPage Connect + invite rehome', () => {

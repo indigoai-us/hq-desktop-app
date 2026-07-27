@@ -60,6 +60,7 @@ function defaultDisplays(): DisplayInfo[] {
 function stubInvoke(options: {
   settings?: SettingsPayload | (() => SettingsPayload);
   displays?: DisplayInfo[];
+  save?: () => Promise<void>;
   saveError?: Error | string;
   applyError?: Error | string;
 }): void {
@@ -81,6 +82,7 @@ function stubInvoke(options: {
       case 'list_displays':
         return displays;
       case 'save_settings':
+        await options.save?.();
         if (options.saveError) {
           throw typeof options.saveError === 'string'
             ? new Error(options.saveError)
@@ -257,6 +259,32 @@ describe('US-004: Widget settings (enable/disable, display, persistence)', () =>
 
       // apply must not run after save failure
       expect(mockInvoke.mock.calls.some((c) => c[0] === 'apply_widget_settings')).toBe(false);
+    });
+
+    it('behavioral: disables widget controls while persistence is in flight', async () => {
+      let releaseSave!: () => void;
+      const saveGate = new Promise<void>((resolve) => {
+        releaseSave = resolve;
+      });
+      stubInvoke({
+        settings: { widgetEnabled: true, widgetDisplay: null },
+        displays: defaultDisplays(),
+        save: () => saveGate,
+      });
+
+      await mountWidgetSettings();
+      const toggle = toggleButton();
+      toggle.click();
+      flushSync();
+
+      expect(toggleButton().disabled).toBe(true);
+      toggleButton().click();
+      await vi.waitFor(() => expect(callsOf('save_settings')).toHaveLength(1));
+
+      releaseSave();
+      await flushPersist();
+      await vi.waitFor(() => expect(toggleButton().disabled).toBe(false));
+      expect(callsOf('save_settings')).toHaveLength(1);
     });
 
     it('behavioral: apply_widget_settings rejection does NOT revert the toggle; shows error and reloads from disk', async () => {
@@ -578,7 +606,7 @@ describe('US-004: Widget settings (enable/disable, display, persistence)', () =>
         /import WidgetSettings from ['"]\.\.\/\.\.\/components\/WidgetSettings\.svelte['"]/,
       );
       expect(settingsPageSource).toMatch(/id=["']widget["']/);
-      expect(settingsPageSource).toMatch(/<WidgetSettings\s*\/>/);
+      expect(settingsPageSource).toContain('<WidgetSettings showLoadError={false} />');
 
       // Popover Settings.svelte is gone — no dual-surface mount remains.
       expect(() => readFileSync(root('src/components/Settings.svelte'), 'utf8')).toThrow();
@@ -587,13 +615,12 @@ describe('US-004: Widget settings (enable/disable, display, persistence)', () =>
       expect(routeSource).toMatch(/SETTINGS_SECTIONS/);
       expect(routeSource).toMatch(/\{\s*id:\s*['"]widget['"]\s*,\s*label:\s*['"]Widget['"]\s*\}/);
 
-      // Self-contained: owns load + persist + apply + list_displays
-      // load uses typed multiline invoke<...>('get_settings'); persist re-reads fresh
+      // Self-contained UI: owns load + apply + list_displays. Persistence is
+      // routed through the shared serialized mutation helper.
       expect(widgetSettingsSource).toMatch(/['"]get_settings['"]/);
-      expect((widgetSettingsSource.match(/['"]get_settings['"]/g) ?? []).length).toBeGreaterThanOrEqual(
-        2,
-      );
-      expect(widgetSettingsSource).toMatch(/['"]save_settings['"]/);
+      expect(widgetSettingsSource).toContain("import { updateSettings } from '../lib/settings-mutations'");
+      expect(widgetSettingsSource).toContain('await updateSettings(');
+      expect(widgetSettingsSource).not.toMatch(/invoke\(['"]save_settings['"]/);
       expect(widgetSettingsSource).toMatch(/['"]apply_widget_settings['"]/);
       expect(widgetSettingsSource).toMatch(/['"]list_displays['"]/);
       expect(widgetSettingsSource).toContain('data-testid="widget-toggle"');

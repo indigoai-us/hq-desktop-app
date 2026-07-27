@@ -17,7 +17,9 @@ describe('desktop-alt project status write — store contract (US-010)', () => {
   it('the store invokes the registered Rust write commands', () => {
     // The adapter is the single place that calls the Tauri write commands, with
     // the camelCased args Tauri v2 exposes.
-    expect(adapter).toContain("invoke('set_local_project_status', { boardPath, projectId, status })");
+    expect(adapter).toContain(
+      "invoke('set_local_project_status', { boardPath, projectId, prdPath, status })",
+    );
     expect(adapter).toContain("invoke('set_local_story_passes', { prdPath, storyId, passes })");
     // The store routes status writes through that adapter.
     expect(store).toContain('saveLocalProjectStatus');
@@ -31,10 +33,16 @@ describe('desktop-alt project status write — store contract (US-010)', () => {
     const awaitIdx = store.indexOf('await saveLocalProjectStatus');
     expect(optimisticIdx).toBeGreaterThan(-1);
     expect(awaitIdx).toBeGreaterThan(optimisticIdx);
-    // Rollback: on catch, the overlay is restored to `previous` and a clear,
-    // user-facing error is returned (not a raw thrown error).
-    expect(store).toContain('statusOverride.set(key, previous)');
+    // Rollback: on catch, the overlay is restored to the last status that
+    // reached disk and a clear user-facing error is returned.
+    expect(store).toContain('statusOverride.set(key, rollbackStatus)');
     expect(store).toContain('Could not save the status change');
+    // Same-identity writes are serialized and expose pending state so navigating
+    // away and back cannot launch an overlapping stale write.
+    expect(store).toContain('statusWriteTail.get(boardPath)');
+    expect(store).toContain('statusPending(project');
+    expect(store).toContain('let statusStateVersion = $state(0)');
+    expect(store).toContain('void statusStateVersion');
     // Board path is derived from companies/<company>/board.json.
     expect(store).toContain('companies/${company}/board.json');
   });
@@ -56,7 +64,9 @@ describe('desktop-alt status dropdown wires onStatusChange → write (US-010)', 
     // The dropdown options now call selectStatus (was a no-op menu-close in 009).
     expect(detail).toContain('onclick={() => selectStatus(status)}');
     expect(detail).toContain('async function selectStatus');
-    expect(detail).toContain("import { setProjectStatus } from '../lib/projects-store.svelte'");
+    expect(detail).toContain(
+      "import { projectsStore, setProjectStatus } from '../lib/projects-store.svelte'",
+    );
     expect(detail).toContain('await setProjectStatus(');
   });
 
@@ -64,17 +74,21 @@ describe('desktop-alt status dropdown wires onStatusChange → write (US-010)', 
     // Local override drives the rendered status (optimistic), defaulting to the
     // raw project status.
     expect(detail).toContain('statusOverride ?? toEditableStatus(project.status)');
-    // Optimistic set before await; rollback + error surface on a failed result.
+    // Optimistic set before await; store rehydration + error surface on failure.
     expect(detail).toContain('statusOverride = next');
-    expect(detail).toContain('statusOverride = previous');
+    expect(detail).toContain('projectsStore.statusOverride(project)');
+    expect(detail).toContain('projectsStore.statusPending(project)');
     expect(detail).toContain('statusError = result.error');
     expect(detail).toContain('data-testid="status-error"');
   });
 
   it('notifies the board via onStatusChange so the list row refreshes', () => {
-    expect(detail).toContain('onStatusChange?.(project.id, next)');
+    expect(detail).toContain('const mutationIdentity = projectIdentity(project)');
+    expect(detail).toContain('rehydrateCurrentStatus(mutationIdentity)');
+    expect(detail).toContain('onStatusChange?.(mutationIdentity, next)');
     expect(board).toContain('onStatusChange={onProjectStatusChange}');
     expect(board).toContain('function onProjectStatusChange');
+    expect(board).toContain('withProjectStatus(selected, changedIdentity, status)');
   });
 });
 
@@ -98,7 +112,8 @@ describe('desktop-alt status write — registration + capability (US-010)', () =
     // write to the core library.
     expect(rust).toContain('pub async fn set_local_project_status');
     expect(rust).toContain('desktop_features_enabled().await');
-    expect(rust).toContain('write_project_status(&hq, &board_path, &project_id, &status)');
+    expect(rust).toContain('prd_path.as_deref()');
+    expect(core).toContain('normalize_project_identity_path');
     // Path-traversal guard + board.json-only target + atomic write (serialize →
     // temp → rename) live in the core library and are unit-tested there
     // (write_project_status_persists_and_round_trips / _rejects_*).

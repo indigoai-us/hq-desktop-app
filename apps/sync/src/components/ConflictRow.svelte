@@ -94,24 +94,24 @@
     display: flex;
     flex-direction: column;
     gap: 0.375rem;
-    padding: 0.5rem 0.625rem;
-    border-radius: 8px;
-    background: var(--popover-surface, rgba(255, 255, 255, 0.08));
-    border: 1px solid var(--popover-border, rgba(255, 255, 255, 0.18));
-    transition: border-color 0.15s ease;
+    padding: 0.5rem 0;
+    border: 0;
+    border-top: 1px solid var(--popover-divider, rgba(255, 255, 255, 0.14));
+    border-radius: 0;
+    background: transparent;
   }
 
   .conflict-row.resolved {
-    border-color: rgba(34, 197, 94, 0.2);
-    background: rgba(34, 197, 94, 0.06);
+    border-color: var(--popover-divider, rgba(255, 255, 255, 0.14));
+    background: transparent;
   }
 
   /* Error state: same calm notice treatment as info — no red surface. The
      row's per-file error message + (when present) Copy-prompt affordance
      carry the meaning. */
   .conflict-row.error {
-    border-color: var(--popover-notice-border, rgba(255, 255, 255, 0.18));
-    background: var(--popover-notice-bg, rgba(255, 255, 255, 0.05));
+    border-color: var(--popover-divider, rgba(255, 255, 255, 0.14));
+    background: transparent;
   }
 
   .row-header {
@@ -178,7 +178,7 @@
 
   .hash-label {
     font-size: 0.6875rem;
-    color: var(--popover-text-muted, #a0a0b0);
+    color: var(--popover-text-muted, #a0a0a0);
   }
 
   .hash-value {
@@ -192,7 +192,7 @@
 
   .hash-separator {
     font-size: 0.625rem;
-    color: var(--popover-text-muted, #a0a0b0);
+    color: var(--popover-text-muted, #a0a0a0);
     opacity: 0.6;
   }
 
@@ -228,7 +228,7 @@
 
   .resolving-text {
     font-size: 0.75rem;
-    color: var(--popover-text-muted, #a0a0b0);
+    color: var(--popover-text-muted, #a0a0a0);
   }
 
   .resolved-state {
@@ -260,7 +260,7 @@
   }
 
   .local-btn {
-    color: var(--popover-primary-text, #111113);
+    color: var(--popover-primary-text, #111111);
     background: var(--popover-primary, #ffffff);
   }
 
@@ -282,7 +282,7 @@
   }
 
   .editor-btn {
-    color: var(--popover-text-muted, #a0a0b0);
+    color: var(--popover-text-muted, #a0a0a0);
     background: rgba(255, 255, 255, 0.05);
     padding: 0.25rem;
   }
@@ -294,18 +294,18 @@
 
   @media (prefers-color-scheme: light) {
     .conflict-row {
-      background: var(--popover-surface, rgba(255, 255, 255, 0.5));
-      border-color: var(--popover-border, rgba(0, 0, 0, 0.12));
+      background: transparent;
+      border-color: var(--popover-divider, rgba(0, 0, 0, 0.12));
     }
 
     .conflict-row.resolved {
-      background: rgba(34, 197, 94, 0.05);
-      border-color: rgba(34, 197, 94, 0.15);
+      background: transparent;
+      border-color: var(--popover-divider, rgba(0, 0, 0, 0.12));
     }
 
     .conflict-row.error {
-      background: var(--popover-notice-bg, rgba(0, 0, 0, 0.04));
-      border-color: var(--popover-notice-border, rgba(0, 0, 0, 0.12));
+      background: transparent;
+      border-color: var(--popover-divider, rgba(0, 0, 0, 0.12));
     }
 
     .hash-value {

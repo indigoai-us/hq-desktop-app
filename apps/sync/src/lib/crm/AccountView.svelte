@@ -117,8 +117,7 @@
   /** Stage-pill tone — affirmative once a client is signed/active. */
   function stageTone(stage: ProjectedAccount['stage']): DotTone {
     if (stage === 'active' || stage === 'signed') return 'ok';
-    if (stage === 'lead') return 'idle';
-    return 'warn';
+    return 'idle';
   }
 </script>
 
@@ -336,7 +335,7 @@
     font-variant-numeric: tabular-nums;
   }
 
-  /* ── status dots (the ONLY color; never purple) ──────────────────── */
+  /* ── compact status dots ─────────────────────────────────────────── */
   .av-dot {
     display: inline-block;
     width: 6px;
@@ -385,10 +384,11 @@
 
   /* ── needs attention ─────────────────────────────────────────────── */
   .av-attention {
-    padding: 14px 16px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: 12px;
-    background: var(--v4-inset);
+    padding: 14px 0 0;
+    border: 0;
+    border-top: 1px solid var(--v4-rowline);
+    border-radius: 0;
+    background: transparent;
   }
   .av-attention-list {
     margin: 0;
@@ -396,7 +396,10 @@
     list-style: none;
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: 0;
+  }
+  .av-attention-list > li + li {
+    border-top: 1px solid var(--v4-rowline);
   }
   .av-attention-row {
     display: grid;
@@ -406,7 +409,7 @@
     width: 100%;
     padding: 9px 6px;
     border: 0;
-    border-radius: 6px;
+    border-radius: 0;
     background: transparent;
     color: inherit;
     font: inherit;
@@ -654,9 +657,9 @@
     display: inline-flex;
     align-items: center;
     gap: 7px;
-    padding: 6px 12px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: 999px;
+    padding: 4px 0;
+    border: 0;
+    border-radius: 0;
     color: var(--v4-text-3);
     font-size: var(--text-base, 13px);
     white-space: nowrap;
@@ -675,8 +678,7 @@
   }
   .av-step-current {
     color: var(--v4-text-1);
-    border-color: var(--v4-ok);
-    box-shadow: 0 0 0 1px var(--v4-ok) inset;
+    box-shadow: none;
   }
   .av-step-current .av-step-mark {
     background: var(--v4-ok);
@@ -784,10 +786,11 @@
     letter-spacing: 0.02em;
   }
   .av-empty {
-    padding: 16px;
-    border: 1px dashed var(--v4-hairline);
-    border-radius: 8px;
-    background: var(--v4-inset);
+    padding: 16px 0;
+    border: 0;
+    border-top: 1px solid var(--v4-hairline);
+    border-radius: 0;
+    background: transparent;
     color: var(--v4-text-3);
     text-align: center;
   }
@@ -799,10 +802,11 @@
   }
   .av-firstrun-card {
     max-width: 420px;
-    padding: 28px 24px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: 12px;
-    background: var(--v4-inset);
+    padding: 28px 0;
+    border: 0;
+    border-top: 1px solid var(--v4-hairline);
+    border-radius: 0;
+    background: transparent;
     text-align: center;
   }
   .av-firstrun-card h2 {
@@ -821,11 +825,12 @@
     line-height: 1.35;
   }
   .av-error {
-    padding: 12px 14px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: 8px;
-    background: var(--v4-inset);
-    color: var(--v4-text-2);
+    padding: 12px 0;
+    border: 0;
+    border-top: 1px solid var(--v4-hairline);
+    border-radius: 0;
+    background: transparent;
+    color: var(--v4-error);
   }
 
   /* loading skeleton */
@@ -836,9 +841,10 @@
   }
   .av-skeleton-row {
     height: 52px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: 8px;
-    background: var(--v4-inset);
+    border: 0;
+    border-top: 1px solid var(--v4-hairline);
+    border-radius: 0;
+    background: transparent;
     animation: av-pulse 1.3s ease-in-out infinite;
   }
   @keyframes av-pulse {

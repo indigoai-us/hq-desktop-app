@@ -11,7 +11,7 @@ import {
 
 describe('statusTone', () => {
   it('running + ready -> ok', () => expect(statusTone('running', true)).toBe('ok'));
-  it('running + not-ready (booting) -> warn', () => expect(statusTone('running', false)).toBe('warn'));
+  it('running + not-ready (booting) -> idle', () => expect(statusTone('running', false)).toBe('idle'));
   it('stopped -> idle', () => expect(statusTone('stopped', false)).toBe('idle'));
   it('crash-loop -> warn', () => expect(statusTone('crash-loop', false)).toBe('warn'));
   it('unknown -> idle', () => expect(statusTone('unknown', false)).toBe('idle'));
@@ -19,7 +19,7 @@ describe('statusTone', () => {
 
 describe('senderTone', () => {
   it('manager -> ok', () => expect(senderTone('manager')).toBe('ok'));
-  it('liaison -> warn', () => expect(senderTone('liaison')).toBe('warn'));
+  it('liaison -> idle', () => expect(senderTone('liaison')).toBe('idle'));
   it('operator -> unread', () => expect(senderTone('operator')).toBe('unread'));
   it('a worker -> idle', () => expect(senderTone('recruiter')).toBe('idle'));
 });

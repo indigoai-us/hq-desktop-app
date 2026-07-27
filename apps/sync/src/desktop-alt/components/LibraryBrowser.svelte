@@ -33,11 +33,11 @@
     error?: string | null;
     /**
      * Force a specific tab and hide the in-body segmented control. Used by the
-     * root LibraryPage, where the four library tabs are promoted to top-level
-     * sidebar links (Skills / Workers / Marketplace / Profile) — the sidebar
-     * owns the switching, so the redundant toolbar tabs are suppressed. When
-     * omitted (e.g. the per-company panel), the segmented control is shown and
-     * the user switches tabs in-place as before.
+     * root LibraryPage, where Skills / Workers / Installed / Profile are
+     * promoted to sidebar links and Submit is owned by the Publish footer. The
+     * sidebar owns the switching, so the redundant toolbar tabs are suppressed.
+     * When omitted (e.g. the per-company panel), the segmented control is shown
+     * and the user switches tabs in-place as before.
      */
     forcedFilter?: Filter;
   }
@@ -287,11 +287,11 @@
 
   .segmented {
     display: inline-flex;
-    gap: var(--v4-space-1);
-    padding: var(--v4-space-1);
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-field);
-    background: var(--v4-control-faint);
+    gap: var(--v4-space-2);
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
   }
 
   .segmented button {
@@ -300,7 +300,8 @@
     gap: var(--v4-space-1);
     padding: var(--v4-space-1) var(--v4-space-3);
     border: 0;
-    border-radius: var(--v4-radius-button);
+    border-bottom: 1px solid transparent;
+    border-radius: 0;
     background: transparent;
     color: var(--v4-text-2);
     font: inherit;
@@ -308,16 +309,18 @@
     font-weight: 600;
     cursor: pointer;
     transition:
-      background 140ms ease,
+      border-color 140ms ease,
       color 140ms ease;
   }
 
   .segmented button:hover {
+    border-bottom-color: var(--v4-rowline);
     color: var(--v4-text-1);
   }
 
   .segmented button.active {
-    background: var(--v4-raised);
+    border-bottom-color: var(--v4-text-2);
+    background: transparent;
     color: var(--v4-text-1);
   }
 
@@ -327,10 +330,10 @@
   }
 
   .seg-count {
-    min-width: 18px;
-    padding: 0 5px;
-    border-radius: var(--v4-radius-pill);
-    background: var(--v4-active-row);
+    min-width: 0;
+    padding: 0;
+    border-radius: 0;
+    background: transparent;
     color: var(--v4-text-3);
     font-family: var(--font-mono);
     font-size: var(--text-base);
@@ -411,8 +414,10 @@
     padding: var(--v4-space-1);
     border: 1px solid var(--v4-control-border);
     border-radius: var(--v4-radius-popover);
-    background: var(--v4-raised);
-    box-shadow: var(--v4-shadow-popover);
+    background: var(--v4-popover);
+    backdrop-filter: var(--v4-glass-filter);
+    -webkit-backdrop-filter: var(--v4-glass-filter);
+    box-shadow: var(--v4-shadow-popover), inset 0 1px 0 var(--v4-glass-highlight);
   }
 
   .scope-menu-actions {
@@ -447,7 +452,7 @@
     width: 100%;
     padding: var(--v4-space-1) var(--v4-space-2);
     border: 0;
-    border-radius: var(--v4-radius-button);
+    border-radius: 0;
     background: transparent;
     color: var(--v4-text-2);
     font: inherit;
@@ -520,11 +525,12 @@
   }
 
   .browser-error {
-    padding: var(--v4-space-3);
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-field);
-    background: var(--v4-control-faint);
-    color: var(--v4-warn);
+    padding: var(--v4-space-3) 0;
+    border: 0;
+    border-top: 1px solid var(--v4-hairline);
+    border-radius: 0;
+    background: transparent;
+    color: var(--v4-error);
     font-size: var(--text-base);
   }
 

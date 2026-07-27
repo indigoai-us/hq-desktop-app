@@ -1,8 +1,10 @@
 <script lang="ts">
   import type { SyncState } from '../lib/sync-model';
+  import type { SettingsTab } from '../route';
+  import VersionPopout from '../components/VersionPopout.svelte';
   import CopyPromptButton from '../../components/CopyPromptButton.svelte';
   import OpenInClaudeCodeButton from '../../components/OpenInClaudeCodeButton.svelte';
-  import { getV4TitleBarModel } from './model';
+  import { getV4TitleBarModel, type V4HydrationIssue } from './model';
   import './tokens.css';
 
   /**
@@ -13,6 +15,7 @@
    * header and never interactive controls.
    */
   interface Props {
+    version: string;
     syncState: SyncState;
     /** Connected workspaces being watched (companies + personal). */
     watchedCount: number;
@@ -24,8 +27,14 @@
     fanoutTotal?: number;
     /** Plain-language error summary, for error states. */
     errorSummary?: string | null;
+    /** Failed desktop hydration while cached surfaces remain visible. */
+    hydrationIssue?: V4HydrationIssue | null;
+    /** The newest hydration request is still resolving. */
+    hydrationRefreshing?: boolean;
     errorMessage?: string;
     errorCompany?: string | null;
+    conflictCount?: number;
+    conflictCompany?: string | null;
     hqFolderPath?: string | null;
     /** Account initials for the profile control (e.g. "CE"). */
     accountInitials?: string | null;
@@ -33,12 +42,16 @@
     onsync?: () => void;
     oncancel?: () => void;
     onretry?: () => void;
+    onretryhydration?: () => void;
+    onresolveconflicts?: () => void;
     ontogglesidebar?: () => void;
     oncommand?: () => void;
     onaccount?: () => void;
+    onOpenSettings?: (tab?: SettingsTab) => void;
   }
 
   let {
+    version,
     syncState,
     watchedCount,
     lastSyncLabel = null,
@@ -46,17 +59,24 @@
     fanoutDone = 0,
     fanoutTotal = 0,
     errorSummary = null,
+    hydrationIssue = null,
+    hydrationRefreshing = false,
     errorMessage = '',
     errorCompany = null,
+    conflictCount = 0,
+    conflictCompany = null,
     hqFolderPath = null,
     accountInitials = null,
     sidebarCollapsed = false,
     onsync,
     oncancel,
     onretry,
+    onretryhydration,
+    onresolveconflicts,
     ontogglesidebar,
     oncommand,
     onaccount,
+    onOpenSettings,
   }: Props = $props();
 
   const model = $derived(
@@ -68,16 +88,43 @@
       fanoutDone,
       fanoutTotal,
       errorSummary,
+      hydrationIssue,
     }),
   );
 
   const initials = $derived((accountInitials ?? 'HQ').slice(0, 2).toUpperCase());
+  let versionOpen = $state(false);
+  let versionContainer: HTMLDivElement | null = $state(null);
 
   function handleAction() {
-    if (model.action.id === 'cancel') oncancel?.();
+    if (model.recovery === 'hydration') onretryhydration?.();
+    else if (model.action.id === 'cancel') oncancel?.();
     else if (model.action.id === 'retry') onretry?.();
+    else if (model.action.id === 'resolve') onresolveconflicts?.();
     else onsync?.();
   }
+
+  $effect(() => {
+    if (!versionOpen) return;
+
+    function onMouseDown(event: MouseEvent) {
+      if (!(event.target instanceof Node)) return;
+      if (versionContainer && !versionContainer.contains(event.target)) {
+        versionOpen = false;
+      }
+    }
+
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') versionOpen = false;
+    }
+
+    window.addEventListener('mousedown', onMouseDown);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('mousedown', onMouseDown);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  });
 </script>
 
 <header class="v4-titlebar" aria-label="Window chrome">
@@ -106,10 +153,8 @@
       class:pulsing={syncState === 'syncing'}
       aria-hidden="true"
     ></span>
-    <span class="v4-sentence">{syncState === 'error' ? 'Sync initialized' : model.sentence}</span>
-    {#if syncState === 'error'}
-      <span class="v4-meta">Click the button to finish sync in Claude Code.</span>
-    {:else if model.meta}
+    <span class="v4-sentence">{model.sentence}</span>
+    {#if model.meta}
       <span class="v4-meta">{model.meta}</span>
     {/if}
   </div>
@@ -130,7 +175,31 @@
         <path d="m10.5 10.5 3 3" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" />
       </svg>
     </button>
-    {#if syncState === 'error' && errorMessage}
+    {#if model.recovery === 'hydration'}
+      <button
+        type="button"
+        class="v4-action"
+        disabled={hydrationRefreshing}
+        aria-busy={hydrationRefreshing}
+        onclick={handleAction}
+      >
+        Retry
+      </button>
+    {:else if syncState === 'conflict'}
+      <div class="v4-recovery-actions" data-tauri-drag-region="false">
+        <button type="button" class="v4-action" onclick={handleAction}>
+          Resolve conflicts
+        </button>
+        <CopyPromptButton
+          variant="inline"
+          label="Copy prompt"
+          issue={{
+            kind: 'sync-conflict',
+            payload: { count: conflictCount, company: conflictCompany },
+          }}
+        />
+      </div>
+    {:else if syncState === 'error' && errorMessage}
       <div class="v4-recovery-actions" data-tauri-drag-region="false">
         <button type="button" class="v4-action" onclick={onretry}>Retry</button>
         <OpenInClaudeCodeButton
@@ -150,6 +219,27 @@
         {model.action.label === 'Sync Now' ? 'Sync' : model.action.label}
       </button>
     {/if}
+    <div class="v4-version-wrap" bind:this={versionContainer}>
+      <button
+        type="button"
+        class="v4-version"
+        data-testid="version-label"
+        aria-expanded={versionOpen}
+        aria-haspopup="dialog"
+        aria-label={`Version v${version}; open updates`}
+        onclick={() => (versionOpen = !versionOpen)}
+      >
+        v{version}
+      </button>
+      {#if versionOpen}
+        <VersionPopout
+          {version}
+          placement="below"
+          onOpenSettings={(tab) => onOpenSettings?.(tab)}
+          onclose={() => (versionOpen = false)}
+        />
+      {/if}
+    </div>
     <button
       type="button"
       class="v4-account"
@@ -164,17 +254,20 @@
 
 <style>
   .v4-titlebar {
+    position: relative;
+    z-index: 10;
     display: flex;
     align-items: center;
     gap: 10px;
     flex: 0 0 40px;
     height: 40px;
+    overflow: visible;
     padding: 0 12px 0 0;
     border-bottom: 1px solid var(--v4-hairline);
     background: var(--v4-chrome);
-    backdrop-filter: blur(22px) saturate(180%);
-    -webkit-backdrop-filter: blur(22px) saturate(180%);
-    box-shadow: inset 0 1px 0 var(--pop-highlight);
+    backdrop-filter: var(--v4-glass-filter);
+    -webkit-backdrop-filter: var(--v4-glass-filter);
+    box-shadow: inset 0 1px 0 var(--v4-glass-highlight);
     font-family: var(--font-sans);
   }
 
@@ -221,10 +314,10 @@
     min-width: 0;
     max-width: 42%;
     height: 28px;
-    padding: 0 10px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-pill);
-    background: var(--v4-control-faint);
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
     /* Status is display-only — do not steal drag or clicks. */
     pointer-events: none;
   }
@@ -299,6 +392,37 @@
     gap: 6px;
   }
 
+  .v4-version-wrap {
+    position: relative;
+    flex: 0 0 auto;
+  }
+
+  .v4-version {
+    height: 28px;
+    padding: 0 8px;
+    border: 1px solid transparent;
+    border-radius: var(--v4-radius-button);
+    background: transparent;
+    color: var(--v4-text-3);
+    font-family: var(--font-mono);
+    font-size: var(--type-metadata, 10px);
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+    cursor: pointer;
+  }
+
+  .v4-version:hover,
+  .v4-version[aria-expanded='true'] {
+    border-color: var(--v4-hairline);
+    background: var(--v4-control-faint);
+    color: var(--v4-text-1);
+  }
+
+  .v4-version:focus-visible {
+    outline: 2px solid var(--v4-focus-ring, var(--v4-control-border));
+    outline-offset: var(--v4-focus-offset, 2px);
+  }
+
   .v4-icon-btn {
     display: grid;
     place-items: center;
@@ -306,7 +430,7 @@
     height: 28px;
     padding: 0;
     border: 1px solid transparent;
-    border-radius: var(--v4-radius-button, 8px);
+    border-radius: var(--v4-radius-button);
     background: transparent;
     color: var(--v4-text-2);
     font: inherit;
@@ -345,8 +469,13 @@
     cursor: pointer;
   }
 
-  .v4-action:hover {
+  .v4-action:hover:not(:disabled) {
     background: var(--v4-active-row);
+  }
+
+  .v4-action:disabled {
+    cursor: default;
+    opacity: 0.55;
   }
 
   .v4-action:focus-visible {

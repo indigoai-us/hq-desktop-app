@@ -43,6 +43,34 @@ export interface HomeConflict {
   error?: string;
 }
 
+/** A local deletion the currency gate intentionally refused to propagate. */
+export interface HomeDeleteRefusal {
+  company: string;
+  path: string;
+  reason: 'stale-etag' | 'legacy-no-etag' | string;
+  at: number;
+}
+
+export interface HomeDeleteRefusalCopy {
+  title: string;
+  sub: string;
+}
+
+/**
+ * Translate safe-delete protocol detail into plain language. ETags are
+ * deliberately absent: they are internal evidence, not useful user copy.
+ */
+export function getDeleteRefusalCopy(refusal: HomeDeleteRefusal): HomeDeleteRefusalCopy {
+  const explanation =
+    refusal.reason === 'legacy-no-etag'
+      ? 'HQ could not yet verify that the remote copy was unchanged, so it was preserved; a later sync can reevaluate it'
+      : 'another device changed this file, so the remote copy was preserved and pulled safely';
+  return {
+    title: `Kept on remote — ${refusal.path}`,
+    sub: `${refusal.company} · ${explanation}`,
+  };
+}
+
 // ── Core drift (subset of the popover's `check_core_state` payload) ─────────
 
 export interface HomeDriftEntry {
@@ -109,6 +137,40 @@ export function getConflictCardModel(conflict: HomeConflict, now = Date.now()): 
   };
 }
 
+/**
+ * Aggregate conflict card for the current runner contract. The runner reports a
+ * count on `sync:complete` but no file paths, so offer the canonical guided
+ * resolver instead of inventing per-file actions the desktop cannot perform.
+ */
+export function getAggregateConflictCardModel(
+  count: number,
+  company: string | null = null,
+): HomeCardModel {
+  const normalizedCount = Math.max(0, count);
+  const title =
+    normalizedCount > 0
+      ? `${normalizedCount} file conflict${normalizedCount === 1 ? '' : 's'} need review`
+      : 'Sync conflicts need review';
+  return {
+    title,
+    sub: [
+      company,
+      'local files were preserved',
+      'resolve the conflicts before syncing again',
+    ]
+      .filter(Boolean)
+      .join(' · '),
+    tone: 'warn',
+    actions: [
+      {
+        id: 'resolve-conflicts',
+        label: 'Resolve conflicts',
+        kind: 'primary',
+      },
+    ],
+  };
+}
+
 /** Drift card — Restore / Keep edit / View diff (home-healthy.png). */
 export function getDriftCardModel(core: HomeCoreState, restoring = false): HomeCardModel | null {
   const report = core.driftReport;
@@ -142,11 +204,13 @@ export function getNeedsYouCount(
   core: HomeCoreState | null,
   driftDismissed: boolean,
   pendingInviteCount = 0,
+  hasAggregateConflict = false,
 ): number {
   const conflictCount = conflicts.length;
   const driftCount =
     !driftDismissed && core && core.driftReport && core.driftReport.count > 0 ? 1 : 0;
-  return conflictCount + driftCount + Math.max(0, pendingInviteCount);
+  const aggregateConflictCount = hasAggregateConflict ? 1 : 0;
+  return conflictCount + driftCount + Math.max(0, pendingInviteCount) + aggregateConflictCount;
 }
 
 /**
@@ -166,7 +230,9 @@ export function getInviteCardModel(
   return {
     title: `Invite — join ${workspace.displayName}`,
     sub: `from ${inviter}${agePart}`,
-    tone: 'warn',
+    // Pending membership is actionable but routine; do not paint it as a
+    // warning. The queue heading and Accept action already provide context.
+    tone: 'neutral',
     actions: [
       {
         id: 'accept-invite',

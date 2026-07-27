@@ -58,8 +58,13 @@ describe('DESKTOP-003: actionable company overview', () => {
     expect(digest).toContain('data-testid="overview-recent-activity"');
     expect(digest).not.toContain('class="digest-stats"');
     expect(digest).not.toContain('class="digest-card"');
-    // Discrete monitors/controls may keep radius (pulse strip, status pills, actions).
-    expect(panel).toMatch(/\.pulse-row\s*\{[\s\S]*?border-radius:\s*var\(--v4-radius-field\)/);
+    // Summary and monitor metadata stay open; only true pills/actions keep radius.
+    expect(panel).toMatch(
+      /\.pulse-row\s*\{[\s\S]*?border:\s*0;[\s\S]*?border-radius:\s*0;[\s\S]*?background:\s*transparent;/,
+    );
+    expect(digest).toMatch(
+      /\.digest-monitor\s*\{[\s\S]*?border:\s*0;[\s\S]*?border-radius:\s*0;[\s\S]*?background:\s*transparent;/,
+    );
     expect(panel).toMatch(/\.status-pill\s*\{[\s\S]*?border-radius:\s*var\(--v4-radius-pill\)/);
   });
 
@@ -121,15 +126,15 @@ describe('DESKTOP-003: actionable company overview', () => {
 
   it('uses the five semantic type roles and explicit 3px title/meta slots', () => {
     expect(V4_TYPE_SCALE).toEqual({
-      metadata: 10,
-      secondary: 11,
-      body: 12,
+      metadata: 13,
+      secondary: 13,
+      body: 14,
       section: 14,
-      detail: 18,
+      detail: 14,
     });
     expect(V4_ROW_STACK_GAP_PX).toBe(3);
-    expect(tokens).toContain('--type-metadata: 10px');
-    expect(tokens).toContain('--type-body: 12px');
+    expect(tokens).toContain('--type-metadata: 13px');
+    expect(tokens).toContain('--type-body: 14px');
     expect(tokens).toContain('--v4-row-stack-gap: 3px');
 
     for (const src of [panel, goalCard, digest, needsYou]) {

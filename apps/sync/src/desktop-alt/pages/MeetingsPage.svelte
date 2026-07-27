@@ -602,7 +602,7 @@
     padding: 1px 7px;
     border: 1px solid var(--v4-control-border);
     border-radius: var(--v4-radius-pill);
-    color: var(--v4-warn);
+    color: var(--v4-error);
     font-size: var(--type-metadata, 10px);
     font-weight: 600;
     white-space: nowrap;
@@ -639,16 +639,34 @@
   }
 
   .toast {
+    --toast-dot: var(--v4-ok);
+    display: flex;
+    align-items: baseline;
+    gap: 7px;
     margin: 10px 0 0;
-    padding: 7px 10px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-field);
-    background: var(--v4-raised);
-    color: var(--v4-ok);
+    padding: 8px 0 0;
+    border: 0;
+    border-top: 1px solid var(--v4-rowline);
+    border-radius: 0;
+    background: transparent;
+    color: var(--v4-text-2);
     font-size: var(--type-body, 12px);
     line-height: 18px;
   }
-  .toast-warn { color: var(--v4-warn); }
+
+  .toast::before {
+    width: 5px;
+    height: 5px;
+    flex: 0 0 auto;
+    border-radius: var(--v4-radius-pill);
+    background: var(--toast-dot);
+    content: '';
+    transform: translateY(-1px);
+  }
+
+  .toast-warn {
+    --toast-dot: var(--v4-warn);
+  }
 
   .btn {
     display: inline-flex;
@@ -731,10 +749,11 @@
     align-items: center;
     gap: 12px;
     min-height: 48px;
-    padding: 8px 10px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-field);
-    background: var(--v4-raised);
+    padding: 8px 0;
+    border: 0;
+    border-top: 1px solid var(--v4-hairline);
+    border-radius: 0;
+    background: transparent;
   }
   .next-time {
     min-width: 58px;
@@ -987,7 +1006,7 @@
 
   @media (prefers-reduced-transparency: reduce) {
     .next-strip {
-      background: var(--v4-raised);
+      background: transparent;
     }
   }
 </style>

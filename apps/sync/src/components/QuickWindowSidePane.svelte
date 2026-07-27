@@ -1,19 +1,18 @@
 <script lang="ts">
-  import { onDestroy } from 'svelte';
   import { listen } from '@tauri-apps/api/event';
   import type { Item } from '../lib/notificationGroups';
   import {
     loadNotificationItems,
     getLastReadTs,
-    markAllNotificationsRead,
   } from '../lib/notificationFeedData';
   import { conversationRows } from '../lib/quickWindowPane';
   import NotificationRow from './NotificationRow.svelte';
 
   // Left inbox strip for share-detail / dm-detail quick windows (US-011 + US-016).
   // Groups recent DMs + shares into one row per conversation so the user can
-  // jump without reopening a notification. Read watermark advances on leave
-  // (US-008 pattern from InboxPage) once the feed has loaded.
+  // jump without reopening a notification. This filtered conversation surface
+  // deliberately does not advance Inbox's global read watermark: doing so
+  // would mark update notifications read without ever rendering them.
 
   interface Props {
     selectedId: string | null;
@@ -27,38 +26,26 @@
   let loading = $state(true);
   // Snapshot once per mount — matches NotificationFeed (session-stable).
   const lastReadTs = getLastReadTs();
-  let feedLoaded = false;
+  let loadGeneration = 0;
 
   const rows = $derived(conversationRows(items, lastReadTs, viewedIds));
 
   async function load(): Promise<void> {
+    const generation = ++loadGeneration;
     loading = true;
     try {
       // Full feed — conversationRows filters dm|share and caps conversations at 30.
-      items = await loadNotificationItems();
-      feedLoaded = true;
+      const next = await loadNotificationItems(undefined, { includeUpdates: false });
+      if (generation !== loadGeneration) return;
+      items = next;
     } catch (err) {
+      if (generation !== loadGeneration) return;
       console.error('quick-window-pane: load failed', err);
       items = [];
     } finally {
-      loading = false;
+      if (generation === loadGeneration) loading = false;
     }
   }
-
-  // Viewing the pane counts as reading the inbox strip: advance the watermark
-  // when the window hides or unmounts, gated on a successful load so a flash
-  // before data arrives cannot swallow unread state.
-  function commitRead(): void {
-    if (!feedLoaded) return;
-    markAllNotificationsRead();
-  }
-
-  onDestroy(commitRead);
-
-  $effect(() => {
-    window.addEventListener('pagehide', commitRead);
-    return () => window.removeEventListener('pagehide', commitRead);
-  });
 
   // Load on mount; debounce reloads on the same signals NotificationFeed uses.
   $effect(() => {
@@ -66,6 +53,7 @@
 
     let reloadTimer: ReturnType<typeof setTimeout> | null = null;
     const scheduleReload = () => {
+      loadGeneration += 1;
       if (reloadTimer) clearTimeout(reloadTimer);
       reloadTimer = setTimeout(() => {
         reloadTimer = null;
@@ -86,6 +74,7 @@
 
     return () => {
       disposed = true;
+      loadGeneration += 1;
       if (reloadTimer) clearTimeout(reloadTimer);
       for (const u of unlisteners) u();
     };
@@ -167,7 +156,7 @@
     min-height: 0;
   }
 
-  /* US-016: subtle type hierarchy — share accent tint; system muted. */
-  .qw-side-list :global(.nr[data-type='share'] .nr-icon) { color: var(--pop-accent, #6aa1ff); }
+  /* US-016: subtle type hierarchy without spending a colored accent. */
+  .qw-side-list :global(.nr[data-type='share'] .nr-icon) { color: var(--pop-text, #e8e8e8); }
   .qw-side-list :global(.nr[data-type='system'] .nr-icon) { color: var(--pop-muted); }
 </style>

@@ -3,7 +3,7 @@
   import { listen } from '@tauri-apps/api/event';
   import { buildNotificationGroups, type Item } from '../lib/notificationGroups';
   import {
-    loadNotificationItems,
+    loadNotificationTimeline,
     getLastReadTs,
     markAllNotificationsRead,
     isUnread,
@@ -35,6 +35,10 @@
     hideEmptyState?: boolean;
     /** Visual density: popover stays compact; desktop Inbox uses roomier rows. */
     density?: 'compact' | 'comfortable';
+    /** Popover owns its update notice separately; Inbox includes feed updates. */
+    includeUpdates?: boolean;
+    /** Explicit successful hydration signal for read-watermark owners. */
+    onloadstatechange?: (loaded: boolean) => void;
   }
 
   let {
@@ -43,12 +47,18 @@
     showDayLabels = true,
     hideEmptyState = false,
     density = 'compact',
+    includeUpdates = true,
+    onloadstatechange,
   }: Props = $props();
 
   let loading = $state(true);
   let error = $state<string | null>(null);
   let items = $state<Item[]>([]);
   let lastReadTs = $state(getLastReadTs());
+  let updateInstalling = $state(false);
+  let updateError = $state<string | null>(null);
+  let partialError = $state<string | null>(null);
+  let loadGeneration = 0;
 
   /** Session-local dismiss — no backend dismiss API. Keys are item ids or
    *  cluster keys filtered out of the rendered groups. */
@@ -61,15 +71,37 @@
   }
 
   async function load(): Promise<void> {
+    const generation = ++loadGeneration;
+    onloadstatechange?.(false);
     loading = true;
     error = null;
+    partialError = null;
     try {
-      items = await loadNotificationItems();
+      const next = await loadNotificationTimeline(undefined, { includeUpdates });
+      if (generation !== loadGeneration) return;
+      items = next.items;
+      const missingSources: string[] = [];
+      if (next.historyState === 'failed') missingSources.push('cloud notifications');
+      if (next.activityState === 'failed') missingSources.push('local activity');
+      if (includeUpdates && next.updateState === 'failed') {
+        missingSources.push('update status');
+      }
+      partialError =
+        missingSources.length > 0
+          ? `Some ${missingSources.join(' and ')} could not be loaded. Available notifications are still shown.`
+          : null;
+      const fullyLoaded =
+        next.historyState === 'resolved' &&
+        next.activityState === 'resolved' &&
+        (!includeUpdates || next.updateState === 'resolved');
+      onloadstatechange?.(fullyLoaded);
     } catch (e) {
+      if (generation !== loadGeneration) return;
       error = typeof e === 'string' ? e : 'Could not load notifications.';
       items = [];
+      onloadstatechange?.(false);
     } finally {
-      loading = false;
+      if (generation === loadGeneration) loading = false;
     }
   }
 
@@ -126,6 +158,28 @@
     }
   }
 
+  async function openUpdateSettings(): Promise<void> {
+    try {
+      await invoke('open_desktop_alt_window', { route: 'settings:updates' });
+    } catch (e) {
+      console.error('notification-feed: open updates failed', e);
+    }
+  }
+
+  async function installUpdate(): Promise<void> {
+    if (updateInstalling) return;
+    updateInstalling = true;
+    updateError = null;
+    try {
+      await invoke('install_update');
+    } catch (e) {
+      console.error('notification-feed: install_update failed', e);
+      updateError = 'Update failed. Open Updates in Settings and try again.';
+    } finally {
+      updateInstalling = false;
+    }
+  }
+
   /** Mirror DmDetail's composer: real send_dm to the message author. */
   async function replyDm(it: Item, text: string): Promise<void> {
     const peer = it.dm?.fromPersonUid;
@@ -149,15 +203,22 @@
   // Both are cheap signals — debounce a single reload so a burst doesn't stack
   // fetches. Listeners are torn down with the component.
   $effect(() => {
-    void load();
-
     let reloadTimer: ReturnType<typeof setTimeout> | null = null;
     const scheduleReload = () => {
+      // Invalidate an in-flight snapshot immediately; the debounced reload
+      // below will become the only response allowed to update this surface.
+      loadGeneration += 1;
+      onloadstatechange?.(false);
       if (reloadTimer) clearTimeout(reloadTimer);
       reloadTimer = setTimeout(() => {
         reloadTimer = null;
         void load();
       }, 400);
+    };
+    const scheduleUpdateCleared = () => {
+      updateError = null;
+      updateInstalling = false;
+      scheduleReload();
     };
 
     // `listen` registers asynchronously. A quick view swap can destroy this
@@ -169,11 +230,25 @@
       if (disposed) unlisten();
       else unlisteners.push(unlisten);
     };
-    void listen('dm:unread-summary', scheduleReload).then(track);
-    void listen('sync:complete', scheduleReload).then(track);
+    const registrations = [
+      listen('dm:unread-summary', scheduleReload).then(track),
+      listen('sync:complete', scheduleReload).then(track),
+    ];
+    if (includeUpdates) {
+      registrations.push(
+        listen('update:available', scheduleReload).then(track),
+        listen('update:cleared', scheduleUpdateCleared).then(track),
+      );
+    }
+    // Register all native listeners before hydration starts so an update event
+    // cannot slip through the mount gap.
+    void Promise.allSettled(registrations).then(() => {
+      if (!disposed) void load();
+    });
 
     return () => {
       disposed = true;
+      loadGeneration += 1;
       if (reloadTimer) clearTimeout(reloadTimer);
       for (const u of unlisteners) u();
     };
@@ -181,6 +256,12 @@
 </script>
 
 <div class="notif-feed" class:notif-comfortable={density === 'comfortable'} data-density={density}>
+  {#if updateError}
+    <p class="notif-status notif-error" role="alert">{updateError}</p>
+  {/if}
+  {#if partialError}
+    <p class="notif-status notif-partial-error" role="alert">{partialError}</p>
+  {/if}
   {#if loading && items.length === 0}
     <p class="notif-status">Loading…</p>
   {:else if error}
@@ -193,7 +274,7 @@
           <path d="M10.3 19.5a2 2 0 0 0 3.4 0" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
         </svg>
         <p>No notifications yet</p>
-        <span class="notif-empty-hint">Messages, shares, and new files will show up here.</span>
+        <span class="notif-empty-hint">Messages, shares, new files, and updates will show up here.</span>
       </div>
     {/if}
   {:else if visibleItems.length === 0}
@@ -246,6 +327,18 @@
                   }
                   ondismiss={() => dismiss(it.id)}
                 />
+              {:else if it.kind === 'update' && it.update}
+                <NotificationRow
+                  type="system"
+                  actor="HQ"
+                  text={it.summary}
+                  ts={it.ts}
+                  unread={isUnread(it, lastReadTs)}
+                  onopen={() => void openUpdateSettings()}
+                  onaction={() => void installUpdate()}
+                  actionLabel={updateInstalling ? 'Updating…' : 'Update now'}
+                  actionDisabled={updateInstalling}
+                />
               {/if}
             {:else if !dismissed.has(row.key)}
               <NotificationRow
@@ -282,6 +375,9 @@
   }
   .notif-error {
     color: var(--popover-danger);
+  }
+  .notif-partial-error {
+    padding-block: 8px;
   }
 
   .notif-empty {

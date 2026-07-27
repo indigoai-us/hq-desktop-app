@@ -28,7 +28,11 @@
   import '@fontsource-variable/geist-mono/wght.css';
   import '../../desktop-alt/styles/desktop-alt.css';
   import { invoke } from '@tauri-apps/api/core';
-  import { listen } from '@tauri-apps/api/event';
+  import {
+    listen,
+    type EventCallback,
+    type UnlistenFn,
+  } from '@tauri-apps/api/event';
   import { buildClaudeCodeUrl } from '../../lib/claude-code-link';
   import { hqSkillMarkdownLink } from '../../lib/hq-skill-link';
   import { appendInboundBatch } from '../../lib/dmThread';
@@ -89,6 +93,13 @@
     takePendingConversation,
     type ConversationTarget,
   } from '../../lib/pendingConversation';
+
+  interface Props {
+    /** Fill the desktop canvas instead of the dedicated native window. */
+    embedded?: boolean;
+  }
+
+  let { embedded = false }: Props = $props();
 
   // A person the caller can DM (connection or company teammate). Mirrors the
   // Rust `Contact` wire shape (camelCase).
@@ -1205,63 +1216,93 @@
   }
 
   $effect(() => {
-    const unlisteners: Array<() => void> = [];
+    const unlisteners: UnlistenFn[] = [];
+    let disposed = false;
+
+    function retainUnlistener(unlisten: UnlistenFn): void {
+      if (disposed) {
+        unlisten();
+        return;
+      }
+      unlisteners.push(unlisten);
+    }
+
+    function registerListener<T>(
+      event: string,
+      handler: EventCallback<T>,
+    ): void {
+      void listen<T>(event, handler)
+        .then(retainUnlistener)
+        .catch((error: unknown) => {
+          if (!disposed) {
+            console.error(`messages: failed to listen for ${event}`, error);
+          }
+        });
+    }
 
     // A new DM may arrive while this window is open — refresh the contact list
     // (so a brand-new conversation appears) and the request count. The badge
     // reset is handled in Rust on messages_window_ready.
-    listen<DmEvent[]>('dm:new-events', (e) => {
+    registerListener<DmEvent[]>('dm:new-events', (e) => {
       applyLiveInbound(e.payload ?? []);
       void loadContacts();
       void loadUnreadSummary();
-    }).then((fn) => unlisteners.push(fn));
+    });
 
     // A brand-new incoming connection request landed (US-011) — append it to the
     // Requests list (rail rows follow via railItems). Dedupe by
     // pairKey so a re-emit doesn't double-add.
-    listen<DmRequest>('dm:request-new', (e) => {
+    registerListener<DmRequest>('dm:request-new', (e) => {
       requests = addRequest(requests, e.payload);
-    }).then((fn) => unlisteners.push(fn));
+    });
 
     // A pending request resolved elsewhere (accepted/declined/blocked, or pruned
     // by the poll diff). Drop it from the unified rail; clear the detail pane
     // when the open request is the one that left the set.
-    listen<{ pairKey: string; state?: string }>('dm:request-update', (e) => {
-      requests = removeRequest(requests, e.payload.pairKey);
-      if (selectedRequest?.pairKey === e.payload.pairKey) selectedRequest = null;
-    }).then((fn) => unlisteners.push(fn));
+    registerListener<{ pairKey: string; state?: string }>(
+      'dm:request-update',
+      (e) => {
+        requests = removeRequest(requests, e.payload.pairKey);
+        if (selectedRequest?.pairKey === e.payload.pairKey) {
+          selectedRequest = null;
+        }
+      },
+    );
 
     // A channel the caller is in has new activity (US-018). If it's the open
     // channel, ChannelView handles its own refresh; otherwise bump the rail
     // unread badge for that channel.
-    listen<{ channelId: string; unread?: number }>('channel:new-message', (e) => {
-      const { channelId } = e.payload;
-      if (selectedChannel?.channelId === channelId) return; // ChannelView owns it
-      // Prefer the authoritative unread the poll computed; fall back to +1.
-      if (typeof e.payload.unread === 'number') {
-        channels = channels.map((c) =>
-          c.channelId === channelId ? { ...c, unread: e.payload.unread } : c,
-        );
-      } else {
-        channels = bumpChannelUnread(channels, channelId, 1);
-      }
-    }).then((fn) => unlisteners.push(fn));
+    registerListener<{ channelId: string; unread?: number }>(
+      'channel:new-message',
+      (e) => {
+        const { channelId } = e.payload;
+        if (selectedChannel?.channelId === channelId) return; // ChannelView owns it
+        // Prefer the authoritative unread the poll computed; fall back to +1.
+        if (typeof e.payload.unread === 'number') {
+          channels = channels.map((c) =>
+            c.channelId === channelId ? { ...c, unread: e.payload.unread } : c,
+          );
+        } else {
+          channels = bumpChannelUnread(channels, channelId, 1);
+        }
+      },
+    );
 
     // Reactions on a message in the open DM conversation changed (US-025). The
     // controller ignores events for any scope other than its own, so this safely
     // no-ops when the open pane is a channel or nothing is selected.
-    listen<ReactionEvent>('message:reaction', (e) => {
+    registerListener<ReactionEvent>('message:reaction', (e) => {
       dmReactions?.applyEvent(e.payload);
       // Share-scope events reconcile the inline share cards' reactions.
       shareReactions.applyEvent(e.payload);
-    }).then((fn) => unlisteners.push(fn));
+    });
 
     // Deep link from the standalone-window path: `open_messages_window` with a
     // target stashes it in Rust and the ready-handshake (or an already-open
     // focus) emits it here.
-    listen<ConversationTarget>('messages:open-conversation', (e) => {
+    registerListener<ConversationTarget>('messages:open-conversation', (e) => {
       openConversationTarget(e.payload);
-    }).then((fn) => unlisteners.push(fn));
+    });
 
     // Deep link from within the SAME desktop window (Notifications page →
     // Messages destination): the sender stashes the target and dispatches
@@ -1272,36 +1313,39 @@
       if (t) openConversationTarget(t);
     };
     window.addEventListener(MESSAGE_PERSON_EVENT, onMessagePerson);
-    unlisteners.push(() => window.removeEventListener(MESSAGE_PERSON_EVENT, onMessagePerson));
+    retainUnlistener(() =>
+      window.removeEventListener(MESSAGE_PERSON_EVENT, onMessagePerson),
+    );
     onMessagePerson();
 
     // A brand-new channel/invite appeared, or a channel's metadata changed.
     // Upsert it into the rail so it shows live without a manual refresh.
-    listen<Channel>('channel:updated', (e) => {
+    registerListener<Channel>('channel:updated', (e) => {
       channels = upsertChannel(channels, e.payload);
       if (selectedChannel?.channelId === e.payload.channelId) {
         selectedChannel = e.payload;
       }
-    }).then((fn) => unlisteners.push(fn));
+    });
 
-    // Ready-handshake: tell Rust the listeners are mounted so it shows + focuses
-    // the window and resets the unread badge (mirrors DmDetail).
+    // Ready-handshake: both render modes clear the unread badge once Messages is
+    // visible. Only the standalone mode may show/focus the native window.
     void loadContacts();
     void loadRequests();
     void loadUnreadSummary();
     void loadChannels();
     void loadCompanyLabels();
     void loadConfig();
-    invoke('messages_window_ready');
+    void invoke(embedded ? 'mark_messages_viewed' : 'messages_window_ready');
 
     return () => {
-      for (const fn of unlisteners) fn();
+      disposed = true;
+      for (const fn of unlisteners.splice(0)) fn();
       shareReactions.dispose();
     };
   });
 </script>
 
-<div class="messages-window">
+<div class="messages-window" class:embedded data-window="messages">
   <!-- DESKTOP-002: source-list rail (glass) + naked main canvas. Compact header
        — no redundant "Messages" page title; no People/Requests tabs. -->
   <aside class="rail" aria-label="Conversations">
@@ -1610,6 +1654,12 @@
     overflow: hidden;
   }
 
+  .messages-window.embedded {
+    width: 100%;
+    height: 100%;
+    background: transparent;
+  }
+
   /* ── Left rail (source-list / liquid-glass control layer) ────────────── */
 
   .rail {
@@ -1794,15 +1844,14 @@
   }
 
   .contact-row {
-    position: relative;
     display: flex;
     align-items: center;
     gap: var(--space-2);
     width: 100%;
     text-align: left;
-    padding: var(--space-2) var(--space-2) var(--space-2) calc(var(--space-2) + 2px);
+    padding: var(--space-2);
     border: none;
-    border-radius: 6px;
+    border-radius: 0;
     background: transparent;
     color: inherit;
     font-family: var(--font-sans);
@@ -1815,21 +1864,10 @@
     background: var(--row-hover);
   }
 
-  /* Selected conversation: restrained row-active surface + a 2px Indigo edge —
-     the desktop "active row" treatment, emphasis kept neutral. */
+  /* Selected conversation stays open and uses a neutral baseline. */
   .contact-row.active {
-    background: var(--row-active);
-  }
-
-  .contact-row.active::before {
-    content: '';
-    position: absolute;
-    left: 0;
-    top: 7px;
-    bottom: 7px;
-    width: 2px;
-    border-radius: 999px;
-    background: var(--fg);
+    background: transparent;
+    box-shadow: inset 0 -1px 0 var(--border);
   }
 
   .contact-row:focus-visible {

@@ -100,8 +100,9 @@ describe('US-006: notification takeover — no native banner', () => {
     expect(dm).toContain('|| crate::commands::widget::takeover_active(app)');
     expect(share).toContain('|| crate::commands::widget::takeover_active(app)');
     expect(meetings).toContain('|| crate::commands::widget::takeover_active(&app)');
-    expect(updater).toContain('|| crate::commands::widget::takeover_active(&app)');
-    expect(updater).toContain('|| crate::commands::widget::takeover_active(&handle)');
+    expect(updater).toContain('|| crate::commands::widget::takeover_active(app)');
+    // Manual + background checks share this gate instead of duplicating it.
+    expect((updater.match(/record_and_announce_update\(/g) ?? []).length).toBeGreaterThanOrEqual(3);
   });
 });
 

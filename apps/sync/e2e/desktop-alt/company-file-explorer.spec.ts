@@ -156,6 +156,7 @@ describe('desktop-alt Files mode — exit + root-default + company filter (US-01
   const rust = readRepoFile('src-tauri/src/commands/desktop_alt.rs');
   const core = readRepoFile('../../crates/hq-desktop-core/src/desktop_alt.rs');
   const mainRs = readRepoFile('src-tauri/src/main.rs');
+  const mocks = readRepoFile('dev-harness/mocks/core.ts');
 
   // -------------------------------------------------------------------------
   // e2eTest 3 (listed): the back/exit control returns to the main area
@@ -189,6 +190,14 @@ describe('desktop-alt Files mode — exit + root-default + company filter (US-01
     expect(sidebar).toContain('rootPath={treeRootPath}');
     // The tree loads the root level on mount, not a pre-walked company tree.
     expect(sidebar).not.toContain("get_company_file_tree");
+  });
+
+  it('populates the preview harness root and first-level HQ folders', () => {
+    expect(mocks).toContain("if (rel === '')");
+    expect(mocks).toContain("if (rel === 'companies')");
+    expect(mocks).toContain("if (rel === 'personal')");
+    expect(mocks).toContain("{ name: 'companies', path: 'companies', isDir: true");
+    expect(mocks).toContain("{ name: 'indigo', path: 'companies/indigo', isDir: true");
   });
 
   // -------------------------------------------------------------------------

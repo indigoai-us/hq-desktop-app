@@ -53,24 +53,22 @@ html[data-window='messages'] {
   --emerald: var(--v4-ok, var(--popover-success));
   --amber: var(--v4-warn, #b45309);
   --red: var(--v4-error, var(--popover-danger));
-  --blue: var(--v4-unread, #0a6fd6);
+  --blue: var(--v4-text-1, var(--c-text));
 
-  /* Messaging primary/focus controls are neutral; blue is reserved for unread
-     counts and true links. */
+  /* Compatibility aliases remain achromatic; narrow semantic state colors use
+     their explicit success, warning, and error tokens instead. */
   --accent: var(--v4-primary-bg, var(--c-btn-bg));
   --accent-fg: var(--v4-primary-fg, var(--c-btn-fg));
   --accent-soft: var(--pop-hover);
 
-  /* DESKTOP-011: normalize legacy --text-* aliases onto the five semantic sizes
-     defined in v4/tokens.css (metadata 10 / secondary 11 / body 12 / section 14 /
-     detail 18). Fallbacks keep the ramp if tokens load order shifts. */
-  --text-micro: var(--type-metadata, 10px);
-  --text-xs: var(--type-secondary, 11px);
-  --text-sm: var(--type-secondary, 11px);
-  --text-base: var(--type-body, 12px);
+  /* Normalize legacy aliases onto the readable desktop ramp. */
+  --text-micro: var(--type-metadata, 13px);
+  --text-xs: var(--type-secondary, 13px);
+  --text-sm: var(--type-secondary, 13px);
+  --text-base: var(--type-body, 14px);
   --text-section: var(--type-section, 14px);
-  --text-lg: var(--type-detail, 18px);
-  --text-kpi: var(--type-detail, 18px);
+  --text-lg: var(--type-detail, 14px);
+  --text-kpi: var(--type-detail, 14px);
 
   --font-display: var(--font-sans);
   --font-mono: 'Geist Mono Variable', ui-monospace, SFMono-Regular, Menlo,
@@ -111,8 +109,8 @@ html[data-window='desktop-alt'] body {
 @media (prefers-reduced-transparency: reduce) {
   html[data-window='desktop-alt'],
   html[data-window='messages'] {
-    --surface-rail: var(--v4-sidebar, #dee3e9);
-    --surface-panel: var(--v4-ground, #f7f8fa);
+    --surface-rail: var(--v4-sidebar, #e2e2e2);
+    --surface-panel: var(--v4-ground, #f2f2f2);
     --surface-raise: var(--v4-raised, #ffffff);
     --border: var(--v4-hairline, var(--c-divider));
     --border-strong: var(--v4-control-border, var(--c-field-border));
@@ -169,8 +167,9 @@ html[data-window='messages'] ::-webkit-scrollbar-thumb:hover {
   /* Single-scroll guarantee: only leaf scrollers (.desktop-main-scroll) may
      scroll — every ancestor clips. */
   overflow: hidden;
-  /* Naked main canvas (DESKTOP-001) — chrome paints its own glass surfaces. */
-  background: var(--v4-ground, var(--page-bg));
+  /* Each region paints one material layer; a shell fill would double-compose
+     the translucent main canvas and hide the native window material. */
+  background: transparent;
 }
 
 /* ---- Body: V4 primary sidebar (220px) + optional secondary sidebar (library /
@@ -219,8 +218,11 @@ html[data-window='messages'] ::-webkit-scrollbar-thumb:hover {
   flex-direction: column;
   width: 100%;
   height: 100%;
-  /* Naked canvas: spacing + hairlines establish structure; no chrome glass. */
+  /* Naked canvas: spacing + hairlines establish structure. The neutral filter
+     removes wallpaper hue while keeping the native material visible. */
   background: var(--v4-ground, transparent);
+  backdrop-filter: var(--v4-glass-filter);
+  -webkit-backdrop-filter: var(--v4-glass-filter);
 }
 
 .desktop-main-scroll {
@@ -228,6 +230,16 @@ html[data-window='messages'] ::-webkit-scrollbar-thumb:hover {
   min-width: 0;
   min-height: 0;
   overflow-y: auto;
+}
+
+/* Company hard policy: every central-canvas surface uses normal-weight 14px
+   sans text. Component-local legacy sizes/weights remain source-compatible,
+   but cannot shrink or embolden rendered desktop content. */
+.desktop-main-scroll,
+.desktop-main-scroll * {
+  font-family: var(--font-sans) !important;
+  font-size: 14px !important;
+  font-weight: 400 !important;
 }
 
 .page {
@@ -288,7 +300,7 @@ html[data-window='messages'] ::-webkit-scrollbar-thumb:hover {
   height: 28px;
   padding: 0;
   border: 1px solid transparent;
-  border-radius: var(--v4-radius-button, 8px);
+  border-radius: var(--v4-radius-button);
   background: transparent;
   color: var(--v4-text-2, var(--muted));
   cursor: pointer;
@@ -418,7 +430,7 @@ html[data-window='messages'] ::-webkit-scrollbar-thumb:hover {
 }
 
 .workspace-error {
-  color: var(--amber);
+  color: var(--v4-error);
 }
 
 .desktop-status-bar {
@@ -429,9 +441,9 @@ html[data-window='messages'] ::-webkit-scrollbar-thumb:hover {
   padding: 0 14px;
   border-top: 1px solid var(--border);
   background: var(--surface-panel);
-  backdrop-filter: blur(22px) saturate(180%);
-  -webkit-backdrop-filter: blur(22px) saturate(180%);
-  box-shadow: inset 0 1px 0 var(--pop-highlight);
+  backdrop-filter: var(--v4-glass-filter);
+  -webkit-backdrop-filter: var(--v4-glass-filter);
+  box-shadow: inset 0 1px 0 var(--v4-glass-highlight);
   color: var(--muted);
   font-size: var(--text-xs);
 }

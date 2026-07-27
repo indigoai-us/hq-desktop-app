@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { tick } from 'svelte';
+  import { onMount, tick } from 'svelte';
 
   export interface CommandPaletteItem {
     id: string;
@@ -24,6 +24,7 @@
   let query = $state('');
   let highlightedIndex = $state(0);
   let inputEl: HTMLInputElement | null = $state(null);
+  let paletteEl: HTMLDivElement | null = $state(null);
 
   function fuzzyMatch(value: string, needle: string): boolean {
     const haystack = value.toLowerCase();
@@ -72,8 +73,14 @@
     highlightedIndex = 0;
   });
 
-  $effect(() => {
+  onMount(() => {
+    const returnFocus =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
     void tick().then(() => inputEl?.focus());
+
+    return () => {
+      if (returnFocus?.isConnected) returnFocus.focus();
+    };
   });
 
   async function execute(command: CommandPaletteItem | undefined) {
@@ -89,7 +96,35 @@
     }
   }
 
+  async function revealHighlightedOption() {
+    await tick();
+    paletteEl
+      ?.querySelector<HTMLButtonElement>('button[role="option"][aria-selected="true"]')
+      ?.scrollIntoView({ block: 'nearest' });
+  }
+
   function handleKeydown(event: KeyboardEvent) {
+    if (event.key === 'Tab') {
+      const focusable = [
+        inputEl,
+        ...(paletteEl?.querySelectorAll<HTMLButtonElement>('button:not([disabled])') ?? []),
+      ].filter(
+        (element): element is HTMLInputElement | HTMLButtonElement =>
+          element instanceof HTMLElement,
+      );
+      const first = focusable[0];
+      const last = focusable.at(-1);
+
+      if (
+        (event.shiftKey && document.activeElement === first) ||
+        (!event.shiftKey && document.activeElement === last)
+      ) {
+        event.preventDefault();
+        (event.shiftKey ? last : first)?.focus();
+      }
+      return;
+    }
+
     if (event.key === 'Escape') {
       event.preventDefault();
       onclose();
@@ -100,6 +135,7 @@
       event.preventDefault();
       highlightedIndex =
         filteredCommands.length === 0 ? 0 : (highlightedIndex + 1) % filteredCommands.length;
+      void revealHighlightedOption();
       return;
     }
 
@@ -109,6 +145,7 @@
         filteredCommands.length === 0
           ? 0
           : (highlightedIndex - 1 + filteredCommands.length) % filteredCommands.length;
+      void revealHighlightedOption();
       return;
     }
 
@@ -121,6 +158,7 @@
 
 <div class="command-backdrop" role="presentation" onclick={onclose}>
   <div
+    bind:this={paletteEl}
     class="command-palette"
     role="dialog"
     aria-modal="true"
@@ -194,20 +232,18 @@
     align-items: flex-start;
     justify-content: center;
     padding: 72px 20px 20px;
-    background: color-mix(in srgb, var(--pop-bg) 48%, transparent);
-    backdrop-filter: blur(8px) saturate(1.2);
-    -webkit-backdrop-filter: blur(8px) saturate(1.2);
+    background: color-mix(in srgb, var(--v4-ground) 48%, transparent);
   }
 
   .command-palette {
     width: min(560px, 100%);
     overflow: hidden;
     border: 1px solid var(--pop-border);
-    border-radius: var(--v4-radius-popover, var(--radius-popover));
-    background: var(--v4-chrome, var(--pop-bg));
-    backdrop-filter: blur(32px) saturate(1.7);
-    -webkit-backdrop-filter: blur(32px) saturate(1.7);
-    box-shadow: var(--v4-shadow-popover, var(--pop-shadow)), inset 0 1px 0 var(--pop-highlight);
+    border-radius: var(--v4-radius-popover);
+    background: var(--v4-popover, var(--pop-bg));
+    backdrop-filter: var(--v4-glass-filter);
+    -webkit-backdrop-filter: var(--v4-glass-filter);
+    box-shadow: var(--v4-shadow-popover, var(--pop-shadow)), inset 0 1px 0 var(--v4-glass-highlight);
     color: var(--pop-text);
     transform-origin: top center;
   }
@@ -288,7 +324,7 @@
   .command-empty {
     width: 100%;
     min-height: 46px;
-    border-radius: 6px;
+    border-radius: 0;
   }
 
   .command-list button {
@@ -306,19 +342,15 @@
     transition:
       background-color 120ms ease,
       color 120ms ease,
-      outline-color 120ms ease,
-      transform 120ms ease;
+      box-shadow 120ms ease;
   }
 
   .command-list button.highlighted,
   .command-list button:focus-visible {
     background: var(--pop-hover);
     color: var(--pop-text);
-    outline: 1px solid var(--pop-border);
-  }
-
-  .command-list button.highlighted {
-    transform: translateX(2px);
+    outline: none;
+    box-shadow: inset 0 -1px 0 var(--pop-border);
   }
 
   .command-copy {

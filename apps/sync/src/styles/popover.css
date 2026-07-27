@@ -53,15 +53,15 @@ textarea,
   --popover-action-hover: var(--pop-hover);
   --popover-progress-track: var(--pop-hover);
   --popover-progress-fill: var(--pop-accent);
-  --popover-blur: blur(32px) saturate(1.7);
+  --popover-blur: var(--glass-filter);
   --popover-border-width: 0.5px;
   /* Redesign accents (notifications-first popover) — status dots, the unread
      indicator, and the segmented-control fill, aliased over the --pop-*
      contract where possible. */
   --popover-status-ok: #28a745;
-  --popover-status-busy: #e6a700;
-  --popover-status-paused: #e8590c;
-  --popover-unread: #0a6cff;
+  --popover-status-busy: var(--pop-muted);
+  --popover-status-paused: var(--pop-muted);
+  --popover-unread: var(--pop-text);
   --popover-seg-track: var(--pop-hover);
   --popover-seg-active: var(--pop-bg);
   --popover-footer-button-bg: var(--pop-hover);
@@ -69,7 +69,7 @@ textarea,
   /* Native macOS segmented control (Notifications ⇄ Workspaces + the
      Settings release-channel picker). Light defaults; dark overrides live in
      the prefers-color-scheme block below. */
-  --seg-track: rgba(118, 118, 128, 0.12);
+  --seg-track: rgba(118, 118, 118, 0.12);
   --seg-track-border: rgba(0, 0, 0, 0.04);
   --seg-sel: #ffffff;
   --seg-sel-border: rgba(0, 0, 0, 0.045);
@@ -83,17 +83,17 @@ textarea,
   --menu-bg: rgba(255, 255, 255, 0.9);
   --menu-border: rgba(0, 0, 0, 0.09);
   --menu-inset: rgba(255, 255, 255, 0.85);
-  --menu-shadow: 0 16px 44px rgba(20, 22, 40, 0.2);
+  --menu-shadow: 0 16px 44px rgba(0, 0, 0, 0.2);
   /* Notification-feed glyph chips carry semantic tints for system-notice rows
      (folded conflict / update / membership notices). */
-  --glyph-action-bg: rgba(0, 122, 255, 0.12);
-  --glyph-action-fg: #007aff;
-  --glyph-action-border: rgba(0, 122, 255, 0.28);
+  --glyph-action-bg: var(--pop-hover);
+  --glyph-action-fg: var(--pop-text);
+  --glyph-action-border: var(--pop-border);
   --glyph-alert-bg: rgba(229, 72, 77, 0.13);
   --glyph-alert-fg: #e5484d;
   --glyph-alert-border: rgba(229, 72, 77, 0.28);
   /* iOS-style green switch (Settings). */
-  --switch-off: rgba(120, 120, 128, 0.28);
+  --switch-off: rgba(120, 120, 120, 0.28);
   --switch-on: #34c759;
 
   /* ---- Type scale ---------------------------------------------------- */
@@ -117,15 +117,15 @@ textarea,
   --space-6: 24px;
 
   /* ---- Radius scale ------------------------------------------------- */
-  --radius-sm: 8px; /* pills, small buttons, toggles, segments */
-  --radius-md: 10px; /* grouped buttons, larger controls */
-  --radius-lg: 14px; /* section group cards */
-  --radius-xl: 12px; /* the popover window */
+  --radius-sm: 6px; /* small buttons, toggles, segments */
+  --radius-md: 6px; /* grouped buttons and larger controls */
+  --radius-lg: 6px; /* genuine compact object cards */
+  --radius-xl: 8px; /* floating popover windows */
 }
 
 @media (prefers-reduced-transparency: reduce) {
   :root {
-    --pop-bg: #f7f7f8;
+    --pop-bg: #f7f7f7;
     --popover-bg: var(--pop-bg);
     --popover-blur: none;
   }
@@ -142,20 +142,20 @@ textarea,
 
     --seg-track: rgba(0, 0, 0, 0.22);
     --seg-track-border: rgba(255, 255, 255, 0.06);
-    --seg-sel: rgba(120, 122, 132, 0.5);
+    --seg-sel: rgba(120, 120, 120, 0.5);
     --seg-sel-border: rgba(255, 255, 255, 0.14);
     --seg-sel-shadow: 0 0.5px 1px rgba(0, 0, 0, 0.45), 0 2px 5px rgba(0, 0, 0, 0.3);
     --seg-badge: rgba(255, 255, 255, 0.16);
     --seg-badge-fg: rgba(255, 255, 255, 0.6);
     --seg-badge-sel: rgba(255, 255, 255, 0.24);
     --seg-badge-sel-fg: rgba(255, 255, 255, 0.98);
-    --menu-bg: rgba(66, 67, 72, 0.94);
+    --menu-bg: rgba(66, 66, 66, 0.94);
     --menu-border: rgba(255, 255, 255, 0.16);
     --menu-inset: rgba(255, 255, 255, 0.08);
     --menu-shadow: 0 18px 50px rgba(0, 0, 0, 0.6);
-    --glyph-action-bg: rgba(10, 132, 255, 0.2);
-    --glyph-action-fg: #0a84ff;
-    --glyph-action-border: rgba(10, 132, 255, 0.34);
+    --glyph-action-bg: var(--pop-hover);
+    --glyph-action-fg: var(--pop-text);
+    --glyph-action-border: var(--pop-border);
     --glyph-alert-bg: rgba(255, 69, 58, 0.2);
     --glyph-alert-fg: #ff453a;
     --glyph-alert-border: rgba(255, 69, 58, 0.34);
@@ -166,31 +166,123 @@ textarea,
 
 @media (prefers-color-scheme: dark) and (prefers-reduced-transparency: reduce) {
   :root {
-    --pop-bg: #262628;
+    --pop-bg: #262626;
     --popover-bg: var(--pop-bg);
   }
 }
 
-/* ─────────────────────────────────────────────────────────────────────────
-   Native macOS segmented control. Shared by the popover's Notifications ⇄
-   Workspaces toggle and the Settings release-channel picker so both read as
-   the same iOS/macOS control. Global (not component-scoped) because two
-   components render it.
-   ───────────────────────────────────────────────────────────────────────── */
+/* Explicit harness themes. `color-scheme` controls native widgets but does not
+   make `prefers-color-scheme` media queries match, so every color-bearing
+   popover semantic/control token must be bridged onto the forced attribute. */
+:root[data-force-theme='light'],
+:root[data-force-theme='dark'] {
+  --popover-bg: var(--pop-bg);
+  --popover-surface: var(--pop-hover);
+  --popover-surface-strong: var(--pop-divider);
+  --popover-border: var(--pop-border);
+  --popover-highlight: var(--pop-highlight);
+  --popover-text: var(--pop-text);
+  --popover-text-muted: var(--pop-muted);
+  --popover-text-heading: var(--pop-text);
+  --popover-primary: var(--pop-accent);
+  --popover-primary-hover: var(--pop-accent);
+  --popover-primary-active: var(--pop-accent);
+  --popover-primary-text: var(--pop-acc-fg);
+  --popover-primary-soft: var(--pop-hover);
+  --popover-focus-ring: var(--pop-focus-ring, var(--pop-accent));
+  --popover-focus-offset: var(--pop-focus-offset, 2px);
+  --popover-notice: var(--pop-muted);
+  --popover-notice-strong: var(--pop-text);
+  --popover-notice-bg: var(--pop-hover);
+  --popover-notice-border: var(--pop-border);
+  --popover-divider: var(--pop-divider);
+  --popover-action-hover: var(--pop-hover);
+  --popover-progress-track: var(--pop-hover);
+  --popover-progress-fill: var(--pop-accent);
+  --popover-blur: var(--glass-filter);
+  --popover-border-width: 0.5px;
+  --popover-status-ok: #28a745;
+  --popover-status-busy: var(--pop-muted);
+  --popover-status-paused: var(--pop-muted);
+  --popover-unread: var(--pop-text);
+  --popover-seg-track: var(--pop-hover);
+  --popover-seg-active: var(--pop-bg);
+  --popover-footer-button-bg: var(--pop-hover);
+  --glyph-action-bg: var(--pop-hover);
+  --glyph-action-fg: var(--pop-text);
+  --glyph-action-border: var(--pop-border);
+}
+
+:root[data-force-theme='light'] {
+  --popover-danger: #dc2626;
+  --popover-warning: #b45309;
+  --popover-warning-glow: rgba(180, 83, 9, 0.28);
+  --popover-success: #1f9d4d;
+  --popover-success-bg: rgba(31, 157, 77, 0.14);
+  --popover-success-border: rgba(31, 157, 77, 0.28);
+  --seg-track: rgba(118, 118, 118, 0.12);
+  --seg-track-border: rgba(0, 0, 0, 0.04);
+  --seg-sel: #ffffff;
+  --seg-sel-border: rgba(0, 0, 0, 0.045);
+  --seg-sel-shadow: 0 0.5px 1px rgba(0, 0, 0, 0.16), 0 2.5px 6px rgba(0, 0, 0, 0.12);
+  --seg-badge: rgba(0, 0, 0, 0.08);
+  --seg-badge-fg: rgba(0, 0, 0, 0.5);
+  --seg-badge-sel: rgba(0, 0, 0, 0.07);
+  --seg-badge-sel-fg: rgba(0, 0, 0, 0.6);
+  --menu-bg: rgba(255, 255, 255, 0.9);
+  --menu-border: rgba(0, 0, 0, 0.09);
+  --menu-inset: rgba(255, 255, 255, 0.85);
+  --menu-shadow: 0 16px 44px rgba(0, 0, 0, 0.2);
+  --glyph-alert-bg: rgba(229, 72, 77, 0.13);
+  --glyph-alert-fg: #e5484d;
+  --glyph-alert-border: rgba(229, 72, 77, 0.28);
+  --switch-off: rgba(120, 120, 120, 0.28);
+  --switch-on: #34c759;
+}
+
+:root[data-force-theme='dark'] {
+  --popover-danger: #ef4444;
+  --popover-warning: #f59e0b;
+  --popover-warning-glow: rgba(245, 158, 11, 0.36);
+  --popover-success: #41d870;
+  --popover-success-bg: rgba(65, 216, 112, 0.22);
+  --popover-success-border: rgba(65, 216, 112, 0.34);
+  --seg-track: rgba(0, 0, 0, 0.22);
+  --seg-track-border: rgba(255, 255, 255, 0.06);
+  --seg-sel: rgba(120, 120, 120, 0.5);
+  --seg-sel-border: rgba(255, 255, 255, 0.14);
+  --seg-sel-shadow: 0 0.5px 1px rgba(0, 0, 0, 0.45), 0 2px 5px rgba(0, 0, 0, 0.3);
+  --seg-badge: rgba(255, 255, 255, 0.16);
+  --seg-badge-fg: rgba(255, 255, 255, 0.6);
+  --seg-badge-sel: rgba(255, 255, 255, 0.24);
+  --seg-badge-sel-fg: rgba(255, 255, 255, 0.98);
+  --menu-bg: rgba(66, 66, 66, 0.94);
+  --menu-border: rgba(255, 255, 255, 0.16);
+  --menu-inset: rgba(255, 255, 255, 0.08);
+  --menu-shadow: 0 18px 50px rgba(0, 0, 0, 0.6);
+  --glyph-alert-bg: rgba(255, 69, 58, 0.2);
+  --glyph-alert-fg: #ff453a;
+  --glyph-alert-border: rgba(255, 69, 58, 0.34);
+  --switch-off: rgba(255, 255, 255, 0.18);
+  --switch-on: #30d158;
+}
+
+/* Open text selector retained for compatibility with legacy popover mounts. */
 .seg-track {
   display: flex;
-  gap: 2px;
-  padding: 2px;
-  border-radius: 8px;
-  background: var(--seg-track);
-  border: 0.5px solid var(--seg-track-border);
+  gap: 8px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
 }
 
 .seg {
   flex: 1;
   height: 25px;
   border: 0;
-  border-radius: 6.5px;
+  border-bottom: 1px solid transparent;
+  border-radius: 0;
   background: transparent;
   color: var(--pop-muted);
   font-family: inherit;
@@ -202,18 +294,20 @@ textarea,
   align-items: center;
   justify-content: center;
   gap: 6px;
-  transition: background 0.18s ease, color 0.18s ease, box-shadow 0.18s ease;
+  transition: border-color 0.18s ease, color 0.18s ease;
 }
 
 .seg:hover:not(.active) {
+  border-bottom-color: var(--pop-divider);
   color: var(--pop-text);
 }
 
 .seg.active {
+  border-bottom-color: var(--pop-text);
   color: var(--pop-text);
   font-weight: 600;
-  background: var(--seg-sel);
-  box-shadow: var(--seg-sel-shadow), inset 0 0 0 0.5px var(--seg-sel-border);
+  background: transparent;
+  box-shadow: none;
 }
 
 .seg:focus-visible {
@@ -222,8 +316,8 @@ textarea,
 }
 
 .seg-badge {
-  padding: 1.5px 5.5px;
-  border-radius: 9px;
+  padding: 0;
+  border-radius: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -232,13 +326,13 @@ textarea,
   line-height: 1;
   letter-spacing: 0;
   font-variant-numeric: tabular-nums;
-  background: var(--seg-badge);
+  background: transparent;
   color: var(--seg-badge-fg);
   transition: background 0.18s ease, color 0.18s ease;
 }
 
 .seg.active .seg-badge {
-  background: var(--seg-badge-sel);
+  background: transparent;
   color: var(--seg-badge-sel-fg);
 }
 
@@ -256,7 +350,7 @@ textarea,
   align-items: flex-start;
   gap: 9px;
   padding: 6px 8px;
-  border-radius: 7px;
+  border-radius: 0;
 }
 
 .notif-row.clickable {
@@ -269,8 +363,8 @@ textarea,
 
 .notif-row.clickable:focus-visible {
   background: var(--pop-hover);
-  outline: 1.5px solid var(--pop-focus-ring, var(--pop-accent));
-  outline-offset: -1px;
+  outline: none;
+  box-shadow: inset 0 -1px 0 var(--pop-focus-ring, var(--pop-text));
 }
 
 /* Leading chips — 24px. `.notif-avatar` is a neutral initials disc (people

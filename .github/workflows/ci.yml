@@ -49,6 +49,10 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --no-frozen-lockfile
+      - name: Release workflow contract tests
+        run: pnpm test:scripts
+      - name: App version lockstep
+        run: pnpm version:check
       - name: Typecheck (svelte-check)
         working-directory: apps/sync
         run: pnpm typecheck

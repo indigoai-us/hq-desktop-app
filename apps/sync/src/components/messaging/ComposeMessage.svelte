@@ -178,8 +178,6 @@
     justify-content: center;
     padding: 3.5rem var(--space-5) var(--space-5);
     background: color-mix(in srgb, var(--pop-bg) 48%, transparent);
-    backdrop-filter: blur(8px) saturate(1.2);
-    -webkit-backdrop-filter: blur(8px) saturate(1.2);
   }
 
   .compose-sheet {
@@ -192,8 +190,8 @@
     border-radius: var(--radius-popover);
     border: 1px solid var(--pop-border);
     background: var(--pop-bg);
-    backdrop-filter: var(--popover-blur, blur(32px) saturate(1.7));
-    -webkit-backdrop-filter: var(--popover-blur, blur(32px) saturate(1.7));
+    backdrop-filter: var(--glass-filter, blur(28px) saturate(0%));
+    -webkit-backdrop-filter: var(--glass-filter, blur(28px) saturate(0%));
     box-shadow: var(--pop-shadow), inset 0 1px 0 var(--pop-highlight);
     color: var(--fg);
     font-family: var(--font-sans);
@@ -251,15 +249,16 @@
     font-size: var(--text-base);
     line-height: 1.5;
     color: var(--muted-2);
-    background: var(--surface-raise);
-    border: 1px solid var(--border);
-    padding: var(--space-2) var(--space-3);
-    border-radius: var(--radius-sm);
+    background: transparent;
+    border: 0;
+    border-top: 1px solid var(--border);
+    padding: var(--space-2) 0 0;
+    border-radius: 0;
   }
 
   .compose-note-blocked {
-    background: var(--surface-raise);
-    border-color: var(--border-strong);
+    background: transparent;
+    border-color: var(--border);
     color: var(--red);
   }
 

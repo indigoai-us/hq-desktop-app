@@ -130,7 +130,7 @@
   .qopts { display: flex; flex-wrap: wrap; gap: 6px; }
   .opt {
     border: 1px solid var(--v4-hairline);
-    border-radius: 999px;
+    border-radius: var(--v4-radius-button);
     background: var(--v4-raised);
     color: var(--v4-text-1);
     font: inherit;

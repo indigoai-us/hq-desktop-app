@@ -131,10 +131,13 @@ describe('US-016: side pane conversation grouping', () => {
       expect(paneSource).toContain('agentActor={row.agent}');
       expect(paneSource).toContain("row.kind === 'dm' ? 'message' : 'share'");
       expect(paneSource).toContain(
-        ".qw-side-list :global(.nr[data-type='share'] .nr-icon) { color: var(--pop-accent, #6aa1ff); }",
+        ".qw-side-list :global(.nr[data-type='share'] .nr-icon) { color: var(--pop-text, #e8e8e8); }",
       );
       expect(paneSource).toContain('conversationRows');
       expect(paneSource).toContain('No conversations');
+      expect(paneSource).toContain('includeUpdates: false');
+      expect(paneSource).not.toContain('markAllNotificationsRead');
+      expect(paneSource).not.toContain("window.addEventListener('pagehide'");
     });
 
     it('NotificationRow exposes unread-count pill and type icons via data-type', () => {

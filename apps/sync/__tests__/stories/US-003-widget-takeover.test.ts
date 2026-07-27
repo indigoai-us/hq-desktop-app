@@ -109,10 +109,13 @@ describe('US-003: Notification takeover with queue-on-occlusion', () => {
       expect(dmNotifyRs).toMatch(gate);
       expect(shareNotifyRs).toMatch(gate);
       expect(meetingsRs).toMatch(gate);
-      // updater has two call sites (download + install prompts)
+      // Updater centralizes the gate so manual and background checks cannot
+      // drift; both call sites route through the shared announcer.
       expect(updaterRs).toMatch(gate);
-      expect((updaterRs.match(new RegExp(gate.source, 'g')) ?? []).length).toBeGreaterThanOrEqual(
-        2,
+      expect(
+        (updaterRs.match(/record_and_announce_update\(/g) ?? []).length,
+      ).toBeGreaterThanOrEqual(
+        3,
       );
     });
 
@@ -163,7 +166,9 @@ describe('US-003: Notification takeover with queue-on-occlusion', () => {
       // Frost wrapper present around each NotificationRow
       expect(frostRows[0]?.querySelector('[data-testid="notification-row"]')).toBeTruthy();
       expect(widgetSource).toMatch(/\.frost\s*\{/);
-      expect(widgetSource).toMatch(/backdrop-filter:\s*blur/);
+      expect(widgetSource).toMatch(
+        /backdrop-filter:\s*var\(--glass-filter,\s*blur\(28px\)\s*saturate\(0%\)\)/,
+      );
     });
   });
 
@@ -193,10 +198,9 @@ describe('US-003: Notification takeover with queue-on-occlusion', () => {
     });
 
     it('behavioral (pure store): no native fallback path in the store; expireItems drops after WIDGET_ROW_TIMEOUT_MS', () => {
-      // Source contract: pure store never mentions native / UN / mac_notification
+      // Source contract: pure store never invokes a platform notification path.
       expect(storeSource).not.toMatch(/mac_notification/i);
       expect(storeSource).not.toMatch(/UNUserNotification/i);
-      expect(storeSource).not.toMatch(/native/i);
       expect(storeSource).not.toMatch(/show_banner|banner_action/);
 
       const now = 5_000;

@@ -1,13 +1,23 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
+  import { updateSettings } from '../lib/settings-mutations';
 
   type DisplayInfo = { name: string; primary: boolean };
+
+  interface Props {
+    /** Parent Settings already owns the same get_settings failure surface. */
+    showLoadError?: boolean;
+  }
+
+  let { showLoadError = true }: Props = $props();
 
   let widgetEnabled = $state(true);
   let widgetDisplay = $state<string | null>(null);
   let displays = $state<DisplayInfo[]>([]);
   let loading = $state(true);
+  let saving = $state(false);
   let error = $state<string | null>(null);
+  let loadError = $state<string | null>(null);
 
   /** True when the stored display name is no longer among returned monitors. */
   const disconnectedDisplay = $derived(
@@ -21,6 +31,7 @@
   async function load() {
     loading = true;
     error = null;
+    loadError = null;
     try {
       const [settings, displayList] = await Promise.all([
         invoke<{
@@ -33,14 +44,15 @@
       widgetDisplay = settings.widgetDisplay ?? null;
       displays = displayList;
     } catch (err) {
-      error = String(err);
+      loadError = String(err);
     } finally {
       loading = false;
     }
   }
 
   /**
-   * Read-modify-write so unrelated menubar.json keys are never clobbered.
+   * The shared mutation queue reads and merges the latest preferences so this
+   * widget patch cannot clobber SettingsPage or VersionPopout changes.
    * `apply_widget_settings` must run after save so the window closes/creates/
    * re-anchors immediately (escape hatch: OFF restores native notifications).
    *
@@ -50,10 +62,7 @@
    */
   async function persist(partial: { widgetEnabled?: boolean; widgetDisplay?: string | null }) {
     try {
-      const prefs = await invoke<Record<string, unknown>>('get_settings');
-      await invoke('save_settings', {
-        prefs: { ...prefs, widgetEnabled, widgetDisplay, ...partial },
-      });
+      await updateSettings(partial);
     } catch (err) {
       throw { phase: 'save' as const, err };
     }
@@ -81,8 +90,10 @@
   }
 
   async function handleToggle() {
+    if (loading || saving) return;
     const previous = widgetEnabled;
     widgetEnabled = !widgetEnabled;
+    saving = true;
     error = null;
     try {
       await persist({ widgetEnabled });
@@ -97,13 +108,17 @@
         await load();
         error = msg;
       }
+    } finally {
+      saving = false;
     }
   }
 
   async function handleDisplayChange(event: Event) {
+    if (loading || saving) return;
     const previous = widgetDisplay;
     const value = (event.currentTarget as HTMLSelectElement).value;
     widgetDisplay = value === '' ? null : value;
+    saving = true;
     error = null;
     try {
       await persist({ widgetDisplay });
@@ -118,6 +133,8 @@
         await load();
         error = msg;
       }
+    } finally {
+      saving = false;
     }
   }
 </script>
@@ -133,6 +150,7 @@
       class="toggle"
       class:active={widgetEnabled}
       onclick={handleToggle}
+      disabled={loading || saving}
       role="switch"
       aria-checked={widgetEnabled}
       aria-label="Desktop widget"
@@ -154,6 +172,7 @@
         aria-label="Widget display"
         value={widgetDisplay ?? ''}
         onchange={handleDisplayChange}
+        disabled={loading || saving}
       >
         <option value="">Primary (default)</option>
         {#each displays as display (display.name)}
@@ -170,6 +189,8 @@
 
   {#if error}
     <p class="error-line" role="alert">{error}</p>
+  {:else if loadError && showLoadError}
+    <p class="error-line" role="alert">{loadError}</p>
   {/if}
 </div>
 
@@ -212,32 +233,31 @@
     line-height: 1.3;
   }
 
-  /* macOS-style switch — pattern from Settings.svelte, theme-agnostic colors */
+  /* Match the compact semantic switch used by the surrounding Settings page. */
   .toggle {
     position: relative;
-    width: 36px;
-    height: 20px;
+    width: 26px;
+    height: 16px;
     padding: 0;
-    background: light-dark(rgba(0, 0, 0, 0.1), rgba(255, 255, 255, 0.1));
-    border: 1px solid light-dark(rgba(0, 0, 0, 0.12), rgba(255, 255, 255, 0.12));
-    border-radius: 10px;
+    background: var(--v4-control-bg, light-dark(rgba(0, 0, 0, 0.1), rgba(255, 255, 255, 0.1)));
+    border: 0;
+    border-radius: var(--v4-radius-pill, 999px);
     cursor: pointer;
     transition: background-color 0.2s ease, border-color 0.2s ease;
     flex-shrink: 0;
   }
 
   .toggle.active {
-    background: light-dark(#1d1d1f, #ffffff);
-    border-color: light-dark(#1d1d1f, #ffffff);
+    background: var(--v4-ok, #30c866);
   }
 
   .toggle-knob {
     position: absolute;
     top: 2px;
     left: 2px;
-    width: 14px;
-    height: 14px;
-    background: #ffffff;
+    width: 12px;
+    height: 12px;
+    background: var(--c-bg, light-dark(#ffffff, #111111));
     border-radius: 50%;
     transition: transform 0.2s ease;
     pointer-events: none;
@@ -245,9 +265,20 @@
   }
 
   .toggle.active .toggle-knob {
-    transform: translateX(16px);
-    background: light-dark(#ffffff, #111113);
+    transform: translateX(10px);
     box-shadow: none;
+  }
+
+  .toggle:focus-visible,
+  .display-picker:focus-visible {
+    outline: 2px solid var(--v4-focus-ring, var(--v4-control-border, currentColor));
+    outline-offset: var(--v4-focus-offset, 2px);
+  }
+
+  .toggle:disabled,
+  .display-picker:disabled {
+    opacity: 0.5;
+    cursor: default;
   }
 
   .display-picker {
@@ -259,7 +290,7 @@
     background: light-dark(rgba(0, 0, 0, 0.04), rgba(255, 255, 255, 0.08));
     color: light-dark(rgba(0, 0, 0, 0.88), rgba(255, 255, 255, 0.92));
     border: 1px solid light-dark(rgba(0, 0, 0, 0.1), rgba(255, 255, 255, 0.1));
-    border-radius: 9px;
+    border-radius: var(--radius-field, 6px);
     cursor: pointer;
     appearance: none;
     -webkit-appearance: none;
@@ -269,8 +300,7 @@
     flex-shrink: 0;
   }
 
-  .display-picker:focus {
-    outline: none;
+  .display-picker:focus-visible {
     border-color: light-dark(rgba(0, 0, 0, 0.22), rgba(255, 255, 255, 0.22));
   }
 

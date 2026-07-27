@@ -47,12 +47,12 @@
     onenabledchange,
   }: Props = $props();
 
-  let enabledState = $state(syncEnabled);
+  let enabledState = $state(true);
   let mode = $state<'all' | 'shared' | 'custom' | null>(null);
   let saving = $state(false);
   let modeError = $state<string | null>(null);
 
-  $effect(() => {
+  $effect.pre(() => {
     enabledState = syncEnabled;
   });
 
@@ -140,6 +140,16 @@
   async function setMode(next: 'all' | 'shared', event: MouseEvent) {
     event.stopPropagation();
     if (!cloudReachable || saving || mode === next) return;
+    // Reducing an All footprint can remove already-downloaded files that are
+    // outside the member's Shared scope. Make that local consequence explicit
+    // before writing the preference; unsynced edits remain protected by the
+    // backend and are called out so this does not sound like data loss.
+    if (mode === 'all' && next === 'shared') {
+      const confirmed = window.confirm(
+        `Switch ${label ?? slug} to Shared? Files that are not shared with you may be removed from this Mac after the next sync. Unsynced edits are preserved.`,
+      );
+      if (!confirmed) return;
+    }
     const prev = mode;
     saving = true;
     modeError = null;
@@ -229,13 +239,11 @@
   .sidebar-sync-mode {
     display: inline-flex;
     align-items: center;
-    gap: 1px;
-    padding: 2px;
-    border-radius: var(--v4-radius-pill);
-    background: var(--v4-chrome);
-    backdrop-filter: blur(8px);
-    -webkit-backdrop-filter: blur(8px);
-    border: 1px solid var(--v4-hairline);
+    gap: 4px;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
     flex-shrink: 0;
     font-family: var(--font-sans);
   }
@@ -272,17 +280,18 @@
   .sidebar-sync-mode-opt {
     appearance: none;
     border: 0;
+    border-bottom: 1px solid transparent;
     background: transparent;
     color: var(--v4-text-3);
     font: inherit;
     font-size: var(--text-sm);
     font-weight: 400;
     line-height: 1;
-    padding: 2px 7px;
-    border-radius: var(--v4-radius-pill);
+    padding: 3px 4px 2px;
+    border-radius: 0;
     cursor: pointer;
     transition:
-      background-color 0.12s ease,
+      border-color 0.12s ease,
       color 0.12s ease;
   }
 
@@ -291,8 +300,9 @@
   }
 
   .sidebar-sync-mode-opt.active {
-    background: var(--v4-primary-bg);
-    color: var(--v4-primary-fg);
+    border-bottom-color: var(--v4-text-2);
+    background: transparent;
+    color: var(--v4-text-1);
   }
 
   .sidebar-sync-mode-opt:disabled {
@@ -315,7 +325,7 @@
   }
 
   .sidebar-sync-mode-custom {
-    border-radius: var(--v4-radius-pill);
+    border-radius: 0;
   }
 
   .sidebar-sync-mode-error {

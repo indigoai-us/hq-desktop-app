@@ -1,4 +1,5 @@
 import {
+  projectIdentity,
   saveLocalProjectStatus,
   saveLocalStoryPasses,
 } from './local-projects';
@@ -17,21 +18,27 @@ import type { Project } from './projects-model';
 // IMMEDIATELY (optimistic paint), fires the write, and on failure ROLLS BACK the
 // overlay to the prior value and surfaces a clear error string.
 //
-// Like company-store these overlays are intentionally NON-reactive plain Maps:
-// the page owns its own $state for the rendered value and reads/writes the
-// overlay imperatively from its handler, so a background concern can never
-// retrigger an effect into a write loop. The store is pure logic + a tiny
-// override cache — no Svelte runes — so it stays trivially unit-testable.
+// The maps keep the queue logic unit-testable; one rune-backed version signal
+// makes their public read methods reactive for whichever detail-view instance
+// is currently mounted. Per-board queues keep rapid navigation from issuing
+// overlapping read-modify-write operations against one company board, while
+// pending and optimistic state remain isolated by stable project identity.
 // ---------------------------------------------------------------------------
 
-/** Optimistically-applied status overrides, keyed by `${company}:${id}`. */
+/** Invalidates reactive readers whenever exposed status state changes. */
+let statusStateVersion = $state(0);
+/** Optimistically-applied status overrides, keyed by stable project identity. */
 const statusOverride = new Map<string, string>();
+/** Last status known to have reached disk, used for ordered rollback. */
+const committedStatus = new Map<string, string>();
+/** Number of queued/running writes for an identity. */
+const statusPendingCount = new Map<string, number>();
+/** Settled tail of each company board's write queue. */
+const statusWriteTail = new Map<string, Promise<void>>();
+/** Latest optimistic mutation revision for rollback ownership. */
+const statusRevision = new Map<string, number>();
 /** Optimistically-applied story-passes overrides, keyed by `${prdPath}:${id}`. */
 const passesOverride = new Map<string, boolean>();
-
-function projectKey(company: string, projectId: string): string {
-  return `${company}:${projectId}`;
-}
 
 function storyKey(prdPath: string, storyId: string): string {
   return `${prdPath}:${storyId}`;
@@ -51,7 +58,7 @@ export function boardPathFor(project: Pick<Project, 'company'>): string | null {
 
 export interface StatusWriteResult {
   ok: boolean;
-  /** The value the caller should now show (new on success, previous on rollback). */
+  /** The value the caller should show (new on success, last committed on rollback). */
   status: string;
   /** A clear, user-facing error string when `ok === false`. */
   error: string | null;
@@ -60,17 +67,16 @@ export interface StatusWriteResult {
 /**
  * Optimistically set a project's status and persist it.
  *
- * The caller updates its rendered value to `next` BEFORE awaiting this (the
- * optimistic paint). On success the overlay records `next`; on failure the
- * overlay is rolled back to `previous` and the returned result tells the caller
- * to restore `previous` and show `error`.
+ * The overlay records `next` before persistence starts. Writes for the same
+ * stable identity run in call order; on failure the latest optimistic mutation
+ * rolls back to the last value that reached disk.
  */
 export async function setProjectStatus(
-  project: Pick<Project, 'id' | 'company'>,
+  project: Pick<Project, 'id' | 'company' | 'prdPath'>,
   previous: string,
   next: string,
 ): Promise<StatusWriteResult> {
-  const key = projectKey(project.company, project.id);
+  const key = projectIdentity(project);
   const boardPath = boardPathFor(project);
   if (!boardPath) {
     return {
@@ -80,21 +86,51 @@ export async function setProjectStatus(
     };
   }
 
-  // Optimistic overlay first — a concurrent read sees the new value immediately.
-  statusOverride.set(key, next);
+  if (!committedStatus.has(key)) committedStatus.set(key, previous);
+  const revision = (statusRevision.get(key) ?? 0) + 1;
+  statusRevision.set(key, revision);
 
+  // Optimistic overlay and pending state are visible before the queued write.
+  statusOverride.set(key, next);
+  statusPendingCount.set(key, (statusPendingCount.get(key) ?? 0) + 1);
+  statusStateVersion += 1;
+
+  const predecessor = statusWriteTail.get(boardPath) ?? Promise.resolve();
+  const operation = predecessor.then(async (): Promise<StatusWriteResult> => {
+    try {
+      await saveLocalProjectStatus(boardPath, project.id, project.prdPath || null, next);
+      committedStatus.set(key, next);
+      return { ok: true, status: next, error: null };
+    } catch (err) {
+      const rollbackStatus = committedStatus.get(key) ?? previous;
+      // Do not let an older failed write clobber a newer queued optimistic value.
+      if (statusRevision.get(key) === revision) {
+        statusOverride.set(key, rollbackStatus);
+        statusStateVersion += 1;
+      }
+      console.error('set_local_project_status failed:', err);
+      return {
+        ok: false,
+        status: rollbackStatus,
+        error: 'Could not save the status change. Please try again.',
+      };
+    }
+  });
+  const settledTail = operation.then(
+    () => undefined,
+    () => undefined,
+  );
+  statusWriteTail.set(boardPath, settledTail);
   try {
-    await saveLocalProjectStatus(boardPath, project.id, next);
-    return { ok: true, status: next, error: null };
-  } catch (err) {
-    // Roll back to the prior value and surface a clear error.
-    statusOverride.set(key, previous);
-    console.error('set_local_project_status failed:', err);
-    return {
-      ok: false,
-      status: previous,
-      error: 'Could not save the status change. Please try again.',
-    };
+    return await operation;
+  } finally {
+    const remaining = (statusPendingCount.get(key) ?? 1) - 1;
+    if (remaining > 0) statusPendingCount.set(key, remaining);
+    else statusPendingCount.delete(key);
+    if (statusWriteTail.get(boardPath) === settledTail) {
+      statusWriteTail.delete(boardPath);
+    }
+    statusStateVersion += 1;
   }
 }
 
@@ -129,8 +165,13 @@ export async function setStoryPasses(
 
 /** Read surface — the last optimistically-applied overlay, if any. */
 export const projectsStore = {
-  statusOverride(company: string, projectId: string): string | null {
-    return statusOverride.get(projectKey(company, projectId)) ?? null;
+  statusOverride(project: Pick<Project, 'id' | 'company' | 'prdPath'>): string | null {
+    void statusStateVersion;
+    return statusOverride.get(projectIdentity(project)) ?? null;
+  },
+  statusPending(project: Pick<Project, 'id' | 'company' | 'prdPath'>): boolean {
+    void statusStateVersion;
+    return (statusPendingCount.get(projectIdentity(project)) ?? 0) > 0;
   },
   passesOverride(prdPath: string, storyId: string): boolean | null {
     const v = passesOverride.get(storyKey(prdPath, storyId));
@@ -142,6 +183,11 @@ export const projectsStore = {
   /** Test-only reset of the overlays between runs. */
   _reset(): void {
     statusOverride.clear();
+    committedStatus.clear();
+    statusPendingCount.clear();
+    statusWriteTail.clear();
+    statusRevision.clear();
     passesOverride.clear();
+    statusStateVersion += 1;
   },
 };

@@ -59,4 +59,18 @@ describe('desktop-alt Messages catch-up digest', () => {
     // No purple accent.
     expect(style).not.toMatch(/var\(--accent/);
   });
+
+  it('keeps the digest wrapper and ranked items open and divider-led', () => {
+    const wrapper = catchUp.match(/\.catch-up\s*\{([\s\S]*?)\}/)?.[1] ?? '';
+    const card = catchUp.match(/\.ranked-card\s*\{([\s\S]*?)\}/)?.[1] ?? '';
+
+    expect(wrapper).toContain('padding: 0');
+    expect(wrapper).toContain('border: 0');
+    expect(wrapper).toContain('border-radius: 0');
+    expect(wrapper).toContain('background: transparent');
+    expect(card).toContain('border: 0');
+    expect(card).toContain('border-top: 1px solid var(--border)');
+    expect(card).toContain('border-radius: 0');
+    expect(card).toContain('background: transparent');
+  });
 });

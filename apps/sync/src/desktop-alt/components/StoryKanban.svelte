@@ -184,11 +184,11 @@
 
   .view-toggle {
     display: inline-flex;
-    gap: 2px;
-    padding: 2px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-button);
-    background: var(--v4-control-faint);
+    gap: var(--v4-space-2);
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
   }
 
   .toggle-segment {
@@ -196,24 +196,27 @@
     align-items: center;
     padding: var(--v4-space-1) var(--v4-space-3);
     border: 0;
-    border-radius: calc(var(--v4-radius-button) - 2px);
+    border-bottom: 1px solid transparent;
+    border-radius: 0;
     background: transparent;
     color: var(--v4-text-2);
     font-size: var(--type-body, var(--text-base));
     font-weight: 600;
     cursor: pointer;
     transition:
-      background 140ms ease,
+      border-color 140ms ease,
       color 140ms ease;
   }
 
   .toggle-segment:hover {
+    border-bottom-color: var(--v4-rowline);
     color: var(--v4-text-1);
   }
 
   .toggle-segment.is-active {
-    background: var(--v4-primary-bg);
-    color: var(--v4-primary-fg);
+    border-bottom-color: var(--v4-text-2);
+    background: transparent;
+    color: var(--v4-text-1);
   }
 
   .toggle-segment:focus-visible {
@@ -282,7 +285,7 @@
   }
 
   .status-dot[data-column='in-progress'] {
-    background: var(--v4-warn);
+    background: var(--v4-text-2);
   }
 
   .status-dot[data-column='complete'] {
@@ -347,8 +350,9 @@
     align-items: center;
     justify-content: center;
     padding: var(--v4-space-5);
-    border: 1px dashed var(--v4-hairline);
+    border: 0;
     border-radius: 0;
+    background: transparent;
   }
 
   .column-empty span {

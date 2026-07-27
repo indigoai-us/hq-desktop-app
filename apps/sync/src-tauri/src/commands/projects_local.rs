@@ -61,13 +61,14 @@ pub async fn get_company_crm_projection(company_slug: String) -> Result<serde_js
 pub async fn set_local_project_status(
     board_path: String,
     project_id: String,
+    prd_path: Option<String>,
     status: String,
 ) -> Result<(), String> {
     if !crate::util::feature_gate::desktop_features_enabled().await {
         return Err("projects writer requires a signed-in user".to_string());
     }
     let hq = resolve_hq_folder();
-    write_project_status(&hq, &board_path, &project_id, &status)
+    write_project_status(&hq, &board_path, &project_id, prd_path.as_deref(), &status)
 }
 
 #[tauri::command]

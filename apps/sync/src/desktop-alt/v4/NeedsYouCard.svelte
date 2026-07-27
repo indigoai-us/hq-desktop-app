@@ -10,8 +10,8 @@
    * text actions), and an optional extra region (the error card's collapsible
    * "Technical details" inset renders through the snippet).
    *
-   * Tone tints the border at ~0.3 alpha — allowed ONLY on needs-attention /
-   * error cards per SPEC section 2.
+   * Rows stay open and neutral. Tone is communicated by the section status and
+   * action copy, never by a colored card edge or partial border.
    */
   interface Props {
     card: HomeCardModel;
@@ -52,19 +52,17 @@
 
 <style>
   .v4-card {
-    padding: 12px 14px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-card);
-    background: var(--v4-raised);
-    box-shadow: var(--v4-shadow-card);
+    padding: 12px 0;
+    border: 0;
+    border-top: 1px solid var(--v4-rowline);
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
   }
 
-  .v4-card.warn {
-    border-color: color-mix(in srgb, var(--v4-warn) 36%, var(--v4-hairline));
-  }
-
+  .v4-card.warn,
   .v4-card.error {
-    border-color: color-mix(in srgb, var(--v4-error) 36%, var(--v4-hairline));
+    border-color: var(--v4-rowline);
   }
 
   .v4-card-row {

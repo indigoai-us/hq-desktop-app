@@ -445,9 +445,10 @@
           <!-- Injection flags surfaced prominently. -->
           {#if flagList.length > 0}
             <div class="injection-banner" data-testid="moderation-injection-banner">
-              ⚠ {flagList.length} potential prompt-injection
+              <span class="warning-dot" aria-hidden="true"></span>
+              <span>{flagList.length} potential prompt-injection
               {flagList.length === 1 ? 'flag' : 'flags'} in the instructions —
-              read carefully before approving.
+              read carefully before approving.</span>
             </div>
           {/if}
 
@@ -476,7 +477,7 @@
                     <span
                       class="doc-path-badge"
                       data-testid="moderation-init-prompt-badge"
-                      title="The post-install setup prompt handed to users to paste into an agent">⚠ setup prompt</span>
+                      title="The post-install setup prompt handed to users to paste into an agent">setup prompt</span>
                   {/if}
                 </p>
                 <pre
@@ -579,7 +580,7 @@
                   <span class="row-name">{item.name}</span>
                   <span class="row-ver">v{item.version}</span>
                   {#if item.injectionScan.length > 0}
-                    <span class="row-flag" data-testid="moderation-row-flag" title="prompt-injection flags">⚠ {item.injectionScan.length}</span>
+                    <span class="row-flag" data-testid="moderation-row-flag" title="prompt-injection flags"><span class="warning-dot" aria-hidden="true"></span>{item.injectionScan.length}</span>
                   {/if}
                 </span>
                 <span class="row-sub">
@@ -827,33 +828,36 @@
     flex-direction: column;
     gap: var(--v4-space-2);
     min-width: 0;
-    padding: var(--v4-space-4);
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-card);
-    background: var(--v4-raised);
-    box-shadow: var(--v4-shadow-card);
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
   }
 
-  .section.locked {
-    border-style: dashed;
+  .section + .section {
+    margin-top: var(--v4-space-3);
+    padding-top: var(--v4-space-5);
+    border-top: 1px solid var(--v4-hairline);
   }
 
   /* Sub-view toggle (Packs | Requests) */
   .subnav {
     display: flex;
-    gap: var(--v4-space-1);
-    padding: 3px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-field);
-    background: var(--v4-raised);
+    gap: var(--v4-space-4);
+    padding: 0;
+    border: 0;
+    border-bottom: 1px solid var(--v4-hairline);
+    border-radius: 0;
+    background: transparent;
     align-self: flex-start;
   }
 
   .subnav-tab {
-    height: 26px;
-    padding: 0 var(--v4-space-3);
+    height: 30px;
+    padding: 0;
     border: none;
-    border-radius: var(--v4-radius-button);
+    border-radius: 0;
     background: transparent;
     color: var(--v4-text-2);
     font: inherit;
@@ -870,8 +874,9 @@
   }
 
   .subnav-tab.active {
-    background: var(--v4-control-faint);
+    background: transparent;
     color: var(--v4-text-1);
+    box-shadow: inset 0 -1px 0 var(--v4-text-1);
   }
 
   .subnav-tab:focus-visible {
@@ -884,10 +889,10 @@
     display: flex;
     flex-direction: column;
     gap: var(--v4-space-1);
-    padding: var(--v4-space-3);
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-field);
-    background: var(--v4-raised);
+    padding: var(--v4-space-3) 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
   }
 
   .request-head {
@@ -985,10 +990,10 @@
      state — muted, subtle bordered box, not the loud `.result.fail` red. */
   .queue-note {
     margin: var(--v4-space-1) 0 0;
-    padding: var(--v4-space-2) var(--v4-space-3);
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-field);
-    background: var(--v4-raised);
+    padding: var(--v4-space-2) 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
     color: var(--v4-text-2);
     font-size: var(--text-base);
     line-height: 18px;
@@ -1011,15 +1016,19 @@
     gap: var(--v4-space-1);
   }
 
+  .queue-list > li + li {
+    border-top: 1px solid var(--v4-hairline);
+  }
+
   .queue-row {
     width: 100%;
     display: flex;
     flex-direction: column;
     gap: 2px;
     padding: var(--v4-space-2) var(--v4-space-3);
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-field);
-    background: var(--v4-raised);
+    border: 0;
+    border-radius: 0;
+    background: transparent;
     color: var(--v4-text-1);
     font: inherit;
     text-align: left;
@@ -1027,7 +1036,7 @@
   }
 
   .queue-row:hover {
-    border-color: var(--v4-control-border);
+    background: var(--v4-control-faint);
   }
 
   .row-main {
@@ -1047,10 +1056,21 @@
   }
 
   .row-flag {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--v4-space-1);
     margin-left: auto;
-    color: var(--v4-warn);
+    color: var(--v4-text-3);
     font-size: var(--text-micro);
     font-weight: 600;
+  }
+
+  .warning-dot {
+    width: 5px;
+    height: 5px;
+    flex: 0 0 auto;
+    border-radius: var(--v4-radius-pill);
+    background: var(--v4-warn);
   }
 
   .row-sub {
@@ -1106,10 +1126,11 @@
     display: flex;
     flex-direction: column;
     gap: var(--v4-space-1);
-    padding: var(--v4-space-3);
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-field);
-    background: var(--v4-raised);
+    padding: var(--v4-space-3) 0 0;
+    border: 0;
+    border-top: 1px solid var(--v4-hairline);
+    border-radius: 0;
+    background: transparent;
     min-width: 0;
   }
 
@@ -1152,11 +1173,11 @@
   /* Monospace micro-label flagging the init-prompt doc as elevated-risk. */
   .doc-path-badge {
     margin-left: var(--v4-space-1);
-    padding: 0 var(--v4-space-1);
-    border: 1px solid var(--v4-warn);
-    border-radius: var(--v4-radius-button);
-    background: color-mix(in srgb, var(--v4-warn) 14%, transparent);
-    color: var(--v4-warn);
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: var(--v4-text-3);
     font-size: var(--text-micro);
     font-weight: 600;
     letter-spacing: 0.02em;
@@ -1165,10 +1186,11 @@
   /* Elevated-risk callout above the init-prompt doc text. */
   .init-prompt-banner {
     margin-top: var(--v4-space-1);
-    padding: var(--v4-space-2) var(--v4-space-3);
-    border: 1px solid var(--v4-warn);
-    border-radius: var(--v4-radius-field);
-    background: color-mix(in srgb, var(--v4-warn) 12%, transparent);
+    padding: var(--v4-space-2) 0;
+    border: 0;
+    border-top: 1px solid var(--v4-rowline);
+    border-radius: 0;
+    background: transparent;
     color: var(--v4-text-1);
     font-size: var(--text-micro);
     line-height: 16px;
@@ -1177,10 +1199,11 @@
   .init-prompt-tag {
     display: inline-block;
     margin-right: var(--v4-space-2);
-    padding: 0 var(--v4-space-1);
-    border-radius: var(--v4-radius-button);
-    background: var(--v4-warn);
-    color: var(--v4-primary-bg);
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: var(--v4-text-3);
     font-size: var(--text-micro);
     font-weight: 600;
     letter-spacing: 0.04em;
@@ -1189,14 +1212,14 @@
 
   /* The init-prompt text block gets a warm hairline so it reads as elevated. */
   .doc-text.init-prompt {
-    border-color: var(--v4-warn);
+    border-color: var(--v4-hairline);
   }
 
   .doc-text {
     margin: 0;
     padding: var(--v4-space-2);
     border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-field);
+    border-radius: var(--v4-radius-structure);
     background: var(--v4-control-faint);
     color: var(--v4-text-1);
     font-family: var(--font-mono);
@@ -1209,17 +1232,22 @@
   }
 
   .flagged {
-    background: color-mix(in srgb, var(--v4-warn) 38%, transparent);
+    background: transparent;
     color: var(--v4-text-1);
-    border-radius: var(--v4-radius-button);
     padding: 0 1px;
+    text-decoration: underline dotted var(--v4-warn);
+    text-underline-offset: 2px;
   }
 
   .injection-banner {
-    padding: var(--v4-space-2) var(--v4-space-3);
-    border: 1px solid var(--v4-warn);
-    border-radius: var(--v4-radius-field);
-    background: color-mix(in srgb, var(--v4-warn) 12%, transparent);
+    display: flex;
+    align-items: baseline;
+    gap: var(--v4-space-2);
+    padding: var(--v4-space-2) 0;
+    border: 0;
+    border-top: 1px solid var(--v4-rowline);
+    border-radius: 0;
+    background: transparent;
     color: var(--v4-text-1);
     font-size: var(--text-micro);
     font-weight: 600;
@@ -1260,15 +1288,27 @@
 
   .approve {
     flex: 1 1 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--v4-space-2);
     height: 34px;
-    border: 1px solid var(--v4-ok);
+    border: 1px solid var(--v4-control-border);
     border-radius: var(--v4-radius-button);
-    background: var(--v4-ok);
-    color: var(--v4-primary-bg);
+    background: var(--v4-primary-bg);
+    color: var(--v4-primary-fg);
     font: inherit;
     font-weight: 600;
     cursor: pointer;
     transition: filter 140ms ease;
+  }
+
+  .approve::before {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--v4-ok);
+    content: '';
   }
 
   .approve:hover:not(:disabled) {
@@ -1355,10 +1395,11 @@
 
   .limitation-note {
     margin: var(--v4-space-1) 0 0;
-    padding: var(--v4-space-2) var(--v4-space-3);
-    border: 1px solid color-mix(in srgb, var(--v4-warn) 34%, transparent);
-    border-radius: var(--v4-radius-field);
-    background: color-mix(in srgb, var(--v4-warn) 8%, transparent);
+    padding: var(--v4-space-2) 0;
+    border: 0;
+    border-top: 1px solid var(--v4-rowline);
+    border-radius: 0;
+    background: transparent;
     color: var(--v4-text-2);
     font-size: var(--text-micro);
     line-height: 16px;
@@ -1374,14 +1415,15 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    gap: var(--v4-space-2);
     margin-top: var(--v4-space-2);
     width: 100%;
     min-height: 32px;
     padding: 0 var(--v4-space-3);
-    border: 1px solid var(--v4-warn);
+    border: 1px solid var(--v4-control-border);
     border-radius: var(--v4-radius-button);
-    background: color-mix(in srgb, var(--v4-warn) 16%, transparent);
-    color: var(--v4-warn);
+    background: var(--v4-control-faint);
+    color: var(--v4-text-1);
     font-family: var(--font-sans);
     font-size: var(--text-base);
     font-weight: 600;
@@ -1392,8 +1434,16 @@
       filter 140ms ease;
   }
 
+  .yank-button::before {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--v4-warn);
+    content: '';
+  }
+
   .yank-button:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--v4-warn) 24%, transparent);
+    background: var(--v4-active-row);
   }
 
   .yank-button:focus-visible {
@@ -1408,10 +1458,11 @@
 
   .confirm-row {
     margin-top: var(--v4-space-2);
-    padding: var(--v4-space-3);
-    border: 1px solid color-mix(in srgb, var(--v4-warn) 50%, transparent);
-    border-radius: var(--v4-radius-field);
-    background: color-mix(in srgb, var(--v4-warn) 10%, transparent);
+    padding: var(--v4-space-2) 0;
+    border: 0;
+    border-top: 1px solid var(--v4-rowline);
+    border-radius: 0;
+    background: transparent;
   }
 
   .confirm-text {
@@ -1427,14 +1478,26 @@
 
   .confirm-yank {
     flex: 1 1 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--v4-space-2);
     height: 32px;
-    border: 1px solid var(--v4-warn);
+    border: 1px solid var(--v4-control-border);
     border-radius: var(--v4-radius-button);
-    background: var(--v4-warn);
-    color: var(--v4-primary-bg);
+    background: var(--v4-primary-bg);
+    color: var(--v4-primary-fg);
     font: inherit;
     font-weight: 600;
     cursor: pointer;
+  }
+
+  .confirm-yank::before {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--v4-warn);
+    content: '';
   }
 
   .confirm-yank:disabled {
@@ -1465,7 +1528,7 @@
   }
 
   .result.fail {
-    color: var(--v4-warn);
+    color: var(--v4-error);
     font-weight: 600;
     overflow-wrap: anywhere;
   }
@@ -1484,10 +1547,10 @@
 
   .result-note {
     margin: 0;
-    padding: var(--v4-space-2) var(--v4-space-3);
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-field);
-    background: var(--v4-raised);
+    padding: var(--v4-space-2) 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
     color: var(--v4-text-2);
     font-size: var(--text-micro);
     line-height: 16px;

@@ -15,6 +15,8 @@
 //!   `open_messages_window`     — create/focus the window (hidden until ready)
 //!   `messages_window_ready`    — renderer→Rust: show + focus the window, reset
 //!                                the unread-DM badge
+//!   `mark_messages_viewed`     — embedded renderer→Rust: reset the unread-DM
+//!                                badge without touching the native window
 //!   `list_contacts`            — `GET /v1/notify/contacts` (people the caller
 //!                                can DM: connections + company teammates)
 //!   `list_company_members`     — `GET /v1/notify/contacts?companyUid=…` (the
@@ -38,7 +40,7 @@
 //!   per-command fetch results, mirroring the `DM_NOTIFY_*` code shape.
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 use crate::commands::cognito;
 use crate::commands::dm_notify;
@@ -49,9 +51,9 @@ use crate::util::logfile::log;
 #[allow(unused_imports)]
 pub use hq_desktop_core::messages::{
     build_create_payload, build_group_payload, build_reaction_payload, build_reactions_url,
-    esc_seg, invite_member_payload, Channel, ChannelDetail, ChannelMember,
-    ChannelMembersResponse, ChannelMessage, ChannelParticipant, ChannelsResponse, Contact,
-    ContactsResponse, MessageReactions, ReactionAggregate, RequestsResponse, UnreadSummary,
+    esc_seg, invite_member_payload, Channel, ChannelDetail, ChannelMember, ChannelMembersResponse,
+    ChannelMessage, ChannelParticipant, ChannelsResponse, Contact, ContactsResponse,
+    MessageReactions, ReactionAggregate, RequestsResponse, UnreadSummary,
 };
 
 /// POST `url` with the bearer + JSON `payload`, parsing the response body into
@@ -181,15 +183,24 @@ pub async fn open_messages_window(
 #[tauri::command]
 pub fn take_pending_messages_target(app: AppHandle) -> Option<MessagesTarget> {
     let state = app.try_state::<PendingMessagesTarget>()?;
-    let target = state
-        .0
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .take();
+    let target = state.0.lock().unwrap_or_else(|p| p.into_inner()).take();
     target
 }
 
-/// Tauri command: called by MessagesShell.svelte once its listeners are
+fn mark_messages_viewed_inner<R: Runtime>(app: &AppHandle<R>) {
+    dm_notify::reset_unread_dms(app);
+}
+
+/// Tauri command for the Messages shell embedded in the main desktop window.
+/// The user is looking at their messages, so clear the unread-DM badge without
+/// showing or focusing the separate native Messages window.
+#[tauri::command]
+pub fn mark_messages_viewed(app: AppHandle) {
+    mark_messages_viewed_inner(&app);
+    log(LOG_TAG, "MESSAGES_VIEWED");
+}
+
+/// Tauri command: called by the standalone MessagesShell once its listeners are
 /// mounted. Shows + focuses the window and resets the unread-DM badge (the user
 /// is now looking at their messages). Mirrors `dm_detail_window_ready`.
 #[tauri::command]
@@ -199,7 +210,7 @@ pub async fn messages_window_ready(app: AppHandle) -> Result<(), String> {
         let _ = window.set_focus();
     }
     // Opening the Messages window clears the unread badge.
-    dm_notify::reset_unread_dms(&app);
+    mark_messages_viewed_inner(&app);
     // Deliver any pending deep-link conversation target now that the shell's
     // listeners are mounted.
     emit_pending_target(&app);
@@ -859,4 +870,22 @@ pub async fn fetch_reactions(
         ),
     );
     Ok(out.reactions)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+    use tauri::Manager;
+
+    #[test]
+    fn mark_messages_viewed_resets_unread_state() {
+        let app = tauri::test::mock_app();
+        assert!(app.manage(dm_notify::UnreadDmState(Mutex::new(7))));
+        let handle = app.handle().clone();
+
+        mark_messages_viewed_inner(&handle);
+
+        assert_eq!(dm_notify::current_unread_dms(&handle), 0);
+    }
 }

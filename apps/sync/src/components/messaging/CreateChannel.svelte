@@ -11,6 +11,7 @@
   // On success the parent is handed the created Channel so it can drop it into
   // the rail (under Personal or the right company header) and open it.
   import { invoke } from '@tauri-apps/api/core';
+  import { untrack } from 'svelte';
   import RecipientPicker from './RecipientPicker.svelte';
   import type { SelectedRecipient } from '../../lib/recipientPicker';
   import type { Channel } from '../../lib/channels';
@@ -37,7 +38,9 @@
   }
 
   // "personal" or a companyUid.
-  let scopeValue = $state<string>(presetCompanyUid ?? 'personal');
+  let scopeValue = $state<string>(
+    untrack(() => presetCompanyUid ?? 'personal'),
+  );
   let name = $state('');
   let companies = $state<{ companyUid: string; companyName: string | null }[]>([]);
 
@@ -236,8 +239,6 @@
     justify-content: center;
     padding: 3.5rem 1.5rem 1.5rem;
     background: color-mix(in srgb, var(--pop-bg) 48%, transparent);
-    backdrop-filter: blur(8px) saturate(1.2);
-    -webkit-backdrop-filter: blur(8px) saturate(1.2);
   }
 
   .create-sheet {
@@ -250,8 +251,8 @@
     border-radius: var(--radius-popover);
     border: 1px solid var(--pop-border);
     background: var(--pop-bg);
-    backdrop-filter: var(--popover-blur, blur(32px) saturate(1.7));
-    -webkit-backdrop-filter: var(--popover-blur, blur(32px) saturate(1.7));
+    backdrop-filter: var(--glass-filter, blur(28px) saturate(0%));
+    -webkit-backdrop-filter: var(--glass-filter, blur(28px) saturate(0%));
     box-shadow: var(--pop-shadow), inset 0 1px 0 var(--pop-highlight);
     color: var(--pop-text);
     font-family: var(--font-sans);

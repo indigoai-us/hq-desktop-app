@@ -69,6 +69,8 @@
     background: var(--emerald);
   }
 
+  /* `warn` is an explicit needs-attention tone supplied by the caller.
+     Keep its semantic color confined to this 7px dot. */
   [data-tone='warn'] .dot {
     background: var(--amber);
   }

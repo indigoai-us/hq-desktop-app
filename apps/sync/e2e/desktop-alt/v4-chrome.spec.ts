@@ -52,6 +52,8 @@ describe('desktop-alt V4 chrome (US-002 / DESKTOP-001)', () => {
       'Overview',
       'Goals',
       'Projects',
+      'Skills',
+      'Workers',
       'Knowledge',
       'Team',
       'More',
@@ -81,7 +83,7 @@ describe('desktop-alt V4 chrome (US-002 / DESKTOP-001)', () => {
     expect(desktopApp).toContain('<V4TitleBar');
     expect(desktopApp).toContain('<V4Sidebar');
     expect(desktopApp).toContain('let companies = $state<Workspace[]>(cachedCompanies)');
-    expect(desktopApp).toContain('const nextCompanies = getDesktopCompanies(result.workspaces)');
+    expect(desktopApp).toContain('const nextCompanies = getDesktopCompanies(nextWorkspaces)');
     expect(desktopApp).toContain('companies = nextCompanies');
     expect(desktopApp).toContain('const shellCompanies = $derived');
     expect(desktopApp).toContain(
@@ -93,7 +95,7 @@ describe('desktop-alt V4 chrome (US-002 / DESKTOP-001)', () => {
     expect(desktopApp).toContain('let renderWorkspaceCount = $state(cachedCompanies.length)');
     expect(desktopApp).toContain('renderCompanies = nextCompanies');
     expect(desktopApp).toContain('renderWorkspaceCount = nextCompanies.length');
-    expect(desktopApp).toContain('writeCachedWorkspaces(result.workspaces)');
+    expect(desktopApp).toContain('writeCachedWorkspaces(nextWorkspaces)');
     expect(desktopApp).not.toContain('window.location.reload()');
     expect(desktopApp).toContain('companies={renderCompanies}');
     expect(desktopApp).not.toContain('{#key renderWorkspaceCount}');
@@ -107,6 +109,15 @@ describe('desktop-alt V4 chrome (US-002 / DESKTOP-001)', () => {
     expect(desktopApp).not.toContain('<DesktopStatusBar');
   });
 
+  it('renders the title-bar model error sentence and detail without misleading recovery copy', () => {
+    const titleBar = readRepoFile('src/desktop-alt/v4/V4TitleBar.svelte');
+
+    expect(titleBar).toContain('{model.sentence}');
+    expect(titleBar).toContain('{model.meta}');
+    expect(titleBar).not.toContain('Sync initialized');
+    expect(titleBar).not.toContain('finish sync in Claude Code');
+  });
+
   it('the sidebar renders all companies directly instead of using an overflow row', () => {
     const sidebar = readRepoFile('src/desktop-alt/v4/V4Sidebar.svelte');
     const harnessMocks = readRepoFile('dev-harness/mocks/core.ts');
@@ -115,8 +126,9 @@ describe('desktop-alt V4 chrome (US-002 / DESKTOP-001)', () => {
     expect(sidebar).toContain('flex: 1 1 auto');
     expect(sidebar).toContain('overflow-y: auto');
     expect(sidebar).toContain('companies,');
-    expect(sidebar).toContain('companies && companies.length > 0 ? companies : fetched');
-    expect(sidebar).toContain('if (companies && companies.length > 0) return');
+    expect(sidebar).toContain('companies ?? fetched');
+    expect(sidebar).toContain('if (companies != null) return');
+    expect(sidebar).not.toContain('companies && companies.length > 0 ? companies : fetched');
     expect(sidebar).not.toContain('companies = null');
     expect(sidebar).not.toContain('data-testid="v4-more-companies"');
     expect(sidebar).not.toContain('model.overflowCount');

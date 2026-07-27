@@ -403,17 +403,16 @@
     gap: 0.5rem;
   }
 
-  /* Soft notice strip — used for cloud-unreachable and manifest-parse-error.
-     Both surfaces share one calm grey treatment; the surface tells you which
-     by its copy + the Copy-prompt button it carries. No severity colour. */
+  /* Cloud and manifest notices stay in the normal flow with one divider. */
   .cloud-warning {
     display: flex;
     align-items: center;
     gap: 0.4375rem;
-    padding: 0.4375rem 0.625rem;
-    border-radius: 6px;
-    background: var(--popover-notice-bg, var(--pop-hover));
-    border: 1px solid var(--popover-notice-border, var(--pop-border));
+    padding: 0.4375rem 0;
+    border-radius: 0;
+    background: transparent;
+    border: 0;
+    border-top: 1px solid var(--popover-divider, var(--pop-border));
   }
 
   .cloud-warning-text {
@@ -442,7 +441,7 @@
        .row-meta-lastsync below, the steady-state row collapses to a single
        name line at ~24px tall so more workspaces fit without scrolling. */
     padding: 0.25rem 0.5rem;
-    border-radius: 6px;
+    border-radius: 0;
     transition: background-color 0.1s ease;
   }
 
@@ -495,7 +494,7 @@
      is carried by the "Manifest out of sync — click to reconnect" meta line
      and the Copy-prompt button, not by colour. */
   .workspace-row.broken {
-    background: var(--popover-notice-bg, var(--pop-hover));
+    background: transparent;
   }
 
   .workspace-row.broken:hover {

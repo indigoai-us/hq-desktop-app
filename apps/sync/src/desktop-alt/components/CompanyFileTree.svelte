@@ -362,7 +362,7 @@
     height: auto;
     padding: 4px 8px;
     border: none;
-    border-radius: 6px;
+    border-radius: 0;
     background: transparent;
     color: var(--v4-text-2);
     font: inherit;
@@ -380,13 +380,14 @@
   }
 
   .ft-row:focus-visible {
-    outline: 2px solid var(--v4-unread, var(--blue, #0a6fd6));
+    outline: 2px solid var(--v4-focus-ring, var(--v4-text-1));
     outline-offset: 1px;
   }
 
   /* Selected file row — neutral emphasis (no purple, hard Indigo policy). */
   .ft-row.selected {
-    background: var(--v4-control-bg, var(--v4-active-row));
+    background: transparent;
+    box-shadow: inset 0 -1px 0 var(--v4-hairline);
     color: var(--v4-text-1);
     font-weight: 600;
   }
@@ -479,12 +480,6 @@
     .ft-chevron,
     .ft-row {
       transition: none;
-    }
-  }
-
-  @media (prefers-reduced-transparency: reduce) {
-    .ft-row.selected {
-      background: var(--v4-active-row);
     }
   }
 

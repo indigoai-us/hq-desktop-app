@@ -352,7 +352,7 @@
         <h3 id="recent-files-title">Recent files</h3>
         <span>{recentCount} of {activity.stats.files7}</span>
       </div>
-      <div class="direction-toggle" aria-label="Activity direction">
+      <div class="direction-toggle" role="group" aria-label="Activity direction">
         <button
           type="button"
           class:is-active={activityDirection === 'all'}
@@ -475,16 +475,17 @@
     justify-content: space-between;
     gap: 14px;
     min-width: 0;
-    padding: 12px;
-    border: 1px solid color-mix(in srgb, var(--v4-warn) 32%, var(--v4-hairline));
-    border-radius: var(--v4-radius-field);
-    background: color-mix(in srgb, var(--v4-warn) 10%, var(--v4-raised));
-    color: var(--v4-warn);
+    padding: 12px 0;
+    border: 0;
+    border-top: 1px solid var(--v4-rowline);
+    border-radius: 0;
+    background: transparent;
+    color: var(--v4-error);
   }
 
   .activity-note {
-    border-color: var(--v4-hairline);
-    background: var(--v4-raised);
+    border-top-color: var(--v4-rowline);
+    background: transparent;
     color: var(--v4-text-3);
   }
 
@@ -527,8 +528,12 @@
   .stats-grid {
     display: grid;
     grid-template-columns: repeat(4, minmax(140px, 1fr));
-    gap: 12px;
+    gap: 0;
     min-width: 0;
+  }
+
+  .stats-grid :global(.stat-tile + .stat-tile) {
+    border-left: 1px solid var(--v4-hairline);
   }
 
   .activity-grid {
@@ -540,7 +545,8 @@
 
   .activity-card {
     min-width: 0;
-    border: 1px solid var(--v4-hairline);
+    border: 0;
+    border-top: 1px solid var(--v4-hairline);
     border-radius: 0;
     background: transparent;
     overflow: hidden;
@@ -578,11 +584,11 @@
   .direction-toggle {
     display: flex;
     align-items: center;
-    gap: 2px;
-    padding: 2px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-field);
-    background: var(--v4-inset);
+    gap: var(--v4-space-2);
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
   }
 
   .direction-toggle button {
@@ -590,17 +596,27 @@
     min-width: 34px;
     padding: 0 8px;
     border: 0;
-    border-radius: var(--v4-radius-button);
+    border-bottom: 1px solid transparent;
+    border-radius: 0;
     background: transparent;
     color: var(--v4-text-3);
     font: inherit;
     font-size: var(--text-base);
     font-weight: 600;
     cursor: pointer;
+    transition:
+      border-color 140ms ease,
+      color 140ms ease;
+  }
+
+  .direction-toggle button:hover {
+    border-bottom-color: var(--v4-rowline);
+    color: var(--v4-text-1);
   }
 
   .direction-toggle button.is-active {
-    background: var(--v4-control-faint);
+    border-bottom-color: var(--v4-text-2);
+    background: transparent;
     color: var(--v4-text-1);
   }
 
@@ -889,6 +905,14 @@
       grid-template-columns: repeat(2, minmax(140px, 1fr));
     }
 
+    .stats-grid :global(.stat-tile:nth-child(odd)) {
+      border-left: 0;
+    }
+
+    .stats-grid :global(.stat-tile:nth-child(n + 3)) {
+      border-top: 1px solid var(--v4-hairline);
+    }
+
     .activity-grid {
       grid-template-columns: minmax(0, 1fr);
     }
@@ -897,6 +921,11 @@
   @media (max-width: 680px) {
     .stats-grid {
       grid-template-columns: minmax(0, 1fr);
+    }
+
+    .stats-grid :global(.stat-tile + .stat-tile) {
+      border-top: 1px solid var(--v4-hairline);
+      border-left: 0;
     }
 
     .recent-row {

@@ -40,7 +40,7 @@
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 use crate::commands::cognito;
 use crate::commands::sync::resolve_vault_api_url;
@@ -166,14 +166,14 @@ fn bump_unread(app: &AppHandle, delta: u32) {
 }
 
 /// Read the current unread-DM count from managed state (0 if unset).
-pub fn current_unread_dms(app: &AppHandle) -> u32 {
+pub fn current_unread_dms<R: Runtime>(app: &AppHandle<R>) -> u32 {
     app.try_state::<UnreadDmState>()
         .map(|s| *s.0.lock().unwrap_or_else(|p| p.into_inner()))
         .unwrap_or(0)
 }
 
 /// Reset the unread-DM count to 0. Called when the Messages window opens.
-pub fn reset_unread_dms(app: &AppHandle) {
+pub fn reset_unread_dms<R: Runtime>(app: &AppHandle<R>) {
     if let Some(state) = app.try_state::<UnreadDmState>() {
         *state.0.lock().unwrap_or_else(|p| p.into_inner()) = 0;
     }

@@ -310,7 +310,6 @@
           onclick={() => select(listing)}
           onkeydown={(event) => handleKeydown(event, listing)}
         >
-          <span class="accent" aria-hidden="true"></span>
           <div class="cover" data-testid="marketplace-cover">
             {#if cover}
               <img class="cover-img" src={cover} alt="" loading="lazy" decoding="async" />
@@ -539,11 +538,12 @@
     justify-content: space-between;
     gap: var(--v4-space-3);
     min-width: 0;
-    padding: var(--v4-space-3);
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-card);
-    background: var(--v4-raised);
-    box-shadow: var(--v4-shadow-card);
+    padding: var(--v4-space-3) 0 0;
+    border: 0;
+    border-top: 1px solid var(--v4-hairline);
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
   }
 
   .your-listings div {
@@ -638,21 +638,6 @@
     outline-offset: 2px;
   }
 
-  /* Amber brand spine — runs the full card height, over the art's left edge. */
-  .accent {
-    position: absolute;
-    inset-block: 0;
-    inset-inline-start: 0;
-    z-index: 4;
-    width: 3px;
-    background: var(--v4-warn);
-    opacity: 0.6;
-    transition: opacity 140ms ease;
-  }
-  .card:hover .accent {
-    opacity: 1;
-  }
-
   /* ---- cover art (the visual hero of each card) ------------------------- */
   .cover {
     position: relative;
@@ -674,6 +659,7 @@
   .cover-img {
     object-fit: cover;
     object-position: center;
+    filter: saturate(0%);
     transition: transform 240ms ease;
   }
   .card:hover .cover-img {
@@ -729,7 +715,7 @@
   .cover-version {
     inset-inline-end: var(--v4-space-2);
     background: color-mix(in srgb, var(--graphic-fg) 50%, transparent);
-    border-color: color-mix(in srgb, var(--v4-warn) 48%, transparent);
+    border-color: var(--v4-hairline);
   }
 
   .kind-tag {
@@ -748,7 +734,7 @@
     width: 6px;
     height: 6px;
     border-radius: 999px;
-    background: var(--v4-warn);
+    background: var(--v4-idle);
   }
 
   /* Pack name overlaid on the bottom of the art (over the scrim). */
@@ -827,8 +813,8 @@
 
   .pill.version {
     flex: 0 0 auto;
-    border-color: color-mix(in srgb, var(--v4-warn) 34%, transparent);
-    color: var(--v4-warn);
+    border-color: var(--v4-hairline);
+    color: var(--v4-text-3);
   }
 
   .card-desc {
@@ -846,20 +832,21 @@
 
   /* ---- states ----------------------------------------------------------- */
   .state-error {
-    padding: var(--v4-space-3);
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-field);
-    background: var(--v4-raised);
-    color: var(--v4-warn);
+    padding: var(--v4-space-3) 0;
+    border: 0;
+    border-top: 1px solid var(--v4-hairline);
+    border-radius: 0;
+    background: transparent;
+    color: var(--v4-error);
     font-size: var(--text-base);
   }
 
   .state-empty {
     padding: var(--v4-space-6);
-    border: 1px dashed var(--v4-control-border);
-    border-radius: var(--v4-radius-card);
-    background: var(--v4-raised);
-    box-shadow: var(--v4-shadow-card);
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
     text-align: center;
   }
 
@@ -917,8 +904,10 @@
     width: 520px;
     max-width: 94vw;
     border-left: 1px solid var(--v4-hairline);
-    background: var(--v4-raised);
-    box-shadow: var(--v4-shadow-popover);
+    background: var(--v4-popover);
+    backdrop-filter: var(--v4-glass-filter);
+    -webkit-backdrop-filter: var(--v4-glass-filter);
+    box-shadow: var(--v4-shadow-popover), inset 1px 0 0 var(--v4-glass-highlight);
     animation: panel-slide-in 200ms cubic-bezier(0.2, 0.7, 0.2, 1);
   }
 
@@ -943,6 +932,7 @@
   .detail-cover-img {
     object-fit: cover;
     object-position: center;
+    filter: saturate(0%);
   }
 
   .detail-cover-fallback {
@@ -959,7 +949,7 @@
     background: linear-gradient(
       to bottom,
       transparent 42%,
-      color-mix(in srgb, var(--v4-raised) 94%, transparent) 100%
+      color-mix(in srgb, var(--v4-popover) 94%, transparent) 100%
     );
   }
 
@@ -1110,14 +1100,28 @@
   }
 
   .consent-note {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
     margin: var(--v4-space-2) 0 0;
-    padding: var(--v4-space-2) var(--v4-space-3);
-    border: 1px solid color-mix(in srgb, var(--v4-warn) 34%, transparent);
-    border-radius: var(--v4-radius-field);
-    background: color-mix(in srgb, var(--v4-warn) 8%, transparent);
+    padding: var(--v4-space-2) 0;
+    border: 0;
+    border-top: 1px solid var(--v4-rowline);
+    border-radius: 0;
+    background: transparent;
     color: var(--v4-text-2);
     font-size: var(--text-micro);
     line-height: 16px;
+  }
+
+  .consent-note::before {
+    width: 6px;
+    height: 6px;
+    margin-top: 5px;
+    flex: 0 0 auto;
+    border-radius: 50%;
+    background: var(--v4-idle);
+    content: '';
   }
 
   .install-button {
@@ -1162,7 +1166,7 @@
   }
 
   .install-result.fail {
-    color: var(--v4-warn);
+    color: var(--v4-error);
     overflow-wrap: anywhere;
   }
 
@@ -1172,7 +1176,7 @@
     padding: var(--v4-space-2) var(--v4-space-3);
     overflow: auto;
     border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-field);
+    border-radius: var(--v4-radius-structure);
     background: var(--v4-control-faint);
     color: var(--v4-text-2);
     font-family: var(--font-mono);
@@ -1204,7 +1208,6 @@
 
   @media (prefers-reduced-motion: reduce) {
     .card,
-    .accent,
     .close-button {
       transition: none;
     }

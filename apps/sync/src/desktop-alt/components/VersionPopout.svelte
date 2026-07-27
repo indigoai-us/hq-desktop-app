@@ -1,11 +1,18 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+  import { updateSettings } from '../../lib/settings-mutations';
+  import {
+    resolvePendingUpdateState,
+    type PendingUpdateState,
+  } from '../../lib/notificationFeedData';
+  import type { SettingsTab } from '../route';
 
   interface Props {
     version: string;
-    onOpenSettings: () => void;
+    onOpenSettings: (tab?: SettingsTab) => void;
     onclose: () => void;
+    placement?: 'above' | 'below';
   }
 
   interface UpdateInfo {
@@ -14,7 +21,7 @@
     date?: string;
   }
 
-  let { version, onOpenSettings, onclose }: Props = $props();
+  let { version, onOpenSettings, onclose, placement = 'above' }: Props = $props();
 
   /** null = no newer version known; string = latest available from check/event. */
   let latestVersion = $state<string | null>(null);
@@ -24,6 +31,7 @@
   let autoUpdate = $state(true);
   let autoUpdateLoading = $state(true);
   let autoUpdateSaving = $state(false);
+  let updateLoadGeneration = 0;
 
   const statusLabel = $derived.by(() => {
     if (phase === 'checking') return 'Checking…';
@@ -41,30 +49,45 @@
 
   $effect(() => {
     let cancelled = false;
-    let unlisten: UnlistenFn | undefined;
+    let unlistenAvailable: UnlistenFn | undefined;
+    let unlistenCleared: UnlistenFn | undefined;
 
     // Register the listener FIRST (no awaits before it) so an
     // `update:available` fired while other hydration calls are in flight
     // is never missed.
     void (async () => {
       try {
-        const fn = await listen<UpdateInfo>('update:available', (event) => {
-          if (cancelled) return;
-          const next = event.payload?.version;
-          if (!next) return;
-          latestVersion = next;
-          if (phase === 'error') {
-            phase = 'idle';
-            errorMessage = null;
-          }
-        });
+        const [availableFn, clearedFn] = await Promise.all([
+          listen<UpdateInfo>('update:available', (event) => {
+            if (cancelled) return;
+            const next = event.payload?.version;
+            if (!next) return;
+            updateLoadGeneration += 1;
+            latestVersion = next;
+            if (phase === 'error') {
+              phase = 'idle';
+              errorMessage = null;
+            }
+          }),
+          listen('update:cleared', () => {
+            if (cancelled) return;
+            updateLoadGeneration += 1;
+            latestVersion = null;
+            if (phase === 'error') {
+              phase = 'idle';
+              errorMessage = null;
+            }
+          }),
+        ]);
         if (cancelled) {
-          fn();
+          availableFn();
+          clearedFn();
           return;
         }
-        unlisten = fn;
+        unlistenAvailable = availableFn;
+        unlistenCleared = clearedFn;
       } catch (err) {
-        console.error('version-popout: failed to listen for update:available', err);
+        console.error('version-popout: failed to listen for updater state', err);
       }
     })();
 
@@ -72,12 +95,18 @@
     // this, an update detected before the pop-out opened would read
     // "Up to date" until a manual check.
     void (async () => {
+      const generation = ++updateLoadGeneration;
       try {
-        const pending = await invoke<UpdateInfo | null>('get_pending_update');
-        if (!cancelled && pending?.version) {
-          latestVersion = pending.version;
+        const pending = await invoke<PendingUpdateState | UpdateInfo | null>(
+          'get_pending_update',
+        );
+        if (cancelled || generation !== updateLoadGeneration) return;
+        const resolved = resolvePendingUpdateState(pending);
+        if (resolved.state === 'resolved') {
+          latestVersion = resolved.value?.version ?? null;
         }
       } catch (err) {
+        if (cancelled || generation !== updateLoadGeneration) return;
         console.error('get_pending_update failed:', err);
       }
     })();
@@ -97,7 +126,9 @@
 
     return () => {
       cancelled = true;
-      unlisten?.();
+      updateLoadGeneration += 1;
+      unlistenAvailable?.();
+      unlistenCleared?.();
     };
   });
 
@@ -145,9 +176,7 @@
     autoUpdate = next;
     autoUpdateSaving = true;
     try {
-      // Read-modify-write the FULL prefs object — never save a partial.
-      const prefs = await invoke<Record<string, unknown>>('get_settings');
-      await invoke('save_settings', { prefs: { ...prefs, autoUpdate: next } });
+      await updateSettings({ autoUpdate: next });
     } catch (err) {
       console.error('save_settings (autoUpdate) failed:', err);
       autoUpdate = previous;
@@ -157,13 +186,14 @@
   }
 
   function handleOpenSettings() {
-    onOpenSettings();
+    onOpenSettings('updates');
     onclose();
   }
 </script>
 
 <div
   class="version-popout"
+  class:below={placement === 'below'}
   data-testid="version-popout"
   role="dialog"
   aria-label="Version and updates"
@@ -242,17 +272,21 @@
     z-index: 200;
     width: 260px;
     padding: 12px;
-    border: 1px solid var(--border-strong, var(--pop-border, rgba(120, 120, 128, 0.3)));
-    border-radius: 10px;
-    /* Solid panel only — glass --pop-bg / --surface-panel are translucent. */
+    border: 1px solid var(--border-strong, var(--pop-border, rgba(120, 120, 120, 0.3)));
+    border-radius: var(--v4-radius-popover);
     opacity: 1;
-    background: var(--c-bg, #2b2b2e);
-    backdrop-filter: none;
-    -webkit-backdrop-filter: none;
-    box-shadow: var(--pop-shadow, 0 12px 32px rgba(0, 0, 0, 0.18));
+    background: var(--v4-popover, var(--pop-bg, rgba(42, 42, 42, 0.76)));
+    backdrop-filter: var(--v4-glass-filter);
+    -webkit-backdrop-filter: var(--v4-glass-filter);
+    box-shadow: var(--v4-shadow-popover, var(--pop-shadow)), inset 0 1px 0 var(--v4-glass-highlight);
     color: var(--fg, var(--c-text, inherit));
     font-size: var(--text-xs, 13px);
     line-height: 1.35;
+  }
+
+  .version-popout.below {
+    top: calc(100% + 8px);
+    bottom: auto;
   }
 
   .vp-rows {
@@ -316,6 +350,12 @@
     background: var(--row-hover, var(--row-active));
   }
 
+  .vp-btn:focus-visible,
+  .vp-settings-link:focus-visible {
+    outline: 2px solid var(--v4-focus-ring, var(--v4-control-border, currentColor));
+    outline-offset: var(--v4-focus-offset, 2px);
+  }
+
   .vp-btn:disabled {
     opacity: 0.55;
     cursor: default;
@@ -366,14 +406,46 @@
   }
 
   .vp-toggle-row input[type='checkbox'] {
+    appearance: none;
+    -webkit-appearance: none;
+    position: relative;
     flex: 0 0 auto;
-    width: 14px;
-    height: 14px;
-    accent-color: var(--fg);
+    width: 26px;
+    height: 16px;
+    border: 0;
+    border-radius: var(--v4-radius-pill, 999px);
+    background: var(--v4-control-bg, var(--row-active));
     cursor: pointer;
   }
 
+  .vp-toggle-row input[type='checkbox']::after {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 12px;
+    height: 12px;
+    border-radius: var(--v4-radius-pill, 999px);
+    background: var(--c-bg, var(--surface-panel));
+    box-shadow: var(--v4-shadow-card, 0 1px 2px rgba(0, 0, 0, 0.2));
+    transition: transform 0.15s ease;
+  }
+
+  .vp-toggle-row input[type='checkbox']:checked {
+    background: var(--v4-ok, #30c866);
+  }
+
+  .vp-toggle-row input[type='checkbox']:checked::after {
+    transform: translateX(10px);
+  }
+
+  .vp-toggle-row input[type='checkbox']:focus-visible {
+    outline: 2px solid var(--v4-focus-ring, var(--v4-control-border, currentColor));
+    outline-offset: var(--v4-focus-offset, 2px);
+  }
+
   .vp-toggle-row input[type='checkbox']:disabled {
+    opacity: 0.5;
     cursor: default;
   }
 
@@ -395,5 +467,13 @@
   .vp-settings-link:hover {
     color: var(--fg);
     text-decoration: underline;
+  }
+
+  @media (prefers-reduced-transparency: reduce) {
+    .version-popout {
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
+      box-shadow: var(--v4-shadow-popover, var(--pop-shadow));
+    }
   }
 </style>

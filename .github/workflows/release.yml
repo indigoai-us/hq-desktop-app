@@ -7,8 +7,8 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag to release (e.g. v0.8.30)."
-        required: false
+        description: "Existing tag to release (vX.Y.Z, vX.Y.Z-beta.N, or vX.Y.Z-alpha.N)."
+        required: true
         type: string
 
 permissions:
@@ -28,8 +28,199 @@ env:
   UNVERIFIED_RELEASE: ${{ vars.RELEASE_UNVERIFIED || 'true' }}
 
 jobs:
+  validate:
+    name: Validate release tag and version
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.classify.outputs.tag }}
+      version: ${{ steps.classify.outputs.version }}
+      channel: ${{ steps.classify.outputs.channel }}
+      prerelease: ${{ steps.classify.outputs.prerelease }}
+      make_latest: ${{ steps.classify.outputs.make_latest }}
+      msi_version: ${{ steps.msi-version.outputs.version }}
+
+    steps:
+      # Keep these strict shapes aligned with
+      # crates/hq-desktop-core/src/release_channel.rs::parse_channel_from_tag.
+      # In particular, raw `-beta`, `-rc.N`, and extra prerelease identifiers
+      # are rejected so CI cannot publish a release the client will not route.
+      - name: Validate tag format and classify channel
+        id: classify
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            TAG="$INPUT_TAG"
+            if [ -z "$TAG" ]; then
+              echo "::error::workflow_dispatch requires an existing release tag."
+              exit 1
+            fi
+          else
+            if [ "${GITHUB_REF_TYPE:-}" != "tag" ]; then
+              echo "::error::Release pushes must run from a tag ref, got: ${GITHUB_REF_TYPE:-unknown}"
+              exit 1
+            fi
+            TAG="$REF_NAME"
+          fi
+
+          if [[ "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            CHANNEL="stable"
+            PRERELEASE="false"
+            MAKE_LATEST="true"
+          elif [[ "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-beta\.(0|[1-9][0-9]*)$ ]]; then
+            CHANNEL="beta"
+            PRERELEASE="true"
+            MAKE_LATEST="false"
+          elif [[ "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-alpha\.(0|[1-9][0-9]*)$ ]]; then
+            CHANNEL="alpha"
+            PRERELEASE="true"
+            MAKE_LATEST="false"
+          else
+            echo "::error::Tag must match vX.Y.Z, vX.Y.Z-beta.N, or vX.Y.Z-alpha.N; got: $TAG"
+            exit 1
+          fi
+
+          {
+            echo "tag=$TAG"
+            echo "version=${TAG#v}"
+            echo "channel=$CHANNEL"
+            echo "prerelease=$PRERELEASE"
+            echo "make_latest=$MAKE_LATEST"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Release tag $TAG classified as channel=$CHANNEL prerelease=$PRERELEASE make_latest=$MAKE_LATEST"
+
+      - name: Checkout exact release tag
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ steps.classify.outputs.tag }}
+          fetch-depth: 0
+
+      # workflow_dispatch may intentionally retry a historical tag that
+      # predates the current publication helpers. Keep immutable build inputs
+      # at the tag root while loading the reviewed control plane from the exact
+      # commit that defines this workflow run.
+      - name: Checkout release control plane
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .release-control
+          sparse-checkout: |
+            scripts/release-asset-contract.mjs
+            scripts/release-stable-order.mjs
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Require release tag commit on main
+        env:
+          TAG: ${{ steps.classify.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags origin \
+            "+refs/heads/main:refs/remotes/origin/main"
+          if ! git -C "$GITHUB_WORKSPACE" merge-base --is-ancestor \
+            "${TAG}^{commit}" refs/remotes/origin/main; then
+            echo "::error::Release tag $TAG is not contained in origin/main. Merge the release commit before tagging."
+            exit 1
+          fi
+
+      - name: Validate versions.toml and stamped app versions
+        env:
+          TAG: ${{ steps.classify.outputs.tag }}
+          VERSION: ${{ steps.classify.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git show-ref --verify --quiet "refs/tags/${TAG}" || {
+            echo "::error::Release tag does not exist: $TAG"
+            exit 1
+          }
+
+          node --input-type=module <<'NODE'
+          import fs from "node:fs";
+
+          const tag = process.env.TAG;
+          const version = process.env.VERSION;
+          const versionsToml = fs.readFileSync("versions.toml", "utf8");
+          const versionsTomlMatch =
+            versionsToml.match(/^\[product\][\s\S]*?^version\s*=\s*"([^"]+)"/m);
+          if (!versionsTomlMatch) {
+            console.error("::error file=versions.toml::Could not find [product] version");
+            process.exit(1);
+          }
+
+          const packageVersion =
+            JSON.parse(fs.readFileSync("apps/sync/package.json", "utf8")).version;
+          const tauriVersion =
+            JSON.parse(fs.readFileSync("apps/sync/src-tauri/tauri.conf.json", "utf8")).version;
+
+          const cargoToml = fs.readFileSync("apps/sync/src-tauri/Cargo.toml", "utf8");
+          const cargoTomlMatch =
+            cargoToml.match(/^\[package\][\s\S]*?^version\s*=\s*"([^"]+)"/m);
+          if (!cargoTomlMatch) {
+            console.error("::error file=apps/sync/src-tauri/Cargo.toml::Could not find package version");
+            process.exit(1);
+          }
+
+          const cargoLock = fs.readFileSync("apps/sync/src-tauri/Cargo.lock", "utf8");
+          const cargoLockMatch =
+            cargoLock.match(/^\[\[package\]\]\nname = "hq-sync-menubar"\nversion = "([^"]+)"/m);
+          if (!cargoLockMatch) {
+            console.error("::error file=apps/sync/src-tauri/Cargo.lock::Could not find hq-sync-menubar package entry");
+            process.exit(1);
+          }
+
+          const checks = [
+            ["versions.toml", versionsTomlMatch[1]],
+            ["apps/sync/package.json", packageVersion],
+            ["apps/sync/src-tauri/tauri.conf.json", tauriVersion],
+            ["apps/sync/src-tauri/Cargo.toml", cargoTomlMatch[1]],
+            ["apps/sync/src-tauri/Cargo.lock", cargoLockMatch[1]],
+          ];
+          const mismatches = checks.filter(([, actual]) => actual !== version);
+          if (mismatches.length > 0) {
+            for (const [file, actual] of mismatches) {
+              console.error(`::error file=${file}::Release tag ${tag} expects version ${version}, found ${actual}`);
+            }
+            process.exit(1);
+          }
+
+          console.log(`Release ${tag} matches versions.toml and all four stamped app version files`);
+          NODE
+
+      - name: Validate Windows MSI ProductVersion
+        id: msi-version
+        env:
+          APP_VERSION: ${{ steps.classify.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          MSI_VERSION="$(node scripts/windows-msi-version.mjs --version "$APP_VERSION")"
+          echo "version=$MSI_VERSION" >> "$GITHUB_OUTPUT"
+          echo "App version $APP_VERSION maps to Windows MSI ProductVersion $MSI_VERSION"
+
+      - name: Reject stable release rollback
+        if: ${{ steps.classify.outputs.channel == 'stable' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_REPOSITORY: ${{ github.repository }}
+          TARGET_TAG: ${{ steps.classify.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          node .release-control/scripts/release-stable-order.mjs stable-order \
+            --repository "$TARGET_REPOSITORY" \
+            --tag "$TARGET_TAG"
+
   macos:
     name: Build macOS universal
+    needs: validate
     runs-on: macos-14
     timeout-minutes: 90
     defaults:
@@ -37,66 +228,11 @@ jobs:
         working-directory: apps/sync
 
     steps:
-      - name: Validate tag format
-        working-directory: .
-        shell: bash
-        run: |
-          TAG="${{ github.event.inputs.tag || github.ref_name }}"
-          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::Tag must match vX.Y.Z format, got: $TAG"
-            exit 1
-          fi
-
-      - name: Checkout
+      - name: Checkout exact release tag
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          ref: refs/tags/${{ needs.validate.outputs.tag }}
           fetch-depth: 0
-
-      - name: Validate release version files
-        env:
-          TAG: ${{ github.event.inputs.tag || github.ref_name }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          node --input-type=module <<'NODE'
-          import fs from "node:fs";
-
-          const tag = process.env.TAG;
-          const version = tag.startsWith("v") ? tag.slice(1) : tag;
-
-          const packageVersion = JSON.parse(fs.readFileSync("package.json", "utf8")).version;
-          const tauriVersion = JSON.parse(fs.readFileSync("src-tauri/tauri.conf.json", "utf8")).version;
-
-          const cargoToml = fs.readFileSync("src-tauri/Cargo.toml", "utf8");
-          const cargoTomlMatch = cargoToml.match(/^\[package\][\s\S]*?^version\s*=\s*"([^"]+)"/m);
-          if (!cargoTomlMatch) {
-            console.error("::error file=apps/sync/src-tauri/Cargo.toml::Could not find package version");
-            process.exit(1);
-          }
-
-          const cargoLock = fs.readFileSync("src-tauri/Cargo.lock", "utf8");
-          const cargoLockMatch = cargoLock.match(/^\[\[package\]\]\nname = "hq-sync-menubar"\nversion = "([^"]+)"/m);
-          if (!cargoLockMatch) {
-            console.error("::error file=apps/sync/src-tauri/Cargo.lock::Could not find hq-sync-menubar package entry");
-            process.exit(1);
-          }
-
-          const checks = [
-            ["package.json", packageVersion],
-            ["src-tauri/tauri.conf.json", tauriVersion],
-            ["src-tauri/Cargo.toml", cargoTomlMatch[1]],
-            ["src-tauri/Cargo.lock", cargoLockMatch[1]],
-          ];
-          const mismatches = checks.filter(([, actual]) => actual !== version);
-          if (mismatches.length > 0) {
-            for (const [file, actual] of mismatches) {
-              console.error(`::error file=apps/sync/${file}::Release tag ${tag} expects version ${version}, found ${actual}`);
-            }
-            process.exit(1);
-          }
-          console.log(`Release version ${version} matches package.json, tauri.conf.json, Cargo.toml, and Cargo.lock`);
-          NODE
 
       - uses: pnpm/action-setup@v4
 
@@ -247,7 +383,7 @@ jobs:
 
       - name: Regenerate updater archive and signature
         env:
-          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          TAG: ${{ needs.validate.outputs.tag }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         shell: bash
@@ -266,7 +402,7 @@ jobs:
 
       - name: Create, sign, notarize, and staple DMG
         env:
-          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          TAG: ${{ needs.validate.outputs.tag }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
@@ -309,6 +445,7 @@ jobs:
 
   windows:
     name: Build Windows ${{ matrix.target }}
+    needs: validate
     runs-on: windows-latest
     timeout-minutes: 90
     permissions:
@@ -333,20 +470,10 @@ jobs:
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
     steps:
-      - name: Validate tag format
-        working-directory: .
-        shell: bash
-        run: |
-          TAG="${{ github.event.inputs.tag || github.ref_name }}"
-          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::Tag must match vX.Y.Z format, got: $TAG"
-            exit 1
-          fi
-
-      - name: Checkout
+      - name: Checkout exact release tag
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          ref: refs/tags/${{ needs.validate.outputs.tag }}
           fetch-depth: 0
 
       - uses: pnpm/action-setup@v4
@@ -417,6 +544,26 @@ jobs:
             throw "Recall sidecar launcher was not produced for ${{ matrix.target }} at $launcher"
           }
 
+      - name: Generate Windows MSI version overlay
+        shell: pwsh
+        env:
+          APP_VERSION: ${{ needs.validate.outputs.version }}
+          EXPECTED_MSI_VERSION: ${{ needs.validate.outputs.msi_version }}
+        run: |
+          $configPath = Join-Path $env:RUNNER_TEMP "tauri.windows.msi-version.conf.json"
+          node ../../scripts/windows-msi-version.mjs --version $env:APP_VERSION --output $configPath
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to generate Windows MSI version overlay"
+          }
+
+          $actual = (Get-Content $configPath -Raw | ConvertFrom-Json).bundle.windows.wix.version
+          if ($actual -ne $env:EXPECTED_MSI_VERSION) {
+            throw "Generated MSI ProductVersion $actual does not match validated $env:EXPECTED_MSI_VERSION"
+          }
+
+          "TAURI_MSI_VERSION_CONFIG=$configPath" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Host "Windows MSI ProductVersion: $actual"
+
       - name: Tauri build (${{ matrix.target }})
         # The release-only overlay carries the Recall externalBin (a per-target PE
         # launcher built by the step above). It is kept out of the auto-merged
@@ -426,7 +573,7 @@ jobs:
           # Tauri runs the overlay's beforeBuildCommand, which builds the launcher
           # again. Keep that nested build on the matrix architecture as well.
           RECALL_SIDECAR_TARGET: ${{ matrix.target }}
-        run: pnpm tauri build --target ${{ matrix.target }} --bundles msi nsis updater --config src-tauri/tauri.windows.conf.json --config src-tauri/tauri.windows.release.conf.json
+        run: pnpm tauri build --target ${{ matrix.target }} --bundles msi nsis updater --config src-tauri/tauri.windows.conf.json --config src-tauri/tauri.windows.release.conf.json --config $env:TAURI_MSI_VERSION_CONFIG
 
       - name: Azure login (OIDC)
         if: ${{ vars.AZURE_CLIENT_ID != '' && env.UNVERIFIED_RELEASE != 'true' }}
@@ -485,8 +632,10 @@ jobs:
 
       - name: Stage Windows artifacts
         shell: pwsh
+        env:
+          TAG: ${{ needs.validate.outputs.tag }}
         run: |
-          $tag = if ("${{ github.event.inputs.tag }}") { "${{ github.event.inputs.tag }}" } else { "${{ github.ref_name }}" }
+          $tag = $env:TAG
           $version = $tag.TrimStart("v")
           $arch = if ("${{ matrix.target }}" -like "x86_64-*") { "x64" } else { "arm64" }
           $stage = Join-Path $env:GITHUB_WORKSPACE "release-artifacts-${{ matrix.target }}"
@@ -503,10 +652,11 @@ jobs:
 
           foreach ($source in @($nsis, $msi)) {
             $sig = "$($source.FullName).sig"
-            if (Test-Path $sig) {
-              $destName = if ($source.Extension -eq ".msi") { "$msiName.sig" } else { "$nsisName.sig" }
-              Copy-Item $sig (Join-Path $stage $destName)
+            if (-not (Test-Path $sig)) {
+              throw "Required updater signature is missing: $sig"
             }
+            $destName = if ($source.Extension -eq ".msi") { "$msiName.sig" } else { "$nsisName.sig" }
+            Copy-Item $sig (Join-Path $stage $destName)
           }
 
           Get-ChildItem -Path $stage | ForEach-Object { Write-Host "Staged: $($_.Name)" }
@@ -520,22 +670,39 @@ jobs:
 
   publish:
     name: Publish GitHub release
-    needs: [macos, windows]
-    # Platform decoupling: macOS and Windows must not block each other. Publish
-    # runs as long as the run wasn't cancelled and at least one platform build
-    # reached a terminal state that could have produced artifacts — macOS
-    # succeeded, or the Windows matrix ran (fully green OR partially/fully failed,
-    # in which case the succeeding legs still uploaded). The latest.json step
-    # below only includes the platforms whose artifacts actually landed, so a
-    # failed Windows sign no longer skips the macOS release (and vice versa).
-    if: ${{ !cancelled() && (needs.macos.result == 'success' || needs.windows.result == 'success' || needs.windows.result == 'failure') }}
+    needs: [validate, macos, windows]
+    concurrency:
+      # Serialize all tags, not only reruns of one tag. Otherwise two stable
+      # builds can finish out of order and the older one can replace latest.
+      group: release-publication
+      cancel-in-progress: false
+    # A desktop release is one cross-platform product. Never publish a partial
+    # release or updater manifest: macOS and the complete Windows matrix must
+    # both finish successfully.
+    if: ${{ !cancelled() && needs.validate.result == 'success' && needs.macos.result == 'success' && needs.windows.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
 
     steps:
-      - name: Checkout
+      - name: Checkout exact release tag
         uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ needs.validate.outputs.tag }}
+          fetch-depth: 0
+
+      - name: Checkout release control plane
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .release-control
+          sparse-checkout: |
+            scripts/release-asset-contract.mjs
+            scripts/release-stable-order.mjs
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -549,22 +716,59 @@ jobs:
           find artifacts -type f -print0 | xargs -0 -I {} cp {} release/
           ls -la release
 
+      - name: Validate complete release artifact set
+        env:
+          TAG: ${{ needs.validate.outputs.tag }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          VERSION="$VERSION" node --input-type=module <<'NODE'
+          import fs from "node:fs";
+
+          const version = process.env.VERSION;
+          const expected = [
+            `HQ_${version}_arm64-setup.exe`,
+            `HQ_${version}_arm64-setup.exe.sig`,
+            `HQ_${version}_arm64.msi`,
+            `HQ_${version}_arm64.msi.sig`,
+            `HQ_${version}_universal.app.tar.gz`,
+            `HQ_${version}_universal.app.tar.gz.sig`,
+            `HQ_${version}_universal.dmg`,
+            `HQ_${version}_x64-setup.exe`,
+            `HQ_${version}_x64-setup.exe.sig`,
+            `HQ_${version}_x64.msi`,
+            `HQ_${version}_x64.msi.sig`,
+          ].sort();
+          const actual = fs.readdirSync("release").sort();
+          const missing = expected.filter((name) => !actual.includes(name));
+          const unexpected = actual.filter((name) => !expected.includes(name));
+
+          if (missing.length || unexpected.length) {
+            console.error(`::error::Incomplete release artifact set. Missing: ${missing.join(", ") || "none"}; unexpected: ${unexpected.join(", ") || "none"}`);
+            process.exit(1);
+          }
+
+          for (const name of expected.filter((entry) => entry.endsWith(".sig"))) {
+            if (!fs.readFileSync(`release/${name}`, "utf8").trim()) {
+              console.error(`::error::Updater signature is empty: ${name}`);
+              process.exit(1);
+            }
+          }
+
+          console.log(`Validated all ${expected.length} versioned release artifacts for ${version}`);
+          NODE
+
       - name: Generate latest.json
         env:
-          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          TAG: ${{ needs.validate.outputs.tag }}
           REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
           VERSION="${TAG#v}"
           BASE="https://github.com/${REPOSITORY}/releases/download/${TAG}"
 
-          # Include only the platforms whose build actually produced artifacts.
-          # A failed Windows (or macOS) build no longer blocks the release — the
-          # surviving platform still ships. Missing platforms are loudly
-          # annotated (::warning::) and simply omitted; the Tauri updater treats
-          # an absent platform key as "no update", so those users stay on their
-          # current version until a later release covers them. Fail only if
-          # NOTHING built (an empty manifest would be a broken release).
+          # The preceding completeness gate guarantees one signed universal
+          # macOS archive and both signed Windows updater installers.
           MAC_TAR_PATH="release/HQ_${VERSION}_universal.app.tar.gz" \
           MAC_SIG_PATH="release/HQ_${VERSION}_universal.app.tar.gz.sig" \
           WIN_X64_EXE_PATH="release/HQ_${VERSION}_x64-setup.exe" \
@@ -577,49 +781,32 @@ jobs:
           node --input-type=module <<'NODE'
           import fs from "node:fs";
 
-          const readSig = (path) => fs.readFileSync(path, "utf8").trim();
-          const has = (path) => !!path && fs.existsSync(path);
-          const warn = (m) => console.log(`::warning::${m}`);
+          const readSig = (path) => {
+            const signature = fs.readFileSync(path, "utf8").trim();
+            if (!signature) {
+              throw new Error(`Updater signature is empty: ${path}`);
+            }
+            return signature;
+          };
           const version = process.env.VERSION;
           const tag = process.env.TAG;
           const base = process.env.BASE;
 
-          const platforms = {};
-
           // macOS — one universal archive serves both arches.
-          if (has(process.env.MAC_TAR_PATH) && has(process.env.MAC_SIG_PATH)) {
-            const macSig = readSig(process.env.MAC_SIG_PATH);
-            const macUrl = `${base}/HQ_${version}_universal.app.tar.gz`;
-            platforms["darwin-aarch64"] = { signature: macSig, url: macUrl };
-            platforms["darwin-x86_64"] = { signature: macSig, url: macUrl };
-          } else {
-            warn("macOS artifacts missing — darwin-aarch64 / darwin-x86_64 omitted from latest.json (macOS users will not auto-update from this release).");
-          }
-
-          // Windows x86_64.
-          if (has(process.env.WIN_X64_EXE_PATH) && has(process.env.WIN_X64_SIG_PATH)) {
-            platforms["windows-x86_64"] = {
+          const macSig = readSig(process.env.MAC_SIG_PATH);
+          const macUrl = `${base}/HQ_${version}_universal.app.tar.gz`;
+          const platforms = {
+            "darwin-aarch64": { signature: macSig, url: macUrl },
+            "darwin-x86_64": { signature: macSig, url: macUrl },
+            "windows-x86_64": {
               signature: readSig(process.env.WIN_X64_SIG_PATH),
               url: `${base}/HQ_${version}_x64-setup.exe`,
-            };
-          } else {
-            warn("Windows x64 artifacts missing — windows-x86_64 omitted from latest.json (x64 users will not auto-update from this release).");
-          }
-
-          // Windows aarch64.
-          if (has(process.env.WIN_ARM64_EXE_PATH) && has(process.env.WIN_ARM64_SIG_PATH)) {
-            platforms["windows-aarch64"] = {
+            },
+            "windows-aarch64": {
               signature: readSig(process.env.WIN_ARM64_SIG_PATH),
               url: `${base}/HQ_${version}_arm64-setup.exe`,
-            };
-          } else {
-            warn("Windows arm64 artifacts missing — windows-aarch64 omitted from latest.json.");
-          }
-
-          if (Object.keys(platforms).length === 0) {
-            console.error("::error::No platform artifacts were produced — refusing to publish an empty latest.json.");
-            process.exit(1);
-          }
+            },
+          };
 
           const manifest = {
             version,
@@ -643,24 +830,279 @@ jobs:
       - name: Create versionless download aliases
         shell: bash
         env:
-          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          TAG: ${{ needs.validate.outputs.tag }}
         run: |
           set -euo pipefail
           VERSION="${TAG#v}"
           cd release
-          for pair in \
-            "HQ_${VERSION}_universal.dmg:HQ.dmg" \
-            "HQ_${VERSION}_x64-setup.exe:HQ_x64-setup.exe" \
-            "HQ_${VERSION}_arm64-setup.exe:HQ_arm64-setup.exe"; do
-            src="${pair%%:*}"; dst="${pair##*:}"
-            if [ -f "$src" ]; then cp "$src" "$dst"; echo "alias $dst -> $src"; else echo "skip (missing) $src"; fi
-          done
+          cp "HQ_${VERSION}_universal.dmg" HQ.dmg
+          cp "HQ_${VERSION}_x64-setup.exe" HQ_x64-setup.exe
+          cp "HQ_${VERSION}_arm64-setup.exe" HQ_arm64-setup.exe
 
-      - name: Create or update GitHub release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
-          name: HQ ${{ github.event.inputs.tag || github.ref_name }}
-          files: release/*
-          fail_on_unmatched_files: true
-          generate_release_notes: true
+      # Creating a public release before all files finish uploading can expose
+      # a partial product if the runner dies mid-upload. Resolve the tag across
+      # authenticated paginated release results (which include drafts), then
+      # mutate only a missing or hidden-draft release.
+      - name: Resolve atomic release state
+        id: release-plan
+        env:
+          TAG: ${{ needs.validate.outputs.tag }}
+          PRERELEASE: ${{ needs.validate.outputs.prerelease }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          releases_json="${RUNNER_TEMP}/github-releases.json"
+          plan_json="${RUNNER_TEMP}/release-plan.json"
+
+          gh api --paginate --slurp \
+            "repos/${REPOSITORY}/releases?per_page=100" \
+            > "$releases_json"
+          node .release-control/scripts/release-asset-contract.mjs plan \
+            --releases "$releases_json" \
+            --directory release \
+            --tag "$TAG" \
+            --prerelease "$PRERELEASE" \
+            > "$plan_json"
+          cat "$plan_json"
+
+          action="$(jq -r '.action' "$plan_json")"
+          release_id="$(jq -r '.releaseId // ""' "$plan_json")"
+          case "$action" in
+            create-draft)
+              test -z "$release_id"
+              ;;
+            reset-draft|already-published)
+              [[ "$release_id" =~ ^[0-9]+$ ]]
+              ;;
+            *)
+              echo "::error::Invalid release plan action: ${action}"
+              exit 1
+              ;;
+          esac
+
+          echo "action=${action}" >> "$GITHUB_OUTPUT"
+          echo "release_id=${release_id}" >> "$GITHUB_OUTPUT"
+
+      - name: Create or reset hidden draft GitHub release
+        id: draft-release
+        if: ${{ steps.release-plan.outputs.action != 'already-published' }}
+        env:
+          TAG: ${{ needs.validate.outputs.tag }}
+          PRERELEASE: ${{ needs.validate.outputs.prerelease }}
+          REPOSITORY: ${{ github.repository }}
+          RELEASE_ACTION: ${{ steps.release-plan.outputs.action }}
+          PLANNED_RELEASE_ID: ${{ steps.release-plan.outputs.release_id }}
+        run: |
+          set -euo pipefail
+          if [ "$RELEASE_ACTION" = "create-draft" ]; then
+            release_json="$(
+              jq -n \
+                --arg tag "$TAG" \
+                --arg name "HQ ${TAG}" \
+                --argjson prerelease "$PRERELEASE" \
+                '{
+                  tag_name: $tag,
+                  name: $name,
+                  draft: true,
+                  prerelease: $prerelease,
+                  generate_release_notes: true
+                }' |
+                gh api --method POST "repos/${REPOSITORY}/releases" --input -
+            )"
+            release_id="$(jq -r '.id' <<<"$release_json")"
+            echo "Created hidden draft release ${TAG} (${release_id})."
+          elif [ "$RELEASE_ACTION" = "reset-draft" ]; then
+            release_id="$PLANNED_RELEASE_ID"
+            release_json="$(
+              gh api "repos/${REPOSITORY}/releases/${release_id}"
+            )"
+            echo "Reusing hidden draft release ${TAG} (${release_id})."
+          else
+            echo "::error::Refusing unsupported draft action ${RELEASE_ACTION}."
+            exit 1
+          fi
+
+          if ! [[ "$release_id" =~ ^[0-9]+$ ]]; then
+            echo "::error::GitHub returned an invalid release id: ${release_id}"
+            exit 1
+          fi
+          jq -e \
+            --arg tag "$TAG" \
+            --arg name "HQ ${TAG}" \
+            --argjson prerelease "$PRERELEASE" \
+            '.tag_name == $tag and .name == $name and
+             .draft == true and .prerelease == $prerelease' \
+            <<<"$release_json" >/dev/null
+
+          # A failed prior attempt may have left a partial hidden draft. Empty
+          # it before retrying so the remote exact-set check is deterministic.
+          asset_ids="$(
+            gh api --paginate \
+              "repos/${REPOSITORY}/releases/${release_id}/assets?per_page=100" \
+              --jq '.[].id'
+          )"
+          if [ -n "$asset_ids" ]; then
+            while IFS= read -r asset_id; do
+              gh api --method DELETE \
+                "repos/${REPOSITORY}/releases/assets/${asset_id}"
+            done <<<"$asset_ids"
+          fi
+
+          echo "release_id=${release_id}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload complete asset set to draft
+        if: ${{ steps.release-plan.outputs.action != 'already-published' }}
+        env:
+          TAG: ${{ needs.validate.outputs.tag }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" release/* -R "$REPOSITORY"
+
+      - name: Verify exact draft release asset set
+        if: ${{ steps.release-plan.outputs.action != 'already-published' }}
+        env:
+          TAG: ${{ needs.validate.outputs.tag }}
+          PRERELEASE: ${{ needs.validate.outputs.prerelease }}
+          RELEASE_ID: ${{ steps.draft-release.outputs.release_id }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          release_json="${RUNNER_TEMP}/draft-release.json"
+          asset_json="${RUNNER_TEMP}/release-assets.json"
+
+          verified="false"
+          for attempt in 1 2 3 4 5; do
+            if gh api "repos/${REPOSITORY}/releases/${RELEASE_ID}" \
+                 > "$release_json" &&
+               gh api --paginate --slurp \
+                 "repos/${REPOSITORY}/releases/${RELEASE_ID}/assets?per_page=100" \
+                 > "$asset_json" &&
+               node .release-control/scripts/release-asset-contract.mjs verify \
+                 --release "$release_json" \
+                 --assets "$asset_json" \
+                 --directory release \
+                 --tag "$TAG" \
+                 --prerelease "$PRERELEASE" \
+                 --draft true \
+                 --match-bytes true; then
+              verified="true"
+              break
+            fi
+            if [ "$attempt" -lt 5 ]; then
+              sleep 2
+            fi
+          done
+          if [ "$verified" != "true" ]; then
+            echo "::error::Hidden draft never reached the complete uploaded asset contract."
+            exit 1
+          fi
+
+      # The early validation protects against obvious rollbacks before the
+      # expensive native builds. This second check runs inside the global
+      # publication lock immediately before the only public-state mutation.
+      - name: Revalidate stable publication order
+        if: ${{ needs.validate.outputs.channel == 'stable' && steps.release-plan.outputs.action != 'already-published' }}
+        env:
+          TARGET_REPOSITORY: ${{ github.repository }}
+          TARGET_TAG: ${{ needs.validate.outputs.tag }}
+        run: |
+          set -euo pipefail
+          node .release-control/scripts/release-stable-order.mjs stable-order \
+            --repository "$TARGET_REPOSITORY" \
+            --tag "$TARGET_TAG"
+
+      - name: Publish verified GitHub release
+        if: ${{ steps.release-plan.outputs.action != 'already-published' }}
+        env:
+          TAG: ${{ needs.validate.outputs.tag }}
+          PRERELEASE: ${{ needs.validate.outputs.prerelease }}
+          MAKE_LATEST: ${{ needs.validate.outputs.make_latest }}
+          RELEASE_ID: ${{ steps.draft-release.outputs.release_id }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          release_json="$(
+            jq -n \
+              --argjson prerelease "$PRERELEASE" \
+              --arg make_latest "$MAKE_LATEST" \
+              '{
+                draft: false,
+                prerelease: $prerelease,
+                make_latest: $make_latest
+              }' |
+              gh api --method PATCH \
+                "repos/${REPOSITORY}/releases/${RELEASE_ID}" \
+                --input -
+          )"
+
+          jq -e \
+            --arg tag "$TAG" \
+            --argjson prerelease "$PRERELEASE" \
+            '.tag_name == $tag and .draft == false and .prerelease == $prerelease' \
+            <<<"$release_json" >/dev/null
+          echo "Published verified release ${TAG} (prerelease=${PRERELEASE}, make_latest=${MAKE_LATEST})."
+
+      # This also makes an ambiguous rerun idempotent: if GitHub published but
+      # the previous runner lost the PATCH response, the resolver accepts the
+      # already-public release only after its remote-only contract is healthy.
+      - name: Confirm public release and channel isolation
+        env:
+          TAG: ${{ needs.validate.outputs.tag }}
+          VERSION: ${{ needs.validate.outputs.version }}
+          PRERELEASE: ${{ needs.validate.outputs.prerelease }}
+          MAKE_LATEST: ${{ needs.validate.outputs.make_latest }}
+          REPOSITORY: ${{ github.repository }}
+          PLANNED_RELEASE_ID: ${{ steps.release-plan.outputs.release_id }}
+          DRAFT_RELEASE_ID: ${{ steps.draft-release.outputs.release_id }}
+          RELEASE_ACTION: ${{ steps.release-plan.outputs.action }}
+        run: |
+          set -euo pipefail
+          if [ "$RELEASE_ACTION" = "already-published" ]; then
+            release_id="$PLANNED_RELEASE_ID"
+            match_bytes="false"
+          else
+            release_id="$DRAFT_RELEASE_ID"
+            match_bytes="true"
+          fi
+          if ! [[ "$release_id" =~ ^[0-9]+$ ]]; then
+            echo "::error::Cannot confirm invalid release id ${release_id}."
+            exit 1
+          fi
+
+          release_json="${RUNNER_TEMP}/public-release.json"
+          asset_json="${RUNNER_TEMP}/public-release-assets.json"
+          verified="false"
+          for attempt in 1 2 3 4 5; do
+            if gh api "repos/${REPOSITORY}/releases/${release_id}" \
+                 > "$release_json" &&
+               gh api --paginate --slurp \
+                 "repos/${REPOSITORY}/releases/${release_id}/assets?per_page=100" \
+                 > "$asset_json" &&
+               node .release-control/scripts/release-asset-contract.mjs verify \
+                 --release "$release_json" \
+                 --assets "$asset_json" \
+                 --directory release \
+                 --tag "$TAG" \
+                 --prerelease "$PRERELEASE" \
+                 --draft false \
+                 --match-bytes "$match_bytes"; then
+              verified="true"
+              break
+            fi
+            if [ "$attempt" -lt 5 ]; then
+              sleep 2
+            fi
+          done
+          if [ "$verified" != "true" ]; then
+            echo "::error::Public release never reached the verified asset contract."
+            exit 1
+          fi
+          node .release-control/scripts/release-asset-contract.mjs manifest \
+            --repository "$REPOSITORY" \
+            --tag "$TAG" \
+            --version "$VERSION"
+          node .release-control/scripts/release-stable-order.mjs confirm-channel \
+            --repository "$REPOSITORY" \
+            --tag "$TAG" \
+            --make-latest "$MAKE_LATEST"

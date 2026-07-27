@@ -184,8 +184,9 @@ describe('DESKTOP-005: project workspace', () => {
     expect(projects).toContain('let loadedSlug: string | null = null');
     expect(projects).toContain('const companyChanged = loadedSlug !== activeSlug');
     expect(projects).toContain('if (companyChanged) {');
+    expect(projects).toContain('const selectedIdentity = projectIdentity(selected)');
     expect(projects).toContain(
-      'selected = allProjects.find((project) => project.id === selected?.id) ?? selected',
+      'allProjects.find((project) => projectIdentity(project) === selectedIdentity)',
     );
 
     const resetBlock = projects.match(/if \(companyChanged\) \{([\s\S]*?)\n    \}/)?.[1] ?? '';
@@ -216,11 +217,11 @@ describe('DESKTOP-005: project workspace', () => {
 
   it('keeps main canvas naked with rounded task cards only; five type roles + 3px stack', () => {
     expect(V4_TYPE_SCALE).toEqual({
-      metadata: 10,
-      secondary: 11,
-      body: 12,
+      metadata: 13,
+      secondary: 13,
+      body: 14,
       section: 14,
-      detail: 18,
+      detail: 14,
     });
     expect(V4_ROW_STACK_GAP_PX).toBe(3);
     expect(detail).toContain('--type-detail');

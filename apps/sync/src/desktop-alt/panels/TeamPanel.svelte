@@ -141,7 +141,13 @@
 
   function memberListMeta(member: TeamMember): string {
     const typeRole = memberTypeRoleLabel(member);
-    const parts: string[] = [typeRole];
+    const parts: string[] = [];
+    if (member.email && member.email !== member.displayName) {
+      parts.push(member.email);
+    }
+    if (typeRole !== memberKindLabel(member.kind)) {
+      parts.push(typeRole);
+    }
     if (member.sessions != null) {
       parts.push(`${member.sessions} ${member.sessions === 1 ? 'session' : 'sessions'}`);
     }
@@ -324,6 +330,11 @@
                     {memberKindLabel(selectedMember.kind)}
                   </span>
                 </div>
+                {#if selectedMember.email && selectedMember.email !== selectedMember.displayName}
+                  <span class="team-detail-email" data-testid="team-detail-email">
+                    {selectedMember.email}
+                  </span>
+                {/if}
                 <span class="team-detail-meta" data-testid="team-detail-meta">
                   {memberTypeRoleLabel(selectedMember)}
                   {#if activitySummary(selectedMember)}
@@ -474,7 +485,7 @@
     flex: 1 1 auto;
     min-height: 0;
     min-width: 0;
-    border: 1px solid var(--v4-hairline);
+    border: 0;
     border-radius: 0;
     background: transparent;
     overflow: hidden;
@@ -527,9 +538,10 @@
   }
 
   .team-member-row.is-selected {
-    background: var(--v4-active-row);
+    background: transparent;
+    box-shadow: inset 0 -1px 0 var(--v4-hairline);
     color: var(--v4-text-1);
-    border-radius: 6px;
+    border-radius: 0;
   }
 
   .member-row-copy {
@@ -628,11 +640,18 @@
     line-height: 1.2;
   }
 
+  .team-detail-email,
   .team-detail-meta {
     color: var(--v4-text-3);
     font-size: var(--type-secondary, 11px);
     font-weight: 400;
     line-height: 1.3;
+  }
+
+  .team-detail-email {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .team-section {
@@ -685,8 +704,9 @@
 
   .team-error {
     margin: 0;
-    padding: 10px 12px;
-    border: 1px solid var(--v4-error, #f87171);
+    padding: 10px 0;
+    border: 0;
+    border-top: 1px solid var(--v4-rowline);
     border-radius: 0;
     background: transparent;
     font-size: var(--type-body, 12px);
@@ -699,7 +719,7 @@
     gap: var(--v4-row-stack-gap, 3px);
     justify-items: center;
     padding: 28px 20px;
-    border: 1px dashed var(--v4-hairline);
+    border: 0;
     border-radius: 0;
     background: transparent;
     text-align: center;
@@ -708,7 +728,6 @@
   .team-detail-empty {
     height: 100%;
     align-content: center;
-    border: 0;
   }
 
   .team-empty-title {
@@ -767,9 +786,12 @@
       background: var(--v4-bg, #fff);
     }
 
-    .team-member-row.is-selected,
     .team-member-row:hover {
       background: var(--v4-control-faint, rgba(0, 0, 0, 0.06));
+    }
+
+    .team-member-row.is-selected {
+      background: transparent;
     }
   }
 </style>

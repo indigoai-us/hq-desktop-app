@@ -1,13 +1,19 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { getVersion } from '@tauri-apps/api/app';
-  import { emit } from '@tauri-apps/api/event';
+  import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { open as openUrl } from '@tauri-apps/plugin-shell';
   import { formatHqFolderMeta, type SettingsTab } from '../route';
   import { emitDesktopTelemetry } from '../../lib/desktop-telemetry';
   import { postOptIn } from '../../lib/onboarding-telemetry';
   import { permissionState, loadMeetingPermissions } from '../../lib/permissionState.svelte';
   import { packUpdateTitle } from '../../lib/packUpdate';
+  import {
+    resolvePendingUpdateState,
+    type PendingUpdateState,
+  } from '../../lib/notificationFeedData';
+  import { updateSettings, type SettingsPatch } from '../../lib/settings-mutations';
   import WidgetSettings from '../../components/WidgetSettings.svelte';
   import '../v4/tokens.css';
 
@@ -41,6 +47,12 @@
     } | null;
     defaultRecordingCompanyUid?: string | null;
     telemetryEnabled?: boolean | null;
+  }
+
+  interface UpdateInfo {
+    version: string;
+    body?: string;
+    date?: string;
   }
 
   type DriftEntry = {
@@ -90,13 +102,28 @@
   let memberships = $state<CompanyMembership[]>([]);
 
   let loading = $state(true);
+  // Controls render immediately for stable layout, but must stay inert until
+  // persisted preferences load successfully. Otherwise a fast click can save
+  // the component defaults over the user's real menubar.json values.
+  let settingsReady = $state(false);
   let saved = $state(false);
   let error = $state<string | null>(null);
+  let savedTimeout: ReturnType<typeof setTimeout> | null = null;
+  let settingsSaveGeneration = 0;
+  // Settings hydration can be started by mount, Retry, or window focus. Keep
+  // responses monotonic so an older request can never replace newer state.
+  let settingsLoadGeneration = 0;
+  let settingsLoadsInFlight = 0;
+  // Local saves are serialized by updateSettings, but focus hydration is a
+  // separate read. Defer that read until every optimistic save has settled so
+  // a pre-save snapshot cannot flip a newly changed control back.
+  let settingsSavesInFlight = 0;
+  let refreshAfterSettingsSaves = false;
   // GA gate (any signed-in user) — from `meetings_feature_enabled`. Gates the
   // Meeting-detection row, which graduated out of the Indigo dogfood.
-  let isIndigoUser = $state(false);
+  let meetingsEnabled = $state(false);
   // True @getindigo.ai gate — from `is_indigo_user`. Gates the builder-only
-  // staging-channel row. Kept separate from `isIndigoUser` above because
+  // staging-channel row. Kept separate from `meetingsEnabled` above because
   // `meetings_feature_enabled` is now GA: keying the staging row off it would
   // hand the @getindigo.ai-only control to every signed-in user.
   let isIndigoBuilder = $state(false);
@@ -141,6 +168,9 @@
   let updateChecking = $state(false);
   let updateResult = $state<string | null>(null);
   let updateResultTimeout: ReturnType<typeof setTimeout> | null = null;
+  let appUpdate = $state<UpdateInfo | null>(null);
+  let appUpdateInstalling = $state(false);
+  let appUpdateLoadGeneration = 0;
 
   // hq CLI update notice — loaded via check_hq_cli_update; null = hide card.
   let hqCliUpdate = $state<{ local: string | null; latest: string } | null>(null);
@@ -182,7 +212,46 @@
       : `Restore v${coreState.targetVersion}`;
   });
 
-  $effect(() => {
+  onMount(() => {
+    let cancelled = false;
+    let unlistenUpdate: UnlistenFn | undefined;
+    let unlistenUpdateCleared: UnlistenFn | undefined;
+
+    // Register before hydration so a background checker event cannot race
+    // get_pending_update while Settings is mounting.
+    void (async () => {
+      try {
+        const [availableFn, clearedFn] = await Promise.all([
+          listen<UpdateInfo>('update:available', (event) => {
+            if (cancelled || !event.payload?.version) return;
+            appUpdateLoadGeneration += 1;
+            appUpdate = event.payload;
+            updateResult = null;
+          }),
+          listen('update:cleared', () => {
+            if (cancelled) return;
+            appUpdateLoadGeneration += 1;
+            appUpdate = null;
+            appUpdateInstalling = false;
+            updateResult = null;
+            if (updateResultTimeout) {
+              clearTimeout(updateResultTimeout);
+              updateResultTimeout = null;
+            }
+          }),
+        ]);
+        if (cancelled) {
+          availableFn();
+          clearedFn();
+          return;
+        }
+        unlistenUpdate = availableFn;
+        unlistenUpdateCleared = clearedFn;
+      } catch (err) {
+        console.error('settings: failed to listen for updater state', err);
+      }
+    })();
+
     void loadSettings();
     void loadNotifPermission();
     void loadUpdateSurfaces();
@@ -200,9 +269,14 @@
     };
     window.addEventListener('focus', onFocus);
     return () => {
+      cancelled = true;
+      appUpdateLoadGeneration += 1;
+      unlistenUpdate?.();
+      unlistenUpdateCleared?.();
       window.removeEventListener('focus', onFocus);
       if (updateResultTimeout) clearTimeout(updateResultTimeout);
       if (coreInstallResultTimeout) clearTimeout(coreInstallResultTimeout);
+      if (savedTimeout) clearTimeout(savedTimeout);
     };
   });
 
@@ -211,14 +285,59 @@
   $effect(() => {
     const id = activeTab;
     if (loading) return;
-    document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    const target = document.getElementById(id);
+    const scroller = target?.closest<HTMLElement>('.desktop-main-scroll');
+    if (!target || !scroller) return;
+    const top =
+      target.getBoundingClientRect().top -
+      scroller.getBoundingClientRect().top +
+      scroller.scrollTop -
+      12;
+    scroller.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
   });
 
+  function applyPersistedSettings(
+    settings: SettingsWire,
+    membershipsWire: CompanyMembership[] | null | undefined,
+  ): void {
+    // Keep the persisted path byte-for-byte intact. In particular, Windows
+    // verbatim paths (\\?\C:\... and \\?\UNC\...) need their prefix for
+    // long-path filesystem operations; formatHqFolderMeta handles display.
+    hqPath = settings.hqPath;
+    syncOnLaunch = settings.syncOnLaunch ?? true;
+    realtimeSync = settings.realtimeSync ?? true;
+    personalSyncEnabled = settings.personalSyncEnabled ?? true;
+    instantSync = settings.instantSync ?? true;
+    notifications = settings.notifications ?? true;
+    shareNotifications = settings.shareNotifications ?? true;
+    dmNotifications = settings.dmNotifications ?? true;
+    cliAutoUpdate = settings.cliAutoUpdate ?? true;
+    autoUpdate = settings.autoUpdate ?? true;
+    stagingChannel = settings.stagingChannel ?? true;
+    startAtLogin = settings.startAtLogin ?? true;
+    meetingDetectEnabled = settings.meetingDetectNotify?.enabled ?? true;
+    meetingDetectPlatforms = settings.meetingDetectNotify?.platforms ?? [...platforms];
+    // Keep only active memberships; validate the stored default against the
+    // live list so a revoked-access default falls back to Personal (null).
+    const membershipRows = Array.isArray(membershipsWire) ? membershipsWire : [];
+    memberships = membershipRows.filter((membership) => membership.status === 'active');
+    const storedUid = settings.defaultRecordingCompanyUid ?? null;
+    defaultRecordingCompanyUid =
+      storedUid && memberships.some((membership) => membership.companyUid === storedUid)
+        ? storedUid
+        : null;
+    telemetryEnabled = settings.telemetryEnabled ?? true;
+    releaseChannel = isChannel(settings.releaseChannel) ? settings.releaseChannel : null;
+  }
+
   async function loadSettings() {
+    const generation = ++settingsLoadGeneration;
+    settingsLoadsInFlight += 1;
     loading = true;
+    settingsReady = false;
     error = null;
     try {
-      const [settings, indigoUser, indigoBuilder, channels, memberships_] = await Promise.all([
+      const [settings, meetingsFeatureEnabled, indigoBuilder, channels, memberships_] = await Promise.all([
         invoke<SettingsWire>('get_settings'),
         invoke<boolean>('meetings_feature_enabled').catch(() => false),
         // True @getindigo.ai gate for the staging-channel row (NOT the GA
@@ -229,38 +348,17 @@
         // block the rest of Settings from rendering → degrade to Personal-only.
         invoke<CompanyMembership[]>('meetings_list_memberships').catch(() => []),
       ]);
-      // Keep the persisted path byte-for-byte intact. In particular, Windows
-      // verbatim paths (\\?\C:\... and \\?\UNC\...) need their prefix for
-      // long-path filesystem operations; formatHqFolderMeta handles display.
-      hqPath = settings.hqPath;
-      syncOnLaunch = settings.syncOnLaunch ?? true;
-      realtimeSync = settings.realtimeSync ?? true;
-      personalSyncEnabled = settings.personalSyncEnabled ?? true;
-      instantSync = settings.instantSync ?? true;
-      notifications = settings.notifications ?? true;
-      shareNotifications = settings.shareNotifications ?? true;
-      dmNotifications = settings.dmNotifications ?? true;
-      cliAutoUpdate = settings.cliAutoUpdate ?? true;
-      autoUpdate = settings.autoUpdate ?? true;
-      stagingChannel = settings.stagingChannel ?? true;
-      startAtLogin = settings.startAtLogin ?? true;
-      meetingDetectEnabled = settings.meetingDetectNotify?.enabled ?? true;
-      meetingDetectPlatforms = settings.meetingDetectNotify?.platforms ?? [...platforms];
-      // Keep only active memberships; validate the stored default against the
-      // live list so a revoked-access default falls back to Personal (null).
-      memberships = (memberships_ ?? []).filter((m) => m.status === 'active');
-      const storedUid = settings.defaultRecordingCompanyUid ?? null;
-      defaultRecordingCompanyUid =
-        storedUid && memberships.some((m) => m.companyUid === storedUid) ? storedUid : null;
-      telemetryEnabled = settings.telemetryEnabled ?? true;
-      isIndigoUser = indigoUser;
+      if (generation !== settingsLoadGeneration) return;
+      applyPersistedSettings(settings, memberships_);
+      meetingsEnabled = meetingsFeatureEnabled;
       isIndigoBuilder = indigoBuilder;
-      availableChannels = channels.filter(isChannel);
-      releaseChannel = isChannel(settings.releaseChannel) ? settings.releaseChannel : null;
+      availableChannels = (Array.isArray(channels) ? channels : []).filter(isChannel);
+      settingsReady = true;
     } catch (err) {
-      error = String(err);
+      if (generation === settingsLoadGeneration) error = String(err);
     } finally {
-      loading = false;
+      settingsLoadsInFlight -= 1;
+      if (generation === settingsLoadGeneration) loading = false;
     }
   }
 
@@ -272,7 +370,7 @@
     meetingDetectPlatforms = meetingDetectPlatforms.includes(platform)
       ? meetingDetectPlatforms.filter((item) => item !== platform)
       : [...meetingDetectPlatforms, platform];
-    void saveSettings();
+    void saveMeetingDetection();
   }
 
   // Re-tether the HQ folder — mirrors the classic Settings "Change…" button so a
@@ -283,7 +381,7 @@
       const picked = await invoke<string | null>('pick_folder');
       if (picked !== null) {
         hqPath = picked;
-        await saveSettings();
+        await saveSettings({ hqPath });
       }
     } catch (err) {
       error = String(err);
@@ -301,42 +399,69 @@
     }
   }
 
-  async function saveSettings() {
+  /**
+   * Persist only the field changed by the initiating control. updateSettings
+   * serializes this patch with WidgetSettings and VersionPopout, then merges it
+   * over the latest on-disk preferences immediately before saving.
+   */
+  async function saveSettings(patch: SettingsPatch): Promise<boolean> {
+    const generation = ++settingsSaveGeneration;
+    settingsSavesInFlight += 1;
+    // Invalidate any pre-save focus read. Once the save queue drains we re-read
+    // if that hydration was superseded, preserving both the optimistic value
+    // and any external changes included in the newer persisted snapshot.
+    if (settingsLoadsInFlight > 0) refreshAfterSettingsSaves = true;
+    settingsLoadGeneration += 1;
     error = null;
     try {
-      await invoke('save_settings', {
-        prefs: {
-          hqPath,
-          syncOnLaunch,
-          notifications,
-          startAtLogin,
-          realtimeSync,
-          personalSyncEnabled,
-          instantSync,
-          shareNotifications,
-          dmNotifications,
-          cliAutoUpdate,
-          autoUpdate,
-          stagingChannel,
-          releaseChannel,
-          meetingDetectNotify: {
-            enabled: meetingDetectEnabled,
-            platforms: meetingDetectPlatforms,
-          },
-          defaultRecordingCompanyUid,
-          telemetryEnabled,
-        },
-      });
-      window.dispatchEvent(
-        new CustomEvent('hq:workspace-sync-enabled-changed', {
-          detail: { slug: 'personal', enabled: personalSyncEnabled },
-        }),
-      );
-      saved = true;
-      window.setTimeout(() => (saved = false), 1000);
+      await updateSettings(patch);
+      if ('personalSyncEnabled' in patch) {
+        window.dispatchEvent(
+          new CustomEvent('hq:workspace-sync-enabled-changed', {
+            detail: {
+              slug: 'personal',
+              enabled: Boolean(patch.personalSyncEnabled),
+            },
+          }),
+        );
+      }
+      if (generation === settingsSaveGeneration) {
+        saved = true;
+        if (savedTimeout) clearTimeout(savedTimeout);
+        savedTimeout = setTimeout(() => {
+          saved = false;
+          savedTimeout = null;
+        }, 1000);
+      }
+      return true;
     } catch (err) {
-      error = String(err);
+      // Only the newest failed action may reconcile the optimistic controls.
+      // An older queued failure must not overwrite a newer patch that is still
+      // waiting to persist.
+      // Every failure still requires one reconciliation after the queue drains:
+      // otherwise an older failed toggle can stay optimistic after a newer
+      // patch succeeds without it.
+      refreshAfterSettingsSaves = true;
+      if (generation === settingsSaveGeneration) {
+        error = String(err);
+      }
+      return false;
+    } finally {
+      settingsSavesInFlight -= 1;
+      if (settingsSavesInFlight === 0 && refreshAfterSettingsSaves) {
+        refreshAfterSettingsSaves = false;
+        await refreshSettingsSilently({ preserveError: error !== null });
+      }
     }
+  }
+
+  function saveMeetingDetection(): Promise<boolean> {
+    return saveSettings({
+      meetingDetectNotify: {
+        enabled: meetingDetectEnabled,
+        platforms: [...meetingDetectPlatforms],
+      },
+    });
   }
 
   async function auditTelemetryPreferenceChanged(enabled: boolean) {
@@ -351,7 +476,7 @@
     if (!next) {
       await auditTelemetryPreferenceChanged(next);
     }
-    await saveSettings();
+    if (!(await saveSettings({ telemetryEnabled: next }))) return;
     await postOptIn({ enabled: next });
     if (next) {
       await auditTelemetryPreferenceChanged(next);
@@ -368,7 +493,7 @@
   // Auto-sync drives whether the background daemon runs at all. Start or stop
   // it immediately so the change takes effect without an app restart.
   async function applyRealtimeSync() {
-    await saveSettings();
+    if (!(await saveSettings({ realtimeSync }))) return;
     try {
       if (realtimeSync) {
         await invoke('start_daemon');
@@ -385,7 +510,7 @@
   // daemon is already running, bounce it so the new flag takes effect now; if
   // Auto-sync is off there's no process to bounce — the next start picks it up.
   async function applyInstantSync() {
-    await saveSettings();
+    if (!(await saveSettings({ instantSync }))) return;
     if (!realtimeSync) return;
     try {
       await invoke('stop_daemon');
@@ -398,12 +523,12 @@
   // Start-at-login must reconcile the macOS LaunchAgent plist, not just persist
   // the flag — otherwise the login item never actually changes.
   async function applyStartAtLogin() {
+    if (!(await saveSettings({ startAtLogin }))) return;
     try {
       await invoke('set_autostart_enabled', { enabled: startAtLogin });
     } catch (err) {
       console.error('Failed to set autostart:', err);
     }
-    await saveSettings();
   }
 
   // OS-level macOS notification authorization (non-prompting). Hidden until
@@ -448,10 +573,29 @@
   // failed check_* never blocks the rest of Settings.
   async function loadUpdateSurfaces() {
     await Promise.all([
+      refreshPendingAppUpdate(),
       refreshHqCliUpdate(),
       refreshPackUpdate(),
       refreshCoreState(),
     ]);
+  }
+
+  async function refreshPendingAppUpdate() {
+    if (appUpdateInstalling) return;
+    const generation = ++appUpdateLoadGeneration;
+    try {
+      const pending = await invoke<PendingUpdateState | UpdateInfo | null>(
+        'get_pending_update',
+      );
+      if (generation !== appUpdateLoadGeneration) return;
+      const resolved = resolvePendingUpdateState(pending);
+      if (resolved.state === 'resolved') {
+        appUpdate = resolved.value;
+      }
+    } catch (err) {
+      if (generation !== appUpdateLoadGeneration) return;
+      console.error('get_pending_update failed:', err);
+    }
   }
 
   async function refreshHqCliUpdate() {
@@ -499,10 +643,9 @@
     updateResult = null;
     if (updateResultTimeout) clearTimeout(updateResultTimeout);
     try {
-      const info = await invoke<{ version: string; body?: string; date?: string } | null>(
-        'check_for_updates',
-      );
-      updateResult = info ? `v${info.version} ready` : 'Up to date';
+      const info = await invoke<UpdateInfo | null>('check_for_updates');
+      appUpdate = info;
+      updateResult = info ? null : 'Up to date';
     } catch (err) {
       console.error('check_for_updates failed:', err);
       updateResult = 'Check failed';
@@ -511,6 +654,23 @@
       updateResultTimeout = setTimeout(() => {
         updateResult = null;
       }, 4000);
+    }
+  }
+
+  async function handleInstallAppUpdate() {
+    if (!appUpdate || appUpdateInstalling) return;
+    appUpdateInstalling = true;
+    updateResult = null;
+    if (updateResultTimeout) clearTimeout(updateResultTimeout);
+    try {
+      // The backend downloads, installs, and restarts the app. On macOS this
+      // call normally never returns because the process is replaced.
+      await invoke('install_update');
+      updateResult = 'Restarting…';
+    } catch (err) {
+      console.error('install_update failed:', err);
+      updateResult = 'Install failed';
+      appUpdateInstalling = false;
     }
   }
 
@@ -653,37 +813,39 @@
     }
   }
 
-  // Re-read just the persisted prefs (no loading flash) so a change made in the
-  // menubar popover while this window is open reflects here on focus. The indigo
-  // gate, channel list, and memberships are process-stable, so they're skipped.
-  async function refreshSettingsSilently() {
+  // Re-read persisted prefs without a loading flash so a change made in the
+  // menubar popover reflects here on focus. Memberships are refreshed too:
+  // access can be revoked while the window is open, and a stored recording
+  // default must never revive after its membership disappears.
+  async function refreshSettingsSilently(
+    { preserveError = false }: { preserveError?: boolean } = {},
+  ) {
+    if (settingsSavesInFlight > 0) {
+      refreshAfterSettingsSaves = true;
+      return;
+    }
+    const generation = ++settingsLoadGeneration;
+    settingsLoadsInFlight += 1;
     try {
-      const settings = await invoke<SettingsWire>('get_settings');
-      hqPath = settings.hqPath;
-      syncOnLaunch = settings.syncOnLaunch ?? true;
-      realtimeSync = settings.realtimeSync ?? true;
-      personalSyncEnabled = settings.personalSyncEnabled ?? true;
-      instantSync = settings.instantSync ?? true;
-      notifications = settings.notifications ?? true;
-      shareNotifications = settings.shareNotifications ?? true;
-      dmNotifications = settings.dmNotifications ?? true;
-      cliAutoUpdate = settings.cliAutoUpdate ?? true;
-      autoUpdate = settings.autoUpdate ?? true;
-      stagingChannel = settings.stagingChannel ?? true;
-      startAtLogin = settings.startAtLogin ?? true;
-      meetingDetectEnabled = settings.meetingDetectNotify?.enabled ?? true;
-      meetingDetectPlatforms = settings.meetingDetectNotify?.platforms ?? [...platforms];
-      defaultRecordingCompanyUid = settings.defaultRecordingCompanyUid ?? null;
-      telemetryEnabled = settings.telemetryEnabled ?? true;
-      releaseChannel = isChannel(settings.releaseChannel) ? settings.releaseChannel : null;
+      const [settings, memberships_] = await Promise.all([
+        invoke<SettingsWire>('get_settings'),
+        invoke<CompanyMembership[]>('meetings_list_memberships').catch(() => memberships),
+      ]);
+      if (generation !== settingsLoadGeneration) return;
+      applyPersistedSettings(settings, memberships_);
+      if (!preserveError) error = null;
+      settingsReady = true;
     } catch {
       // Non-fatal — keep showing the last-known values.
+    } finally {
+      settingsLoadsInFlight -= 1;
     }
   }
 
-  $effect(() => {
+  onMount(() => {
     const onFocus = () => {
-      void refreshSettingsSilently();
+      if (settingsReady) void refreshSettingsSilently();
+      else void loadSettings();
     };
     window.addEventListener('focus', onFocus);
     return () => window.removeEventListener('focus', onFocus);
@@ -700,9 +862,20 @@
     </header>
 
     {#if error}
-      <p class="error" role="alert">{error}</p>
+      <div class="error" role="alert">
+        <span>{error}</span>
+        <button
+          type="button"
+          data-testid="settings-retry-load"
+          disabled={loading}
+          onclick={() => void loadSettings()}
+        >
+          {loading ? 'Retrying…' : 'Retry'}
+        </button>
+      </div>
     {/if}
 
+    <fieldset class="settings-controls" disabled={!settingsReady}>
     <section id="sync" class="settings-section">
       <h2>Sync</h2>
       <div class="settings-card">
@@ -710,19 +883,19 @@
           <div><strong>HQ folder</strong><span>{hqPathLabel}</span></div>
           <button type="button" class="row-button" onclick={handlePickFolder}>Change…</button>
         </div>
-        <label class="setting-row"><span><strong>Sync on launch</strong><small>Run a sync when the app starts.</small></span><input type="checkbox" bind:checked={syncOnLaunch} onchange={saveSettings} /></label>
+        <label class="setting-row"><span><strong>Sync on launch</strong><small>Run a sync when the app starts.</small></span><input type="checkbox" bind:checked={syncOnLaunch} onchange={() => void saveSettings({ syncOnLaunch })} /></label>
         <label class="setting-row"><span><strong>Auto-sync</strong><small>Sync every few minutes in the background.</small></span><input type="checkbox" bind:checked={realtimeSync} onchange={applyRealtimeSync} /></label>
         <label class="setting-row"><span><strong>Instant sync</strong><small>Push local edits within seconds when eligible.</small></span><input type="checkbox" bind:checked={instantSync} onchange={applyInstantSync} /></label>
-        <label class="setting-row"><span><strong>Sync personal vault</strong><small>Include personal HQ files in the fanout.</small></span><input type="checkbox" bind:checked={personalSyncEnabled} onchange={saveSettings} /></label>
+        <label class="setting-row"><span><strong>Sync personal vault</strong><small>Include personal HQ files in the fanout.</small></span><input type="checkbox" bind:checked={personalSyncEnabled} onchange={() => void saveSettings({ personalSyncEnabled })} /></label>
       </div>
     </section>
 
     <section id="notifications" class="settings-section">
       <h2>Notifications</h2>
       <div class="settings-card">
-        <label class="setting-row"><span><strong>Sync notifications</strong><small>Notify when sync needs attention.</small></span><input type="checkbox" bind:checked={notifications} onchange={saveSettings} /></label>
-        <label class="setting-row"><span><strong>Share notifications</strong><small>Show file-share activity from teammates.</small></span><input type="checkbox" bind:checked={shareNotifications} onchange={saveSettings} /></label>
-        <label class="setting-row"><span><strong>DM notifications</strong><small>Show direct messages in the menu bar.</small></span><input type="checkbox" bind:checked={dmNotifications} onchange={saveSettings} /></label>
+        <label class="setting-row"><span><strong>Sync notifications</strong><small>Notify when sync needs attention.</small></span><input type="checkbox" bind:checked={notifications} onchange={() => void saveSettings({ notifications })} /></label>
+        <label class="setting-row"><span><strong>Share notifications</strong><small>Show file-share activity from teammates.</small></span><input type="checkbox" bind:checked={shareNotifications} onchange={() => void saveSettings({ shareNotifications })} /></label>
+        <label class="setting-row"><span><strong>DM notifications</strong><small>Show direct messages in the menu bar.</small></span><input type="checkbox" bind:checked={dmNotifications} onchange={() => void saveSettings({ dmNotifications })} /></label>
         <!-- macOS permission monitor — OS authorization, separate from the
              in-app toggles above. Hidden until the first state read resolves. -->
         {#if notifPermission !== 'unknown'}
@@ -765,7 +938,7 @@
     <section id="widget" class="settings-section">
       <h2>Widget</h2>
       <div class="settings-card">
-        <WidgetSettings />
+        <WidgetSettings showLoadError={false} />
       </div>
     </section>
 
@@ -776,22 +949,37 @@
              silent, no-prompt install of the app itself (self-update +
              restart), the hq CLI, and hq-core (drift-safe rescue). Supersedes
              the old per-CLI "Auto-update HQ CLI" toggle. -->
-        <label class="setting-row"><span><strong>Automatic updates</strong><small>Install HQ, the app, and the CLI updates automatically in the background — no prompts.</small></span><input id="toggle-auto-update" type="checkbox" bind:checked={autoUpdate} onchange={saveSettings} aria-label="Automatic updates" /></label>
-        <label class="setting-row gated-row"><span><strong>HQ core staging channel</strong><small>@getindigo.ai only. Changes rescue and drift targets.</small></span><input type="checkbox" disabled={!isIndigoBuilder} bind:checked={stagingChannel} onchange={async () => { await saveSettings(); await refreshCoreState(); }} /><em>Gated</em></label>
-        <label class="setting-row gated-row"><span><strong>Release channel</strong><small>@getindigo.ai only. Stable is enforced for everyone else.</small></span><select disabled={availableChannels.length <= 1} bind:value={releaseChannel} onchange={saveSettings}><option value={null}>Default ({displayedChannel})</option>{#each availableChannels as channel (channel)}<option value={channel}>{channel}</option>{/each}</select><em>Gated</em></label>
+        <label class="setting-row"><span><strong>Automatic updates</strong><small>Install HQ, the app, and the CLI updates automatically in the background — no prompts.</small></span><input id="toggle-auto-update" type="checkbox" bind:checked={autoUpdate} onchange={() => void saveSettings({ autoUpdate })} aria-label="Automatic updates" /></label>
+        <label class="setting-row gated-row"><span><strong>HQ core staging channel</strong><small>@getindigo.ai only. Changes rescue and drift targets.</small></span><input type="checkbox" disabled={!isIndigoBuilder} bind:checked={stagingChannel} onchange={async () => { if (await saveSettings({ stagingChannel })) await refreshCoreState(); }} /><em>Gated</em></label>
+        <label class="setting-row gated-row"><span><strong>Release channel</strong><small>@getindigo.ai only. Stable is enforced for everyone else.</small></span><select disabled={availableChannels.length <= 1} bind:value={releaseChannel} onchange={() => void saveSettings({ releaseChannel })}><option value={null}>Default ({displayedChannel})</option>{#each availableChannels as channel (channel)}<option value={channel}>{channel}</option>{/each}</select><em>Gated</em></label>
         <div class="setting-row">
           <span>
             <strong>Check for Updates</strong>
-            <small>{updateResult ?? 'Background checks run every 6 hours'}</small>
+            <small>
+              {updateResult ?? (appUpdate ? `v${appUpdate.version} ready` : 'Background checks run every 6 hours')}
+            </small>
           </span>
-          <button
-            type="button"
-            class="row-button"
-            onclick={handleCheckForUpdates}
-            disabled={updateChecking}
-          >
-            {updateChecking ? 'Checking…' : 'Check Now'}
-          </button>
+          <div class="row-actions">
+            {#if appUpdate}
+              <button
+                type="button"
+                class="row-button primary"
+                data-testid="settings-install-app-update"
+                onclick={handleInstallAppUpdate}
+                disabled={appUpdateInstalling}
+              >
+                {appUpdateInstalling ? 'Installing…' : 'Restart to Update'}
+              </button>
+            {/if}
+            <button
+              type="button"
+              class="row-button"
+              onclick={handleCheckForUpdates}
+              disabled={updateChecking || appUpdateInstalling}
+            >
+              {updateChecking ? 'Checking…' : 'Check Now'}
+            </button>
+          </div>
         </div>
         <div class="setting-row">
           <span>
@@ -909,7 +1097,7 @@
     <section id="meetings" class="settings-section">
       <h2>Meetings</h2>
       <div class="settings-card">
-        <label class="setting-row gated-row"><span><strong>Meeting detection</strong><small>Detect active meeting apps and surface recording actions.</small></span><input type="checkbox" disabled={!isIndigoUser} bind:checked={meetingDetectEnabled} onchange={saveSettings} /><em>Gated</em></label>
+        <label class="setting-row" class:gated-row={!meetingsEnabled}><span><strong>Meeting detection</strong><small>Detect active meeting apps and surface recording actions.</small></span><input type="checkbox" disabled={!meetingsEnabled} bind:checked={meetingDetectEnabled} onchange={() => void saveMeetingDetection()} />{#if !meetingsEnabled}<em>Unavailable</em>{/if}</label>
         {#if meetingDetectEnabled}
           <!-- Only shown when detection is on — otherwise the platform toggles
                looked actionable but changed nothing (detection was off). -->
@@ -940,7 +1128,7 @@
             onchange={(event) => {
               const v = event.currentTarget.value;
               defaultRecordingCompanyUid = v === '' ? null : v;
-              void saveSettings();
+              void saveSettings({ defaultRecordingCompanyUid });
             }}
           >
             <option value="">Personal</option>
@@ -969,6 +1157,7 @@
         </div>
       </div>
     </section>
+    </fieldset>
   </main>
 </section>
 
@@ -979,6 +1168,15 @@
     height: 100%;
     color: var(--v4-text-1);
     font-family: var(--font-sans);
+  }
+
+  .settings-controls {
+    display: grid;
+    gap: var(--v4-space-5);
+    min-width: 0;
+    margin: 0;
+    padding: 0;
+    border: 0;
   }
 
   .settings-section h2,
@@ -995,7 +1193,10 @@
     flex-direction: column;
     gap: var(--v4-space-5);
     min-width: 0;
-    overflow: auto;
+    /* The shell's .desktop-main-scroll is the single vertical scroller.
+       Keeping this wrapper non-scrolling lets scrollIntoView move the section
+       index to the requested anchor instead of stopping at a nested container. */
+    overflow: visible;
   }
 
   h1 {
@@ -1012,11 +1213,11 @@
 
   .settings-card {
     display: grid;
-    overflow: hidden;
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-card);
-    background: var(--v4-raised);
-    box-shadow: var(--v4-shadow-card);
+    overflow: visible;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
   }
 
   .setting-row {
@@ -1054,11 +1255,51 @@
   }
 
   small,
-  .setting-row div span,
-  .error {
+  .setting-row div span {
     color: var(--v4-text-3);
     font-size: var(--text-base);
     line-height: 1.35;
+  }
+
+  .error {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--v4-space-3);
+    margin: 0;
+    padding: 9px 0;
+    border-bottom: 1px solid var(--v4-rowline);
+    background: color-mix(in srgb, var(--v4-ground) 68%, transparent);
+    backdrop-filter: var(--v4-glass-filter-soft);
+    -webkit-backdrop-filter: var(--v4-glass-filter-soft);
+    color: var(--v4-error);
+    font-size: var(--text-base);
+    line-height: 1.35;
+  }
+
+  .error span {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .error button {
+    flex: 0 0 auto;
+    min-height: 28px;
+    padding: 0 var(--v4-space-3);
+    border: 1px solid var(--v4-control-border);
+    border-radius: var(--v4-radius-button);
+    background: var(--v4-control-faint);
+    color: var(--v4-text-1);
+    font: inherit;
+    cursor: pointer;
+  }
+
+  .error button:disabled {
+    opacity: 0.55;
+    cursor: progress;
   }
 
   input,
@@ -1134,6 +1375,10 @@
     color: var(--v4-text-1);
   }
 
+  :global(html[data-force-theme='light']) select {
+    color-scheme: light;
+  }
+
   .gated-row em {
     padding: 3px 7px;
     border: 1px solid var(--v4-hairline);
@@ -1184,7 +1429,7 @@
     height: 26px;
     padding: 0 10px;
     border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-pill);
+    border-radius: var(--v4-radius-button);
     background: transparent;
     color: var(--v4-text-2);
     font: inherit;
@@ -1240,6 +1485,8 @@
 
   .notice-card {
     margin-top: 8px;
+    border-top: 1px solid var(--v4-rowline);
+    background: transparent;
   }
 
   .notice-row {
