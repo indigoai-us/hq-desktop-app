@@ -291,7 +291,26 @@ pub async fn reassert_consent_for_person(vault: &VaultClient, person_uid: &str) 
     // ignores `onlyIfUnset` — so we must not write at all.
     match vault.get_telemetry_opt_in().await {
         Ok(resp) if resp.unset == Some(true) => {}
-        Ok(_) => return,
+        Ok(resp) => {
+            // Consent IS recorded — nothing to repair. Record that fact so this
+            // stops re-checking: `write_menubar_telemetry_pref` clears the
+            // person binding on every deliberate answer, so without this the
+            // early return never fires again and each sync repeats this GET
+            // forever (twice, on the cache-miss path).
+            //
+            // Only bind when the server names the same person we resolved, so
+            // a mismatched response can never mislabel the record.
+            if resp.person_uid.as_deref() == Some(person_uid) {
+                let _ = hq_desktop_core::first_run::merge_menubar_flags(
+                    &path,
+                    &[(
+                        "telemetryOptInPersonUid",
+                        Value::String(person_uid.to_string()),
+                    )],
+                );
+            }
+            return;
+        }
         Err(err) => {
             eprintln!("[telemetry] consent state unreadable, skipping re-assert: {err}");
             return;
