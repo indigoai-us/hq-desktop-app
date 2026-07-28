@@ -34,6 +34,7 @@ pub struct AiTools {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ClaudeReady {
     pub installed: bool,
+    pub desktop_installed: bool,
     pub logged_in: bool,
 }
 
@@ -46,11 +47,17 @@ pub fn detect_ai_tools() -> AiTools {
         CLI_PROBE_TIMEOUT,
     );
     if let Some(home) = dirs::home_dir() {
-        tools.claude_last_used_ms = last_used_ms_in(&home.join(".claude"));
-        tools.codex_last_used_ms = last_used_ms_in(&home.join(".codex"));
-        tools.grok_last_used_ms = last_used_ms_in(&home.join(".grok"));
+        tools.claude_last_used_ms = last_used_ms_in(&cli_config_dir_in(&home, "claude"));
+        tools.codex_last_used_ms = last_used_ms_in(&cli_config_dir_in(&home, "codex"));
+        tools.grok_last_used_ms = last_used_ms_in(&cli_config_dir_in(&home, "grok"));
     }
     tools
+}
+
+/// Claude Code, Codex, and Grok CLIs keep their user config in dot-directories
+/// under the platform home directory, including Windows' `%USERPROFILE%`.
+fn cli_config_dir_in(home: &Path, tool: &str) -> std::path::PathBuf {
+    home.join(format!(".{tool}"))
 }
 
 #[tauri::command]
@@ -58,8 +65,10 @@ pub fn detect_claude_ready() -> ClaudeReady {
     // This is polled during installation, so it is filesystem-only: detect_ai_tools
     // launches shell probes that can take up to four seconds each.
     let home = dirs::home_dir();
+    let desktop_installed = claude_desktop_installed();
     ClaudeReady {
-        installed: claude_desktop_installed() || claude_cli_on_search_path(),
+        installed: desktop_installed || claude_cli_on_search_path(),
+        desktop_installed,
         logged_in: home.as_deref().is_some_and(claude_logged_in_in),
     }
 }
@@ -129,28 +138,27 @@ fn last_used_ms_in(base: &Path) -> Option<u64> {
     latest
 }
 
+#[cfg(not(windows))]
 fn claude_cli_on_search_path() -> bool {
-    #[cfg(windows)]
-    let path = extended_search_path();
-    #[cfg(not(windows))]
     let path = std::env::var_os("PATH").unwrap_or_default();
+    std::env::split_paths(&path).any(|directory| directory.join("claude").is_file())
+}
+
+#[cfg(windows)]
+fn claude_cli_on_search_path() -> bool {
+    let path = extended_search_path();
     std::env::split_paths(&path).any(|directory| {
-        if directory.join("claude").is_file() {
-            return true;
-        }
-        #[cfg(windows)]
-        {
-            return ["exe", "cmd", "bat"]
-                .iter()
-                .any(|extension| directory.join(format!("claude.{extension}")).is_file());
-        }
-        #[cfg(not(windows))]
-        false
+        ["exe", "cmd", "bat"]
+            .iter()
+            .any(|extension| directory.join(format!("claude.{extension}")).is_file())
     })
 }
 
-/// `.credentials.json` is documented by Claude Code on Linux/Windows; on macOS
-/// `oauthAccount` remains a disk marker while credentials live in Keychain.
+/// Claude Code markers only. Claude Desktop credentials are held in macOS
+/// Keychain/Windows DPAPI; its documented `claude_desktop_config.json` can be
+/// created before login, so treating it as proof of sign-in would be a false
+/// positive. The onboarding watcher uses a bounded installed-only fallback for
+/// Desktop instead of reading credentials or inventing a filesystem marker.
 fn claude_logged_in_in(home: &Path) -> bool {
     if home.join(".claude/.credentials.json").is_file() {
         return true;
@@ -259,28 +267,24 @@ fn claude_desktop_installed() -> bool {
 
 #[cfg(windows)]
 fn claude_desktop_installed() -> bool {
-    if let Ok(local) = std::env::var("LOCALAPPDATA") {
-        let local = PathBuf::from(local);
-        if local.join("AnthropicClaude").join("claude.exe").exists()
+    let local = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
+    let program_files = std::env::var_os("ProgramFiles").map(PathBuf::from);
+    claude_desktop_installed_in(local.as_deref(), program_files.as_deref())
+}
+
+#[cfg(windows)]
+fn claude_desktop_installed_in(local: Option<&Path>, program_files: Option<&Path>) -> bool {
+    let in_local = local.is_some_and(|local| {
+        local.join("AnthropicClaude").join("claude.exe").is_file()
             || local
                 .join("Programs")
                 .join("Claude")
                 .join("Claude.exe")
-                .exists()
-        {
-            return true;
-        }
-    }
-    if let Ok(program_files) = std::env::var("ProgramFiles") {
-        if PathBuf::from(program_files)
-            .join("Claude")
-            .join("Claude.exe")
-            .exists()
-        {
-            return true;
-        }
-    }
-    false
+                .is_file()
+    });
+    let in_program_files = program_files
+        .is_some_and(|program_files| program_files.join("Claude").join("Claude.exe").is_file());
+    in_local || in_program_files
 }
 
 #[cfg(not(windows))]
@@ -363,6 +367,24 @@ mod tests {
         assert!(last_used_ms_in(&dir.path().join(".claude")).is_some());
     }
 
+    #[cfg(not(windows))]
+    #[test]
+    fn resolves_cli_recency_dirs_under_the_home_directory() {
+        let home = tempfile::tempdir().expect("tempdir");
+        assert_eq!(
+            cli_config_dir_in(home.path(), "claude"),
+            home.path().join(".claude")
+        );
+        assert_eq!(
+            cli_config_dir_in(home.path(), "codex"),
+            home.path().join(".codex")
+        );
+        assert_eq!(
+            cli_config_dir_in(home.path(), "grok"),
+            home.path().join(".grok")
+        );
+    }
+
     #[test]
     fn detects_present_and_absent_claude_login_markers() {
         let home = tempfile::tempdir().expect("tempdir");
@@ -377,6 +399,74 @@ mod tests {
         )
         .expect("write oauth marker");
         assert!(claude_logged_in_in(oauth_home.path()));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn desktop_config_is_not_mistaken_for_a_macos_login_marker() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let config = home
+            .path()
+            .join("Library/Application Support/Claude/claude_desktop_config.json");
+        fs::create_dir_all(config.parent().expect("config parent")).expect("create config parent");
+        fs::write(config, "{}").expect("write desktop config");
+        assert!(!claude_logged_in_in(home.path()));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn desktop_config_is_not_mistaken_for_a_windows_login_marker() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let config = home
+            .path()
+            .join("AppData/Roaming/Claude/claude_desktop_config.json");
+        fs::create_dir_all(config.parent().expect("config parent")).expect("create config parent");
+        fs::write(config, "{}").expect("write desktop config");
+        assert!(!claude_logged_in_in(home.path()));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn resolves_windows_cli_recency_dirs_under_userprofile() {
+        let home = tempfile::tempdir().expect("tempdir");
+        assert_eq!(
+            cli_config_dir_in(home.path(), "claude"),
+            home.path().join(".claude")
+        );
+        assert_eq!(
+            cli_config_dir_in(home.path(), "codex"),
+            home.path().join(".codex")
+        );
+        assert_eq!(
+            cli_config_dir_in(home.path(), "grok"),
+            home.path().join(".grok")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn detects_supported_windows_claude_desktop_installer_layouts() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let local = root.path().join("LocalAppData");
+        let program_files = root.path().join("ProgramFiles");
+        let direct = local.join("AnthropicClaude/claude.exe");
+        fs::create_dir_all(direct.parent().expect("direct parent")).expect("create direct parent");
+        fs::write(&direct, "").expect("write direct fixture");
+        assert!(claude_desktop_installed_in(Some(&local), None));
+
+        fs::remove_file(&direct).expect("remove direct fixture");
+        let program = local.join("Programs/Claude/Claude.exe");
+        fs::create_dir_all(program.parent().expect("program parent"))
+            .expect("create program parent");
+        fs::write(&program, "").expect("write program fixture");
+        assert!(claude_desktop_installed_in(Some(&local), None));
+
+        fs::remove_file(&program).expect("remove program fixture");
+        let machine = program_files.join("Claude/Claude.exe");
+        fs::create_dir_all(machine.parent().expect("machine parent"))
+            .expect("create machine parent");
+        fs::write(&machine, "").expect("write machine fixture");
+        assert!(claude_desktop_installed_in(None, Some(&program_files)));
     }
 
     #[cfg(unix)]

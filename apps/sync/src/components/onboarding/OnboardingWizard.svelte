@@ -80,11 +80,16 @@
     stalled?: boolean;
     message?: string;
   };
-  type ClaudeReady = { installed: boolean; logged_in: boolean };
+  type ClaudeReady = {
+    installed: boolean;
+    desktop_installed: boolean;
+    logged_in: boolean;
+  };
 
   const RING_CIRCUMFERENCE = 2 * Math.PI * 52;
   const FADE_OUT_MS = 320;
   const CLAUDE_WATCH_MAX_CONSECUTIVE_FAILURES = 3;
+  const CLAUDE_DESKTOP_READY_FALLBACK_MS = 30_000;
   const DEFAULT_STEP = WIZARD_STEPS[0].index;
 
   let { initialStep, onfinish }: Props = $props();
@@ -922,7 +927,10 @@
       return;
     }
 
-    if (!ready.installed || !ready.logged_in) {
+    const desktopFallbackReady =
+      ready.desktop_installed &&
+      Date.now() - claudeWatchStartedAt >= CLAUDE_DESKTOP_READY_FALLBACK_MS;
+    if (!ready.installed || (!ready.logged_in && !desktopFallbackReady)) {
       return;
     }
 

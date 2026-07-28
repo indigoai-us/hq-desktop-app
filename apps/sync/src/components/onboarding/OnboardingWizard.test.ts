@@ -177,6 +177,40 @@ describe('onboarding launch handoff', () => {
     expect(onfinish).toHaveBeenCalledOnce();
   });
 
+  it('opens Claude Desktop after the bounded installed-only fallback', async () => {
+    const onfinish = mountWizard();
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'detect_claude_ready':
+          return { installed: true, desktop_installed: true, logged_in: false };
+        case 'open_claude_code_link':
+          return undefined;
+        default:
+          return undefined;
+      }
+    });
+
+    await flush();
+    primaryButton().click();
+    await flush();
+
+    await vi.advanceTimersByTimeAsync(27_000);
+    await flush();
+    expect(tauri.invoke.mock.calls.filter(([command]) => command === 'open_claude_code_link'))
+      .toHaveLength(0);
+
+    await vi.advanceTimersByTimeAsync(3_000);
+    await flush();
+    expect(tauri.invoke).toHaveBeenCalledWith('open_claude_code_link', {
+      url: 'claude://code/new?q=%2Fsetup&folder=%2FUsers%2Ftest%2Fhq',
+    });
+    expect(onfinish).toHaveBeenCalledOnce();
+  });
+
   it('stops the watcher and surfaces one error after consecutive readiness failures', async () => {
     mountWizard();
     tauri.invoke.mockImplementation(async (command: string) => {

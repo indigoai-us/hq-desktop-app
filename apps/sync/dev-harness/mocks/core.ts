@@ -920,7 +920,11 @@ const handlers: Record<string, Handler> = {
     grok_last_used_ms: null,
     any: true,
   }),
-  detect_claude_ready: () => ({ installed: true, logged_in: true }),
+  detect_claude_ready: () => ({
+    installed: true,
+    desktop_installed: true,
+    logged_in: true,
+  }),
   set_hq_install_path: () => null,
   start_initial_cloud_sync: () =>
     harnessScenario() === 'onboarding-progress'
