@@ -3,6 +3,7 @@ import {
   NO_AI_TOOLS,
   markToolUnavailable,
   readyCommandFor,
+  selectPrimaryLaunch,
   summaryLaunchState,
   type AiTools,
 } from './onboarding-summary';
@@ -21,6 +22,19 @@ function tools(overrides: Partial<AiTools> = {}): AiTools {
 }
 
 describe('onboarding summary launch state', () => {
+  it('selects the newest available tool and uses deterministic priority for ties', () => {
+    expect(selectPrimaryLaunch(tools({ claude_cli: true, codex_cli: true, grok_cli: true, grok_last_used_ms: 3 }))).toEqual({ kind: 'grok', label: 'Open in Grok' });
+    expect(selectPrimaryLaunch(tools({ claude_cli: true, codex_cli: true, grok_cli: true }))).toEqual({ kind: 'claude', label: 'Open in Claude Code' });
+  });
+
+  it.each([
+    [{}, { kind: 'download', label: 'Download Claude' }],
+    [{ claude_desktop: true }, { kind: 'claude', label: 'Open in Claude Code' }],
+    [{ codex_desktop: true }, { kind: 'codex', label: 'Open in Codex' }],
+    [{ grok_cli: true }, { kind: 'grok', label: 'Open in Grok' }],
+  ])('selects supported launch %o', (available, expected) => {
+    expect(selectPrimaryLaunch(tools(available))).toEqual(expected);
+  });
   it('prefers Claude Desktop over terminal CLIs', () => {
     expect(
       summaryLaunchState(

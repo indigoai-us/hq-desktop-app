@@ -13,7 +13,9 @@
     NO_AI_TOOLS,
     markToolUnavailable,
     readyCommandFor,
+    selectPrimaryLaunch,
     type AiTools,
+    type PrimaryLaunch,
   } from '../../lib/onboarding-summary';
   import {
     allSettled,
@@ -78,9 +80,16 @@
     stalled?: boolean;
     message?: string;
   };
+  type ClaudeReady = {
+    installed: boolean;
+    desktop_installed: boolean;
+    logged_in: boolean;
+  };
 
   const RING_CIRCUMFERENCE = 2 * Math.PI * 52;
   const FADE_OUT_MS = 320;
+  const CLAUDE_WATCH_MAX_CONSECUTIVE_FAILURES = 3;
+  const CLAUDE_DESKTOP_READY_FALLBACK_MS = 30_000;
   const DEFAULT_STEP = WIZARD_STEPS[0].index;
 
   let { initialStep, onfinish }: Props = $props();
@@ -135,7 +144,13 @@
   let detectionFailed = $state(false);
   let probeInFlight = false;
   let detectorMounted = false;
-  let launching = $state<'claude' | 'codex' | null>(null);
+  let launching = $state<
+    'claude' | 'codex' | 'grok' | 'download' | 'watching' | null
+  >(null);
+  let claudeWatchInterval: number | null = null;
+  let claudeWatchStartedAt = 0;
+  let claudeWatchConsecutiveFailures = 0;
+  let claudeWatchExpired = $state(false);
   let launchError = $state<string | null>(null);
   let revealError = $state<string | null>(null);
   let showManualTools = $state(false);
@@ -175,6 +190,7 @@
   const setupBands = $derived(friendlySetupBands(overallPercent));
   const needsAttention = $derived(setupFailures.length > 0);
   const manualCommand = $derived(readyCommandFor(installPath, aiTools));
+  const primaryLaunch = $derived<PrimaryLaunch>(selectPrimaryLaunch(aiTools));
   const manualToolsVisible = $derived(
     showManualTools || Boolean(launchError || revealError || detectionFailed),
   );
@@ -254,6 +270,7 @@
     mounted = false;
     currentSignInCall += 1;
     clearTransitionTimers();
+    stopClaudeWatch();
     cancelSetupRun();
   });
 
@@ -846,6 +863,141 @@
     }
   }
 
+  async function handleLaunchGrok() {
+    launchError = null;
+    revealError = null;
+    launching = 'grok';
+    try {
+      const tools = await ensureAiTools();
+      if (tools.grok_cli && installPath) {
+        await invoke('launch_cli_in_terminal', {
+          path: installPath,
+          tool: 'grok',
+        });
+        await onfinish?.();
+        return;
+      }
+      launchError =
+        'Grok CLI was not detected. Open this HQ folder manually from Grok.';
+      showManualTools = true;
+    } catch (err) {
+      launchError = `Could not open Grok: ${errorMessage(err)}`;
+      showManualTools = true;
+      aiTools = markToolUnavailable(aiTools, 'grok_cli');
+    } finally {
+      launching = null;
+    }
+  }
+
+  function stopClaudeWatch() {
+    if (claudeWatchInterval !== null) {
+      window.clearInterval(claudeWatchInterval);
+    }
+    claudeWatchInterval = null;
+    if (launching === 'watching') {
+      launching = null;
+    }
+  }
+
+  function stopClaudeWatchWithError(err: unknown) {
+    stopClaudeWatch();
+    launchError = `Could not open Claude Code: ${errorMessage(err)}`;
+    showManualTools = true;
+  }
+
+  async function pollClaudeReady() {
+    if (Date.now() - claudeWatchStartedAt >= 15 * 60 * 1000) {
+      stopClaudeWatch();
+      claudeWatchExpired = true;
+      return;
+    }
+
+    let ready: ClaudeReady;
+    try {
+      ready = await invoke<ClaudeReady>('detect_claude_ready');
+      claudeWatchConsecutiveFailures = 0;
+    } catch (err) {
+      claudeWatchConsecutiveFailures += 1;
+      if (
+        claudeWatchConsecutiveFailures >=
+        CLAUDE_WATCH_MAX_CONSECUTIVE_FAILURES
+      ) {
+        stopClaudeWatchWithError(err);
+      }
+      return;
+    }
+
+    const desktopFallbackReady =
+      ready.desktop_installed &&
+      Date.now() - claudeWatchStartedAt >= CLAUDE_DESKTOP_READY_FALLBACK_MS;
+    if (!ready.installed || (!ready.logged_in && !desktopFallbackReady)) {
+      return;
+    }
+
+    stopClaudeWatch();
+    launching = 'claude';
+    try {
+      const url = buildClaudeCodeUrl({
+        folder: installPath ?? '',
+        prompt: '/setup',
+      });
+      await invoke('open_claude_code_link', { url });
+      await onfinish?.();
+    } catch (err) {
+      stopClaudeWatchWithError(err);
+    } finally {
+      launching = null;
+    }
+  }
+
+  function startClaudeWatch() {
+    if (claudeWatchInterval !== null) {
+      return;
+    }
+    claudeWatchExpired = false;
+    claudeWatchConsecutiveFailures = 0;
+    claudeWatchStartedAt = Date.now();
+    launching = 'watching';
+    claudeWatchInterval = window.setInterval(() => {
+      void pollClaudeReady();
+    }, 3000);
+  }
+
+  async function handleDownloadClaude() {
+    launchError = null;
+    revealError = null;
+    const watching = claudeWatchInterval !== null;
+    if (!watching) {
+      launching = 'download';
+    }
+    try {
+      await openExternal('https://claude.ai/download');
+      if (!watching) {
+        startClaudeWatch();
+      }
+    } catch (err) {
+      launchError = `Could not open Claude download page: ${errorMessage(err)}`;
+      showManualTools = true;
+    } finally {
+      if (launching === 'download') {
+        launching = null;
+      }
+    }
+  }
+
+  async function handlePrimaryLaunch() {
+    if (launching === 'watching' || primaryLaunch.kind === 'download') {
+      return handleDownloadClaude();
+    }
+    if (primaryLaunch.kind === 'claude') {
+      return handleLaunchClaudeCode();
+    }
+    if (primaryLaunch.kind === 'codex') {
+      return handleLaunchCodex();
+    }
+    return handleLaunchGrok();
+  }
+
   function advanceTo(step: number) {
     router.goTo(step);
     transitionTo(router.currentStep);
@@ -953,6 +1105,9 @@
       cancelSetupRun();
       setupStarted = false;
       stages = buildInitialStages();
+    }
+    if (previous === 3 && next !== 3) {
+      stopClaudeWatch();
     }
 
     panelOn = false;
@@ -1279,8 +1434,8 @@
               <circle cx="10" cy="14.2" r=".7"></circle>
             </svg>
             <div class="setup-caution-copy">
-              <strong>Complete setup in Claude Code or Codex</strong>
-              <span>Open the HQ folder and run <code>/setup</code>. Choose Finish only if you want to do this later.</span>
+              <strong>Complete setup in your AI tool</strong>
+              <span>Open the HQ folder and run <code>/setup</code>.</span>
             </div>
           </div>
           {#if needsAttention}
@@ -1293,6 +1448,11 @@
           {:else if detectionFailed}
             <p class="inline-note" role="status">Tool detection failed. You can still continue and open {installDisplayPath} manually.</p>
           {/if}
+          {#if claudeWatchExpired}
+            <p class="inline-note" role="status">
+              Claude is taking longer than expected. You can open this HQ folder from Claude manually.
+            </p>
+          {/if}
           {#if manualToolsVisible}
             <div class="manual-tools" aria-label="Manual setup options">
               <button type="button" onclick={handleRevealFolder} disabled={revealingFolder}>
@@ -1303,31 +1463,19 @@
               <button type="button" onclick={handleCopyImportPrompt}>{importPromptCopied ? 'Import copied' : 'Copy /import-claude'}</button>
             </div>
           {/if}
-          <div class="btns split">
-            <div class="btn-group">
-              <button
-                class="btn btn-secondary"
-                type="button"
-                disabled={launching !== null}
-                onclick={handleLaunchClaudeCode}
-              >
-                {launching === 'claude' ? 'Opening…' : 'Open in Claude Code'}
-              </button>
-              <button
-                class="btn btn-secondary"
-                type="button"
-                disabled={launching !== null}
-                onclick={handleLaunchCodex}
-              >
-                {launching === 'codex' ? 'Opening…' : 'Open in Codex'}
-              </button>
-            </div>
+          <div class="btns">
             <button
               class="btn btn-primary"
               type="button"
-              disabled={launching !== null}
-              onclick={() => void onfinish?.()}
-            >Finish</button>
+              disabled={launching !== null && launching !== 'watching'}
+              onclick={handlePrimaryLaunch}
+            >
+              {launching === 'watching'
+                ? 'Waiting for Claude…'
+                : launching === primaryLaunch.kind
+                  ? 'Opening…'
+                  : primaryLaunch.label}
+            </button>
           </div>
         </section>
 
@@ -1572,7 +1720,6 @@
   .check-row span:last-child { color:var(--c-muted); font-size:14px; line-height:20px; }
   .btns { display:flex; gap:8px; margin-top:auto; }
   .btns.split { justify-content:space-between; }
-  .btn-group { display:flex; gap:8px; }
   .btn { font-family:inherit; font-size:14px; font-weight:400; line-height:20px; padding:10px 16px; border-radius:8px; border:none; cursor:pointer; transition:opacity .15s, transform .1s; }
   .btn:active:not(:disabled) { transform:scale(.97); }
   .btn-primary { background:var(--c-btn-bg); color:var(--c-btn-fg); }
