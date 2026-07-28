@@ -1,17 +1,22 @@
 //! Cross-platform AI coding tool detection used by the onboarding Done screen.
 
 use std::ffi::{OsStr, OsString};
+use std::fs;
+use std::path::Path;
 #[cfg(windows)]
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use serde::Serialize;
+use serde_json::Value;
 
 #[cfg(windows)]
 use crate::commands::install_deps::extended_search_path;
 
 const CLI_PROBE_TIMEOUT: Duration = Duration::from_secs(4);
+const RECENCY_MAX_DEPTH: usize = 2;
+const RECENCY_MAX_ENTRIES: usize = 2_000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AiTools {
@@ -20,17 +25,43 @@ pub struct AiTools {
     pub codex_cli: bool,
     pub codex_desktop: bool,
     pub grok_cli: bool,
+    pub claude_last_used_ms: Option<u64>,
+    pub codex_last_used_ms: Option<u64>,
+    pub grok_last_used_ms: Option<u64>,
     pub any: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ClaudeReady {
+    pub installed: bool,
+    pub logged_in: bool,
 }
 
 #[tauri::command]
 pub fn detect_ai_tools() -> AiTools {
-    detect_ai_tools_in(
+    let mut tools = detect_ai_tools_in(
         claude_desktop_installed(),
         codex_desktop_installed(),
         None,
         CLI_PROBE_TIMEOUT,
-    )
+    );
+    if let Some(home) = dirs::home_dir() {
+        tools.claude_last_used_ms = last_used_ms_in(&home.join(".claude"));
+        tools.codex_last_used_ms = last_used_ms_in(&home.join(".codex"));
+        tools.grok_last_used_ms = last_used_ms_in(&home.join(".grok"));
+    }
+    tools
+}
+
+#[tauri::command]
+pub fn detect_claude_ready() -> ClaudeReady {
+    // This is polled during installation, so it is filesystem-only: detect_ai_tools
+    // launches shell probes that can take up to four seconds each.
+    let home = dirs::home_dir();
+    ClaudeReady {
+        installed: claude_desktop_installed() || claude_cli_on_search_path(),
+        logged_in: home.as_deref().is_some_and(claude_logged_in_in),
+    }
 }
 
 fn detect_ai_tools_in(
@@ -53,8 +84,81 @@ fn detect_ai_tools_in(
         codex_cli,
         codex_desktop,
         grok_cli,
+        claude_last_used_ms: None,
+        codex_last_used_ms: None,
+        grok_last_used_ms: None,
         any,
     }
+}
+
+/// Bounded config-tree mtime resolver; individual filesystem failures are ignored.
+fn last_used_ms_in(base: &Path) -> Option<u64> {
+    fn update(latest: &mut Option<u64>, path: &Path) {
+        let Ok(time) = fs::metadata(path).and_then(|metadata| metadata.modified()) else {
+            return;
+        };
+        let Ok(duration) = time.duration_since(UNIX_EPOCH) else {
+            return;
+        };
+        let millis = duration.as_millis().try_into().unwrap_or(u64::MAX);
+        *latest = Some(latest.map_or(millis, |current| current.max(millis)));
+    }
+    fn walk(path: &Path, depth: usize, examined: &mut usize, latest: &mut Option<u64>) {
+        update(latest, path);
+        if depth >= RECENCY_MAX_DEPTH || *examined >= RECENCY_MAX_ENTRIES {
+            return;
+        }
+        let Ok(entries) = fs::read_dir(path) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            if *examined >= RECENCY_MAX_ENTRIES {
+                return;
+            }
+            *examined += 1;
+            let path = entry.path();
+            update(latest, &path);
+            if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                walk(&path, depth + 1, examined, latest);
+            }
+        }
+    }
+    let mut latest = None;
+    let mut examined = 0;
+    walk(base, 0, &mut examined, &mut latest);
+    latest
+}
+
+fn claude_cli_on_search_path() -> bool {
+    #[cfg(windows)]
+    let path = extended_search_path();
+    #[cfg(not(windows))]
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    std::env::split_paths(&path).any(|directory| {
+        if directory.join("claude").is_file() {
+            return true;
+        }
+        #[cfg(windows)]
+        {
+            return ["exe", "cmd", "bat"]
+                .iter()
+                .any(|extension| directory.join(format!("claude.{extension}")).is_file());
+        }
+        #[cfg(not(windows))]
+        false
+    })
+}
+
+/// `.credentials.json` is documented by Claude Code on Linux/Windows; on macOS
+/// `oauthAccount` remains a disk marker while credentials live in Keychain.
+fn claude_logged_in_in(home: &Path) -> bool {
+    if home.join(".claude/.credentials.json").is_file() {
+        return true;
+    }
+    fs::read_to_string(home.join(".claude.json"))
+        .ok()
+        .and_then(|contents| serde_json::from_str::<Value>(&contents).ok())
+        .is_some_and(|json| json.get("oauthAccount").is_some())
 }
 
 fn cli_runnable(binary: &str, path_override: Option<&OsStr>, timeout: Duration) -> bool {
@@ -242,9 +346,37 @@ mod tests {
                 codex_cli: false,
                 codex_desktop: false,
                 grok_cli: false,
+                claude_last_used_ms: None,
+                codex_last_used_ms: None,
+                grok_last_used_ms: None,
                 any: false,
             }
         );
+    }
+
+    #[test]
+    fn resolves_recency_and_skips_missing_fixture_directories() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert_eq!(last_used_ms_in(&dir.path().join("missing")), None);
+        fs::create_dir(dir.path().join(".claude")).expect("create fixture");
+        fs::write(dir.path().join(".claude/history.jsonl"), "history").expect("write fixture");
+        assert!(last_used_ms_in(&dir.path().join(".claude")).is_some());
+    }
+
+    #[test]
+    fn detects_present_and_absent_claude_login_markers() {
+        let home = tempfile::tempdir().expect("tempdir");
+        assert!(!claude_logged_in_in(home.path()));
+        fs::create_dir(home.path().join(".claude")).expect("create config");
+        fs::write(home.path().join(".claude/.credentials.json"), "{}").expect("write credentials");
+        assert!(claude_logged_in_in(home.path()));
+        let oauth_home = tempfile::tempdir().expect("tempdir");
+        fs::write(
+            oauth_home.path().join(".claude.json"),
+            r#"{"oauthAccount":{}}"#,
+        )
+        .expect("write oauth marker");
+        assert!(claude_logged_in_in(oauth_home.path()));
     }
 
     #[cfg(unix)]

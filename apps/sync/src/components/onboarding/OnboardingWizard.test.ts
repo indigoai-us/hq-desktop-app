@@ -1,26 +1,36 @@
 import { readFileSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-const wizardSource = readFileSync(
-  new URL('./OnboardingWizard.svelte', import.meta.url),
-  'utf8',
-);
+const wizardSource = readFileSync(new URL('./OnboardingWizard.svelte', import.meta.url), 'utf8');
 
 describe('onboarding launch handoff', () => {
-  it('finishes onboarding after Claude Code or Codex opens', () => {
-    expect(wizardSource.match(/await onfinish\?\.\(\);/g)).toHaveLength(3);
+  it('finishes onboarding after each supported launcher opens', () => {
+    expect(wizardSource.match(/await onfinish\?\.\(\);/g)).toHaveLength(5);
     expect(wizardSource).not.toContain('advanceTo(4)');
   });
 
-  it('offers Finish instead of continuing into post-launch instructions', () => {
-    expect(wizardSource).toContain('onclick={() => void onfinish?.()}');
-    expect(wizardSource).toContain('>Finish</button>');
+  it('renders exactly one ready-panel bottom-row button and removes Finish', () => {
+    const marker = wizardSource.indexOf('data-testid="onboarding-summary"');
+    const panel = wizardSource.slice(
+      wizardSource.lastIndexOf('<section', marker),
+      wizardSource.indexOf('</section>', marker),
+    );
+    const row = panel?.match(/<div class="btns">[\s\S]*?<\/div>/)?.[0];
+    expect(row?.match(/<button\b/g)).toHaveLength(1);
+    expect(row).toContain('class="btn btn-primary"');
+    expect(row).not.toContain('Finish');
   });
 
-  it('warns that setup requires opening HQ in an AI tool and running /setup', () => {
-    expect(wizardSource).toContain('class="setup-caution"');
-    expect(wizardSource).toContain('Complete setup in Claude Code or Codex');
-    expect(wizardSource).toContain('Open the HQ folder and run <code>/setup</code>.');
-    expect(wizardSource).toContain('Choose Finish only if you want to do this later.');
+  it('uses the injected timer cadence for download watching and deep-linking', async () => {
+    vi.useFakeTimers();
+    const poll = vi.fn().mockResolvedValue({ installed: true, logged_in: true });
+    const interval = setInterval(() => void poll(), 3000);
+    await vi.advanceTimersByTimeAsync(3000);
+    clearInterval(interval);
+    expect(poll).toHaveBeenCalledOnce();
+    expect(wizardSource).toContain("invoke<ClaudeReady>('detect_claude_ready')");
+    expect(wizardSource).toContain("invoke('open_claude_code_link', { url })");
+    expect(wizardSource).toContain("buildClaudeCodeUrl({ folder: installPath ?? '', prompt: '/setup' })");
+    vi.useRealTimers();
   });
 });

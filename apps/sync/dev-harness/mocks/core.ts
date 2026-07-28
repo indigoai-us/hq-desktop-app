@@ -915,8 +915,12 @@ const handlers: Record<string, Handler> = {
     codex_cli: true,
     codex_desktop: true,
     grok_cli: false,
+    claude_last_used_ms: 1_700_000_000_000,
+    codex_last_used_ms: 1_699_000_000_000,
+    grok_last_used_ms: null,
     any: true,
   }),
+  detect_claude_ready: () => ({ installed: true, logged_in: true }),
   set_hq_install_path: () => null,
   start_initial_cloud_sync: () =>
     harnessScenario() === 'onboarding-progress'
