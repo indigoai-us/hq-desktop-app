@@ -35,7 +35,7 @@
     type StageId,
     type StageState,
   } from '../../lib/onboarding-setup';
-  import { postOptIn } from '../../lib/onboarding-telemetry';
+  import { postOptIn, markConsentRepromptShown } from '../../lib/onboarding-telemetry';
   import { emitDesktopTelemetry } from '../../lib/desktop-telemetry';
   import {
     CONSENT_STEP_INDEX,
@@ -48,6 +48,18 @@
   interface Props {
     initialStep: number;
     onfinish?: () => void | Promise<void>;
+    /**
+     * `'onboarding'` (default) is the full first-run wizard. `'reprompt'` is the
+     * US-005 launch-time re-ask for a person whose recorded consent is stale,
+     * administrative, or pre-versioned: it shows ONLY the consent step, reusing
+     * the exact same blocking, unbiased UI and awaited write as onboarding, and
+     * finishes (via `onfinish`) the moment the answer is confirmed — there is no
+     * setup and no ready screen. The `personUid` the guard is keyed to is passed
+     * so the answer can mark the re-prompt "shown" for exactly this person.
+     */
+    mode?: 'onboarding' | 'reprompt';
+    /** The `prs_*` the re-prompt is keyed to (reprompt mode only). */
+    repromptPersonUid?: string | null;
   }
 
   interface DetectHqResult {
@@ -87,7 +99,14 @@
   const READY_STEP_INDEX =
     WIZARD_STEPS.find((step) => step.id === 'ready')?.index ?? 4;
 
-  let { initialStep, onfinish }: Props = $props();
+  let {
+    initialStep,
+    onfinish,
+    mode = 'onboarding',
+    repromptPersonUid = null,
+  }: Props = $props();
+
+  const isReprompt = $derived(mode === 'reprompt');
 
   let activeInitialStep = $state<number | null>(null);
   let router = $state(createWizardRouter());
@@ -214,7 +233,9 @@
   });
 
   $effect(() => {
-    if (currentStep !== 2 || setupStarted) return;
+    // In re-prompt mode there is no install/setup — only the consent step — so
+    // the setup run must never start even if the step index momentarily reads 2.
+    if (isReprompt || currentStep !== 2 || setupStarted) return;
     setupStarted = true;
     void startSetupRun();
   });
@@ -755,6 +776,8 @@
       // AC1 — make the ordering explicit. Ensure the person entity exists
       // before the opt-in POST fires. This resolves from cache instantly on the
       // common path; only a fresh install with in-flight provisioning waits.
+      // In re-prompt mode the entity already exists (the person has been running
+      // HQ), so this is a fast confirmation, not a bootstrap.
       try {
         await invokeCommand<boolean>('ensure_person_entity');
       } catch (err) {
@@ -766,7 +789,9 @@
 
       // Provenance travels with the answer so the server can tell a genuine
       // onboarding answer from an administrative backfill and re-ask when the
-      // wording changes.
+      // wording changes. surface=onboarding + the current version, and NEVER
+      // onlyIfUnset — a re-prompt DELIBERATELY replaces the stale record, so the
+      // write must be unconditional (US-005).
       const result = await postOptIn({
         enabled,
         surface: 'onboarding',
@@ -784,6 +809,17 @@
         return;
       }
 
+      if (isReprompt) {
+        // The stale record is now replaced with a fully versioned one. Record
+        // that the re-prompt was answered for this person+version (idempotent
+        // with the dismissal guard) and close — there is no ready screen.
+        if (repromptPersonUid) {
+          await markConsentRepromptShown(TELEMETRY_CONSENT_VERSION, repromptPersonUid);
+        }
+        await onfinish?.();
+        return;
+      }
+
       if (enabled && setupCompletionMetrics) {
         void emitDesktopTelemetry({
           eventName: 'desktop_setup_completed',
@@ -797,6 +833,21 @@
   }
 
   /**
+   * US-005: dismiss the re-prompt WITHOUT answering. This marks the prompt
+   * "shown" for this person+version so it is not shown again this version — but
+   * it posts NOTHING, so a dismissal never counts as an answer and the record
+   * stays stale (the person keeps collecting under the previous default until
+   * they actually answer). Reprompt mode only.
+   */
+  async function dismissReprompt(): Promise<void> {
+    if (consentSubmitting) return;
+    if (repromptPersonUid) {
+      await markConsentRepromptShown(TELEMETRY_CONSENT_VERSION, repromptPersonUid);
+    }
+    await onfinish?.();
+  }
+
+  /**
    * AC4 — an offline person is not trapped. Their answer is already cached with
    * provenance; the consent repair reconciles it on the next successful
    * connection. Finishing here is honest: it does NOT emit the completion event
@@ -804,8 +855,18 @@
    * succeeded — it just stops blocking setup on a connection the person doesn't
    * have.
    */
-  function finishOffline(): void {
+  async function finishOffline(): Promise<void> {
     if (consentSubmitting) return;
+    if (isReprompt) {
+      // Reprompt has no ready screen. The answer is cached with provenance and
+      // reconciled by the consent repair on reconnect; mark the prompt shown so
+      // it does not nag again this version, then close.
+      if (repromptPersonUid) {
+        await markConsentRepromptShown(TELEMETRY_CONSENT_VERSION, repromptPersonUid);
+      }
+      await onfinish?.();
+      return;
+    }
     advanceTo(READY_STEP_INDEX);
   }
 
@@ -1480,16 +1541,30 @@
                   type="button"
                   disabled={consentSubmitting}
                   data-testid="consent-finish-offline"
-                  onclick={finishOffline}
+                  onclick={() => void finishOffline()}
                 >Finish setup — send later</button>
               {/if}
             {:else}
               <button
                 class="btn btn-primary"
                 type="button"
+                data-testid="consent-continue"
                 disabled={telemetryChoice === null || consentSubmitting}
                 onclick={() => void submitConsent()}
               >{consentSubmitting ? 'Saving…' : 'Continue'}</button>
+              {#if isReprompt}
+                <!-- US-005: dismissing is allowed but is NOT an answer. It marks
+                     the prompt shown for this version so it stops nagging, posts
+                     nothing, and leaves the record stale (collection continues
+                     under the previous default until the person answers). -->
+                <button
+                  class="btn btn-secondary"
+                  type="button"
+                  data-testid="consent-dismiss"
+                  disabled={consentSubmitting}
+                  onclick={() => void dismissReprompt()}
+                >Not now</button>
+              {/if}
             {/if}
           </div>
         </section>

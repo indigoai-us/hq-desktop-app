@@ -483,6 +483,163 @@ pub async fn get_telemetry_consent_status() -> Result<TelemetryConsentStatus, St
     }
 }
 
+// ── US-005: re-prompt a stale/administrative/pre-versioned consent record ──────
+
+/// Keys under which the "we already re-prompted this person at this version"
+/// guard is persisted in `menubar.json`. The pair is what makes the re-prompt
+/// fire AT MOST ONCE per consent version per person: a bump of the version, or a
+/// different signed-in person, both make the stored pair no longer match and so
+/// re-open the prompt. A dismissal writes this pair WITHOUT posting any answer,
+/// so dismissing is remembered but never counts as an answer.
+const REPROMPT_VERSION_KEY: &str = "telemetryRepromptedConsentVersion";
+const REPROMPT_PERSON_KEY: &str = "telemetryRepromptedPersonUid";
+
+/// Whether the launch-time telemetry re-prompt should be shown, and the identity
+/// it is keyed to.
+///
+/// `should_reprompt` is the only field the caller acts on; the rest are returned
+/// so the frontend can pass the same `person_uid` back to
+/// `mark_consent_reprompt_shown` without a second server round-trip.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConsentRepromptStatus {
+    /// Show the blocking consent step exactly once this launch when true.
+    pub should_reprompt: bool,
+    /// The `prs_*` the server attributes the record to. `None` when the server
+    /// did not name one (older server / no entity yet) — in which case we never
+    /// re-prompt, because the guard could not be keyed to a person and would
+    /// re-fire every launch.
+    pub person_uid: Option<String>,
+}
+
+/// Decide, from the server response and the locally-persisted guard, whether the
+/// launch-time re-prompt should be shown.
+///
+/// Pure so it is unit-testable without a live server or a real `menubar.json`.
+///
+/// The rules, matching the story's acceptance criteria and the cross-repo
+/// contract:
+///   - The SERVER is the authority on staleness (`stale`). We do not re-derive
+///     the staleness rule on the client.
+///   - A record is only re-promptable when the server both marks it `stale` AND
+///     names the `person_uid` it belongs to (so the "shown once" guard can be
+///     keyed to that person).
+///   - It is shown at most once per (consent version, person): if the stored
+///     guard already names this person at the current version, do not re-prompt.
+///   - A record that is NOT stale (a current, self-given answer) is never
+///     re-prompted.
+fn decide_reprompt(
+    resp: &crate::commands::vault_client::TelemetryOptInResponse,
+    current_version: u32,
+    prompted_version: Option<u32>,
+    prompted_person_uid: Option<&str>,
+) -> ConsentRepromptStatus {
+    let person_uid = resp.person_uid.clone();
+
+    // Not stale → the person holds a current, self-given answer. Nothing to ask.
+    // The server owns this decision; `stale != Some(true)` (including a server
+    // that predates the field, `None`) means "do not re-prompt".
+    let stale = resp.stale == Some(true);
+
+    // Without a person to key the guard to, a re-prompt would re-fire every
+    // launch (we could never record that it was shown for THIS person). Fail
+    // safe: do not re-prompt.
+    let Some(ref uid) = person_uid else {
+        return ConsentRepromptStatus {
+            should_reprompt: false,
+            person_uid,
+        };
+    };
+
+    // Already shown for this exact (version, person) — dismissal or answer both
+    // record it, and neither should re-open the prompt.
+    let already_shown =
+        prompted_version == Some(current_version) && prompted_person_uid == Some(uid.as_str());
+
+    ConsentRepromptStatus {
+        should_reprompt: stale && !already_shown,
+        person_uid,
+    }
+}
+
+/// Read the persisted re-prompt guard `(version, person_uid)` from `menubar.json`.
+fn read_reprompt_guard(path: &Path) -> (Option<u32>, Option<String>) {
+    let obj = hq_desktop_core::first_run::read_menubar_obj(path);
+    let version = obj
+        .get(REPROMPT_VERSION_KEY)
+        .and_then(|v| v.as_u64())
+        .and_then(|n| u32::try_from(n).ok());
+    let person = obj
+        .get(REPROMPT_PERSON_KEY)
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+    (version, person)
+}
+
+/// Whether the launch-time telemetry consent re-prompt is due (US-005).
+///
+/// Server-authoritative and FAIL-QUIET: if the server is unreachable, or does
+/// not report the record as stale, or does not name the person, this returns
+/// `should_reprompt: false` and the app is never blocked. Collection is
+/// unaffected — staleness means "ask again", not "stop collecting" — and the
+/// caller simply tries again on the next launch.
+#[tauri::command]
+pub async fn consent_reprompt_status(consent_version: u32) -> Result<ConsentRepromptStatus, String> {
+    let access_token = crate::commands::cognito::get_valid_access_token().await?;
+    let api_url = resolve_vault_api_url()?;
+    let vault = VaultClient::new(&api_url, &access_token);
+
+    let resp = match vault.get_telemetry_opt_in().await {
+        Ok(resp) => resp,
+        Err(err) => {
+            // Fail quiet: an unreachable/erroring server must never block the app
+            // or provoke a re-prompt. Try again next launch.
+            eprintln!("[telemetry] consent-reprompt-status server unreachable: {err}");
+            return Ok(ConsentRepromptStatus {
+                should_reprompt: false,
+                person_uid: None,
+            });
+        }
+    };
+
+    let path = crate::util::paths::menubar_json_path()?;
+    let (prompted_version, prompted_person) = read_reprompt_guard(&path);
+
+    Ok(decide_reprompt(
+        &resp,
+        consent_version,
+        prompted_version,
+        prompted_person.as_deref(),
+    ))
+}
+
+/// Record that the launch-time re-prompt has been SHOWN for this person at this
+/// consent version, so it is not shown again for the same pair.
+///
+/// Called on dismissal (which must NOT post an answer) and — harmlessly — after
+/// an answer (which already makes the record non-stale). Persisted via the same
+/// untyped-merge + atomic-rename path every other menubar flag uses, so unknown
+/// keys survive.
+#[tauri::command]
+pub fn mark_consent_reprompt_shown(
+    consent_version: u32,
+    person_uid: String,
+) -> Result<(), String> {
+    if person_uid.is_empty() {
+        // Nothing to key the guard to — refuse rather than write a useless pair.
+        return Err("mark_consent_reprompt_shown requires a person_uid".to_string());
+    }
+    let path = crate::util::paths::menubar_json_path()?;
+    hq_desktop_core::first_run::merge_menubar_flags(
+        &path,
+        &[
+            (REPROMPT_VERSION_KEY, Value::from(consent_version)),
+            (REPROMPT_PERSON_KEY, Value::String(person_uid)),
+        ],
+    )
+}
+
 fn is_safe_event_name(event_name: &str) -> bool {
     !event_name.is_empty()
         && event_name.len() <= 96
@@ -2006,5 +2163,109 @@ mod tests {
             }
         }
         assert!(checked > 0, "must have processed at least one fixture row");
+    }
+
+    // ── US-005: launch-time re-prompt decision ────────────────────────────────
+
+    use crate::commands::vault_client::TelemetryOptInResponse;
+
+    fn opt_in_resp(
+        enabled: bool,
+        stale: Option<bool>,
+        person_uid: Option<&str>,
+    ) -> TelemetryOptInResponse {
+        TelemetryOptInResponse {
+            enabled,
+            updated_at: None,
+            unset: Some(false),
+            person_uid: person_uid.map(|s| s.to_string()),
+            consent_version: None,
+            source: None,
+            answered_by: None,
+            stale,
+        }
+    }
+
+    #[test]
+    fn reprompt_shown_once_for_a_stale_record_then_suppressed() {
+        // A stale record with a known person and no prior guard → re-prompt.
+        let resp = opt_in_resp(true, Some(true), Some("prs_alice"));
+        let first = decide_reprompt(&resp, 1, None, None);
+        assert!(first.should_reprompt);
+        assert_eq!(first.person_uid.as_deref(), Some("prs_alice"));
+
+        // After the guard records (v1, prs_alice) — whether via dismissal or an
+        // answer — the SAME version+person must NOT re-prompt again.
+        let second = decide_reprompt(&resp, 1, Some(1), Some("prs_alice"));
+        assert!(!second.should_reprompt);
+    }
+
+    #[test]
+    fn reprompt_not_shown_when_record_is_current() {
+        // A current, self-given answer is never stale, so never re-prompted.
+        let resp = opt_in_resp(true, Some(false), Some("prs_alice"));
+        assert!(!decide_reprompt(&resp, 1, None, None).should_reprompt);
+    }
+
+    #[test]
+    fn reprompt_suppressed_when_server_omits_the_stale_field() {
+        // An older server that predates `stale` sends `None`. The client must not
+        // re-derive staleness; `None` means "do not re-prompt".
+        let resp = opt_in_resp(true, None, Some("prs_alice"));
+        assert!(!decide_reprompt(&resp, 1, None, None).should_reprompt);
+    }
+
+    #[test]
+    fn reprompt_suppressed_without_a_person_to_key_the_guard() {
+        // Stale but no person_uid: re-prompting would re-fire every launch because
+        // the "shown once" guard could not be keyed to anyone. Fail safe.
+        let resp = opt_in_resp(true, Some(true), None);
+        let decision = decide_reprompt(&resp, 1, None, None);
+        assert!(!decision.should_reprompt);
+        assert!(decision.person_uid.is_none());
+    }
+
+    #[test]
+    fn reprompt_re_fires_when_the_consent_version_is_bumped() {
+        // Guard names (v1, prs_alice); the current version is now 2. The bump
+        // makes the stored pair no longer match, so a still-stale record is
+        // re-prompted once more.
+        let resp = opt_in_resp(true, Some(true), Some("prs_alice"));
+        assert!(decide_reprompt(&resp, 2, Some(1), Some("prs_alice")).should_reprompt);
+    }
+
+    #[test]
+    fn reprompt_re_fires_for_a_different_person_on_the_same_machine() {
+        // The guard is keyed per person: a machine where prs_alice was already
+        // re-prompted must still re-prompt prs_bob (a stale record of his own).
+        let resp = opt_in_resp(true, Some(true), Some("prs_bob"));
+        assert!(decide_reprompt(&resp, 1, Some(1), Some("prs_alice")).should_reprompt);
+    }
+
+    #[test]
+    fn reprompt_guard_round_trips_through_menubar_json() {
+        let home = setup_home();
+        let path = home.path().join(".hq/menubar.json");
+        write_menubar(home.path(), r#"{"machineId":"mid-reprompt"}"#);
+
+        // No guard written yet.
+        assert_eq!(read_reprompt_guard(&path), (None, None));
+
+        // Marking writes the (version, person) pair and preserves other keys.
+        hq_desktop_core::first_run::merge_menubar_flags(
+            &path,
+            &[
+                (REPROMPT_VERSION_KEY, Value::from(1u32)),
+                (REPROMPT_PERSON_KEY, Value::String("prs_alice".to_string())),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(
+            read_reprompt_guard(&path),
+            (Some(1), Some("prs_alice".to_string()))
+        );
+        let v: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(v["machineId"], "mid-reprompt");
     }
 }

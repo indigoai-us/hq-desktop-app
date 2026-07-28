@@ -8,7 +8,12 @@ const wizardSource = readFileSync(
 
 describe('onboarding launch handoff', () => {
   it('finishes onboarding after Claude Code or Codex opens', () => {
-    expect(wizardSource.match(/await onfinish\?\.\(\);/g)).toHaveLength(3);
+    // Six `await onfinish?.()` sites total: three are the launch-handoff paths
+    // (Claude Code / Codex / the manual finish flows), and three were added by
+    // the US-005 re-prompt mode (answer, dismiss, and the offline finish), which
+    // closes the consent step directly instead of advancing to a ready screen
+    // that does not exist in that mode.
+    expect(wizardSource.match(/await onfinish\?\.\(\);/g)).toHaveLength(6);
     expect(wizardSource).not.toContain('advanceTo(4)');
   });
 

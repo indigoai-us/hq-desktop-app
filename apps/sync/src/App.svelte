@@ -38,6 +38,7 @@
     clearStopWatchdog,
     resolveStopTimeout,
   } from './lib/stopWatchdog';
+  import { TELEMETRY_CONSENT_VERSION } from './lib/consent-version';
   import './styles/popover.css';
 
   interface Config {
@@ -70,6 +71,12 @@
   let expiresAt = $state('');
   let checking = $state(true);
   let lifecycleState = $state<string | null>(null);
+  // US-005: when the server reports this person's recorded consent as stale
+  // (pre-versioned, administrative, or below the current version), the blocking
+  // consent step is shown once. `null` means no re-prompt is due; otherwise it
+  // carries the `prs_*` the "shown once" guard is keyed to. Server-authoritative
+  // and fail-quiet: an unreachable server leaves this null and never blocks.
+  let consentReprompt = $state<{ personUid: string } | null>(null);
   let syncState = $state<'idle' | 'syncing' | 'error' | 'conflict' | 'setup-needed' | 'auth-error'>('idle');
   // True while a manual "Sync Now" owns the progress UI — its richer
   // stdout-driven stream (fanout-aware) drives the card. Gates out the
@@ -2074,6 +2081,39 @@
     } finally {
       checking = false;
     }
+    // US-005: once signed in and NOT in first-run onboarding, ask the server
+    // whether this person's recorded consent is stale and should be re-asked.
+    // Non-blocking and fail-quiet — the Popover renders immediately; if a
+    // re-prompt is due it swaps in on the next tick.
+    if (authenticated && !isOnboardingState(lifecycleState)) {
+      void checkConsentReprompt();
+    }
+  }
+
+  /**
+   * US-005: query the server-authoritative re-prompt decision and, if due,
+   * arm the blocking consent step. Fail-quiet: any error (unreachable server,
+   * no token) leaves `consentReprompt` null so the app is never blocked, and we
+   * simply try again on the next launch.
+   */
+  async function checkConsentReprompt() {
+    try {
+      const status = await invoke<{ shouldReprompt: boolean; personUid: string | null }>(
+        'consent_reprompt_status',
+        { consentVersion: TELEMETRY_CONSENT_VERSION },
+      );
+      if (status.shouldReprompt && status.personUid) {
+        consentReprompt = { personUid: status.personUid };
+      }
+    } catch (err) {
+      console.warn('consent reprompt check failed (non-fatal):', err);
+    }
+  }
+
+  async function handleConsentRepromptFinish() {
+    // The person answered or dismissed; the guard is persisted server/local-side.
+    // Return to the normal popover and refresh consent-dependent surfaces.
+    consentReprompt = null;
   }
 
   async function handleOnboardingFinish() {
@@ -2104,6 +2144,15 @@
     <Onboarding
       state={(lifecycleState ?? 'NeedsInstall') as LifecycleState}
       onfinish={handleOnboardingFinish}
+    />
+  {:else if authenticated && consentReprompt}
+    <!-- US-005: blocking re-prompt for a stale/administrative/pre-versioned
+         consent record. Same consent UI as onboarding, answered exactly once. -->
+    <Onboarding
+      state="SteadyState"
+      mode="reprompt"
+      repromptPersonUid={consentReprompt.personUid}
+      onfinish={handleConsentRepromptFinish}
     />
   {:else if authenticated}
     <Popover

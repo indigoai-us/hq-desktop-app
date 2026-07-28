@@ -4,6 +4,7 @@ type InvokeCommand = (command: string, args?: Record<string, unknown>) => Promis
 
 const POST_OPT_IN_COMMAND = 'post_telemetry_opt_in';
 const WRITE_PREF_COMMAND = 'write_menubar_telemetry_pref';
+const MARK_REPROMPT_SHOWN_COMMAND = 'mark_consent_reprompt_shown';
 
 export type TelemetryOptInSurface = 'onboarding' | 'settings';
 
@@ -94,6 +95,29 @@ export async function postOptIn({
     // so it can show a retry (or, when offline, let the person finish anyway
     // knowing the cached answer will be reconciled later).
     return { cached, uploaded: false, error: errorText(err) };
+  }
+}
+
+/**
+ * Record that the US-005 launch-time consent re-prompt has been SHOWN for this
+ * person at this consent version, so it is not shown again for the same pair.
+ *
+ * A DISMISSAL calls this and NOTHING else — dismissing must never post an
+ * answer. An ANSWER also calls it (harmlessly: answering already replaces the
+ * stale record with a current one, so it stops being stale regardless). It is
+ * best-effort — a failure to persist the guard must not block the user — so it
+ * never throws; the worst case is the prompt reappearing on a later launch,
+ * never a lost answer.
+ */
+export async function markConsentRepromptShown(
+  consentVersion: number,
+  personUid: string,
+  invokeCommand: InvokeCommand = invoke as InvokeCommand,
+): Promise<void> {
+  try {
+    await invokeCommand(MARK_REPROMPT_SHOWN_COMMAND, { consentVersion, personUid });
+  } catch (err) {
+    console.warn('[telemetry] mark_consent_reprompt_shown failed:', err);
   }
 }
 
