@@ -341,6 +341,51 @@ describe('US-003 — settings reflects the server', () => {
     expect(posted?.enabled).toBe(false);
   });
 
+  // ── finding #6: a withdrawal must not emit another telemetry event ──────
+  it('does NOT emit a telemetry_preference_changed event on a withdrawal', async () => {
+    // The old code emitted telemetry_preference_changed(false) BEFORE the
+    // withdrawal write — while the server still reported "enabled" — producing
+    // one more telemetry event AFTER the user had asked to stop. A withdrawal
+    // must halt emission immediately, so no such event may fire.
+    stubInvoke({
+      consent: { enabled: true, source: 'server', updatedAt: null, consentVersion: null, unset: false },
+    });
+    await mountSettings();
+
+    const toggle = telemetryToggle();
+    toggle.checked = false;
+    toggle.dispatchEvent(new Event('change', { bubbles: true }));
+    await settle();
+
+    const emits = calls.filter((c) => c.command === 'emit_desktop_telemetry_if_opted_in');
+    expect(emits).toHaveLength(0);
+  });
+
+  it('still records telemetry_preference_changed on an OPT-IN, after the server confirms it', async () => {
+    // Opting IN is a change worth recording, and by then collection is (about to
+    // be) on — so a single audit event after the confirmed write is correct.
+    let phase: 'before' | 'after' = 'before';
+    stubInvoke({
+      consent: async () =>
+        phase === 'before'
+          ? { enabled: false, source: 'server', updatedAt: null, consentVersion: null, unset: false }
+          : { enabled: true, source: 'server', updatedAt: '2026-07-28T09:00:00Z', consentVersion: 1, unset: false },
+      onPostOptIn: () => {
+        phase = 'after';
+      },
+    });
+    await mountSettings();
+    expect(telemetryToggle().checked).toBe(false);
+
+    const toggle = telemetryToggle();
+    toggle.checked = true;
+    toggle.dispatchEvent(new Event('change', { bubbles: true }));
+    await settle();
+
+    const emits = calls.filter((c) => c.command === 'emit_desktop_telemetry_if_opted_in');
+    expect(emits.length).toBeGreaterThanOrEqual(1);
+  });
+
   it('re-reads the server after a successful withdrawal so the displayed value stays authoritative', async () => {
     // After the write succeeds, the screen re-reads the server rather than
     // trusting the optimistic toggle — so it can never drift from truth.

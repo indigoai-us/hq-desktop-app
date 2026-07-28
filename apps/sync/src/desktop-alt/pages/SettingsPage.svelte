@@ -555,9 +555,13 @@
     if (telemetryBusy) return;
     telemetryBusy = true;
     try {
-      if (!next) {
-        await auditTelemetryPreferenceChanged(next);
-      }
+      // Finding #6: a withdrawal must HALT emission immediately — so we must not
+      // emit ANY telemetry event for a withdrawal. The old code deliberately
+      // emitted `telemetry_preference_changed(false)` BEFORE the withdrawal
+      // write, while the server still reported "enabled", which produced one
+      // more telemetry event AFTER the user had asked to stop. That event is now
+      // removed entirely; only an opt-IN records the change (after the server
+      // confirms it).
       // Persist the offline cache too, so an immediately-following offline read
       // shows the just-chosen value.
       if (!(await saveSettings({ telemetryEnabled: next }))) return;
@@ -566,7 +570,7 @@
         surface: 'settings',
         consentVersion: TELEMETRY_CONSENT_VERSION,
       });
-      if (next) {
+      if (next && result.uploaded) {
         await auditTelemetryPreferenceChanged(next);
       }
       // Re-read the server so provenance (updatedAt/version) reflects the write

@@ -801,9 +801,17 @@
       if (!result.uploaded) {
         // Do not advance on a failed remote write — that is exactly the
         // swallowed-failure US-002 forbids. Show the person what happened.
+        //
+        // Finding #5: "finish offline" is only honest when the answer is safely
+        // CACHED — that cached record is what the consent repair reconciles
+        // later. If the LOCAL write ALSO failed (`cached === false`), there is no
+        // answer to reconcile, so offering the offline path would let the person
+        // complete setup with their choice lost entirely. In that case force the
+        // retry-only "server" affordance regardless of whether it looks offline.
         const message = result.error ?? 'The server did not confirm your choice.';
+        const offlineButCached = result.cached && looksOffline(message);
         consentFailure = {
-          kind: looksOffline(message) ? 'offline' : 'server',
+          kind: offlineButCached ? 'offline' : 'server',
           message,
         };
         return;

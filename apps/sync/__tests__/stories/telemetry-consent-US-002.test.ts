@@ -64,6 +64,10 @@ async function settle() {
  * behaves so a single test can flip it from failure to success across a retry.
  */
 let postResult: { mode: 'ok' } | { mode: 'reject'; error: unknown } = { mode: 'ok' };
+// When true, the local cache write (write_menubar_telemetry_pref) fails — used
+// to prove finding #5: with NO cached answer there is nothing to reconcile, so
+// "finish offline" must not be offered.
+let cacheWriteFails = false;
 const calls: { command: string; args?: Record<string, unknown> }[] = [];
 
 function stubInvoke() {
@@ -77,6 +81,7 @@ function stubInvoke() {
       case 'ensure_person_entity':
         return true;
       case 'write_menubar_telemetry_pref':
+        if (cacheWriteFails) throw new Error('disk full: cache write failed');
         return undefined;
       case 'post_telemetry_opt_in':
         if (postResult.mode === 'reject') throw postResult.error;
@@ -143,6 +148,7 @@ beforeEach(() => {
   openExternal.mockClear();
   calls.length = 0;
   postResult = { mode: 'ok' };
+  cacheWriteFails = false;
   stubInvoke();
   document.body.innerHTML = '';
   host = document.createElement('div');
@@ -296,6 +302,54 @@ describe('US-002 AC4 — offline does not trap the user', () => {
     // offline does not re-post nor pretend the server confirmed the write. The
     // cached answer is reconciled later by the consent repair.
     expect(postCalls().length).toBe(postsBefore);
+  });
+});
+
+describe('US-002 finding #5 — no "finish offline" when the cache write also failed', () => {
+  it('offers the offline-finish path when the answer WAS cached', async () => {
+    // Baseline: upload fails but the local cache succeeded → there IS an answer
+    // to reconcile later, so "finish offline" is honest and offered.
+    postResult = {
+      mode: 'reject',
+      error: 'error sending request: connection refused (offline)',
+    };
+    cacheWriteFails = false;
+    await mountAt(3);
+    chooseShare();
+    await flush();
+    primaryContinue().click();
+    await settle();
+
+    expect(
+      consentPanel().querySelector('[data-testid="consent-finish-offline"]'),
+    ).not.toBeNull();
+  });
+
+  it('does NOT offer "finish offline" when BOTH the upload and the cache write failed', async () => {
+    // Both writes failed: there is no cached answer to reconcile, so completing
+    // setup would lose the choice entirely. The UI must force a retry, not offer
+    // an offline finish that silently drops the answer.
+    postResult = {
+      mode: 'reject',
+      error: 'error sending request: connection refused (offline)',
+    };
+    cacheWriteFails = true;
+    await mountAt(3);
+    chooseShare();
+    await flush();
+    primaryContinue().click();
+    await settle();
+    await new Promise((r) => setTimeout(r, 400));
+    await flush();
+
+    // Did NOT advance, no offline-finish escape hatch, retry is the only way.
+    expect(readyIsActive()).toBe(false);
+    expect(
+      consentPanel().querySelector('[data-testid="consent-finish-offline"]'),
+    ).toBeNull();
+    expect(
+      consentPanel().querySelector('[data-testid="consent-retry"]'),
+    ).not.toBeNull();
   });
 });
 

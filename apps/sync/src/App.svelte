@@ -39,6 +39,7 @@
     resolveStopTimeout,
   } from './lib/stopWatchdog';
   import { TELEMETRY_CONSENT_VERSION } from './lib/consent-version';
+  import { markConsentRepromptShown } from './lib/onboarding-telemetry';
   import './styles/popover.css';
 
   interface Config {
@@ -2103,6 +2104,24 @@
         { consentVersion: TELEMETRY_CONSENT_VERSION },
       );
       if (status.shouldReprompt && status.personUid) {
+        // Finding #8: write the "shown once" guard the moment the prompt is
+        // DISPLAYED, not only after the person answers or dismisses. Otherwise
+        // closing or crashing after it appears re-shows it next launch. The
+        // guard write is awaited BEFORE arming, and a write FAILURE must not
+        // silently cause a repeat: if it did not persist, we do not display the
+        // prompt this launch (we simply try again next launch, where the guard
+        // write can be retried) rather than showing an unguarded prompt that
+        // would nag every launch.
+        const persisted = await markConsentRepromptShown(
+          TELEMETRY_CONSENT_VERSION,
+          status.personUid,
+        );
+        if (!persisted) {
+          console.warn(
+            'consent reprompt guard did not persist; deferring the prompt to a later launch',
+          );
+          return;
+        }
         consentReprompt = { personUid: status.personUid };
       }
     } catch (err) {
