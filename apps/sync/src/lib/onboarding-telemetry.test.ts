@@ -85,4 +85,39 @@ describe('postOptIn', () => {
     });
     expect(invokeCommand).toHaveBeenCalledTimes(2);
   });
+
+  // US-002: the remote outcome is REPORTED, not swallowed. A failed upload used
+  // to be indistinguishable from a refusal — the caller must now be able to tell
+  // "the server refused to record this" from "the person said no".
+  it('reports a confirmed upload as uploaded:true (never throws)', async () => {
+    const invokeCommand = vi.fn().mockResolvedValue(undefined);
+
+    const result = await postOptIn({ enabled: true, invokeCommand });
+
+    expect(result).toEqual({ cached: true, uploaded: true });
+  });
+
+  it('reports a failed upload as uploaded:false with the error, and still cached', async () => {
+    const invokeCommand = vi
+      .fn()
+      .mockResolvedValueOnce(undefined) // local cache write succeeds
+      .mockRejectedValueOnce(new Error('HTTP 500')); // remote POST fails
+
+    const result = await postOptIn({ enabled: true, invokeCommand });
+
+    expect(result.uploaded).toBe(false);
+    expect(result.cached).toBe(true);
+    expect(result.error).toContain('HTTP 500');
+  });
+
+  it('reports cached:false when even the local write fails but the upload lands', async () => {
+    const invokeCommand = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('disk full')) // local cache write fails
+      .mockResolvedValueOnce(undefined); // remote POST succeeds
+
+    const result = await postOptIn({ enabled: false, invokeCommand });
+
+    expect(result).toEqual({ cached: false, uploaded: true });
+  });
 });

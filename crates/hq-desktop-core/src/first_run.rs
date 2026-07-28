@@ -294,6 +294,73 @@ mod tests {
         assert_eq!(read_menubar_consent(&path).replayable_for(ME), None);
     }
 
+    // ── replayable_for guards, exercised directly ──────────────────────────
+    //
+    // AC5 of US-002: reconciliation refuses to replay an answer belonging to a
+    // different account, and (via the server-side onlyIfUnset guard, checked in
+    // the app crate) refuses to overwrite an answer already recorded
+    // server-side. These pin the client-side half — the account-match and
+    // provenance guards — directly on `replayable_for`, independent of the JSON
+    // parsing above, so a refactor of one cannot silently loosen the other.
+
+    fn answer(enabled: bool, answered_at: Option<&str>, subject: Option<&str>) -> MenubarConsent {
+        MenubarConsent {
+            enabled: Some(enabled),
+            answered_at: answered_at.map(str::to_string),
+            subject: subject.map(str::to_string),
+            person_uid: None,
+        }
+    }
+
+    #[test]
+    fn replayable_for_matches_only_the_binding_account() {
+        // Bound to A: replayable for A, refused for B. Replaying A's answer for
+        // B would opt B in without B ever seeing the prompt.
+        let a = answer(true, Some("2026-07-27T10:00:00Z"), Some("sub-A"));
+        assert_eq!(a.replayable_for("sub-A"), Some(true));
+        assert_eq!(a.replayable_for("sub-B"), None);
+    }
+
+    #[test]
+    fn replayable_for_refuses_an_unbound_answer() {
+        // No subject: unbound records are produced routinely (the answer is
+        // stamped before the person entity exists), so "unbound" proves nothing
+        // about WHOSE answer it is and must never be replayed for anyone.
+        let unbound = answer(false, Some("2026-07-27T10:00:00Z"), None);
+        assert_eq!(unbound.replayable_for("sub-A"), None);
+    }
+
+    #[test]
+    fn replayable_for_refuses_an_answer_without_provenance() {
+        // No answered_at: `telemetryEnabled` may just be a persisted settings
+        // default, not a choice the person made — replaying it would manufacture
+        // consent out of a default.
+        let no_provenance = answer(true, None, Some("sub-A"));
+        assert_eq!(no_provenance.replayable_for("sub-A"), None);
+    }
+
+    #[test]
+    fn replayable_for_refuses_when_no_answer_recorded() {
+        // No `enabled` at all — nothing to replay.
+        let empty = MenubarConsent {
+            enabled: None,
+            answered_at: Some("2026-07-27T10:00:00Z".to_string()),
+            subject: Some("sub-A".to_string()),
+            person_uid: None,
+        };
+        assert_eq!(empty.replayable_for("sub-A"), None);
+    }
+
+    #[test]
+    fn replayable_for_preserves_an_explicit_opt_out() {
+        // A real opt-out is an answer and must replay as `false`, never be
+        // conflated with "unanswered" (which would silently convert it to an
+        // opt-in).
+        let opt_out = answer(false, Some("2026-07-27T10:00:00Z"), Some("sub-A"));
+        assert_eq!(opt_out.replayable_for("sub-A"), Some(false));
+        assert_eq!(opt_out.replayable_for("sub-B"), None);
+    }
+
     #[test]
     fn consent_record_ignores_unusable_values() {
         let dir = TempDir::new().unwrap();

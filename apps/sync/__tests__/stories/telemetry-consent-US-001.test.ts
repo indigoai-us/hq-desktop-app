@@ -233,6 +233,10 @@ describe('US-001 recording the answer', () => {
 
     consentContinue().click();
     await flush();
+    // submitConsent now awaits ensure_person_entity (US-002 AC1) before the
+    // POST, so the upload lands a couple of microtasks later than it used to.
+    await flush();
+    await flush();
 
     const post = invoke.mock.calls.find((c) => c[0] === 'post_telemetry_opt_in');
     expect(post).toBeDefined();

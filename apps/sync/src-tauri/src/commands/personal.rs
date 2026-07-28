@@ -915,6 +915,32 @@ async fn resolve_or_provision<R: tauri::Runtime + 'static>(
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
+/// Guarantee the caller's `person` entity exists before the consent write.
+///
+/// AC1 of US-002: `/v1/usage/opt-in` resolves the caller's `prs_*` person
+/// entity and 404s (`no-person-entity`) when none exists — the original
+/// lost-answer defect. The consent step now sits AFTER setup, which provisions
+/// the entity, but that provisioning is kicked off in the BACKGROUND by
+/// `start_initial_cloud_sync` and may still be in flight when consent is
+/// submitted. Rather than relying on step ordering alone, the consent step
+/// awaits this command first: it resolves the entity from cache or provisions
+/// it synchronously, so the POST that follows always has somewhere to land.
+///
+/// Returns `Ok(true)` once an entity exists (resolved or freshly created), and
+/// `Ok(false)` for the benign 409 where the entity exists server-side but is
+/// not resolvable this cycle — in both cases the entity IS present, so the
+/// consent write may proceed. Only a hard error (no token, vault unreachable)
+/// surfaces as `Err`, which the caller treats like any other upload failure.
+#[tauri::command]
+pub async fn ensure_person_entity(app: tauri::AppHandle) -> Result<bool, String> {
+    let jwt = crate::commands::sync::resolve_jwt().await?;
+    let vault_url = crate::commands::sync::resolve_vault_api_url()?;
+    let vault = VaultClient::new(&vault_url, &jwt);
+    // `Some(..)` = resolved to a concrete uid; `None` = benign 409, entity
+    // already exists server-side. Either way the entity is present.
+    Ok(resolve_or_provision(&app, &vault).await?.is_some())
+}
+
 pub async fn ensure_personal_bucket_and_first_push<R: tauri::Runtime + 'static>(
     app: &tauri::AppHandle<R>,
     vault: &VaultClient,

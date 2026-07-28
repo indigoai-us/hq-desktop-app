@@ -117,6 +117,13 @@
   // answer was dropped. Consent is now its own step after setup.)
   let telemetryChoice = $state<'share' | 'decline' | null>(null);
   let consentSubmitting = $state(false);
+  // The outcome of the last consent attempt. `null` while unattempted or after
+  // a clean success. When the remote write fails we DO NOT advance — we surface
+  // this so the person sees a retry (server error) or an honest "saved on this
+  // machine, will send when you reconnect" (offline) instead of the failure
+  // being swallowed to the console.
+  type ConsentFailure = { kind: 'server' | 'offline'; message: string };
+  let consentFailure = $state<ConsentFailure | null>(null);
   let loadingProvider = $state<SignInProvider | null>(null);
   let signInError = $state('');
   let currentSignInCall = 0;
@@ -712,35 +719,94 @@
   let setupCompletionMetrics = $state<SetupCompletionMetrics | null>(null);
 
   /**
-   * Record the telemetry answer and leave the consent step for the ready
-   * screen. Called from either option's Continue. Declining is first-class:
-   * it records the answer, emits nothing, withholds nothing, and finishes
-   * setup exactly like sharing does.
+   * A best-effort guess at whether an upload failure is "you are offline"
+   * versus "the server errored". Offline steers the user toward finishing setup
+   * now (the answer is cached and reconciled later); a server error steers them
+   * toward Retry. The classes only change the copy — either way we never report
+   * a failed write as a success.
+   */
+  function looksOffline(message: string): boolean {
+    return /offline|network|connection|unreachable|timed out|timeout|dns|failed to connect|ENOTFOUND|ECONNREFUSED|ETIMEDOUT/i.test(
+      message,
+    );
+  }
+
+  /**
+   * Record the telemetry answer and, only when the SERVER confirms the write,
+   * leave the consent step for the ready screen. Called from either option's
+   * Continue. Declining is first-class: it records the answer, emits nothing,
+   * withholds nothing, and finishes setup exactly like sharing does.
+   *
+   * US-002: the remote write is foreground and its failure is visible.
+   *   - AC1: the caller's person entity is guaranteed to exist first, so the
+   *     POST cannot 404 into the void. Setup provisions it, but that runs in the
+   *     background, so we await it here rather than trusting step ordering.
+   *   - AC2/AC3: a failed remote write does NOT advance; it surfaces a retry.
+   *   - AC4: an OFFLINE person can still finish — the answer is already cached
+   *     with provenance and reconciled by the consent repair on reconnect. We
+   *     say so honestly and never call it a successful server write.
    */
   async function submitConsent(): Promise<void> {
     if (telemetryChoice === null || consentSubmitting) return;
     consentSubmitting = true;
+    consentFailure = null;
     const enabled = telemetryChoice === 'share';
     try {
+      // AC1 — make the ordering explicit. Ensure the person entity exists
+      // before the opt-in POST fires. This resolves from cache instantly on the
+      // common path; only a fresh install with in-flight provisioning waits.
+      try {
+        await invokeCommand<boolean>('ensure_person_entity');
+      } catch (err) {
+        // Could not confirm the entity (no token / vault unreachable). Fall
+        // through to postOptIn: the local cache still records the answer, and
+        // the failure surfaces below just like an upload failure.
+        console.warn('[onboarding-consent] ensure_person_entity failed:', err);
+      }
+
       // Provenance travels with the answer so the server can tell a genuine
       // onboarding answer from an administrative backfill and re-ask when the
-      // wording changes. Error behaviour is unchanged for this story (US-002
-      // makes the write awaited/durable with a retry affordance).
-      await postOptIn({
+      // wording changes.
+      const result = await postOptIn({
         enabled,
         surface: 'onboarding',
         consentVersion: TELEMETRY_CONSENT_VERSION,
       });
+
+      if (!result.uploaded) {
+        // Do not advance on a failed remote write — that is exactly the
+        // swallowed-failure US-002 forbids. Show the person what happened.
+        const message = result.error ?? 'The server did not confirm your choice.';
+        consentFailure = {
+          kind: looksOffline(message) ? 'offline' : 'server',
+          message,
+        };
+        return;
+      }
+
       if (enabled && setupCompletionMetrics) {
         void emitDesktopTelemetry({
           eventName: 'desktop_setup_completed',
           properties: { ...setupCompletionMetrics },
         });
       }
+      advanceTo(READY_STEP_INDEX);
     } finally {
       consentSubmitting = false;
-      advanceTo(READY_STEP_INDEX);
     }
+  }
+
+  /**
+   * AC4 — an offline person is not trapped. Their answer is already cached with
+   * provenance; the consent repair reconciles it on the next successful
+   * connection. Finishing here is honest: it does NOT emit the completion event
+   * (the server never confirmed the write) and does NOT claim the upload
+   * succeeded — it just stops blocking setup on a connection the person doesn't
+   * have.
+   */
+  function finishOffline(): void {
+    if (consentSubmitting) return;
+    advanceTo(READY_STEP_INDEX);
   }
 
   async function startSetupRun() {
@@ -1350,7 +1416,10 @@
                 name="telemetry-consent"
                 value="share"
                 checked={telemetryChoice === 'share'}
-                onchange={() => (telemetryChoice = 'share')}
+                onchange={() => {
+                  telemetryChoice = 'share';
+                  consentFailure = null;
+                }}
               />
               <span class="consent-option-copy">
                 <span class="consent-option-title">Share usage data</span>
@@ -1363,7 +1432,10 @@
                 name="telemetry-consent"
                 value="decline"
                 checked={telemetryChoice === 'decline'}
-                onchange={() => (telemetryChoice = 'decline')}
+                onchange={() => {
+                  telemetryChoice = 'decline';
+                  consentFailure = null;
+                }}
               />
               <span class="consent-option-copy">
                 <span class="consent-option-title">Don't share usage data</span>
@@ -1371,13 +1443,54 @@
               </span>
             </label>
           </fieldset>
+          {#if consentFailure}
+            <div
+              class="consent-error"
+              class:offline={consentFailure.kind === 'offline'}
+              role="alert"
+              data-testid="consent-error"
+            >
+              {#if consentFailure.kind === 'offline'}
+                <p class="consent-error-text">
+                  You appear to be offline, so your choice couldn't be sent yet.
+                  It's saved on this machine and HQ will send it automatically the
+                  next time you're connected. You can finish setting up now.
+                </p>
+              {:else}
+                <p class="consent-error-text">
+                  We couldn't save your choice to the server just now. Nothing was
+                  lost — your answer is held on this machine. Try again in a
+                  moment.
+                </p>
+              {/if}
+            </div>
+          {/if}
           <div class="btns">
-            <button
-              class="btn btn-primary"
-              type="button"
-              disabled={telemetryChoice === null || consentSubmitting}
-              onclick={() => void submitConsent()}
-            >Continue</button>
+            {#if consentFailure}
+              <button
+                class="btn btn-primary"
+                type="button"
+                disabled={consentSubmitting}
+                data-testid="consent-retry"
+                onclick={() => void submitConsent()}
+              >{consentSubmitting ? 'Retrying…' : 'Retry'}</button>
+              {#if consentFailure.kind === 'offline'}
+                <button
+                  class="btn btn-secondary"
+                  type="button"
+                  disabled={consentSubmitting}
+                  data-testid="consent-finish-offline"
+                  onclick={finishOffline}
+                >Finish setup — send later</button>
+              {/if}
+            {:else}
+              <button
+                class="btn btn-primary"
+                type="button"
+                disabled={telemetryChoice === null || consentSubmitting}
+                onclick={() => void submitConsent()}
+              >{consentSubmitting ? 'Saving…' : 'Continue'}</button>
+            {/if}
           </div>
         </section>
 
@@ -1693,6 +1806,10 @@
   .consent-link { appearance:none; border:0; background:none; padding:0; margin:0; color:var(--c-text); font:inherit; font-size:12.5px; line-height:17px; text-decoration:underline; cursor:pointer; }
   .consent-link:hover { opacity:.8; }
   .consent-link:focus-visible { outline:1.5px solid var(--c-focus-ring, var(--c-text)); outline-offset:2px; border-radius:3px; }
+
+  .consent-error { margin:12px 0 0; padding:10px 13px; border:1px solid var(--c-danger, #d14343); border-radius:10px; background:color-mix(in srgb, var(--c-danger, #d14343) 8%, transparent); }
+  .consent-error.offline { border-color:var(--c-warning, #c88a1e); background:color-mix(in srgb, var(--c-warning, #c88a1e) 8%, transparent); }
+  .consent-error-text { margin:0; font-size:12.5px; line-height:17px; color:var(--c-text); }
 
   .consent-options { margin:14px 0 0; padding:0; border:0; display:flex; flex-direction:column; gap:8px; }
   .consent-option { display:flex; align-items:flex-start; gap:10px; padding:11px 13px; border:1px solid var(--c-field-border); border-radius:10px; cursor:pointer; transition:border-color .12s, background-color .12s; }
