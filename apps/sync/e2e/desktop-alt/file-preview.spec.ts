@@ -18,8 +18,8 @@ import { readRepoFile } from './harness';
  *      the open actions render in the header independent of preview success.
  *   4. get_company_file_content is invoked with { path } (binary/oversized
  *      triggers the catch path, which drives the unsupported state).
- *   5. Reveal in Finder uses plugin-shell open() (shell:allow-open grant) for
- *      reveal only — it is not used for Open-in-Claude-Code.
+ *   5. Reveal in Finder uses the reveal_in_finder app command for reveal only
+ *      — it is not used for Open-in-Claude-Code.
  *   6. Files mode wires the tree + preview: FilesModeSidebar owns the tree and
  *      file select, DesktopApp renders FilePreviewPane in the main area driven
  *      by the selected path (US-009 moved this off the per-company panel).
@@ -105,13 +105,12 @@ describe('desktop-alt file preview pane + open actions (US-004 file-explorer)', 
     // No hand-rolled claude:// query string in FilePreviewPane source.
     expect(preview).not.toMatch(/claude:\/\/[\w/]*\?/);
 
-    // plugin-shell open() is imported — but used ONLY for Reveal in Finder,
-    // not for Open-in-Claude-Code.  Assert it is present (reveal needs it):
-    expect(preview).toContain("from '@tauri-apps/plugin-shell'");
-    // And that it is NOT invoked near the open-in-claude-code path — the
-    // import is used exclusively in the revealInFinder function.
+    // Reveal in Finder goes through the reveal_in_finder app command, NOT
+    // plugin-shell open() (open() launches the file's default app and never
+    // reveals it in Finder).
+    expect(preview).not.toContain("from '@tauri-apps/plugin-shell'");
     expect(preview).toContain('async function revealInFinder');
-    expect(preview).toContain('await open(absolutePath)');
+    expect(preview).toContain("invoke('reveal_in_finder', { path })");
   });
 
   // -------------------------------------------------------------------------
@@ -187,27 +186,25 @@ describe('desktop-alt file preview pane + open actions (US-004 file-explorer)', 
   });
 
   // -------------------------------------------------------------------------
-  // Additional acceptance criteria: Reveal in Finder uses plugin-shell open()
+  // Additional acceptance criteria: Reveal in Finder uses the reveal_in_finder command
   // -------------------------------------------------------------------------
-  it('uses plugin-shell open() for Reveal in Finder only — not for claude:// dispatch', () => {
-    // plugin-shell open() is imported.
-    expect(preview).toContain("import { open } from '@tauri-apps/plugin-shell'");
-
+  it('uses the reveal_in_finder app command for Reveal in Finder — never plugin-shell open()', () => {
     // Reveal button carries the correct testid.
     expect(preview).toContain('data-testid="reveal-in-finder"');
 
-    // open() is called inside the revealInFinder function (the absolute path).
-    expect(preview).toContain('await open(absolutePath)');
+    // Reveal routes through the Rust command that runs 'open -R' (reveal +
+    // select in Finder), passing the HQ-relative path.
+    expect(preview).toContain('async function revealInFinder');
+    expect(preview).toContain("invoke('reveal_in_finder', { path })");
 
-    // absolutePath is built from hqFolderPath + '/' + path.
-    expect(preview).toContain('hqFolderPath');
-    expect(preview).toContain('absolutePath');
+    // REGRESSION (feedback_8ac16311 / DEV-1985): reveal must NOT use the shell
+    // open() verb, which merely opens the file in its default app and leaves
+    // Finder where it was.
+    expect(preview).not.toContain("from '@tauri-apps/plugin-shell'");
+    expect(preview).not.toContain('open(absolutePath)');
 
     // Reveal self-suppresses when hqFolderPath is empty ({#if absolutePath}).
     expect(preview).toContain('{#if absolutePath}');
-
-    // open() is NOT used for any claude:// dispatch in FilePreviewPane.
-    expect(preview).not.toMatch(/open\(['"]claude:\/\//);
   });
 
   // -------------------------------------------------------------------------
