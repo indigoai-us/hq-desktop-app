@@ -277,6 +277,24 @@ pub struct TelemetryOptInResponse {
     /// cached answer that belongs to a different account.
     #[serde(default)]
     pub person_uid: Option<String>,
+    /// The consent version whose wording the person was shown when they
+    /// answered. `None` means the record predates versioning (and is therefore
+    /// stale). Surfaced to the settings screen as provenance (AC5).
+    #[serde(default)]
+    pub consent_version: Option<u32>,
+    /// Which surface produced the answer (`onboarding` / `settings` /
+    /// `administrative`, or the interim `admin-backfill-*` marker). `None` on
+    /// servers that predate provenance.
+    #[serde(default)]
+    pub source: Option<String>,
+    /// The Cognito subject that recorded the answer. `None` on older servers.
+    #[serde(default)]
+    pub answered_by: Option<String>,
+    /// Whether the record is stale per the cross-repo contract (predates
+    /// versioning, was set administratively, or was answered against an older
+    /// wording). `None` on servers that predate the field.
+    #[serde(default)]
+    pub stale: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1409,5 +1427,55 @@ mod tests {
         assert!(body.get("surface").is_none());
         assert!(body.get("consentVersion").is_none());
         assert!(body.get("onlyIfUnset").is_none());
+    }
+
+    #[tokio::test]
+    async fn get_telemetry_opt_in_parses_provenance_fields() {
+        // US-003 AC5: the GET response now carries provenance the settings
+        // screen renders — consentVersion, source, answeredBy, stale.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/usage/opt-in"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({
+                "enabled": false,
+                "updatedAt": "2026-07-27T10:00:00Z",
+                "unset": false,
+                "personUid": "prs_abc",
+                "consentVersion": 1,
+                "source": "settings",
+                "answeredBy": "sub-A",
+                "stale": false,
+            })))
+            .mount(&server)
+            .await;
+
+        let resp = client(&server.uri()).get_telemetry_opt_in().await.unwrap();
+        assert!(!resp.enabled);
+        assert_eq!(resp.updated_at.as_deref(), Some("2026-07-27T10:00:00Z"));
+        assert_eq!(resp.consent_version, Some(1));
+        assert_eq!(resp.source.as_deref(), Some("settings"));
+        assert_eq!(resp.answered_by.as_deref(), Some("sub-A"));
+        assert_eq!(resp.stale, Some(false));
+    }
+
+    #[tokio::test]
+    async fn get_telemetry_opt_in_tolerates_absent_provenance() {
+        // An older server omits the new fields entirely; they must degrade to
+        // None rather than fail to deserialize.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/usage/opt-in"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(&json!({ "enabled": true })),
+            )
+            .mount(&server)
+            .await;
+
+        let resp = client(&server.uri()).get_telemetry_opt_in().await.unwrap();
+        assert!(resp.enabled);
+        assert_eq!(resp.consent_version, None);
+        assert_eq!(resp.source, None);
+        assert_eq!(resp.answered_by, None);
+        assert_eq!(resp.stale, None);
     }
 }

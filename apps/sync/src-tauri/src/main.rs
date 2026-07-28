@@ -330,6 +330,7 @@ fn main() {
             commands::settings::get_settings,
             commands::settings::save_settings,
             commands::telemetry::post_telemetry_opt_in,
+            commands::telemetry::get_telemetry_consent_status,
             commands::telemetry::write_menubar_telemetry_pref,
             commands::telemetry::emit_desktop_telemetry_if_opted_in,
             commands::personal::ensure_person_entity,

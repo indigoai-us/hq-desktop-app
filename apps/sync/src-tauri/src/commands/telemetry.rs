@@ -412,6 +412,77 @@ async fn resolve_telemetry_enabled(vault: &VaultClient) -> bool {
     }
 }
 
+/// What the Settings screen renders the telemetry toggle from.
+///
+/// `source` is deliberately `"server"` or `"local-cache"` rather than a boolean
+/// flag: the screen must be able to say honestly WHERE the value came from. When
+/// the server is reachable, `enabled` is the server-authoritative answer and the
+/// provenance fields (`updated_at`, `consent_version`, `answered_by`) accompany
+/// it. When the server is unreachable, `enabled` is the local cache — displayed,
+/// but labelled as an offline value rather than presented as current truth.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TelemetryConsentStatus {
+    /// The effective answer to render the toggle from.
+    pub enabled: bool,
+    /// `"server"` when the value is server-authoritative, `"local-cache"` when
+    /// the server was unreachable and this is the offline fallback.
+    pub source: TelemetryConsentSource,
+    /// When the answer was recorded (ISO 8601). Provenance for AC5; absent on
+    /// records that predate the field or on the local-cache path.
+    pub updated_at: Option<String>,
+    /// The consent version the person was shown when they answered. Provenance
+    /// for AC5; absent when the record predates versioning.
+    pub consent_version: Option<u32>,
+    /// The server has a row but no recorded answer for this caller.
+    pub unset: bool,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TelemetryConsentSource {
+    Server,
+    LocalCache,
+}
+
+/// Read the server-authoritative telemetry consent state for the Settings
+/// toggle (AC1/AC2/AC5).
+///
+/// The local `menubar.json` file is a cache for OFFLINE display only. It is
+/// never the source of truth while the server is reachable — reading the toggle
+/// from the local file was the whole defect this story fixes, because the file
+/// can say "on" while the server holds a refusal (and vice versa), so the screen
+/// could contradict what collection actually does.
+///
+/// On a server error the local cache is returned WITH `source: LocalCache`, so
+/// the caller can label it honestly as an offline value rather than passing it
+/// off as the current answer.
+#[tauri::command]
+pub async fn get_telemetry_consent_status() -> Result<TelemetryConsentStatus, String> {
+    let access_token = crate::commands::cognito::get_valid_access_token().await?;
+    let api_url = resolve_vault_api_url()?;
+    let vault = VaultClient::new(&api_url, &access_token);
+    match vault.get_telemetry_opt_in().await {
+        Ok(resp) => Ok(TelemetryConsentStatus {
+            enabled: resp.enabled,
+            source: TelemetryConsentSource::Server,
+            updated_at: resp.updated_at,
+            consent_version: resp.consent_version,
+            unset: resp.unset == Some(true),
+        }),
+        Err(err) => {
+            eprintln!("[telemetry] consent-status-fallback-local: {err}");
+            Ok(TelemetryConsentStatus {
+                enabled: read_local_telemetry_enabled(),
+                source: TelemetryConsentSource::LocalCache,
+                updated_at: None,
+                consent_version: None,
+                unset: false,
+            })
+        }
+    }
+}
+
 fn is_safe_event_name(event_name: &str) -> bool {
     !event_name.is_empty()
         && event_name.len() <= 96
@@ -1251,6 +1322,91 @@ mod tests {
             .filter(|r| r.method == wiremock::http::Method::POST)
             .collect();
         assert_eq!(posts.len(), 0, "no POST expected when opt-in is false");
+    }
+
+    // ── US-003 AC3: withdrawal halts emission on the NEXT cycle, no restart ────
+    //
+    // The collection cycle re-resolves consent every time (step 2 of
+    // `send_telemetry_if_opted_in`), so a server-side withdrawal takes effect on
+    // the very next cycle with nothing cached across cycles and no app restart.
+    // Two cycles run against the SAME process/state: cycle 1 sees the server say
+    // enabled and emits; between cycles the server flips to declined; cycle 2
+    // must emit nothing. If the consent value were cached across cycles, cycle 2
+    // would still POST — this test would fail.
+    #[tokio::test]
+    async fn test_withdrawal_halts_emission_on_next_cycle_without_restart() {
+        let server = MockServer::start().await;
+        // Cycle 1: opted in.
+        Mock::given(method("GET"))
+            .and(path("/v1/usage/opt-in"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({"enabled": true})))
+            .up_to_n_times(1)
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        // Cycle 2 onward: withdrawn. A lower priority (higher number) makes this
+        // the fallback once the one-shot cycle-1 mock is exhausted.
+        Mock::given(method("GET"))
+            .and(path("/v1/usage/opt-in"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({"enabled": false})))
+            .with_priority(2)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/usage"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .mount(&server)
+            .await;
+
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let home = setup_home();
+        write_menubar(home.path(), r#"{"machineId":"mid-withdraw"}"#);
+        write_jsonl(home.path(), "proj", "s.jsonl", &[USER_ROW, ASST_ROW]);
+        std::env::set_var("HOME", home.path());
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+
+        let handle = make_app_handle();
+
+        // Cycle 1: server says enabled → events are POSTed.
+        send_telemetry_if_opted_in(&handle, "/hq", "test-jwt")
+            .await
+            .unwrap();
+        let posts_after_cycle1 = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|r| r.method == wiremock::http::Method::POST)
+            .count();
+        assert!(
+            posts_after_cycle1 >= 1,
+            "cycle 1 should emit while opted in"
+        );
+
+        // Add a fresh row so cycle 2 has NEW content to send. If consent were
+        // cached from cycle 1, this row would be POSTed — it must not be.
+        write_jsonl(home.path(), "proj2", "s2.jsonl", &[USER_ROW]);
+
+        // Cycle 2: server now says withdrawn → no restart, and no further POST.
+        send_telemetry_if_opted_in(&handle, "/hq", "test-jwt")
+            .await
+            .unwrap();
+
+        std::env::remove_var("HOME");
+        std::env::remove_var("HQ_VAULT_API_URL");
+
+        let posts_after_cycle2 = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|r| r.method == wiremock::http::Method::POST)
+            .count();
+        assert_eq!(
+            posts_after_cycle2, posts_after_cycle1,
+            "cycle 2 must emit NOTHING once the server records a withdrawal — \
+             consent is re-resolved per cycle, never cached across cycles"
+        );
     }
 
     // ── (b) Missing cursor file → all files at offset 0 ──────────────────────
