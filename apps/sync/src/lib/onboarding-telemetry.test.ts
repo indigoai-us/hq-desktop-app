@@ -25,6 +25,38 @@ describe('postOptIn', () => {
     });
   });
 
+  it('forwards surface and consent version to the remote write only', async () => {
+    const invokeCommand = vi.fn().mockResolvedValue(undefined);
+
+    await postOptIn({
+      enabled: true,
+      surface: 'onboarding',
+      consentVersion: 1,
+      invokeCommand,
+    });
+
+    // The local cache holds only the answer — provenance is server-side metadata.
+    expect(invokeCommand).toHaveBeenNthCalledWith(1, 'write_menubar_telemetry_pref', {
+      enabled: true,
+    });
+    expect(invokeCommand).toHaveBeenNthCalledWith(2, 'post_telemetry_opt_in', {
+      enabled: true,
+      surface: 'onboarding',
+      consentVersion: 1,
+    });
+  });
+
+  it('omits provenance keys entirely when not provided', async () => {
+    const invokeCommand = vi.fn().mockResolvedValue(undefined);
+
+    await postOptIn({ enabled: false, invokeCommand });
+
+    const uploadArgs = invokeCommand.mock.calls[1][1];
+    expect(uploadArgs).toEqual({ enabled: false });
+    expect('surface' in uploadArgs).toBe(false);
+    expect('consentVersion' in uploadArgs).toBe(false);
+  });
+
   it('still uploads when the local cache write fails', async () => {
     const invokeCommand = vi
       .fn()

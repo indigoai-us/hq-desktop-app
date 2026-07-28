@@ -38,10 +38,12 @@
   import { postOptIn } from '../../lib/onboarding-telemetry';
   import { emitDesktopTelemetry } from '../../lib/desktop-telemetry';
   import {
+    CONSENT_STEP_INDEX,
     createWizardRouter,
     markSetupStepCompleted,
     WIZARD_STEPS,
   } from '../../lib/onboarding-wizard';
+  import { TELEMETRY_CONSENT_VERSION } from '../../lib/consent-version';
 
   interface Props {
     initialStep: number;
@@ -82,6 +84,8 @@
   const RING_CIRCUMFERENCE = 2 * Math.PI * 52;
   const FADE_OUT_MS = 320;
   const DEFAULT_STEP = WIZARD_STEPS[0].index;
+  const READY_STEP_INDEX =
+    WIZARD_STEPS.find((step) => step.id === 'ready')?.index ?? 4;
 
   let { initialStep, onfinish }: Props = $props();
 
@@ -105,7 +109,14 @@
   let folderLargeEl: HTMLImageElement | null = null;
   let folderLabelEl: HTMLSpanElement | null = null;
 
-  let telemetryEnabled = $state(true);
+  // The telemetry consent answer is a genuine tri-state: `null` means the
+  // person has NOT answered yet. No option is pre-selected, so the consent
+  // step's continue action stays disabled until they choose. (It used to be a
+  // pre-ticked boolean on the sign-in panel, which biased the choice AND posted
+  // the answer before the person entity existed — so the write 404'd and the
+  // answer was dropped. Consent is now its own step after setup.)
+  let telemetryChoice = $state<'share' | 'decline' | null>(null);
+  let consentSubmitting = $state(false);
   let loadingProvider = $state<SignInProvider | null>(null);
   let signInError = $state('');
   let currentSignInCall = 0;
@@ -151,7 +162,7 @@
     installPath ? friendlyPath(installPath, homeDirFromDefaultHqPath(installPath)) : '~/hq',
   );
   const directoryButtonLabel = $derived(directoryBusy ? 'Checking…' : 'Choose…');
-  const topHeight = $derived(currentStep >= 4 ? '240px' : '200px');
+  const topHeight = $derived(currentStep >= 5 ? '240px' : '200px');
   const settledCount = $derived(
     stages.filter((stage) => stage.status === 'ok' || stage.status === 'failed')
       .length,
@@ -202,7 +213,7 @@
   });
 
   $effect(() => {
-    if (aiTools?.any !== false || currentStep < 3) return;
+    if (aiTools?.any !== false || currentStep < 4) return;
     const intervalId = window.setInterval(() => {
       void probeAiTools();
     }, 3000);
@@ -340,13 +351,10 @@
       if (result.authenticated) {
         await refocusWindow();
         if (!isCurrentSignInCall(call)) return;
-        void postOptIn({ enabled: telemetryEnabled });
-        if (telemetryEnabled) {
-          void emitDesktopTelemetry({
-            eventName: 'oauth_signin_succeeded',
-            properties: { provider },
-          });
-        }
+        // No telemetry is written here. The consent question is asked later, as
+        // its own step after setup — before an answer exists we must not opt the
+        // person in NOR emit any usage event (a person who later declines must
+        // have produced zero events).
         advanceTo(1);
       } else {
         signInError = 'Authentication failed. Please try again.';
@@ -674,25 +682,64 @@
       setupFailures = result.failedStages;
       markSetupStepCompleted();
       await journalInstallComplete();
-      if (telemetryEnabled) {
+      // Capture the setup metrics now, but DON'T emit the completion event yet:
+      // consent hasn't been asked. The event is emitted from the consent step,
+      // and only when the person opts in — a decline must produce no events.
+      setupCompletionMetrics = {
+        stageCount: stages.length,
+        failedStageCount: setupFailures.length,
+        detectedToolCount: aiTools
+          ? [
+              aiTools.claude_cli,
+              aiTools.claude_desktop,
+              aiTools.codex_cli,
+              aiTools.codex_desktop,
+              aiTools.grok_cli,
+            ].filter(Boolean).length
+          : 0,
+      };
+      // Advance to the consent step (index 3), which now sits between setup and
+      // the ready screen.
+      advanceTo(CONSENT_STEP_INDEX);
+    }
+  }
+
+  interface SetupCompletionMetrics {
+    stageCount: number;
+    failedStageCount: number;
+    detectedToolCount: number;
+  }
+  let setupCompletionMetrics = $state<SetupCompletionMetrics | null>(null);
+
+  /**
+   * Record the telemetry answer and leave the consent step for the ready
+   * screen. Called from either option's Continue. Declining is first-class:
+   * it records the answer, emits nothing, withholds nothing, and finishes
+   * setup exactly like sharing does.
+   */
+  async function submitConsent(): Promise<void> {
+    if (telemetryChoice === null || consentSubmitting) return;
+    consentSubmitting = true;
+    const enabled = telemetryChoice === 'share';
+    try {
+      // Provenance travels with the answer so the server can tell a genuine
+      // onboarding answer from an administrative backfill and re-ask when the
+      // wording changes. Error behaviour is unchanged for this story (US-002
+      // makes the write awaited/durable with a retry affordance).
+      await postOptIn({
+        enabled,
+        surface: 'onboarding',
+        consentVersion: TELEMETRY_CONSENT_VERSION,
+      });
+      if (enabled && setupCompletionMetrics) {
         void emitDesktopTelemetry({
           eventName: 'desktop_setup_completed',
-          properties: {
-            stageCount: stages.length,
-            failedStageCount: setupFailures.length,
-            detectedToolCount: aiTools
-              ? [
-                  aiTools.claude_cli,
-                  aiTools.claude_desktop,
-                  aiTools.codex_cli,
-                  aiTools.codex_desktop,
-                  aiTools.grok_cli,
-                ].filter(Boolean).length
-              : 0,
-          },
+          properties: { ...setupCompletionMetrics },
         });
       }
-      advanceTo(3);
+    } finally {
+      consentSubmitting = false;
+      advanceTo(READY_STEP_INDEX);
     }
   }
 
@@ -960,7 +1007,7 @@
 
     void runMorph(previous, next, token).then((handled) => {
       if (handled) return;
-      const slide = previous >= 4 && next >= 4 && !reducedMotion;
+      const slide = previous >= 5 && next >= 5 && !reducedMotion;
       if (slide) {
         outgoingGraphicStep = graphicStep;
         outgoingGraphicDirection = next > previous ? 'left' : 'right';
@@ -1080,23 +1127,15 @@
         </div>
 
         <div class="gfx" class:on={graphicIsOn(3)} data-g="3">
+          {@render ConsentShield()}
+        </div>
+
+        <div class="gfx" class:on={graphicIsOn(4)} data-g="4">
           {@render BigCheck()}
         </div>
 
         <div
           class="gfx gtop"
-          class:on={graphicIsOn(4)}
-          class:enter-left={graphicStep === 4 && incomingGraphicDirection === 'left'}
-          class:enter-right={graphicStep === 4 && incomingGraphicDirection === 'right'}
-          class:out-left={outgoingGraphicStep === 4 && outgoingGraphicDirection === 'left'}
-          class:out-right={outgoingGraphicStep === 4 && outgoingGraphicDirection === 'right'}
-          data-g="4"
-        >
-          {@render TrustMock()}
-        </div>
-
-        <div
-          class="gfx"
           class:on={graphicIsOn(5)}
           class:enter-left={graphicStep === 5 && incomingGraphicDirection === 'left'}
           class:enter-right={graphicStep === 5 && incomingGraphicDirection === 'right'}
@@ -1104,7 +1143,7 @@
           class:out-right={outgoingGraphicStep === 5 && outgoingGraphicDirection === 'right'}
           data-g="5"
         >
-          {@render SettingsMock()}
+          {@render TrustMock()}
         </div>
 
         <div
@@ -1116,11 +1155,11 @@
           class:out-right={outgoingGraphicStep === 6 && outgoingGraphicDirection === 'right'}
           data-g="6"
         >
-          {@render SetupPromptMock()}
+          {@render SettingsMock()}
         </div>
 
         <div
-          class="gfx gtop"
+          class="gfx"
           class:on={graphicIsOn(7)}
           class:enter-left={graphicStep === 7 && incomingGraphicDirection === 'left'}
           class:enter-right={graphicStep === 7 && incomingGraphicDirection === 'right'}
@@ -1128,7 +1167,7 @@
           class:out-right={outgoingGraphicStep === 7 && outgoingGraphicDirection === 'right'}
           data-g="7"
         >
-          {@render HandoffMock()}
+          {@render SetupPromptMock()}
         </div>
 
         <div
@@ -1139,6 +1178,18 @@
           class:out-left={outgoingGraphicStep === 8 && outgoingGraphicDirection === 'left'}
           class:out-right={outgoingGraphicStep === 8 && outgoingGraphicDirection === 'right'}
           data-g="8"
+        >
+          {@render HandoffMock()}
+        </div>
+
+        <div
+          class="gfx gtop"
+          class:on={graphicIsOn(9)}
+          class:enter-left={graphicStep === 9 && incomingGraphicDirection === 'left'}
+          class:enter-right={graphicStep === 9 && incomingGraphicDirection === 'right'}
+          class:out-left={outgoingGraphicStep === 9 && outgoingGraphicDirection === 'left'}
+          class:out-right={outgoingGraphicStep === 9 && outgoingGraphicDirection === 'right'}
+          data-g="9"
         >
           {@render BuildMock()}
         </div>
@@ -1154,17 +1205,10 @@
         >
           <h2 class="h" id="onboarding-title-signin">Welcome to HQ</h2>
           <p class="body">One home for your whole team and every AI tool you use. Your knowledge, your best work, and your way of doing things all in one place, getting better over time.</p>
-          <label class="check-row">
-            <span class="check" class:on={telemetryEnabled}>
-              <input
-                type="checkbox"
-                bind:checked={telemetryEnabled}
-                aria-label="Share anonymous usage data to help make HQ better"
-              />
-              <span class="checkmark" aria-hidden="true">{@render CheckTiny()}</span>
-            </span>
-            <span>Share anonymous usage data to help make HQ better</span>
-          </label>
+          <!-- The telemetry consent checkbox used to live here, pre-ticked. It is
+               gone on purpose: a pre-ticked box is not a real choice, and posting
+               the answer here (before setup provisions the person entity) meant the
+               write had nowhere to land. Consent is now its own step after setup. -->
           {#if signInError}
             <p class="inline-note error" role="alert">{signInError}</p>
           {:else if loadingProvider}
@@ -1267,6 +1311,80 @@
           class="panel"
           class:on={panelStep === 3 && panelOn}
           data-p="3"
+          data-testid="onboarding-consent"
+          aria-labelledby="onboarding-title-consent"
+        >
+          <h2 class="h" id="onboarding-title-consent">Help improve HQ?</h2>
+          <p class="body">
+            You choose whether HQ collects anonymous usage data. Nothing is decided
+            for you — pick an option to continue. You can change this later in
+            Settings, and either choice sets up HQ the same way.
+          </p>
+          <div class="consent-facts">
+            <p class="consent-facts-line">
+              <span class="consent-facts-label">What we collect:</span>
+              which skills you run, the AI model, token and session counts, and the
+              names of your repositories, branches, and connected MCP services.
+            </p>
+            <p class="consent-facts-line">
+              <span class="consent-facts-label">What we never collect:</span>
+              the words in your prompts, the contents of your files, or what you
+              pass into and get back from your tools.
+            </p>
+            <p class="consent-facts-line">
+              <!-- Points at the HQ telemetry/privacy documentation. TODO(consent):
+                   confirm the canonical privacy URL before release. -->
+              <button
+                type="button"
+                class="consent-link"
+                onclick={() =>
+                  void openExternal('https://hq.computer/privacy').catch(() => {})}
+              >Read the full description of what's collected</button>
+            </p>
+          </div>
+          <fieldset class="consent-options">
+            <legend class="sr-only">Share anonymous usage data</legend>
+            <label class="consent-option" class:selected={telemetryChoice === 'share'}>
+              <input
+                type="radio"
+                name="telemetry-consent"
+                value="share"
+                checked={telemetryChoice === 'share'}
+                onchange={() => (telemetryChoice = 'share')}
+              />
+              <span class="consent-option-copy">
+                <span class="consent-option-title">Share usage data</span>
+                <span class="consent-option-sub">Help make HQ better for everyone.</span>
+              </span>
+            </label>
+            <label class="consent-option" class:selected={telemetryChoice === 'decline'}>
+              <input
+                type="radio"
+                name="telemetry-consent"
+                value="decline"
+                checked={telemetryChoice === 'decline'}
+                onchange={() => (telemetryChoice = 'decline')}
+              />
+              <span class="consent-option-copy">
+                <span class="consent-option-title">Don't share usage data</span>
+                <span class="consent-option-sub">Everything still works exactly the same.</span>
+              </span>
+            </label>
+          </fieldset>
+          <div class="btns">
+            <button
+              class="btn btn-primary"
+              type="button"
+              disabled={telemetryChoice === null || consentSubmitting}
+              onclick={() => void submitConsent()}
+            >Continue</button>
+          </div>
+        </section>
+
+        <section
+          class="panel"
+          class:on={panelStep === 4 && panelOn}
+          data-p="4"
           data-testid="onboarding-summary"
           aria-labelledby="onboarding-title-ready"
         >
@@ -1333,25 +1451,13 @@
 
         <section
           class="panel"
-          class:on={panelStep === 4 && panelOn}
-          data-p="4"
+          class:on={panelStep === 5 && panelOn}
+          data-p="5"
           data-testid="onboarding-trust"
           aria-labelledby="onboarding-title-trust"
         >
           <h2 class="h" id="onboarding-title-trust">Trust your workspace</h2>
           <p class="body">Claude Code will open with your hq folder selected and /setup ready to run. Choose “Yes, trust this workspace.” Just check that hq is still the folder it’s pointing at.</p>
-          <div class="btns split"><button class="btn btn-secondary" type="button" onclick={() => goBackTo(3)}>Back</button><button class="btn btn-primary" type="button" onclick={() => advanceTo(5)}>Continue</button></div>
-        </section>
-
-        <section
-          class="panel"
-          class:on={panelStep === 5 && panelOn}
-          data-p="5"
-          data-testid="onboarding-settings"
-          aria-labelledby="onboarding-title-settings"
-        >
-          <h2 class="h" id="onboarding-title-settings">Dial in your settings</h2>
-          <p class="body">For the best results, use the latest models (Opus 4.8 or GPT-5.5), set thinking to “High” or above, and turn on auto mode (bypass permissions). You might need to flip that last one on in settings.</p>
           <div class="btns split"><button class="btn btn-secondary" type="button" onclick={() => goBackTo(4)}>Back</button><button class="btn btn-primary" type="button" onclick={() => advanceTo(6)}>Continue</button></div>
         </section>
 
@@ -1359,11 +1465,11 @@
           class="panel"
           class:on={panelStep === 6 && panelOn}
           data-p="6"
-          data-testid="onboarding-run-setup"
-          aria-labelledby="onboarding-title-run-setup"
+          data-testid="onboarding-settings"
+          aria-labelledby="onboarding-title-settings"
         >
-          <h2 class="h" id="onboarding-title-run-setup">Press enter to run /setup</h2>
-          <p class="body">Hit ⏎ in the message box to start setup.</p>
+          <h2 class="h" id="onboarding-title-settings">Dial in your settings</h2>
+          <p class="body">For the best results, use the latest models (Opus 4.8 or GPT-5.5), set thinking to “High” or above, and turn on auto mode (bypass permissions). You might need to flip that last one on in settings.</p>
           <div class="btns split"><button class="btn btn-secondary" type="button" onclick={() => goBackTo(5)}>Back</button><button class="btn btn-primary" type="button" onclick={() => advanceTo(7)}>Continue</button></div>
         </section>
 
@@ -1371,11 +1477,11 @@
           class="panel"
           class:on={panelStep === 7 && panelOn}
           data-p="7"
-          data-testid="onboarding-handoff"
-          aria-labelledby="onboarding-title-handoff"
+          data-testid="onboarding-run-setup"
+          aria-labelledby="onboarding-title-run-setup"
         >
-          <h2 class="h" id="onboarding-title-handoff">Answer, then run /handoff</h2>
-          <p class="body">Work through every question until it says setup is finished, then send “/handoff” to save everything to HQ’s memory. You’ll do this at the end of every session.</p>
+          <h2 class="h" id="onboarding-title-run-setup">Press enter to run /setup</h2>
+          <p class="body">Hit ⏎ in the message box to start setup.</p>
           <div class="btns split"><button class="btn btn-secondary" type="button" onclick={() => goBackTo(6)}>Back</button><button class="btn btn-primary" type="button" onclick={() => advanceTo(8)}>Continue</button></div>
         </section>
 
@@ -1383,12 +1489,24 @@
           class="panel"
           class:on={panelStep === 8 && panelOn}
           data-p="8"
+          data-testid="onboarding-handoff"
+          aria-labelledby="onboarding-title-handoff"
+        >
+          <h2 class="h" id="onboarding-title-handoff">Answer, then run /handoff</h2>
+          <p class="body">Work through every question until it says setup is finished, then send “/handoff” to save everything to HQ’s memory. You’ll do this at the end of every session.</p>
+          <div class="btns split"><button class="btn btn-secondary" type="button" onclick={() => goBackTo(7)}>Back</button><button class="btn btn-primary" type="button" onclick={() => advanceTo(9)}>Continue</button></div>
+        </section>
+
+        <section
+          class="panel"
+          class:on={panelStep === 9 && panelOn}
+          data-p="9"
           data-testid="onboarding-build"
           aria-labelledby="onboarding-title-build"
         >
           <h2 class="h" id="onboarding-title-build">Open a fresh session and build</h2>
           <p class="body">Start with “/brainstorm” to get going. Working on a specific company? Send “/startwork acme” and describe what you want. Then it’s the same rhythm every time: start work, handoff, repeat.</p>
-          <div class="btns split"><button class="btn btn-secondary" type="button" onclick={() => goBackTo(7)}>Back</button><button class="btn btn-primary" type="button" onclick={() => void onfinish?.()}>Done</button></div>
+          <div class="btns split"><button class="btn btn-secondary" type="button" onclick={() => goBackTo(8)}>Back</button><button class="btn btn-primary" type="button" onclick={() => void onfinish?.()}>Done</button></div>
         </section>
       </div>
     </div>
@@ -1433,6 +1551,13 @@
 
 {#snippet MicIcon()}
   <svg viewBox="0 0 14 14" width="12" height="12" fill="none"><rect x="5" y="1.5" width="4" height="7" rx="2" stroke="currentColor" stroke-width="1.1"/><path d="M3 7a4 4 0 0 0 8 0M7 11v1.5" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>
+{/snippet}
+
+{#snippet ConsentShield()}
+  <svg class="bigcheck" viewBox="0 0 96 96" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="#fff" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M48 10 78 22V46c0 20-13 32-30 40C31 78 18 66 18 46V22L48 10Z" />
+    <path d="M38 48l7 7 14-16" />
+  </svg>
 {/snippet}
 
 {#snippet BigCheck()}
@@ -1562,14 +1687,22 @@
 
   .h { color:var(--c-text); font-size:24px; font-weight:600; line-height:32px; margin:0; letter-spacing:-1px; }
   .body { color:var(--c-muted); font-size:14px; font-weight:400; line-height:20px; margin:4px 0 0; max-width:592px; }
-  .check-row { display:flex; align-items:center; gap:8px; margin-top:16px; cursor:pointer; }
-  .check { position:relative; width:16px; height:16px; border-radius:4px; border:1px solid var(--check-border); background:transparent; display:flex; align-items:center; justify-content:center; flex-shrink:0; transition:background-color .12s, border-color .12s; }
-  .check.on { background:var(--check-bg); border-color:var(--check-bg); }
-  .check input { position:absolute; inset:0; width:16px; height:16px; opacity:0; cursor:pointer; }
-  .check svg { width:10px; height:10px; stroke:var(--check-fg); }
-  .checkmark { display:grid; place-items:center; opacity:0; }
-  .check input:checked + .checkmark { opacity:1; }
-  .check-row span:last-child { color:var(--c-muted); font-size:14px; line-height:20px; }
+  .consent-facts { margin-top:12px; display:flex; flex-direction:column; gap:6px; }
+  .consent-facts-line { margin:0; color:var(--c-muted); font-size:12.5px; line-height:17px; }
+  .consent-facts-label { color:var(--c-text); font-weight:600; }
+  .consent-link { appearance:none; border:0; background:none; padding:0; margin:0; color:var(--c-text); font:inherit; font-size:12.5px; line-height:17px; text-decoration:underline; cursor:pointer; }
+  .consent-link:hover { opacity:.8; }
+  .consent-link:focus-visible { outline:1.5px solid var(--c-focus-ring, var(--c-text)); outline-offset:2px; border-radius:3px; }
+
+  .consent-options { margin:14px 0 0; padding:0; border:0; display:flex; flex-direction:column; gap:8px; }
+  .consent-option { display:flex; align-items:flex-start; gap:10px; padding:11px 13px; border:1px solid var(--c-field-border); border-radius:10px; cursor:pointer; transition:border-color .12s, background-color .12s; }
+  .consent-option.selected { border-color:var(--check-bg); background:color-mix(in srgb, var(--check-bg) 8%, transparent); }
+  .consent-option input { margin-top:2px; width:16px; height:16px; flex-shrink:0; accent-color:var(--check-bg); cursor:pointer; }
+  .consent-option:has(input:focus-visible) { outline:1.5px solid var(--c-focus-ring, var(--c-text)); outline-offset:2px; }
+  .consent-option-copy { display:flex; flex-direction:column; gap:1px; }
+  .consent-option-title { color:var(--c-text); font-size:14px; font-weight:500; line-height:18px; }
+  .consent-option-sub { color:var(--c-muted); font-size:12px; line-height:16px; }
+
   .btns { display:flex; gap:8px; margin-top:auto; }
   .btns.split { justify-content:space-between; }
   .btn-group { display:flex; gap:8px; }
@@ -1580,8 +1713,7 @@
   .btn:hover:not(:disabled) { opacity:.88; }
   .btn:focus-visible,
   .choose:focus-visible,
-  .manual-tools button:focus-visible,
-  .check:has(input:focus-visible) {
+  .manual-tools button:focus-visible {
     outline:1.5px solid var(--c-focus-ring, var(--c-text));
     outline-offset:var(--c-focus-offset, 2px);
   }

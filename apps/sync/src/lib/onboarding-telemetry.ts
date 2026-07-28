@@ -5,8 +5,21 @@ type InvokeCommand = (command: string, args?: Record<string, unknown>) => Promis
 const POST_OPT_IN_COMMAND = 'post_telemetry_opt_in';
 const WRITE_PREF_COMMAND = 'write_menubar_telemetry_pref';
 
+export type TelemetryOptInSurface = 'onboarding' | 'settings';
+
 export interface PostOptInOptions {
   enabled: boolean;
+  /**
+   * Which surface produced this answer. Recorded server-side as provenance so a
+   * later self-heal replay can tell a genuine answer from an administrative
+   * backfill. Optional for back-compat with callers that predate provenance.
+   */
+  surface?: TelemetryOptInSurface;
+  /**
+   * The consent version whose wording was shown when the person answered. Lets
+   * the server mark the record stale (and re-ask) once the wording changes.
+   */
+  consentVersion?: number;
   invokeCommand?: InvokeCommand;
 }
 
@@ -25,16 +38,23 @@ export interface PostOptInOptions {
  */
 export async function postOptIn({
   enabled,
+  surface,
+  consentVersion,
   invokeCommand = invoke as InvokeCommand,
 }: PostOptInOptions): Promise<void> {
   try {
+    // The local cache holds only the answer itself — provenance (surface,
+    // consent version) is server-side metadata, so it is not written here.
     await invokeCommand(WRITE_PREF_COMMAND, { enabled });
   } catch (err) {
     console.error('[telemetry] write_menubar_telemetry_pref failed:', err);
   }
 
   try {
-    await invokeCommand(POST_OPT_IN_COMMAND, { enabled });
+    const args: Record<string, unknown> = { enabled };
+    if (surface !== undefined) args.surface = surface;
+    if (consentVersion !== undefined) args.consentVersion = consentVersion;
+    await invokeCommand(POST_OPT_IN_COMMAND, args);
   } catch (err) {
     console.error('[telemetry] post_telemetry_opt_in failed:', err);
   }

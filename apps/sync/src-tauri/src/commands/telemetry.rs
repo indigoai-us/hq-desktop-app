@@ -317,7 +317,12 @@ pub async fn reassert_consent_for_person(vault: &VaultClient, person_uid: &str) 
         }
     }
 
-    match vault.post_telemetry_opt_in_opts(enabled, true).await {
+    // This is a self-heal REPLAY of a cached answer, not a fresh answer, so it
+    // carries no onboarding/settings provenance of its own.
+    match vault
+        .post_telemetry_opt_in_opts(enabled, true, None, None)
+        .await
+    {
         Ok(()) => {
             // Bind the record to this account so we do not repeat the work, and
             // so the hq-cloud sync runner can safely replay it later (it refuses
@@ -348,12 +353,17 @@ async fn post_telemetry_opt_in_with_retry(
     api_url: &str,
     access_token: &str,
     enabled: bool,
+    surface: Option<&str>,
+    consent_version: Option<u32>,
 ) -> Result<(), String> {
     let vault = VaultClient::new(api_url, access_token);
     let mut last_error = None;
 
     for attempt in 0..3 {
-        match vault.post_telemetry_opt_in(enabled).await {
+        match vault
+            .post_telemetry_opt_in_opts(enabled, false, surface, consent_version)
+            .await
+        {
             Ok(()) => return Ok(()),
             Err(err) => last_error = Some(err.to_string()),
         }
@@ -369,11 +379,27 @@ async fn post_telemetry_opt_in_with_retry(
     ))
 }
 
+/// Persist an explicit telemetry answer with its provenance.
+///
+/// `surface` (`onboarding`/`settings`) and `consent_version` accompany the
+/// answer so the server can record which surface produced it and which wording
+/// the person was shown; both are optional and forward-compatible.
 #[tauri::command]
-pub async fn post_telemetry_opt_in(enabled: bool) -> Result<(), String> {
+pub async fn post_telemetry_opt_in(
+    enabled: bool,
+    surface: Option<String>,
+    consent_version: Option<u32>,
+) -> Result<(), String> {
     let access_token = crate::commands::cognito::get_valid_access_token().await?;
     let api_url = resolve_vault_api_url()?;
-    post_telemetry_opt_in_with_retry(&api_url, &access_token, enabled).await
+    post_telemetry_opt_in_with_retry(
+        &api_url,
+        &access_token,
+        enabled,
+        surface.as_deref(),
+        consent_version,
+    )
+    .await
 }
 
 async fn resolve_telemetry_enabled(vault: &VaultClient) -> bool {
