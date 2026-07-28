@@ -44,6 +44,12 @@ pub struct LifecycleInputs {
     pub has_auth: bool,
     /// An install marker indicates an in-progress or failed install step.
     pub install_in_progress: bool,
+    /// The person has answered the blocking telemetry consent question at least
+    /// once on this machine (menubar.json carries the `telemetryOptInAnsweredAt`
+    /// provenance marker). Consent is compulsory, so an installed machine whose
+    /// consent is UNANSWERED must be routed back through onboarding rather than
+    /// classified as an already-set-up machine that skips it.
+    pub consent_answered: bool,
 }
 
 /// Classifier verdict: the state plus whether the caller should backfill
@@ -109,8 +115,18 @@ pub fn classify_lifecycle(inputs: LifecycleInputs) -> LifecycleVerdict {
     let state = if inputs.install_in_progress {
         LifecycleState::InstallResume
     } else if is_installed {
+        // Compulsory consent overrides the "already installed, skip onboarding"
+        // shortcut: a machine that reached the consent step and quit before
+        // answering (setup done + machineId written, but firstRunCompleted still
+        // false) must NOT be waved through as a legacy update — that is exactly
+        // how quitting at the consent step bypassed consent. Route any installed
+        // machine whose consent is unanswered to the onboarding first-run state,
+        // where the blocking consent step runs. Once consent is answered (or
+        // first-run completed), the normal classification resumes.
         if inputs.first_run_completed {
             LifecycleState::SteadyState
+        } else if !inputs.consent_answered {
+            LifecycleState::InstalledFirstRun
         } else if inputs.had_machine_id {
             LifecycleState::InstalledLegacyUpdate
         } else {
@@ -143,6 +159,7 @@ mod tests {
             hq_root_valid: false,
             has_auth: false,
             install_in_progress: false,
+            consent_answered: false,
         }
     }
 
@@ -171,6 +188,7 @@ mod tests {
             hq_root_valid: true,
             has_auth: true,
             install_in_progress: true,
+            consent_answered: true,
         });
 
         assert_eq!(verdict.state, LifecycleState::InstallResume);
@@ -198,6 +216,7 @@ mod tests {
             hq_root_valid: true,
             has_auth: true,
             install_in_progress: false,
+            consent_answered: false,
         });
 
         assert_eq!(verdict.state, LifecycleState::InstalledFirstRun);
@@ -206,6 +225,9 @@ mod tests {
 
     #[test]
     fn classify_installed_legacy_update_and_requests_backfill() {
+        // A genuine legacy sync user who HAS answered consent: no first-run flag
+        // yet but consent is on record, so they stay a legacy-update, not sent
+        // through onboarding again.
         let verdict = classify_lifecycle(LifecycleInputs {
             install_completed: false,
             first_run_completed: false,
@@ -214,10 +236,35 @@ mod tests {
             hq_root_valid: true,
             has_auth: true,
             install_in_progress: false,
+            consent_answered: true,
         });
 
         assert_eq!(verdict.state, LifecycleState::InstalledLegacyUpdate);
         assert!(verdict.needs_install_backfill);
+    }
+
+    #[test]
+    fn classify_installed_but_unanswered_consent_routes_to_onboarding() {
+        // Finding #2: a machine that completed setup (machineId written) but quit
+        // at the consent step before answering must NOT be waved through as a
+        // legacy update — it must return to onboarding so the blocking consent
+        // step runs. This is the exact "quit at consent bypasses consent" bug.
+        let verdict = classify_lifecycle(LifecycleInputs {
+            install_completed: true,
+            first_run_completed: false,
+            had_machine_id: true,
+            config_valid: true,
+            hq_root_valid: true,
+            has_auth: true,
+            install_in_progress: false,
+            consent_answered: false,
+        });
+
+        assert_eq!(
+            verdict.state,
+            LifecycleState::InstalledFirstRun,
+            "unanswered consent must route back to onboarding, not skip it"
+        );
     }
 
     #[test]
@@ -230,6 +277,7 @@ mod tests {
             hq_root_valid: true,
             has_auth: true,
             install_in_progress: false,
+            consent_answered: true,
         });
 
         assert_eq!(verdict.state, LifecycleState::SteadyState);
@@ -292,6 +340,7 @@ mod tests {
             hq_root_valid: true,
             has_auth: true,
             install_in_progress: false,
+            consent_answered: true,
         });
 
         assert_eq!(verdict.state, LifecycleState::SteadyState);
@@ -358,6 +407,7 @@ mod tests {
             hq_root_valid: true,
             has_auth: true,
             install_in_progress: false,
+            consent_answered: false,
         });
         let steady_state = classify_lifecycle(LifecycleInputs {
             install_completed: true,
@@ -367,6 +417,7 @@ mod tests {
             hq_root_valid: true,
             has_auth: true,
             install_in_progress: false,
+            consent_answered: true,
         });
 
         assert_eq!(first_run.state, LifecycleState::InstalledFirstRun);
