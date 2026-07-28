@@ -165,6 +165,17 @@ pub fn resolve_bin(name: &str) -> String {
 /// precedence without depending on the developer machine's actual HOME or
 /// shell configuration.
 #[cfg(not(target_os = "windows"))]
+fn user_cli_dirs(home: &Path) -> Vec<PathBuf> {
+    vec![
+        home.join(".npm-global").join("bin"),
+        // pnpm's default global executable directory on macOS.
+        home.join("Library").join("pnpm"),
+        // pnpm's default global executable directory on Linux.
+        home.join(".local").join("share").join("pnpm"),
+    ]
+}
+
+#[cfg(not(target_os = "windows"))]
 fn resolve_bin_in_dirs(home: Option<&Path>, name: &str) -> Option<String> {
     if let Some(home) = home {
         // Managed HQ toolchain (installed by hq-installer). Match
@@ -179,10 +190,12 @@ fn resolve_bin_in_dirs(home: Option<&Path>, name: &str) -> Option<String> {
             }
         }
 
-        // User npm prefix after the managed toolchain.
-        let candidate = home.join(".npm-global").join("bin").join(name);
-        if candidate.exists() {
-            return Some(candidate.to_string_lossy().to_string());
+        // User-level npm/pnpm prefixes after the managed toolchain.
+        for dir in user_cli_dirs(home) {
+            let candidate = dir.join(name);
+            if candidate.exists() {
+                return Some(candidate.to_string_lossy().to_string());
+            }
         }
     }
 
@@ -385,10 +398,11 @@ pub fn child_path() -> String {
                     }
                 }
             }
-            // User-level npm prefix (no-sudo installs).
-            let npm_global = home.join(".npm-global").join("bin");
-            if npm_global.exists() {
-                parts.push(npm_global.to_string_lossy().to_string());
+            // User-level npm/pnpm prefixes (no-sudo installs).
+            for dir in user_cli_dirs(&home) {
+                if dir.exists() {
+                    parts.push(dir.to_string_lossy().to_string());
+                }
             }
         }
 
@@ -691,6 +705,35 @@ mod tests {
         assert_eq!(
             resolve_bin_in_dirs(Some(tmp.path()), name),
             Some(expected.to_string_lossy().to_string())
+        );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn test_resolve_bin_in_dirs_finds_macos_pnpm_global_binary() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let name = "hq-test-bin";
+        let expected = tmp.path().join("Library/pnpm").join(name);
+        std::fs::create_dir_all(expected.parent().unwrap()).unwrap();
+        std::fs::write(&expected, b"#!/bin/sh\n").unwrap();
+
+        assert_eq!(
+            resolve_bin_in_dirs(Some(tmp.path()), name),
+            Some(expected.to_string_lossy().to_string())
+        );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn test_user_cli_dirs_include_npm_and_pnpm_defaults() {
+        let home = PathBuf::from("/Users/testuser");
+        assert_eq!(
+            user_cli_dirs(&home),
+            vec![
+                PathBuf::from("/Users/testuser/.npm-global/bin"),
+                PathBuf::from("/Users/testuser/Library/pnpm"),
+                PathBuf::from("/Users/testuser/.local/share/pnpm"),
+            ]
         );
     }
 
