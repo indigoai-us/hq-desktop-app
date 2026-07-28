@@ -156,6 +156,14 @@ pub struct MenubarConsent {
     /// The `prs_*` this record has been reconciled to, once known. Consumed by
     /// the hq-cloud sync runner, which does its own account check.
     pub person_uid: Option<String>,
+    /// The surface that produced the answer (`onboarding` / `settings`). Cached
+    /// so an OFFLINE replay can carry the same provenance it was given with,
+    /// rather than posting a version-less record that the server would read as
+    /// stale and re-prompt against the very wording the person already answered.
+    pub surface: Option<String>,
+    /// The consent version whose wording the person was shown when they
+    /// answered. Cached alongside `surface` for the same reason.
+    pub consent_version: Option<u32>,
 }
 
 impl MenubarConsent {
@@ -191,6 +199,11 @@ pub fn read_menubar_consent(path: &Path) -> MenubarConsent {
         answered_at: str_field("telemetryOptInAnsweredAt"),
         subject: str_field("telemetryOptInSub"),
         person_uid: str_field("telemetryOptInPersonUid"),
+        surface: str_field("telemetryOptInSurface"),
+        consent_version: obj
+            .get("telemetryConsentVersion")
+            .and_then(|v| v.as_u64())
+            .and_then(|n| u32::try_from(n).ok()),
     }
 }
 
@@ -234,6 +247,22 @@ mod tests {
         assert_eq!(c.answered_at.as_deref(), Some("2026-07-27T10:00:00Z"));
         assert_eq!(c.subject.as_deref(), Some(ME));
         assert_eq!(c.replayable_for(ME), Some(true));
+    }
+
+    #[test]
+    fn consent_record_reads_cached_surface_and_version_for_offline_replay() {
+        // Finding #7: the cached record must carry the surface + consent version
+        // so an offline replay can restate the provenance it was given against,
+        // instead of posting a version-less record the server reads as stale.
+        let dir = TempDir::new().unwrap();
+        let path = write_menubar_json(
+            &dir,
+            r#"{"telemetryEnabled":true,"telemetryOptInAnsweredAt":"2026-07-27T10:00:00Z","telemetryOptInSub":"sub-me","telemetryOptInSurface":"onboarding","telemetryConsentVersion":1}"#,
+        );
+
+        let c = read_menubar_consent(&path);
+        assert_eq!(c.surface.as_deref(), Some("onboarding"));
+        assert_eq!(c.consent_version, Some(1));
     }
 
     #[test]
@@ -294,6 +323,77 @@ mod tests {
         assert_eq!(read_menubar_consent(&path).replayable_for(ME), None);
     }
 
+    // ── replayable_for guards, exercised directly ──────────────────────────
+    //
+    // AC5 of US-002: reconciliation refuses to replay an answer belonging to a
+    // different account, and (via the server-side onlyIfUnset guard, checked in
+    // the app crate) refuses to overwrite an answer already recorded
+    // server-side. These pin the client-side half — the account-match and
+    // provenance guards — directly on `replayable_for`, independent of the JSON
+    // parsing above, so a refactor of one cannot silently loosen the other.
+
+    fn answer(enabled: bool, answered_at: Option<&str>, subject: Option<&str>) -> MenubarConsent {
+        MenubarConsent {
+            enabled: Some(enabled),
+            answered_at: answered_at.map(str::to_string),
+            subject: subject.map(str::to_string),
+            person_uid: None,
+            surface: None,
+            consent_version: None,
+        }
+    }
+
+    #[test]
+    fn replayable_for_matches_only_the_binding_account() {
+        // Bound to A: replayable for A, refused for B. Replaying A's answer for
+        // B would opt B in without B ever seeing the prompt.
+        let a = answer(true, Some("2026-07-27T10:00:00Z"), Some("sub-A"));
+        assert_eq!(a.replayable_for("sub-A"), Some(true));
+        assert_eq!(a.replayable_for("sub-B"), None);
+    }
+
+    #[test]
+    fn replayable_for_refuses_an_unbound_answer() {
+        // No subject: unbound records are produced routinely (the answer is
+        // stamped before the person entity exists), so "unbound" proves nothing
+        // about WHOSE answer it is and must never be replayed for anyone.
+        let unbound = answer(false, Some("2026-07-27T10:00:00Z"), None);
+        assert_eq!(unbound.replayable_for("sub-A"), None);
+    }
+
+    #[test]
+    fn replayable_for_refuses_an_answer_without_provenance() {
+        // No answered_at: `telemetryEnabled` may just be a persisted settings
+        // default, not a choice the person made — replaying it would manufacture
+        // consent out of a default.
+        let no_provenance = answer(true, None, Some("sub-A"));
+        assert_eq!(no_provenance.replayable_for("sub-A"), None);
+    }
+
+    #[test]
+    fn replayable_for_refuses_when_no_answer_recorded() {
+        // No `enabled` at all — nothing to replay.
+        let empty = MenubarConsent {
+            enabled: None,
+            answered_at: Some("2026-07-27T10:00:00Z".to_string()),
+            subject: Some("sub-A".to_string()),
+            person_uid: None,
+            surface: None,
+            consent_version: None,
+        };
+        assert_eq!(empty.replayable_for("sub-A"), None);
+    }
+
+    #[test]
+    fn replayable_for_preserves_an_explicit_opt_out() {
+        // A real opt-out is an answer and must replay as `false`, never be
+        // conflated with "unanswered" (which would silently convert it to an
+        // opt-in).
+        let opt_out = answer(false, Some("2026-07-27T10:00:00Z"), Some("sub-A"));
+        assert_eq!(opt_out.replayable_for("sub-A"), Some(false));
+        assert_eq!(opt_out.replayable_for("sub-B"), None);
+    }
+
     #[test]
     fn consent_record_ignores_unusable_values() {
         let dir = TempDir::new().unwrap();
@@ -317,6 +417,8 @@ mod tests {
             answered_at: None,
             subject: None,
             person_uid: None,
+            surface: None,
+            consent_version: None,
         };
         assert_eq!(read_menubar_consent(&dir.path().join("nope.json")), empty);
 

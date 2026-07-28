@@ -50,8 +50,13 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
             release_channel: None,
             meeting_detect_notify: Some(default_meeting_detect_notify()),
             default_recording_company_uid: None,
-            // Telemetry is opt-out; absent → on (mirrors
-            // telemetry.rs::read_local_telemetry_enabled's unwrap_or(true)).
+            // Legacy `MenubarPrefs.telemetryEnabled` default for the classic
+            // settings shape. NOTE: this is NOT the consent source of truth — the
+            // desktop consent surfaces read the SERVER-authoritative
+            // `get_telemetry_consent_status`, and the emission/consent fallback
+            // (`telemetry.rs::read_local_telemetry_enabled`) is now account-scoped
+            // and provenance-gated, resolving a missing answer to no-collection
+            // rather than defaulting on.
             telemetry_enabled: Some(true),
             // Windows defaults to the tray popup; macOS keeps the widget.
             widget_enabled: Some(default_widget_enabled()),

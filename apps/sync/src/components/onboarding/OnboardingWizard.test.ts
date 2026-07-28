@@ -102,7 +102,12 @@ afterEach(async () => {
 
 describe('onboarding launch handoff', () => {
   it('finishes onboarding after each supported launcher opens', () => {
-    expect(wizardSource.match(/await onfinish\?\.\(\);/g)).toHaveLength(5);
+    // Eight `await onfinish?.()` sites total: FIVE are the launch-handoff paths
+    // (the supported launchers plus the manual finish flows), and THREE were
+    // added by the US-005 consent re-prompt mode (answer, dismiss, and the
+    // offline finish), which closes the consent step directly instead of
+    // advancing to a ready screen that does not exist in that mode.
+    expect(wizardSource.match(/await onfinish\?\.\(\);/g)).toHaveLength(8);
     expect(wizardSource).not.toContain('advanceTo(4)');
   });
 

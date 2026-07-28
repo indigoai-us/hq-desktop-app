@@ -13,17 +13,19 @@ import {
 function makeState(overrides: Partial<WizardState> = {}): WizardState {
   return {
     installPath: null,
+    consentAnswered: false,
     ...overrides,
   };
 }
 
 describe('onboarding wizard step contract', () => {
-  it('ends first-run onboarding on the ready screen', () => {
+  it('inserts the consent step after setup and ends on the ready screen', () => {
     expect(WIZARD_STEPS).toEqual([
       { index: 0, id: 'welcome-signin', label: 'Welcome' },
       { index: 1, id: 'directory', label: 'Location' },
       { index: 2, id: 'setup', label: 'Setup' },
-      { index: 3, id: 'ready', label: 'Ready' },
+      { index: 3, id: 'consent', label: 'Consent' },
+      { index: 4, id: 'ready', label: 'Ready' },
     ]);
     expect(AUTH_GATED_STEPS).toEqual([2]);
   });
@@ -36,7 +38,7 @@ describe('createWizardRouter', () => {
 
   it('starts at screen 0 by default and accepts a valid start option', () => {
     expect(createWizardRouter().currentStep).toBe(0);
-    expect(createWizardRouter({ start: 3 }).currentStep).toBe(3);
+    expect(createWizardRouter({ start: 4 }).currentStep).toBe(4);
   });
 
   it('clamps next() at the final step', () => {
@@ -46,8 +48,10 @@ describe('createWizardRouter', () => {
       router.next();
     }
 
-    expect(router.currentStep).toBe(3);
-    expect(router.canGoNext(makeState({ installPath: '/tmp/hq' }))).toBe(false);
+    expect(router.currentStep).toBe(4);
+    expect(
+      router.canGoNext(makeState({ installPath: '/tmp/hq', consentAnswered: true })),
+    ).toBe(false);
   });
 
   it('clamps back() at the first screen', () => {
@@ -60,11 +64,11 @@ describe('createWizardRouter', () => {
   });
 
   it('moves backward from non-gated steps', () => {
-    const router = createWizardRouter({ start: 3 });
+    const router = createWizardRouter({ start: 4 });
 
     router.back();
 
-    expect(router.currentStep).toBe(2);
+    expect(router.currentStep).toBe(3);
     expect(router.canGoBack).toBe(true);
   });
 
@@ -100,20 +104,21 @@ describe('createWizardRouter', () => {
 
   it('blocks navigation targets that cross the completed setup gate backwards', () => {
     markSetupStepCompleted();
-    const router = createWizardRouter({ start: 3 });
+    const router = createWizardRouter({ start: 4 });
 
-    expect(router.canNavigateTo(3)).toBe(false);
+    // The consent step (3) sits AFTER the setup gate, so it stays reachable.
+    expect(router.canNavigateTo(3)).toBe(true);
     expect(router.canNavigateTo(2)).toBe(false);
     expect(router.canNavigateTo(1)).toBe(false);
     expect(router.canNavigateTo(0)).toBe(false);
   });
 
   it('rejects out-of-range and current navigation targets', () => {
-    const router = createWizardRouter({ start: 3 });
+    const router = createWizardRouter({ start: 4 });
 
     expect(router.canNavigateTo(-1)).toBe(false);
-    expect(router.canNavigateTo(3)).toBe(false);
     expect(router.canNavigateTo(4)).toBe(false);
+    expect(router.canNavigateTo(5)).toBe(false);
   });
 
   it('does not navigate to or before a completed setup gate', () => {
@@ -140,9 +145,14 @@ describe('getStepValidity', () => {
     expect(getStepValidity(2, makeState({ installPath: '/tmp/hq' }))).toBe(false);
   });
 
+  it('blocks the consent step until the telemetry question is answered', () => {
+    expect(getStepValidity(3, makeState({ consentAnswered: false }))).toBe(false);
+    expect(getStepValidity(3, makeState({ consentAnswered: true }))).toBe(true);
+  });
+
   it('defaults to valid for ungated steps', () => {
     expect(getStepValidity(0, makeState())).toBe(true);
-    expect(getStepValidity(3, makeState())).toBe(true);
+    expect(getStepValidity(4, makeState())).toBe(true);
   });
 });
 

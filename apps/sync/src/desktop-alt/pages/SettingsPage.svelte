@@ -7,6 +7,7 @@
   import { formatHqFolderMeta, type SettingsTab } from '../route';
   import { emitDesktopTelemetry } from '../../lib/desktop-telemetry';
   import { postOptIn } from '../../lib/onboarding-telemetry';
+  import { TELEMETRY_CONSENT_VERSION } from '../../lib/consent-version';
   import { permissionState, loadMeetingPermissions } from '../../lib/permissionState.svelte';
   import { packUpdateTitle } from '../../lib/packUpdate';
   import {
@@ -153,8 +154,29 @@
   let meetingDetectEnabled = $state(true);
   let meetingDetectPlatforms = $state<string[]>([...platforms]);
   let defaultRecordingCompanyUid = $state<string | null>(null);
-  // Telemetry is opt-out — defaults ON until the user explicitly turns it off.
-  let telemetryEnabled = $state(true);
+  // The telemetry toggle is rendered from the SERVER-AUTHORITATIVE consent
+  // state, never from the local menubar.json file. The local file is a cache
+  // for offline display only. Reading the toggle from the local file was the
+  // whole defect this story (US-003) fixes: the file could say "on" while the
+  // server holds a refusal (or vice versa), so the screen would contradict what
+  // collection actually does — which is why the declined-users backfill was
+  // deliberately never run.
+  //
+  // `telemetryEnabled` is null until the server answers, so the toggle renders
+  // in a "checking…" state rather than flashing the ON default before the
+  // server responds (that flash is a small version of the same lie).
+  let telemetryEnabled = $state<boolean | null>(null);
+  // Where the currently-displayed value came from. `'server'` = authoritative;
+  // `'local-cache'` = the server was unreachable and this is the offline value,
+  // which the UI labels honestly rather than presenting as current truth.
+  let telemetrySource = $state<'server' | 'local-cache' | null>(null);
+  // Provenance (AC5) — when the answer was recorded and which consent wording
+  // it was recorded against. Absent on records that predate these fields.
+  let telemetryUpdatedAt = $state<string | null>(null);
+  let telemetryConsentVersion = $state<number | null>(null);
+  // In-flight guard so a toggle click cannot race the initial server read or a
+  // previous write.
+  let telemetryBusy = $state(false);
 
   // macOS notification authorization — distinct from the in-app `notifications`
   // preference. `'unknown'` = not yet read (row hidden until first resolve).
@@ -253,6 +275,7 @@
     })();
 
     void loadSettings();
+    void loadTelemetryConsent();
     void loadNotifPermission();
     void loadUpdateSurfaces();
     getVersion()
@@ -326,7 +349,10 @@
       storedUid && memberships.some((membership) => membership.companyUid === storedUid)
         ? storedUid
         : null;
-    telemetryEnabled = settings.telemetryEnabled ?? true;
+    // Deliberately NOT read from the local file here. The telemetry toggle is
+    // server-authoritative and is loaded separately by loadTelemetryConsent();
+    // the local `settings.telemetryEnabled` is only the offline cache and must
+    // never be shown as the current answer while the server is reachable.
     releaseChannel = isChannel(settings.releaseChannel) ? settings.releaseChannel : null;
   }
 
@@ -471,16 +497,110 @@
     });
   }
 
+  // The server-authoritative consent read for the toggle (AC1/AC2/AC5).
+  interface TelemetryConsentStatus {
+    enabled: boolean;
+    source: 'server' | 'local-cache';
+    updatedAt: string | null;
+    consentVersion: number | null;
+    unset: boolean;
+  }
+
+  // Monotonic generation so a slow initial read can never overwrite a newer
+  // value the user has since toggled.
+  let telemetryLoadGeneration = 0;
+
+  /**
+   * Load the SERVER-AUTHORITATIVE telemetry consent and render the toggle from
+   * it. The local menubar.json file is consulted only when the server is
+   * unreachable, and when it is, the value is labelled as an offline cache
+   * rather than presented as the current answer.
+   *
+   * `telemetryEnabled` stays `null` until this resolves, so the toggle shows a
+   * "checking…" state instead of flashing the ON default before the server
+   * answers.
+   */
+  async function loadTelemetryConsent(): Promise<void> {
+    const generation = ++telemetryLoadGeneration;
+    try {
+      const status = await invoke<TelemetryConsentStatus>('get_telemetry_consent_status');
+      if (generation !== telemetryLoadGeneration) return;
+      // A server that has a row but no recorded answer (`unset`) resolves to the
+      // interim opt-out-is-collection default; render the toggle from the
+      // effective `enabled` the server reports either way.
+      telemetryEnabled = status.enabled;
+      telemetrySource = status.source;
+      telemetryUpdatedAt = status.updatedAt;
+      telemetryConsentVersion = status.consentVersion;
+    } catch (err) {
+      if (generation !== telemetryLoadGeneration) return;
+      // Even the command errored (no token, resolve failure). Do not fabricate
+      // an answer: leave the toggle in its checking state and note it offline.
+      console.error('settings: failed to read telemetry consent', err);
+      telemetrySource = 'local-cache';
+    }
+  }
+
+  /**
+   * Persist a telemetry answer. The server write is the source of truth; the
+   * local cache write inside postOptIn is only for offline display. A withdrawal
+   * (enabled=false) is carried to the server unconditionally with its surface
+   * and consent version, so it cannot later be resurrected by any replay path.
+   */
   async function applyTelemetryPreference() {
-    const next = telemetryEnabled;
-    if (!next) {
-      await auditTelemetryPreferenceChanged(next);
+    // `bind:checked` has already flipped `telemetryEnabled` by the time onchange
+    // fires; a null here would mean a toggle before the initial read resolved,
+    // which the disabled binding prevents.
+    const next = telemetryEnabled === true;
+    if (telemetryBusy) return;
+    telemetryBusy = true;
+    try {
+      // Finding #6: a withdrawal must HALT emission immediately — so we must not
+      // emit ANY telemetry event for a withdrawal. The old code deliberately
+      // emitted `telemetry_preference_changed(false)` BEFORE the withdrawal
+      // write, while the server still reported "enabled", which produced one
+      // more telemetry event AFTER the user had asked to stop. That event is now
+      // removed entirely; only an opt-IN records the change (after the server
+      // confirms it).
+      // Persist the offline cache too, so an immediately-following offline read
+      // shows the just-chosen value.
+      if (!(await saveSettings({ telemetryEnabled: next }))) return;
+      const result = await postOptIn({
+        enabled: next,
+        surface: 'settings',
+        consentVersion: TELEMETRY_CONSENT_VERSION,
+      });
+      if (next && result.uploaded) {
+        await auditTelemetryPreferenceChanged(next);
+      }
+      // Re-read the server so provenance (updatedAt/version) reflects the write
+      // just made, and so the displayed value is the server's, not the optimistic
+      // toggle. On a failed upload the re-read falls back to the cache and the
+      // source label flips to offline, which is the honest state.
+      if (result.uploaded) {
+        await loadTelemetryConsent();
+      } else {
+        telemetrySource = 'local-cache';
+      }
+    } finally {
+      telemetryBusy = false;
     }
-    if (!(await saveSettings({ telemetryEnabled: next }))) return;
-    await postOptIn({ enabled: next });
-    if (next) {
-      await auditTelemetryPreferenceChanged(next);
-    }
+  }
+
+  /**
+   * Plain-language "answered on {date}" for the provenance line. Returns null
+   * when there is no usable date, so the caller omits the line rather than
+   * rendering "null".
+   */
+  function formatConsentAnsweredAt(iso: string | null): string | null {
+    if (!iso) return null;
+    const when = new Date(iso);
+    if (Number.isNaN(when.getTime())) return null;
+    return when.toLocaleDateString(undefined, {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+    });
   }
 
   // Three toggles carry live backend side-effects beyond persistence — without
@@ -846,6 +966,9 @@
     const onFocus = () => {
       if (settingsReady) void refreshSettingsSilently();
       else void loadSettings();
+      // Re-read server consent on focus so a withdrawal made elsewhere (or the
+      // provenance of a just-recorded answer) is reflected without a restart.
+      void loadTelemetryConsent();
     };
     window.addEventListener('focus', onFocus);
     return () => window.removeEventListener('focus', onFocus);
@@ -1079,7 +1202,38 @@
       <h2>General</h2>
       <div class="settings-card">
         <label class="setting-row"><span><strong>Start at login</strong><small>Open HQ when your computer starts.</small></span><input type="checkbox" bind:checked={startAtLogin} onchange={applyStartAtLogin} /></label>
-        <label class="setting-row"><span><strong>Usage telemetry</strong><small>Share anonymized usage counts to improve HQ. You can turn this off any time.</small></span><input type="checkbox" bind:checked={telemetryEnabled} onchange={applyTelemetryPreference} /></label>
+        <label class="setting-row" data-testid="telemetry-row">
+          <span>
+            <strong>Usage telemetry</strong>
+            <small>Share anonymized usage counts to improve HQ. You can turn this off any time.</small>
+            {#if telemetryEnabled === null}
+              <small class="telemetry-note" data-testid="telemetry-checking">Checking your current choice…</small>
+            {:else}
+              {#if telemetrySource === 'local-cache'}
+                <small class="telemetry-note" data-testid="telemetry-offline">Showing your last known choice from this device — we couldn't reach the server to confirm it just now.</small>
+              {/if}
+              {#if telemetrySource === 'server'}
+                {@const answeredOn = formatConsentAnsweredAt(telemetryUpdatedAt)}
+                {#if answeredOn}
+                  <small class="telemetry-note" data-testid="telemetry-answered-at">You answered this on {answeredOn}.</small>
+                {/if}
+                {#if telemetryConsentVersion !== null}
+                  <small class="telemetry-note" data-testid="telemetry-consent-version">Recorded against telemetry notice version {telemetryConsentVersion}.</small>
+                {/if}
+              {/if}
+            {/if}
+          </span>
+          <input
+            type="checkbox"
+            data-testid="telemetry-toggle"
+            checked={telemetryEnabled === true}
+            disabled={telemetryEnabled === null || telemetryBusy}
+            onchange={(event) => {
+              telemetryEnabled = event.currentTarget.checked;
+              void applyTelemetryPreference();
+            }}
+          />
+        </label>
         <div class="setting-row">
           <span><strong>Version</strong><small>HQ desktop app build</small></span>
           <span class="version-value">{appVersion ? `v${appVersion}` : '—'}</span>
@@ -1246,6 +1400,16 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  /* Provenance + offline notes wrap over multiple lines instead of being
+     truncated like the single-line description above them. */
+  .telemetry-note {
+    display: block;
+    margin-top: 4px;
+    overflow: visible;
+    white-space: normal;
+    color: var(--v4-text-3, var(--v4-text-2));
   }
 
   strong {
