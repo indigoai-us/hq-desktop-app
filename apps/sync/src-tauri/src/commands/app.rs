@@ -118,10 +118,13 @@ fn open_claude_code_link_windows(url: &str) -> Result<(), String> {
             SW_SHOWNORMAL,
         )
     };
-    if !shell_execute_succeeded(result.0) {
+    // ShellExecuteW's HINSTANCE is a legacy integer status smuggled through a
+    // pointer type, so converting it to isize here is intentional.
+    let result = result.0 as isize;
+    if !shell_execute_succeeded(result) {
         return Err(format!(
             "ShellExecuteW failed to open claude link: {}",
-            result.0
+            result
         ));
     }
 
