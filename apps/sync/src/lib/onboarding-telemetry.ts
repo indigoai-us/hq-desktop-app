@@ -74,11 +74,17 @@ export async function postOptIn({
 }: PostOptInOptions): Promise<PostOptInResult> {
   let cached = false;
   try {
-    // The local cache holds only the answer itself — provenance (surface,
-    // consent version) is server-side metadata, so it is not written here. It
-    // still runs FIRST and best-effort: it is what stamps the answer with the
-    // account that gave it and lets an offline person finish setup.
-    await invokeCommand(WRITE_PREF_COMMAND, { enabled });
+    // The local cache carries the answer AND its provenance (surface + consent
+    // version). Caching the provenance is what lets an OFFLINE self-heal replay
+    // restate the same version the person answered against — without it the
+    // replay posts a version-less record that the server reads as stale and
+    // re-prompts against the exact wording already answered. Still runs FIRST
+    // and best-effort: it also stamps the answer with the account that gave it
+    // and lets an offline person finish setup.
+    const cacheArgs: Record<string, unknown> = { enabled };
+    if (surface !== undefined) cacheArgs.surface = surface;
+    if (consentVersion !== undefined) cacheArgs.consentVersion = consentVersion;
+    await invokeCommand(WRITE_PREF_COMMAND, cacheArgs);
     cached = true;
   } catch (err) {
     console.error('[telemetry] write_menubar_telemetry_pref failed:', err);
@@ -102,22 +108,28 @@ export async function postOptIn({
  * Record that the US-005 launch-time consent re-prompt has been SHOWN for this
  * person at this consent version, so it is not shown again for the same pair.
  *
- * A DISMISSAL calls this and NOTHING else — dismissing must never post an
- * answer. An ANSWER also calls it (harmlessly: answering already replaces the
- * stale record with a current one, so it stops being stale regardless). It is
- * best-effort — a failure to persist the guard must not block the user — so it
- * never throws; the worst case is the prompt reappearing on a later launch,
- * never a lost answer.
+ * The guard is written when the prompt is DISPLAYED (armed), not only after the
+ * person acts — otherwise closing or crashing after it appears would show it
+ * again next launch (finding #8). A DISMISSAL and an ANSWER also call it
+ * (idempotent: answering already replaces the stale record with a current one).
+ *
+ * It never throws — a guard-write failure must not block the user — but it
+ * RETURNS whether the guard was persisted, so a caller that armed the prompt on
+ * the strength of the guard can react to a write failure instead of silently
+ * risking a repeat. The worst case is still only the prompt reappearing on a
+ * later launch, never a lost answer.
  */
 export async function markConsentRepromptShown(
   consentVersion: number,
   personUid: string,
   invokeCommand: InvokeCommand = invoke as InvokeCommand,
-): Promise<void> {
+): Promise<boolean> {
   try {
     await invokeCommand(MARK_REPROMPT_SHOWN_COMMAND, { consentVersion, personUid });
+    return true;
   } catch (err) {
     console.warn('[telemetry] mark_consent_reprompt_shown failed:', err);
+    return false;
   }
 }
 

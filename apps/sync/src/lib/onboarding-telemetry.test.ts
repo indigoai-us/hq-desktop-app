@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { postOptIn } from './onboarding-telemetry';
+import { markConsentRepromptShown, postOptIn } from './onboarding-telemetry';
 
 describe('postOptIn', () => {
   /**
@@ -25,7 +25,11 @@ describe('postOptIn', () => {
     });
   });
 
-  it('forwards surface and consent version to the remote write only', async () => {
+  it('caches provenance (surface + consent version) locally so an offline replay can restate it', async () => {
+    // Finding #7: the local cache must carry the surface + consent version, not
+    // just the answer. Otherwise an offline self-heal replay posts a version-less
+    // record the server reads as stale, re-prompting against wording already
+    // answered. Both the cache write AND the remote write now carry provenance.
     const invokeCommand = vi.fn().mockResolvedValue(undefined);
 
     await postOptIn({
@@ -35,9 +39,10 @@ describe('postOptIn', () => {
       invokeCommand,
     });
 
-    // The local cache holds only the answer — provenance is server-side metadata.
     expect(invokeCommand).toHaveBeenNthCalledWith(1, 'write_menubar_telemetry_pref', {
       enabled: true,
+      surface: 'onboarding',
+      consentVersion: 1,
     });
     expect(invokeCommand).toHaveBeenNthCalledWith(2, 'post_telemetry_opt_in', {
       enabled: true,
@@ -119,5 +124,33 @@ describe('postOptIn', () => {
     const result = await postOptIn({ enabled: false, invokeCommand });
 
     expect(result).toEqual({ cached: false, uploaded: true });
+  });
+});
+
+describe('markConsentRepromptShown', () => {
+  // Finding #8: the guard is written when the re-prompt is DISPLAYED, and its
+  // success is REPORTED so the caller (App.svelte) can refuse to arm an
+  // unguarded prompt that would nag every launch. Previously the guard was only
+  // written after an action, and any failure was swallowed.
+  it('returns true when the guard write succeeds', async () => {
+    const invokeCommand = vi.fn().mockResolvedValue(undefined);
+
+    const ok = await markConsentRepromptShown(1, 'prs_alice', invokeCommand);
+
+    expect(ok).toBe(true);
+    expect(invokeCommand).toHaveBeenCalledWith('mark_consent_reprompt_shown', {
+      consentVersion: 1,
+      personUid: 'prs_alice',
+    });
+  });
+
+  it('returns false (never throws) when the guard write fails', async () => {
+    const invokeCommand = vi.fn().mockRejectedValue(new Error('disk full'));
+
+    const ok = await markConsentRepromptShown(1, 'prs_alice', invokeCommand);
+
+    // Reported, not swallowed: the caller can defer the prompt rather than show
+    // an unguarded one that repeats on every launch.
+    expect(ok).toBe(false);
   });
 });

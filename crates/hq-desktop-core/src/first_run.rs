@@ -156,6 +156,14 @@ pub struct MenubarConsent {
     /// The `prs_*` this record has been reconciled to, once known. Consumed by
     /// the hq-cloud sync runner, which does its own account check.
     pub person_uid: Option<String>,
+    /// The surface that produced the answer (`onboarding` / `settings`). Cached
+    /// so an OFFLINE replay can carry the same provenance it was given with,
+    /// rather than posting a version-less record that the server would read as
+    /// stale and re-prompt against the very wording the person already answered.
+    pub surface: Option<String>,
+    /// The consent version whose wording the person was shown when they
+    /// answered. Cached alongside `surface` for the same reason.
+    pub consent_version: Option<u32>,
 }
 
 impl MenubarConsent {
@@ -191,6 +199,11 @@ pub fn read_menubar_consent(path: &Path) -> MenubarConsent {
         answered_at: str_field("telemetryOptInAnsweredAt"),
         subject: str_field("telemetryOptInSub"),
         person_uid: str_field("telemetryOptInPersonUid"),
+        surface: str_field("telemetryOptInSurface"),
+        consent_version: obj
+            .get("telemetryConsentVersion")
+            .and_then(|v| v.as_u64())
+            .and_then(|n| u32::try_from(n).ok()),
     }
 }
 
@@ -234,6 +247,22 @@ mod tests {
         assert_eq!(c.answered_at.as_deref(), Some("2026-07-27T10:00:00Z"));
         assert_eq!(c.subject.as_deref(), Some(ME));
         assert_eq!(c.replayable_for(ME), Some(true));
+    }
+
+    #[test]
+    fn consent_record_reads_cached_surface_and_version_for_offline_replay() {
+        // Finding #7: the cached record must carry the surface + consent version
+        // so an offline replay can restate the provenance it was given against,
+        // instead of posting a version-less record the server reads as stale.
+        let dir = TempDir::new().unwrap();
+        let path = write_menubar_json(
+            &dir,
+            r#"{"telemetryEnabled":true,"telemetryOptInAnsweredAt":"2026-07-27T10:00:00Z","telemetryOptInSub":"sub-me","telemetryOptInSurface":"onboarding","telemetryConsentVersion":1}"#,
+        );
+
+        let c = read_menubar_consent(&path);
+        assert_eq!(c.surface.as_deref(), Some("onboarding"));
+        assert_eq!(c.consent_version, Some(1));
     }
 
     #[test]
@@ -309,6 +338,8 @@ mod tests {
             answered_at: answered_at.map(str::to_string),
             subject: subject.map(str::to_string),
             person_uid: None,
+            surface: None,
+            consent_version: None,
         }
     }
 
@@ -347,6 +378,8 @@ mod tests {
             answered_at: Some("2026-07-27T10:00:00Z".to_string()),
             subject: Some("sub-A".to_string()),
             person_uid: None,
+            surface: None,
+            consent_version: None,
         };
         assert_eq!(empty.replayable_for("sub-A"), None);
     }
@@ -384,6 +417,8 @@ mod tests {
             answered_at: None,
             subject: None,
             person_uid: None,
+            surface: None,
+            consent_version: None,
         };
         assert_eq!(read_menubar_consent(&dir.path().join("nope.json")), empty);
 

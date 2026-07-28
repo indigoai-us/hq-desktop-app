@@ -159,21 +159,37 @@ fn sanitize_row(row: &Value) -> Option<Value> {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-fn read_local_telemetry_enabled() -> bool {
-    let home = paths::home_dir().unwrap_or_default();
-    let path = home.join(".hq/menubar.json");
-    if let Ok(contents) = fs::read_to_string(&path) {
-        if let Ok(v) = serde_json::from_str::<Value>(&contents) {
-            return v
-                .get("telemetryEnabled")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(true);
-        }
-    }
-    true
+/// The offline-cache answer for the CURRENTLY signed-in account, or `None`.
+///
+/// This is deliberately NOT a bare read of `telemetryEnabled`, and it never
+/// defaults a missing answer to `true`. Two properties matter, and the old
+/// `unwrap_or(true)` had neither:
+///
+///   1. Provenance. `telemetryEnabled` alone is also a settings default —
+///      `get_settings` supplies `true` when it is absent — so its mere presence
+///      proves nothing. Only a record carrying `telemetryOptInAnsweredAt` (the
+///      provenance marker written the moment the user actually answers) counts.
+///   2. Account scope. `menubar.json` is a per-MACHINE file and sign-out does
+///      NOT clear it. Without the Cognito-subject binding, account B would
+///      inherit account A's cached answer on any server-read failure. The
+///      binding check (via `replayable_for`) refuses an answer that belongs to a
+///      different account, and refuses an unbound one.
+///
+/// `None` means "this account has no genuine cached answer" — the caller must
+/// treat that as no-collection, never as opted-in.
+fn read_local_telemetry_enabled() -> Option<bool> {
+    let path = crate::util::paths::menubar_json_path().ok()?;
+    let record = hq_desktop_core::first_run::read_menubar_consent(&path);
+    let subject = current_cognito_subject()?;
+    record.replayable_for(&subject)
 }
 
-fn write_menubar_telemetry_pref_to(path: &Path, enabled: bool) -> Result<(), String> {
+fn write_menubar_telemetry_pref_to(
+    path: &Path,
+    enabled: bool,
+    surface: Option<&str>,
+    consent_version: Option<u32>,
+) -> Result<(), String> {
     // `telemetryOptInAnsweredAt` is the PROVENANCE marker. `telemetryEnabled`
     // alone cannot stand in for an answer: it is also a settings field that
     // `get_settings` defaults to `true` when absent, and the settings mutation
@@ -193,6 +209,12 @@ fn write_menubar_telemetry_pref_to(path: &Path, enabled: bool) -> Result<(), Str
     // answered on this machine and B later toggles the setting, B's answer
     // overwrites the subject and the stale `prs_*` from A, so B's own answer is
     // never rejected as someone else's.
+    //
+    // `surface` and `consent_version` are cached alongside the answer so an
+    // OFFLINE self-heal replay can restate the SAME provenance the person
+    // answered with (finding #7). Without them the replay posts a version-less
+    // record, which the server's own contract reads as stale — re-prompting the
+    // person against the exact wording they already answered.
     let subject = current_cognito_subject();
     hq_desktop_core::first_run::merge_menubar_flags(
         path,
@@ -205,6 +227,16 @@ fn write_menubar_telemetry_pref_to(path: &Path, enabled: bool) -> Result<(), Str
             (
                 "telemetryOptInSub",
                 subject.map(Value::String).unwrap_or(Value::Null),
+            ),
+            (
+                "telemetryOptInSurface",
+                surface
+                    .map(|s| Value::String(s.to_string()))
+                    .unwrap_or(Value::Null),
+            ),
+            (
+                "telemetryConsentVersion",
+                consent_version.map(Value::from).unwrap_or(Value::Null),
             ),
             // Cleared, not carried over: this record now belongs to whoever is
             // signed in, and the person uid is re-established by the repair.
@@ -257,11 +289,17 @@ fn current_cognito_subject() -> Option<String> {
 ///      answer; replaying that would opt B in without B ever being asked. An
 ///      UNBOUND record is not replayable either — unbound records are produced
 ///      routinely, not just by older versions, so "unbound" proves nothing.
-///   4. The server must report `unset` — proving both that no answer is
-///      recorded AND that this server understands `onlyIfUnset`. An older
-///      server silently ignores that flag and writes unconditionally, so
-///      without this probe the "conditional" replay could clobber a real
-///      choice.
+///   4. The write must be safe against the server's recorded state:
+///      - server has NO answer → replay conditionally (`onlyIfUnset`);
+///      - server has an OLDER answer than our local one → replay
+///        UNCONDITIONALLY, because a newer offline decision (notably a
+///        withdrawal) must win, never be dropped;
+///      - server has a same-or-newer answer → the server is authoritative, do
+///        not replay;
+///      - server predates the `unset` field (and so ignores `onlyIfUnset`) → do
+///        not write at all.
+///      The replay carries the cached surface + consent version so an offline
+///      answer is not re-read as stale against its own wording.
 pub async fn reassert_consent_for_person(vault: &VaultClient, person_uid: &str) {
     let Ok(path) = crate::util::paths::menubar_json_path() else {
         return;
@@ -286,41 +324,68 @@ pub async fn reassert_consent_for_person(vault: &VaultClient, person_uid: &str) 
         return;
     };
 
-    // Guard 4: only act when the server itself says there is no recorded answer.
-    // `unset: None` means the server predates this field — and therefore also
-    // ignores `onlyIfUnset` — so we must not write at all.
-    match vault.get_telemetry_opt_in().await {
-        Ok(resp) if resp.unset == Some(true) => {}
-        Ok(resp) => {
-            // Consent IS recorded — nothing to repair. Record that fact so this
-            // stops re-checking: `write_menubar_telemetry_pref` clears the
-            // person binding on every deliberate answer, so without this the
-            // early return never fires again and each sync repeats this GET
-            // forever (twice, on the cache-miss path).
-            //
-            // Only bind when the server names the same person we resolved, so
-            // a mismatched response can never mislabel the record.
-            if resp.person_uid.as_deref() == Some(person_uid) {
-                let _ = hq_desktop_core::first_run::merge_menubar_flags(
-                    &path,
-                    &[(
-                        "telemetryOptInPersonUid",
-                        Value::String(person_uid.to_string()),
-                    )],
-                );
-            }
-            return;
-        }
+    // Whether to replay conditionally (`onlyIfUnset`) or unconditionally.
+    //
+    //   - Server has NO answer (`unset: true`)  → replay conditionally. The
+    //     `onlyIfUnset` guard is belt-and-braces against a concurrent write.
+    //   - Server HAS an answer, but the LOCAL answer is strictly NEWER than the
+    //     server's → replay UNCONDITIONALLY. This is finding #3: an offline
+    //     withdrawal (a genuine, account-bound `false` recorded after the server
+    //     last saw `true`) must WIN, not be dropped because "the server already
+    //     has an answer". A conditional write here would no-op and the stale
+    //     server value would turn the toggle back on at the next read.
+    //   - Server HAS an answer at least as new as the local one → the server is
+    //     authoritative; do not replay. Just bind and stop re-checking.
+    //   - `unset: None` (server predates the field, and therefore also ignores
+    //     `onlyIfUnset`) → do not write at all; we cannot reason about its
+    //     conditional semantics.
+    let resp = match vault.get_telemetry_opt_in().await {
+        Ok(resp) => resp,
         Err(err) => {
             eprintln!("[telemetry] consent state unreadable, skipping re-assert: {err}");
             return;
         }
-    }
+    };
 
-    // This is a self-heal REPLAY of a cached answer, not a fresh answer, so it
-    // carries no onboarding/settings provenance of its own.
+    let only_if_unset = match resp.unset {
+        Some(true) => true,
+        Some(false) => {
+            // The server holds an answer. Replay ONLY when our local answer is a
+            // genuinely newer decision that never reached the server — a
+            // withdrawal must never be lost or reversed.
+            if !local_answer_is_newer(record.answered_at.as_deref(), resp.updated_at.as_deref()) {
+                // Server is authoritative (same-or-newer). Bind so this stops
+                // re-checking, only when the server names the same person.
+                if resp.person_uid.as_deref() == Some(person_uid) {
+                    let _ = hq_desktop_core::first_run::merge_menubar_flags(
+                        &path,
+                        &[(
+                            "telemetryOptInPersonUid",
+                            Value::String(person_uid.to_string()),
+                        )],
+                    );
+                }
+                return;
+            }
+            // A newer local decision (e.g. an offline withdrawal). Overwrite the
+            // stale server value unconditionally so it cannot be resurrected.
+            false
+        }
+        None => {
+            // Server predates the `unset`/conditional-write rollout — do not
+            // write, we cannot trust its `onlyIfUnset` handling.
+            return;
+        }
+    };
+
+    // This is a self-heal REPLAY of a cached answer. Carry the SAME provenance
+    // the person answered with (finding #7) so the server does not read the
+    // replayed record as version-less/stale and re-prompt against wording the
+    // person already answered.
+    let surface = record.surface.as_deref();
+    let consent_version = record.consent_version;
     match vault
-        .post_telemetry_opt_in_opts(enabled, true, None, None)
+        .post_telemetry_opt_in_opts(enabled, only_if_unset, surface, consent_version)
         .await
     {
         Ok(()) => {
@@ -341,10 +406,35 @@ pub async fn reassert_consent_for_person(vault: &VaultClient, person_uid: &str) 
     }
 }
 
+/// Whether the LOCAL answer (`local`) was recorded strictly after the server's
+/// last write (`server`).
+///
+/// Both are RFC 3339 timestamps. A local answer that is newer is an offline
+/// decision the server has not yet seen and must win over the server's stale
+/// value (finding #3). Missing/unparseable inputs fail SAFE — we treat the
+/// answer as NOT newer, so we never clobber a server answer we cannot prove is
+/// older than ours.
+fn local_answer_is_newer(local: Option<&str>, server: Option<&str>) -> bool {
+    let (Some(local), Some(server)) = (local, server) else {
+        return false;
+    };
+    let (Ok(local), Ok(server)) = (
+        chrono::DateTime::parse_from_rfc3339(local),
+        chrono::DateTime::parse_from_rfc3339(server),
+    ) else {
+        return false;
+    };
+    local > server
+}
+
 #[tauri::command]
-pub fn write_menubar_telemetry_pref(enabled: bool) -> Result<(), String> {
+pub fn write_menubar_telemetry_pref(
+    enabled: bool,
+    surface: Option<String>,
+    consent_version: Option<u32>,
+) -> Result<(), String> {
     let path = crate::util::paths::menubar_json_path()?;
-    write_menubar_telemetry_pref_to(&path, enabled)
+    write_menubar_telemetry_pref_to(&path, enabled, surface.as_deref(), consent_version)
 }
 
 const OPT_IN_RETRY_DELAYS: [Duration; 2] = [Duration::from_secs(1), Duration::from_secs(3)];
@@ -407,7 +497,12 @@ async fn resolve_telemetry_enabled(vault: &VaultClient) -> bool {
         Ok(resp) => resp.enabled,
         Err(_) => {
             eprintln!("[telemetry] telemetry-opt-in-fallback-local");
-            read_local_telemetry_enabled()
+            // A missing (or account-mismatched) local answer resolves to
+            // NO collection. Defaulting to `true` here is exactly the
+            // account-unscoped, opt-in-by-omission bug this story removes: on a
+            // server-read failure it would collect for someone who never
+            // answered, or inherit another account's answer.
+            read_local_telemetry_enabled().unwrap_or(false)
         }
     }
 }
@@ -472,12 +567,18 @@ pub async fn get_telemetry_consent_status() -> Result<TelemetryConsentStatus, St
         }),
         Err(err) => {
             eprintln!("[telemetry] consent-status-fallback-local: {err}");
+            // The local cache is account-scoped and provenance-gated. When it
+            // holds no genuine answer for THIS account, render the toggle from
+            // no-collection with `unset: true` rather than fabricating an
+            // opted-in default — a missing answer must never appear pre-ticked,
+            // and account B must never inherit account A's cached value.
+            let cached = read_local_telemetry_enabled();
             Ok(TelemetryConsentStatus {
-                enabled: read_local_telemetry_enabled(),
+                enabled: cached.unwrap_or(false),
                 source: TelemetryConsentSource::LocalCache,
                 updated_at: None,
                 consent_version: None,
-                unset: false,
+                unset: cached.is_none(),
             })
         }
     }
@@ -887,6 +988,16 @@ pub async fn send_telemetry_if_opted_in<R: tauri::Runtime>(
 
     let mut batch_events: Vec<Value> = Vec::new();
     let mut batch_sources: Vec<RowSource> = Vec::new();
+    // Set when a withdrawal is detected mid-cycle so both the scan and the final
+    // flush stop emitting (finding #6).
+    let mut withdrawn_mid_cycle = false;
+    // Whether at least one batch has already been flushed this cycle. A cycle can
+    // span many 1 MB batches; once we have started emitting, the final flush must
+    // re-check consent so a withdrawal that lands part-way through does not get
+    // one more batch out (finding #6). A single-batch cycle needs no re-check —
+    // the top-of-cycle consent check already governs it — so we do not pay an
+    // extra GET on the common path.
+    let mut flushed_once = false;
 
     for file_path in &file_paths {
         let path_str = normalize_cursor_file_key(file_path);
@@ -972,6 +1083,20 @@ pub async fn send_telemetry_if_opted_in<R: tauri::Runtime>(
                 let candidate =
                     build_wire_payload(&machine_id, &installer_version, &batch_events, &sanitized);
                 if candidate.len() > MAX_BATCH_BYTES {
+                    // A collection cycle can span many batches. Re-check consent
+                    // before EACH flush so a withdrawal made mid-cycle halts
+                    // emission at once (finding #6): the initial check at the top
+                    // is not enough — without this, an in-flight cycle keeps
+                    // flushing batches after the user has asked to stop. Drop the
+                    // pending batch (do not send it) and stop scanning; the
+                    // cursor is not advanced for the un-sent rows, so they are
+                    // simply re-evaluated (and skipped) next cycle.
+                    if !resolve_telemetry_enabled(&vault).await {
+                        batch_events.clear();
+                        batch_sources.clear();
+                        withdrawn_mid_cycle = true;
+                        break;
+                    }
                     // Flush current batch
                     flush_batch(
                         &vault,
@@ -982,6 +1107,7 @@ pub async fn send_telemetry_if_opted_in<R: tauri::Runtime>(
                         &mut newly_committed,
                     )
                     .await;
+                    flushed_once = true;
                 }
             }
 
@@ -992,19 +1118,33 @@ pub async fn send_telemetry_if_opted_in<R: tauri::Runtime>(
                 mtime: current_mtime,
             });
         }
+        if withdrawn_mid_cycle {
+            break;
+        }
     }
 
-    // Flush remaining batch
+    // Flush remaining batch. If we already emitted at least one batch this
+    // cycle, re-check consent first so a withdrawal that landed part-way through
+    // a multi-batch cycle halts the final flush too (finding #6). A single-batch
+    // cycle skips the re-check — the top-of-cycle check already governs it, so
+    // the common path pays no extra GET.
     if !batch_events.is_empty() {
-        flush_batch(
-            &vault,
-            &machine_id,
-            &installer_version,
-            &mut batch_events,
-            &mut batch_sources,
-            &mut newly_committed,
-        )
-        .await;
+        let halt =
+            withdrawn_mid_cycle || (flushed_once && !resolve_telemetry_enabled(&vault).await);
+        if halt {
+            batch_events.clear();
+            batch_sources.clear();
+        } else {
+            flush_batch(
+                &vault,
+                &machine_id,
+                &installer_version,
+                &mut batch_events,
+                &mut batch_sources,
+                &mut newly_committed,
+            )
+            .await;
+        }
     }
 
     // Build final cursor: loaded < rotation_resets < newly_committed
@@ -1129,6 +1269,31 @@ mod tests {
         .unwrap();
     }
 
+    /// Build an unsigned JWT whose payload carries `sub`. `decode_id_token_claims`
+    /// only base64url-decodes the middle segment, so the signature is irrelevant.
+    fn id_token_for_subject(sub: &str) -> String {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+        let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"none","typ":"JWT"}"#);
+        let payload = URL_SAFE_NO_PAD.encode(format!(r#"{{"sub":"{sub}"}}"#).as_bytes());
+        format!("{header}.{payload}.sig")
+    }
+
+    /// Write a cognito token file whose id_token names `sub`, so
+    /// `current_cognito_subject` resolves to that account.
+    fn write_tokens_for_subject(home: &std::path::Path, sub: &str) {
+        fs::write(
+            home.join(".hq/cognito-tokens.json"),
+            serde_json::to_string(&json!({
+                "accessToken": "test-access-token",
+                "idToken": id_token_for_subject(sub),
+                "refreshToken": "test-refresh-token",
+                "expiresAt": 4_102_444_800_000_i64,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+
     fn read_cursor(home: &std::path::Path) -> TelemetryCursor {
         let body = fs::read_to_string(home.join(".hq/telemetry-cursor.json")).unwrap();
         serde_json::from_str(&body).unwrap()
@@ -1179,13 +1344,16 @@ mod tests {
         );
         let path = home.path().join(".hq/menubar.json");
 
-        write_menubar_telemetry_pref_to(&path, true).unwrap();
+        write_menubar_telemetry_pref_to(&path, true, Some("onboarding"), Some(1)).unwrap();
 
         let v: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(v["machineId"], "mid-keep");
         assert_eq!(v["hqPath"], "/foo");
         assert_eq!(v["syncOnLaunch"], false);
         assert_eq!(v["telemetryEnabled"], true);
+        // Provenance is cached for an offline replay (finding #7).
+        assert_eq!(v["telemetryOptInSurface"], "onboarding");
+        assert_eq!(v["telemetryConsentVersion"], 1);
     }
 
     #[test]
@@ -1193,24 +1361,79 @@ mod tests {
         let home = TempDir::new().unwrap();
         let path = home.path().join(".hq/menubar.json");
 
-        write_menubar_telemetry_pref_to(&path, false).unwrap();
+        write_menubar_telemetry_pref_to(&path, false, Some("settings"), Some(1)).unwrap();
 
         let v: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(v["telemetryEnabled"], false);
+        assert_eq!(v["telemetryOptInSurface"], "settings");
         assert!(!path.with_extension("json.tmp").exists());
     }
 
+    // ── US-003 AC / finding #4: the local cache is account-scoped, provenance-
+    //    gated, and never defaults a missing answer to enabled. ────────────────
+
     #[test]
-    fn test_missing_local_telemetry_pref_defaults_true() {
+    fn test_missing_local_telemetry_answer_resolves_to_no_collection() {
+        // A menubar with no recorded answer must NOT default to opted-in. The
+        // old `unwrap_or(true)` here was the account-unscoped, opt-in-by-omission
+        // bug: on a server-read failure it collected for a person who never
+        // answered.
         let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let home = setup_home();
         write_menubar(home.path(), r#"{"machineId":"mid-default"}"#);
+        write_tokens_for_subject(home.path(), "sub-a");
         std::env::set_var("HOME", home.path());
 
-        let enabled = read_local_telemetry_enabled();
+        let answer = read_local_telemetry_enabled();
 
         std::env::remove_var("HOME");
-        assert!(enabled, "missing telemetryEnabled should default ON");
+        assert_eq!(
+            answer, None,
+            "a missing answer must not default to enabled — it is no answer at all"
+        );
+    }
+
+    #[test]
+    fn test_local_answer_requires_provenance_not_a_bare_flag() {
+        // A bare `telemetryEnabled: true` (which `get_settings` supplies as a
+        // default) without the provenance marker is NOT an answer.
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let home = setup_home();
+        write_menubar(
+            home.path(),
+            r#"{"machineId":"mid-p","telemetryEnabled":true}"#,
+        );
+        write_tokens_for_subject(home.path(), "sub-a");
+        std::env::set_var("HOME", home.path());
+
+        let answer = read_local_telemetry_enabled();
+
+        std::env::remove_var("HOME");
+        assert_eq!(answer, None, "a bare flag without provenance is not consent");
+    }
+
+    #[test]
+    fn test_local_answer_is_account_scoped() {
+        // Account A answered on this machine. When account B is signed in, B must
+        // NOT inherit A's cached answer — the record is bound to A's subject.
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let home = setup_home();
+        write_menubar(
+            home.path(),
+            r#"{"machineId":"mid-scope","telemetryEnabled":true,"telemetryOptInAnsweredAt":"2026-07-27T10:00:00Z","telemetryOptInSub":"sub-a"}"#,
+        );
+        std::env::set_var("HOME", home.path());
+
+        // Account A: sees its own answer.
+        write_tokens_for_subject(home.path(), "sub-a");
+        let a = read_local_telemetry_enabled();
+        // Account B: the cached answer belongs to A, so B gets no answer.
+        write_tokens_for_subject(home.path(), "sub-b");
+        let b = read_local_telemetry_enabled();
+
+        std::env::remove_var("HOME");
+        assert_eq!(a, Some(true), "account A reads its own answer");
+        assert_eq!(b, None, "account B must not inherit account A's answer");
     }
 
     #[tokio::test]
@@ -1774,6 +1997,96 @@ mod tests {
         );
     }
 
+    // ── finding #6: a withdrawal made MID-CYCLE halts emission at once ─────────
+    //
+    // A collection cycle can span several 1 MB batches. If consent is checked
+    // only once at the top, an in-flight cycle keeps flushing batches after the
+    // user withdraws. Here the top-of-cycle check sees "enabled" (so the cycle
+    // starts and flushes batch 1), then the server flips to "declined"; the
+    // per-flush re-check must then STOP — no further batch may be POSTed.
+    #[tokio::test]
+    async fn test_withdrawal_mid_cycle_halts_further_batches() {
+        let server = MockServer::start().await;
+        // The cycle re-checks consent before EACH flush past the first. With ~2
+        // batches there are two consent GETs after the top-of-cycle one: the
+        // rollover between batch 1 and batch 2, and the final flush. Model:
+        // top-check + rollover both see "enabled" (so batch 1 is emitted), then
+        // the final re-check sees the withdrawal → batch 2 is dropped. So the
+        // first TWO GETs return enabled, and every one after returns declined.
+        Mock::given(method("GET"))
+            .and(path("/v1/usage/opt-in"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({"enabled": true})))
+            .up_to_n_times(2)
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1/usage/opt-in"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({"enabled": false})))
+            .with_priority(2)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/usage"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .mount(&server)
+            .await;
+
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let home = setup_home();
+        write_menubar(home.path(), r#"{"machineId":"mid-midwithdraw"}"#);
+
+        // Enough rows to force multiple 1 MB batches (same shape as the rollover
+        // test): ~50 rows * ~25 KB ≈ 1.25 MB → ≥2 batches.
+        let long_branch = "x".repeat(25_000);
+        let mut lines = Vec::new();
+        for i in 0..50usize {
+            let row = json!({
+                "type": "user",
+                "timestamp": format!("2026-04-25T10:00:{:02}Z", i % 60),
+                "sessionId": "s1",
+                "uuid": format!("u{}", i),
+                "parentUuid": null,
+                "userType": "human",
+                "entrypoint": "cli",
+                "cwd": "/Users/x",
+                "gitBranch": long_branch,
+                "version": "1.0",
+                "message": {"role": "user", "content": [{"type": "text", "text": "hi"}], "id": "m"}
+            });
+            lines.push(serde_json::to_string(&row).unwrap());
+        }
+        let lines_str: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
+        write_jsonl(home.path(), "proj", "large.jsonl", &lines_str);
+
+        std::env::set_var("HOME", home.path());
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+
+        let handle = make_app_handle();
+        send_telemetry_if_opted_in(&handle, "/hq", "tok")
+            .await
+            .unwrap();
+
+        std::env::remove_var("HOME");
+        std::env::remove_var("HQ_VAULT_API_URL");
+
+        // Batch 1 flushed while still opted in; the withdrawal detected before
+        // the next flush stops emission — so exactly ONE usage POST, not ≥2.
+        let usage_posts = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|r| r.method == wiremock::http::Method::POST && r.url.path() == "/v1/usage")
+            .count();
+        assert_eq!(
+            usage_posts, 1,
+            "a mid-cycle withdrawal must halt further batches — the cycle emits \
+             what was in flight, then stops the moment the server records the \
+             withdrawal"
+        );
+    }
+
     // ── (e) Non-200 does NOT advance cursor ───────────────────────────────────
 
     #[tokio::test]
@@ -2009,7 +2322,7 @@ mod tests {
         );
     }
 
-    // ── (i) GET opt-in HTTP 500 → fallback reads menubar.json ─────────────────
+    // ── (i) GET opt-in HTTP 500 → fallback reads the account-scoped local answer
 
     #[tokio::test]
     async fn test_opt_in_500_fallback_true_runs_telemetry() {
@@ -2027,11 +2340,14 @@ mod tests {
 
         let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let home = setup_home();
-        // menubar.json has telemetryEnabled: true
+        // A GENUINE opt-in answer for the signed-in account: enabled + provenance
+        // + a subject binding that matches the token. A bare flag would (rightly)
+        // no longer be honoured — see test_local_answer_requires_provenance.
         write_menubar(
             home.path(),
-            r#"{"machineId":"mid-i1","telemetryEnabled":true}"#,
+            r#"{"machineId":"mid-i1","telemetryEnabled":true,"telemetryOptInAnsweredAt":"2026-07-27T10:00:00Z","telemetryOptInSub":"sub-i1"}"#,
         );
+        write_tokens_for_subject(home.path(), "sub-i1");
         write_jsonl(home.path(), "proj", "s.jsonl", &[USER_ROW]);
 
         std::env::set_var("HOME", home.path());
@@ -2051,7 +2367,47 @@ mod tests {
             .collect();
         assert!(
             !posts.is_empty(),
-            "telemetryEnabled=true in fallback → should POST ≥1"
+            "a genuine account-bound opt-in in fallback → should POST ≥1"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_opt_in_500_fallback_missing_answer_skips_telemetry() {
+        // On a server-read failure with NO genuine local answer, collection must
+        // NOT happen. This is the finding #4 regression: the old default-true
+        // fallback would collect for someone who never answered.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/usage/opt-in"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("error"))
+            .mount(&server)
+            .await;
+
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let home = setup_home();
+        write_menubar(home.path(), r#"{"machineId":"mid-i0"}"#);
+        write_tokens_for_subject(home.path(), "sub-i0");
+        write_jsonl(home.path(), "proj", "s.jsonl", &[USER_ROW]);
+
+        std::env::set_var("HOME", home.path());
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+
+        let handle = make_app_handle();
+        let result = send_telemetry_if_opted_in(&handle, "/hq", "tok").await;
+
+        std::env::remove_var("HOME");
+        std::env::remove_var("HQ_VAULT_API_URL");
+
+        assert!(result.is_ok());
+        let reqs = server.received_requests().await.unwrap();
+        let posts: Vec<_> = reqs
+            .iter()
+            .filter(|r| r.method == wiremock::http::Method::POST)
+            .collect();
+        assert_eq!(
+            posts.len(),
+            0,
+            "no genuine local answer → fallback resolves to no-collection"
         );
     }
 
@@ -2066,11 +2422,12 @@ mod tests {
 
         let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let home = setup_home();
-        // menubar.json has telemetryEnabled: false
+        // A genuine, account-bound opt-OUT answer for the signed-in account.
         write_menubar(
             home.path(),
-            r#"{"machineId":"mid-i2","telemetryEnabled":false}"#,
+            r#"{"machineId":"mid-i2","telemetryEnabled":false,"telemetryOptInAnsweredAt":"2026-07-27T10:00:00Z","telemetryOptInSub":"sub-i2"}"#,
         );
+        write_tokens_for_subject(home.path(), "sub-i2");
         write_jsonl(home.path(), "proj", "s.jsonl", &[USER_ROW]);
 
         std::env::set_var("HOME", home.path());
@@ -2267,5 +2624,172 @@ mod tests {
         );
         let v: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(v["machineId"], "mid-reprompt");
+    }
+
+    // ── findings #3 / #7: offline withdrawal survives reconciliation, and the
+    //    replay carries the cached surface + consent version. ──────────────────
+
+    #[test]
+    fn local_answer_is_newer_compares_timestamps_and_fails_safe() {
+        // Strictly newer local answer → true (an offline decision the server
+        // hasn't seen).
+        assert!(local_answer_is_newer(
+            Some("2026-07-28T10:00:00Z"),
+            Some("2026-07-27T10:00:00Z"),
+        ));
+        // Same or older → false (the server is authoritative).
+        assert!(!local_answer_is_newer(
+            Some("2026-07-27T10:00:00Z"),
+            Some("2026-07-27T10:00:00Z"),
+        ));
+        assert!(!local_answer_is_newer(
+            Some("2026-07-26T10:00:00Z"),
+            Some("2026-07-27T10:00:00Z"),
+        ));
+        // Missing or unparseable → fail SAFE (never clobber).
+        assert!(!local_answer_is_newer(None, Some("2026-07-27T10:00:00Z")));
+        assert!(!local_answer_is_newer(Some("2026-07-27T10:00:00Z"), None));
+        assert!(!local_answer_is_newer(Some("garbage"), Some("2026-07-27T10:00:00Z")));
+    }
+
+    /// Mount a GET `/v1/usage/opt-in` returning `get_body`, and a POST
+    /// `/v1/usage/opt-in` that accepts the replay so requests can be inspected.
+    async fn mount_opt_in(server: &MockServer, get_body: Value) {
+        Mock::given(method("GET"))
+            .and(path("/v1/usage/opt-in"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&get_body))
+            .mount(server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/usage/opt-in"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .mount(server)
+            .await;
+    }
+
+    fn opt_in_posts(reqs: &[wiremock::Request]) -> Vec<Value> {
+        reqs.iter()
+            .filter(|r| {
+                r.method == wiremock::http::Method::POST && r.url.path() == "/v1/usage/opt-in"
+            })
+            .map(|r| serde_json::from_slice(&r.body).unwrap())
+            .collect()
+    }
+
+    // Finding #3: an offline withdrawal recorded AFTER the server last saw `true`
+    // must be replayed (unconditionally) so it wins — never dropped because "the
+    // server already has an answer".
+    #[tokio::test]
+    async fn reassert_replays_a_newer_offline_withdrawal_unconditionally() {
+        let server = MockServer::start().await;
+        // Server still holds the stale `true`, last written yesterday.
+        mount_opt_in(
+            &server,
+            json!({
+                "enabled": true,
+                "updatedAt": "2026-07-27T10:00:00Z",
+                "unset": false,
+                "personUid": "prs_alice"
+            }),
+        )
+        .await;
+
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let home = setup_home();
+        // Local record: a genuine, account-bound WITHDRAWAL made offline TODAY,
+        // newer than the server's value, with cached provenance.
+        write_menubar(
+            home.path(),
+            r#"{"machineId":"mid-wd","telemetryEnabled":false,"telemetryOptInAnsweredAt":"2026-07-28T09:00:00Z","telemetryOptInSub":"sub-alice","telemetryOptInSurface":"settings","telemetryConsentVersion":1}"#,
+        );
+        std::env::set_var("HOME", home.path());
+
+        let vault = VaultClient::new(server.uri(), id_token_for_subject("sub-alice"));
+        reassert_consent_for_person(&vault, "prs_alice").await;
+
+        std::env::remove_var("HOME");
+
+        let posts = opt_in_posts(&server.received_requests().await.unwrap());
+        assert_eq!(posts.len(), 1, "the newer withdrawal must be replayed");
+        // It wins: enabled=false, written UNCONDITIONALLY (no onlyIfUnset), and
+        // carries the cached provenance (finding #7).
+        assert_eq!(posts[0]["enabled"], json!(false));
+        assert!(
+            posts[0].get("onlyIfUnset").is_none(),
+            "a newer withdrawal is written unconditionally so it cannot be dropped"
+        );
+        assert_eq!(posts[0]["surface"], json!("settings"));
+        assert_eq!(posts[0]["consentVersion"], json!(1));
+    }
+
+    // Finding #3 (converse): when the server's answer is at least as new as the
+    // local one, the server is authoritative — do NOT replay.
+    #[tokio::test]
+    async fn reassert_does_not_replay_when_server_answer_is_newer() {
+        let server = MockServer::start().await;
+        mount_opt_in(
+            &server,
+            json!({
+                "enabled": true,
+                "updatedAt": "2026-07-29T10:00:00Z",
+                "unset": false,
+                "personUid": "prs_alice"
+            }),
+        )
+        .await;
+
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let home = setup_home();
+        // Local answer is OLDER than the server's.
+        write_menubar(
+            home.path(),
+            r#"{"machineId":"mid-old","telemetryEnabled":false,"telemetryOptInAnsweredAt":"2026-07-28T09:00:00Z","telemetryOptInSub":"sub-alice"}"#,
+        );
+        std::env::set_var("HOME", home.path());
+
+        let vault = VaultClient::new(server.uri(), id_token_for_subject("sub-alice"));
+        reassert_consent_for_person(&vault, "prs_alice").await;
+
+        std::env::remove_var("HOME");
+
+        let posts = opt_in_posts(&server.received_requests().await.unwrap());
+        assert_eq!(posts.len(), 0, "the server's newer answer is authoritative");
+    }
+
+    // Finding #7: on a server that has NO answer, the conditional replay still
+    // carries the cached surface + consent version.
+    #[tokio::test]
+    async fn reassert_replay_on_unset_server_carries_cached_provenance() {
+        let server = MockServer::start().await;
+        mount_opt_in(
+            &server,
+            json!({
+                "enabled": false,
+                "updatedAt": null,
+                "unset": true,
+                "personUid": "prs_alice"
+            }),
+        )
+        .await;
+
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let home = setup_home();
+        write_menubar(
+            home.path(),
+            r#"{"machineId":"mid-unset","telemetryEnabled":true,"telemetryOptInAnsweredAt":"2026-07-28T09:00:00Z","telemetryOptInSub":"sub-alice","telemetryOptInSurface":"onboarding","telemetryConsentVersion":1}"#,
+        );
+        std::env::set_var("HOME", home.path());
+
+        let vault = VaultClient::new(server.uri(), id_token_for_subject("sub-alice"));
+        reassert_consent_for_person(&vault, "prs_alice").await;
+
+        std::env::remove_var("HOME");
+
+        let posts = opt_in_posts(&server.received_requests().await.unwrap());
+        assert_eq!(posts.len(), 1);
+        assert_eq!(posts[0]["enabled"], json!(true));
+        assert_eq!(posts[0]["onlyIfUnset"], json!(true));
+        assert_eq!(posts[0]["surface"], json!("onboarding"));
+        assert_eq!(posts[0]["consentVersion"], json!(1));
     }
 }
