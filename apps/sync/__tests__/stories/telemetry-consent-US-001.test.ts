@@ -269,13 +269,19 @@ describe('US-001 recording the answer', () => {
     });
 
     // Setup completes normally: the ready screen becomes the active panel and
-    // still offers every finish action (nothing withheld for declining).
+    // still offers its launch action (nothing withheld for declining). The
+    // ready panel carries a SINGLE primary launcher — there is no separate
+    // "Finish" button for anyone, so its absence here is not a capability
+    // withheld from someone who declined.
     const ready = host.querySelector<HTMLElement>('[data-testid="onboarding-summary"]');
     expect(ready).not.toBeNull();
     expect(ready!.classList.contains('on')).toBe(true);
     expect(ready!.textContent).toContain('HQ is ready');
     expect(ready!.textContent).toContain('Open in Claude Code');
-    expect(ready!.textContent).toContain('Finish');
+    // The launcher is present AND enabled — a decline must not disable it.
+    const launch = ready!.querySelector<HTMLButtonElement>('.btns .btn-primary');
+    expect(launch).not.toBeNull();
+    expect(launch!.disabled).toBe(false);
   });
 
   it('emits no desktop_setup_completed usage event when declining (AC 5)', async () => {
