@@ -2726,7 +2726,7 @@ dependencies = [
 
 [[package]]
 name = "hq-sync-menubar"
-version = "0.10.35-beta.5"
+version = "0.10.35-beta.6"
 dependencies = [
  "aws-config",
  "aws-credential-types",
