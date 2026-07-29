@@ -414,7 +414,8 @@ describe('compact activity bursts', () => {
   });
 
   it('compacts repeated automated agent-join DMs but not ordinary identical DMs', () => {
-    const now = Date.parse('2026-07-28T18:10:00-06:00');
+    // Keep the fixture on the same local calendar day in every CI timezone.
+    const now = new Date(2026, 6, 28, 18, 10).getTime();
     const joinText = '🤖 A new agent (an agent) just joined the company.';
     const rows = [
       item({

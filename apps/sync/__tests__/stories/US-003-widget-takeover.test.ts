@@ -9,7 +9,7 @@
 
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Vitest resolves Svelte's public entry with the default/server condition in
 // this repo's node test config, even for per-file happy-dom tests. Force the
@@ -23,6 +23,7 @@ import { flushSync, mount, unmount } from 'svelte';
 import Widget from '../../src/components/Widget.svelte';
 import {
   WIDGET_ROW_TIMEOUT_MS,
+  WIDGET_RECENT_STORAGE_KEY,
   addItem,
   bannerToStackItem,
   emptyWidgetStack,
@@ -45,6 +46,14 @@ const mainRs = readFileSync(root('src-tauri/src/main.rs'), 'utf8');
 
 let host: HTMLElement;
 let component: ReturnType<typeof mount> | null = null;
+
+beforeEach(() => {
+  try {
+    globalThis.localStorage?.removeItem(WIDGET_RECENT_STORAGE_KEY);
+  } catch {
+    // Node runtimes without a configured localStorage file expose a throwing shim.
+  }
+});
 
 function mountWidget(props: Record<string, unknown> = {}): HTMLElement {
   host = document.createElement('div');
