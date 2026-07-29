@@ -250,7 +250,7 @@ describe('US-013: pinned popup matches locked design (scenes 8-10)', () => {
       expect(style).toContain('.hl-body');
       expect(style).toContain('.hl-footer');
       expect(style).toContain('.hl-open-messages');
-      expect(style).toContain('.hl-icon-btn');
+      expect(style).toContain('.hl-open-desktop');
     });
 
     it('uses fast Emil motion plus explicit press and focus-visible feedback', () => {
@@ -265,7 +265,7 @@ describe('US-013: pinned popup matches locked design (scenes 8-10)', () => {
       expect(style).toContain('.wm:active');
       expect(style).toContain('.hl-close:focus-visible');
       expect(style).toContain('.hl-open-messages:focus-visible');
-      expect(style).toContain('.hl-icon-btn:focus-visible');
+      expect(style).toContain('.hl-open-desktop:focus-visible');
       expect(style).toContain('.ctx-item:focus-visible');
       expect(style).toContain('.wm:focus-visible');
       expect(style).not.toContain('transition: all');
