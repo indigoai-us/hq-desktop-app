@@ -188,6 +188,7 @@ fn runtime_log_line(show_dock_icon: bool) -> &'static str {
 ///
 /// The Dock tile badge is a small circle; a 4-digit count renders as an
 /// unreadable smear and stretches the tile. Every mainstream Mac app caps it.
+#[cfg(target_os = "macos")]
 const BADGE_CAP: u32 = 99;
 
 /// Render an unread count as a Dock badge label.
@@ -200,7 +201,10 @@ const BADGE_CAP: u32 = 99;
 /// That mismatch is why this module calls `set_badge_label` with its own
 /// formatting rather than using `set_badge_count`.
 ///
-/// Pure so the cap and the zero case are unit-testable on any platform.
+/// Pure, so the cap and the zero case are unit-testable without a Dock.
+/// macOS-only alongside its single caller: no other platform has a Dock tile,
+/// and an ungated helper would be dead code on Windows/Linux.
+#[cfg(target_os = "macos")]
 pub fn format_badge_label(unread: u32) -> Option<String> {
     match unread {
         0 => None,
@@ -336,6 +340,7 @@ mod tests {
         assert!(!effective_dock_icon(Some(&prefs_with_dock(Some(false)))));
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn test_badge_zero_clears_rather_than_showing_a_literal_zero() {
         // The whole reason this module formats its own label instead of using
@@ -343,6 +348,7 @@ mod tests {
         assert_eq!(format_badge_label(0), None);
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn test_badge_shows_exact_count_up_to_the_cap() {
         assert_eq!(format_badge_label(1).as_deref(), Some("1"));
@@ -350,6 +356,7 @@ mod tests {
         assert_eq!(format_badge_label(99).as_deref(), Some("99"));
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn test_badge_caps_above_99() {
         assert_eq!(format_badge_label(100).as_deref(), Some("99+"));
@@ -357,6 +364,7 @@ mod tests {
         assert_eq!(format_badge_label(u32::MAX).as_deref(), Some("99+"));
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn test_badge_label_never_exceeds_three_characters() {
         // Keeps the Dock tile circle from stretching, for every possible input
