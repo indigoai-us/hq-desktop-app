@@ -6,17 +6,21 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use sha2::{Digest, Sha256};
+
+use hq_desktop_core::sessions::codex::{enumerate_rollout_files, RolloutFile};
 
 use crate::commands::sync::resolve_vault_api_url;
 use crate::commands::vault_client::{
     RawTelemetryEvent, TelemetryEventsBatch, UsageBatch, VaultClient,
 };
+use crate::util::client_info::build_client;
 use crate::util::paths;
 
 // ── Cursor schema ─────────────────────────────────────────────────────────────
@@ -25,12 +29,16 @@ use crate::util::paths;
 struct CursorEntry {
     offset: u64,
     mtime: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    context: Option<CodexUsageContext>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct TelemetryCursor {
     version: String,
     files: HashMap<String, CursorEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    codex_next_rollout: Option<String>,
 }
 
 impl Default for TelemetryCursor {
@@ -38,12 +46,23 @@ impl Default for TelemetryCursor {
         Self {
             version: "1".to_string(),
             files: HashMap::new(),
+            codex_next_rollout: None,
         }
     }
 }
 
+fn telemetry_home_dir() -> Option<std::path::PathBuf> {
+    #[cfg(test)]
+    if let Some(home) = std::env::var_os("HQ_TEST_HOME") {
+        if !home.is_empty() {
+            return Some(home.into());
+        }
+    }
+    paths::home_dir()
+}
+
 fn cursor_path() -> Option<std::path::PathBuf> {
-    paths::home_dir().map(|h| h.join(".hq/telemetry-cursor.json"))
+    telemetry_home_dir().map(|h| h.join(".hq/telemetry-cursor.json"))
 }
 
 fn normalize_cursor_key_with_separator(raw: &str, separator: char) -> String {
@@ -72,6 +91,9 @@ fn normalize_cursor_files(files: HashMap<String, CursorEntry>) -> HashMap<String
             .and_modify(|existing: &mut CursorEntry| {
                 if entry.offset > existing.offset {
                     existing.offset = entry.offset;
+                    existing.context = entry.context.clone();
+                } else if entry.offset == existing.offset && existing.context.is_none() {
+                    existing.context = entry.context.clone();
                 }
                 if entry.mtime > existing.mtime {
                     existing.mtime = entry.mtime;
@@ -113,43 +135,59 @@ fn save_cursor(cursor: &TelemetryCursor) -> Result<(), String> {
 /// Build an outgoing event row matching the server's KEEP allowlist
 /// (hq-pro vault-service /v1/usage). Any field outside this set is rejected
 /// by the server with `unexpected-event-field`, so we emit ONLY those fields.
+const MAX_ID_BYTES: usize = 256;
+const MAX_TIMESTAMP_BYTES: usize = 128;
+const MAX_PATH_BYTES: usize = 4 * 1024;
+const MAX_MODEL_BYTES: usize = 256;
+
+fn bounded_scalar(value: Option<&Value>, max_bytes: usize) -> Option<Value> {
+    value
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty() && value.len() <= max_bytes)
+        .map(|value| Value::String(value.to_string()))
+}
+
+fn bounded_u64(value: Option<&Value>) -> Option<Value> {
+    value.and_then(Value::as_u64).map(Value::from)
+}
+
 fn sanitize_row(row: &Value) -> Option<Value> {
     let obj = row.as_object()?;
     let mut out = serde_json::Map::new();
 
-    macro_rules! copy_opt {
-        ($key:expr) => {
-            if let Some(v) = obj.get($key) {
-                out.insert($key.to_string(), v.clone());
+    macro_rules! copy_string {
+        ($key:expr, $limit:expr) => {
+            if let Some(v) = bounded_scalar(obj.get($key), $limit) {
+                out.insert($key.to_string(), v);
             }
         };
     }
 
-    copy_opt!("sessionId");
-    copy_opt!("timestamp");
-    copy_opt!("uuid");
-    copy_opt!("cwd");
-    copy_opt!("gitBranch");
-    copy_opt!("userType");
+    copy_string!("sessionId", MAX_ID_BYTES);
+    copy_string!("timestamp", MAX_TIMESTAMP_BYTES);
+    copy_string!("uuid", MAX_ID_BYTES);
+    copy_string!("cwd", MAX_PATH_BYTES);
+    copy_string!("gitBranch", MAX_PATH_BYTES);
+    copy_string!("userType", MAX_ID_BYTES);
 
     // Promote message.model and flatten message.usage.* into top-level
     // camelCase fields the server expects.
     if let Some(msg) = obj.get("message").and_then(|v| v.as_object()) {
-        if let Some(v) = msg.get("model") {
-            out.insert("model".to_string(), v.clone());
+        if let Some(v) = bounded_scalar(msg.get("model"), MAX_MODEL_BYTES) {
+            out.insert("model".to_string(), v);
         }
         if let Some(usage) = msg.get("usage").and_then(|v| v.as_object()) {
-            if let Some(v) = usage.get("input_tokens") {
-                out.insert("inputTokens".to_string(), v.clone());
+            if let Some(v) = bounded_u64(usage.get("input_tokens")) {
+                out.insert("inputTokens".to_string(), v);
             }
-            if let Some(v) = usage.get("output_tokens") {
-                out.insert("outputTokens".to_string(), v.clone());
+            if let Some(v) = bounded_u64(usage.get("output_tokens")) {
+                out.insert("outputTokens".to_string(), v);
             }
-            if let Some(v) = usage.get("cache_creation_input_tokens") {
-                out.insert("cacheCreationInputTokens".to_string(), v.clone());
+            if let Some(v) = bounded_u64(usage.get("cache_creation_input_tokens")) {
+                out.insert("cacheCreationInputTokens".to_string(), v);
             }
-            if let Some(v) = usage.get("cache_read_input_tokens") {
-                out.insert("cacheReadInputTokens".to_string(), v.clone());
+            if let Some(v) = bounded_u64(usage.get("cache_read_input_tokens")) {
+                out.insert("cacheReadInputTokens".to_string(), v);
             }
         }
     }
@@ -159,7 +197,7 @@ fn sanitize_row(row: &Value) -> Option<Value> {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/// The offline-cache answer for the CURRENTLY signed-in account, or `None`.
+/// The offline-cache answer for the request's authenticated caller, or `None`.
 ///
 /// This is deliberately NOT a bare read of `telemetryEnabled`, and it never
 /// defaults a missing answer to `true`. Two properties matter, and the old
@@ -177,11 +215,10 @@ fn sanitize_row(row: &Value) -> Option<Value> {
 ///
 /// `None` means "this account has no genuine cached answer" — the caller must
 /// treat that as no-collection, never as opted-in.
-fn read_local_telemetry_enabled() -> Option<bool> {
+fn read_local_telemetry_enabled(caller_subject: Option<&str>) -> Option<bool> {
     let path = crate::util::paths::menubar_json_path().ok()?;
     let record = hq_desktop_core::first_run::read_menubar_consent(&path);
-    let subject = current_cognito_subject()?;
-    record.replayable_for(&subject)
+    record.replayable_for(caller_subject?)
 }
 
 fn write_menubar_telemetry_pref_to(
@@ -502,7 +539,8 @@ async fn resolve_telemetry_enabled(vault: &VaultClient) -> bool {
             // account-unscoped, opt-in-by-omission bug this story removes: on a
             // server-read failure it would collect for someone who never
             // answered, or inherit another account's answer.
-            read_local_telemetry_enabled().unwrap_or(false)
+            let caller_subject = vault.caller_subject();
+            read_local_telemetry_enabled(caller_subject.as_deref()).unwrap_or(false)
         }
     }
 }
@@ -572,7 +610,8 @@ pub async fn get_telemetry_consent_status() -> Result<TelemetryConsentStatus, St
             // no-collection with `unset: true` rather than fabricating an
             // opted-in default — a missing answer must never appear pre-ticked,
             // and account B must never inherit account A's cached value.
-            let cached = read_local_telemetry_enabled();
+            let caller_subject = vault.caller_subject();
+            let cached = read_local_telemetry_enabled(caller_subject.as_deref());
             Ok(TelemetryConsentStatus {
                 enabled: cached.unwrap_or(false),
                 source: TelemetryConsentSource::LocalCache,
@@ -686,7 +725,9 @@ fn read_reprompt_guard(path: &Path) -> (Option<u32>, Option<String>) {
 /// unaffected — staleness means "ask again", not "stop collecting" — and the
 /// caller simply tries again on the next launch.
 #[tauri::command]
-pub async fn consent_reprompt_status(consent_version: u32) -> Result<ConsentRepromptStatus, String> {
+pub async fn consent_reprompt_status(
+    consent_version: u32,
+) -> Result<ConsentRepromptStatus, String> {
     let access_token = crate::commands::cognito::get_valid_access_token().await?;
     let api_url = resolve_vault_api_url()?;
     let vault = VaultClient::new(&api_url, &access_token);
@@ -723,10 +764,7 @@ pub async fn consent_reprompt_status(consent_version: u32) -> Result<ConsentRepr
 /// untyped-merge + atomic-rename path every other menubar flag uses, so unknown
 /// keys survive.
 #[tauri::command]
-pub fn mark_consent_reprompt_shown(
-    consent_version: u32,
-    person_uid: String,
-) -> Result<(), String> {
+pub fn mark_consent_reprompt_shown(consent_version: u32, person_uid: String) -> Result<(), String> {
     if person_uid.is_empty() {
         // Nothing to key the guard to — refuse rather than write a useless pair.
         return Err("mark_consent_reprompt_shown requires a person_uid".to_string());
@@ -915,12 +953,12 @@ pub fn setup_daily_active_emit() {
 }
 
 fn read_machine_id() -> String {
-    let home = paths::home_dir().unwrap_or_default();
+    let home = telemetry_home_dir().unwrap_or_default();
     let path = home.join(".hq/menubar.json");
     if let Ok(contents) = fs::read_to_string(&path) {
         if let Ok(v) = serde_json::from_str::<Value>(&contents) {
             if let Some(id) = v.get("machineId").and_then(|v| v.as_str()) {
-                if !id.is_empty() {
+                if !id.is_empty() && id.len() <= MAX_ID_BYTES {
                     return id.to_string();
                 }
             }
@@ -940,13 +978,415 @@ fn mtime_secs(metadata: &std::fs::Metadata) -> u64 {
 }
 
 /// Per-row tracking: which file + byte-end-offset contributed this row.
+fn system_time_secs(time: std::time::SystemTime) -> u64 {
+    time.duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
+}
+
+fn candidate_cursor_entry(
+    stored: Option<&CursorEntry>,
+    current_size: u64,
+    current_mtime: u64,
+) -> CursorEntry {
+    let stored = stored.cloned().unwrap_or_default();
+    let rotated =
+        current_size < stored.offset || (stored.mtime > 0 && current_mtime < stored.mtime);
+    // Pre-context Codex cursors cannot safely resume without replaying an
+    // unbounded prefix. Reset once and rebuild context through bounded reads;
+    // server-side event dedupe keeps this at-least-once migration safe.
+    let legacy_without_context = stored.offset > 0 && stored.context.is_none();
+    let reset = rotated || legacy_without_context;
+
+    CursorEntry {
+        offset: if reset { 0 } else { stored.offset },
+        mtime: current_mtime,
+        context: if reset { None } else { stored.context },
+    }
+}
+
+fn codex_candidate_entries(
+    codex_dir: &std::path::Path,
+    cursor: &TelemetryCursor,
+) -> HashMap<String, CursorEntry> {
+    enumerate_rollout_files(codex_dir)
+        .into_values()
+        .map(|rollout| {
+            let path = normalize_cursor_file_key(&rollout.path);
+            let entry = candidate_cursor_entry(
+                cursor.files.get(&path),
+                rollout.size,
+                system_time_secs(rollout.mtime),
+            );
+            (path, entry)
+        })
+        .collect()
+}
+
+fn codex_rollouts_freshest_first(codex_dir: &Path) -> Vec<(String, RolloutFile)> {
+    let mut rollouts: Vec<_> = enumerate_rollout_files(codex_dir).into_iter().collect();
+    sort_rollouts_freshest_first(&mut rollouts);
+    rollouts
+}
+
+fn sort_rollouts_freshest_first(rollouts: &mut [(String, RolloutFile)]) {
+    rollouts.sort_by(|left, right| {
+        right
+            .1
+            .mtime
+            .cmp(&left.1.mtime)
+            .then_with(|| left.0.cmp(&right.0))
+    });
+}
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct CodexUsageContext {
+    session_id: Option<String>,
+    cwd: Option<String>,
+    git_branch: Option<String>,
+    session_model: Option<String>,
+    collaboration_model: Option<String>,
+    turn_model: Option<String>,
+    #[serde(default)]
+    discarding_partial_line: bool,
+}
+
+impl CodexUsageContext {
+    fn new(filename_session_id: &str) -> Self {
+        Self {
+            session_id: (!filename_session_id.is_empty()).then(|| filename_session_id.to_string()),
+            ..Self::default()
+        }
+    }
+
+    fn model(&self) -> Option<&str> {
+        self.turn_model
+            .as_deref()
+            .or(self.collaboration_model.as_deref())
+            .or(self.session_model.as_deref())
+    }
+}
+
+fn bounded_string(value: Option<&Value>, max_bytes: usize) -> Option<String> {
+    value
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty() && value.len() <= max_bytes)
+        .map(str::to_string)
+}
+
+fn session_meta_git_branch(payload: &serde_json::Map<String, Value>) -> Option<String> {
+    bounded_string(payload.get("gitBranch"), MAX_PATH_BYTES)
+        .or_else(|| bounded_string(payload.get("git_branch"), MAX_PATH_BYTES))
+        .or_else(|| {
+            payload
+                .get("git")
+                .and_then(Value::as_object)
+                .and_then(|git| bounded_string(git.get("branch"), MAX_PATH_BYTES))
+        })
+}
+
+fn stable_codex_event_id(rollout_identity: &str, start_offset: u64, end_offset: u64) -> String {
+    let mut digest = Sha256::new();
+    digest.update(rollout_identity.as_bytes());
+    digest.update([0]);
+    digest.update(start_offset.to_be_bytes());
+    digest.update(end_offset.to_be_bytes());
+    format!("codex-{:x}", digest.finalize())
+}
+
+/// Parse one Codex rollout record, updating the current model/session context and
+/// returning an allowlisted row only for event_msg/token_count records.
+fn codex_usage_row_at(
+    record: &Value,
+    context: &mut CodexUsageContext,
+    rollout_identity: &str,
+    start_offset: u64,
+    end_offset: u64,
+) -> Option<Value> {
+    let obj = record.as_object()?;
+    let kind = obj.get("type").and_then(Value::as_str)?;
+    let payload = obj.get("payload").and_then(Value::as_object);
+
+    match kind {
+        "session_meta" => {
+            let payload = payload?;
+            if let Some(id) = bounded_string(payload.get("id"), MAX_ID_BYTES) {
+                context.session_id = Some(id);
+            }
+            context.cwd = bounded_string(payload.get("cwd"), MAX_PATH_BYTES);
+            context.git_branch = session_meta_git_branch(payload);
+            context.session_model = bounded_string(payload.get("model"), MAX_MODEL_BYTES);
+            return None;
+        }
+        "turn_context" => {
+            context.turn_model =
+                payload.and_then(|p| bounded_string(p.get("model"), MAX_MODEL_BYTES));
+            if let Some(model) = payload
+                .and_then(|p| p.get("collaboration_mode"))
+                .and_then(Value::as_object)
+                .and_then(|mode| mode.get("settings"))
+                .and_then(Value::as_object)
+                .and_then(|settings| bounded_string(settings.get("model"), MAX_MODEL_BYTES))
+            {
+                context.collaboration_model = Some(model);
+            }
+            return None;
+        }
+        "collaboration_mode" => {
+            context.collaboration_model = payload
+                .and_then(|p| p.get("settings"))
+                .and_then(Value::as_object)
+                .and_then(|settings| bounded_string(settings.get("model"), MAX_MODEL_BYTES));
+            return None;
+        }
+        "event_msg" => {}
+        _ => return None,
+    }
+
+    let payload = payload?;
+    if payload.get("type").and_then(Value::as_str) == Some("collaboration_mode") {
+        context.collaboration_model = payload
+            .get("settings")
+            .and_then(Value::as_object)
+            .and_then(|settings| bounded_string(settings.get("model"), MAX_MODEL_BYTES));
+        return None;
+    }
+    if payload.get("type").and_then(Value::as_str) != Some("token_count") {
+        return None;
+    }
+
+    let usage = payload
+        .get("info")
+        .and_then(Value::as_object)?
+        .get("last_token_usage")
+        .and_then(Value::as_object)?;
+    let input_tokens = usage
+        .get("input_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let output_tokens = usage
+        .get("output_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+        .saturating_add(
+            usage
+                .get("reasoning_output_tokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+        );
+
+    let mut row = serde_json::Map::new();
+    if let Some(value) = context.session_id.as_ref() {
+        row.insert("sessionId".to_string(), Value::String(value.clone()));
+    }
+    if let Some(value) = bounded_scalar(obj.get("timestamp"), MAX_TIMESTAMP_BYTES) {
+        row.insert("timestamp".to_string(), value);
+    }
+    let event_id = bounded_scalar(obj.get("uuid"), MAX_ID_BYTES).unwrap_or_else(|| {
+        Value::String(stable_codex_event_id(
+            rollout_identity,
+            start_offset,
+            end_offset,
+        ))
+    });
+    row.insert("uuid".to_string(), event_id);
+    if let Some(value) = context.cwd.as_ref() {
+        row.insert("cwd".to_string(), Value::String(value.clone()));
+    }
+    if let Some(value) = context.git_branch.as_ref() {
+        row.insert("gitBranch".to_string(), Value::String(value.clone()));
+    }
+
+    // Reuse the shared server allowlist gate by representing Codex's flat
+    // counters as the same intermediate message shape used by Claude rows.
+    let mut message = serde_json::Map::new();
+    if let Some(model) = context.model() {
+        message.insert("model".to_string(), Value::String(model.to_string()));
+    }
+    let mut normalized_usage = serde_json::Map::new();
+    normalized_usage.insert("input_tokens".to_string(), Value::from(input_tokens));
+    normalized_usage.insert("output_tokens".to_string(), Value::from(output_tokens));
+    if let Some(value) = usage.get("cached_input_tokens").and_then(Value::as_u64) {
+        normalized_usage.insert("cache_read_input_tokens".to_string(), Value::from(value));
+    }
+    message.insert("usage".to_string(), Value::Object(normalized_usage));
+    row.insert("message".to_string(), Value::Object(message));
+    sanitize_row(&Value::Object(row))
+}
+
+#[cfg(test)]
+fn codex_usage_row(record: &Value, context: &mut CodexUsageContext) -> Option<Value> {
+    codex_usage_row_at(record, context, "test-rollout", 0, 0)
+}
+/// Scanner over rollout lines. Each bounded read carries optional usage plus
+/// byte progress and context, without retaining previously parsed records.
+struct CodexRolloutScanner {
+    reader: BufReader<fs::File>,
+    context: CodexUsageContext,
+    rollout_identity: String,
+    line: Vec<u8>,
+}
+
+impl CodexRolloutScanner {
+    fn open(
+        path: &Path,
+        start_offset: u64,
+        filename_session_id: &str,
+        saved_context: Option<CodexUsageContext>,
+    ) -> Result<Self, String> {
+        let file = fs::File::open(path).map_err(|error| error.to_string())?;
+        let has_saved_context = saved_context.is_some();
+        let mut scanner = Self {
+            reader: BufReader::new(file),
+            context: saved_context.unwrap_or_else(|| CodexUsageContext::new(filename_session_id)),
+            rollout_identity: filename_session_id.to_string(),
+            line: Vec::new(),
+        };
+
+        if has_saved_context {
+            scanner
+                .reader
+                .seek(SeekFrom::Start(start_offset))
+                .map_err(|error| error.to_string())?;
+            return Ok(scanner);
+        }
+
+        // Missing-context cursors are reset to zero before opening, so all
+        // context reconstruction happens through bounded reads.
+        Ok(scanner)
+    }
+}
+
+impl CodexRolloutScanner {
+    fn next_bounded(&mut self, max_bytes: u64) -> Option<(Option<Value>, u64, CodexUsageContext)> {
+        if max_bytes == 0 {
+            return None;
+        }
+        let start_offset = self.reader.stream_position().ok()?;
+        let continuing_oversized_line = self.context.discarding_partial_line;
+        let read_limit = if continuing_oversized_line {
+            max_bytes
+        } else {
+            max_bytes.min(MAX_CODEX_LINE_BYTES)
+        };
+        self.line.clear();
+        let bytes_read = self
+            .reader
+            .by_ref()
+            .take(read_limit)
+            .read_until(b'\n', &mut self.line)
+            .ok()?;
+        if bytes_read == 0 {
+            return None;
+        }
+        let end_offset = self.reader.stream_position().ok()?;
+        let reached_eof = self.reader.fill_buf().ok()?.is_empty();
+        let ended_line = self.line.last() == Some(&b'\n') || reached_eof;
+
+        if !ended_line {
+            if continuing_oversized_line || bytes_read as u64 >= MAX_CODEX_LINE_BYTES {
+                self.context.discarding_partial_line = true;
+                return Some((None, end_offset, self.context.clone()));
+            }
+            self.reader.seek(SeekFrom::Start(start_offset)).ok()?;
+            return None;
+        }
+        if continuing_oversized_line {
+            self.context.discarding_partial_line = false;
+            return Some((None, end_offset, self.context.clone()));
+        }
+
+        let parsed = serde_json::from_slice::<Value>(&self.line);
+        if reached_eof && self.line.last() != Some(&b'\n') && parsed.is_err() {
+            // A live rollout may be observed mid-write. Retain the fragment
+            // start so the next sync can parse the completed JSON record.
+            self.reader.seek(SeekFrom::Start(start_offset)).ok()?;
+            return None;
+        }
+        let row = parsed.ok().and_then(|record| {
+            codex_usage_row_at(
+                &record,
+                &mut self.context,
+                &self.rollout_identity,
+                start_offset,
+                end_offset,
+            )
+        });
+        Some((row, end_offset, self.context.clone()))
+    }
+}
+
+/// Per-line tracking used to commit acknowledged or zero-event scan progress.
 struct RowSource {
     file_path: String,
     end_offset: u64,
     mtime: u64,
+    context: Option<CodexUsageContext>,
 }
 
+fn record_source(sources: &mut Vec<RowSource>, source: RowSource) {
+    if let Some(existing) = sources
+        .iter_mut()
+        .find(|existing| existing.file_path == source.file_path)
+    {
+        if source.end_offset > existing.end_offset {
+            *existing = source;
+        }
+    } else {
+        sources.push(source);
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct UsageAck {
+    ok: bool,
+    written: usize,
+    #[serde(default)]
+    deduped: usize,
+    #[serde(default)]
+    skipped: Vec<Value>,
+}
+
+fn usage_ack_is_complete(ack: &UsageAck, event_count: usize) -> bool {
+    ack.ok && ack.skipped.is_empty() && ack.written.checked_add(ack.deduped) == Some(event_count)
+}
 const MAX_BATCH_BYTES: usize = 1_000_000;
+const MAX_CODEX_BATCHES_PER_SYNC: usize = 4;
+const MAX_CODEX_SCAN_BYTES_PER_SYNC: u64 = 4 * 1024 * 1024;
+const MAX_CODEX_LINE_BYTES: u64 = 64 * 1024;
+
+fn per_rollout_scan_budget(pending_count: usize) -> u64 {
+    if pending_count == 0 {
+        return 0;
+    }
+    (MAX_CODEX_SCAN_BYTES_PER_SYNC / pending_count as u64)
+        .clamp(MAX_CODEX_LINE_BYTES, MAX_CODEX_SCAN_BYTES_PER_SYNC)
+}
+
+fn rollout_batch_allowance(index: usize, pending_count: usize) -> usize {
+    if pending_count == 0 {
+        return 0;
+    }
+    if pending_count > MAX_CODEX_BATCHES_PER_SYNC {
+        return 1;
+    }
+    let base = MAX_CODEX_BATCHES_PER_SYNC / pending_count;
+    base + usize::from(index < MAX_CODEX_BATCHES_PER_SYNC % pending_count)
+}
+
+fn rotate_rollouts_to_saved_start(
+    rollouts: &mut [(String, RolloutFile)],
+    saved_start: Option<&str>,
+) {
+    let Some(saved_start) = saved_start else {
+        return;
+    };
+    if let Some(index) = rollouts
+        .iter()
+        .position(|(_, rollout)| normalize_cursor_file_key(&rollout.path) == saved_start)
+    {
+        rollouts.rotate_left(index);
+    }
+}
 
 // ── Main entry point ──────────────────────────────────────────────────────────
 
@@ -964,19 +1404,20 @@ pub async fn send_telemetry_if_opted_in<R: tauri::Runtime>(
     let api_url = resolve_vault_api_url()?;
     let vault = VaultClient::new(&api_url, jwt);
 
-    // 2. Opt-in check
+    // 2. Opt-in check. Resolve server-first with the account-bound local fallback.
     if !resolve_telemetry_enabled(&vault).await {
         return Ok(());
     }
 
-    // 3. Load cursor
+    // 3. Load cursor and schedule Codex rollouts only after opt-in succeeds.
+    let home = telemetry_home_dir().ok_or("home dir unavailable")?;
     let cursor = load_cursor();
     let loaded_files = cursor.files.clone();
+    let codex_candidates = codex_candidate_entries(&home.join(".codex"), &cursor);
     let mut newly_committed: HashMap<String, CursorEntry> = HashMap::new();
     let mut rotation_resets: HashMap<String, CursorEntry> = HashMap::new();
 
     // 4. Enumerate ~/.claude/projects/**/*.jsonl
-    let home = paths::home_dir().ok_or("home dir unavailable")?;
     let pattern = format!("{}/.claude/projects/**/*.jsonl", home.display());
     let file_paths: Vec<_> = match glob::glob(&pattern) {
         Ok(g) => g.flatten().filter(|p| p.is_file()).collect(),
@@ -988,18 +1429,9 @@ pub async fn send_telemetry_if_opted_in<R: tauri::Runtime>(
 
     let mut batch_events: Vec<Value> = Vec::new();
     let mut batch_sources: Vec<RowSource> = Vec::new();
-    // Set when a withdrawal is detected mid-cycle so both the scan and the final
-    // flush stop emitting (finding #6).
-    let mut withdrawn_mid_cycle = false;
-    // Whether at least one batch has already been flushed this cycle. A cycle can
-    // span many 1 MB batches; once we have started emitting, the final flush must
-    // re-check consent so a withdrawal that lands part-way through does not get
-    // one more batch out (finding #6). A single-batch cycle needs no re-check —
-    // the top-of-cycle consent check already governs it — so we do not pay an
-    // extra GET on the common path.
-    let mut flushed_once = false;
+    let mut upload_failed = false;
 
-    for file_path in &file_paths {
+    'claude_files: for file_path in &file_paths {
         let path_str = normalize_cursor_file_key(file_path);
 
         let metadata = match fs::metadata(file_path) {
@@ -1022,6 +1454,7 @@ pub async fn send_telemetry_if_opted_in<R: tauri::Runtime>(
                 CursorEntry {
                     offset: 0,
                     mtime: current_mtime,
+                    context: None,
                 },
             );
         }
@@ -1078,65 +1511,212 @@ pub async fn send_telemetry_if_opted_in<R: tauri::Runtime>(
                 None => continue,
             };
 
+            if !single_event_fits(&machine_id, &installer_version, &sanitized) {
+                record_source(
+                    &mut batch_sources,
+                    RowSource {
+                        file_path: path_str.clone(),
+                        end_offset: line_end_offsets[i],
+                        mtime: current_mtime,
+                        context: None,
+                    },
+                );
+                continue;
+            }
+
             // Check if adding this row would exceed 1 MB
             if !batch_events.is_empty() {
                 let candidate =
                     build_wire_payload(&machine_id, &installer_version, &batch_events, &sanitized);
                 if candidate.len() > MAX_BATCH_BYTES {
-                    // A collection cycle can span many batches. Re-check consent
-                    // before EACH flush so a withdrawal made mid-cycle halts
-                    // emission at once (finding #6): the initial check at the top
-                    // is not enough — without this, an in-flight cycle keeps
-                    // flushing batches after the user has asked to stop. Drop the
-                    // pending batch (do not send it) and stop scanning; the
-                    // cursor is not advanced for the un-sent rows, so they are
-                    // simply re-evaluated (and skipped) next cycle.
-                    if !resolve_telemetry_enabled(&vault).await {
-                        batch_events.clear();
-                        batch_sources.clear();
-                        withdrawn_mid_cycle = true;
-                        break;
-                    }
                     // Flush current batch
-                    flush_batch(
+                    if !flush_batch(
                         &vault,
+                        &api_url,
+                        jwt,
                         &machine_id,
                         &installer_version,
                         &mut batch_events,
                         &mut batch_sources,
                         &mut newly_committed,
                     )
-                    .await;
-                    flushed_once = true;
+                    .await
+                    {
+                        upload_failed = true;
+                        break 'claude_files;
+                    }
                 }
             }
 
             batch_events.push(sanitized);
-            batch_sources.push(RowSource {
-                file_path: path_str.clone(),
-                end_offset: line_end_offsets[i],
-                mtime: current_mtime,
-            });
-        }
-        if withdrawn_mid_cycle {
-            break;
+            record_source(
+                &mut batch_sources,
+                RowSource {
+                    file_path: path_str.clone(),
+                    end_offset: line_end_offsets[i],
+                    mtime: current_mtime,
+                    context: None,
+                },
+            );
         }
     }
 
-    // Flush remaining batch. If we already emitted at least one batch this
-    // cycle, re-check consent first so a withdrawal that landed part-way through
-    // a multi-batch cycle halts the final flush too (finding #6). A single-batch
-    // cycle skips the re-check — the top-of-cycle check already governs it, so
-    // the common path pays no extra GET.
-    if !batch_events.is_empty() {
-        let halt =
-            withdrawn_mid_cycle || (flushed_once && !resolve_telemetry_enabled(&vault).await);
-        if halt {
-            batch_events.clear();
-            batch_sources.clear();
-        } else {
-            flush_batch(
+    // Stream Codex token-count events through the same size cap and commit
+    // tracking as Claude rows. Enumeration includes every rollout regardless of
+    // originator or thread source.
+    let mut codex_batches_sent = 0usize;
+    let mut codex_bytes_scanned = 0u64;
+    let mut codex_next_rollout = cursor.codex_next_rollout.clone();
+    if !upload_failed {
+        let rollouts = codex_rollouts_freshest_first(&home.join(".codex"));
+        let mut pending_rollouts: Vec<_> = rollouts
+            .into_iter()
+            .filter(|(_, rollout)| {
+                let path = normalize_cursor_file_key(&rollout.path);
+                codex_candidates
+                    .get(&path)
+                    .is_some_and(|entry| entry.offset < rollout.size)
+            })
+            .collect();
+        rotate_rollouts_to_saved_start(&mut pending_rollouts, cursor.codex_next_rollout.as_deref());
+        let pending_count = pending_rollouts.len();
+        let pending_paths: Vec<_> = pending_rollouts
+            .iter()
+            .map(|(_, rollout)| normalize_cursor_file_key(&rollout.path))
+            .collect();
+        let per_rollout_scan_budget = per_rollout_scan_budget(pending_count);
+        let mut hit_sync_limit = false;
+        codex_next_rollout = None;
+        'codex_files: for (rollout_index, (filename_session_id, rollout)) in
+            pending_rollouts.into_iter().enumerate()
+        {
+            let path_str = normalize_cursor_file_key(&rollout.path);
+            let Some(candidate) = codex_candidates.get(&path_str) else {
+                continue;
+            };
+            if candidate.offset >= rollout.size {
+                continue;
+            }
+
+            let Ok(mut scanner) = CodexRolloutScanner::open(
+                &rollout.path,
+                candidate.offset,
+                &filename_session_id,
+                candidate.context.clone(),
+            ) else {
+                continue;
+            };
+            let mut previous_offset = candidate.offset;
+
+            let mut rollout_bytes_scanned = 0u64;
+            let mut rollout_batches_sent = 0usize;
+            let rollout_batch_allowance = rollout_batch_allowance(rollout_index, pending_count);
+            loop {
+                let global_remaining =
+                    MAX_CODEX_SCAN_BYTES_PER_SYNC.saturating_sub(codex_bytes_scanned);
+                if global_remaining == 0 {
+                    hit_sync_limit = true;
+                    codex_next_rollout = pending_paths.get(rollout_index).cloned();
+                    break 'codex_files;
+                }
+                let file_remaining = per_rollout_scan_budget.saturating_sub(rollout_bytes_scanned);
+                if file_remaining == 0 {
+                    break;
+                }
+                let remaining = global_remaining.min(file_remaining);
+                let Some((sanitized, end_offset, context)) = scanner.next_bounded(remaining) else {
+                    if global_remaining < MAX_CODEX_LINE_BYTES && previous_offset < rollout.size {
+                        hit_sync_limit = true;
+                        codex_next_rollout = pending_paths.get(rollout_index).cloned();
+                        break 'codex_files;
+                    }
+                    break;
+                };
+                let scanned = end_offset.saturating_sub(previous_offset);
+                codex_bytes_scanned = codex_bytes_scanned.saturating_add(scanned);
+                rollout_bytes_scanned = rollout_bytes_scanned.saturating_add(scanned);
+                previous_offset = end_offset;
+
+                if let Some(sanitized) = sanitized {
+                    if !batch_events.is_empty() {
+                        let candidate_payload = build_wire_payload(
+                            &machine_id,
+                            &installer_version,
+                            &batch_events,
+                            &sanitized,
+                        );
+                        if candidate_payload.len() > MAX_BATCH_BYTES {
+                            let batch_contains_codex =
+                                batch_sources.iter().any(|source| source.context.is_some());
+                            if !flush_batch(
+                                &vault,
+                                &api_url,
+                                jwt,
+                                &machine_id,
+                                &installer_version,
+                                &mut batch_events,
+                                &mut batch_sources,
+                                &mut newly_committed,
+                            )
+                            .await
+                            {
+                                upload_failed = true;
+                                break 'codex_files;
+                            }
+                            if batch_contains_codex {
+                                codex_batches_sent += 1;
+                                rollout_batches_sent += 1;
+                                if codex_batches_sent >= MAX_CODEX_BATCHES_PER_SYNC {
+                                    hit_sync_limit = true;
+                                    codex_next_rollout = pending_paths
+                                        .get((rollout_index + 1) % pending_count)
+                                        .cloned();
+                                    break 'codex_files;
+                                }
+                                if rollout_batches_sent >= rollout_batch_allowance {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    batch_events.push(sanitized);
+                }
+
+                record_source(
+                    &mut batch_sources,
+                    RowSource {
+                        file_path: path_str.clone(),
+                        end_offset,
+                        mtime: system_time_secs(rollout.mtime),
+                        context: Some(context),
+                    },
+                );
+
+                if codex_bytes_scanned >= MAX_CODEX_SCAN_BYTES_PER_SYNC {
+                    hit_sync_limit = true;
+                    codex_next_rollout = pending_paths
+                        .get((rollout_index + 1) % pending_count)
+                        .cloned();
+                    break 'codex_files;
+                }
+                if rollout_bytes_scanned >= per_rollout_scan_budget {
+                    break;
+                }
+            }
+        }
+        if !hit_sync_limit && !upload_failed {
+            codex_next_rollout = None;
+        }
+    }
+
+    // POST pending emitted rows before committing their scanned-line progress.
+    // A zero-event scan slice can advance locally without making a request.
+    if !upload_failed {
+        if !batch_events.is_empty() {
+            let _ = flush_batch(
                 &vault,
+                &api_url,
+                jwt,
                 &machine_id,
                 &installer_version,
                 &mut batch_events,
@@ -1144,11 +1724,16 @@ pub async fn send_telemetry_if_opted_in<R: tauri::Runtime>(
                 &mut newly_committed,
             )
             .await;
+        } else if !batch_sources.is_empty() {
+            commit_acknowledged_sources(&batch_sources, &mut newly_committed);
         }
     }
 
-    // Build final cursor: loaded < rotation_resets < newly_committed
+    // Build final cursor: loaded < Codex candidates < rotation resets < commits
     let mut final_files = loaded_files;
+    for (fp, entry) in codex_candidates {
+        final_files.insert(fp, entry);
+    }
     for (fp, entry) in rotation_resets {
         final_files.insert(fp, entry);
     }
@@ -1160,6 +1745,7 @@ pub async fn send_telemetry_if_opted_in<R: tauri::Runtime>(
     let final_cursor = TelemetryCursor {
         version: "1".to_string(),
         files: final_files,
+        codex_next_rollout,
     };
     save_cursor(&final_cursor)?;
 
@@ -1183,14 +1769,52 @@ fn build_wire_payload(
     serde_json::to_vec(&payload).unwrap_or_default()
 }
 
+fn single_event_fits(machine_id: &str, installer_version: &str, event: &Value) -> bool {
+    build_wire_payload(machine_id, installer_version, &[], event).len() <= MAX_BATCH_BYTES
+}
+
+fn commit_acknowledged_sources(
+    sources: &[RowSource],
+    newly_committed: &mut HashMap<String, CursorEntry>,
+) {
+    let mut max_per_file: HashMap<String, CursorEntry> = HashMap::new();
+    for src in sources {
+        let entry = CursorEntry {
+            offset: src.end_offset,
+            mtime: src.mtime,
+            context: src.context.clone(),
+        };
+        max_per_file
+            .entry(src.file_path.clone())
+            .and_modify(|current| {
+                if entry.offset > current.offset {
+                    *current = entry.clone();
+                }
+            })
+            .or_insert(entry);
+    }
+    newly_committed.extend(max_per_file);
+}
+
 async fn flush_batch(
     vault: &VaultClient,
+    api_url: &str,
+    jwt: &str,
     machine_id: &str,
     installer_version: &str,
     batch_events: &mut Vec<Value>,
     batch_sources: &mut Vec<RowSource>,
     newly_committed: &mut HashMap<String, CursorEntry>,
-) {
+) -> bool {
+    // Consent is checked at the request boundary, including the first and only
+    // batch in a cycle. A withdrawal while files are being scanned must prevent
+    // the pending payload from ever leaving the machine.
+    if !resolve_telemetry_enabled(vault).await {
+        batch_events.clear();
+        batch_sources.clear();
+        return false;
+    }
+    let event_count = batch_events.len();
     let batch = UsageBatch {
         machine_id: machine_id.to_string(),
         installer_version: installer_version.to_string(),
@@ -1198,29 +1822,39 @@ async fn flush_batch(
     };
     let sources = std::mem::take(batch_sources);
 
-    if vault.post_usage(&batch).await.is_ok() {
-        // Advance cursor to max end_offset per file in this batch
-        let mut max_per_file: HashMap<String, (u64, u64)> = HashMap::new();
-        for src in &sources {
-            max_per_file
-                .entry(src.file_path.clone())
-                .and_modify(|(_, off)| *off = (*off).max(src.end_offset))
-                .or_insert((src.mtime, src.end_offset));
-        }
-        for (fp, (mtime, offset)) in max_per_file {
-            newly_committed.insert(fp, CursorEntry { offset, mtime });
-        }
+    let acknowledged = match build_client()
+        .post(format!("{}/v1/usage", api_url.trim_end_matches('/')))
+        .bearer_auth(jwt)
+        .json(&batch)
+        .send()
+        .await
+    {
+        Ok(response) if response.status().is_success() => response
+            .json::<UsageAck>()
+            .await
+            .ok()
+            .map(|ack| usage_ack_is_complete(&ack, event_count))
+            .unwrap_or(false),
+        _ => false,
+    };
+
+    if acknowledged {
+        commit_acknowledged_sources(&sources, newly_committed);
+        true
+    } else {
+        // Any partial/malformed acknowledgment retains the whole source range.
+        // Continuing could acknowledge a later batch from the same file and
+        // advance its cursor across this unacknowledged gap.
+        false
     }
-    // On non-200: batch_events and batch_sources are already cleared (mem::take),
-    // and we do NOT advance newly_committed for this batch's files.
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-mod tests {
+mod codex_telemetry_tests {
     use super::*;
-    use crate::util::test_support::ENV_MUTEX;
+    use crate::util::test_support::{scoped_home, ENV_MUTEX};
     use serde_json::json;
     use std::fs;
     use tempfile::TempDir;
@@ -1228,6 +1862,15 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     // ── Test helpers ─────────────────────────────────────────────────────────
+    fn complete_ack(request: &wiremock::Request) -> ResponseTemplate {
+        let event_count = serde_json::from_slice::<Value>(&request.body)
+            .ok()
+            .and_then(|body| body.get("events").and_then(Value::as_array).map(Vec::len))
+            .unwrap_or(0);
+        ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true, "written": event_count, "deduped": 0, "skipped": []
+        }))
+    }
 
     /// Create a temp HOME with ~/.hq/ and ~/.claude/projects/ structure.
     fn setup_home() -> TempDir {
@@ -1384,7 +2027,7 @@ mod tests {
         write_tokens_for_subject(home.path(), "sub-a");
         std::env::set_var("HOME", home.path());
 
-        let answer = read_local_telemetry_enabled();
+        let answer = read_local_telemetry_enabled(Some("sub-a"));
 
         std::env::remove_var("HOME");
         assert_eq!(
@@ -1406,10 +2049,13 @@ mod tests {
         write_tokens_for_subject(home.path(), "sub-a");
         std::env::set_var("HOME", home.path());
 
-        let answer = read_local_telemetry_enabled();
+        let answer = read_local_telemetry_enabled(Some("sub-a"));
 
         std::env::remove_var("HOME");
-        assert_eq!(answer, None, "a bare flag without provenance is not consent");
+        assert_eq!(
+            answer, None,
+            "a bare flag without provenance is not consent"
+        );
     }
 
     #[test]
@@ -1426,14 +2072,41 @@ mod tests {
 
         // Account A: sees its own answer.
         write_tokens_for_subject(home.path(), "sub-a");
-        let a = read_local_telemetry_enabled();
+        let a = read_local_telemetry_enabled(Some("sub-a"));
         // Account B: the cached answer belongs to A, so B gets no answer.
         write_tokens_for_subject(home.path(), "sub-b");
-        let b = read_local_telemetry_enabled();
+        let b = read_local_telemetry_enabled(Some("sub-b"));
 
         std::env::remove_var("HOME");
         assert_eq!(a, Some(true), "account A reads its own answer");
         assert_eq!(b, None, "account B must not inherit account A's answer");
+    }
+    #[tokio::test]
+    async fn offline_fallback_uses_in_flight_caller_after_account_switch() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/usage/opt-in"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("offline"))
+            .mount(&server)
+            .await;
+
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let home = setup_home();
+        write_menubar(
+            home.path(),
+            r#"{"telemetryEnabled":true,"telemetryOptInAnsweredAt":"2026-07-27T10:00:00Z","telemetryOptInSub":"sub-a"}"#,
+        );
+        write_tokens_for_subject(home.path(), "sub-b");
+        std::env::set_var("HOME", home.path());
+
+        let vault_for_in_flight_a = VaultClient::new(server.uri(), id_token_for_subject("sub-a"));
+        let enabled = resolve_telemetry_enabled(&vault_for_in_flight_a).await;
+
+        std::env::remove_var("HOME");
+        assert!(
+            enabled,
+            "account B's token file must not replace in-flight account A"
+        );
     }
 
     #[tokio::test]
@@ -1716,16 +2389,16 @@ mod tests {
     #[tokio::test]
     async fn test_withdrawal_halts_emission_on_next_cycle_without_restart() {
         let server = MockServer::start().await;
-        // Cycle 1: opted in.
+        // Cycle 1: opted in at cycle start and again immediately before POST.
         Mock::given(method("GET"))
             .and(path("/v1/usage/opt-in"))
             .respond_with(ResponseTemplate::new(200).set_body_json(&json!({"enabled": true})))
-            .up_to_n_times(1)
+            .up_to_n_times(2)
             .with_priority(1)
             .mount(&server)
             .await;
         // Cycle 2 onward: withdrawn. A lower priority (higher number) makes this
-        // the fallback once the one-shot cycle-1 mock is exhausted.
+        // the fallback once both cycle-1 checks are exhausted.
         Mock::given(method("GET"))
             .and(path("/v1/usage/opt-in"))
             .respond_with(ResponseTemplate::new(200).set_body_json(&json!({"enabled": false})))
@@ -1734,7 +2407,7 @@ mod tests {
             .await;
         Mock::given(method("POST"))
             .and(path("/v1/usage"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .respond_with(complete_ack)
             .mount(&server)
             .await;
 
@@ -1801,7 +2474,7 @@ mod tests {
             .await;
         Mock::given(method("POST"))
             .and(path("/v1/usage"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .respond_with(complete_ack)
             .mount(&server)
             .await;
 
@@ -1858,7 +2531,7 @@ mod tests {
             .await;
         Mock::given(method("POST"))
             .and(path("/v1/usage"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .respond_with(complete_ack)
             .mount(&server)
             .await;
 
@@ -1935,7 +2608,7 @@ mod tests {
             .await;
         Mock::given(method("POST"))
             .and(path("/v1/usage"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .respond_with(complete_ack)
             .mount(&server)
             .await;
 
@@ -1943,11 +2616,12 @@ mod tests {
         let home = setup_home();
         write_menubar(home.path(), r#"{"machineId":"mid-d"}"#);
 
-        // Generate ~50 rows with a large gitBranch so sanitized rows are ~25 KB each
-        // 50 * 25 KB ≈ 1.25 MB > 1 MB → should produce ≥2 batches
-        let long_branch = "x".repeat(25_000);
+        // Each row carries two valid maximum-size allowlisted fields. Their
+        // aggregate wire payload exceeds 1 MB without relying on rejected data.
+        const EVENT_COUNT: usize = 150;
+        let bounded_path = "x".repeat(MAX_PATH_BYTES);
         let mut lines = Vec::new();
-        for i in 0..50usize {
+        for i in 0..EVENT_COUNT {
             let row = json!({
                 "type": "user",
                 "timestamp": format!("2026-04-25T10:00:{:02}Z", i % 60),
@@ -1956,15 +2630,15 @@ mod tests {
                 "parentUuid": null,
                 "userType": "human",
                 "entrypoint": "cli",
-                "cwd": "/Users/x",
-                "gitBranch": long_branch,
+                "cwd": bounded_path.clone(),
+                "gitBranch": bounded_path.clone(),
                 "version": "1.0",
                 "message": {"role": "user", "content": [{"type": "text", "text": "hi"}], "id": "m"}
             });
             lines.push(serde_json::to_string(&row).unwrap());
         }
         let lines_str: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
-        write_jsonl(home.path(), "proj", "large.jsonl", &lines_str);
+        let path = write_jsonl(home.path(), "proj", "large.jsonl", &lines_str);
 
         std::env::set_var("HOME", home.path());
         std::env::set_var("HQ_VAULT_API_URL", server.uri());
@@ -1988,12 +2662,25 @@ mod tests {
             posts.len()
         );
 
-        // Last batch must be < 1 MB
-        let last_post = posts.last().unwrap();
-        assert!(
-            last_post.body.len() < MAX_BATCH_BYTES,
-            "last batch must be < 1 MB, got {} bytes",
-            last_post.body.len()
+        let submitted_events: usize = posts
+            .iter()
+            .map(|post| {
+                assert!(
+                    post.body.len() <= MAX_BATCH_BYTES,
+                    "every batch must be at most 1 MB, got {} bytes",
+                    post.body.len()
+                );
+                serde_json::from_slice::<Value>(&post.body).unwrap()["events"]
+                    .as_array()
+                    .unwrap()
+                    .len()
+            })
+            .sum();
+        assert_eq!(submitted_events, EVENT_COUNT);
+        let cursor = read_cursor(home.path());
+        assert_eq!(
+            cursor.files[&normalize_cursor_file_key(&path)].offset,
+            fs::metadata(path).unwrap().len()
         );
     }
 
@@ -2028,7 +2715,7 @@ mod tests {
             .await;
         Mock::given(method("POST"))
             .and(path("/v1/usage"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .respond_with(complete_ack)
             .mount(&server)
             .await;
 
@@ -2036,11 +2723,11 @@ mod tests {
         let home = setup_home();
         write_menubar(home.path(), r#"{"machineId":"mid-midwithdraw"}"#);
 
-        // Enough rows to force multiple 1 MB batches (same shape as the rollover
-        // test): ~50 rows * ~25 KB ≈ 1.25 MB → ≥2 batches.
-        let long_branch = "x".repeat(25_000);
+        // Use the same valid bounded aggregate as the rollover test so this
+        // genuinely reaches a second flush.
+        let bounded_path = "x".repeat(MAX_PATH_BYTES);
         let mut lines = Vec::new();
-        for i in 0..50usize {
+        for i in 0..150usize {
             let row = json!({
                 "type": "user",
                 "timestamp": format!("2026-04-25T10:00:{:02}Z", i % 60),
@@ -2049,8 +2736,8 @@ mod tests {
                 "parentUuid": null,
                 "userType": "human",
                 "entrypoint": "cli",
-                "cwd": "/Users/x",
-                "gitBranch": long_branch,
+                "cwd": bounded_path.clone(),
+                "gitBranch": bounded_path.clone(),
                 "version": "1.0",
                 "message": {"role": "user", "content": [{"type": "text", "text": "hi"}], "id": "m"}
             });
@@ -2084,6 +2771,54 @@ mod tests {
             "a mid-cycle withdrawal must halt further batches — the cycle emits \
              what was in flight, then stops the moment the server records the \
              withdrawal"
+        );
+    }
+
+    #[tokio::test]
+    async fn withdrawal_during_single_batch_scan_prevents_first_post() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/usage/opt-in"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"enabled": true})))
+            .up_to_n_times(1)
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1/usage/opt-in"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"enabled": false})))
+            .with_priority(2)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/usage"))
+            .respond_with(complete_ack)
+            .mount(&server)
+            .await;
+
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let home = setup_home();
+        write_menubar(home.path(), r#"{"machineId":"mid-single-withdraw"}"#);
+        write_jsonl(home.path(), "proj", "single.jsonl", &[USER_ROW]);
+        std::env::set_var("HOME", home.path());
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+
+        let handle = make_app_handle();
+        send_telemetry_if_opted_in(&handle, "/hq", "tok")
+            .await
+            .unwrap();
+
+        std::env::remove_var("HOME");
+        std::env::remove_var("HQ_VAULT_API_URL");
+
+        let requests = server.received_requests().await.unwrap();
+        let usage_posts = requests
+            .iter()
+            .filter(|request| request.method == wiremock::http::Method::POST)
+            .count();
+        assert_eq!(
+            usage_posts, 0,
+            "withdrawal before the first POST must stop upload"
         );
     }
 
@@ -2157,7 +2892,7 @@ mod tests {
             .await;
         Mock::given(method("POST"))
             .and(path("/v1/usage"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .respond_with(complete_ack)
             .mount(&server)
             .await;
 
@@ -2198,7 +2933,7 @@ mod tests {
             .await;
         Mock::given(method("POST"))
             .and(path("/v1/usage"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .respond_with(complete_ack)
             .mount(&server)
             .await;
 
@@ -2259,7 +2994,7 @@ mod tests {
             .await;
         Mock::given(method("POST"))
             .and(path("/v1/usage"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .respond_with(complete_ack)
             .mount(&server)
             .await;
 
@@ -2334,7 +3069,7 @@ mod tests {
             .await;
         Mock::given(method("POST"))
             .and(path("/v1/usage"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .respond_with(complete_ack)
             .mount(&server)
             .await;
 
@@ -2354,7 +3089,8 @@ mod tests {
         std::env::set_var("HQ_VAULT_API_URL", server.uri());
 
         let handle = make_app_handle();
-        let result = send_telemetry_if_opted_in(&handle, "/hq", "tok").await;
+        let token = id_token_for_subject("sub-i1");
+        let result = send_telemetry_if_opted_in(&handle, "/hq", &token).await;
 
         std::env::remove_var("HOME");
         std::env::remove_var("HQ_VAULT_API_URL");
@@ -2393,7 +3129,8 @@ mod tests {
         std::env::set_var("HQ_VAULT_API_URL", server.uri());
 
         let handle = make_app_handle();
-        let result = send_telemetry_if_opted_in(&handle, "/hq", "tok").await;
+        let token = id_token_for_subject("sub-i0");
+        let result = send_telemetry_if_opted_in(&handle, "/hq", &token).await;
 
         std::env::remove_var("HOME");
         std::env::remove_var("HQ_VAULT_API_URL");
@@ -2434,7 +3171,8 @@ mod tests {
         std::env::set_var("HQ_VAULT_API_URL", server.uri());
 
         let handle = make_app_handle();
-        let result = send_telemetry_if_opted_in(&handle, "/hq", "tok").await;
+        let token = id_token_for_subject("sub-i2");
+        let result = send_telemetry_if_opted_in(&handle, "/hq", &token).await;
 
         std::env::remove_var("HOME");
         std::env::remove_var("HQ_VAULT_API_URL");
@@ -2649,7 +3387,10 @@ mod tests {
         // Missing or unparseable → fail SAFE (never clobber).
         assert!(!local_answer_is_newer(None, Some("2026-07-27T10:00:00Z")));
         assert!(!local_answer_is_newer(Some("2026-07-27T10:00:00Z"), None));
-        assert!(!local_answer_is_newer(Some("garbage"), Some("2026-07-27T10:00:00Z")));
+        assert!(!local_answer_is_newer(
+            Some("garbage"),
+            Some("2026-07-27T10:00:00Z")
+        ));
     }
 
     /// Mount a GET `/v1/usage/opt-in` returning `get_body`, and a POST
@@ -2791,5 +3532,1264 @@ mod tests {
         assert_eq!(posts[0]["onlyIfUnset"], json!(true));
         assert_eq!(posts[0]["surface"], json!("onboarding"));
         assert_eq!(posts[0]["consentVersion"], json!(1));
+    }
+    fn write_codex_rollout(home: &std::path::Path, contents: &str) -> std::path::PathBuf {
+        let dir = home.join(".codex/sessions/2026/07/23");
+        fs::create_dir_all(&dir).unwrap();
+        let path =
+            dir.join("rollout-2026-07-23T10-00-00-019de12c-d83e-78c2-9bb3-cbb8146965e4.jsonl");
+        fs::write(&path, contents).unwrap();
+        path
+    }
+
+    const MULTI_DATE_CODEX_ROLLOUT: &str = concat!(
+        "{\"type\":\"session_meta\",\"payload\":{\"id\":\"fixture-session\",\"cwd\":\"/repo\",\"git\":{\"branch\":\"feature/telemetry\"}}}\n",
+        "{\"type\":\"turn_context\",\"payload\":{\"model\":\"gpt-fixture\"}}\n",
+        "{\"timestamp\":\"2026-07-28T23:59:59Z\",\"uuid\":\"fixture-1\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"last_token_usage\":{\"input_tokens\":10,\"output_tokens\":3,\"reasoning_output_tokens\":2,\"cached_input_tokens\":4},\"total_token_usage\":{\"input_tokens\":10,\"output_tokens\":3,\"reasoning_output_tokens\":2,\"cached_input_tokens\":4}}}}\n",
+        "{\"type\":\"event_msg\",\"payload\":{\"type\":\"base_instructions\",\"text\":\"sensitive instructions must stay local\"}}\n",
+        "{\"timestamp\":\"2026-07-29T00:00:01Z\",\"uuid\":\"fixture-2\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"last_token_usage\":{\"input_tokens\":7,\"output_tokens\":5,\"reasoning_output_tokens\":1,\"cached_input_tokens\":2},\"total_token_usage\":{\"input_tokens\":17,\"output_tokens\":8,\"reasoning_output_tokens\":3,\"cached_input_tokens\":6}}}}\n",
+        "{\"type\":\"function_call_output\",\"payload\":{\"output\":\"sensitive tool output must stay local\"}}\n",
+        "{\"timestamp\":\"2026-07-29T00:00:02Z\",\"uuid\":\"fixture-3\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"last_token_usage\":{\"input_tokens\":2,\"output_tokens\":1,\"reasoning_output_tokens\":4,\"cached_input_tokens\":1},\"total_token_usage\":{\"input_tokens\":19,\"output_tokens\":9,\"reasoning_output_tokens\":7,\"cached_input_tokens\":7}}}}\n",
+    );
+
+    fn codex_fixture(model: &str, uuid: &str) -> String {
+        [
+            json!({"type":"session_meta","payload":{"id":"codex-session","cwd":"/repo","git_branch":"main"}}),
+            json!({"type":"turn_context","payload":{"model":model}}),
+            json!({"timestamp":uuid,"uuid":uuid,"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":2,"output_tokens":3}}}}),
+        ]
+        .into_iter().map(|row| row.to_string()).collect::<Vec<_>>().join("\n") + "\n"
+    }
+
+    async fn post_bodies(server: &MockServer) -> Vec<Value> {
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|request| request.method == wiremock::http::Method::POST)
+            .map(|request| serde_json::from_slice(&request.body).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn missing_codex_uuid_is_stable_across_replay() {
+        let record = json!({
+            "timestamp": "2026-07-29T10:00:00Z",
+            "type": "event_msg",
+            "payload": {"type": "token_count", "info": {"last_token_usage": {
+                "input_tokens": 2, "output_tokens": 3
+            }}}
+        });
+        let mut first_context = CodexUsageContext::new("rollout-a");
+        let first = codex_usage_row_at(&record, &mut first_context, "rollout-a", 120, 240).unwrap();
+        let mut replay_context = CodexUsageContext::new("rollout-a");
+        let replay =
+            codex_usage_row_at(&record, &mut replay_context, "rollout-a", 120, 240).unwrap();
+        let mut other_line_context = CodexUsageContext::new("rollout-a");
+        let other_line =
+            codex_usage_row_at(&record, &mut other_line_context, "rollout-a", 241, 361).unwrap();
+
+        assert_eq!(first["uuid"], replay["uuid"]);
+        assert_ne!(first["uuid"], other_line["uuid"]);
+        assert!(first["uuid"].as_str().unwrap().starts_with("codex-"));
+    }
+
+    #[test]
+    fn unterminated_eof_fragment_retries_after_append_completion() {
+        use std::io::Write;
+
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("rollout.jsonl");
+        let complete = json!({
+            "timestamp": "final",
+            "type": "event_msg",
+            "payload": {"type": "token_count", "info": {"last_token_usage": {
+                "input_tokens": 1, "output_tokens": 2
+            }}}
+        })
+        .to_string();
+        let fragment = &complete[..complete.len() - 1];
+        fs::write(&path, fragment).unwrap();
+        let saved = CodexUsageContext {
+            turn_model: Some("fragment-model".to_string()),
+            ..CodexUsageContext::default()
+        };
+
+        let mut first =
+            CodexRolloutScanner::open(&path, 0, "rollout", Some(saved.clone())).unwrap();
+        assert!(first.next_bounded(u64::MAX).is_none());
+
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(b"}")
+            .unwrap();
+        let mut retry = CodexRolloutScanner::open(&path, 0, "rollout", Some(saved)).unwrap();
+        let (row, offset, _) = retry.next_bounded(u64::MAX).unwrap();
+        assert_eq!(row.unwrap()["model"], "fragment-model");
+        assert_eq!(offset, complete.len() as u64);
+    }
+
+    #[test]
+    fn ordinary_line_crossing_scan_slice_rewinds_and_emits_next_cycle() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("rollout.jsonl");
+        let record = json!({
+            "timestamp": "2026-07-29T10:00:00Z",
+            "uuid": "slice-boundary-event",
+            "type": "event_msg",
+            "payload": {"type": "token_count", "info": {"last_token_usage": {
+                "input_tokens": 1, "output_tokens": 2
+            }}}
+        })
+        .to_string()
+            + "\n";
+        fs::write(&path, &record).unwrap();
+        let saved = CodexUsageContext {
+            turn_model: Some("slice-model".to_string()),
+            ..CodexUsageContext::default()
+        };
+
+        let mut first =
+            CodexRolloutScanner::open(&path, 0, "rollout", Some(saved.clone())).unwrap();
+        assert!(first.next_bounded((record.len() / 2) as u64).is_none());
+        assert_eq!(first.reader.stream_position().unwrap(), 0);
+
+        let mut next_cycle = CodexRolloutScanner::open(&path, 0, "rollout", Some(saved)).unwrap();
+        let (row, offset, context) = next_cycle.next_bounded(record.len() as u64).unwrap();
+        let row = row.unwrap();
+        assert_eq!(row["uuid"], "slice-boundary-event");
+        assert_eq!(row["model"], "slice-model");
+        assert_eq!(offset, record.len() as u64);
+        assert!(!context.discarding_partial_line);
+    }
+
+    #[test]
+    fn sanitizer_rejects_nested_and_unbounded_scalar_metadata() {
+        let secret = "private-prompt-fragment";
+        let row = sanitize_row(&json!({
+            "timestamp": {"nested": secret},
+            "uuid": [secret],
+            "sessionId": secret.repeat(MAX_ID_BYTES),
+            "cwd": {"nested": secret},
+            "gitBranch": secret.repeat(MAX_PATH_BYTES),
+            "userType": true,
+            "message": {
+                "model": {"nested": secret},
+                "usage": {
+                    "input_tokens": secret,
+                    "output_tokens": {"nested": secret}
+                }
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(row, json!({}));
+        assert!(!serde_json::to_string(&row).unwrap().contains(secret));
+    }
+
+    #[test]
+    fn complete_ack_requires_every_submitted_event() {
+        let full = UsageAck {
+            ok: true,
+            written: 2,
+            deduped: 0,
+            skipped: vec![],
+        };
+        let deduped = UsageAck {
+            ok: true,
+            written: 1,
+            deduped: 1,
+            skipped: vec![],
+        };
+        let partial = UsageAck {
+            ok: true,
+            written: 1,
+            deduped: 0,
+            skipped: vec![],
+        };
+        let skipped = UsageAck {
+            ok: true,
+            written: 1,
+            deduped: 0,
+            skipped: vec![json!({"index": 1, "code": "invalid"})],
+        };
+
+        assert!(usage_ack_is_complete(&full, 2));
+        assert!(usage_ack_is_complete(&deduped, 2));
+        assert!(!usage_ack_is_complete(&partial, 2));
+        assert!(!usage_ack_is_complete(&skipped, 2));
+    }
+
+    #[tokio::test]
+    async fn partial_http_ack_keeps_sources_until_full_retry() {
+        let partial_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/usage/opt-in"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"enabled": true})))
+            .mount(&partial_server)
+            .await;
+        let partial_vault = VaultClient::new(partial_server.uri(), "token");
+
+        Mock::given(method("POST"))
+            .and(path("/v1/usage"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "ok": true,
+                "written": 0,
+                "deduped": 0,
+                "skipped": [{"index": 0, "code": "invalid"}]
+            })))
+            .mount(&partial_server)
+            .await;
+        let source = || RowSource {
+            file_path: "rollout".to_string(),
+            end_offset: 99,
+            mtime: 1,
+            context: Some(CodexUsageContext::default()),
+        };
+        let event = || json!({"uuid": "stable-event", "inputTokens": 1});
+        let mut events = vec![event()];
+        let mut sources = vec![source()];
+        let mut committed = HashMap::new();
+
+        assert!(
+            !flush_batch(
+                &partial_vault,
+                &partial_server.uri(),
+                "token",
+                "machine",
+                "version",
+                &mut events,
+                &mut sources,
+                &mut committed,
+            )
+            .await
+        );
+        assert!(committed.is_empty());
+
+        let full_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/usage/opt-in"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"enabled": true})))
+            .mount(&full_server)
+            .await;
+        let full_vault = VaultClient::new(full_server.uri(), "token");
+
+        Mock::given(method("POST"))
+            .and(path("/v1/usage"))
+            .respond_with(complete_ack)
+            .mount(&full_server)
+            .await;
+        let mut retry_events = vec![event()];
+        let mut retry_sources = vec![source()];
+        assert!(
+            flush_batch(
+                &full_vault,
+                &full_server.uri(),
+                "token",
+                "machine",
+                "version",
+                &mut retry_events,
+                &mut retry_sources,
+                &mut committed,
+            )
+            .await
+        );
+        assert_eq!(committed["rollout"].offset, 99);
+        let partial_body = post_bodies(&partial_server).await;
+        let retry_body = post_bodies(&full_server).await;
+        assert_eq!(partial_body[0]["events"][0]["uuid"], "stable-event");
+        assert_eq!(retry_body[0]["events"][0]["uuid"], "stable-event");
+    }
+
+    #[test]
+    fn source_checkpoints_coalesce_per_file() {
+        let source = |path: &str, offset: u64| RowSource {
+            file_path: path.to_string(),
+            end_offset: offset,
+            mtime: 1,
+            context: Some(CodexUsageContext::default()),
+        };
+        let mut sources = Vec::new();
+        for offset in 1..=10_000 {
+            record_source(&mut sources, source("rollout-a", offset));
+        }
+        record_source(&mut sources, source("rollout-b", 7));
+
+        assert_eq!(sources.len(), 2);
+        assert_eq!(
+            sources
+                .iter()
+                .find(|s| s.file_path == "rollout-a")
+                .unwrap()
+                .end_offset,
+            10_000
+        );
+    }
+
+    #[test]
+    fn unshippable_single_event_is_detected_without_serializing_content_to_logs() {
+        let secret = "private-content".repeat(MAX_BATCH_BYTES);
+        let event = json!({"cwd": secret});
+        assert!(!single_event_fits("machine", "version", &event));
+
+        let sanitized = sanitize_row(&event).unwrap();
+        assert!(single_event_fits("machine", "version", &sanitized));
+        assert_eq!(sanitized, json!({}));
+    }
+
+    #[test]
+    fn rollout_order_prefers_fresh_work_over_old_backfill() {
+        use std::time::{Duration, SystemTime};
+
+        let rollout = |id: &str, age_secs: u64| {
+            (
+                id.to_string(),
+                RolloutFile {
+                    path: std::path::PathBuf::from(id),
+                    size: 1,
+                    mtime: SystemTime::UNIX_EPOCH + Duration::from_secs(age_secs),
+                },
+            )
+        };
+        let mut rollouts = vec![
+            rollout("old", 1),
+            rollout("fresh", 10),
+            rollout("middle", 5),
+        ];
+        sort_rollouts_freshest_first(&mut rollouts);
+        assert_eq!(
+            rollouts
+                .into_iter()
+                .map(|entry| entry.0)
+                .collect::<Vec<_>>(),
+            ["fresh", "middle", "old"]
+        );
+    }
+
+    #[tokio::test]
+    async fn older_rollout_advances_while_newer_rollout_keeps_growing() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/usage/opt-in"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"enabled": true})))
+            .mount(&server)
+            .await;
+
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let home = setup_home();
+        write_menubar(home.path(), r#"{"machineId":"codex-fair"}"#);
+        let dir = home.path().join(".codex/sessions/2026/07/29");
+        fs::create_dir_all(&dir).unwrap();
+        let older_path =
+            dir.join("rollout-2026-07-29T10-00-00-019de12c-d83e-78c2-9bb3-cbb8146965e1.jsonl");
+        let newer_path =
+            dir.join("rollout-2026-07-29T11-00-00-019de12c-d83e-78c2-9bb3-cbb8146965e2.jsonl");
+        let padding =
+            json!({"type":"event_msg","payload":{"type":"user_message","message":"x".repeat(1024)}})
+                .to_string() + "\n";
+        let mut older = String::new();
+        while older.len() < 3 * 1024 * 1024 {
+            older.push_str(&padding);
+        }
+        fs::write(&older_path, &older).unwrap();
+        fs::write(&newer_path, &older).unwrap();
+
+        std::env::set_var("HOME", home.path());
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+        let handle = make_app_handle();
+        send_telemetry_if_opted_in(&handle, "/hq", "tok")
+            .await
+            .unwrap();
+        let first_cursor = read_cursor(home.path());
+        let older_key = older_path.to_string_lossy().to_string();
+        let newer_key = newer_path.to_string_lossy().to_string();
+        let first_older_offset = first_cursor.files[&older_key].offset;
+        assert!(first_older_offset > 0);
+        assert!(first_older_offset < older.len() as u64);
+
+        use std::io::Write;
+        let growth = padding.repeat(1024);
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&newer_path)
+            .unwrap()
+            .write_all(growth.as_bytes())
+            .unwrap();
+
+        send_telemetry_if_opted_in(&handle, "/hq", "tok")
+            .await
+            .unwrap();
+        std::env::remove_var("HOME");
+        std::env::remove_var("HQ_VAULT_API_URL");
+
+        let second_cursor = read_cursor(home.path());
+        assert!(
+            second_cursor.files[&older_key].offset > first_older_offset,
+            "the older rollout must advance on every bounded pass"
+        );
+        assert_eq!(
+            second_cursor.files[&older_key].offset,
+            older.len() as u64,
+            "the older backfill completes despite fresh work"
+        );
+        assert!(
+            second_cursor.files[&newer_key].offset < (older.len() + growth.len()) as u64,
+            "the growing rollout remains bounded by its fair slice"
+        );
+    }
+
+    #[tokio::test]
+    async fn more_than_sixty_four_near_limit_lines_advance_across_bounded_syncs() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/usage/opt-in"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"enabled": true})))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/usage"))
+            .respond_with(complete_ack)
+            .mount(&server)
+            .await;
+
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let home = setup_home();
+        write_menubar(home.path(), r#"{"machineId":"codex-many-rollouts"}"#);
+        let dir = home.path().join(".codex/sessions/2026/07/29");
+        fs::create_dir_all(&dir).unwrap();
+        const ROLLOUT_COUNT: usize = 65;
+        let old_divided_slice = MAX_CODEX_SCAN_BYTES_PER_SYNC / ROLLOUT_COUNT as u64;
+        let mut rollouts = Vec::new();
+        for index in 0..ROLLOUT_COUNT {
+            let rollout_id = format!("019de12c-d83e-78c2-9bb3-{index:012x}");
+            let path = dir.join(format!("rollout-2026-07-29T10-00-00-{rollout_id}.jsonl"));
+            let line = json!({
+                "timestamp":"2026-07-29T10:00:00Z",
+                "type":"event_msg",
+                "padding":"x".repeat(64_800),
+                "payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":2,"output_tokens":3}}}
+            })
+            .to_string()
+                + "\n";
+            assert!(line.len() as u64 > old_divided_slice);
+            assert!(line.len() as u64 <= MAX_CODEX_LINE_BYTES);
+            fs::write(&path, &line).unwrap();
+            rollouts.push((normalize_cursor_file_key(&path), line.len() as u64));
+        }
+
+        std::env::set_var("HOME", home.path());
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+        let handle = make_app_handle();
+        send_telemetry_if_opted_in(&handle, "/hq", "tok")
+            .await
+            .unwrap();
+
+        let first = read_cursor(home.path());
+        let advanced = rollouts
+            .iter()
+            .filter(|(path, _)| first.files[path].offset > 0)
+            .count();
+        let deferred: Vec<_> = rollouts
+            .iter()
+            .filter(|(path, _)| first.files[path].offset == 0)
+            .collect();
+        assert_eq!(advanced, 64);
+        assert_eq!(deferred.len(), 1);
+        assert_eq!(
+            first.codex_next_rollout.as_deref(),
+            Some(deferred[0].0.as_str())
+        );
+
+        send_telemetry_if_opted_in(&handle, "/hq", "tok")
+            .await
+            .unwrap();
+        std::env::remove_var("HOME");
+        std::env::remove_var("HQ_VAULT_API_URL");
+
+        let second = read_cursor(home.path());
+        assert!(rollouts
+            .iter()
+            .all(|(path, size)| second.files[path].offset == *size));
+        assert!(second.codex_next_rollout.is_none());
+    }
+
+    #[tokio::test]
+    async fn dense_rollouts_share_global_batch_cap_without_starvation() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/usage/opt-in"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"enabled": true})))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/usage"))
+            .respond_with(complete_ack)
+            .mount(&server)
+            .await;
+
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let home = setup_home();
+        write_menubar(home.path(), r#"{"machineId":"codex-batch-fair"}"#);
+        let dir = home.path().join(".codex/sessions/2026/07/29");
+        fs::create_dir_all(&dir).unwrap();
+        let older_path =
+            dir.join("rollout-2026-07-29T10-00-00-019de12c-d83e-78c2-9bb3-cbb8146965f1.jsonl");
+        let newer_path =
+            dir.join("rollout-2026-07-29T11-00-00-019de12c-d83e-78c2-9bb3-cbb8146965f2.jsonl");
+        let dense_rollout = |session: &str| {
+            let bounded_path = "x".repeat(MAX_PATH_BYTES);
+            let mut records = vec![
+                json!({"type":"session_meta","payload":{"id":session,"cwd":bounded_path.clone(),"gitBranch":bounded_path}}),
+                json!({"type":"turn_context","payload":{"model":"gpt-dense"}}),
+            ];
+            for index in 0..350 {
+                records.push(json!({"timestamp":"2026-07-29T10:00:00Z","uuid":format!("{session}-{index}"),"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":2,"output_tokens":3}}}}));
+            }
+            records
+                .into_iter()
+                .map(|record| record.to_string())
+                .collect::<Vec<_>>()
+                .join("\n")
+                + "\n"
+        };
+        let older = dense_rollout("older-dense");
+        let newer = dense_rollout("newer-dense");
+        fs::write(&older_path, &older).unwrap();
+        fs::write(&newer_path, &newer).unwrap();
+
+        std::env::set_var("HOME", home.path());
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+        let handle = make_app_handle();
+        send_telemetry_if_opted_in(&handle, "/hq", "tok")
+            .await
+            .unwrap();
+        std::env::remove_var("HOME");
+        std::env::remove_var("HQ_VAULT_API_URL");
+
+        let posts = post_bodies(&server).await;
+        assert_eq!(posts.len(), MAX_CODEX_BATCHES_PER_SYNC);
+        let cursor = read_cursor(home.path());
+        let older_key = normalize_cursor_file_key(&older_path);
+        let newer_key = normalize_cursor_file_key(&newer_path);
+        assert!(
+            cursor.files[&newer_key].offset > 0,
+            "the dense newest rollout receives its priority share"
+        );
+        assert!(
+            cursor.files[&older_key].offset > 0,
+            "the older rollout advances before the newest can consume all four batches"
+        );
+        assert!(cursor.files[&newer_key].offset < newer.len() as u64);
+        assert!(cursor.files[&older_key].offset < older.len() as u64);
+    }
+
+    #[tokio::test]
+    async fn codex_rows_share_batch_resume_and_only_send_appends() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/usage/opt-in"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({"enabled": true})))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/usage"))
+            .respond_with(complete_ack)
+            .mount(&server)
+            .await;
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let home = setup_home();
+        write_menubar(home.path(), r#"{"machineId":"codex-combined"}"#);
+        write_jsonl(home.path(), "proj", "claude.jsonl", &[USER_ROW]);
+        let initial = codex_fixture("gpt-codex-a", "codex-1");
+        let codex_path = write_codex_rollout(home.path(), &initial);
+        let codex_key = codex_path.to_string_lossy().to_string();
+        std::env::set_var("HOME", home.path());
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+        let handle = make_app_handle();
+        send_telemetry_if_opted_in(&handle, "/hq", "tok")
+            .await
+            .unwrap();
+        let first = post_bodies(&server).await;
+        assert_eq!(
+            first.len(),
+            1,
+            "Claude and Codex rows should share one batch"
+        );
+        assert_eq!(first[0]["events"].as_array().unwrap().len(), 2);
+        assert!(first[0]["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["model"] == "gpt-codex-a"));
+        assert_eq!(
+            read_cursor(home.path()).files[&codex_key].offset,
+            initial.len() as u64
+        );
+        send_telemetry_if_opted_in(&handle, "/hq", "tok")
+            .await
+            .unwrap();
+        assert_eq!(
+            post_bodies(&server).await.len(),
+            1,
+            "ingested rerun must not POST"
+        );
+        let appended = codex_fixture("gpt-codex-b", "codex-2");
+        use std::io::Write;
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&codex_path)
+            .unwrap()
+            .write_all(appended.as_bytes())
+            .unwrap();
+        send_telemetry_if_opted_in(&handle, "/hq", "tok")
+            .await
+            .unwrap();
+        std::env::remove_var("HOME");
+        std::env::remove_var("HQ_VAULT_API_URL");
+        let final_posts = post_bodies(&server).await;
+        assert_eq!(final_posts.len(), 2);
+        assert_eq!(final_posts[1]["events"].as_array().unwrap().len(), 1);
+        assert_eq!(final_posts[1]["events"][0]["uuid"], "codex-2");
+        assert_eq!(final_posts[1]["events"][0]["model"], "gpt-codex-b");
+        assert_eq!(
+            read_cursor(home.path()).files[&codex_key].offset,
+            (initial.len() + appended.len()) as u64
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_codex_batch_keeps_cursor_and_next_run_resends() {
+        let failed_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/usage/opt-in"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({"enabled": true})))
+            .mount(&failed_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/usage"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("error"))
+            .mount(&failed_server)
+            .await;
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let home = setup_home();
+        write_menubar(home.path(), r#"{"machineId":"codex-retry"}"#);
+        let rollout = codex_fixture("gpt-retry", "retry-event");
+        let codex_path = write_codex_rollout(home.path(), &rollout);
+        let codex_key = codex_path.to_string_lossy().to_string();
+        std::env::set_var("HOME", home.path());
+        std::env::set_var("HQ_VAULT_API_URL", failed_server.uri());
+        let handle = make_app_handle();
+        send_telemetry_if_opted_in(&handle, "/hq", "tok")
+            .await
+            .unwrap();
+        assert_eq!(read_cursor(home.path()).files[&codex_key].offset, 0);
+        let retry_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/usage/opt-in"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({"enabled": true})))
+            .mount(&retry_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/usage"))
+            .respond_with(complete_ack)
+            .mount(&retry_server)
+            .await;
+        std::env::set_var("HQ_VAULT_API_URL", retry_server.uri());
+        send_telemetry_if_opted_in(&handle, "/hq", "tok")
+            .await
+            .unwrap();
+        std::env::remove_var("HOME");
+        std::env::remove_var("HQ_VAULT_API_URL");
+        assert_eq!(
+            read_cursor(home.path()).files[&codex_key].offset,
+            rollout.len() as u64
+        );
+        let retry_posts = post_bodies(&retry_server).await;
+        assert_eq!(retry_posts.len(), 1);
+        assert_eq!(retry_posts[0]["events"][0]["uuid"], "retry-event");
+        assert_eq!(retry_posts[0]["events"][0]["model"], "gpt-retry");
+    }
+
+    #[tokio::test]
+    async fn large_codex_backfill_is_bounded_and_resumes_with_saved_context() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/usage/opt-in"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({"enabled": true})))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/usage"))
+            .respond_with(complete_ack)
+            .mount(&server)
+            .await;
+
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let home = setup_home();
+        write_menubar(home.path(), r#"{"machineId":"codex-bounded"}"#);
+        const EVENT_COUNT: usize = 600;
+        let bounded_path = "x".repeat(MAX_PATH_BYTES);
+        let mut records = vec![
+            json!({"type":"session_meta","payload":{"id":"bounded-session","cwd":bounded_path.clone(),"gitBranch":bounded_path.clone()}}),
+            json!({"type":"turn_context","payload":{"model":"gpt-bounded"}}),
+        ];
+        for index in 1..=EVENT_COUNT {
+            records.push(json!({"timestamp":format!("2026-07-29T10:{:02}:{:02}Z", (index / 60) % 60, index % 60),"uuid":format!("u{index}"),"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":2,"output_tokens":3}}}}));
+        }
+        let rollout = records
+            .into_iter()
+            .map(|row| row.to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        let codex_path = write_codex_rollout(home.path(), &rollout);
+        let codex_key = codex_path.to_string_lossy().to_string();
+        std::env::set_var("HOME", home.path());
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+        let handle = make_app_handle();
+
+        send_telemetry_if_opted_in(&handle, "/hq", "tok")
+            .await
+            .unwrap();
+        let first_posts = post_bodies(&server).await;
+        assert_eq!(first_posts.len(), MAX_CODEX_BATCHES_PER_SYNC);
+        let first_sent: usize = first_posts
+            .iter()
+            .map(|body| body["events"].as_array().unwrap().len())
+            .sum();
+        assert!(first_sent > 0 && first_sent < EVENT_COUNT);
+        assert!(first_posts
+            .iter()
+            .all(|body| { serde_json::to_vec(body).unwrap().len() <= MAX_BATCH_BYTES }));
+        let partial = read_cursor(home.path()).files[&codex_key].clone();
+        assert!(partial.offset > 0 && partial.offset < rollout.len() as u64);
+        assert_eq!(
+            partial.context.as_ref().and_then(CodexUsageContext::model),
+            Some("gpt-bounded")
+        );
+
+        use std::io::Write;
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .open(&codex_path)
+            .unwrap();
+        file.write_all(&vec![b' '; partial.offset as usize])
+            .unwrap();
+        drop(file);
+
+        send_telemetry_if_opted_in(&handle, "/hq", "tok")
+            .await
+            .unwrap();
+        std::env::remove_var("HOME");
+        std::env::remove_var("HQ_VAULT_API_URL");
+
+        let all_posts = post_bodies(&server).await;
+        let resumed_posts = &all_posts[MAX_CODEX_BATCHES_PER_SYNC..];
+        assert!(!resumed_posts.is_empty());
+        assert!(resumed_posts
+            .iter()
+            .all(|body| { serde_json::to_vec(body).unwrap().len() <= MAX_BATCH_BYTES }));
+        let resumed_events: Vec<&Value> = resumed_posts
+            .iter()
+            .flat_map(|body| body["events"].as_array().unwrap())
+            .collect();
+        assert_eq!(
+            resumed_events.len(),
+            EVENT_COUNT - first_sent,
+            "second sync sends exactly the unacked tail"
+        );
+        assert!(resumed_events
+            .iter()
+            .all(|event| event["model"] == "gpt-bounded"));
+        assert_eq!(
+            resumed_events.first().unwrap()["uuid"],
+            format!("u{}", first_sent + 1)
+        );
+        assert_eq!(
+            read_cursor(home.path()).files[&codex_key].offset,
+            rollout.len() as u64
+        );
+    }
+
+    #[tokio::test]
+    async fn sparse_codex_rollout_advances_by_scan_budget_without_posting() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/usage/opt-in"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({"enabled": true})))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/usage"))
+            .respond_with(complete_ack)
+            .mount(&server)
+            .await;
+
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let home = setup_home();
+        write_menubar(home.path(), r#"{"machineId":"codex-sparse"}"#);
+        let mut rollout =
+            json!({"type":"session_meta","payload":{"id":"sparse-session"}}).to_string() + "\n";
+        rollout.push_str(
+            &(json!({"type":"turn_context","payload":{"model":"gpt-sparse"}}).to_string() + "\n"),
+        );
+        rollout.push_str("malformed rollout line\n");
+        let malformed_end = rollout.len() as u64;
+        let padding = "x".repeat(1024);
+        while rollout.len() < (MAX_CODEX_SCAN_BYTES_PER_SYNC as usize + 1024 * 1024) {
+            rollout.push_str(&(json!({"type":"event_msg","payload":{"type":"user_message","message":padding.clone()}}).to_string() + "\n"));
+        }
+        let codex_path = write_codex_rollout(home.path(), &rollout);
+        let codex_key = codex_path.to_string_lossy().to_string();
+        let _home_scope = scoped_home(home.path());
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+        let handle = make_app_handle();
+
+        send_telemetry_if_opted_in(&handle, "/hq", "tok")
+            .await
+            .unwrap();
+        assert!(
+            post_bodies(&server).await.is_empty(),
+            "zero-token slice must not POST"
+        );
+        let partial = read_cursor(home.path()).files[&codex_key].clone();
+        let fair_slice = per_rollout_scan_budget(1);
+        assert!(
+            partial.offset <= fair_slice,
+            "scan progress must remain inside the per-rollout byte slice"
+        );
+        assert!(
+            partial.offset >= fair_slice.saturating_sub(MAX_CODEX_LINE_BYTES),
+            "rewinding the boundary record may leave at most one valid line uncommitted"
+        );
+        assert!(partial.offset < rollout.len() as u64);
+        assert!(
+            partial.offset > malformed_end,
+            "malformed lines still advance progress"
+        );
+        assert_eq!(
+            partial.context.as_ref().and_then(CodexUsageContext::model),
+            Some("gpt-sparse")
+        );
+
+        send_telemetry_if_opted_in(&handle, "/hq", "tok")
+            .await
+            .unwrap();
+        std::env::remove_var("HQ_VAULT_API_URL");
+        assert!(post_bodies(&server).await.is_empty());
+        assert_eq!(
+            read_cursor(home.path()).files[&codex_key].offset,
+            rollout.len() as u64
+        );
+    }
+
+    #[tokio::test]
+    async fn oversized_codex_line_is_checkpointed_in_bounded_chunks() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/usage/opt-in"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({"enabled": true})))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/usage"))
+            .respond_with(complete_ack)
+            .mount(&server)
+            .await;
+
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let home = setup_home();
+        write_menubar(home.path(), r#"{"machineId":"codex-oversized"}"#);
+        let mut rollout =
+            json!({"type":"session_meta","payload":{"id":"oversized-session"}}).to_string() + "\n";
+        rollout.push_str(
+            &(json!({"type":"turn_context","payload":{"model":"gpt-after-large"}}).to_string()
+                + "\n"),
+        );
+        rollout.push_str("{\"ignored\":\"");
+        rollout.push_str(&"x".repeat(9 * 1024 * 1024));
+        rollout.push_str("\"}\n");
+        rollout.push_str(&codex_fixture("gpt-after-large", "after-large"));
+        let codex_path = write_codex_rollout(home.path(), &rollout);
+        let codex_key = codex_path.to_string_lossy().to_string();
+        std::env::set_var("HOME", home.path());
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+        let handle = make_app_handle();
+
+        send_telemetry_if_opted_in(&handle, "/hq", "tok")
+            .await
+            .unwrap();
+        let first = read_cursor(home.path()).files[&codex_key].clone();
+        assert_eq!(first.offset, MAX_CODEX_SCAN_BYTES_PER_SYNC);
+        assert!(first.context.as_ref().unwrap().discarding_partial_line);
+        assert!(post_bodies(&server).await.is_empty());
+
+        send_telemetry_if_opted_in(&handle, "/hq", "tok")
+            .await
+            .unwrap();
+        let second = read_cursor(home.path()).files[&codex_key].clone();
+        assert_eq!(second.offset, 2 * MAX_CODEX_SCAN_BYTES_PER_SYNC);
+        assert!(second.context.as_ref().unwrap().discarding_partial_line);
+        assert!(post_bodies(&server).await.is_empty());
+
+        send_telemetry_if_opted_in(&handle, "/hq", "tok")
+            .await
+            .unwrap();
+        std::env::remove_var("HOME");
+        std::env::remove_var("HQ_VAULT_API_URL");
+        let posts = post_bodies(&server).await;
+        assert_eq!(posts.len(), 1);
+        assert_eq!(posts[0]["events"].as_array().unwrap().len(), 1);
+        assert_eq!(posts[0]["events"][0]["uuid"], "after-large");
+        assert_eq!(posts[0]["events"][0]["model"], "gpt-after-large");
+        assert_eq!(
+            read_cursor(home.path()).files[&codex_key].offset,
+            rollout.len() as u64
+        );
+    }
+
+    // ── (a) opt-in=false → 0 bytes sent ──────────────────────────────────────
+
+    #[test]
+    fn codex_candidates_resume_stored_offset_and_reset_shrunk_files() {
+        let home = setup_home();
+        let rollout = write_codex_rollout(home.path(), "first\nsecond\n");
+        let path = rollout.to_string_lossy().to_string();
+        let mtime = mtime_secs(&fs::metadata(&rollout).unwrap());
+        let mut cursor = TelemetryCursor::default();
+        cursor.files.insert(
+            path.clone(),
+            CursorEntry {
+                offset: 3,
+                mtime,
+                context: Some(CodexUsageContext::default()),
+            },
+        );
+
+        let candidates = codex_candidate_entries(&home.path().join(".codex"), &cursor);
+        assert_eq!(
+            candidates[&path].offset, 3,
+            "grown rollout resumes at stored offset"
+        );
+
+        let legacy = candidate_cursor_entry(
+            Some(&CursorEntry {
+                offset: 3,
+                mtime,
+                context: None,
+            }),
+            10_000,
+            mtime,
+        );
+        assert_eq!(
+            legacy.offset, 0,
+            "legacy contextless cursor resets for bounded scan"
+        );
+
+        cursor.files.insert(
+            path.clone(),
+            CursorEntry {
+                offset: 10_000,
+                mtime,
+                context: Some(CodexUsageContext::default()),
+            },
+        );
+        let candidates = codex_candidate_entries(&home.path().join(".codex"), &cursor);
+        assert_eq!(candidates[&path].offset, 0, "shrunk rollout resets to zero");
+        assert!(
+            candidates[&path].context.is_none(),
+            "rotation clears saved context"
+        );
+
+        let rolled_back = candidate_cursor_entry(
+            Some(&CursorEntry {
+                offset: 3,
+                mtime: mtime + 1,
+                context: Some(CodexUsageContext::default()),
+            }),
+            10_000,
+            mtime,
+        );
+        assert_eq!(rolled_back.offset, 0, "mtime rollback resets to zero");
+    }
+
+    #[test]
+    fn missing_codex_dir_produces_no_candidates() {
+        let home = setup_home();
+        let candidates =
+            codex_candidate_entries(&home.path().join(".codex"), &TelemetryCursor::default());
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn codex_token_count_maps_delta_and_only_allowlisted_fields() {
+        let mut context = CodexUsageContext::new("filename-session");
+        assert!(codex_usage_row(
+            &json!({
+                "type": "session_meta",
+                "payload": {
+                    "id": "meta-session",
+                    "cwd": "/work/project",
+                    "git": {"branch": "feature/usage"},
+                    "originator": "codex_cli_rs",
+                    "thread_source": "subagent",
+                    "model": "session-model"
+                }
+            }),
+            &mut context,
+        )
+        .is_none());
+        assert!(codex_usage_row(
+            &json!({"type": "turn_context", "payload": {"model": "gpt-current"}}),
+            &mut context,
+        )
+        .is_none());
+
+        let row = codex_usage_row(
+            &json!({
+                "timestamp": "2026-07-29T10:00:00Z",
+                "type": "event_msg",
+                "uuid": "event-uuid",
+                "payload": {
+                    "type": "token_count",
+                    "info": {
+                        "total_token_usage": {
+                            "input_tokens": 9000,
+                            "output_tokens": 8000,
+                            "cached_input_tokens": 7000
+                        },
+                        "last_token_usage": {
+                            "input_tokens": 11,
+                            "output_tokens": 7,
+                            "reasoning_output_tokens": 5,
+                            "cached_input_tokens": 3
+                        }
+                    },
+                    "raw_content": "must never leave the machine"
+                }
+            }),
+            &mut context,
+        )
+        .unwrap();
+
+        assert_eq!(
+            row,
+            json!({
+                "sessionId": "meta-session",
+                "timestamp": "2026-07-29T10:00:00Z",
+                "uuid": "event-uuid",
+                "cwd": "/work/project",
+                "gitBranch": "feature/usage",
+                "model": "gpt-current",
+                "inputTokens": 11,
+                "outputTokens": 12,
+                "cacheReadInputTokens": 3
+            })
+        );
+        assert!(row.get("cacheCreationInputTokens").is_none());
+    }
+
+    #[test]
+    fn multi_date_codex_fixture_preserves_timestamps_and_sums_to_final_total() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("rollout-multi-date.jsonl");
+        fs::write(&path, MULTI_DATE_CODEX_ROLLOUT).unwrap();
+        let mut scanner = CodexRolloutScanner::open(&path, 0, "filename-session", None).unwrap();
+        let mut rows = Vec::new();
+
+        while let Some((row, _, _)) = scanner.next_bounded(u64::MAX) {
+            if let Some(row) = row {
+                rows.push(row);
+            }
+        }
+
+        assert_eq!(rows.len(), 3);
+        assert_eq!(
+            rows.iter()
+                .map(|row| row["timestamp"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            [
+                "2026-07-28T23:59:59Z",
+                "2026-07-29T00:00:01Z",
+                "2026-07-29T00:00:02Z",
+            ]
+        );
+        assert!(rows.iter().all(|row| row["model"] == "gpt-fixture"));
+
+        let input_total: u64 = rows
+            .iter()
+            .map(|row| row["inputTokens"].as_u64().unwrap())
+            .sum();
+        let output_total: u64 = rows
+            .iter()
+            .map(|row| row["outputTokens"].as_u64().unwrap())
+            .sum();
+        let cache_total: u64 = rows
+            .iter()
+            .map(|row| row["cacheReadInputTokens"].as_u64().unwrap())
+            .sum();
+        let final_usage = MULTI_DATE_CODEX_ROLLOUT
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .filter_map(|record| {
+                record
+                    .get("payload")?
+                    .get("info")?
+                    .get("total_token_usage")
+                    .cloned()
+            })
+            .last()
+            .unwrap();
+        assert_eq!(input_total, final_usage["input_tokens"].as_u64().unwrap());
+        assert_eq!(
+            output_total,
+            final_usage["output_tokens"].as_u64().unwrap()
+                + final_usage["reasoning_output_tokens"].as_u64().unwrap()
+        );
+        assert_eq!(
+            cache_total,
+            final_usage["cached_input_tokens"].as_u64().unwrap()
+        );
+
+        const ALLOWLIST: [&str; 10] = [
+            "sessionId",
+            "timestamp",
+            "uuid",
+            "cwd",
+            "gitBranch",
+            "userType",
+            "model",
+            "inputTokens",
+            "outputTokens",
+            "cacheReadInputTokens",
+        ];
+        assert!(rows.iter().all(|row| {
+            row.as_object()
+                .unwrap()
+                .keys()
+                .all(|key| ALLOWLIST.contains(&key.as_str()))
+        }));
+        let encoded = serde_json::to_string(&rows).unwrap();
+        assert!(!encoded.contains("sensitive instructions"));
+        assert!(!encoded.contains("sensitive tool output"));
+    }
+
+    #[test]
+    fn codex_model_fallbacks_and_mid_session_switches_are_respected() {
+        let mut context = CodexUsageContext::new("filename-session");
+        codex_usage_row(
+            &json!({
+                "type": "session_meta",
+                "payload": {"model": "session-model"}
+            }),
+            &mut context,
+        );
+        let token = |timestamp: &str| {
+            json!({
+                "timestamp": timestamp,
+                "type": "event_msg",
+                "payload": {
+                    "type": "token_count",
+                    "info": {"last_token_usage": {"input_tokens": 1, "output_tokens": 2}}
+                }
+            })
+        };
+
+        let session_fallback = codex_usage_row(&token("t1"), &mut context).unwrap();
+        assert_eq!(session_fallback["model"], "session-model");
+
+        codex_usage_row(
+            &json!({
+                "type": "turn_context",
+                "payload": {
+                    "collaboration_mode": {"settings": {"model": "collab-model"}}
+                }
+            }),
+            &mut context,
+        );
+        let collaboration_fallback = codex_usage_row(&token("t2"), &mut context).unwrap();
+        assert_eq!(collaboration_fallback["model"], "collab-model");
+
+        codex_usage_row(
+            &json!({"type": "turn_context", "payload": {"model": "turn-model-a"}}),
+            &mut context,
+        );
+        let first_turn = codex_usage_row(&token("t3"), &mut context).unwrap();
+        assert_eq!(first_turn["model"], "turn-model-a");
+
+        codex_usage_row(
+            &json!({"type": "turn_context", "payload": {"model": "turn-model-b"}}),
+            &mut context,
+        );
+        let switched_turn = codex_usage_row(&token("t4"), &mut context).unwrap();
+        assert_eq!(switched_turn["model"], "turn-model-b");
+    }
+
+    #[test]
+    fn codex_rollout_resumes_at_cursor_without_buffering_file() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("rollout.jsonl");
+        let lines = [
+            json!({
+                "type": "session_meta",
+                "payload": {"id": "session-id", "cwd": "/repo", "git_branch": "main"}
+            }),
+            json!({"type": "turn_context", "payload": {"model": "model-a"}}),
+            json!({
+                "timestamp": "first",
+                "type": "event_msg",
+                "payload": {"type": "token_count", "info": {"last_token_usage": {"input_tokens": 2, "output_tokens": 3}}}
+            }),
+            json!({"type": "turn_context", "payload": {"model": "model-b"}}),
+            json!({
+                "timestamp": "second",
+                "type": "event_msg",
+                "payload": {"type": "token_count", "info": {"last_token_usage": {"input_tokens": 5, "output_tokens": 7}}}
+            }),
+        ];
+        let encoded: Vec<String> = lines.iter().map(Value::to_string).collect();
+        let contents = format!("{}\n", encoded.join("\n"));
+        fs::write(&path, &contents).unwrap();
+        let start_offset = encoded[..3].iter().map(|line| line.len() as u64 + 1).sum();
+
+        let saved_context = CodexUsageContext {
+            session_id: Some("session-id".to_string()),
+            turn_model: Some("model-a".to_string()),
+            ..CodexUsageContext::default()
+        };
+        let mut scanner =
+            CodexRolloutScanner::open(&path, start_offset, "filename-id", Some(saved_context))
+                .unwrap();
+        let mut emitted = Vec::new();
+        while let Some((row, offset, context)) = scanner.next_bounded(u64::MAX) {
+            if let Some(row) = row {
+                emitted.push((row, offset, context));
+            }
+        }
+
+        assert_eq!(emitted.len(), 1);
+        assert_eq!(emitted[0].0["timestamp"], "second");
+        assert_eq!(emitted[0].0["model"], "model-b");
+        assert_eq!(emitted[0].0["sessionId"], "session-id");
+        assert_eq!(emitted[0].1, contents.len() as u64);
+    }
+
+    #[test]
+    fn codex_scanner_parses_final_record_without_newline() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("rollout.jsonl");
+        let record = json!({"timestamp":"final","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1,"output_tokens":2}}}}).to_string();
+        fs::write(&path, &record).unwrap();
+        let saved = CodexUsageContext {
+            turn_model: Some("final-model".to_string()),
+            ..CodexUsageContext::default()
+        };
+        let mut scanner = CodexRolloutScanner::open(&path, 0, "session", Some(saved)).unwrap();
+        let (row, offset, _) = scanner.next_bounded(record.len() as u64).unwrap();
+        assert_eq!(row.unwrap()["model"], "final-model");
+        assert_eq!(offset, record.len() as u64);
     }
 }
