@@ -3922,8 +3922,8 @@ mod codex_telemetry_tests {
             .await
             .unwrap();
         let first_cursor = read_cursor(home.path());
-        let older_key = older_path.to_string_lossy().to_string();
-        let newer_key = newer_path.to_string_lossy().to_string();
+        let older_key = normalize_cursor_file_key(&older_path);
+        let newer_key = normalize_cursor_file_key(&newer_path);
         let first_older_offset = first_cursor.files[&older_key].offset;
         assert!(first_older_offset > 0);
         assert!(first_older_offset < older.len() as u64);
@@ -4123,7 +4123,7 @@ mod codex_telemetry_tests {
         write_jsonl(home.path(), "proj", "claude.jsonl", &[USER_ROW]);
         let initial = codex_fixture("gpt-codex-a", "codex-1");
         let codex_path = write_codex_rollout(home.path(), &initial);
-        let codex_key = codex_path.to_string_lossy().to_string();
+        let codex_key = normalize_cursor_file_key(&codex_path);
         std::env::set_var("HOME", home.path());
         std::env::set_var("HQ_VAULT_API_URL", server.uri());
         let handle = make_app_handle();
@@ -4196,7 +4196,7 @@ mod codex_telemetry_tests {
         write_menubar(home.path(), r#"{"machineId":"codex-retry"}"#);
         let rollout = codex_fixture("gpt-retry", "retry-event");
         let codex_path = write_codex_rollout(home.path(), &rollout);
-        let codex_key = codex_path.to_string_lossy().to_string();
+        let codex_key = normalize_cursor_file_key(&codex_path);
         std::env::set_var("HOME", home.path());
         std::env::set_var("HQ_VAULT_API_URL", failed_server.uri());
         let handle = make_app_handle();
@@ -4264,7 +4264,7 @@ mod codex_telemetry_tests {
             .join("\n")
             + "\n";
         let codex_path = write_codex_rollout(home.path(), &rollout);
-        let codex_key = codex_path.to_string_lossy().to_string();
+        let codex_key = normalize_cursor_file_key(&codex_path);
         std::env::set_var("HOME", home.path());
         std::env::set_var("HQ_VAULT_API_URL", server.uri());
         let handle = make_app_handle();
@@ -4361,7 +4361,7 @@ mod codex_telemetry_tests {
             rollout.push_str(&(json!({"type":"event_msg","payload":{"type":"user_message","message":padding.clone()}}).to_string() + "\n"));
         }
         let codex_path = write_codex_rollout(home.path(), &rollout);
-        let codex_key = codex_path.to_string_lossy().to_string();
+        let codex_key = normalize_cursor_file_key(&codex_path);
         let _home_scope = scoped_home(home.path());
         std::env::set_var("HQ_VAULT_API_URL", server.uri());
         let handle = make_app_handle();
@@ -4432,7 +4432,7 @@ mod codex_telemetry_tests {
         rollout.push_str("\"}\n");
         rollout.push_str(&codex_fixture("gpt-after-large", "after-large"));
         let codex_path = write_codex_rollout(home.path(), &rollout);
-        let codex_key = codex_path.to_string_lossy().to_string();
+        let codex_key = normalize_cursor_file_key(&codex_path);
         std::env::set_var("HOME", home.path());
         std::env::set_var("HQ_VAULT_API_URL", server.uri());
         let handle = make_app_handle();
@@ -4475,7 +4475,7 @@ mod codex_telemetry_tests {
     fn codex_candidates_resume_stored_offset_and_reset_shrunk_files() {
         let home = setup_home();
         let rollout = write_codex_rollout(home.path(), "first\nsecond\n");
-        let path = rollout.to_string_lossy().to_string();
+        let path = normalize_cursor_file_key(&rollout);
         let mtime = mtime_secs(&fs::metadata(&rollout).unwrap());
         let mut cursor = TelemetryCursor::default();
         cursor.files.insert(

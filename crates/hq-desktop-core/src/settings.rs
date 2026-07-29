@@ -103,9 +103,9 @@ mod tests {
             widget_enabled: Some(prefs.widget_enabled.unwrap_or(true)),
             // Pass-through — None = primary display.
             widget_display: prefs.widget_display,
-            // Dock icon defaults OFF when absent (existing installs keep the
-            // menubar-only posture; explicit `true` is the only opt-in).
-            dock_icon: Some(prefs.dock_icon.unwrap_or(false)),
+            // Dock icon defaults ON when absent (existing installs gain the
+            // Dock icon on upgrade; explicit `false` is the only opt-out).
+            dock_icon: Some(prefs.dock_icon.unwrap_or(true)),
         }
     }
 
@@ -206,7 +206,8 @@ mod tests {
         // explicit widget_enabled false + display pass through
         assert_eq!(result.widget_enabled, Some(false));
         assert_eq!(result.widget_display, Some("DELL U2720Q".to_string()));
-        // explicit dock_icon false round-trips as false (same as the default)
+        // explicit dock_icon false survives the default-on coercion — the
+        // menubar-only opt-out must not be silently re-enabled on every save
         assert_eq!(result.dock_icon, Some(false));
     }
 

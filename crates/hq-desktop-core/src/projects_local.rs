@@ -3830,6 +3830,7 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn displaced_regular_file_reader_refuses_non_files() {
         let root = make_fixture_tree();

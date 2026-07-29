@@ -3623,11 +3623,12 @@ mod tests {
 
     mod file_explorer {
         use super::super::{
-            build_file_tree, canonical_hq_relative_path, company_slug_for_hq_path,
-            read_file_bytes_capped, read_file_content, read_file_content_capped,
-            set_file_read_after_size_check_hook, set_file_read_before_open_hook,
+            build_file_tree, company_slug_for_hq_path, read_file_bytes_capped, read_file_content,
+            read_file_content_capped, set_file_read_after_size_check_hook,
             validate_hq_relative_path, workspace_grants_company_file_access, FileNode,
         };
+        #[cfg(unix)]
+        use super::super::{canonical_hq_relative_path, set_file_read_before_open_hook};
         use crate::workspaces::{Workspace, WorkspaceKind, WorkspaceState};
         use std::fs;
         use std::path::PathBuf;

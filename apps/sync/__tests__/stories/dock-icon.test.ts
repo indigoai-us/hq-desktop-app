@@ -1,11 +1,13 @@
 /**
- * macOS Dock icon — off by default, with a Settings opt-in.
+ * macOS Dock icon — on by default, with a Settings opt-out, plus the
+ * unread-message Dock badge.
  *
  * Source-contract coverage for the wiring that cannot be exercised from a
  * Linux/CI vitest run: the launch-time activation policy, the live re-apply
  * command, the Dock-click (Reopen) route, and the Settings toggle's
- * save-then-apply contract. The pure default semantics (`absent → hidden`,
- * `explicit true → shown`) are covered by Rust unit tests in
+ * save-then-apply contract. The pure semantics (`absent → shown`,
+ * `explicit false → hidden`, and the badge label formatting) are covered by
+ * Rust unit tests in
  * `src-tauri/src/commands/dock.rs`, which run under `cargo test --workspace`.
  */
 
@@ -26,7 +28,7 @@ const readMain = () => readRepo('src-tauri/src/main.rs');
 const readSettingsRs = () => readRepo('src-tauri/src/commands/settings.rs');
 const readSettingsPage = () => readRepo('src/desktop-alt/pages/SettingsPage.svelte');
 
-describe('Dock icon: off by default, with a Settings opt-in', () => {
+describe('Dock icon: on by default, with a Settings opt-out', () => {
   describe('preference plumbing', () => {
     it('types dockIcon on MenubarPrefs so the toggle round-trips instead of being wiped', () => {
       const src = readRepo('../../crates/hq-desktop-core/src/config.rs');
@@ -38,19 +40,19 @@ describe('Dock icon: off by default, with a Settings opt-in', () => {
       );
     });
 
-    it('defaults dockIcon OFF in get_settings for both the no-file and on-disk branches', () => {
+    it('defaults dockIcon ON in get_settings for both the no-file and on-disk branches', () => {
       const src = readSettingsRs();
-      expect(src).toMatch(/dock_icon: Some\(false\)/);
-      expect(src).toMatch(/dock_icon: Some\(prefs\.dock_icon\.unwrap_or\(false\)\)/);
+      expect(src).toMatch(/dock_icon: Some\(true\)/);
+      expect(src).toMatch(/dock_icon: Some\(prefs\.dock_icon\.unwrap_or\(true\)\)/);
     });
 
-    it('resolves the pref default-off, so no install gains a Dock icon it did not ask for', () => {
+    it('resolves the pref default-on, so existing installs gain the icon on upgrade', () => {
       const src = readDock();
       expect(src).toMatch(/fn\s+effective_dock_icon/);
-      expect(src).toMatch(/prefs\.and_then\(\|p\| p\.dock_icon\)\.unwrap_or\(false\)/);
-      // Guards the polarity specifically: default-ON is the wrong answer here
-      // and is exactly what a careless copy of start_at_login would produce.
-      expect(src).not.toMatch(/p\.dock_icon\)\.unwrap_or\(true\)/);
+      expect(src).toMatch(/prefs\.and_then\(\|p\| p\.dock_icon\)\.unwrap_or\(true\)/);
+      // Polarity guard: the Rust resolver, get_settings, and the Svelte
+      // hydration default must agree, or the toggle lies about the real state.
+      expect(src).not.toMatch(/p\.dock_icon\)\.unwrap_or\(false\)/);
     });
 
     it('logs unreadable prefs rather than silently presenting as never-configured', () => {
@@ -149,6 +151,39 @@ describe('Dock icon: off by default, with a Settings opt-in', () => {
     });
   });
 
+  describe('unread-message Dock badge', () => {
+    it('formats the badge label in Rust rather than using set_badge_count', () => {
+      const src = readDock();
+      expect(src).toMatch(/pub fn format_badge_label\(unread: u32\) -> Option<String>/);
+      // set_badge_count stringifies 0 into a literal "0" badge on macOS, which
+      // is why this module owns its formatting and calls set_badge_label.
+      expect(src).toMatch(/\.set_badge_label\(/);
+      // Must not CALL set_badge_count — the doc comment naming it is fine, so
+      // match the call form rather than the bare identifier.
+      expect(src).not.toMatch(/\.set_badge_count\(/);
+    });
+
+    it('mirrors the count from BOTH writers of the unread state', () => {
+      // bump_unread and reset_unread_dms are the only two mutators of
+      // UnreadDmState. If a future writer appears without a set_badge call the
+      // badge silently drifts, so both call sites are pinned here.
+      const src = readRepo('src-tauri/src/commands/dm_notify.rs');
+      const bump = src.slice(src.indexOf('fn bump_unread'));
+      expect(bump.slice(0, bump.indexOf('\n}\n'))).toMatch(/dock::set_badge\(app, total\)/);
+      const reset = src.slice(src.indexOf('pub fn reset_unread_dms'));
+      expect(reset.slice(0, reset.indexOf('\n}\n'))).toMatch(/dock::set_badge\(app, 0\)/);
+    });
+
+    it('is best-effort — a badge failure never propagates into message delivery', () => {
+      const src = readDock();
+      const fn = src.slice(src.indexOf('pub fn set_badge'));
+      const body = fn.slice(0, fn.indexOf('\n}\n'));
+      // No `?` and no Result return: the unread path must not fail on a badge.
+      expect(src).not.toMatch(/pub fn set_badge<R: tauri::Runtime>\([^)]*\) -> Result/);
+      expect(body).toMatch(/set_badge_label failed/);
+    });
+  });
+
   describe('Settings toggle', () => {
     it('renders a macOS-only Show in Dock row', () => {
       const src = readSettingsPage();
@@ -157,12 +192,12 @@ describe('Dock icon: off by default, with a Settings opt-in', () => {
       expect(src).toMatch(/\{#if isMacOS\}/);
     });
 
-    it('hydrates the toggle default-off, matching the Rust resolver', () => {
+    it('hydrates the toggle default-on, matching the Rust resolver', () => {
       const src = readSettingsPage();
-      expect(src).toMatch(/dockIcon = settings\.dockIcon \?\? false;/);
-      // The pre-hydration $state default must agree, or the row flashes ON for
-      // a user who never opted in.
-      expect(src).toMatch(/let dockIcon = \$state\(false\);/);
+      expect(src).toMatch(/dockIcon = settings\.dockIcon \?\? true;/);
+      // The pre-hydration $state default must agree, or the row flashes OFF
+      // for a user whose Dock icon is actually showing.
+      expect(src).toMatch(/let dockIcon = \$state\(true\);/);
     });
 
     it('persists first, then re-applies live so the change is not deferred to relaunch', () => {

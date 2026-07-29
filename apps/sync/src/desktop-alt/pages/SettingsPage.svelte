@@ -206,9 +206,9 @@
   let stagingChannel = $state(true);
   let releaseChannel = $state<Channel | null>(null);
   let startAtLogin = $state(true);
-  // Dock icon default-OFF, mirroring `dock::effective_dock_icon` in Rust, so
+  // Dock icon default-ON, mirroring `dock::effective_dock_icon` in Rust, so
   // the toggle shows the true posture before the first read resolves.
-  let dockIcon = $state(false);
+  let dockIcon = $state(true);
   let meetingDetectEnabled = $state(true);
   let meetingDetectPlatforms = $state<string[]>([...platforms]);
   let defaultRecordingCompanyUid = $state<string | null>(null);
@@ -560,7 +560,7 @@
     autoUpdate = settings.autoUpdate ?? true;
     stagingChannel = settings.stagingChannel ?? true;
     startAtLogin = settings.startAtLogin ?? true;
-    dockIcon = settings.dockIcon ?? false;
+    dockIcon = settings.dockIcon ?? true;
     meetingDetectEnabled = settings.meetingDetectNotify?.enabled ?? true;
     meetingDetectPlatforms = settings.meetingDetectNotify?.platforms ?? [...platforms];
     // Keep only active memberships; validate the stored default against the
@@ -2098,7 +2098,7 @@
           <label class="setting-row">
             <span>
               <strong>Show in Dock</strong>
-              <small>Add an HQ icon to the Dock. Off by default — HQ runs from the menu bar.</small>
+              <small>Keep an HQ icon in the Dock. Turn this off to run HQ from the menu bar only.</small>
               {#if liveControlErrors['dock-icon']}
                 <small
                   class="row-action-error"

@@ -9,14 +9,17 @@
  * README-oriented HTML subset (`p`/`div` alignment, `img`, `br`, and
  * `details`/`summary`) is parsed and rebuilt from validated values; raw source
  * HTML is never passed through. The only attributes emitted are fixed
- * accessibility attributes, safe presentation values, and validated
- * `href`/`src` values. No `eval`, no arbitrary source HTML, no external libs.
+ * accessibility attributes, safe presentation values, and validated `href`
+ * values. Inline image markup degrades to its alt text so the webview never
+ * performs a renderer-side image request. No `eval`, no arbitrary source HTML,
+ * no external libs.
  *
  * Supported: ATX + Setext headings, paragraphs and hard line breaks, unordered,
  * ordered, and GFM task lists, fenced/indented code, inline code, bold, italic,
- * strikethrough, links, images, autolinks, blockquotes, horizontal rules, and
- * GFM tables, plus the sanitized README HTML subset above. Unsupported HTML
- * tags are suppressed while their ordinary text remains visible.
+ * strikethrough, links, image fallbacks, autolinks, wikilink labels,
+ * blockquotes, horizontal rules, and GFM tables, plus the sanitized README HTML
+ * subset above. Unsupported HTML tags are suppressed while their ordinary text
+ * remains visible.
  *
  * Pure (no Svelte runes, no Tauri imports) so it is trivially unit-testable.
  */

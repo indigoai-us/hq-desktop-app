@@ -2011,7 +2011,7 @@ mod tests {
         assert_eq!(first.reason, "I want to publish my skills.");
         assert_eq!(first.status, "pending");
 
-        // Sparse item: optional handle/uid absent → empty strings, still parses.
+        // Explicit nulls from sparse API records become empty strings.
         let second = &apps[1];
         assert_eq!(second.application_id, "app_2");
         assert_eq!(second.applicant_email, "alice@example.com");
@@ -2019,6 +2019,23 @@ mod tests {
         assert!(second.applicant_uid.is_empty());
         assert!(second.reason.is_empty());
         assert!(second.submitted_at.is_empty());
+    }
+
+    #[test]
+    fn applications_default_omitted_optional_fields() {
+        let body = r#"{"applications":[
+            {"applicationId":"app_sparse","applicantEmail":"sparse@example.com"}
+        ]}"#;
+        let apps = parse_creator_applications_response(StatusCode::OK, body).expect("parsed");
+        let sparse = &apps[0];
+
+        assert_eq!(sparse.application_id, "app_sparse");
+        assert_eq!(sparse.applicant_email, "sparse@example.com");
+        assert!(sparse.applicant_uid.is_empty());
+        assert!(sparse.handle.is_empty());
+        assert!(sparse.reason.is_empty());
+        assert!(sparse.status.is_empty());
+        assert!(sparse.submitted_at.is_empty());
     }
 
     #[test]
