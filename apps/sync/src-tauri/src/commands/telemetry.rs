@@ -37,6 +37,8 @@ struct CursorEntry {
 struct TelemetryCursor {
     version: String,
     files: HashMap<String, CursorEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    codex_next_rollout: Option<String>,
 }
 
 impl Default for TelemetryCursor {
@@ -44,6 +46,7 @@ impl Default for TelemetryCursor {
         Self {
             version: "1".to_string(),
             files: HashMap::new(),
+            codex_next_rollout: None,
         }
     }
 }
@@ -1345,6 +1348,32 @@ fn per_rollout_scan_budget(pending_count: usize) -> u64 {
     (MAX_CODEX_SCAN_BYTES_PER_SYNC / pending_count.max(1) as u64).max(1)
 }
 
+fn rollout_batch_allowance(index: usize, pending_count: usize) -> usize {
+    if pending_count == 0 {
+        return 0;
+    }
+    if pending_count > MAX_CODEX_BATCHES_PER_SYNC {
+        return 1;
+    }
+    let base = MAX_CODEX_BATCHES_PER_SYNC / pending_count;
+    base + usize::from(index < MAX_CODEX_BATCHES_PER_SYNC % pending_count)
+}
+
+fn rotate_rollouts_to_saved_start(
+    rollouts: &mut [(String, RolloutFile)],
+    saved_start: Option<&str>,
+) {
+    let Some(saved_start) = saved_start else {
+        return;
+    };
+    if let Some(index) = rollouts
+        .iter()
+        .position(|(_, rollout)| normalize_cursor_file_key(&rollout.path) == saved_start)
+    {
+        rollouts.rotate_left(index);
+    }
+}
+
 // ── Main entry point ──────────────────────────────────────────────────────────
 
 /// Scan ~/.claude/projects/**/*.jsonl, sanitize, and POST new events.
@@ -1523,9 +1552,10 @@ pub async fn send_telemetry_if_opted_in<R: tauri::Runtime>(
     // originator or thread source.
     let mut codex_batches_sent = 0usize;
     let mut codex_bytes_scanned = 0u64;
+    let mut codex_next_rollout = cursor.codex_next_rollout.clone();
     if !upload_failed {
         let rollouts = codex_rollouts_freshest_first(&home.join(".codex"));
-        let pending_rollouts: Vec<_> = rollouts
+        let mut pending_rollouts: Vec<_> = rollouts
             .into_iter()
             .filter(|(_, rollout)| {
                 let path = normalize_cursor_file_key(&rollout.path);
@@ -1534,8 +1564,18 @@ pub async fn send_telemetry_if_opted_in<R: tauri::Runtime>(
                     .is_some_and(|entry| entry.offset < rollout.size)
             })
             .collect();
-        let per_rollout_scan_budget = per_rollout_scan_budget(pending_rollouts.len());
-        'codex_files: for (filename_session_id, rollout) in pending_rollouts {
+        rotate_rollouts_to_saved_start(&mut pending_rollouts, cursor.codex_next_rollout.as_deref());
+        let pending_count = pending_rollouts.len();
+        let pending_paths: Vec<_> = pending_rollouts
+            .iter()
+            .map(|(_, rollout)| normalize_cursor_file_key(&rollout.path))
+            .collect();
+        let per_rollout_scan_budget = per_rollout_scan_budget(pending_count);
+        let mut hit_batch_cap = false;
+        codex_next_rollout = None;
+        'codex_files: for (rollout_index, (filename_session_id, rollout)) in
+            pending_rollouts.into_iter().enumerate()
+        {
             let path_str = normalize_cursor_file_key(&rollout.path);
             let Some(candidate) = codex_candidates.get(&path_str) else {
                 continue;
@@ -1555,6 +1595,8 @@ pub async fn send_telemetry_if_opted_in<R: tauri::Runtime>(
             let mut previous_offset = candidate.offset;
 
             let mut rollout_bytes_scanned = 0u64;
+            let mut rollout_batches_sent = 0usize;
+            let rollout_batch_allowance = rollout_batch_allowance(rollout_index, pending_count);
             loop {
                 let global_remaining =
                     MAX_CODEX_SCAN_BYTES_PER_SYNC.saturating_sub(codex_bytes_scanned);
@@ -1602,8 +1644,16 @@ pub async fn send_telemetry_if_opted_in<R: tauri::Runtime>(
                             }
                             if batch_contains_codex {
                                 codex_batches_sent += 1;
+                                rollout_batches_sent += 1;
                                 if codex_batches_sent >= MAX_CODEX_BATCHES_PER_SYNC {
+                                    hit_batch_cap = true;
+                                    codex_next_rollout = pending_paths
+                                        .get((rollout_index + 1) % pending_count)
+                                        .cloned();
                                     break 'codex_files;
+                                }
+                                if rollout_batches_sent >= rollout_batch_allowance {
+                                    break;
                                 }
                             }
                         }
@@ -1628,6 +1678,9 @@ pub async fn send_telemetry_if_opted_in<R: tauri::Runtime>(
                     break;
                 }
             }
+        }
+        if !hit_batch_cap {
+            codex_next_rollout = None;
         }
     }
 
@@ -1667,6 +1720,7 @@ pub async fn send_telemetry_if_opted_in<R: tauri::Runtime>(
     let final_cursor = TelemetryCursor {
         version: "1".to_string(),
         files: final_files,
+        codex_next_rollout,
     };
     save_cursor(&final_cursor)?;
 
@@ -3860,6 +3914,76 @@ mod codex_telemetry_tests {
             second_cursor.files[&newer_key].offset < (older.len() + growth.len()) as u64,
             "the growing rollout remains bounded by its fair slice"
         );
+    }
+
+    #[tokio::test]
+    async fn dense_rollouts_share_global_batch_cap_without_starvation() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/usage/opt-in"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"enabled": true})))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/usage"))
+            .respond_with(complete_ack)
+            .mount(&server)
+            .await;
+
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let home = setup_home();
+        write_menubar(home.path(), r#"{"machineId":"codex-batch-fair"}"#);
+        let dir = home.path().join(".codex/sessions/2026/07/29");
+        fs::create_dir_all(&dir).unwrap();
+        let older_path =
+            dir.join("rollout-2026-07-29T10-00-00-019de12c-d83e-78c2-9bb3-cbb8146965f1.jsonl");
+        let newer_path =
+            dir.join("rollout-2026-07-29T11-00-00-019de12c-d83e-78c2-9bb3-cbb8146965f2.jsonl");
+        let dense_rollout = |session: &str| {
+            let bounded_path = "x".repeat(MAX_PATH_BYTES);
+            let mut records = vec![
+                json!({"type":"session_meta","payload":{"id":session,"cwd":bounded_path.clone(),"gitBranch":bounded_path}}),
+                json!({"type":"turn_context","payload":{"model":"gpt-dense"}}),
+            ];
+            for index in 0..350 {
+                records.push(json!({"timestamp":"2026-07-29T10:00:00Z","uuid":format!("{session}-{index}"),"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":2,"output_tokens":3}}}}));
+            }
+            records
+                .into_iter()
+                .map(|record| record.to_string())
+                .collect::<Vec<_>>()
+                .join("\n")
+                + "\n"
+        };
+        let older = dense_rollout("older-dense");
+        let newer = dense_rollout("newer-dense");
+        fs::write(&older_path, &older).unwrap();
+        fs::write(&newer_path, &newer).unwrap();
+
+        std::env::set_var("HOME", home.path());
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+        let handle = make_app_handle();
+        send_telemetry_if_opted_in(&handle, "/hq", "tok")
+            .await
+            .unwrap();
+        std::env::remove_var("HOME");
+        std::env::remove_var("HQ_VAULT_API_URL");
+
+        let posts = post_bodies(&server).await;
+        assert_eq!(posts.len(), MAX_CODEX_BATCHES_PER_SYNC);
+        let cursor = read_cursor(home.path());
+        let older_key = normalize_cursor_file_key(&older_path);
+        let newer_key = normalize_cursor_file_key(&newer_path);
+        assert!(
+            cursor.files[&newer_key].offset > 0,
+            "the dense newest rollout receives its priority share"
+        );
+        assert!(
+            cursor.files[&older_key].offset > 0,
+            "the older rollout advances before the newest can consume all four batches"
+        );
+        assert!(cursor.files[&newer_key].offset < newer.len() as u64);
+        assert!(cursor.files[&older_key].offset < older.len() as u64);
     }
 
     #[tokio::test]
