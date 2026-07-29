@@ -184,7 +184,7 @@ fn sanitize_row(row: &Value) -> Option<Value> {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/// The offline-cache answer for the CURRENTLY signed-in account, or `None`.
+/// The offline-cache answer for the request's authenticated caller, or `None`.
 ///
 /// This is deliberately NOT a bare read of `telemetryEnabled`, and it never
 /// defaults a missing answer to `true`. Two properties matter, and the old
@@ -202,11 +202,10 @@ fn sanitize_row(row: &Value) -> Option<Value> {
 ///
 /// `None` means "this account has no genuine cached answer" — the caller must
 /// treat that as no-collection, never as opted-in.
-fn read_local_telemetry_enabled() -> Option<bool> {
+fn read_local_telemetry_enabled(caller_subject: Option<&str>) -> Option<bool> {
     let path = crate::util::paths::menubar_json_path().ok()?;
     let record = hq_desktop_core::first_run::read_menubar_consent(&path);
-    let subject = current_cognito_subject()?;
-    record.replayable_for(&subject)
+    record.replayable_for(caller_subject?)
 }
 
 fn write_menubar_telemetry_pref_to(
@@ -527,7 +526,8 @@ async fn resolve_telemetry_enabled(vault: &VaultClient) -> bool {
             // account-unscoped, opt-in-by-omission bug this story removes: on a
             // server-read failure it would collect for someone who never
             // answered, or inherit another account's answer.
-            read_local_telemetry_enabled().unwrap_or(false)
+            let caller_subject = vault.caller_subject();
+            read_local_telemetry_enabled(caller_subject.as_deref()).unwrap_or(false)
         }
     }
 }
@@ -597,7 +597,8 @@ pub async fn get_telemetry_consent_status() -> Result<TelemetryConsentStatus, St
             // no-collection with `unset: true` rather than fabricating an
             // opted-in default — a missing answer must never appear pre-ticked,
             // and account B must never inherit account A's cached value.
-            let cached = read_local_telemetry_enabled();
+            let caller_subject = vault.caller_subject();
+            let cached = read_local_telemetry_enabled(caller_subject.as_deref());
             Ok(TelemetryConsentStatus {
                 enabled: cached.unwrap_or(false),
                 source: TelemetryConsentSource::LocalCache,
@@ -1329,6 +1330,10 @@ const MAX_BATCH_BYTES: usize = 1_000_000;
 const MAX_CODEX_BATCHES_PER_SYNC: usize = 4;
 const MAX_CODEX_SCAN_BYTES_PER_SYNC: u64 = 4 * 1024 * 1024;
 
+fn per_rollout_scan_budget(pending_count: usize) -> u64 {
+    (MAX_CODEX_SCAN_BYTES_PER_SYNC / pending_count.max(1) as u64).max(1)
+}
+
 // ── Main entry point ──────────────────────────────────────────────────────────
 
 /// Scan ~/.claude/projects/**/*.jsonl, sanitize, and POST new events.
@@ -1371,7 +1376,6 @@ pub async fn send_telemetry_if_opted_in<R: tauri::Runtime>(
     let mut batch_events: Vec<Value> = Vec::new();
     let mut batch_sources: Vec<RowSource> = Vec::new();
     let mut upload_failed = false;
-    let mut flushed_once = false;
 
     'claude_files: for file_path in &file_paths {
         let path_str = normalize_cursor_file_key(file_path);
@@ -1471,14 +1475,9 @@ pub async fn send_telemetry_if_opted_in<R: tauri::Runtime>(
                 let candidate =
                     build_wire_payload(&machine_id, &installer_version, &batch_events, &sanitized);
                 if candidate.len() > MAX_BATCH_BYTES {
-                    if !resolve_telemetry_enabled(&vault).await {
-                        batch_events.clear();
-                        batch_sources.clear();
-                        upload_failed = true;
-                        break 'claude_files;
-                    }
                     // Flush current batch
                     if !flush_batch(
+                        &vault,
                         &api_url,
                         jwt,
                         &machine_id,
@@ -1492,7 +1491,6 @@ pub async fn send_telemetry_if_opted_in<R: tauri::Runtime>(
                         upload_failed = true;
                         break 'claude_files;
                     }
-                    flushed_once = true;
                 }
             }
 
@@ -1516,7 +1514,17 @@ pub async fn send_telemetry_if_opted_in<R: tauri::Runtime>(
     let mut codex_bytes_scanned = 0u64;
     if !upload_failed {
         let rollouts = codex_rollouts_freshest_first(&home.join(".codex"));
-        'codex_files: for (filename_session_id, rollout) in rollouts {
+        let pending_rollouts: Vec<_> = rollouts
+            .into_iter()
+            .filter(|(_, rollout)| {
+                let path = normalize_cursor_file_key(&rollout.path);
+                codex_candidates
+                    .get(&path)
+                    .is_some_and(|entry| entry.offset < rollout.size)
+            })
+            .collect();
+        let per_rollout_scan_budget = per_rollout_scan_budget(pending_rollouts.len());
+        'codex_files: for (filename_session_id, rollout) in pending_rollouts {
             let path_str = normalize_cursor_file_key(&rollout.path);
             let Some(candidate) = codex_candidates.get(&path_str) else {
                 continue;
@@ -1535,16 +1543,24 @@ pub async fn send_telemetry_if_opted_in<R: tauri::Runtime>(
             };
             let mut previous_offset = candidate.offset;
 
+            let mut rollout_bytes_scanned = 0u64;
             loop {
-                let remaining = MAX_CODEX_SCAN_BYTES_PER_SYNC.saturating_sub(codex_bytes_scanned);
-                if remaining == 0 {
+                let global_remaining =
+                    MAX_CODEX_SCAN_BYTES_PER_SYNC.saturating_sub(codex_bytes_scanned);
+                if global_remaining == 0 {
                     break 'codex_files;
                 }
+                let file_remaining = per_rollout_scan_budget.saturating_sub(rollout_bytes_scanned);
+                if file_remaining == 0 {
+                    break;
+                }
+                let remaining = global_remaining.min(file_remaining);
                 let Some((sanitized, end_offset, context)) = scanner.next_bounded(remaining) else {
                     break;
                 };
-                codex_bytes_scanned =
-                    codex_bytes_scanned.saturating_add(end_offset.saturating_sub(previous_offset));
+                let scanned = end_offset.saturating_sub(previous_offset);
+                codex_bytes_scanned = codex_bytes_scanned.saturating_add(scanned);
+                rollout_bytes_scanned = rollout_bytes_scanned.saturating_add(scanned);
                 previous_offset = end_offset;
 
                 if let Some(sanitized) = sanitized {
@@ -1556,15 +1572,10 @@ pub async fn send_telemetry_if_opted_in<R: tauri::Runtime>(
                             &sanitized,
                         );
                         if candidate_payload.len() > MAX_BATCH_BYTES {
-                            if !resolve_telemetry_enabled(&vault).await {
-                                batch_events.clear();
-                                batch_sources.clear();
-                                upload_failed = true;
-                                break 'codex_files;
-                            }
                             let batch_contains_codex =
                                 batch_sources.iter().any(|source| source.context.is_some());
                             if !flush_batch(
+                                &vault,
                                 &api_url,
                                 jwt,
                                 &machine_id,
@@ -1578,7 +1589,6 @@ pub async fn send_telemetry_if_opted_in<R: tauri::Runtime>(
                                 upload_failed = true;
                                 break 'codex_files;
                             }
-                            flushed_once = true;
                             if batch_contains_codex {
                                 codex_batches_sent += 1;
                                 if codex_batches_sent >= MAX_CODEX_BATCHES_PER_SYNC {
@@ -1603,6 +1613,9 @@ pub async fn send_telemetry_if_opted_in<R: tauri::Runtime>(
                 if codex_bytes_scanned >= MAX_CODEX_SCAN_BYTES_PER_SYNC {
                     break 'codex_files;
                 }
+                if rollout_bytes_scanned >= per_rollout_scan_budget {
+                    break;
+                }
             }
         }
     }
@@ -1611,21 +1624,17 @@ pub async fn send_telemetry_if_opted_in<R: tauri::Runtime>(
     // A zero-event scan slice can advance locally without making a request.
     if !upload_failed {
         if !batch_events.is_empty() {
-            if flushed_once && !resolve_telemetry_enabled(&vault).await {
-                batch_events.clear();
-                batch_sources.clear();
-            } else {
-                let _ = flush_batch(
-                    &api_url,
-                    jwt,
-                    &machine_id,
-                    &installer_version,
-                    &mut batch_events,
-                    &mut batch_sources,
-                    &mut newly_committed,
-                )
-                .await;
-            }
+            let _ = flush_batch(
+                &vault,
+                &api_url,
+                jwt,
+                &machine_id,
+                &installer_version,
+                &mut batch_events,
+                &mut batch_sources,
+                &mut newly_committed,
+            )
+            .await;
         } else if !batch_sources.is_empty() {
             commit_acknowledged_sources(&batch_sources, &mut newly_committed);
         }
@@ -1698,6 +1707,7 @@ fn commit_acknowledged_sources(
 }
 
 async fn flush_batch(
+    vault: &VaultClient,
     api_url: &str,
     jwt: &str,
     machine_id: &str,
@@ -1706,6 +1716,14 @@ async fn flush_batch(
     batch_sources: &mut Vec<RowSource>,
     newly_committed: &mut HashMap<String, CursorEntry>,
 ) -> bool {
+    // Consent is checked at the request boundary, including the first and only
+    // batch in a cycle. A withdrawal while files are being scanned must prevent
+    // the pending payload from ever leaving the machine.
+    if !resolve_telemetry_enabled(vault).await {
+        batch_events.clear();
+        batch_sources.clear();
+        return false;
+    }
     let event_count = batch_events.len();
     let batch = UsageBatch {
         machine_id: machine_id.to_string(),
@@ -1754,6 +1772,15 @@ mod codex_telemetry_tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     // ── Test helpers ─────────────────────────────────────────────────────────
+    fn complete_ack(request: &wiremock::Request) -> ResponseTemplate {
+        let event_count = serde_json::from_slice::<Value>(&request.body)
+            .ok()
+            .and_then(|body| body.get("events").and_then(Value::as_array).map(Vec::len))
+            .unwrap_or(0);
+        ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true, "written": event_count, "deduped": 0, "skipped": []
+        }))
+    }
 
     /// Create a temp HOME with ~/.hq/ and ~/.claude/projects/ structure.
     fn setup_home() -> TempDir {
@@ -1910,7 +1937,7 @@ mod codex_telemetry_tests {
         write_tokens_for_subject(home.path(), "sub-a");
         std::env::set_var("HOME", home.path());
 
-        let answer = read_local_telemetry_enabled();
+        let answer = read_local_telemetry_enabled(Some("sub-a"));
 
         std::env::remove_var("HOME");
         assert_eq!(
@@ -1932,7 +1959,7 @@ mod codex_telemetry_tests {
         write_tokens_for_subject(home.path(), "sub-a");
         std::env::set_var("HOME", home.path());
 
-        let answer = read_local_telemetry_enabled();
+        let answer = read_local_telemetry_enabled(Some("sub-a"));
 
         std::env::remove_var("HOME");
         assert_eq!(
@@ -1955,14 +1982,41 @@ mod codex_telemetry_tests {
 
         // Account A: sees its own answer.
         write_tokens_for_subject(home.path(), "sub-a");
-        let a = read_local_telemetry_enabled();
+        let a = read_local_telemetry_enabled(Some("sub-a"));
         // Account B: the cached answer belongs to A, so B gets no answer.
         write_tokens_for_subject(home.path(), "sub-b");
-        let b = read_local_telemetry_enabled();
+        let b = read_local_telemetry_enabled(Some("sub-b"));
 
         std::env::remove_var("HOME");
         assert_eq!(a, Some(true), "account A reads its own answer");
         assert_eq!(b, None, "account B must not inherit account A's answer");
+    }
+    #[tokio::test]
+    async fn offline_fallback_uses_in_flight_caller_after_account_switch() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/usage/opt-in"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("offline"))
+            .mount(&server)
+            .await;
+
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let home = setup_home();
+        write_menubar(
+            home.path(),
+            r#"{"telemetryEnabled":true,"telemetryOptInAnsweredAt":"2026-07-27T10:00:00Z","telemetryOptInSub":"sub-a"}"#,
+        );
+        write_tokens_for_subject(home.path(), "sub-b");
+        std::env::set_var("HOME", home.path());
+
+        let vault_for_in_flight_a = VaultClient::new(server.uri(), id_token_for_subject("sub-a"));
+        let enabled = resolve_telemetry_enabled(&vault_for_in_flight_a).await;
+
+        std::env::remove_var("HOME");
+        assert!(
+            enabled,
+            "account B's token file must not replace in-flight account A"
+        );
     }
 
     #[tokio::test]
@@ -2245,16 +2299,16 @@ mod codex_telemetry_tests {
     #[tokio::test]
     async fn test_withdrawal_halts_emission_on_next_cycle_without_restart() {
         let server = MockServer::start().await;
-        // Cycle 1: opted in.
+        // Cycle 1: opted in at cycle start and again immediately before POST.
         Mock::given(method("GET"))
             .and(path("/v1/usage/opt-in"))
             .respond_with(ResponseTemplate::new(200).set_body_json(&json!({"enabled": true})))
-            .up_to_n_times(1)
+            .up_to_n_times(2)
             .with_priority(1)
             .mount(&server)
             .await;
         // Cycle 2 onward: withdrawn. A lower priority (higher number) makes this
-        // the fallback once the one-shot cycle-1 mock is exhausted.
+        // the fallback once both cycle-1 checks are exhausted.
         Mock::given(method("GET"))
             .and(path("/v1/usage/opt-in"))
             .respond_with(ResponseTemplate::new(200).set_body_json(&json!({"enabled": false})))
@@ -2263,7 +2317,7 @@ mod codex_telemetry_tests {
             .await;
         Mock::given(method("POST"))
             .and(path("/v1/usage"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .respond_with(complete_ack)
             .mount(&server)
             .await;
 
@@ -2330,7 +2384,7 @@ mod codex_telemetry_tests {
             .await;
         Mock::given(method("POST"))
             .and(path("/v1/usage"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .respond_with(complete_ack)
             .mount(&server)
             .await;
 
@@ -2387,7 +2441,7 @@ mod codex_telemetry_tests {
             .await;
         Mock::given(method("POST"))
             .and(path("/v1/usage"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .respond_with(complete_ack)
             .mount(&server)
             .await;
 
@@ -2464,7 +2518,7 @@ mod codex_telemetry_tests {
             .await;
         Mock::given(method("POST"))
             .and(path("/v1/usage"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .respond_with(complete_ack)
             .mount(&server)
             .await;
 
@@ -2557,7 +2611,7 @@ mod codex_telemetry_tests {
             .await;
         Mock::given(method("POST"))
             .and(path("/v1/usage"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .respond_with(complete_ack)
             .mount(&server)
             .await;
 
@@ -2613,6 +2667,54 @@ mod codex_telemetry_tests {
             "a mid-cycle withdrawal must halt further batches — the cycle emits \
              what was in flight, then stops the moment the server records the \
              withdrawal"
+        );
+    }
+
+    #[tokio::test]
+    async fn withdrawal_during_single_batch_scan_prevents_first_post() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/usage/opt-in"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"enabled": true})))
+            .up_to_n_times(1)
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1/usage/opt-in"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"enabled": false})))
+            .with_priority(2)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/usage"))
+            .respond_with(complete_ack)
+            .mount(&server)
+            .await;
+
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let home = setup_home();
+        write_menubar(home.path(), r#"{"machineId":"mid-single-withdraw"}"#);
+        write_jsonl(home.path(), "proj", "single.jsonl", &[USER_ROW]);
+        std::env::set_var("HOME", home.path());
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+
+        let handle = make_app_handle();
+        send_telemetry_if_opted_in(&handle, "/hq", "tok")
+            .await
+            .unwrap();
+
+        std::env::remove_var("HOME");
+        std::env::remove_var("HQ_VAULT_API_URL");
+
+        let requests = server.received_requests().await.unwrap();
+        let usage_posts = requests
+            .iter()
+            .filter(|request| request.method == wiremock::http::Method::POST)
+            .count();
+        assert_eq!(
+            usage_posts, 0,
+            "withdrawal before the first POST must stop upload"
         );
     }
 
@@ -2686,7 +2788,7 @@ mod codex_telemetry_tests {
             .await;
         Mock::given(method("POST"))
             .and(path("/v1/usage"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .respond_with(complete_ack)
             .mount(&server)
             .await;
 
@@ -2727,7 +2829,7 @@ mod codex_telemetry_tests {
             .await;
         Mock::given(method("POST"))
             .and(path("/v1/usage"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .respond_with(complete_ack)
             .mount(&server)
             .await;
 
@@ -2788,7 +2890,7 @@ mod codex_telemetry_tests {
             .await;
         Mock::given(method("POST"))
             .and(path("/v1/usage"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .respond_with(complete_ack)
             .mount(&server)
             .await;
 
@@ -2863,7 +2965,7 @@ mod codex_telemetry_tests {
             .await;
         Mock::given(method("POST"))
             .and(path("/v1/usage"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .respond_with(complete_ack)
             .mount(&server)
             .await;
 
@@ -2883,7 +2985,8 @@ mod codex_telemetry_tests {
         std::env::set_var("HQ_VAULT_API_URL", server.uri());
 
         let handle = make_app_handle();
-        let result = send_telemetry_if_opted_in(&handle, "/hq", "tok").await;
+        let token = id_token_for_subject("sub-i1");
+        let result = send_telemetry_if_opted_in(&handle, "/hq", &token).await;
 
         std::env::remove_var("HOME");
         std::env::remove_var("HQ_VAULT_API_URL");
@@ -2922,7 +3025,8 @@ mod codex_telemetry_tests {
         std::env::set_var("HQ_VAULT_API_URL", server.uri());
 
         let handle = make_app_handle();
-        let result = send_telemetry_if_opted_in(&handle, "/hq", "tok").await;
+        let token = id_token_for_subject("sub-i0");
+        let result = send_telemetry_if_opted_in(&handle, "/hq", &token).await;
 
         std::env::remove_var("HOME");
         std::env::remove_var("HQ_VAULT_API_URL");
@@ -2963,7 +3067,8 @@ mod codex_telemetry_tests {
         std::env::set_var("HQ_VAULT_API_URL", server.uri());
 
         let handle = make_app_handle();
-        let result = send_telemetry_if_opted_in(&handle, "/hq", "tok").await;
+        let token = id_token_for_subject("sub-i2");
+        let result = send_telemetry_if_opted_in(&handle, "/hq", &token).await;
 
         std::env::remove_var("HOME");
         std::env::remove_var("HQ_VAULT_API_URL");
@@ -3324,56 +3429,6 @@ mod codex_telemetry_tests {
         assert_eq!(posts[0]["surface"], json!("onboarding"));
         assert_eq!(posts[0]["consentVersion"], json!(1));
     }
-}
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::util::test_support::ENV_MUTEX;
-    use serde_json::json;
-    use std::fs;
-    use tempfile::TempDir;
-    use wiremock::matchers::{method, path};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
-
-    // ── Test helpers ─────────────────────────────────────────────────────────
-
-    fn complete_ack(request: &wiremock::Request) -> ResponseTemplate {
-        let event_count = serde_json::from_slice::<Value>(&request.body)
-            .ok()
-            .and_then(|body| body.get("events").and_then(Value::as_array).map(Vec::len))
-            .unwrap_or(0);
-        ResponseTemplate::new(200).set_body_json(json!({
-            "ok": true, "written": event_count, "deduped": 0, "skipped": []
-        }))
-    }
-
-    /// Create a temp HOME with ~/.hq/ and ~/.claude/projects/ structure.
-    fn setup_home() -> TempDir {
-        let tmp = TempDir::new().unwrap();
-        fs::create_dir_all(tmp.path().join(".hq")).unwrap();
-        fs::create_dir_all(tmp.path().join(".claude/projects")).unwrap();
-        tmp
-    }
-
-    /// Write a JSONL file under ~/.claude/projects/<subdir>/<name>.jsonl.
-    fn write_jsonl(
-        home: &std::path::Path,
-        subdir: &str,
-        name: &str,
-        lines: &[&str],
-    ) -> std::path::PathBuf {
-        let dir = home.join(".claude/projects").join(subdir);
-        fs::create_dir_all(&dir).unwrap();
-        let p = dir.join(name);
-        let content: String = lines.iter().map(|l| format!("{}\n", l)).collect();
-        fs::write(&p, &content).unwrap();
-        p
-    }
-
-    fn write_menubar(home: &std::path::Path, content: &str) {
-        fs::write(home.join(".hq/menubar.json"), content).unwrap();
-    }
-
     fn write_codex_rollout(home: &std::path::Path, contents: &str) -> std::path::PathBuf {
         let dir = home.join(".codex/sessions/2026/07/23");
         fs::create_dir_all(&dir).unwrap();
@@ -3383,13 +3438,6 @@ mod tests {
         path
     }
 
-    fn read_cursor(home: &std::path::Path) -> TelemetryCursor {
-        let body = fs::read_to_string(home.join(".hq/telemetry-cursor.json")).unwrap();
-        serde_json::from_str(&body).unwrap()
-    }
-
-    const USER_ROW: &str = r#"{"type":"user","timestamp":"2026-04-25T10:00:00Z","sessionId":"s1","uuid":"u1","parentUuid":null,"userType":"human","entrypoint":"cli","cwd":"/Users/x/proj","gitBranch":"main","version":"1.0","message":{"role":"user","content":[{"type":"text","text":"hello world"}],"id":"msg_1"}}"#;
-    const ASST_ROW: &str = r#"{"type":"assistant","timestamp":"2026-04-25T10:00:01Z","sessionId":"s1","uuid":"u2","parentUuid":"u1","message":{"role":"assistant","model":"claude-opus","content":[{"type":"text","text":"hi"},{"type":"thinking","thinking":"hmm"}],"stop_sequence":"</end>","usage":{"input_tokens":42,"output_tokens":7},"id":"msg_2"},"toolUseIds":["t1"],"toolResults":[{"id":"t1","output":"x"}],"requestId":"req_1"}"#;
     const MULTI_DATE_CODEX_ROLLOUT: &str = concat!(
         "{\"type\":\"session_meta\",\"payload\":{\"id\":\"fixture-session\",\"cwd\":\"/repo\",\"git\":{\"branch\":\"feature/telemetry\"}}}\n",
         "{\"type\":\"turn_context\",\"payload\":{\"model\":\"gpt-fixture\"}}\n",
@@ -3399,11 +3447,6 @@ mod tests {
         "{\"type\":\"function_call_output\",\"payload\":{\"output\":\"sensitive tool output must stay local\"}}\n",
         "{\"timestamp\":\"2026-07-29T00:00:02Z\",\"uuid\":\"fixture-3\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"last_token_usage\":{\"input_tokens\":2,\"output_tokens\":1,\"reasoning_output_tokens\":4,\"cached_input_tokens\":1},\"total_token_usage\":{\"input_tokens\":19,\"output_tokens\":9,\"reasoning_output_tokens\":7,\"cached_input_tokens\":7}}}}\n",
     );
-
-    fn make_app_handle() -> tauri::AppHandle<tauri::test::MockRuntime> {
-        let app = tauri::test::mock_app();
-        app.handle().clone()
-    }
 
     fn codex_fixture(model: &str, uuid: &str) -> String {
         [
@@ -3545,6 +3588,13 @@ mod tests {
     #[tokio::test]
     async fn partial_http_ack_keeps_sources_until_full_retry() {
         let partial_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/usage/opt-in"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"enabled": true})))
+            .mount(&partial_server)
+            .await;
+        let partial_vault = VaultClient::new(partial_server.uri(), "token");
+
         Mock::given(method("POST"))
             .and(path("/v1/usage"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -3568,6 +3618,7 @@ mod tests {
 
         assert!(
             !flush_batch(
+                &partial_vault,
                 &partial_server.uri(),
                 "token",
                 "machine",
@@ -3581,6 +3632,13 @@ mod tests {
         assert!(committed.is_empty());
 
         let full_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/usage/opt-in"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"enabled": true})))
+            .mount(&full_server)
+            .await;
+        let full_vault = VaultClient::new(full_server.uri(), "token");
+
         Mock::given(method("POST"))
             .and(path("/v1/usage"))
             .respond_with(complete_ack)
@@ -3590,6 +3648,7 @@ mod tests {
         let mut retry_sources = vec![source()];
         assert!(
             flush_batch(
+                &full_vault,
                 &full_server.uri(),
                 "token",
                 "machine",
@@ -3671,6 +3730,79 @@ mod tests {
             ["fresh", "middle", "old"]
         );
     }
+
+    #[tokio::test]
+    async fn older_rollout_advances_while_newer_rollout_keeps_growing() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/usage/opt-in"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"enabled": true})))
+            .mount(&server)
+            .await;
+
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let home = setup_home();
+        write_menubar(home.path(), r#"{"machineId":"codex-fair"}"#);
+        let dir = home.path().join(".codex/sessions/2026/07/29");
+        fs::create_dir_all(&dir).unwrap();
+        let older_path =
+            dir.join("rollout-2026-07-29T10-00-00-019de12c-d83e-78c2-9bb3-cbb8146965e1.jsonl");
+        let newer_path =
+            dir.join("rollout-2026-07-29T11-00-00-019de12c-d83e-78c2-9bb3-cbb8146965e2.jsonl");
+        let padding =
+            json!({"type":"event_msg","payload":{"type":"user_message","message":"x".repeat(1024)}})
+                .to_string() + "\n";
+        let mut older = String::new();
+        while older.len() < 3 * 1024 * 1024 {
+            older.push_str(&padding);
+        }
+        fs::write(&older_path, &older).unwrap();
+        fs::write(&newer_path, &older).unwrap();
+
+        std::env::set_var("HOME", home.path());
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+        let handle = make_app_handle();
+        send_telemetry_if_opted_in(&handle, "/hq", "tok")
+            .await
+            .unwrap();
+        let first_cursor = read_cursor(home.path());
+        let older_key = older_path.to_string_lossy().to_string();
+        let newer_key = newer_path.to_string_lossy().to_string();
+        let first_older_offset = first_cursor.files[&older_key].offset;
+        assert!(first_older_offset > 0);
+        assert!(first_older_offset < older.len() as u64);
+
+        use std::io::Write;
+        let growth = padding.repeat(1024);
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&newer_path)
+            .unwrap()
+            .write_all(growth.as_bytes())
+            .unwrap();
+
+        send_telemetry_if_opted_in(&handle, "/hq", "tok")
+            .await
+            .unwrap();
+        std::env::remove_var("HOME");
+        std::env::remove_var("HQ_VAULT_API_URL");
+
+        let second_cursor = read_cursor(home.path());
+        assert!(
+            second_cursor.files[&older_key].offset > first_older_offset,
+            "the older rollout must advance on every bounded pass"
+        );
+        assert_eq!(
+            second_cursor.files[&older_key].offset,
+            older.len() as u64,
+            "the older backfill completes despite fresh work"
+        );
+        assert!(
+            second_cursor.files[&newer_key].offset < (older.len() + growth.len()) as u64,
+            "the growing rollout remains bounded by its fair slice"
+        );
+    }
+
     #[tokio::test]
     async fn codex_rows_share_batch_resume_and_only_send_appends() {
         let server = MockServer::start().await;
@@ -4352,650 +4484,5 @@ mod tests {
         let (row, offset, _) = scanner.next_bounded(record.len() as u64).unwrap();
         assert_eq!(row.unwrap()["model"], "final-model");
         assert_eq!(offset, record.len() as u64);
-    }
-
-    #[tokio::test]
-    async fn test_opt_in_false_sends_nothing() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/v1/usage/opt-in"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({"enabled": false})))
-            .mount(&server)
-            .await;
-
-        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let home = setup_home();
-        write_menubar(home.path(), r#"{"machineId":"test-id","hqPath":"/foo"}"#);
-        write_jsonl(home.path(), "proj", "session.jsonl", &[USER_ROW, ASST_ROW]);
-        write_codex_rollout(home.path(), "{\"type\":\"event_msg\"}\n");
-        std::env::set_var("HOME", home.path());
-        std::env::set_var("HQ_VAULT_API_URL", server.uri());
-
-        let handle = make_app_handle();
-        let result = send_telemetry_if_opted_in(&handle, "/hq", "test-jwt").await;
-
-        std::env::remove_var("HOME");
-        std::env::remove_var("HQ_VAULT_API_URL");
-
-        assert!(result.is_ok());
-        let reqs = server.received_requests().await.unwrap();
-        let posts: Vec<_> = reqs
-            .iter()
-            .filter(|r| r.method == wiremock::http::Method::POST)
-            .collect();
-        assert_eq!(posts.len(), 0, "no POST expected when opt-in is false");
-        assert!(
-            !home.path().join(".hq/telemetry-cursor.json").exists(),
-            "opted-out collection must not enumerate or persist Codex rollouts",
-        );
-    }
-
-    // ── (b) Missing cursor file → all files at offset 0 ──────────────────────
-
-    #[tokio::test]
-    async fn test_missing_cursor_starts_at_offset_zero() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/v1/usage/opt-in"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({"enabled": true})))
-            .mount(&server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/v1/usage"))
-            .respond_with(complete_ack)
-            .mount(&server)
-            .await;
-
-        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let home = setup_home();
-        write_menubar(home.path(), r#"{"machineId":"mid-b","hqPath":"/foo"}"#);
-        let jsonl_path = write_jsonl(home.path(), "proj", "s.jsonl", &[USER_ROW, ASST_ROW]);
-        let file_size = fs::metadata(&jsonl_path).unwrap().len();
-        let codex_path = write_codex_rollout(home.path(), "{\"type\":\"event_msg\"}\n");
-
-        std::env::set_var("HOME", home.path());
-        std::env::set_var("HQ_VAULT_API_URL", server.uri());
-
-        let handle = make_app_handle();
-        let result = send_telemetry_if_opted_in(&handle, "/hq", "test-jwt").await;
-
-        std::env::remove_var("HOME");
-        std::env::remove_var("HQ_VAULT_API_URL");
-
-        assert!(result.is_ok());
-
-        // Cursor file should exist with correct offset
-        let cursor = read_cursor(home.path());
-        let path_str = jsonl_path.to_string_lossy().to_string();
-        let entry = cursor
-            .files
-            .get(&path_str)
-            .expect("cursor should have entry for the file");
-        assert_eq!(
-            entry.offset, file_size,
-            "cursor offset should equal file size"
-        );
-        let codex_entry = cursor
-            .files
-            .get(&codex_path.to_string_lossy().to_string())
-            .expect("enabled collection should persist the Codex candidate");
-        assert_eq!(
-            codex_entry.offset, 0,
-            "new Codex rollout starts at offset zero"
-        );
-
-        // POST contains only the 2 Claude events because the Codex fixture has
-        // no token_count payload; raw rollout records must never be uploaded.
-        let reqs = server.received_requests().await.unwrap();
-        let posts: Vec<_> = reqs
-            .iter()
-            .filter(|r| r.method == wiremock::http::Method::POST)
-            .collect();
-        assert!(!posts.is_empty(), "at least 1 POST expected");
-        let body: Value = serde_json::from_slice(&posts[0].body).unwrap();
-        let events = body["events"].as_array().unwrap();
-        assert_eq!(events.len(), 2);
-    }
-
-    // ── (c) Strip-list removes every REMOVE field ─────────────────────────────
-
-    #[tokio::test]
-    async fn test_strip_list_removes_remove_fields() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/v1/usage/opt-in"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({"enabled": true})))
-            .mount(&server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/v1/usage"))
-            .respond_with(complete_ack)
-            .mount(&server)
-            .await;
-
-        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let home = setup_home();
-        write_menubar(home.path(), r#"{"machineId":"mid-c"}"#);
-        // Row containing ALL REMOVE fields
-        let full_row = r#"{"type":"user","timestamp":"2026-04-25T10:00:00Z","sessionId":"s1","uuid":"u1","parentUuid":null,"userType":"human","entrypoint":"cli","cwd":"/Users/x","gitBranch":"main","version":"1.0","content":[{"type":"text"}],"thinking":"internal","text":"raw","toolUseIds":["t1"],"toolResults":[{"id":"t1"}],"message":{"role":"user","content":[{"type":"text","text":"hi"}],"model":"claude","thinking":"x","text":"y","stop_sequence":"\n\nHuman:","id":"msg_1","usage":{"input_tokens":5,"output_tokens":2}}}"#;
-        write_jsonl(home.path(), "proj", "full.jsonl", &[full_row]);
-
-        std::env::set_var("HOME", home.path());
-        std::env::set_var("HQ_VAULT_API_URL", server.uri());
-
-        let handle = make_app_handle();
-        let result = send_telemetry_if_opted_in(&handle, "/hq", "tok").await;
-
-        std::env::remove_var("HOME");
-        std::env::remove_var("HQ_VAULT_API_URL");
-
-        assert!(result.is_ok());
-
-        let reqs = server.received_requests().await.unwrap();
-        let posts: Vec<_> = reqs
-            .iter()
-            .filter(|r| r.method == wiremock::http::Method::POST)
-            .collect();
-        assert!(!posts.is_empty());
-        let body: Value = serde_json::from_slice(&posts[0].body).unwrap();
-        // Server allowlist (KEEP_FIELDS in hq-pro vault-service /v1/usage):
-        //   sessionId, timestamp, uuid, cwd, gitBranch, userType, model,
-        //   inputTokens, outputTokens, cacheCreationInputTokens, cacheReadInputTokens
-        let allowed: std::collections::HashSet<&str> = [
-            "sessionId",
-            "timestamp",
-            "uuid",
-            "cwd",
-            "gitBranch",
-            "userType",
-            "model",
-            "inputTokens",
-            "outputTokens",
-            "cacheCreationInputTokens",
-            "cacheReadInputTokens",
-        ]
-        .into_iter()
-        .collect();
-        for event in body["events"].as_array().unwrap() {
-            let obj = event.as_object().unwrap();
-            for key in obj.keys() {
-                assert!(
-                    allowed.contains(key.as_str()),
-                    "field `{}` is not in server allowlist",
-                    key,
-                );
-            }
-            // `message` must be flattened — no nested object should remain
-            assert!(!obj.contains_key("message"), "`message` must not be nested");
-            // Sensitive fields must be absent
-            for removed in &["content", "thinking", "text", "toolUseIds", "toolResults"] {
-                assert!(!obj.contains_key(*removed), "`{}` must be absent", removed);
-            }
-        }
-    }
-
-    // ── (d) 1 MB cap rollover ─────────────────────────────────────────────────
-
-    #[tokio::test]
-    async fn test_one_mb_cap_causes_rollover() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/v1/usage/opt-in"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({"enabled": true})))
-            .mount(&server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/v1/usage"))
-            .respond_with(complete_ack)
-            .mount(&server)
-            .await;
-
-        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let home = setup_home();
-        write_menubar(home.path(), r#"{"machineId":"mid-d"}"#);
-
-        // Each row keeps two valid 4 KiB metadata fields after sanitization.
-        // 150 * ~8 KiB > 1 MB, so the wire-size guard must roll over.
-        let bounded_path = "x".repeat(MAX_PATH_BYTES);
-        let mut lines = Vec::new();
-        for i in 0..150usize {
-            let row = json!({
-                "type": "user",
-                "timestamp": format!("2026-04-25T10:00:{:02}Z", i % 60),
-                "sessionId": "s1",
-                "uuid": format!("u{}", i),
-                "parentUuid": null,
-                "userType": "human",
-                "entrypoint": "cli",
-                "cwd": bounded_path,
-                "gitBranch": bounded_path,
-                "version": "1.0",
-                "message": {"role": "user", "content": [{"type": "text", "text": "hi"}], "id": "m"}
-            });
-            lines.push(serde_json::to_string(&row).unwrap());
-        }
-        let lines_str: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
-        write_jsonl(home.path(), "proj", "large.jsonl", &lines_str);
-
-        std::env::set_var("HOME", home.path());
-        std::env::set_var("HQ_VAULT_API_URL", server.uri());
-
-        let handle = make_app_handle();
-        let result = send_telemetry_if_opted_in(&handle, "/hq", "tok").await;
-
-        std::env::remove_var("HOME");
-        std::env::remove_var("HQ_VAULT_API_URL");
-
-        assert!(result.is_ok());
-
-        let reqs = server.received_requests().await.unwrap();
-        let posts: Vec<_> = reqs
-            .iter()
-            .filter(|r| r.method == wiremock::http::Method::POST)
-            .collect();
-        assert!(
-            posts.len() >= 2,
-            "expected ≥2 POSTs due to 1 MB rollover, got {}",
-            posts.len()
-        );
-
-        // Last batch must be < 1 MB
-        let last_post = posts.last().unwrap();
-        assert!(
-            last_post.body.len() < MAX_BATCH_BYTES,
-            "last batch must be < 1 MB, got {} bytes",
-            last_post.body.len()
-        );
-    }
-
-    // ── (e) Non-200 does NOT advance cursor ───────────────────────────────────
-
-    #[tokio::test]
-    async fn test_non_200_does_not_advance_cursor() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/v1/usage/opt-in"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({"enabled": true})))
-            .mount(&server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/v1/usage"))
-            .respond_with(ResponseTemplate::new(500).set_body_string("error"))
-            .mount(&server)
-            .await;
-
-        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let home = setup_home();
-        write_menubar(home.path(), r#"{"machineId":"mid-e"}"#);
-        let jsonl_path = write_jsonl(
-            home.path(),
-            "proj",
-            "s.jsonl",
-            &[USER_ROW, ASST_ROW, USER_ROW],
-        );
-
-        std::env::set_var("HOME", home.path());
-        std::env::set_var("HQ_VAULT_API_URL", server.uri());
-
-        let handle = make_app_handle();
-        let result = send_telemetry_if_opted_in(&handle, "/hq", "tok").await;
-
-        std::env::remove_var("HOME");
-        std::env::remove_var("HQ_VAULT_API_URL");
-
-        assert!(result.is_ok());
-
-        let path_str = jsonl_path.to_string_lossy().to_string();
-        // Cursor entry must be absent (or at 0), NOT at EOF
-        let cursor_file = home.path().join(".hq/telemetry-cursor.json");
-        if cursor_file.exists() {
-            let cursor = read_cursor(home.path());
-            if let Some(entry) = cursor.files.get(&path_str) {
-                assert_eq!(entry.offset, 0, "cursor must not advance on 500");
-            }
-            // If absent, that's also acceptable
-        }
-        // Verify that no entry with non-zero offset exists
-        if cursor_file.exists() {
-            let cursor = read_cursor(home.path());
-            let entry_offset = cursor.files.get(&path_str).map(|e| e.offset).unwrap_or(0);
-            assert_eq!(
-                entry_offset, 0,
-                "cursor offset must be 0 (or absent) after failed POST"
-            );
-        }
-    }
-
-    // ── (f) Atomic cursor write ───────────────────────────────────────────────
-
-    #[tokio::test]
-    async fn test_atomic_cursor_write_no_tmp_file() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/v1/usage/opt-in"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({"enabled": true})))
-            .mount(&server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/v1/usage"))
-            .respond_with(complete_ack)
-            .mount(&server)
-            .await;
-
-        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let home = setup_home();
-        write_menubar(home.path(), r#"{"machineId":"mid-f"}"#);
-        write_jsonl(home.path(), "proj", "s.jsonl", &[USER_ROW]);
-
-        std::env::set_var("HOME", home.path());
-        std::env::set_var("HQ_VAULT_API_URL", server.uri());
-
-        let handle = make_app_handle();
-        let result = send_telemetry_if_opted_in(&handle, "/hq", "tok").await;
-
-        std::env::remove_var("HOME");
-        std::env::remove_var("HQ_VAULT_API_URL");
-
-        assert!(result.is_ok());
-        assert!(
-            !home.path().join(".hq/telemetry-cursor.json.tmp").exists(),
-            "no .tmp file should remain after atomic write"
-        );
-        assert!(
-            home.path().join(".hq/telemetry-cursor.json").exists(),
-            "cursor file must exist after successful run"
-        );
-    }
-
-    // ── (g) New files discovered between runs start at offset 0 ──────────────
-
-    #[tokio::test]
-    async fn test_new_file_between_runs_starts_at_zero() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/v1/usage/opt-in"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({"enabled": true})))
-            .mount(&server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/v1/usage"))
-            .respond_with(complete_ack)
-            .mount(&server)
-            .await;
-
-        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let home = setup_home();
-        write_menubar(home.path(), r#"{"machineId":"mid-g"}"#);
-
-        // Run 1: only fixture A
-        let _path_a = write_jsonl(home.path(), "proj-a", "a.jsonl", &[USER_ROW]);
-        std::env::set_var("HOME", home.path());
-        std::env::set_var("HQ_VAULT_API_URL", server.uri());
-
-        let handle = make_app_handle();
-        send_telemetry_if_opted_in(&handle, "/hq", "tok")
-            .await
-            .unwrap();
-
-        let posts_run1 = server
-            .received_requests()
-            .await
-            .unwrap()
-            .iter()
-            .filter(|r| r.method == wiremock::http::Method::POST)
-            .count();
-        assert!(posts_run1 >= 1, "run 1 should POST fixture A");
-
-        // Run 2: add fixture B
-        let path_b = write_jsonl(home.path(), "proj-b", "b.jsonl", &[ASST_ROW]);
-        send_telemetry_if_opted_in(&handle, "/hq", "tok")
-            .await
-            .unwrap();
-
-        std::env::remove_var("HOME");
-        std::env::remove_var("HQ_VAULT_API_URL");
-
-        let cursor = read_cursor(home.path());
-        let path_b_str = path_b.to_string_lossy().to_string();
-        let b_size = fs::metadata(&path_b).unwrap().len();
-        let b_entry = cursor
-            .files
-            .get(&path_b_str)
-            .expect("cursor should have an entry for fixture B after run 2");
-        assert_eq!(
-            b_entry.offset, b_size,
-            "fixture B should be fully consumed in run 2"
-        );
-    }
-
-    // ── (h) Truncated/rotated file resets cursor ──────────────────────────────
-
-    #[tokio::test]
-    async fn test_rotated_file_resets_cursor() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/v1/usage/opt-in"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({"enabled": true})))
-            .mount(&server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/v1/usage"))
-            .respond_with(complete_ack)
-            .mount(&server)
-            .await;
-
-        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let home = setup_home();
-        write_menubar(home.path(), r#"{"machineId":"mid-h"}"#);
-
-        // Run 1: fixture A with 3 rows
-        let path_a = write_jsonl(
-            home.path(),
-            "proj",
-            "a.jsonl",
-            &[USER_ROW, ASST_ROW, USER_ROW],
-        );
-        let original_size = fs::metadata(&path_a).unwrap().len();
-        assert!(original_size > 0);
-
-        std::env::set_var("HOME", home.path());
-        std::env::set_var("HQ_VAULT_API_URL", server.uri());
-
-        let handle = make_app_handle();
-        send_telemetry_if_opted_in(&handle, "/hq", "tok")
-            .await
-            .unwrap();
-
-        // Verify run 1 set cursor to EOF
-        let cursor_after_run1 = read_cursor(home.path());
-        let path_a_str = path_a.to_string_lossy().to_string();
-        let entry1 = cursor_after_run1.files.get(&path_a_str).unwrap();
-        assert_eq!(entry1.offset, original_size);
-
-        // Truncate A to 0 bytes (size < stored_offset → rotation trigger)
-        {
-            let _f = fs::OpenOptions::new()
-                .write(true)
-                .truncate(true)
-                .open(&path_a)
-                .unwrap();
-        }
-        assert_eq!(fs::metadata(&path_a).unwrap().len(), 0);
-
-        // Run 2: A is now empty after truncation
-        send_telemetry_if_opted_in(&handle, "/hq", "tok")
-            .await
-            .unwrap();
-
-        std::env::remove_var("HOME");
-        std::env::remove_var("HQ_VAULT_API_URL");
-
-        // Cursor for A should be reset to 0
-        let cursor_after_run2 = read_cursor(home.path());
-        let entry2_offset = cursor_after_run2
-            .files
-            .get(&path_a_str)
-            .map(|e| e.offset)
-            .unwrap_or(0);
-        assert_eq!(
-            entry2_offset, 0,
-            "cursor must be reset to 0 after file rotation/truncation"
-        );
-    }
-
-    // ── (i) GET opt-in HTTP 500 → fallback reads menubar.json ─────────────────
-
-    #[tokio::test]
-    async fn test_opt_in_500_fallback_true_runs_telemetry() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/v1/usage/opt-in"))
-            .respond_with(ResponseTemplate::new(500).set_body_string("error"))
-            .mount(&server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/v1/usage"))
-            .respond_with(complete_ack)
-            .mount(&server)
-            .await;
-
-        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let home = setup_home();
-        // menubar.json has telemetryEnabled: true
-        write_menubar(
-            home.path(),
-            r#"{"machineId":"mid-i1","telemetryEnabled":true}"#,
-        );
-        write_jsonl(home.path(), "proj", "s.jsonl", &[USER_ROW]);
-
-        std::env::set_var("HOME", home.path());
-        std::env::set_var("HQ_VAULT_API_URL", server.uri());
-
-        let handle = make_app_handle();
-        let result = send_telemetry_if_opted_in(&handle, "/hq", "tok").await;
-
-        std::env::remove_var("HOME");
-        std::env::remove_var("HQ_VAULT_API_URL");
-
-        assert!(result.is_ok());
-        let reqs = server.received_requests().await.unwrap();
-        let posts: Vec<_> = reqs
-            .iter()
-            .filter(|r| r.method == wiremock::http::Method::POST)
-            .collect();
-        assert!(
-            !posts.is_empty(),
-            "telemetryEnabled=true in fallback → should POST ≥1"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_opt_in_500_fallback_false_skips_telemetry() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/v1/usage/opt-in"))
-            .respond_with(ResponseTemplate::new(500).set_body_string("error"))
-            .mount(&server)
-            .await;
-
-        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let home = setup_home();
-        // menubar.json has telemetryEnabled: false
-        write_menubar(
-            home.path(),
-            r#"{"machineId":"mid-i2","telemetryEnabled":false}"#,
-        );
-        write_jsonl(home.path(), "proj", "s.jsonl", &[USER_ROW]);
-
-        std::env::set_var("HOME", home.path());
-        std::env::set_var("HQ_VAULT_API_URL", server.uri());
-
-        let handle = make_app_handle();
-        let result = send_telemetry_if_opted_in(&handle, "/hq", "tok").await;
-
-        std::env::remove_var("HOME");
-        std::env::remove_var("HQ_VAULT_API_URL");
-
-        assert!(result.is_ok());
-        let reqs = server.received_requests().await.unwrap();
-        let posts: Vec<_> = reqs
-            .iter()
-            .filter(|r| r.method == wiremock::http::Method::POST)
-            .collect();
-        assert_eq!(
-            posts.len(),
-            0,
-            "telemetryEnabled=false in fallback → no POST"
-        );
-    }
-
-    // ── test_telemetry_strips_prompt_bodies (fixture-based) ───────────────────
-
-    #[test]
-    fn test_telemetry_strips_prompt_bodies() {
-        let fixtures_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/claude-projects");
-
-        let mut checked = 0usize;
-        for entry in walkdir::WalkDir::new(&fixtures_dir)
-            .into_iter()
-            .flatten()
-            .filter(|e| e.path().extension().map_or(false, |x| x == "jsonl"))
-        {
-            let content = fs::read_to_string(entry.path()).expect("read fixture");
-            for line in content.lines() {
-                let trimmed = line.trim();
-                if trimmed.is_empty() {
-                    continue;
-                }
-                let parsed: Value = serde_json::from_str(trimmed).expect("parse fixture line");
-                let sanitized =
-                    sanitize_row(&parsed).expect("sanitize_row must return Some for valid rows");
-                let obj = sanitized.as_object().unwrap();
-
-                // Every sanitized field must be in the server's KEEP allowlist
-                let allowed: std::collections::HashSet<&str> = [
-                    "sessionId",
-                    "timestamp",
-                    "uuid",
-                    "cwd",
-                    "gitBranch",
-                    "userType",
-                    "model",
-                    "inputTokens",
-                    "outputTokens",
-                    "cacheCreationInputTokens",
-                    "cacheReadInputTokens",
-                ]
-                .into_iter()
-                .collect();
-                for key in obj.keys() {
-                    assert!(
-                        allowed.contains(key.as_str()),
-                        "fixture {:?}: field `{}` is not in server allowlist",
-                        entry.path(),
-                        key,
-                    );
-                }
-                // Sensitive fields must be absent at top level
-                for removed in &["content", "thinking", "text", "toolUseIds", "toolResults"] {
-                    assert!(
-                        !obj.contains_key(*removed),
-                        "fixture {:?}: top-level `{}` must not survive sanitization",
-                        entry.path(),
-                        removed,
-                    );
-                }
-                // `message` must be flattened
-                assert!(
-                    !obj.contains_key("message"),
-                    "fixture {:?}: `message` must be flattened — no sub-object should remain",
-                    entry.path()
-                );
-
-                checked += 1;
-            }
-        }
-        assert!(checked > 0, "must have processed at least one fixture row");
     }
 }
