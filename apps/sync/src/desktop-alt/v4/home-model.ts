@@ -694,11 +694,11 @@ export interface HomeCompanyRow {
   /** Second line — role, or "Personal vault". */
   sub: string;
   tone: HomeCompanyTone;
-  /** "3 active" project count, or "—" when none are local. */
+  /** "3 active" project count, or a descriptive local-empty state. */
   projects: string;
-  /** "12 / 18 stories" rollup, or "—" when no stories are tracked. */
+  /** "12 / 18 stories" rollup, or a descriptive tracking-empty state. */
   stories: string;
-  /** Relative last-synced, or "—". */
+  /** Relative last-synced, or a descriptive never-synced state. */
   lastChange: string;
 }
 
@@ -724,11 +724,15 @@ export function getHomeCompanyRows(input: {
   return portfolioWorkspaces(input.workspaces).map((w) => {
     const agg = byCompany.get(w.slug);
     const projects =
-      agg && agg.active > 0 ? `${agg.active.toLocaleString()} active` : agg ? 'no active' : '—';
+      agg && agg.active > 0
+        ? `${agg.active.toLocaleString()} active`
+        : agg
+          ? 'No active projects'
+          : 'No local projects';
     const stories =
       agg && agg.storiesTotal > 0
         ? `${agg.storiesComplete.toLocaleString()} / ${agg.storiesTotal.toLocaleString()} stories`
-        : '—';
+        : 'No tracked stories';
     return {
       slug: w.slug,
       name: w.displayName,
@@ -736,7 +740,7 @@ export function getHomeCompanyRows(input: {
       tone: toneForWorkspace(w),
       projects,
       stories,
-      lastChange: formatRelativeTime(w.lastSyncedAt) ?? '—',
+      lastChange: formatRelativeTime(w.lastSyncedAt) ?? 'Not synced',
     };
   });
 }

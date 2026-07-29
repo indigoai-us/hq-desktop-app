@@ -23,6 +23,7 @@
     type Story,
   } from '../lib/projects-model';
   import { relativeActivity } from '../lib/sessions';
+  import { createStoryMutationGuard } from './story-mutation-guard';
   import LabelChip from '../components/LabelChip.svelte';
   import OpenFileInClaudeCode from '../components/OpenFileInClaudeCode.svelte';
   import ProvenanceLine from '../components/ProvenanceLine.svelte';
@@ -64,10 +65,13 @@
   let footerBusy = $state<'prd' | 'run' | 'copy' | null>(null);
   let footerMessage = $state<string | null>(null);
   let hqFolderPath = $state('');
+  const passesMutationGuard = createStoryMutationGuard();
 
   $effect(() => {
     void story?.id;
     void story?.passes;
+    void prdPath;
+    passesMutationGuard.invalidate();
     passesOverride = null;
     error = null;
     footerBusy = null;
@@ -114,15 +118,24 @@
 
   async function setPasses(next: boolean) {
     if (!story || saving || next === currentPasses) return;
+    const targetStory = story;
+    const targetPrdPath = prdPath;
+    const target = passesMutationGuard.capture(targetStory.id, targetPrdPath);
     const previous = currentPasses;
     passesOverride = next;
     saving = true;
     error = null;
-    const result = await setStoryPasses(prdPath, story.id, previous, next);
+    const result = await setStoryPasses(
+      targetPrdPath,
+      targetStory.id,
+      previous,
+      next,
+    );
+    if (!passesMutationGuard.isCurrent(target, story?.id, prdPath)) return;
     saving = false;
     if (result.ok) {
       passesOverride = result.passes;
-      onStoryPassesChange?.(story.id, result.passes);
+      onStoryPassesChange?.(targetStory.id, result.passes);
     } else {
       passesOverride = previous;
       error = result.error;

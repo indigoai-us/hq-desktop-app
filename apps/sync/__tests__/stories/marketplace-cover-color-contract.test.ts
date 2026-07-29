@@ -30,7 +30,7 @@ const listings: MarketplaceListing[] = [
     slug: 'full-color-art',
     version: '1.0.0',
     author: 'maya',
-    summary: 'A creator cover whose original colors must remain intact.',
+    summary: 'A hosted cover that must not bypass the packaged image policy.',
     createdAt: '2026-07-28T12:00:00Z',
     coverImageUrl: 'https://cdn.example.com/full-color.jpg',
   },
@@ -65,7 +65,7 @@ afterEach(async () => {
 });
 
 describe('marketplace cover color contract', () => {
-  it('preserves real artwork colors and limits generated tinting to fallbacks', async () => {
+  it('uses the colorful fallback instead of emitting blocked hosted image URLs', async () => {
     component = mount(MarketplacePanel, { target: host });
 
     await vi.waitFor(() => {
@@ -79,15 +79,19 @@ describe('marketplace cover color contract', () => {
     expect(real).toBeTruthy();
     expect(fallback).toBeTruthy();
 
-    expect(real!.querySelector('.cover-img')).toBeTruthy();
-    expect(real!.querySelector('.cover-color')).toBeNull();
+    expect(real!.querySelector('.cover-img')).toBeNull();
+    expect(real!.querySelector('.cover-fallback')).toBeTruthy();
+    expect(real!.querySelector('.cover-color')).toBeTruthy();
+    expect(real!.querySelector('img[src^="http"]')).toBeNull();
     expect(fallback!.querySelector('.cover-fallback')).toBeTruthy();
     expect(fallback!.querySelector('.cover-color')).toBeTruthy();
 
     real!.click();
     flushSync();
     const detail = host.querySelector('[data-testid="marketplace-detail-cover"]');
-    expect(detail?.querySelector('.detail-cover-img')).toBeTruthy();
-    expect(detail?.querySelector('.cover-color')).toBeNull();
+    expect(detail?.querySelector('.detail-cover-img')).toBeNull();
+    expect(detail?.querySelector('.detail-cover-fallback')).toBeTruthy();
+    expect(detail?.querySelector('.cover-color')).toBeTruthy();
+    expect(detail?.querySelector('img[src^="http"]')).toBeNull();
   });
 });

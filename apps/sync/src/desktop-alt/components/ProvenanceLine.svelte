@@ -29,9 +29,7 @@
   );
   const compactSummary = $derived(
     [
-      ...(view.people.length > 0
-        ? view.people.map((person) => `${person.role} ${person.label}`)
-        : ['Unassigned']),
+      ...view.people.map((person) => `${person.role} ${person.label}`),
       sourceLabel,
     ].join(' · '),
   );
@@ -47,9 +45,7 @@
   {#if compact}
     <span class="compact-summary">{compactSummary}</span>
   {:else}
-    {#if view.people.length === 0}
-      <span class="person unassigned">Unassigned</span>
-    {:else}
+    {#if view.people.length > 0}
       {#each view.people as person (`${person.role}:${person.label}`)}
         <span class="person">
           <span class="role">{person.role}</span>
@@ -99,10 +95,6 @@
     font-weight: 600;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-
-  .unassigned {
-    color: var(--v4-text-3);
   }
 
   .source {

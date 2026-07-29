@@ -36,6 +36,7 @@
     type PublicCreatorPreview,
     type SocialLink,
   } from '../lib/marketplace';
+  import { safeLocalImageSrc } from '../lib/local-image-src';
 
   // ── Step state ───────────────────────────────────────────────────────────
   /** The claimed handle, once known (claim success OR a prior session). null = claim step. */
@@ -108,6 +109,10 @@
     pendingAvatarPath
       ? (pendingAvatarPath.split('/').filter(Boolean).pop() ?? pendingAvatarPath)
       : null,
+  );
+  const displayAvatarSrc = $derived(safeLocalImageSrc(avatarUrl));
+  const previewAvatarSrc = $derived(
+    safeLocalImageSrc(preview?.creator.avatarUrl),
   );
 
   // ── Claim flow ──────────────────────────────────────────────────────────────
@@ -323,10 +328,12 @@
       <div class="field">
         <span class="field-label">Avatar</span>
         <div class="avatar-row">
-          {#if avatarUrl}
-            <img class="avatar-img" src={avatarUrl} alt="Your avatar" data-testid="profile-avatar-img" />
+          {#if displayAvatarSrc}
+            <img class="avatar-img" src={displayAvatarSrc} alt="Your avatar" data-testid="profile-avatar-img" />
           {:else}
-            <div class="avatar-placeholder" aria-hidden="true">{handle.slice(0, 1).toUpperCase()}</div>
+            <div class="avatar-placeholder" aria-hidden="true" data-testid="profile-avatar-fallback"
+              >{handle.slice(0, 1).toUpperCase()}</div
+            >
           {/if}
           <div class="avatar-actions">
             <button
@@ -345,6 +352,11 @@
             </button>
             {#if avatarPreviewName}
               <span class="avatar-chosen" title={pendingAvatarPath}>{avatarPreviewName}</span>
+            {/if}
+            {#if avatarUrl && !displayAvatarSrc}
+              <span class="field-hint" data-testid="profile-avatar-preview-unavailable"
+                >Saved avatar preview unavailable in this version.</span
+              >
             {/if}
             <span class="field-hint">PNG, JPEG, WebP, or GIF · up to 2 MiB.</span>
           </div>
@@ -475,10 +487,19 @@
       {:else if preview}
         <article class="preview-card">
           <div class="preview-id">
-            {#if preview.creator.avatarUrl}
-              <img class="preview-avatar" src={preview.creator.avatarUrl} alt="" />
+            {#if previewAvatarSrc}
+              <img
+                class="preview-avatar"
+                src={previewAvatarSrc}
+                alt=""
+                data-testid="profile-preview-avatar-img"
+              />
             {:else}
-              <div class="preview-avatar placeholder" aria-hidden="true">
+              <div
+                class="preview-avatar placeholder"
+                aria-hidden="true"
+                data-testid="profile-preview-avatar-fallback"
+              >
                 {(preview.creator.displayName || preview.creator.handle).slice(0, 1).toUpperCase()}
               </div>
             {/if}
@@ -487,6 +508,13 @@
                 >{preview.creator.displayName || preview.creator.handle}</span
               >
               <span class="preview-handle">@{preview.creator.handle}</span>
+              {#if preview.creator.avatarUrl && !previewAvatarSrc}
+                <span
+                  class="preview-avatar-unavailable"
+                  data-testid="profile-preview-avatar-unavailable"
+                  >Avatar preview unavailable</span
+                >
+              {/if}
             </div>
           </div>
 
@@ -930,6 +958,11 @@
     color: var(--v4-unread);
     font-size: var(--text-base);
     font-weight: 600;
+  }
+
+  .preview-avatar-unavailable {
+    color: var(--v4-text-3);
+    font-size: var(--text-micro);
   }
 
   .preview-bio {

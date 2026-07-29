@@ -6,16 +6,17 @@
  * as a distinct object, not a row of text. Covers are bundled with the app and
  * keyed by the pack `slug` (the stable, per-creator install identifier).
  *
- * FORWARD-COMPATIBLE: `coverForListing` prefers a server-provided
- * `coverImageUrl` when the backend starts serving one (per-listing, scales to any
- * creator's pack), and only falls back to the bundled map for the packs we ship
- * art for today. A pack with neither resolves to `null`, and the card renders a
- * deterministic branded gradient placeholder instead (see `coverFallback`).
+ * Server-provided remote cover URLs are intentionally not rendered directly:
+ * the packaged CSP blocks remote images so a listing cannot become a tracking
+ * pixel. Once an authorized native proxy returns a raster data URL,
+ * `coverForListing` will accept it. Until then, shipped art wins and every other
+ * pack gets the deterministic branded gradient placeholder.
  *
  * Kept rune-free + asset-import-only so it's trivially unit-testable.
  */
 
 import type { MarketplaceListing } from './marketplace';
+import { safeLocalImageSrc } from './local-image-src';
 
 // Vite resolves each import to a hashed asset URL string at build time.
 import engineeringCover from '../assets/pack-covers/engineering.jpg';
@@ -41,12 +42,13 @@ export const BUNDLED_PACK_COVERS: Readonly<Record<string, string>> = {
 /**
  * Resolve the cover-art URL for a listing, or `null` when none is available.
  *
- * Precedence: a server-provided `coverImageUrl` (future backend) wins over the
- * bundled-by-slug art, so hosted covers seamlessly take over once they exist.
+ * Precedence: a CSP-compatible, locally rendered `coverImageUrl` (for example a
+ * raster data URL from a future native proxy) wins over bundled-by-slug art.
+ * Direct http(s) URLs are ignored and fall through to bundled or generated art.
  */
 export function coverForListing(listing: MarketplaceListing): string | null {
-  const hosted = listing.coverImageUrl?.trim();
-  if (hosted) return hosted;
+  const local = safeLocalImageSrc(listing.coverImageUrl);
+  if (local) return local;
   return BUNDLED_PACK_COVERS[listing.slug] ?? null;
 }
 

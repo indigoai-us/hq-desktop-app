@@ -136,9 +136,19 @@ describe('Meetings native: compact IA and preserved actions', () => {
 
     // Row open / invite / uninvite / join-now.
     expect(agenda).toContain('aria-label="Open meeting in browser"');
-    expect(agenda).toContain('aria-label="Invite bot"');
-    expect(agenda).toContain("aria-label={recurring ? 'Uninvite bot from series' : 'Uninvite bot'}");
-    expect(agenda).toContain('aria-label="Tell bot to join now"');
+    expect(agenda).toContain(
+      "aria-label={invitePending ? 'Inviting bot' : recurring ? 'Invite bot to series' : 'Invite bot'}",
+    );
+    expect(agenda).toContain(
+      "aria-label={uninvitePending ? 'Cancelling bot invitation' : recurring ? 'Uninvite bot from series' : 'Uninvite bot'}",
+    );
+    expect(agenda).toContain(
+      "aria-label={joinNowPending ? 'Telling bot to join now' : 'Tell bot to join now'}",
+    );
+    expect(agenda).toContain('aria-busy={invitePending}');
+    expect(agenda.match(/aria-busy=\{uninvitePending\}/g)).toHaveLength(3);
+    expect(agenda).toContain('aria-busy={joinNowPending}');
+    expect(agenda).not.toContain('aria-busy={pending}');
     expect(agenda).toContain('<span class="pill">Scheduled</span>');
     expect(agenda).toContain('<span class="pill live">Live</span>');
     expect(agenda).toContain('class="pill">Next</span>');

@@ -15,6 +15,7 @@
     type MeetingEvent,
     type ScheduledBot,
   } from '../lib/meetings-model';
+  import type { MeetingBotAction } from '../lib/meetings-store.svelte';
   import '../v4/tokens.css';
 
   interface Props {
@@ -32,8 +33,8 @@
     botsByEventId?: Map<string, ScheduledBot>;
     /** Full active scheduled-bot list for recurring-series row resolution. */
     scheduledBots?: ScheduledBot[];
-    /** event ids with an in-flight bot action — disables + spins that row. */
-    pendingEventIds?: Set<string>;
+    /** Event -> in-flight bot operation. Siblings disable without false busy UI. */
+    pendingActionsByEventId?: Map<string, MeetingBotAction>;
     /** Deep-link focus from notification / open_meetings_window. */
     focusedMeetingId?: string | null;
     /** Bot-action callbacks. The store owns the network call; this stays presentational. */
@@ -52,7 +53,7 @@
     liveEventId = null,
     botsByEventId = new Map(),
     scheduledBots = [],
-    pendingEventIds = new Set(),
+    pendingActionsByEventId = new Map(),
     focusedMeetingId = null,
     onInvite = () => {},
     onUninvite = () => {},
@@ -109,7 +110,11 @@
           {@const dur = durationLabel(event)}
           {@const sig = signalSummary(signalCounts(event))}
           {@const bot = botForEvent(event, botsByEventId, scheduledBots)}
-          {@const pending = pendingEventIds.has(event.id)}
+          {@const pendingAction = pendingActionsByEventId.get(event.id)}
+          {@const pending = pendingAction !== undefined}
+          {@const invitePending = pendingAction === 'invite'}
+          {@const uninvitePending = pendingAction === 'uninvite'}
+          {@const joinNowPending = pendingAction === 'join-now'}
           {@const kind = rowButtonKind(bot)}
           {@const attachment = botAttachmentState(bot)}
           {@const url = eventMeetingUrl(event)}
@@ -184,17 +189,18 @@
                 </button>
               {/if}
               {#if !url}
-                <span class="row-icon-btn row-icon-empty" title="No meeting URL on this event">—</span>
+                <span class="row-icon-spacer" aria-hidden="true"></span>
               {:else if kind === 'invite'}
                 <button
                   type="button"
                   class="row-icon-btn row-icon-invite"
                   disabled={pending}
-                  title={pending ? 'Inviting…' : recurring ? 'Invite bot to this series' : 'Invite bot to this meeting'}
-                  aria-label="Invite bot"
+                  title={invitePending ? 'Inviting…' : pending ? 'Wait for the current bot action' : recurring ? 'Invite bot to this series' : 'Invite bot to this meeting'}
+                  aria-busy={invitePending}
+                  aria-label={invitePending ? 'Inviting bot' : recurring ? 'Invite bot to series' : 'Invite bot'}
                   onclick={() => onInvite(event)}
                 >
-                  {#if pending}
+                  {#if invitePending}
                     <span class="row-icon-spinner" aria-hidden="true"></span>
                   {:else}
                     <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
@@ -207,11 +213,12 @@
                   type="button"
                   class="row-icon-btn row-icon-invited"
                   disabled={pending}
-                  title={pending ? 'Cancelling…' : recurring ? 'Bot scheduled for series — click to uninvite series' : 'Bot scheduled — click to uninvite'}
-                  aria-label={recurring ? 'Uninvite bot from series' : 'Uninvite bot'}
+                  title={uninvitePending ? 'Cancelling…' : pending ? 'Wait for the current bot action' : recurring ? 'Bot scheduled for series — click to uninvite series' : 'Bot scheduled — click to uninvite'}
+                  aria-busy={uninvitePending}
+                  aria-label={uninvitePending ? 'Cancelling bot invitation' : recurring ? 'Uninvite bot from series' : 'Uninvite bot'}
                   onclick={() => onUninvite(event)}
                 >
-                  {#if pending}
+                  {#if uninvitePending}
                     <span class="row-icon-spinner" aria-hidden="true"></span>
                   {:else}
                     <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
@@ -224,11 +231,12 @@
                   type="button"
                   class="row-icon-btn row-icon-incall"
                   disabled={pending}
-                  title={pending ? 'Removing bot…' : recurring ? 'Bot is in this series — click to remove from series' : 'Bot is in the meeting — click to remove'}
-                  aria-label={recurring ? 'Remove bot from series' : 'Remove bot from meeting'}
+                  title={uninvitePending ? 'Removing bot…' : pending ? 'Wait for the current bot action' : recurring ? 'Bot is in this series — click to remove from series' : 'Bot is in the meeting — click to remove'}
+                  aria-busy={uninvitePending}
+                  aria-label={uninvitePending ? 'Removing bot' : recurring ? 'Remove bot from series' : 'Remove bot from meeting'}
                   onclick={() => onUninvite(event)}
                 >
-                  {#if pending}
+                  {#if uninvitePending}
                     <span class="row-icon-spinner" aria-hidden="true"></span>
                   {:else}
                     <span class="live-dot" aria-hidden="true"></span>
@@ -239,8 +247,9 @@
                   type="button"
                   class="row-icon-btn row-icon-joining"
                   disabled={pending}
-                  title={pending ? 'Cancelling…' : recurring ? 'Bot is joining this series — click to cancel series' : 'Bot is joining — click to cancel'}
-                  aria-label={recurring ? 'Cancel bot series join' : 'Cancel bot join'}
+                  title={uninvitePending ? 'Cancelling…' : pending ? 'Wait for the current bot action' : recurring ? 'Bot is joining this series — click to cancel series' : 'Bot is joining — click to cancel'}
+                  aria-busy={uninvitePending}
+                  aria-label={uninvitePending ? 'Cancelling bot join' : recurring ? 'Cancel bot series join' : 'Cancel bot join'}
                   onclick={() => onUninvite(event)}
                 >
                   <span class="row-icon-spinner row-icon-spinner-amber" aria-hidden="true"></span>
@@ -265,11 +274,12 @@
                   type="button"
                   class="row-icon-btn row-icon-bot-now"
                   disabled={pending}
-                  title={pending ? 'Telling bot to join…' : 'Tell bot to join now'}
-                  aria-label="Tell bot to join now"
+                  title={joinNowPending ? 'Telling bot to join…' : pending ? 'Wait for the current bot action' : 'Tell bot to join now'}
+                  aria-busy={joinNowPending}
+                  aria-label={joinNowPending ? 'Telling bot to join now' : 'Tell bot to join now'}
                   onclick={() => onJoinNow(event)}
                 >
-                  {#if pending}
+                  {#if joinNowPending}
                     <span class="row-icon-spinner" aria-hidden="true"></span>
                   {:else}
                     <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
@@ -554,13 +564,11 @@
     cursor: wait;
   }
 
-  /* No URL — inert placeholder, keeps the trailing column aligned. */
-  .row-icon-empty {
-    color: var(--v4-text-3);
-    background: transparent;
-    border-color: transparent;
-    cursor: default;
-    font-size: var(--type-body, 12px);
+  /* No URL — preserve column rhythm without painting a placeholder glyph. */
+  .row-icon-spacer {
+    flex: 0 0 auto;
+    width: 24px;
+    height: 24px;
   }
   /* Open-in-browser — discreet so the eye lands on the state button first. */
   .row-icon-join {

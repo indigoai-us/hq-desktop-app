@@ -4,6 +4,7 @@
   import Sparkline from '../components/Sparkline.svelte';
   import StatTile from '../components/StatTile.svelte';
   import OpenFileInClaudeCode from '../components/OpenFileInClaudeCode.svelte';
+  import { ActivityRequestTimeoutError } from '../lib/activity-request';
 
   interface Props {
     slug: string;
@@ -103,6 +104,9 @@
     }
     return 'No files';
   });
+  const activityPeriodLabel = $derived(
+    loading ? 'Loading activity' : error ? 'Refresh failed' : 'Last 14 days',
+  );
 
   $effect(() => {
     const token = reloadToken;
@@ -137,7 +141,10 @@
       .catch((err) => {
         console.error('get_company_activity failed:', err);
         if (!cancelled) {
-          error = String(err);
+          error =
+            err instanceof ActivityRequestTimeoutError
+              ? 'The activity service took too long to respond. Try again.'
+              : 'Couldn’t load activity. Check your connection and try again.';
           if (companyStore.activity(slug) == null) activity = emptyActivity();
         }
       })
@@ -248,7 +255,7 @@
   <header class="activity-toolbar">
     <div class="activity-title title-stack">
       <h2 id="activity-panel-title">Activity</h2>
-      <span>{loading ? 'Loading activity' : 'Last 14 days'}</span>
+      <span>{activityPeriodLabel}</span>
     </div>
   </header>
 

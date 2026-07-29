@@ -41,7 +41,7 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "img-src 'self' data: asset:"
     }
   },
   "plugins": {

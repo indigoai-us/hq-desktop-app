@@ -556,33 +556,37 @@
     right: 12px;
     bottom: 40px;
     z-index: 10000;
-    width: 320px;
+    width: 336px;
+    max-width: calc(100vw - 24px);
     max-height: calc(100vh - 56px);
+    box-sizing: border-box;
     overflow-y: auto;
-    padding: 12px;
+    padding: 16px;
     border: 1px solid var(--border-strong, var(--pop-border, rgba(120, 120, 120, 0.3)));
     border-radius: var(--v4-radius-popover);
     opacity: 1;
     background: var(
       --v4-popover-strong,
-      var(--v4-popover, var(--pop-bg, rgba(42, 42, 42, 0.86)))
+      var(--v4-popover, var(--pop-bg, rgba(42, 42, 42, 0.82)))
     );
     backdrop-filter: var(--v4-glass-filter-popover, var(--v4-glass-filter));
     -webkit-backdrop-filter: var(--v4-glass-filter-popover, var(--v4-glass-filter));
     box-shadow: var(--v4-shadow-popover, var(--pop-shadow)), inset 0 1px 0 var(--v4-glass-highlight);
     color: var(--fg, var(--c-text, inherit));
     font-size: var(--text-xs, 13px);
-    line-height: 1.35;
+    line-height: 1.4;
+    transform-origin: bottom right;
   }
 
   .version-popout.below {
     top: 48px;
     bottom: auto;
+    transform-origin: top right;
   }
 
   .vp-product {
     display: grid;
-    gap: 8px;
+    gap: 10px;
     padding: 2px 0;
     border: 0;
     border-radius: 0;
@@ -590,8 +594,8 @@
   }
 
   .vp-product + .vp-product {
-    margin-top: 10px;
-    padding-top: 12px;
+    margin-top: 14px;
+    padding-top: 14px;
     border-top: 1px solid var(--border-strong);
   }
 
@@ -633,7 +637,7 @@
   .vp-rows {
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 8px;
   }
 
   .vp-row {
@@ -661,8 +665,8 @@
   .vp-core-status {
     overflow: hidden;
     color: var(--muted);
-    font-size: 11px;
-    line-height: 1.35;
+    font-size: 12px;
+    line-height: 1.4;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -675,8 +679,8 @@
   .vp-actions {
     display: flex;
     flex-direction: column;
-    gap: 6px;
-    margin-top: 12px;
+    gap: 8px;
+    margin-top: 16px;
   }
 
   .vp-btn {
@@ -685,8 +689,8 @@
     justify-content: center;
     gap: 6px;
     width: 100%;
-    min-height: 28px;
-    padding: 4px 10px;
+    min-height: 34px;
+    padding: 6px 12px;
     border: 1px solid var(--border-strong);
     border-radius: 6px;
     background: var(--row-active);
@@ -695,6 +699,7 @@
     font-size: inherit;
     font-weight: 600;
     cursor: pointer;
+    transition: transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
   }
 
   .vp-btn:hover:not(:disabled) {
@@ -712,6 +717,10 @@
     cursor: default;
   }
 
+  .vp-btn:active:not(:disabled) {
+    transform: scale(0.98);
+  }
+
   .vp-btn-primary {
     background: var(--fg);
     border-color: var(--fg);
@@ -725,7 +734,7 @@
 
   .vp-divider {
     height: 1px;
-    margin: 12px 0;
+    margin: 16px 0;
     background: var(--border-strong);
   }
 
@@ -745,7 +754,7 @@
   .vp-toggle-copy {
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: 4px;
     min-width: 0;
     cursor: pointer;
   }
@@ -758,8 +767,8 @@
 
   .vp-toggle-copy small {
     color: var(--muted);
-    font-size: 11px;
-    line-height: 1.3;
+    font-size: 12px;
+    line-height: 1.4;
   }
 
   .vp-toggle-row input[type='checkbox'] {
@@ -874,8 +883,8 @@
   .vp-settings-link {
     display: block;
     width: 100%;
-    margin-top: 10px;
-    padding: 0;
+    margin-top: 14px;
+    padding: 2px 0 0;
     border: 0;
     background: transparent;
     color: var(--muted);

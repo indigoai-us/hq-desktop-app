@@ -27,7 +27,7 @@
     PROJECT_RENDER_BATCH,
     progressiveWindow,
   } from '../lib/progressive-collection';
-  import { normalizeProvenance } from '../lib/provenance';
+  import { responsiblePerson } from '../lib/provenance';
   import {
     compareProjectsByRecency,
     groupProjectsByPortfolioColumn,
@@ -134,6 +134,41 @@
     );
   }
 
+  async function refreshSelectedStoriesForProvenance(
+    project: Project,
+  ): Promise<void> {
+    if (!project.prdPath) return;
+    const companySlug = slug;
+    const selectedIdentity = projectIdentity(project);
+    const generation = storyLoadGeneration + 1;
+    storyLoadGeneration = generation;
+    storiesLoading = true;
+    try {
+      const nextStories = await loadLocalProjectStories(
+        project.prdPath,
+        project.provenance,
+      );
+      if (!isCurrentStoryLoad(generation, companySlug, selectedIdentity)) return;
+      stories = nextStories;
+      storiesError = null;
+      if (
+        selectedStoryId !== null &&
+        !nextStories.some((story) => story.id === selectedStoryId)
+      ) {
+        selectedStoryId = null;
+      }
+    } catch (err) {
+      if (!isCurrentStoryLoad(generation, companySlug, selectedIdentity)) return;
+      // Attribution refresh is best-effort. Keep the already-visible stories
+      // rather than blanking the workspace if this local reread fails.
+      console.warn('story provenance refresh failed:', err);
+    } finally {
+      if (isCurrentStoryLoad(generation, companySlug, selectedIdentity)) {
+        storiesLoading = false;
+      }
+    }
+  }
+
   async function createProject(): Promise<void> {
     if (!onnewproject || newProjectPending) return;
     newProjectPending = true;
@@ -162,8 +197,8 @@
   const sessions = $derived(sessionsStore.sessions);
 
   function leadLabel(project: Project): string | null {
-    const owner = normalizeProvenance(project.provenance).owner;
-    return owner && owner !== 'Unassigned' ? owner : null;
+    const person = responsiblePerson(project.provenance, 'project');
+    return person === 'Unassigned' ? null : person;
   }
 
   function showMoreProjects(column: PortfolioColumn, nextCount: number): void {
@@ -322,7 +357,9 @@
         cloudProvenance = indexProjectProvenance(rows);
         provenanceUnavailable = false;
         if (selected) {
-          selected = applyProjectProvenance(selected, cloudProvenance);
+          const refreshed = applyProjectProvenance(selected, cloudProvenance);
+          selected = refreshed;
+          void refreshSelectedStoriesForProvenance(refreshed);
         }
       })
       .catch((err) => {
@@ -412,11 +449,11 @@
 
   function listUpdatedLabel(project: Project): string {
     const iso = project.updatedAt || project.createdAt;
-    if (!iso) return '—';
+    if (!iso) return 'Not recorded';
     // Prefer compact relative when sessions helper can parse it; else short date.
     const rel = relativeActivity(iso, now);
-    if (rel !== '—') return rel;
-    return formatProjectDate(iso) ?? '—';
+    if (rel !== 'Not recorded') return rel;
+    return formatProjectDate(iso) ?? 'Not recorded';
   }
 
   function selectStoryById(storyId: string): void {
@@ -450,7 +487,10 @@
 
     storiesLoading = true;
     try {
-      const nextStories = await loadLocalProjectStories(project.prdPath);
+      const nextStories = await loadLocalProjectStories(
+        project.prdPath,
+        project.provenance,
+      );
       if (!isCurrentStoryLoad(generation, companySlug, selectedIdentity)) return;
       stories = nextStories;
     } catch (err) {
@@ -491,6 +531,10 @@
   }
 
   function onStoryPassesChange(storyId: string, passes: boolean): void {
+    // A late cloud-provenance reread contains the disk snapshot from before
+    // this successful write. Retire it before committing the persisted result
+    // so it cannot restore the old passes value over the user's change.
+    invalidateStoryLoad();
     stories = stories.map((story) =>
       story.id === storyId ? { ...story, passes } : story,
     );
@@ -583,13 +627,13 @@
       </label>
 
       <label class="tool-select">
-        <span class="visually-hidden">Filter by owner</span>
+        <span class="visually-hidden">Filter by owner or creator</span>
         <select
           bind:value={ownerFilter}
           data-testid="portfolio-owner-filter"
-          aria-label="Filter by project owner"
+          aria-label="Filter by project owner or creator"
         >
-          <option value="">Owner · Anyone</option>
+          <option value="">Person · Anyone</option>
           {#each ownerOptions as owner (owner)}
             <option value={owner}>{owner}</option>
           {/each}
@@ -702,7 +746,6 @@
                       {project}
                       showCompany={false}
                       goalLabel={goal}
-                      ownerLabel={leadLabel(project)}
                       {provenanceUnavailable}
                       liveRun={column === 'active' ? liveRun : null}
                       stateContext={portfolioStateContext(column, project)}
@@ -766,7 +809,7 @@
                       {project.description ||
                         (project.createdAt
                           ? `started ${formatProjectDate(project.createdAt)}`
-                          : '—')}
+                          : 'No description')}
                       {#if !goal}
                         <button
                           type="button"
@@ -782,7 +825,7 @@
                       {/if}
                     </span>
                   </div>
-                  <div class="list-goal">{goal ?? '—'}</div>
+                  <div class="list-goal">{goal ?? 'No goal'}</div>
                   <div class="list-provenance" data-testid="project-list-provenance">
                     <ProvenanceLine
                       provenance={project.provenance}

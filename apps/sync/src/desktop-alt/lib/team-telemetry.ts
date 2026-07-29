@@ -43,6 +43,7 @@ export interface TeamTelemetryView {
 export interface TeamMemberLabel {
   email?: string | null;
   displayName?: string | null;
+  name?: string | null;
 }
 
 export function memberKindFromUid(uid: string): TeamMemberKind {
@@ -72,11 +73,61 @@ export function displayNameFromMember(raw: {
   displayName?: string;
   name?: string;
 }, resolved?: TeamMemberLabel): string {
-  const name = (raw.displayName || raw.name || resolved?.displayName || '').trim();
+  const name = (
+    raw.displayName ||
+    raw.name ||
+    resolved?.displayName ||
+    resolved?.name ||
+    ''
+  ).trim();
   if (name) return name;
   const email = (raw.email || resolved?.email || '').trim();
   if (email) return email;
-  return 'Unknown member';
+  const sourceUid = (raw.personUid ?? '').trim();
+  if (sourceUid) return sourceUid;
+  return 'Identity unavailable';
+}
+
+function trimmedString(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return trimmed || undefined;
+}
+
+/**
+ * The production telemetry response already includes display-safe identities
+ * keyed by source UID. Read that authoritative enrichment before consulting
+ * the separate contacts response.
+ */
+function telemetryMemberLabel(value: unknown, personUid: string): TeamMemberLabel | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const identities = value as Record<string, unknown>;
+  for (const groupName of ['persons', 'agents'] as const) {
+    const group = identities[groupName];
+    if (!group || typeof group !== 'object') continue;
+    const row = (group as Record<string, unknown>)[personUid];
+    if (!row || typeof row !== 'object') continue;
+    const identity = row as Record<string, unknown>;
+    return {
+      displayName: trimmedString(identity.displayName) ?? trimmedString(identity.name),
+      email: trimmedString(identity.email),
+    };
+  }
+  return undefined;
+}
+
+function mergedMemberLabel(
+  primary: TeamMemberLabel | undefined,
+  secondary: TeamMemberLabel | undefined,
+): TeamMemberLabel | undefined {
+  const displayName =
+    trimmedString(primary?.displayName) ??
+    trimmedString(primary?.name) ??
+    trimmedString(secondary?.displayName) ??
+    trimmedString(secondary?.name);
+  const email = trimmedString(primary?.email) ?? trimmedString(secondary?.email);
+  if (!displayName && !email) return undefined;
+  return { displayName, email };
 }
 
 function finiteNumber(value: unknown): number | undefined {
@@ -166,7 +217,10 @@ function mergeDuplicateMember(existing: TeamMember, incoming: TeamMember): TeamM
   return {
     ...existing,
     displayName:
-      existing.displayName === 'Unknown member' && incoming.displayName !== 'Unknown member'
+      (existing.displayName === existing.id ||
+        existing.displayName === 'Identity unavailable') &&
+      incoming.displayName !== incoming.id &&
+      incoming.displayName !== 'Identity unavailable'
         ? incoming.displayName
         : existing.displayName,
     email: existing.email ?? incoming.email,
@@ -224,7 +278,10 @@ export function normalizeCompanyTeamTelemetry(
           ? r.membershipRole
           : '';
     const role = roleRaw.trim() || undefined;
-    const resolvedLabel = options?.memberLabelsById?.[personUid];
+    const resolvedLabel = mergedMemberLabel(
+      telemetryMemberLabel(o.identities, personUid),
+      options?.memberLabelsById?.[personUid],
+    );
     const emailRaw =
       typeof r.email === 'string'
         ? r.email

@@ -123,7 +123,11 @@ pub async fn get_local_projects() -> Result<Vec<LocalProject>, String> {
     }
     let (hq, workspaces) = hydrated_project_context().await?;
     let authorized = authorized_company_slugs(&workspaces);
-    Ok(scan_local_projects_for_companies(&hq, &authorized))
+    tauri::async_runtime::spawn_blocking(move || {
+        scan_local_projects_for_companies(&hq, &authorized)
+    })
+    .await
+    .map_err(|error| format!("projects scan task join: {error}"))
 }
 
 #[tauri::command]

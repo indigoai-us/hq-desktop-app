@@ -505,6 +505,37 @@ pub fn parse_board_response(status: StatusCode, text: &str) -> Result<CompanyBoa
     parse_company_board(text)
 }
 
+pub fn parse_project_creators_response(
+    status: StatusCode,
+    text: &str,
+) -> Result<Vec<ProjectCreator>, String> {
+    if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
+        return Err(format!("AUTH_REQUIRED: creators (HTTP {status})"));
+    }
+    if status == StatusCode::NO_CONTENT {
+        return Ok(Vec::new());
+    }
+    if status == StatusCode::NOT_FOUND {
+        return if is_board_not_provisioned(text) {
+            eprintln!("[desktop-alt] creators 404 not-provisioned -> no cloud attribution: {text}");
+            Ok(Vec::new())
+        } else {
+            Err(format!("creators HTTP {status}: {text}"))
+        };
+    }
+    if !status.is_success() {
+        return Err(format!("creators HTTP {status}: {text}"));
+    }
+
+    let text = text.trim();
+    if text.is_empty() {
+        eprintln!("[desktop-alt] creators {status} empty body -> no cloud attribution");
+        return Ok(Vec::new());
+    }
+
+    parse_project_creators(text).map_err(|error| format!("creators parse: {error}"))
+}
+
 pub fn parse_activity_response(status: StatusCode, text: &str) -> Result<CompanyActivity, String> {
     if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
         return Err(format!("AUTH_REQUIRED: activity (HTTP {status})"));
@@ -2014,6 +2045,54 @@ mod tests {
             .unwrap()
             .is_empty());
         assert!(super::parse_project_creators("not json").is_err());
+    }
+
+    #[test]
+    fn project_creator_response_distinguishes_absence_from_auth_and_server_failures() {
+        assert!(
+            super::parse_project_creators_response(reqwest::StatusCode::NO_CONTENT, "")
+                .expect("204 has no cloud attribution")
+                .is_empty()
+        );
+        assert!(super::parse_project_creators_response(
+            reqwest::StatusCode::NOT_FOUND,
+            r#"{"code":"board-not-provisioned"}"#,
+        )
+        .expect("an explicitly unprovisioned board has no attribution")
+        .is_empty());
+        assert!(
+            super::parse_project_creators_response(reqwest::StatusCode::OK, " \n ")
+                .expect("an empty successful board has no attribution")
+                .is_empty()
+        );
+
+        for status in [
+            reqwest::StatusCode::UNAUTHORIZED,
+            reqwest::StatusCode::FORBIDDEN,
+        ] {
+            let error =
+                super::parse_project_creators_response(status, "").expect_err("auth must surface");
+            assert!(error.starts_with("AUTH_REQUIRED: creators"));
+        }
+
+        let route_error = super::parse_project_creators_response(
+            reqwest::StatusCode::NOT_FOUND,
+            r#"{"code":"not-found","message":"route not found"}"#,
+        )
+        .expect_err("generic 404 must not masquerade as checked attribution");
+        assert!(route_error.contains("creators HTTP 404"));
+
+        let server_error = super::parse_project_creators_response(
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            "upstream unavailable",
+        )
+        .expect_err("server failures must reach the UI");
+        assert!(server_error.contains("creators HTTP 500"));
+
+        let parse_error =
+            super::parse_project_creators_response(reqwest::StatusCode::OK, "not json")
+                .expect_err("malformed successful responses must remain visible");
+        assert!(parse_error.starts_with("creators parse:"));
     }
 
     #[test]

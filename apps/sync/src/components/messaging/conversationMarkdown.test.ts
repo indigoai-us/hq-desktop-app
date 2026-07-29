@@ -89,6 +89,12 @@ pnpm test
       expect(source).toContain(':global(ol)');
       expect(source).toContain(':global(img)');
       expect(source).toContain(':global(hr)');
+      expect(source).toContain(
+        'font-family: var(--font-sans, -apple-system, BlinkMacSystemFont, sans-serif);',
+      );
+      expect(source).toContain(
+        'font-family: var(--font-display, var(--font-sans, -apple-system, BlinkMacSystemFont, sans-serif));',
+      );
       expect(source).toContain('border-radius: 0;');
       expect(source).toContain('overflow-x: auto;');
     }

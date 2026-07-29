@@ -19,6 +19,7 @@
     loadLocalProjects,
     loadLocalProjectStories,
     projectIdentity,
+    withProjectStatus,
     type KeyResult,
     type Objective,
     type ProjectProvenanceIndex,
@@ -65,6 +66,7 @@
   let storiesLoading = $state(false);
   let storiesError = $state<string | null>(null);
   let selectedStoryId = $state<string | null>(null);
+  let storyLoadGeneration = 0;
   let actionBusy = $state<string | null>(null);
   let actionMessage = $state<string | null>(null);
 
@@ -90,6 +92,57 @@
       : (stories.find((story) => story.id === selectedStoryId) ?? null),
   );
 
+  function invalidateStoryLoad(): void {
+    storyLoadGeneration += 1;
+    storiesLoading = false;
+  }
+
+  function isCurrentStoryLoad(
+    generation: number,
+    companySlug: string,
+    selectedIdentity: string,
+  ): boolean {
+    return (
+      generation === storyLoadGeneration &&
+      slug === companySlug &&
+      selected !== null &&
+      projectIdentity(selected) === selectedIdentity
+    );
+  }
+
+  async function refreshSelectedStoriesForProvenance(
+    project: Project,
+  ): Promise<void> {
+    if (!project.prdPath) return;
+    const companySlug = slug;
+    const selectedIdentity = projectIdentity(project);
+    const generation = storyLoadGeneration + 1;
+    storyLoadGeneration = generation;
+    storiesLoading = true;
+    try {
+      const nextStories = await loadLocalProjectStories(
+        project.prdPath,
+        project.provenance,
+      );
+      if (!isCurrentStoryLoad(generation, companySlug, selectedIdentity)) return;
+      stories = nextStories;
+      storiesError = null;
+      if (
+        selectedStoryId !== null &&
+        !nextStories.some((story) => story.id === selectedStoryId)
+      ) {
+        selectedStoryId = null;
+      }
+    } catch (err) {
+      if (!isCurrentStoryLoad(generation, companySlug, selectedIdentity)) return;
+      console.warn('story provenance refresh failed:', err);
+    } finally {
+      if (isCurrentStoryLoad(generation, companySlug, selectedIdentity)) {
+        storiesLoading = false;
+      }
+    }
+  }
+
   function goalKey(objective: Objective): string {
     return objective.id || objective.title || '';
   }
@@ -106,6 +159,7 @@
 
   $effect(() => {
     const activeSlug = slug;
+    invalidateStoryLoad();
     objectives = [];
     projects = [];
     cloudProvenance = emptyProjectProvenanceIndex();
@@ -131,7 +185,9 @@
         cloudProvenance = indexProjectProvenance(records);
         provenanceUnavailable = false;
         if (selected) {
-          selected = applyProjectProvenance(selected, cloudProvenance);
+          const refreshed = applyProjectProvenance(selected, cloudProvenance);
+          selected = refreshed;
+          void refreshSelectedStoriesForProvenance(refreshed);
         }
       })
       .catch((err) => {
@@ -208,7 +264,7 @@
   }
 
   function formatValue(value: number | string | null | undefined, unit?: string): string {
-    if (value == null || value === '') return '—';
+    if (value == null || value === '') return 'Not set';
     const text = String(value);
     if (!unit) return text;
     if (unit === '$' || unit.toLowerCase() === 'usd') return `$${text}`;
@@ -269,11 +325,10 @@
     return quarter ?? raw;
   }
 
-  function ownerLabel(value: string | null | undefined): string {
+  function ownerLabel(value: string | null | undefined): string | null {
     const raw = (value ?? '').trim();
-    // An unowned objective is honestly "Unassigned" — never invent "Agent"
-    // attribution the data doesn't assert (matches Projects/Tasks).
-    if (!raw) return 'Unassigned';
+    // Missing attribution is omitted instead of repeated as row-level noise.
+    if (!raw) return null;
     if (raw.toLowerCase() === 'you' || raw.toLowerCase() === 'me') return 'You';
     if (raw.toLowerCase() === 'agent') return 'Agent';
     return raw;
@@ -294,10 +349,28 @@
   function goalListMeta(objective: Objective): string {
     const status = goalStatus(objective.status);
     const owner = ownerLabel(objective.owner);
-    const quarter = quarterLabel(objective.timeframe) ?? '—';
+    const quarter = quarterLabel(objective.timeframe);
     const linked = linkedProjects(objective).length;
     const projectsLabel = `${linked} ${linked === 1 ? 'project' : 'projects'}`;
-    return `${status.label} · ${owner} · ${quarter} · ${projectsLabel}`;
+    return [
+      status.label,
+      owner ? `Owner ${owner}` : null,
+      quarter,
+      projectsLabel,
+    ]
+      .filter((part): part is string => Boolean(part))
+      .join(' · ');
+  }
+
+  function goalDetailMeta(objective: Objective): string {
+    const owner = ownerLabel(objective.owner);
+    const quarter = quarterLabel(objective.timeframe);
+    return [
+      owner ? `Owner ${owner}` : null,
+      quarter ? `Target ${quarter}` : null,
+    ]
+      .filter((part): part is string => Boolean(part))
+      .join(' · ');
   }
 
   function selectGoal(objective: Objective): void {
@@ -412,6 +485,10 @@
   }
 
   async function openProject(project: Project): Promise<void> {
+    const companySlug = slug;
+    const selectedIdentity = projectIdentity(project);
+    const generation = storyLoadGeneration + 1;
+    storyLoadGeneration = generation;
     selected = project;
     stories = [];
     storiesError = null;
@@ -424,34 +501,46 @@
 
     storiesLoading = true;
     try {
-      stories = await loadLocalProjectStories(project.prdPath);
+      const nextStories = await loadLocalProjectStories(
+        project.prdPath,
+        project.provenance,
+      );
+      if (!isCurrentStoryLoad(generation, companySlug, selectedIdentity)) return;
+      stories = nextStories;
     } catch (err) {
+      if (!isCurrentStoryLoad(generation, companySlug, selectedIdentity)) return;
       console.error('get_local_project_prd failed:', err);
       const detail = err instanceof Error ? err.message : String(err);
       storiesError = `Could not load this project’s stories — ${detail}`;
       stories = [];
     } finally {
-      storiesLoading = false;
+      if (isCurrentStoryLoad(generation, companySlug, selectedIdentity)) {
+        storiesLoading = false;
+      }
     }
   }
 
   function backToGoals(): void {
+    invalidateStoryLoad();
     selected = null;
     stories = [];
     storiesError = null;
     selectedStoryId = null;
   }
 
-  function onProjectStatusChange(projectId: string, status: string): void {
-    if (selected && selected.id === projectId) {
-      selected = { ...selected, status };
+  function onProjectStatusChange(changedIdentity: string, status: string): void {
+    if (selected) {
+      selected = withProjectStatus(selected, changedIdentity, status);
     }
     projects = projects.map((project) =>
-      project.id === projectId ? { ...project, status } : project,
+      withProjectStatus(project, changedIdentity, status),
     );
   }
 
   function onStoryPassesChange(storyId: string, passes: boolean): void {
+    // Ignore any pre-mutation provenance refresh that is still in flight: its
+    // PRD snapshot predates the successful passes write.
+    invalidateStoryLoad();
     stories = stories.map((story) =>
       story.id === storyId ? { ...story, passes } : story,
     );
@@ -596,9 +685,11 @@
                       <span>{selectedStatus.label}</span>
                     </span>
                   </div>
-                  <span class="goal-meta" data-testid="goal-detail-meta">
-                    owner: {ownerLabel(selectedGoal.owner)} · target {quarterLabel(selectedGoal.timeframe) ?? '—'}
-                  </span>
+                  {#if goalDetailMeta(selectedGoal)}
+                    <span class="goal-meta" data-testid="goal-detail-meta">
+                      {goalDetailMeta(selectedGoal)}
+                    </span>
+                  {/if}
                 </div>
               </header>
 

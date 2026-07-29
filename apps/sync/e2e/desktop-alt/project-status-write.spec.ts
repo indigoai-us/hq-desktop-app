@@ -59,6 +59,7 @@ describe('desktop-alt status dropdown wires onStatusChange → write (US-010)', 
   // The detail view's status writes are hosted by the per-company board panel
   // (US-011) now that the top-level BoardPage is gone.
   const board = readRepoFile('src/desktop-alt/panels/CompanyBoardPanel.svelte');
+  const goals = readRepoFile('src/desktop-alt/pages/CompanyGoalsPage.svelte');
 
   it('selecting a status calls the store write through an onclick handler', () => {
     // The dropdown options now call selectStatus (was a no-op menu-close in 009).
@@ -89,6 +90,19 @@ describe('desktop-alt status dropdown wires onStatusChange → write (US-010)', 
     expect(board).toContain('onStatusChange={onProjectStatusChange}');
     expect(board).toContain('function onProjectStatusChange');
     expect(board).toContain('withProjectStatus(selected, changedIdentity, status)');
+  });
+
+  it('uses the same composite identity on the Goals linked-project surface', () => {
+    expect(goals).toContain(
+      'function onProjectStatusChange(changedIdentity: string, status: string)',
+    );
+    expect(goals).toContain(
+      'selected = withProjectStatus(selected, changedIdentity, status)',
+    );
+    expect(goals).toContain(
+      'withProjectStatus(project, changedIdentity, status)',
+    );
+    expect(goals).not.toContain('selected.id === projectId');
   });
 });
 

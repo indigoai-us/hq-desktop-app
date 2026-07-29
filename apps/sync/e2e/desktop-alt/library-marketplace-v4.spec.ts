@@ -49,6 +49,9 @@ describe('desktop-alt V4 library and marketplace family (US-014)', () => {
     expect(profile).toContain('claimCreatorHandle');
     expect(profile).toContain('data-testid="profile-preview"');
     expect(profile).toContain('data-testid="profile-preview-listing"');
+    expect(profile).toContain('safeLocalImageSrc');
+    expect(profile).toContain('data-testid="profile-avatar-preview-unavailable"');
+    expect(profile).toContain('data-testid="profile-preview-avatar-unavailable"');
     expect(moderation).toContain('Creator-access requests');
     expect(moderation).toContain('data-testid="moderation-request-row"');
     expect(moderation).toContain('data-testid="moderation-request-approve"');

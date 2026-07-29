@@ -51,11 +51,50 @@ export function safeHref(rawUrl: string): string | null {
   return null;
 }
 
-/** Images use the same strict URL boundary, excluding mailto and anchors. */
+/**
+ * Images from untrusted Markdown must stay on the packaged app origin.
+ *
+ * Unlike links, remote http(s) images are not passive: rendering one tells the
+ * remote server that a specific message or file was opened and exposes network
+ * metadata. Keep ordinary relative app assets, but reject every explicit
+ * scheme (including http(s), data, blob, file, and Tauri's asset protocol).
+ * Authorized native previews use their own data URL path outside this renderer.
+ */
 export function safeImageSrc(rawUrl: string): string | null {
   const src = safeHref(rawUrl);
-  if (src === null || /^(?:mailto:|#)/i.test(src)) return null;
+  if (src === null || src.startsWith('#') || /^[a-z][a-z0-9+.-]*:/i.test(src)) {
+    return null;
+  }
   return src;
+}
+
+/**
+ * Remove a conventional YAML frontmatter envelope from the start of a
+ * Markdown document. HQ knowledge metadata belongs to the file model, not the
+ * rendered article body, so showing it as a paragraph makes an otherwise valid
+ * document look broken.
+ *
+ * Be deliberately conservative: a leading horizontal rule remains ordinary
+ * Markdown unless it has a closing delimiter and at least one YAML-style key.
+ */
+function withoutYamlFrontmatter(source: string): string {
+  const normalized = source.startsWith('\uFEFF') ? source.slice(1) : source;
+  const lines = normalized.split('\n');
+  if (lines[0]?.trim() !== '---') return normalized;
+
+  const closingIndex = lines
+    .slice(1, 201)
+    .findIndex((line) => /^(?:---|\.\.\.)\s*\r?$/.test(line));
+  if (closingIndex < 0) return normalized;
+
+  const delimiterIndex = closingIndex + 1;
+  const metadata = lines.slice(1, delimiterIndex);
+  const hasYamlKey = metadata.some((line) =>
+    /^[A-Za-z_][A-Za-z0-9_-]*\s*:\s*(?:.*)?\r?$/.test(line),
+  );
+  if (!hasYamlKey) return normalized;
+
+  return lines.slice(delimiterIndex + 1).join('\n').replace(/^\s*\n/, '');
 }
 
 type RawHtmlAttributes = Map<string, string | null>;
@@ -509,7 +548,7 @@ function renderListBlock(lines: string[], startIndex: number): { html: string; n
  * and ordered lists, blockquotes, horizontal rules, and paragraphs. Anything not
  * matched flows into a paragraph of inline-rendered (escaped) text.
  */
-export function renderMarkdown(source: string): string {
+function renderMarkdownCore(source: string): string {
   const lines = suppressUnsafeRawHtml(source).split('\n');
   const out: string[] = [];
 
@@ -563,7 +602,7 @@ export function renderMarkdown(source: string): string {
         ? rawDetails.body.slice(summary[0].length)
         : rawDetails.body
       ).trim();
-      const bodyHtml = detailsBody ? renderMarkdown(detailsBody) : '';
+      const bodyHtml = detailsBody ? renderMarkdownCore(detailsBody) : '';
       const open = rawDetails.attributes.has('open') ? ' open' : '';
       out.push(`<details${open}>${summaryHtml}${bodyHtml}</details>`);
       i = rawDetails.nextIndex;
@@ -672,7 +711,7 @@ export function renderMarkdown(source: string): string {
         quote.push(lines[i].replace(/^\s*>\s?/, ''));
         i += 1;
       }
-      out.push(`<blockquote>${renderMarkdown(quote.join('\n'))}</blockquote>`);
+      out.push(`<blockquote>${renderMarkdownCore(quote.join('\n'))}</blockquote>`);
       continue;
     }
 
@@ -701,4 +740,20 @@ export function renderMarkdown(source: string): string {
 
   flushParagraph();
   return out.join('\n');
+}
+
+/**
+ * Render arbitrary Markdown without treating a YAML-shaped prefix as hidden
+ * metadata. Messages and recursive blocks use this lossless entry point.
+ */
+export function renderMarkdown(source: string): string {
+  return renderMarkdownCore(source);
+}
+
+/**
+ * Render one top-level HQ file/knowledge document. Frontmatter is removed once
+ * at this boundary; nested quotes and disclosure bodies remain ordinary text.
+ */
+export function renderMarkdownDocument(source: string): string {
+  return renderMarkdownCore(withoutYamlFrontmatter(source));
 }

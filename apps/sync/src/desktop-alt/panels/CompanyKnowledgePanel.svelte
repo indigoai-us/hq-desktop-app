@@ -136,10 +136,19 @@
       </button>
       <FilePreviewPane path={selectedPath} />
     {:else}
-      <div class="knowledge-empty" data-testid="company-knowledge-empty">
-        <span class="knowledge-empty-title">Select a knowledge file</span>
-        <p class="knowledge-empty-meta">
-          Browse or search the company knowledge tree to preview markdown, images, PDFs, and text.
+      <div
+        class="knowledge-empty"
+        data-testid="company-knowledge-empty"
+        role="status"
+        aria-labelledby="knowledge-empty-title"
+        aria-describedby="knowledge-empty-description"
+      >
+        <span id="knowledge-empty-title" class="knowledge-empty-title">
+          Choose a file to preview
+        </span>
+        <p id="knowledge-empty-description" class="knowledge-empty-meta">
+          Select a file from the knowledge tree, or search by name. Markdown, images, PDFs, and
+          text open here.
         </p>
       </div>
     {/if}
@@ -285,16 +294,16 @@
   }
 
   .knowledge-empty-title {
-    color: var(--v4-text-2);
+    color: var(--v4-text-1);
     font-size: var(--type-body, var(--text-base));
-    font-weight: 500;
+    font-weight: 600;
     line-height: 1.3;
   }
 
   .knowledge-empty-meta {
     margin: 0;
-    max-width: 280px;
-    color: var(--v4-text-3);
+    max-width: 320px;
+    color: var(--v4-text-2);
     font-size: var(--type-secondary, var(--text-sm));
     font-weight: 400;
     line-height: 1.35;

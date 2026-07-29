@@ -874,8 +874,9 @@
     min-width: 0;
     max-width: 100%;
     margin: 0;
+    font-family: var(--font-sans, -apple-system, BlinkMacSystemFont, sans-serif);
     font-size: var(--text-base);
-    line-height: 1.45;
+    line-height: 1.55;
     color: var(--message-markdown-text);
     white-space: normal;
     overflow-wrap: anywhere;
@@ -901,23 +902,24 @@
   .dm-bubble-body :global(h4),
   .dm-bubble-body :global(h5),
   .dm-bubble-body :global(h6) {
-    margin: 0.875rem 0 0.375rem;
+    margin: 1rem 0 0.4rem;
     color: var(--message-markdown-text);
+    font-family: var(--font-display, var(--font-sans, -apple-system, BlinkMacSystemFont, sans-serif));
     font-weight: 650;
-    line-height: 1.25;
-    letter-spacing: -0.01em;
+    line-height: 1.18;
+    letter-spacing: -0.02em;
   }
 
   .dm-bubble-body :global(h1) {
-    font-size: 1.2em;
+    font-size: 1.42em;
   }
 
   .dm-bubble-body :global(h2) {
-    font-size: 1.12em;
+    font-size: 1.28em;
   }
 
   .dm-bubble-body :global(h3) {
-    font-size: 1.06em;
+    font-size: 1.14em;
   }
 
   .dm-bubble-body :global(h4),
@@ -928,13 +930,14 @@
 
   .dm-bubble-body :global(ul),
   .dm-bubble-body :global(ol) {
-    margin: 0.5rem 0;
-    padding-left: 1.25rem;
+    margin: 0.625rem 0;
+    padding-left: 1.4rem;
   }
 
   .dm-bubble-body :global(li) {
-    margin: 0.1875rem 0;
-    padding-left: 0.125rem;
+    margin: 0.3rem 0;
+    padding-left: 0.2rem;
+    line-height: 1.5;
   }
 
   .dm-bubble-body :global(li > ul),
@@ -1715,8 +1718,9 @@
   }
 
   :global([data-window='messages']) .dm-bubble-body {
+    font-family: var(--font-sans, -apple-system, BlinkMacSystemFont, sans-serif);
     font-size: var(--text-base);
-    line-height: 1.5;
+    line-height: 1.55;
     color: var(--fg);
   }
 

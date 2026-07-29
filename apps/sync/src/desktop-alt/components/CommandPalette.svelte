@@ -247,12 +247,16 @@
     display: flex;
     align-items: flex-start;
     justify-content: center;
-    padding: 72px 20px 20px;
+    padding: clamp(48px, 9vh, 72px) 20px 20px;
     background: rgba(0, 0, 0, 0.14);
   }
 
   .command-palette {
+    display: flex;
+    flex-direction: column;
     width: min(560px, 100%);
+    max-height: min(640px, calc(100dvh - 96px));
+    min-height: 0;
     overflow: hidden;
     border: 1px solid var(--pop-border);
     border-radius: var(--v4-radius-popover);
@@ -278,6 +282,7 @@
     align-items: center;
     gap: 10px;
     height: 48px;
+    flex: 0 0 auto;
     padding: 0 12px;
     border-bottom: 1px solid var(--pop-divider);
     background: var(--pop-hover);
@@ -315,10 +320,15 @@
   }
 
   .command-list {
-    max-height: min(360px, calc(100vh - 160px));
+    flex: 1 1 auto;
+    min-height: 0;
     overflow-y: auto;
+    overscroll-behavior: contain;
     padding: 6px;
+    scroll-padding-block: 6px;
     scrollbar-color: var(--pop-muted) transparent;
+    scrollbar-gutter: stable;
+    scrollbar-width: thin;
   }
 
   .command-section + .command-section {
@@ -355,6 +365,7 @@
     font: inherit;
     text-align: left;
     cursor: pointer;
+    scroll-margin-block: 6px;
     transition:
       background-color 120ms ease,
       color 120ms ease,

@@ -200,6 +200,25 @@ describe('local/cloud provenance adapter', () => {
     ).toBe('companies/indigo/board.json');
   });
 
+  it('uses the Git first-add author as creator-only fallback', () => {
+    const derived = toProject({
+      id: 'p-1',
+      title: 'Launch',
+      company: 'indigo',
+      prdPath: 'companies/indigo/projects/launch/prd.json',
+      storyCount: 2,
+      storiesComplete: 0,
+      creatorFallback: 'Corey Epstein',
+    });
+
+    expect(derived.provenance).toMatchObject({
+      owner: null,
+      assignee: null,
+      creator: 'Corey Epstein',
+    });
+    expect(derived.creatorFallback).toBe('Corey Epstein');
+  });
+
   it('normalizes legacy task assignee/creator/source aliases and metadata fallbacks', () => {
     expect(
       toStory({
@@ -242,6 +261,46 @@ describe('local/cloud provenance adapter', () => {
       origin: 'companies/indigo/projects/launch/prd.json',
     });
     expect(stories[1].provenance?.origin).toBe('Linear import');
+  });
+
+  it('inherits only project source context while preserving explicit task roles', async () => {
+    invokeMock.mockResolvedValue({
+      name: 'Launch',
+      userStories: [
+        { id: 'US-001', title: 'Inherited' },
+        {
+          id: 'US-002',
+          title: 'Explicit',
+          owner: 'Task owner',
+          assignee: 'Task assignee',
+          creator: 'Task creator',
+          source: 'Task source',
+        },
+      ],
+    });
+
+    const stories = await loadLocalProjectStories(
+      'companies/indigo/projects/launch/prd.json',
+      {
+        owner: 'Project owner',
+        assignee: 'Project assignee',
+        creator: 'Corey Epstein',
+        origin: 'Project source',
+      },
+    );
+
+    expect(stories[0].provenance).toEqual({
+      owner: null,
+      assignee: null,
+      creator: null,
+      origin: 'Project source',
+    });
+    expect(stories[1].provenance).toEqual({
+      owner: 'Task owner',
+      assignee: 'Task assignee',
+      creator: 'Task creator',
+      origin: 'Task source',
+    });
   });
 
   it('indexes cloud attribution by normalized path and id, then fills only missing local fields', async () => {
@@ -387,6 +446,37 @@ describe('local/cloud provenance adapter', () => {
         index,
       ).provenance?.origin,
     ).toBe('Local plan');
+  });
+
+  it('ranks explicit cloud responsibility above the Git creator fallback', () => {
+    const local = toProject({
+      id: 'p-1',
+      title: 'Launch',
+      company: 'indigo',
+      prdPath: 'companies/indigo/projects/launch/prd.json',
+      storyCount: 0,
+      storiesComplete: 0,
+      creatorFallback: 'Git Author',
+    });
+    const cloud = indexProjectProvenance([
+      {
+        id: 'p-1',
+        prdPath: 'companies/indigo/projects/launch/prd.json',
+        provenance: {
+          owner: 'Cloud Owner',
+          assignee: null,
+          creator: 'Cloud Creator',
+          origin: 'Cloud board',
+        },
+      },
+    ]);
+
+    expect(applyProjectProvenance(local, cloud).provenance).toEqual({
+      owner: 'Cloud Owner',
+      assignee: null,
+      creator: 'Cloud Creator',
+      origin: 'Cloud board',
+    });
   });
 
   it('normalizes project-level PRD provenance for detail fallback', async () => {

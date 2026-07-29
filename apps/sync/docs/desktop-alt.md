@@ -31,7 +31,7 @@ All commands are registered in `src-tauri/src/main.rs`.
 | --- | --- |
 | `desktop_alt_enabled` | Returns the Indigo gate result. |
 | `open_desktop_alt_window` | Shows/focuses an existing `desktop-alt` window or builds the decorated window. The window is built `transparent(true)` and gets its native macOS glass backing applied via `glass::apply_liquid_glass_window` immediately after build (0.8.1-beta.1). |
-| `get_company_project_creators` | Fetches the cloud board for a company and returns only projects with a non-empty creator (derived from the prd's S3 `created-by` metadata) for the Projects-list **Lead** column (0.8.2-beta.1). Projects with no stamped creator are omitted and stay "Unassigned" in the UI. Pure parse is `parse_project_creators`, unit-tested in `desktop_alt.rs`. |
+| `get_company_project_creators` | Legacy-named cloud attribution lookup. It returns normalized owner, assignee, creator, and origin fields keyed by project id / PRD path. Desktop surfaces prefer explicit local attribution, fill missing fields from this cloud result, and use the same-company PRD's first Git author only as a final **Created by** fallback. A creator is never relabeled as an owner. |
 | `get_company_summary` | Returns counts for the company header and overview stats. |
 | `get_company_board` | Reads board data from the vault API at `/companies/{companyUid}/board`. |
 | `get_company_activity` | Reads activity data from the vault API at `/companies/{companyUid}/activity`. |
@@ -45,6 +45,7 @@ Company slugs are normalized in Rust, resolved through `list_syncable_workspaces
 ## Data + Security Notes
 
 - V4 reads work-system data from local HQ goals/projects where possible, while Activity and Deployments still use their existing service-backed command paths.
+- Projects and tasks display asserted roles separately: **Owner**, **Assignee**, **Created by**, and **Source**. Missing people are omitted instead of repeated as “Unassigned.” Local Git history is tenant-scoped and supplies creator evidence only when no explicit person attribution exists.
 - Deployments intentionally call hq-deploy directly; hq-deploy owns app rows, DNS state, deploy history, passwords, and share-token state.
 - Secrets must never expose plaintext. `get_company_secrets` projects each row into `{ env, count, items: [{ key, upd, rot }] }`; parser and E2E coverage reject recursive `value` or `secret` fields.
 - The desktop-alt capability grants only `core:default`, `core:event:default`, and `shell:allow-open`.

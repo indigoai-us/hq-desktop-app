@@ -78,7 +78,8 @@ describe('DESKTOP-004: project portfolio Kanban', () => {
     expect(page).toContain('data-testid="portfolio-owner-filter"');
     expect(page).toContain('data-testid="view-toggle-board"');
     expect(page).toContain('data-testid="view-toggle-list"');
-    expect(page).toContain('Owner · Anyone');
+    expect(page).toContain('Person · Anyone');
+    expect(page).toContain('Filter by project owner or creator');
     expect(page).toContain('New project');
     expect(page).toContain('async function createProject(): Promise<void>');
     expect(page).toContain('onclick={createProject}');
@@ -152,15 +153,15 @@ describe('DESKTOP-004: project portfolio Kanban', () => {
     expect(model).toContain('subagents: null');
   });
 
-  it('project cards expose name, description, goal, owner, progress, and state context', () => {
+  it('project cards expose name, description, goal, provenance, progress, and state context', () => {
     expect(row).toContain('projectDisplayName(project)');
     expect(row).toContain('project.description');
     expect(row).toContain('goalLabel');
-    expect(row).toContain('ownerLabel');
+    expect(row).toContain('<ProvenanceLine');
     expect(row).toContain('projectProgress');
     expect(row).toContain('stateContext');
     expect(page).toContain('goalLabel={goal}');
-    expect(page).toContain('ownerLabel={leadLabel(project)}');
+    expect(page).not.toContain('ownerLabel={leadLabel(project)}');
     expect(page).toContain('portfolioStateContext(column, project)');
     expect(page).toContain("liveRun={column === 'active' ? liveRun : null}");
   });
@@ -218,7 +219,9 @@ describe('DESKTOP-004: project portfolio Kanban', () => {
     expect(page).toContain('data-testid="filtered-projects-empty-state"');
     expect(page).toContain('aria-busy={loading}');
     expect(page).toContain('get_company_project_creators');
-    expect(page).toContain("'Unassigned'");
+    expect(page).toContain("responsiblePerson(project.provenance, 'project')");
+    expect(page).toContain("'No goal'");
+    expect(page).not.toContain("ownerLabel={leadLabel(project)}");
     // The company shell owns the always-visible action and exposes immediate
     // pending feedback while the Projects page keeps an optional guarded hook
     // for embedded callers.

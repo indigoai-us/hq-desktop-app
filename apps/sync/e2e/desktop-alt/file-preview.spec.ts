@@ -10,7 +10,7 @@ import { readRepoFile } from './harness';
  *
  * Acceptance criteria covered:
  *   1. Markdown files are detected by extension and rendered as HTML via
- *      renderMarkdown, not shown as raw text.
+ *      renderMarkdownDocument, not shown as raw text.
  *   2. Open-in-Claude-Code reuses OpenFileInClaudeCode.svelte in authorized
  *      mode, so the renderer supplies only the HQ-relative file path.
  *   3. Binary / oversized files drive the unsupported placeholder via .catch();
@@ -48,20 +48,20 @@ describe('desktop-alt file preview pane + open actions (US-004 file-explorer)', 
   const capability = readRepoFile('src-tauri/capabilities/desktop-alt.json');
 
   // -------------------------------------------------------------------------
-  // US-004 e2eTest 1: Markdown detection + renderMarkdown rendering
+  // US-004 e2eTest 1: Markdown detection + document-boundary rendering
   // -------------------------------------------------------------------------
-  it('detects markdown by extension and renders via renderMarkdown into file-preview-markdown (not raw text)', () => {
-    // Imports renderMarkdown from the shared lib (no reimplementation).
+  it('detects markdown by extension and renders via renderMarkdownDocument into file-preview-markdown (not raw text)', () => {
+    // Imports the document renderer so top-level frontmatter is stripped once.
     expect(preview).toContain(
-      "import { renderMarkdown } from '../lib/markdown'",
+      "import { renderMarkdownDocument } from '../lib/markdown'",
     );
     // Classification lives in file-preview-kind (shared Files + Knowledge).
     expect(preview).toContain("from '../lib/file-preview-kind'");
     const kindLib = readRepoFile('src/desktop-alt/lib/file-preview-kind.ts');
     expect(kindLib).toContain('/\\.(md|markdown)$/i');
 
-    // The markdown derived-state drives renderMarkdown when isMarkdown is true.
-    expect(preview).toContain('renderMarkdown(content)');
+    // The markdown derived-state drives the file-document renderer.
+    expect(preview).toContain('renderMarkdownDocument(content)');
 
     // Markdown result is rendered into the article via {@html ...} —
     // Svelte auto-escaping is intentionally bypassed for HTML rendering.

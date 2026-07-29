@@ -315,15 +315,16 @@ describe('visual hierarchy polish: scoped surface contracts', () => {
     expect(feed).toContain('sourceLabel="Workspace activity"');
     expect(feed).toContain('sourceLabel="App update"');
     expect(inbox).toContain('density="comfortable"');
-    expect(quickPane).toContain(
-      "sourceLabel={row.kind === 'dm' ? 'Direct message' : 'Shared file'}",
-    );
+    expect(quickPane).toContain('row.ids.length > 1');
+    expect(quickPane).toContain('`Direct messages · ${row.ids.length}`');
+    expect(quickPane).toContain('`Shared files · ${row.ids.length}`');
     expect(widget).toContain('sourceLabel={notificationSourceLabel(row.item)}');
   });
 
   it('caps initial chronology rendering without changing total or unread semantics', () => {
     expect(feed).toContain("const INITIAL_RENDER_LIMIT = { compact: 32, comfortable: 60 } as const");
-    expect(feed).toContain('const allGroups = $derived(buildNotificationGroups(undismissedItems))');
+    expect(feed).toContain('buildNotificationGroups(undismissedItems, Date.now()');
+    expect(feed).toContain('aggregateRepeatedMessagesAcrossDays: !showDayLabels');
     expect(feed).toContain('group.rows.slice(0, rowsLeft)');
     expect(feed).toContain('countUnread(visibleItems, lastReadTs)');
     expect(feed).toContain('onitemschange?.(visibleItems.length)');

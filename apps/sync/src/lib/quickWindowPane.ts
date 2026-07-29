@@ -6,7 +6,10 @@
  * and stay out of the Svelte component lifecycle.
  */
 
-import type { Item } from './notificationGroups';
+import {
+  repeatedAutomatedMessageKey,
+  type Item,
+} from './notificationGroups';
 import { isUnread } from './notificationFeedData';
 
 /** Max rows shown in a quick-window side pane (newest-first feed is already sorted). */
@@ -54,8 +57,15 @@ export function isAgentSender(item: Item): boolean {
   return u.startsWith('agt_') || u.startsWith('agent_') || u.startsWith('agent:');
 }
 
-/** Conversation identity: kind + stable sender key (person uid, else email, else display actor). DM and share threads from the same person stay distinct rows by design (type hierarchy). */
+/**
+ * Conversation identity: kind + stable sender key (person uid, else email,
+ * else display actor). Repeated server-generated agent-join notices share one
+ * synthetic conversation regardless of which provisioned agent emitted them;
+ * normal human messages never cross sender boundaries.
+ */
 export function conversationKey(item: Item): string {
+  const automatedKey = repeatedAutomatedMessageKey(item);
+  if (automatedKey) return `dm:automated:${automatedKey}`;
   const who =
     item.kind === 'dm'
       ? item.dm?.fromPersonUid || item.dm?.fromEmail || item.actor

@@ -832,7 +832,7 @@
     } catch (err) {
       if (!isLatest()) return;
       // A missing/locked HQ tree leaves the portfolio table empty rather than
-      // breaking Home — the stats simply read 0 / "—".
+      // breaking Home — the stats simply use their neutral empty states.
       console.error('get_local_projects failed:', err);
     }
   }

@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
+  defaultTelemetryRange,
   displayNameFromMember,
+  isoDay,
   memberKindFromUid,
   memberKindLabel,
   memberTypeRoleLabel,
@@ -30,19 +32,25 @@ describe('memberKindLabel / memberTypeRoleLabel', () => {
 });
 
 describe('displayNameFromMember', () => {
-  it('prefers displayName, then email, then a non-UID fallback', () => {
+  it('prefers genuine identity fields, then the source UID, then an explicit unavailable state', () => {
     expect(displayNameFromMember({ displayName: 'Ada', email: 'a@x.com', personUid: 'prs_1' })).toBe(
       'Ada',
     );
     expect(displayNameFromMember({ email: 'a@x.com', personUid: 'prs_1' })).toBe('a@x.com');
-    expect(displayNameFromMember({ personUid: 'prs_1' })).toBe('Unknown member');
-    expect(displayNameFromMember({ personUid: 'prs_1' })).not.toContain('prs_');
+    expect(displayNameFromMember({ personUid: 'prs_1' })).toBe('prs_1');
+    expect(displayNameFromMember({})).toBe('Identity unavailable');
     expect(
       displayNameFromMember(
         { personUid: 'prs_1' },
         { email: 'resolved@example.com', displayName: null },
       ),
     ).toBe('resolved@example.com');
+    expect(
+      displayNameFromMember(
+        { personUid: 'prs_1' },
+        { name: 'Server Identity', email: null },
+      ),
+    ).toBe('Server Identity');
   });
 });
 
@@ -109,7 +117,12 @@ describe('normalizeCompanyTeamTelemetry', () => {
         {
           personUid: 'agt_izzy',
           displayName: 'Izzy',
-          activeProjects: ['Instant DM delivery', { title: 'HQ Desktop app' }],
+          activeProjects: [
+            'Instant DM delivery',
+            { title: 'HQ Desktop app' },
+            { name: 'Named project' },
+            42,
+          ],
         },
       ],
     });
@@ -117,6 +130,7 @@ describe('normalizeCompanyTeamTelemetry', () => {
     expect(view.members[0]?.activeProjects).toEqual([
       'Instant DM delivery',
       'HQ Desktop app',
+      'Named project',
     ]);
   });
 
@@ -158,6 +172,54 @@ describe('normalizeCompanyTeamTelemetry', () => {
     ]);
   });
 
+  it('uses identities returned with telemetry before falling back to a source UID', () => {
+    const view = normalizeCompanyTeamTelemetry({
+      members: [
+        {
+          personUid: 'prs_historical',
+          skills: { journal: 3 },
+          events: 28703,
+          distinctSessions: 116,
+        },
+        {
+          personUid: 'agt_release',
+          skills: { deploy: 2 },
+        },
+      ],
+      identities: {
+        persons: {
+          prs_historical: {
+            uid: 'prs_historical',
+            type: 'person',
+            name: 'Historical Member',
+            email: 'historical@example.com',
+          },
+        },
+        agents: {
+          agt_release: {
+            uid: 'agt_release',
+            type: 'agent',
+            name: 'Release Agent',
+          },
+        },
+      },
+    });
+
+    expect(view.members.find((member) => member.id === 'prs_historical')).toMatchObject({
+      displayName: 'Historical Member',
+      email: 'historical@example.com',
+    });
+    expect(view.members.find((member) => member.id === 'agt_release')?.displayName).toBe(
+      'Release Agent',
+    );
+
+    const sourceOnly = normalizeCompanyTeamTelemetry({
+      members: [{ personUid: 'prs_source_only' }],
+      identities: { persons: {}, agents: {} },
+    });
+    expect(sourceOnly.members[0]?.displayName).toBe('prs_source_only');
+  });
+
   it('collapses only exact duplicate member UIDs without hiding same-name people', () => {
     const view = normalizeCompanyTeamTelemetry({
       members: [
@@ -195,8 +257,21 @@ describe('normalizeCompanyTeamTelemetry', () => {
 });
 
 describe('teamTelemetryErrorMessage', () => {
-  it('maps 403/401 to clear copy', () => {
+  it('maps permission, authentication, network, and fieldless errors to clear copy', () => {
     expect(teamTelemetryErrorMessage('HTTP 403 forbidden')).toMatch(/owner|admin/i);
     expect(teamTelemetryErrorMessage('auth: unauthorized 401')).toMatch(/Sign in/i);
+    expect(teamTelemetryErrorMessage(new Error('network unavailable'))).toMatch(/connection/i);
+    expect(teamTelemetryErrorMessage('fetch failed')).toMatch(/connection/i);
+    expect(teamTelemetryErrorMessage('')).toBe('Failed to load team telemetry.');
+  });
+});
+
+describe('telemetry date range helpers', () => {
+  it('formats a supplied UTC day and produces a bounded default range', () => {
+    expect(isoDay(new Date('2026-07-28T23:59:59.000Z'))).toBe('2026-07-28');
+    const range = defaultTelemetryRange();
+    expect(range.from).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(range.to).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(range.from <= range.to).toBe(true);
   });
 });

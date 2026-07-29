@@ -510,6 +510,8 @@
   }
 
   .v4-icon-btn {
+    appearance: none;
+    -webkit-appearance: none;
     display: grid;
     place-items: center;
     width: 28px;
@@ -527,6 +529,15 @@
   .v4-icon-btn.active {
     border-color: var(--v4-hairline);
     background: var(--v4-control-faint);
+    color: var(--v4-text-1);
+  }
+
+  /* Pressed global controls stay visibly selected without inheriting the OS
+     accent color. aria-pressed remains the semantic source of truth. */
+  .v4-icon-btn[aria-pressed='true'] {
+    border-color: var(--v4-control-border);
+    background: color-mix(in srgb, var(--v4-text-1) 8%, transparent);
+    box-shadow: inset 0 0 0 1px var(--v4-hairline);
     color: var(--v4-text-1);
   }
 

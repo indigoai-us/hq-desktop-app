@@ -158,9 +158,9 @@
           <div class="ls-row" class:dim={isDimmed(session.status)}>
             <span class={`ls-dot ${session.status}`} aria-hidden="true"></span>
             <span class="ls-name" title={session.cwd}>{rowName(session)}</span>
-            <span class="ls-company">{session.company || '—'}</span>
+            <span class="ls-company">{session.company || 'No company'}</span>
             <span class="ls-spacer"></span>
-            <span class="ls-model">{session.model || '—'}</span>
+            <span class="ls-model">{session.model || 'Unknown model'}</span>
             <span class="ls-time">{relativeActivity(session.lastActivityAt, now)}</span>
           </div>
         {/each}

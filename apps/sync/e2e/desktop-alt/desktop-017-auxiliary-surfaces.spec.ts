@@ -194,6 +194,7 @@ describe('DESKTOP-017: auxiliary desktop surfaces', () => {
   it('exposes every standalone main-window mount to the visual harness', () => {
     const standaloneMounts = [
       ['meetings-window', 'MeetingsWindow', 'meetings'],
+      ['new-files-detail', 'NewFilesDetail', 'new-files'],
       ['drift-detail', 'DriftDetail', 'drift'],
       ['activity-log', 'ActivityLog', 'activity'],
       ['share-detail', 'ShareDetail', 'share-detail'],

@@ -93,7 +93,7 @@ describe('work provenance display', () => {
     expect(provenanceView(undefined, 'project')).toEqual({
       people: [],
       origin: 'Unknown source',
-      ariaLabel: 'Unassigned · Unknown source',
+      ariaLabel: 'Unknown source',
     });
     expect(responsiblePerson(undefined, 'project')).toBe('Unassigned');
   });
@@ -118,7 +118,7 @@ describe('work provenance display', () => {
     expect(provenanceView(undefined, 'project', true)).toEqual({
       people: [],
       origin: 'Attribution unavailable',
-      ariaLabel: 'Unassigned · Attribution unavailable',
+      ariaLabel: 'Attribution unavailable',
     });
     expect(provenanceView(undefined, 'project').origin).toBe('Unknown source');
     expect(

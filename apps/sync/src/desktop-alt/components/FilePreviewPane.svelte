@@ -16,7 +16,7 @@
    * company membership before reading or dispatching anything.
    */
   import { invoke } from '@tauri-apps/api/core';
-  import { renderMarkdown } from '../lib/markdown';
+  import { renderMarkdownDocument } from '../lib/markdown';
   import { filePreviewKind } from '../lib/file-preview-kind';
   import OpenFileInClaudeCode from './OpenFileInClaudeCode.svelte';
   import '../v4/tokens.css';
@@ -62,7 +62,7 @@
   const copyPathValue = $derived(path);
 
   const markdownHtml = $derived(
-    isMarkdown && content !== null ? renderMarkdown(content) : '',
+    isMarkdown && content !== null ? renderMarkdownDocument(content) : '',
   );
 
   // Fetch / resolve preview on every selected path change.

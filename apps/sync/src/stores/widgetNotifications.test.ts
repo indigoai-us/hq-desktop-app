@@ -348,7 +348,7 @@ describe('compact activity bursts', () => {
       unread: true,
     });
 
-  it('collapses one actor/source/time burst into one newest representative', () => {
+  it('collapses one source/session burst into one newest representative', () => {
     const now = Date.parse('2026-07-28T18:10:00-06:00');
     const grouped = compactActivityBursts([
       activity('latest', 'richard@sender.agency', now),
@@ -366,7 +366,7 @@ describe('compact activity bursts', () => {
     });
   });
 
-  it('does not combine different actors, companies, days, or time windows', () => {
+  it('combines contributors within a company but separates companies, days, and sessions', () => {
     const now = Date.parse('2026-07-28T18:10:00-06:00');
     const grouped = compactActivityBursts([
       activity('base', 'Richard', now, 'indigo'),
@@ -388,15 +388,18 @@ describe('compact activity bursts', () => {
 
     expect(grouped.map((entry) => entry.id)).toEqual([
       'base',
-      'actor',
       'company',
       'later',
       'yesterday',
     ]);
-    expect(grouped.every((entry) => entry.compactGroupCount == null)).toBe(true);
+    expect(grouped[0]).toMatchObject({
+      compactGroupCount: 2,
+      compactGroupIds: ['base', 'actor'],
+    });
+    expect(grouped.slice(1).every((entry) => entry.compactGroupCount == null)).toBe(true);
   });
 
-  it('keeps messages, channels, shares, updates, and warnings individual', () => {
+  it('keeps human messages, channels, shares, updates, and warnings individual', () => {
     const now = Date.parse('2026-07-28T18:10:00-06:00');
     const rows = [
       item({ id: 'dm-1', type: 'message', kind: 'dm', actor: 'Richard', ts: now }),
@@ -407,6 +410,68 @@ describe('compact activity bursts', () => {
       item({ id: 'warning-1', type: 'system', kind: 'system', actor: 'HQ', ts: now - 5 }),
     ];
 
+    expect(compactActivityBursts(rows)).toEqual(rows);
+  });
+
+  it('compacts repeated automated agent-join DMs but not ordinary identical DMs', () => {
+    const now = Date.parse('2026-07-28T18:10:00-06:00');
+    const joinText = '🤖 A new agent (an agent) just joined the company.';
+    const rows = [
+      item({
+        id: 'join-1',
+        type: 'message',
+        kind: 'dm',
+        actor: 'Provisioner one',
+        text: joinText,
+        ts: now,
+        data: { body: joinText, fromPersonUid: 'agt_join_1' },
+      }),
+      item({
+        id: 'join-2',
+        type: 'message',
+        kind: 'dm',
+        actor: 'Provisioner two',
+        text: joinText,
+        ts: now - 60 * 60_000,
+        data: { body: joinText, fromPersonUid: 'agt_join_2' },
+      }),
+      item({ id: 'ok-1', type: 'message', kind: 'dm', actor: 'Maya', text: 'OK', ts: now - 2 }),
+      item({ id: 'ok-2', type: 'message', kind: 'dm', actor: 'Izzy', text: 'OK', ts: now - 3 }),
+    ];
+
+    const grouped = compactActivityBursts(rows);
+    expect(grouped).toHaveLength(3);
+    expect(grouped[0]).toMatchObject({
+      id: 'join-1',
+      compactGroupCount: 2,
+      compactGroupIds: ['join-1', 'join-2'],
+    });
+    expect(grouped.slice(1).map((entry) => entry.id)).toEqual(['ok-1', 'ok-2']);
+  });
+
+  it('keeps human DMs mentioning a new agent as separate conversations', () => {
+    const now = Date.parse('2026-07-28T18:10:00-06:00');
+    const prose = 'I heard a new agent joined, so I updated our onboarding notes.';
+    const rows = [
+      item({
+        id: 'maya',
+        type: 'message',
+        kind: 'dm',
+        actor: 'Maya',
+        text: prose,
+        ts: now,
+        data: { body: prose, fromPersonUid: 'prs_maya' },
+      }),
+      item({
+        id: 'izzy',
+        type: 'message',
+        kind: 'dm',
+        actor: 'Izzy',
+        text: prose,
+        ts: now - 1,
+        data: { body: prose, fromPersonUid: 'prs_izzy' },
+      }),
+    ];
     expect(compactActivityBursts(rows)).toEqual(rows);
   });
 

@@ -12,9 +12,9 @@ describe('project and task provenance source contract', () => {
   const storyPanel = readRepoFile('src/desktop-alt/v4/StoryPanel.svelte');
   const provenanceLine = readRepoFile('src/desktop-alt/components/ProvenanceLine.svelte');
 
-  it('uses one honest provenance renderer with explicit missing-data labels', () => {
+  it('uses one honest provenance renderer and keeps unknown people visually quiet', () => {
     expect(provenanceLine).toContain('provenanceView,');
-    expect(provenanceLine).toContain('Unassigned');
+    expect(provenanceLine).not.toContain('Unassigned');
     expect(provenanceLine).toContain('Unknown source');
     expect(provenanceLine).toContain('view.people');
     expect(provenanceLine).toContain('view.origin');
@@ -30,15 +30,43 @@ describe('project and task provenance source contract', () => {
       expect(source).toContain('indexProjectProvenance');
       expect(source).toContain('applyProjectProvenance');
     }
-    expect(projects).toContain('normalizeProvenance(project.provenance).owner');
+    expect(projects).toContain("responsiblePerson(project.provenance, 'project')");
     expect(projects).not.toContain('creatorByKey');
   });
 
   it('never promotes a creator into the project owner field', () => {
     expect(projects).toMatch(
-      /function leadLabel[\s\S]*?normalizeProvenance\(project\.provenance\)\.owner/,
+      /function leadLabel[\s\S]*?responsiblePerson\(project\.provenance,\s*'project'\)/,
     );
-    expect(projects).toContain('ownerLabel={leadLabel(project)}');
+    expect(projects).not.toContain('ownerLabel={leadLabel(project)}');
+    expect(projectRow).toContain('normalizeProvenance(ownerLabel ? { owner: ownerLabel } : null)');
+  });
+
+  it('uses first-add Git history only as a creator fallback after explicit metadata', () => {
+    const adapter = readRepoFile('src/desktop-alt/lib/local-projects.ts');
+    const rust = readRepoFile('../../crates/hq-desktop-core/src/projects_local.rs');
+    const command = readRepoFile('src-tauri/src/commands/projects_local.rs');
+    expect(rust).toContain('parse_git_first_add_creators');
+    expect(rust).toContain('project_needs_creator_fallback');
+    expect(rust).toContain('creator_fallback');
+    expect(rust).toContain('CREATOR_HISTORY_CACHE');
+    expect(rust).toContain('CreatorHistoryCacheKey');
+    expect(rust).toContain('--find-renames=100%');
+    expect(rust).toContain('status.starts_with(\'R\')');
+    expect(command).toContain('spawn_blocking');
+    expect(adapter).toContain('creatorFallback');
+    expect(adapter).toContain('localWithoutHistory');
+    expect(adapter).toContain('withCreatorFallback');
+    expect(adapter).toContain('projectProvenance');
+  });
+
+  it('surfaces failed cloud attribution instead of silently treating it as absent', () => {
+    const command = readRepoFile('src-tauri/src/commands/desktop_alt.rs');
+    const core = readRepoFile('../../crates/hq-desktop-core/src/desktop_alt.rs');
+    expect(command).toContain('parse_project_creators_response(status, &text)');
+    expect(core).toContain('pub fn parse_project_creators_response');
+    expect(core).toContain('AUTH_REQUIRED: creators');
+    expect(core).toContain('creators HTTP');
   });
 
   it('renders provenance on project cards, portfolio list rows, overview rows, and project header', () => {
@@ -59,7 +87,22 @@ describe('project and task provenance source contract', () => {
     expect(projectDetail).toContain('data-testid="task-rail-provenance"');
     expect(storyPanel).toContain('data-testid="task-detail-provenance"');
     expect(overview).toContain('provenance: current?.story.provenance');
+    expect(overview).toContain('project.provenance,');
     expect(overview).toContain('data-testid="inflight-story-provenance"');
+  });
+
+  it('reconciles already-loaded task provenance when cloud attribution arrives late', () => {
+    for (const source of [projects, overview, goals]) {
+      expect(source).toContain('refreshSelectedStoriesForProvenance');
+      expect(source).toMatch(
+        /selected = refreshed;\s*void refreshSelectedStoriesForProvenance\(refreshed\)/,
+      );
+      expect(source).toContain('storyLoadGeneration');
+      expect(source).toContain('isCurrentStoryLoad');
+    }
+    expect(overview).toMatch(
+      /cloudProvenance = indexProjectProvenance\(records\);[\s\S]*?inFlightStory = \{\};/,
+    );
   });
 
   it('keeps task provenance visible at narrow list widths', () => {

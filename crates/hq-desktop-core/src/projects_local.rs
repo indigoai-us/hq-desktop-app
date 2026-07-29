@@ -33,8 +33,10 @@
 //! `board.json` is skipped (logged), never panicked on — one bad file must not
 //! blank the whole list.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
+use std::process::Command;
+use std::sync::{Mutex, OnceLock};
 
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
@@ -94,6 +96,11 @@ pub struct LocalProject {
     /// Explicit owner/creator/source metadata, when declared.
     #[serde(default)]
     pub provenance: WorkProvenance,
+    /// Best-effort first-add author from the local HQ Git history. This is
+    /// creator evidence, never ownership, and only participates after explicit
+    /// local/cloud attribution has had a chance to win.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub creator_fallback: Option<String>,
 }
 
 /// A single user story, mirroring the prd.json story shape the Kanban + detail
@@ -397,9 +404,13 @@ pub struct PrdStory {
     title: String,
     #[serde(default)]
     description: String,
-    #[serde(default, rename = "acceptanceCriteria")]
+    #[serde(
+        default,
+        rename = "acceptanceCriteria",
+        deserialize_with = "deserialize_acceptance_criteria"
+    )]
     acceptance_criteria: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_passes")]
     passes: bool,
     // Accept number OR string priority (see LocalStory::priority) — a numeric
     // priority must not fail the whole prd parse.
@@ -417,6 +428,56 @@ pub struct PrdStory {
     attribution: RawAttribution,
     #[serde(default)]
     provenance: RawAttribution,
+}
+
+fn acceptance_criterion(value: serde_json::Value) -> Result<String, String> {
+    match value {
+        serde_json::Value::String(value) => Ok(value),
+        serde_json::Value::Object(object) => object
+            .get("criterion")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| {
+                "acceptance criterion object must contain a string criterion".to_string()
+            }),
+        _ => Err("acceptance criterion must be a string or criterion object".to_string()),
+    }
+}
+
+fn deserialize_acceptance_criteria<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    match value {
+        serde_json::Value::Array(values) => values
+            .into_iter()
+            .map(acceptance_criterion)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(serde::de::Error::custom),
+        serde_json::Value::Null => Ok(Vec::new()),
+        _ => Err(serde::de::Error::custom(
+            "acceptanceCriteria must be an array",
+        )),
+    }
+}
+
+fn deserialize_passes<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    let passes = match value {
+        serde_json::Value::Bool(value) => value,
+        serde_json::Value::Null => false,
+        serde_json::Value::String(value) if value.eq_ignore_ascii_case("skipped") => false,
+        _ => {
+            return Err(serde::de::Error::custom(
+                "passes must be a boolean, null, or \"skipped\"",
+            ));
+        }
+    };
+    Ok(passes)
 }
 
 /// Permissive input shape for current and legacy provenance aliases. Values are
@@ -747,6 +808,347 @@ fn require_same_project_write_target(
     Ok(())
 }
 
+const GIT_AUTHOR_RECORD: char = '\u{001e}';
+const GIT_AUTHOR_FIELD: char = '\u{001f}';
+const CREATOR_HISTORY_CACHE_LIMIT: usize = 8;
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct CreatorHistoryCacheKey {
+    hq_root: PathBuf,
+    head: String,
+    scopes: Vec<String>,
+}
+
+static CREATOR_HISTORY_CACHE: OnceLock<
+    Mutex<HashMap<CreatorHistoryCacheKey, HashMap<String, String>>>,
+> = OnceLock::new();
+
+fn project_needs_creator_fallback(project: &LocalProject) -> bool {
+    project.provenance.owner.is_none()
+        && project.provenance.assignee.is_none()
+        && project.provenance.creator.is_none()
+}
+
+#[derive(Debug, Default, PartialEq)]
+struct GitCreatorHistory {
+    creators: HashMap<String, String>,
+    /// Commits where exact-only detection reported at least one added and one
+    /// deleted PRD. These are the only commits that can contain a modified
+    /// rename, so a targeted heuristic pass can stay fast on large HQ repos.
+    possible_modified_rename_commits: Vec<String>,
+}
+
+#[derive(Debug, Default)]
+struct GitCreatorCommit {
+    hash: String,
+    author: Option<String>,
+    added_prd: bool,
+    deleted_prd: bool,
+}
+
+fn finish_git_creator_commit(
+    current: &mut GitCreatorCommit,
+    possible_modified_rename_commits: &mut Vec<String>,
+) {
+    if current.added_prd && current.deleted_prd && !current.hash.is_empty() {
+        possible_modified_rename_commits.push(current.hash.clone());
+    }
+    *current = GitCreatorCommit::default();
+}
+
+fn is_prd_path(path: &str) -> bool {
+    path == "prd.json" || path.ends_with("/prd.json")
+}
+
+/// Parse the machine-delimited output of:
+/// `git log --reverse --diff-filter=ADR
+/// --format=%x1e%H%x1f%aN%x1f%aE --name-status`.
+///
+/// `--reverse` places the oldest add first. Exact renames carry that original
+/// creator forward within the authorized history scopes instead of attributing
+/// the move to the mover. `or_insert` preserves the first recorded author if a
+/// path was later deleted and added again. A+D PRD commits are retained for the
+/// narrowly targeted modified-rename fallback in `load_git_first_add_creators`.
+fn parse_git_creator_history(output: &str) -> GitCreatorHistory {
+    let mut creators = HashMap::new();
+    let mut current = GitCreatorCommit::default();
+    let mut possible_modified_rename_commits = Vec::new();
+    for raw_line in output.lines() {
+        let line = raw_line.trim_end_matches('\r');
+        if let Some(header) = line.strip_prefix(GIT_AUTHOR_RECORD) {
+            finish_git_creator_commit(&mut current, &mut possible_modified_rename_commits);
+            let mut fields = header.splitn(3, GIT_AUTHOR_FIELD);
+            current.hash = fields.next().unwrap_or_default().trim().to_string();
+            let name = fields.next().unwrap_or_default().trim();
+            let email = fields.next().unwrap_or_default().trim();
+            current.author = if name.is_empty() {
+                (!email.is_empty()).then(|| email.to_string())
+            } else {
+                Some(name.to_string())
+            };
+            continue;
+        }
+        let mut fields = line.split('\t');
+        match (fields.next(), fields.next(), fields.next()) {
+            (Some("A"), Some(path), None) => {
+                let path = normalize_rel(path.trim());
+                current.added_prd |= is_prd_path(&path);
+                if let Some(author) = current.author.as_ref().filter(|_| !path.is_empty()) {
+                    creators.entry(path).or_insert_with(|| author.clone());
+                }
+            }
+            (Some("D"), Some(path), None) => {
+                current.deleted_prd |= is_prd_path(&normalize_rel(path.trim()));
+            }
+            (Some(status), Some(previous), Some(next)) if status.starts_with('R') => {
+                let previous = normalize_rel(previous.trim());
+                let next = normalize_rel(next.trim());
+                if let Some(original_author) = creators.get(&previous).cloned() {
+                    creators.entry(next).or_insert(original_author);
+                }
+            }
+            _ => {}
+        }
+    }
+    finish_git_creator_commit(&mut current, &mut possible_modified_rename_commits);
+    GitCreatorHistory {
+        creators,
+        possible_modified_rename_commits,
+    }
+}
+
+#[cfg(test)]
+fn parse_git_first_add_creators(output: &str) -> HashMap<String, String> {
+    parse_git_creator_history(output).creators
+}
+
+fn apply_modified_rename_commit(
+    hq_root: &Path,
+    scopes: &[String],
+    commit: &str,
+    creators: &mut HashMap<String, String>,
+) {
+    if commit.is_empty() {
+        return;
+    }
+    let mut command = Command::new("git");
+    command
+        .arg("-C")
+        .arg(hq_root)
+        .args([
+            "diff-tree",
+            "--no-commit-id",
+            "-r",
+            "--find-renames=50%",
+            "--diff-filter=R",
+            "--name-status",
+            commit,
+            "--",
+        ])
+        .args(scopes)
+        .env("GIT_OPTIONAL_LOCKS", "0");
+    let Ok(output) = command.output() else {
+        return;
+    };
+    if !output.status.success() {
+        return;
+    }
+    for raw_line in String::from_utf8_lossy(&output.stdout).lines() {
+        let mut fields = raw_line.trim_end_matches('\r').split('\t');
+        match (fields.next(), fields.next(), fields.next()) {
+            (Some(status), Some(previous), Some(next)) if status.starts_with('R') => {
+                let previous = normalize_rel(previous.trim());
+                let next = normalize_rel(next.trim());
+                if let Some(original_author) = creators.get(&previous).cloned() {
+                    // The exact-only first pass sees a modified rename as D+A
+                    // and initially attributes the new path to the mover. A
+                    // verified heuristic rename must replace that provisional
+                    // value with the original file creator.
+                    creators.insert(next, original_author);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn project_history_scopes(paths: &[String]) -> Vec<String> {
+    let mut scopes = paths
+        .iter()
+        .filter_map(|path| {
+            let normalized = normalize_rel(path);
+            let mut parts = normalized.split('/');
+            match (parts.next(), parts.next(), parts.next()) {
+                (Some("companies"), Some(company), Some("projects"))
+                    if !company.is_empty() && company != "." && company != ".." =>
+                {
+                    Some(format!("companies/{company}/projects"))
+                }
+                _ => None,
+            }
+        })
+        .collect::<Vec<_>>();
+    scopes.sort();
+    scopes.dedup();
+    scopes
+}
+
+fn git_head(hq_root: &Path) -> Option<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(hq_root)
+        .args(["rev-parse", "--verify", "HEAD"])
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let head = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!head.is_empty()).then_some(head)
+}
+
+fn load_git_first_add_creators(hq_root: &Path, scopes: &[String]) -> HashMap<String, String> {
+    if scopes.is_empty() {
+        return HashMap::new();
+    }
+    let mut command = Command::new("git");
+    command
+        .arg("-C")
+        .arg(hq_root)
+        .args([
+            "log",
+            "--find-renames=100%",
+            "--reverse",
+            "--diff-filter=ADR",
+            "--format=%x1e%H%x1f%aN%x1f%aE",
+            "--name-status",
+            "--",
+        ])
+        .args(scopes)
+        .env("GIT_OPTIONAL_LOCKS", "0");
+    let Ok(output) = command.output() else {
+        return HashMap::new();
+    };
+    if !output.status.success() {
+        return HashMap::new();
+    }
+    let history = parse_git_creator_history(&String::from_utf8_lossy(&output.stdout));
+    let mut creators = history.creators;
+    for commit in history.possible_modified_rename_commits {
+        apply_modified_rename_commit(hq_root, scopes, &commit, &mut creators);
+    }
+    creators
+}
+
+fn first_add_creators_for_paths(hq_root: &Path, paths: &[String]) -> HashMap<String, String> {
+    let scopes = project_history_scopes(paths);
+    let Some(head) = git_head(hq_root) else {
+        return HashMap::new();
+    };
+    let key = CreatorHistoryCacheKey {
+        hq_root: hq_root.to_path_buf(),
+        head,
+        scopes: scopes.clone(),
+    };
+    let cache = CREATOR_HISTORY_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(mut entries) = cache.lock() {
+        if let Some(creators) = entries.get(&key) {
+            return creators.clone();
+        }
+
+        // Hold the short-lived lock through the load so simultaneous Overview,
+        // Projects, and Goals requests become a single flight instead of
+        // launching duplicate history walks.
+        //
+        // Hundreds of exact pathspecs make Git walk history once per PRD and
+        // took ~9 seconds on a real HQ tree. One already-authorized company
+        // projects scope plus exact-only rename detection measured ~0.7 seconds
+        // for the full company tree; exact PRD matches are filtered by the
+        // caller. Exact renames retain the original creator without Git's
+        // expensive heuristic rename search.
+        let creators = load_git_first_add_creators(hq_root, &scopes);
+        if entries.len() >= CREATOR_HISTORY_CACHE_LIMIT {
+            entries.clear();
+        }
+        entries.insert(key, creators.clone());
+        return creators;
+    }
+
+    // Poisoned cache state must never blank the projects surface.
+    load_git_first_add_creators(hq_root, &scopes)
+}
+
+fn project_creator_fallback_path(project: &LocalProject) -> Option<String> {
+    let path = normalize_rel(project.prd_path.as_deref()?);
+    let path_company = company_slug_for_hq_path(&path).ok().flatten()?;
+    if path_company != project.company {
+        return None;
+    }
+    let project_prefix = format!("companies/{path_company}/projects/");
+    (path.starts_with(&project_prefix) && path.ends_with("/prd.json")).then_some(path)
+}
+
+/// Keep a board-declared PRD identity only when it belongs to that board's
+/// company. Existing paths are canonicalized so a same-company spelling cannot
+/// hide a cross-company symlink; missing same-company paths remain useful as
+/// legacy identities for a project whose PRD has not synced down yet.
+fn validated_board_prd_path(hq_root: &Path, company: &str, raw_path: &str) -> Option<String> {
+    let normalized = validate_hq_relative_path(raw_path, false).ok()?;
+    if Path::new(&normalized)
+        .file_name()
+        .and_then(|name| name.to_str())
+        != Some("prd.json")
+    {
+        return None;
+    }
+    if company_slug_for_hq_path(&normalized)
+        .ok()
+        .flatten()
+        .as_deref()
+        != Some(company)
+    {
+        return None;
+    }
+    let project_prefix = format!("companies/{company}/projects/");
+    let project_relative = normalized.strip_prefix(&project_prefix)?;
+    if project_relative == "prd.json" || !project_relative.ends_with("/prd.json") {
+        return None;
+    }
+
+    let candidate = hq_root.join(&normalized);
+    if !candidate.exists() {
+        return Some(normalized);
+    }
+    let target = resolve_project_path(hq_root, &normalized, "prd.json").ok()?;
+    (target.company_slug.as_deref() == Some(company)).then_some(target.relative_path)
+}
+
+fn apply_creator_fallback_map(projects: &mut [LocalProject], creators: &HashMap<String, String>) {
+    for project in projects {
+        if !project_needs_creator_fallback(project) {
+            continue;
+        }
+        let Some(path) = project_creator_fallback_path(project) else {
+            continue;
+        };
+        project.creator_fallback = creators.get(&path).cloned();
+    }
+}
+
+fn apply_git_creator_fallbacks(hq_root: &Path, projects: &mut [LocalProject]) {
+    let mut paths = projects
+        .iter()
+        .filter(|project| project_needs_creator_fallback(project))
+        .filter_map(project_creator_fallback_path)
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths.dedup();
+
+    let creators = first_add_creators_for_paths(hq_root, &paths);
+    apply_creator_fallback_map(projects, &creators);
+}
+
 /// List projects across every company by scanning the local HQ tree.
 ///
 /// Reads `companies/<slug>/board.json` for project metadata and
@@ -836,6 +1238,9 @@ fn scan_local_projects_scoped(
                     attribution,
                     provenance,
                 } = project;
+                let prd_path = prd_path
+                    .as_deref()
+                    .and_then(|rel| validated_board_prd_path(hq_root, &slug, rel));
                 let prd_details = prd_path.as_deref().and_then(|rel| {
                     resolve_project_path(hq_root, rel, "prd.json")
                         .ok()
@@ -854,7 +1259,7 @@ fn scan_local_projects_scoped(
                         })
                 });
                 if let Some(rel) = prd_path.as_deref() {
-                    linked_prds.insert(normalize_rel(rel));
+                    linked_prds.insert(rel.to_string());
                 }
                 let (story_count, stories_complete, prd_created, prd_updated, prd_provenance) =
                     prd_details.unwrap_or((0, 0, None, None, WorkProvenance::default()));
@@ -883,6 +1288,7 @@ fn scan_local_projects_scoped(
                         merge_work_provenance(board_provenance, prd_provenance),
                         &board_source,
                     ),
+                    creator_fallback: None,
                 });
             }
         }
@@ -935,10 +1341,12 @@ fn scan_local_projects_scoped(
                 story_count,
                 stories_complete,
                 provenance,
+                creator_fallback: None,
             });
         }
     }
 
+    apply_git_creator_fallbacks(hq_root, &mut out);
     out
 }
 
@@ -1790,14 +2198,17 @@ pub fn now_iso8601() -> String {
 /// panic). Used so one bad file can be skipped instead of failing the scan.
 pub fn read_json_lenient<T: serde::de::DeserializeOwned>(path: &Path) -> Option<T> {
     let bytes = std::fs::read(path).ok()?;
-    match serde_json::from_slice::<T>(&bytes) {
+    let json_bytes = bytes
+        .strip_prefix(&[0xef, 0xbb, 0xbf])
+        .unwrap_or(bytes.as_slice());
+    match serde_json::from_slice::<T>(json_bytes) {
         Ok(v) => Some(v),
         Err(e) => {
             // serde's derived struct visitor rejects duplicate fields even
             // though serde_json::Value follows common JSON consumer behavior
             // and keeps the last value. Accept that recoverable shape so one
             // duplicated optional metadata key cannot hide an entire project.
-            if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+            if let Ok(value) = serde_json::from_slice::<serde_json::Value>(json_bytes) {
                 if let Ok(parsed) = serde_json::from_value::<T>(value) {
                     return Some(parsed);
                 }
@@ -2057,6 +2468,11 @@ mod tests {
         assert_eq!(broken.stories_complete, 0);
         assert_eq!(broken.created_at.as_deref(), Some("2026-05-01T00:00:00Z"));
         assert_eq!(
+            broken.prd_path.as_deref(),
+            Some("companies/indigo/projects/missing/prd.json"),
+            "a missing same-company PRD remains a useful legacy identity",
+        );
+        assert_eq!(
             broken.provenance.origin.as_deref(),
             Some("companies/indigo/board.json"),
         );
@@ -2070,6 +2486,61 @@ mod tests {
             })
             .count();
         assert_eq!(flagship_rows, 1, "linked prd must not be duplicated");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn scan_drops_cross_company_board_prd_identity_before_it_reaches_the_ui() {
+        let root = std::env::temp_dir().join(format!(
+            "hq-projects-cross-company-board-path-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos(),
+        ));
+        let alpha = root.join("companies/alpha");
+        let beta_project = root.join("companies/beta/projects/secret");
+        fs::create_dir_all(&alpha).unwrap();
+        fs::create_dir_all(&beta_project).unwrap();
+        fs::write(
+            alpha.join("board.json"),
+            r#"{
+                "projects":[{
+                    "id":"alpha-project",
+                    "title":"Alpha project",
+                    "prd_path":"companies/beta/projects/secret/prd.json"
+                }]
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            beta_project.join("prd.json"),
+            r#"{
+                "name":"Beta secret",
+                "userStories":[{"id":"B-001","title":"Private task","passes":false}]
+            }"#,
+        )
+        .unwrap();
+
+        let allowed = HashSet::from(["alpha".to_string()]);
+        let projects = scan_local_projects_for_companies(&root, &allowed);
+        assert_eq!(projects.len(), 1);
+        let project = &projects[0];
+        assert_eq!(project.company, "alpha");
+        assert_eq!(project.id, "alpha-project");
+        assert!(
+            project.prd_path.is_none(),
+            "a board row must not carry another company's PRD identity into Alpha UI"
+        );
+        assert_eq!(project.story_count, 0);
+        assert_eq!(project.stories_complete, 0);
+        assert!(project.creator_fallback.is_none());
+        assert_eq!(
+            project.provenance.origin.as_deref(),
+            Some("companies/alpha/board.json"),
+        );
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -2202,6 +2673,246 @@ mod tests {
     }
 
     #[test]
+    fn git_first_add_creator_is_an_honest_last_resort_not_an_owner() {
+        let log = concat!(
+            "\u{001e}a1\u{001f}Corey Epstein\u{001f}corey@getindigo.ai\n\n",
+            "A\tcompanies/indigo/projects/alpha/prd.json\n",
+            "\u{001e}b2\u{001f}\u{001f}maya@example.com\n\n",
+            "A\tcompanies/indigo/projects/beta/prd.json\n",
+            "\u{001e}c3\u{001f}Project Mover\u{001f}mover@example.com\n\n",
+            "R100\tcompanies/indigo/projects/alpha/prd.json\tcompanies/indigo/projects/alpha-renamed/prd.json\n",
+            "\u{001e}d4\u{001f}Later Author\u{001f}later@example.com\n\n",
+            "A\tcompanies/indigo/projects/alpha/prd.json\n",
+            "\u{001e}e5\u{001f}Other Tenant Author\u{001f}other@example.com\n\n",
+            "A\tcompanies/other/projects/secret/prd.json\n",
+        );
+        let creators = parse_git_first_add_creators(log);
+        assert_eq!(
+            project_history_scopes(&[
+                "companies/indigo/projects/alpha/prd.json".to_string(),
+                "companies/indigo/projects/beta/prd.json".to_string(),
+                "companies/other/projects/gamma/prd.json".to_string(),
+                "../companies/escape/projects/nope/prd.json".to_string(),
+            ]),
+            vec![
+                "companies/indigo/projects".to_string(),
+                "companies/other/projects".to_string(),
+            ],
+            "history scans collapse exact PRDs to authorized company scopes",
+        );
+        assert_eq!(
+            creators
+                .get("companies/indigo/projects/alpha/prd.json")
+                .map(String::as_str),
+            Some("Corey Epstein"),
+            "the oldest add author wins even if a file is added again",
+        );
+        assert_eq!(
+            creators
+                .get("companies/indigo/projects/beta/prd.json")
+                .map(String::as_str),
+            Some("maya@example.com"),
+            "email is retained when Git has no display name",
+        );
+        assert_eq!(
+            creators
+                .get("companies/indigo/projects/alpha-renamed/prd.json")
+                .map(String::as_str),
+            Some("Corey Epstein"),
+            "an exact rename carries the original creator instead of the mover",
+        );
+
+        let project = |id: &str, path: &str, provenance: WorkProvenance| LocalProject {
+            id: id.to_string(),
+            title: id.to_string(),
+            description: String::new(),
+            company: "indigo".to_string(),
+            status: "active".to_string(),
+            prd_path: Some(path.to_string()),
+            created_at: None,
+            updated_at: None,
+            story_count: 0,
+            stories_complete: 0,
+            provenance,
+            creator_fallback: None,
+        };
+        let mut projects = vec![
+            project(
+                "alpha",
+                "companies/indigo/projects/alpha/prd.json",
+                WorkProvenance::default(),
+            ),
+            project(
+                "beta",
+                "companies/indigo/projects/beta/prd.json",
+                WorkProvenance {
+                    owner: Some("Explicit owner".to_string()),
+                    ..WorkProvenance::default()
+                },
+            ),
+            project(
+                "cross-tenant",
+                "companies/other/projects/secret/prd.json",
+                WorkProvenance::default(),
+            ),
+        ];
+        apply_creator_fallback_map(&mut projects, &creators);
+
+        assert_eq!(
+            projects[0].creator_fallback.as_deref(),
+            Some("Corey Epstein"),
+        );
+        assert!(projects[0].provenance.owner.is_none());
+        assert!(projects[0].provenance.creator.is_none());
+        assert!(
+            projects[1].creator_fallback.is_none(),
+            "explicit responsibility must outrank Git history",
+        );
+        assert!(
+            projects[2].creator_fallback.is_none(),
+            "an Indigo project must never expose another tenant's Git author even if its board retains a cross-company path",
+        );
+    }
+
+    #[test]
+    fn creator_history_cache_is_scoped_and_invalidates_at_a_new_head() {
+        let root = std::env::temp_dir().join(format!(
+            "hq-projects-creator-cache-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos(),
+        ));
+        let project_dir = root.join("companies/indigo/projects/alpha");
+        fs::create_dir_all(&project_dir).expect("project dir");
+
+        let git = |args: &[&str]| {
+            let status = Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(args)
+                .env("GIT_OPTIONAL_LOCKS", "0")
+                .status()
+                .expect("git command");
+            assert!(status.success(), "git {args:?}");
+        };
+        git(&["init", "--quiet"]);
+        fs::create_dir_all(root.join(".git/empty-hooks")).expect("empty hooks dir");
+        git(&["config", "core.hooksPath", ".git/empty-hooks"]);
+        git(&["config", "commit.gpgsign", "false"]);
+        git(&["config", "user.name", "First Author"]);
+        git(&["config", "user.email", "first@example.com"]);
+        fs::write(
+            project_dir.join("prd.json"),
+            r#"{
+                "name":"alpha",
+                "description":"A sufficiently stable project document for rename similarity.",
+                "userStories":[
+                    {"id":"US-001","title":"Preserve original creator","passes":false},
+                    {"id":"US-002","title":"Keep project history","passes":false}
+                ]
+            }"#,
+        )
+        .expect("write alpha");
+        git(&["add", "companies/indigo/projects/alpha/prd.json"]);
+        git(&["commit", "--quiet", "--no-verify", "-m", "add alpha"]);
+
+        let alpha_path = "companies/indigo/projects/alpha/prd.json".to_string();
+        let alpha = first_add_creators_for_paths(&root, std::slice::from_ref(&alpha_path));
+        assert_eq!(
+            alpha.get(&alpha_path).map(String::as_str),
+            Some("First Author")
+        );
+
+        let scopes = project_history_scopes(std::slice::from_ref(&alpha_path));
+        let first_key = CreatorHistoryCacheKey {
+            hq_root: root.clone(),
+            head: git_head(&root).expect("first head"),
+            scopes,
+        };
+        assert!(
+            CREATOR_HISTORY_CACHE
+                .get()
+                .and_then(|cache| cache.lock().ok())
+                .is_some_and(|entries| entries.contains_key(&first_key)),
+            "the first history walk is cached by repo, HEAD, and authorized scopes",
+        );
+
+        let beta_dir = root.join("companies/indigo/projects/beta");
+        fs::create_dir_all(&beta_dir).expect("beta dir");
+        git(&["config", "user.name", "Second Author"]);
+        git(&["config", "user.email", "second@example.com"]);
+        git(&[
+            "mv",
+            "companies/indigo/projects/alpha",
+            "companies/indigo/projects/alpha-renamed",
+        ]);
+        fs::write(
+            root.join("companies/indigo/projects/alpha-renamed/prd.json"),
+            r#"{
+                "name":"alpha renamed",
+                "description":"A sufficiently stable project document for rename similarity.",
+                "userStories":[
+                    {"id":"US-001","title":"Preserve original creator","passes":true},
+                    {"id":"US-002","title":"Keep project history","passes":false}
+                ]
+            }"#,
+        )
+        .expect("edit moved alpha");
+        git(&["add", "companies/indigo/projects/alpha-renamed/prd.json"]);
+        fs::write(beta_dir.join("prd.json"), r#"{"name":"beta"}"#).expect("write beta");
+        git(&["add", "companies/indigo/projects/beta/prd.json"]);
+        git(&[
+            "commit",
+            "--quiet",
+            "--no-verify",
+            "-m",
+            "move alpha and add beta",
+        ]);
+
+        let renamed_path = "companies/indigo/projects/alpha-renamed/prd.json".to_string();
+        let beta_path = "companies/indigo/projects/beta/prd.json".to_string();
+        let exact_only = Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args([
+                "diff-tree",
+                "--no-commit-id",
+                "-r",
+                "--find-renames=100%",
+                "--diff-filter=ADR",
+                "--name-status",
+                "HEAD",
+                "--",
+                "companies/indigo/projects",
+            ])
+            .env("GIT_OPTIONAL_LOCKS", "0")
+            .output()
+            .expect("exact-only diff");
+        let exact_only = String::from_utf8_lossy(&exact_only.stdout);
+        assert!(
+            exact_only.lines().any(|line| line.starts_with("A\t"))
+                && exact_only.lines().any(|line| line.starts_with("D\t")),
+            "fixture must be a modified rename that exact-only detection misses: {exact_only}",
+        );
+        let refreshed =
+            first_add_creators_for_paths(&root, &[renamed_path.clone(), beta_path.clone()]);
+        assert_eq!(
+            refreshed.get(&renamed_path).map(String::as_str),
+            Some("First Author"),
+            "moving a PRD under a new author must retain its original creator",
+        );
+        assert_eq!(
+            refreshed.get(&beta_path).map(String::as_str),
+            Some("Second Author"),
+            "a new HEAD invalidates the cached creator map",
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn numeric_priority_does_not_break_the_prd() {
         // Regression: real prds write `priority` as a NUMBER (e.g. 1). When the
         // field was typed `Option<String>`, serde rejected the entire prd the
@@ -2246,6 +2957,95 @@ mod tests {
         assert_eq!(numeric.story_count, 2);
         assert_eq!(numeric.stories_complete, 1);
 
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn real_prd_story_variants_remain_visible_without_changing_completion_semantics() {
+        let root =
+            std::env::temp_dir().join(format!("hq-prd-schema-variants-{}", std::process::id(),));
+        let proj = root.join("companies/acme/projects/schema-variants");
+        fs::create_dir_all(&proj).unwrap();
+        fs::write(
+            proj.join("prd.json"),
+            r#"{
+                "name":"Schema variants",
+                "userStories":[
+                    {
+                        "id":"S-1",
+                        "acceptanceCriteria":[
+                            "Plain criterion",
+                            {"criterion":"Structured criterion","testability":"automated"}
+                        ],
+                        "passes":true,
+                        "labels":["ui"],
+                        "dependsOn":["S-0"],
+                        "notes":"Preserve exactly"
+                    },
+                    {
+                        "id":"S-2",
+                        "acceptanceCriteria":[
+                            {"criterion":"Manual criterion","testability":"manual"}
+                        ],
+                        "passes":"skipped"
+                    },
+                    {"id":"S-3","passes":null},
+                    {"id":"S-4"}
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        let parsed = read_project_prd(&root, "companies/acme/projects/schema-variants/prd.json")
+            .expect("real story schema variants parse");
+        assert_eq!(parsed.user_stories.len(), 4);
+        assert_eq!(
+            parsed.user_stories[0].acceptance_criteria,
+            vec!["Plain criterion", "Structured criterion"],
+        );
+        assert_eq!(
+            parsed.user_stories[1].acceptance_criteria,
+            vec!["Manual criterion"],
+        );
+        assert!(parsed.user_stories[0].passes);
+        assert!(parsed.user_stories[1..].iter().all(|story| !story.passes));
+        assert_eq!(parsed.user_stories[0].labels, vec!["ui"]);
+        assert_eq!(parsed.user_stories[0].depends_on, vec!["S-0"]);
+        assert_eq!(
+            parsed.user_stories[0].notes.as_deref(),
+            Some("Preserve exactly"),
+        );
+
+        let projects = scan_local_projects(&root);
+        let project = projects
+            .iter()
+            .find(|project| project.title == "Schema variants")
+            .expect("schema-variant PRD remains in project scan");
+        assert_eq!((project.story_count, project.stories_complete), (4, 1));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn utf8_bom_is_ignored_but_malformed_json_still_fails() {
+        let root = std::env::temp_dir().join(format!("hq-prd-bom-{}", std::process::id(),));
+        fs::create_dir_all(&root).unwrap();
+        let bom_path = root.join("bom.json");
+        let mut bom_json = vec![0xef, 0xbb, 0xbf];
+        bom_json.extend_from_slice(br#"{"name":"BOM project","userStories":[]}"#);
+        fs::write(&bom_path, bom_json).unwrap();
+        let parsed = read_json_lenient::<PrdFile>(&bom_path).expect("UTF-8 BOM is accepted");
+        assert_eq!(parsed.name, "BOM project");
+
+        let malformed_path = root.join("malformed.json");
+        fs::write(
+            &malformed_path,
+            br#"{"name":"broken","userStories":[{"id":"S-1"} {"id":"S-2"}]}"#,
+        )
+        .unwrap();
+        assert!(
+            read_json_lenient::<PrdFile>(&malformed_path).is_none(),
+            "genuinely malformed JSON remains visible to diagnostics and skipped",
+        );
         let _ = fs::remove_dir_all(&root);
     }
 

@@ -142,4 +142,13 @@ describe('desktop interaction feedback and render budgets', () => {
       /@media \(prefers-reduced-motion: reduce\)[\s\S]*?\.toggle-knob[\s\S]*?transition: none/,
     );
   });
+
+  it('keeps project navigation and goal linking as sibling native buttons', () => {
+    const projects = read('src/desktop-alt/components/ProjectRow.svelte');
+    expect(projects).toContain('class="project-open"');
+    expect(projects).toMatch(
+      /<\/button>\s*\{#if onlinkgoal && !goalLabel\}[\s\S]*?<button[\s\S]*?class="link-nudge"/,
+    );
+    expect(projects).not.toContain('role="button"');
+  });
 });

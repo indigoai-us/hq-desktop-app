@@ -5,6 +5,7 @@
  * share the same reducers. Rust emits `widget:notification` / `widget:occlusion`;
  * this module only owns in-memory stack semantics and window size math.
  */
+import { automatedAgentJoinNoticeKey } from '../lib/automatedNotices';
 
 /** Auto-collapse timeout for each visible stack row (ms). */
 export const WIDGET_ROW_TIMEOUT_MS = 8000;
@@ -60,8 +61,12 @@ export const WIDGET_RECENT_MAX = 20;
  */
 export const WIDGET_HOVER_MAX = 10;
 
-/** Activity from one actor/source inside this window becomes one compact row. */
-export const WIDGET_ACTIVITY_BURST_WINDOW_MS = 10 * 60 * 1000;
+/**
+ * Ambient activity from one company/source inside this window becomes one
+ * compact row. Six hours keeps a working-session burst together without
+ * flattening separate days into one opaque notification.
+ */
+export const WIDGET_ACTIVITY_BURST_WINDOW_MS = 6 * 60 * 60 * 1000;
 
 /** localStorage key for persisted widget recent history (US-015). */
 export const WIDGET_RECENT_STORAGE_KEY = 'hq-widget-recent-v1';
@@ -525,7 +530,7 @@ export function hoverItems(state: WidgetStackState): WidgetStackItem[] {
   return state.recent.slice(0, WIDGET_HOVER_MAX);
 }
 
-function compactActivityContext(item: WidgetStackItem): string {
+function compactActivityContext(item: WidgetStackItem): string | null {
   const record =
     item.data && typeof item.data === 'object' && !Array.isArray(item.data)
       ? (item.data as Record<string, unknown>)
@@ -533,14 +538,29 @@ function compactActivityContext(item: WidgetStackItem): string {
   const source =
     record?.company ??
     record?.companySlug ??
+    record?.company_slug ??
+    record?.companyName ??
     record?.workspace ??
     record?.repo ??
     record?.source ??
     '';
-  return [
-    item.actor?.trim().toLocaleLowerCase() ?? '',
-    String(source).trim().toLocaleLowerCase(),
-  ].join('\u001f');
+  const normalized = String(source).trim().toLocaleLowerCase();
+  return normalized ? normalized : null;
+}
+
+function compactAutomatedDmKey(item: WidgetStackItem): string | null {
+  const data =
+    item.data && typeof item.data === 'object' && !Array.isArray(item.data)
+      ? (item.data as Record<string, unknown>)
+      : null;
+  return automatedAgentJoinNoticeKey({
+    kind: item.kind,
+    body: typeof data?.body === 'string' ? data.body : item.text,
+    fromPersonUid:
+      typeof data?.fromPersonUid === 'string' ? data.fromPersonUid : null,
+    details: typeof data?.details === 'string' ? data.details : null,
+    prompt: typeof data?.prompt === 'string' ? data.prompt : null,
+  });
 }
 
 function sameLocalDay(a: number, b: number): boolean {
@@ -556,9 +576,10 @@ function sameLocalDay(a: number, b: number): boolean {
 /**
  * Collapse ambient sync/activity bursts for the compact communications panel.
  *
- * Direct messages, channels, mentions, shares, updates, meetings, and warnings
- * always remain individual. The full Inbox also keeps every underlying event;
- * this helper is only consumed by Widget's mini-window projection.
+ * Human direct messages, channels, mentions, shares, updates, meetings, and
+ * warnings remain individual. Repeated automated agent-join DMs compact using
+ * the same deliberately narrow rule as Inbox. The full audit trail remains in
+ * recent history; this helper is only consumed by Widget's mini-window projection.
  */
 export function compactActivityBursts(
   items: WidgetStackItem[],
@@ -571,19 +592,27 @@ export function compactActivityBursts(
   >();
 
   for (const item of items) {
-    const eligible =
+    const activityEligible =
       item.type === 'sync' &&
       item.kind !== 'dm' &&
       item.kind !== 'channel' &&
       item.kind !== 'share' &&
       item.kind !== 'update' &&
       item.kind !== 'meeting';
-    if (!eligible) {
+    const automatedDmKey = compactAutomatedDmKey(item);
+    const activityContext = activityEligible
+      ? compactActivityContext(item)
+      : null;
+    const key = automatedDmKey
+      ? `automated-dm:${automatedDmKey}`
+      : activityContext
+        ? `activity:${activityContext}`
+        : null;
+    if (!key) {
       output.push(item);
       continue;
     }
 
-    const key = compactActivityContext(item);
     const cluster = openClusters.get(key);
     if (
       !cluster ||

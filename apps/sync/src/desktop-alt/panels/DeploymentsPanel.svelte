@@ -157,15 +157,13 @@
     </div>
 
     <div class="deployments-controls detail-primary-actions primary-actions" aria-label="Deployment controls">
-      <!-- On a load error `deployments` is cleared, so the counts would read
-           "0 active / 0 deploying / 0 paused" — indistinguishable from "no
-           deployments". Show em-dashes instead so the header reflects "unknown,
-           load failed" rather than fabricating an empty state. -->
-      <div class="counts" aria-label="Deployment state counts">
-        <span><strong>{error ? '—' : activeCount}</strong> active</span>
-        <span><strong>{error ? '—' : deployingCount}</strong> deploying</span>
-        <span><strong>{error ? '—' : pausedCount}</strong> paused</span>
-      </div>
+      {#if !error}
+        <div class="counts" aria-label="Deployment state counts">
+          <span><strong>{activeCount}</strong> active</span>
+          <span><strong>{deployingCount}</strong> deploying</span>
+          <span><strong>{pausedCount}</strong> paused</span>
+        </div>
+      {/if}
       <input
         class="deploy-search"
         bind:value={deploymentQuery}

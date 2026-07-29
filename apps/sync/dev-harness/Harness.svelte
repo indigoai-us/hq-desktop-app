@@ -7,6 +7,7 @@
   import HomePage from '../src/desktop-alt/pages/HomePage.svelte';
   import DesktopApp from '../src/desktop-alt/DesktopApp.svelte';
   import ActivityLog from '../src/components/ActivityLog.svelte';
+  import NewFilesDetail from '../src/components/NewFilesDetail.svelte';
   import DriftDetail from '../src/components/DriftDetail.svelte';
   import ShareDetail from '../src/components/ShareDetail.svelte';
   import DmDetail from '../src/components/DmDetail.svelte';
@@ -136,6 +137,24 @@
     },
   ];
 
+  const newFilesPreview = [
+    {
+      path: 'companies/indigo/projects/hq-desktop-app/README.md',
+      bytes: 6842,
+      addedBy: 'maya@getindigo.ai',
+    },
+    {
+      path: 'companies/indigo/knowledge/desktop-release-checklist.md',
+      bytes: 2140,
+      addedBy: 'corey@getindigo.ai',
+    },
+    {
+      path: 'companies/indigo/meetings/2026-07-28-desktop-review.md',
+      bytes: 932,
+      addedBy: null,
+    },
+  ];
+
   const dmPreviewEvent = {
     eventId: 'dm-preview-1',
     fromPersonUid: 'prs_maya',
@@ -252,6 +271,8 @@
             ? 'drift-detail'
             : view === 'activity'
               ? 'activity-log'
+              : view === 'new-files'
+                ? 'new-files-detail'
               : view === 'share-detail'
                 ? 'share-detail'
                 : view === 'dm-detail'
@@ -273,6 +294,8 @@
 
   if (view === 'drift') {
     setTimeout(() => void emit('drift:report', driftPreviewReport), 75);
+  } else if (view === 'new-files') {
+    setTimeout(() => void emit('new-files:list', newFilesPreview), 75);
   } else if (view === 'share-detail') {
     setTimeout(() => void emit('share:events-list', sharePreviewEvents), 75);
   } else if (view === 'dm-detail') {
@@ -304,6 +327,9 @@
 {#if view === 'activity'}
   <!-- Recent Changes at its native 560x460 size. -->
   <ActivityLog />
+{:else if view === 'new-files'}
+  <!-- Newly synced files at its native 500x400 size. -->
+  <NewFilesDetail />
 {:else if view === 'drift'}
   <!-- Core Drift at its native 560x480 size. -->
   <DriftDetail />

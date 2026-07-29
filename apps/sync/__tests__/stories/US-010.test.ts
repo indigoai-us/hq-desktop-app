@@ -10,6 +10,10 @@ const activityPanel = readFileSync(
   resolve(process.cwd(), 'src/desktop-alt/panels/ActivityPanel.svelte'),
   'utf8',
 );
+const companyStore = readFileSync(
+  resolve(process.cwd(), 'src/desktop-alt/lib/company-store.svelte.ts'),
+  'utf8',
+);
 const statTile = readFileSync(
   resolve(process.cwd(), 'src/desktop-alt/components/StatTile.svelte'),
   'utf8',
@@ -43,7 +47,11 @@ describe('US-010: Activity panel reads company activity via Tauri command', () =
     expect(page).toContain('{cloudBacked}');
     expect(operations).toContain('<ActivityPanel {slug} {cloudBacked} {syncEnabled} />');
     expect(page).not.toContain('Activity panel - wired in US-010');
-    expect(panel).toContain('void companyStore.loadActivity<Partial<CompanyActivity>>(slug');
+    expect(panel).toContain('void companyStore.loadActivity<Partial<CompanyActivity>>(slug, force)');
+    expect(normalize(companyStore)).toContain(
+      "activity: (slug: string) => withActivityRequestDeadline(invoke<unknown>('get_company_activity', { slug }))",
+    );
+    expect(panel).toContain("err instanceof ActivityRequestTimeoutError ? 'The activity service took too long to respond. Try again.'");
     expect(panel).toContain('return () => { cancelled = true; };');
     expect(panel).toContain('function retry() { if (loading) return; error = null; loading = true; reloadToken += 1; }');
     expect(panel).toContain("console.error('get_company_activity failed:', err)");

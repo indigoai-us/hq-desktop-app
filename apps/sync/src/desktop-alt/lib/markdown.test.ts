@@ -2,11 +2,69 @@ import { describe, expect, it } from 'vitest';
 import {
   renderInline,
   renderMarkdown,
+  renderMarkdownDocument,
   safeHref,
   safeImageSrc,
 } from './markdown';
 
 describe('desktop markdown rendering', () => {
+  it('hides YAML frontmatter and renders the document body normally', () => {
+    const html = renderMarkdownDocument(
+      [
+        '---',
+        'type: knowledge',
+        'status: active',
+        'tags:',
+        '  - operations',
+        '---',
+        '',
+        '# Retention dashboard',
+        '',
+        '| Step | Owner |',
+        '| --- | --- |',
+        '| Refresh | RevOps |',
+      ].join('\n'),
+    );
+
+    expect(html).not.toContain('type: knowledge');
+    expect(html).not.toContain('status: active');
+    expect(html).toContain('<h1>Retention dashboard</h1>');
+    expect(html).toContain('<table>');
+    expect(html).toContain('<td>RevOps</td>');
+  });
+
+  it('keeps a leading horizontal rule when no valid YAML envelope exists', () => {
+    const html = renderMarkdownDocument(['---', '', 'Visible body'].join('\n'));
+
+    expect(html).toContain('<hr />');
+    expect(html).toContain('<p>Visible body</p>');
+  });
+
+  it('preserves YAML-shaped content inside nested Markdown blocks', () => {
+    const html = renderMarkdownDocument(
+      [
+        '> ---',
+        '> title: Quoted metadata example',
+        '> ---',
+        '> Still visible',
+        '',
+        '<details open>',
+        '<summary>Example</summary>',
+        '',
+        '---',
+        'title: Disclosure metadata example',
+        '---',
+        'Still visible too',
+        '</details>',
+      ].join('\n'),
+    );
+
+    expect(html).toContain('Quoted metadata example');
+    expect(html).toContain('Still visible');
+    expect(html).toContain('Disclosure metadata example');
+    expect(html).toContain('Still visible too');
+  });
+
   it('renders a GFM table as semantic HTML instead of raw pipe text', () => {
     const html = renderMarkdown(
       [
@@ -127,7 +185,7 @@ describe('desktop markdown rendering', () => {
     expect(html).toContain('*literal*');
   });
 
-  it('renders the narrow raw HTML subset commonly used to center README artwork', () => {
+  it('renders the narrow raw HTML subset without auto-loading remote README artwork', () => {
     const html = renderMarkdown(
       [
         '<p align="center" class="ignored" onclick="alert(1)">',
@@ -139,12 +197,34 @@ describe('desktop markdown rendering', () => {
     );
 
     expect(html).toBe(
-      '<p class="markdown-align-center"><img src="https://example.com/hq.png" alt="HQ" loading="lazy" decoding="async" width="180" height="80" /> <br /> <strong>The operating system for teams.</strong></p>',
+      '<p class="markdown-align-center">HQ <br /> <strong>The operating system for teams.</strong></p>',
     );
     expect(html).not.toContain('&lt;p');
     expect(html).not.toContain('onclick');
     expect(html).not.toContain('onerror');
     expect(html).not.toContain('style=');
+  });
+
+  it('never emits remote image requests from Markdown or raw HTML', () => {
+    const html = renderMarkdown(
+      [
+        '![Remote](https://tracker.example/pixel.png)',
+        '![Insecure](http://tracker.example/pixel.png)',
+        '<img src="https://tracker.example/raw.png" alt="Raw remote">',
+        '',
+        '![Local](/images/local.png)',
+      ].join('\n'),
+    );
+
+    expect(safeImageSrc('https://tracker.example/pixel.png')).toBeNull();
+    expect(safeImageSrc('http://tracker.example/pixel.png')).toBeNull();
+    expect(html).not.toContain('tracker.example');
+    expect(html).toContain('Remote');
+    expect(html).toContain('Insecure');
+    expect(html).toContain('Raw remote');
+    expect(html).toContain(
+      '<img src="/images/local.png" alt="Local" loading="lazy" decoding="async" />',
+    );
   });
 
   it('renders README details and summary blocks while continuing to parse Markdown', () => {

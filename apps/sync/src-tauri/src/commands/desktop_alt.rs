@@ -47,15 +47,16 @@ pub use hq_desktop_core::desktop_alt::{
     normalize_deployment_state, normalize_slug, number_field, parse_activity_response,
     parse_board_response, parse_company_activity, parse_company_board,
     parse_crm_projection_response, parse_deployment_entries, parse_deployments_response,
-    parse_project_creators, parse_secret_envs, parse_secrets_response, read_file_bytes_capped,
-    read_file_content, read_file_content_capped, resolve_company_uid_from_workspaces,
-    resolve_hq_folder, secret_env_and_key, secret_key, secret_rotation, secret_rows,
-    secret_structure_summary, secret_updated_at, secrets_url, string_field, subdomain_from_url,
-    summary_count_or_auth, validate_hq_relative_path, workspace_grants_company_file_access,
-    ActivityContributor, ActivityEntry, ActivityStats, BoardCard, BoardColumn,
-    BoardCreatorEnvelope, BoardCreatorProject, CompanyActivity, CompanyActivitySummary,
-    CompanyBoard, CompanySummary, DeploymentEntry, DirEntry, FileNode, LiveBoardAssignee,
-    LiveBoardModel, LiveBoardProject, ProjectCreator, SecretEnv, SecretItem, DEV_NOISE_NAMES,
+    parse_project_creators, parse_project_creators_response, parse_secret_envs,
+    parse_secrets_response, read_file_bytes_capped, read_file_content, read_file_content_capped,
+    resolve_company_uid_from_workspaces, resolve_hq_folder, secret_env_and_key, secret_key,
+    secret_rotation, secret_rows, secret_structure_summary, secret_updated_at, secrets_url,
+    string_field, subdomain_from_url, summary_count_or_auth, validate_hq_relative_path,
+    workspace_grants_company_file_access, ActivityContributor, ActivityEntry, ActivityStats,
+    BoardCard, BoardColumn, BoardCreatorEnvelope, BoardCreatorProject, CompanyActivity,
+    CompanyActivitySummary, CompanyBoard, CompanySummary, DeploymentEntry, DirEntry, FileNode,
+    LiveBoardAssignee, LiveBoardModel, LiveBoardProject, ProjectCreator, SecretEnv, SecretItem,
+    DEV_NOISE_NAMES,
 };
 use hq_desktop_core::workspaces::Workspace;
 
@@ -217,13 +218,7 @@ pub async fn get_company_project_creators(slug: String) -> Result<Vec<ProjectCre
         .text()
         .await
         .map_err(|e| format!("creators read: {e}"))?;
-    // A missing / unprovisioned board (or no ACL) is not an error here — the
-    // Lead column simply falls back to "Unassigned". Only the body parse below
-    // can fail, and only on a 2xx with malformed JSON.
-    if !status.is_success() {
-        return Ok(Vec::new());
-    }
-    parse_project_creators(&text).map_err(|e| format!("creators parse: {e}"))
+    parse_project_creators_response(status, &text)
 }
 
 #[tauri::command]

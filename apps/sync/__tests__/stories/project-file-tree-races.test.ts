@@ -35,6 +35,14 @@ vi.mock('../../src/desktop-alt/lib/projects-store.svelte', () => ({
     statusPending: vi.fn(() => false),
   },
   setProjectStatus: vi.fn(),
+  setStoryPasses: vi.fn(
+    async (
+      _prdPath: string,
+      _storyId: string,
+      _previous: boolean,
+      next: boolean,
+    ) => ({ ok: true, passes: next, error: null }),
+  ),
 }));
 
 const tauri = vi.hoisted(() => ({ invoke: vi.fn() }));
@@ -44,6 +52,7 @@ import { flushSync, mount, unmount } from 'svelte';
 import CompanyFileTree from '../../src/desktop-alt/components/CompanyFileTree.svelte';
 import CompanyProjectsPage from '../../src/desktop-alt/pages/CompanyProjectsPage.svelte';
 import type { DirEntry } from '../../src/desktop-alt/lib/file-tree';
+import type { ProjectProvenanceRecord } from '../../src/desktop-alt/lib/local-projects';
 import type { Project, Story } from '../../src/desktop-alt/lib/projects-model';
 
 function deferred<T>() {
@@ -85,6 +94,7 @@ let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
 
 beforeEach(() => {
+  vi.clearAllMocks();
   host = document.createElement('div');
   document.body.appendChild(host);
   localProjects.loadCompanyGoals.mockResolvedValue({ objectives: [] });
@@ -152,6 +162,146 @@ describe('project story selection races', () => {
 
     expect(host.textContent).toContain('Bravo-only story');
     expect(host.textContent).not.toContain('Stale Alpha story');
+  });
+
+  it('reloads open tasks when authoritative cloud provenance arrives after local history', async () => {
+    const cloud = deferred<ProjectProvenanceRecord[]>();
+    const localProject: Project = {
+      ...project('alpha'),
+      provenance: {
+        owner: null,
+        assignee: null,
+        creator: 'Local Git Author',
+        origin: 'companies/indigo/projects/alpha/prd.json',
+      },
+      creatorFallback: 'Local Git Author',
+    };
+    localProjects.loadLocalProjects.mockResolvedValue([localProject]);
+    localProjects.loadCompanyProjectProvenance.mockReturnValue(cloud.promise);
+    localProjects.loadLocalProjectStories.mockImplementation(
+      async (_prdPath: string, provenance: Project['provenance']) => [
+        {
+          ...story('US-A', 'Attribution-sensitive story'),
+          provenance,
+        },
+      ],
+    );
+
+    component = mount(CompanyProjectsPage, {
+      target: host,
+      props: { slug: 'indigo' },
+    });
+    await vi.waitFor(() => {
+      flushSync();
+      expect(host.querySelector('[aria-label="Project Project alpha"]')).toBeTruthy();
+    });
+
+    host
+      .querySelector<HTMLButtonElement>('[aria-label="Project Project alpha"]')
+      ?.click();
+    await vi.waitFor(() => {
+      expect(localProjects.loadLocalProjectStories).toHaveBeenCalledTimes(1);
+    });
+    expect(localProjects.loadLocalProjectStories.mock.calls[0]?.[1]).toMatchObject({
+      creator: 'Local Git Author',
+      owner: null,
+    });
+
+    cloud.resolve([
+      {
+        id: 'alpha',
+        prdPath: 'companies/indigo/projects/alpha/prd.json',
+        provenance: {
+          owner: 'Cloud Owner',
+          assignee: null,
+          creator: null,
+          origin: 'hq-cloud',
+        },
+      },
+    ]);
+
+    await vi.waitFor(() => {
+      flushSync();
+      expect(localProjects.loadLocalProjectStories).toHaveBeenCalledTimes(2);
+    });
+    expect(localProjects.loadLocalProjectStories.mock.calls[1]?.[1]).toMatchObject({
+      owner: 'Cloud Owner',
+      creator: null,
+      origin: 'hq-cloud',
+    });
+    expect(host.textContent).toContain('Owner');
+    expect(host.textContent).toContain('Cloud Owner');
+    expect(host.textContent).not.toContain('Local Git Author');
+  });
+
+  it('does not let a pre-mutation provenance reread restore an old passes value', async () => {
+    const cloud = deferred<ProjectProvenanceRecord[]>();
+    const staleProvenanceRead = deferred<Story[]>();
+    let reads = 0;
+    localProjects.loadCompanyProjectProvenance.mockReturnValue(cloud.promise);
+    localProjects.loadLocalProjectStories.mockImplementation(async () => {
+      reads += 1;
+      if (reads === 1) return [story('US-A', 'Mutable story')];
+      return staleProvenanceRead.promise;
+    });
+
+    component = mount(CompanyProjectsPage, {
+      target: host,
+      props: { slug: 'indigo' },
+    });
+    await vi.waitFor(() => {
+      flushSync();
+      expect(host.querySelector('[aria-label="Project Project alpha"]')).toBeTruthy();
+    });
+
+    host
+      .querySelector<HTMLButtonElement>('[aria-label="Project Project alpha"]')
+      ?.click();
+    await vi.waitFor(() => {
+      flushSync();
+      expect(
+        host.querySelector('[aria-label="Story US-A: Mutable story"]'),
+      ).toBeTruthy();
+    });
+    host
+      .querySelector<HTMLButtonElement>('[aria-label="Story US-A: Mutable story"]')
+      ?.click();
+    flushSync();
+
+    cloud.resolve([
+      {
+        id: 'alpha',
+        prdPath: 'companies/indigo/projects/alpha/prd.json',
+        provenance: {
+          owner: 'Cloud Owner',
+          assignee: null,
+          creator: null,
+          origin: 'hq-cloud',
+        },
+      },
+    ]);
+    await vi.waitFor(() => {
+      expect(localProjects.loadLocalProjectStories).toHaveBeenCalledTimes(2);
+    });
+
+    const doneButton = () =>
+      Array.from(
+        host.querySelectorAll<HTMLButtonElement>(
+          '[data-testid="task-status-control"] button',
+        ),
+      ).find((button) => button.textContent?.trim() === 'Done');
+    doneButton()?.click();
+    await vi.waitFor(() => {
+      flushSync();
+      expect(doneButton()?.classList.contains('active')).toBe(true);
+    });
+
+    staleProvenanceRead.resolve([story('US-A', 'Mutable story')]);
+    await staleProvenanceRead.promise;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    flushSync();
+
+    expect(doneButton()?.classList.contains('active')).toBe(true);
   });
 });
 

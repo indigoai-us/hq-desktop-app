@@ -28,7 +28,7 @@
   } from '../lib/local-projects';
   import { mergeProvenance } from '../lib/provenance';
   import { projectsStore, setProjectStatus } from '../lib/projects-store.svelte';
-  import { renderMarkdown } from '../lib/markdown';
+  import { renderMarkdownDocument } from '../lib/markdown';
   import {
     classifyTasks,
     groupByTaskColumn,
@@ -167,7 +167,9 @@
 
   const hasPrd = $derived(Boolean(project.prdPath));
   const hasReadme = $derived(readme !== null && readme.trim() !== '');
-  const readmeHtml = $derived(hasReadme ? renderMarkdown(readme as string) : '');
+  const readmeHtml = $derived(
+    hasReadme ? renderMarkdownDocument(readme as string) : '',
+  );
 
   // Sessions for Active task matching (DESKTOP-005).
   let now = $state(Date.now());
@@ -419,7 +421,7 @@
   }
 
   function formatKrValue(value: unknown, unit?: string): string {
-    if (value === null || value === undefined || value === '') return '—';
+    if (value === null || value === undefined || value === '') return 'Not set';
     return `${value}${unit ?? ''}`;
   }
 

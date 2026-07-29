@@ -564,9 +564,9 @@ describe('getHomeCompanyRows', () => {
 
     const personal = rows.find((r) => r.slug === 'personal')!;
     expect(personal.sub).toBe('Personal vault');
-    expect(personal.projects).toBe('—'); // no local projects for personal
-    expect(personal.stories).toBe('—');
-    expect(personal.lastChange).toBe('—');
+    expect(personal.projects).toBe('No local projects');
+    expect(personal.stories).toBe('No tracked stories');
+    expect(personal.lastChange).toBe('Not synced');
   });
 
   it('keeps pending invites in Needs you and out of the accepted portfolio table', () => {

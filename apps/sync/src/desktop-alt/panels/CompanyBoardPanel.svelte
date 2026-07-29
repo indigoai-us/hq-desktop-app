@@ -117,11 +117,63 @@
   let storiesError = $state<string | null>(null);
 
   let selectedStoryId = $state<string | null>(null);
+  let storyLoadGeneration = 0;
   const selectedStory = $derived(
     selectedStoryId === null
       ? null
       : (stories.find((story) => story.id === selectedStoryId) ?? null),
   );
+
+  function invalidateStoryLoad(): void {
+    storyLoadGeneration += 1;
+    storiesLoading = false;
+  }
+
+  function isCurrentStoryLoad(
+    generation: number,
+    companySlug: string,
+    selectedIdentity: string,
+  ): boolean {
+    return (
+      generation === storyLoadGeneration &&
+      slug === companySlug &&
+      selected !== null &&
+      projectIdentity(selected) === selectedIdentity
+    );
+  }
+
+  async function refreshSelectedStoriesForProvenance(
+    project: Project,
+  ): Promise<void> {
+    if (!project.prdPath) return;
+    const companySlug = slug;
+    const selectedIdentity = projectIdentity(project);
+    const generation = storyLoadGeneration + 1;
+    storyLoadGeneration = generation;
+    storiesLoading = true;
+    try {
+      const nextStories = await loadLocalProjectStories(
+        project.prdPath,
+        project.provenance,
+      );
+      if (!isCurrentStoryLoad(generation, companySlug, selectedIdentity)) return;
+      stories = nextStories;
+      storiesError = null;
+      if (
+        selectedStoryId !== null &&
+        !nextStories.some((story) => story.id === selectedStoryId)
+      ) {
+        selectedStoryId = null;
+      }
+    } catch (err) {
+      if (!isCurrentStoryLoad(generation, companySlug, selectedIdentity)) return;
+      console.warn('story provenance refresh failed:', err);
+    } finally {
+      if (isCurrentStoryLoad(generation, companySlug, selectedIdentity)) {
+        storiesLoading = false;
+      }
+    }
+  }
 
   // Projects already scoped to this company (the Rust command returns ALL
   // companies; we filter by slug here, exactly as the task specifies).
@@ -260,6 +312,7 @@
   // against an out-of-order completion when the user switches companies fast.
   $effect(() => {
     const activeSlug = slug;
+    invalidateStoryLoad();
     projects = [];
     objectives = [];
     inFlightStory = {};
@@ -284,8 +337,14 @@
         if (cancelled) return;
         cloudProvenance = indexProjectProvenance(records);
         provenanceUnavailable = false;
+        // Existing overview task rows inherited the provisional project
+        // provenance. Clear the cache so the effect below reloads them with
+        // authoritative cloud attribution.
+        inFlightStory = {};
         if (selected) {
-          selected = applyProjectProvenance(selected, cloudProvenance);
+          const refreshed = applyProjectProvenance(selected, cloudProvenance);
+          selected = refreshed;
+          void refreshSelectedStoriesForProvenance(refreshed);
         }
       })
       .catch((err) => {
@@ -332,7 +391,10 @@
       if (identity in inFlightStory) continue;
       void (async () => {
         try {
-          const projectStories = await loadLocalProjectStories(project.prdPath);
+          const projectStories = await loadLocalProjectStories(
+            project.prdPath,
+            project.provenance,
+          );
           if (cancelled) return;
           const classified = classifyStories(projectStories);
           const current =
@@ -466,11 +528,7 @@
   }
 
   function goalChip(project: Project): string {
-    return objectiveForProject(project)?.title || '—';
-  }
-
-  function priorityLabel(priority: number | null | undefined): string {
-    return priority === null || priority === undefined ? '—' : `P${priority}`;
+    return objectiveForProject(project)?.title || 'No goal';
   }
 
   function rowStatus(project: Project, detail: InFlightDetail | undefined): RowStatus {
@@ -487,10 +545,10 @@
     return { label: 'Gated', tone: 'idle' };
   }
 
-  function lastUpdatedLabel(cards: CompanyBoardCard[]): string {
+  function lastUpdatedLabel(cards: CompanyBoardCard[]): string | null {
     const age = cards.map((card) => card.age).find((value): value is string => Boolean(value));
     if (age) return age;
-    return cards.length > 0 ? 'just now' : '—';
+    return cards.length > 0 ? 'just now' : null;
   }
 
   function projectMeta(project: Project, detail: InFlightDetail | undefined): string {
@@ -539,6 +597,9 @@
   }
 
   function onStoryPassesChange(storyId: string, passes: boolean): void {
+    // Provenance hydration can reread this PRD concurrently. Once a passes
+    // mutation succeeds, its older snapshot must no longer be allowed to win.
+    invalidateStoryLoad();
     stories = stories.map((story) =>
       story.id === storyId ? { ...story, passes } : story,
     );
@@ -554,6 +615,10 @@
   }
 
   async function openProject(project: Project): Promise<void> {
+    const companySlug = slug;
+    const selectedIdentity = projectIdentity(project);
+    const generation = storyLoadGeneration + 1;
+    storyLoadGeneration = generation;
     selected = project;
     stories = [];
     storiesError = null;
@@ -566,8 +631,14 @@
 
     storiesLoading = true;
     try {
-      stories = await loadLocalProjectStories(project.prdPath);
+      const nextStories = await loadLocalProjectStories(
+        project.prdPath,
+        project.provenance,
+      );
+      if (!isCurrentStoryLoad(generation, companySlug, selectedIdentity)) return;
+      stories = nextStories;
     } catch (err) {
+      if (!isCurrentStoryLoad(generation, companySlug, selectedIdentity)) return;
       console.error('get_local_project_prd failed:', err);
       // Surface the underlying error, not just a generic line — the real cause
       // (feature-gate rejection, a stale prdPath, or an unresolved HQ folder) is
@@ -576,11 +647,14 @@
       storiesError = `Could not load this project’s stories — ${detail}`;
       stories = [];
     } finally {
-      storiesLoading = false;
+      if (isCurrentStoryLoad(generation, companySlug, selectedIdentity)) {
+        storiesLoading = false;
+      }
     }
   }
 
   function backToList(): void {
+    invalidateStoryLoad();
     selected = null;
     stories = [];
     storiesError = null;
@@ -649,7 +723,7 @@
         <div class="pulse-item pulse-cloud">
           <span class={`status-dot ${cloudPulse.tone}`} aria-hidden="true"></span>
           <span class="pulse-label">{cloudPulse.label}</span>
-          {#if lastUpdated !== '—'}
+          {#if lastUpdated}
             <span class="pulse-meta">· {lastUpdated}</span>
           {/if}
         </div>

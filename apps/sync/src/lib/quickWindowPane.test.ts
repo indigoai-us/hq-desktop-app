@@ -199,6 +199,22 @@ describe('conversationKey', () => {
     expect(conversationKey(share)).toBe('share:prs_izzy');
     expect(conversationKey(dm)).not.toBe(conversationKey(share));
   });
+
+  it('uses one synthetic key for identical automated join notices from different senders', () => {
+    const first = dmItem('dm:join-1', 200, {
+      fromPersonUid: 'agt_provisioner_one',
+      actor: 'A new agent',
+      body: '🤖 A new agent (an agent) just joined the company.',
+    });
+    const second = dmItem('dm:join-2', 100, {
+      fromPersonUid: 'agt_provisioner_two',
+      actor: 'A new agent',
+      body: '🤖 A new agent (an agent) just joined the company.',
+    });
+
+    expect(conversationKey(first)).toBe(conversationKey(second));
+    expect(conversationKey(first)).toContain('dm:automated:');
+  });
 });
 
 describe('conversationRows', () => {
@@ -242,6 +258,40 @@ describe('conversationRows', () => {
     expect(rows.map((r) => r.key)).toEqual(['dm:prs_izzy', 'share:prs_izzy']);
     expect(rows[0].kind).toBe('dm');
     expect(rows[1].kind).toBe('share');
+  });
+
+  it('compacts repeated automated joins across senders but keeps identical human replies separate', () => {
+    const items: Item[] = [
+      dmItem('dm:join-1', 500, {
+        fromPersonUid: 'agt_provisioner_one',
+        actor: 'HQ Provisioner',
+        body: '🤖 Nova (an agent) just joined Indigo.',
+      }),
+      dmItem('dm:join-2', 400, {
+        fromPersonUid: 'agt_provisioner_two',
+        actor: 'HQ Provisioner',
+        body: '🤖 Nova (an agent) just joined Indigo.',
+      }),
+      dmItem('dm:ok-1', 300, {
+        fromPersonUid: 'prs_maya',
+        actor: 'Maya',
+        body: 'OK',
+      }),
+      dmItem('dm:ok-2', 200, {
+        fromPersonUid: 'prs_izzy',
+        actor: 'Izzy',
+        body: 'OK',
+      }),
+    ];
+
+    const rows = conversationRows(items, 0, new Set());
+    expect(rows).toHaveLength(3);
+    expect(rows[0].ids).toEqual(['dm:join-1', 'dm:join-2']);
+    expect(rows[0].unreadCount).toBe(2);
+    expect(rows.slice(1).map((row) => row.ids)).toEqual([
+      ['dm:ok-1'],
+      ['dm:ok-2'],
+    ]);
   });
 
   it('reduces unreadCount when member ids are in viewedIds', () => {

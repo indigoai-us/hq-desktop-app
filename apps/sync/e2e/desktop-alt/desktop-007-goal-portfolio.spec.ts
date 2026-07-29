@@ -73,7 +73,9 @@ describe('DESKTOP-007: goal portfolio and drill-down', () => {
     expect(page).toContain('as project (projectIdentity(project))');
     expect(page).toContain("import ProjectDetailView from './ProjectDetailView.svelte'");
     expect(page).toContain('onclick={() => openProject(project)}');
-    expect(page).toContain('loadLocalProjectStories(project.prdPath)');
+    expect(page).toContain('loadLocalProjectStories(');
+    expect(page).toContain('project.prdPath,');
+    expect(page).toContain('project.provenance,');
     expect(page).toContain('<ProjectDetailView');
     expect(page).toContain('selectedStory={selectedStory}');
     expect(page).toContain('oncloseStory={closeStory}');
@@ -91,8 +93,9 @@ describe('DESKTOP-007: goal portfolio and drill-down', () => {
   });
 
   it('preserves owner, quarter, status, notes, counts, empty/loading/error honesty', () => {
-    expect(page).toContain('owner: {ownerLabel(selectedGoal.owner)}');
-    expect(page).toContain('target {quarterLabel(selectedGoal.timeframe)');
+    expect(page).toContain('function goalDetailMeta(objective: Objective)');
+    expect(page).toContain('owner ? `Owner ${owner}` : null');
+    expect(page).toContain('quarter ? `Target ${quarter}` : null');
     expect(page).toContain('data-testid="goal-detail-status"');
     expect(page).toContain('data-testid="goal-detail-meta"');
     expect(page).toContain('data-testid="goal-detail-description"');
@@ -105,7 +108,7 @@ describe('DESKTOP-007: goal portfolio and drill-down', () => {
     expect(page).toContain('Goals unavailable. Try again after a sync.');
     // No fabricated proposal counts.
     expect(page).not.toContain('agent proposed');
-    expect(page).toContain("return 'Unassigned'");
+    expect(page).not.toContain("return 'Unassigned'");
   });
 
   it('uses naked hairline list/detail with square open selection rows', () => {

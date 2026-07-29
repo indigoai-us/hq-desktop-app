@@ -13,6 +13,7 @@
   import {
     meetingsStore,
     startMeetingsStore,
+    type MeetingBotAction,
     type ToastDescriptor,
   } from '../lib/meetings-store.svelte';
   import LiveNowCard from '../components/LiveNowCard.svelte';
@@ -55,9 +56,11 @@
   const fetchError = $derived(meetingsStore.fetchError);
   const refreshBlocked = $derived(meetingsStore.refreshBlocked);
   const loading = $derived(meetingsStore.loading);
-  // Per-row in-flight set for bot actions, owned by the store. Passed to the
-  // agenda so each row can disable its buttons + spin while its invoke runs.
-  const pendingEventIds = $derived(meetingsStore.pendingEventIds);
+  // Per-row operation map, owned by the store. Sibling actions disable while
+  // a request runs, but only the invoked control announces and paints busy.
+  const pendingActionsByEventId = $derived<Map<string, MeetingBotAction>>(
+    meetingsStore.pendingActionsByEventId,
+  );
 
   /** Deep-link focus from open_meetings_window / notification (US-004 routing). */
   let focusedMeetingId = $state<string | null>(null);
@@ -371,7 +374,15 @@
           <span class="error-pill" title={fetchError}>Refresh issue</span>
           <span class="error-copy">{fetchError}</span>
           {#if refreshBlocked}
-            <button type="button" class="report-link" onclick={onReportProblem} disabled={reporting}>
+            <button
+              type="button"
+              class="report-link"
+              data-testid="meetings-report-problem"
+              onclick={onReportProblem}
+              disabled={reporting}
+              aria-busy={reporting}
+              aria-label={reporting ? 'Reporting refresh problem' : 'Report refresh problem'}
+            >
               {reporting ? 'Reporting…' : 'Report a problem'}
             </button>
           {/if}
@@ -389,7 +400,15 @@
         <span class="icon">{@render iconCalendar()}</span>
         {calendarOpening ? 'Opening…' : 'Open calendar'}
       </button>
-      <button type="button" class="btn" onclick={() => void meetingsStore.refresh()} disabled={loading}>
+      <button
+        type="button"
+        class="btn"
+        data-testid="meetings-refresh"
+        onclick={() => void meetingsStore.refresh()}
+        disabled={loading}
+        aria-busy={loading}
+        aria-label={loading ? 'Refreshing meetings' : 'Refresh meetings'}
+      >
         <span class="icon">{@render iconSync()}</span>
         {loading ? 'Refreshing' : 'Refresh'}
       </button>
@@ -437,7 +456,10 @@
       <button
         type="button"
         class="btn url-invite-btn"
+        data-testid="meetings-url-invite"
         disabled={urlInviting || !isPlausibleMeetingUrl(urlInput.trim())}
+        aria-busy={urlInviting}
+        aria-label={urlInviting ? 'Inviting recording bot' : 'Invite recording bot'}
         onclick={onUrlInvite}
       >
         {urlInviting ? 'Inviting…' : 'Invite'}
@@ -455,7 +477,9 @@
 
     <!-- 2. Up next — compact strip, not a summary card. -->
     <section class="next-strip" aria-label="Up next" data-testid="meetings-up-next">
-      <div class="next-time">{upNext ? timeLabel(upNext) : '—'}</div>
+      <div class="next-time">
+        {#if upNext}{timeLabel(upNext)}{/if}
+      </div>
       <div class="next-copy">
         {#if upNext}
           {@const dur = durationLabel(upNext)}
@@ -517,7 +541,7 @@
       {liveEventId}
       {botsByEventId}
       {scheduledBots}
-      {pendingEventIds}
+      {pendingActionsByEventId}
       {focusedMeetingId}
       {onInvite}
       {onUninvite}

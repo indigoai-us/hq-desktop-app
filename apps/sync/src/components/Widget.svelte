@@ -238,7 +238,9 @@
   function notificationSourceLabel(item: WidgetStackItem): string {
     switch (item.kind) {
       case 'dm':
-        return 'Direct message';
+        return item.compactGroupCount && item.compactGroupCount > 1
+          ? `Direct messages · ${item.compactGroupCount} notices`
+          : 'Direct message';
       case 'channel': {
         const scope =
           item.data && typeof item.data === 'object' && 'scope' in item.data
@@ -1022,10 +1024,10 @@
       onopen={() => handleOpen(row.item)}
       onaction={row.item.actionId ? () => handleAction(row.item) : undefined}
       ondismiss={() => handleHoverDismiss(row.item)}
-      onreply={row.item.kind === 'dm'
+      onreply={row.item.kind === 'dm' && !row.item.compactGroupCount
         ? (text) => replyDm(row.item, text)
         : undefined}
-      onreact={row.item.kind === 'dm'
+      onreact={row.item.kind === 'dm' && !row.item.compactGroupCount
         ? (emoji) => reactDm(row.item, emoji)
         : undefined}
       onholdchange={(h) => setReplyHold(row.item.id, h)}
@@ -1087,6 +1089,7 @@
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
   class="wg"
+  class:surface-open={hoverOpen || contextMenuOpen}
   onpointerdowncapture={handlePointerDownCapture}
   onfocusincapture={handleFocusInCapture}
   onpointerenter={cancelHoverClose}
@@ -1393,16 +1396,16 @@
     background: transparent;
     overflow: hidden;
     /* Stack/row appearance tokens — light default; dark overrides below. */
-    --row-bg: rgba(250, 250, 250, 0.5);
-    --row-bg-hover: rgba(250, 250, 250, 0.74);
-    --row-border: rgba(255, 255, 255, 0.6);
-    --row-fg: #1d1d1d;
-    --row-muted: rgba(0, 0, 0, 0.52);
-    --row-shadow: 0 8px 22px rgba(0, 0, 0, 0.16);
-    --row-highlight: rgba(255, 255, 255, 0.75);
-    --row-hover-bg: rgba(0, 0, 0, 0.06);
-    --reply-bg: rgba(0, 0, 0, 0.05);
-    --reply-border: rgba(0, 0, 0, 0.14);
+    --row-bg: rgba(245, 245, 245, 0.82);
+    --row-bg-hover: rgba(250, 250, 250, 0.94);
+    --row-border: rgba(255, 255, 255, 0.82);
+    --row-fg: #171717;
+    --row-muted: rgba(0, 0, 0, 0.66);
+    --row-shadow: 0 10px 28px rgba(0, 0, 0, 0.2);
+    --row-highlight: rgba(255, 255, 255, 0.9);
+    --row-hover-bg: rgba(0, 0, 0, 0.08);
+    --reply-bg: rgba(0, 0, 0, 0.07);
+    --reply-border: rgba(0, 0, 0, 0.18);
     --qd-fg: #333333;
     /* The widget has no window-sized native material because that would turn
        its transparent click-through canvas into a visible rectangle. Keep the
@@ -1480,7 +1483,7 @@
     backdrop-filter: var(--glass-filter, blur(36px) saturate(118%) contrast(102%));
     border: 0.5px solid var(--row-border);
     box-shadow: var(--row-shadow), inset 0 1px 0 var(--row-highlight);
-    margin-bottom: 10px;
+    margin-bottom: 14px;
     transform-origin: bottom right;
     animation: widget-panel-in 110ms cubic-bezier(0.23, 1, 0.32, 1) backwards;
     box-sizing: border-box;
@@ -2051,6 +2054,20 @@
     opacity: 1;
   }
 
+  .wg.surface-open .wm {
+    margin-right: 4px;
+    opacity: 0.58;
+  }
+
+  .wg.surface-open .wm:hover,
+  .wg.surface-open .wm:focus-visible {
+    opacity: 0.82;
+  }
+
+  .wg.surface-open .wm :global(svg) {
+    width: 44px;
+  }
+
   .wm:focus-visible {
     opacity: 1;
     outline: 2px solid currentColor;
@@ -2083,16 +2100,16 @@
 
   @media (prefers-color-scheme: dark) {
     .wg {
-      --row-bg: rgba(30, 30, 30, 0.44);
-      --row-bg-hover: rgba(38, 38, 38, 0.66);
-      --row-border: rgba(255, 255, 255, 0.14);
+      --row-bg: rgba(24, 24, 24, 0.78);
+      --row-bg-hover: rgba(32, 32, 32, 0.9);
+      --row-border: rgba(255, 255, 255, 0.22);
       --row-fg: #fff;
-      --row-muted: rgba(255, 255, 255, 0.62);
-      --row-shadow: 0 8px 22px rgba(0, 0, 0, 0.32);
-      --row-highlight: rgba(255, 255, 255, 0.16);
-      --row-hover-bg: rgba(255, 255, 255, 0.1);
-      --reply-bg: rgba(255, 255, 255, 0.08);
-      --reply-border: rgba(255, 255, 255, 0.18);
+      --row-muted: rgba(255, 255, 255, 0.74);
+      --row-shadow: 0 10px 28px rgba(0, 0, 0, 0.38);
+      --row-highlight: rgba(255, 255, 255, 0.18);
+      --row-hover-bg: rgba(255, 255, 255, 0.12);
+      --reply-bg: rgba(255, 255, 255, 0.12);
+      --reply-border: rgba(255, 255, 255, 0.22);
       --qd-fg: #d4d4d4;
     }
 
@@ -2107,30 +2124,30 @@
      Override the whole material stack, not only the idle mark, so populated
      notification, mini-inbox, reply, and context-menu states stay coherent. */
   :global(html[data-force-theme='light']) .wg {
-    --row-bg: rgba(250, 250, 250, 0.5);
-    --row-bg-hover: rgba(250, 250, 250, 0.74);
-    --row-border: rgba(255, 255, 255, 0.6);
-    --row-fg: #1d1d1d;
-    --row-muted: rgba(0, 0, 0, 0.52);
-    --row-shadow: 0 8px 22px rgba(0, 0, 0, 0.16);
-    --row-highlight: rgba(255, 255, 255, 0.75);
-    --row-hover-bg: rgba(0, 0, 0, 0.06);
-    --reply-bg: rgba(0, 0, 0, 0.05);
-    --reply-border: rgba(0, 0, 0, 0.14);
+    --row-bg: rgba(245, 245, 245, 0.82);
+    --row-bg-hover: rgba(250, 250, 250, 0.94);
+    --row-border: rgba(255, 255, 255, 0.82);
+    --row-fg: #171717;
+    --row-muted: rgba(0, 0, 0, 0.66);
+    --row-shadow: 0 10px 28px rgba(0, 0, 0, 0.2);
+    --row-highlight: rgba(255, 255, 255, 0.9);
+    --row-hover-bg: rgba(0, 0, 0, 0.08);
+    --reply-bg: rgba(0, 0, 0, 0.07);
+    --reply-border: rgba(0, 0, 0, 0.18);
     --qd-fg: #333333;
   }
 
   :global(html[data-force-theme='dark']) .wg {
-    --row-bg: rgba(30, 30, 30, 0.44);
-    --row-bg-hover: rgba(38, 38, 38, 0.66);
-    --row-border: rgba(255, 255, 255, 0.14);
+    --row-bg: rgba(24, 24, 24, 0.78);
+    --row-bg-hover: rgba(32, 32, 32, 0.9);
+    --row-border: rgba(255, 255, 255, 0.22);
     --row-fg: #fff;
-    --row-muted: rgba(255, 255, 255, 0.62);
-    --row-shadow: 0 8px 22px rgba(0, 0, 0, 0.32);
-    --row-highlight: rgba(255, 255, 255, 0.16);
-    --row-hover-bg: rgba(255, 255, 255, 0.1);
-    --reply-bg: rgba(255, 255, 255, 0.08);
-    --reply-border: rgba(255, 255, 255, 0.18);
+    --row-muted: rgba(255, 255, 255, 0.74);
+    --row-shadow: 0 10px 28px rgba(0, 0, 0, 0.38);
+    --row-highlight: rgba(255, 255, 255, 0.18);
+    --row-hover-bg: rgba(255, 255, 255, 0.12);
+    --reply-bg: rgba(255, 255, 255, 0.12);
+    --reply-border: rgba(255, 255, 255, 0.22);
     --qd-fg: #d4d4d4;
   }
 

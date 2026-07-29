@@ -164,7 +164,7 @@
   }
 
   function fmtDate(iso: string): string {
-    if (!iso) return '—';
+    if (!iso) return 'Not recorded';
     const d = new Date(iso);
     return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
   }
@@ -268,7 +268,7 @@
 
   let manualId = $state('');
   const targetId = $derived((listing?.id ?? manualId).trim());
-  const targetLabel = $derived(listing?.name?.trim() || targetId || '—');
+  const targetLabel = $derived(listing?.name?.trim() || targetId || 'No listing selected');
 
   let reason = $state('');
   let confirmArmed = $state(false);

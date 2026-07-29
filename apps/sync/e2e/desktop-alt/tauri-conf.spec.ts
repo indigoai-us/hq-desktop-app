@@ -62,6 +62,17 @@ describe('tauri.conf.json desktop-alt window declaration', () => {
     );
   });
 
+  it('enforces a packaged image CSP that cannot auto-load remote tracking images', () => {
+    const csp = conf.app?.security?.csp;
+
+    expect(typeof csp).toBe('string');
+    expect(csp).toContain("img-src 'self'");
+    expect(csp).toContain('data:');
+    expect(csp).toContain('asset:');
+    expect(csp).not.toMatch(/img-src[^;]*https?:/i);
+    expect(csp).not.toMatch(/img-src[^;]*\*/i);
+  });
+
   it('applies AppKit Liquid Glass on the main thread with an older-macOS vibrancy fallback', () => {
     expect(desktopCommandSource).toContain('dispatcher.run_on_main_thread(move ||');
     expect(desktopCommandSource).toContain('crate::glass::apply_liquid_glass_window(&window)');

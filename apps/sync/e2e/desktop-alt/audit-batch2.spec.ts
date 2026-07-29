@@ -55,7 +55,8 @@ describe('audit batch 2: confirmed-finding fixes', () => {
 
   it('deployments counts read as "unknown" (—) on a load error, not a fake empty', () => {
     const panel = readRepoFile('src/desktop-alt/panels/DeploymentsPanel.svelte');
-    expect(panel).toContain("{error ? '—' : activeCount}");
+    expect(panel).toContain('{#if !error}');
+    expect(panel).toContain('{activeCount}');
     expect(panel).toContain('error ? "Couldn\'t load"');
   });
 });

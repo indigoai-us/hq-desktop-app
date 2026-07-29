@@ -444,13 +444,13 @@ export function findAccount(
 
 // ── Small display helpers (shared by list + detail) ──────────────────────────
 
-/** The canonical em-dash a missing leg / value renders as (graceful degrade). */
-export const EM_DASH = '—';
+/** Explicit neutral copy for a missing CRM field. */
+export const NOT_RECORDED = 'Not recorded';
 
-/** Display a possibly-empty value, falling back to the em-dash. */
+/** Display a possibly-empty value without a cryptic punctuation placeholder. */
 export function orDash(value: string | null | undefined): string {
   const v = (value ?? '').trim();
-  return v.length > 0 ? v : EM_DASH;
+  return v.length > 0 ? v : NOT_RECORDED;
 }
 
 /** Human relative timestamp ("just now", "5m ago") for activity/synced lines. */
@@ -459,9 +459,9 @@ export function relativeTime(
   now: number = Date.now(),
 ): string {
   const trimmed = (iso ?? '').trim();
-  if (!trimmed) return EM_DASH;
+  if (!trimmed) return NOT_RECORDED;
   const then = new Date(trimmed).getTime();
-  if (Number.isNaN(then)) return EM_DASH;
+  if (Number.isNaN(then)) return NOT_RECORDED;
   const secs = Math.max(0, Math.round((now - then) / 1000));
   if (secs < 60) return 'just now';
   const mins = Math.round(secs / 60);

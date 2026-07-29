@@ -47,11 +47,25 @@ describe('coverForListing — pack cover resolution', () => {
     expect(coverForListing(listing({ slug: 'some-unknown-pack' }))).toBeNull();
   });
 
-  it('prefers a server-provided coverImageUrl over the bundled map', () => {
+  it('does not render a server-provided remote cover URL', () => {
     const hosted = 'https://cdn.example.com/cover.png';
-    // Even for a slug that HAS bundled art, the hosted URL wins (forward-compat).
-    const url = coverForListing(listing({ slug: 'gstack', coverImageUrl: hosted }));
-    expect(url).toBe(hosted);
+    expect(
+      coverForListing(listing({ slug: 'some-unknown-pack', coverImageUrl: hosted })),
+    ).toBeNull();
+  });
+
+  it('keeps bundled art when a listing also includes a blocked remote cover', () => {
+    const url = coverForListing(
+      listing({ slug: 'gstack', coverImageUrl: 'https://cdn.example.com/cover.png' }),
+    );
+    expect(url).toBe(BUNDLED_PACK_COVERS.gstack);
+  });
+
+  it('accepts a raster data cover once a native proxy supplies one', () => {
+    const proxied = 'data:image/jpeg;base64,/9j/4AAQSkZJRg==';
+    expect(
+      coverForListing(listing({ slug: 'some-unknown-pack', coverImageUrl: proxied })),
+    ).toBe(proxied);
   });
 
   it('ignores a blank/whitespace coverImageUrl and falls back to bundled art', () => {

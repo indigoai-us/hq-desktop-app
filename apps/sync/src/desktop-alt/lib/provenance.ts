@@ -138,7 +138,7 @@ export function hasProvenance(value: WorkProvenance | null | undefined): boolean
 
 /**
  * Resolve a compact display model without inventing a person or source.
- * Missing people render as Unassigned; missing origins as Unknown source.
+ * Missing people stay visually quiet; missing origins remain explicit.
  */
 export function provenanceView(
   value: WorkProvenance | null | undefined,
@@ -164,14 +164,13 @@ export function provenanceView(
     : attributionUnavailable
       ? 'Attribution unavailable'
       : 'Unknown source';
-  const personLabels =
-    people.length > 0
-      ? people.map((person) => `${person.role} ${person.label}`)
-      : ['Unassigned'];
+  const personLabels = people.map(
+    (person) => `${person.role} ${person.label}`,
+  );
   return {
     people,
     origin,
-    ariaLabel: [...personLabels, origin].join(' · '),
+    ariaLabel: [...personLabels, origin].filter(Boolean).join(' · '),
   };
 }
 

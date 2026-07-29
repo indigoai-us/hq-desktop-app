@@ -37,7 +37,7 @@
   let view = $state<PackagesView | null>(null);
   let loading = $state(true);
   let refreshing = $state(false);
-  let busy = $state<{ op: string; name: string } | null>(null);
+  let busy = $state<{ op: string; id: string; label: string } | null>(null);
   let logLines = $state<string[]>([]);
   let errorMsg = $state<string | null>(null);
   let errorContext = $state<'read' | 'mutation'>('read');
@@ -103,7 +103,7 @@
   }
 
   async function install(source: string, registry = false): Promise<void> {
-    busy = { op: 'install', name: shortSource(source) };
+    busy = { op: 'install', id: source, label: shortSource(source) };
     logLines = [];
     errorMsg = null;
     try {
@@ -116,7 +116,7 @@
   }
 
   async function update(name: string): Promise<void> {
-    busy = { op: 'update', name };
+    busy = { op: 'update', id: name, label: name };
     logLines = [];
     errorMsg = null;
     try {
@@ -129,14 +129,14 @@
   }
 
   async function uninstall(name: string): Promise<void> {
-    confirmUninstall = null;
-    busy = { op: 'uninstall', name };
+    busy = { op: 'uninstall', id: name, label: name };
     logLines = [];
     errorMsg = null;
     try {
       await invoke('uninstall_package', { name });
       logLines = [`Uninstalled ${name}.`];
       await refresh();
+      confirmUninstall = null;
     } catch (e) {
       errorMsg = String(e);
       errorContext = 'mutation';
@@ -278,6 +278,10 @@
   function isGatedOff(a: AvailablePack): boolean {
     return a.conditionalStatus === 'fail';
   }
+
+  function isPackBusy(op: 'install' | 'update' | 'uninstall', id: string): boolean {
+    return busy?.op === op && busy.id === id;
+  }
 </script>
 
 <div class="installed-packs" data-testid="installed-packs-panel">
@@ -357,7 +361,7 @@
       <div class="op-head">
         <span class="spinner" aria-hidden="true"></span>
         {busy.op === 'install' ? 'Installing' : busy.op === 'update' ? 'Updating' : 'Uninstalling'}
-        <strong>{busy.name}</strong>…
+        <strong>{busy.label}</strong>…
       </div>
       {#if logLines.length}
         <pre class="log" data-testid="installed-log">{logLines.join('\n')}</pre>
@@ -465,22 +469,46 @@
           </div>
           <div class="row-actions">
             {#if p.updateAvailable}
-              <button class="action primary" onclick={() => update(p.name)} disabled={!!busy}
-                >Update</button
+              <button
+                class="action primary"
+                onclick={() => update(p.name)}
+                disabled={!!busy}
+                aria-busy={isPackBusy('update', p.name)}
+                aria-label={isPackBusy('update', p.name) ? `Updating ${p.name}` : `Update ${p.name}`}
               >
+                {isPackBusy('update', p.name) ? 'Updating…' : 'Update'}
+              </button>
             {/if}
             <button
               class="action danger"
               onclick={() => (confirmUninstall = p.name)}
-              disabled={!!busy}>Uninstall</button
+              disabled={!!busy}
+              aria-busy={isPackBusy('uninstall', p.name)}
+              aria-label={isPackBusy('uninstall', p.name) ? `Removing ${p.name}` : `Uninstall ${p.name}`}
             >
+              {isPackBusy('uninstall', p.name) ? 'Removing…' : 'Uninstall'}
+            </button>
           </div>
         </div>
         {#if confirmUninstall === p.name}
           <div class="confirm" data-testid="installed-confirm">
             Remove <strong>{p.name}</strong> and its host links?
-            <button class="action danger" onclick={() => uninstall(p.name)}>Remove</button>
-            <button class="action ghost" onclick={() => (confirmUninstall = null)}>Cancel</button>
+            <button
+              class="action danger"
+              onclick={() => uninstall(p.name)}
+              disabled={!!busy}
+              aria-busy={isPackBusy('uninstall', p.name)}
+              aria-label={isPackBusy('uninstall', p.name) ? `Removing ${p.name}` : `Remove ${p.name}`}
+            >
+              {isPackBusy('uninstall', p.name) ? 'Removing…' : 'Remove'}
+            </button>
+            <button
+              class="action ghost"
+              onclick={() => (confirmUninstall = null)}
+              disabled={!!busy}
+            >
+              Cancel
+            </button>
           </div>
         {/if}
       {/each}
@@ -499,9 +527,15 @@
               {#if a.description}<div class="row-sub">{a.description}</div>{/if}
             </div>
             <div class="row-actions">
-              <button class="action primary" onclick={() => install(a.source, false)} disabled={!!busy}
-                >Install</button
+              <button
+                class="action primary"
+                onclick={() => install(a.source, false)}
+                disabled={!!busy}
+                aria-busy={isPackBusy('install', a.source)}
+                aria-label={isPackBusy('install', a.source) ? `Installing ${shortSource(a.source)}` : `Install ${shortSource(a.source)}`}
               >
+                {isPackBusy('install', a.source) ? 'Installing…' : 'Install'}
+              </button>
             </div>
           </div>
         {/each}
@@ -515,9 +549,15 @@
               <div class="row-sub">Registry package</div>
             </div>
             <div class="row-actions">
-              <button class="action primary" onclick={() => install(r.slug, true)} disabled={!!busy}
-                >Install</button
+              <button
+                class="action primary"
+                onclick={() => install(r.slug, true)}
+                disabled={!!busy}
+                aria-busy={isPackBusy('install', r.slug)}
+                aria-label={isPackBusy('install', r.slug) ? `Installing ${shortSource(r.slug)}` : `Install ${shortSource(r.slug)}`}
               >
+                {isPackBusy('install', r.slug) ? 'Installing…' : 'Install'}
+              </button>
             </div>
           </div>
         {/each}

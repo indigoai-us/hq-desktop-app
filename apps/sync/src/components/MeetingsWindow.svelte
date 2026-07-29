@@ -1863,7 +1863,11 @@
                   </button>
                 {/if}
                 {#if !url}
-                  <span class="row-icon-btn row-icon-empty" title="No meeting URL on this event">—</span>
+                  <span
+                    class="row-icon-btn row-icon-empty"
+                    title="No meeting URL on this event"
+                    aria-hidden="true"
+                  ></span>
                 {:else if kind === 'invite'}
                   <button
                     type="button"

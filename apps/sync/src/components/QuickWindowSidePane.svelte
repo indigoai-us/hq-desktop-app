@@ -333,7 +333,13 @@
               type={row.kind === 'dm' ? 'message' : 'share'}
               actor={row.actor}
               identityLabel={senderIdentity(row.actor, row.agent)}
-              sourceLabel={row.kind === 'dm' ? 'Direct message' : 'Shared file'}
+              sourceLabel={row.kind === 'dm'
+                ? row.ids.length > 1
+                  ? `Direct messages · ${row.ids.length}`
+                  : 'Direct message'
+                : row.ids.length > 1
+                  ? `Shared files · ${row.ids.length}`
+                  : 'Shared file'}
               text={row.latest.kind === 'dm' ? (row.latest.dm?.body ?? row.latest.summary) : row.latest.summary}
               ts={row.latest.ts}
               unread={!isSelected && row.unreadCount > 0}

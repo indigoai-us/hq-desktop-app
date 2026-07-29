@@ -2,6 +2,7 @@ import * as Sentry from "@sentry/svelte";
 import './styles/design-system.css';
 import App from './App.svelte';
 import MeetingsWindow from './components/MeetingsWindow.svelte';
+import NewFilesDetail from './components/NewFilesDetail.svelte';
 import DriftDetail from './components/DriftDetail.svelte';
 import ActivityLog from './components/ActivityLog.svelte';
 import ShareDetail from './components/ShareDetail.svelte';
@@ -40,6 +41,8 @@ installDesktopZoom();
 let Component: typeof App;
 if (windowLabel === 'meetings-window') {
   Component = MeetingsWindow as unknown as typeof App;
+} else if (windowLabel === 'new-files-detail') {
+  Component = NewFilesDetail as unknown as typeof App;
 } else if (windowLabel === 'drift-detail') {
   Component = DriftDetail as unknown as typeof App;
 } else if (windowLabel === 'activity-log') {

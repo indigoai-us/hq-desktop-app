@@ -206,6 +206,7 @@
 
   // App version from tauri.conf.json via the Tauri API.
   let appVersion = $state('');
+  let appVersionLoadFailed = $state(false);
 
   // Manual "Check for Updates" transient result (app auto-updater).
   let updateChecking = $state(false);
@@ -409,8 +410,12 @@
     getVersion()
       .then((v) => {
         appVersion = v;
+        appVersionLoadFailed = false;
       })
-      .catch((err) => console.error('Failed to read app version:', err));
+      .catch((err) => {
+        appVersionLoadFailed = true;
+        console.error('Failed to read app version:', err);
+      });
     // Non-prompting read so the Meeting permissions row reflects the current
     // macOS grant state; refreshed on focus (returning from System Settings).
     void loadMeetingPermissions();
@@ -1585,7 +1590,7 @@
           </span>
           <div class="row-actions">
             <span class="version-chip" data-testid="settings-app-version">
-              {appVersion ? `v${appVersion}` : 'Reading…'}
+              {appVersion ? `v${appVersion}` : appVersionLoadFailed ? 'Unavailable' : 'Reading…'}
             </span>
             {#if appUpdate}
               <button
@@ -1799,8 +1804,11 @@
             <button
               type="button"
               class="row-button primary"
+              data-testid="settings-update-packs"
               onclick={handleUpdatePacks}
               disabled={packsUpdating}
+              aria-busy={packsUpdating}
+              aria-label={packsUpdating ? 'Updating installed packs' : 'Update installed packs'}
             >
               {packsUpdating ? 'Updating…' : 'Update'}
             </button>
@@ -1857,7 +1865,9 @@
         </label>
         <div class="setting-row">
           <span><strong>Version</strong><small>HQ desktop app build</small></span>
-          <span class="version-value">{appVersion ? `v${appVersion}` : '—'}</span>
+          <span class="version-value">
+            {appVersion ? `v${appVersion}` : appVersionLoadFailed ? 'Unavailable' : 'Reading…'}
+          </span>
         </div>
         <div class="setting-row">
           <span><strong>Account</strong><small>Sign out returns you to the menu bar sign-in screen.</small></span>

@@ -31,6 +31,7 @@ export interface LocalProjectWire {
   prdPath?: string;
   createdAt?: string | null;
   updatedAt?: string | null;
+  creatorFallback?: string | null;
   storyCount: number;
   storiesComplete: number;
   provenance?: unknown;
@@ -143,12 +144,43 @@ function projectSourceFallback(
   return company ? `companies/${company}/board.json` : null;
 }
 
+/**
+ * Project provenance can supply context for a task, but project responsibility
+ * is not task responsibility. Only source context may flow down; explicit task
+ * owner/assignee/creator/source fields still win in {@link toStory}. A project
+ * creator is not evidence that the same person authored every task.
+ */
+function storyProjectFallback(
+  provenance: WorkProvenance | null | undefined,
+): WorkProvenance {
+  const normalized = normalizeProvenance(provenance);
+  return {
+    owner: null,
+    assignee: null,
+    creator: null,
+    origin: normalized.origin,
+  };
+}
+
 /** Map one `LocalProject` wire object into the US-004 `Project` shape. */
 export function toProject(wire: LocalProjectWire): Project {
-  const provenance = withOriginFallback(
+  const explicitProvenance = withOriginFallback(
     normalizeProvenance(wire.provenance, wire),
     projectSourceFallback(wire),
   );
+  const creatorFallback =
+    typeof wire.creatorFallback === 'string' && wire.creatorFallback.trim()
+      ? wire.creatorFallback.trim()
+      : null;
+  const usesCreatorFallback = Boolean(
+    creatorFallback &&
+      !explicitProvenance.owner &&
+      !explicitProvenance.assignee &&
+      !explicitProvenance.creator,
+  );
+  const provenance = usesCreatorFallback
+    ? { ...explicitProvenance, creator: creatorFallback }
+    : explicitProvenance;
   return {
     id: wire.id,
     title: wire.title,
@@ -162,6 +194,7 @@ export function toProject(wire: LocalProjectWire): Project {
     storiesTotal: Math.max(0, wire.storyCount ?? 0),
     storiesComplete: Math.max(0, wire.storiesComplete ?? 0),
     provenance,
+    creatorFallback: usesCreatorFallback ? creatorFallback : null,
   };
 }
 
@@ -221,7 +254,11 @@ export function withProjectStatus(
 }
 
 /** Map one `LocalStory` wire object into the US-004 `Story` shape. */
-export function toStory(wire: LocalStoryWire, sourcePath?: string): Story {
+export function toStory(
+  wire: LocalStoryWire,
+  sourcePath?: string,
+  projectProvenance?: WorkProvenance | null,
+): Story {
   return {
     id: wire.id,
     title: wire.title,
@@ -235,7 +272,10 @@ export function toStory(wire: LocalStoryWire, sourcePath?: string): Story {
     files: wire.files ?? [],
     model_hint: wire.model_hint ?? null,
     provenance: withOriginFallback(
-      normalizeProvenance(wire.provenance, wire, wire.metadata),
+      mergeProvenance(
+        normalizeProvenance(wire.provenance, wire, wire.metadata),
+        storyProjectFallback(projectProvenance),
+      ),
       sourcePath,
     ),
   };
@@ -339,7 +379,12 @@ export function applyProjectProvenance(
     (pathKey ? index.byPath[pathKey] : undefined) ??
     (idKey && !index.ambiguousIds.has(idKey) ? index.byId[idKey] : undefined);
   const local = normalizeProvenance(project.provenance);
-  const normalizedLocalOrigin = normalizeProjectPath(local.origin);
+  const creatorFallback = project.creatorFallback?.trim() || null;
+  const localWithoutHistory =
+    creatorFallback && local.creator === creatorFallback
+      ? { ...local, creator: null }
+      : local;
+  const normalizedLocalOrigin = normalizeProjectPath(localWithoutHistory.origin);
   const boardFallback = project.company.trim()
     ? `companies/${project.company.trim()}/board.json`
     : '';
@@ -350,11 +395,19 @@ export function applyProjectProvenance(
   // wins only the board/prd file path we derived as a last-resort source.
   const localForMerge =
     cloud?.origin && derivedOrigins.has(normalizedLocalOrigin)
-      ? { ...local, origin: null }
-      : local;
+      ? { ...localWithoutHistory, origin: null }
+      : localWithoutHistory;
+  const explicit = mergeProvenance(localForMerge, cloud);
+  const withCreatorFallback =
+    creatorFallback &&
+    !explicit.owner &&
+    !explicit.assignee &&
+    !explicit.creator
+      ? { ...explicit, creator: creatorFallback }
+      : explicit;
   const provenance = withOriginFallback(
-    mergeProvenance(localForMerge, cloud),
-    local.origin ?? projectSourceFallback(project),
+    withCreatorFallback,
+    localWithoutHistory.origin ?? projectSourceFallback(project),
   );
   return { ...project, provenance };
 }
@@ -463,10 +516,19 @@ export async function loadCompanyGoals(slug: string): Promise<CompanyGoals> {
 }
 
 /** Load + normalise the stories for a single project's prd.json. */
-export async function loadLocalProjectStories(prdPath: string): Promise<Story[]> {
+export async function loadLocalProjectStories(
+  prdPath: string,
+  projectProvenance?: WorkProvenance | null,
+): Promise<Story[]> {
   // The Rust command param is `prd_path`; Tauri v2 exposes it camelCased.
   const prd = await invoke<LocalProjectPrdWire>('get_local_project_prd', { prdPath });
-  return (prd?.userStories ?? []).map((story) => toStory(story, prdPath));
+  const inherited = mergeProvenance(
+    projectProvenance,
+    normalizeProvenance(prd.provenance, prd, prd.metadata),
+  );
+  return (prd?.userStories ?? []).map((story) =>
+    toStory(story, prdPath, inherited),
+  );
 }
 
 /** Load PRD detail content with project-level provenance normalized. */

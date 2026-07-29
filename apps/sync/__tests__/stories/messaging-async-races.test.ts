@@ -16,7 +16,9 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: tauri.invoke }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: tauri.listen }));
 
 import { flushSync, mount, tick, unmount } from 'svelte';
+import DmThreadPane from '../../src/components/DmThreadPane.svelte';
 import MessagesShell from '../../src/components/messaging/MessagesShell.svelte';
+import DmThreadPaneRaceHarness from './DmThreadPaneRaceHarness.svelte';
 import ThreadPanelRaceHarness from './ThreadPanelRaceHarness.svelte';
 
 interface Deferred<T> {
@@ -60,6 +62,19 @@ function dmMessage(eventId: string, body: string, rootEventId?: string) {
     prompt: null,
     createdAt: '2026-07-28T12:00:00.000Z',
     direction: 'in',
+  };
+}
+
+function dmEvent(eventId: string, body: string, createdAt: string) {
+  return {
+    eventId,
+    fromPersonUid: 'peer',
+    fromEmail: 'peer@example.com',
+    fromDisplayName: 'Peer',
+    body,
+    details: null,
+    prompt: null,
+    createdAt,
   };
 }
 
@@ -142,6 +157,139 @@ afterEach(async () => {
   consoleErrorSpy.mockRestore();
   host.remove();
   vi.clearAllMocks();
+});
+
+describe('DmThreadPane hydration ownership', () => {
+  it('preserves live and optimistic messages appended while hydration is in flight', async () => {
+    const hydration = deferred<{ messages: ReturnType<typeof dmMessage>[] }>();
+
+    tauri.invoke.mockImplementation((command: string) => {
+      if (command === 'fetch_dm_thread') return hydration.promise;
+      if (command === 'send_dm') return Promise.resolve();
+      return Promise.resolve(baseFixture(command));
+    });
+
+    component = mount(DmThreadPane, {
+      target: host,
+      props: {
+        event: dmEvent(
+          'opening-event',
+          'Opening message',
+          '2026-07-28T12:01:00.000Z',
+        ),
+      },
+    });
+    await vi.waitFor(() => expect(listeners.has('dm:new-events')).toBe(true));
+
+    emit('dm:new-events', [
+      dmEvent(
+        'live-event',
+        'Arrived while loading',
+        '2026-07-28T12:02:00.000Z',
+      ),
+    ]);
+    typeReply('Sent while loading').click();
+    await vi.waitFor(() => {
+      flushSync();
+      expect(host.textContent).toContain('Sent while loading');
+    });
+
+    hydration.resolve({
+      messages: [dmMessage('history-event', 'Earlier history')],
+    });
+    await hydration.promise;
+    await tick();
+    flushSync();
+
+    const bodyText = [...host.querySelectorAll<HTMLElement>('.dm-bubble-body')].map(
+      (node) => node.textContent?.trim(),
+    );
+    expect(bodyText).toEqual([
+      'Earlier history',
+      'Opening message',
+      'Arrived while loading',
+      'Sent while loading',
+    ]);
+  });
+
+  it('ignores a stale Alice hydration success after switching the pane to Bob', async () => {
+    const alice = deferred<{ messages: ReturnType<typeof dmMessage>[] }>();
+    const bob = deferred<{ messages: ReturnType<typeof dmMessage>[] }>();
+
+    tauri.invoke.mockImplementation((command: string, args?: any) => {
+      if (command === 'fetch_dm_thread') {
+        return args?.withPersonUid === 'person-alice' ? alice.promise : bob.promise;
+      }
+      return Promise.resolve(baseFixture(command));
+    });
+
+    component = mount(DmThreadPaneRaceHarness, { target: host });
+    await vi.waitFor(() => {
+      expect(tauri.invoke).toHaveBeenCalledWith('fetch_dm_thread', {
+        withPersonUid: 'person-alice',
+      });
+    });
+
+    host.querySelector<HTMLButtonElement>('[data-testid="select-bob"]')?.click();
+    flushSync();
+    expect(host.textContent).not.toContain('Alice opening');
+
+    bob.resolve({ messages: [dmMessage('bob-history', 'Bob history')] });
+    await vi.waitFor(() => {
+      flushSync();
+      expect(host.textContent).toContain('Bob history');
+      expect(host.textContent).toContain('Bob opening');
+    });
+
+    alice.resolve({ messages: [dmMessage('alice-history', 'Alice private history')] });
+    await alice.promise;
+    await tick();
+    flushSync();
+
+    expect(host.textContent).toContain('Bob history');
+    expect(host.textContent).toContain('Bob opening');
+    expect(host.textContent).not.toContain('Alice private history');
+    expect(host.textContent).not.toContain('Alice opening');
+  });
+
+  it('ignores a stale Alice hydration failure after switching the pane to Bob', async () => {
+    const alice = deferred<{ messages: ReturnType<typeof dmMessage>[] }>();
+    const bob = deferred<{ messages: ReturnType<typeof dmMessage>[] }>();
+
+    tauri.invoke.mockImplementation((command: string, args?: any) => {
+      if (command === 'fetch_dm_thread') {
+        return args?.withPersonUid === 'person-alice' ? alice.promise : bob.promise;
+      }
+      return Promise.resolve(baseFixture(command));
+    });
+
+    component = mount(DmThreadPaneRaceHarness, { target: host });
+    await vi.waitFor(() => {
+      expect(tauri.invoke).toHaveBeenCalledWith('fetch_dm_thread', {
+        withPersonUid: 'person-alice',
+      });
+    });
+
+    host.querySelector<HTMLButtonElement>('[data-testid="select-bob"]')?.click();
+    flushSync();
+    bob.resolve({ messages: [dmMessage('bob-history', 'Bob remains current')] });
+    await vi.waitFor(() => {
+      flushSync();
+      expect(host.textContent).toContain('Bob remains current');
+      expect(host.querySelector('.dm-thread')?.getAttribute('aria-busy')).toBe('false');
+    });
+
+    alice.reject(new Error('Alice thread unavailable'));
+    await alice.promise.catch(() => undefined);
+    await tick();
+    flushSync();
+
+    expect(host.textContent).toContain('Bob remains current');
+    expect(host.textContent).toContain('Bob opening');
+    expect(host.textContent).not.toContain('Alice thread unavailable');
+    expect(host.querySelector('[role="alert"]')).toBeNull();
+    expect(host.querySelector('.dm-thread')?.getAttribute('aria-busy')).toBe('false');
+  });
 });
 
 describe('MessagesShell async ownership', () => {

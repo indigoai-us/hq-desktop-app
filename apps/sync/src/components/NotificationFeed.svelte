@@ -134,7 +134,13 @@
   // individual dismissals are removed before grouping so surviving clusters
   // recompute their counts.
   const undismissedItems = $derived(items.filter((it) => !dismissed.has(it.id)));
-  const allGroups = $derived(buildNotificationGroups(undismissedItems));
+  const allGroups = $derived(
+    buildNotificationGroups(undismissedItems, Date.now(), {
+      // Inbox intentionally omits day headings, so carrying an identical
+      // automated notice into a second invisible day bucket only adds noise.
+      aggregateRepeatedMessagesAcrossDays: !showDayLabels,
+    }),
+  );
   const visibleGroups = $derived.by((): DayGroup[] =>
     allGroups
       .map((group) => ({
@@ -451,12 +457,18 @@
                   />
                 {/key}
               {/if}
-            {:else}
+            {:else if row.clusterKind === 'new-file'}
+              {@const contributorLabel =
+                row.actors.length === 0
+                  ? ''
+                  : row.actors.length === 1
+                    ? ` · ${row.actors[0]}`
+                    : ` · ${row.actors.length} contributors`}
               <NotificationRow
                 type="sync"
                 actor={row.company}
                 sourceLabel="Workspace activity"
-                text={`${row.count} new files in ${row.company}`}
+                text={`${row.count} new files in ${row.company}${contributorLabel}`}
                 ts={row.latestTs}
                 unread={row.items.some((it) => isUnread(it, lastReadTs))}
                 comfortable={density === 'comfortable'}
@@ -464,6 +476,19 @@
                   row.company ? () => openCompanyActivity(row.company) : undefined
                 }
                 ondismiss={() => dismiss(row.key)}
+              />
+            {:else}
+              {@const latest = row.items[0]}
+              <NotificationRow
+                type="message"
+                actor={row.actor}
+                sourceLabel="Direct messages"
+                text={`${row.count} similar notices · ${row.summary}`}
+                ts={row.latestTs}
+                unread={row.items.some((it) => isUnread(it, lastReadTs))}
+                comfortable={density === 'comfortable'}
+                hoverExpand={false}
+                onopen={latest?.dm ? () => openDm(latest) : undefined}
               />
             {/if}
           {/each}
