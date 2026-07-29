@@ -27,11 +27,11 @@ describe('desktop-alt markdown helper (US-009)', () => {
     expect(escapeHtml('<script>alert(1)</script>')).toBe(
       '&lt;script&gt;alert(1)&lt;/script&gt;',
     );
-    // A README image is rebuilt from safe attributes; handlers never survive.
-    const html = renderMarkdown('Hello <img src=x onerror=alert(1)>');
-    expect(html).toContain(
-      '<img src="x" alt="" loading="lazy" decoding="async" />',
-    );
+    // Inline images never initiate a renderer-side request. Their safe alt text
+    // remains readable while source attributes and handlers are discarded.
+    const html = renderMarkdown('Hello <img src=x alt="Map" onerror=alert(1)>');
+    expect(html).toContain('<p>Hello Map</p>');
+    expect(html).not.toContain('<img');
     expect(html).not.toContain('onerror');
     expect(html).not.toContain('alert(1)');
   });
