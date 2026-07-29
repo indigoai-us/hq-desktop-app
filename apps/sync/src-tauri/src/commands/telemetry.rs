@@ -1345,7 +1345,11 @@ const MAX_CODEX_SCAN_BYTES_PER_SYNC: u64 = 4 * 1024 * 1024;
 const MAX_CODEX_LINE_BYTES: u64 = 64 * 1024;
 
 fn per_rollout_scan_budget(pending_count: usize) -> u64 {
-    (MAX_CODEX_SCAN_BYTES_PER_SYNC / pending_count.max(1) as u64).max(1)
+    if pending_count == 0 {
+        return 0;
+    }
+    (MAX_CODEX_SCAN_BYTES_PER_SYNC / pending_count as u64)
+        .clamp(MAX_CODEX_LINE_BYTES, MAX_CODEX_SCAN_BYTES_PER_SYNC)
 }
 
 fn rollout_batch_allowance(index: usize, pending_count: usize) -> usize {
@@ -1571,7 +1575,7 @@ pub async fn send_telemetry_if_opted_in<R: tauri::Runtime>(
             .map(|(_, rollout)| normalize_cursor_file_key(&rollout.path))
             .collect();
         let per_rollout_scan_budget = per_rollout_scan_budget(pending_count);
-        let mut hit_batch_cap = false;
+        let mut hit_sync_limit = false;
         codex_next_rollout = None;
         'codex_files: for (rollout_index, (filename_session_id, rollout)) in
             pending_rollouts.into_iter().enumerate()
@@ -1601,6 +1605,8 @@ pub async fn send_telemetry_if_opted_in<R: tauri::Runtime>(
                 let global_remaining =
                     MAX_CODEX_SCAN_BYTES_PER_SYNC.saturating_sub(codex_bytes_scanned);
                 if global_remaining == 0 {
+                    hit_sync_limit = true;
+                    codex_next_rollout = pending_paths.get(rollout_index).cloned();
                     break 'codex_files;
                 }
                 let file_remaining = per_rollout_scan_budget.saturating_sub(rollout_bytes_scanned);
@@ -1609,6 +1615,11 @@ pub async fn send_telemetry_if_opted_in<R: tauri::Runtime>(
                 }
                 let remaining = global_remaining.min(file_remaining);
                 let Some((sanitized, end_offset, context)) = scanner.next_bounded(remaining) else {
+                    if global_remaining < MAX_CODEX_LINE_BYTES && previous_offset < rollout.size {
+                        hit_sync_limit = true;
+                        codex_next_rollout = pending_paths.get(rollout_index).cloned();
+                        break 'codex_files;
+                    }
                     break;
                 };
                 let scanned = end_offset.saturating_sub(previous_offset);
@@ -1646,7 +1657,7 @@ pub async fn send_telemetry_if_opted_in<R: tauri::Runtime>(
                                 codex_batches_sent += 1;
                                 rollout_batches_sent += 1;
                                 if codex_batches_sent >= MAX_CODEX_BATCHES_PER_SYNC {
-                                    hit_batch_cap = true;
+                                    hit_sync_limit = true;
                                     codex_next_rollout = pending_paths
                                         .get((rollout_index + 1) % pending_count)
                                         .cloned();
@@ -1672,6 +1683,10 @@ pub async fn send_telemetry_if_opted_in<R: tauri::Runtime>(
                 );
 
                 if codex_bytes_scanned >= MAX_CODEX_SCAN_BYTES_PER_SYNC {
+                    hit_sync_limit = true;
+                    codex_next_rollout = pending_paths
+                        .get((rollout_index + 1) % pending_count)
+                        .cloned();
                     break 'codex_files;
                 }
                 if rollout_bytes_scanned >= per_rollout_scan_budget {
@@ -1679,7 +1694,7 @@ pub async fn send_telemetry_if_opted_in<R: tauri::Runtime>(
                 }
             }
         }
-        if !hit_batch_cap {
+        if !hit_sync_limit && !upload_failed {
             codex_next_rollout = None;
         }
     }
@@ -3914,6 +3929,81 @@ mod codex_telemetry_tests {
             second_cursor.files[&newer_key].offset < (older.len() + growth.len()) as u64,
             "the growing rollout remains bounded by its fair slice"
         );
+    }
+
+    #[tokio::test]
+    async fn more_than_sixty_four_near_limit_lines_advance_across_bounded_syncs() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/usage/opt-in"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"enabled": true})))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/usage"))
+            .respond_with(complete_ack)
+            .mount(&server)
+            .await;
+
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let home = setup_home();
+        write_menubar(home.path(), r#"{"machineId":"codex-many-rollouts"}"#);
+        let dir = home.path().join(".codex/sessions/2026/07/29");
+        fs::create_dir_all(&dir).unwrap();
+        const ROLLOUT_COUNT: usize = 65;
+        let old_divided_slice = MAX_CODEX_SCAN_BYTES_PER_SYNC / ROLLOUT_COUNT as u64;
+        let mut rollouts = Vec::new();
+        for index in 0..ROLLOUT_COUNT {
+            let rollout_id = format!("019de12c-d83e-78c2-9bb3-{index:012x}");
+            let path = dir.join(format!("rollout-2026-07-29T10-00-00-{rollout_id}.jsonl"));
+            let line = json!({
+                "timestamp":"2026-07-29T10:00:00Z",
+                "type":"event_msg",
+                "padding":"x".repeat(64_800),
+                "payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":2,"output_tokens":3}}}
+            })
+            .to_string()
+                + "\n";
+            assert!(line.len() as u64 > old_divided_slice);
+            assert!(line.len() as u64 <= MAX_CODEX_LINE_BYTES);
+            fs::write(&path, &line).unwrap();
+            rollouts.push((normalize_cursor_file_key(&path), line.len() as u64));
+        }
+
+        std::env::set_var("HOME", home.path());
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+        let handle = make_app_handle();
+        send_telemetry_if_opted_in(&handle, "/hq", "tok")
+            .await
+            .unwrap();
+
+        let first = read_cursor(home.path());
+        let advanced = rollouts
+            .iter()
+            .filter(|(path, _)| first.files[path].offset > 0)
+            .count();
+        let deferred: Vec<_> = rollouts
+            .iter()
+            .filter(|(path, _)| first.files[path].offset == 0)
+            .collect();
+        assert_eq!(advanced, 64);
+        assert_eq!(deferred.len(), 1);
+        assert_eq!(
+            first.codex_next_rollout.as_deref(),
+            Some(deferred[0].0.as_str())
+        );
+
+        send_telemetry_if_opted_in(&handle, "/hq", "tok")
+            .await
+            .unwrap();
+        std::env::remove_var("HOME");
+        std::env::remove_var("HQ_VAULT_API_URL");
+
+        let second = read_cursor(home.path());
+        assert!(rollouts
+            .iter()
+            .all(|(path, size)| second.files[path].offset == *size));
+        assert!(second.codex_next_rollout.is_none());
     }
 
     #[tokio::test]
