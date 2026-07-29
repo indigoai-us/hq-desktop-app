@@ -103,10 +103,7 @@ pub fn apply_windows_window_style(window: &impl HasWindowHandle, appearance: Win
             Ok(()) => {
                 log(
                     "ui",
-                    &format!(
-                        "apply_mica: success ({} variant)",
-                        appearance.label()
-                    ),
+                    &format!("apply_mica: success ({} variant)", appearance.label()),
                 );
                 return;
             }
@@ -172,9 +169,8 @@ fn system_apps_use_dark() -> bool {
     use winreg::RegKey;
 
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-    let Ok(key) = hkcu.open_subkey(
-        r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
-    ) else {
+    let Ok(key) = hkcu.open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")
+    else {
         return true;
     };
     let value: u32 = key.get_value("AppsUseLightTheme").unwrap_or(0);

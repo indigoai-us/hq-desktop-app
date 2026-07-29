@@ -7,7 +7,7 @@
 use std::path::{Component, Path, PathBuf};
 
 use reqwest::StatusCode;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::config::{read_hq_config_lenient, HqConfig, MenubarPrefs};
 use crate::paths;
@@ -1018,6 +1018,13 @@ pub fn parse_request_access_response(status: StatusCode, text: &str) -> Result<S
 // a 403 (surfaced as a clear "admin only" error so the panel can lock its
 // Requests view). This command never makes its own admin decision.
 
+fn deserialize_nullable_string<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 /// One pending creator-access application as returned by the admin list route.
 /// Mirrors the hq-pro wire shape 1:1 (camelCase).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1026,22 +1033,22 @@ pub struct CreatorApplication {
     /// Stable application id — the key the decide command takes.
     pub application_id: String,
     /// The applicant's internal person uid (opaque to the UI).
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_nullable_string")]
     pub applicant_uid: String,
     /// The applicant's email (the primary display key in the queue row).
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_nullable_string")]
     pub applicant_email: String,
     /// The handle the applicant wants, when they supplied one.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_nullable_string")]
     pub handle: String,
     /// The applicant's pitch (why they want creator access).
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_nullable_string")]
     pub reason: String,
     /// Application status — `pending` for everything in this queue.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_nullable_string")]
     pub status: String,
     /// ISO-8601 submission timestamp (queue is ordered oldest-first by this).
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_nullable_string")]
     pub submitted_at: String,
 }
 
@@ -1990,8 +1997,8 @@ mod tests {
             {"applicationId":"app_1","applicantUid":"prs_a","applicantEmail":"mallory@example.com",
              "handle":"mallory","reason":"I want to publish my skills.","status":"pending",
              "submittedAt":"2026-06-03T10:00:00Z"},
-            {"applicationId":"app_2","applicantEmail":"alice@example.com","status":"pending",
-             "submittedAt":"2026-06-04T11:00:00Z"}
+            {"applicationId":"app_2","applicantUid":null,"applicantEmail":"alice@example.com",
+             "handle":null,"reason":null,"status":"pending","submittedAt":null}
         ]}"#;
         let apps = parse_creator_applications_response(StatusCode::OK, body).expect("parsed");
         assert_eq!(apps.len(), 2);
@@ -2010,6 +2017,8 @@ mod tests {
         assert_eq!(second.applicant_email, "alice@example.com");
         assert!(second.handle.is_empty());
         assert!(second.applicant_uid.is_empty());
+        assert!(second.reason.is_empty());
+        assert!(second.submitted_at.is_empty());
     }
 
     #[test]

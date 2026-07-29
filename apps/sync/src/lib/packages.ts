@@ -160,6 +160,25 @@ export function shortSource(source: string | undefined): string {
 }
 
 /**
+ * Stable comparison identity for pack names from the three shapes the CLI can
+ * return: installed names, packs.yaml sources, and registry slugs.
+ *
+ * Display helpers intentionally preserve origin/version detail; this helper is
+ * only for deduplication. Empty/malformed sources have no identity and must not
+ * become an install action.
+ */
+export function packIdentity(source: string | undefined): string {
+  const raw = source?.trim();
+  if (!raw) return '';
+  let identity = shortSource(raw).trim().toLowerCase();
+  identity = identity.replace(/^(?:marketplace|registry):/, '');
+  if (identity.includes('/') && identity.includes('hq-pack-')) {
+    identity = identity.slice(identity.lastIndexOf('/') + 1);
+  }
+  return identity.replace(/@[^@/]+$/, '');
+}
+
+/**
  * Was this pack installed from the MODERATED marketplace/registry origin?
  *
  * Only these origins go through marketplace moderation (injection scan +

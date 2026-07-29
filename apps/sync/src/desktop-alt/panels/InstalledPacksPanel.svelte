@@ -24,6 +24,7 @@
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import {
     shortSource,
+    packIdentity,
     isPromptRenderable,
     friendlyPackagesError,
     isMissingPackagesToolError,
@@ -62,8 +63,25 @@
   let clipboardFailures = $state<Record<string, ClipboardFailure | undefined>>({});
 
   const installed = $derived(view?.packs?.installed ?? []);
-  const available = $derived(view?.packs?.available ?? []);
-  const registryAvailable = $derived(view?.registry?.available ?? []);
+  const installedIdentities = $derived(
+    new Set(
+      installed
+        .flatMap((pack) => [packIdentity(pack.name), packIdentity(pack.source)])
+        .filter(Boolean),
+    ),
+  );
+  const available = $derived(
+    (view?.packs?.available ?? []).filter((pack) => {
+      const identity = packIdentity(pack.source);
+      return identity !== '' && !installedIdentities.has(identity);
+    }),
+  );
+  const registryAvailable = $derived(
+    (view?.registry?.available ?? []).filter((pack) => {
+      const identity = packIdentity(pack.slug);
+      return identity !== '' && !installedIdentities.has(identity);
+    }),
+  );
   const hasPackSnapshot = $derived(Boolean(view?.packs));
   const updatesCount = $derived(installed.filter((p) => p.updateAvailable).length);
   const HQ_CLI_INSTALL_COMMAND = 'npm install -g @indigoai-us/hq-cli@latest';

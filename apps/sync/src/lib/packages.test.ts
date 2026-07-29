@@ -5,6 +5,7 @@ import {
   isMissingPackagesToolError,
   isPromptRenderable,
   friendlyPackagesError,
+  packIdentity,
   shortSource,
   type InstalledPack,
   type PackInitialization,
@@ -154,5 +155,22 @@ describe('shortSource (unchanged regression guard)', () => {
   it('drops the long git prefix to the trailing pack name', () => {
     expect(shortSource('github:owner/repo#packages/hq-pack-impeccable')).toBe('hq-pack-impeccable');
     expect(shortSource(undefined)).toBe('unknown source');
+  });
+});
+
+describe('packIdentity', () => {
+  it('matches installed names to packs.yaml, scoped npm, and registry sources', () => {
+    expect(packIdentity('hq-pack-engineering')).toBe('hq-pack-engineering');
+    expect(packIdentity('@indigoai-us/hq-pack-engineering')).toBe('hq-pack-engineering');
+    expect(packIdentity('github:indigoai-us/hq#packages/hq-pack-engineering@1.3.0')).toBe(
+      'hq-pack-engineering',
+    );
+    expect(packIdentity('registry:hq-pack-engineering@1.3.0')).toBe('hq-pack-engineering');
+  });
+
+  it('does not manufacture an install identity for an empty source', () => {
+    expect(packIdentity('')).toBe('');
+    expect(packIdentity('   ')).toBe('');
+    expect(packIdentity(undefined)).toBe('');
   });
 });

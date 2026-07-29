@@ -52,20 +52,19 @@ export function safeHref(rawUrl: string): string | null {
 }
 
 /**
- * Images from untrusted Markdown must stay on the packaged app origin.
+ * Images from untrusted Markdown must not initiate a renderer-side file or
+ * network request.
  *
  * Unlike links, remote http(s) images are not passive: rendering one tells the
  * remote server that a specific message or file was opened and exposes network
- * metadata. Keep ordinary relative app assets, but reject every explicit
- * scheme (including http(s), data, blob, file, and Tauri's asset protocol).
- * Authorized native previews use their own data URL path outside this renderer.
+ * metadata. Relative Markdown images are not safe to resolve against the Tauri
+ * app origin either: they point at the packaged UI rather than the selected HQ
+ * document and render as broken, oversized frames. Degrade every inline image
+ * to its alt text here. Authorized native image previews use their own
+ * size-capped data URL path outside this renderer.
  */
-export function safeImageSrc(rawUrl: string): string | null {
-  const src = safeHref(rawUrl);
-  if (src === null || src.startsWith('#') || /^[a-z][a-z0-9+.-]*:/i.test(src)) {
-    return null;
-  }
-  return src;
+export function safeImageSrc(_rawUrl: string): string | null {
+  return null;
 }
 
 /**
@@ -183,6 +182,22 @@ export function renderInline(text: string): string {
     },
   );
 
+  // HQ knowledge uses Obsidian-style wikilinks extensively. The desktop does
+  // not yet expose a canonical ontology router, so render the human label
+  // cleanly instead of leaking `[[path|label]]` syntax or inventing a broken
+  // navigation target.
+  work = work.replace(
+    /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g,
+    (_match, target: string, explicitLabel: string | undefined) => {
+      const cleanTarget = target.trim();
+      const fallbackLabel = cleanTarget.split('/').filter(Boolean).at(-1) ?? cleanTarget;
+      const label = explicitLabel?.trim() || fallbackLabel;
+      return stash(
+        `<span class="markdown-wikilink" title="${escapeHtml(cleanTarget)}">${renderInlineEmphasis(escapeHtml(label))}</span>`,
+      );
+    },
+  );
+
   work = work.replace(
     /\[([^\]]+)\]\(([^)\s]+)(?:\s+["'][^"']*["'])?\)/g,
     (_match, label: string, url: string) => {
@@ -219,10 +234,19 @@ export function renderInline(text: string): string {
   work = work.replace(/<\/?[a-z][a-z0-9-]*(?:\s+[^<>]*?)?\s*\/?>/gi, '');
 
   work = renderInlineEmphasis(escapeHtml(work));
-  return work.replace(
-    /\u0000FRAGMENT(\d+)\u0000/g,
-    (_match, index: string) => fragments[Number(index)] ?? '',
-  );
+  // Link labels may themselves contain an earlier stashed fragment (for
+  // example [`hq setup`](https://example.com)). Restore until stable so a
+  // nested code span never leaks a literal "FRAGMENT0" token into the UI.
+  let restored = work;
+  for (let depth = 0; depth <= fragments.length; depth += 1) {
+    const next = restored.replace(
+      /\u0000FRAGMENT(\d+)\u0000/g,
+      (_match, index: string) => fragments[Number(index)] ?? '',
+    );
+    if (next === restored) break;
+    restored = next;
+  }
+  return restored;
 }
 
 /** Apply bold and italic (asterisk or underscore) to already-escaped text. */
@@ -236,7 +260,7 @@ function renderInlineEmphasis(escaped: string): string {
     .replace(/(^|\W)_([^_]+)_(?=\W|$)/g, '$1<em>$2</em>');
 }
 
-/** Split a GFM table row without treating escaped/code-span pipes as columns. */
+/** Split a GFM table row without treating escaped/code/wikilink pipes as columns. */
 function splitTableRow(line: string): string[] {
   let body = line.trim();
   if (body.startsWith('|')) body = body.slice(1);
@@ -246,6 +270,7 @@ function splitTableRow(line: string): string[] {
   let cell = '';
   let escaped = false;
   let codeTicks = 0;
+  let inWikilink = false;
 
   for (let index = 0; index < body.length; index += 1) {
     const character = body[index];
@@ -266,7 +291,19 @@ function splitTableRow(line: string): string[] {
       index += run - 1;
       continue;
     }
-    if (character === '|' && codeTicks === 0) {
+    if (codeTicks === 0 && character === '[' && body[index + 1] === '[') {
+      inWikilink = true;
+      cell += '[[';
+      index += 1;
+      continue;
+    }
+    if (codeTicks === 0 && inWikilink && character === ']' && body[index + 1] === ']') {
+      inWikilink = false;
+      cell += ']]';
+      index += 1;
+      continue;
+    }
+    if (character === '|' && codeTicks === 0 && !inWikilink) {
       cells.push(cell.trim());
       cell = '';
       continue;

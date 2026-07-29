@@ -357,7 +357,7 @@ describe('US-015: widget popup shows recent history (not just unviewed)', () => 
       ).toBe('Open desktop view');
     });
 
-    it('mini popup footer prioritizes a labeled Messages action and quiet desktop icon', () => {
+    it('mini popup footer exposes labeled Messages and HQ destinations', () => {
       vi.useFakeTimers();
       vi.setSystemTime(new Date(2026, 6, 15, 12, 0, 0));
       const now = Date.now();
@@ -372,10 +372,9 @@ describe('US-015: widget popup shows recent history (not just unviewed)', () => 
         '[data-testid="widget-hover-desktop"]',
       );
       expect(inbox?.getAttribute('aria-label')).toBe('Open messages');
-      expect(desktop?.getAttribute('title')).toBe('Open full HQ');
-      expect(desktop?.getAttribute('aria-label')).toBe('Open full HQ');
+      expect(desktop?.getAttribute('aria-label')).toBe('Open HQ');
       expect(inbox?.textContent?.trim()).toBe('Open messages');
-      expect(desktop?.textContent?.trim()).toBe('');
+      expect(desktop?.textContent?.trim()).toBe('Open HQ');
     });
 
     it('Messages menu item closes the context menu (opens quick window via Tauri)', () => {

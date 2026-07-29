@@ -194,6 +194,7 @@
   let channels = $state<Channel[]>([]);
   let loadingChannels = $state(false);
   let channelsError = $state<string | null>(null);
+  let retryingChannels = $state(false);
   let selectedChannel = $state<Channel | null>(null);
   let channelsLoadGeneration = 0;
   let channelMutationRevision = 0;
@@ -1097,6 +1098,16 @@
     }
   }
 
+  async function retryChannels(): Promise<void> {
+    if (retryingChannels) return;
+    retryingChannels = true;
+    try {
+      await loadChannels();
+    } finally {
+      retryingChannels = false;
+    }
+  }
+
   async function loadCompanyLabels(): Promise<void> {
     try {
       const list = await invoke<MembershipRow[]>('meetings_list_memberships');
@@ -1788,7 +1799,7 @@
         </div>
       {/if}
 
-      {#if loadingContacts || loadingChannels}
+      {#if (loadingContacts || loadingChannels) && !retryingChannels}
         <p class="rail-status">Loading conversations…</p>
       {:else if contactsError}
         <div class="rail-status rail-error" role="alert">
@@ -1800,6 +1811,17 @@
             disabled={loadingContacts}
             aria-busy={loadingContacts}
           >{loadingContacts ? 'Retrying…' : 'Retry'}</button>
+        </div>
+      {:else if channelsError || retryingChannels}
+        <div class="rail-status rail-error" role="alert">
+          <p>{retryingChannels ? 'Retrying channels…' : channelsError}</p>
+          <button
+            type="button"
+            class="rail-retry"
+            onclick={retryChannels}
+            disabled={retryingChannels}
+            aria-busy={retryingChannels}
+          >{retryingChannels ? 'Retrying…' : 'Retry'}</button>
         </div>
       {:else}
         {#if requestsError}

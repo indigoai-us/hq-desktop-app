@@ -94,6 +94,32 @@ describe('desktop markdown rendering', () => {
     expect(html).toContain('<td><code>a | b</code></td>');
   });
 
+  it('keeps HQ wikilink labels readable without splitting table columns', () => {
+    const html = renderMarkdown(
+      [
+        '| Competitor | Focus | Differentiator |',
+        '| --- | --- | --- |',
+        '| Fathom | Free [[ontology/entities/concept/meeting-intelligence|meeting notes]] | Persistent memory |',
+      ].join('\n'),
+    );
+
+    expect(html).toContain(
+      '<td>Free <span class="markdown-wikilink" title="ontology/entities/concept/meeting-intelligence">meeting notes</span></td>',
+    );
+    expect(html).toContain('<td>Persistent memory</td>');
+    expect(html).not.toContain('[[');
+    expect(html.match(/<td>/g)).toHaveLength(3);
+  });
+
+  it('renders unlabeled wikilinks with their final path segment', () => {
+    const html = renderInline('See [[ontology/entities/company/indigo]] now');
+
+    expect(html).toContain(
+      'See <span class="markdown-wikilink" title="ontology/entities/company/indigo">indigo</span> now',
+    );
+    expect(html).not.toContain('[[');
+  });
+
   it('degrades malformed table delimiters to safe paragraph text', () => {
     const html = renderMarkdown(
       ['| Name | Value |', '| --- | :-- |', '| safe | <script> |'].join('\n'),
@@ -169,20 +195,30 @@ describe('desktop markdown rendering', () => {
     expect(html).toContain('<pre><code>indented()</code></pre>');
   });
 
-  it('renders safe links, autolinks, images, emphasis, deletion, and escaped punctuation', () => {
+  it('renders safe links, autolinks, image fallbacks, emphasis, deletion, and escaped punctuation', () => {
     const html = renderInline(
       String.raw`[HQ](https://example.com) <team@example.com> ![Map](/map.png) **bold** _em_ ~~old~~ \*literal\*`,
     );
 
     expect(html).toContain('<a href="https://example.com"');
     expect(html).toContain('<a href="mailto:team@example.com"');
-    expect(html).toContain(
-      '<img src="/map.png" alt="Map" loading="lazy" decoding="async" />',
-    );
+    expect(html).toContain('Map');
+    expect(html).not.toContain('<img');
     expect(html).toContain('<strong>bold</strong>');
     expect(html).toContain('<em>em</em>');
     expect(html).toContain('<del>old</del>');
     expect(html).toContain('*literal*');
+  });
+
+  it('restores inline-code fragments nested inside link labels', () => {
+    const html = renderInline(
+      '[`@indigoai-us/hq-pack-*`](https://www.npmjs.com/search?q=hq-pack)',
+    );
+
+    expect(html).toContain(
+      '<a href="https://www.npmjs.com/search?q=hq-pack" target="_blank" rel="noopener noreferrer"><code>@indigoai-us/hq-pack-*</code></a>',
+    );
+    expect(html).not.toContain('FRAGMENT');
   });
 
   it('renders the narrow raw HTML subset without auto-loading remote README artwork', () => {
@@ -222,9 +258,9 @@ describe('desktop markdown rendering', () => {
     expect(html).toContain('Remote');
     expect(html).toContain('Insecure');
     expect(html).toContain('Raw remote');
-    expect(html).toContain(
-      '<img src="/images/local.png" alt="Local" loading="lazy" decoding="async" />',
-    );
+    expect(html).toContain('Local');
+    expect(html).not.toContain('<img');
+    expect(safeImageSrc('/images/local.png')).toBeNull();
   });
 
   it('renders README details and summary blocks while continuing to parse Markdown', () => {

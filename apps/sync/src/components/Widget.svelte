@@ -1324,35 +1324,36 @@
           {/if}
         </button>
         <button
-          class="hl-icon-btn"
+          class="hl-open-desktop"
           type="button"
           data-testid="widget-hover-desktop"
-          title="Open full HQ"
-          aria-label={desktopNavigationError ? 'Retry opening full HQ' : 'Open full HQ'}
+          aria-label={desktopNavigationError ? 'Retry opening HQ' : 'Open HQ'}
           aria-busy={navigationPending === 'desktop'}
           disabled={navigationPending !== null}
           onclick={() => void menuOpenDesktop()}
         >
           {#if navigationPending === 'desktop'}
             <span class="widget-nav-spinner" data-testid="widget-navigation-spinner" aria-hidden="true"></span>
+            Opening HQ…
           {:else}
             <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-            <rect
-              x="1.75"
-              y="2.5"
-              width="12.5"
-              height="8.5"
-              rx="1.25"
-              stroke="currentColor"
-              stroke-width="1.35"
-            />
-            <path
-              d="M5 13.5h6M8 11v2.5"
-              stroke="currentColor"
-              stroke-width="1.35"
-              stroke-linecap="round"
-            />
+              <rect
+                x="1.75"
+                y="2.5"
+                width="12.5"
+                height="8.5"
+                rx="1.25"
+                stroke="currentColor"
+                stroke-width="1.35"
+              />
+              <path
+                d="M5 13.5h6M8 11v2.5"
+                stroke="currentColor"
+                stroke-width="1.35"
+                stroke-linecap="round"
+              />
             </svg>
+            Open HQ
           {/if}
         </button>
       </div>
@@ -1645,7 +1646,7 @@
     text-transform: uppercase;
   }
 
-  /* One clear mini-window destination plus a quiet full-app escape hatch. */
+  /* The compact window has two visible destinations: Messages and full HQ. */
   .hl-footer {
     display: flex;
     align-items: center;
@@ -1657,13 +1658,13 @@
     box-sizing: border-box;
   }
 
-  .hl-open-messages {
+  .hl-open-messages,
+  .hl-open-desktop {
     min-width: 0;
     height: 32px;
     display: inline-flex;
     align-items: center;
     gap: 8px;
-    flex: 1;
     padding: 0 8px;
     border: 0;
     border-radius: var(--radius-button, 6px);
@@ -1680,41 +1681,24 @@
       transform 120ms cubic-bezier(0.23, 1, 0.32, 1);
   }
 
-  .hl-open-messages:hover {
-    background: var(--row-hover-bg);
+  .hl-open-messages {
+    flex: 1;
   }
 
-  .hl-open-messages:focus-visible {
-    background: var(--row-hover-bg);
-    outline: 2px solid var(--row-fg);
-    outline-offset: -2px;
-  }
-
-  .hl-icon-btn {
-    appearance: none;
-    border: 0;
-    background: transparent;
+  .hl-open-desktop {
+    flex: 0 0 auto;
     color: var(--row-muted);
-    width: 28px;
-    height: 28px;
-    border-radius: var(--radius-button, 6px);
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    cursor: pointer;
-    padding: 0;
-    transition:
-      background-color 120ms ease,
-      color 120ms ease,
-      transform 120ms cubic-bezier(0.23, 1, 0.32, 1);
+    padding-inline: 9px;
   }
 
-  .hl-icon-btn:hover {
+  .hl-open-messages:hover,
+  .hl-open-desktop:hover {
     background: var(--row-hover-bg);
     color: var(--row-fg);
   }
 
-  .hl-icon-btn:focus-visible {
+  .hl-open-messages:focus-visible,
+  .hl-open-desktop:focus-visible {
     background: var(--row-hover-bg);
     color: var(--row-fg);
     outline: 2px solid var(--row-fg);
@@ -1723,11 +1707,11 @@
 
   .hl-close:active:not(:disabled),
   .hl-open-messages:active:not(:disabled),
-  .hl-icon-btn:active:not(:disabled) {
+  .hl-open-desktop:active:not(:disabled) {
     transform: scale(0.97);
   }
 
-  .hl-icon-btn:disabled,
+  .hl-open-desktop:disabled,
   .hl-open-messages:disabled,
   .ctx-item:disabled {
     cursor: progress;
@@ -2261,7 +2245,7 @@
 
     .hl-close,
     .hl-open-messages,
-    .hl-icon-btn,
+    .hl-open-desktop,
     .hl-inline-retry,
     .ctx-item,
     .wm,
@@ -2274,7 +2258,7 @@
     .ctx-item:active:not(:disabled),
     .hl-close:active:not(:disabled),
     .hl-open-messages:active:not(:disabled),
-    .hl-icon-btn:active:not(:disabled),
+    .hl-open-desktop:active:not(:disabled),
     .hl-inline-retry:active:not(:disabled),
     .hl-row :global(.nr-primary-action:active:not(:disabled)),
     .hl-row :global(.nr-open:active:not(:disabled)),
