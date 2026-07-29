@@ -463,6 +463,15 @@ pub enum ActivationSource {
     DesktopShortcut,
     /// Global compact shortcut (Opt/Alt+Shift+H).
     CompactShortcut,
+    /// macOS Dock icon click on the already-running app
+    /// (`applicationShouldHandleReopen` → `RunEvent::Reopen`).
+    ///
+    /// Distinct from [`Self::TaskbarSecondProcess`] even though both are
+    /// "re-activate the running app": a Dock icon is the affordance users
+    /// associate with a full application window, so clicking it opens the
+    /// desktop view rather than the compact popover (the menu-bar icon is
+    /// still the popover's affordance).
+    DockIconClick,
 }
 
 /// What the activation policy does for a given source.
@@ -483,9 +492,9 @@ pub fn activation_policy(source: ActivationSource) -> ActivationAction {
             ActivationAction::ToggleCompact
         }
         ActivationSource::TaskbarSecondProcess => ActivationAction::ShowCompact,
-        ActivationSource::OpenHqMenu | ActivationSource::DesktopShortcut => {
-            ActivationAction::ShowDesktop { route: None }
-        }
+        ActivationSource::OpenHqMenu
+        | ActivationSource::DesktopShortcut
+        | ActivationSource::DockIconClick => ActivationAction::ShowDesktop { route: None },
     }
 }
 
@@ -1363,6 +1372,20 @@ mod window_router_tests {
         assert_eq!(
             activation_policy(ActivationSource::DesktopShortcut),
             ActivationAction::ShowDesktop { route: None }
+        );
+    }
+
+    #[test]
+    fn activation_matrix_dock_icon_click_opens_the_desktop_window() {
+        // The Dock icon is a full-application affordance — it must NOT land on
+        // the compact popover the way a taskbar re-activation does.
+        assert_eq!(
+            activation_policy(ActivationSource::DockIconClick),
+            ActivationAction::ShowDesktop { route: None }
+        );
+        assert_ne!(
+            activation_policy(ActivationSource::DockIconClick),
+            activation_policy(ActivationSource::TaskbarSecondProcess)
         );
     }
 

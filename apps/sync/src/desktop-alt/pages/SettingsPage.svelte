@@ -31,12 +31,16 @@
     readBrowserDesktopZoom,
     requestDesktopZoom,
   } from '../../lib/desktopZoom';
+  import { isMac } from '../lib/platform';
   import WidgetSettings from '../../components/WidgetSettings.svelte';
   import '../v4/tokens.css';
 
   // The secondary sidebar drives which section is in view; this page renders all
   // sections in one scroll and reacts to `activeTab` by scrolling it into view.
   let { activeTab = 'sync' }: { activeTab?: SettingsTab } = $props();
+
+  // Evaluated once: the host OS cannot change while the window is open.
+  const isMacOS = isMac();
 
   type Channel = 'stable' | 'beta' | 'alpha';
   type Platform = 'zoom' | 'meet' | 'teams' | 'slack' | 'webex';
@@ -52,13 +56,15 @@
     | 'staging-channel'
     | 'release-channel'
     | 'start-at-login'
+    | 'dock-icon'
     | 'meeting-detection'
     | 'meeting-platforms'
     | 'default-recording-company';
   type LiveControlKey =
     | 'realtime-sync'
     | 'instant-sync'
-    | 'start-at-login';
+    | 'start-at-login'
+    | 'dock-icon';
 
   // Exact upgrade command the v0.9.8 popover copied to the clipboard.
   const HQ_CLI_UPGRADE_CMD = 'npm install -g @indigoai-us/hq-cli@latest';
@@ -83,6 +89,7 @@
     } | null;
     defaultRecordingCompanyUid?: string | null;
     telemetryEnabled?: boolean | null;
+    dockIcon?: boolean | null;
   }
 
   interface UpdateInfo {
@@ -199,6 +206,9 @@
   let stagingChannel = $state(true);
   let releaseChannel = $state<Channel | null>(null);
   let startAtLogin = $state(true);
+  // Dock icon default-OFF, mirroring `dock::effective_dock_icon` in Rust, so
+  // the toggle shows the true posture before the first read resolves.
+  let dockIcon = $state(false);
   let meetingDetectEnabled = $state(true);
   let meetingDetectPlatforms = $state<string[]>([...platforms]);
   let defaultRecordingCompanyUid = $state<string | null>(null);
@@ -301,6 +311,7 @@
     'realtime-sync': null,
     'instant-sync': null,
     'start-at-login': null,
+    'dock-icon': null,
   });
   let appearance = $state<AppearancePreferences>(
     readBrowserAppearancePreferences(),
@@ -549,6 +560,7 @@
     autoUpdate = settings.autoUpdate ?? true;
     stagingChannel = settings.stagingChannel ?? true;
     startAtLogin = settings.startAtLogin ?? true;
+    dockIcon = settings.dockIcon ?? false;
     meetingDetectEnabled = settings.meetingDetectNotify?.enabled ?? true;
     meetingDetectPlatforms = settings.meetingDetectNotify?.platforms ?? [...platforms];
     // Keep only active memberships; validate the stored default against the
@@ -999,6 +1011,43 @@
       await refreshCoreState();
     } finally {
       endSettingsControl('staging-channel');
+    }
+  }
+
+  // The Dock icon must change NOW, not at next launch — so persist first, then
+  // re-apply the activation policy from the freshly written preference. Same
+  // save-then-apply contract as the widget toggle.
+  //
+  // A failed save reverts the optimistic checkbox (nothing was written). A
+  // failed apply keeps the new value — disk is already authoritative — but
+  // still surfaces the error, because until the next launch the visible Dock
+  // state and the toggle disagree.
+  async function applyDockIcon() {
+    // `bind:checked` has already flipped `dockIcon`, so the pre-toggle value
+    // is its negation — this is a two-state control.
+    if (!beginSettingsControl('dock-icon')) return;
+    const previous = !dockIcon;
+    setLiveControlError('dock-icon', null);
+    try {
+      if (!(await saveSettings({ dockIcon }))) {
+        dockIcon = previous;
+        setLiveControlError(
+          'dock-icon',
+          'Couldn’t save Dock visibility. The previous setting was restored.',
+        );
+        return;
+      }
+      try {
+        await invoke('apply_dock_icon');
+      } catch (err) {
+        console.error('Failed to apply dock icon:', err);
+        setLiveControlError(
+          'dock-icon',
+          'Saved. Restart HQ to finish changing Dock visibility.',
+        );
+      }
+    } finally {
+      endSettingsControl('dock-icon');
     }
   }
 
@@ -2043,6 +2092,33 @@
             aria-busy={isSettingsControlPending('start-at-login')}
           />
         </label>
+        {#if isMacOS}
+          <!-- macOS-only: Windows and Linux have no activation policy, and HQ
+               already owns a taskbar entry there, so the row would be a no-op. -->
+          <label class="setting-row">
+            <span>
+              <strong>Show in Dock</strong>
+              <small>Add an HQ icon to the Dock. Off by default — HQ runs from the menu bar.</small>
+              {#if liveControlErrors['dock-icon']}
+                <small
+                  class="row-action-error"
+                  role="alert"
+                  data-testid="settings-dock-icon-error"
+                >{liveControlErrors['dock-icon']}</small>
+              {/if}
+            </span>
+            <input
+              id="toggle-dock-icon"
+              data-testid="dock-icon-toggle"
+              type="checkbox"
+              bind:checked={dockIcon}
+              onchange={applyDockIcon}
+              aria-label="Show in Dock"
+              disabled={isSettingsControlPending('dock-icon')}
+              aria-busy={isSettingsControlPending('dock-icon')}
+            />
+          </label>
+        {/if}
         <label class="setting-row" data-testid="telemetry-row">
           <span>
             <strong>Usage telemetry</strong>

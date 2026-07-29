@@ -757,6 +757,38 @@ pub fn toggle_desktop_window(app: &AppHandle) {
     });
 }
 
+/// Show + focus the desktop window. Never hides it.
+///
+/// The show-only counterpart to [`toggle_desktop_window`], for activation
+/// sources where hiding would read as a no-op rather than a toggle — the macOS
+/// Dock icon click being the case this exists for. Clicking a Dock icon to make
+/// the window disappear is not behaviour any Mac app has.
+///
+/// `open_desktop_alt_window_inner` already show+focuses an existing window, so
+/// this is safe to call whether or not the window has been built yet. When the
+/// GA gate rejects a signed-out user it falls back to the classic popover, same
+/// as `toggle_desktop_window`, so the Dock icon still reaches SignInPrompt.
+///
+/// macOS-only because the Dock-click (`RunEvent::Reopen`) handler is its only
+/// caller; ungated it would be dead code on Windows/Linux. Drop the gate if a
+/// non-macOS activation source ever needs show-without-toggle.
+#[cfg(target_os = "macos")]
+pub fn show_desktop_window(app: &AppHandle) {
+    let app_clone = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(_e) =
+            crate::commands::desktop_alt::open_desktop_alt_window_inner(app_clone.clone(), None)
+                .await
+        {
+            // show_popover_window does AppKit window ops — main thread only.
+            let app_main = app_clone.clone();
+            let _ = app_clone.run_on_main_thread(move || {
+                show_popover_window(&app_main);
+            });
+        }
+    });
+}
+
 /// Show the popover (`main`) on-screen, hiding the desktop window first.
 ///
 /// Positions it top-right just under the menu bar — on macOS Tahoe the tao

@@ -22,6 +22,18 @@
 -->
 <plist version="1.0">
 <dict>
+    <!--
+      LSUIElement keeps HQ a menu-bar app: no Dock icon, no Cmd-Tab entry.
+      That matches the DEFAULT of the `dockIcon` preference (off), so the
+      common case needs no runtime intervention at all.
+
+      It is no longer the final word on Dock presence: `commands/dock.rs` reads
+      `dockIcon` during `.setup()` and, for a user who has opted IN, promotes
+      the app to NSApplicationActivationPolicyRegular. Promoting an LSUIElement
+      process with -[NSApplication setActivationPolicy:] is the supported
+      direction (demoting a Regular launch is the flaky one), which is the
+      other reason the bundle stays accessory-first.
+    -->
     <key>LSUIElement</key>
     <true/>
     <key>NSMicrophoneUsageDescription</key>

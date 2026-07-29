@@ -193,9 +193,10 @@ struct HeadInfo {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// A rollout file we located on disk, keyed by its filename-embedded session id.
-struct RolloutFile {
-    path: PathBuf,
-    mtime: SystemTime,
+pub struct RolloutFile {
+    pub path: PathBuf,
+    pub size: u64,
+    pub mtime: SystemTime,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -228,11 +229,7 @@ pub fn codex_dir() -> PathBuf {
 /// `now` is injected (not `SystemTime::now()`) so the age→status window is
 /// deterministic under test.
 pub fn scan_codex_sessions(codex_dir: &Path, now: SystemTime) -> Vec<AgentSession> {
-    // Locate every rollout on disk, keyed by filename id. BTreeMap keeps output
-    // deterministic (sorted by id) without a separate sort.
-    let mut rollouts: BTreeMap<String, RolloutFile> = BTreeMap::new();
-    collect_rollouts(&codex_dir.join("sessions"), &mut rollouts);
-    collect_rollouts(&codex_dir.join("archived_sessions"), &mut rollouts);
+    let rollouts = enumerate_rollout_files(codex_dir);
 
     if rollouts.is_empty() {
         // No rollouts on disk → no local Codex sessions. Empty, not error.
@@ -291,6 +288,16 @@ pub fn scan_codex_sessions(codex_dir: &Path, now: SystemTime) -> Vec<AgentSessio
     out
 }
 
+/// Locate live and archived rollout files with the stat metadata needed by both
+/// session discovery and the telemetry byte cursor. Missing Codex directories
+/// are represented by an empty map.
+pub fn enumerate_rollout_files(codex_dir: &Path) -> BTreeMap<String, RolloutFile> {
+    let mut rollouts = BTreeMap::new();
+    collect_rollouts(&codex_dir.join("sessions"), &mut rollouts);
+    collect_rollouts(&codex_dir.join("archived_sessions"), &mut rollouts);
+    rollouts
+}
+
 /// Recursively collect `rollout-*.jsonl` files under `dir` into `out`, keyed by
 /// the session id embedded in the filename. Walks `sessions/YYYY/MM/DD/` (nested)
 /// and the flat `archived_sessions/` alike. Unreadable dirs/files are skipped.
@@ -327,7 +334,11 @@ fn collect_rollouts(dir: &Path, out: &mut BTreeMap<String, RolloutFile>) {
         };
         // First writer wins; a session id shouldn't collide across sessions/ and
         // archived_sessions/, but if it does we keep the first (live) one.
-        out.entry(id).or_insert(RolloutFile { path, mtime });
+        out.entry(id).or_insert(RolloutFile {
+            path,
+            size: metadata.len(),
+            mtime,
+        });
     }
 }
 
@@ -703,6 +714,35 @@ mod tests {
         let nonexistent = root.join("does-not-exist");
         let sessions = scan_codex_sessions(&nonexistent, SystemTime::now());
         assert!(sessions.is_empty());
+    }
+
+    #[test]
+    fn telemetry_enumerator_returns_live_and_archived_rollouts() {
+        let root = make_fixture_root();
+        let live_id = "019de12c-d83e-78c2-9bb3-cbb8146965e4";
+        let archived_id = "019de12f-9c8a-77c0-b8d1-12895c1e4b68";
+        let live =
+            write_session_rollout(&root, "2026/07/23", "2026-07-23T10-00-00", live_id, "{}\n");
+        let archived = write_archived_rollout(
+            &root,
+            "2026-07-22T10-00-00",
+            archived_id,
+            "{\"type\":\"event_msg\"}\n",
+        );
+
+        let rollouts = enumerate_rollout_files(&root);
+
+        assert_eq!(rollouts.len(), 2);
+        assert_eq!(rollouts[live_id].path, live);
+        assert_eq!(rollouts[archived_id].path, archived);
+        assert!(rollouts[live_id].size > 0);
+        assert!(rollouts[archived_id].size > 0);
+    }
+
+    #[test]
+    fn telemetry_enumerator_missing_codex_dir_is_empty() {
+        let root = make_fixture_root().join("missing");
+        assert!(enumerate_rollout_files(&root).is_empty());
     }
 
     #[test]
