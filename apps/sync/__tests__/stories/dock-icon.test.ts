@@ -87,11 +87,35 @@ describe('Dock icon: default-on with a Settings opt-out', () => {
   });
 
   describe('Dock click', () => {
-    it('routes Reopen to the compact popover so the icon is not inert', () => {
+    it('routes Reopen to the desktop window, not the compact popover', () => {
       const src = readMain();
       expect(src).toMatch(/tauri::RunEvent::Reopen/);
-      expect(src).toMatch(/ActivationSource::TaskbarSecondProcess/);
-      expect(src).toMatch(/tray::show_window_at_tray\(_app_handle\)/);
+      expect(src).toMatch(/ActivationSource::DockIconClick/);
+      expect(src).toMatch(/tray::show_desktop_window\(_app_handle\)/);
+      expect(src).not.toMatch(/RunEvent::Reopen[\s\S]{0,900}?show_window_at_tray/);
+    });
+
+    it('declares DockIconClick as its own activation source mapping to ShowDesktop', () => {
+      const src = readRepo('src-tauri/src/commands/desktop_alt.rs');
+      expect(src).toMatch(/DockIconClick/);
+      // Grouped with the other desktop-opening sources in the match arm.
+      expect(src).toMatch(
+        /ActivationSource::OpenHqMenu\s*\|\s*ActivationSource::DesktopShortcut\s*\|\s*ActivationSource::DockIconClick\s*=>\s*ActivationAction::ShowDesktop/,
+      );
+    });
+
+    it('shows the desktop window without toggling it back off', () => {
+      const src = readRepo('src-tauri/src/tray.rs');
+      expect(src).toMatch(/pub fn show_desktop_window/);
+      // The show-only helper must not carry toggle_desktop_window's hide branch.
+      const body = src.slice(src.indexOf('pub fn show_desktop_window'));
+      expect(body.slice(0, body.indexOf('\n}\n'))).not.toMatch(/\.hide\(\)/);
+    });
+
+    it('falls back to the popover sign-in surface when the desktop gate rejects', () => {
+      const src = readRepo('src-tauri/src/tray.rs');
+      const body = src.slice(src.indexOf('pub fn show_desktop_window'));
+      expect(body.slice(0, body.indexOf('\n}\n'))).toMatch(/show_popover_window/);
     });
 
     it('ignores has_visible_windows — the always-on-top widget would mask it', () => {

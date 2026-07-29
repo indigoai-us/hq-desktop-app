@@ -958,14 +958,16 @@ fn main() {
 
             // Dock-icon click on the already-running app. Without this the
             // Dock icon (default-on via the `dockIcon` pref) would bounce and
-            // do nothing, because the popover is a hidden window the OS has no
-            // reason to unhide on its own.
+            // do nothing, because every HQ window is hidden by default and the
+            // OS has no reason to unhide one on its own.
             //
-            // US-004 WindowRouter: a Dock click is the same class of
-            // activation as a taskbar / second-process launch, so it takes the
-            // ShowCompact branch — always surface the compact popover, never
-            // toggle it back off (a click on a Dock icon that hides the window
-            // reads as a no-op) and never auto-open the full desktop.
+            // US-004 WindowRouter: `DockIconClick` resolves to ShowDesktop, so
+            // this opens the full desktop window — a Dock icon is the
+            // affordance users associate with an application's main window,
+            // while the menu-bar icon stays the compact popover's affordance.
+            // Show, never toggle: a Dock click that hides the window reads as a
+            // no-op. Signed-out users fall back to the popover's SignInPrompt
+            // inside `show_desktop_window`.
             //
             // `has_visible_windows` is deliberately ignored: the always-on-top
             // floating widget counts as a visible window, so honouring the flag
@@ -974,10 +976,10 @@ fn main() {
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Reopen { .. } = event {
                 let _ = commands::desktop_alt::activation_policy(
-                    commands::desktop_alt::ActivationSource::TaskbarSecondProcess,
+                    commands::desktop_alt::ActivationSource::DockIconClick,
                 );
-                tray::show_window_at_tray(_app_handle);
-                util::logfile::log("dock", "dock icon clicked: showed compact popover");
+                tray::show_desktop_window(_app_handle);
+                util::logfile::log("dock", "dock icon clicked: showing desktop window");
             }
         });
 }
