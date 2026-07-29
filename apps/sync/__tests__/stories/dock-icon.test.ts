@@ -59,20 +59,41 @@ describe('Dock icon: default-on with a Settings opt-out', () => {
   });
 
   describe('activation policy', () => {
-    it('maps the pref to Regular / Accessory in one shared helper', () => {
+    it('maps the pref to Regular / Accessory in one pure helper', () => {
       const src = readDock();
-      expect(src).toMatch(/fn\s+set_activation_policy/);
+      expect(src).toMatch(/fn\s+policy_for/);
       expect(src).toMatch(/tauri::ActivationPolicy::Regular/);
       expect(src).toMatch(/tauri::ActivationPolicy::Accessory/);
     });
 
     it('applies the pref at launch instead of hardcoding Accessory', () => {
       const src = readMain();
-      expect(src).toMatch(/commands::dock::dock_icon_pref\(\)/);
-      expect(src).toMatch(/commands::dock::set_activation_policy\(app\.handle\(\), show_dock_icon\)/);
+      expect(src).toMatch(/commands::dock::apply_at_launch\(app, commands::dock::dock_icon_pref\(\)\)/);
       // The old unconditional demotion must be gone — it would pin every user
       // to the menubar-only posture regardless of the preference.
       expect(src).not.toMatch(/app\.set_activation_policy\(tauri::ActivationPolicy::Accessory\)/);
+    });
+
+    // REGRESSION GUARD. tao's `AppState::launched` re-applies the policy it has
+    // STORED when applicationDidFinishLaunching fires — which is after
+    // `.setup()`. So the launch path must use `App::set_activation_policy`
+    // (&mut App → stores it); the AppHandle setter calls NSApp immediately and
+    // is silently overwritten, pinning every launch to tao's `Regular` default
+    // and breaking the opt-out. The two paths must stay distinct.
+    it('uses the &mut App setter at launch and the AppHandle setter at runtime', () => {
+      const src = readDock();
+      expect(src).toMatch(/pub fn apply_at_launch\(app: &mut tauri::App, show_dock_icon: bool\)/);
+      expect(src).toMatch(/app\.set_activation_policy\(policy_for\(show_dock_icon\)\);/);
+      expect(src).toMatch(
+        /pub fn apply_at_runtime\(app: &tauri::AppHandle, show_dock_icon: bool\) -> Result<\(\), String>/,
+      );
+      // The launch helper must not route through the AppHandle/runtime path.
+      const launchBody = src.slice(src.indexOf('pub fn apply_at_launch'));
+      expect(launchBody.slice(0, launchBody.indexOf('\n}\n'))).not.toMatch(/apply_at_runtime|AppHandle/);
+    });
+
+    it('never applies the launch policy via app.handle()', () => {
+      expect(readMain()).not.toMatch(/set_activation_policy\(app\.handle\(\)/);
     });
 
     it('keeps LSUIElement so an opted-out user never sees a Dock icon flash at login', () => {

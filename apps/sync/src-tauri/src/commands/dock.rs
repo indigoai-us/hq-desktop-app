@@ -3,8 +3,8 @@
 //! HQ ships with a Dock icon by default. The bundle stays `LSUIElement=true`
 //! (see `Info.plist`) so the process still *launches* as an accessory — that
 //! keeps the login-item start silent and means a user who has opted out never
-//! sees a Dock icon flash before we demote the policy. The effective posture is
-//! then decided at runtime from the `dockIcon` preference:
+//! sees a Dock icon flash before the policy settles. The effective posture is
+//! decided from the `dockIcon` preference:
 //!
 //!   * `dockIcon: true` (default, absent → true) → `ActivationPolicy::Regular`.
 //!     Dock icon, Cmd-Tab entry, standard app menu bar. Promoting an
@@ -27,6 +27,13 @@
 //! status, so hover/clicks on the floating wordmark cannot steal focus no
 //! matter which activation policy the app runs under. Regular policy therefore
 //! does not regress the widget.
+//!
+//! ## Two apply paths, and why they are not interchangeable
+//!
+//! [`apply_at_launch`] (`&mut App`) and [`apply_at_runtime`] (`AppHandle`) look
+//! like the same call but reach different tao code, and swapping them is a
+//! silent no-op that only reproduces on a real Mac. The full explanation lives
+//! on [`apply_at_launch`] — read it before touching either.
 //!
 //! ## Prefs
 //!
@@ -97,23 +104,89 @@ fn read_prefs() -> Option<MenubarPrefs> {
     }
 }
 
-/// Apply the stored `dockIcon` preference to the running app.
+/// Map a resolved preference to its activation policy. Pure.
+#[cfg(target_os = "macos")]
+pub fn policy_for(show_dock_icon: bool) -> tauri::ActivationPolicy {
+    if show_dock_icon {
+        tauri::ActivationPolicy::Regular
+    } else {
+        tauri::ActivationPolicy::Accessory
+    }
+}
+
+/// LAUNCH path — apply the preference from `main.rs` `.setup()`.
 ///
-/// Called once from `main.rs` `.setup()` and again by the Settings toggle
-/// (after `save_settings` persists the new value) so flipping the switch takes
-/// effect immediately instead of at next launch.
+/// **This MUST use `App::set_activation_policy` (the `&mut App` setter), not
+/// the `AppHandle` one.** They are not interchangeable, and picking the wrong
+/// one is a silent no-op that only shows up on a real Mac:
 ///
-/// No manual main-thread hop: unlike the NSWindow work in
-/// `apply_widget_settings`, `AppHandle::set_activation_policy` posts a
-/// `Message::SetActivationPolicy` through the wry runtime, which is handled on
-/// the event-loop (main) thread — inline when the caller already is the main
-/// thread. Errors are returned so the Settings UI can surface a failed apply
-/// (disk is already authoritative at that point).
+///   * `App::set_activation_policy` reaches `EventLoopExtMacOS::
+///     set_activation_policy`, which *stores* the policy in tao's delegate
+///     aux-state.
+///   * `AppHandle::set_activation_policy` posts a runtime message that calls
+///     `-[NSApp setActivationPolicy:]` *immediately*.
+///
+/// `.setup()` runs before the event loop starts. At
+/// `applicationDidFinishLaunching`, tao's `AppState::launched` calls
+/// `apply_activation_policy`, which unconditionally re-applies the **stored**
+/// aux-state value — clobbering anything set imperatively beforehand. Since
+/// tao's stored default is `Regular`, using the AppHandle setter here would
+/// leave every launch on `Regular` no matter what the user chose, silently
+/// breaking the opt-out. tao delays the apply on purpose (their comment: the
+/// menu bar isn't interactable otherwise), so storing the value is the
+/// supported path, not a workaround.
+///
+/// Returns `()` because the `&mut App` setter is infallible.
+#[cfg(target_os = "macos")]
+pub fn apply_at_launch(app: &mut tauri::App, show_dock_icon: bool) {
+    app.set_activation_policy(policy_for(show_dock_icon));
+    log(LOG_TAG, launch_log_line(show_dock_icon));
+}
+
+/// RUNTIME path — re-apply the preference after the event loop is running.
+///
+/// Safe to use the `AppHandle` setter here precisely because
+/// `applicationDidFinishLaunching` has already been and gone, so nothing will
+/// re-apply the stored aux-state over the top. The message is handled on the
+/// event-loop (main) thread, so no manual `run_on_main_thread` hop is needed —
+/// unlike the NSWindow work in `apply_widget_settings`.
+#[cfg(target_os = "macos")]
+pub fn apply_at_runtime(app: &tauri::AppHandle, show_dock_icon: bool) -> Result<(), String> {
+    app.set_activation_policy(policy_for(show_dock_icon))
+        .map_err(|e| format!("set_activation_policy failed: {e}"))?;
+    log(LOG_TAG, runtime_log_line(show_dock_icon));
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn launch_log_line(show_dock_icon: bool) -> &'static str {
+    if show_dock_icon {
+        "launch: activation policy = Regular (Dock icon shown)"
+    } else {
+        "launch: activation policy = Accessory (Dock icon hidden)"
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn runtime_log_line(show_dock_icon: bool) -> &'static str {
+    if show_dock_icon {
+        "runtime: activation policy = Regular (Dock icon shown)"
+    } else {
+        "runtime: activation policy = Accessory (Dock icon hidden)"
+    }
+}
+
+/// Re-apply the stored `dockIcon` preference to the already-running app.
+///
+/// Called by the Settings toggle after `save_settings` persists the new value,
+/// so flipping the switch takes effect immediately instead of at next launch.
+/// Errors are returned so the Settings UI can surface a failed apply (disk is
+/// already authoritative at that point).
 #[tauri::command]
 pub async fn apply_dock_icon(app: tauri::AppHandle) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
-        set_activation_policy(&app, dock_icon_pref())
+        apply_at_runtime(&app, dock_icon_pref())
     }
 
     // Windows/Linux have no activation policy; the taskbar entry is owned by
@@ -124,32 +197,6 @@ pub async fn apply_dock_icon(app: tauri::AppHandle) -> Result<(), String> {
         let _ = app;
         Ok(())
     }
-}
-
-/// Set the app's activation policy from a resolved preference.
-///
-/// Split out from the command so the launch path (`main.rs` `.setup()`) and the
-/// toggle path share one implementation and one log line.
-#[cfg(target_os = "macos")]
-pub fn set_activation_policy(app: &tauri::AppHandle, show_dock_icon: bool) -> Result<(), String> {
-    let policy = if show_dock_icon {
-        tauri::ActivationPolicy::Regular
-    } else {
-        tauri::ActivationPolicy::Accessory
-    };
-
-    app.set_activation_policy(policy)
-        .map_err(|e| format!("set_activation_policy failed: {e}"))?;
-
-    log(
-        LOG_TAG,
-        if show_dock_icon {
-            "activation policy = Regular (Dock icon shown)"
-        } else {
-            "activation policy = Accessory (Dock icon hidden)"
-        },
-    );
-    Ok(())
 }
 
 #[cfg(test)]
@@ -213,6 +260,32 @@ mod tests {
         // distinguishable from "explicitly enabled" on disk.
         let json = serde_json::to_string(&prefs_with_dock(None)).expect("serialize");
         assert!(!json.contains("dockIcon"), "unexpected key in {json}");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_policy_for_maps_the_pref_to_the_right_activation_policy() {
+        // `ActivationPolicy` is #[non_exhaustive] with no PartialEq, so match
+        // rather than assert_eq.
+        assert!(matches!(policy_for(true), tauri::ActivationPolicy::Regular));
+        assert!(matches!(
+            policy_for(false),
+            tauri::ActivationPolicy::Accessory
+        ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_launch_and_runtime_log_lines_are_distinguishable() {
+        // The launch and runtime paths use different Tauri setters for a
+        // load-bearing reason (see `apply_at_launch`); keeping their log lines
+        // distinct is what makes a regression visible in ~/.hq's debug log.
+        assert!(launch_log_line(true).starts_with("launch:"));
+        assert!(launch_log_line(true).contains("Regular"));
+        assert!(launch_log_line(false).contains("Accessory"));
+        assert!(runtime_log_line(true).starts_with("runtime:"));
+        assert!(runtime_log_line(true).contains("Regular"));
+        assert!(runtime_log_line(false).contains("Accessory"));
     }
 
     #[test]

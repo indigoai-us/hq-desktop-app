@@ -631,19 +631,13 @@ fn main() {
             // the process launches as an accessory either way and a user who
             // opted out never sees a Dock icon flash before we settle here.
             // Re-applied without a restart by `apply_dock_icon` when the
-            // Settings toggle flips. Already on the main thread inside
-            // `.setup()`, so call the shared helper directly.
+            // Settings toggle flips.
+            //
+            // `apply_at_launch` takes `&mut App` on purpose — the AppHandle
+            // setter is NOT equivalent here and would be silently clobbered at
+            // applicationDidFinishLaunching. See its doc comment.
             #[cfg(target_os = "macos")]
-            {
-                let show_dock_icon = commands::dock::dock_icon_pref();
-                if let Err(e) = commands::dock::set_activation_policy(app.handle(), show_dock_icon)
-                {
-                    // Non-fatal: a failed policy set leaves the launch-time
-                    // accessory posture, which is the app's historical
-                    // behaviour — the tray still works.
-                    util::logfile::log("dock", &format!("launch apply failed: {e}"));
-                }
-            }
+            commands::dock::apply_at_launch(app, commands::dock::dock_icon_pref());
 
             // Brand the app's runtime icon image. This is what the Dock
             // renders under `Regular` policy; under `Accessory` the Dock stays
