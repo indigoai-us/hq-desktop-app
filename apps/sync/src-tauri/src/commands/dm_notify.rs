@@ -149,6 +149,11 @@ pub const EVENT_CHANNEL_UPDATED: &str = "channel:updated";
 /// the popover badge updates immediately. Called from `do_poll` (the one
 /// poller). Best-effort: if the request count can't be fetched here we emit the
 /// DM count alone — `get_unread_summary` reconciles requests on next read.
+///
+/// Also mirrors the new total onto the macOS Dock badge. This function and
+/// [`reset_unread_dms`] are the ONLY two writers of `UnreadDmState`, so
+/// updating the badge at both keeps it an exact function of that state — no
+/// poller, no frontend round-trip, and no way for the two to drift.
 fn bump_unread(app: &AppHandle, delta: u32) {
     let Some(state) = app.try_state::<UnreadDmState>() else {
         return;
@@ -163,6 +168,7 @@ fn bump_unread(app: &AppHandle, delta: u32) {
     // poll path network-free for requests avoids a second fetch per poll.
     let payload = serde_json::json!({ "unreadDms": total, "pendingRequests": 0u32 });
     let _ = app.emit(EVENT_DM_UNREAD_SUMMARY, &payload);
+    crate::commands::dock::set_badge(app, total);
 }
 
 /// Read the current unread-DM count from managed state (0 if unset).
@@ -173,10 +179,16 @@ pub fn current_unread_dms<R: Runtime>(app: &AppHandle<R>) -> u32 {
 }
 
 /// Reset the unread-DM count to 0. Called when the Messages window opens.
+///
+/// Clears the Dock badge too — the count and the badge share one owner (see
+/// [`bump_unread`]). Unconditional rather than "only if it was non-zero": the
+/// clear is idempotent, and always issuing it also repairs a badge that somehow
+/// drifted out of step with the state.
 pub fn reset_unread_dms<R: Runtime>(app: &AppHandle<R>) {
     if let Some(state) = app.try_state::<UnreadDmState>() {
         *state.0.lock().unwrap_or_else(|p| p.into_inner()) = 0;
     }
+    crate::commands::dock::set_badge(app, 0);
 }
 
 // ── Public API ───────────────────────────────────────────────────────────────────
