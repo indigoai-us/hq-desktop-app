@@ -267,6 +267,24 @@ textarea,
   --switch-on: #30d158;
 }
 
+/* These selectors follow the forced-theme blocks so Reduce Transparency wins
+   despite the production theme attribute's greater specificity. */
+@media (prefers-reduced-transparency: reduce) {
+  :root[data-force-theme='light'] {
+    --pop-bg: #f7f7f7;
+    --popover-bg: var(--pop-bg);
+    --popover-blur: none;
+    --menu-bg: #ffffff;
+  }
+
+  :root[data-force-theme='dark'] {
+    --pop-bg: #262626;
+    --popover-bg: var(--pop-bg);
+    --popover-blur: none;
+    --menu-bg: #424242;
+  }
+}
+
 /* Open text selector retained for compatibility with legacy popover mounts. */
 .seg-track {
   display: flex;

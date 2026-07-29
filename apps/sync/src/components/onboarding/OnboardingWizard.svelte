@@ -145,6 +145,8 @@
   // answer was dropped. Consent is now its own step after setup.)
   let telemetryChoice = $state<'share' | 'decline' | null>(null);
   let consentSubmitting = $state(false);
+  let privacyOpening = $state(false);
+  let privacyOpenError = $state(false);
   // The outcome of the last consent attempt. `null` while unattempted or after
   // a clean success. When the remote write fails we DO NOT advance — we surface
   // this so the person sees a retry (server error) or an honest "saved on this
@@ -195,8 +197,11 @@
   let commandCopied = $state(false);
   let pathCopied = $state(false);
   let importPromptCopied = $state(false);
-  let copyingAction = $state<'path' | 'command' | 'import' | null>(null);
+  type CopyAction = 'path' | 'command' | 'import';
+  let copyingAction = $state<CopyAction | null>(null);
+  let copyFailure = $state<CopyAction | null>(null);
   let finishing = $state(false);
+  let finishError = $state(false);
 
   const displayPath = $derived(
     resolvedPath ? friendlyPath(resolvedPath, homeDir) : 'Resolving ~/hq...',
@@ -362,6 +367,20 @@
       await invokeCommand('bring_main_window_to_front');
     } catch (err) {
       console.warn('[onboarding-signin] failed to refocus window:', err);
+    }
+  }
+
+  async function handleOpenPrivacy(): Promise<void> {
+    if (privacyOpening) return;
+    privacyOpening = true;
+    privacyOpenError = false;
+    try {
+      await openExternal('https://hq.computer/privacy');
+    } catch (err) {
+      console.error('onboarding: privacy page failed to open', err);
+      privacyOpenError = true;
+    } finally {
+      privacyOpening = false;
     }
   }
 
@@ -843,7 +862,7 @@
         if (repromptPersonUid) {
           await markConsentRepromptShown(TELEMETRY_CONSENT_VERSION, repromptPersonUid);
         }
-        await onfinish?.();
+        await finishWithRecovery();
         return;
       }
 
@@ -867,11 +886,11 @@
    * they actually answer). Reprompt mode only.
    */
   async function dismissReprompt(): Promise<void> {
-    if (consentSubmitting) return;
+    if (consentSubmitting || finishing) return;
     if (repromptPersonUid) {
       await markConsentRepromptShown(TELEMETRY_CONSENT_VERSION, repromptPersonUid);
     }
-    await onfinish?.();
+    await finishWithRecovery();
   }
 
   /**
@@ -883,7 +902,7 @@
    * have.
    */
   async function finishOffline(): Promise<void> {
-    if (consentSubmitting) return;
+    if (consentSubmitting || finishing) return;
     if (isReprompt) {
       // Reprompt has no ready screen. The answer is cached with provenance and
       // reconciled by the consent repair on reconnect; mark the prompt shown so
@@ -891,7 +910,7 @@
       if (repromptPersonUid) {
         await markConsentRepromptShown(TELEMETRY_CONSENT_VERSION, repromptPersonUid);
       }
-      await onfinish?.();
+      await finishWithRecovery();
       return;
     }
     advanceTo(READY_STEP_INDEX);
@@ -950,53 +969,69 @@
   }
 
   async function copyText(text: string, setCopied: (value: boolean) => void) {
+    await navigator.clipboard.writeText(text);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1500);
+  }
+
+  async function runCopyAction(
+    action: CopyAction,
+    text: string,
+    setCopied: (value: boolean) => void,
+  ) {
+    if (copyingAction) return;
+    copyFailure = null;
+    copyingAction = action;
     try {
-      await navigator.clipboard.writeText(text);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1500);
-    } catch {
-      // Clipboard failures are silent; the value stays visible and selectable.
+      await copyText(text, setCopied);
+    } catch (err) {
+      console.error(`onboarding: copy ${action} failed`, err);
+      copyFailure = action;
+    } finally {
+      copyingAction = null;
     }
   }
 
   async function handleCopyCommand() {
-    if (copyingAction) return;
-    copyingAction = 'command';
-    try {
-      await copyText(manualCommand, (value) => (commandCopied = value));
-    } finally {
-      copyingAction = null;
-    }
+    await runCopyAction('command', manualCommand, (value) => (commandCopied = value));
   }
 
   async function handleCopyPath() {
-    if (copyingAction) return;
-    copyingAction = 'path';
-    try {
-      await copyText(installPath ?? '~/hq', (value) => (pathCopied = value));
-    } finally {
-      copyingAction = null;
-    }
+    await runCopyAction('path', installPath ?? '~/hq', (value) => (pathCopied = value));
   }
 
   async function handleCopyImportPrompt() {
-    if (copyingAction) return;
-    copyingAction = 'import';
+    await runCopyAction('import', '/import-claude', (value) => (importPromptCopied = value));
+  }
+
+  async function retryCopyAction() {
+    if (copyFailure === 'path') {
+      await handleCopyPath();
+    } else if (copyFailure === 'command') {
+      await handleCopyCommand();
+    } else if (copyFailure === 'import') {
+      await handleCopyImportPrompt();
+    }
+  }
+
+  async function finishWithRecovery(): Promise<boolean> {
+    if (finishing) return false;
+    finishing = true;
+    finishError = false;
     try {
-      await copyText('/import-claude', (value) => (importPromptCopied = value));
+      await onfinish?.();
+      return true;
+    } catch (err) {
+      console.error('onboarding: finish failed', err);
+      finishError = true;
+      return false;
     } finally {
-      copyingAction = null;
+      finishing = false;
     }
   }
 
   async function handleFinish(): Promise<void> {
-    if (finishing) return;
-    finishing = true;
-    try {
-      await onfinish?.();
-    } finally {
-      finishing = false;
-    }
+    await finishWithRecovery();
   }
 
   async function handleRevealFolder() {
@@ -1017,6 +1052,7 @@
     launchError = null;
     revealError = null;
     launching = 'claude';
+    let launched = false;
     try {
       const tools = await ensureAiTools();
       if (tools.claude_desktop) {
@@ -1025,17 +1061,15 @@
           prompt: '/setup',
         });
         await invoke('open_claude_code_link', { url });
-        await onfinish?.();
-        return;
-      }
-      if (tools.claude_cli && installPath) {
+        launched = true;
+      } else if (tools.claude_cli && installPath) {
         await invoke('launch_claude_code', { path: installPath });
-        await onfinish?.();
-        return;
+        launched = true;
+      } else {
+        launchError =
+          'Claude Code was not detected. Use the folder and /setup prompt shown here.';
+        showManualTools = true;
       }
-      launchError =
-        'Claude Code was not detected. Use the folder and /setup prompt shown here.';
-      showManualTools = true;
     } catch (err) {
       const msg = errorMessage(err);
       launchError = `Could not open Claude Code: ${msg}`;
@@ -1046,12 +1080,14 @@
     } finally {
       launching = null;
     }
+    if (launched) await finishWithRecovery();
   }
 
   async function handleLaunchCodex() {
     launchError = null;
     revealError = null;
     launching = 'codex';
+    let launched = false;
     try {
       const tools = await ensureAiTools();
       if (tools.codex_cli && installPath) {
@@ -1059,12 +1095,12 @@
           path: installPath,
           tool: 'codex',
         });
-        await onfinish?.();
-        return;
+        launched = true;
+      } else {
+        launchError =
+          'Codex CLI was not detected. Open this HQ folder manually from Codex.';
+        showManualTools = true;
       }
-      launchError =
-        'Codex CLI was not detected. Open this HQ folder manually from Codex.';
-      showManualTools = true;
     } catch (err) {
       const msg = errorMessage(err);
       launchError = `Could not open Codex: ${msg}`;
@@ -1073,12 +1109,14 @@
     } finally {
       launching = null;
     }
+    if (launched) await finishWithRecovery();
   }
 
   async function handleLaunchGrok() {
     launchError = null;
     revealError = null;
     launching = 'grok';
+    let launched = false;
     try {
       const tools = await ensureAiTools();
       if (tools.grok_cli && installPath) {
@@ -1086,12 +1124,12 @@
           path: installPath,
           tool: 'grok',
         });
-        await onfinish?.();
-        return;
+        launched = true;
+      } else {
+        launchError =
+          'Grok CLI was not detected. Open this HQ folder manually from Grok.';
+        showManualTools = true;
       }
-      launchError =
-        'Grok CLI was not detected. Open this HQ folder manually from Grok.';
-      showManualTools = true;
     } catch (err) {
       launchError = `Could not open Grok: ${errorMessage(err)}`;
       showManualTools = true;
@@ -1099,6 +1137,7 @@
     } finally {
       launching = null;
     }
+    if (launched) await finishWithRecovery();
   }
 
   function stopClaudeWatch() {
@@ -1148,18 +1187,20 @@
 
     stopClaudeWatch();
     launching = 'claude';
+    let launched = false;
     try {
       const url = buildClaudeCodeUrl({
         folder: installPath ?? '',
         prompt: '/setup',
       });
       await invoke('open_claude_code_link', { url });
-      await onfinish?.();
+      launched = true;
     } catch (err) {
       stopClaudeWatchWithError(err);
     } finally {
       launching = null;
     }
+    if (launched) await finishWithRecovery();
   }
 
   function startClaudeWatch() {
@@ -1657,9 +1698,19 @@
               <button
                 type="button"
                 class="consent-link"
-                onclick={() =>
-                  void openExternal('https://hq.computer/privacy').catch(() => {})}
-              >Read the full description of what's collected</button>
+                disabled={privacyOpening}
+                aria-busy={privacyOpening}
+                onclick={() => void handleOpenPrivacy()}
+              >{privacyOpening
+                  ? 'Opening privacy details…'
+                  : privacyOpenError
+                    ? 'Retry opening the privacy details'
+                    : "Read the full description of what's collected"}</button>
+              {#if privacyOpenError}
+                <span class="consent-link-error" role="alert">
+                  Couldn’t open the page.
+                </span>
+              {/if}
             </p>
           </div>
           <fieldset class="consent-options">
@@ -1719,12 +1770,25 @@
               {/if}
             </div>
           {/if}
+          {#if finishError}
+            <div class="finish-action-error" role="alert" data-testid="consent-finish-error">
+              <span>Couldn’t finish setup. Your progress is safe.</span>
+              <button
+                type="button"
+                onclick={handleFinish}
+                disabled={finishing}
+                aria-busy={finishing}
+              >
+                {finishing ? 'Retrying…' : 'Retry'}
+              </button>
+            </div>
+          {/if}
           <div class="btns">
             {#if consentFailure}
               <button
                 class="btn btn-primary"
                 type="button"
-                disabled={consentSubmitting}
+                disabled={consentSubmitting || finishing}
                 data-testid="consent-retry"
                 onclick={() => void submitConsent()}
               >{consentSubmitting ? 'Retrying…' : 'Retry'}</button>
@@ -1732,7 +1796,7 @@
                 <button
                   class="btn btn-secondary"
                   type="button"
-                  disabled={consentSubmitting}
+                  disabled={consentSubmitting || finishing}
                   data-testid="consent-finish-offline"
                   onclick={() => void finishOffline()}
                 >Finish setup — send later</button>
@@ -1742,7 +1806,7 @@
                 class="btn btn-primary"
                 type="button"
                 data-testid="consent-continue"
-                disabled={telemetryChoice === null || consentSubmitting}
+                disabled={telemetryChoice === null || consentSubmitting || finishing}
                 onclick={() => void submitConsent()}
               >{consentSubmitting ? 'Saving…' : 'Continue'}</button>
               {#if isReprompt}
@@ -1754,7 +1818,7 @@
                   class="btn btn-secondary"
                   type="button"
                   data-testid="consent-dismiss"
-                  disabled={consentSubmitting}
+                  disabled={consentSubmitting || finishing}
                   onclick={() => void dismissReprompt()}
                 >Not now</button>
               {/if}
@@ -1797,6 +1861,19 @@
               Claude is taking longer than expected. You can open this HQ folder from Claude manually.
             </p>
           {/if}
+          {#if finishError}
+            <div class="finish-action-error" role="alert" data-testid="launcher-finish-error">
+              <span>The tool opened, but HQ couldn’t finish setup.</span>
+              <button
+                type="button"
+                onclick={handleFinish}
+                disabled={finishing}
+                aria-busy={finishing}
+              >
+                {finishing ? 'Retrying…' : 'Retry'}
+              </button>
+            </div>
+          {/if}
           {#if manualToolsVisible}
             <div class="manual-tools" aria-label="Manual setup options">
               <button
@@ -1832,15 +1909,31 @@
                 {copyingAction === 'import' ? 'Copying…' : importPromptCopied ? 'Import copied' : 'Copy /import-claude'}
               </button>
             </div>
+            {#if copyFailure}
+              <div class="copy-action-error" role="alert" data-testid="onboarding-copy-error">
+                <span>Couldn’t copy to the clipboard.</span>
+                <button
+                  type="button"
+                  onclick={() => void retryCopyAction()}
+                  disabled={copyingAction !== null}
+                  aria-busy={copyingAction !== null}
+                >
+                  {copyingAction ? 'Retrying…' : 'Retry'}
+                </button>
+              </div>
+            {/if}
           {/if}
           <div class="btns">
             <button
               class="btn btn-primary"
               type="button"
-              disabled={launching !== null && launching !== 'watching'}
+              disabled={finishing || (launching !== null && launching !== 'watching')}
+              aria-busy={finishing || (launching !== null && launching !== 'watching')}
               onclick={handlePrimaryLaunch}
             >
-              {launching === 'watching'
+              {finishing
+                ? 'Finishing…'
+                : launching === 'watching'
                 ? 'Waiting for Claude…'
                 : launching === primaryLaunch.kind
                   ? 'Opening…'
@@ -1906,7 +1999,12 @@
         >
           <h2 class="h" id="onboarding-title-build">Open a fresh session and build</h2>
           <p class="body">Start with “/brainstorm” to get going. Working on a specific company? Send “/startwork acme” and describe what you want. Then it’s the same rhythm every time: start work, handoff, repeat.</p>
-          <div class="btns split"><button class="btn btn-secondary" type="button" onclick={() => goBackTo(8)}>Back</button><button class="btn btn-primary" type="button" onclick={handleFinish} disabled={finishing} aria-busy={finishing}>{finishing ? 'Finishing…' : 'Done'}</button></div>
+          {#if finishError}
+            <p class="inline-note error" role="alert" data-testid="onboarding-finish-error">
+              Couldn’t finish setup. Your progress is safe.
+            </p>
+          {/if}
+          <div class="btns split"><button class="btn btn-secondary" type="button" onclick={() => goBackTo(8)}>Back</button><button class="btn btn-primary" type="button" onclick={handleFinish} disabled={finishing} aria-busy={finishing}>{finishing ? 'Finishing…' : finishError ? 'Retry' : 'Done'}</button></div>
         </section>
       </div>
     </div>
@@ -2092,7 +2190,9 @@
   .consent-facts-label { color:var(--c-text); font-weight:600; }
   .consent-link { appearance:none; border:0; background:none; padding:0; margin:0; color:var(--c-text); font:inherit; font-size:12.5px; line-height:17px; text-decoration:underline; cursor:pointer; }
   .consent-link:hover { opacity:.8; }
+  .consent-link:disabled { opacity:.55; cursor:wait; }
   .consent-link:focus-visible { outline:1.5px solid var(--c-focus-ring, var(--c-text)); outline-offset:2px; border-radius:3px; }
+  .consent-link-error { margin-left:8px; color:#d04444; }
 
   .consent-error { margin:12px 0 0; padding:10px 13px; border:1px solid var(--c-danger, #d14343); border-radius:10px; background:color-mix(in srgb, var(--c-danger, #d14343) 8%, transparent); }
   .consent-error.offline { border-color:var(--c-warning, #c88a1e); background:color-mix(in srgb, var(--c-warning, #c88a1e) 8%, transparent); }
@@ -2125,6 +2225,9 @@
   .inline-note { margin:10px 0 0; color:var(--c-muted); font-size:12px; line-height:16px; }
   .inline-note.error { color:#d04444; }
   .inline-note.warning { color:var(--c-text); }
+  .finish-action-error { display:flex; align-items:baseline; justify-content:space-between; gap:10px; margin:10px 0 0; color:var(--c-danger, #d14343); font-size:12px; line-height:16px; }
+  .finish-action-error button { flex:0 0 auto; padding:0; border:0; border-bottom:1px solid currentcolor; border-radius:0; background:transparent; color:inherit; font:inherit; font-weight:700; cursor:pointer; }
+  .finish-action-error button:disabled { opacity:.58; cursor:wait; }
   .setup-caution {
     display:flex;
     align-items:flex-start;
@@ -2197,6 +2300,28 @@
   .manual-tools button { appearance:none; border:0.5px solid var(--c-field-border); border-radius:6px; background:var(--c-btn2-bg); color:var(--c-muted); font:inherit; font-size:11.5px; line-height:15px; padding:4px 7px; cursor:pointer; }
   .manual-tools button:hover:not(:disabled) { color:var(--c-text); }
   .manual-tools button:disabled { opacity:.5; cursor:not-allowed; }
+  .copy-action-error {
+    display:flex;
+    align-items:center;
+    gap:8px;
+    margin-top:8px;
+    color:#d04444;
+    font-size:12px;
+    line-height:16px;
+  }
+  .copy-action-error button {
+    appearance:none;
+    border:0;
+    padding:0;
+    background:transparent;
+    color:inherit;
+    font:inherit;
+    font-weight:600;
+    text-decoration:underline;
+    text-underline-offset:2px;
+    cursor:pointer;
+  }
+  .copy-action-error button:disabled { opacity:.55; cursor:wait; }
 
   .mn { font-family:ui-monospace,"SF Mono",Menlo,Monaco,monospace; }
   .medium, .strong { font-weight:500; }

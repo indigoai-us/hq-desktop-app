@@ -283,6 +283,24 @@ describe('US-003: Notification takeover with queue-on-occlusion', () => {
       expect(widgetRs).toMatch(/widgetEnabled/);
     });
 
+    it('source contract: native DM fallback dispatch is bounded by the active account transition', () => {
+      const nativeFallback =
+        dmNotifyRs.match(
+          /#\[cfg\(target_os = "macos"\)\][\s\S]*?#\[cfg\(not\(target_os = "macos"\)\)\]/,
+        )?.[0] ?? '';
+      expect(nativeFallback).toContain('with_current_notification_mutation(app, auth');
+      expect(nativeFallback).toContain('tokio::task::spawn_blocking');
+      expect(nativeFallback).toContain('.asynchronous(true)');
+      expect(nativeFallback).not.toContain('wait_for_click(true)');
+
+      const nonMacFallback =
+        dmNotifyRs.match(
+          /#\[cfg\(not\(target_os = "macos"\)\)\][\s\S]*?Ack only the fresh DMs/,
+        )?.[0] ?? '';
+      expect(nonMacFallback).toContain('with_current_notification_mutation(app, auth');
+      expect(nonMacFallback).toContain('.show()');
+    });
+
     it('source contract: occlusion observer + widget_ready + resize_widget wired; Widget listens and invokes ready', () => {
       // Rust: NSWindowDidChangeOcclusionStateNotification → widget:occlusion
       expect(widgetRs).toContain('NSWindowDidChangeOcclusionStateNotification');

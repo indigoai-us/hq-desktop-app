@@ -62,6 +62,15 @@ export class ChannelUnreadTracker {
     return this.total();
   }
 
+  reset(): void {
+    this.snapshotGeneration += 1;
+    this.eventRevision = 0;
+    this.snapshotBaselines.clear();
+    this.eventRevisions.clear();
+    this.counts.clear();
+    this.completeSnapshot = false;
+  }
+
   hasCompleteSnapshot(): boolean {
     return this.completeSnapshot;
   }

@@ -5,6 +5,7 @@
   import { onMount, untrack } from 'svelte';
   import ConflictModal from './ConflictModal.svelte';
   import NotificationFeed from './NotificationFeed.svelte';
+  import NotificationActionRecovery from './NotificationActionRecovery.svelte';
   import CopyPromptButton from './CopyPromptButton.svelte';
   import OpenInClaudeCodeButton from './OpenInClaudeCodeButton.svelte';
   import { joinableMemberships, type Workspace } from '../lib/workspaces';
@@ -12,6 +13,7 @@
   import { isCorePath, CORE_SETUP_LABEL } from '../lib/progressLabel';
   import { sanitizeVisibleIdentifiers } from '../lib/visible-labels';
   import { safeUnlisten } from '../lib/listener-registry';
+  import { shouldUseNativePopoverMaterial } from '../lib/nativePopoverMaterial';
   import {
     POPOVER_MIN_HEIGHT,
     POPOVER_WIDTH,
@@ -20,6 +22,7 @@
     shouldResizePopoverWindow,
   } from '../lib/popover-window-size';
   import type { ConflictFile } from '../stores/conflicts';
+  import type { NativeNotificationRecovery } from '../lib/nativeNotificationRecovery';
 
   interface Config {
     configured: boolean;
@@ -54,11 +57,15 @@
     messagesUnreadCount?: number;
     updateAvailable?: { version: string; body?: string; date?: string } | null;
     updateInstalling?: boolean;
+    updateInstallError?: string | null;
+    notificationActionRecovery?: NativeNotificationRecovery | null;
+    notificationActionRetrying?: boolean;
     onsync: () => void;
     onresolve?: (path: string, strategy: 'keep-local' | 'keep-remote') => void;
     onopen?: (path: string) => void;
     ondismissconflicts?: () => void;
-    oninstallupdate?: () => void;
+    oninstallupdate?: () => void | Promise<void>;
+    onretrynotificationaction?: () => void | Promise<void>;
     bindStatsRefresh?: (fn: () => void) => void;
   }
 
@@ -96,11 +103,15 @@
     messagesUnreadCount = 0,
     updateAvailable = null,
     updateInstalling = false,
+    updateInstallError = null,
+    notificationActionRecovery = null,
+    notificationActionRetrying = false,
     onsync,
     onresolve,
     onopen,
     ondismissconflicts,
     oninstallupdate,
+    onretrynotificationaction,
     bindStatsRefresh,
   }: Props = $props();
 
@@ -108,17 +119,23 @@
   let popoverContentEl: HTMLElement | null = $state(null);
   let popoverMainContentEl: HTMLElement | null = $state(null);
   let opening = $state(false);
-  let openingHQ = $state(false);
+  let openingDesktop = $state(false);
   let openingMessages = $state(false);
   let openingUpdates = $state(false);
+  let desktopOpenError = $state('');
+  let messagesOpenError = $state('');
+  let updatesOpenError = $state('');
   let openingTimer: number | null = null;
   let syncStatus = $state<SyncStatus | null>(null);
   let syncStatusLoading = $state(true);
   let syncStatusError = $state('');
   let lastWindowHeight = $state(0);
-  // AppKit owns the optical material in the native menubar window. Browser
-  // previews and non-macOS fallbacks retain the CSS filter below.
-  const nativeGlass = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+  // AppKit/Windows own optical material in their native menubar windows.
+  // Browser previews and Linux retain the CSS filter below.
+  const nativeGlass = shouldUseNativePopoverMaterial(
+    typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window,
+    typeof navigator === 'undefined' ? '' : navigator.userAgent,
+  );
   const visibleCloudError = $derived(
     sanitizeVisibleIdentifiers(cloudError, { companies: workspaces ?? [] }),
   );
@@ -132,25 +149,29 @@
     feedEl?.markAllRead();
   }
 
-  async function openHQ() {
-    if (openingHQ) return;
-    openingHQ = true;
+  async function openDesktop() {
+    if (openingDesktop) return;
+    desktopOpenError = '';
+    openingDesktop = true;
     try {
-      await invoke('open_desktop_alt_window', { route: 'inbox' });
+      await invoke('open_desktop_alt_window');
     } catch (e) {
       console.error('popover: open_desktop_alt_window failed', e);
+      desktopOpenError = 'Couldn’t open the desktop.';
     } finally {
-      openingHQ = false;
+      openingDesktop = false;
     }
   }
 
   async function openMessages() {
     if (openingMessages) return;
+    messagesOpenError = '';
     openingMessages = true;
     try {
       await invoke('open_communications_window');
     } catch (e) {
       console.error('popover: open communications failed', e);
+      messagesOpenError = 'Couldn’t open Messages.';
     } finally {
       openingMessages = false;
     }
@@ -158,11 +179,13 @@
 
   async function openUpdates() {
     if (openingUpdates) return;
+    updatesOpenError = '';
     openingUpdates = true;
     try {
       await invoke('open_desktop_alt_window', { route: 'settings:updates' });
     } catch (e) {
       console.error('popover: open updates failed', e);
+      updatesOpenError = 'Couldn’t open Updates.';
     } finally {
       openingUpdates = false;
     }
@@ -499,6 +522,26 @@
         {openingMessages ? 'Opening…' : 'Open'}
       </span>
     </button>
+    {#if messagesOpenError}
+      <div class="popover-action-error" role="alert" data-testid="popover-messages-error">
+        <span>{messagesOpenError}</span>
+        <button
+          type="button"
+          onclick={() => void openMessages()}
+          disabled={openingMessages}
+          aria-busy={openingMessages}
+        >
+          {openingMessages ? 'Retrying…' : 'Retry'}
+        </button>
+      </div>
+    {/if}
+    {#if notificationActionRecovery && onretrynotificationaction}
+      <NotificationActionRecovery
+        message={notificationActionRecovery.message}
+        pending={notificationActionRetrying}
+        onretry={onretrynotificationaction}
+      />
+    {/if}
 
     <!-- Notifications panel body — slim label + unread count + Mark all read.
          System notices (conflict / update / membership / auth / errors) pin to
@@ -519,15 +562,28 @@
           <button
             class="mbp-sec-action mbp-sec-action-primary"
             type="button"
-            data-testid="popover-open-hq"
-            onclick={() => void openHQ()}
-            disabled={openingHQ}
-            aria-busy={openingHQ}
+            data-testid="popover-open-desktop"
+            onclick={() => void openDesktop()}
+            disabled={openingDesktop}
+            aria-busy={openingDesktop}
           >
-            {openingHQ ? 'Opening…' : 'Open HQ'}
+            {openingDesktop ? 'Opening…' : 'Open desktop'}
           </button>
         </div>
       </div>
+      {#if desktopOpenError}
+        <div class="popover-action-error" role="alert" data-testid="popover-desktop-error">
+          <span>{desktopOpenError}</span>
+          <button
+            type="button"
+            onclick={() => void openDesktop()}
+            disabled={openingDesktop}
+            aria-busy={openingDesktop}
+          >
+            {openingDesktop ? 'Retrying…' : 'Retry'}
+          </button>
+        </div>
+      {/if}
 
       {#if conflictModalActive && onresolve && onopen && ondismissconflicts}
         <!-- Detailed conflict resolver keeps its own card; the lighter conflict
@@ -589,13 +645,40 @@
             <button
               type="button"
               class="mbp-mini primary"
-              onclick={oninstallupdate}
+              onclick={() => void oninstallupdate?.()}
               disabled={updateInstalling || !oninstallupdate}
+              aria-busy={updateInstalling}
             >
               {updateInstalling ? 'Installing…' : 'Install'}
             </button>
           </span>
         </div>
+        {#if updatesOpenError}
+          <div class="popover-action-error" role="alert" data-testid="popover-updates-error">
+            <span>{updatesOpenError}</span>
+            <button
+              type="button"
+              onclick={() => void openUpdates()}
+              disabled={openingUpdates}
+              aria-busy={openingUpdates}
+            >
+              {openingUpdates ? 'Retrying…' : 'Retry'}
+            </button>
+          </div>
+        {/if}
+        {#if updateInstallError}
+          <div class="popover-action-error" role="alert" data-testid="popover-install-error">
+            <span>{updateInstallError}</span>
+            <button
+              type="button"
+              onclick={() => void oninstallupdate?.()}
+              disabled={updateInstalling || !oninstallupdate}
+              aria-busy={updateInstalling}
+            >
+              {updateInstalling ? 'Retrying…' : 'Retry'}
+            </button>
+          </div>
+        {/if}
       {/if}
 
       {#if syncState === 'conflict' && !conflictModalActive}
@@ -1066,6 +1149,43 @@
 
   .mbp-messages-entry[aria-busy='true'] .mbp-messages-icon {
     animation: mbp-messages-pulse 0.8s ease-in-out infinite alternate;
+  }
+
+  .popover-action-error {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 27px;
+    padding: 2px 12px 5px;
+    color: var(--popover-danger);
+    font-size: 11px;
+    line-height: 1.3;
+  }
+
+  .popover-action-error span {
+    min-width: 0;
+    flex: 1;
+  }
+
+  .popover-action-error button {
+    flex: 0 0 auto;
+    padding: 2px 0;
+    border: 0;
+    background: transparent;
+    color: var(--pop-text);
+    font: inherit;
+    font-weight: 650;
+    cursor: pointer;
+  }
+
+  .popover-action-error button:disabled {
+    color: var(--pop-muted);
+    cursor: wait;
+  }
+
+  .popover-action-error button:focus-visible {
+    outline: 1.5px solid var(--popover-focus-ring, var(--pop-accent));
+    outline-offset: 2px;
   }
 
   @keyframes mbp-messages-pulse {

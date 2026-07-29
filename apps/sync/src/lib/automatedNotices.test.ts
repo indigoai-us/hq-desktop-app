@@ -14,6 +14,23 @@ describe('automatedAgentJoinNoticeKey', () => {
     ).toBe('🤖 izzy (an agent) just joined indigo.');
   });
 
+  it('compacts exact legacy history rows when the announced and display names match', () => {
+    expect(
+      automatedAgentJoinNoticeKey({
+        kind: 'dm',
+        body: joinBody,
+        fromDisplayName: 'Izzy',
+      }),
+    ).toBe('🤖 izzy (an agent) just joined indigo.');
+    expect(
+      automatedAgentJoinNoticeKey({
+        kind: 'dm',
+        body: joinBody,
+        fromDisplayName: 'Someone else',
+      }),
+    ).toBeNull();
+  });
+
   it('rejects human prose that happens to mention a new agent joining', () => {
     expect(
       automatedAgentJoinNoticeKey({
@@ -27,6 +44,7 @@ describe('automatedAgentJoinNoticeKey', () => {
         kind: 'dm',
         body: joinBody,
         fromPersonUid: 'prs_maya',
+        fromDisplayName: 'Izzy',
       }),
     ).toBeNull();
   });

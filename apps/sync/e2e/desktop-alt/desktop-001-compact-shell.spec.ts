@@ -45,14 +45,35 @@ function workspace(overrides: Partial<Workspace> = {}): Workspace {
   };
 }
 
-function firstRgbaAlpha(source: string, property: string): number {
-  const match = source.match(
-    new RegExp(
-      `--${property}:\\s*rgba\\(\\s*\\d+\\s*,\\s*\\d+\\s*,\\s*\\d+\\s*,\\s*([\\d.]+)\\s*\\)`,
-    ),
+const DEFAULT_WINDOW_TRANSPARENCY_FACTOR = 0.65;
+
+function firstLiquidGlassAlpha(
+  source: string,
+  property: string,
+  factor = DEFAULT_WINDOW_TRANSPARENCY_FACTOR,
+): number {
+  const declaration = source.match(new RegExp(`--${property}:\\s*([^;]+);`));
+  expect(declaration, `missing --${property}`).not.toBeNull();
+  const value = declaration?.[1].trim() ?? '';
+  const expression = value.match(
+    /^rgb\(\s*\d+\s+\d+\s+\d+\s*\/\s*clamp\(\s*([\d.]+)\s*,\s*calc\(\s*1\s*-\s*var\(--hq-window-transparency-factor(?:\s*,\s*([\d.]+))?\)\s*\*\s*([\d.]+)\s*\)\s*,\s*([\d.]+)\s*\)\s*\)$/i,
   );
-  expect(match, `${property} must have a translucent rgba default`).not.toBeNull();
-  return Number(match?.[1]);
+  expect(
+    expression,
+    `${property} must use the window-transparency liquid-glass expression; received: ${value}`,
+  ).not.toBeNull();
+
+  const floor = Number(expression?.[1]);
+  const fallback = expression?.[2];
+  const multiplier = Number(expression?.[3]);
+  const ceiling = Number(expression?.[4]);
+  if (fallback !== undefined) {
+    expect(Number(fallback), `${property} must retain the 0.65 default factor`).toBe(
+      DEFAULT_WINDOW_TRANSPARENCY_FACTOR,
+    );
+  }
+  expect(ceiling, `${property} must resolve fully opaque at factor 0`).toBe(1);
+  return Math.min(ceiling, Math.max(floor, 1 - factor * multiplier));
 }
 
 describe('DESKTOP-001: compact native shell', () => {
@@ -210,16 +231,19 @@ describe('DESKTOP-001: compact native shell', () => {
 
   it('light-mode material roles stay visibly translucent with weighted hierarchy', () => {
     const tokens = readRepoFile('src/desktop-alt/v4/tokens.css');
-    const ground = firstRgbaAlpha(tokens, 'v4-ground');
-    const chrome = firstRgbaAlpha(tokens, 'v4-chrome');
-    const sidebar = firstRgbaAlpha(tokens, 'v4-sidebar');
-    const raised = firstRgbaAlpha(tokens, 'v4-raised');
+    const properties = ['v4-ground', 'v4-chrome', 'v4-sidebar', 'v4-raised'] as const;
+    const [ground, chrome, sidebar, raised] = properties.map((property) =>
+      firstLiquidGlassAlpha(tokens, property),
+    );
 
     expect(ground).toBeLessThanOrEqual(0.5);
     expect(chrome).toBeLessThanOrEqual(0.5);
     expect(sidebar).toBeLessThanOrEqual(0.5);
     expect(raised).toBeGreaterThan(ground);
     expect(raised).toBeLessThanOrEqual(0.6);
+    for (const property of properties) {
+      expect(firstLiquidGlassAlpha(tokens, property, 0)).toBe(1);
+    }
     expect(tokens).toContain('DESKTOP-012');
   });
 });

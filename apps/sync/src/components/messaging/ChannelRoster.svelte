@@ -47,6 +47,11 @@
 
   // Which member is being removed (disables that row's button).
   let removing = $state<string | null>(null);
+  let removeFailure = $state<{
+    channelId: string;
+    personUid: string;
+    message: string;
+  } | null>(null);
 
   interface MembersResponse {
     members: ChannelMember[];
@@ -55,6 +60,7 @@
   async function loadMembers(): Promise<void> {
     loading = true;
     error = null;
+    removeFailure = null;
     try {
       const resp = await invoke<MembersResponse>('list_channel_members', { channelId });
       members = resp.members ?? [];
@@ -93,22 +99,35 @@
     }
   }
 
-  async function remove(personUid: string): Promise<void> {
+  function actionErrorMessage(err: unknown): string {
+    if (err instanceof Error && err.message) return err.message;
+    if (typeof err === 'string' && err.trim()) return err;
+    return 'The member could not be removed.';
+  }
+
+  async function remove(personUid: string, isRetry = false): Promise<void> {
     if (removing) return;
+    const targetChannelId = channelId;
     removing = personUid;
-    error = null;
+    if (!isRetry) removeFailure = null;
     try {
       const resp = await invoke<MembersResponse>('remove_channel_member', {
-        channelId,
+        channelId: targetChannelId,
         personUid,
       });
+      if (channelId !== targetChannelId) return;
       // Prefer the server's returned list; fall back to a local prune.
       members = resp.members && resp.members.length > 0
         ? resp.members
         : members.filter((m) => m.personUid !== personUid);
       oncountchange?.(members.length);
+      removeFailure = null;
     } catch (err) {
-      error = typeof err === 'string' ? err : 'Could not remove this member';
+      removeFailure = {
+        channelId: targetChannelId,
+        personUid,
+        message: actionErrorMessage(err),
+      };
       console.error('channel-roster: remove_channel_member failed', err);
     } finally {
       removing = null;
@@ -196,14 +215,29 @@
               <span class="member-role" class:owner={m.role === 'owner'}>{m.role}</span>
             </span>
             {#if isOwner && m.role !== 'owner' && m.personUid !== selfPersonUid}
-              <button
-                class="member-remove"
-                type="button"
-                onclick={() => remove(m.personUid)}
-                disabled={removing !== null}
-              >
-                {removing === m.personUid ? 'Removing…' : 'Remove'}
-              </button>
+              {#if removeFailure?.channelId === channelId && removeFailure.personUid === m.personUid}
+                <span class="member-remove-error" role="alert" title={removeFailure.message}>
+                  <span>Couldn’t remove {memberLabel(m)}.</span>
+                  <button
+                    type="button"
+                    onclick={() => void remove(m.personUid, true)}
+                    disabled={removing !== null}
+                    aria-busy={removing === m.personUid}
+                  >
+                    {removing === m.personUid ? 'Retrying…' : 'Retry'}
+                  </button>
+                </span>
+              {:else}
+                <button
+                  class="member-remove"
+                  type="button"
+                  onclick={() => void remove(m.personUid)}
+                  disabled={removing !== null}
+                  aria-busy={removing === m.personUid}
+                >
+                  {removing === m.personUid ? 'Removing…' : 'Remove'}
+                </button>
+              {/if}
             {/if}
           </li>
         {/each}
@@ -394,6 +428,39 @@
   .member-remove:disabled {
     opacity: 0.5;
     cursor: default;
+  }
+
+  .member-remove-error {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    margin-left: auto;
+    color: var(--red, var(--popover-danger));
+    font-size: var(--text-base);
+  }
+
+  .member-remove-error > span {
+    max-width: 10rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .member-remove-error button {
+    padding: 0;
+    border: 0;
+    border-bottom: 1px solid currentColor;
+    border-radius: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .member-remove-error button:disabled {
+    cursor: progress;
+    opacity: 0.58;
   }
 
   .btn {

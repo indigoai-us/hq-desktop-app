@@ -122,6 +122,7 @@ describe('desktop-alt status write — registration + capability (US-010)', () =
   it('the Rust write command guards membership + canonical path + atomic write', () => {
     const rust = readRepoFile('src-tauri/src/commands/projects_local.rs');
     const core = readRepoFile('../../crates/hq-desktop-core/src/projects_local.rs');
+    const scopedFs = readRepoFile('../../crates/hq-desktop-core/src/desktop_alt.rs');
     // The command wrapper enforces the signed-in gate, hydrates live workspace
     // membership, and authorizes the canonical company target before delegating.
     expect(rust).toContain('pub async fn set_local_project_status');
@@ -140,11 +141,16 @@ describe('desktop-alt status write — registration + capability (US-010)', () =
     expect(core).toContain('fn commit_json_mutation_with_exchange');
     expect(core).toContain('fn prepare_atomic_json_write');
     expect(core).toContain('fn atomic_exchange_file');
-    expect(core).toContain('RenameFlags::EXCHANGE');
+    expect(core).toContain('.exchange_files(&self.temp_name, &target.target_name)');
+    expect(scopedFs).toContain('rustix::fs::renameat_with');
+    expect(scopedFs).toContain('RenameFlags::EXCHANGE');
+    expect(scopedFs).toContain('self.descriptor.as_ref()');
     expect(core).toContain('ReplaceFileW(');
     expect(core).toContain('DisplacedAtomicJsonWrite::capture');
     expect(core).toContain('OFlags::NOFOLLOW');
-    expect(core).toContain('FILE_FLAG_OPEN_REPARSE_POINT');
+    expect(scopedFs).toContain('FILE_FLAG_OPEN_REPARSE_POINT');
+    expect(scopedFs).toContain('FILE_OPEN_REPARSE_POINT');
+    expect(scopedFs).toContain('NtCreateFile(');
     expect(core).toContain('file.write_all(&serialized).and_then(|()| file.sync_all())');
     expect(core).not.toContain('std::fs::rename(&tmp_path, target)');
   });

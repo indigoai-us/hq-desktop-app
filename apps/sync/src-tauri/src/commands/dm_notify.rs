@@ -22,8 +22,9 @@
 //!
 //! ## Cursor
 //!
-//! `~/.hq/dm-cursor.json`, keyed by `machineId` (same scheme as
-//! `share-notify-cursor.json`) so each Mac tracks its own inbox position.
+//! `~/.hq/dm-cursor.json`, keyed by a hash of Cognito subject + `machineId` so
+//! each account on each device tracks an isolated inbox position. A legacy
+//! machine-only entry is claimed once by the first authenticated account.
 //!
 //! ## Gating
 //!
@@ -38,7 +39,7 @@
 //!   `DM_NOTIFY_SEND_OK` / `_SEND_FAIL` — outbound send result.
 
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
@@ -52,11 +53,11 @@ pub use hq_desktop_core::dm_notify::{
     build_compose_payload, build_send_payload, build_thread_reply_payload, build_thread_url,
     build_threads_url, classify_send_response, clear_in_flight, diff_requests,
     dm_notifications_enabled, esc_thread_seg, normalize_scope, partition_unnotified,
-    read_cursor_entry, respond_action_path, respond_action_state, try_set_in_flight,
-    write_cursor_entry, ActiveConversationInner, ActiveConversationState, ActiveThreadInner,
-    ActiveThreadState, CursorEntry, DmEvent, InboxResponse, NotificationDmActionEvent,
-    PendingDmEvents, RequestsListResponse, SeenChannelState, SeenRequestState, SendDmOutcome,
-    ThreadReply, ThreadResponse, ThreadView, UnreadDmState,
+    read_cursor_entry_for_account, respond_action_path, respond_action_state, try_set_in_flight,
+    write_cursor_entry_for_account, ActiveConversationInner, ActiveConversationState,
+    ActiveThreadInner, ActiveThreadState, CursorEntry, DmEvent, InboxResponse, PendingDmEvents,
+    RequestsListResponse, SeenChannelState, SeenRequestState, SendDmOutcome, ThreadReply,
+    ThreadResponse, ThreadView, UnreadDmState,
 };
 
 const LOG_TAG: &str = "dm-notify";
@@ -64,12 +65,6 @@ const LOG_TAG: &str = "dm-notify";
 /// Tauri event emitted when new DMs are found (frontend may surface a badge
 /// or inbox view; currently informational, mirrors `share:new-events`).
 pub const EVENT_DM_NEW_EVENTS: &str = "dm:new-events";
-
-/// Tauri event emitted when the user actions a DM notification — "copy" (write
-/// the agent prompt to the clipboard, only when the DM carries a `prompt`) or
-/// "open" (open the DM detail window). Every DM is clickable: a body-click maps
-/// to "open". Frontend listener lives in App.svelte.
-const EVENT_NOTIFICATION_DM_ACTION: &str = "notification:dm-action";
 
 /// Tauri event emitted by the SINGLE poll path when a new reply lands in the
 /// thread the user currently has open (US-022). A "thread" wake on the person
@@ -225,12 +220,587 @@ pub const EVENT_DM_REQUEST_UPDATE: &str = "dm:request-update";
 /// channels list it re-fetches).
 pub const EVENT_CHANNEL_NEW_MESSAGE: &str = "channel:new-message";
 
+/// Tauri event emitted whenever an authoritative per-channel unread count
+/// changes, including decreases to zero. The menu-bar aggregate listens to this
+/// separately from `channel:new-message`, which remains an increase-only
+/// content-refresh signal.
+pub const EVENT_CHANNEL_UNREAD_CHANGED: &str = "channel:unread-changed";
+
 /// Tauri event emitted by the SINGLE poll path when a channel's metadata
 /// changed (US-018) — a brand-new channel appeared (created/invited), or its
 /// name/membership/member-count changed. Payload is the full `Channel` (camel).
 /// ChannelList upserts it so a new invite/channel appears live without a manual
 /// refresh.
 pub const EVENT_CHANNEL_UPDATED: &str = "channel:updated";
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NotificationAuthSnapshot {
+    pub generation: u64,
+    pub identity: String,
+    pub access_token: String,
+}
+
+struct NotificationSessionInner {
+    generation: u64,
+    identity: Option<String>,
+    access_token: Option<String>,
+}
+
+impl Default for NotificationSessionInner {
+    fn default() -> Self {
+        Self {
+            generation: 0,
+            identity: None,
+            access_token: None,
+        }
+    }
+}
+
+impl NotificationSessionInner {
+    fn auth_snapshot(&self) -> Option<NotificationAuthSnapshot> {
+        Some(NotificationAuthSnapshot {
+            generation: self.generation,
+            identity: self.identity.clone()?,
+            access_token: self.access_token.clone()?,
+        })
+    }
+}
+
+/// Owns notification authentication identity and a cancellation pulse for the
+/// current generation. Polls capture one identity/generation/access-token
+/// snapshot before any network work and may commit only while that exact
+/// snapshot is still active. A transition withdraws the current identity and
+/// broadcasts immediately. Cancellable work (polls/banners) is dropped;
+/// intentional writes are tracked separately until their bounded response.
+pub struct NotificationSessionState {
+    inner: tokio::sync::Mutex<NotificationSessionInner>,
+    invalidation: tokio::sync::watch::Sender<u64>,
+    mutation_leases: Arc<NotificationMutationLeases>,
+    /// Serializes local credential-file writes only. Never held while waiting
+    /// for the network or a banner, so auth invalidation stays prompt.
+    credential_write_gate: tokio::sync::Mutex<()>,
+}
+
+impl NotificationSessionState {
+    pub fn new() -> Self {
+        let (invalidation, _) = tokio::sync::watch::channel(0u64);
+        Self {
+            inner: tokio::sync::Mutex::new(NotificationSessionInner::default()),
+            invalidation,
+            mutation_leases: Arc::new(NotificationMutationLeases::default()),
+            credential_write_gate: tokio::sync::Mutex::new(()),
+        }
+    }
+}
+
+/// A short-lived, intentionally remote-mutating operation (ACK, mark-read,
+/// request response). Auth transitions withdraw the active identity first and
+/// then wait for these leases to drain before publishing the next account,
+/// which establishes a linearization point: no previous-account write is still
+/// in flight once the next account is visible to the rest of the app.
+#[derive(Default)]
+struct NotificationMutationLeases {
+    active: Mutex<usize>,
+    drained: tokio::sync::Notify,
+}
+
+impl NotificationMutationLeases {
+    fn acquire(self: &Arc<Self>) -> NotificationMutationLease {
+        let mut active = self
+            .active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *active = active.saturating_add(1);
+        NotificationMutationLease {
+            tracker: Arc::clone(self),
+        }
+    }
+
+    async fn wait_for_drain(&self) {
+        loop {
+            let notified = self.drained.notified();
+            tokio::pin!(notified);
+            // Register before inspecting `active`: `notify_waiters` does not
+            // retain a permit for a future waiter, so enabling first closes the
+            // last-lease-drop race between the count read and `.await`.
+            notified.as_mut().enable();
+            if *self
+                .active
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                == 0
+            {
+                return;
+            }
+            notified.await;
+        }
+    }
+}
+
+struct NotificationMutationLease {
+    tracker: Arc<NotificationMutationLeases>,
+}
+
+impl Drop for NotificationMutationLease {
+    fn drop(&mut self) {
+        let mut active = self
+            .tracker
+            .active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        debug_assert!(*active > 0, "notification mutation lease underflow");
+        *active = active.saturating_sub(1);
+        if *active == 0 {
+            self.tracker.drained.notify_waiters();
+        }
+    }
+}
+
+async fn transition_notification_session_if_generation<R: Runtime>(
+    app: &AppHandle<R>,
+    identity: Option<String>,
+    access_token: Option<String>,
+    force_reset: bool,
+) -> Option<(u64, Option<NotificationAuthSnapshot>)> {
+    transition_notification_session_if_generation_expected(
+        app,
+        identity,
+        access_token,
+        force_reset,
+        None,
+    )
+    .await
+}
+
+/// Apply one transition only if no other auth transition happened after the
+/// caller captured `expected_generation`. This is the publish CAS for token
+/// resolution: an old resolver cannot restore account A after OAuth/sign-out
+/// has already invalidated A.
+async fn transition_notification_session_if_generation_expected<R: Runtime>(
+    app: &AppHandle<R>,
+    identity: Option<String>,
+    access_token: Option<String>,
+    force_reset: bool,
+    expected_generation: Option<u64>,
+) -> Option<(u64, Option<NotificationAuthSnapshot>)> {
+    let Some(session_state) = app.try_state::<NotificationSessionState>() else {
+        return None;
+    };
+    let mut session = session_state.inner.lock().await;
+    if expected_generation.is_some_and(|expected| session.generation != expected) {
+        return None;
+    }
+    let identity_changed = session.identity != identity;
+    let token_changed = session.access_token != access_token;
+    if !force_reset && !identity_changed && !token_changed {
+        return Some((session.generation, session.auth_snapshot()));
+    }
+
+    // Phase 1: withdraw the old identity and wake all existing operations.
+    // This is deliberately separate from publishing the next identity below:
+    // callers never see account B as active while an intentional account-A
+    // write still owns a lease.
+    session.generation = session.generation.wrapping_add(1);
+    session.identity = None;
+    session.access_token = None;
+    let generation = session.generation;
+
+    // Notify active work while this brief state update is still serialized.
+    // Receivers are created only after they validated the matching snapshot,
+    // so a changed value always means their identity/token is no longer safe.
+    session_state.invalidation.send_replace(generation);
+
+    // A same-account access-token refresh invalidates in-flight network work,
+    // but the account's unread/seen UI state remains valid. Account replacement
+    // and explicit replacement/sign-out clear all account-scoped state.
+    if force_reset || identity_changed {
+        if let Some(state) = app.try_state::<UnreadDmState>() {
+            *state.0.lock().unwrap_or_else(|p| p.into_inner()) = 0;
+        }
+        if let Some(state) = app.try_state::<PendingDmEvents>() {
+            state.0.lock().unwrap_or_else(|p| p.into_inner()).clear();
+        }
+        if let Some(state) = app.try_state::<SeenRequestState>() {
+            state
+                .0
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .reset_for_session();
+        }
+        let cleared_channel_ids = app
+            .try_state::<SeenChannelState>()
+            .map(|state| {
+                let mut channels = state.0.lock().unwrap_or_else(|p| p.into_inner());
+                let ids = channels.unread_by_id.keys().cloned().collect::<Vec<_>>();
+                channels.reset_for_session();
+                ids
+            })
+            .unwrap_or_default();
+        if let Some(state) = app.try_state::<ActiveThreadState>() {
+            *state.0.lock().unwrap_or_else(|p| p.into_inner()) = ActiveThreadInner::default();
+        }
+        if let Some(state) = app.try_state::<ActiveConversationState>() {
+            *state.0.lock().unwrap_or_else(|p| p.into_inner()) = ActiveConversationInner::default();
+        }
+        if let Some(state) = app.try_state::<WatchedSharesState>() {
+            *state.0.lock().unwrap_or_else(|p| p.into_inner()) = WatchedSharesInner::default();
+        }
+
+        let summary = serde_json::json!({ "unreadDms": 0u32, "pendingRequests": 0u32 });
+        let _ = app.emit(EVENT_DM_UNREAD_SUMMARY, &summary);
+        for channel_id in cleared_channel_ids {
+            let unread = serde_json::json!({ "channelId": channel_id, "unread": 0u32 });
+            let _ = app.emit(EVENT_CHANNEL_UNREAD_CHANGED, &unread);
+        }
+    }
+
+    let mutation_leases = Arc::clone(&session_state.mutation_leases);
+    drop(session);
+
+    // Cancellable work sees the invalidation; an intentional remote mutation
+    // instead completes under its lease. Do not publish the next identity or
+    // return from an auth transition until every such lease is gone.
+    mutation_leases.wait_for_drain().await;
+
+    // Phase 2: publish the next identity only if another transition did not
+    // win while we waited for old mutations. Keeping the same generation is
+    // safe: it was already broadcast as the cancellation boundary, and no
+    // caller can obtain a new authenticated snapshot before this publication.
+    let snapshot = match (identity, access_token) {
+        (Some(identity), Some(access_token)) => {
+            let mut session = session_state.inner.lock().await;
+            if session.generation != generation || session.identity.is_some() {
+                return None;
+            }
+            session.identity = Some(identity);
+            session.access_token = Some(access_token);
+            session.auth_snapshot()
+        }
+        (None, None) => None,
+        _ => return None,
+    };
+    Some((generation, snapshot))
+}
+
+async fn transition_notification_session<R: Runtime>(
+    app: &AppHandle<R>,
+    identity: Option<String>,
+    access_token: Option<String>,
+    force_reset: bool,
+) -> (u64, Option<NotificationAuthSnapshot>) {
+    transition_notification_session_if_generation(app, identity, access_token, force_reset)
+        .await
+        .unwrap_or((0, None))
+}
+
+/// Establish the first authenticated notification session, or reset all
+/// account-scoped state when Cognito resolves to a different person.
+pub async fn ensure_notification_session<R: Runtime>(
+    app: &AppHandle<R>,
+    identity: String,
+    access_token: String,
+) -> NotificationAuthSnapshot {
+    transition_notification_session(app, Some(identity), Some(access_token), false)
+        .await
+        .1
+        .expect("authenticated notification transition must yield a snapshot")
+}
+
+/// Start a freshly-authenticated session even when the same person signs back
+/// in, invalidating work started with the previous token generation.
+pub async fn replace_notification_session<R: Runtime>(
+    app: &AppHandle<R>,
+    identity: String,
+    access_token: String,
+) -> NotificationAuthSnapshot {
+    transition_notification_session(app, Some(identity), Some(access_token), true)
+        .await
+        .1
+        .expect("authenticated notification transition must yield a snapshot")
+}
+
+/// Force invalidation for an explicit sign-out so even a poll captured before
+/// token deletion cannot commit afterward.
+pub async fn invalidate_notification_session<R: Runtime>(app: &AppHandle<R>) -> u64 {
+    transition_notification_session(app, None, None, true)
+        .await
+        .0
+}
+
+pub async fn current_notification_auth_snapshot<R: Runtime>(
+    app: &AppHandle<R>,
+) -> Option<NotificationAuthSnapshot> {
+    let state = app.try_state::<NotificationSessionState>()?;
+    let snapshot = state.inner.lock().await.auth_snapshot();
+    snapshot
+}
+
+async fn notification_session_generation<R: Runtime>(app: &AppHandle<R>) -> Option<u64> {
+    let state = app.try_state::<NotificationSessionState>()?;
+    let generation = state.inner.lock().await.generation;
+    Some(generation)
+}
+
+async fn clear_notification_session_if_generation<R: Runtime>(
+    app: &AppHandle<R>,
+    expected_generation: u64,
+) -> Option<u64> {
+    transition_notification_session_if_generation_expected(
+        app,
+        None,
+        None,
+        false,
+        Some(expected_generation),
+    )
+    .await
+    .map(|(generation, _)| generation)
+}
+
+async fn ensure_notification_session_if_generation<R: Runtime>(
+    app: &AppHandle<R>,
+    expected_generation: u64,
+    identity: String,
+    access_token: String,
+) -> Option<NotificationAuthSnapshot> {
+    transition_notification_session_if_generation_expected(
+        app,
+        Some(identity),
+        Some(access_token),
+        false,
+        Some(expected_generation),
+    )
+    .await
+    .and_then(|(_, snapshot)| snapshot)
+}
+
+async fn replace_notification_session_if_generation<R: Runtime>(
+    app: &AppHandle<R>,
+    expected_generation: u64,
+    identity: String,
+    access_token: String,
+) -> Option<NotificationAuthSnapshot> {
+    transition_notification_session_if_generation_expected(
+        app,
+        Some(identity),
+        Some(access_token),
+        true,
+        Some(expected_generation),
+    )
+    .await
+    .and_then(|(_, snapshot)| snapshot)
+}
+
+/// Run a synchronous state mutation/event emission only if the network work
+/// still belongs to the exact identity, token, and generation it captured.
+pub async fn with_current_notification_auth_snapshot<R: Runtime, T>(
+    app: &AppHandle<R>,
+    expected: &NotificationAuthSnapshot,
+    commit: impl FnOnce() -> T,
+) -> Option<T> {
+    let state = app.try_state::<NotificationSessionState>()?;
+    let session = state.inner.lock().await;
+    if session.auth_snapshot().as_ref() != Some(expected) {
+        return None;
+    }
+    Some(commit())
+}
+
+/// Run an async operation only while `expected` remains the active session.
+///
+/// The state mutex is deliberately released before polling `operation`: auth
+/// transitions must not queue behind a slow HTTP request or a native-banner
+/// await. Every transition changes the watch value, which cancels an operation
+/// that has not completed and suppresses any result that races the transition.
+/// This is used for cancellable non-mutating async work such as native banner
+/// presentation. Remote writes use [`with_current_notification_mutation`] so
+/// auth transitions also await an intentional-write lease.
+pub async fn with_current_notification_auth_snapshot_async<R, F, Fut, T>(
+    app: &AppHandle<R>,
+    expected: &NotificationAuthSnapshot,
+    operation: F,
+) -> Option<T>
+where
+    R: Runtime,
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = T>,
+{
+    let state = app.try_state::<NotificationSessionState>()?;
+    let session = state.inner.lock().await;
+    if session.auth_snapshot().as_ref() != Some(expected) {
+        return None;
+    }
+    let mut invalidation = state.invalidation.subscribe();
+    drop(session);
+
+    tokio::select! {
+        biased;
+        changed = invalidation.changed() => {
+            // A dropped sender can only happen while the app is shutting down;
+            // treating it as invalidation prevents an old operation committing.
+            let _ = changed;
+            None
+        }
+        output = operation() => {
+            with_current_notification_auth_snapshot(app, expected, || output).await
+        }
+    }
+}
+
+/// Run a remote mutation only while `expected` remains current.
+///
+/// The lease is acquired while the exact session snapshot is still protected,
+/// then the state mutex is released before network I/O. Unlike a poll or a
+/// banner, a write is deliberately **not** cancelled after dispatch: dropping a
+/// client future cannot prove the server did not receive it. A transition
+/// withdraws the old identity immediately, then waits for this lease through
+/// the bounded server response before publishing the next identity or
+/// returning. Once a transition returns, no previous-account write can still
+/// be executing remotely. Every caller uses `build_client`, whose default
+/// request timeout bounds how long a transition can remain withdrawn.
+pub async fn with_current_notification_mutation<R, F, Fut, T>(
+    app: &AppHandle<R>,
+    expected: &NotificationAuthSnapshot,
+    operation: F,
+) -> Option<T>
+where
+    R: Runtime,
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = T>,
+{
+    let state = app.try_state::<NotificationSessionState>()?;
+    let session = state.inner.lock().await;
+    if session.auth_snapshot().as_ref() != Some(expected) {
+        return None;
+    }
+    let lease = state.mutation_leases.acquire();
+    drop(session);
+
+    let output = operation().await;
+    let result = with_current_notification_auth_snapshot(app, expected, || output).await;
+    drop(lease);
+    result
+}
+
+pub(crate) async fn resolve_notification_auth_snapshot<R: Runtime>(
+    app: &AppHandle<R>,
+) -> Result<NotificationAuthSnapshot, String> {
+    let (_, snapshot) = resolve_notification_credentials(app).await?;
+    Ok(snapshot)
+}
+
+pub(crate) async fn resolve_notification_credentials<R: Runtime>(
+    app: &AppHandle<R>,
+) -> Result<(cognito::CognitoTokens, NotificationAuthSnapshot), String> {
+    let started_generation = notification_session_generation(app)
+        .await
+        .ok_or_else(|| "Notification session state is unavailable".to_string())?;
+    let tokens = match cognito::get_valid_tokens().await {
+        Ok(tokens) => tokens,
+        Err(error) => {
+            let _ = clear_notification_session_if_generation(app, started_generation).await;
+            return Err(error);
+        }
+    };
+    let snapshot = ensure_notification_session_if_generation(
+        app,
+        started_generation,
+        crate::commands::auth::notification_identity_from_tokens(&tokens),
+        tokens.access_token.clone(),
+    )
+    .await
+    .ok_or_else(|| "Authentication changed while resolving credentials".to_string())?;
+    Ok((tokens, snapshot))
+}
+
+pub(crate) async fn replace_notification_credentials<R: Runtime>(
+    app: &AppHandle<R>,
+    tokens: &cognito::CognitoTokens,
+) -> Result<NotificationAuthSnapshot, String> {
+    let state = app
+        .try_state::<NotificationSessionState>()
+        .ok_or_else(|| "Notification session state is unavailable".to_string())?;
+    // Invalidate before token publication so no poll can observe the new token
+    // while the previous account's notification generation is still current.
+    let generation = invalidate_notification_session(app).await;
+    let _credential_write = state.credential_write_gate.lock().await;
+    cognito::set_tokens(tokens).await?;
+    replace_notification_session_if_generation(
+        app,
+        generation,
+        crate::commands::auth::notification_identity_from_tokens(tokens),
+        tokens.access_token.clone(),
+    )
+    .await
+    .ok_or_else(|| "Authentication changed while storing credentials".to_string())
+}
+
+pub(crate) async fn clear_notification_credentials<R: Runtime>(
+    app: &AppHandle<R>,
+) -> Result<(), String> {
+    let state = app
+        .try_state::<NotificationSessionState>()
+        .ok_or_else(|| "Notification session state is unavailable".to_string())?;
+    invalidate_notification_session(app).await;
+    let _credential_write = state.credential_write_gate.lock().await;
+    cognito::clear_tokens().await
+}
+
+pub(crate) async fn refresh_notification_credentials<R: Runtime>(
+    app: &AppHandle<R>,
+) -> Result<cognito::CognitoTokens, String> {
+    let started_generation = notification_session_generation(app)
+        .await
+        .ok_or_else(|| "Notification session state is unavailable".to_string())?;
+
+    let Some(started_from) = cognito::get_tokens().await? else {
+        let _ = clear_notification_session_if_generation(app, started_generation).await;
+        return Err("No tokens found — user is not signed in".to_string());
+    };
+    let refreshed = match cognito::refresh_access_token_classified(&started_from.refresh_token)
+        .await
+    {
+        Ok(tokens) => tokens,
+        Err(error) => {
+            if error.requires_reauth {
+                cognito::invalidate_tokens(&started_from).await?;
+            }
+            match cognito::get_tokens().await? {
+                Some(current) if current != started_from && !cognito::is_expired(&current) => {
+                    current
+                }
+                _ => {
+                    if error.requires_reauth {
+                        let _ =
+                            clear_notification_session_if_generation(app, started_generation).await;
+                    }
+                    return Err(cognito::REAUTH_MESSAGE.to_string());
+                }
+            }
+        }
+    };
+
+    let Some(current) = cognito::persist_refreshed_tokens_if_current(&started_from, &refreshed)
+        .await?
+        .into_current_tokens()
+    else {
+        let _ = clear_notification_session_if_generation(app, started_generation).await;
+        return Err("No tokens found — user is not signed in".to_string());
+    };
+    let current = if cognito::is_expired(&current) {
+        cognito::get_valid_tokens().await?
+    } else {
+        current
+    };
+    ensure_notification_session_if_generation(
+        app,
+        started_generation,
+        crate::commands::auth::notification_identity_from_tokens(&current),
+        current.access_token.clone(),
+    )
+    .await
+    .ok_or_else(|| "Authentication changed while refreshing credentials".to_string())?;
+    Ok(current)
+}
 
 /// Add `delta` to the running unread-DM count and emit `dm:unread-summary` so
 /// the popover badge updates immediately. Called from `do_poll` (the one
@@ -264,6 +834,8 @@ pub fn reset_unread_dms<R: Runtime>(app: &AppHandle<R>) {
     if let Some(state) = app.try_state::<UnreadDmState>() {
         *state.0.lock().unwrap_or_else(|p| p.into_inner()) = 0;
     }
+    let payload = serde_json::json!({ "unreadDms": 0u32, "pendingRequests": 0u32 });
+    let _ = app.emit(EVENT_DM_UNREAD_SUMMARY, &payload);
 }
 
 // ── Public API ───────────────────────────────────────────────────────────────────
@@ -276,7 +848,18 @@ pub async fn poll_dm_once(app: AppHandle) {
         log(LOG_TAG, "DM_NOTIFY_POLL_SKIP poll already in-flight");
         return;
     }
-    do_poll(&app).await;
+    let auth = match resolve_notification_auth_snapshot(&app).await {
+        Ok(auth) => auth,
+        Err(error) => {
+            log(LOG_TAG, &format!("DM_NOTIFY_POLL_AUTH_FAIL {error}"));
+            // Credential resolution already performs a generation-conditional
+            // clear. An unconditional clear here could erase a newer account
+            // that signed in while an older resolver was failing.
+            clear_in_flight();
+            return;
+        }
+    };
+    do_poll(&app, &auth).await;
     clear_in_flight();
 }
 
@@ -605,17 +1188,15 @@ pub async fn respond_dm_request(
     pair_key: String,
     action: String,
 ) -> Result<(), String> {
+    let auth = current_notification_auth_snapshot(&app)
+        .await
+        .ok_or_else(|| "Not signed in".to_string())?;
     let key = pair_key.trim();
     if key.is_empty() {
         return Err("pairKey must not be empty".to_string());
     }
     let path =
         respond_action_path(&action).ok_or_else(|| format!("Unsupported action: {action}"))?;
-
-    let access_token = cognito::get_valid_access_token().await.map_err(|e| {
-        log(LOG_TAG, &format!("DM_NOTIFY_RESPOND_FAIL auth: {e}"));
-        format!("Not signed in: {e}")
-    })?;
 
     let base_url = resolve_vault_api_url()
         .map(|u| u.trim_end_matches('/').to_string())
@@ -627,16 +1208,34 @@ pub async fn respond_dm_request(
     let url = format!("{}/v1/notify/connections/{}", base_url, path);
     let payload = serde_json::json!({ "pairKey": key });
 
-    let resp = build_client()
-        .post(&url)
-        .header("authorization", format!("Bearer {}", access_token))
-        .json(&payload)
-        .send()
-        .await
-        .map_err(|e| {
-            log(LOG_TAG, &format!("DM_NOTIFY_RESPOND_FAIL network: {e}"));
-            format!("Network error: {e}")
-        })?;
+    // The request action is account-owned. Dispatch it through the same
+    // response-bounded mutation lease as inbox ACKs so an account switch
+    // between opening the Requests pane and clicking Accept/Decline cannot
+    // publish a new account while the prior account can still mutate remotely.
+    let sent = with_current_notification_mutation(&app, &auth, || async {
+        build_client()
+            .post(&url)
+            .header("authorization", format!("Bearer {}", auth.access_token))
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| {
+                log(LOG_TAG, &format!("DM_NOTIFY_RESPOND_FAIL network: {e}"));
+                format!("Network error: {e}")
+            })
+    })
+    .await;
+    let resp = match sent {
+        None => {
+            log(
+                LOG_TAG,
+                &format!("DM_NOTIFY_RESPOND_STALE action={path} before remote dispatch"),
+            );
+            return Ok(());
+        }
+        Some(Err(error)) => return Err(error),
+        Some(Ok(resp)) => resp,
+    };
 
     let status = resp.status();
     if !status.is_success() {
@@ -654,16 +1253,27 @@ pub async fn respond_dm_request(
         );
     }
 
-    // The request has left the pending set — drop it from the seen-set so a later
-    // poll doesn't treat its disappearance as a second state change.
-    if let Some(state) = app.try_state::<SeenRequestState>() {
-        let mut guard = state.0.lock().unwrap_or_else(|p| p.into_inner());
-        guard.pair_keys.remove(key);
-    }
-
     let new_state = respond_action_state(&action);
-    let update = serde_json::json!({ "pairKey": key, "state": new_state });
-    let _ = app.emit(EVENT_DM_REQUEST_UPDATE, &update);
+    let committed = with_current_notification_auth_snapshot(&app, &auth, || {
+        // The request has left the pending set. Advance the local revision
+        // before mutating so an older list GET cannot restore the pair.
+        if let Some(state) = app.try_state::<SeenRequestState>() {
+            let mut guard = state.0.lock().unwrap_or_else(|p| p.into_inner());
+            guard.invalidate_snapshots();
+            guard.pair_keys.remove(key);
+        }
+        let update = serde_json::json!({ "pairKey": key, "state": new_state });
+        let _ = app.emit(EVENT_DM_REQUEST_UPDATE, &update);
+    })
+    .await;
+
+    if committed.is_none() {
+        log(
+            LOG_TAG,
+            &format!("DM_NOTIFY_RESPOND_STALE action={path} state={new_state}"),
+        );
+        return Ok(());
+    }
 
     log(
         LOG_TAG,
@@ -676,11 +1286,20 @@ pub async fn respond_dm_request(
 /// Folded into the SINGLE `do_poll` path (NOT a parallel poller). Best-effort:
 /// any failure logs and returns without disturbing the DM-inbox poll. The first
 /// poll seeds the seen-set silently (no banner for the pre-launch backlog).
-async fn poll_requests(app: &AppHandle, base_url: &str, access_token: &str) {
+async fn poll_requests(app: &AppHandle, base_url: &str, auth: &NotificationAuthSnapshot) {
+    let Some(state) = app.try_state::<SeenRequestState>() else {
+        return;
+    };
+    let snapshot_revision = state
+        .0
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .begin_snapshot();
+
     let url = format!("{}/v1/notify/connections/requests", base_url);
     let resp = build_client()
         .get(&url)
-        .header("authorization", format!("Bearer {}", access_token))
+        .header("authorization", format!("Bearer {}", auth.access_token))
         .send()
         .await;
 
@@ -708,46 +1327,54 @@ async fn poll_requests(app: &AppHandle, base_url: &str, access_token: &str) {
         }
     };
 
-    let Some(state) = app.try_state::<SeenRequestState>() else {
-        return;
-    };
-
-    let (new_requests, removed, first_run) = {
+    let committed = with_current_notification_auth_snapshot(app, auth, || {
         let mut guard = state.0.lock().unwrap_or_else(|p| p.into_inner());
+        if !guard.snapshot_is_current(snapshot_revision) {
+            return false;
+        }
         let first_run = !guard.initialized;
         let (new_requests, removed) = diff_requests(&guard.pair_keys, &list.requests);
         // Reconcile the seen-set to exactly the current pending pairKeys.
         guard.pair_keys = list.requests.iter().map(|r| r.pair_key.clone()).collect();
         guard.initialized = true;
-        (new_requests, removed, first_run)
-    };
+        drop(guard);
 
-    if first_run {
-        // Seed silently — the user already had these before launch.
+        if first_run {
+            // Seed silently — the user already had these before launch.
+            log(
+                LOG_TAG,
+                &format!("DM_NOTIFY_REQ_POLL_SEED count={}", list.requests.len()),
+            );
+            return true;
+        }
+
+        for req in &new_requests {
+            log(
+                LOG_TAG,
+                &format!(
+                    "DM_NOTIFY_REQ_NEW from={} pair={}",
+                    req.from_email, req.pair_key
+                ),
+            );
+            let _ = app.emit(EVENT_DM_REQUEST_NEW, req);
+        }
+        for pair_key in &removed {
+            // The request left the pending set. We can't tell accept vs decline
+            // from its disappearance alone, so report a neutral "resolved" flip.
+            let update = serde_json::json!({ "pairKey": pair_key, "state": "resolved" });
+            log(LOG_TAG, &format!("DM_NOTIFY_REQ_RESOLVED pair={pair_key}"));
+            let _ = app.emit(EVENT_DM_REQUEST_UPDATE, &update);
+        }
+        true
+    })
+    .await
+    .unwrap_or(false);
+
+    if !committed {
         log(
             LOG_TAG,
-            &format!("DM_NOTIFY_REQ_POLL_SEED count={}", list.requests.len()),
+            "DM_NOTIFY_REQ_POLL_STALE auth generation or local request revision changed",
         );
-        return;
-    }
-
-    for req in &new_requests {
-        log(
-            LOG_TAG,
-            &format!(
-                "DM_NOTIFY_REQ_NEW from={} pair={}",
-                req.from_email, req.pair_key
-            ),
-        );
-        let _ = app.emit(EVENT_DM_REQUEST_NEW, req);
-    }
-    for pair_key in &removed {
-        // The request left the pending set. We can't tell accept vs decline from
-        // its disappearance alone, so report a neutral "resolved" flip; on accept
-        // the held message arrives via the DM inbox poll and renders the thread.
-        let update = serde_json::json!({ "pairKey": pair_key, "state": "resolved" });
-        log(LOG_TAG, &format!("DM_NOTIFY_REQ_RESOLVED pair={pair_key}"));
-        let _ = app.emit(EVENT_DM_REQUEST_UPDATE, &update);
     }
 }
 
@@ -895,7 +1522,7 @@ fn parse_reaction_poll_payload(
 /// any share whose aggregate set changed since the last poll. Folded into the
 /// SINGLE `do_poll` path right beside `poll_reactions` (NOT a parallel poller).
 /// Best-effort; no-op when no share surface is registered.
-async fn poll_share_reactions(app: &AppHandle, base_url: &str, access_token: &str) {
+async fn poll_share_reactions(app: &AppHandle, base_url: &str, auth: &NotificationAuthSnapshot) {
     let event_ids = {
         let Some(state) = app.try_state::<WatchedSharesState>() else {
             return;
@@ -917,7 +1544,7 @@ async fn poll_share_reactions(app: &AppHandle, base_url: &str, access_token: &st
         );
         let resp = build_client()
             .get(&url)
-            .header("authorization", format!("Bearer {}", access_token))
+            .header("authorization", format!("Bearer {}", auth.access_token))
             .send()
             .await;
 
@@ -961,26 +1588,21 @@ async fn poll_share_reactions(app: &AppHandle, base_url: &str, access_token: &st
             }
         };
 
-        // Compare against the last-emitted snapshot; emit only on a change.
-        // Bail if the watch was cleared/replaced while we were fetching.
+        // Compare, mutate, and emit inside the same auth-snapshot guard. This
+        // prevents an account switch from landing after local reconciliation
+        // but before event publication.
         let snapshot = serde_json::to_string(&reactions).unwrap_or_default();
-        let changed = {
+        let committed = with_current_notification_auth_snapshot(app, auth, || {
             let Some(state) = app.try_state::<WatchedSharesState>() else {
-                return;
+                return false;
             };
             let mut guard = state.0.lock().unwrap_or_else(|p| p.into_inner());
-            if !guard.event_ids.contains(event_id) {
-                continue; // this share is no longer watched — stale fetch
+            if !guard.event_ids.contains(event_id)
+                || guard.last_seen.get(event_id) == Some(&snapshot)
+            {
+                return false;
             }
-            if guard.last_seen.get(event_id) == Some(&snapshot) {
-                false
-            } else {
-                guard.last_seen.insert(event_id.clone(), snapshot);
-                true
-            }
-        };
-
-        if changed {
+            guard.last_seen.insert(event_id.clone(), snapshot);
             let payload = crate::commands::messages::MessageReactions {
                 message_scope: scope.clone(),
                 message_id: event_id.to_string(),
@@ -991,6 +1613,15 @@ async fn poll_share_reactions(app: &AppHandle, base_url: &str, access_token: &st
                 &format!("DM_NOTIFY_SHARE_REACTION_CHANGED scope={scope}"),
             );
             let _ = app.emit(EVENT_MESSAGE_REACTION, &payload);
+            true
+        })
+        .await;
+        if committed.is_none() {
+            log(
+                LOG_TAG,
+                "DM_NOTIFY_SHARE_REACTION_POLL_STALE auth snapshot changed",
+            );
+            return;
         }
     }
 }
@@ -1000,7 +1631,7 @@ async fn poll_share_reactions(app: &AppHandle, base_url: &str, access_token: &st
 /// into the SINGLE `do_poll` path (NOT a parallel poller). Best-effort: any
 /// failure logs and returns without disturbing the rest of the poll. No-op when
 /// no conversation is open.
-async fn poll_reactions(app: &AppHandle, base_url: &str, access_token: &str) {
+async fn poll_reactions(app: &AppHandle, base_url: &str, auth: &NotificationAuthSnapshot) {
     // Snapshot the descriptor without holding the lock across the network calls.
     let (scope, message_ids) = {
         let Some(state) = app.try_state::<ActiveConversationState>() else {
@@ -1022,7 +1653,7 @@ async fn poll_reactions(app: &AppHandle, base_url: &str, access_token: &str) {
         );
         let resp = build_client()
             .get(&url)
-            .header("authorization", format!("Bearer {}", access_token))
+            .header("authorization", format!("Bearer {}", auth.access_token))
             .send()
             .await;
 
@@ -1063,26 +1694,19 @@ async fn poll_reactions(app: &AppHandle, base_url: &str, access_token: &str) {
             }
         };
 
-        // Compare against the last-emitted snapshot; emit only on a change. Bail
-        // if the conversation was closed/swapped while we were fetching.
+        // Compare, mutate, and emit under the same auth-snapshot guard.
         let snapshot = serde_json::to_string(&reactions).unwrap_or_default();
-        let changed = {
+        let committed = with_current_notification_auth_snapshot(app, auth, || {
             let Some(state) = app.try_state::<ActiveConversationState>() else {
-                return;
+                return false;
             };
             let mut guard = state.0.lock().unwrap_or_else(|p| p.into_inner());
-            if guard.scope.as_deref() != Some(scope.as_str()) {
-                return; // conversation closed or swapped — stale fetch
+            if guard.scope.as_deref() != Some(scope.as_str())
+                || guard.last_seen.get(message_id) == Some(&snapshot)
+            {
+                return false;
             }
-            if guard.last_seen.get(message_id) == Some(&snapshot) {
-                false
-            } else {
-                guard.last_seen.insert(message_id.clone(), snapshot);
-                true
-            }
-        };
-
-        if changed {
+            guard.last_seen.insert(message_id.clone(), snapshot);
             let payload = crate::commands::messages::MessageReactions {
                 message_scope: scope.clone(),
                 message_id: message_id.clone(),
@@ -1093,6 +1717,15 @@ async fn poll_reactions(app: &AppHandle, base_url: &str, access_token: &str) {
                 &format!("DM_NOTIFY_REACTION_CHANGED scope={scope} id={message_id}"),
             );
             let _ = app.emit(EVENT_MESSAGE_REACTION, &payload);
+            true
+        })
+        .await;
+        if committed.is_none() {
+            log(
+                LOG_TAG,
+                "DM_NOTIFY_REACTION_POLL_STALE auth snapshot changed",
+            );
+            return;
         }
     }
 }
@@ -1326,7 +1959,7 @@ pub fn set_active_thread(
 /// open panel hasn't seen yet. Folded into the SINGLE `do_poll` path (NOT a
 /// parallel poller). Best-effort: any failure logs and returns without disturbing
 /// the rest of the poll. No-op when no thread is open.
-async fn poll_active_thread(app: &AppHandle, base_url: &str, access_token: &str) {
+async fn poll_active_thread(app: &AppHandle, base_url: &str, auth: &NotificationAuthSnapshot) {
     // Snapshot the active-thread descriptor without holding the lock across the
     // network call.
     let descriptor = {
@@ -1356,7 +1989,7 @@ async fn poll_active_thread(app: &AppHandle, base_url: &str, access_token: &str)
     );
     let resp = build_client()
         .get(&url)
-        .header("authorization", format!("Bearer {}", access_token))
+        .header("authorization", format!("Bearer {}", auth.access_token))
         .send()
         .await;
 
@@ -1384,16 +2017,15 @@ async fn poll_active_thread(app: &AppHandle, base_url: &str, access_token: &str)
         }
     };
 
-    // Compute the genuinely-new replies under the lock, then reconcile the
-    // seen-set. Bail (without emitting) if the panel was closed or swapped while
-    // we were fetching.
-    let new_replies: Vec<ThreadReply> = {
+    // Reconcile and emit under the same auth-snapshot guard, so stale account
+    // work cannot mutate the active thread or leak an event to the new account.
+    let committed = with_current_notification_auth_snapshot(app, auth, || {
         let Some(state) = app.try_state::<ActiveThreadState>() else {
-            return;
+            return false;
         };
         let mut guard = state.0.lock().unwrap_or_else(|p| p.into_inner());
         if guard.root_event_id.as_deref() != Some(root.as_str()) {
-            return; // panel closed or swapped — stale fetch
+            return false;
         }
         let fresh: Vec<ThreadReply> = view
             .replies
@@ -1404,29 +2036,30 @@ async fn poll_active_thread(app: &AppHandle, base_url: &str, access_token: &str)
         for r in &fresh {
             guard.seen_reply_ids.insert(r.event_id.clone());
         }
-        fresh
-    };
+        drop(guard);
 
-    if new_replies.is_empty() {
-        return;
-    }
-
-    // Emit oldest→newest so the panel appends in chronological order. The server
-    // returns newest-first, so reverse.
-    for reply in new_replies.iter().rev() {
-        let payload = serde_json::json!({
-            "rootEventId": root,
-            "reply": reply,
-            "replyCount": view.reply_count,
-        });
-        log(
-            LOG_TAG,
-            &format!(
-                "DM_NOTIFY_THREAD_NEW_REPLY root={root} reply={}",
-                reply.event_id
-            ),
-        );
-        let _ = app.emit(EVENT_THREAD_NEW_REPLY, &payload);
+        // Emit oldest→newest so the panel appends in chronological order. The
+        // server returns newest-first, so reverse.
+        for reply in fresh.iter().rev() {
+            let payload = serde_json::json!({
+                "rootEventId": root,
+                "reply": reply,
+                "replyCount": view.reply_count,
+            });
+            log(
+                LOG_TAG,
+                &format!(
+                    "DM_NOTIFY_THREAD_NEW_REPLY root={root} reply={}",
+                    reply.event_id
+                ),
+            );
+            let _ = app.emit(EVENT_THREAD_NEW_REPLY, &payload);
+        }
+        true
+    })
+    .await;
+    if committed.is_none() {
+        log(LOG_TAG, "DM_NOTIFY_THREAD_POLL_STALE auth snapshot changed");
     }
 }
 
@@ -1451,6 +2084,9 @@ struct ChannelDiff {
     new_messages: Vec<(String, u32)>,
     /// channelIds that are brand-new to the caller this poll (fire updated).
     new_channels: Vec<String>,
+    /// Exact count changes, including decreases and channels removed from the
+    /// caller's visible set (represented as zero).
+    unread_changes: Vec<(String, u32)>,
 }
 
 /// Diff the freshly-listed channels against the last-observed unread map.
@@ -1465,6 +2101,9 @@ fn diff_channels(
     let mut diff = ChannelDiff::default();
     for ch in current {
         let unread = ch.unread.unwrap_or(0);
+        if seen_unread.get(&ch.channel_id).copied() != Some(unread) {
+            diff.unread_changes.push((ch.channel_id.clone(), unread));
+        }
         match seen_unread.get(&ch.channel_id) {
             None => {
                 // Brand-new channel/invite this poll.
@@ -1479,6 +2118,14 @@ fn diff_channels(
             _ => {}
         }
     }
+    for channel_id in seen_unread.keys() {
+        if !current
+            .iter()
+            .any(|channel| &channel.channel_id == channel_id)
+        {
+            diff.unread_changes.push((channel_id.clone(), 0));
+        }
+    }
     diff
 }
 
@@ -1486,11 +2133,20 @@ fn diff_channels(
 /// SINGLE `do_poll` path (NOT a parallel poller). Best-effort: any failure logs
 /// and returns without disturbing the DM-inbox poll. The first poll seeds the
 /// unread map silently (no events for the pre-launch backlog).
-async fn poll_channels(app: &AppHandle, base_url: &str, access_token: &str) {
+async fn poll_channels(app: &AppHandle, base_url: &str, auth: &NotificationAuthSnapshot) {
+    let Some(state) = app.try_state::<SeenChannelState>() else {
+        return;
+    };
+    let snapshot_revision = state
+        .0
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .begin_snapshot();
+
     let url = format!("{}/v1/notify/channels", base_url);
     let resp = build_client()
         .get(&url)
-        .header("authorization", format!("Bearer {}", access_token))
+        .header("authorization", format!("Bearer {}", auth.access_token))
         .send()
         .await;
 
@@ -1521,12 +2177,11 @@ async fn poll_channels(app: &AppHandle, base_url: &str, access_token: &str) {
         }
     };
 
-    let Some(state) = app.try_state::<SeenChannelState>() else {
-        return;
-    };
-
-    let (diff, channels, first_run) = {
+    let committed = with_current_notification_auth_snapshot(app, auth, || {
         let mut guard = state.0.lock().unwrap_or_else(|p| p.into_inner());
+        if !guard.snapshot_is_current(snapshot_revision) {
+            return false;
+        }
         let first_run = !guard.initialized;
         let diff = diff_channels(&guard.unread_by_id, &list.channels);
         // Reconcile the unread map to exactly the current channels.
@@ -1536,39 +2191,55 @@ async fn poll_channels(app: &AppHandle, base_url: &str, access_token: &str) {
             .map(|c| (c.channel_id.clone(), c.unread.unwrap_or(0)))
             .collect();
         guard.initialized = true;
-        (diff, list.channels, first_run)
-    };
+        drop(guard);
 
-    if first_run {
-        log(
-            LOG_TAG,
-            &format!("DM_NOTIFY_CHAN_POLL_SEED count={}", channels.len()),
-        );
-        return;
-    }
-
-    // Emit `channel:updated` for brand-new channels/invites (full payload so the
-    // rail can render the row without a separate fetch).
-    for channel_id in &diff.new_channels {
-        if let Some(ch) = channels.iter().find(|c| &c.channel_id == channel_id) {
-            log(LOG_TAG, &format!("DM_NOTIFY_CHAN_UPDATED id={channel_id}"));
-            let _ = app.emit(EVENT_CHANNEL_UPDATED, ch);
+        if first_run {
+            log(
+                LOG_TAG,
+                &format!("DM_NOTIFY_CHAN_POLL_SEED count={}", list.channels.len()),
+            );
+            return true;
         }
-    }
-    // Emit `channel:new-message` for channels whose unread grew.
-    for (channel_id, unread) in &diff.new_messages {
+
+        // Emit `channel:updated` for brand-new channels/invites (full payload so
+        // the rail can render the row without a separate fetch).
+        for channel_id in &diff.new_channels {
+            if let Some(ch) = list.channels.iter().find(|c| &c.channel_id == channel_id) {
+                log(LOG_TAG, &format!("DM_NOTIFY_CHAN_UPDATED id={channel_id}"));
+                let _ = app.emit(EVENT_CHANNEL_UPDATED, ch);
+            }
+        }
+        // Publish every exact unread transition (increase, decrease, or removal)
+        // before increase-only content refresh signals.
+        for (channel_id, unread) in &diff.unread_changes {
+            let payload = serde_json::json!({ "channelId": channel_id, "unread": unread });
+            let _ = app.emit(EVENT_CHANNEL_UNREAD_CHANGED, &payload);
+        }
+        // Emit `channel:new-message` for channels whose unread grew.
+        for (channel_id, unread) in &diff.new_messages {
+            log(
+                LOG_TAG,
+                &format!("DM_NOTIFY_CHAN_NEW_MESSAGE id={channel_id} unread={unread}"),
+            );
+            let payload = serde_json::json!({ "channelId": channel_id, "unread": unread });
+            let _ = app.emit(EVENT_CHANNEL_NEW_MESSAGE, &payload);
+        }
+        true
+    })
+    .await
+    .unwrap_or(false);
+
+    if !committed {
         log(
             LOG_TAG,
-            &format!("DM_NOTIFY_CHAN_NEW_MESSAGE id={channel_id} unread={unread}"),
+            "DM_NOTIFY_CHAN_POLL_STALE auth generation or local unread revision changed",
         );
-        let payload = serde_json::json!({ "channelId": channel_id, "unread": unread });
-        let _ = app.emit(EVENT_CHANNEL_NEW_MESSAGE, &payload);
     }
 }
 
 // ── Core poll logic (mirrors share_notify::do_poll) ─────────────────────────────
 
-async fn do_poll(app: &AppHandle) {
+async fn do_poll(app: &AppHandle, auth: &NotificationAuthSnapshot) {
     if !dm_notifications_enabled() {
         log(LOG_TAG, "DM_NOTIFY_POLL_SKIP dmNotifications disabled");
         return;
@@ -1578,14 +2249,6 @@ async fn do_poll(app: &AppHandle) {
         Ok(id) => id,
         Err(e) => {
             log(LOG_TAG, &format!("DM_NOTIFY_POLL_ERROR machineId: {e}"));
-            return;
-        }
-    };
-
-    let access_token = match cognito::get_valid_access_token().await {
-        Ok(t) => t,
-        Err(e) => {
-            log(LOG_TAG, &format!("DM_NOTIFY_POLL_AUTH_FAIL {e}"));
             return;
         }
     };
@@ -1603,33 +2266,33 @@ async fn do_poll(app: &AppHandle) {
     // fire even when the DM inbox is empty (the inbox path returns early on an
     // empty body). Best-effort: any failure logs and returns without disturbing
     // the DM-inbox poll below.
-    poll_requests(app, &base_url, &access_token).await;
+    poll_requests(app, &base_url, auth).await;
 
     // Fold channel-activity polling into the SAME single path (US-018) — a
     // "channel" wake on the person topic routes here. Best-effort; emits
     // `channel:new-message` / `channel:updated`. NOT a parallel poller.
-    poll_channels(app, &base_url, &access_token).await;
+    poll_channels(app, &base_url, auth).await;
 
     // Fold thread-activity polling into the SAME single path (US-022) — a
     // "thread" wake on the person topic routes here. Re-fetches whichever thread
     // the ThreadPanel currently has open and emits `thread:new-reply` for replies
     // it hasn't surfaced yet. No-op when no panel is open. NOT a parallel poller.
-    poll_active_thread(app, &base_url, &access_token).await;
+    poll_active_thread(app, &base_url, auth).await;
 
     // Fold reaction-activity polling into the SAME single path (US-025) — a
     // "reaction" wake on the person topic routes here. Re-fetches reactions for
     // whichever conversation is open and emits `message:reaction` for messages
     // whose aggregate set changed. No-op when no conversation is open. NOT a
     // parallel poller.
-    poll_reactions(app, &base_url, &access_token).await;
+    poll_reactions(app, &base_url, auth).await;
 
     // Share-reaction polling rides the same wake: a "reaction" wake for a
     // `share:` scope arrives on the person topic exactly like a `dm:` one, so
     // re-fetching the watched shares here keeps every visible share surface
     // live without a parallel poller.
-    poll_share_reactions(app, &base_url, &access_token).await;
+    poll_share_reactions(app, &base_url, auth).await;
 
-    let entry = read_cursor_entry(&machine_id);
+    let entry = read_cursor_entry_for_account(&machine_id, &auth.identity);
     let since = entry.cursor.clone();
     let url = match since.as_deref() {
         Some(s) => format!("{}/v1/notify/inbox?since={}&limit=50", base_url, s),
@@ -1640,7 +2303,7 @@ async fn do_poll(app: &AppHandle) {
 
     let resp = build_client()
         .get(&url)
-        .header("authorization", format!("Bearer {}", access_token))
+        .header("authorization", format!("Bearer {}", auth.access_token))
         .send()
         .await;
 
@@ -1672,6 +2335,17 @@ async fn do_poll(app: &AppHandle) {
         }
     };
 
+    if with_current_notification_auth_snapshot(app, auth, || ())
+        .await
+        .is_none()
+    {
+        log(
+            LOG_TAG,
+            "DM_NOTIFY_POLL_STALE authenticated notification snapshot changed",
+        );
+        return;
+    }
+
     if body.events.is_empty() {
         log(LOG_TAG, "DM_NOTIFY_POLL_OK no new DMs");
         return;
@@ -1690,8 +2364,9 @@ async fn do_poll(app: &AppHandle) {
         .max()
         .unwrap_or_default();
     let (fresh, updated_notified) = partition_unnotified(&body.events, &entry.notified);
-    write_cursor_entry(
+    write_cursor_entry_for_account(
         &machine_id,
+        &auth.identity,
         &CursorEntry {
             cursor: (!newest.is_empty()).then(|| newest.to_string()),
             notified: updated_notified,
@@ -1723,12 +2398,21 @@ async fn do_poll(app: &AppHandle) {
     // Extend the SINGLE poll path with unread accounting (US-009) — NOT a
     // parallel poller. Every freshly-polled DM increments the running unread
     // count and emits `dm:unread-summary` so the popover Messages badge stays
-    // live. The count is reset when the Messages window opens.
-    bump_unread(app, fresh.len() as u32);
-
-    // Windows parity: persist exactly the DMs whose notifications are emitted
-    // so dismissed toasts remain visible in local notification history.
-    crate::commands::notification_history::record_dm_events(&fresh);
+    // live. The count is reset when the Messages window opens. Keep the
+    // account-owned state under the generation check, but do not retain that
+    // lock while showing banners or ACKing the server.
+    if with_current_notification_auth_snapshot(app, auth, || {
+        bump_unread(app, fresh.len() as u32);
+        // Windows parity: persist exactly the DMs whose notifications are
+        // emitted so dismissed toasts remain visible in local history.
+        crate::commands::notification_history::record_dm_events(&fresh);
+    })
+    .await
+    .is_none()
+    {
+        log(LOG_TAG, "DM_NOTIFY_POLL_STALE before unread accounting");
+        return;
+    }
 
     // SPIKE: when the custom banner is enabled, route every DM through the
     // in-app banner (commands::banner) — event-driven, no blocking Cocoa run
@@ -1742,8 +2426,17 @@ async fn do_poll(app: &AppHandle) {
             &format!("DM_NOTIFY_CUSTOM_BANNER {} DM(s)", fresh.len()),
         );
         for dm in &fresh {
-            if let Err(e) = crate::commands::banner::show_dm_banner(app.clone(), dm.clone()).await {
-                log(LOG_TAG, &format!("DM_NOTIFY_BANNER_FAIL err={e}"));
+            match with_current_notification_auth_snapshot_async(app, auth, || {
+                crate::commands::banner::show_dm_banner(app.clone(), dm.clone())
+            })
+            .await
+            {
+                Some(Err(e)) => log(LOG_TAG, &format!("DM_NOTIFY_BANNER_FAIL err={e}")),
+                None => {
+                    log(LOG_TAG, "DM_NOTIFY_BANNER_STALE auth session changed");
+                    return;
+                }
+                Some(Ok(())) => {}
             }
         }
         let event_ids: Vec<String> = fresh.iter().map(|e| e.event_id.clone()).collect();
@@ -1752,8 +2445,11 @@ async fn do_poll(app: &AppHandle) {
         // a quick app quit, leaving the web/other-device unread badge stuck even
         // though this Mac already showed + dismissed the DM. post_ack is
         // best-effort + uses a timed client, so awaiting can't hang the poll.
-        post_ack(event_ids).await;
-        let _ = app.emit(EVENT_DM_NEW_EVENTS, &fresh);
+        post_ack(app, auth, event_ids).await;
+        let _ = with_current_notification_auth_snapshot(app, auth, || {
+            app.emit(EVENT_DM_NEW_EVENTS, &fresh)
+        })
+        .await;
         return;
     }
 
@@ -1777,83 +2473,39 @@ async fn do_poll(app: &AppHandle) {
         for dm in &fresh {
             let title = dm.from_display_name.clone();
             let message = dm.body.clone();
-            let has_prompt = dm
-                .prompt
-                .as_deref()
-                .map(|s| !s.trim().is_empty())
-                .unwrap_or(false);
-            let has_details = dm
-                .details
-                .as_deref()
-                .map(|s| !s.trim().is_empty())
-                .unwrap_or(false);
-            let app_for_thread = app.clone();
-            let event_clone = dm.clone();
+            let title_for_log = title.clone();
+            let dispatched = with_current_notification_mutation(app, auth, || async move {
+                tokio::task::spawn_blocking(move || {
+                    // Native fallback is intentionally fire-and-forget. The
+                    // custom banner/widget path above owns interactive actions;
+                    // waiting for a native click here would keep an account
+                    // transition blocked until the user acted.
+                    let mut notification = mac_notification_sys::Notification::default();
+                    notification
+                        .title(&title)
+                        .message(&message)
+                        .asynchronous(true);
+                    notification.send()
+                })
+                .await
+            })
+            .await;
 
-            std::thread::spawn(move || {
-                let mut notification = mac_notification_sys::Notification::default();
-                notification.title(&title).message(&message);
-
-                let mut actions: Vec<&str> = Vec::new();
-                if has_prompt {
-                    actions.push("Copy prompt");
+            match dispatched {
+                None => {
+                    log(LOG_TAG, "DM_NOTIFY_TOAST_STALE auth session changed");
+                    return;
                 }
-                if has_details {
-                    actions.push("Open details");
-                }
-                if !actions.is_empty() {
-                    notification.main_button(mac_notification_sys::MainButton::DropdownActions(
-                        "Actions", &actions,
-                    ));
-                }
-
-                let response =
-                    match crate::commands::share_notify::BlockingNotifyGuard::try_acquire() {
-                        Some(guard) => {
-                            let r = notification.wait_for_click(true).send();
-                            drop(guard);
-                            r
-                        }
-                        None => notification.send(),
-                    };
-
-                match response {
-                    Ok(resp) => {
-                        let action: Option<&'static str> = match resp {
-                            mac_notification_sys::NotificationResponse::ActionButton(name)
-                                if name.eq_ignore_ascii_case("copy prompt") =>
-                            {
-                                Some("copy")
-                            }
-                            mac_notification_sys::NotificationResponse::ActionButton(name)
-                                if name.eq_ignore_ascii_case("open details") =>
-                            {
-                                Some("open")
-                            }
-                            mac_notification_sys::NotificationResponse::Click => Some("open"),
-                            _ => None,
-                        };
-
-                        if let Some(action) = action {
-                            let payload = NotificationDmActionEvent {
-                                action: action.to_string(),
-                                event: event_clone,
-                            };
-                            if let Err(e) =
-                                app_for_thread.emit(EVENT_NOTIFICATION_DM_ACTION, &payload)
-                            {
-                                log(
-                                    LOG_TAG,
-                                    &format!(
-                                        "DM_NOTIFY_EMIT_ACTION_FAILED action={action} err={e}"
-                                    ),
-                                );
-                            }
-                        }
-                    }
-                    Err(e) => log(LOG_TAG, &format!("DM_NOTIFY_SEND_FAILED err={e}")),
-                }
-            });
+                Some(Ok(Ok(_))) => log(
+                    LOG_TAG,
+                    &format!("DM_NOTIFY_TOAST_SHOWN from={title_for_log}"),
+                ),
+                Some(Ok(Err(error))) => log(LOG_TAG, &format!("DM_NOTIFY_SEND_FAILED err={error}")),
+                Some(Err(error)) => log(
+                    LOG_TAG,
+                    &format!("DM_NOTIFY_SEND_WORKER_FAILED err={error}"),
+                ),
+            }
         }
     }
 
@@ -1863,15 +2515,21 @@ async fn do_poll(app: &AppHandle) {
         for dm in &fresh {
             let title = dm.from_display_name.clone();
             let message = dm.body.clone();
-            match app
-                .notification()
-                .builder()
-                .title(&title)
-                .body(&message)
-                .show()
-            {
-                Ok(()) => log(LOG_TAG, &format!("DM_NOTIFY_TOAST_SHOWN from={title}")),
-                Err(e) => log(LOG_TAG, &format!("DM_NOTIFY_SEND_FAILED err={e}")),
+            let dispatched = with_current_notification_mutation(app, auth, || async {
+                app.notification()
+                    .builder()
+                    .title(&title)
+                    .body(&message)
+                    .show()
+            })
+            .await;
+            match dispatched {
+                None => {
+                    log(LOG_TAG, "DM_NOTIFY_TOAST_STALE auth session changed");
+                    return;
+                }
+                Some(Ok(())) => log(LOG_TAG, &format!("DM_NOTIFY_TOAST_SHOWN from={title}")),
+                Some(Err(error)) => log(LOG_TAG, &format!("DM_NOTIFY_SEND_FAILED err={error}")),
             }
         }
     }
@@ -1881,20 +2539,16 @@ async fn do_poll(app: &AppHandle) {
     // so the server-side unread decrement reliably lands within the poll's
     // lifetime; post_ack is best-effort + uses a timed client, so it can't hang.
     let event_ids: Vec<String> = fresh.iter().map(|e| e.event_id.clone()).collect();
-    post_ack(event_ids).await;
+    post_ack(app, auth, event_ids).await;
 
-    let _ = app.emit(EVENT_DM_NEW_EVENTS, &fresh);
+    let _ = with_current_notification_auth_snapshot(app, auth, || {
+        app.emit(EVENT_DM_NEW_EVENTS, &fresh)
+    })
+    .await;
 }
 
 /// POST `/v1/notify/inbox/ack`. Best-effort: errors logged, never surfaced.
-async fn post_ack(event_ids: Vec<String>) {
-    let access_token = match cognito::get_valid_access_token().await {
-        Ok(t) => t,
-        Err(e) => {
-            log(LOG_TAG, &format!("DM_NOTIFY_ACK_AUTH_FAIL {e}"));
-            return;
-        }
-    };
+async fn post_ack(app: &AppHandle, auth: &NotificationAuthSnapshot, event_ids: Vec<String>) {
     let base_url = match resolve_vault_api_url() {
         Ok(u) => u.trim_end_matches('/').to_string(),
         Err(e) => {
@@ -1905,24 +2559,30 @@ async fn post_ack(event_ids: Vec<String>) {
     let url = format!("{}/v1/notify/inbox/ack", base_url);
     let body = serde_json::json!({ "eventIds": event_ids });
 
-    match build_client()
-        .post(&url)
-        .header("authorization", format!("Bearer {}", access_token))
-        .json(&body)
-        .send()
-        .await
-    {
-        Ok(r) if r.status().is_success() => {
+    let token = auth.access_token.clone();
+    let sent = with_current_notification_mutation(app, auth, move || async move {
+        build_client()
+            .post(&url)
+            .header("authorization", format!("Bearer {token}"))
+            .json(&body)
+            .send()
+            .await
+    })
+    .await;
+
+    match sent {
+        None => log(LOG_TAG, "DM_NOTIFY_ACK_STALE auth session changed"),
+        Some(Ok(r)) if r.status().is_success() => {
             log(
                 LOG_TAG,
                 &format!("DM_NOTIFY_ACK_OK {} DM(s)", event_ids.len()),
             );
         }
-        Ok(r) => log(
+        Some(Ok(r)) => log(
             LOG_TAG,
             &format!("DM_NOTIFY_ACK_ERROR status={}", r.status()),
         ),
-        Err(e) => log(LOG_TAG, &format!("DM_NOTIFY_ACK_ERROR {e}")),
+        Some(Err(e)) => log(LOG_TAG, &format!("DM_NOTIFY_ACK_ERROR {e}")),
     }
 }
 
@@ -2171,9 +2831,12 @@ pub async fn dm_detail_window_ready(app: AppHandle) -> Result<(), String> {
     // Best-effort ack so the opened DM isn't re-notified next poll.
     if let Some(event) = events.first() {
         let event_id = event.event_id.clone();
-        tauri::async_runtime::spawn(async move {
-            post_ack(vec![event_id]).await;
-        });
+        if let Some(auth) = current_notification_auth_snapshot(&app).await {
+            let app_for_ack = app.clone();
+            tauri::async_runtime::spawn(async move {
+                post_ack(&app_for_ack, &auth, vec![event_id]).await;
+            });
+        }
     }
 
     Ok(())
@@ -2241,8 +2904,9 @@ mod tests {
     }
 
     #[test]
-    fn diff_channels_detects_unread_increase_only() {
-        // a stayed flat, b grew, c shrank (read elsewhere) → only b fires.
+    fn diff_channels_keeps_new_message_increase_only_and_reports_exact_changes() {
+        // a stayed flat, b grew, c shrank (read elsewhere) → only b is a new
+        // message, while both b and c publish exact unread snapshots.
         let mut seen: HashMap<String, u32> = HashMap::new();
         seen.insert("a".to_string(), 2);
         seen.insert("b".to_string(), 1);
@@ -2251,6 +2915,20 @@ mod tests {
         let diff = diff_channels(&seen, &current);
         assert!(diff.new_channels.is_empty());
         assert_eq!(diff.new_messages, vec![("b".to_string(), 3)]);
+        assert_eq!(
+            diff.unread_changes,
+            vec![("b".to_string(), 3), ("c".to_string(), 0)]
+        );
+    }
+
+    #[test]
+    fn diff_channels_clears_removed_channel_unread() {
+        let mut seen: HashMap<String, u32> = HashMap::new();
+        seen.insert("removed".to_string(), 6);
+
+        let diff = diff_channels(&seen, &[]);
+
+        assert_eq!(diff.unread_changes, vec![("removed".to_string(), 0)]);
     }
 
     #[test]
@@ -2334,5 +3012,401 @@ mod tests {
         assert_eq!(reactions[0].emoji, "👀");
         assert_eq!(reactions[0].count, 1);
         assert!(!reactions[0].reacted_by_me);
+    }
+
+    #[tokio::test]
+    async fn account_switch_resets_native_notification_state_and_rejects_old_snapshot() {
+        let app = tauri::test::mock_app();
+        assert!(app.manage(NotificationSessionState::new()));
+        assert!(app.manage(UnreadDmState(Mutex::new(0))));
+        assert!(app.manage(SeenRequestState::new()));
+        assert!(app.manage(SeenChannelState::new()));
+        let handle = app.handle().clone();
+
+        let first_snapshot =
+            replace_notification_session(&handle, "person-a".to_string(), "access-a".to_string())
+                .await;
+        *handle
+            .state::<UnreadDmState>()
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = 7;
+        {
+            let request_state = handle.state::<SeenRequestState>();
+            let mut requests = request_state
+                .0
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            requests.initialized = true;
+            requests.pair_keys.insert("pair-a".to_string());
+        }
+        {
+            let channel_state = handle.state::<SeenChannelState>();
+            let mut channels = channel_state
+                .0
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            channels.initialized = true;
+            channels.unread_by_id.insert("channel-a".to_string(), 4);
+        }
+
+        let second_snapshot =
+            replace_notification_session(&handle, "person-b".to_string(), "access-b".to_string())
+                .await;
+
+        assert_ne!(first_snapshot.generation, second_snapshot.generation);
+        assert_eq!(second_snapshot.identity, "person-b");
+        assert_eq!(second_snapshot.access_token, "access-b");
+        assert_eq!(
+            current_notification_auth_snapshot(&handle).await,
+            Some(second_snapshot.clone())
+        );
+        assert_eq!(current_unread_dms(&handle), 0);
+        assert!(
+            !handle
+                .state::<SeenRequestState>()
+                .0
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .initialized
+        );
+        assert!(handle
+            .state::<SeenChannelState>()
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unread_by_id
+            .is_empty());
+
+        let stale_commit =
+            with_current_notification_auth_snapshot(&handle, &first_snapshot, || 1u8).await;
+        assert_eq!(stale_commit, None);
+        let current_commit =
+            with_current_notification_auth_snapshot(&handle, &second_snapshot, || 2u8).await;
+        assert_eq!(current_commit, Some(2));
+    }
+
+    #[tokio::test]
+    async fn access_token_rotation_invalidates_old_work_without_erasing_same_account_state() {
+        let app = tauri::test::mock_app();
+        assert!(app.manage(NotificationSessionState::new()));
+        assert!(app.manage(UnreadDmState(Mutex::new(0))));
+        let handle = app.handle().clone();
+
+        let old_snapshot =
+            replace_notification_session(&handle, "person-a".to_string(), "access-old".to_string())
+                .await;
+        *handle
+            .state::<UnreadDmState>()
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = 7;
+
+        let refreshed_snapshot = ensure_notification_session(
+            &handle,
+            "person-a".to_string(),
+            "access-refreshed".to_string(),
+        )
+        .await;
+
+        assert_ne!(old_snapshot.generation, refreshed_snapshot.generation);
+        assert_eq!(refreshed_snapshot.identity, "person-a");
+        assert_eq!(refreshed_snapshot.access_token, "access-refreshed");
+        assert_eq!(
+            current_unread_dms(&handle),
+            7,
+            "a same-account refresh invalidates old requests but preserves account state"
+        );
+        assert_eq!(
+            with_current_notification_auth_snapshot(&handle, &old_snapshot, || "stale").await,
+            None
+        );
+        assert_eq!(
+            with_current_notification_auth_snapshot(&handle, &refreshed_snapshot, || "current")
+                .await,
+            Some("current")
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_thread_and_reaction_subpolls_cannot_mutate_or_emit_after_account_switch() {
+        let app = tauri::test::mock_app();
+        assert!(app.manage(NotificationSessionState::new()));
+        assert!(app.manage(ActiveThreadState::new()));
+        assert!(app.manage(ActiveConversationState::new()));
+        assert!(app.manage(WatchedSharesState::new()));
+        let handle = app.handle().clone();
+
+        let stale_snapshot =
+            replace_notification_session(&handle, "person-a".to_string(), "access-a".to_string())
+                .await;
+        let _current_snapshot =
+            replace_notification_session(&handle, "person-b".to_string(), "access-b".to_string())
+                .await;
+
+        let emitted = std::sync::atomic::AtomicUsize::new(0);
+        let committed = with_current_notification_auth_snapshot(&handle, &stale_snapshot, || {
+            handle
+                .state::<ActiveThreadState>()
+                .0
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .seen_reply_ids
+                .insert("stale-reply".to_string());
+            handle
+                .state::<ActiveConversationState>()
+                .0
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .last_seen
+                .insert("stale-message".to_string(), "[]".to_string());
+            handle
+                .state::<WatchedSharesState>()
+                .0
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .last_seen
+                .insert("stale-share".to_string(), "[]".to_string());
+            emitted.fetch_add(3, std::sync::atomic::Ordering::SeqCst);
+        })
+        .await;
+
+        assert!(committed.is_none());
+        assert!(handle
+            .state::<ActiveThreadState>()
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .seen_reply_ids
+            .is_empty());
+        assert!(handle
+            .state::<ActiveConversationState>()
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .last_seen
+            .is_empty());
+        assert!(handle
+            .state::<WatchedSharesState>()
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .last_seen
+            .is_empty());
+        assert_eq!(
+            emitted.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "event emission must stay inside the same generation guard as state mutation"
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_account_snapshot_cannot_start_an_ack() {
+        let app = tauri::test::mock_app();
+        assert!(app.manage(NotificationSessionState::new()));
+        let handle = app.handle().clone();
+
+        let stale_snapshot =
+            replace_notification_session(&handle, "person-a".to_string(), "access-a".to_string())
+                .await;
+        replace_notification_session(&handle, "person-b".to_string(), "access-b".to_string()).await;
+
+        let ack_calls = std::sync::atomic::AtomicUsize::new(0);
+        let result =
+            with_current_notification_auth_snapshot_async(&handle, &stale_snapshot, || async {
+                ack_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            })
+            .await;
+
+        assert!(result.is_none());
+        assert_eq!(
+            ack_calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "an ACK must not begin after its captured account snapshot is stale"
+        );
+    }
+
+    #[tokio::test]
+    async fn generation_cas_prevents_late_old_account_publication() {
+        let app = tauri::test::mock_app();
+        assert!(app.manage(NotificationSessionState::new()));
+        let handle = app.handle().clone();
+
+        // An old token resolver may have read generation zero before OAuth
+        // starts. OAuth invalidates it first, so the stale publication CAS must
+        // fail instead of resurrecting account A after B is active.
+        let old_generation = notification_session_generation(&handle)
+            .await
+            .expect("managed notification session");
+        let account_b =
+            replace_notification_session(&handle, "person-b".to_string(), "access-b".to_string())
+                .await;
+        let stale_publication = ensure_notification_session_if_generation(
+            &handle,
+            old_generation,
+            "person-a".to_string(),
+            "access-a".to_string(),
+        )
+        .await;
+
+        assert!(stale_publication.is_none());
+        assert_eq!(
+            current_notification_auth_snapshot(&handle).await,
+            Some(account_b),
+            "the newer account must remain final; A cannot publish after B"
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_auth_failure_cannot_clear_a_newer_account() {
+        let app = tauri::test::mock_app();
+        assert!(app.manage(NotificationSessionState::new()));
+        let handle = app.handle().clone();
+
+        let old_generation = notification_session_generation(&handle)
+            .await
+            .expect("managed notification session");
+        let account_b =
+            replace_notification_session(&handle, "person-b".to_string(), "access-b".to_string())
+                .await;
+
+        assert_eq!(
+            clear_notification_session_if_generation(&handle, old_generation).await,
+            None,
+            "the stale resolver must lose its generation CAS"
+        );
+        assert_eq!(
+            current_notification_auth_snapshot(&handle).await,
+            Some(account_b),
+            "an old auth failure must not sign out the newer account"
+        );
+    }
+
+    #[tokio::test]
+    async fn auth_transition_waits_for_an_active_mutating_lease_before_publishing_next_account() {
+        let app = tauri::test::mock_app();
+        assert!(app.manage(NotificationSessionState::new()));
+        let handle = app.handle().clone();
+        let account_a =
+            replace_notification_session(&handle, "person-a".to_string(), "access-a".to_string())
+                .await;
+
+        // Acquire an intentional-write lease exactly as the mutation helper
+        // does, then hold it past the account-switch start.
+        let lease = {
+            let state = handle.state::<NotificationSessionState>();
+            let session = state.inner.lock().await;
+            assert_eq!(session.auth_snapshot().as_ref(), Some(&account_a));
+            let lease = state.mutation_leases.acquire();
+            drop(session);
+            lease
+        };
+
+        let switching_handle = handle.clone();
+        let switch = tokio::spawn(async move {
+            replace_notification_session(
+                &switching_handle,
+                "person-b".to_string(),
+                "access-b".to_string(),
+            )
+            .await
+        });
+
+        // The old identity is withdrawn immediately, but B is not published
+        // while the old remote-write lease remains active.
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+            if current_notification_auth_snapshot(&handle).await.is_none() {
+                break;
+            }
+        }
+        assert_eq!(current_notification_auth_snapshot(&handle).await, None);
+        assert!(
+            !switch.is_finished(),
+            "account B must wait for the account-A mutation lease to drain"
+        );
+
+        drop(lease);
+        let account_b = tokio::time::timeout(std::time::Duration::from_millis(250), switch)
+            .await
+            .expect("transition completes after the lease drains")
+            .expect("transition task succeeds");
+        assert_eq!(
+            current_notification_auth_snapshot(&handle).await,
+            Some(account_b)
+        );
+    }
+
+    #[tokio::test]
+    async fn auth_transition_waits_for_pending_mutation_response_before_publishing_next_account() {
+        let app = tauri::test::mock_app();
+        assert!(app.manage(NotificationSessionState::new()));
+        let handle = app.handle().clone();
+        let account_a =
+            replace_notification_session(&handle, "person-a".to_string(), "access-a".to_string())
+                .await;
+
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let operation_handle = handle.clone();
+        let operation = tokio::spawn(async move {
+            with_current_notification_mutation(&operation_handle, &account_a, move || async move {
+                let _ = started_tx.send(());
+                release_rx
+                    .await
+                    .expect("test completes the remote response");
+            })
+            .await
+        });
+
+        tokio::time::timeout(std::time::Duration::from_millis(250), started_rx)
+            .await
+            .expect("mutation begins")
+            .expect("mutation start signal is delivered");
+
+        let switching_handle = handle.clone();
+        let switch = tokio::spawn(async move {
+            replace_notification_session(
+                &switching_handle,
+                "person-b".to_string(),
+                "access-b".to_string(),
+            )
+            .await
+        });
+
+        // The transition is immediately visible as unauthenticated, but it
+        // cannot publish B or return while the account-A server write remains
+        // in flight.
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+            if current_notification_auth_snapshot(&handle).await.is_none() {
+                break;
+            }
+        }
+        assert_eq!(current_notification_auth_snapshot(&handle).await, None);
+        assert!(
+            !switch.is_finished(),
+            "the transition must wait for the pending mutation response"
+        );
+
+        release_tx
+            .send(())
+            .expect("release the simulated server response");
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_millis(250), operation)
+                .await
+                .expect("completed operation exits")
+                .expect("operation task succeeds"),
+            None,
+            "the stale operation cannot commit local state after account A is withdrawn"
+        );
+        let account_b = tokio::time::timeout(std::time::Duration::from_millis(250), switch)
+            .await
+            .expect("transition completes once the write lease drains")
+            .expect("transition task succeeds");
+        assert_eq!(
+            current_notification_auth_snapshot(&handle).await,
+            Some(account_b)
+        );
     }
 }

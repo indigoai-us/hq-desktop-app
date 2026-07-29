@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::paths;
 
@@ -108,6 +109,30 @@ pub struct UnreadDmState(pub Mutex<u32>);
 pub struct SeenRequestsInner {
     pub initialized: bool,
     pub pair_keys: HashSet<String>,
+    /// Monotonic local-mutation revision captured before an HTTP snapshot.
+    /// A request action or auth-session reset advances it so the older response
+    /// cannot restore a request that has already left the pending set.
+    revision: u64,
+}
+
+impl SeenRequestsInner {
+    pub fn begin_snapshot(&self) -> u64 {
+        self.revision
+    }
+
+    pub fn snapshot_is_current(&self, revision: u64) -> bool {
+        self.revision == revision
+    }
+
+    pub fn invalidate_snapshots(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    pub fn reset_for_session(&mut self) {
+        self.invalidate_snapshots();
+        self.initialized = false;
+        self.pair_keys.clear();
+    }
 }
 
 pub struct SeenRequestState(pub Mutex<SeenRequestsInner>);
@@ -129,6 +154,30 @@ pub struct SeenChannelsInner {
     pub initialized: bool,
     /// channelId → last-observed unread count.
     pub unread_by_id: HashMap<String, u32>,
+    /// Monotonic local-mutation revision captured before an HTTP snapshot.
+    /// Marking a channel read or changing auth sessions advances it so a stale
+    /// list response cannot resurrect an older unread count.
+    revision: u64,
+}
+
+impl SeenChannelsInner {
+    pub fn begin_snapshot(&self) -> u64 {
+        self.revision
+    }
+
+    pub fn snapshot_is_current(&self, revision: u64) -> bool {
+        self.revision == revision
+    }
+
+    pub fn invalidate_snapshots(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    pub fn reset_for_session(&mut self) {
+        self.invalidate_snapshots();
+        self.initialized = false;
+        self.unread_by_id.clear();
+    }
 }
 
 pub struct SeenChannelState(pub Mutex<SeenChannelsInner>);
@@ -164,20 +213,20 @@ pub fn clear_in_flight() {
 
 // ── Cursor persistence (mirrors share_notify) ───────────────────────────────────
 
-/// Upper bound on the per-machine `notified` ring. The repeated boundary events
-/// (the cause of the re-notify bug) are always the newest, so they never reach
-/// the eviction end of the FIFO — 200 is comfortably more than any single
-/// `?since=` page (`limit=50`).
+/// Upper bound on each account-scoped `notified` ring. The repeated boundary
+/// events (the cause of the re-notify bug) are always the newest, so they never
+/// reach the eviction end of the FIFO — 200 is comfortably more than any
+/// single `?since=` page (`limit=50`).
 pub const NOTIFIED_CAP: usize = 200;
 
-/// Per-machine cursor state. `cursor` is the ISO8601 `createdAt` of the newest
-/// DM seen (the `?since=` value). `notified` is a bounded FIFO of recently
-/// banner-fired `eventId`s: the inbox treats `?since=` as **inclusive**, so the
-/// boundary DM(s) — and any DM sharing the cursor's exact timestamp — are
-/// returned on every subsequent poll. Without an id-level guard that re-fires the
-/// same banner each poll/launch (the same class of bug fixed in share_notify on
-/// 2026-05-29). Deduping by id makes re-notification impossible regardless of the
-/// server's `since` semantics.
+/// Cursor state for one machine/account pair. `cursor` is the ISO8601
+/// `createdAt` of the newest DM seen (the `?since=` value). `notified` is a
+/// bounded FIFO of recently banner-fired `eventId`s: the inbox treats
+/// `?since=` as **inclusive**, so the boundary DM(s) — and any DM sharing the
+/// cursor's exact timestamp — are returned on every subsequent poll. Without
+/// an id-level guard that re-fires the same banner each poll/launch (the same
+/// class of bug fixed in share_notify on 2026-05-29). Deduping by id makes
+/// re-notification impossible regardless of the server's `since` semantics.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CursorEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -233,14 +282,103 @@ pub fn read_cursor_entry(machine_id: &str) -> CursorEntry {
     read_cursor_store().remove(machine_id).unwrap_or_default()
 }
 
-pub fn write_cursor_entry(machine_id: &str, entry: &CursorEntry) {
+fn write_cursor_store(store: &CursorStore) {
     let Ok(path) = cursor_path() else { return };
+    if let Ok(json) = serde_json::to_string_pretty(store) {
+        let _ = std::fs::write(&path, json);
+    }
+}
+
+pub fn write_cursor_entry(machine_id: &str, entry: &CursorEntry) {
     // Re-read (with normalisation) so we never clobber other machines' entries.
     let mut store = read_cursor_store();
     store.insert(machine_id.to_string(), entry.clone());
-    if let Ok(json) = serde_json::to_string_pretty(&store) {
-        let _ = std::fs::write(&path, json);
+    write_cursor_store(&store);
+}
+
+const ACCOUNT_CURSOR_KEY_PREFIX: &str = "account-v1";
+
+/// Build the persisted cursor key for one machine/account pair.
+///
+/// The stable account identity should be the authenticated Cognito subject,
+/// not an access token or display value. Hashing both inputs keeps raw identity
+/// data out of `dm-cursor.json`, while the length prefix prevents ambiguous
+/// concatenations from producing the same digest input.
+pub fn account_cursor_key(machine_id: &str, account_identity: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update((machine_id.len() as u64).to_be_bytes());
+    hasher.update(machine_id.as_bytes());
+    hasher.update(account_identity.as_bytes());
+    format!("{ACCOUNT_CURSOR_KEY_PREFIX}:{:x}", hasher.finalize())
+}
+
+/// Resolve an account-scoped entry from an in-memory store.
+///
+/// Returns the resolved entry and whether the store changed. A pre-account
+/// machine-only entry is claimed by the first authenticated identity and moved
+/// to its scoped key. Consuming the old key is essential: a later identity on
+/// the same machine must start with an empty cursor rather than inherit another
+/// account's notification history.
+fn resolve_account_cursor_entry(
+    store: &mut CursorStore,
+    machine_id: &str,
+    account_identity: &str,
+) -> (CursorEntry, bool) {
+    let scoped_key = account_cursor_key(machine_id, account_identity);
+
+    if let Some(scoped_entry) = store.get(&scoped_key).cloned() {
+        let removed_stale_legacy = store.remove(machine_id).is_some();
+        return (scoped_entry, removed_stale_legacy);
     }
+
+    let Some(legacy_entry) = store.remove(machine_id) else {
+        return (CursorEntry::default(), false);
+    };
+
+    store.insert(scoped_key, legacy_entry.clone());
+    (legacy_entry, true)
+}
+
+/// Insert an account-scoped entry without disturbing other account or machine
+/// entries. Any leftover machine-only key is consumed so it cannot later leak
+/// into another account.
+fn upsert_account_cursor_entry(
+    store: &mut CursorStore,
+    machine_id: &str,
+    account_identity: &str,
+    entry: &CursorEntry,
+) {
+    store.remove(machine_id);
+    store.insert(
+        account_cursor_key(machine_id, account_identity),
+        entry.clone(),
+    );
+}
+
+/// Read the cursor for one authenticated account on a machine.
+///
+/// On first use after upgrading from a machine-only store, this claims the
+/// legacy entry for the current identity and persists the migrated shape.
+/// Other entries in the store are preserved.
+pub fn read_cursor_entry_for_account(machine_id: &str, account_identity: &str) -> CursorEntry {
+    let mut store = read_cursor_store();
+    let (entry, changed) = resolve_account_cursor_entry(&mut store, machine_id, account_identity);
+    if changed {
+        write_cursor_store(&store);
+    }
+    entry
+}
+
+/// Persist the cursor for one authenticated account on a machine while
+/// preserving every unrelated account and machine entry.
+pub fn write_cursor_entry_for_account(
+    machine_id: &str,
+    account_identity: &str,
+    entry: &CursorEntry,
+) {
+    let mut store = read_cursor_store();
+    upsert_account_cursor_entry(&mut store, machine_id, account_identity, entry);
+    write_cursor_store(&store);
 }
 
 /// Split a poll's DMs into the subset to notify (dropping any whose `eventId` is
@@ -774,6 +912,185 @@ mod tests {
         assert_eq!(entry.notified, ["e1", "e2"]);
     }
 
+    fn cursor_entry(cursor: &str, notified: &[&str]) -> CursorEntry {
+        CursorEntry {
+            cursor: Some(cursor.to_string()),
+            notified: notified
+                .iter()
+                .map(|event_id| event_id.to_string())
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn account_cursor_keys_partition_the_same_machine_by_stable_identity() {
+        let alpha = account_cursor_key("machine-1", "cognito-sub-alpha");
+        let alpha_again = account_cursor_key("machine-1", "cognito-sub-alpha");
+        let beta = account_cursor_key("machine-1", "cognito-sub-beta");
+
+        assert_eq!(alpha, alpha_again, "the same account must resolve stably");
+        assert_ne!(
+            alpha, beta,
+            "accounts on one machine must never share a cursor"
+        );
+        assert_ne!(
+            alpha, "machine-1",
+            "scoped keys must not reuse the legacy key"
+        );
+    }
+
+    #[test]
+    fn account_cursor_resolution_reads_only_the_current_identity() {
+        let alpha_key = account_cursor_key("machine-1", "account-alpha");
+        let beta_key = account_cursor_key("machine-1", "account-beta");
+        let mut store = CursorStore::from([
+            (
+                alpha_key.clone(),
+                cursor_entry("alpha-time", &["alpha-event"]),
+            ),
+            (beta_key.clone(), cursor_entry("beta-time", &["beta-event"])),
+            (
+                "other-machine".to_string(),
+                cursor_entry("other-time", &["other-event"]),
+            ),
+        ]);
+
+        let (alpha, changed) =
+            resolve_account_cursor_entry(&mut store, "machine-1", "account-alpha");
+
+        assert!(
+            !changed,
+            "reading an already-scoped entry should not rewrite it"
+        );
+        assert_eq!(alpha.cursor.as_deref(), Some("alpha-time"));
+        assert_eq!(alpha.notified, ["alpha-event"]);
+        assert_eq!(
+            store
+                .get(&beta_key)
+                .and_then(|entry| entry.cursor.as_deref()),
+            Some("beta-time"),
+            "another account's cursor must remain untouched"
+        );
+        assert!(store.contains_key("other-machine"));
+    }
+
+    #[test]
+    fn legacy_machine_cursor_is_claimed_once_by_the_current_identity() {
+        let alpha_key = account_cursor_key("machine-1", "account-alpha");
+        let beta_key = account_cursor_key("machine-1", "account-beta");
+        let mut store = CursorStore::from([
+            (
+                "machine-1".to_string(),
+                cursor_entry("legacy-time", &["legacy-event"]),
+            ),
+            (
+                "other-machine".to_string(),
+                cursor_entry("other-time", &["other-event"]),
+            ),
+        ]);
+
+        let (alpha, changed) =
+            resolve_account_cursor_entry(&mut store, "machine-1", "account-alpha");
+
+        assert!(changed, "claiming a legacy entry must request persistence");
+        assert_eq!(alpha.cursor.as_deref(), Some("legacy-time"));
+        assert_eq!(alpha.notified, ["legacy-event"]);
+        assert!(
+            !store.contains_key("machine-1"),
+            "legacy key must be consumed"
+        );
+        assert_eq!(
+            store
+                .get(&alpha_key)
+                .and_then(|entry| entry.cursor.as_deref()),
+            Some("legacy-time")
+        );
+        assert!(
+            store.contains_key("other-machine"),
+            "unrelated entries survive"
+        );
+
+        let (beta, changed_again) =
+            resolve_account_cursor_entry(&mut store, "machine-1", "account-beta");
+
+        assert!(!changed_again);
+        assert!(beta.cursor.is_none());
+        assert!(beta.notified.is_empty());
+        assert!(
+            !store.contains_key(&beta_key),
+            "a later identity must not inherit the claimed legacy cursor"
+        );
+        assert_eq!(
+            store
+                .get(&alpha_key)
+                .and_then(|entry| entry.cursor.as_deref()),
+            Some("legacy-time"),
+            "the first identity keeps its migrated entry"
+        );
+    }
+
+    #[test]
+    fn existing_account_cursor_wins_and_consumes_a_stale_legacy_entry() {
+        let alpha_key = account_cursor_key("machine-1", "account-alpha");
+        let mut store = CursorStore::from([
+            (
+                alpha_key.clone(),
+                cursor_entry("scoped-time", &["scoped-event"]),
+            ),
+            (
+                "machine-1".to_string(),
+                cursor_entry("legacy-time", &["legacy-event"]),
+            ),
+        ]);
+
+        let (alpha, changed) =
+            resolve_account_cursor_entry(&mut store, "machine-1", "account-alpha");
+
+        assert!(changed, "discarding a stale legacy key must be persisted");
+        assert_eq!(alpha.cursor.as_deref(), Some("scoped-time"));
+        assert_eq!(alpha.notified, ["scoped-event"]);
+        assert!(!store.contains_key("machine-1"));
+        assert_eq!(
+            store
+                .get(&alpha_key)
+                .and_then(|entry| entry.cursor.as_deref()),
+            Some("scoped-time"),
+            "legacy data must never overwrite a newer scoped cursor"
+        );
+    }
+
+    #[test]
+    fn account_cursor_write_removes_stale_legacy_key_and_preserves_other_entries() {
+        let alpha_key = account_cursor_key("machine-1", "account-alpha");
+        let mut store = CursorStore::from([
+            (
+                "machine-1".to_string(),
+                cursor_entry("legacy-time", &["legacy-event"]),
+            ),
+            (
+                "other-machine".to_string(),
+                cursor_entry("other-time", &["other-event"]),
+            ),
+        ]);
+        let current = cursor_entry("current-time", &["current-event"]);
+
+        upsert_account_cursor_entry(&mut store, "machine-1", "account-alpha", &current);
+
+        assert!(!store.contains_key("machine-1"));
+        assert_eq!(
+            store
+                .get(&alpha_key)
+                .and_then(|entry| entry.cursor.as_deref()),
+            Some("current-time")
+        );
+        assert_eq!(
+            store
+                .get("other-machine")
+                .and_then(|entry| entry.cursor.as_deref()),
+            Some("other-time")
+        );
+    }
+
     #[test]
     fn thread_url_includes_person_and_optional_params() {
         // Base case: just the recipient.
@@ -885,6 +1202,59 @@ mod tests {
             serde_json::from_str("{}").expect("empty requests parses");
         assert!(empty.requests.is_empty());
         assert!(empty.next_cursor.is_none());
+    }
+
+    #[test]
+    fn request_snapshot_is_rejected_after_a_local_resolution() {
+        let mut state = SeenRequestsInner::default();
+        state.pair_keys.insert("pair_pending".to_string());
+        let snapshot_revision = state.begin_snapshot();
+
+        state.invalidate_snapshots();
+        state.pair_keys.remove("pair_pending");
+
+        assert!(
+            !state.snapshot_is_current(snapshot_revision),
+            "an HTTP response started before respond_dm_request completed must not restore it"
+        );
+    }
+
+    #[test]
+    fn channel_snapshot_is_rejected_after_mark_read() {
+        let mut state = SeenChannelsInner::default();
+        state.unread_by_id.insert("channel_a".to_string(), 4);
+        let snapshot_revision = state.begin_snapshot();
+
+        state.invalidate_snapshots();
+        state.unread_by_id.insert("channel_a".to_string(), 0);
+
+        assert!(
+            !state.snapshot_is_current(snapshot_revision),
+            "an HTTP response started before mark_channel_read completed must not restore unread"
+        );
+    }
+
+    #[test]
+    fn session_reset_clears_seen_notification_state_and_invalidates_snapshots() {
+        let mut requests = SeenRequestsInner::default();
+        requests.initialized = true;
+        requests.pair_keys.insert("pair_a".to_string());
+        let request_revision = requests.begin_snapshot();
+
+        let mut channels = SeenChannelsInner::default();
+        channels.initialized = true;
+        channels.unread_by_id.insert("channel_a".to_string(), 3);
+        let channel_revision = channels.begin_snapshot();
+
+        requests.reset_for_session();
+        channels.reset_for_session();
+
+        assert!(!requests.initialized);
+        assert!(requests.pair_keys.is_empty());
+        assert!(!requests.snapshot_is_current(request_revision));
+        assert!(!channels.initialized);
+        assert!(channels.unread_by_id.is_empty());
+        assert!(!channels.snapshot_is_current(channel_revision));
     }
 
     #[test]

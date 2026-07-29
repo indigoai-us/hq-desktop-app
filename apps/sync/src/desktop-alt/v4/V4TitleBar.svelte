@@ -98,22 +98,33 @@
   let versionContainer: HTMLDivElement | null = $state(null);
   let coreVersion = $state<string | null>(null);
   let coreVersionLoading = $state(true);
+  let coreVersionError = $state(false);
   let actionPending = $state(false);
+  let actionError = $state<string | null>(null);
+  let actionErrorDetail = $state('');
+  let actionContext = '';
   let coreVersionLoadGeneration = 0;
-  const coreVersionLabel = $derived(
-    coreVersionLoading ? 'Core …' : coreVersion ? `Core v${coreVersion}` : 'Core —',
-  );
+  const coreVersionLabel = $derived.by(() => {
+    if (coreVersionLoading) return 'Core checking…';
+    if (coreVersion) return `Core v${coreVersion}`;
+    return coreVersionError ? 'Core unavailable' : 'Core not detected';
+  });
 
   async function refreshCoreVersion() {
     const generation = ++coreVersionLoadGeneration;
     coreVersionLoading = true;
+    coreVersionError = false;
     try {
       const next = await invoke<string | null>('get_hq_version');
-      if (generation === coreVersionLoadGeneration) coreVersion = next;
+      if (generation === coreVersionLoadGeneration) {
+        coreVersion = next;
+        coreVersionError = false;
+      }
     } catch (err) {
       if (generation !== coreVersionLoadGeneration) return;
       console.error('titlebar: failed to read HQ Core version', err);
       coreVersion = null;
+      coreVersionError = true;
     } finally {
       if (generation === coreVersionLoadGeneration) coreVersionLoading = false;
     }
@@ -122,16 +133,41 @@
   async function handleAction(): Promise<void> {
     if (actionPending) return;
     actionPending = true;
+    actionError = null;
+    actionErrorDetail = '';
     try {
       if (model.recovery === 'hydration') await onretryhydration?.();
       else if (model.action.id === 'cancel') await oncancel?.();
       else if (model.action.id === 'retry') await onretry?.();
       else if (model.action.id === 'resolve') await onresolveconflicts?.();
       else await onsync?.();
+    } catch (err) {
+      console.error(`titlebar: ${model.action.id} action failed`, err);
+      actionErrorDetail = err instanceof Error ? err.message : String(err);
+      actionError =
+        model.recovery === 'hydration'
+          ? 'Couldn’t refresh'
+          : model.action.id === 'cancel'
+            ? 'Couldn’t cancel'
+            : model.action.id === 'resolve'
+              ? 'Couldn’t open conflicts'
+              : syncState === 'auth-error'
+                ? 'Couldn’t start sign-in'
+                : model.action.id === 'retry'
+                  ? 'Couldn’t retry'
+                  : 'Couldn’t start sync';
     } finally {
       actionPending = false;
     }
   }
+
+  $effect(() => {
+    const nextContext = `${syncState}:${model.recovery ?? ''}:${model.action.id}`;
+    if (nextContext === actionContext) return;
+    actionContext = nextContext;
+    actionError = null;
+    actionErrorDetail = '';
+  });
 
   $effect(() => {
     if (!versionOpen) return;
@@ -202,6 +238,11 @@
   <div class="v4-drag-pad v4-drag-flex" data-tauri-drag-region aria-hidden="true"></div>
 
   <div class="v4-title-actions">
+    {#if actionError}
+      <span class="v4-action-error" role="alert" title={actionErrorDetail}>
+        {actionError}
+      </span>
+    {/if}
     <button
       type="button"
       class="v4-icon-btn"
@@ -291,7 +332,9 @@
         data-testid="version-label"
         aria-expanded={versionOpen}
         aria-haspopup="dialog"
-        aria-label={`HQ desktop app v${version}; ${coreVersionLabel}; open updates`}
+        aria-label={`HQ desktop app v${version}; ${coreVersionLabel}; ${
+          coreVersionError ? 'retry Core version and open updates' : 'open updates'
+        }`}
         onclick={() => (versionOpen = !versionOpen)}
       >
         <span class="v4-version-app">App v{version}</span>
@@ -299,6 +342,13 @@
         <span class="v4-version-core" data-testid="core-version-label">
           {coreVersionLabel}
         </span>
+        {#if coreVersionError && !coreVersionLoading}
+          <span
+            class="v4-version-retry"
+            data-testid="core-version-retry"
+            aria-hidden="true"
+          >Retry</span>
+        {/if}
       </button>
       {#if versionOpen}
         <VersionPopout
@@ -461,6 +511,17 @@
     gap: 6px;
   }
 
+  .v4-action-error {
+    max-width: 150px;
+    overflow: hidden;
+    color: var(--v4-error);
+    font-size: var(--type-metadata, 10px);
+    font-weight: 550;
+    line-height: 1;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   .v4-version-wrap {
     position: relative;
     flex: 0 0 auto;
@@ -502,6 +563,11 @@
   .v4-version-core {
     color: var(--v4-text-1);
     font-weight: 650;
+  }
+
+  .v4-version-retry {
+    color: var(--v4-text-1);
+    font-weight: 500;
   }
 
   .v4-version:focus-visible {

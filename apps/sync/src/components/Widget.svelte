@@ -28,7 +28,6 @@
     dismissRecent,
     expireItems,
     historyFeedItemToStackItem,
-    hoverItems,
     hoverRows,
     markQueueSeen,
     markRecentRead,
@@ -67,6 +66,12 @@
     return normalizeDesktopZoom(
       Number(document.documentElement.dataset.desktopZoom) / 100,
     );
+  }
+
+  function createActionRequestId(): string {
+    const nativeId = globalThis.crypto?.randomUUID?.();
+    return nativeId ??
+      `widget-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
   }
 
   let desktopZoom = $state(untrack(currentDesktopZoom));
@@ -212,7 +217,7 @@
       : [],
   );
   const hoverConversationUnread = $derived(
-    hoverItems(stack).filter(
+    hoverDisplayItems.filter(
       (item) => isConversationItem(item) && item.unread === true,
     ).length,
   );
@@ -221,8 +226,15 @@
     return item.kind === 'dm' || item.kind === 'channel';
   }
 
-  function channelUnreadFor(item: WidgetStackItem): number {
-    if (item.kind !== 'channel' || !item.data || typeof item.data !== 'object') {
+  function conversationUnreadFor(item: WidgetStackItem): number {
+    if (item.kind === 'dm' && item.compactGroupCount) {
+      return Math.max(0, item.compactGroupUnreadCount ?? 0);
+    }
+    if (
+      item.kind !== 'channel' ||
+      !item.data ||
+      typeof item.data !== 'object'
+    ) {
       return 0;
     }
     const unread = (item.data as { unread?: unknown }).unread;
@@ -239,7 +251,7 @@
     switch (item.kind) {
       case 'dm':
         return item.compactGroupCount && item.compactGroupCount > 1
-          ? `Direct messages · ${item.compactGroupCount} notices`
+          ? `${item.compactGroupCount} recent messages`
           : 'Direct message';
       case 'channel': {
         const scope =
@@ -557,9 +569,8 @@
   }
 
   async function handleOpen(item: WidgetStackItem): Promise<void> {
-    // Drop any stale reply-hold for this row so ids never hold forever.
-    setReplyHold(item.id, false);
     if (!hasTauri()) {
+      setReplyHold(item.id, false);
       applyStack(dismissItem(stack, item.id));
       if (stack.visible.length === 0) {
         setPointerHold(false);
@@ -568,11 +579,30 @@
     }
     try {
       const { invoke } = await import('@tauri-apps/api/core');
+      const explicitClickAction =
+        item.clickActionId !== '' &&
+        item.clickActionId !== 'open' &&
+        !item.clickActionId.startsWith('open-');
       // Route Open by kind + source data. Prefer direct open_* invokes so the
       // widget does not depend on the (often hidden) main webview's
       // notification:banner-action listener. Kind-based fallbacks keep
       // localStorage-hydrated rows (action surface stripped) usable.
-      if (item.kind === 'dm' && item.data) {
+      if (explicitClickAction) {
+        const payload: BannerPayloadLike = {
+          kind: item.kind,
+          title: item.actor ?? '',
+          body: item.text,
+          clickActionId: item.clickActionId,
+          data: item.data,
+          actionId: item.actionId,
+          actionLabel: item.actionLabel,
+        };
+        await invoke('banner_action', {
+          requestId: createActionRequestId(),
+          action: item.clickActionId,
+          payload,
+        });
+      } else if (item.kind === 'dm' && item.data) {
         await invoke('open_dm_detail', { event: item.data });
       } else if (item.kind === 'channel') {
         await invoke('open_communications_window', { channel: item.data });
@@ -609,6 +639,7 @@
           actionLabel: item.actionLabel,
         };
         await invoke('banner_action', {
+          requestId: createActionRequestId(),
           action: item.clickActionId,
           payload,
         });
@@ -616,6 +647,9 @@
         // Display-only / unknown — two-pane communications, not full desktop.
         await invoke('open_communications_window');
       }
+      // A failed native open leaves the draft-owning row mounted. Release its
+      // parent hold only after the destination has actually acknowledged.
+      setReplyHold(item.id, false);
       applyStack(dismissItem(stack, item.id));
       // Opening the last row unmounts .stack without a pointerleave —
       // clear the pointer hold so the next notification still auto-hides.
@@ -647,8 +681,25 @@
         actionId: item.actionId,
         actionLabel: item.actionLabel,
       };
-      await invoke('banner_action', { action: item.actionId, payload });
-      applyStack(dismissItem(stack, item.id));
+      await invoke('banner_action', {
+        requestId: createActionRequestId(),
+        action: item.actionId,
+        payload,
+      });
+      const completedIds = new Set(item.compactGroupIds ?? [item.id]);
+      const dismissed = dismissItem(stack, item.id);
+      applyStack({
+        ...dismissed,
+        recent: dismissed.recent.map((recentItem) =>
+          completedIds.has(recentItem.id)
+            ? {
+                ...recentItem,
+                actionId: undefined,
+                actionLabel: undefined,
+              }
+            : recentItem
+        ),
+      });
       if (stack.visible.length === 0) setPointerHold(false);
     } catch (err) {
       console.error('widget: action failed', err);
@@ -1016,8 +1067,9 @@
       text={row.item.text}
       ts={row.item.ts}
       unread={row.item.unread ?? false}
-      badgeCount={channelUnreadFor(row.item)}
+      badgeCount={conversationUnreadFor(row.item)}
       comfortable
+      hoverExpand={row.item.kind === 'dm' && !row.item.compactGroupCount}
       actionLabel={row.item.actionLabel ?? undefined}
       actionDisabled={actioningIds.has(row.item.id)}
       textDismiss
@@ -1396,8 +1448,8 @@
     background: transparent;
     overflow: hidden;
     /* Stack/row appearance tokens — light default; dark overrides below. */
-    --row-bg: rgba(245, 245, 245, 0.82);
-    --row-bg-hover: rgba(250, 250, 250, 0.94);
+    --row-bg: rgb(245 245 245 / clamp(0.82, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.277), 1));
+    --row-bg-hover: rgb(250 250 250 / clamp(0.94, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.092), 1));
     --row-border: rgba(255, 255, 255, 0.82);
     --row-fg: #171717;
     --row-muted: rgba(0, 0, 0, 0.66);
@@ -2100,8 +2152,8 @@
 
   @media (prefers-color-scheme: dark) {
     .wg {
-      --row-bg: rgba(24, 24, 24, 0.78);
-      --row-bg-hover: rgba(32, 32, 32, 0.9);
+      --row-bg: rgb(24 24 24 / clamp(0.78, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.338), 1));
+      --row-bg-hover: rgb(32 32 32 / clamp(0.9, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.154), 1));
       --row-border: rgba(255, 255, 255, 0.22);
       --row-fg: #fff;
       --row-muted: rgba(255, 255, 255, 0.74);
@@ -2124,8 +2176,8 @@
      Override the whole material stack, not only the idle mark, so populated
      notification, mini-inbox, reply, and context-menu states stay coherent. */
   :global(html[data-force-theme='light']) .wg {
-    --row-bg: rgba(245, 245, 245, 0.82);
-    --row-bg-hover: rgba(250, 250, 250, 0.94);
+    --row-bg: rgb(245 245 245 / clamp(0.82, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.277), 1));
+    --row-bg-hover: rgb(250 250 250 / clamp(0.94, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.092), 1));
     --row-border: rgba(255, 255, 255, 0.82);
     --row-fg: #171717;
     --row-muted: rgba(0, 0, 0, 0.66);
@@ -2138,8 +2190,8 @@
   }
 
   :global(html[data-force-theme='dark']) .wg {
-    --row-bg: rgba(24, 24, 24, 0.78);
-    --row-bg-hover: rgba(32, 32, 32, 0.9);
+    --row-bg: rgb(24 24 24 / clamp(0.78, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.338), 1));
+    --row-bg-hover: rgb(32 32 32 / clamp(0.9, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.154), 1));
     --row-border: rgba(255, 255, 255, 0.22);
     --row-fg: #fff;
     --row-muted: rgba(255, 255, 255, 0.74);
@@ -2161,6 +2213,40 @@
     --wm-fg: #fff;
     --wm-shadow: drop-shadow(0 1px 6px rgba(0, 0, 0, 0.45));
     --qd-fg: #d4d4d4;
+  }
+
+  @media (prefers-reduced-transparency: reduce) {
+    .wg {
+      --row-bg: rgb(245 245 245);
+      --row-bg-hover: rgb(250 250 250);
+      --glass-filter: none;
+      --glass-filter-soft: none;
+    }
+
+    :global(html[data-force-theme='light']) .wg {
+      --row-bg: rgb(245 245 245);
+      --row-bg-hover: rgb(250 250 250);
+    }
+
+    :global(html[data-force-theme='dark']) .wg {
+      --row-bg: rgb(24 24 24);
+      --row-bg-hover: rgb(32 32 32);
+    }
+
+    .stack-grouped,
+    .stack-single .frost,
+    .hover-list,
+    .ctx-menu {
+      -webkit-backdrop-filter: none;
+      backdrop-filter: none;
+    }
+  }
+
+  @media (prefers-reduced-transparency: reduce) and (prefers-color-scheme: dark) {
+    .wg {
+      --row-bg: rgb(24 24 24);
+      --row-bg-hover: rgb(32 32 32);
+    }
   }
 
   @media (prefers-reduced-motion: reduce) {

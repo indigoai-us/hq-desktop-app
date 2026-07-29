@@ -56,13 +56,14 @@ async function flush(): Promise<void> {
 function mountWizard(
   onfinish = vi.fn(),
   initialStep = 3,
+  aiTools = NO_AI_TOOLS,
 ): ReturnType<typeof vi.fn> {
   tauri.invoke.mockImplementation(async (command: string) => {
     switch (command) {
       case 'resolve_hq_path':
         return '/Users/test/hq';
       case 'detect_ai_tools':
-        return NO_AI_TOOLS;
+        return aiTools;
       default:
         return undefined;
     }
@@ -105,11 +106,48 @@ afterEach(async () => {
 
 describe('onboarding launch handoff', () => {
   it('finishes onboarding after each supported launcher opens', () => {
-    // Nine `await onfinish?.()` sites total: FIVE are the launch-handoff paths,
-    // THREE are the US-005 consent re-prompt outcomes (answer, dismiss, and the
-    // offline finish), and ONE is the guarded final Done flow.
-    expect(wizardSource.match(/await onfinish\?\.\(\);/g)).toHaveLength(9);
+    // Every exit routes through one guarded recovery boundary. Launcher errors
+    // and native handoff errors must never be conflated.
+    expect(wizardSource.match(/await onfinish\?\.\(\);/g)).toHaveLength(1);
+    expect(wizardSource).toContain('async function finishWithRecovery()');
     expect(wizardSource).not.toContain('advanceTo(4)');
+  });
+
+  it('retries a failed native handoff without relaunching the AI tool', async () => {
+    const onfinish = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('tray handoff unavailable'))
+      .mockResolvedValue(undefined);
+    mountWizard(
+      onfinish,
+      4,
+      { ...NO_AI_TOOLS, claude_desktop: true, any: true },
+    );
+    await flush();
+
+    primaryButton().click();
+    await flush();
+    await vi.advanceTimersByTimeAsync(1);
+    await flush();
+
+    expect(
+      tauri.invoke.mock.calls.filter(([command]) => command === 'open_claude_code_link'),
+    ).toHaveLength(1);
+    const recovery = host.querySelector<HTMLElement>(
+      '[data-testid="launcher-finish-error"]',
+    );
+    expect(recovery?.textContent).toContain(
+      'The tool opened, but HQ couldn’t finish setup.',
+    );
+    expect(recovery?.textContent).not.toContain('Could not open Claude Code');
+
+    recovery?.querySelector<HTMLButtonElement>('button')?.click();
+    await flush();
+
+    expect(onfinish).toHaveBeenCalledTimes(2);
+    expect(
+      tauri.invoke.mock.calls.filter(([command]) => command === 'open_claude_code_link'),
+    ).toHaveLength(1);
   });
 
   it('renders exactly one ready-panel bottom-row button and removes Finish', () => {
@@ -121,7 +159,7 @@ describe('onboarding launch handoff', () => {
     const row = panel?.match(/<div class="btns">[\s\S]*?<\/div>/)?.[0];
     expect(row?.match(/<button\b/g)).toHaveLength(1);
     expect(row).toContain('class="btn btn-primary"');
-    expect(row).not.toContain('Finish');
+    expect(row).not.toMatch(/>\s*Finish\s*</);
   });
 
   it('keeps final Done pending and guarded until the handoff finishes', async () => {

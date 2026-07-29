@@ -45,7 +45,10 @@ describe('desktop-alt V4 settings and first-run (US-013 / US-005)', () => {
     // behavior until the next launch.
     expect(page).toContain("invoke('start_daemon')");
     expect(page).toContain("invoke('stop_daemon')");
-    expect(page).toContain("invoke('set_autostart_enabled', { enabled: startAtLogin })");
+    expect(page).toContain('const next = startAtLogin;');
+    expect(page).toContain('const previous = !next;');
+    expect(page).toContain("invoke('set_autostart_enabled', { enabled: next })");
+    expect(page).toContain("invoke('set_autostart_enabled', { enabled: previous })");
     // The three toggles must route through their effect handlers, not the bare
     // saveSettings persistence path.
     expect(page).toContain('onchange={applyRealtimeSync}');

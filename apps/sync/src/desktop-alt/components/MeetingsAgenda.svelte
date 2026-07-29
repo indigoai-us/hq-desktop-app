@@ -63,14 +63,24 @@
 
   const upNextId = $derived(upNext?.id ?? null);
   let openingEventIds = $state(new Set<string>());
+  let openingFailures = $state(new Map<string, string>());
 
   async function openMeeting(eventId: string, url: string): Promise<void> {
     if (openingEventIds.has(eventId)) return;
+    if (openingFailures.has(eventId)) {
+      const nextFailures = new Map(openingFailures);
+      nextFailures.delete(eventId);
+      openingFailures = nextFailures;
+    }
     openingEventIds = new Set(openingEventIds).add(eventId);
     try {
       await onOpenExternal(url);
     } catch (err) {
       console.error('meetings: failed to open meeting URL', err);
+      openingFailures = new Map(openingFailures).set(
+        eventId,
+        'Couldn’t open this meeting.',
+      );
     } finally {
       const next = new Set(openingEventIds);
       next.delete(eventId);
@@ -151,6 +161,19 @@
               <div class="mcompany">
                 {companyLabel(event, companyNames)}{#if dur} · {dur}{/if}
               </div>
+              {#if openingFailures.has(event.id) && url}
+                <div class="meeting-open-error" role="alert">
+                  <span>{openingFailures.get(event.id)}</span>
+                  <button
+                    type="button"
+                    onclick={() => void openMeeting(event.id, url)}
+                    disabled={openingEventIds.has(event.id)}
+                    aria-busy={openingEventIds.has(event.id)}
+                  >
+                    {openingEventIds.has(event.id) ? 'Retrying…' : 'Retry'}
+                  </button>
+                </div>
+              {/if}
             </div>
             <div class="msig">{sig}</div>
             <div class="mstate">
@@ -473,6 +496,26 @@
     line-height: 14px;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .meeting-open-error {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 2px;
+    color: var(--v4-error);
+    font-size: var(--type-metadata, 10px);
+    line-height: 14px;
+  }
+
+  .meeting-open-error button {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: currentColor;
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
   }
 
   .msig {

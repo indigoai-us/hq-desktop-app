@@ -38,8 +38,17 @@ describe('visual QA batch 3 regressions', () => {
 
   it('keeps communications glass legible and the open-state wordmark subordinate', () => {
     expect(widget).toContain('class:surface-open={hoverOpen || contextMenuOpen}');
-    expect(widget).toContain('--row-bg: rgba(245, 245, 245, 0.82)');
-    expect(widget).toContain('--row-bg: rgba(24, 24, 24, 0.78)');
+    expect(widget).toContain(
+      '--row-bg: rgb(245 245 245 / clamp(0.82, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.277), 1))',
+    );
+    expect(widget).toContain(
+      '--row-bg: rgb(24 24 24 / clamp(0.78, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.338), 1))',
+    );
+    expect(widget).toContain('@media (prefers-reduced-transparency: reduce)');
+    expect(widget).toContain('--row-bg: rgb(245 245 245)');
+    expect(widget).toContain('--row-bg: rgb(24 24 24)');
+    expect(widget).toContain('-webkit-backdrop-filter: none');
+    expect(widget).toContain('backdrop-filter: none');
     expect(cssRule(widget, '.hover-list')).toContain('margin-bottom: 14px');
     expect(cssRule(widget, '.wg.surface-open .wm')).toContain('opacity: 0.58');
     expect(cssRule(widget, '.wg.surface-open .wm :global(svg)')).toContain('width: 44px');

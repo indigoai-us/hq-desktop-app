@@ -39,12 +39,20 @@
 //!   * Multi-banner **stacking** (vertical offset per live banner). Today a
 //!     second notification replaces the first in the single banner window.
 
-use std::sync::Mutex;
+use std::{
+    collections::HashMap,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex,
+    },
+    time::Duration,
+};
 
 use hq_desktop_core::banner::initials;
 pub use hq_desktop_core::banner::{custom_banner_enabled, BannerPayload};
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewWindowBuilder};
+use tokio::sync::oneshot;
 
 use crate::util::logfile::log;
 
@@ -61,6 +69,24 @@ const EVENT_BANNER: &str = "banner:event";
 /// Replaces the per-source `notification:dm-action` / `notification:share-action`
 /// for the CUSTOM banner path (the native paths still emit their own events).
 const EVENT_BANNER_ACTION: &str = "notification:banner-action";
+
+/// The main webview normally acknowledges immediately after the requested
+/// action settles. Keep the timeout bounded so a crashed/reloading webview
+/// cannot leave an IPC command pending forever.
+const ACTION_ACK_TIMEOUT: Duration = Duration::from_secs(15);
+/// Recording does not succeed when the bridge accepts the command; Recall's
+/// matching `recording:started` lifecycle event is authoritative. App uses a
+/// 45-second caller timeout, so Rust must outlive it and never manufacture an
+/// early Retry while that semantic start is still active.
+const RECORDING_ACTION_ACK_TIMEOUT: Duration = Duration::from_secs(60);
+
+fn action_ack_timeout(kind: &str, action: &str) -> Duration {
+    if kind == "meeting" && action == "record" {
+        RECORDING_ACTION_ACK_TIMEOUT
+    } else {
+        ACTION_ACK_TIMEOUT
+    }
+}
 
 /// Banner geometry (logical px). `BANNER_H` is the INITIAL height the window is
 /// created at; the frontend measures its rendered content on mount and calls
@@ -79,10 +105,63 @@ const MARGIN_TOP: f64 = 40.0;
 /// Managed state: the payload pending for the banner's ready-handshake.
 pub struct PendingBanner(pub Mutex<Option<BannerPayload>>);
 
+/// Explicit main-webview router readiness. The frontend sets this only after
+/// its critical listener is installed and clears it before uninstalling.
+#[derive(Default)]
+pub struct BannerActionRouterReadiness(AtomicBool);
+
+impl BannerActionRouterReadiness {
+    fn is_ready(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+
+    fn set_ready(&self, ready: bool) {
+        self.0.store(ready, Ordering::Release);
+    }
+}
+
+/// Managed acknowledgement ledger for custom notification actions.
+///
+/// `banner_action` registers a one-shot sender before emitting to `App.svelte`.
+/// The app reports the real result through `banner_action_result`; the original
+/// command only resolves after that acknowledgement. This keeps every visual
+/// surface mounted until the destination action actually succeeds.
+#[derive(Default)]
+pub struct PendingBannerActions(Mutex<HashMap<String, oneshot::Sender<bool>>>);
+
+impl PendingBannerActions {
+    fn register(&self, request_id: &str) -> Result<oneshot::Receiver<bool>, String> {
+        let (sender, receiver) = oneshot::channel();
+        let mut pending = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        if pending.contains_key(request_id) {
+            return Err("That action is already in progress.".to_string());
+        }
+        pending.insert(request_id.to_string(), sender);
+        Ok(receiver)
+    }
+
+    fn complete(&self, request_id: &str, success: bool) -> bool {
+        let sender = self
+            .0
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(request_id);
+        sender.is_some_and(|sender| sender.send(success).is_ok())
+    }
+
+    fn remove(&self, request_id: &str) {
+        self.0
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(request_id);
+    }
+}
+
 /// Action re-dispatched to `App.svelte`. One shape for every source.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct BannerActionEvent {
+    request_id: String,
     kind: String,
     action: String,
     data: serde_json::Value,
@@ -408,29 +487,148 @@ pub async fn banner_window_ready(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// The banner was actioned. Re-emit the unified `notification:banner-action`
-/// event for `App.svelte` to route by `kind`, then dismiss the banner.
+#[tauri::command]
+pub fn banner_action_router_ready(readiness: State<'_, BannerActionRouterReadiness>) {
+    readiness.set_ready(true);
+    log(LOG_TAG, "action router ready");
+}
+
+#[tauri::command]
+pub fn banner_action_router_not_ready(readiness: State<'_, BannerActionRouterReadiness>) {
+    readiness.set_ready(false);
+    log(LOG_TAG, "action router not ready");
+}
+
+/// The banner or widget was actioned. Emit the unified event for `App.svelte`
+/// to route by `kind`, then wait for its explicit success/failure result.
+///
+/// A successful emit is not a successful user action: opening a window,
+/// copying, installing, or starting a recording can still fail later. The
+/// frontend keeps its row mounted while this command waits and only dismisses
+/// after `banner_action_result` acknowledges success.
 #[tauri::command]
 pub async fn banner_action(
     app: AppHandle,
+    pending: State<'_, PendingBannerActions>,
+    readiness: State<'_, BannerActionRouterReadiness>,
+    request_id: String,
     action: String,
     payload: BannerPayload,
 ) -> Result<(), String> {
+    let request_id = request_id.trim().to_string();
+    if request_id.is_empty() || request_id.len() > 128 {
+        return Err("Couldn’t start that action. Try again.".to_string());
+    }
+    if !readiness.is_ready() {
+        return Err("HQ is still getting ready. Try again in a moment.".to_string());
+    }
+    let ack_timeout = action_ack_timeout(&payload.kind, &action);
+
     log(
         LOG_TAG,
-        &format!("action kind={} action={}", payload.kind, action),
+        &format!(
+            "action request={} kind={} action={}",
+            request_id, payload.kind, action
+        ),
     );
-    app.emit(
+    let receiver = pending.register(&request_id)?;
+    if let Err(error) = app.emit(
         EVENT_BANNER_ACTION,
         BannerActionEvent {
+            request_id: request_id.clone(),
             kind: payload.kind,
             action,
             data: payload.data,
         },
-    )
-    .map_err(|e| e.to_string())?;
-    dismiss_banner_inner(&app);
+    ) {
+        pending.remove(&request_id);
+        log(
+            LOG_TAG,
+            &format!("action request={} emit FAILED: {error}", request_id),
+        );
+        return Err("Couldn’t start that action. Try again.".to_string());
+    }
+
+    let result = tokio::time::timeout(ack_timeout, receiver).await;
+    pending.remove(&request_id);
+    match result {
+        Ok(Ok(true)) => Ok(()),
+        Ok(Ok(false)) => Err("Couldn’t complete that action. Try again.".to_string()),
+        Ok(Err(_)) | Err(_) => {
+            log(
+                LOG_TAG,
+                &format!("action request={} acknowledgement timed out", request_id),
+            );
+            Err("The action took too long. Try again.".to_string())
+        }
+    }
+}
+
+/// Complete a pending custom action after `App.svelte` has finished the real
+/// destination work. Stale/late acknowledgements are harmless and idempotent.
+#[tauri::command]
+pub async fn banner_action_result(
+    pending: State<'_, PendingBannerActions>,
+    request_id: String,
+    success: bool,
+) -> Result<(), String> {
+    if !pending.complete(request_id.trim(), success) {
+        log(
+            LOG_TAG,
+            &format!("late action result ignored request={}", request_id.trim()),
+        );
+    }
     Ok(())
+}
+
+/// Turn a failed native notification action into a visible, retryable custom
+/// banner. This is intentionally limited to the native DM/share action set;
+/// the opaque `data` is echoed back only to the existing App action router.
+#[tauri::command]
+pub async fn show_action_retry_banner(
+    app: AppHandle,
+    kind: String,
+    action: String,
+    data: serde_json::Value,
+) -> Result<(), String> {
+    let (title, body) = match (kind.as_str(), action.as_str()) {
+        ("dm", "copy") => (
+            "Couldn’t copy the prompt",
+            "The message is still available. Try copying it again.",
+        ),
+        ("dm", "open") => (
+            "Couldn’t open the message",
+            "The message is still available. Try opening it again.",
+        ),
+        ("share", "claude") => (
+            "Couldn’t open Claude",
+            "The shared item is still available. Try again.",
+        ),
+        ("share", "copy") => (
+            "Couldn’t copy the details",
+            "The shared item is still available. Try copying again.",
+        ),
+        ("share", "open") => (
+            "Couldn’t open the shared item",
+            "The shared item is still available. Try opening it again.",
+        ),
+        _ => return Err("Unsupported notification action.".to_string()),
+    };
+
+    show_banner(
+        app,
+        BannerPayload {
+            kind,
+            title: title.to_string(),
+            body: body.to_string(),
+            icon_text: Some("HQ".to_string()),
+            action_label: Some("Retry".to_string()),
+            action_id: Some(action.clone()),
+            click_action_id: action,
+            data,
+        },
+    )
+    .await
 }
 
 /// Dismiss the banner (auto-timeout or explicit close).
@@ -564,4 +762,53 @@ pub async fn preview_meeting_banner(app: AppHandle) -> Result<(), String> {
         "zoom".to_string(),
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn pending_action_delivers_the_real_result_once() {
+        let pending = PendingBannerActions::default();
+        let receiver = pending.register("request-1").expect("register action");
+
+        assert!(pending.complete("request-1", true));
+        assert!(receiver.await.expect("receive action result"));
+        assert!(!pending.complete("request-1", false));
+    }
+
+    #[test]
+    fn duplicate_request_ids_cannot_replace_an_active_waiter() {
+        let pending = PendingBannerActions::default();
+        let _receiver = pending.register("request-1").expect("register action");
+
+        let error = pending
+            .register("request-1")
+            .expect_err("duplicate request must fail");
+        assert_eq!(error, "That action is already in progress.");
+    }
+
+    #[test]
+    fn recording_ack_timeout_outlives_the_generic_action_timeout() {
+        assert!(
+            action_ack_timeout("meeting", "record") > ACTION_ACK_TIMEOUT,
+            "recording must wait for the authoritative SDK lifecycle event"
+        );
+        assert_eq!(
+            action_ack_timeout("dm", "open"),
+            ACTION_ACK_TIMEOUT,
+            "ordinary actions retain the short bounded timeout"
+        );
+    }
+
+    #[test]
+    fn banner_action_router_readiness_is_explicit() {
+        let readiness = BannerActionRouterReadiness::default();
+        assert!(!readiness.is_ready());
+        readiness.set_ready(true);
+        assert!(readiness.is_ready());
+        readiness.set_ready(false);
+        assert!(!readiness.is_ready());
+    }
 }

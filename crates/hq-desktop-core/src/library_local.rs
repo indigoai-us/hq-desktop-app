@@ -34,7 +34,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::{read_hq_config_lenient, MenubarPrefs};
 use crate::desktop_alt::{
-    canonical_hq_relative_path, company_slug_for_hq_path, validate_hq_relative_path,
+    canonical_hq_relative_path, company_slug_for_hq_path, open_hq_regular_file_no_follow,
+    validate_hq_relative_path,
 };
 use crate::paths;
 
@@ -605,7 +606,7 @@ pub fn worker_from_yaml(
     if target.company_slug != company {
         return None;
     }
-    let raw = std::fs::read_to_string(&target.absolute_path).ok()?;
+    let raw = read_library_target_text(&target).ok()?;
     let parsed: WorkerFile = serde_yaml::from_str(&raw).ok()?;
     let path = format!("{rel}/");
     let fallback_id = last_path_segment(&path);
@@ -804,7 +805,7 @@ pub fn scan_skills_dir(
         if target.company_slug != company {
             continue;
         }
-        let Ok(raw) = std::fs::read_to_string(&target.absolute_path) else {
+        let Ok(raw) = read_library_target_text(&target) else {
             continue;
         };
         let (front_yaml, _body) = split_frontmatter(&raw);
@@ -845,20 +846,56 @@ pub fn detect_pack(skill_dir: &Path) -> Option<String> {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    static LIBRARY_DETAIL_BEFORE_READ_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
+}
+
+#[cfg(test)]
+fn set_library_detail_before_read_hook(hook: impl FnOnce() + 'static) {
+    LIBRARY_DETAIL_BEFORE_READ_HOOK.with(|slot| {
+        *slot.borrow_mut() = Some(Box::new(hook));
+    });
+}
+
+#[cfg(test)]
+fn run_library_detail_before_read_hook() {
+    LIBRARY_DETAIL_BEFORE_READ_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook();
+        }
+    });
+}
+
+#[cfg(not(test))]
+fn run_library_detail_before_read_hook() {}
+
 pub fn read_worker_detail(hq_root: &Path, worker_path: &str) -> Result<WorkerDetail, String> {
     let target = resolve_worker_detail_target(hq_root, worker_path)?;
     read_worker_detail_target(&target)
 }
 
-pub fn read_worker_detail_target(
-    target: &ResolvedLibraryDetailTarget,
-) -> Result<WorkerDetail, String> {
-    let raw = std::fs::read_to_string(&target.absolute_path).map_err(|error| {
+fn read_library_target_text(target: &ResolvedLibraryDetailTarget) -> Result<String, String> {
+    use std::io::Read;
+
+    let mut file =
+        open_hq_regular_file_no_follow(&target.hq_root, &target.canonical_relative_path)?;
+    let mut raw = String::new();
+    file.read_to_string(&mut raw).map_err(|error| {
         format!(
-            "could not read worker.yaml at {:?}: {error}",
+            "could not read library target at {:?}: {error}",
             target.relative_path
         )
     })?;
+    Ok(raw)
+}
+
+pub fn read_worker_detail_target(
+    target: &ResolvedLibraryDetailTarget,
+) -> Result<WorkerDetail, String> {
+    run_library_detail_before_read_hook();
+    let raw = read_library_target_text(target)?;
     let parsed: WorkerFile = serde_yaml::from_str(&raw).map_err(|error| {
         format!(
             "worker.yaml at {:?} is not valid YAML: {error}",
@@ -886,12 +923,8 @@ pub fn read_skill_detail(hq_root: &Path, skill_path: &str) -> Result<SkillDetail
 pub fn read_skill_detail_target(
     target: &ResolvedLibraryDetailTarget,
 ) -> Result<SkillDetail, String> {
-    let raw = std::fs::read_to_string(&target.absolute_path).map_err(|error| {
-        format!(
-            "could not read SKILL.md at {:?}: {error}",
-            target.relative_path
-        )
-    })?;
+    run_library_detail_before_read_hook();
+    let raw = read_library_target_text(target)?;
     let (front_yaml, body) = split_frontmatter(&raw);
     let front = front_yaml
         .and_then(|y| serde_yaml::from_str::<SkillFrontmatter>(y).ok())
@@ -1641,6 +1674,71 @@ skills:
 
         let _ = fs::remove_dir_all(&root);
         let _ = fs::remove_dir_all(&outside);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn worker_detail_rejects_parent_swap_after_target_resolution() {
+        use std::os::unix::fs::symlink;
+
+        let root = make_fixture_tree();
+        let target = resolve_worker_detail_target(&root, "companies/indigo/workers/cmo/").unwrap();
+        let authorized_dir = root.join("companies/indigo/workers/cmo");
+        let unauthorized_dir = root.join("companies/liverecover/workers/gtm");
+
+        set_library_detail_before_read_hook({
+            let root = root.clone();
+            let authorized_dir = authorized_dir.clone();
+            move || {
+                fs::rename(
+                    &authorized_dir,
+                    root.join("companies/indigo/workers/cmo-original"),
+                )
+                .unwrap();
+                symlink(&unauthorized_dir, &authorized_dir).unwrap();
+            }
+        });
+
+        let result = read_worker_detail_target(&target);
+        assert!(
+            result.is_err(),
+            "a parent swap must fail closed, got {:?}",
+            result.unwrap()
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn skill_detail_rejects_parent_swap_after_target_resolution() {
+        use std::os::unix::fs::symlink;
+
+        let root = make_fixture_tree();
+        let target =
+            resolve_skill_detail_target(&root, "companies/indigo/skills/signals/SKILL.md").unwrap();
+        let authorized_dir = root.join("companies/indigo/skills/signals");
+        let unauthorized_dir = root.join("companies/liverecover/skills/retention");
+
+        set_library_detail_before_read_hook({
+            let root = root.clone();
+            let authorized_dir = authorized_dir.clone();
+            move || {
+                fs::rename(
+                    &authorized_dir,
+                    root.join("companies/indigo/skills/signals-original"),
+                )
+                .unwrap();
+                symlink(&unauthorized_dir, &authorized_dir).unwrap();
+            }
+        });
+
+        let result = read_skill_detail_target(&target);
+        assert!(
+            result.is_err(),
+            "a parent swap must fail closed, got {:?}",
+            result.unwrap()
+        );
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[cfg(unix)]

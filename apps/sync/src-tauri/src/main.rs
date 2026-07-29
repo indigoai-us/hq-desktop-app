@@ -8,7 +8,6 @@ mod events;
 #[cfg(target_os = "macos")]
 mod glass;
 mod tray;
-#[cfg(target_os = "macos")]
 mod tray_helper;
 mod updater;
 mod util;
@@ -342,6 +341,7 @@ fn main() {
         .manage(commands::activity::SessionActivity::new())
         .manage(commands::share_notify::PendingShareEvents(Mutex::new(Vec::new())))
         .manage(commands::dm_notify::PendingDmEvents(Mutex::new(Vec::new())))
+        .manage(commands::dm_notify::NotificationSessionState::new())
         .manage(commands::dm_notify::UnreadDmState(Mutex::new(0)))
         .manage(commands::dm_notify::SeenRequestState::new())
         .manage(commands::dm_notify::SeenChannelState::new())
@@ -350,6 +350,8 @@ fn main() {
         .manage(commands::dm_notify::WatchedSharesState::new())
         .manage(commands::messages::PendingMessagesTarget::new())
         .manage(commands::banner::PendingBanner(Mutex::new(None)))
+        .manage(commands::banner::PendingBannerActions::default())
+        .manage(commands::banner::BannerActionRouterReadiness::default())
         // new-files-detail window handshake state (folded in from hq-sync-win).
         .manage(commands::new_files::PendingNewFiles(Mutex::new(Vec::new())))
         // Menubar-app close behaviour: intercept window-close (traffic-light
@@ -635,6 +637,7 @@ fn main() {
             commands::messages::list_channel_members,
             commands::messages::remove_channel_member,
             commands::messages::mark_channel_read,
+            tray_helper::set_tray_message_badge,
             commands::messages::toggle_reaction,
             commands::messages::fetch_reactions,
             commands::notification_history::open_notification_history,
@@ -643,6 +646,10 @@ fn main() {
             commands::notifications::notification_request_permission,
             commands::banner::banner_window_ready,
             commands::banner::banner_action,
+            commands::banner::banner_action_result,
+            commands::banner::banner_action_router_ready,
+            commands::banner::banner_action_router_not_ready,
+            commands::banner::show_action_retry_banner,
             commands::banner::dismiss_banner,
             commands::banner::resize_banner,
             commands::banner::show_main_window,

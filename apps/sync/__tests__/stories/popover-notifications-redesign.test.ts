@@ -56,6 +56,14 @@ describe('notifications-first popover (feed-folded system notices)', () => {
     expect(p).toContain('let openingUpdates = $state(false)');
     expect(p).toContain('aria-busy={openingUpdates}');
     expect(p).toContain("{openingUpdates ? 'Opening…' : 'View updates'}");
+    expect(p).toContain('data-testid="popover-updates-error"');
+    expect(p).toContain('data-testid="popover-install-error"');
+    expect(p).toContain('aria-busy={updateInstalling}');
+    expect(normalize(app)).toContain('let updateInstallError = $state<string | null>(null)');
+    expect(normalize(app)).toContain(
+      "updateInstallError = 'Couldn’t install the update. Try again.'",
+    );
+    expect(normalize(app)).toContain('{updateInstallError}');
   });
 
   it('restores a flat Messages entry with the aggregate DM, request, and channel count', () => {
@@ -74,13 +82,22 @@ describe('notifications-first popover (feed-folded system notices)', () => {
     expect(a).toContain('Math.max(0, unreadSummary.pendingRequests)');
     expect(a).toContain('Math.max(0, unreadSummary.channelUnread)');
     expect(a).toContain("invoke<ChannelsUnreadResponse | null>('list_channels')");
-    expect(a).toContain("'channel:new-message'");
+    expect(a).toContain("'channel:unread-changed'");
     expect(a).toContain("'channel:updated'");
     expect(a).toContain('{messagesUnreadCount}');
 
     expect(popover).toMatch(
       /\.mbp-messages-entry\s*\{[\s\S]*?border-radius:\s*0;[\s\S]*?background:\s*transparent;/,
     );
+  });
+
+  it('keeps the full desktop one explicit text action away', () => {
+    const p = normalize(popover);
+
+    expect(p).toContain('data-testid="popover-open-desktop"');
+    expect(p).toContain('let openingDesktop = $state(false)');
+    expect(p).toContain('aria-busy={openingDesktop}');
+    expect(p).toContain("{openingDesktop ? 'Opening…' : 'Open desktop'}");
   });
 
   it('preserves a readable actor/message/timestamp lane at the native compact width', () => {

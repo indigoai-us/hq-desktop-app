@@ -8,7 +8,7 @@
 // 2. Mix of read/unread → all rows, dots only on unread; badge shows unread count only.
 // 3. Restart persistence: seed localStorage, mount without initialItems → rows survive;
 //    empty localStorage + no items → empty state.
-// 4. 10-max: 12 recent items → popup renders exactly 10 rows.
+// 4. Screen-safe cap: 12 recent items → popup renders exactly 7 rows.
 
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -257,8 +257,8 @@ describe('US-015: widget popup shows recent history (not just unviewed)', () => 
     });
   });
 
-  describe('hover max 10', () => {
-    it('seeds 12 recent items → popup renders exactly WIDGET_HOVER_MAX (10) rows', () => {
+  describe('screen-safe hover cap', () => {
+    it('seeds 12 recent items → popup renders exactly WIDGET_HOVER_MAX (7) rows', () => {
       vi.useFakeTimers();
       vi.setSystemTime(new Date(2026, 6, 15, 12, 0, 0));
       const now = Date.now();
@@ -278,7 +278,7 @@ describe('US-015: widget popup shows recent history (not just unviewed)', () => 
       expect(list.querySelectorAll('[data-testid="notification-row"]')).toHaveLength(
         WIDGET_HOVER_MAX,
       );
-      expect(WIDGET_HOVER_MAX).toBe(10);
+      expect(WIDGET_HOVER_MAX).toBe(7);
     });
   });
 

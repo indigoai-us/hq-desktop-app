@@ -495,7 +495,7 @@ pub fn oauth_cancel_listen(state: Option<String>) -> Result<(), String> {
 
 /// Exchange an authorization code for tokens using the stored PKCE verifier.
 #[tauri::command]
-pub async fn oauth_exchange_code(code: String) -> Result<AuthState, String> {
+pub async fn oauth_exchange_code(app: AppHandle, code: String) -> Result<AuthState, String> {
     // Take the verifier out of storage (one-time use)
     let verifier = {
         let mut guard = pkce_store()
@@ -558,7 +558,7 @@ pub async fn oauth_exchange_code(code: String) -> Result<AuthState, String> {
         expires_at,
     };
 
-    cognito::set_tokens(&tokens).await?;
+    crate::commands::dm_notify::replace_notification_credentials(&app, &tokens).await?;
     eprintln!("[oauth] token exchange completed");
 
     Ok(AuthState {

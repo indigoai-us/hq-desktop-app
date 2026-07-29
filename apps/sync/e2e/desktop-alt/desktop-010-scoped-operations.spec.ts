@@ -116,7 +116,11 @@ describe('DESKTOP-010: scoped company operations', () => {
     expect(deployments).toContain('No provisioned subdomains for this company.');
     expect(deploymentRow).toContain("import { open } from '@tauri-apps/plugin-shell'");
     expect(deploymentRow).toContain('async function openDeployment()');
-    expect(deploymentRow).toContain('title="Open in browser"');
+    expect(deploymentRow).toContain(
+      "title={openError ? 'Could not open — retry' : 'Open in browser'}",
+    );
+    expect(deploymentRow).toContain("{opening ? 'Retrying…' : 'Retry'}");
+    expect(deploymentRow).toContain('onclick={openDeployment}');
     // Honesty: no fake rollback confirm that reverts nothing.
     expect(deploymentRow).not.toContain('rollbackConfirm');
 

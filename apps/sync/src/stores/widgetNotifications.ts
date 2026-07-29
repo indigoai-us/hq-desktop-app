@@ -54,12 +54,13 @@ export const WIDGET_RECENT_MAX = 20;
 
 /**
  * Max rows shown in the wordmark hover/click popup (US-015).
- * Always lists the most recent N compact rows (or fewer when history is
- * shorter). Repeated activity can collapse before this cap so one noisy sync
- * burst never crowds conversations and unrelated updates out of the panel.
- * Read/unread does not affect inclusion.
+ *
+ * Seven leaves enough room for the orienting header, section labels, and
+ * destination footer on a 768px-tall display, including reply-expansion
+ * headroom. The full Messages window remains one click away in the footer.
+ * Repeated activity and messages collapse before this cap.
  */
-export const WIDGET_HOVER_MAX = 10;
+export const WIDGET_HOVER_MAX = 7;
 
 /**
  * Ambient activity from one company/source inside this window becomes one
@@ -150,6 +151,8 @@ export interface WidgetStackItem {
   compactGroupIds?: string[];
   /** Derived compact-panel count. Omitted for a normal, ungrouped row. */
   compactGroupCount?: number;
+  /** Unread members represented by a compact conversation/activity row. */
+  compactGroupUnreadCount?: number;
 }
 
 /** Minimal channel shape used to surface unread channels in the widget. */
@@ -558,9 +561,40 @@ function compactAutomatedDmKey(item: WidgetStackItem): string | null {
     body: typeof data?.body === 'string' ? data.body : item.text,
     fromPersonUid:
       typeof data?.fromPersonUid === 'string' ? data.fromPersonUid : null,
+    fromEmail: typeof data?.fromEmail === 'string' ? data.fromEmail : null,
+    fromDisplayName:
+      typeof data?.fromDisplayName === 'string'
+        ? data.fromDisplayName
+        : item.actor,
     details: typeof data?.details === 'string' ? data.details : null,
     prompt: typeof data?.prompt === 'string' ? data.prompt : null,
   });
+}
+
+/**
+ * Stable conversation identity for the mini messages window.
+ *
+ * Native history carries a person UID; older/persisted rows may only retain
+ * email, display name, or the visible actor. This projection is deliberately
+ * scoped to the compact widget: the full Inbox keeps every individual event.
+ */
+function compactDmConversationKey(item: WidgetStackItem): string | null {
+  if (item.kind !== 'dm' || item.type !== 'message') return null;
+  const data =
+    item.data && typeof item.data === 'object' && !Array.isArray(item.data)
+      ? (item.data as Record<string, unknown>)
+      : null;
+  for (const value of [
+    data?.fromPersonUid,
+    data?.fromEmail,
+    data?.fromDisplayName,
+    item.actor,
+  ]) {
+    if (typeof value !== 'string') continue;
+    const normalized = value.trim().toLocaleLowerCase();
+    if (normalized) return normalized;
+  }
+  return null;
 }
 
 function sameLocalDay(a: number, b: number): boolean {
@@ -576,10 +610,12 @@ function sameLocalDay(a: number, b: number): boolean {
 /**
  * Collapse ambient sync/activity bursts for the compact communications panel.
  *
- * Human direct messages, channels, mentions, shares, updates, meetings, and
- * warnings remain individual. Repeated automated agent-join DMs compact using
- * the same deliberately narrow rule as Inbox. The full audit trail remains in
- * recent history; this helper is only consumed by Widget's mini-window projection.
+ * Direct messages compact by conversation so one active sender consumes one
+ * row instead of turning the mini messages window into an event log. Channels,
+ * mentions, shares, updates, meetings, and warnings remain individual.
+ * Repeated automated agent-join DMs compact using the same deliberately narrow
+ * rule as Inbox. The full audit trail remains in recent history; this helper is
+ * only consumed by Widget's mini-window projection.
  */
 export function compactActivityBursts(
   items: WidgetStackItem[],
@@ -600,14 +636,17 @@ export function compactActivityBursts(
       item.kind !== 'update' &&
       item.kind !== 'meeting';
     const automatedDmKey = compactAutomatedDmKey(item);
+    const dmConversationKey = compactDmConversationKey(item);
     const activityContext = activityEligible
       ? compactActivityContext(item)
       : null;
     const key = automatedDmKey
       ? `automated-dm:${automatedDmKey}`
-      : activityContext
-        ? `activity:${activityContext}`
-        : null;
+      : dmConversationKey
+        ? `dm:${dmConversationKey}`
+        : activityContext
+          ? `activity:${activityContext}`
+          : null;
     if (!key) {
       output.push(item);
       continue;
@@ -630,11 +669,16 @@ export function compactActivityBursts(
 
     const representative = output[cluster.outputIndex]!;
     const memberIds = representative.compactGroupIds ?? [representative.id];
+    const unreadMembers =
+      representative.compactGroupUnreadCount ??
+      (representative.unread === true ? 1 : 0);
     output[cluster.outputIndex] = {
       ...representative,
       unread: representative.unread === true || item.unread === true,
       compactGroupIds: [...memberIds, item.id],
       compactGroupCount: memberIds.length + 1,
+      compactGroupUnreadCount:
+        unreadMembers + (item.unread === true ? 1 : 0),
     };
   }
 
@@ -1042,7 +1086,11 @@ export function widgetHoverWindowSize(
     (items.length > 1 ? (items.length - 1) * WIDGET_HOVER_ROW_GAP : 0) +
     separators * WIDGET_HOVER_SEPARATOR_HEIGHT;
 
-  if (items.some((item) => item.type === 'message')) {
+  if (
+    items.some(
+      (item) => item.type === 'message' && !item.compactGroupCount,
+    )
+  ) {
     height += WIDGET_MESSAGE_EXPAND_HEADROOM;
   }
 

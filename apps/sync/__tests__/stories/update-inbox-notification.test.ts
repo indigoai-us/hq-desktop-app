@@ -135,7 +135,12 @@ describe('Inbox app-update notification', () => {
     });
     expect(tauri.invoke).not.toHaveBeenCalledWith('install_update');
 
-    row.querySelector<HTMLButtonElement>('.nr-open')!.click();
+    const updateAction = row.querySelector<HTMLButtonElement>('.nr-open')!;
+    await vi.waitFor(() => {
+      flushSync();
+      expect(updateAction.disabled).toBe(false);
+    });
+    updateAction.click();
     await vi.waitFor(() => {
       expect(tauri.invoke).toHaveBeenCalledWith('install_update');
     });

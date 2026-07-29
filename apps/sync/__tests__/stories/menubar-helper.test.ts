@@ -80,13 +80,32 @@ describe('macOS menu-bar helper process (HQ status item)', () => {
     expect(tray).toMatch(/center_px - win_w \/ 2/);
   });
 
-  it('build.rs compiles the helper on macOS and fails loud if swiftc breaks', () => {
+  it('builds a verified universal helper on macOS and fails loud if any tool breaks', () => {
     const build = read('src-tauri/build.rs');
+    const support = read('src-tauri/build_support/tray_helper.rs');
     expect(build).toContain('CARGO_CFG_TARGET_OS');
     expect(build).toContain('helper/hq-tray-helper.swift');
-    expect(build).toContain('swiftc');
-    // assert!(status.success(...)) — a silent drop would ship no icon.
-    expect(build).toMatch(/assert!\(\s*status\.success\(\)/);
+    expect(build).toContain('tray_helper_build::build_universal_helper');
+    expect(build).toMatch(
+      /\.unwrap_or_else\(\|error\| panic!\("build\.rs: failed to build hq-tray-helper:/,
+    );
+
+    // Compile both promised architectures at the app's macOS floor, merge
+    // them, then verify architecture and deployment metadata before the
+    // resource is atomically published into the bundle.
+    expect(support).toContain('MACOS_DEPLOYMENT_TARGET: &str = "13.0"');
+    expect(support).toContain('["arm64", "x86_64"]');
+    expect(support).toContain('.arg("swiftc")');
+    expect(support).toContain('.arg("lipo").arg("-create")');
+    expect(support).toContain('.arg("vtool")');
+    expect(support).toContain('validate_architectures(');
+    expect(support).toContain('validate_minimum_versions(');
+    expect(support).toContain('publish_verified_helper(');
+
+    // Every native command returns an error on a non-zero status; build.rs
+    // converts that Result into a panic, so CI cannot silently ship no icon.
+    expect(support).toContain('if output.status.success()');
+    expect(support).toMatch(/Err\(format!\(\s*"failed to \{description\}/);
   });
 
   it('bundles the compiled helper into Contents/Resources', () => {

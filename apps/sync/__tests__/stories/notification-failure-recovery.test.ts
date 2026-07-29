@@ -204,6 +204,40 @@ describe('NotificationFeed failure recovery', () => {
 });
 
 describe('NotificationRow reaction failure recovery', () => {
+  it('exposes and runs a message secondary action from the expanded footer', async () => {
+    const onaction = vi.fn().mockResolvedValue(undefined);
+
+    component = mount(NotificationRow, {
+      target: host,
+      props: {
+        type: 'message',
+        actor: 'Maya',
+        text: 'Use the attached prompt.',
+        ts: Date.now(),
+        onopen: vi.fn(),
+        onaction,
+        actionLabel: 'Copy prompt',
+      },
+    });
+    flushSync();
+
+    const row = host.querySelector<HTMLElement>(
+      '[data-testid="notification-row"]',
+    )!;
+    row.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+    flushSync();
+
+    const action = row.querySelector<HTMLButtonElement>(
+      '[data-testid="notification-message-action"]',
+    );
+    expect(action?.textContent?.trim()).toBe('Copy prompt');
+    action!.click();
+
+    await vi.waitFor(() => {
+      expect(onaction).toHaveBeenCalledOnce();
+    });
+  });
+
   it('exposes Retry after rejection and retries the same emoji', async () => {
     const onreact = vi
       .fn()

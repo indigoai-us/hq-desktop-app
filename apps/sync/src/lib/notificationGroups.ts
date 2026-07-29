@@ -137,6 +137,8 @@ export function repeatedAutomatedMessageKey(it: Item): string | null {
     kind: it.kind,
     body: it.dm.body || it.summary,
     fromPersonUid: it.dm.fromPersonUid,
+    fromEmail: it.dm.fromEmail,
+    fromDisplayName: it.dm.fromDisplayName || it.actor,
     details: it.dm.details,
     prompt: it.dm.prompt,
   });

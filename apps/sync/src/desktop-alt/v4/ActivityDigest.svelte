@@ -21,6 +21,7 @@
   // collapsed until clicked. Keyed by group id so toggles survive reorders.
   let expanded = $state<Record<string, boolean>>({});
   let openingLog = $state(false);
+  let openLogError = $state('');
 
   function isExpanded(id: string, index: number): boolean {
     return expanded[id] ?? index === 0;
@@ -32,9 +33,13 @@
 
   async function openLog(): Promise<void> {
     if (!onopenlog || openingLog) return;
+    openLogError = '';
     openingLog = true;
     try {
       await onopenlog();
+    } catch (err) {
+      console.error('home: open activity log failed', err);
+      openLogError = 'Couldn’t open the event log.';
     } finally {
       openingLog = false;
     }
@@ -57,6 +62,14 @@
       </button>
     </p>
   </div>
+  {#if openLogError}
+    <div class="v4-digest-error" role="alert">
+      <span>{openLogError}</span>
+      <button type="button" onclick={openLog} disabled={openingLog} aria-busy={openingLog}>
+        {openingLog ? 'Retrying…' : 'Retry'}
+      </button>
+    </div>
+  {/if}
 
   {#if groups.length === 0}
     <div class="v4-digest-empty">
@@ -138,6 +151,24 @@
 
   .v4-digest-log:hover {
     color: var(--v4-text-2);
+  }
+
+  .v4-digest-error {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    color: var(--v4-error);
+    font-size: var(--type-metadata, var(--text-micro));
+  }
+
+  .v4-digest-error button {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: currentColor;
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
   }
 
   .v4-digest-empty {

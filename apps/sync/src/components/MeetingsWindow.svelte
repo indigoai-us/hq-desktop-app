@@ -224,6 +224,18 @@
   }
   let activeMeetings = $state<ActiveMeeting[]>([]);
   let recordingMemberships = $state<ActiveMembership[]>([]);
+  type ActiveMeetingAction = 'start' | 'stop' | 'change-company';
+  type ActiveActionFailure = {
+    action: ActiveMeetingAction;
+    companyUid?: string | null;
+    message: string;
+  };
+  let activeActionPending = $state(
+    new Map<string, ActiveMeetingAction>(),
+  );
+  let activeActionFailures = $state(
+    new Map<string, ActiveActionFailure>(),
+  );
   // `defaultRecordingCompanyUid` is informational here — the row's
   // dropdown defaults to whatever App.svelte's resolver picked, so we
   // don't strictly need to know the default ourselves. Kept on the
@@ -239,11 +251,19 @@
     return platform || 'Meeting';
   }
 
-  function dispatchActiveAction(
-    action: 'start' | 'stop' | 'change-company',
+  async function dispatchActiveAction(
+    action: ActiveMeetingAction,
     windowId: string,
     companyUid?: string | null,
-  ) {
+  ): Promise<void> {
+    if (activeActionPending.has(windowId)) return;
+    const previous = activeMeetings.find((meeting) => meeting.windowId === windowId);
+    if (!previous) return;
+    const nextFailures = new Map(activeActionFailures);
+    nextFailures.delete(windowId);
+    activeActionFailures = nextFailures;
+    activeActionPending = new Map(activeActionPending).set(windowId, action);
+
     // Optimistic local mutation so the row reflects the intent without
     // waiting for App.svelte's snapshot re-broadcast (which can lag by
     // a tick over the cross-window event channel). The next snapshot
@@ -251,28 +271,61 @@
     // lives there, including 'starting' → 'recording' transitions
     // driven by SDK confirmation events.
     if (action === 'change-company') {
-      const idx = activeMeetings.findIndex((m) => m.windowId === windowId);
-      if (idx >= 0) {
-        activeMeetings[idx] = {
-          ...activeMeetings[idx],
+      activeMeetings = activeMeetings.map((meeting) =>
+        meeting.windowId === windowId
+          ? {
+          ...meeting,
           companyUid: companyUid ?? null,
           companyUserSet: true,
-        };
-      }
+            }
+          : meeting,
+      );
     } else if (action === 'start') {
-      const idx = activeMeetings.findIndex((m) => m.windowId === windowId);
-      if (idx >= 0) {
-        activeMeetings[idx] = { ...activeMeetings[idx], state: 'starting' };
-      }
+      activeMeetings = activeMeetings.map((meeting) =>
+        meeting.windowId === windowId
+          ? { ...meeting, state: 'starting' }
+          : meeting,
+      );
     } else if (action === 'stop') {
-      const idx = activeMeetings.findIndex((m) => m.windowId === windowId);
-      if (idx >= 0) {
-        activeMeetings[idx] = { ...activeMeetings[idx], state: 'stopping' };
-      }
+      activeMeetings = activeMeetings.map((meeting) =>
+        meeting.windowId === windowId
+          ? { ...meeting, state: 'stopping' }
+          : meeting,
+      );
     }
-    emit('meetings-window:action', { action, windowId, companyUid }).catch((err) => {
+
+    try {
+      await emit('meetings-window:action', { action, windowId, companyUid });
+    } catch (err) {
       console.warn('meetings-window:action emit failed', err);
-    });
+      activeMeetings = activeMeetings.map((meeting) =>
+        meeting.windowId === windowId ? previous : meeting,
+      );
+      activeActionFailures = new Map(activeActionFailures).set(windowId, {
+        action,
+        companyUid,
+        message:
+          action === 'change-company'
+            ? 'Couldn’t update the recording company.'
+            : action === 'start'
+              ? 'Couldn’t start recording.'
+              : 'Couldn’t stop recording.',
+      });
+    } finally {
+      const nextPending = new Map(activeActionPending);
+      nextPending.delete(windowId);
+      activeActionPending = nextPending;
+    }
+  }
+
+  function retryActiveAction(windowId: string): void {
+    const failure = activeActionFailures.get(windowId);
+    if (!failure) return;
+    void dispatchActiveAction(
+      failure.action,
+      windowId,
+      failure.companyUid,
+    );
   }
 
   /**
@@ -1644,8 +1697,12 @@
       <div class="active-meetings" aria-label="Active meetings">
         <p class="active-meetings-label">In progress</p>
         {#each activeMeetings as meeting (meeting.windowId)}
+          {@const pendingActiveAction = activeActionPending.get(meeting.windowId)}
+          {@const activeFailure = activeActionFailures.get(meeting.windowId)}
           {@const pickerDisabled =
-            meeting.state === 'starting' || meeting.state === 'stopping'}
+            meeting.state === 'starting' ||
+            meeting.state === 'stopping' ||
+            pendingActiveAction !== undefined}
           <div class="active-row" data-state={meeting.state}>
             <div class="active-info">
               <span class="active-platform">{activePlatformLabel(meeting.platform)} meeting</span>
@@ -1669,9 +1726,10 @@
               aria-label="Attribute recording to"
               value={meeting.companyUid ?? ''}
               disabled={pickerDisabled}
+              aria-busy={pendingActiveAction === 'change-company'}
               onchange={(e) => {
                 const v = (e.currentTarget as HTMLSelectElement).value;
-                dispatchActiveAction(
+                void dispatchActiveAction(
                   'change-company',
                   meeting.windowId,
                   v === '' ? null : v,
@@ -1687,18 +1745,37 @@
               <button
                 type="button"
                 class="active-action active-action-stop"
-                onclick={() => dispatchActiveAction('stop', meeting.windowId)}
+                onclick={() => void dispatchActiveAction('stop', meeting.windowId)}
+                disabled={pendingActiveAction !== undefined}
+                aria-busy={pendingActiveAction === 'stop'}
               >Stop</button>
             {:else if meeting.state === 'starting' || meeting.state === 'stopping'}
-              <button type="button" class="active-action" disabled>…</button>
+              <button type="button" class="active-action" disabled aria-busy="true">
+                {meeting.state === 'starting' ? 'Starting…' : 'Stopping…'}
+              </button>
             {:else}
               <button
                 type="button"
                 class="active-action active-action-record"
-                onclick={() => dispatchActiveAction('start', meeting.windowId)}
+                onclick={() => void dispatchActiveAction('start', meeting.windowId)}
+                disabled={pendingActiveAction !== undefined}
+                aria-busy={pendingActiveAction === 'start'}
               >Record</button>
             {/if}
           </div>
+          {#if activeFailure}
+            <div class="active-action-error" role="alert">
+              <span>{activeFailure.message}</span>
+              <button
+                type="button"
+                onclick={() => retryActiveAction(meeting.windowId)}
+                disabled={pendingActiveAction !== undefined}
+                aria-busy={pendingActiveAction !== undefined}
+              >
+                {pendingActiveAction !== undefined ? 'Retrying…' : 'Retry'}
+              </button>
+            </div>
+          {/if}
         {/each}
       </div>
     {/if}
@@ -2203,6 +2280,24 @@
   .active-row[data-state='error'] {
     background: transparent;
     border-color: var(--c-divider);
+  }
+  .active-action-error {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: -4px;
+    color: var(--c-danger, #f87171);
+    font-size: var(--text-base);
+  }
+  .active-action-error button {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: currentColor;
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
   }
   .active-info {
     display: flex;

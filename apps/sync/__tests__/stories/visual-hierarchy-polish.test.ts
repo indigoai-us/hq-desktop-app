@@ -206,6 +206,68 @@ describe('visual hierarchy polish: shared notification row', () => {
       expect(visibleAction.disabled).toBe(false);
     });
   });
+
+  it('prevents the row destination and secondary action from racing each other', async () => {
+    let finishOpen!: () => void;
+    let finishAction!: () => void;
+    const onopen = vi.fn(
+      () =>
+        new Promise<void>((resolvePromise) => {
+          finishOpen = resolvePromise;
+        }),
+    );
+    const onaction = vi.fn(
+      () =>
+        new Promise<void>((resolvePromise) => {
+          finishAction = resolvePromise;
+        }),
+    );
+    component = mount(NotificationRow, {
+      target: host,
+      props: {
+        type: 'system',
+        actor: 'HQ',
+        text: 'Version 0.10.35 is ready',
+        ts: Date.now(),
+        actionLabel: 'Update now',
+        onopen,
+        onaction,
+      },
+    });
+    flushSync();
+
+    const primary = host.querySelector<HTMLButtonElement>('.nr-primary-action')!;
+    const action = host.querySelector<HTMLButtonElement>('.nr-open')!;
+
+    primary.click();
+    flushSync();
+    expect(primary.disabled).toBe(true);
+    expect(action.disabled).toBe(true);
+    action.click();
+    expect(onaction).not.toHaveBeenCalled();
+
+    finishOpen();
+    await vi.waitFor(() => {
+      flushSync();
+      expect(primary.disabled).toBe(false);
+      expect(action.disabled).toBe(false);
+    });
+
+    action.click();
+    flushSync();
+    expect(onaction).toHaveBeenCalledTimes(1);
+    expect(primary.disabled).toBe(true);
+    expect(action.disabled).toBe(true);
+    primary.click();
+    expect(onopen).toHaveBeenCalledTimes(1);
+
+    finishAction();
+    await vi.waitFor(() => {
+      flushSync();
+      expect(primary.disabled).toBe(false);
+      expect(action.disabled).toBe(false);
+    });
+  });
 });
 
 describe('visual hierarchy polish: bounded Inbox chronology', () => {

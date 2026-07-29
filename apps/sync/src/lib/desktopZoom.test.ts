@@ -4,6 +4,7 @@ import {
   DEFAULT_DESKTOP_ZOOM,
   DESKTOP_ZOOM_STORAGE_KEY,
   DESKTOP_ZOOM_CHANGE_EVENT,
+  DESKTOP_ZOOM_REQUEST_EVENT,
   desktopZoomActionForKey,
   installDesktopZoom,
   MAX_DESKTOP_ZOOM,
@@ -11,6 +12,7 @@ import {
   nextDesktopZoom,
   normalizeDesktopZoom,
   readDesktopZoom,
+  requestDesktopZoom,
   scaleDesktopWindowSize,
   writeDesktopZoom,
 } from './desktopZoom';
@@ -20,14 +22,30 @@ function source(relativePath: string): string {
 }
 
 describe('desktop zoom', () => {
-  it('recognizes macOS zoom shortcuts, including the unshifted Cmd+= form', () => {
+  it('recognizes macOS and Windows zoom shortcuts', () => {
     expect(desktopZoomActionForKey({ key: '=', code: 'Equal', metaKey: true })).toBe('in');
     expect(desktopZoomActionForKey({ key: '+', code: 'Equal', metaKey: true })).toBe('in');
     expect(desktopZoomActionForKey({ key: '-', code: 'Minus', metaKey: true })).toBe('out');
     expect(desktopZoomActionForKey({ key: '0', code: 'Digit0', metaKey: true })).toBe('reset');
+    expect(
+      desktopZoomActionForKey({
+        key: '=',
+        code: 'Equal',
+        metaKey: false,
+        ctrlKey: true,
+      }),
+    ).toBe('in');
+    expect(
+      desktopZoomActionForKey({
+        key: '-',
+        code: 'Minus',
+        metaKey: false,
+        ctrlKey: true,
+      }),
+    ).toBe('out');
   });
 
-  it('does not steal unmodified, Ctrl/Alt-modified, composed, or already-handled input', () => {
+  it('does not steal unmodified, double-modified, Alt, composed, or handled input', () => {
     expect(desktopZoomActionForKey({ key: '=', metaKey: false })).toBeNull();
     expect(desktopZoomActionForKey({ key: '=', metaKey: true, ctrlKey: true })).toBeNull();
     expect(desktopZoomActionForKey({ key: '-', metaKey: true, altKey: true })).toBeNull();
@@ -76,6 +94,24 @@ describe('desktop zoom', () => {
     expect(readDesktopZoom(null)).toBe(DEFAULT_DESKTOP_ZOOM);
   });
 
+  it('persists and dispatches same-window requests from Appearance settings', () => {
+    const values = new Map<string, string>();
+    const storage = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+    };
+    const dispatchEvent = vi.fn<(event: Event) => boolean>(() => true);
+    const target = { dispatchEvent } as unknown as Window;
+
+    expect(requestDesktopZoom(1.3, { target, storage })).toBe(1.3);
+    expect(values.get(DESKTOP_ZOOM_STORAGE_KEY)).toBe('1.3');
+    const event = dispatchEvent.mock.calls[0]![0] as CustomEvent<{
+      zoom: number;
+    }>;
+    expect(event.type).toBe(DESKTOP_ZOOM_REQUEST_EVENT);
+    expect(event.detail).toEqual({ zoom: 1.3 });
+  });
+
   it('applies the persisted value immediately and cleans up both global listeners', () => {
     const listeners = new Map<string, EventListener>();
     const target = {
@@ -97,6 +133,7 @@ describe('desktop zoom', () => {
     expect(applyZoom).toHaveBeenCalledWith(1.2);
     expect(listeners.has('keydown')).toBe(true);
     expect(listeners.has('storage')).toBe(true);
+    expect(listeners.has(DESKTOP_ZOOM_REQUEST_EVENT)).toBe(true);
 
     cleanup();
     expect(listeners.size).toBe(0);

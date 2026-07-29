@@ -169,11 +169,13 @@ describe('US-011: Deployments panel reads hq-deploy subdomains via Tauri command
     const row = normalize(deploymentRow);
 
     expect(row).toContain("import { open } from '@tauri-apps/plugin-shell';");
-    expect(row).toContain('async function openDeployment() { if (opening) return; opening = true; openError = false;');
+    expect(row).toContain('let openError = $state<string | null>(null)');
+    expect(row).toContain('async function openDeployment() { if (opening) return; opening = true; try {');
+    expect(row).toContain('class="deployment-action-error" role="alert"');
     expect(row).toContain('await open(`https://${deployment.url}`)');
     expect(row).toContain('disabled={opening}');
     expect(row).toContain('aria-busy={opening}');
-    expect(row).toContain('title="Open in browser"');
+    expect(row).toContain("title={openError ? 'Could not open — retry' : 'Open in browser'}");
     expect(row).toContain('onclick={openDeployment}');
     expect(desktopAltCapability).toContain('"shell:allow-open"');
   });

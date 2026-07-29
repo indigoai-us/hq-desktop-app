@@ -123,7 +123,7 @@
         : `Open ${resolvedSourceLabel}: ${text}`
     }${unreadLabel ? `, ${unreadLabel}` : ''}`,
   );
-  const visibleActionPending = $derived(onaction ? actionPending : openPending);
+  const visibleActionPending = $derived(openPending || actionPending);
   const timestampIso = $derived(new Date(ts).toISOString());
   const timestampTitle = $derived(
     new Intl.DateTimeFormat(undefined, {
@@ -172,7 +172,7 @@
   }
 
   function handleOpen(): void {
-    if (!onopen || openPending) return;
+    if (!onopen || openPending || actionPending) return;
     openError = null;
     openPending = true;
     try {
@@ -200,7 +200,7 @@
       handleOpen();
       return;
     }
-    if (actionPending || actionDisabled) return;
+    if (actionPending || openPending || actionDisabled) return;
     actionError = null;
     actionPending = true;
     try {
@@ -407,12 +407,12 @@
       class:nr-primary-expanded={expanded}
       type="button"
       aria-label={primaryActionLabel}
-      aria-busy={openPending}
-      disabled={openPending}
+      aria-busy={openPending || actionPending}
+      disabled={openPending || actionPending}
       onclick={() => void handleOpen()}
     >
       {@render primaryContent()}
-      {#if openPending}
+      {#if openPending || actionPending}
         <span class="nr-spinner" data-testid="notification-pending" aria-hidden="true"></span>
       {/if}
     </button>
@@ -442,6 +442,22 @@
         }}
         onkeydown={onReplyKeydown}
       />
+      {#if onaction}
+        <button
+          class="nr-message-action"
+          type="button"
+          data-testid="notification-message-action"
+          aria-label={actionLabel ?? 'Run message action'}
+          aria-busy={visibleActionPending}
+          disabled={actionDisabled || visibleActionPending}
+          onclick={() => void handleAction()}
+        >
+          {#if visibleActionPending}
+            <span class="nr-spinner nr-spinner-small" aria-hidden="true"></span>
+          {/if}
+          {visibleActionPending ? 'Working…' : (actionLabel ?? 'Action')}
+        </button>
+      {/if}
       {#each REACT_EMOJI as emoji (emoji)}
         <button
           class="nr-react"
@@ -497,9 +513,9 @@
         </span>
       {/if}
     </div>
-  {:else if !isMessage && (onopen || onaction || ondismiss)}
+  {:else if (!isMessage && (onopen || onaction || ondismiss)) || (isMessage && onaction)}
     <span class="nr-actions">
-      {#if onopen || onaction}
+      {#if onaction || (!isMessage && onopen)}
         <button
           class="nr-open"
           type="button"
@@ -915,7 +931,9 @@
   }
 
   .nr:not(.nr-message):hover .nr-actions,
-  .nr:not(.nr-message):focus-within .nr-actions {
+  .nr:not(.nr-message):focus-within .nr-actions,
+  .nr-message:not(.nr-expanded):hover .nr-actions,
+  .nr-message:not(.nr-expanded):focus-within .nr-actions {
     width: auto;
     overflow: visible;
     opacity: 1;
@@ -924,6 +942,7 @@
   }
 
   .nr-open,
+  .nr-message-action,
   .nr-dismiss {
     height: 20px;
     border-radius: 5px;
@@ -947,25 +966,34 @@
     padding: 0;
   }
 
+  .nr-message-action {
+    flex: 0 0 auto;
+    height: 24px;
+  }
+
   .nr-dismiss-text {
     width: auto;
     padding: 0 8px;
   }
 
   .nr-open:hover,
+  .nr-message-action:hover,
   .nr-dismiss:hover,
   .nr-open:focus-visible,
+  .nr-message-action:focus-visible,
   .nr-dismiss:focus-visible {
     outline: 1.5px solid var(--popover-text-muted);
     outline-offset: 1px;
   }
 
-  .nr-open:disabled {
+  .nr-open:disabled,
+  .nr-message-action:disabled {
     cursor: default;
     opacity: 0.55;
   }
 
   .nr-open:active:not(:disabled),
+  .nr-message-action:active:not(:disabled),
   .nr-dismiss:active:not(:disabled),
   .nr-react:active:not(:disabled),
   .nr-retry:active:not(:disabled) {
@@ -1111,6 +1139,7 @@
     .nr,
     .nr-primary-action,
     .nr-open,
+    .nr-message-action,
     .nr-dismiss,
     .nr-react,
     .nr-retry {
@@ -1126,6 +1155,7 @@
 
     .nr-primary-action:active:not(:disabled),
     .nr-open:active:not(:disabled),
+    .nr-message-action:active:not(:disabled),
     .nr-dismiss:active:not(:disabled),
     .nr-react:active:not(:disabled),
     .nr-retry:active:not(:disabled) {

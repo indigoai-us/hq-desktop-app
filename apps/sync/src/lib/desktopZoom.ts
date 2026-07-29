@@ -2,6 +2,7 @@ import { getCurrentWebview } from '@tauri-apps/api/webview';
 
 export const DESKTOP_ZOOM_STORAGE_KEY = 'hq-sync.desktop.zoom.v1';
 export const DESKTOP_ZOOM_CHANGE_EVENT = 'hq:desktop-zoom-change';
+export const DESKTOP_ZOOM_REQUEST_EVENT = 'hq:desktop-zoom-request';
 export const DEFAULT_DESKTOP_ZOOM = 1;
 export const MIN_DESKTOP_ZOOM = 0.8;
 export const MAX_DESKTOP_ZOOM = 1.6;
@@ -33,6 +34,8 @@ interface DesktopZoomOptions {
   onError?: (error: unknown) => void;
 }
 
+type DesktopZoomRequestOptions = Pick<DesktopZoomOptions, 'storage' | 'target'>;
+
 function roundZoom(value: number): number {
   return Math.round(value * 10) / 10;
 }
@@ -54,6 +57,10 @@ export function readDesktopZoom(storage: ZoomStorage | null): number {
   }
 }
 
+export function readBrowserDesktopZoom(): number {
+  return readDesktopZoom(getBrowserStorage());
+}
+
 export function writeDesktopZoom(storage: ZoomStorage | null, value: number): void {
   if (!storage) return;
 
@@ -67,9 +74,10 @@ export function writeDesktopZoom(storage: ZoomStorage | null, value: number): vo
 export function desktopZoomActionForKey(
   event: DesktopZoomKeyEvent,
 ): DesktopZoomAction | null {
+  const hasOnePlatformModifier =
+    Boolean(event.metaKey) !== Boolean(event.ctrlKey);
   if (
-    !event.metaKey ||
-    event.ctrlKey ||
+    !hasOnePlatformModifier ||
     event.altKey ||
     event.defaultPrevented ||
     event.isComposing
@@ -83,6 +91,23 @@ export function desktopZoomActionForKey(
   if (event.key === '-' || event.code === 'NumpadSubtract') return 'out';
   if (event.key === '0') return 'reset';
   return null;
+}
+
+export function requestDesktopZoom(
+  value: number,
+  options: DesktopZoomRequestOptions = {},
+): number {
+  const target = options.target ?? window;
+  const storage =
+    options.storage === undefined ? getBrowserStorage() : options.storage;
+  const zoom = normalizeDesktopZoom(value);
+  writeDesktopZoom(storage, zoom);
+  target.dispatchEvent(
+    new CustomEvent<{ zoom: number }>(DESKTOP_ZOOM_REQUEST_EVENT, {
+      detail: { zoom },
+    }),
+  );
+  return zoom;
 }
 
 export function nextDesktopZoom(current: number, action: DesktopZoomAction): number {
@@ -214,14 +239,23 @@ export function installDesktopZoom(options: DesktopZoomOptions = {}): () => void
     if (next !== current) apply(next);
   };
 
+  const onRequest = (event: Event) => {
+    const next = normalizeDesktopZoom(
+      (event as CustomEvent<{ zoom?: unknown }>).detail?.zoom,
+    );
+    if (next !== current) apply(next);
+  };
+
   apply(current);
   target.addEventListener('keydown', onKeydown);
   target.addEventListener('storage', onStorage);
+  target.addEventListener(DESKTOP_ZOOM_REQUEST_EVENT, onRequest);
 
   return () => {
     disposed = true;
     queuedNativeZoom = null;
     target.removeEventListener('keydown', onKeydown);
     target.removeEventListener('storage', onStorage);
+    target.removeEventListener(DESKTOP_ZOOM_REQUEST_EVENT, onRequest);
   };
 }

@@ -54,4 +54,35 @@ describe('MeetingsAgenda pending controls', () => {
     expect(joinNow?.getAttribute('aria-busy')).toBe('true');
     expect(joinNow?.querySelector('.row-icon-spinner')).not.toBeNull();
   });
+
+  it('keeps a rejected meeting handoff visible and retryable', async () => {
+    const openExternal = vi
+      .fn<() => Promise<void>>()
+      .mockRejectedValueOnce(new Error('browser unavailable'))
+      .mockResolvedValueOnce();
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    component = mount(MeetingsAgenda, {
+      target: host,
+      props: {
+        groups: [{ label: 'Today', events: [event] }],
+        upNext: null,
+        totalCount: 1,
+        onOpenExternal: openExternal,
+      },
+    });
+
+    host.querySelector<HTMLButtonElement>('.row-icon-join')?.click();
+    await vi.waitFor(() => {
+      expect(host.querySelector('[role="alert"]')?.textContent).toContain(
+        'Couldn’t open this meeting.',
+      );
+    });
+
+    host.querySelector<HTMLButtonElement>('.meeting-open-error button')?.click();
+    await vi.waitFor(() => {
+      expect(openExternal).toHaveBeenCalledTimes(2);
+      expect(host.querySelector('[role="alert"]')).toBeNull();
+    });
+  });
 });

@@ -268,14 +268,19 @@
       </button>
     </header>
 
-    <div class="status-control" aria-label="Story status" data-testid="task-status-control">
+    <div
+      class="status-control"
+      aria-label="Story status"
+      aria-busy={saving}
+      data-testid="task-status-control"
+    >
       <button
         type="button"
         class:active={!currentPasses}
         disabled={saving}
         onclick={() => setPasses(false)}
       >
-        To do
+        {saving && !currentPasses ? 'Saving…' : 'To do'}
       </button>
       <button
         type="button"
@@ -283,7 +288,7 @@
         disabled={saving}
         onclick={() => setPasses(true)}
       >
-        Done
+        {saving && currentPasses ? 'Saving…' : 'Done'}
       </button>
     </div>
 
@@ -442,8 +447,9 @@
         data-testid="copy-story-id"
         onclick={() => void copyStoryId()}
         disabled={footerBusy !== null}
+        aria-busy={footerBusy === 'copy'}
       >
-        Copy ID
+        {footerBusy === 'copy' ? 'Copying…' : 'Copy ID'}
       </button>
       <button type="button" onclick={() => void openPrd()} disabled={footerBusy !== null || !prdPath}>
         {footerBusy === 'prd' ? 'Opening…' : 'Open PRD'}

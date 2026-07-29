@@ -73,6 +73,20 @@
   let refreshing = $state(false);
   let prompting = $state(false);
   let lastFetchedAt = $state<number | null>(null);
+  type FailedAction = PermissionId | 'refresh' | 'prompt';
+  let actionError = $state('');
+  let failedAction = $state<FailedAction | null>(null);
+  let sdkStarting = $state(false);
+  let sdkStartError = $state('');
+  const retryingFailure = $derived(
+    failedAction === 'refresh'
+      ? refreshing
+      : failedAction === 'prompt'
+        ? prompting
+        : failedAction
+          ? opening === failedAction
+          : false,
+  );
 
   // Convenience accessors that pull from the shared reactive store.
   const snapshot = $derived(permissionState.meetingPermissions);
@@ -87,12 +101,30 @@
   // is idempotent on the backend; the local flag keeps us from re-invoking on
   // every reactive tick.
   let sdkStartAttempted = $state(false);
+
+  async function startRecallSdk(): Promise<void> {
+    if (sdkStarting) return;
+    sdkStartError = '';
+    sdkStartAttempted = true;
+    sdkStarting = true;
+    try {
+      await invoke('start_recall_sdk');
+    } catch (err) {
+      console.error('start_recall_sdk failed:', err);
+      sdkStartError = 'Permissions are granted, but meeting detection didn’t start.';
+    } finally {
+      sdkStarting = false;
+    }
+  }
+
   $effect(() => {
+    if (!allGranted) {
+      sdkStartAttempted = false;
+      sdkStartError = '';
+      return;
+    }
     if (allGranted && !sdkStartAttempted) {
-      sdkStartAttempted = true;
-      invoke('start_recall_sdk').catch((err) => {
-        console.error('start_recall_sdk failed:', err);
-      });
+      void startRecallSdk();
     }
   });
 
@@ -125,11 +157,15 @@
   }
 
   async function handleOpen(id: PermissionId) {
+    actionError = '';
+    failedAction = null;
     opening = id;
     try {
       await invoke('permissions_open_settings', { permission: id });
     } catch (err) {
       console.error('permissions_open_settings failed:', err);
+      actionError = `Couldn’t open ${PERMISSIONS.find((permission) => permission.id === id)?.title ?? 'this permission'} in System Settings.`;
+      failedAction = id;
     } finally {
       // Brief delay so the chrome of the button registers the click;
       // then clear so a re-click is responsive.
@@ -140,10 +176,15 @@
   }
 
   async function handleRefresh() {
+    actionError = '';
+    failedAction = null;
     refreshing = true;
     try {
-      await loadMeetingPermissions();
+      await loadMeetingPermissions({ throwOnError: true });
       lastFetchedAt = Date.now();
+    } catch {
+      actionError = 'Couldn’t refresh meeting permissions.';
+      failedAction = 'refresh';
     } finally {
       refreshing = false;
     }
@@ -158,15 +199,27 @@
     // Safe to call repeatedly; first call shows native prompts for any
     // permission still in NotDetermined, subsequent calls are silent.
     if (prompting) return;
+    actionError = '';
+    failedAction = null;
     prompting = true;
     try {
       await invoke('permissions_force_native_register');
-      await loadMeetingPermissions();
+      await loadMeetingPermissions({ throwOnError: true });
     } catch (err) {
       console.error('permissions_force_native_register failed:', err);
+      actionError = 'Couldn’t trigger the native permission prompts.';
+      failedAction = 'prompt';
     } finally {
       prompting = false;
     }
+  }
+
+  async function retryFailedAction(): Promise<void> {
+    const action = failedAction;
+    if (!action) return;
+    if (action === 'refresh') await handleRefresh();
+    else if (action === 'prompt') await handleRunNativeRegister();
+    else await handleOpen(action);
   }
 
   let unlistenFocus: (() => void) | null = null;
@@ -282,6 +335,7 @@
             class="open-btn"
             onclick={() => handleOpen(perm.id)}
             disabled={opening === perm.id}
+            aria-busy={opening === perm.id}
           >
             {#if opening === perm.id}
               Opening…
@@ -296,6 +350,33 @@
     {/each}
   </ul>
 
+  {#if actionError}
+    <div class="permission-action-error" role="alert">
+      <span>{actionError}</span>
+      <button
+        type="button"
+        onclick={() => void retryFailedAction()}
+        disabled={retryingFailure}
+        aria-busy={retryingFailure}
+      >
+        {retryingFailure ? 'Retrying…' : 'Retry'}
+      </button>
+    </div>
+  {/if}
+  {#if sdkStartError}
+    <div class="permission-action-error" role="alert" data-testid="sdk-start-error">
+      <span>{sdkStartError}</span>
+      <button
+        type="button"
+        onclick={() => void startRecallSdk()}
+        disabled={sdkStarting}
+        aria-busy={sdkStarting}
+      >
+        {sdkStarting ? 'Retrying…' : 'Retry'}
+      </button>
+    </div>
+  {/if}
+
   <footer>
     <div class="footer-meta">
       {#if lastFetchedAt}
@@ -304,7 +385,7 @@
         Loading…
       {/if}
     </div>
-    <button class="refresh-btn" onclick={handleRefresh} disabled={refreshing}>
+    <button class="refresh-btn" onclick={handleRefresh} disabled={refreshing} aria-busy={refreshing}>
       {refreshing ? 'Refreshing…' : 'Refresh'}
     </button>
   </footer>
@@ -369,6 +450,26 @@
     border-top: 1px solid var(--c-divider);
     border-radius: 0;
     box-shadow: none;
+  }
+
+  .permission-action-error {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin: 8px 22px 0;
+    color: var(--c-danger, #d84b4b);
+    font-size: 12px;
+  }
+
+  .permission-action-error button {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: currentColor;
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
   }
   .why-card h2 {
     margin: 0 0 6px;

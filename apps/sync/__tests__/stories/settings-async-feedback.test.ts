@@ -98,7 +98,11 @@ describe('Settings async interaction feedback', () => {
     );
     expect(settings).toContain('if (hqCliCmdCopying) return');
     expect(settings).toContain("? 'Copying…'");
-    expect(settings).toContain("signingOut ? 'Signing out…' : 'Sign out'");
-    expect(settings).toContain("quitting ? 'Quitting…' : 'Quit HQ'");
+    expect(settings).toMatch(
+      /\{signingOut\s*\?\s*'Signing out…'\s*:\s*accountRetryAction === 'sign-out'\s*\?\s*'Retry sign out'\s*:\s*'Sign out'\}/,
+    );
+    expect(settings).toMatch(
+      /\{quitting\s*\?\s*'Quitting…'\s*:\s*accountRetryAction === 'quit'\s*\?\s*'Retry quit'\s*:\s*'Quit HQ'\}/,
+    );
   });
 });

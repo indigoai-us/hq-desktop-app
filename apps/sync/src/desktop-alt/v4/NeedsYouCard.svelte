@@ -21,12 +21,20 @@
 
   let { card, onaction, children }: Props = $props();
   let pendingActionId = $state<string | null>(null);
+  let actionFailure = $state<{ id: string; message: string } | null>(null);
 
   async function handleAction(id: string): Promise<void> {
     if (!onaction || pendingActionId) return;
+    actionFailure = null;
     pendingActionId = id;
     try {
       await onaction(id);
+    } catch (err) {
+      console.error(`home action ${id} failed`, err);
+      actionFailure = {
+        id,
+        message: 'That action didn’t complete.',
+      };
     } finally {
       pendingActionId = null;
     }
@@ -59,6 +67,19 @@
   </div>
   {#if children}
     {@render children()}
+  {/if}
+  {#if actionFailure}
+    <div class="v4-card-error" role="alert">
+      <span>{actionFailure.message}</span>
+      <button
+        type="button"
+        onclick={() => void handleAction(actionFailure!.id)}
+        disabled={pendingActionId !== null}
+        aria-busy={pendingActionId === actionFailure.id}
+      >
+        {pendingActionId === actionFailure.id ? 'Retrying…' : 'Retry'}
+      </button>
+    </div>
   {/if}
 </div>
 
@@ -158,5 +179,24 @@
   .v4-card-action:disabled {
     opacity: 0.5;
     cursor: default;
+  }
+
+  .v4-card-error {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 8px;
+    color: var(--v4-error);
+    font-size: var(--type-metadata, var(--text-micro));
+  }
+
+  .v4-card-error button {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: currentColor;
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
   }
 </style>

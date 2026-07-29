@@ -14,14 +14,35 @@ import { readRepoFile } from './harness';
  * drag regions only.
  */
 
-function firstRgbaAlpha(source: string, property: string): number {
-  const match = source.match(
-    new RegExp(
-      `--${property}:\\s*rgba\\(\\s*\\d+\\s*,\\s*\\d+\\s*,\\s*\\d+\\s*,\\s*([\\d.]+)\\s*\\)`,
-    ),
+const DEFAULT_WINDOW_TRANSPARENCY_FACTOR = 0.65;
+
+function firstLiquidGlassAlpha(
+  source: string,
+  property: string,
+  factor = DEFAULT_WINDOW_TRANSPARENCY_FACTOR,
+): number {
+  const declaration = source.match(new RegExp(`--${property}:\\s*([^;]+);`));
+  expect(declaration, `missing --${property}`).not.toBeNull();
+  const value = declaration?.[1].trim() ?? '';
+  const expression = value.match(
+    /^rgb\(\s*\d+\s+\d+\s+\d+\s*\/\s*clamp\(\s*([\d.]+)\s*,\s*calc\(\s*1\s*-\s*var\(--hq-window-transparency-factor(?:\s*,\s*([\d.]+))?\)\s*\*\s*([\d.]+)\s*\)\s*,\s*([\d.]+)\s*\)\s*\)$/i,
   );
-  expect(match, `${property} must have a translucent rgba default`).not.toBeNull();
-  return Number(match?.[1]);
+  expect(
+    expression,
+    `${property} must use the window-transparency liquid-glass expression; received: ${value}`,
+  ).not.toBeNull();
+
+  const floor = Number(expression?.[1]);
+  const fallback = expression?.[2];
+  const multiplier = Number(expression?.[3]);
+  const ceiling = Number(expression?.[4]);
+  if (fallback !== undefined) {
+    expect(Number(fallback), `${property} must retain the 0.65 default factor`).toBe(
+      DEFAULT_WINDOW_TRANSPARENCY_FACTOR,
+    );
+  }
+  expect(ceiling, `${property} must resolve fully opaque at factor 0`).toBe(1);
+  return Math.min(ceiling, Math.max(floor, 1 - factor * multiplier));
 }
 
 describe('DESKTOP-011: accessible responsive native behavior', () => {
@@ -72,16 +93,19 @@ describe('DESKTOP-011: accessible responsive native behavior', () => {
   });
 
   it('keeps light material roles translucent and weighted by hierarchy', () => {
-    const ground = firstRgbaAlpha(tokens, 'v4-ground');
-    const chrome = firstRgbaAlpha(tokens, 'v4-chrome');
-    const sidebarAlpha = firstRgbaAlpha(tokens, 'v4-sidebar');
-    const raised = firstRgbaAlpha(tokens, 'v4-raised');
+    const properties = ['v4-ground', 'v4-chrome', 'v4-sidebar', 'v4-raised'] as const;
+    const [ground, chrome, sidebarAlpha, raised] = properties.map((property) =>
+      firstLiquidGlassAlpha(tokens, property),
+    );
 
     expect(ground).toBeLessThanOrEqual(0.5);
     expect(chrome).toBeLessThanOrEqual(0.5);
     expect(sidebarAlpha).toBeLessThanOrEqual(0.5);
     expect(raised).toBeGreaterThan(ground);
     expect(raised).toBeLessThanOrEqual(0.6);
+    for (const property of properties) {
+      expect(firstLiquidGlassAlpha(tokens, property, 0)).toBe(1);
+    }
     expect(desktopCss).toContain('--surface-rail: var(--v4-sidebar');
     expect(desktopCss).toContain('--surface-panel: var(--v4-ground');
     expect(desktopCss).toContain('--surface-raise: var(--v4-raised');
@@ -98,7 +122,7 @@ describe('DESKTOP-011: accessible responsive native behavior', () => {
     expect(tokens).toContain('--v4-text-1: #111111');
     // Dark surface tokens exist alongside the light text.
     expect(tokens).toMatch(
-      /@media \(prefers-color-scheme: dark\)\s*\{[\s\S]*?--v4-chrome:\s*rgba\(30, 30, 30/,
+      /@media \(prefers-color-scheme: dark\)\s*\{[\s\S]*?--v4-chrome:\s*rgb\(30 30 30\s*\/\s*clamp\(/,
     );
   });
 
@@ -144,6 +168,9 @@ describe('DESKTOP-011: accessible responsive native behavior', () => {
     expect(desktopCss).toContain('@media (prefers-reduced-transparency: reduce)');
     expect(tokens).toContain('@media (prefers-reduced-transparency: reduce)');
     expect(tokens).toContain('--v4-chrome: #e8e8e8');
+    expect(tokens).toMatch(
+      /@supports not \(\(backdrop-filter:\s*blur\(1px\)\)[\s\S]*?@media \(prefers-reduced-transparency:\s*reduce\)\s*\{[\s\S]*?--v4-fallback-material-alpha:\s*1/,
+    );
     expect(titleBar).toContain('@media (prefers-reduced-transparency: reduce)');
     expect(titleBar).toContain('@media (prefers-reduced-motion: reduce)');
     expect(messages).toContain('@media (prefers-reduced-motion: reduce)');

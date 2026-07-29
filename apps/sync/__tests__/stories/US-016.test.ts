@@ -63,7 +63,9 @@ describe('US-016: V4 connective tissue stays complete', () => {
     expect(banner).toContain('clickActionId: string;');
     expect(banner).toContain("listen<BannerPayload>('banner:event'");
     expect(banner).toContain("invoke('banner_window_ready')");
-    expect(banner).toContain("invoke('banner_action', { action: actionId, payload })");
+    expect(banner).toContain("requestId: createActionRequestId()");
+    expect(banner).toContain("action: actionId");
+    expect(banner).toContain("payload,");
     expect(banner).toContain("invoke('dismiss_banner')");
     expect(banner).toContain('data-kind={payload.kind}');
     expect(banner).toContain('{payload.actionLabel}');

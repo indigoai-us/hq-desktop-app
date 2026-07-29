@@ -43,6 +43,7 @@
   let errorContext = $state<'read' | 'mutation'>('read');
   let updateProbeError = $state<string | null>(null);
   let repairCommandState = $state<'idle' | 'copying' | 'copied' | 'failed'>('idle');
+  let repairCommandError = $state<string | null>(null);
   let repairCommandTimer: ReturnType<typeof setTimeout> | null = null;
   let confirmUninstall = $state<string | null>(null);
   // Per-pack "copied" feedback for the Get started copy button, keyed by pack name.
@@ -53,6 +54,12 @@
   let copiedPrompt = $state<string | null>(null);
   let copyingPrompt = $state<string | null>(null);
   let copiedPromptTimer: ReturnType<typeof setTimeout> | null = null;
+  type ClipboardAction = 'get-started' | 'setup-prompt';
+  interface ClipboardFailure {
+    action: ClipboardAction;
+    message: string;
+  }
+  let clipboardFailures = $state<Record<string, ClipboardFailure | undefined>>({});
 
   const installed = $derived(view?.packs?.installed ?? []);
   const available = $derived(view?.packs?.available ?? []);
@@ -60,6 +67,12 @@
   const hasPackSnapshot = $derived(Boolean(view?.packs));
   const updatesCount = $derived(installed.filter((p) => p.updateAvailable).length);
   const HQ_CLI_INSTALL_COMMAND = 'npm install -g @indigoai-us/hq-cli@latest';
+
+  function actionErrorMessage(error: unknown): string {
+    if (error instanceof Error && error.message) return error.message;
+    if (typeof error === 'string' && error.trim()) return error;
+    return 'Clipboard access was rejected.';
+  }
 
   async function refresh(): Promise<void> {
     if (refreshing) return;
@@ -91,6 +104,7 @@
     try {
       await navigator.clipboard.writeText(HQ_CLI_INSTALL_COMMAND);
       repairCommandState = 'copied';
+      repairCommandError = null;
       if (repairCommandTimer) clearTimeout(repairCommandTimer);
       repairCommandTimer = setTimeout(() => {
         repairCommandState = 'idle';
@@ -99,6 +113,7 @@
     } catch (error) {
       console.error('installed-packs: repair command copy failed', error);
       repairCommandState = 'failed';
+      repairCommandError = actionErrorMessage(error);
     }
   }
 
@@ -227,6 +242,42 @@
     return cmd ? `Run ${cmd} to get started` : null;
   }
 
+  function clipboardFailureKey(p: InstalledPack, action: ClipboardAction): string {
+    return `${action}:${p.name}:${p.source ?? p.transport ?? ''}`;
+  }
+
+  function clipboardFailure(
+    p: InstalledPack,
+    action: ClipboardAction,
+  ): ClipboardFailure | undefined {
+    return clipboardFailures[clipboardFailureKey(p, action)];
+  }
+
+  function clearClipboardFailure(p: InstalledPack, action: ClipboardAction): void {
+    clipboardFailures = {
+      ...clipboardFailures,
+      [clipboardFailureKey(p, action)]: undefined,
+    };
+  }
+
+  function setClipboardFailure(
+    p: InstalledPack,
+    action: ClipboardAction,
+    error: unknown,
+  ): void {
+    clipboardFailures = {
+      ...clipboardFailures,
+      [clipboardFailureKey(p, action)]: {
+        action,
+        message: actionErrorMessage(error),
+      },
+    };
+  }
+
+  function retryClipboardAction(p: InstalledPack, action: ClipboardAction): Promise<void> {
+    return action === 'get-started' ? copyGetStarted(p) : copySetupPrompt(p);
+  }
+
   async function copyGetStarted(p: InstalledPack): Promise<void> {
     const line = getStartedLine(p);
     if (!line || copyingPack) return;
@@ -234,6 +285,7 @@
     try {
       await navigator.clipboard.writeText(line);
       copiedPack = p.name;
+      clearClipboardFailure(p, 'get-started');
       if (copiedTimer) clearTimeout(copiedTimer);
       copiedTimer = setTimeout(() => {
         copiedPack = null;
@@ -241,6 +293,7 @@
       }, 1800);
     } catch (err) {
       console.error('installed-packs: clipboard write failed', err);
+      setClipboardFailure(p, 'get-started', err);
     } finally {
       copyingPack = null;
     }
@@ -263,6 +316,7 @@
     try {
       await navigator.clipboard.writeText(prompt);
       copiedPrompt = p.name;
+      clearClipboardFailure(p, 'setup-prompt');
       if (copiedPromptTimer) clearTimeout(copiedPromptTimer);
       copiedPromptTimer = setTimeout(() => {
         copiedPrompt = null;
@@ -270,6 +324,7 @@
       }, 1800);
     } catch (err) {
       console.error('installed-packs: setup-prompt clipboard write failed', err);
+      setClipboardFailure(p, 'setup-prompt', err);
     } finally {
       copyingPrompt = null;
     }
@@ -342,6 +397,19 @@
                   ? 'Copy repair command'
                   : 'Copy install command'}
         </button>
+        {#if repairCommandError}
+          <span class="pack-action-error" role="alert" title={repairCommandError}>
+            Couldn’t copy to the clipboard.
+            <button
+              type="button"
+              onclick={copyRepairCommand}
+              disabled={repairCommandState === 'copying'}
+              aria-busy={repairCommandState === 'copying'}
+            >
+              {repairCommandState === 'copying' ? 'Retrying…' : 'Retry'}
+            </button>
+          </span>
+        {/if}
       {/if}
       <details>
         <summary>Technical details</summary>
@@ -429,6 +497,20 @@
                       : 'Copy'}
                 </button>
               </div>
+              {#if clipboardFailure(p, 'get-started')}
+                {@const failure = clipboardFailure(p, 'get-started') as ClipboardFailure}
+                <p class="pack-action-error" role="alert" title={failure.message}>
+                  <span>Couldn’t copy to the clipboard.</span>
+                  <button
+                    type="button"
+                    onclick={() => retryClipboardAction(p, failure.action)}
+                    disabled={copyingPack === p.name}
+                    aria-busy={copyingPack === p.name}
+                  >
+                    {copyingPack === p.name ? 'Retrying…' : 'Retry'}
+                  </button>
+                </p>
+              {/if}
             {/if}
             <!--
               Moderation-approved setup prose (US-009). SUPPRESSED by default:
@@ -465,6 +547,20 @@
                 <pre class="setup-prompt-text">{p.initialization?.prompt}</pre>
                 <p class="setup-prompt-note">The pack author's setup prompt.</p>
               </div>
+              {#if clipboardFailure(p, 'setup-prompt')}
+                {@const failure = clipboardFailure(p, 'setup-prompt') as ClipboardFailure}
+                <p class="pack-action-error" role="alert" title={failure.message}>
+                  <span>Couldn’t copy to the clipboard.</span>
+                  <button
+                    type="button"
+                    onclick={() => retryClipboardAction(p, failure.action)}
+                    disabled={copyingPrompt === p.name}
+                    aria-busy={copyingPrompt === p.name}
+                  >
+                    {copyingPrompt === p.name ? 'Retrying…' : 'Retry'}
+                  </button>
+                </p>
+              {/if}
             {/if}
           </div>
           <div class="row-actions">
@@ -816,6 +912,34 @@
 
   .get-started-copy:disabled,
   .setup-prompt-copy:disabled {
+    opacity: 0.58;
+    cursor: wait;
+  }
+
+  .pack-action-error {
+    display: inline-flex;
+    align-items: baseline;
+    gap: var(--v4-space-2);
+    margin: var(--v4-space-1) 0 0;
+    color: var(--v4-error);
+    font-size: var(--text-micro);
+    line-height: 15px;
+  }
+
+  .pack-action-error button {
+    flex: 0 0 auto;
+    padding: 0;
+    border: 0;
+    border-bottom: 1px solid currentcolor;
+    border-radius: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-weight: 700;
+    cursor: pointer;
+  }
+
+  .pack-action-error button:disabled {
     opacity: 0.58;
     cursor: wait;
   }

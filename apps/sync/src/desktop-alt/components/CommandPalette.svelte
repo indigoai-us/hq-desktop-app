@@ -19,6 +19,10 @@
     label: 'ACTIONS' | 'NAVIGATE';
     items: CommandPaletteItem[];
   }
+  interface CommandActionError {
+    command: CommandPaletteItem;
+    message: string;
+  }
 
   let { commands, onclose }: Props = $props();
   let query = $state('');
@@ -26,6 +30,13 @@
   let inputEl: HTMLInputElement | null = $state(null);
   let paletteEl: HTMLDivElement | null = $state(null);
   let executingId = $state<string | null>(null);
+  let actionError = $state<CommandActionError | null>(null);
+
+  function errorMessage(error: unknown): string {
+    if (error instanceof Error && error.message) return error.message;
+    if (typeof error === 'string' && error.trim()) return error;
+    return 'The command was rejected before it could finish.';
+  }
 
   function fuzzyMatch(value: string, needle: string): boolean {
     const haystack = value.toLowerCase();
@@ -87,17 +98,18 @@
   async function execute(command: CommandPaletteItem | undefined) {
     if (!command || executingId) return;
     executingId = command.id;
+    if (actionError?.command.id !== command.id) actionError = null;
     // Give the selected row an immediate pending state before a native invoke
     // or navigation can block/replace this surface.
     await tick();
-    // Always close the palette, even if the action throws — otherwise a single
-    // failing command left the palette stuck open and modal over the whole app.
     try {
       await command.action();
+      onclose();
     } catch (err) {
       console.error('command-palette: action failed', err);
+      actionError = { command, message: errorMessage(err) };
     } finally {
-      onclose();
+      executingId = null;
     }
   }
 
@@ -195,6 +207,21 @@
     </div>
 
     <h2 id="command-palette-title">Command palette</h2>
+
+    {#if actionError}
+      {@const failure = actionError}
+      <div class="command-action-error" role="alert" title={failure.message}>
+        <span>Couldn’t run <strong>{failure.command.label}</strong>.</span>
+        <button
+          type="button"
+          onclick={() => void execute(failure.command)}
+          disabled={!!executingId}
+          aria-busy={executingId === failure.command.id}
+        >
+          {executingId === failure.command.id ? 'Retrying…' : 'Retry'}
+        </button>
+      </div>
+    {/if}
 
     <div id="command-palette-list" class="command-list" role="listbox" aria-label="Commands">
       {#if commandSections.length > 0}
@@ -329,6 +356,41 @@
     scrollbar-color: var(--pop-muted) transparent;
     scrollbar-gutter: stable;
     scrollbar-width: thin;
+  }
+
+  .command-action-error {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--pop-divider);
+    color: var(--v4-error, #ef4444);
+    font-size: var(--text-base);
+    line-height: 17px;
+  }
+
+  .command-action-error span {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .command-action-error button {
+    flex: 0 0 auto;
+    padding: 0;
+    border: 0;
+    border-bottom: 1px solid currentcolor;
+    border-radius: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-weight: 700;
+    cursor: pointer;
+  }
+
+  .command-action-error button:disabled {
+    opacity: 0.58;
+    cursor: wait;
   }
 
   .command-section + .command-section {

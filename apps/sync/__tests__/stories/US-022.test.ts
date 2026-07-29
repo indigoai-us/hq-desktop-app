@@ -143,9 +143,17 @@ describe('US-022: Rust commands + poll path + registration + capability', () => 
   it('emits thread:new-reply from the single poll path', () => {
     const r = normalize(dmNotify);
     expect(r).toContain('pub const EVENT_THREAD_NEW_REPLY: &str = "thread:new-reply";');
-    expect(r).toContain('async fn poll_active_thread(');
+    expect(r).toContain(
+      'async fn poll_active_thread(app: &AppHandle, base_url: &str, auth: &NotificationAuthSnapshot)',
+    );
     // Folded into the single do_poll path, not a parallel poller.
-    expect(r).toContain('poll_active_thread(app, &base_url, &access_token).await;');
+    // The immutable auth snapshot must travel through the network call so a
+    // response from a superseded login cannot commit or emit into the new
+    // account's session.
+    expect(r).toContain('poll_active_thread(app, &base_url, auth).await;');
+    expect(r).not.toContain(
+      'poll_active_thread(app, &base_url, &access_token).await;',
+    );
     expect(r).toContain('app.emit(EVENT_THREAD_NEW_REPLY,');
   });
 

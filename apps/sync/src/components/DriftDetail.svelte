@@ -34,6 +34,11 @@
     targetRepo: string; // e.g. "indigoai-us/hq-core"
     targetRef: string;  // e.g. "v14.2.1" (release) or a 40-char SHA (staging)
   }
+  type DriftOpenAction = 'local' | 'upstream';
+  interface DriftOpenFailure {
+    action: DriftOpenAction;
+    message: string;
+  }
 
   let report = $state<DriftReport | null>(null);
   // Per-row in-flight + result state for the Restore button. Keyed by
@@ -42,6 +47,7 @@
   // composite key keeps the map shape consistent).
   let restoreState = $state<Record<string, 'idle' | 'in-flight' | 'done' | string>>({});
   let openState = $state<Record<string, 'local' | 'upstream' | null>>({});
+  let openFailures = $state<Record<string, DriftOpenFailure | undefined>>({});
 
   // Header/help baseline label. Release reports carry a bare semver
   // (`14.2.1`) that reads naturally with a `v` prefix; staging reports
@@ -67,13 +73,16 @@
   // `core-state:changed` event whose listener pipes the new report
   // back into this window via `drift:report`.
   let rechecking = $state(false);
+  let recheckError = $state<string | null>(null);
   async function recheck() {
     if (rechecking) return;
     rechecking = true;
     try {
       await invoke('check_core_state');
+      recheckError = null;
     } catch (e) {
       console.error('recheck failed:', e);
+      recheckError = errorMessage(e);
     } finally {
       rechecking = false;
     }
@@ -141,6 +150,23 @@
     return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
   }
 
+  function errorMessage(error: unknown): string {
+    if (error instanceof Error && error.message) return error.message;
+    if (typeof error === 'string' && error.trim()) return error;
+    return 'The desktop action was rejected.';
+  }
+
+  function setOpenFailure(entry: DriftEntry, action: DriftOpenAction, error: unknown) {
+    openFailures = {
+      ...openFailures,
+      [entry.path]: { action, message: errorMessage(error) },
+    };
+  }
+
+  function clearOpenFailure(entry: DriftEntry) {
+    openFailures = { ...openFailures, [entry.path]: undefined };
+  }
+
   function upstreamBlobUrl(entry: DriftEntry): string {
     // Build the link from the *report's* target (the tree this drift
     // was measured against), not the local installed version. Avoids
@@ -156,8 +182,10 @@
     openState = { ...openState, [entry.path]: 'upstream' };
     try {
       await openInBrowser(upstreamBlobUrl(entry));
+      clearOpenFailure(entry);
     } catch (e) {
       console.error('open upstream failed:', e);
+      setOpenFailure(entry, 'upstream', e);
     } finally {
       openState = { ...openState, [entry.path]: null };
     }
@@ -172,11 +200,17 @@
     // resolved HQ folder.
     try {
       await invoke('open_in_editor', { path: entry.path });
+      clearOpenFailure(entry);
     } catch (e) {
       console.error('open_in_editor failed:', e);
+      setOpenFailure(entry, 'local', e);
     } finally {
       openState = { ...openState, [entry.path]: null };
     }
+  }
+
+  function retryOpen(entry: DriftEntry, action: DriftOpenAction) {
+    return action === 'local' ? openLocal(entry) : viewUpstream(entry);
   }
 
   async function restore(entry: DriftEntry, kind: 'modified' | 'missing') {
@@ -221,6 +255,7 @@
       // button or background re-check) so done/error flags don't bleed
       // across scans.
       restoreState = {};
+      openFailures = {};
     }).then((fn) => {
       unlisten = fn;
       // Race-free handshake: Rust waits for this invoke before emitting
@@ -266,6 +301,7 @@
         <div class="drift-row-actions">{@render actions(entry)}</div>
       </div>
     </div>
+    {@render openErr(entry)}
     {#if errKey}{@render restoreErr(errKey)}{/if}
   </div>
 {/snippet}
@@ -355,9 +391,28 @@
   />
 {/snippet}
 
+{#snippet openErr(entry: DriftEntry)}
+  {#if openFailures[entry.path]}
+    {@const failure = openFailures[entry.path] as DriftOpenFailure}
+    <div class="drift-row-open-error" role="alert" title={failure.message}>
+      <span>
+        {failure.action === 'local' ? 'Couldn’t open the local file.' : 'Couldn’t open the upstream file.'}
+      </span>
+      <button
+        type="button"
+        onclick={() => retryOpen(entry, failure.action)}
+        disabled={openState[entry.path] != null}
+        aria-busy={openState[entry.path] != null}
+      >
+        {openState[entry.path] ? 'Retrying…' : 'Retry'}
+      </button>
+    </div>
+  {/if}
+{/snippet}
+
 {#snippet restoreErr(key: string)}
   {#if typeof restoreState[key] === 'string' && restoreState[key] !== 'in-flight' && restoreState[key] !== 'done'}
-    <p class="drift-row-error">Restore failed: {restoreState[key]}</p>
+    <p class="drift-row-error" role="alert">Restore failed: {restoreState[key]}</p>
   {/if}
 {/snippet}
 
@@ -391,6 +446,15 @@
       </button>
     </div>
   </header>
+
+  {#if recheckError}
+    <div class="drift-recheck-error" role="alert" title={recheckError}>
+      <span>Couldn’t refresh Core Drift.</span>
+      <button type="button" onclick={recheck} disabled={rechecking} aria-busy={rechecking}>
+        {rechecking ? 'Retrying…' : 'Retry'}
+      </button>
+    </div>
+  {/if}
 
   {#if !report}
     <!-- Initial load: managed-state handshake hasn't fired yet (or is
@@ -868,10 +932,45 @@
     justify-content: center;
   }
 
-  .drift-row-error {
+  .drift-row-open-error,
+  .drift-row-error,
+  .drift-recheck-error {
     margin: 0;
     font-size: var(--fs-sm);
     color: var(--popover-danger, #ef4444);
     line-height: 1.3;
+  }
+
+  .drift-row-open-error,
+  .drift-recheck-error {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.5rem;
+  }
+
+  .drift-recheck-error {
+    padding: 0.375rem 0.875rem;
+    border-bottom: 1px solid var(--popover-border, rgba(255, 255, 255, 0.14));
+  }
+
+  .drift-row-open-error button,
+  .drift-recheck-error button {
+    flex: 0 0 auto;
+    padding: 0;
+    border: 0;
+    border-bottom: 1px solid currentcolor;
+    border-radius: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-weight: 700;
+    cursor: pointer;
+  }
+
+  .drift-row-open-error button:disabled,
+  .drift-recheck-error button:disabled {
+    opacity: 0.58;
+    cursor: wait;
   }
 </style>

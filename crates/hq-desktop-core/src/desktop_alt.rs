@@ -1648,9 +1648,30 @@ pub fn read_file_content(hq_root: &Path, rel_path: &str) -> Result<String, Strin
 
 #[cfg(test)]
 thread_local! {
+    static FILE_READ_BEFORE_OPEN_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
     static FILE_READ_AFTER_SIZE_CHECK_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         std::cell::RefCell::new(None);
 }
+
+#[cfg(test)]
+fn set_file_read_before_open_hook(hook: impl FnOnce() + 'static) {
+    FILE_READ_BEFORE_OPEN_HOOK.with(|slot| {
+        *slot.borrow_mut() = Some(Box::new(hook));
+    });
+}
+
+#[cfg(test)]
+fn run_file_read_before_open_hook() {
+    FILE_READ_BEFORE_OPEN_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook();
+        }
+    });
+}
+
+#[cfg(not(test))]
+fn run_file_read_before_open_hook() {}
 
 #[cfg(test)]
 fn set_file_read_after_size_check_hook(hook: impl FnOnce() + 'static) {
@@ -1671,58 +1692,540 @@ fn run_file_read_after_size_check_hook() {
 #[cfg(not(test))]
 fn run_file_read_after_size_check_hook() {}
 
-#[cfg(unix)]
-fn open_regular_file_no_follow(path: &Path) -> Result<std::fs::File, String> {
-    use std::os::unix::fs::OpenOptionsExt;
-
-    // O_NOFOLLOW differs between the Linux family and BSD/Darwin family.
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    const O_NOFOLLOW: i32 = 0x0002_0000;
-    #[cfg(not(any(target_os = "linux", target_os = "android")))]
-    const O_NOFOLLOW: i32 = 0x0000_0100;
-
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(O_NOFOLLOW)
-        .open(path)
-        .map_err(|e| format!("could not open preview file without following symlinks: {e}"))?;
-    let metadata = file
-        .metadata()
-        .map_err(|e| format!("could not inspect opened preview file: {e}"))?;
-    if !metadata.is_file() {
-        return Err("preview target is not a regular file".to_string());
-    }
-    Ok(file)
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[derive(Clone)]
+pub(crate) struct HqScopedDirectory {
+    descriptor: std::sync::Arc<std::fs::File>,
 }
 
-#[cfg(windows)]
-fn open_regular_file_no_follow(path: &Path) -> Result<std::fs::File, String> {
-    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+/// A retained Windows directory-handle chain. Each handle intentionally omits
+/// `FILE_SHARE_DELETE`, so a junction/parent directory cannot be renamed or
+/// replaced after authorization while a descendant file is opened or written.
+///
+/// Windows has no public `openat(2)` equivalent. `NtCreateFile` with a
+/// `RootDirectory` handle is the native relative-open primitive; retaining the
+/// complete chain closes the otherwise subtle `canonicalize` → parent-junction
+/// swap between authorization and `CreateFileW`/`ReplaceFileW`.
+#[cfg(target_os = "windows")]
+#[derive(Clone)]
+pub(crate) struct HqScopedDirectory {
+    descriptors: std::sync::Arc<Vec<std::fs::File>>,
+}
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+impl HqScopedDirectory {
+    pub(crate) fn open_regular_file(
+        &self,
+        file_name: &std::ffi::OsStr,
+    ) -> Result<std::fs::File, String> {
+        let descriptor = rustix::fs::openat(
+            self.descriptor.as_ref(),
+            file_name,
+            rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::CLOEXEC | rustix::fs::OFlags::NOFOLLOW,
+            rustix::fs::Mode::empty(),
+        )
+        .map_err(|e| format!("could not open HQ file without following links: {e}"))?;
+        let file = std::fs::File::from(descriptor);
+        let metadata = file
+            .metadata()
+            .map_err(|e| format!("could not inspect opened HQ file: {e}"))?;
+        if !metadata.is_file() {
+            return Err("HQ file target is not a regular file".to_string());
+        }
+        Ok(file)
+    }
+
+    pub(crate) fn create_new_file(
+        &self,
+        file_name: &std::ffi::OsStr,
+    ) -> Result<std::fs::File, std::io::Error> {
+        rustix::fs::openat(
+            self.descriptor.as_ref(),
+            file_name,
+            rustix::fs::OFlags::WRONLY
+                | rustix::fs::OFlags::CREATE
+                | rustix::fs::OFlags::EXCL
+                | rustix::fs::OFlags::CLOEXEC
+                | rustix::fs::OFlags::NOFOLLOW,
+            rustix::fs::Mode::from_raw_mode(0o666),
+        )
+        .map(std::fs::File::from)
+        .map_err(std::io::Error::from)
+    }
+
+    pub(crate) fn exchange_files(
+        &self,
+        first: &std::ffi::OsStr,
+        second: &std::ffi::OsStr,
+    ) -> Result<(), String> {
+        rustix::fs::renameat_with(
+            self.descriptor.as_ref(),
+            first,
+            self.descriptor.as_ref(),
+            second,
+            rustix::fs::RenameFlags::EXCHANGE,
+        )
+        .map_err(|error| format!("could not atomically exchange project JSON: {error}"))
+    }
+
+    pub(crate) fn remove_file(&self, file_name: &std::ffi::OsStr) -> Result<(), std::io::Error> {
+        rustix::fs::unlinkat(
+            self.descriptor.as_ref(),
+            file_name,
+            rustix::fs::AtFlags::empty(),
+        )
+        .map_err(std::io::Error::from)
+    }
+}
+
+#[cfg(target_os = "windows")]
+mod windows_scoped_directory {
+    use std::{
+        ffi::{c_void, OsStr},
+        fs::File,
+        os::windows::{
+            ffi::OsStrExt,
+            fs::{MetadataExt, OpenOptionsExt},
+            io::{AsRawHandle, FromRawHandle, RawHandle},
+        },
+        path::Path,
+    };
+
+    use super::HqScopedDirectory;
+
+    // NT native API constants. The Win32 API exposes no way to open a child
+    // relative to a retained directory handle; this is the documented kernel
+    // primitive underpinning Win32 relative opens.
+    const OBJ_CASE_INSENSITIVE: u32 = 0x0000_0040;
+    const FILE_LIST_DIRECTORY: u32 = 0x0000_0001;
+    const FILE_READ_ATTRIBUTES: u32 = 0x0000_0080;
+    const GENERIC_READ: u32 = 0x8000_0000;
+    const GENERIC_WRITE: u32 = 0x4000_0000;
+    const SYNCHRONIZE: u32 = 0x0010_0000;
+    const DELETE: u32 = 0x0001_0000;
+    const FILE_SHARE_READ: u32 = 0x0000_0001;
+    const FILE_OPEN: u32 = 0x0000_0001;
+    const FILE_CREATE: u32 = 0x0000_0002;
+    const FILE_DIRECTORY_FILE: u32 = 0x0000_0001;
+    const FILE_NON_DIRECTORY_FILE: u32 = 0x0000_0040;
+    const FILE_SYNCHRONOUS_IO_NONALERT: u32 = 0x0000_0020;
+    const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
     const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
     const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
 
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
-        .open(path)
-        .map_err(|e| {
-            format!("could not open preview file without following reparse points: {e}")
+    #[repr(C)]
+    struct UnicodeString {
+        length: u16,
+        maximum_length: u16,
+        buffer: *mut u16,
+    }
+
+    #[repr(C)]
+    struct ObjectAttributes {
+        length: u32,
+        root_directory: isize,
+        object_name: *mut UnicodeString,
+        attributes: u32,
+        security_descriptor: *mut c_void,
+        security_quality_of_service: *mut c_void,
+    }
+
+    #[repr(C)]
+    struct IoStatusBlock {
+        status_or_pointer: usize,
+        information: usize,
+    }
+
+    #[link(name = "ntdll")]
+    unsafe extern "system" {
+        fn NtCreateFile(
+            file_handle: *mut isize,
+            desired_access: u32,
+            object_attributes: *mut ObjectAttributes,
+            io_status_block: *mut IoStatusBlock,
+            allocation_size: *mut i64,
+            file_attributes: u32,
+            share_access: u32,
+            create_disposition: u32,
+            create_options: u32,
+            ea_buffer: *mut c_void,
+            ea_length: u32,
+        ) -> i32;
+        fn NtSetInformationFile(
+            file_handle: isize,
+            io_status_block: *mut IoStatusBlock,
+            file_information: *mut c_void,
+            length: u32,
+            file_information_class: u32,
+        ) -> i32;
+    }
+
+    fn status_error(operation: &str, status: i32) -> String {
+        format!("{operation} failed with NTSTATUS 0x{:08x}", status as u32)
+    }
+
+    fn validate_child_name(name: &OsStr) -> Result<(), String> {
+        let text = name
+            .to_str()
+            .ok_or_else(|| "HQ path component is not valid UTF-8".to_string())?;
+        if text.is_empty() || text == "." || text == ".." || text.contains(['/', '\\']) {
+            return Err("HQ path component is not a single safe name".to_string());
+        }
+        Ok(())
+    }
+
+    fn nt_open_relative(
+        parent: &File,
+        name: &OsStr,
+        desired_access: u32,
+        create_disposition: u32,
+        create_options: u32,
+    ) -> Result<File, String> {
+        validate_child_name(name)?;
+        let mut encoded = name.encode_wide().collect::<Vec<_>>();
+        let byte_len = encoded
+            .len()
+            .checked_mul(std::mem::size_of::<u16>())
+            .and_then(|length| u16::try_from(length).ok())
+            .ok_or_else(|| "HQ path component is too long".to_string())?;
+        let mut object_name = UnicodeString {
+            length: byte_len,
+            maximum_length: byte_len,
+            buffer: encoded.as_mut_ptr(),
+        };
+        let mut attributes = ObjectAttributes {
+            length: std::mem::size_of::<ObjectAttributes>() as u32,
+            root_directory: parent.as_raw_handle() as isize,
+            object_name: &mut object_name,
+            attributes: OBJ_CASE_INSENSITIVE,
+            security_descriptor: std::ptr::null_mut(),
+            security_quality_of_service: std::ptr::null_mut(),
+        };
+        let mut io_status = IoStatusBlock {
+            status_or_pointer: 0,
+            information: 0,
+        };
+        let mut handle = -1isize;
+        // The opened parent handle is the root for this one component. We
+        // deliberately share READ only: no concurrent rename/delete/reparse
+        // rewrite can replace any retained ancestor during the operation.
+        let status = unsafe {
+            NtCreateFile(
+                &mut handle,
+                desired_access,
+                &mut attributes,
+                &mut io_status,
+                std::ptr::null_mut(),
+                0,
+                FILE_SHARE_READ,
+                create_disposition,
+                create_options | FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_REPARSE_POINT,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if status < 0 {
+            return Err(status_error(
+                "could not open HQ path without following reparse points",
+                status,
+            ));
+        }
+        // SAFETY: a successful NtCreateFile returns one owned HANDLE. File
+        // closes it exactly once, and `encoded` remains alive for the syscall.
+        Ok(unsafe { File::from_raw_handle(handle as RawHandle) })
+    }
+
+    fn ensure_real_directory(file: File) -> Result<File, String> {
+        let metadata = file
+            .metadata()
+            .map_err(|error| format!("could not inspect opened HQ directory: {error}"))?;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 || !metadata.is_dir() {
+            return Err("HQ directory must not be a reparse point".to_string());
+        }
+        Ok(file)
+    }
+
+    fn ensure_regular_file(file: File) -> Result<File, String> {
+        let metadata = file
+            .metadata()
+            .map_err(|error| format!("could not inspect opened HQ file: {error}"))?;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 || !metadata.is_file() {
+            return Err("HQ file target is not a regular file".to_string());
+        }
+        Ok(file)
+    }
+
+    fn open_root(path: &Path) -> Result<File, String> {
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)
+            .map_err(|error| {
+                format!("could not open HQ folder without following reparse points: {error}")
+            })?;
+        ensure_real_directory(file)
+    }
+
+    pub(super) fn open_scoped_directory(
+        hq_root: &Path,
+        rel_dir: &str,
+        validate_relative: impl Fn(&str) -> Result<String, String>,
+    ) -> Result<HqScopedDirectory, String> {
+        let canonical_root = std::fs::canonicalize(hq_root)
+            .map_err(|error| format!("could not resolve HQ folder: {error}"))?;
+        let root = open_root(&canonical_root)?;
+        let mut chain = vec![root];
+
+        if !rel_dir.is_empty() {
+            let normalized = validate_relative(rel_dir)?;
+            if normalized != rel_dir {
+                return Err("HQ directory path must be canonical".to_string());
+            }
+            for segment in normalized.split('/') {
+                let parent = chain
+                    .last()
+                    .ok_or_else(|| "HQ directory chain is empty".to_string())?;
+                let child = nt_open_relative(
+                    parent,
+                    OsStr::new(segment),
+                    FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+                    FILE_OPEN,
+                    FILE_DIRECTORY_FILE,
+                )?;
+                chain.push(ensure_real_directory(child)?);
+            }
+        }
+        Ok(HqScopedDirectory {
+            descriptors: std::sync::Arc::new(chain),
+        })
+    }
+
+    pub(super) fn open_regular_file(
+        directory: &HqScopedDirectory,
+        file_name: &OsStr,
+    ) -> Result<File, String> {
+        let parent = directory
+            .descriptors
+            .last()
+            .ok_or_else(|| "HQ directory chain is empty".to_string())?;
+        ensure_regular_file(nt_open_relative(
+            parent,
+            file_name,
+            GENERIC_READ | SYNCHRONIZE,
+            FILE_OPEN,
+            FILE_NON_DIRECTORY_FILE,
+        )?)
+    }
+
+    pub(super) fn create_new_file(
+        directory: &HqScopedDirectory,
+        file_name: &OsStr,
+    ) -> Result<File, std::io::Error> {
+        let parent = directory.descriptors.last().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::Other, "HQ directory chain is empty")
         })?;
+        nt_open_relative(
+            parent,
+            file_name,
+            GENERIC_WRITE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+            FILE_CREATE,
+            FILE_NON_DIRECTORY_FILE,
+        )
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))
+    }
+
+    pub(super) fn remove_file(
+        directory: &HqScopedDirectory,
+        file_name: &OsStr,
+    ) -> Result<(), std::io::Error> {
+        // `NtSetInformationFile(FileDispositionInformation)` deletes the
+        // terminal directory entry through the retained parent handle. It is
+        // the Windows counterpart to unlinkat and never re-resolves a path
+        // through a replaceable parent junction.
+        const FILE_DISPOSITION_INFORMATION: u32 = 13;
+        let parent = directory.descriptors.last().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::Other, "HQ directory chain is empty")
+        })?;
+        let file = nt_open_relative(
+            parent,
+            file_name,
+            DELETE | SYNCHRONIZE,
+            FILE_OPEN,
+            FILE_NON_DIRECTORY_FILE,
+        )
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
+        let mut io_status = IoStatusBlock {
+            status_or_pointer: 0,
+            information: 0,
+        };
+        let mut delete_file: u8 = 1;
+        let status = unsafe {
+            NtSetInformationFile(
+                file.as_raw_handle() as isize,
+                &mut io_status,
+                (&mut delete_file as *mut u8).cast(),
+                1,
+                FILE_DISPOSITION_INFORMATION,
+            )
+        };
+        if status < 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                status_error(
+                    "could not remove HQ file without following reparse points",
+                    status,
+                ),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl HqScopedDirectory {
+    pub(crate) fn open_regular_file(
+        &self,
+        file_name: &std::ffi::OsStr,
+    ) -> Result<std::fs::File, String> {
+        windows_scoped_directory::open_regular_file(self, file_name)
+    }
+
+    pub(crate) fn create_new_file(
+        &self,
+        file_name: &std::ffi::OsStr,
+    ) -> Result<std::fs::File, std::io::Error> {
+        windows_scoped_directory::create_new_file(self, file_name)
+    }
+
+    pub(crate) fn remove_file(&self, file_name: &std::ffi::OsStr) -> Result<(), std::io::Error> {
+        windows_scoped_directory::remove_file(self, file_name)
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub(crate) fn open_hq_scoped_directory(
+    hq_root: &Path,
+    rel_dir: &str,
+) -> Result<HqScopedDirectory, String> {
+    use std::os::unix::fs::MetadataExt;
+
+    let canonical_root =
+        std::fs::canonicalize(hq_root).map_err(|e| format!("could not resolve HQ folder: {e}"))?;
+    let expected_root = std::fs::symlink_metadata(&canonical_root)
+        .map_err(|e| format!("could not inspect HQ folder: {e}"))?;
+    if expected_root.file_type().is_symlink() || !expected_root.is_dir() {
+        return Err("HQ folder must be a real directory".to_string());
+    }
+
+    let descriptor = rustix::fs::open(
+        &canonical_root,
+        rustix::fs::OFlags::RDONLY
+            | rustix::fs::OFlags::DIRECTORY
+            | rustix::fs::OFlags::CLOEXEC
+            | rustix::fs::OFlags::NOFOLLOW,
+        rustix::fs::Mode::empty(),
+    )
+    .map_err(|e| format!("could not open HQ folder without following links: {e}"))?;
+    let mut directory = std::fs::File::from(descriptor);
+    let opened_root = directory
+        .metadata()
+        .map_err(|e| format!("could not inspect opened HQ folder: {e}"))?;
+    if opened_root.dev() != expected_root.dev() || opened_root.ino() != expected_root.ino() {
+        return Err("HQ folder changed while it was being opened".to_string());
+    }
+
+    if !rel_dir.is_empty() {
+        let normalized = validate_hq_relative_path(rel_dir, false)?;
+        if normalized != rel_dir {
+            return Err("HQ directory path must be canonical".to_string());
+        }
+        for segment in normalized.split('/') {
+            let next = rustix::fs::openat(
+                &directory,
+                segment,
+                rustix::fs::OFlags::RDONLY
+                    | rustix::fs::OFlags::DIRECTORY
+                    | rustix::fs::OFlags::CLOEXEC
+                    | rustix::fs::OFlags::NOFOLLOW,
+                rustix::fs::Mode::empty(),
+            )
+            .map_err(|e| {
+                format!(
+                    "could not open HQ directory component {segment:?} without following links: {e}"
+                )
+            })?;
+            directory = std::fs::File::from(next);
+        }
+    }
+    Ok(HqScopedDirectory {
+        descriptor: std::sync::Arc::new(directory),
+    })
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn open_hq_scoped_directory(
+    hq_root: &Path,
+    rel_dir: &str,
+) -> Result<HqScopedDirectory, String> {
+    windows_scoped_directory::open_scoped_directory(hq_root, rel_dir, |value| {
+        validate_hq_relative_path(value, false)
+    })
+}
+
+/// Open an already-canonical HQ-relative regular file while binding every
+/// path component to the opened HQ root. Unix walks the directory chain with
+/// `openat(..., O_NOFOLLOW)` so an ancestor swapped after authorization cannot
+/// redirect the read.
+pub fn open_hq_regular_file_no_follow(
+    hq_root: &Path,
+    canonical_rel_path: &str,
+) -> Result<std::fs::File, String> {
+    let normalized = validate_hq_relative_path(canonical_rel_path, false)?;
+    if normalized != canonical_rel_path {
+        return Err("HQ file path must be canonical".to_string());
+    }
+    let relative = Path::new(&normalized);
+    let file_name = relative
+        .file_name()
+        .ok_or_else(|| "HQ file path has no terminal name".to_string())?;
+    let parent = relative.parent().unwrap_or_else(|| Path::new(""));
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    let file = {
+        let parent_rel = parent
+            .to_str()
+            .ok_or_else(|| "HQ file parent is not valid UTF-8".to_string())?;
+        open_hq_scoped_directory(hq_root, parent_rel)?.open_regular_file(file_name)?
+    };
+
+    #[cfg(target_os = "windows")]
+    let file = {
+        let parent_rel = parent
+            .to_str()
+            .ok_or_else(|| "HQ file parent is not valid UTF-8".to_string())?;
+        open_hq_scoped_directory(hq_root, parent_rel)?.open_regular_file(file_name)?
+    };
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    let file = {
+        let canonical_root = std::fs::canonicalize(hq_root)
+            .map_err(|e| format!("could not resolve HQ folder: {e}"))?;
+        open_regular_file_no_follow_path(&canonical_root.join(&normalized))?
+    };
+
     let metadata = file
         .metadata()
-        .map_err(|e| format!("could not inspect opened preview file: {e}"))?;
-    if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-        return Err("preview target must not be a symlink or reparse point".to_string());
-    }
+        .map_err(|e| format!("could not inspect opened HQ file: {e}"))?;
     if !metadata.is_file() {
-        return Err("preview target is not a regular file".to_string());
+        return Err("HQ file target is not a regular file".to_string());
     }
     Ok(file)
 }
 
 #[cfg(not(any(unix, windows)))]
-fn open_regular_file_no_follow(path: &Path) -> Result<std::fs::File, String> {
+fn open_regular_file_no_follow_path(path: &Path) -> Result<std::fs::File, String> {
     let metadata = std::fs::symlink_metadata(path)
         .map_err(|e| format!("could not inspect preview file: {e}"))?;
     if metadata.file_type().is_symlink() {
@@ -1732,6 +2235,33 @@ fn open_regular_file_no_follow(path: &Path) -> Result<std::fs::File, String> {
         return Err("preview target is not a regular file".to_string());
     }
     std::fs::File::open(path).map_err(|e| format!("could not open preview file: {e}"))
+}
+
+#[cfg(test)]
+mod windows_path_authority_contract_tests {
+    /// The macOS/Linux regression can exercise actual symlink swaps. Windows
+    /// junctions are unavailable in the host test environment, so lock the
+    /// required native authority contract in source as well: every component
+    /// must be opened under a retained RootDirectory handle, and the chain
+    /// must deny delete sharing for the whole operation.
+    #[test]
+    fn windows_uses_retained_relative_no_reparse_directory_handles() {
+        let source = include_str!("desktop_alt.rs");
+        for required in [
+            "struct HqScopedDirectory {\n    descriptors: std::sync::Arc<Vec<std::fs::File>>",
+            "fn NtCreateFile(",
+            "root_directory: parent.as_raw_handle() as isize",
+            "FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_REPARSE_POINT",
+            "share_mode(FILE_SHARE_READ)",
+            "FILE_SHARE_READ,",
+            "open_hq_scoped_directory(hq_root, parent_rel)?.open_regular_file(file_name)?",
+        ] {
+            assert!(
+                source.contains(required),
+                "Windows parent-swap authority contract drifted: missing {required:?}"
+            );
+        }
+    }
 }
 
 /// Read raw file bytes under the same strict/canonical HQ-relative contract.
@@ -1763,8 +2293,9 @@ pub fn read_file_bytes_capped(
         return Err("file path resolves across HQ company boundaries".to_string());
     }
 
-    let canonical_abs = canonical_root.join(&canonical_rel);
-    let file = open_regular_file_no_follow(&canonical_abs)?;
+    let _canonical_abs = canonical_root.join(&canonical_rel);
+    run_file_read_before_open_hook();
+    let file = open_hq_regular_file_no_follow(&canonical_root, &canonical_rel)?;
     let initial_len = file
         .metadata()
         .map_err(|e| format!("could not inspect opened preview file: {e}"))?
@@ -3094,8 +3625,8 @@ mod tests {
         use super::super::{
             build_file_tree, canonical_hq_relative_path, company_slug_for_hq_path,
             read_file_bytes_capped, read_file_content, read_file_content_capped,
-            set_file_read_after_size_check_hook, validate_hq_relative_path,
-            workspace_grants_company_file_access, FileNode,
+            set_file_read_after_size_check_hook, set_file_read_before_open_hook,
+            validate_hq_relative_path, workspace_grants_company_file_access, FileNode,
         };
         use crate::workspaces::{Workspace, WorkspaceKind, WorkspaceState};
         use std::fs;
@@ -3621,6 +4152,37 @@ mod tests {
             assert!(
                 error.contains("symlink") || error.contains("could not open"),
                 "got: {error}",
+            );
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn read_file_bytes_capped_rejects_parent_swap_after_authorization() {
+            use std::os::unix::fs::symlink;
+
+            let tmp = TempDir::new().unwrap();
+            let root = tmp.path().to_path_buf();
+            let active = root.join("companies/active");
+            let pending = root.join("companies/pending");
+            fs::create_dir_all(active.join("docs")).unwrap();
+            fs::create_dir_all(pending.join("docs")).unwrap();
+            fs::write(active.join("docs/report.md"), b"authorized").unwrap();
+            fs::write(pending.join("docs/report.md"), b"pending-secret").unwrap();
+
+            set_file_read_before_open_hook({
+                let active_docs = active.join("docs");
+                let pending_docs = pending.join("docs");
+                move || {
+                    fs::rename(&active_docs, active.join("docs-original")).unwrap();
+                    symlink(&pending_docs, &active_docs).unwrap();
+                }
+            });
+
+            let result = read_file_bytes_capped(&root, "companies/active/docs/report.md", 64);
+            assert!(
+                result.is_err(),
+                "an ancestor swap must fail closed, got {:?}",
+                result.unwrap()
             );
         }
 

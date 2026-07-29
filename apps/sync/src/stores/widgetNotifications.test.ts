@@ -399,11 +399,11 @@ describe('compact activity bursts', () => {
     expect(grouped.slice(1).every((entry) => entry.compactGroupCount == null)).toBe(true);
   });
 
-  it('keeps human messages, channels, shares, updates, and warnings individual', () => {
+  it('keeps different conversations, channels, shares, updates, and warnings individual', () => {
     const now = Date.parse('2026-07-28T18:10:00-06:00');
     const rows = [
       item({ id: 'dm-1', type: 'message', kind: 'dm', actor: 'Richard', ts: now }),
-      item({ id: 'dm-2', type: 'message', kind: 'dm', actor: 'Richard', ts: now - 1 }),
+      item({ id: 'dm-2', type: 'message', kind: 'dm', actor: 'Maya', ts: now - 1 }),
       item({ id: 'channel-1', type: 'mention', kind: 'channel', actor: '#design', ts: now - 2 }),
       item({ id: 'share-1', type: 'share', kind: 'share', actor: 'Richard', ts: now - 3 }),
       item({ id: 'update-1', type: 'system', kind: 'update', actor: 'HQ', ts: now - 4 }),
@@ -413,7 +413,94 @@ describe('compact activity bursts', () => {
     expect(compactActivityBursts(rows)).toEqual(rows);
   });
 
-  it('compacts repeated automated agent-join DMs but not ordinary identical DMs', () => {
+  it('projects a same-sender DM burst as one latest, directly-openable conversation', () => {
+    const now = new Date(2026, 6, 28, 18, 10).getTime();
+    const latestData = {
+      eventId: 'dm-latest',
+      fromPersonUid: 'prs_richard',
+      fromEmail: 'richard@sender.agency',
+      body: 'Latest project update',
+    };
+    const grouped = compactActivityBursts([
+      item({
+        id: 'dm-latest',
+        type: 'message',
+        kind: 'dm',
+        actor: 'richard@sender.agency',
+        text: 'Latest project update',
+        ts: now,
+        data: latestData,
+        unread: true,
+      }),
+      item({
+        id: 'dm-middle',
+        type: 'message',
+        kind: 'dm',
+        actor: 'Richard',
+        text: 'Different project update',
+        ts: now - 60_000,
+        data: {
+          eventId: 'dm-middle',
+          fromPersonUid: 'prs_richard',
+          fromEmail: 'richard@sender.agency',
+        },
+        unread: false,
+      }),
+      item({
+        id: 'dm-oldest',
+        type: 'message',
+        kind: 'dm',
+        actor: 'Richard Sender',
+        text: 'Oldest project update',
+        ts: now - 120_000,
+        data: {
+          eventId: 'dm-oldest',
+          fromPersonUid: 'prs_richard',
+        },
+        unread: true,
+      }),
+    ]);
+
+    expect(grouped).toHaveLength(1);
+    expect(grouped[0]).toMatchObject({
+      id: 'dm-latest',
+      text: 'Latest project update',
+      data: latestData,
+      compactGroupCount: 3,
+      compactGroupUnreadCount: 2,
+      compactGroupIds: ['dm-latest', 'dm-middle', 'dm-oldest'],
+      unread: true,
+    });
+  });
+
+  it('uses normalized sender fallback for persisted DMs without native identity data', () => {
+    const now = new Date(2026, 6, 28, 18, 10).getTime();
+    const grouped = compactActivityBursts([
+      item({
+        id: 'dm-1',
+        type: 'message',
+        kind: 'dm',
+        actor: ' Richard@Sender.Agency ',
+        text: 'First',
+        ts: now,
+        data: null,
+      }),
+      item({
+        id: 'dm-2',
+        type: 'message',
+        kind: 'dm',
+        actor: 'richard@sender.agency',
+        text: 'Second',
+        ts: now - 1,
+        data: null,
+      }),
+    ]);
+
+    expect(grouped).toHaveLength(1);
+    expect(grouped[0]?.compactGroupCount).toBe(2);
+  });
+
+  it('compacts repeated automated agent-join DMs but keeps different ordinary senders separate', () => {
     // Keep the fixture on the same local calendar day in every CI timezone.
     const now = new Date(2026, 6, 28, 18, 10).getTime();
     const joinText = '🤖 A new agent (an agent) just joined the company.';
@@ -498,7 +585,7 @@ describe('compact activity bursts', () => {
     const visible = compactHoverItems(state);
     expect(visible).toHaveLength(WIDGET_HOVER_MAX);
     expect(visible[0]?.compactGroupCount).toBe(7);
-    expect(visible.at(-1)?.id).toBe('message-8');
+    expect(visible.at(-1)?.id).toBe('message-5');
     // The underlying recent history remains the full individual audit trail.
     expect(state.recent).toHaveLength(16);
   });
@@ -807,6 +894,32 @@ describe('widgetHoverWindowSize', () => {
       width: WIDGET_HOVER_PANEL_WIDTH + 20,
       height: base + WIDGET_MESSAGE_EXPAND_HEADROOM,
     });
+  });
+
+  it('does not reserve reply headroom for a grouped conversation that cannot expand', () => {
+    const groupedMessage = [
+      item({
+        id: 'latest',
+        type: 'message',
+        kind: 'dm',
+        compactGroupCount: 10,
+        compactGroupIds: Array.from({ length: 10 }, (_, index) => `dm-${index}`),
+      }),
+    ];
+    const base =
+      WIDGET_MARK_AREA +
+      WIDGET_STACK_MARGIN_BOTTOM +
+      WIDGET_TOP_HEADROOM +
+      WIDGET_HOVER_LIST_PADDING +
+      WIDGET_HOVER_HEADER_HEIGHT +
+      WIDGET_HOVER_FOOTER_HEIGHT +
+      WIDGET_HOVER_ROW_HEIGHT;
+
+    expect(widgetHoverWindowSize(groupedMessage, 0)).toEqual({
+      width: WIDGET_HOVER_PANEL_WIDTH + 20,
+      height: base,
+    });
+    expect(base).toBeLessThan(300);
   });
 });
 

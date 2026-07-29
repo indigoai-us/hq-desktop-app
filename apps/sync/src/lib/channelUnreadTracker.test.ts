@@ -75,4 +75,19 @@ describe('ChannelUnreadTracker', () => {
     ).toBeNull();
     expect(tracker.hasCompleteSnapshot()).toBe(false);
   });
+
+  it('clears every count and invalidates in-flight snapshots on sign-out', () => {
+    const tracker = new ChannelUnreadTracker();
+    const staleSnapshot = tracker.beginSnapshot();
+    tracker.applyEvent('ch-one', 7);
+
+    tracker.reset();
+
+    expect(tracker.total()).toBe(0);
+    expect(tracker.get('ch-one')).toBe(0);
+    expect(tracker.hasCompleteSnapshot()).toBe(false);
+    expect(
+      tracker.commitSnapshot(staleSnapshot, [{ channelId: 'ch-one', unread: 7 }]),
+    ).toBeNull();
+  });
 });

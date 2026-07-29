@@ -145,10 +145,11 @@ function projectSourceFallback(
 }
 
 /**
- * Project provenance can supply context for a task, but project responsibility
- * is not task responsibility. Only source context may flow down; explicit task
- * owner/assignee/creator/source fields still win in {@link toStory}. A project
- * creator is not evidence that the same person authored every task.
+ * Project provenance can supply authorship and source context for a task, but
+ * project responsibility is not task responsibility. Creator may flow down as
+ * the best available "created by" attribution; owner and assignee never do.
+ * Explicit task owner/assignee/creator/source fields still win in
+ * {@link toStory}.
  */
 function storyProjectFallback(
   provenance: WorkProvenance | null | undefined,
@@ -157,7 +158,7 @@ function storyProjectFallback(
   return {
     owner: null,
     assignee: null,
-    creator: null,
+    creator: normalized.creator,
     origin: normalized.origin,
   };
 }

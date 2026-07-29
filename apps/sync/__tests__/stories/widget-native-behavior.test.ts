@@ -321,7 +321,8 @@ describe('Widget restored native standalone behavior', () => {
       page: '#eeeeee',
       popDivider: 'rgba(0,0,0,0.08)',
       popIcon: 'rgba(0,0,0,0.5)',
-      rowBg: 'rgba(245, 245, 245, 0.82)',
+      rowBg:
+        'rgb(245 245 245 / clamp(0.82, calc(1 - 0.65 * 0.277), 1))',
       rowFg: '#171717',
       replyBg: 'rgba(0, 0, 0, 0.07)',
       qdFg: '#333333',
@@ -336,7 +337,8 @@ describe('Widget restored native standalone behavior', () => {
       page: '#101010',
       popDivider: 'rgba(255,255,255,0.1)',
       popIcon: 'rgba(255,255,255,0.55)',
-      rowBg: 'rgba(24, 24, 24, 0.78)',
+      rowBg:
+        'rgb(24 24 24 / clamp(0.78, calc(1 - 0.65 * 0.338), 1))',
       rowFg: '#fff',
       replyBg: 'rgba(255, 255, 255, 0.12)',
       qdFg: '#d4d4d4',
@@ -712,6 +714,109 @@ describe('Widget restored native standalone behavior', () => {
     ).toBe(true);
   });
 
+  it('routes an explicit click action before the notification kind fallback', async () => {
+    mountWidget();
+    await waitForNativeReady();
+
+    await openVisibleNotification(
+      notification({
+        kind: 'meeting',
+        title: 'Meeting needs a company',
+        body: 'Assign it so the transcript files correctly.',
+        clickActionId: 'assign',
+        actionId: 'assign',
+        actionLabel: 'Assign',
+        data: { meetingId: 'meeting-1' },
+      }),
+    );
+
+    expect(tauri.invoke).toHaveBeenCalledWith(
+      'banner_action',
+      expect.objectContaining({
+        action: 'assign',
+        payload: expect.objectContaining({
+          kind: 'meeting',
+          clickActionId: 'assign',
+        }),
+      }),
+    );
+    expect(
+      tauri.invoke.mock.calls.some(([command]) => command === 'show_main_window'),
+    ).toBe(false);
+
+    tauri.invoke.mockClear();
+    await openVisibleNotification(
+      notification({
+        kind: 'share',
+        title: 'Couldn’t open Claude',
+        body: 'The shared item is still available.',
+        clickActionId: 'claude',
+        actionId: 'claude',
+        actionLabel: 'Retry',
+        data: { paths: ['launch-plan.md'] },
+      }),
+    );
+    expect(tauri.invoke).toHaveBeenCalledWith(
+      'banner_action',
+      expect.objectContaining({ action: 'claude' }),
+    );
+    expect(
+      tauri.invoke.mock.calls.some(([command]) => command === 'open_share_detail'),
+    ).toBe(false);
+  });
+
+  it('neutralizes a successful one-shot action in the mini panel', async () => {
+    mountWidget();
+    await waitForNativeReady();
+    emitNative(
+      'widget:notification',
+      notification({
+        kind: 'update',
+        title: 'HQ 0.10.36',
+        body: 'Ready to install',
+        clickActionId: 'open',
+        actionId: 'update',
+        actionLabel: 'Update now',
+        data: { version: '0.10.36' },
+      }),
+    );
+
+    host.querySelector<HTMLElement>('.wm')!.click();
+    flushSync();
+    const list = host.querySelector<HTMLElement>(
+      '[data-testid="widget-hover-list"]',
+    )!;
+    const oneShotAction = [...list.querySelectorAll<HTMLButtonElement>('.nr-open')]
+      .find((button) => button.textContent?.trim() === 'Update now');
+    expect(oneShotAction).toBeTruthy();
+    oneShotAction!.click();
+
+    await vi.waitFor(() => {
+      flushSync();
+      expect(
+        tauri.invoke.mock.calls.filter(([command]) => command === 'banner_action'),
+      ).toHaveLength(1);
+      expect(list.textContent).not.toContain('Update now');
+    });
+
+    const retainedRow = list.querySelector<HTMLElement>(
+      '[data-testid="notification-row"]',
+    )!;
+    const open = [...retainedRow.querySelectorAll<HTMLButtonElement>('.nr-open')]
+      .find((button) => button.textContent?.trim() === 'Open');
+    expect(open).toBeTruthy();
+    open!.click();
+
+    await vi.waitFor(() => {
+      expect(tauri.invoke).toHaveBeenCalledWith('open_desktop_alt_window', {
+        route: 'settings:updates',
+      });
+    });
+    expect(
+      tauri.invoke.mock.calls.filter(([command]) => command === 'banner_action'),
+    ).toHaveLength(1);
+  });
+
   it('retains a failed open with accessible retry and dismisses only after success', async () => {
     failedCommands.add('open_communications_window');
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
@@ -754,6 +859,60 @@ describe('Widget restored native standalone behavior', () => {
         ([command]) => command === 'open_communications_window',
       ),
     ).toHaveLength(2);
+
+    consoleError.mockRestore();
+  });
+
+  it('retains a failed custom action and retries it with a fresh request id', async () => {
+    failedCommands.add('banner_action');
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    mountWidget();
+    await waitForNativeReady();
+
+    emitNative(
+      'widget:notification',
+      notification({
+        kind: 'update',
+        title: 'HQ 0.10.35',
+        body: 'Ready to install',
+        actionId: 'update',
+        actionLabel: 'Update now',
+      }),
+    );
+    const row = host.querySelector<HTMLElement>(
+      '[data-testid="widget-stack"] [data-testid="notification-row"]',
+    )!;
+    row.querySelector<HTMLButtonElement>('.nr-open')!.click();
+
+    await vi.waitFor(() => {
+      flushSync();
+      expect(row.querySelector('.nr-action-error')?.textContent).toContain(
+        'Couldn’t complete that action.',
+      );
+    });
+    expect(host.querySelector('[data-testid="widget-stack"]')).toBeTruthy();
+
+    const firstRequest = (
+      tauri.invoke.mock.calls.find(([command]) => command === 'banner_action')?.[1] as
+        | { requestId?: string }
+        | undefined
+    )?.requestId;
+    expect(firstRequest).toEqual(expect.any(String));
+
+    failedCommands.delete('banner_action');
+    row.querySelector<HTMLButtonElement>('.nr-action-error .nr-retry')!.click();
+    await vi.waitFor(() => {
+      flushSync();
+      expect(host.querySelector('[data-testid="widget-stack"]')).toBeNull();
+    });
+
+    const actionCalls = tauri.invoke.mock.calls.filter(
+      ([command]) => command === 'banner_action',
+    );
+    expect(actionCalls).toHaveLength(2);
+    expect((actionCalls[1]?.[1] as { requestId?: string }).requestId).not.toBe(
+      firstRequest,
+    );
 
     consoleError.mockRestore();
   });
@@ -1035,6 +1194,64 @@ describe('Widget restored native standalone behavior', () => {
     consoleError.mockRestore();
   });
 
+  it('keeps a draft hold active when opening its message fails', async () => {
+    failedCommands.add('open_dm_detail');
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    mountWidget();
+    await waitForNativeReady();
+    emitNative(
+      'widget:notification',
+      notification({
+        kind: 'dm',
+        title: 'Maya',
+        body: 'Keep this draft safe.',
+        data: { eventId: 'dm-open-failed', fromPersonUid: 'person-1' },
+      }),
+    );
+
+    host
+      .querySelector<HTMLElement>('.wm')!
+      .dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+    flushSync();
+    const list = host.querySelector<HTMLElement>(
+      '[data-testid="widget-hover-list"]',
+    )!;
+    const row = list.querySelector<HTMLElement>(
+      '[data-testid="notification-row"]',
+    )!;
+    row.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+    flushSync();
+    const input = row.querySelector<HTMLInputElement>('.nr-reply')!;
+    input.focus();
+    input.value = 'Unsent context';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+
+    vi.useFakeTimers();
+    row.querySelector<HTMLButtonElement>('.nr-primary-action')!.click();
+    await vi.waitFor(() => {
+      flushSync();
+      expect(row.querySelector('.nr-action-error')?.textContent).toContain(
+        'Couldn’t open this item.',
+      );
+    });
+
+    host
+      .querySelector<HTMLElement>('.wg')!
+      .dispatchEvent(new MouseEvent('pointerleave', { bubbles: true }));
+    await vi.advanceTimersByTimeAsync(500);
+    flushSync();
+
+    expect(host.querySelector('[data-testid="widget-hover-list"]')).toBeTruthy();
+    expect(
+      host.querySelector<HTMLInputElement>(
+        '[data-testid="widget-hover-list"] input.nr-reply',
+      )?.value,
+    ).toBe('Unsent context');
+
+    consoleError.mockRestore();
+  });
+
   it('hydrates retained notification history into the mini inbox', async () => {
     history = {
       dms: [
@@ -1107,6 +1324,84 @@ describe('Widget restored native standalone behavior', () => {
         host.querySelector('[data-testid="widget-hover-list"]')?.textContent,
       ).toContain('launch.md'),
     );
+  });
+
+  it('keeps the redesigned hierarchy when live hydration returns a noisy same-sender DM burst', async () => {
+    mountWidget();
+    await waitForNativeReady();
+    host.querySelector<HTMLButtonElement>('.wm')!.click();
+    flushSync();
+
+    const panel = host.querySelector<HTMLElement>(
+      '[data-testid="widget-hover-list"]',
+    );
+    expect(panel?.querySelector('.hl-header')).toBeTruthy();
+    expect(panel?.textContent).toContain('You’re caught up');
+
+    const now = Date.now();
+    history = {
+      dms: Array.from({ length: 10 }, (_, index) => ({
+        eventId: `dogfood-dm-${index}`,
+        fromPersonUid: 'prs_richard',
+        fromDisplayName: 'Richard Sender',
+        fromEmail: 'richard@sender.agency',
+        body:
+          index === 0
+            ? 'Latest launch verification'
+            : `Dogfood project update ${index}`,
+        createdAt: new Date(now - index * 1_000).toISOString(),
+      })),
+      shares: [],
+      files: [],
+    };
+
+    vi.useFakeTimers();
+    emitNative('dm:unread-summary');
+    await vi.advanceTimersByTimeAsync(300);
+    flushSync();
+
+    const hydrated = host.querySelector<HTMLElement>(
+      '[data-testid="widget-hover-list"]',
+    )!;
+    const rows = hydrated.querySelectorAll<HTMLElement>(
+      '[data-testid="notification-row"]',
+    );
+    expect(hydrated.querySelector('.hl-header')).toBeTruthy();
+    expect(hydrated.querySelector('.hl-title')?.textContent).toBe('Messages');
+    expect(
+      [...hydrated.querySelectorAll('.hl-section-label')].map(
+        (label) => label.textContent,
+      ),
+    ).toEqual(['Conversations']);
+    expect(hydrated.querySelector('.hl-summary')?.textContent).toContain(
+      '1 new conversation',
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.textContent).toContain('Richard Sender');
+    expect(rows[0]?.textContent).toContain('10 recent messages');
+    expect(rows[0]?.textContent).toContain('Latest launch verification');
+    expect(
+      rows[0]?.querySelector('[data-testid="unread-count"]')?.textContent,
+    ).toBe('10');
+    expect(rows[0]?.getAttribute('data-expanded')).toBe('false');
+    expect(
+      hydrated.querySelector('[data-testid="widget-hover-inbox"]'),
+    ).toBeTruthy();
+    expect(
+      hydrated.querySelector('[data-testid="widget-hover-desktop"]'),
+    ).toBeTruthy();
+
+    rows[0]
+      ?.querySelector<HTMLButtonElement>('.nr-primary-action')
+      ?.click();
+    await vi.waitFor(() => {
+      expect(tauri.invoke).toHaveBeenCalledWith('open_dm_detail', {
+        event: expect.objectContaining({
+          eventId: 'dogfood-dm-0',
+          fromPersonUid: 'prs_richard',
+        }),
+      });
+    });
   });
 
   it('distinguishes pending native history hydration from a genuinely caught-up inbox', async () => {

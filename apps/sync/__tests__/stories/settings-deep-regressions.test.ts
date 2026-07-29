@@ -58,6 +58,8 @@ type InvokeOptions = {
     log_tail: string;
     log_path: string;
   }>;
+  notificationPermission?: 'granted' | 'denied' | 'prompt';
+  requestNotificationPermission?: () => Promise<'granted' | 'denied' | 'prompt'>;
 };
 
 function deferred<T>() {
@@ -115,7 +117,9 @@ function stubInvoke(options: InvokeOptions = {}): void {
           ? options.memberships()
           : (options.memberships ?? []);
       case 'notification_permission_state':
-        return 'granted';
+        return options.notificationPermission ?? 'granted';
+      case 'notification_request_permission':
+        return options.requestNotificationPermission?.() ?? 'granted';
       case 'meetings_permissions_state':
         return {
           accessibility: 'granted',
@@ -132,7 +136,7 @@ function stubInvoke(options: InvokeOptions = {}): void {
       case 'check_hq_cli_update':
         return options.checkCli?.() ?? options.cliUpdate ?? null;
       case 'get_hq_cli_version':
-        return options.cliVersion ?? '0.19.4';
+        return options.cliVersion === undefined ? '0.19.4' : options.cliVersion;
       case 'install_hq_cli_update':
         return options.installCli?.();
       case 'set_hq_cli_update_dismissed':
@@ -514,7 +518,7 @@ describe('Settings deep regressions', () => {
     expect(Array.from(select?.options ?? []).map((option) => option.value)).toEqual(['']);
   });
 
-  it('keeps every Settings control disabled until the persisted preferences load', async () => {
+  it('keeps backend Settings disabled during hydration while local Appearance stays usable', async () => {
     let resolveSettings!: (value: Record<string, unknown>) => void;
     const settingsDeferred = new Promise<Record<string, unknown>>((resolve) => {
       resolveSettings = resolve;
@@ -526,10 +530,28 @@ describe('Settings deep regressions', () => {
     const controls = Array.from(host.querySelectorAll<
       HTMLButtonElement | HTMLInputElement | HTMLSelectElement
     >('button, input, select'));
-    const disabledGroup = host.querySelector<HTMLFieldSetElement>('fieldset[disabled]');
+    const disabledGroups = Array.from(
+      host.querySelectorAll<HTMLFieldSetElement>('fieldset.settings-controls[disabled]'),
+    );
+    const appearance = host.querySelector<HTMLElement>(
+      '[data-testid="settings-appearance"]',
+    );
+    const localControls = Array.from(
+      appearance?.querySelectorAll<HTMLInputElement>('input') ?? [],
+    );
+    const backendControls = controls.filter(
+      (control) => !appearance?.contains(control),
+    );
     expect(controls.length).toBeGreaterThan(0);
-    expect(disabledGroup?.disabled).toBe(true);
-    expect(controls.every((control) => disabledGroup?.contains(control))).toBe(true);
+    expect(disabledGroups).toHaveLength(2);
+    expect(disabledGroups.every((group) => group.disabled)).toBe(true);
+    expect(
+      backendControls.every((control) =>
+        disabledGroups.some((group) => group.contains(control)),
+      ),
+    ).toBe(true);
+    expect(localControls.length).toBeGreaterThan(0);
+    expect(localControls.every((control) => !control.disabled)).toBe(true);
 
     resolveSettings(defaultSettings);
     await waitForSettingsReady();
@@ -764,7 +786,7 @@ describe('Settings deep regressions', () => {
     });
   });
 
-  it('reverts live toggles and skips their side effects when persistence fails', async () => {
+  it('reverts live toggles and rolls back their side effects when persistence fails', async () => {
     stubInvoke({
       save: async () => {
         throw new Error('disk is read-only');
@@ -777,15 +799,16 @@ describe('Settings deep regressions', () => {
     tauri.invoke.mockClear();
     realtime.checked = false;
     realtime.dispatchEvent(new Event('change', { bubbles: true }));
-    await vi.waitFor(() => expect(realtime.checked).toBe(true));
+    await vi.waitFor(() => expect(checkbox('Auto-sync').checked).toBe(true));
     expect(host.querySelector('[role="alert"]')?.textContent).toContain('disk is read-only');
-    expect(tauri.invoke).not.toHaveBeenCalledWith('stop_daemon');
+    expect(tauri.invoke).toHaveBeenCalledWith('stop_daemon');
+    expect(tauri.invoke).toHaveBeenCalledWith('start_daemon');
 
     const instant = checkbox('Instant sync');
     tauri.invoke.mockClear();
     instant.checked = false;
     instant.dispatchEvent(new Event('change', { bubbles: true }));
-    await vi.waitFor(() => expect(instant.checked).toBe(true));
+    await vi.waitFor(() => expect(checkbox('Instant sync').checked).toBe(true));
     expect(tauri.invoke).not.toHaveBeenCalledWith('stop_daemon');
     expect(tauri.invoke).not.toHaveBeenCalledWith('start_daemon');
 
@@ -793,9 +816,308 @@ describe('Settings deep regressions', () => {
     tauri.invoke.mockClear();
     startAtLogin.checked = false;
     startAtLogin.dispatchEvent(new Event('change', { bubbles: true }));
-    await vi.waitFor(() => expect(startAtLogin.checked).toBe(true));
-    expect(tauri.invoke).not.toHaveBeenCalledWith('set_autostart_enabled', {
+    await vi.waitFor(() => expect(checkbox('Start at login').checked).toBe(true));
+    expect(tauri.invoke).toHaveBeenCalledWith('set_autostart_enabled', {
       enabled: false,
+    });
+    expect(tauri.invoke).toHaveBeenCalledWith('set_autostart_enabled', {
+      enabled: true,
+    });
+  });
+
+  it('does not persist Auto-sync until the daemon changes and leaves a visible retry path', async () => {
+    stubInvoke();
+    await mountSettings();
+    await waitForSettingsReady();
+
+    const originalInvoke = tauri.invoke.getMockImplementation()!;
+    let stopAttempts = 0;
+    tauri.invoke.mockImplementation(
+      async (command: string, args?: Record<string, unknown>) => {
+        if (command === 'stop_daemon') {
+          stopAttempts += 1;
+          if (stopAttempts === 1) throw new Error('daemon unavailable');
+        }
+        return originalInvoke(command, args);
+      },
+    );
+    tauri.invoke.mockClear();
+
+    const realtime = checkbox('Auto-sync');
+    realtime.checked = false;
+    realtime.dispatchEvent(new Event('change', { bubbles: true }));
+
+    await vi.waitFor(() => {
+      flushSync();
+      expect(realtime.checked).toBe(true);
+      expect(
+        host.querySelector('[data-testid="settings-realtime-sync-error"]')?.textContent,
+      ).toContain('Toggle again to retry');
+    });
+    expect(tauri.invoke).not.toHaveBeenCalledWith(
+      'save_settings',
+      expect.anything(),
+    );
+    expect(realtime.disabled).toBe(false);
+
+    const retryRealtime = checkbox('Auto-sync');
+    retryRealtime.checked = false;
+    retryRealtime.dispatchEvent(new Event('change', { bubbles: true }));
+    await vi.waitFor(() => {
+      flushSync();
+      expect(tauri.invoke).toHaveBeenCalledWith(
+        'save_settings',
+        expect.objectContaining({
+          prefs: expect.objectContaining({ realtimeSync: false }),
+        }),
+      );
+      expect(checkbox('Auto-sync').checked).toBe(false);
+      expect(
+        host.querySelector('[data-testid="settings-realtime-sync-error"]'),
+      ).toBeNull();
+    });
+  });
+
+  it('reverts Instant sync and its persisted value when daemon activation fails', async () => {
+    stubInvoke();
+    await mountSettings();
+    await waitForSettingsReady();
+
+    const originalInvoke = tauri.invoke.getMockImplementation()!;
+    let startAttempts = 0;
+    tauri.invoke.mockImplementation(
+      async (command: string, args?: Record<string, unknown>) => {
+        if (command === 'start_daemon') {
+          startAttempts += 1;
+          if (startAttempts === 1) throw new Error('daemon restart failed');
+        }
+        return originalInvoke(command, args);
+      },
+    );
+    tauri.invoke.mockClear();
+
+    const instant = checkbox('Instant sync');
+    instant.checked = false;
+    instant.dispatchEvent(new Event('change', { bubbles: true }));
+
+    await vi.waitFor(() => {
+      flushSync();
+      expect(instant.checked).toBe(true);
+      expect(
+        host.querySelector('[data-testid="settings-instant-sync-error"]')?.textContent,
+      ).toContain('Toggle again to retry');
+    });
+    const savedSnapshots = tauri.invoke.mock.calls
+      .filter(([command]) => command === 'save_settings')
+      .map(([, args]) => (args as { prefs: Record<string, unknown> }).prefs.instantSync);
+    expect(savedSnapshots).toEqual([false, true]);
+    expect(instant.disabled).toBe(false);
+  });
+
+  it('does not persist Start at login until native autostart succeeds', async () => {
+    stubInvoke();
+    await mountSettings();
+    await waitForSettingsReady();
+
+    const originalInvoke = tauri.invoke.getMockImplementation()!;
+    let attempts = 0;
+    tauri.invoke.mockImplementation(
+      async (command: string, args?: Record<string, unknown>) => {
+        if (command === 'set_autostart_enabled') {
+          attempts += 1;
+          if (attempts === 1) throw new Error('launch agent unavailable');
+        }
+        return originalInvoke(command, args);
+      },
+    );
+    tauri.invoke.mockClear();
+
+    const startAtLogin = checkbox('Start at login');
+    startAtLogin.checked = false;
+    startAtLogin.dispatchEvent(new Event('change', { bubbles: true }));
+
+    await vi.waitFor(() => {
+      flushSync();
+      expect(startAtLogin.checked).toBe(true);
+      expect(
+        host.querySelector('[data-testid="settings-start-at-login-error"]')?.textContent,
+      ).toContain('Toggle again to retry');
+    });
+    expect(tauri.invoke).not.toHaveBeenCalledWith(
+      'save_settings',
+      expect.anything(),
+    );
+    expect(startAtLogin.disabled).toBe(false);
+  });
+
+  it('shows notification permission failure and retries from the same control', async () => {
+    let attempts = 0;
+    stubInvoke({
+      notificationPermission: 'prompt',
+      requestNotificationPermission: async () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error('permission bridge unavailable');
+        return 'granted';
+      },
+    });
+    await mountSettings();
+    await waitForSettingsReady();
+
+    const permissionButton = await vi.waitFor(() => {
+      const button = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(
+        (candidate) => candidate.textContent?.trim() === 'Enable',
+      );
+      expect(button).toBeTruthy();
+      return button!;
+    });
+    permissionButton.click();
+
+    await vi.waitFor(() => {
+      flushSync();
+      expect(
+        host.querySelector('[data-testid="settings-notification-permission-error"]')
+          ?.textContent,
+      ).toContain('Try again');
+      expect(permissionButton.textContent?.trim()).toBe('Try again');
+    });
+    permissionButton.click();
+    await vi.waitFor(() => {
+      flushSync();
+      expect(host.textContent).toContain('System notifications are enabled for HQ');
+      expect(
+        host.querySelector('[data-testid="settings-notification-permission-error"]'),
+      ).toBeNull();
+    });
+  });
+
+  it('keeps failed CLI copy, drift open, sign-out, and quit actions retryable', async () => {
+    const driftReport = {
+      baselineStatus: 'Available',
+      updateRequired: false,
+      count: 1,
+      modified: [],
+      missing: [],
+      added: [],
+      scannedAt: '2026-07-29T00:00:00Z',
+      hqVersion: '15.0.16',
+      targetRepo: 'indigo/hq-core',
+      targetRef: 'main',
+    };
+    stubInvoke({
+      cliVersion: null,
+      coreState: {
+        channel: 'release',
+        targetRepo: 'indigo/hq-core',
+        targetVersion: '15.0.16',
+        targetRef: 'main',
+        localVersion: '15.0.16',
+        floorSha: null,
+        isEligible: true,
+        versionBehind: false,
+        driftReport,
+        unchangedCount: 0,
+        userOnlyCount: 1,
+        scannedAt: '2026-07-29T00:00:00Z',
+      },
+    });
+    const clipboardWrite = vi
+      .fn<() => Promise<void>>()
+      .mockRejectedValueOnce(new Error('clipboard blocked'))
+      .mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: clipboardWrite },
+    });
+    await mountSettings();
+    await waitForSettingsReady();
+
+    const originalInvoke = tauri.invoke.getMockImplementation()!;
+    const attempts = new Map<string, number>();
+    tauri.invoke.mockImplementation(
+      async (command: string, args?: Record<string, unknown>) => {
+        if (['open_drift_detail', 'quit_app'].includes(command)) {
+          const next = (attempts.get(command) ?? 0) + 1;
+          attempts.set(command, next);
+          if (next === 1) throw new Error(`${command} unavailable`);
+        }
+        return originalInvoke(command, args);
+      },
+    );
+    tauri.emit
+      .mockRejectedValueOnce(new Error('sign-out bridge unavailable'))
+      .mockResolvedValue(undefined);
+
+    const copy = await vi.waitFor(() => {
+      const button = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(
+        (candidate) => candidate.textContent?.trim() === 'Copy install command',
+      );
+      expect(button).toBeTruthy();
+      return button!;
+    });
+    copy.click();
+    await vi.waitFor(() => {
+      flushSync();
+      expect(copy.textContent?.trim()).toBe('Copy failed — retry');
+      expect(host.querySelector('[data-testid="settings-cli-copy-error"]')).toBeTruthy();
+    });
+    copy.click();
+    await vi.waitFor(() => expect(copy.textContent?.trim()).toBe('Command copied'));
+
+    const drift = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(
+      (candidate) => candidate.textContent?.trim() === '1 drifted',
+    );
+    expect(drift).toBeTruthy();
+    drift?.click();
+    await vi.waitFor(() => {
+      flushSync();
+      expect(drift?.textContent?.trim()).toBe('Retry details');
+      expect(host.querySelector('[data-testid="settings-drift-error"]')).toBeTruthy();
+    });
+    drift?.click();
+    await vi.waitFor(() => {
+      flushSync();
+      expect(host.querySelector('[data-testid="settings-drift-error"]')).toBeNull();
+    });
+
+    const signOut = host.querySelector<HTMLButtonElement>(
+      '[data-testid="settings-sign-out"]',
+    );
+    expect(signOut).toBeTruthy();
+    signOut?.click();
+    await vi.waitFor(() => {
+      flushSync();
+      expect(signOut?.textContent?.trim()).toBe('Retry sign out');
+      expect(host.querySelector('[data-testid="settings-account-error"]')).toBeTruthy();
+    });
+    signOut?.click();
+    await vi.waitFor(() => {
+      flushSync();
+      expect(host.querySelector('[data-testid="settings-account-error"]')).toBeNull();
+      expect(
+        host.querySelector<HTMLButtonElement>('[data-testid="settings-sign-out"]')
+          ?.disabled,
+      ).toBe(false);
+    });
+
+    const quit = host.querySelector<HTMLButtonElement>('[data-testid="settings-quit"]');
+    expect(quit).toBeTruthy();
+    quit?.click();
+    await vi.waitFor(() => {
+      flushSync();
+      expect(
+        host
+          .querySelector<HTMLButtonElement>('[data-testid="settings-quit"]')
+          ?.textContent?.trim(),
+      ).toBe('Retry quit');
+      expect(host.querySelector('[data-testid="settings-account-error"]')).toBeTruthy();
+      expect(
+        host.querySelector<HTMLButtonElement>('[data-testid="settings-quit"]')?.disabled,
+      ).toBe(false);
+    });
+    host.querySelector<HTMLButtonElement>('[data-testid="settings-quit"]')?.click();
+    await vi.waitFor(() => {
+      flushSync();
+      expect(host.querySelector('[data-testid="settings-account-error"]')).toBeNull();
     });
   });
 

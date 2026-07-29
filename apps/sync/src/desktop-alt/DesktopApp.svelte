@@ -952,6 +952,7 @@
       await invoke('open_in_editor', { path });
     } catch (err) {
       console.error('open_in_editor failed:', err);
+      throw err;
     }
   }
 
@@ -989,6 +990,7 @@
       coreState = await invoke<HomeCoreState | null>('check_core_state');
     } catch (err) {
       console.error('restore_from_upstream failed:', err);
+      throw err;
     } finally {
       driftRestoring = false;
     }
@@ -1006,6 +1008,7 @@
       await invoke('open_drift_detail', { report });
     } catch (err) {
       console.error('open_drift_detail failed:', err);
+      throw err;
     }
   }
 
@@ -1016,6 +1019,7 @@
       await invoke('begin_reauth');
     } catch (err) {
       console.error('begin_reauth failed:', err);
+      throw err;
     }
   }
 
@@ -1024,6 +1028,7 @@
       await invoke('open_activity_log');
     } catch (err) {
       console.error('open_activity_log failed:', err);
+      throw err;
     }
   }
 
@@ -1033,6 +1038,7 @@
       await invoke('cancel_sync');
     } catch (err) {
       console.error('cancel_sync failed:', err);
+      throw err;
     }
   }
 

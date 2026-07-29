@@ -114,6 +114,10 @@ describe('desktop-alt V4 chrome (US-002 / DESKTOP-001)', () => {
 
     expect(titleBar).toContain('{model.sentence}');
     expect(titleBar).toContain('{model.meta}');
+    expect(titleBar).toContain('catch (err)');
+    expect(titleBar).toContain('class="v4-action-error" role="alert"');
+    expect(titleBar).toContain("syncState === 'auth-error'");
+    expect(titleBar).toContain("'Couldn’t start sign-in'");
     expect(titleBar).not.toContain('Sync initialized');
     expect(titleBar).not.toContain('finish sync in Claude Code');
   });

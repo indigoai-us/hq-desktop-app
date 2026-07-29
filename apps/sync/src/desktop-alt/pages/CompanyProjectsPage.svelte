@@ -506,6 +506,12 @@
     }
   }
 
+  function retrySelectedStories(): Promise<void> | void {
+    const project = selected;
+    if (!project) return;
+    return openProject(project);
+  }
+
   function openProjectFromKey(event: KeyboardEvent, project: Project): void {
     if (event.key !== 'Enter' && event.key !== ' ') return;
     event.preventDefault();
@@ -561,6 +567,7 @@
       {stories}
       {storiesLoading}
       {storiesError}
+      onretryStories={retrySelectedStories}
       objectives={objectives}
       onback={backToProjects}
       onselectStory={openStory}

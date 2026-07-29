@@ -241,6 +241,18 @@ describe('DESKTOP-017: auxiliary desktop surfaces', () => {
     );
   });
 
+  it('keeps meeting SDK startup recovery independent from permission refresh', () => {
+    const refresh =
+      permissions.match(
+        /async function handleRefresh\(\)[\s\S]*?\n  async function handleRunNativeRegister/,
+      )?.[0] ?? '';
+    expect(permissions).toContain("let sdkStartError = $state('')");
+    expect(permissions).toContain('data-testid="sdk-start-error"');
+    expect(permissions).toContain('onclick={() => void startRecallSdk()}');
+    expect(refresh).not.toContain('sdkStartError =');
+    expect(permissions).not.toContain("failedAction = 'sdk'");
+  });
+
   it('keeps meeting warnings and focused rows open and neutral', () => {
     expectOpenSection(meetings, '.toast', 'meetings status message');
     expect(rule(meetings, '.toast')).toContain(

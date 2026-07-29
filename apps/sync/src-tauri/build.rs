@@ -1,3 +1,6 @@
+#[path = "build_support/tray_helper.rs"]
+mod tray_helper_build;
+
 fn main() {
     println!("cargo:rerun-if-env-changed=HQ_SYNC_SENTRY_DSN");
     println!(
@@ -38,27 +41,25 @@ fn main() {
         locked_versions(&lock_text, "wry").join(",")
     );
 
-    // Compile the native menu-bar helper (`hq-tray-helper`) on macOS so the
-    // bundler can copy it into Contents/Resources. The helper is a tiny separate
-    // AppKit process that owns the "HQ" status item — Tauri's tao runtime parks
-    // an in-process status item off-screen on macOS Tahoe (a clean AppKit
-    // process places it correctly). Fail loud: a release that silently dropped
-    // the helper would ship with no menu-bar icon.
+    // Build a universal native menu-bar helper (`hq-tray-helper`) with the same
+    // macOS 13 deployment floor promised by the application bundle. The build
+    // support verifies both Mach-O architectures and each slice's minimum OS
+    // metadata before atomically publishing the resource the bundler copies.
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
         println!("cargo:rerun-if-changed=helper/hq-tray-helper.swift");
-        let status = std::process::Command::new("swiftc")
-            .args([
-                "-O",
-                "helper/hq-tray-helper.swift",
-                "-o",
-                "helper/hq-tray-helper",
-            ])
-            .status()
-            .expect("build.rs: failed to invoke swiftc to build hq-tray-helper");
-        assert!(
-            status.success(),
-            "build.rs: swiftc failed to compile helper/hq-tray-helper.swift"
+        println!("cargo:rerun-if-changed=build_support/tray_helper.rs");
+        let manifest_directory = std::path::PathBuf::from(
+            std::env::var("CARGO_MANIFEST_DIR").expect("build.rs: CARGO_MANIFEST_DIR is unset"),
         );
+        let output_directory =
+            std::path::PathBuf::from(std::env::var("OUT_DIR").expect("build.rs: OUT_DIR is unset"))
+                .join("hq-tray-helper");
+        tray_helper_build::build_universal_helper(
+            &manifest_directory.join("helper/hq-tray-helper.swift"),
+            &output_directory,
+            &manifest_directory.join("helper/hq-tray-helper"),
+        )
+        .unwrap_or_else(|error| panic!("build.rs: failed to build hq-tray-helper: {error}"));
     }
 
     tauri_build::build()

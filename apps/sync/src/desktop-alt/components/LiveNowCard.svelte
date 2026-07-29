@@ -32,6 +32,7 @@
   // attribution from the calendar event, so they get no picker.
   const showCompanyPicker = $derived(!!meeting && !meeting.windowId.startsWith('scheduled-bot:'));
   let joining = $state(false);
+  let joinError = $state('');
 
   function platformLabel(platform?: string): string {
     if (!platform) return '';
@@ -67,11 +68,13 @@
 
   async function join(): Promise<void> {
     if (!joinUrl || joining) return;
+    joinError = '';
     joining = true;
     try {
       await openExternal(joinUrl);
     } catch (err) {
       console.error('meetings: failed to open live meeting', err);
+      joinError = 'Couldn’t open this meeting.';
     } finally {
       joining = false;
     }
@@ -148,6 +151,14 @@
           </button>
         {/if}
       </div>
+      {#if joinError && joinUrl}
+        <div class="live-action-error" role="alert">
+          <span>{joinError}</span>
+          <button type="button" onclick={join} disabled={joining} aria-busy={joining}>
+            {joining ? 'Retrying…' : 'Retry'}
+          </button>
+        </div>
+      {/if}
     </div>
   </section>
 {:else}
@@ -245,6 +256,25 @@
     color: var(--v4-error);
     font-size: var(--type-secondary, 11px);
     line-height: 16px;
+  }
+
+  .live-action-error {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 10px;
+    color: var(--v4-error);
+    font-size: var(--type-metadata, 10px);
+  }
+
+  .live-action-error button {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: currentColor;
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
   }
   .live-company {
     display: flex;

@@ -263,7 +263,7 @@ describe('local/cloud provenance adapter', () => {
     expect(stories[1].provenance?.origin).toBe('Linear import');
   });
 
-  it('inherits only project source context while preserving explicit task roles', async () => {
+  it('inherits project creator and source while preserving explicit task roles', async () => {
     invokeMock.mockResolvedValue({
       name: 'Launch',
       userStories: [
@@ -292,7 +292,7 @@ describe('local/cloud provenance adapter', () => {
     expect(stories[0].provenance).toEqual({
       owner: null,
       assignee: null,
-      creator: null,
+      creator: 'Corey Epstein',
       origin: 'Project source',
     });
     expect(stories[1].provenance).toEqual({

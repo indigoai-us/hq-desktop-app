@@ -1382,10 +1382,12 @@ mod tests {
         write_menubar(home.path(), r#"{"machineId":"mid-default"}"#);
         write_tokens_for_subject(home.path(), "sub-a");
         std::env::set_var("HOME", home.path());
+        std::env::set_var("HQ_TEST_HOME", home.path());
 
         let answer = read_local_telemetry_enabled();
 
         std::env::remove_var("HOME");
+        std::env::remove_var("HQ_TEST_HOME");
         assert_eq!(
             answer, None,
             "a missing answer must not default to enabled — it is no answer at all"
@@ -1404,10 +1406,12 @@ mod tests {
         );
         write_tokens_for_subject(home.path(), "sub-a");
         std::env::set_var("HOME", home.path());
+        std::env::set_var("HQ_TEST_HOME", home.path());
 
         let answer = read_local_telemetry_enabled();
 
         std::env::remove_var("HOME");
+        std::env::remove_var("HQ_TEST_HOME");
         assert_eq!(
             answer, None,
             "a bare flag without provenance is not consent"
@@ -1425,6 +1429,7 @@ mod tests {
             r#"{"machineId":"mid-scope","telemetryEnabled":true,"telemetryOptInAnsweredAt":"2026-07-27T10:00:00Z","telemetryOptInSub":"sub-a"}"#,
         );
         std::env::set_var("HOME", home.path());
+        std::env::set_var("HQ_TEST_HOME", home.path());
 
         // Account A: sees its own answer.
         write_tokens_for_subject(home.path(), "sub-a");
@@ -1434,6 +1439,7 @@ mod tests {
         let b = read_local_telemetry_enabled();
 
         std::env::remove_var("HOME");
+        std::env::remove_var("HQ_TEST_HOME");
         assert_eq!(a, Some(true), "account A reads its own answer");
         assert_eq!(b, None, "account B must not inherit account A's answer");
     }
@@ -1689,12 +1695,14 @@ mod tests {
         write_menubar(home.path(), r#"{"machineId":"test-id","hqPath":"/foo"}"#);
         write_jsonl(home.path(), "proj", "session.jsonl", &[USER_ROW, ASST_ROW]);
         std::env::set_var("HOME", home.path());
+        std::env::set_var("HQ_TEST_HOME", home.path());
         std::env::set_var("HQ_VAULT_API_URL", server.uri());
 
         let handle = make_app_handle();
         let result = send_telemetry_if_opted_in(&handle, "/hq", "test-jwt").await;
 
         std::env::remove_var("HOME");
+        std::env::remove_var("HQ_TEST_HOME");
         std::env::remove_var("HQ_VAULT_API_URL");
 
         assert!(result.is_ok());
@@ -1745,6 +1753,7 @@ mod tests {
         write_menubar(home.path(), r#"{"machineId":"mid-withdraw"}"#);
         write_jsonl(home.path(), "proj", "s.jsonl", &[USER_ROW, ASST_ROW]);
         std::env::set_var("HOME", home.path());
+        std::env::set_var("HQ_TEST_HOME", home.path());
         std::env::set_var("HQ_VAULT_API_URL", server.uri());
 
         let handle = make_app_handle();
@@ -1775,6 +1784,7 @@ mod tests {
             .unwrap();
 
         std::env::remove_var("HOME");
+        std::env::remove_var("HQ_TEST_HOME");
         std::env::remove_var("HQ_VAULT_API_URL");
 
         let posts_after_cycle2 = server
@@ -1814,12 +1824,14 @@ mod tests {
         let file_size = fs::metadata(&jsonl_path).unwrap().len();
 
         std::env::set_var("HOME", home.path());
+        std::env::set_var("HQ_TEST_HOME", home.path());
         std::env::set_var("HQ_VAULT_API_URL", server.uri());
 
         let handle = make_app_handle();
         let result = send_telemetry_if_opted_in(&handle, "/hq", "test-jwt").await;
 
         std::env::remove_var("HOME");
+        std::env::remove_var("HQ_TEST_HOME");
         std::env::remove_var("HQ_VAULT_API_URL");
 
         assert!(result.is_ok());
@@ -2353,12 +2365,14 @@ mod tests {
         write_jsonl(home.path(), "proj", "s.jsonl", &[USER_ROW]);
 
         std::env::set_var("HOME", home.path());
+        std::env::set_var("HQ_TEST_HOME", home.path());
         std::env::set_var("HQ_VAULT_API_URL", server.uri());
 
         let handle = make_app_handle();
         let result = send_telemetry_if_opted_in(&handle, "/hq", "tok").await;
 
         std::env::remove_var("HOME");
+        std::env::remove_var("HQ_TEST_HOME");
         std::env::remove_var("HQ_VAULT_API_URL");
 
         assert!(result.is_ok());
@@ -2392,12 +2406,14 @@ mod tests {
         write_jsonl(home.path(), "proj", "s.jsonl", &[USER_ROW]);
 
         std::env::set_var("HOME", home.path());
+        std::env::set_var("HQ_TEST_HOME", home.path());
         std::env::set_var("HQ_VAULT_API_URL", server.uri());
 
         let handle = make_app_handle();
         let result = send_telemetry_if_opted_in(&handle, "/hq", "tok").await;
 
         std::env::remove_var("HOME");
+        std::env::remove_var("HQ_TEST_HOME");
         std::env::remove_var("HQ_VAULT_API_URL");
 
         assert!(result.is_ok());
@@ -2433,12 +2449,14 @@ mod tests {
         write_jsonl(home.path(), "proj", "s.jsonl", &[USER_ROW]);
 
         std::env::set_var("HOME", home.path());
+        std::env::set_var("HQ_TEST_HOME", home.path());
         std::env::set_var("HQ_VAULT_API_URL", server.uri());
 
         let handle = make_app_handle();
         let result = send_telemetry_if_opted_in(&handle, "/hq", "tok").await;
 
         std::env::remove_var("HOME");
+        std::env::remove_var("HQ_TEST_HOME");
         std::env::remove_var("HQ_VAULT_API_URL");
 
         assert!(result.is_ok());

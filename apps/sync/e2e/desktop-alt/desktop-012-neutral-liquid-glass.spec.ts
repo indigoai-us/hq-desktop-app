@@ -49,18 +49,46 @@ function balancedBlock(source: string, marker: string): string {
   throw new Error(`unclosed CSS block after: ${marker}`);
 }
 
+function lastBalancedBlock(source: string, marker: string): string {
+  const markerIndex = source.lastIndexOf(marker);
+  expect(
+    markerIndex,
+    `missing final CSS block marker: ${marker}`,
+  ).toBeGreaterThanOrEqual(0);
+  return balancedBlock(source.slice(markerIndex), marker);
+}
+
 function customProperty(block: string, property: string): string {
   const match = block.match(new RegExp(`--${property}:\\s*([^;]+);`));
   expect(match, `missing --${property}`).not.toBeNull();
   return match?.[1].trim() ?? '';
 }
 
-function rgbaAlpha(value: string): number {
-  const match = value.match(
-    /^rgba\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*([\d.]+)\s*\)$/i,
+const DEFAULT_WINDOW_TRANSPARENCY_FACTOR = 0.65;
+
+function liquidGlassAlpha(
+  value: string,
+  factor = DEFAULT_WINDOW_TRANSPARENCY_FACTOR,
+): number {
+  const expression = value.match(
+    /^rgb\(\s*\d+\s+\d+\s+\d+\s*\/\s*clamp\(\s*([\d.]+)\s*,\s*calc\(\s*1\s*-\s*var\(--hq-window-transparency-factor(?:\s*,\s*([\d.]+))?\)\s*\*\s*([\d.]+)\s*\)\s*,\s*([\d.]+)\s*\)\s*\)$/i,
   );
-  expect(match, `expected rgba material, received: ${value}`).not.toBeNull();
-  return Number(match?.[1]);
+  expect(
+    expression,
+    `expected a window-transparency liquid-glass material, received: ${value}`,
+  ).not.toBeNull();
+
+  const floor = Number(expression?.[1]);
+  const fallback = expression?.[2];
+  const multiplier = Number(expression?.[3]);
+  const ceiling = Number(expression?.[4]);
+  if (fallback !== undefined) {
+    expect(Number(fallback), 'material must retain the 0.65 default factor').toBe(
+      DEFAULT_WINDOW_TRANSPARENCY_FACTOR,
+    );
+  }
+  expect(ceiling, 'material must resolve fully opaque at factor 0').toBe(1);
+  return Math.min(ceiling, Math.max(floor, 1 - factor * multiplier));
 }
 
 function saturationPercent(value: string): number {
@@ -188,13 +216,18 @@ describe('DESKTOP-012: neutral liquid-glass materials', () => {
     ] as const) {
       const alphas = Object.fromEntries(
         Object.entries(ceilings).map(([property, ceiling]) => {
-          const alpha = rgbaAlpha(customProperty(block, property));
+          const material = customProperty(block, property);
+          const alpha = liquidGlassAlpha(material);
           expect(alpha, `${mode} ${property} must remain visibly translucent`).toBeGreaterThan(
             0.2,
           );
           expect(alpha, `${mode} ${property} exceeds its material alpha ceiling`).toBeLessThanOrEqual(
             ceiling,
           );
+          expect(
+            liquidGlassAlpha(material, 0),
+            `${mode} ${property} must become opaque when window transparency is disabled`,
+          ).toBe(1);
           return [property, alpha];
         }),
       );
@@ -202,6 +235,19 @@ describe('DESKTOP-012: neutral liquid-glass materials', () => {
       expect(alphas['v4-raised']).toBeGreaterThan(alphas['v4-ground']);
       expect(alphas['v4-popover']).toBeGreaterThanOrEqual(alphas['v4-raised']);
     }
+  });
+
+  it('lets the unsupported-filter fallback become literally solid at 100% opacity', () => {
+    const fallback = tokens.slice(
+      tokens.indexOf('@supports not ((backdrop-filter: blur(1px))'),
+    );
+    expect(fallback).toContain(
+      '--v4-fallback-material-alpha: clamp(0.92, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.03), 1)',
+    );
+    expect(fallback).toContain(
+      '--v4-ground: rgb(242 242 242 / var(--v4-fallback-material-alpha))',
+    );
+    expect(fallback).not.toMatch(/rgba\([^)]*,\s*0\.98\)/);
   });
 
   it('defines one restrained live-vibrancy filter stack and routes desktop chrome through it', () => {
@@ -315,6 +361,50 @@ describe('DESKTOP-012: neutral liquid-glass materials', () => {
     );
   });
 
+  it('keeps forced light and dark shared materials solid when transparency is reduced', () => {
+    const designReduced = lastBalancedBlock(
+      designSystem,
+      '@media (prefers-reduced-transparency: reduce)',
+    );
+    const designLight = balancedBlock(
+      designReduced,
+      ":root[data-force-theme='light']",
+    );
+    const designDark = balancedBlock(
+      designReduced,
+      ":root[data-force-theme='dark']",
+    );
+
+    for (const block of [designLight, designDark]) {
+      expectSolidSurface(block, 'pop-bg');
+      expectSolidSurface(block, 'compact-glass-bg');
+      expectSolidSurface(block, 'compact-glass-rail');
+      expectSolidSurface(block, 'compact-glass-selected');
+      expect(customProperty(block, 'glass-filter')).toBe('none');
+      expect(customProperty(block, 'glass-filter-soft')).toBe('none');
+    }
+
+    const popoverReduced = lastBalancedBlock(
+      popover,
+      '@media (prefers-reduced-transparency: reduce)',
+    );
+    const popoverLight = balancedBlock(
+      popoverReduced,
+      ":root[data-force-theme='light']",
+    );
+    const popoverDark = balancedBlock(
+      popoverReduced,
+      ":root[data-force-theme='dark']",
+    );
+
+    for (const block of [popoverLight, popoverDark]) {
+      expectSolidSurface(block, 'pop-bg');
+      expectSolidSurface(block, 'menu-bg');
+      expect(customProperty(block, 'popover-bg')).toBe('var(--pop-bg)');
+      expect(customProperty(block, 'popover-blur')).toBe('none');
+    }
+  });
+
   it('does not double-compose the translucent canvas beneath glass chrome', () => {
     const shellRule = desktopCss.match(/\.desktop-shell\s*\{([\s\S]*?)\}/)?.[1] ?? '';
     const canvasRule =
@@ -333,9 +423,13 @@ describe('DESKTOP-012: neutral liquid-glass materials', () => {
     const sharedPrimitives = balancedBlock(designSystem, ':root {');
     const sharedFilter = customProperty(sharedPrimitives, 'glass-filter');
     const sharedSoftFilter = customProperty(sharedPrimitives, 'glass-filter-soft');
+    const sharedPopover = customProperty(sharedPrimitives, 'pop-bg');
 
     expect(designSystem).toContain('--page-bg:#eeeeee');
-    expect(designSystem).toContain('--pop-bg:rgba(250,250,250,0.58)');
+    expect(customProperty(sharedPrimitives, 'hq-window-transparency-factor')).toBe('0.65');
+    expect(sharedPopover).toMatch(/^rgb\(\s*250\s+250\s+250\s*\//);
+    expect(liquidGlassAlpha(sharedPopover)).toBeCloseTo(0.58, 2);
+    expect(liquidGlassAlpha(sharedPopover, 0)).toBe(1);
     expect(saturationPercent(sharedFilter)).toBeGreaterThanOrEqual(118);
     expect(saturationPercent(sharedFilter)).toBeLessThanOrEqual(135);
     expect(saturationPercent(sharedSoftFilter)).toBeGreaterThanOrEqual(110);
@@ -345,8 +439,14 @@ describe('DESKTOP-012: neutral liquid-glass materials', () => {
 
     const widgetScope = balancedBlock(widget, '.wg {');
     const widgetFilter = customProperty(widgetScope, 'glass-filter');
+    const widgetRow = customProperty(widgetScope, 'row-bg');
+    const widgetRowHover = customProperty(widgetScope, 'row-bg-hover');
     expect(saturationPercent(widgetFilter)).toBeGreaterThanOrEqual(165);
     expect(saturationPercent(widgetFilter)).toBeLessThanOrEqual(180);
+    expect(liquidGlassAlpha(widgetRow)).toBeCloseTo(0.82, 2);
+    expect(liquidGlassAlpha(widgetRowHover)).toBeCloseTo(0.94, 2);
+    expect(liquidGlassAlpha(widgetRow, 0)).toBe(1);
+    expect(liquidGlassAlpha(widgetRowHover, 0)).toBe(1);
 
     expect(popover).toContain('--popover-blur: var(--glass-filter)');
     expect(popover).toContain('--popover-unread: var(--pop-text)');

@@ -28,6 +28,24 @@ function dm(id: string, actor: string, ts: number): Item {
   return { id, kind: 'dm', actor, summary: 'hi', ts };
 }
 
+function agentJoin(id: string, actor: string, ts: number): Item {
+  return {
+    id,
+    kind: 'dm',
+    actor,
+    summary: '🤖 A new agent (an agent) just joined the company.',
+    ts,
+    dm: {
+      eventId: id,
+      fromPersonUid: `agt_${id}`,
+      fromEmail: `${id}@example.com`,
+      fromDisplayName: actor,
+      body: '🤖 A new agent (an agent) just joined the company.',
+      createdAt: new Date(ts).toISOString(),
+    },
+  };
+}
+
 const onlyCluster = (rows: Row[]) => rows.filter((r) => r.type === 'cluster');
 const onlySingle = (rows: Row[]) => rows.filter((r) => r.type === 'single');
 
@@ -118,21 +136,6 @@ describe('buildNotificationGroups', () => {
   });
 
   it('compacts repeated automated agent-join DMs across hours without collapsing human replies', () => {
-    const agentJoin = (id: string, actor: string, ts: number): Item => ({
-      id,
-      kind: 'dm',
-      actor,
-      summary: '🤖 A new agent (an agent) just joined the company.',
-      ts,
-      dm: {
-        eventId: id,
-        fromPersonUid: `agt_${id}`,
-        fromEmail: `${id}@example.com`,
-        fromDisplayName: actor,
-        body: '🤖 A new agent (an agent) just joined the company.',
-        createdAt: new Date(ts).toISOString(),
-      },
-    });
     const items: Item[] = [
       agentJoin('join-1', 'A new agent', at(15, 0)),
       dm('human-1', 'Maya', at(14, 30)),
@@ -182,6 +185,19 @@ describe('buildNotificationGroups', () => {
     expect(clusters).toHaveLength(1);
     expect(clusters[0].type === 'cluster' && clusters[0].count).toBe(2);
     expect(groups.filter((group) => group.rows.length > 0)).toHaveLength(1);
+  });
+
+  it('compacts the same agent-join notice across modern and legacy history shapes', () => {
+    const modern = agentJoin('modern', 'A new agent', at(12, 0));
+    const legacy = agentJoin('legacy', 'A new agent', at(11, 0));
+    legacy.dm!.fromPersonUid = '';
+
+    const groups = buildNotificationGroups([modern, legacy], NOW, {
+      aggregateRepeatedMessagesAcrossDays: true,
+    });
+    const clusters = groups.flatMap((group) => onlyCluster(group.rows));
+    expect(clusters).toHaveLength(1);
+    expect(clusters[0].type === 'cluster' && clusters[0].count).toBe(2);
   });
 
   it('never compacts human prose that mentions an agent joining', () => {

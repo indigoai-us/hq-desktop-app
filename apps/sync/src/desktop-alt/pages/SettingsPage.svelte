@@ -15,6 +15,22 @@
     type PendingUpdateState,
   } from '../../lib/notificationFeedData';
   import { updateSettings, type SettingsPatch } from '../../lib/settings-mutations';
+  import {
+    APPEARANCE_CHANGE_EVENT,
+    readBrowserAppearancePreferences,
+    requestAppearancePreferenceChange,
+    windowOpacityFromTransparency,
+    windowTransparencyFromOpacity,
+    type AppearancePreferences,
+    type ColorTheme,
+  } from '../../lib/appearancePreferences';
+  import {
+    DESKTOP_ZOOM_CHANGE_EVENT,
+    MAX_DESKTOP_ZOOM,
+    MIN_DESKTOP_ZOOM,
+    readBrowserDesktopZoom,
+    requestDesktopZoom,
+  } from '../../lib/desktopZoom';
   import WidgetSettings from '../../components/WidgetSettings.svelte';
   import '../v4/tokens.css';
 
@@ -39,6 +55,10 @@
     | 'meeting-detection'
     | 'meeting-platforms'
     | 'default-recording-company';
+  type LiveControlKey =
+    | 'realtime-sync'
+    | 'instant-sync'
+    | 'start-at-login';
 
   // Exact upgrade command the v0.9.8 popover copied to the clipboard.
   const HQ_CLI_UPGRADE_CMD = 'npm install -g @indigoai-us/hq-cli@latest';
@@ -105,6 +125,14 @@
   };
 
   const platforms: Platform[] = ['zoom', 'meet', 'teams', 'slack', 'webex'];
+  const appearanceThemes: ReadonlyArray<{
+    id: ColorTheme;
+    label: string;
+  }> = [
+    { id: 'system', label: 'System' },
+    { id: 'light', label: 'Light' },
+    { id: 'dark', label: 'Dark' },
+  ];
 
   // Memberships drive the default-recording-company dropdown (mirrors the
   // classic Settings + MeetingsWindow URL-invite picker). Empty for users with
@@ -202,6 +230,7 @@
   // preference. `'unknown'` = not yet read (row hidden until first resolve).
   let notifPermission = $state<'granted' | 'denied' | 'prompt' | 'unknown'>('unknown');
   let notifRequesting = $state(false);
+  let notifPermissionError = $state<string | null>(null);
   let meetingPermissionsOpening = $state(false);
 
   // App version from tauri.conf.json via the Tauri API.
@@ -231,6 +260,7 @@
   >(null);
   let hqCliCmdCopied = $state(false);
   let hqCliCmdCopying = $state(false);
+  let hqCliCmdCopyError = $state<string | null>(null);
 
   // Pack update notice — loaded via check_pack_update; hide when count is 0/null.
   let packUpdate = $state<{ count: number; names: string[] } | null>(null);
@@ -252,6 +282,7 @@
   let coreInstalling = $state(false);
   let coreInstallGeneration = 0;
   let driftDetailOpening = $state(false);
+  let driftDetailError = $state<string | null>(null);
   // Transient install result for the HQ core row (v0.9.8 parity): 'ok' auto-
   // clears after ~6s; 'err' stays until the next run. log_path surfaces on err
   // so the user can open the rescue log for details.
@@ -264,6 +295,20 @@
   let coreLogOpenTimeout: ReturnType<typeof setTimeout> | null = null;
   let signingOut = $state(false);
   let quitting = $state(false);
+  let accountActionError = $state<string | null>(null);
+  let accountRetryAction = $state<'sign-out' | 'quit' | null>(null);
+  let liveControlErrors = $state<Record<LiveControlKey, string | null>>({
+    'realtime-sync': null,
+    'instant-sync': null,
+    'start-at-login': null,
+  });
+  let appearance = $state<AppearancePreferences>(
+    readBrowserAppearancePreferences(),
+  );
+  let interfaceZoom = $state(readBrowserDesktopZoom());
+  const windowOpacity = $derived(
+    windowOpacityFromTransparency(appearance.windowTransparency),
+  );
 
   const displayedChannel = $derived<Channel>(
     releaseChannel ?? (availableChannels.includes('beta') ? 'beta' : 'stable'),
@@ -343,6 +388,33 @@
     return coreState.versionBehind
       ? `Update to v${coreState.targetVersion}`
       : `Restore v${coreState.targetVersion}`;
+  });
+
+  function updateAppearance(patch: Partial<AppearancePreferences>): void {
+    appearance = requestAppearancePreferenceChange(patch);
+  }
+
+  function updateInterfaceZoom(value: number): void {
+    interfaceZoom = requestDesktopZoom(value);
+  }
+
+  onMount(() => {
+    const onAppearanceChange = (event: Event) => {
+      appearance = (
+        event as CustomEvent<AppearancePreferences>
+      ).detail;
+    };
+    const onZoomChange = (event: Event) => {
+      interfaceZoom = (
+        event as CustomEvent<{ zoom: number }>
+      ).detail.zoom;
+    };
+    window.addEventListener(APPEARANCE_CHANGE_EVENT, onAppearanceChange);
+    window.addEventListener(DESKTOP_ZOOM_CHANGE_EVENT, onZoomChange);
+    return () => {
+      window.removeEventListener(APPEARANCE_CHANGE_EVENT, onAppearanceChange);
+      window.removeEventListener(DESKTOP_ZOOM_CHANGE_EVENT, onZoomChange);
+    };
   });
 
   onMount(() => {
@@ -543,6 +615,17 @@
 
   function endSettingsControl(control: SettingsControlKey): void {
     pendingSettingsControls = pendingSettingsControls.filter((item) => item !== control);
+  }
+
+  function setLiveControlError(
+    control: LiveControlKey,
+    message: string | null,
+  ): void {
+    liveControlErrors = { ...liveControlErrors, [control]: message };
+  }
+
+  async function restoreDaemonState(enabled: boolean): Promise<void> {
+    await invoke(enabled ? 'start_daemon' : 'stop_daemon');
   }
 
   async function persistSettingsControl(
@@ -801,16 +884,33 @@
   // it immediately so the change takes effect without an app restart.
   async function applyRealtimeSync() {
     if (!beginSettingsControl('realtime-sync')) return;
+    const next = realtimeSync;
+    const previous = !next;
+    setLiveControlError('realtime-sync', null);
     try {
-      if (!(await saveSettings({ realtimeSync }))) return;
-      if (realtimeSync) {
-        await invoke('start_daemon');
-      } else {
-        await invoke('stop_daemon');
+      // Apply the live process state first so a failed daemon command never
+      // leaves a persisted preference claiming that Auto-sync is active.
+      await restoreDaemonState(next);
+      if (!(await saveSettings({ realtimeSync: next }))) {
+        realtimeSync = previous;
+        try {
+          await restoreDaemonState(previous);
+        } catch (rollbackError) {
+          console.error('Auto-sync daemon rollback failed:', rollbackError);
+        }
       }
     } catch (err) {
-      // Persisted state is authoritative; main.rs reconciles on next launch.
       console.error('Auto-sync daemon command failed:', err);
+      realtimeSync = previous;
+      setLiveControlError(
+        'realtime-sync',
+        'Couldn’t change Auto-sync. The saved setting was left unchanged. Toggle again to retry.',
+      );
+      try {
+        await restoreDaemonState(previous);
+      } catch (rollbackError) {
+        console.error('Auto-sync daemon recovery failed:', rollbackError);
+      }
     } finally {
       endSettingsControl('realtime-sync');
     }
@@ -821,13 +921,37 @@
   // Auto-sync is off there's no process to bounce — the next start picks it up.
   async function applyInstantSync() {
     if (!beginSettingsControl('instant-sync')) return;
+    const next = instantSync;
+    const previous = !next;
+    let preferencePersisted = false;
+    setLiveControlError('instant-sync', null);
     try {
-      if (!(await saveSettings({ instantSync }))) return;
+      // The daemon reads Instant-sync from persisted settings at spawn time, so
+      // save before bouncing it. If activation fails below, immediately write
+      // the previous preference back.
+      if (!(await saveSettings({ instantSync: next }))) return;
+      preferencePersisted = true;
       if (!realtimeSync) return;
       await invoke('stop_daemon');
       await invoke('start_daemon');
     } catch (err) {
       console.error('Instant-sync daemon restart failed:', err);
+      instantSync = previous;
+      if (preferencePersisted) {
+        const restored = await saveSettings({ instantSync: previous });
+        if (restored) instantSync = previous;
+      }
+      setLiveControlError(
+        'instant-sync',
+        'Couldn’t activate Instant sync, so the previous setting was restored. Toggle again to retry.',
+      );
+      if (realtimeSync) {
+        try {
+          await invoke('start_daemon');
+        } catch (rollbackError) {
+          console.error('Instant-sync daemon recovery failed:', rollbackError);
+        }
+      }
     } finally {
       endSettingsControl('instant-sync');
     }
@@ -837,11 +961,31 @@
   // the flag — otherwise the login item never actually changes.
   async function applyStartAtLogin() {
     if (!beginSettingsControl('start-at-login')) return;
+    const next = startAtLogin;
+    const previous = !next;
+    setLiveControlError('start-at-login', null);
     try {
-      if (!(await saveSettings({ startAtLogin }))) return;
-      await invoke('set_autostart_enabled', { enabled: startAtLogin });
+      await invoke('set_autostart_enabled', { enabled: next });
+      if (!(await saveSettings({ startAtLogin: next }))) {
+        startAtLogin = previous;
+        try {
+          await invoke('set_autostart_enabled', { enabled: previous });
+        } catch (rollbackError) {
+          console.error('Autostart rollback failed:', rollbackError);
+        }
+      }
     } catch (err) {
       console.error('Failed to set autostart:', err);
+      startAtLogin = previous;
+      setLiveControlError(
+        'start-at-login',
+        'Couldn’t change Start at login. The saved setting was left unchanged. Toggle again to retry.',
+      );
+      try {
+        await invoke('set_autostart_enabled', { enabled: previous });
+      } catch (rollbackError) {
+        console.error('Autostart recovery failed:', rollbackError);
+      }
     } finally {
       endSettingsControl('start-at-login');
     }
@@ -874,6 +1018,7 @@
   async function handleEnableNotifications() {
     if (notifRequesting) return;
     notifRequesting = true;
+    notifPermissionError = null;
     // Once macOS has recorded a denial it will NOT re-show the system dialog,
     // so request_permission() would be a silent no-op. Deep-link to
     // System Settings > Notifications instead.
@@ -892,6 +1037,10 @@
           : 'Failed to request notification permission:',
         err,
       );
+      notifPermissionError =
+        notifPermission === 'denied'
+          ? 'Couldn’t open Notification Settings. Try again.'
+          : 'Couldn’t request notification permission. Try again.';
     } finally {
       notifRequesting = false;
     }
@@ -1138,6 +1287,8 @@
   async function copyHqCliCommand() {
     if (hqCliCmdCopying) return;
     hqCliCmdCopying = true;
+    hqCliCmdCopied = false;
+    hqCliCmdCopyError = null;
     try {
       await navigator.clipboard.writeText(HQ_CLI_UPGRADE_CMD);
       hqCliCmdCopied = true;
@@ -1146,6 +1297,7 @@
       }, 1500);
     } catch (err) {
       console.error('copy hq CLI command failed:', err);
+      hqCliCmdCopyError = 'Couldn’t copy the install command. Try again.';
     } finally {
       hqCliCmdCopying = false;
     }
@@ -1176,10 +1328,12 @@
       coreChannelPending
     ) return;
     driftDetailOpening = true;
+    driftDetailError = null;
     try {
       await invoke('open_drift_detail', { report });
     } catch (err) {
       console.error('open_drift_detail failed:', err);
+      driftDetailError = 'Couldn’t open drift details. Try again.';
     } finally {
       driftDetailOpening = false;
     }
@@ -1304,17 +1458,15 @@
   async function handleSignOut() {
     if (signingOut || quitting) return;
     signingOut = true;
+    accountActionError = null;
+    accountRetryAction = null;
     try {
-      try {
-        await emit('tray:sign-out');
-      } catch (err) {
-        console.error('emit tray:sign-out failed:', err);
-      }
-      try {
-        await invoke('show_main_window');
-      } catch (err) {
-        console.error('show_main_window failed:', err);
-      }
+      await emit('tray:sign-out');
+      await invoke('show_main_window');
+    } catch (err) {
+      console.error('sign out failed:', err);
+      accountActionError = 'Couldn’t finish signing out. Try again.';
+      accountRetryAction = 'sign-out';
     } finally {
       signingOut = false;
     }
@@ -1323,10 +1475,14 @@
   async function handleQuit() {
     if (quitting || signingOut) return;
     quitting = true;
+    accountActionError = null;
+    accountRetryAction = null;
     try {
       await invoke('quit_app');
     } catch (err) {
       console.error('quit_app failed:', err);
+      accountActionError = 'Couldn’t quit HQ. Try again.';
+      accountRetryAction = 'quit';
     } finally {
       quitting = false;
     }
@@ -1424,7 +1580,17 @@
           />
         </label>
         <label class="setting-row">
-          <span><strong>Auto-sync</strong><small>Sync every few minutes in the background.</small></span>
+          <span>
+            <strong>Auto-sync</strong>
+            <small>Sync every few minutes in the background.</small>
+            {#if liveControlErrors['realtime-sync']}
+              <small
+                class="row-action-error"
+                role="alert"
+                data-testid="settings-realtime-sync-error"
+              >{liveControlErrors['realtime-sync']}</small>
+            {/if}
+          </span>
           <input
             type="checkbox"
             bind:checked={realtimeSync}
@@ -1434,7 +1600,17 @@
           />
         </label>
         <label class="setting-row">
-          <span><strong>Instant sync</strong><small>Push local edits within seconds when eligible.</small></span>
+          <span>
+            <strong>Instant sync</strong>
+            <small>Push local edits within seconds when eligible.</small>
+            {#if liveControlErrors['instant-sync']}
+              <small
+                class="row-action-error"
+                role="alert"
+                data-testid="settings-instant-sync-error"
+              >{liveControlErrors['instant-sync']}</small>
+            {/if}
+          </span>
           <input
             type="checkbox"
             bind:checked={instantSync}
@@ -1504,6 +1680,13 @@
                   Not enabled yet — allow to see sync &amp; share alerts
                 {/if}
               </small>
+              {#if notifPermissionError}
+                <small
+                  class="row-action-error"
+                  role="alert"
+                  data-testid="settings-notification-permission-error"
+                >{notifPermissionError}</small>
+              {/if}
             </span>
             {#if notifPermission === 'granted'}
               <span class="perm-pill">Enabled</span>
@@ -1517,6 +1700,8 @@
               >
                 {#if notifRequesting}
                   {notifPermission === 'denied' ? 'Opening…' : 'Requesting…'}
+                {:else if notifPermissionError}
+                  Try again
                 {:else if notifPermission === 'denied'}
                   Open Settings
                 {:else}
@@ -1623,6 +1808,13 @@
           <span>
             <strong>HQ Core</strong>
             <small data-testid="settings-core-status">{coreStatusLabel}</small>
+            {#if driftDetailError}
+              <small
+                class="row-action-error"
+                role="alert"
+                data-testid="settings-drift-error"
+              >{driftDetailError}</small>
+            {/if}
             {#if coreInstallResult === 'err' && coreInstallLogPath}
               <small
                 class="core-log-path"
@@ -1687,6 +1879,8 @@
                   ? 'Checking…'
                   : driftDetailOpening
                     ? 'Opening…'
+                    : driftDetailError
+                      ? 'Retry details'
                     : `${coreState?.driftReport.count} drifted`}
               </button>
             {/if}
@@ -1727,6 +1921,13 @@
               role={hqCliUpdateError ? 'alert' : undefined}
               aria-live="polite"
             >{hqCliStatusLabel}</small>
+            {#if hqCliCmdCopyError}
+              <small
+                class="row-action-error"
+                role="alert"
+                data-testid="settings-cli-copy-error"
+              >{hqCliCmdCopyError}</small>
+            {/if}
           </span>
           <div class="row-actions">
             <span class="version-chip" data-testid="settings-cli-version">
@@ -1756,6 +1957,8 @@
                   ? 'Copying…'
                   : hqCliCmdCopied
                     ? 'Command copied'
+                    : hqCliCmdCopyError
+                      ? 'Copy failed — retry'
                     : 'Copy install command'}
               </button>
             {/if}
@@ -1821,7 +2024,17 @@
       <h2>General</h2>
       <div class="settings-card">
         <label class="setting-row">
-          <span><strong>Start at login</strong><small>Open HQ when your computer starts.</small></span>
+          <span>
+            <strong>Start at login</strong>
+            <small>Open HQ when your computer starts.</small>
+            {#if liveControlErrors['start-at-login']}
+              <small
+                class="row-action-error"
+                role="alert"
+                data-testid="settings-start-at-login-error"
+              >{liveControlErrors['start-at-login']}</small>
+            {/if}
+          </span>
           <input
             type="checkbox"
             bind:checked={startAtLogin}
@@ -1870,31 +2083,125 @@
           </span>
         </div>
         <div class="setting-row">
-          <span><strong>Account</strong><small>Sign out returns you to the menu bar sign-in screen.</small></span>
+          <span>
+            <strong>Account</strong>
+            <small>Sign out returns you to the menu bar sign-in screen.</small>
+            {#if accountActionError}
+              <small
+                class="row-action-error"
+                role="alert"
+                data-testid="settings-account-error"
+              >{accountActionError}</small>
+            {/if}
+          </span>
           <div class="row-actions">
             <button
               type="button"
               class="row-button"
+              data-testid="settings-sign-out"
               onclick={handleSignOut}
               disabled={signingOut || quitting}
               aria-busy={signingOut}
             >
-              {signingOut ? 'Signing out…' : 'Sign out'}
+              {signingOut
+                ? 'Signing out…'
+                : accountRetryAction === 'sign-out'
+                  ? 'Retry sign out'
+                  : 'Sign out'}
             </button>
             <button
               type="button"
               class="row-button danger"
+              data-testid="settings-quit"
               onclick={handleQuit}
               disabled={quitting || signingOut}
               aria-busy={quitting}
             >
-              {quitting ? 'Quitting…' : 'Quit HQ'}
+              {quitting
+                ? 'Quitting…'
+                : accountRetryAction === 'quit'
+                  ? 'Retry quit'
+                  : 'Quit HQ'}
             </button>
           </div>
         </div>
       </div>
     </section>
+    </fieldset>
 
+    <section id="appearance" class="settings-section" data-testid="settings-appearance">
+      <h2>Appearance</h2>
+      <div class="settings-card">
+        <div class="setting-row appearance-row">
+          <span>
+            <strong>Theme</strong>
+            <small>Follow your system or keep HQ light or dark.</small>
+          </span>
+          <div class="theme-options" role="radiogroup" aria-label="Theme">
+            {#each appearanceThemes as theme (theme.id)}
+              <label class="theme-option">
+                <input
+                  type="radio"
+                  name="appearance-theme"
+                  value={theme.id}
+                  checked={appearance.colorTheme === theme.id}
+                  onchange={() => updateAppearance({ colorTheme: theme.id })}
+                />
+                <span>{theme.label}</span>
+              </label>
+            {/each}
+          </div>
+        </div>
+
+        <label class="setting-row appearance-row">
+          <span>
+            <strong>Window opacity</strong>
+            <small>100% is fully solid. Lower values reveal more native vibrancy.</small>
+          </span>
+          <span class="range-control">
+            <input
+              type="range"
+              min="0"
+              max="100"
+              step="5"
+              value={windowOpacity}
+              aria-label="Window opacity"
+              aria-valuetext={`${windowOpacity}%`}
+              oninput={(event) =>
+                updateAppearance({
+                  windowTransparency: windowTransparencyFromOpacity(
+                    event.currentTarget.valueAsNumber,
+                  ),
+                })}
+            />
+            <output aria-live="polite">{windowOpacity}%</output>
+          </span>
+        </label>
+
+        <label class="setting-row appearance-row">
+          <span>
+            <strong>Interface size</strong>
+            <small>Changes every HQ window. Use ⌘/Ctrl +, −, or 0 anytime.</small>
+          </span>
+          <span class="range-control">
+            <input
+              type="range"
+              min={MIN_DESKTOP_ZOOM}
+              max={MAX_DESKTOP_ZOOM}
+              step="0.1"
+              value={interfaceZoom}
+              aria-label="Interface size"
+              aria-valuetext={`${Math.round(interfaceZoom * 100)}%`}
+              oninput={(event) =>
+                updateInterfaceZoom(event.currentTarget.valueAsNumber)}
+            />
+            <output aria-live="polite">{Math.round(interfaceZoom * 100)}%</output>
+          </span>
+        </label>
+      </div>
+    </section>
+
+    <fieldset class="settings-controls" disabled={!settingsReady}>
     <section id="meetings" class="settings-section">
       <h2>Meetings</h2>
       <div class="settings-card">
@@ -2147,6 +2454,10 @@
     cursor: progress;
   }
 
+  .row-action-error {
+    color: var(--v4-error);
+  }
+
   input,
   select {
     min-width: 0;
@@ -2205,7 +2516,7 @@
     outline-offset: 2px;
   }
 
-  input:not([type='checkbox']),
+  input:not([type='checkbox']):not([type='radio']):not([type='range']),
   select {
     height: 30px;
     border: 1px solid var(--v4-hairline);
@@ -2228,6 +2539,117 @@
 
   :global(html[data-force-theme='light']) select {
     color-scheme: light;
+  }
+
+  .theme-options {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 16px;
+  }
+
+  .theme-option {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    min-height: 30px;
+    color: var(--v4-text-2);
+    font-size: var(--text-base);
+    cursor: pointer;
+  }
+
+  input[type='radio'] {
+    appearance: none;
+    -webkit-appearance: none;
+    display: grid;
+    place-items: center;
+    width: 14px;
+    height: 14px;
+    margin: 0;
+    border: 1px solid var(--v4-text-3);
+    border-radius: 50%;
+    background: transparent;
+  }
+
+  input[type='radio']::after {
+    content: '';
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--v4-text-1);
+    transform: scale(0);
+    transition: transform 120ms var(--ease-out);
+  }
+
+  input[type='radio']:checked {
+    border-color: var(--v4-text-1);
+  }
+
+  input[type='radio']:checked::after {
+    transform: scale(1);
+  }
+
+  input[type='radio']:checked + span {
+    color: var(--v4-text-1);
+    font-weight: 500;
+  }
+
+  input[type='radio']:focus-visible {
+    outline: 1.5px solid var(--v4-focus-ring);
+    outline-offset: 3px;
+  }
+
+  .range-control {
+    display: grid;
+    grid-template-columns: minmax(116px, 176px) 44px;
+    align-items: center;
+    justify-content: end;
+    gap: 10px;
+    min-width: 190px;
+  }
+
+  .range-control input[type='range'] {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 100%;
+    height: 20px;
+    margin: 0;
+    background: transparent;
+    cursor: pointer;
+  }
+
+  .range-control input[type='range']::-webkit-slider-runnable-track {
+    height: 2px;
+    border-radius: 1px;
+    background: var(--v4-hairline);
+  }
+
+  .range-control input[type='range']::-webkit-slider-thumb {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 14px;
+    height: 14px;
+    margin-top: -6px;
+    border: 1px solid var(--v4-control-border);
+    border-radius: 50%;
+    background: var(--v4-text-1);
+    box-shadow: var(--v4-shadow-card);
+  }
+
+  .range-control input[type='range']:focus-visible {
+    outline: none;
+  }
+
+  .range-control input[type='range']:focus-visible::-webkit-slider-thumb {
+    outline: 1.5px solid var(--v4-focus-ring);
+    outline-offset: 3px;
+  }
+
+  .range-control output {
+    color: var(--v4-text-2);
+    font-size: var(--text-base);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
   }
 
   .gated-row em {
@@ -2420,7 +2842,8 @@
 
   @media (prefers-reduced-motion: reduce) {
     input[type='checkbox'],
-    input[type='checkbox']::after {
+    input[type='checkbox']::after,
+    input[type='radio']::after {
       transition: none;
     }
   }
@@ -2446,6 +2869,21 @@
     #updates .setting-row > input,
     #updates .setting-row > select,
     #updates .setting-row > em {
+      justify-self: start;
+    }
+
+    .appearance-row {
+      grid-template-columns: minmax(0, 1fr);
+      align-items: start;
+      gap: 8px;
+    }
+
+    .theme-options {
+      justify-content: flex-start;
+    }
+
+    .range-control {
+      width: min(100%, 280px);
       justify-self: start;
     }
   }

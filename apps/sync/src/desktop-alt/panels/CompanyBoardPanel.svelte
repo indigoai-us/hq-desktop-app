@@ -653,6 +653,12 @@
     }
   }
 
+  function retrySelectedStories(): Promise<void> | void {
+    const project = selected;
+    if (!project) return;
+    return openProject(project);
+  }
+
   function backToList(): void {
     invalidateStoryLoad();
     selected = null;
@@ -686,6 +692,7 @@
       {stories}
       {storiesLoading}
       {storiesError}
+      onretryStories={retrySelectedStories}
       {objectives}
       onback={backToList}
       onselectStory={openStory}

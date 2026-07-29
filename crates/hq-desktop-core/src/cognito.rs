@@ -1,3 +1,4 @@
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt;
@@ -49,6 +50,7 @@ const COGNITO_ENDPOINT: &str = "https://cognito-idp.us-east-1.amazonaws.com/";
 /// 2-minute buffer before expiry (in milliseconds)
 const EXPIRY_BUFFER_MS: i64 = 120_000;
 const REFRESH_ATTEMPTS: usize = 2;
+const VALID_TOKEN_RESOLUTION_ATTEMPTS: usize = 3;
 
 /// Positive, user-facing copy shared by startup and sync surfaces after the
 /// one automatic refresh retry has been exhausted.
@@ -102,7 +104,7 @@ fn classify_refresh_failure(status: u16, body: &str) -> (bool, bool) {
     )
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CognitoTokens {
     pub access_token: String,
@@ -111,6 +113,40 @@ pub struct CognitoTokens {
     /// Unix epoch milliseconds. Accepts both i64 and ISO 8601 string on deserialization.
     #[serde(with = "expires_at_flexible")]
     pub expires_at: i64,
+}
+
+/// Result of attempting to publish refreshed Cognito tokens.
+///
+/// A refresh is persisted only while the exact token generation it started
+/// from is still current. If another process signs in, refreshes, invalidates,
+/// or signs out first, that newer state wins and is returned to the caller.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RefreshPersistenceOutcome {
+    Persisted(CognitoTokens),
+    Superseded(Option<CognitoTokens>),
+}
+
+impl RefreshPersistenceOutcome {
+    /// The token generation callers should use after the persistence attempt.
+    ///
+    /// `None` means the winning state is signed out or invalidated.
+    pub fn current_tokens(&self) -> Option<&CognitoTokens> {
+        match self {
+            Self::Persisted(tokens) | Self::Superseded(Some(tokens)) => Some(tokens),
+            Self::Superseded(None) => None,
+        }
+    }
+
+    pub fn into_current_tokens(self) -> Option<CognitoTokens> {
+        match self {
+            Self::Persisted(tokens) | Self::Superseded(Some(tokens)) => Some(tokens),
+            Self::Superseded(None) => None,
+        }
+    }
+
+    pub fn was_persisted(&self) -> bool {
+        matches!(self, Self::Persisted(_))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -142,6 +178,44 @@ fn file_mtime(path: &PathBuf) -> Result<SystemTime, String> {
         .map_err(|e| format!("Failed to read file mtime: {}", e))
 }
 
+fn token_file_lock_path(path: &Path) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".lock");
+    path.with_file_name(name)
+}
+
+struct TokenFileLock(std::fs::File);
+
+impl Drop for TokenFileLock {
+    fn drop(&mut self) {
+        let _ = FileExt::unlock(&self.0);
+    }
+}
+
+fn lock_token_file_at(path: &Path) -> Result<TokenFileLock, String> {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create token directory: {e}"))?;
+    }
+    let lock_path = token_file_lock_path(path);
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true).create(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options
+        .open(&lock_path)
+        .map_err(|e| format!("Failed to open token lock {}: {e}", lock_path.display()))?;
+    file.lock_exclusive()
+        .map_err(|e| format!("Failed to lock token file {}: {e}", path.display()))?;
+    Ok(TokenFileLock(file))
+}
+
 #[derive(Debug)]
 enum TokenReadError {
     Io(std::io::Error),
@@ -163,7 +237,7 @@ fn token_is_invalidated_at(path: &Path, access_token: &str) -> bool {
     invalidation_path_for_token(path, access_token).exists()
 }
 
-fn invalidate_token_at(path: &Path, access_token: &str) -> Result<(), String> {
+fn invalidate_token_at_unlocked(path: &Path, access_token: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("Failed to create .hq directory: {e}"))?;
@@ -181,6 +255,11 @@ fn invalidate_token_at(path: &Path, access_token: &str) -> Result<(), String> {
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
         Err(e) => Err(format!("Failed to invalidate token: {e}")),
     }
+}
+
+fn invalidate_token_at(path: &Path, access_token: &str) -> Result<(), String> {
+    let _lock = lock_token_file_at(path)?;
+    invalidate_token_at_unlocked(path, access_token)
 }
 
 fn remove_invalidation_marker_at(path: &Path, access_token: &str) -> Result<(), String> {
@@ -256,8 +335,7 @@ pub async fn has_non_empty_stored_token() -> Result<bool, String> {
     }
 }
 
-pub fn write_tokens_to_file(tokens: &CognitoTokens) -> Result<(), String> {
-    let path = tokens_file_path()?;
+fn write_tokens_to_path_unlocked(path: &Path, tokens: &CognitoTokens) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("Failed to create .hq directory: {}", e))?;
@@ -268,9 +346,10 @@ pub fn write_tokens_to_file(tokens: &CognitoTokens) -> Result<(), String> {
     // A successful login/refresh for this exact token generation is
     // authoritative. Remove its old rejection marker before publishing the
     // token file; a failure observed after this point will recreate it.
-    remove_invalidation_marker_at(&path, &tokens.access_token)?;
+    remove_invalidation_marker_at(path, &tokens.access_token)?;
 
-    let tmp_path = path.with_file_name(format!(".cognito-tokens.json.tmp.{}", std::process::id()));
+    let file_name = path.file_name().unwrap_or_default().to_string_lossy();
+    let tmp_path = path.with_file_name(format!(".{file_name}.tmp.{}", std::process::id()));
     std::fs::write(&tmp_path, &contents)
         .map_err(|e| format!("Failed to write temp token file: {}", e))?;
 
@@ -285,6 +364,42 @@ pub fn write_tokens_to_file(tokens: &CognitoTokens) -> Result<(), String> {
     std::fs::rename(&tmp_path, &path)
         .map_err(|e| format!("Failed to rename temp token file: {}", e))?;
     Ok(())
+}
+
+fn write_tokens_to_path(path: &Path, tokens: &CognitoTokens) -> Result<(), String> {
+    let _lock = lock_token_file_at(path)?;
+    write_tokens_to_path_unlocked(path, tokens)
+}
+
+fn persist_refreshed_tokens_if_current_unlocked(
+    path: &Path,
+    started_from: &CognitoTokens,
+    refreshed: &CognitoTokens,
+) -> Result<RefreshPersistenceOutcome, String> {
+    let current = read_tokens_from_path(path).map_err(|error| match error {
+        TokenReadError::Io(error) => format!("Failed to read token file: {error}"),
+        TokenReadError::Parse(error) => format!("Failed to parse token file: {error}"),
+    })?;
+    if current.as_ref() != Some(started_from) {
+        return Ok(RefreshPersistenceOutcome::Superseded(current));
+    }
+
+    write_tokens_to_path_unlocked(path, refreshed)?;
+    Ok(RefreshPersistenceOutcome::Persisted(refreshed.clone()))
+}
+
+fn persist_refreshed_tokens_if_current_at(
+    path: &Path,
+    started_from: &CognitoTokens,
+    refreshed: &CognitoTokens,
+) -> Result<RefreshPersistenceOutcome, String> {
+    let _lock = lock_token_file_at(path)?;
+    persist_refreshed_tokens_if_current_unlocked(path, started_from, refreshed)
+}
+
+pub fn write_tokens_to_file(tokens: &CognitoTokens) -> Result<(), String> {
+    let path = tokens_file_path()?;
+    write_tokens_to_path(&path, tokens)
 }
 
 /// Get tokens, using in-memory cache with mtime invalidation.
@@ -345,6 +460,34 @@ pub async fn set_tokens(tokens: &CognitoTokens) -> Result<(), String> {
     Ok(())
 }
 
+/// Publish a refresh result only if the exact token generation it started from
+/// is still the current, usable on-disk generation.
+///
+/// The comparison and atomic token-file replacement share a cross-process
+/// sidecar lock with login, sign-out, and invalidation writes. A newer login or
+/// refresh is returned as `Superseded(Some(tokens))`; sign-out or invalidation
+/// is returned as `Superseded(None)`.
+pub async fn persist_refreshed_tokens_if_current(
+    started_from: &CognitoTokens,
+    refreshed: &CognitoTokens,
+) -> Result<RefreshPersistenceOutcome, String> {
+    let path = tokens_file_path()?;
+    let mut guard = cache().lock().await;
+    let _file_lock = lock_token_file_at(&path)?;
+    let outcome = persist_refreshed_tokens_if_current_unlocked(&path, started_from, refreshed)?;
+
+    *guard = match outcome.current_tokens() {
+        Some(tokens) => Some(CachedTokens {
+            tokens: tokens.clone(),
+            path: path.clone(),
+            file_mtime: file_mtime(&path)?,
+        }),
+        None => None,
+    };
+    crate::feature_gate::clear_cached_gate();
+    Ok(outcome)
+}
+
 /// Mark one rejected token generation unusable without deleting the shared
 /// credential file. A concurrent login/refresh that writes a different token
 /// remains valid, and the raw file stays available for friendly reauth copy.
@@ -383,7 +526,7 @@ pub async fn clear_tokens() -> Result<(), String> {
 /// Delete a token file. A missing file is success (already signed out), so this
 /// is idempotent. Path-parameterized (mirrors `has_non_empty_token_at`) so the
 /// deletion contract is unit-testable without `$HOME` or the async cache.
-fn remove_token_file_at(path: &Path) -> Result<(), String> {
+fn remove_token_file_at_unlocked(path: &Path) -> Result<(), String> {
     match std::fs::remove_file(path) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -415,6 +558,11 @@ fn remove_token_file_at(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn remove_token_file_at(path: &Path) -> Result<(), String> {
+    let _lock = lock_token_file_at(path)?;
+    remove_token_file_at_unlocked(path)
+}
+
 pub fn is_expired(tokens: &CognitoTokens) -> bool {
     if tokens.expires_at <= 0 {
         return true; // treat corrupt/zero timestamps as expired
@@ -430,7 +578,7 @@ pub fn expires_at_iso(tokens: &CognitoTokens) -> String {
     format_unix_ms_as_iso(tokens.expires_at.max(0))
 }
 
-/// Get a non-expired access token, refreshing + persisting if needed.
+/// Get a non-expired token generation, refreshing + persisting if needed.
 ///
 /// Centralises the "read tokens → check expiry → refresh + persist"
 /// pattern that `auth.rs::get_auth_state` implements inline so other
@@ -444,29 +592,56 @@ pub fn expires_at_iso(tokens: &CognitoTokens) -> String {
 /// when the refresh itself fails — callers should treat both as
 /// "need to re-auth".
 ///
-/// Not race-safe across concurrent callers: two concurrent expired
-/// calls may both hit Cognito's refresh endpoint with the same
-/// refresh_token. Cognito tolerates this (REFRESH_TOKEN_AUTH is
-/// idempotent on its side) and the token file is last-write-wins —
-/// one extra Cognito round-trip in the worst case, no auth corruption.
-pub async fn get_valid_access_token() -> Result<String, String> {
-    let tokens = get_tokens()
-        .await?
-        .ok_or_else(|| "Not signed in".to_string())?;
-    if !is_expired(&tokens) {
-        return Ok(tokens.access_token);
-    }
-    let refreshed = match refresh_access_token_classified(&tokens.refresh_token).await {
-        Ok(tokens) => tokens,
-        Err(err) => {
-            if err.requires_reauth {
-                invalidate_tokens(&tokens).await?;
-            }
-            return Err(REAUTH_MESSAGE.to_string());
+/// Concurrent callers can still make duplicate Cognito refresh requests, but
+/// persistence is compare-and-swap: only a refresh of the current generation
+/// can publish. A newer login/refresh is returned as the winner. If another
+/// expired generation wins, resolution retries from that generation rather
+/// than returning an already-expired access token.
+pub async fn get_valid_tokens() -> Result<CognitoTokens, String> {
+    for _ in 0..VALID_TOKEN_RESOLUTION_ATTEMPTS {
+        let tokens = get_tokens()
+            .await?
+            .ok_or_else(|| "Not signed in".to_string())?;
+        if !is_expired(&tokens) {
+            return Ok(tokens);
         }
-    };
-    set_tokens(&refreshed).await?;
-    Ok(refreshed.access_token)
+
+        let refreshed = match refresh_access_token_classified(&tokens.refresh_token).await {
+            Ok(tokens) => tokens,
+            Err(err) => {
+                if err.requires_reauth {
+                    invalidate_tokens(&tokens).await?;
+                }
+                match get_tokens().await? {
+                    Some(current) if current != tokens => {
+                        if !is_expired(&current) {
+                            return Ok(current);
+                        }
+                        continue;
+                    }
+                    _ => return Err(REAUTH_MESSAGE.to_string()),
+                }
+            }
+        };
+
+        match persist_refreshed_tokens_if_current(&tokens, &refreshed)
+            .await?
+            .into_current_tokens()
+        {
+            Some(current) if !is_expired(&current) => return Ok(current),
+            Some(_) => continue,
+            None => return Err("Not signed in".to_string()),
+        }
+    }
+
+    Err(REAUTH_MESSAGE.to_string())
+}
+
+/// Get a non-expired access token, refreshing with CAS-safe persistence if
+/// needed. Callers that also need identity claims should use
+/// [`get_valid_tokens`] instead.
+pub async fn get_valid_access_token() -> Result<String, String> {
+    get_valid_tokens().await.map(|tokens| tokens.access_token)
 }
 
 /// Subset of Cognito ID-token claims we actually use. The token is signed
@@ -658,7 +833,18 @@ pub async fn refresh_access_token(refresh_token: &str) -> Result<CognitoTokens, 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::mpsc;
+    use std::time::Duration;
     use tempfile;
+
+    fn token_generation(name: &str) -> CognitoTokens {
+        CognitoTokens {
+            access_token: format!("{name}-access"),
+            id_token: Some(format!("{name}-id")),
+            refresh_token: format!("{name}-refresh"),
+            expires_at: 999,
+        }
+    }
 
     #[test]
     fn test_is_expired_future_token() {
@@ -1008,5 +1194,143 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(read_back.access_token, "a");
         assert_eq!(read_back.expires_at, 999);
+    }
+
+    #[test]
+    fn test_refresh_persistence_replaces_matching_generation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cognito-tokens.json");
+        let started_from = token_generation("expired");
+        let refreshed = token_generation("refreshed");
+        write_tokens_to_path(&path, &started_from).unwrap();
+
+        let outcome =
+            persist_refreshed_tokens_if_current_at(&path, &started_from, &refreshed).unwrap();
+
+        assert!(matches!(
+            outcome,
+            RefreshPersistenceOutcome::Persisted(ref tokens)
+                if tokens.access_token == refreshed.access_token
+        ));
+        assert_eq!(
+            read_tokens_from_path(&path)
+                .unwrap()
+                .expect("refreshed tokens should be stored")
+                .access_token,
+            refreshed.access_token
+        );
+    }
+
+    #[test]
+    fn test_refresh_persistence_preserves_newer_login() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cognito-tokens.json");
+        let started_from = token_generation("expired");
+        let refreshed = token_generation("stale-refresh");
+        let newer_login = token_generation("new-login");
+        write_tokens_to_path(&path, &newer_login).unwrap();
+
+        let outcome =
+            persist_refreshed_tokens_if_current_at(&path, &started_from, &refreshed).unwrap();
+
+        assert!(matches!(
+            outcome,
+            RefreshPersistenceOutcome::Superseded(Some(ref tokens))
+                if tokens.access_token == newer_login.access_token
+        ));
+        assert_eq!(
+            read_tokens_from_path(&path)
+                .unwrap()
+                .expect("newer login must remain stored")
+                .access_token,
+            newer_login.access_token
+        );
+    }
+
+    #[test]
+    fn test_refresh_persistence_does_not_recreate_signed_out_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cognito-tokens.json");
+        let started_from = token_generation("expired");
+        let refreshed = token_generation("late-refresh");
+
+        let outcome =
+            persist_refreshed_tokens_if_current_at(&path, &started_from, &refreshed).unwrap();
+
+        assert!(matches!(
+            outcome,
+            RefreshPersistenceOutcome::Superseded(None)
+        ));
+        assert!(!path.exists(), "late refresh must not undo sign-out");
+    }
+
+    #[test]
+    fn test_refresh_persistence_does_not_revive_invalidated_generation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cognito-tokens.json");
+        let started_from = token_generation("rejected");
+        let refreshed = token_generation("late-refresh");
+        write_tokens_to_path(&path, &started_from).unwrap();
+        invalidate_token_at(&path, &started_from.access_token).unwrap();
+
+        let outcome =
+            persist_refreshed_tokens_if_current_at(&path, &started_from, &refreshed).unwrap();
+
+        assert!(matches!(
+            outcome,
+            RefreshPersistenceOutcome::Superseded(None)
+        ));
+        assert!(
+            read_tokens_from_path(&path).unwrap().is_none(),
+            "invalidated generation must stay unusable"
+        );
+    }
+
+    #[test]
+    fn test_refresh_persistence_compares_after_cross_process_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cognito-tokens.json");
+        let started_from = token_generation("expired");
+        let refreshed = token_generation("stale-refresh");
+        let newer_login = token_generation("new-login");
+        write_tokens_to_path(&path, &started_from).unwrap();
+
+        let lock = lock_token_file_at(&path).unwrap();
+        let worker_path = path.clone();
+        let worker_started_from = started_from.clone();
+        let worker_refreshed = refreshed.clone();
+        let (send, receive) = mpsc::channel();
+        std::thread::spawn(move || {
+            let outcome = persist_refreshed_tokens_if_current_at(
+                &worker_path,
+                &worker_started_from,
+                &worker_refreshed,
+            );
+            send.send(outcome).unwrap();
+        });
+
+        assert!(
+            receive.recv_timeout(Duration::from_millis(50)).is_err(),
+            "refresh persistence must wait for the shared file lock"
+        );
+        write_tokens_to_path_unlocked(&path, &newer_login).unwrap();
+        drop(lock);
+
+        let outcome = receive
+            .recv_timeout(Duration::from_secs(2))
+            .expect("refresh persistence should finish after unlock")
+            .unwrap();
+        assert!(matches!(
+            outcome,
+            RefreshPersistenceOutcome::Superseded(Some(ref tokens))
+                if tokens.access_token == newer_login.access_token
+        ));
+        assert_eq!(
+            read_tokens_from_path(&path)
+                .unwrap()
+                .expect("newer login must win")
+                .access_token,
+            newer_login.access_token
+        );
     }
 }

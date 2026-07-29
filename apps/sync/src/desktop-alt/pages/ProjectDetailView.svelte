@@ -67,6 +67,8 @@
     storiesLoading?: boolean;
     /** Error string if the stories failed to load. */
     storiesError?: string | null;
+    /** Retry the selected project's story load after a scoped failure. */
+    onretryStories?: () => void | Promise<void>;
     /** Back to the project list (Projects). */
     onback: () => void;
     /** Open a story's detail (parent may also track selection). */
@@ -98,6 +100,7 @@
     stories,
     storiesLoading = false,
     storiesError = null,
+    onretryStories,
     onback,
     onselectStory,
     objectives = [],
@@ -244,6 +247,8 @@
   let statusOpen = $state(false);
   let statusError = $state<string | null>(null);
   let statusSaving = $state(false);
+  let storyRetrying = $state(false);
+  let storyRetryGeneration = 0;
   $effect(() => {
     void projectIdentity(project);
     void project.status;
@@ -252,6 +257,11 @@
     statusOpen = false;
     statusError = null;
     statusSaving = projectsStore.statusPending(project);
+  });
+  $effect(() => {
+    void projectIdentity(project);
+    storyRetryGeneration += 1;
+    storyRetrying = false;
   });
   const currentStatus = $derived(
     statusOverride ?? toEditableStatus(project.status),
@@ -289,6 +299,19 @@
       }
     } finally {
       rehydrateCurrentStatus(mutationIdentity);
+    }
+  }
+
+  async function retryStories(): Promise<void> {
+    if (!onretryStories || storyRetrying) return;
+    const generation = storyRetryGeneration;
+    storyRetrying = true;
+    try {
+      await onretryStories();
+    } catch (err) {
+      console.error('ProjectDetailView story retry failed:', err);
+    } finally {
+      if (generation === storyRetryGeneration) storyRetrying = false;
     }
   }
 
@@ -543,12 +566,19 @@
             data-testid="status-trigger"
             aria-haspopup="listbox"
             aria-expanded={statusOpen}
+            aria-busy={statusSaving}
             disabled={statusSaving}
             onclick={() => (statusOpen = !statusOpen)}
           >
             <span class="status-dot" aria-hidden="true"></span>
-            <span>{EDITABLE_PROJECT_STATUS_LABEL[currentStatus]}</span>
-            <span class="status-caret" aria-hidden="true">⌄</span>
+            <span>
+              {statusSaving
+                ? 'Saving…'
+                : EDITABLE_PROJECT_STATUS_LABEL[currentStatus]}
+            </span>
+            {#if !statusSaving}
+              <span class="status-caret" aria-hidden="true">⌄</span>
+            {/if}
           </button>
           {#if statusOpen}
             <ul class="status-menu" role="listbox" data-testid="status-menu">
@@ -884,8 +914,28 @@
           </div>
         {:else if tab === 'tasks'}
           <div class="board-tab tasks-tab" data-testid="detail-board">
-            {#if storiesError}
-              <div class="drill-error" role="alert">{storiesError}</div>
+            {#if storiesError || storyRetrying}
+              <div
+                class="drill-error"
+                role="alert"
+                data-testid="story-load-error"
+              >
+                <span>
+                  {storiesError ?? 'Reloading this project’s stories…'}
+                </span>
+                {#if onretryStories}
+                  <button
+                    type="button"
+                    class="drill-retry"
+                    data-testid="story-load-retry"
+                    aria-busy={storyRetrying || storiesLoading}
+                    disabled={storyRetrying || storiesLoading}
+                    onclick={() => void retryStories()}
+                  >
+                    {storyRetrying || storiesLoading ? 'Retrying…' : 'Retry'}
+                  </button>
+                {/if}
+              </div>
             {:else if !hasPrd}
               <div class="drill-empty">
                 <p>This project has no linked PRD yet, so there are no tasks to show.</p>
@@ -1684,6 +1734,10 @@
   }
 
   .drill-error {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--v4-space-3);
     padding: var(--v4-space-3) 0;
     border: 0;
     border-top: 1px solid var(--v4-hairline);
@@ -1691,6 +1745,32 @@
     background: transparent;
     color: var(--v4-error);
     font-size: var(--type-body, var(--text-base));
+  }
+
+  .drill-retry {
+    flex: 0 0 auto;
+    padding: 3px 0;
+    border: 0;
+    background: transparent;
+    color: var(--v4-text-1);
+    font: inherit;
+    font-size: var(--type-secondary, var(--text-sm));
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .drill-retry:hover:not(:disabled) {
+    color: var(--v4-text-2);
+  }
+
+  .drill-retry:focus-visible {
+    outline: 1px solid var(--v4-focus-ring);
+    outline-offset: var(--v4-focus-offset, 2px);
+  }
+
+  .drill-retry:disabled {
+    color: var(--v4-text-3);
+    cursor: default;
   }
 
   .drill-empty {
