@@ -36,7 +36,6 @@
     | 'staging-channel'
     | 'release-channel'
     | 'start-at-login'
-    | 'telemetry'
     | 'meeting-detection'
     | 'meeting-platforms'
     | 'default-recording-company';
@@ -1849,6 +1848,7 @@
             data-testid="telemetry-toggle"
             checked={telemetryEnabled === true}
             disabled={telemetryEnabled === null || telemetryBusy}
+            aria-busy={telemetryEnabled === null || telemetryBusy}
             onchange={(event) => {
               telemetryEnabled = event.currentTarget.checked;
               void applyTelemetryPreference();

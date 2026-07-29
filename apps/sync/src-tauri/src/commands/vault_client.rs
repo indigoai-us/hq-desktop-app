@@ -1466,9 +1466,7 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/v1/usage/opt-in"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(&json!({ "enabled": true })),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({ "enabled": true })))
             .mount(&server)
             .await;
 

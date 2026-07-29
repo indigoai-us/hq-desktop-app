@@ -112,6 +112,14 @@ vi.mock('@tauri-apps/api/core', () => ({
         return null;
       case 'check_core_state':
         return null;
+      case 'get_telemetry_consent_status':
+        return {
+          enabled: false,
+          source: 'server',
+          updatedAt: null,
+          consentVersion: null,
+          unset: true,
+        };
       case 'save_settings':
         return undefined;
       default:

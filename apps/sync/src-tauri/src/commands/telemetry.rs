@@ -686,7 +686,9 @@ fn read_reprompt_guard(path: &Path) -> (Option<u32>, Option<String>) {
 /// unaffected — staleness means "ask again", not "stop collecting" — and the
 /// caller simply tries again on the next launch.
 #[tauri::command]
-pub async fn consent_reprompt_status(consent_version: u32) -> Result<ConsentRepromptStatus, String> {
+pub async fn consent_reprompt_status(
+    consent_version: u32,
+) -> Result<ConsentRepromptStatus, String> {
     let access_token = crate::commands::cognito::get_valid_access_token().await?;
     let api_url = resolve_vault_api_url()?;
     let vault = VaultClient::new(&api_url, &access_token);
@@ -723,10 +725,7 @@ pub async fn consent_reprompt_status(consent_version: u32) -> Result<ConsentRepr
 /// untyped-merge + atomic-rename path every other menubar flag uses, so unknown
 /// keys survive.
 #[tauri::command]
-pub fn mark_consent_reprompt_shown(
-    consent_version: u32,
-    person_uid: String,
-) -> Result<(), String> {
+pub fn mark_consent_reprompt_shown(consent_version: u32, person_uid: String) -> Result<(), String> {
     if person_uid.is_empty() {
         // Nothing to key the guard to — refuse rather than write a useless pair.
         return Err("mark_consent_reprompt_shown requires a person_uid".to_string());
@@ -1409,7 +1408,10 @@ mod tests {
         let answer = read_local_telemetry_enabled();
 
         std::env::remove_var("HOME");
-        assert_eq!(answer, None, "a bare flag without provenance is not consent");
+        assert_eq!(
+            answer, None,
+            "a bare flag without provenance is not consent"
+        );
     }
 
     #[test]
@@ -2649,7 +2651,10 @@ mod tests {
         // Missing or unparseable → fail SAFE (never clobber).
         assert!(!local_answer_is_newer(None, Some("2026-07-27T10:00:00Z")));
         assert!(!local_answer_is_newer(Some("2026-07-27T10:00:00Z"), None));
-        assert!(!local_answer_is_newer(Some("garbage"), Some("2026-07-27T10:00:00Z")));
+        assert!(!local_answer_is_newer(
+            Some("garbage"),
+            Some("2026-07-27T10:00:00Z")
+        ));
     }
 
     /// Mount a GET `/v1/usage/opt-in` returning `get_body`, and a POST

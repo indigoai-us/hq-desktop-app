@@ -415,10 +415,7 @@ fn write_response(stream: &mut TcpStream, status: &str, body: &str) {
 /// It also surfaces a port-in-use conflict immediately, instead of after
 /// the user has already been sent to the provider's sign-in page.
 #[tauri::command]
-pub async fn start_oauth_login(
-    app: AppHandle,
-    provider: String,
-) -> Result<OAuthFlowInit, String> {
+pub async fn start_oauth_login(app: AppHandle, provider: String) -> Result<OAuthFlowInit, String> {
     let identity_provider = cognito_identity_provider(&provider)?;
     let state = uuid::Uuid::new_v4().to_string();
     let verifier = generate_code_verifier();

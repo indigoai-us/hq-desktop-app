@@ -28,7 +28,6 @@ describe('Settings async interaction feedback', () => {
       'dm-notifications',
       'auto-update',
       'start-at-login',
-      'telemetry',
       'meeting-detection',
       'meeting-platforms',
       'default-recording-company',
@@ -38,6 +37,17 @@ describe('Settings async interaction feedback', () => {
       expect(settings).toContain(`aria-busy={isSettingsControlPending('${control}')}`);
       expect(settings).toContain(`disabled={isSettingsControlPending('${control}')`);
     }
+
+    // Telemetry uses its own server-authoritative lifecycle rather than the
+    // local settings mutation queue. It stays inert while the first consent
+    // read or a consent write is pending and exposes that state accessibly.
+    expect(settings).toContain('if (telemetryBusy) return');
+    expect(settings).toContain(
+      'disabled={telemetryEnabled === null || telemetryBusy}',
+    );
+    expect(settings).toContain(
+      'aria-busy={telemetryEnabled === null || telemetryBusy}',
+    );
 
     // The builder-only staging switch also stays blocked throughout a core
     // install, and it remains disabled for callers outside the Indigo gate.

@@ -389,8 +389,6 @@ fn main() {
             commands::launch::reveal_folder,
             commands::new_files::open_new_files_detail,
             commands::new_files::detail_window_ready,
-            commands::process::spawn_process,
-            commands::process::cancel_process,
             commands::oauth::start_oauth_login,
             commands::oauth::oauth_listen_for_code,
             commands::oauth::oauth_exchange_code,
