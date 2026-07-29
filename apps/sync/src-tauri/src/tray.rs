@@ -768,6 +768,11 @@ pub fn toggle_desktop_window(app: &AppHandle) {
 /// this is safe to call whether or not the window has been built yet. When the
 /// GA gate rejects a signed-out user it falls back to the classic popover, same
 /// as `toggle_desktop_window`, so the Dock icon still reaches SignInPrompt.
+///
+/// macOS-only because the Dock-click (`RunEvent::Reopen`) handler is its only
+/// caller; ungated it would be dead code on Windows/Linux. Drop the gate if a
+/// non-macOS activation source ever needs show-without-toggle.
+#[cfg(target_os = "macos")]
 pub fn show_desktop_window(app: &AppHandle) {
     let app_clone = app.clone();
     tauri::async_runtime::spawn(async move {
