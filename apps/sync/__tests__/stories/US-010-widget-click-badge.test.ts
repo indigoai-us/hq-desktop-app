@@ -168,7 +168,8 @@ describe('US-010: widget click-to-open + unread badge', () => {
       const list = host.querySelector('[data-testid="widget-hover-list"]');
       expect(list).toBeTruthy();
       expect(list?.querySelector('[data-testid="widget-empty-state"]')).toBeTruthy();
-      expect(list?.textContent).toContain('No recent notifications');
+      expect(list?.textContent).toContain('You’re caught up');
+      expect(list?.textContent).toContain('New messages, channel activity');
 
       wm.dispatchEvent(new MouseEvent('click', { bubbles: true }));
       flushSync();

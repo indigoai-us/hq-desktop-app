@@ -254,18 +254,21 @@ pub fn parse_crm_projection_response(
     serde_json::from_str(trimmed).map_err(|e| format!("crm-projection parse: {e}"))
 }
 
-/// Per-project creator for the Projects list Lead column. The cloud board model
-/// already derives each project's creator from its prd.json's S3 `created-by`
-/// author metadata (resolved honestly server-side — never fabricated), so we
-/// just expose it here. Rows are matchable to `get_local_projects` by board
-/// `id` (same board.json project id) or by `prdPath`. Only projects that
-/// actually carry a creator are returned; everything else stays "Unassigned".
+/// Per-project attribution for Projects surfaces. The legacy command/type name
+/// remains for compatibility, while optional owner/origin fields extend the
+/// established creator row without breaking older webviews.
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectCreator {
     pub id: String,
     pub prd_path: Option<String>,
+    /// Kept as a string for the original command contract; empty when the row
+    /// is retained for owner/origin but no displayable creator exists.
     pub creator: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -280,27 +283,77 @@ pub struct BoardCreatorProject {
     pub id: String,
     #[serde(default, rename = "prdPath")]
     pub prd_path: Option<String>,
-    #[serde(default, rename = "createdByName")]
-    pub created_by_name: Option<String>,
+    #[serde(
+        default,
+        rename = "createdByName",
+        alias = "creatorName",
+        alias = "creator"
+    )]
+    pub created_by_name: Option<serde_json::Value>,
+    #[serde(default, rename = "owner", alias = "ownerName", alias = "owner_name")]
+    pub owner: Option<serde_json::Value>,
+    #[serde(default, rename = "origin", alias = "source")]
+    pub origin: Option<serde_json::Value>,
 }
-/// Pure parse of the board JSON into creator rows: keep only projects that
-/// carry a non-empty `createdByName`, so the frontend map only contains real
-/// creators (everything else stays "Unassigned"). Testable in isolation.
+
+fn attribution_label(value: &Option<serde_json::Value>, keys: &[&str]) -> Option<String> {
+    let value = value.as_ref()?;
+    if let Some(value) = value.as_str() {
+        let value = value.trim();
+        return (!value.is_empty()).then(|| value.to_string());
+    }
+    let object = value.as_object()?;
+    keys.iter().find_map(|key| {
+        object
+            .get(*key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    })
+}
+
+/// Pure parse of cloud board JSON into backward-compatible attribution rows.
+/// Rows with no displayable creator, owner, or origin are omitted.
 pub fn parse_project_creators(text: &str) -> Result<Vec<ProjectCreator>, String> {
     let env: BoardCreatorEnvelope = serde_json::from_str(text).map_err(|e| e.to_string())?;
     Ok(env
         .projects
         .into_iter()
         .filter_map(|p| {
-            let creator = p.created_by_name?;
-            let creator = creator.trim().to_string();
-            if creator.is_empty() {
+            let creator = attribution_label(
+                &p.created_by_name,
+                &[
+                    "displayName",
+                    "display_name",
+                    "name",
+                    "email",
+                    "handle",
+                    "label",
+                ],
+            );
+            let owner = attribution_label(
+                &p.owner,
+                &[
+                    "displayName",
+                    "display_name",
+                    "name",
+                    "email",
+                    "handle",
+                    "label",
+                ],
+            );
+            let origin =
+                attribution_label(&p.origin, &["label", "name", "type", "provider", "source"]);
+            if creator.is_none() && owner.is_none() && origin.is_none() {
                 return None;
             }
             Some(ProjectCreator {
                 id: p.id,
                 prd_path: p.prd_path,
-                creator,
+                creator: creator.unwrap_or_default(),
+                owner,
+                origin,
             })
         })
         .collect())
@@ -450,6 +503,37 @@ pub fn parse_board_response(status: StatusCode, text: &str) -> Result<CompanyBoa
     }
 
     parse_company_board(text)
+}
+
+pub fn parse_project_creators_response(
+    status: StatusCode,
+    text: &str,
+) -> Result<Vec<ProjectCreator>, String> {
+    if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
+        return Err(format!("AUTH_REQUIRED: creators (HTTP {status})"));
+    }
+    if status == StatusCode::NO_CONTENT {
+        return Ok(Vec::new());
+    }
+    if status == StatusCode::NOT_FOUND {
+        return if is_board_not_provisioned(text) {
+            eprintln!("[desktop-alt] creators 404 not-provisioned -> no cloud attribution: {text}");
+            Ok(Vec::new())
+        } else {
+            Err(format!("creators HTTP {status}: {text}"))
+        };
+    }
+    if !status.is_success() {
+        return Err(format!("creators HTTP {status}: {text}"));
+    }
+
+    let text = text.trim();
+    if text.is_empty() {
+        eprintln!("[desktop-alt] creators {status} empty body -> no cloud attribution");
+        return Ok(Vec::new());
+    }
+
+    parse_project_creators(text).map_err(|error| format!("creators parse: {error}"))
 }
 
 pub fn parse_activity_response(status: StatusCode, text: &str) -> Result<CompanyActivity, String> {
@@ -1310,6 +1394,118 @@ pub fn lexically_normalize(path: &Path) -> PathBuf {
     out
 }
 
+/// Validate and normalize the forward-slash HQ-relative path contract.
+///
+/// `allow_root` permits an empty path for the lazy explorer's HQ-root listing.
+pub fn validate_hq_relative_path(rel_path: &str, allow_root: bool) -> Result<String, String> {
+    let value = rel_path.trim();
+    if value.is_empty() {
+        return allow_root
+            .then(String::new)
+            .ok_or_else(|| "invalid HQ-relative path: path is required".to_string());
+    }
+    if value.starts_with('/') || value.contains('\\') || value.contains('\0') {
+        return Err(format!("invalid HQ-relative path: {rel_path:?}"));
+    }
+
+    let mut segments: Vec<&str> = Vec::new();
+    for segment in value.split('/') {
+        match segment {
+            "." => continue,
+            "" | ".." => {
+                return Err(format!("invalid HQ-relative path: {rel_path:?}"));
+            }
+            _ if segment.contains(':') => {
+                // Reject Windows drive paths and alternate data streams on
+                // every platform so the wire contract has one meaning.
+                return Err(format!("invalid HQ-relative path: {rel_path:?}"));
+            }
+            _ => segments.push(segment),
+        }
+    }
+
+    if segments.is_empty() {
+        return allow_root
+            .then(String::new)
+            .ok_or_else(|| "invalid HQ-relative path: path is required".to_string());
+    }
+    Ok(segments.join("/"))
+}
+
+/// Resolve the company addressed by a valid HQ-relative path.
+pub fn company_slug_for_hq_path(rel_path: &str) -> Result<Option<String>, String> {
+    let normalized = validate_hq_relative_path(rel_path, true)?;
+    let mut segments = normalized.split('/');
+    if segments.next() != Some("companies") {
+        return Ok(None);
+    }
+    Ok(segments
+        .next()
+        .filter(|slug| !slug.is_empty())
+        .map(str::to_string))
+}
+
+/// Resolve an existing HQ-relative path through filesystem symlinks and return
+/// its canonical HQ-relative spelling. The canonical target must remain under
+/// the canonical HQ root.
+pub fn canonical_hq_relative_path(
+    hq_root: &Path,
+    rel_path: &str,
+    allow_root: bool,
+) -> Result<String, String> {
+    let normalized = validate_hq_relative_path(rel_path, allow_root)?;
+    let candidate = if normalized.is_empty() {
+        hq_root.to_path_buf()
+    } else {
+        hq_root.join(&normalized)
+    };
+    let canonical_root =
+        std::fs::canonicalize(hq_root).map_err(|e| format!("could not resolve HQ folder: {e}"))?;
+    let canonical_candidate = std::fs::canonicalize(&candidate)
+        .map_err(|e| format!("could not resolve {rel_path:?}: {e}"))?;
+    let relative = canonical_candidate
+        .strip_prefix(&canonical_root)
+        .map_err(|_| format!("path escapes the HQ folder: {rel_path:?}"))?;
+
+    let mut segments: Vec<String> = Vec::new();
+    for component in relative.components() {
+        match component {
+            Component::Normal(value) => {
+                let value = value
+                    .to_str()
+                    .ok_or_else(|| format!("path is not valid UTF-8: {rel_path:?}"))?;
+                segments.push(value.to_string());
+            }
+            Component::CurDir => {}
+            _ => return Err(format!("invalid canonical HQ path: {rel_path:?}")),
+        }
+    }
+    if segments.is_empty() && !allow_root {
+        return Err("invalid HQ-relative path: path is required".to_string());
+    }
+    Ok(segments.join("/"))
+}
+
+/// Whether a resolved company workspace grants local Files access.
+pub fn workspace_grants_company_file_access(workspaces: &[Workspace], slug: &str) -> bool {
+    let Some(workspace) = workspaces
+        .iter()
+        .find(|workspace| workspace.slug == slug && workspace.has_local_folder)
+    else {
+        return false;
+    };
+
+    match workspace.membership_status.as_deref() {
+        Some("active") => true,
+        // A genuinely local-only company is authored on this machine and has
+        // no cloud identity to authorize. Cloud-bound folders fail closed
+        // when live membership hydration is unavailable.
+        None => workspace.state == WorkspaceState::LocalOnly && workspace.cloud_uid.is_none(),
+        // Pending, paused, revoked, and future unknown statuses fail closed.
+        Some(_) => false,
+    }
+}
+
 /// Curated dev-noise exclusion set for the local file explorer.
 ///
 /// These entry names are filtered out at **every level** of the tree so users
@@ -1373,16 +1569,26 @@ pub fn build_file_tree(hq_root: &Path, slug: &str) -> Result<FileNode, String> {
     if slug.is_empty() {
         return Err("company slug is required".to_string());
     }
-    let root = hq_root.join("companies").join(slug);
-    // Defense-in-depth: a slug containing `..` (or separators) must not let the
-    // walk escape the HQ folder.
-    if !is_within(hq_root, &root) {
-        return Err(format!("company slug escapes the HQ folder: {slug:?}"));
+    let rel = format!("companies/{slug}");
+    let normalized = validate_hq_relative_path(&rel, false)?;
+    if normalized != rel
+        || company_slug_for_hq_path(&normalized)?.as_deref() != Some(slug)
+        || normalized.split('/').count() != 2
+    {
+        return Err(format!("invalid company slug: {slug:?}"));
     }
+    let canonical_root =
+        std::fs::canonicalize(hq_root).map_err(|e| format!("could not resolve HQ folder: {e}"))?;
+    let canonical_rel = canonical_hq_relative_path(&canonical_root, &normalized, false)?;
+    if canonical_rel != normalized {
+        return Err(format!(
+            "company folder resolves across HQ company boundaries: {slug:?}"
+        ));
+    }
+    let root = canonical_root.join(&canonical_rel);
     if !root.is_dir() {
         return Err(format!("company '{slug}' has no local folder"));
     }
-    let rel = format!("companies/{slug}");
     build_node(&root, slug.to_string(), rel)
 }
 
@@ -1396,6 +1602,15 @@ pub fn build_node(abs: &Path, name: String, rel_path: String) -> Result<FileNode
         let entries = std::fs::read_dir(abs)
             .map_err(|e| format!("could not read directory {rel_path:?}: {e}"))?;
         for entry in entries.flatten() {
+            if entry
+                .file_type()
+                .map(|file_type| file_type.is_symlink())
+                .unwrap_or(true)
+            {
+                // A symlink can alias another company (or leave HQ entirely).
+                // Files exposes authored nodes only.
+                continue;
+            }
             let child_name = match entry.file_name().into_string() {
                 Ok(n) => n,
                 // Non-UTF-8 names can't round-trip through the JSON path
@@ -1431,6 +1646,680 @@ pub fn read_file_content(hq_root: &Path, rel_path: &str) -> Result<String, Strin
     read_file_content_capped(hq_root, rel_path, MAX_FILE_BYTES)
 }
 
+#[cfg(test)]
+thread_local! {
+    static FILE_READ_BEFORE_OPEN_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
+    static FILE_READ_AFTER_SIZE_CHECK_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
+}
+
+#[cfg(test)]
+fn set_file_read_before_open_hook(hook: impl FnOnce() + 'static) {
+    FILE_READ_BEFORE_OPEN_HOOK.with(|slot| {
+        *slot.borrow_mut() = Some(Box::new(hook));
+    });
+}
+
+#[cfg(test)]
+fn run_file_read_before_open_hook() {
+    FILE_READ_BEFORE_OPEN_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook();
+        }
+    });
+}
+
+#[cfg(not(test))]
+fn run_file_read_before_open_hook() {}
+
+#[cfg(test)]
+fn set_file_read_after_size_check_hook(hook: impl FnOnce() + 'static) {
+    FILE_READ_AFTER_SIZE_CHECK_HOOK.with(|slot| {
+        *slot.borrow_mut() = Some(Box::new(hook));
+    });
+}
+
+#[cfg(test)]
+fn run_file_read_after_size_check_hook() {
+    FILE_READ_AFTER_SIZE_CHECK_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook();
+        }
+    });
+}
+
+#[cfg(not(test))]
+fn run_file_read_after_size_check_hook() {}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[derive(Clone)]
+pub(crate) struct HqScopedDirectory {
+    descriptor: std::sync::Arc<std::fs::File>,
+}
+
+/// A retained Windows directory-handle chain. Each handle intentionally omits
+/// `FILE_SHARE_DELETE`, so a junction/parent directory cannot be renamed or
+/// replaced after authorization while a descendant file is opened or written.
+///
+/// Windows has no public `openat(2)` equivalent. `NtCreateFile` with a
+/// `RootDirectory` handle is the native relative-open primitive; retaining the
+/// complete chain closes the otherwise subtle `canonicalize` → parent-junction
+/// swap between authorization and `CreateFileW`/`ReplaceFileW`.
+#[cfg(target_os = "windows")]
+#[derive(Clone)]
+pub(crate) struct HqScopedDirectory {
+    descriptors: std::sync::Arc<Vec<std::fs::File>>,
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+impl HqScopedDirectory {
+    pub(crate) fn open_regular_file(
+        &self,
+        file_name: &std::ffi::OsStr,
+    ) -> Result<std::fs::File, String> {
+        let descriptor = rustix::fs::openat(
+            self.descriptor.as_ref(),
+            file_name,
+            rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::CLOEXEC | rustix::fs::OFlags::NOFOLLOW,
+            rustix::fs::Mode::empty(),
+        )
+        .map_err(|e| format!("could not open HQ file without following links: {e}"))?;
+        let file = std::fs::File::from(descriptor);
+        let metadata = file
+            .metadata()
+            .map_err(|e| format!("could not inspect opened HQ file: {e}"))?;
+        if !metadata.is_file() {
+            return Err("HQ file target is not a regular file".to_string());
+        }
+        Ok(file)
+    }
+
+    pub(crate) fn create_new_file(
+        &self,
+        file_name: &std::ffi::OsStr,
+    ) -> Result<std::fs::File, std::io::Error> {
+        rustix::fs::openat(
+            self.descriptor.as_ref(),
+            file_name,
+            rustix::fs::OFlags::WRONLY
+                | rustix::fs::OFlags::CREATE
+                | rustix::fs::OFlags::EXCL
+                | rustix::fs::OFlags::CLOEXEC
+                | rustix::fs::OFlags::NOFOLLOW,
+            rustix::fs::Mode::from_raw_mode(0o666),
+        )
+        .map(std::fs::File::from)
+        .map_err(std::io::Error::from)
+    }
+
+    pub(crate) fn exchange_files(
+        &self,
+        first: &std::ffi::OsStr,
+        second: &std::ffi::OsStr,
+    ) -> Result<(), String> {
+        rustix::fs::renameat_with(
+            self.descriptor.as_ref(),
+            first,
+            self.descriptor.as_ref(),
+            second,
+            rustix::fs::RenameFlags::EXCHANGE,
+        )
+        .map_err(|error| format!("could not atomically exchange project JSON: {error}"))
+    }
+
+    pub(crate) fn remove_file(&self, file_name: &std::ffi::OsStr) -> Result<(), std::io::Error> {
+        rustix::fs::unlinkat(
+            self.descriptor.as_ref(),
+            file_name,
+            rustix::fs::AtFlags::empty(),
+        )
+        .map_err(std::io::Error::from)
+    }
+}
+
+#[cfg(target_os = "windows")]
+mod windows_scoped_directory {
+    use std::{
+        ffi::{c_void, OsStr},
+        fs::File,
+        os::windows::{
+            ffi::OsStrExt,
+            fs::{MetadataExt, OpenOptionsExt},
+            io::{AsRawHandle, FromRawHandle, RawHandle},
+        },
+        path::Path,
+    };
+
+    use super::HqScopedDirectory;
+
+    // NT native API constants. The Win32 API exposes no way to open a child
+    // relative to a retained directory handle; this is the documented kernel
+    // primitive underpinning Win32 relative opens.
+    const OBJ_CASE_INSENSITIVE: u32 = 0x0000_0040;
+    const FILE_LIST_DIRECTORY: u32 = 0x0000_0001;
+    const FILE_READ_ATTRIBUTES: u32 = 0x0000_0080;
+    const GENERIC_READ: u32 = 0x8000_0000;
+    const GENERIC_WRITE: u32 = 0x4000_0000;
+    const SYNCHRONIZE: u32 = 0x0010_0000;
+    const DELETE: u32 = 0x0001_0000;
+    const FILE_SHARE_READ: u32 = 0x0000_0001;
+    const FILE_OPEN: u32 = 0x0000_0001;
+    const FILE_CREATE: u32 = 0x0000_0002;
+    const FILE_DIRECTORY_FILE: u32 = 0x0000_0001;
+    const FILE_NON_DIRECTORY_FILE: u32 = 0x0000_0040;
+    const FILE_SYNCHRONOUS_IO_NONALERT: u32 = 0x0000_0020;
+    const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+
+    #[repr(C)]
+    struct UnicodeString {
+        length: u16,
+        maximum_length: u16,
+        buffer: *mut u16,
+    }
+
+    #[repr(C)]
+    struct ObjectAttributes {
+        length: u32,
+        root_directory: isize,
+        object_name: *mut UnicodeString,
+        attributes: u32,
+        security_descriptor: *mut c_void,
+        security_quality_of_service: *mut c_void,
+    }
+
+    #[repr(C)]
+    struct IoStatusBlock {
+        status_or_pointer: usize,
+        information: usize,
+    }
+
+    #[link(name = "ntdll")]
+    unsafe extern "system" {
+        fn NtCreateFile(
+            file_handle: *mut isize,
+            desired_access: u32,
+            object_attributes: *mut ObjectAttributes,
+            io_status_block: *mut IoStatusBlock,
+            allocation_size: *mut i64,
+            file_attributes: u32,
+            share_access: u32,
+            create_disposition: u32,
+            create_options: u32,
+            ea_buffer: *mut c_void,
+            ea_length: u32,
+        ) -> i32;
+        fn NtSetInformationFile(
+            file_handle: isize,
+            io_status_block: *mut IoStatusBlock,
+            file_information: *mut c_void,
+            length: u32,
+            file_information_class: u32,
+        ) -> i32;
+    }
+
+    fn status_error(operation: &str, status: i32) -> String {
+        format!("{operation} failed with NTSTATUS 0x{:08x}", status as u32)
+    }
+
+    fn validate_child_name(name: &OsStr) -> Result<(), String> {
+        let text = name
+            .to_str()
+            .ok_or_else(|| "HQ path component is not valid UTF-8".to_string())?;
+        if text.is_empty() || text == "." || text == ".." || text.contains(['/', '\\']) {
+            return Err("HQ path component is not a single safe name".to_string());
+        }
+        Ok(())
+    }
+
+    fn nt_open_relative(
+        parent: &File,
+        name: &OsStr,
+        desired_access: u32,
+        create_disposition: u32,
+        create_options: u32,
+    ) -> Result<File, String> {
+        validate_child_name(name)?;
+        let mut encoded = name.encode_wide().collect::<Vec<_>>();
+        let byte_len = encoded
+            .len()
+            .checked_mul(std::mem::size_of::<u16>())
+            .and_then(|length| u16::try_from(length).ok())
+            .ok_or_else(|| "HQ path component is too long".to_string())?;
+        let mut object_name = UnicodeString {
+            length: byte_len,
+            maximum_length: byte_len,
+            buffer: encoded.as_mut_ptr(),
+        };
+        let mut attributes = ObjectAttributes {
+            length: std::mem::size_of::<ObjectAttributes>() as u32,
+            root_directory: parent.as_raw_handle() as isize,
+            object_name: &mut object_name,
+            attributes: OBJ_CASE_INSENSITIVE,
+            security_descriptor: std::ptr::null_mut(),
+            security_quality_of_service: std::ptr::null_mut(),
+        };
+        let mut io_status = IoStatusBlock {
+            status_or_pointer: 0,
+            information: 0,
+        };
+        let mut handle = -1isize;
+        // The opened parent handle is the root for this one component. We
+        // deliberately share READ only: no concurrent rename/delete/reparse
+        // rewrite can replace any retained ancestor during the operation.
+        let status = unsafe {
+            NtCreateFile(
+                &mut handle,
+                desired_access,
+                &mut attributes,
+                &mut io_status,
+                std::ptr::null_mut(),
+                0,
+                FILE_SHARE_READ,
+                create_disposition,
+                create_options | FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_REPARSE_POINT,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if status < 0 {
+            return Err(status_error(
+                "could not open HQ path without following reparse points",
+                status,
+            ));
+        }
+        // SAFETY: a successful NtCreateFile returns one owned HANDLE. File
+        // closes it exactly once, and `encoded` remains alive for the syscall.
+        Ok(unsafe { File::from_raw_handle(handle as RawHandle) })
+    }
+
+    fn ensure_real_directory(file: File) -> Result<File, String> {
+        let metadata = file
+            .metadata()
+            .map_err(|error| format!("could not inspect opened HQ directory: {error}"))?;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 || !metadata.is_dir() {
+            return Err("HQ directory must not be a reparse point".to_string());
+        }
+        Ok(file)
+    }
+
+    fn ensure_regular_file(file: File) -> Result<File, String> {
+        let metadata = file
+            .metadata()
+            .map_err(|error| format!("could not inspect opened HQ file: {error}"))?;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 || !metadata.is_file() {
+            return Err("HQ file target is not a regular file".to_string());
+        }
+        Ok(file)
+    }
+
+    fn open_root(path: &Path) -> Result<File, String> {
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)
+            .map_err(|error| {
+                format!("could not open HQ folder without following reparse points: {error}")
+            })?;
+        ensure_real_directory(file)
+    }
+
+    pub(super) fn open_scoped_directory(
+        hq_root: &Path,
+        rel_dir: &str,
+        validate_relative: impl Fn(&str) -> Result<String, String>,
+    ) -> Result<HqScopedDirectory, String> {
+        let canonical_root = std::fs::canonicalize(hq_root)
+            .map_err(|error| format!("could not resolve HQ folder: {error}"))?;
+        let root = open_root(&canonical_root)?;
+        let mut chain = vec![root];
+
+        if !rel_dir.is_empty() {
+            let normalized = validate_relative(rel_dir)?;
+            if normalized != rel_dir {
+                return Err("HQ directory path must be canonical".to_string());
+            }
+            for segment in normalized.split('/') {
+                let parent = chain
+                    .last()
+                    .ok_or_else(|| "HQ directory chain is empty".to_string())?;
+                let child = nt_open_relative(
+                    parent,
+                    OsStr::new(segment),
+                    FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+                    FILE_OPEN,
+                    FILE_DIRECTORY_FILE,
+                )?;
+                chain.push(ensure_real_directory(child)?);
+            }
+        }
+        Ok(HqScopedDirectory {
+            descriptors: std::sync::Arc::new(chain),
+        })
+    }
+
+    pub(super) fn open_regular_file(
+        directory: &HqScopedDirectory,
+        file_name: &OsStr,
+    ) -> Result<File, String> {
+        let parent = directory
+            .descriptors
+            .last()
+            .ok_or_else(|| "HQ directory chain is empty".to_string())?;
+        ensure_regular_file(nt_open_relative(
+            parent,
+            file_name,
+            GENERIC_READ | SYNCHRONIZE,
+            FILE_OPEN,
+            FILE_NON_DIRECTORY_FILE,
+        )?)
+    }
+
+    pub(super) fn create_new_file(
+        directory: &HqScopedDirectory,
+        file_name: &OsStr,
+    ) -> Result<File, std::io::Error> {
+        let parent = directory.descriptors.last().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::Other, "HQ directory chain is empty")
+        })?;
+        nt_open_relative(
+            parent,
+            file_name,
+            GENERIC_WRITE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+            FILE_CREATE,
+            FILE_NON_DIRECTORY_FILE,
+        )
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))
+    }
+
+    pub(super) fn remove_file(
+        directory: &HqScopedDirectory,
+        file_name: &OsStr,
+    ) -> Result<(), std::io::Error> {
+        // `NtSetInformationFile(FileDispositionInformation)` deletes the
+        // terminal directory entry through the retained parent handle. It is
+        // the Windows counterpart to unlinkat and never re-resolves a path
+        // through a replaceable parent junction.
+        const FILE_DISPOSITION_INFORMATION: u32 = 13;
+        let parent = directory.descriptors.last().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::Other, "HQ directory chain is empty")
+        })?;
+        let file = nt_open_relative(
+            parent,
+            file_name,
+            DELETE | SYNCHRONIZE,
+            FILE_OPEN,
+            FILE_NON_DIRECTORY_FILE,
+        )
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
+        let mut io_status = IoStatusBlock {
+            status_or_pointer: 0,
+            information: 0,
+        };
+        let mut delete_file: u8 = 1;
+        let status = unsafe {
+            NtSetInformationFile(
+                file.as_raw_handle() as isize,
+                &mut io_status,
+                (&mut delete_file as *mut u8).cast(),
+                1,
+                FILE_DISPOSITION_INFORMATION,
+            )
+        };
+        if status < 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                status_error(
+                    "could not remove HQ file without following reparse points",
+                    status,
+                ),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl HqScopedDirectory {
+    pub(crate) fn open_regular_file(
+        &self,
+        file_name: &std::ffi::OsStr,
+    ) -> Result<std::fs::File, String> {
+        windows_scoped_directory::open_regular_file(self, file_name)
+    }
+
+    pub(crate) fn create_new_file(
+        &self,
+        file_name: &std::ffi::OsStr,
+    ) -> Result<std::fs::File, std::io::Error> {
+        windows_scoped_directory::create_new_file(self, file_name)
+    }
+
+    pub(crate) fn remove_file(&self, file_name: &std::ffi::OsStr) -> Result<(), std::io::Error> {
+        windows_scoped_directory::remove_file(self, file_name)
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub(crate) fn open_hq_scoped_directory(
+    hq_root: &Path,
+    rel_dir: &str,
+) -> Result<HqScopedDirectory, String> {
+    use std::os::unix::fs::MetadataExt;
+
+    let canonical_root =
+        std::fs::canonicalize(hq_root).map_err(|e| format!("could not resolve HQ folder: {e}"))?;
+    let expected_root = std::fs::symlink_metadata(&canonical_root)
+        .map_err(|e| format!("could not inspect HQ folder: {e}"))?;
+    if expected_root.file_type().is_symlink() || !expected_root.is_dir() {
+        return Err("HQ folder must be a real directory".to_string());
+    }
+
+    let descriptor = rustix::fs::open(
+        &canonical_root,
+        rustix::fs::OFlags::RDONLY
+            | rustix::fs::OFlags::DIRECTORY
+            | rustix::fs::OFlags::CLOEXEC
+            | rustix::fs::OFlags::NOFOLLOW,
+        rustix::fs::Mode::empty(),
+    )
+    .map_err(|e| format!("could not open HQ folder without following links: {e}"))?;
+    let mut directory = std::fs::File::from(descriptor);
+    let opened_root = directory
+        .metadata()
+        .map_err(|e| format!("could not inspect opened HQ folder: {e}"))?;
+    if opened_root.dev() != expected_root.dev() || opened_root.ino() != expected_root.ino() {
+        return Err("HQ folder changed while it was being opened".to_string());
+    }
+
+    if !rel_dir.is_empty() {
+        let normalized = validate_hq_relative_path(rel_dir, false)?;
+        if normalized != rel_dir {
+            return Err("HQ directory path must be canonical".to_string());
+        }
+        for segment in normalized.split('/') {
+            let next = rustix::fs::openat(
+                &directory,
+                segment,
+                rustix::fs::OFlags::RDONLY
+                    | rustix::fs::OFlags::DIRECTORY
+                    | rustix::fs::OFlags::CLOEXEC
+                    | rustix::fs::OFlags::NOFOLLOW,
+                rustix::fs::Mode::empty(),
+            )
+            .map_err(|e| {
+                format!(
+                    "could not open HQ directory component {segment:?} without following links: {e}"
+                )
+            })?;
+            directory = std::fs::File::from(next);
+        }
+    }
+    Ok(HqScopedDirectory {
+        descriptor: std::sync::Arc::new(directory),
+    })
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn open_hq_scoped_directory(
+    hq_root: &Path,
+    rel_dir: &str,
+) -> Result<HqScopedDirectory, String> {
+    windows_scoped_directory::open_scoped_directory(hq_root, rel_dir, |value| {
+        validate_hq_relative_path(value, false)
+    })
+}
+
+/// Open an already-canonical HQ-relative regular file while binding every
+/// path component to the opened HQ root. Unix walks the directory chain with
+/// `openat(..., O_NOFOLLOW)` so an ancestor swapped after authorization cannot
+/// redirect the read.
+pub fn open_hq_regular_file_no_follow(
+    hq_root: &Path,
+    canonical_rel_path: &str,
+) -> Result<std::fs::File, String> {
+    let normalized = validate_hq_relative_path(canonical_rel_path, false)?;
+    if normalized != canonical_rel_path {
+        return Err("HQ file path must be canonical".to_string());
+    }
+    let relative = Path::new(&normalized);
+    let file_name = relative
+        .file_name()
+        .ok_or_else(|| "HQ file path has no terminal name".to_string())?;
+    let parent = relative.parent().unwrap_or_else(|| Path::new(""));
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    let file = {
+        let parent_rel = parent
+            .to_str()
+            .ok_or_else(|| "HQ file parent is not valid UTF-8".to_string())?;
+        open_hq_scoped_directory(hq_root, parent_rel)?.open_regular_file(file_name)?
+    };
+
+    #[cfg(target_os = "windows")]
+    let file = {
+        let parent_rel = parent
+            .to_str()
+            .ok_or_else(|| "HQ file parent is not valid UTF-8".to_string())?;
+        open_hq_scoped_directory(hq_root, parent_rel)?.open_regular_file(file_name)?
+    };
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    let file = {
+        let canonical_root = std::fs::canonicalize(hq_root)
+            .map_err(|e| format!("could not resolve HQ folder: {e}"))?;
+        open_regular_file_no_follow_path(&canonical_root.join(&normalized))?
+    };
+
+    let metadata = file
+        .metadata()
+        .map_err(|e| format!("could not inspect opened HQ file: {e}"))?;
+    if !metadata.is_file() {
+        return Err("HQ file target is not a regular file".to_string());
+    }
+    Ok(file)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn open_regular_file_no_follow_path(path: &Path) -> Result<std::fs::File, String> {
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|e| format!("could not inspect preview file: {e}"))?;
+    if metadata.file_type().is_symlink() {
+        return Err("preview target must not be a symlink".to_string());
+    }
+    if !metadata.is_file() {
+        return Err("preview target is not a regular file".to_string());
+    }
+    std::fs::File::open(path).map_err(|e| format!("could not open preview file: {e}"))
+}
+
+#[cfg(test)]
+mod windows_path_authority_contract_tests {
+    /// The macOS/Linux regression can exercise actual symlink swaps. Windows
+    /// junctions are unavailable in the host test environment, so lock the
+    /// required native authority contract in source as well: every component
+    /// must be opened under a retained RootDirectory handle, and the chain
+    /// must deny delete sharing for the whole operation.
+    #[test]
+    fn windows_uses_retained_relative_no_reparse_directory_handles() {
+        let source = include_str!("desktop_alt.rs");
+        for required in [
+            "struct HqScopedDirectory {\n    descriptors: std::sync::Arc<Vec<std::fs::File>>",
+            "fn NtCreateFile(",
+            "root_directory: parent.as_raw_handle() as isize",
+            "FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_REPARSE_POINT",
+            "share_mode(FILE_SHARE_READ)",
+            "FILE_SHARE_READ,",
+            "open_hq_scoped_directory(hq_root, parent_rel)?.open_regular_file(file_name)?",
+        ] {
+            assert!(
+                source.contains(required),
+                "Windows parent-swap authority contract drifted: missing {required:?}"
+            );
+        }
+    }
+}
+
+/// Read raw file bytes under the same strict/canonical HQ-relative contract.
+pub fn read_file_bytes_capped(
+    hq_root: &Path,
+    rel_path: &str,
+    max_bytes: u64,
+) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+
+    let rel = validate_hq_relative_path(rel_path, false)?;
+    let canonical_root =
+        std::fs::canonicalize(hq_root).map_err(|e| format!("could not resolve HQ folder: {e}"))?;
+    let relative = Path::new(&rel);
+    let file_name = relative
+        .file_name()
+        .ok_or_else(|| format!("file not found: {rel_path:?}"))?;
+    let parent = relative.parent().unwrap_or_else(|| Path::new(""));
+    let parent_rel = parent
+        .to_str()
+        .ok_or_else(|| format!("path is not valid UTF-8: {rel_path:?}"))?;
+    let canonical_parent = canonical_hq_relative_path(hq_root, parent_rel, true)?;
+    let canonical_rel = if canonical_parent.is_empty() {
+        file_name.to_string_lossy().to_string()
+    } else {
+        format!("{canonical_parent}/{}", file_name.to_string_lossy())
+    };
+    if company_slug_for_hq_path(&rel)? != company_slug_for_hq_path(&canonical_rel)? {
+        return Err("file path resolves across HQ company boundaries".to_string());
+    }
+
+    let _canonical_abs = canonical_root.join(&canonical_rel);
+    run_file_read_before_open_hook();
+    let file = open_hq_regular_file_no_follow(&canonical_root, &canonical_rel)?;
+    let initial_len = file
+        .metadata()
+        .map_err(|e| format!("could not inspect opened preview file: {e}"))?
+        .len();
+    if initial_len > max_bytes {
+        return Err(format!(
+            "file is too large to preview ({initial_len} bytes; limit is {max_bytes} bytes)"
+        ));
+    }
+
+    run_file_read_after_size_check_hook();
+    let mut bytes = Vec::new();
+    file.take(max_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("could not read {rel_path:?}: {e}"))?;
+    let actual_len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+    if actual_len > max_bytes {
+        return Err(format!(
+            "file is too large to preview ({actual_len} bytes read; limit is {max_bytes} bytes)"
+        ));
+    }
+    Ok(bytes)
+}
+
 /// Size-cap-parameterized core of `read_file_content`. Split out so tests can
 /// exercise the real cap path with a tiny `max_bytes` instead of writing a
 /// 50MB fixture. Mirrors `IgnoreFilter::within_size_limit`: the cap is checked
@@ -1440,27 +2329,7 @@ pub fn read_file_content_capped(
     rel_path: &str,
     max_bytes: u64,
 ) -> Result<String, String> {
-    let rel = rel_path.trim();
-    if rel.is_empty() {
-        return Err("path is required".to_string());
-    }
-    let abs = hq_root.join(rel);
-    if !is_within(hq_root, &abs) {
-        return Err(format!("path escapes the HQ folder: {rel_path:?}"));
-    }
-    if !abs.is_file() {
-        return Err(format!("file not found: {rel_path:?}"));
-    }
-    // Check the size cap from metadata FIRST — never read an oversized file.
-    let len = std::fs::metadata(&abs)
-        .map_err(|e| format!("could not stat {rel_path:?}: {e}"))?
-        .len();
-    if len > max_bytes {
-        return Err(format!(
-            "file is too large to preview ({len} bytes; limit is {max_bytes} bytes)"
-        ));
-    }
-    let bytes = std::fs::read(&abs).map_err(|e| format!("could not read {rel_path:?}: {e}"))?;
+    let bytes = read_file_bytes_capped(hq_root, rel_path, max_bytes)?;
     String::from_utf8(bytes).map_err(|_| format!("cannot preview binary file: {rel_path:?}"))
 }
 // ---- Lazy HQ-root file explorer (US-010) ----------------------------------
@@ -1488,12 +2357,12 @@ pub struct DirEntry {
 /// Pure body for `list_hq_dir` — takes an explicit HQ root so the traversal
 /// guard + noise filter + sort order are unit-testable without the gate.
 pub fn list_dir_entries(hq_root: &Path, rel_path: &str) -> Result<Vec<DirEntry>, String> {
-    // Empty / "." / "/" all mean the HQ root.
-    let rel = rel_path.trim().trim_matches('/');
-    let abs = if rel.is_empty() || rel == "." {
+    // Empty / "." mean the HQ root.
+    let rel = validate_hq_relative_path(rel_path, true)?;
+    let abs = if rel.is_empty() {
         hq_root.to_path_buf()
     } else {
-        hq_root.join(rel)
+        hq_root.join(&rel)
     };
 
     // Defense-in-depth: reject any path that escapes the HQ folder.
@@ -1504,10 +2373,22 @@ pub fn list_dir_entries(hq_root: &Path, rel_path: &str) -> Result<Vec<DirEntry>,
         return Err(format!("directory not found: {rel_path:?}"));
     }
 
-    let entries = std::fs::read_dir(&abs)
+    let canonical_rel = canonical_hq_relative_path(hq_root, &rel, true)?;
+    let canonical_root =
+        std::fs::canonicalize(hq_root).map_err(|e| format!("could not resolve HQ folder: {e}"))?;
+    let canonical_abs = canonical_root.join(canonical_rel);
+
+    let entries = std::fs::read_dir(&canonical_abs)
         .map_err(|e| format!("could not read directory {rel_path:?}: {e}"))?;
     let mut out: Vec<DirEntry> = Vec::new();
     for entry in entries.flatten() {
+        if entry
+            .file_type()
+            .map(|file_type| file_type.is_symlink())
+            .unwrap_or(true)
+        {
+            continue;
+        }
         let name = match entry.file_name().into_string() {
             Ok(n) => n,
             // Non-UTF-8 names can't round-trip through the JSON contract — skip.
@@ -1518,7 +2399,7 @@ pub fn list_dir_entries(hq_root: &Path, rel_path: &str) -> Result<Vec<DirEntry>,
         if is_dev_noise(&name, is_dir) {
             continue;
         }
-        let child_rel = if rel.is_empty() || rel == "." {
+        let child_rel = if rel.is_empty() {
             name.clone()
         } else {
             format!("{rel}/{name}")
@@ -1550,6 +2431,13 @@ pub fn dir_has_visible_children(abs: &Path) -> bool {
         return false;
     };
     for entry in entries.flatten() {
+        if entry
+            .file_type()
+            .map(|file_type| file_type.is_symlink())
+            .unwrap_or(true)
+        {
+            continue;
+        }
         let Ok(name) = entry.file_name().into_string() else {
             continue;
         };
@@ -1688,6 +2576,91 @@ mod tests {
             .unwrap()
             .is_empty());
         assert!(super::parse_project_creators("not json").is_err());
+    }
+
+    #[test]
+    fn project_creator_response_distinguishes_absence_from_auth_and_server_failures() {
+        assert!(
+            super::parse_project_creators_response(reqwest::StatusCode::NO_CONTENT, "")
+                .expect("204 has no cloud attribution")
+                .is_empty()
+        );
+        assert!(super::parse_project_creators_response(
+            reqwest::StatusCode::NOT_FOUND,
+            r#"{"code":"board-not-provisioned"}"#,
+        )
+        .expect("an explicitly unprovisioned board has no attribution")
+        .is_empty());
+        assert!(
+            super::parse_project_creators_response(reqwest::StatusCode::OK, " \n ")
+                .expect("an empty successful board has no attribution")
+                .is_empty()
+        );
+
+        for status in [
+            reqwest::StatusCode::UNAUTHORIZED,
+            reqwest::StatusCode::FORBIDDEN,
+        ] {
+            let error =
+                super::parse_project_creators_response(status, "").expect_err("auth must surface");
+            assert!(error.starts_with("AUTH_REQUIRED: creators"));
+        }
+
+        let route_error = super::parse_project_creators_response(
+            reqwest::StatusCode::NOT_FOUND,
+            r#"{"code":"not-found","message":"route not found"}"#,
+        )
+        .expect_err("generic 404 must not masquerade as checked attribution");
+        assert!(route_error.contains("creators HTTP 404"));
+
+        let server_error = super::parse_project_creators_response(
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            "upstream unavailable",
+        )
+        .expect_err("server failures must reach the UI");
+        assert!(server_error.contains("creators HTTP 500"));
+
+        let parse_error =
+            super::parse_project_creators_response(reqwest::StatusCode::OK, "not json")
+                .expect_err("malformed successful responses must remain visible");
+        assert!(parse_error.starts_with("creators parse:"));
+    }
+
+    #[test]
+    fn parse_project_creators_preserves_optional_owner_and_origin_without_requiring_creator() {
+        let body = r#"{
+            "projects": [
+                {
+                    "id":"p1",
+                    "prdPath":"companies/co/projects/a/prd.json",
+                    "createdByName":"Corey",
+                    "ownerName":"Maya",
+                    "source":"Linear import"
+                },
+                {
+                    "id":"p2",
+                    "owner":{"displayName":"Ada"},
+                    "origin":"HQ plan"
+                },
+                {
+                    "id":"p3",
+                    "owner":{"uid":"opaque-only"},
+                    "source":" "
+                }
+            ]
+        }"#;
+        let rows = super::parse_project_creators(body).expect("parses");
+        assert_eq!(rows.len(), 2, "opaque/blank attribution is omitted");
+
+        let p1 = rows.iter().find(|row| row.id == "p1").unwrap();
+        assert_eq!(p1.creator, "Corey");
+        assert_eq!(p1.owner.as_deref(), Some("Maya"));
+        assert_eq!(p1.origin.as_deref(), Some("Linear import"));
+
+        let p2 = rows.iter().find(|row| row.id == "p2").unwrap();
+        assert!(p2.creator.is_empty());
+        assert_eq!(p2.owner.as_deref(), Some("Ada"));
+        assert_eq!(p2.origin.as_deref(), Some("HQ plan"));
     }
 
     #[test]
@@ -2650,8 +3623,13 @@ mod tests {
 
     mod file_explorer {
         use super::super::{
-            build_file_tree, read_file_content, read_file_content_capped, FileNode,
+            build_file_tree, company_slug_for_hq_path, read_file_bytes_capped, read_file_content,
+            read_file_content_capped, set_file_read_after_size_check_hook,
+            validate_hq_relative_path, workspace_grants_company_file_access, FileNode,
         };
+        #[cfg(unix)]
+        use super::super::{canonical_hq_relative_path, set_file_read_before_open_hook};
+        use crate::workspaces::{Workspace, WorkspaceKind, WorkspaceState};
         use std::fs;
         use std::path::PathBuf;
         use tempfile::TempDir;
@@ -2882,19 +3860,197 @@ mod tests {
             assert!(build_file_tree(&root, "nope").is_err());
         }
 
+        #[cfg(unix)]
+        #[test]
+        fn build_file_tree_rejects_company_root_symlink_aliases() {
+            use std::os::unix::fs::symlink;
+
+            let tmp = TempDir::new().unwrap();
+            let root = tmp.path().to_path_buf();
+            let pending = root.join("companies").join("pending");
+            fs::create_dir_all(&pending).unwrap();
+            fs::write(pending.join("secret.md"), "secret").unwrap();
+
+            let active = root.join("companies").join("active");
+            symlink(&pending, &active).unwrap();
+            assert!(build_file_tree(&root, "active").is_err());
+
+            fs::remove_file(&active).unwrap();
+            let outside = TempDir::new().unwrap();
+            fs::write(outside.path().join("outside.md"), "outside").unwrap();
+            symlink(outside.path(), &active).unwrap();
+            assert!(build_file_tree(&root, "active").is_err());
+        }
+
+        #[test]
+        fn hq_relative_path_contract_rejects_ambiguous_or_traversing_inputs() {
+            assert_eq!(
+                validate_hq_relative_path("./companies/indigo/policies/foo.md", false).unwrap(),
+                "companies/indigo/policies/foo.md"
+            );
+            assert_eq!(validate_hq_relative_path("", true).unwrap(), "");
+
+            for invalid in [
+                "companies/indigo/../pending/secret.md",
+                "companies\\pending\\secret.md",
+                "/companies/pending/secret.md",
+                "C:/companies/pending/secret.md",
+                "companies//pending/secret.md",
+                "companies/pending/file.txt:stream",
+                "companies/pending/\0secret.md",
+            ] {
+                assert!(
+                    validate_hq_relative_path(invalid, false).is_err(),
+                    "accepted ambiguous path: {invalid:?}"
+                );
+            }
+            assert!(validate_hq_relative_path("   ", false).is_err());
+        }
+
+        #[test]
+        fn company_path_resolution_runs_after_strict_path_validation() {
+            assert_eq!(
+                company_slug_for_hq_path("companies/indigo/knowledge/overview.md").unwrap(),
+                Some("indigo".to_string())
+            );
+            assert_eq!(
+                company_slug_for_hq_path("./personal/knowledge/overview.md").unwrap(),
+                None
+            );
+            assert!(company_slug_for_hq_path("companies/indigo/../pending/secret.md").is_err());
+            assert!(company_slug_for_hq_path("companies\\pending\\secret.md").is_err());
+        }
+
+        fn company_workspace(
+            slug: &str,
+            state: WorkspaceState,
+            membership_status: Option<&str>,
+        ) -> Workspace {
+            Workspace {
+                slug: slug.to_string(),
+                display_name: slug.to_string(),
+                kind: WorkspaceKind::Company,
+                state,
+                cloud_uid: None,
+                bucket_name: None,
+                has_local_folder: true,
+                local_path: Some(format!("/tmp/HQ/companies/{slug}")),
+                membership_status: membership_status.map(str::to_string),
+                role: Some("member".to_string()),
+                sync_enabled: true,
+                last_synced_at: None,
+                broken_reason: None,
+                invited_by: None,
+                invited_at: None,
+            }
+        }
+
+        #[test]
+        fn company_file_access_requires_active_or_local_owned_workspace() {
+            let workspaces = vec![
+                company_workspace("active", WorkspaceState::Synced, Some("active")),
+                company_workspace("pending", WorkspaceState::Synced, Some("pending")),
+                company_workspace("paused", WorkspaceState::Synced, Some("paused")),
+                company_workspace("local", WorkspaceState::LocalOnly, None),
+                company_workspace("offline", WorkspaceState::Synced, None),
+            ];
+
+            assert!(workspace_grants_company_file_access(&workspaces, "active"));
+            assert!(workspace_grants_company_file_access(&workspaces, "local"));
+            assert!(!workspace_grants_company_file_access(
+                &workspaces,
+                "offline"
+            ));
+            assert!(!workspace_grants_company_file_access(
+                &workspaces,
+                "pending"
+            ));
+            assert!(!workspace_grants_company_file_access(&workspaces, "paused"));
+            assert!(!workspace_grants_company_file_access(
+                &workspaces,
+                "unknown"
+            ));
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn canonical_company_resolution_exposes_cross_scope_symlink_aliases() {
+            use std::os::unix::fs::symlink;
+
+            let tmp = TempDir::new().unwrap();
+            let root = tmp.path().to_path_buf();
+            let active = root.join("companies").join("active");
+            let pending = root.join("companies").join("pending");
+            let personal = root.join("personal");
+            fs::create_dir_all(&active).unwrap();
+            fs::create_dir_all(&pending).unwrap();
+            fs::create_dir_all(&personal).unwrap();
+            fs::write(pending.join("secret.md"), "not granted").unwrap();
+            fs::write(personal.join("private.md"), "personal").unwrap();
+            symlink(&pending, active.join("pending-link")).unwrap();
+            symlink(&personal, active.join("personal-link")).unwrap();
+
+            assert_eq!(
+                canonical_hq_relative_path(
+                    &root,
+                    "companies/active/pending-link/secret.md",
+                    false,
+                )
+                .unwrap(),
+                "companies/pending/secret.md"
+            );
+            assert_eq!(
+                canonical_hq_relative_path(
+                    &root,
+                    "companies/active/personal-link/private.md",
+                    false,
+                )
+                .unwrap(),
+                "personal/private.md"
+            );
+
+            // Recursive and lazy tree payloads omit symlinks entirely, so an
+            // allowed company cannot expose another scope's entry names.
+            let tree = build_file_tree(&root, "active").unwrap();
+            assert!(tree.children.is_empty());
+            let entries = super::super::list_dir_entries(&root, "companies/active").unwrap();
+            assert!(entries.is_empty());
+        }
+
         #[test]
         fn read_file_content_rejects_path_traversal() {
             let tmp = TempDir::new().unwrap();
             let root = tmp.path().to_path_buf();
             let err = read_file_content(&root, "../../etc/passwd").unwrap_err();
-            assert!(err.contains("escapes the HQ folder"), "got: {err}");
+            assert!(err.contains("invalid HQ-relative path"), "got: {err}");
 
             // Absolute path also escapes.
             let abs_err = read_file_content(&root, "/etc/passwd").unwrap_err();
-            assert!(abs_err.contains("escapes the HQ folder"), "got: {abs_err}");
+            assert!(
+                abs_err.contains("invalid HQ-relative path"),
+                "got: {abs_err}"
+            );
 
             // Empty path is rejected.
             assert!(read_file_content(&root, "   ").is_err());
+        }
+
+        #[test]
+        fn read_file_content_rejects_cross_company_parent_traversal() {
+            let tmp = TempDir::new().unwrap();
+            let root = tmp.path().to_path_buf();
+            let pending = root.join("companies").join("pending");
+            fs::create_dir_all(&pending).unwrap();
+            fs::write(pending.join("secret.md"), "not granted").unwrap();
+
+            let err =
+                read_file_content(&root, "companies/indigo/../pending/secret.md").unwrap_err();
+            assert!(err.contains("invalid HQ-relative path"), "got: {err}");
+            let slash_err = read_file_content(&root, "companies\\pending\\secret.md").unwrap_err();
+            assert!(
+                slash_err.contains("invalid HQ-relative path"),
+                "got: {slash_err}"
+            );
         }
 
         #[test]
@@ -2939,6 +4095,95 @@ mod tests {
             assert_eq!(
                 read_file_content_capped(&root, "companies/test/ok.txt", 4).unwrap(),
                 "abcd"
+            );
+        }
+
+        #[test]
+        fn read_file_bytes_capped_supports_binary_media_without_losing_the_cap() {
+            let tmp = TempDir::new().unwrap();
+            let root = tmp.path().to_path_buf();
+            let dir = root.join("companies").join("test");
+            fs::create_dir_all(&dir).unwrap();
+            let binary = [0xff, 0xd8, 0xff, 0x00, 0x80];
+            fs::write(dir.join("photo.jpg"), binary).unwrap();
+
+            assert_eq!(
+                read_file_bytes_capped(&root, "companies/test/photo.jpg", 5).unwrap(),
+                binary
+            );
+            let err = read_file_bytes_capped(&root, "companies/test/photo.jpg", 4).unwrap_err();
+            assert!(err.contains("too large to preview"), "got: {err}");
+            assert!(
+                read_file_bytes_capped(&root, "companies/test/../pending/secret.jpg", 5,).is_err()
+            );
+        }
+
+        #[test]
+        fn read_file_bytes_capped_enforces_limit_on_bytes_actually_read() {
+            let tmp = TempDir::new().unwrap();
+            let root = tmp.path().to_path_buf();
+            let dir = root.join("companies").join("test");
+            fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("changing.jpg");
+            fs::write(&path, b"1234").unwrap();
+
+            set_file_read_after_size_check_hook({
+                let path = path.clone();
+                move || fs::write(path, b"1234567890").unwrap()
+            });
+
+            let error =
+                read_file_bytes_capped(&root, "companies/test/changing.jpg", 4).unwrap_err();
+            assert!(error.contains("too large to preview"), "got: {error}");
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn read_file_bytes_capped_rejects_a_final_component_symlink() {
+            use std::os::unix::fs::symlink;
+
+            let tmp = TempDir::new().unwrap();
+            let root = tmp.path().to_path_buf();
+            let dir = root.join("companies").join("test");
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("real.jpg"), b"image").unwrap();
+            symlink(dir.join("real.jpg"), dir.join("alias.jpg")).unwrap();
+
+            let error = read_file_bytes_capped(&root, "companies/test/alias.jpg", 16).unwrap_err();
+            assert!(
+                error.contains("symlink") || error.contains("could not open"),
+                "got: {error}",
+            );
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn read_file_bytes_capped_rejects_parent_swap_after_authorization() {
+            use std::os::unix::fs::symlink;
+
+            let tmp = TempDir::new().unwrap();
+            let root = tmp.path().to_path_buf();
+            let active = root.join("companies/active");
+            let pending = root.join("companies/pending");
+            fs::create_dir_all(active.join("docs")).unwrap();
+            fs::create_dir_all(pending.join("docs")).unwrap();
+            fs::write(active.join("docs/report.md"), b"authorized").unwrap();
+            fs::write(pending.join("docs/report.md"), b"pending-secret").unwrap();
+
+            set_file_read_before_open_hook({
+                let active_docs = active.join("docs");
+                let pending_docs = pending.join("docs");
+                move || {
+                    fs::rename(&active_docs, active.join("docs-original")).unwrap();
+                    symlink(&pending_docs, &active_docs).unwrap();
+                }
+            });
+
+            let result = read_file_bytes_capped(&root, "companies/active/docs/report.md", 64);
+            assert!(
+                result.is_err(),
+                "an ancestor swap must fail closed, got {:?}",
+                result.unwrap()
             );
         }
 
@@ -3052,19 +4297,35 @@ mod tests {
 
             // Traversal escapes the HQ folder.
             let err = list_dir_entries(&root, "../../etc").unwrap_err();
-            assert!(err.contains("escapes the HQ folder"), "got: {err}");
+            assert!(err.contains("invalid HQ-relative path"), "got: {err}");
             // A `..` segment embedded mid-path also escapes.
             let mid_err = list_dir_entries(&root, "repos/../../etc").unwrap_err();
-            assert!(mid_err.contains("escapes the HQ folder"), "got: {mid_err}");
-            // A leading slash is normalized to an HQ-relative segment (so an
-            // "absolute"-looking input can never read outside the HQ folder);
-            // `/etc` becomes `etc`, which simply does not exist under the root.
+            assert!(
+                mid_err.contains("invalid HQ-relative path"),
+                "got: {mid_err}"
+            );
+            // Absolute-looking input is rejected by the cross-platform path
+            // contract rather than repaired into a different relative path.
             let abs_err = list_dir_entries(&root, "/etc").unwrap_err();
-            assert!(abs_err.contains("directory not found"), "got: {abs_err}");
+            assert!(
+                abs_err.contains("invalid HQ-relative path"),
+                "got: {abs_err}"
+            );
             // Nonexistent dir.
             assert!(list_dir_entries(&root, "nope").is_err());
             // A file path (not a dir) is rejected.
             assert!(list_dir_entries(&root, "README.md").is_err());
+        }
+
+        #[test]
+        fn list_dir_entries_rejects_cross_company_parent_traversal() {
+            use super::super::list_dir_entries;
+            let tmp = TempDir::new().unwrap();
+            let root = make_hq_root(&tmp);
+            fs::create_dir_all(root.join("companies").join("pending")).unwrap();
+
+            let err = list_dir_entries(&root, "companies/indigo/../pending").unwrap_err();
+            assert!(err.contains("invalid HQ-relative path"), "got: {err}");
         }
     }
 }

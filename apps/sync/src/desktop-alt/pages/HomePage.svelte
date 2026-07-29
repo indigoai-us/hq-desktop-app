@@ -82,17 +82,17 @@
     companyNamesByUid?: Map<string, string>;
     /** Open a company workspace from the portfolio table. */
     onopencompany?: (slug: string) => void;
-    onresolveconflict?: (path: string, strategy: 'keep-local' | 'keep-remote') => void;
-    oncompareconflict?: (path: string) => void;
-    onresolveaggregateconflicts?: () => void;
-    onrestoredrift?: () => void;
-    onkeepdrift?: () => void;
-    onviewdrift?: () => void;
+    onresolveconflict?: (path: string, strategy: 'keep-local' | 'keep-remote') => void | Promise<void>;
+    oncompareconflict?: (path: string) => void | Promise<void>;
+    onresolveaggregateconflicts?: () => void | Promise<void>;
+    onrestoredrift?: () => void | Promise<void>;
+    onkeepdrift?: () => void | Promise<void>;
+    onviewdrift?: () => void | Promise<void>;
     /** Accept a pending company invite (claim-by-email). */
     onacceptinvite?: (slug: string) => void | Promise<void>;
-    onsignin?: () => void;
-    onretry?: () => void;
-    onopenlog?: () => void;
+    onsignin?: () => void | Promise<void>;
+    onretry?: () => void | Promise<void>;
+    onopenlog?: () => void | Promise<void>;
   }
 
   let {
@@ -197,24 +197,24 @@
   const companyRows = $derived(getHomeCompanyRows({ workspaces, projects }));
   const todayAgenda = $derived(getHomeTodayAgenda({ events: meetingEvents, companyNamesByUid }));
 
-  function handleConflictAction(path: string, actionId: string) {
-    if (actionId === 'compare') oncompareconflict?.(path);
-    else onresolveconflict?.(path, actionId as 'keep-local' | 'keep-remote');
+  async function handleConflictAction(path: string, actionId: string): Promise<void> {
+    if (actionId === 'compare') await oncompareconflict?.(path);
+    else await onresolveconflict?.(path, actionId as 'keep-local' | 'keep-remote');
   }
 
-  function handleAggregateConflictAction(actionId: string) {
-    if (actionId === 'resolve-conflicts') onresolveaggregateconflicts?.();
+  async function handleAggregateConflictAction(actionId: string): Promise<void> {
+    if (actionId === 'resolve-conflicts') await onresolveaggregateconflicts?.();
   }
 
-  function handleDriftAction(actionId: string) {
-    if (actionId === 'restore') onrestoredrift?.();
-    else if (actionId === 'keep-edit') onkeepdrift?.();
-    else if (actionId === 'view-diff') onviewdrift?.();
+  async function handleDriftAction(actionId: string): Promise<void> {
+    if (actionId === 'restore') await onrestoredrift?.();
+    else if (actionId === 'keep-edit') await onkeepdrift?.();
+    else if (actionId === 'view-diff') await onviewdrift?.();
   }
 
-  function handleErrorAction(actionId: string) {
-    if (actionId === 'sign-in') onsignin?.();
-    else onretry?.();
+  async function handleErrorAction(actionId: string): Promise<void> {
+    if (actionId === 'sign-in') await onsignin?.();
+    else await onretry?.();
   }
 
   async function handleInviteAction(slug: string, actionId: string) {
@@ -522,7 +522,10 @@
     min-width: 0;
   }
 
-  @container home (max-width: 720px) {
+  /* Stack from the real canvas width. With the desktop rail mounted, a
+     1040px window supplies roughly 800px here and the wide table + Today rail
+     otherwise forces the right edge off-screen. */
+  @container home (max-width: 900px) {
     .home-grid {
       grid-template-columns: minmax(0, 1fr);
     }

@@ -12,7 +12,7 @@
    */
   interface Props {
     groups: HomeDigestGroup[];
-    onopenlog?: () => void;
+    onopenlog?: () => void | Promise<void>;
   }
 
   let { groups, onopenlog }: Props = $props();
@@ -20,6 +20,8 @@
   // Newest group starts expanded (matches home-healthy.png); the rest are
   // collapsed until clicked. Keyed by group id so toggles survive reorders.
   let expanded = $state<Record<string, boolean>>({});
+  let openingLog = $state(false);
+  let openLogError = $state('');
 
   function isExpanded(id: string, index: number): boolean {
     return expanded[id] ?? index === 0;
@@ -28,6 +30,20 @@
   function toggle(id: string, index: number) {
     expanded = { ...expanded, [id]: !isExpanded(id, index) };
   }
+
+  async function openLog(): Promise<void> {
+    if (!onopenlog || openingLog) return;
+    openLogError = '';
+    openingLog = true;
+    try {
+      await onopenlog();
+    } catch (err) {
+      console.error('home: open activity log failed', err);
+      openLogError = 'Couldn’t open the event log.';
+    } finally {
+      openingLog = false;
+    }
+  }
 </script>
 
 <section class="v4-digest" aria-label="Today across your companies">
@@ -35,11 +51,25 @@
     <h2 class="v4-digest-title">Today across your companies</h2>
     <p class="v4-digest-tools">
       grouped by person ·
-      <button type="button" class="v4-digest-log" onclick={() => onopenlog?.()}>
-        raw event log →
+      <button
+        type="button"
+        class="v4-digest-log"
+        onclick={openLog}
+        disabled={openingLog}
+        aria-busy={openingLog}
+      >
+        {openingLog ? 'opening event log…' : 'raw event log →'}
       </button>
     </p>
   </div>
+  {#if openLogError}
+    <div class="v4-digest-error" role="alert">
+      <span>{openLogError}</span>
+      <button type="button" onclick={openLog} disabled={openingLog} aria-busy={openingLog}>
+        {openingLog ? 'Retrying…' : 'Retry'}
+      </button>
+    </div>
+  {/if}
 
   {#if groups.length === 0}
     <div class="v4-digest-empty">
@@ -121,6 +151,24 @@
 
   .v4-digest-log:hover {
     color: var(--v4-text-2);
+  }
+
+  .v4-digest-error {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    color: var(--v4-error);
+    font-size: var(--type-metadata, var(--text-micro));
+  }
+
+  .v4-digest-error button {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: currentColor;
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
   }
 
   .v4-digest-empty {

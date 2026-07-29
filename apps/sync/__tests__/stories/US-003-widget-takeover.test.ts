@@ -9,7 +9,7 @@
 
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Vitest resolves Svelte's public entry with the default/server condition in
 // this repo's node test config, even for per-file happy-dom tests. Force the
@@ -23,6 +23,7 @@ import { flushSync, mount, unmount } from 'svelte';
 import Widget from '../../src/components/Widget.svelte';
 import {
   WIDGET_ROW_TIMEOUT_MS,
+  WIDGET_RECENT_STORAGE_KEY,
   addItem,
   bannerToStackItem,
   emptyWidgetStack,
@@ -45,6 +46,14 @@ const mainRs = readFileSync(root('src-tauri/src/main.rs'), 'utf8');
 
 let host: HTMLElement;
 let component: ReturnType<typeof mount> | null = null;
+
+beforeEach(() => {
+  try {
+    globalThis.localStorage?.removeItem(WIDGET_RECENT_STORAGE_KEY);
+  } catch {
+    // Node runtimes without a configured localStorage file expose a throwing shim.
+  }
+});
 
 function mountWidget(props: Record<string, unknown> = {}): HTMLElement {
   host = document.createElement('div');
@@ -119,7 +128,7 @@ describe('US-003: Notification takeover with queue-on-occlusion', () => {
       );
     });
 
-    it('behavioral: Widget mounts seeded rows as one-line NotificationRows in the frost stack, newest first', () => {
+    it('behavioral: multiple seeded rows share one grouped glass shell with flat children, newest first', () => {
       const now = 50_000;
       const older = bannerToStackItem(
         {
@@ -148,6 +157,8 @@ describe('US-003: Notification takeover with queue-on-occlusion', () => {
 
       const stack = host.querySelector('[data-testid="widget-stack"]');
       expect(stack).toBeTruthy();
+      expect(stack!.classList.contains('stack-grouped')).toBe(true);
+      expect(stack!.classList.contains('stack-single')).toBe(false);
 
       const frostRows = stack!.querySelectorAll('.frost');
       expect(frostRows.length).toBe(2);
@@ -163,12 +174,33 @@ describe('US-003: Notification takeover with queue-on-occlusion', () => {
       expect(rows[0]?.getAttribute('data-expanded')).toBe('false');
       expect(rows[1]?.getAttribute('data-expanded')).toBe('false');
 
-      // Frost wrapper present around each NotificationRow
+      // Flat wrappers remain for keyed row behavior, but the parent owns the
+      // only material and the children have no card chrome.
       expect(frostRows[0]?.querySelector('[data-testid="notification-row"]')).toBeTruthy();
-      expect(widgetSource).toMatch(/\.frost\s*\{/);
       expect(widgetSource).toMatch(
-        /backdrop-filter:\s*var\(--glass-filter,\s*blur\(28px\)\s*saturate\(0%\)\)/,
+        /\.stack-grouped,\s*\.stack-single \.frost\s*\{[\s\S]*?backdrop-filter:\s*var\(--glass-filter,/,
       );
+      const frostBlock = widgetSource.match(/\n  \.frost\s*\{[^}]+\}/s)?.[0] ?? '';
+      expect(frostBlock).toContain('border-radius: 0');
+      expect(frostBlock).toContain('background: transparent');
+      expect(frostBlock).not.toContain('backdrop-filter');
+      expect(widgetSource).toContain('.stack-grouped .frost + .frost');
+      expect(widgetSource).not.toMatch(
+        /backdrop-filter:\s*var\(--glass-filter,[^;]*saturate\(\s*0%?\s*\)/,
+      );
+    });
+
+    it('behavioral: a single transient alert remains one true toast card', () => {
+      mountWidget({
+        initialItems: [
+          stackItem({ id: 'single', type: 'message', kind: 'dm', text: 'hello' }),
+        ],
+      });
+
+      const stack = host.querySelector('[data-testid="widget-stack"]');
+      expect(stack?.classList.contains('stack-single')).toBe(true);
+      expect(stack?.classList.contains('stack-grouped')).toBe(false);
+      expect(stack?.querySelectorAll('.frost')).toHaveLength(1);
     });
   });
 
@@ -249,6 +281,24 @@ describe('US-003: Notification takeover with queue-on-occlusion', () => {
       expect(widgetRs).toMatch(/FRESH each call|instantly restores native/i);
       expect(widgetRs).toMatch(/fn widget_enabled\(\)\s*->\s*bool/);
       expect(widgetRs).toMatch(/widgetEnabled/);
+    });
+
+    it('source contract: native DM fallback dispatch is bounded by the active account transition', () => {
+      const nativeFallback =
+        dmNotifyRs.match(
+          /#\[cfg\(target_os = "macos"\)\][\s\S]*?#\[cfg\(not\(target_os = "macos"\)\)\]/,
+        )?.[0] ?? '';
+      expect(nativeFallback).toContain('with_current_notification_mutation(app, auth');
+      expect(nativeFallback).toContain('tokio::task::spawn_blocking');
+      expect(nativeFallback).toContain('.asynchronous(true)');
+      expect(nativeFallback).not.toContain('wait_for_click(true)');
+
+      const nonMacFallback =
+        dmNotifyRs.match(
+          /#\[cfg\(not\(target_os = "macos"\)\)\][\s\S]*?Ack only the fresh DMs/,
+        )?.[0] ?? '';
+      expect(nonMacFallback).toContain('with_current_notification_mutation(app, auth');
+      expect(nonMacFallback).toContain('.show()');
     });
 
     it('source contract: occlusion observer + widget_ready + resize_widget wired; Widget listens and invokes ready', () => {

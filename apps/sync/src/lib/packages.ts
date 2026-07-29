@@ -121,6 +121,32 @@ export interface PackagesDone {
   message?: string;
 }
 
+/**
+ * Keep subprocess diagnostics out of the primary Installed-packs surface.
+ * The raw string remains available in a disclosure for support, while the
+ * visible message tells the user what to do next.
+ */
+export function friendlyPackagesError(error: string | null | undefined): string | null {
+  const detail = error?.trim();
+  if (!detail) return null;
+  if (isMissingPackagesToolError(detail)) {
+    return 'HQ tools need repair before installed packs can be loaded.';
+  }
+  if (/network|timed? out|dns|offline|fetch|connection/i.test(detail)) {
+    return 'Installed packs could not be refreshed. Check your connection and try again.';
+  }
+  return 'Installed packs could not be loaded. Retry and review the technical details.';
+}
+
+/** Whether the pack command could not start because `hq`/`npx` is unavailable. */
+export function isMissingPackagesToolError(error: string | null | undefined): boolean {
+  const detail = error?.trim();
+  return Boolean(
+    detail &&
+      /no such file or directory|os error 2|enoent|spawn [`'"]?(?:hq|npx)/i.test(detail),
+  );
+}
+
 /** A short, human label for a pack source string (drops the long git prefix). */
 export function shortSource(source: string | undefined): string {
   if (!source) return 'unknown source';
@@ -131,6 +157,25 @@ export function shortSource(source: string | undefined): string {
     return tail.split('@')[0];
   }
   return source;
+}
+
+/**
+ * Stable comparison identity for pack names from the three shapes the CLI can
+ * return: installed names, packs.yaml sources, and registry slugs.
+ *
+ * Display helpers intentionally preserve origin/version detail; this helper is
+ * only for deduplication. Empty/malformed sources have no identity and must not
+ * become an install action.
+ */
+export function packIdentity(source: string | undefined): string {
+  const raw = source?.trim();
+  if (!raw) return '';
+  let identity = shortSource(raw).trim().toLowerCase();
+  identity = identity.replace(/^(?:marketplace|registry):/, '');
+  if (identity.includes('/') && identity.includes('hq-pack-')) {
+    identity = identity.slice(identity.lastIndexOf('/') + 1);
+  }
+  return identity.replace(/@[^@/]+$/, '');
 }
 
 /**

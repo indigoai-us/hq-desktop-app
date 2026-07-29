@@ -45,7 +45,10 @@ describe('desktop-alt V4 settings and first-run (US-013 / US-005)', () => {
     // behavior until the next launch.
     expect(page).toContain("invoke('start_daemon')");
     expect(page).toContain("invoke('stop_daemon')");
-    expect(page).toContain("invoke('set_autostart_enabled', { enabled: startAtLogin })");
+    expect(page).toContain('const next = startAtLogin;');
+    expect(page).toContain('const previous = !next;');
+    expect(page).toContain("invoke('set_autostart_enabled', { enabled: next })");
+    expect(page).toContain("invoke('set_autostart_enabled', { enabled: previous })");
     // The three toggles must route through their effect handlers, not the bare
     // saveSettings persistence path.
     expect(page).toContain('onchange={applyRealtimeSync}');
@@ -169,7 +172,12 @@ describe('desktop-alt V4 settings and first-run (US-013 / US-005)', () => {
     // Core rescue succeeds with the real result shape in the normal/update
     // scenario, while the explicit error scenario returns a nonzero rescue
     // result so the log-path recovery UI can be inspected without a null crash.
-    expect(harness).toContain("exit_code: scenario === 'settings-errors' ? 1 : 0");
-    expect(harness).toMatch(/log_path:\s*scenario === 'settings-errors'/);
+    expect(harness).toContain('exit_code: failed ? 1 : 0');
+    expect(harness).toContain('harnessCliVersion = \'0.20.0\'');
+    expect(harness).toContain('harnessPacksUpdated = true');
+    expect(harness).toContain('harnessCoreVersion = HARNESS_DRIFT.targetVersion');
+    expect(harness).toContain('harnessCoreUpdated = true');
+    expect(harness).toContain('harnessAppUpdateInstalled = true');
+    expect(harness).toContain('log_path: failed');
   });
 });

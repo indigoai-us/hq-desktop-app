@@ -2,6 +2,7 @@ import * as Sentry from "@sentry/svelte";
 import './styles/design-system.css';
 import App from './App.svelte';
 import MeetingsWindow from './components/MeetingsWindow.svelte';
+import NewFilesDetail from './components/NewFilesDetail.svelte';
 import DriftDetail from './components/DriftDetail.svelte';
 import ActivityLog from './components/ActivityLog.svelte';
 import ShareDetail from './components/ShareDetail.svelte';
@@ -13,7 +14,10 @@ import MessagesShell from './components/messaging/MessagesShell.svelte';
 import GlobalErrorBoundary from './components/GlobalErrorBoundary.svelte';
 import { mount } from 'svelte';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { setTheme } from '@tauri-apps/api/app';
 import { beforeSend } from "./sentry-before-send";
+import { installDesktopZoom } from './lib/desktopZoom';
+import { installAppearancePreferences } from './lib/appearancePreferences';
 
 Sentry.init({
   dsn: import.meta.env.VITE_SENTRY_DSN,
@@ -32,10 +36,20 @@ const windowLabel = getCurrentWindow().label;
 document.documentElement.dataset.window = windowLabel;
 const isWindows = /Windows/i.test(navigator.userAgent);
 document.documentElement.dataset.platform = isWindows ? 'windows' : 'other';
+// One persisted preference governs every HQ WebView: desktop, Messages,
+// meetings, detail sheets, the widget, and the compact menubar surface.
+installDesktopZoom();
+installAppearancePreferences(
+  windowLabel === 'main'
+    ? { applyNativeTheme: (theme) => setTheme(theme) }
+    : {},
+);
 
 let Component: typeof App;
 if (windowLabel === 'meetings-window') {
   Component = MeetingsWindow as unknown as typeof App;
+} else if (windowLabel === 'new-files-detail') {
+  Component = NewFilesDetail as unknown as typeof App;
 } else if (windowLabel === 'drift-detail') {
   Component = DriftDetail as unknown as typeof App;
 } else if (windowLabel === 'activity-log') {

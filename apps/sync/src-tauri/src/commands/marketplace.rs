@@ -44,8 +44,8 @@ pub use hq_desktop_core::marketplace::{
     ApplicationsEnvelope, BrowseEnvelope, ClaimError, ClaimResult, CreatorApplication,
     CreatorProfile, Decision, DetailEnvelope, InjectionFlag, InstallScope, InstructionDoc,
     MarketplaceListing, MarketplaceListingDetail, ModerationDecisionResult, ModerationQueueItem,
-    MyCreator, MyCreatorEnvelope, PublicCreatorPreview, PublishError, PublishResult,
-    QueueEnvelope, SocialLink, YankResult, MAX_AVATAR_BYTES,
+    MyCreator, MyCreatorEnvelope, PublicCreatorPreview, PublishError, PublishResult, QueueEnvelope,
+    SocialLink, YankResult, MAX_AVATAR_BYTES,
 };
 
 use crate::commands::sync::{resolve_jwt, resolve_vault_api_url};

@@ -22,8 +22,10 @@ describe('DESKTOP-002: unified messages and notification triage', () => {
   const dmDetail = readRepoFile('src/components/DmDetail.svelte');
   const shareDetail = readRepoFile('src/components/ShareDetail.svelte');
 
-  it('drops the redundant Messages page title and People/Requests tabs', () => {
+  it('orients the rail without restoring a redundant page title or People/Requests tabs', () => {
     expect(shell).not.toContain('<h1>Messages</h1>');
+    expect(shell).toContain('<h2>Messages</h2>');
+    expect(shell).toContain("railItems.length === 1 ? 'conversation' : 'conversations'");
     expect(shell).not.toMatch(/>\s*People\s*</);
     expect(shell).not.toMatch(/>\s*Requests\s*</);
     expect(shell).not.toContain("segment = 'people'");
@@ -35,6 +37,26 @@ describe('DESKTOP-002: unified messages and notification triage', () => {
     expect(shell).toContain('class="new-message-btn"');
     expect(shell).toContain('aria-label="New message"');
     expect(shell).toContain('DESKTOP-002');
+  });
+
+  it('names every conversation source, timestamps channels, and never hashes group DMs', () => {
+    expect(shell).toContain('data-provenance="direct-message"');
+    expect(shell).toContain("data-provenance={isGroupDm ? 'group-dm' : 'channel'}");
+    expect(shell).toContain('data-provenance="connection-request"');
+    expect(shell).toContain('data-provenance="shared-path"');
+    expect(shell).toContain('data-provenance="agent"');
+    expect(shell).toContain('<span class="contact-provenance">Direct message</span>');
+    expect(shell).toContain('<span class="contact-provenance">Connection request</span>');
+    expect(shell).toContain('<span class="contact-provenance">Shared path</span>');
+    expect(shell).toContain('function channelProvenance');
+    expect(shell).toContain("if (channel.scope === 'group')");
+    expect(shell).toContain('function channelActivityAt');
+    expect(shell).toContain('function formatChannelTime');
+    expect(shell).toContain('<time class="contact-time" datetime={activityAt ?? undefined}>');
+    expect(shell).toContain("{#if isGroupDm}");
+    expect(shell).toContain("selectedChannel.scope === 'group'");
+    expect(shell).toContain('aria-current={isActive ? \'page\' : undefined}');
+    expect(shell).toContain('aria-busy={isActive && loadingThread}');
   });
 
   it('renders requests and shared paths as ordinary recency-sorted rail rows', () => {
@@ -104,10 +126,22 @@ describe('DESKTOP-002: unified messages and notification triage', () => {
     expect(conversation).toContain('onsend');
   });
 
-  it('uses liquid-glass/source-list treatment only on the rail, naked main canvas', () => {
-    expect(shell).toContain('background: var(--surface-rail)');
+  it('uses one window material with a locally separated rail and naked main canvas', () => {
+    const railRule = shell.match(/\.rail\s*\{([\s\S]*?)\}/)?.[1] ?? '';
+    const windowRule = shell.match(/\.messages-window\s*\{([\s\S]*?)\}/)?.[1] ?? '';
+    expect(shell).toMatch(
+      /\.messages-window\s*\{[\s\S]*?background:\s*var\(--v4-ground/,
+    );
+    expect(windowRule).not.toContain('backdrop-filter:');
+    expect(railRule).toMatch(
+      /background:\s*color-mix\(in srgb,\s*var\(--v4-text-1[\s\S]*?5%,\s*transparent\);/,
+    );
+    expect(railRule).not.toContain('backdrop-filter:');
     expect(shell).toMatch(
       /\.pane\s*\{[\s\S]*?background:\s*transparent;[\s\S]*?border-radius:\s*0;/,
+    );
+    expect(conversation).toMatch(
+      /:global\(\[data-window='desktop-alt'\]\) \.dm-reply-input\s*\{[\s\S]*?background:\s*transparent;/,
     );
     expect(shell).toContain('data-testid="messages-main-pane"');
     // Title/meta 3px gap on rail rows and pane headers.
@@ -116,6 +150,13 @@ describe('DESKTOP-002: unified messages and notification triage', () => {
     );
     expect(shell).toMatch(
       /\.pane-title-stack\s*\{[\s\S]*?gap:\s*var\(--v4-row-stack-gap,\s*3px\)/,
+    );
+    expect(shell).toMatch(/\.rail\s*\{[\s\S]*?width:\s*320px/);
+    expect(shell).toMatch(
+      /\.contact-row\s*\{[\s\S]*?min-height:\s*58px;[\s\S]*?border-radius:\s*0;/,
+    );
+    expect(shell).toMatch(
+      /\.contact-row\.active\s*\{[\s\S]*?background:\s*transparent;[\s\S]*?box-shadow:\s*inset 0 -1px 0 var\(--border\)/,
     );
   });
 

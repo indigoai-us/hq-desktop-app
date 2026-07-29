@@ -2,11 +2,34 @@ import { describe, expect, it } from 'vitest';
 
 import {
   isMarketplaceOrigin,
+  isMissingPackagesToolError,
   isPromptRenderable,
+  friendlyPackagesError,
+  packIdentity,
   shortSource,
   type InstalledPack,
   type PackInitialization,
 } from './packages';
+
+describe('friendlyPackagesError', () => {
+  it('turns a missing CLI spawn failure into actionable product language', () => {
+    expect(
+      friendlyPackagesError('spawn `hq packs list --json`: No such file or directory (os error 2)'),
+    ).toBe('HQ tools need repair before installed packs can be loaded.');
+  });
+
+  it('keeps network and unknown failures concise', () => {
+    expect(friendlyPackagesError('network request timed out')).toContain('connection');
+    expect(friendlyPackagesError('unexpected parser failure')).toContain('technical details');
+    expect(friendlyPackagesError(null)).toBeNull();
+  });
+
+  it('only offers CLI repair for missing executable failures', () => {
+    expect(isMissingPackagesToolError('spawn npx: ENOENT')).toBe(true);
+    expect(isMissingPackagesToolError('network request timed out')).toBe(false);
+    expect(isMissingPackagesToolError(null)).toBe(false);
+  });
+});
 
 /**
  * US-009 — the suppress/show gate for a pack's author-written
@@ -132,5 +155,22 @@ describe('shortSource (unchanged regression guard)', () => {
   it('drops the long git prefix to the trailing pack name', () => {
     expect(shortSource('github:owner/repo#packages/hq-pack-impeccable')).toBe('hq-pack-impeccable');
     expect(shortSource(undefined)).toBe('unknown source');
+  });
+});
+
+describe('packIdentity', () => {
+  it('matches installed names to packs.yaml, scoped npm, and registry sources', () => {
+    expect(packIdentity('hq-pack-engineering')).toBe('hq-pack-engineering');
+    expect(packIdentity('@indigoai-us/hq-pack-engineering')).toBe('hq-pack-engineering');
+    expect(packIdentity('github:indigoai-us/hq#packages/hq-pack-engineering@1.3.0')).toBe(
+      'hq-pack-engineering',
+    );
+    expect(packIdentity('registry:hq-pack-engineering@1.3.0')).toBe('hq-pack-engineering');
+  });
+
+  it('does not manufacture an install identity for an empty source', () => {
+    expect(packIdentity('')).toBe('');
+    expect(packIdentity('   ')).toBe('');
+    expect(packIdentity(undefined)).toBe('');
   });
 });

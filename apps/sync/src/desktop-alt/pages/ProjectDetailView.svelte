@@ -23,11 +23,12 @@
     loadLocalProjectPrd,
     loadLocalProjectReadme,
     projectIdentity,
-    type LocalProjectPrdWire,
+    type LocalProjectPrd,
     type Objective,
   } from '../lib/local-projects';
+  import { mergeProvenance } from '../lib/provenance';
   import { projectsStore, setProjectStatus } from '../lib/projects-store.svelte';
-  import { renderMarkdown } from '../lib/markdown';
+  import { renderMarkdownDocument } from '../lib/markdown';
   import {
     classifyTasks,
     groupByTaskColumn,
@@ -51,6 +52,7 @@
   import { sessionsStore, startSessionsStore } from '../lib/sessions-store.svelte';
   import type { DirEntry } from '../lib/file-tree';
   import StoryKanban from '../components/StoryKanban.svelte';
+  import ProvenanceLine from '../components/ProvenanceLine.svelte';
   import CompanyFileTree from '../components/CompanyFileTree.svelte';
   import FilePreviewPane from '../components/FilePreviewPane.svelte';
   import StoryPanel from '../v4/StoryPanel.svelte';
@@ -65,6 +67,8 @@
     storiesLoading?: boolean;
     /** Error string if the stories failed to load. */
     storiesError?: string | null;
+    /** Retry the selected project's story load after a scoped failure. */
+    onretryStories?: () => void | Promise<void>;
     /** Back to the project list (Projects). */
     onback: () => void;
     /** Open a story's detail (parent may also track selection). */
@@ -87,6 +91,8 @@
     onselectDependency?: (storyId: string) => void;
     /** Story passes toggle callback from the docked panel. */
     onStoryPassesChange?: (storyId: string, passes: boolean) => void;
+    /** The optional cloud attribution lookup failed for this project. */
+    provenanceUnavailable?: boolean;
   }
 
   let {
@@ -94,6 +100,7 @@
     stories,
     storiesLoading = false,
     storiesError = null,
+    onretryStories,
     onback,
     onselectStory,
     objectives = [],
@@ -102,12 +109,13 @@
     oncloseStory,
     onselectDependency,
     onStoryPassesChange,
+    provenanceUnavailable = false,
   }: Props = $props();
 
   // ---- README / PRD load ---------------------------------------------------
   let readme = $state<string | null>(null);
   let readmeLoading = $state(false);
-  let prd = $state<LocalProjectPrdWire | null>(null);
+  let prd = $state<LocalProjectPrd | null>(null);
   let prdLoading = $state(false);
 
   $effect(() => {
@@ -162,7 +170,9 @@
 
   const hasPrd = $derived(Boolean(project.prdPath));
   const hasReadme = $derived(readme !== null && readme.trim() !== '');
-  const readmeHtml = $derived(hasReadme ? renderMarkdown(readme as string) : '');
+  const readmeHtml = $derived(
+    hasReadme ? renderMarkdownDocument(readme as string) : '',
+  );
 
   // Sessions for Active task matching (DESKTOP-005).
   let now = $state(Date.now());
@@ -181,6 +191,9 @@
   const linkedGoal = $derived(findLinkedGoal(project, objectives));
   const keyResults = $derived(linkedGoal?.keyResults ?? []);
   const prdDescription = $derived(prd?.description?.trim() || project.description);
+  const detailProvenance = $derived(
+    mergeProvenance(project.provenance, prd?.provenance),
+  );
   /** Overview roll-up counts (Not started / In progress / Active / Complete). */
   const overviewTaskRail = $derived.by(() => {
     const sections = [
@@ -234,6 +247,8 @@
   let statusOpen = $state(false);
   let statusError = $state<string | null>(null);
   let statusSaving = $state(false);
+  let storyRetrying = $state(false);
+  let storyRetryGeneration = 0;
   $effect(() => {
     void projectIdentity(project);
     void project.status;
@@ -242,6 +257,11 @@
     statusOpen = false;
     statusError = null;
     statusSaving = projectsStore.statusPending(project);
+  });
+  $effect(() => {
+    void projectIdentity(project);
+    storyRetryGeneration += 1;
+    storyRetrying = false;
   });
   const currentStatus = $derived(
     statusOverride ?? toEditableStatus(project.status),
@@ -279,6 +299,19 @@
       }
     } finally {
       rehydrateCurrentStatus(mutationIdentity);
+    }
+  }
+
+  async function retryStories(): Promise<void> {
+    if (!onretryStories || storyRetrying) return;
+    const generation = storyRetryGeneration;
+    storyRetrying = true;
+    try {
+      await onretryStories();
+    } catch (err) {
+      console.error('ProjectDetailView story retry failed:', err);
+    } finally {
+      if (generation === storyRetryGeneration) storyRetrying = false;
     }
   }
 
@@ -411,7 +444,7 @@
   }
 
   function formatKrValue(value: unknown, unit?: string): string {
-    if (value === null || value === undefined || value === '') return '—';
+    if (value === null || value === undefined || value === '') return 'Not set';
     return `${value}${unit ?? ''}`;
   }
 
@@ -424,6 +457,13 @@
 
   function closeTaskDetail() {
     oncloseStory?.();
+  }
+
+  function selectTab(nextTab: Tab) {
+    tab = nextTab;
+    if (nextTab !== 'tasks' && selectedStory) {
+      oncloseStory?.();
+    }
   }
 
   function selectRailStory(story: Story) {
@@ -486,7 +526,7 @@
 
 <section
   class="project-detail"
-  class:has-task-detail={selectedStory != null}
+  class:has-task-detail={selectedStory != null && tab === 'tasks'}
   aria-labelledby="project-detail-title"
   data-testid="project-detail-view"
 >
@@ -526,12 +566,19 @@
             data-testid="status-trigger"
             aria-haspopup="listbox"
             aria-expanded={statusOpen}
+            aria-busy={statusSaving}
             disabled={statusSaving}
             onclick={() => (statusOpen = !statusOpen)}
           >
             <span class="status-dot" aria-hidden="true"></span>
-            <span>{EDITABLE_PROJECT_STATUS_LABEL[currentStatus]}</span>
-            <span class="status-caret" aria-hidden="true">⌄</span>
+            <span>
+              {statusSaving
+                ? 'Saving…'
+                : EDITABLE_PROJECT_STATUS_LABEL[currentStatus]}
+            </span>
+            {#if !statusSaving}
+              <span class="status-caret" aria-hidden="true">⌄</span>
+            {/if}
           </button>
           {#if statusOpen}
             <ul class="status-menu" role="listbox" data-testid="status-menu">
@@ -607,6 +654,13 @@
           <span aria-hidden="true">⎇</span> {prd.branchName}
         </span>
       {/if}
+      <div class="header-provenance" data-testid="project-detail-provenance">
+        <ProvenanceLine
+          provenance={detailProvenance}
+          kind="project"
+          unavailable={provenanceUnavailable}
+        />
+      </div>
     </div>
 
     <!-- Compact summary strip — progress + task roll-up counts. -->
@@ -644,7 +698,7 @@
         class="tab"
         class:active={tab === 'overview'}
         data-testid="tab-overview"
-        onclick={() => (tab = 'overview')}
+        onclick={() => selectTab('overview')}
       >
         Overview
       </button>
@@ -654,7 +708,7 @@
         class:active={boardTabActive}
         data-testid="tab-board"
         data-tab="tasks"
-        onclick={() => (tab = 'tasks')}
+        onclick={() => selectTab('tasks')}
       >
         Tasks
         {#if kpi.total > 0}
@@ -666,7 +720,7 @@
         class="tab"
         class:active={tab === 'files'}
         data-testid="tab-files"
-        onclick={() => (tab = 'files')}
+        onclick={() => selectTab('files')}
       >
         Files
       </button>
@@ -675,7 +729,7 @@
         class="tab"
         class:active={tab === 'activity'}
         data-testid="tab-activity"
-        onclick={() => (tab = 'activity')}
+        onclick={() => selectTab('activity')}
       >
         Activity
       </button>
@@ -683,7 +737,7 @@
   </header>
 
   <div class="workspace-body" data-testid="project-workspace-body">
-    {#if selectedStory}
+    {#if selectedStory && tab === 'tasks'}
       <!-- DESKTOP-006: stable task workspace — compact rail + detail, no modal. -->
       <div
         class="task-workspace"
@@ -743,6 +797,13 @@
                       <span class="task-rail-copy">
                         <span class="task-rail-title">{item.story.title}</span>
                         <span class="task-rail-meta">{railMeta(item.story, column)}</span>
+                        <span class="task-rail-provenance" data-testid="task-rail-provenance">
+                          <ProvenanceLine
+                            provenance={item.story.provenance}
+                            kind="story"
+                            compact
+                          />
+                        </span>
                       </span>
                       {#if isLive}
                         <span class="live-dot" aria-hidden="true"></span>
@@ -853,8 +914,28 @@
           </div>
         {:else if tab === 'tasks'}
           <div class="board-tab tasks-tab" data-testid="detail-board">
-            {#if storiesError}
-              <div class="drill-error" role="alert">{storiesError}</div>
+            {#if storiesError || storyRetrying}
+              <div
+                class="drill-error"
+                role="alert"
+                data-testid="story-load-error"
+              >
+                <span>
+                  {storiesError ?? 'Reloading this project’s stories…'}
+                </span>
+                {#if onretryStories}
+                  <button
+                    type="button"
+                    class="drill-retry"
+                    data-testid="story-load-retry"
+                    aria-busy={storyRetrying || storiesLoading}
+                    disabled={storyRetrying || storiesLoading}
+                    onclick={() => void retryStories()}
+                  >
+                    {storyRetrying || storiesLoading ? 'Retrying…' : 'Retry'}
+                  </button>
+                {/if}
+              </div>
             {:else if !hasPrd}
               <div class="drill-empty">
                 <p>This project has no linked PRD yet, so there are no tasks to show.</p>
@@ -877,25 +958,34 @@
               </div>
             {:else}
               <div class="files-layout">
-                <div class="files-tree">
-                  {#key projectFilesRoot}
-                    <CompanyFileTree
-                      rootPath={projectFilesRoot}
-                      loadChildren={loadProjectChildren}
-                      selectedPath={selectedFilePath}
-                      onselect={handleFileSelect}
-                    />
-                  {/key}
-                </div>
-                <div class="files-preview">
+                <aside class="files-tree" aria-label="Project files">
+                  <header class="files-tree-header">
+                    <h2>Project files</h2>
+                    <span title={projectFilesRoot}>
+                      {projectFilesRoot.split('/').pop() ?? projectDisplayName(project)}
+                    </span>
+                  </header>
+                  <div class="files-tree-scroll">
+                    {#key projectFilesRoot}
+                      <CompanyFileTree
+                        rootPath={projectFilesRoot}
+                        loadChildren={loadProjectChildren}
+                        selectedPath={selectedFilePath}
+                        onselect={handleFileSelect}
+                      />
+                    {/key}
+                  </div>
+                </aside>
+                <section class="files-preview" aria-label="File preview">
                   {#if selectedFilePath}
-                    <FilePreviewPane path={selectedFilePath} {hqFolderPath} />
+                    <FilePreviewPane path={selectedFilePath} />
                   {:else}
                     <div class="files-empty" data-testid="project-files-empty">
-                      Select a project file to preview it
+                      <span class="files-empty-title">Preview</span>
+                      <p>Select a project file to read it without leaving the workspace.</p>
                     </div>
                   {/if}
-                </div>
+                </section>
               </div>
             {/if}
           </div>
@@ -1073,6 +1163,11 @@
     margin-top: var(--v4-space-3);
   }
 
+  .header-provenance {
+    flex: 1 0 100%;
+    min-width: 0;
+  }
+
   .badge,
   .status-badge {
     display: inline-flex;
@@ -1176,8 +1271,8 @@
     border: 1px solid var(--v4-hairline);
     border-radius: var(--v4-radius-popover);
     background: var(--v4-popover);
-    backdrop-filter: var(--v4-glass-filter);
-    -webkit-backdrop-filter: var(--v4-glass-filter);
+    backdrop-filter: var(--v4-glass-filter-popover, var(--v4-glass-filter));
+    -webkit-backdrop-filter: var(--v4-glass-filter-popover, var(--v4-glass-filter));
     box-shadow: var(--v4-shadow-popover), inset 0 1px 0 var(--v4-glass-highlight);
   }
 
@@ -1400,7 +1495,7 @@
     min-width: 0;
     min-height: 0;
     border-right: 1px solid var(--v4-hairline);
-    background: var(--v4-chrome);
+    background: color-mix(in srgb, var(--v4-text-1) 5%, transparent);
   }
 
   .task-rail-tools {
@@ -1530,6 +1625,12 @@
     white-space: nowrap;
   }
 
+  .task-rail-provenance {
+    display: block;
+    min-width: 0;
+    overflow: hidden;
+  }
+
   .task-rail-done {
     color: var(--v4-text-3);
     font-size: var(--type-metadata, var(--text-micro));
@@ -1633,6 +1734,10 @@
   }
 
   .drill-error {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--v4-space-3);
     padding: var(--v4-space-3) 0;
     border: 0;
     border-top: 1px solid var(--v4-hairline);
@@ -1640,6 +1745,32 @@
     background: transparent;
     color: var(--v4-error);
     font-size: var(--type-body, var(--text-base));
+  }
+
+  .drill-retry {
+    flex: 0 0 auto;
+    padding: 3px 0;
+    border: 0;
+    background: transparent;
+    color: var(--v4-text-1);
+    font: inherit;
+    font-size: var(--type-secondary, var(--text-sm));
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .drill-retry:hover:not(:disabled) {
+    color: var(--v4-text-2);
+  }
+
+  .drill-retry:focus-visible {
+    outline: 1px solid var(--v4-focus-ring);
+    outline-offset: var(--v4-focus-offset, 2px);
+  }
+
+  .drill-retry:disabled {
+    color: var(--v4-text-3);
+    cursor: default;
   }
 
   .drill-empty {
@@ -1659,41 +1790,90 @@
   }
 
   .files-layout {
-    display: flex;
-    min-height: 0;
+    display: grid;
+    grid-template-columns: minmax(260px, 30%) minmax(0, 1fr);
+    min-height: clamp(360px, calc(100dvh - 340px), 680px);
     height: 100%;
     border: 0;
+    border-top: 1px solid var(--v4-hairline);
     border-radius: 0;
     background: transparent;
     overflow: hidden;
   }
 
   .files-tree {
-    flex: 0 0 260px;
-    min-width: 200px;
-    max-width: 300px;
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    min-width: 0;
     min-height: 0;
-    overflow-y: auto;
-    padding: 8px 6px;
+    overflow: hidden;
+    padding: 0;
     border-right: 1px solid var(--v4-hairline);
-    background: var(--v4-chrome);
+    background: transparent;
+  }
+
+  .files-tree-header {
+    display: grid;
+    gap: var(--v4-row-stack-gap, 3px);
+    min-width: 0;
+    padding: 12px 14px 10px 0;
+    border-bottom: 1px solid var(--v4-rowline);
+  }
+
+  .files-tree-header h2 {
+    margin: 0;
+    color: var(--v4-text-1);
+    font-size: var(--type-section, var(--text-base));
+    font-weight: 600;
+    line-height: 1.25;
+  }
+
+  .files-tree-header span {
+    overflow: hidden;
+    color: var(--v4-text-3);
+    font-family: var(--font-mono);
+    font-size: var(--type-metadata, var(--text-micro));
+    line-height: 1.3;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .files-tree-scroll {
+    min-width: 0;
+    min-height: 0;
+    padding: 6px 8px 12px 0;
+    overflow-y: auto;
   }
 
   .files-preview {
-    flex: 1 1 auto;
     min-width: 0;
     min-height: 0;
     overflow: auto;
   }
 
   .files-empty {
-    display: flex;
-    align-items: center;
-    justify-content: center;
+    display: grid;
+    align-content: start;
+    gap: var(--v4-row-stack-gap, 3px);
     height: 100%;
     min-height: 160px;
+    padding: 14px;
     color: var(--v4-text-3);
     font-size: var(--type-body, var(--text-base));
+  }
+
+  .files-empty-title {
+    color: var(--v4-text-1);
+    font-size: var(--type-section, var(--text-base));
+    font-weight: 600;
+  }
+
+  .files-empty p {
+    max-width: 42ch;
+    margin: 0;
+    color: var(--v4-text-3);
+    font-size: var(--type-secondary, var(--text-sm));
+    line-height: 1.4;
   }
 
   .activity-panel {
@@ -2108,6 +2288,19 @@
 
   /* Responsive: keep breadcrumb/status/actions visible; board can scroll.
      Task rail collapses safely; primary close/open actions stay visible. */
+  @container project-detail (max-width: 900px) {
+    .toolbar-actions {
+      width: 100%;
+      flex: 1 1 100%;
+      justify-content: flex-start;
+    }
+
+    .toolbar-action {
+      max-width: 100%;
+      white-space: normal;
+    }
+  }
+
   @container project-detail (max-width: 760px) {
     .detail-layout {
       grid-template-columns: minmax(0, 1fr);
@@ -2125,16 +2318,19 @@
     }
 
     .files-layout {
-      flex-direction: column;
+      grid-template-columns: minmax(0, 1fr);
+      grid-template-rows: minmax(180px, 38%) minmax(260px, 1fr);
     }
 
     .files-tree {
-      flex: 0 0 auto;
-      max-width: none;
       width: 100%;
-      max-height: 220px;
       border-right: 0;
       border-bottom: 1px solid var(--v4-hairline);
+    }
+
+    .files-tree-header,
+    .files-tree-scroll {
+      padding-right: 0;
     }
   }
 
@@ -2166,7 +2362,7 @@
       position: sticky;
       top: 0;
       z-index: 1;
-      background: var(--v4-chrome);
+      background: color-mix(in srgb, var(--v4-text-1) 5%, transparent);
     }
   }
 

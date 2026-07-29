@@ -2,7 +2,7 @@
   /**
    * MarketplacePage — Marketplace as a top-level desktop destination (US-007,
    * ⌘4). Promoted out of the Library tabs; the self-contained MarketplacePanel
-   * owns fetching, install states, README preview, and YOUR LISTINGS.
+   * owns fetching, install states, README preview, and the published listing grid.
    */
   import MarketplacePanel from '../panels/MarketplacePanel.svelte';
 </script>

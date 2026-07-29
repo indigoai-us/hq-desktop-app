@@ -21,16 +21,22 @@
 //!     and a company's skills in `companies/<slug>/skills/*`.
 //!
 //! Like the other local readers, callers resolve the HQ folder with the standard
-//! 4-tier resolver, and detail reads are guarded with the lexical
-//! `is_within` path-traversal check. Parsing is lenient: a missing registry or an
+//! 4-tier resolver. Detail reads strictly validate the HQ-relative wire path,
+//! canonicalize the terminal file, and reject both HQ escapes and company-scope
+//! changes through symlinks. Parsing is lenient: a missing registry or an
 //! unreadable/garbage individual file is skipped (empty result), never a panic —
 //! one bad worker.yaml must not blank the whole library.
 
+use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use crate::config::{read_hq_config_lenient, MenubarPrefs};
+use crate::desktop_alt::{
+    canonical_hq_relative_path, company_slug_for_hq_path, open_hq_regular_file_no_follow,
+    validate_hq_relative_path,
+};
 use crate::paths;
 
 // ---- wire types (camelCase) ------------------------------------------------
@@ -154,6 +160,19 @@ pub struct SkillDetail {
     pub body: String,
 }
 
+/// A detail file after strict wire-path validation and canonical filesystem
+/// resolution. `relative_path` retains the authorized lexical alias (for
+/// example `.claude/skills/land/SKILL.md`), while `canonical_relative_path` and
+/// `absolute_path` identify the target that is actually read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedLibraryDetailTarget {
+    pub hq_root: PathBuf,
+    pub absolute_path: PathBuf,
+    pub relative_path: String,
+    pub canonical_relative_path: String,
+    pub company_slug: Option<String>,
+}
+
 // ---- on-disk parse models --------------------------------------------------
 
 /// One registry entry, built by hand from `serde_yaml::Value` (see
@@ -235,6 +254,94 @@ pub fn resolve_hq_folder() -> PathBuf {
         config.as_ref().and_then(|c| c.hq_folder_path.as_deref()),
         menubar_prefs.as_ref().and_then(|p| p.hq_path.as_deref()),
     )
+}
+
+/// Validate the Library's HQ-relative wire spelling without silently accepting
+/// whitespace, `.` aliases, duplicate separators, or more than the one legacy
+/// trailing slash used by worker-directory rows.
+fn normalize_library_relative_path(
+    raw_path: &str,
+    field: &str,
+    allow_one_trailing_slash: bool,
+) -> Result<String, String> {
+    if raw_path != raw_path.trim() {
+        return Err(format!("{field} must use a canonical HQ-relative path"));
+    }
+    let without_trailing = if allow_one_trailing_slash {
+        raw_path.strip_suffix('/').unwrap_or(raw_path)
+    } else {
+        raw_path
+    };
+    let normalized = validate_hq_relative_path(without_trailing, false)
+        .map_err(|error| format!("invalid {field}: {error}"))?;
+    if normalized != without_trailing {
+        return Err(format!("{field} must use a canonical HQ-relative path"));
+    }
+    Ok(normalized)
+}
+
+fn resolve_library_terminal_target(
+    hq_root: &Path,
+    relative_path: String,
+    terminal_name: &str,
+) -> Result<ResolvedLibraryDetailTarget, String> {
+    if Path::new(&relative_path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        != Some(terminal_name)
+    {
+        return Err(format!("library path must point at {terminal_name}"));
+    }
+
+    let canonical_relative_path = canonical_hq_relative_path(hq_root, &relative_path, false)?;
+    if Path::new(&canonical_relative_path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        != Some(terminal_name)
+    {
+        return Err(format!(
+            "library path resolves to a file other than {terminal_name}"
+        ));
+    }
+
+    let lexical_company = company_slug_for_hq_path(&relative_path)?;
+    let canonical_company = company_slug_for_hq_path(&canonical_relative_path)?;
+    if lexical_company != canonical_company {
+        return Err("library path resolves across HQ company boundaries".to_string());
+    }
+
+    let canonical_root = std::fs::canonicalize(hq_root)
+        .map_err(|error| format!("could not resolve HQ folder: {error}"))?;
+    let absolute_path = canonical_root.join(&canonical_relative_path);
+    if !absolute_path.is_file() {
+        return Err(format!("library target is not a file: {relative_path:?}"));
+    }
+
+    Ok(ResolvedLibraryDetailTarget {
+        hq_root: canonical_root,
+        absolute_path,
+        relative_path,
+        canonical_relative_path,
+        company_slug: canonical_company,
+    })
+}
+
+/// Resolve one worker directory to its canonical `worker.yaml` terminal file.
+pub fn resolve_worker_detail_target(
+    hq_root: &Path,
+    worker_path: &str,
+) -> Result<ResolvedLibraryDetailTarget, String> {
+    let worker_dir = normalize_library_relative_path(worker_path, "worker_path", true)?;
+    resolve_library_terminal_target(hq_root, format!("{worker_dir}/worker.yaml"), "worker.yaml")
+}
+
+/// Resolve one skill path to its canonical `SKILL.md` terminal file.
+pub fn resolve_skill_detail_target(
+    hq_root: &Path,
+    skill_path: &str,
+) -> Result<ResolvedLibraryDetailTarget, String> {
+    let relative_path = normalize_library_relative_path(skill_path, "skill_path", false)?;
+    resolve_library_terminal_target(hq_root, relative_path, "SKILL.md")
 }
 
 // ---- pure scanners (explicit HQ root → unit-testable) ----------------------
@@ -380,6 +487,48 @@ pub fn worker_row(entry: &RawWorkerEntry, scope: &str, company: Option<String>) 
     }
 }
 
+fn safe_registry_worker_row(
+    hq_root: &Path,
+    entry: &RawWorkerEntry,
+    scope: &str,
+    company: Option<String>,
+) -> Option<LibraryWorker> {
+    let worker_dir =
+        normalize_library_relative_path(&entry.path, "registry worker path", true).ok()?;
+    let lexical_company = company_slug_for_hq_path(&worker_dir).ok()?;
+    if company.is_none() && (worker_dir == "companies" || worker_dir.starts_with("companies/")) {
+        return None;
+    }
+    if lexical_company != company {
+        return None;
+    }
+    if let Some(slug) = company.as_deref() {
+        let required_prefix = format!("companies/{slug}/workers/");
+        if !format!("{worker_dir}/").starts_with(&required_prefix) {
+            return None;
+        }
+    }
+
+    // A generated registry can lead the filesystem. Preserve a valid row when
+    // its detail file has not landed yet, but if a terminal exists (including a
+    // symlink) it must resolve within the same authorized scope.
+    let terminal = hq_root.join(&worker_dir).join("worker.yaml");
+    match std::fs::symlink_metadata(&terminal) {
+        Ok(_) => {
+            let target = resolve_worker_detail_target(hq_root, &worker_dir).ok()?;
+            if target.company_slug != company {
+                return None;
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return None,
+    }
+
+    let mut row = worker_row(entry, scope, company);
+    row.path = format!("{worker_dir}/");
+    Some(row)
+}
+
 pub fn push_unique_worker(workers: &mut Vec<LibraryWorker>, worker: LibraryWorker) {
     let next_path = worker.path.trim_end_matches('/');
     if workers
@@ -428,7 +577,7 @@ pub fn collect_worker_yaml_files(dir: &Path, out: &mut Vec<PathBuf>) {
         let Ok(file_type) = entry.file_type() else {
             continue;
         };
-        if file_type.is_file() && name == "worker.yaml" {
+        if name == "worker.yaml" && (file_type.is_file() || file_type.is_symlink()) {
             out.push(path);
             continue;
         }
@@ -447,23 +596,19 @@ pub fn worker_from_yaml(
     if yaml_path.file_name().and_then(|n| n.to_str()) != Some("worker.yaml") {
         return None;
     }
-    if !is_within(hq_root, yaml_path) {
-        return None;
-    }
-
-    let raw = std::fs::read_to_string(yaml_path).ok()?;
-    let parsed: WorkerFile = serde_yaml::from_str(&raw).ok()?;
     let dir = yaml_path.parent()?;
     let rel = dir
         .strip_prefix(hq_root)
         .ok()?
         .to_string_lossy()
         .replace('\\', "/");
-    let path = if rel.ends_with('/') {
-        rel
-    } else {
-        format!("{rel}/")
-    };
+    let target = resolve_worker_detail_target(hq_root, &rel).ok()?;
+    if target.company_slug != company {
+        return None;
+    }
+    let raw = read_library_target_text(&target).ok()?;
+    let parsed: WorkerFile = serde_yaml::from_str(&raw).ok()?;
+    let path = format!("{rel}/");
     let fallback_id = last_path_segment(&path);
     let id = if parsed.worker.id.trim().is_empty() {
         fallback_id
@@ -494,18 +639,19 @@ pub fn worker_from_yaml(
     })
 }
 
-/// The ROOT library is an ALL-SCOPES view: core (public workers + `.claude/skills`),
-/// the personal overlay (`personal/skills`), AND every company's private workers +
-/// company-scoped skills. The desktop UI narrows it with a client-side facet
-/// filter (Core / Personal / per-company), so the backend just returns the union.
-pub fn scan_root_library(hq_root: &Path) -> LibraryItems {
+/// The ROOT library contains global/public + personal items and only the company
+/// scopes authorized by the caller's live workspace snapshot.
+pub fn scan_root_library(
+    hq_root: &Path,
+    authorized_company_slugs: &BTreeSet<String>,
+) -> LibraryItems {
     let registry = read_registry(hq_root);
 
     // Core: public/shared workers + the root + personal skill dirs.
     let mut workers: Vec<LibraryWorker> = registry
         .iter()
         .filter(|e| e.visibility == "public")
-        .map(|e| worker_row(e, "root", None))
+        .filter_map(|e| safe_registry_worker_row(hq_root, e, "root", None))
         .collect();
     for worker in scan_worker_yaml_dir(hq_root, &hq_root.join("core/workers/public"), "root", None)
     {
@@ -519,23 +665,16 @@ pub fn scan_root_library(hq_root: &Path) -> LibraryItems {
         None,
     ));
 
-    // Every company's private workers (by registry path prefix) + its skills.
-    for slug in company_slugs(hq_root, &registry) {
-        let prefix = format!("companies/{slug}/workers/");
-        for e in registry.iter().filter(|e| e.path.starts_with(&prefix)) {
-            push_unique_worker(&mut workers, worker_row(e, "company", Some(slug.clone())));
-        }
-        let workers_dir = hq_root.join("companies").join(&slug).join("workers");
-        for worker in scan_worker_yaml_dir(hq_root, &workers_dir, "company", Some(slug.clone())) {
+    for slug in authorized_company_slugs {
+        let Ok(company_items) = scan_company_library(hq_root, slug) else {
+            // Root is a lenient aggregate. An invalid/broken company folder
+            // fails closed without blanking global or other authorized items.
+            continue;
+        };
+        for worker in company_items.workers {
             push_unique_worker(&mut workers, worker);
         }
-        let skills_dir = hq_root.join("companies").join(&slug).join("skills");
-        skills.extend(scan_skills_dir(
-            hq_root,
-            &skills_dir,
-            "company",
-            Some(slug.clone()),
-        ));
+        skills.extend(company_items.skills);
     }
 
     LibraryItems { workers, skills }
@@ -579,14 +718,44 @@ pub fn slug_from_worker_path(path: &str) -> Option<String> {
     }
 }
 
+fn validate_company_library_root(hq_root: &Path, slug: &str) -> Result<bool, String> {
+    let relative = format!("companies/{slug}");
+    let candidate = hq_root.join(&relative);
+    match std::fs::symlink_metadata(&candidate) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(format!(
+                "could not inspect company library {slug:?}: {error}"
+            ))
+        }
+    }
+
+    let canonical = canonical_hq_relative_path(hq_root, &relative, false)?;
+    if canonical != relative {
+        return Err(format!(
+            "company library resolves outside its canonical scope: {slug:?}"
+        ));
+    }
+    let canonical_root = std::fs::canonicalize(hq_root)
+        .map_err(|error| format!("could not resolve HQ folder: {error}"))?;
+    if !canonical_root.join(&canonical).is_dir() {
+        return Err(format!("company library is not a directory: {slug:?}"));
+    }
+    Ok(true)
+}
+
 pub fn scan_company_library(hq_root: &Path, company_slug: &str) -> Result<LibraryItems, String> {
     let slug = validate_slug(company_slug)?;
+    if !validate_company_library_root(hq_root, &slug)? {
+        return Ok(LibraryItems::default());
+    }
 
     let prefix = format!("companies/{slug}/workers/");
     let mut workers: Vec<LibraryWorker> = read_registry(hq_root)
         .iter()
         .filter(|e| e.path.starts_with(&prefix))
-        .map(|e| worker_row(e, "company", Some(slug.clone())))
+        .filter_map(|e| safe_registry_worker_row(hq_root, e, "company", Some(slug.clone())))
         .collect();
     let workers_dir = hq_root.join("companies").join(&slug).join("workers");
     for worker in scan_worker_yaml_dir(hq_root, &workers_dir, "company", Some(slug.clone())) {
@@ -623,9 +792,20 @@ pub fn scan_skills_dir(
         // A symlinked skill dir usually points into core/packages/hq-pack-<pack>/;
         // surface the pack so the UI can badge it.
         let pack = detect_pack(&entry.path());
-        // `.join("SKILL.md")` + read_to_string follows a symlinked skill dir.
+        // Resolve through symlinked pack dirs, but require the canonical target
+        // to stay inside HQ and in the same company/global authorization scope.
         let skill_md = entry.path().join("SKILL.md");
-        let Ok(raw) = std::fs::read_to_string(&skill_md) else {
+        let rel = match skill_md.strip_prefix(hq_root) {
+            Ok(r) => r.to_string_lossy().replace('\\', "/"),
+            Err(_) => continue,
+        };
+        let Ok(target) = resolve_skill_detail_target(hq_root, &rel) else {
+            continue;
+        };
+        if target.company_slug != company {
+            continue;
+        }
+        let Ok(raw) = read_library_target_text(&target) else {
             continue;
         };
         let (front_yaml, _body) = split_frontmatter(&raw);
@@ -636,10 +816,6 @@ pub fn scan_skills_dir(
             dir_name.clone()
         } else {
             front.name.clone()
-        };
-        let rel = match skill_md.strip_prefix(hq_root) {
-            Ok(r) => r.to_string_lossy().replace('\\', "/"),
-            Err(_) => continue,
         };
         out.push(LibrarySkill {
             name,
@@ -670,25 +846,62 @@ pub fn detect_pack(skill_dir: &Path) -> Option<String> {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    static LIBRARY_DETAIL_BEFORE_READ_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
+}
+
+#[cfg(test)]
+fn set_library_detail_before_read_hook(hook: impl FnOnce() + 'static) {
+    LIBRARY_DETAIL_BEFORE_READ_HOOK.with(|slot| {
+        *slot.borrow_mut() = Some(Box::new(hook));
+    });
+}
+
+#[cfg(test)]
+fn run_library_detail_before_read_hook() {
+    LIBRARY_DETAIL_BEFORE_READ_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook();
+        }
+    });
+}
+
+#[cfg(not(test))]
+fn run_library_detail_before_read_hook() {}
+
 pub fn read_worker_detail(hq_root: &Path, worker_path: &str) -> Result<WorkerDetail, String> {
-    let rel = worker_path.trim();
-    if rel.is_empty() {
-        return Err("worker_path is required".to_string());
-    }
-    let dir = hq_root.join(rel);
-    if !is_within(hq_root, &dir) {
-        return Err(format!(
-            "worker_path escapes the HQ folder: {worker_path:?}"
-        ));
-    }
-    let yaml_path = dir.join("worker.yaml");
-    if !is_within(hq_root, &yaml_path) {
-        return Err("worker.yaml path escapes the HQ folder".to_string());
-    }
-    let raw = std::fs::read_to_string(&yaml_path)
-        .map_err(|e| format!("could not read worker.yaml at {worker_path:?}: {e}"))?;
-    let parsed: WorkerFile = serde_yaml::from_str(&raw)
-        .map_err(|e| format!("worker.yaml at {worker_path:?} is not valid YAML: {e}"))?;
+    let target = resolve_worker_detail_target(hq_root, worker_path)?;
+    read_worker_detail_target(&target)
+}
+
+fn read_library_target_text(target: &ResolvedLibraryDetailTarget) -> Result<String, String> {
+    use std::io::Read;
+
+    let mut file =
+        open_hq_regular_file_no_follow(&target.hq_root, &target.canonical_relative_path)?;
+    let mut raw = String::new();
+    file.read_to_string(&mut raw).map_err(|error| {
+        format!(
+            "could not read library target at {:?}: {error}",
+            target.relative_path
+        )
+    })?;
+    Ok(raw)
+}
+
+pub fn read_worker_detail_target(
+    target: &ResolvedLibraryDetailTarget,
+) -> Result<WorkerDetail, String> {
+    run_library_detail_before_read_hook();
+    let raw = read_library_target_text(target)?;
+    let parsed: WorkerFile = serde_yaml::from_str(&raw).map_err(|error| {
+        format!(
+            "worker.yaml at {:?} is not valid YAML: {error}",
+            target.relative_path
+        )
+    })?;
 
     Ok(WorkerDetail {
         id: parsed.worker.id,
@@ -703,19 +916,15 @@ pub fn read_worker_detail(hq_root: &Path, worker_path: &str) -> Result<WorkerDet
 }
 
 pub fn read_skill_detail(hq_root: &Path, skill_path: &str) -> Result<SkillDetail, String> {
-    let rel = skill_path.trim();
-    if rel.is_empty() {
-        return Err("skill_path is required".to_string());
-    }
-    let abs = hq_root.join(rel);
-    if !is_within(hq_root, &abs) {
-        return Err(format!("skill_path escapes the HQ folder: {skill_path:?}"));
-    }
-    if abs.file_name().and_then(|n| n.to_str()) != Some("SKILL.md") {
-        return Err("skill_path must point at a SKILL.md file".to_string());
-    }
-    let raw = std::fs::read_to_string(&abs)
-        .map_err(|e| format!("could not read SKILL.md at {skill_path:?}: {e}"))?;
+    let target = resolve_skill_detail_target(hq_root, skill_path)?;
+    read_skill_detail_target(&target)
+}
+
+pub fn read_skill_detail_target(
+    target: &ResolvedLibraryDetailTarget,
+) -> Result<SkillDetail, String> {
+    run_library_detail_before_read_hook();
+    let raw = read_library_target_text(target)?;
     let (front_yaml, body) = split_frontmatter(&raw);
     let front = front_yaml
         .and_then(|y| serde_yaml::from_str::<SkillFrontmatter>(y).ok())
@@ -841,14 +1050,15 @@ pub fn normalize_instructions(value: Option<&serde_yaml::Value>) -> String {
 
 /// Validate a company slug is a single safe directory name.
 pub fn validate_slug(company_slug: &str) -> Result<String, String> {
-    let slug = company_slug.trim();
-    if slug.is_empty() {
-        return Err("company_slug is required".to_string());
-    }
-    if slug.contains('/') || slug.contains('\\') || slug == "." || slug == ".." {
+    if company_slug != company_slug.trim() {
         return Err(format!("invalid company_slug: {company_slug:?}"));
     }
-    Ok(slug.to_string())
+    let slug = validate_hq_relative_path(company_slug, false)
+        .map_err(|_| format!("invalid company_slug: {company_slug:?}"))?;
+    if slug != company_slug || slug.contains('/') {
+        return Err(format!("invalid company_slug: {company_slug:?}"));
+    }
+    Ok(slug)
 }
 
 // ---- path-traversal guard (mirrors projects_local.rs) ----------------------
@@ -888,7 +1098,12 @@ pub fn lexically_normalize(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
     use std::fs;
+
+    fn authorized(slugs: &[&str]) -> BTreeSet<String> {
+        slugs.iter().map(|slug| (*slug).to_string()).collect()
+    }
 
     /// Build a throwaway HQ tree under a unique temp dir and return its root.
     fn make_fixture_tree() -> PathBuf {
@@ -953,6 +1168,16 @@ skills:
 "#;
         fs::write(cmo.join("worker.yaml"), cmo_yaml).unwrap();
 
+        // A second company makes authorization filtering and cross-company
+        // symlink regressions observable.
+        let liverecover_worker = root.join("companies/liverecover/workers/gtm");
+        fs::create_dir_all(&liverecover_worker).unwrap();
+        fs::write(
+            liverecover_worker.join("worker.yaml"),
+            "worker:\n  id: gtm\n  name: \"LiveRecover GTM\"\n  type: OpsWorker\n  description: \"LiveRecover only\"\n",
+        )
+        .unwrap();
+
         // A worker.yaml with a block-scalar instructions + string skills.
         let arch = root.join("core/workers/public/dev-team/architect");
         fs::create_dir_all(&arch).unwrap();
@@ -1007,6 +1232,13 @@ skills:
             "---\nname: signals\ndescription: Surface action items\n---\n\n# Signals\n",
         )
         .unwrap();
+        let liverecover_skills = root.join("companies/liverecover/skills");
+        fs::create_dir_all(liverecover_skills.join("retention")).unwrap();
+        fs::write(
+            liverecover_skills.join("retention/SKILL.md"),
+            "---\nname: retention\ndescription: LiveRecover retention\n---\n\n# Retention\n",
+        )
+        .unwrap();
 
         // A skill WITH an author block (US-001) — must surface uid/handle/displayName.
         fs::create_dir_all(claude_skills.join("authored")).unwrap();
@@ -1031,7 +1263,7 @@ skills:
     #[test]
     fn root_library_aggregates_all_scopes() {
         let root = make_fixture_tree();
-        let items = scan_root_library(&root);
+        let items = scan_root_library(&root, &authorized(&["indigo", "liverecover"]));
 
         // Core worker is present and scoped "root".
         let architect = items.workers.iter().find(|w| w.id == "architect").unwrap();
@@ -1082,6 +1314,48 @@ skills:
         let _ = fs::remove_dir_all(&root);
     }
 
+    #[test]
+    fn root_library_filters_company_scopes_to_authorized_slugs() {
+        let root = make_fixture_tree();
+
+        let items = scan_root_library(&root, &authorized(&["indigo"]));
+        assert!(items.workers.iter().any(|worker| worker.id == "architect"));
+        assert!(items
+            .skills
+            .iter()
+            .any(|skill| skill.name == "impeccable" && skill.scope == "personal"));
+        assert!(items.workers.iter().any(|worker| {
+            worker.id == "cmo-indigo" && worker.company.as_deref() == Some("indigo")
+        }));
+        assert!(items.skills.iter().any(|skill| {
+            skill.name == "signals" && skill.company.as_deref() == Some("indigo")
+        }));
+        assert!(!items
+            .workers
+            .iter()
+            .any(|worker| worker.company.as_deref() == Some("liverecover")));
+        assert!(!items
+            .skills
+            .iter()
+            .any(|skill| skill.company.as_deref() == Some("liverecover")));
+
+        let global_only = scan_root_library(&root, &BTreeSet::new());
+        assert!(global_only
+            .workers
+            .iter()
+            .all(|worker| worker.company.is_none()));
+        assert!(global_only
+            .skills
+            .iter()
+            .all(|skill| skill.company.is_none()));
+        assert!(global_only
+            .skills
+            .iter()
+            .any(|skill| skill.name == "impeccable"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
     /// Regression for the "0 workers" bug: an UNQUOTED template entry
     /// (`id: {product}-gtm`) is YAML-parsed as a map, which previously aborted
     /// the whole registry deserialize and blanked every worker. The reader must
@@ -1093,7 +1367,7 @@ skills:
 
         // Root still sees the public worker despite the malformed template entry,
         // and the templated company worker surfaces (path-derived name "gtm").
-        let root_items = scan_root_library(&root);
+        let root_items = scan_root_library(&root, &authorized(&["indigo", "liverecover"]));
         assert!(root_items.workers.iter().any(|w| w.id == "architect"));
         assert!(root_items
             .workers
@@ -1120,7 +1394,7 @@ skills:
         )
         .unwrap();
 
-        let root_items = scan_root_library(&root);
+        let root_items = scan_root_library(&root, &authorized(&["indigo", "liverecover"]));
         let architect = root_items
             .workers
             .iter()
@@ -1231,6 +1505,17 @@ skills:
         assert_eq!(plan.name, "plan");
         assert!(plan.allowed_tools.is_empty());
 
+        let personal =
+            read_skill_detail(&root, "personal/skills/impeccable/SKILL.md").expect("personal");
+        assert_eq!(personal.name, "impeccable");
+
+        #[cfg(unix)]
+        {
+            let packaged =
+                read_skill_detail(&root, ".claude/skills/land/SKILL.md").expect("packaged");
+            assert_eq!(packaged.name, "land");
+        }
+
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -1251,11 +1536,245 @@ skills:
     }
 
     #[test]
+    fn detail_rejects_noncanonical_hq_relative_paths() {
+        let root = make_fixture_tree();
+        for invalid in [
+            " companies/indigo/workers/cmo/",
+            "companies/indigo/workers/cmo/ ",
+            "companies/indigo/./workers/cmo/",
+            "companies//indigo/workers/cmo/",
+            "companies/indigo/workers/cmo//",
+        ] {
+            assert!(
+                read_worker_detail(&root, invalid).is_err(),
+                "worker path {invalid:?}"
+            );
+        }
+        for invalid in [
+            " .claude/skills/run/SKILL.md",
+            ".claude/skills/run/SKILL.md ",
+            ".claude/skills/./run/SKILL.md",
+            ".claude//skills/run/SKILL.md",
+        ] {
+            assert!(
+                read_skill_detail(&root, invalid).is_err(),
+                "skill path {invalid:?}"
+            );
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn detail_and_scans_reject_cross_scope_and_outside_hq_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let root = make_fixture_tree();
+        let outside = root.with_extension("outside");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(
+            outside.join("SKILL.md"),
+            "---\nname: outside\n---\n\noutside\n",
+        )
+        .unwrap();
+        fs::write(
+            outside.join("worker.yaml"),
+            "worker:\n  id: outside\n  name: Outside\n  type: OpsWorker\n",
+        )
+        .unwrap();
+
+        let indigo_skills = root.join("companies/indigo/skills");
+        fs::create_dir_all(indigo_skills.join("cross")).unwrap();
+        symlink(
+            root.join("companies/liverecover/skills/retention/SKILL.md"),
+            indigo_skills.join("cross/SKILL.md"),
+        )
+        .unwrap();
+        fs::create_dir_all(indigo_skills.join("outside")).unwrap();
+        symlink(
+            outside.join("SKILL.md"),
+            indigo_skills.join("outside/SKILL.md"),
+        )
+        .unwrap();
+        fs::create_dir_all(indigo_skills.join("root-cross")).unwrap();
+        symlink(
+            root.join(".claude/skills/run/SKILL.md"),
+            indigo_skills.join("root-cross/SKILL.md"),
+        )
+        .unwrap();
+        fs::create_dir_all(indigo_skills.join("wrong-terminal")).unwrap();
+        fs::write(
+            root.join("companies/indigo/private.md"),
+            "same company, wrong terminal",
+        )
+        .unwrap();
+        symlink(
+            root.join("companies/indigo/private.md"),
+            indigo_skills.join("wrong-terminal/SKILL.md"),
+        )
+        .unwrap();
+
+        let indigo_workers = root.join("companies/indigo/workers");
+        fs::create_dir_all(indigo_workers.join("cross")).unwrap();
+        symlink(
+            root.join("companies/liverecover/workers/gtm/worker.yaml"),
+            indigo_workers.join("cross/worker.yaml"),
+        )
+        .unwrap();
+        fs::create_dir_all(indigo_workers.join("outside")).unwrap();
+        symlink(
+            outside.join("worker.yaml"),
+            indigo_workers.join("outside/worker.yaml"),
+        )
+        .unwrap();
+        fs::create_dir_all(indigo_workers.join("root-cross")).unwrap();
+        symlink(
+            root.join("core/workers/public/dev-team/architect/worker.yaml"),
+            indigo_workers.join("root-cross/worker.yaml"),
+        )
+        .unwrap();
+
+        assert!(read_skill_detail(&root, "companies/indigo/skills/cross/SKILL.md").is_err());
+        assert!(read_skill_detail(&root, "companies/indigo/skills/outside/SKILL.md").is_err());
+        assert!(read_skill_detail(&root, "companies/indigo/skills/root-cross/SKILL.md").is_err());
+        assert!(
+            read_skill_detail(&root, "companies/indigo/skills/wrong-terminal/SKILL.md").is_err()
+        );
+        assert!(read_worker_detail(&root, "companies/indigo/workers/cross/").is_err());
+        assert!(read_worker_detail(&root, "companies/indigo/workers/outside/").is_err());
+        assert!(read_worker_detail(&root, "companies/indigo/workers/root-cross/").is_err());
+
+        let company = scan_company_library(&root, "indigo").unwrap();
+        for rejected in ["cross", "outside", "root-cross", "wrong-terminal"] {
+            assert!(
+                !company
+                    .skills
+                    .iter()
+                    .any(|skill| skill.path.contains(&format!("/{rejected}/"))),
+                "skill alias {rejected:?}"
+            );
+        }
+        for rejected in ["cross", "outside", "root-cross"] {
+            assert!(
+                !company
+                    .workers
+                    .iter()
+                    .any(|worker| worker.path.contains(&format!("/{rejected}/"))),
+                "worker alias {rejected:?}"
+            );
+        }
+
+        fs::create_dir_all(root.join(".claude/skills/company-alias")).unwrap();
+        symlink(
+            root.join("companies/indigo/skills/signals/SKILL.md"),
+            root.join(".claude/skills/company-alias/SKILL.md"),
+        )
+        .unwrap();
+        assert!(read_skill_detail(&root, ".claude/skills/company-alias/SKILL.md").is_err());
+
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn worker_detail_rejects_parent_swap_after_target_resolution() {
+        use std::os::unix::fs::symlink;
+
+        let root = make_fixture_tree();
+        let target = resolve_worker_detail_target(&root, "companies/indigo/workers/cmo/").unwrap();
+        let authorized_dir = root.join("companies/indigo/workers/cmo");
+        let unauthorized_dir = root.join("companies/liverecover/workers/gtm");
+
+        set_library_detail_before_read_hook({
+            let root = root.clone();
+            let authorized_dir = authorized_dir.clone();
+            move || {
+                fs::rename(
+                    &authorized_dir,
+                    root.join("companies/indigo/workers/cmo-original"),
+                )
+                .unwrap();
+                symlink(&unauthorized_dir, &authorized_dir).unwrap();
+            }
+        });
+
+        let result = read_worker_detail_target(&target);
+        assert!(
+            result.is_err(),
+            "a parent swap must fail closed, got {:?}",
+            result.unwrap()
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn skill_detail_rejects_parent_swap_after_target_resolution() {
+        use std::os::unix::fs::symlink;
+
+        let root = make_fixture_tree();
+        let target =
+            resolve_skill_detail_target(&root, "companies/indigo/skills/signals/SKILL.md").unwrap();
+        let authorized_dir = root.join("companies/indigo/skills/signals");
+        let unauthorized_dir = root.join("companies/liverecover/skills/retention");
+
+        set_library_detail_before_read_hook({
+            let root = root.clone();
+            let authorized_dir = authorized_dir.clone();
+            move || {
+                fs::rename(
+                    &authorized_dir,
+                    root.join("companies/indigo/skills/signals-original"),
+                )
+                .unwrap();
+                symlink(&unauthorized_dir, &authorized_dir).unwrap();
+            }
+        });
+
+        let result = read_skill_detail_target(&target);
+        assert!(
+            result.is_err(),
+            "a parent swap must fail closed, got {:?}",
+            result.unwrap()
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn company_library_rejects_cross_company_and_outside_hq_directory_aliases() {
+        use std::os::unix::fs::symlink;
+
+        let root = make_fixture_tree();
+        fs::rename(
+            root.join("companies/indigo"),
+            root.join("companies/indigo-real"),
+        )
+        .unwrap();
+        symlink(
+            root.join("companies/liverecover"),
+            root.join("companies/indigo"),
+        )
+        .unwrap();
+        assert!(scan_company_library(&root, "indigo").is_err());
+
+        fs::remove_file(root.join("companies/indigo")).unwrap();
+        let outside = root.with_extension("outside-company");
+        fs::create_dir_all(&outside).unwrap();
+        symlink(&outside, root.join("companies/indigo")).unwrap();
+        assert!(scan_company_library(&root, "indigo").is_err());
+
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    #[test]
     fn missing_registry_is_empty_not_panic() {
         let root =
             std::env::temp_dir().join(format!("hq-library-local-empty-{}", std::process::id()));
         let _ = fs::create_dir_all(&root);
-        let items = scan_root_library(&root);
+        let items = scan_root_library(&root, &BTreeSet::new());
         assert!(items.workers.is_empty());
         assert!(items.skills.is_empty());
         let _ = fs::remove_dir_all(&root);
@@ -1324,7 +1843,7 @@ skills:
         // Case 1: the registry still has its original (pre-creation) entries — the
         // reindex hook hasn't run yet. The on-disk worker.yaml fallback must still
         // surface glm-5-2.
-        let stale = scan_root_library(&root);
+        let stale = scan_root_library(&root, &authorized(&["indigo"]));
         let from_fs = stale
             .workers
             .iter()
@@ -1348,7 +1867,7 @@ skills:
         )
         .unwrap();
 
-        let fresh = scan_root_library(&root);
+        let fresh = scan_root_library(&root, &authorized(&["indigo"]));
         let matches: Vec<_> = fresh
             .workers
             .iter()

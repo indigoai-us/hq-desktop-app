@@ -8,7 +8,7 @@
 // 2. Mix of read/unread → all rows, dots only on unread; badge shows unread count only.
 // 3. Restart persistence: seed localStorage, mount without initialItems → rows survive;
 //    empty localStorage + no items → empty state.
-// 4. 10-max: 12 recent items → popup renders exactly 10 rows.
+// 4. Screen-safe cap: 12 recent items → popup renders exactly 7 rows.
 
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -235,7 +235,8 @@ describe('US-015: widget popup shows recent history (not just unviewed)', () => 
       const list = pinOpen();
       const empty = list.querySelector('[data-testid="widget-empty-state"]');
       expect(empty).toBeTruthy();
-      expect(empty!.textContent?.trim()).toBe('No recent notifications');
+      expect(empty!.textContent).toContain('You’re caught up');
+      expect(empty!.textContent).toContain('New messages, channel activity');
       expect(list.querySelectorAll('[data-testid="notification-row"]')).toHaveLength(0);
     });
 
@@ -256,8 +257,8 @@ describe('US-015: widget popup shows recent history (not just unviewed)', () => 
     });
   });
 
-  describe('hover max 10', () => {
-    it('seeds 12 recent items → popup renders exactly WIDGET_HOVER_MAX (10) rows', () => {
+  describe('screen-safe hover cap', () => {
+    it('seeds 12 recent items → popup renders exactly WIDGET_HOVER_MAX (7) rows', () => {
       vi.useFakeTimers();
       vi.setSystemTime(new Date(2026, 6, 15, 12, 0, 0));
       const now = Date.now();
@@ -277,7 +278,7 @@ describe('US-015: widget popup shows recent history (not just unviewed)', () => 
       expect(list.querySelectorAll('[data-testid="notification-row"]')).toHaveLength(
         WIDGET_HOVER_MAX,
       );
-      expect(WIDGET_HOVER_MAX).toBe(10);
+      expect(WIDGET_HOVER_MAX).toBe(7);
     });
   });
 
@@ -305,28 +306,41 @@ describe('US-015: widget popup shows recent history (not just unviewed)', () => 
       );
     });
 
-    it('update Open + context menu Inbox use open_inbox_window (not desktop-alt)', () => {
+    it('update Open routes to Updates while context menu Messages keeps the quick window', () => {
       const { readFileSync } = require('node:fs') as typeof import('node:fs');
       const { resolve } = require('node:path') as typeof import('node:path');
       const src = readFileSync(
         resolve(process.cwd(), 'src/components/Widget.svelte'),
         'utf8',
       );
-      expect(src).toContain("open_inbox_window");
-      // Non-install update Open → two-pane Inbox quick window.
-      expect(src).toMatch(/kind === 'update'[\s\S]*open_inbox_window/);
+      expect(src).toContain("open_communications_window");
+      const openStart = src.indexOf('async function handleOpen');
+      const openEnd = src.indexOf('async function handleAction', openStart);
+      const openBody = src.slice(openStart, openEnd);
+      expect(openBody).toMatch(
+        /kind === 'update'[\s\S]*open_desktop_alt_window[\s\S]*route:\s*'settings:updates'/,
+      );
+      const menuStart = src.indexOf('async function menuOpenInbox');
+      const menuEnd = src.indexOf('async function menuOpenDesktop', menuStart);
+      expect(src.slice(menuStart, menuEnd)).toContain(
+        "invoke('open_communications_window')",
+      );
       expect(src).toContain('oncontextmenu={handleWordmarkContextMenu}');
       expect(src).toContain('widget-context-menu');
       expect(src).toContain('widget-menu-inbox');
       expect(src).toContain('widget-menu-desktop');
       expect(src).toContain('Open desktop view');
-      // Fallback opens must not force desktop-alt inbox.
-      expect(src).not.toMatch(/open_desktop_alt_window',\s*\{\s*route:\s*'inbox'/);
+      // Update navigation must never fall through to the quick communications window.
+      const updateStart = openBody.indexOf("item.kind === 'update'");
+      const updateEnd = openBody.indexOf("item.kind === 'meeting'", updateStart);
+      expect(openBody.slice(updateStart, updateEnd)).not.toContain(
+        "invoke('open_communications_window')",
+      );
     });
   });
 
   describe('context menu (behavioral)', () => {
-    it('right-click wordmark shows Inbox + Open desktop view items', () => {
+    it('right-click wordmark shows Messages + Open desktop view items', () => {
       mountWidget();
       const wm = host.querySelector('.wm')!;
       wm.dispatchEvent(
@@ -336,14 +350,14 @@ describe('US-015: widget popup shows recent history (not just unviewed)', () => 
       const menu = host.querySelector('[data-testid="widget-context-menu"]');
       expect(menu).toBeTruthy();
       expect(host.querySelector('[data-testid="widget-menu-inbox"]')?.textContent?.trim()).toBe(
-        'Inbox',
+        'Messages',
       );
       expect(
         host.querySelector('[data-testid="widget-menu-desktop"]')?.textContent?.trim(),
       ).toBe('Open desktop view');
     });
 
-    it('mini popup footer has icon-only Inbox + Desktop actions with titles', () => {
+    it('mini popup footer exposes labeled Messages and HQ destinations', () => {
       vi.useFakeTimers();
       vi.setSystemTime(new Date(2026, 6, 15, 12, 0, 0));
       const now = Date.now();
@@ -357,16 +371,13 @@ describe('US-015: widget popup shows recent history (not just unviewed)', () => 
       const desktop = host.querySelector<HTMLButtonElement>(
         '[data-testid="widget-hover-desktop"]',
       );
-      expect(inbox?.getAttribute('title')).toBe('Inbox');
-      expect(inbox?.getAttribute('aria-label')).toBe('Inbox');
-      expect(desktop?.getAttribute('title')).toBe('Desktop');
-      expect(desktop?.getAttribute('aria-label')).toBe('Desktop');
-      // Icons only — no long text labels in the button body.
-      expect(inbox?.textContent?.trim()).toBe('');
-      expect(desktop?.textContent?.trim()).toBe('');
+      expect(inbox?.getAttribute('aria-label')).toBe('Open messages');
+      expect(desktop?.getAttribute('aria-label')).toBe('Open HQ');
+      expect(inbox?.textContent?.trim()).toBe('Open messages');
+      expect(desktop?.textContent?.trim()).toBe('Open HQ');
     });
 
-    it('Inbox menu item closes the context menu (opens quick window via Tauri)', () => {
+    it('Messages menu item closes the context menu (opens quick window via Tauri)', () => {
       mountWidget();
       const wm = host.querySelector('.wm')!;
       wm.dispatchEvent(
@@ -375,7 +386,7 @@ describe('US-015: widget popup shows recent history (not just unviewed)', () => 
       flushSync();
       host.querySelector<HTMLButtonElement>('[data-testid="widget-menu-inbox"]')!.click();
       flushSync();
-      // No Tauri → falls back to mini list; with Tauri would invoke open_inbox_window.
+      // No Tauri → falls back to mini list; native uses open_communications_window.
       expect(host.querySelector('[data-testid="widget-context-menu"]')).toBeNull();
     });
   });

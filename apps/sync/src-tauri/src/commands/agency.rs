@@ -7,7 +7,7 @@ use hq_desktop_core::agency::{
     agency_root, child_dirs, cksum, classify_message, inbox_ready, is_within, now_iso,
     parse_options, read_jsonl, read_status_map, resolve_hq_folder,
 };
-pub use hq_desktop_core::agency::{AgencyWorker, AgencyTeam, AgencyQuestion, AgencyMessage};
+pub use hq_desktop_core::agency::{AgencyMessage, AgencyQuestion, AgencyTeam, AgencyWorker};
 
 /// List every agency team under `workspace/agency/<company>/<team>/`, each with
 /// its `(worker, instance)` rows + status + ready flag. Empty (not an error)

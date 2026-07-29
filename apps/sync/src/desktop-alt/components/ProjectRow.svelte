@@ -19,7 +19,9 @@
     type Project,
     type ProjectLiveRunView,
   } from '../lib/projects-model';
+  import { mergeProvenance, normalizeProvenance } from '../lib/provenance';
   import { relativeActivity } from '../lib/sessions';
+  import ProvenanceLine from './ProvenanceLine.svelte';
 
   interface Props {
     project: Project;
@@ -27,8 +29,10 @@
     showCompany?: boolean;
     /** Linked goal title when known; omit when unlinked. */
     goalLabel?: string | null;
-    /** Owner / lead label when known. */
+    /** Genuine owner label from a legacy portfolio caller, when known. */
     ownerLabel?: string | null;
+    /** The cloud attribution lookup failed; local provenance remains authoritative. */
+    provenanceUnavailable?: boolean;
     /**
      * Live run view for Active cards. Only pass when a real live signal exists.
      * When null/undefined, the quiet state-context line is used instead.
@@ -49,6 +53,7 @@
     showCompany = true,
     goalLabel = null,
     ownerLabel = null,
+    provenanceUnavailable = false,
     liveRun = null,
     stateContext = null,
     now = Date.now(),
@@ -62,7 +67,13 @@
   const progress = $derived(projectProgress(project.storiesComplete, project.storiesTotal));
   const hasProgress = $derived(progress.total > 0);
   const showPortfolioMeta = $derived(
-    goalLabel !== null || ownerLabel !== null || stateContext !== null || liveRun !== null,
+    goalLabel !== null || stateContext !== null || liveRun !== null,
+  );
+  const cardProvenance = $derived(
+    mergeProvenance(
+      project.provenance,
+      normalizeProvenance(ownerLabel ? { owner: ownerLabel } : null),
+    ),
   );
 
   function activate() {
@@ -75,124 +86,130 @@
   }
 </script>
 
-<button
-  type="button"
+<article
   class="project-card"
   data-status={status}
   data-testid="project-row"
-  aria-label={`Project ${projectDisplayName(project)}`}
-  onclick={activate}
 >
-  <div class="card-head">
-    {#if ownerLabel}
-      <span class="owner-chip" title={ownerLabel}>{ownerLabel}</span>
-    {:else}
+  <button
+    type="button"
+    class="project-open"
+    aria-label={`Project ${projectDisplayName(project)}`}
+    onclick={activate}
+  >
+    <div class="card-head">
       <span class="status-tag" data-status={status}>
-        <span class="status-dot" class:is-live={isLive} data-status={status} aria-hidden="true"></span>
+        <span
+          class="status-dot"
+          class:is-live={isLive}
+          data-status={status}
+          aria-hidden="true"
+        ></span>
         {PROJECT_LIST_STATUS_LABEL[status]}
       </span>
-    {/if}
-    {#if showCompany && project.company && !showPortfolioMeta}
-      <span class="pill company" title={project.company}>{project.company}</span>
-    {/if}
-  </div>
-
-  <div class="title-stack">
-    <h3 class="card-name" title={projectDisplayName(project)}>{projectDisplayName(project)}</h3>
-    {#if project.description}
-      <p class="card-desc">{project.description}</p>
-    {/if}
-  </div>
-
-  {#if showPortfolioMeta}
-    <div class="card-context">
-      <span class="context-goal" title={goalLabel ?? 'No linked goal'}>
-        {goalLabel ?? 'No linked goal'}
-      </span>
-      {#if hasProgress}
-        <span class="context-tasks">{progress.complete} / {progress.total} tasks</span>
+      {#if showCompany && project.company && !showPortfolioMeta}
+        <span class="pill company" title={project.company}>{project.company}</span>
       {/if}
     </div>
-  {/if}
 
-  {#if hasProgress}
-    <div class="card-progress">
-      <div class="progress-track" aria-hidden="true">
-        <div
-          class="progress-fill"
-          data-status={status}
-          class:live-run={liveRun !== null}
-          style={`width: ${progress.percent}%;`}
-        ></div>
-      </div>
-      {#if !showPortfolioMeta}
-        <span class="progress-count">{progress.complete}/{progress.total}</span>
-        <span class="progress-percent">{progress.percent}%</span>
+    <div class="title-stack">
+      <h3 class="card-name" title={projectDisplayName(project)}>{projectDisplayName(project)}</h3>
+      {#if project.description}
+        <p class="card-desc">{project.description}</p>
       {/if}
     </div>
-  {/if}
 
-  {#if liveRun}
-    <div class="live-run" data-testid="project-live-run">
-      <div class="live-run-head">
-        <span class="live-run-phase">
-          <span class="live-dot" aria-hidden="true"></span>
-          {liveRun.phase ?? 'Live'}
+    <ProvenanceLine
+      provenance={cardProvenance}
+      kind="project"
+      testid="project-card-provenance"
+      unavailable={provenanceUnavailable}
+    />
+
+    {#if showPortfolioMeta}
+      <div class="card-context">
+        <span class="context-goal" title={goalLabel ?? 'No linked goal'}>
+          {goalLabel ?? 'No linked goal'}
         </span>
-        {#if liveRun.elapsed}
-          <span class="live-run-time">{liveRun.elapsed}</span>
+        {#if hasProgress}
+          <span class="context-tasks">{progress.complete} / {progress.total} tasks</span>
         {/if}
       </div>
-      {#if liveRun.progressPercent !== null}
-        <div class="live-run-track" aria-hidden="true">
-          <span style={`width: ${liveRun.progressPercent}%`}></span>
+    {/if}
+
+    {#if hasProgress}
+      <div class="card-progress">
+        <div class="progress-track" aria-hidden="true">
+          <div
+            class="progress-fill"
+            data-status={status}
+            class:live-run={liveRun !== null}
+            style={`width: ${progress.percent}%;`}
+          ></div>
         </div>
-      {/if}
-      <div class="live-run-foot">
-        <span>
-          {liveRun.workers}
-          {liveRun.workers === 1 ? 'worker' : 'workers'}
-          {#if liveRun.subagents !== null}
-            · {liveRun.subagents}
-            {liveRun.subagents === 1 ? 'subagent' : 'subagents'}
-          {:else}
-            · subagents unavailable
-          {/if}
-        </span>
-        <span>
-          {#if liveRun.lastSignalAt}
-            {relativeActivity(liveRun.lastSignalAt, now)}
-          {:else}
-            signal unavailable
-          {/if}
-        </span>
+        {#if !showPortfolioMeta}
+          <span class="progress-count">{progress.complete}/{progress.total}</span>
+          <span class="progress-percent">{progress.percent}%</span>
+        {/if}
       </div>
-    </div>
-  {:else if stateContext}
-    <span class="quiet-run-state">{stateContext}</span>
-  {/if}
+    {/if}
+
+    {#if liveRun}
+      <div class="live-run" data-testid="project-live-run">
+        <div class="live-run-head">
+          <span class="live-run-phase">
+            <span class="live-dot" aria-hidden="true"></span>
+            {liveRun.phase ?? 'Live'}
+          </span>
+          {#if liveRun.elapsed}
+            <span class="live-run-time">{liveRun.elapsed}</span>
+          {/if}
+        </div>
+        {#if liveRun.progressPercent !== null}
+          <div class="live-run-track" aria-hidden="true">
+            <span style={`width: ${liveRun.progressPercent}%`}></span>
+          </div>
+        {/if}
+        <div class="live-run-foot">
+          <span>
+            {liveRun.workers}
+            {liveRun.workers === 1 ? 'worker' : 'workers'}
+            {#if liveRun.subagents !== null}
+              · {liveRun.subagents}
+              {liveRun.subagents === 1 ? 'subagent' : 'subagents'}
+            {:else}
+              · subagents unavailable
+            {/if}
+          </span>
+          <span>
+            {#if liveRun.lastSignalAt}
+              {relativeActivity(liveRun.lastSignalAt, now)}
+            {:else}
+              signal unavailable
+            {/if}
+          </span>
+        </div>
+      </div>
+    {:else if stateContext}
+      <span class="quiet-run-state">{stateContext}</span>
+    {/if}
+  </button>
 
   {#if onlinkgoal && !goalLabel}
     <span class="link-row">
-      <span
-        role="button"
-        tabindex="0"
+      <button
+        type="button"
         class="link-nudge"
         class:is-busy={linkBusy}
+        disabled={linkBusy}
+        aria-busy={linkBusy}
         onclick={linkGoal}
-        onkeydown={(event) => {
-          if (event.key === 'Enter' || event.key === ' ') {
-            event.preventDefault();
-            event.stopPropagation();
-            onlinkgoal?.(project);
-          }
-        }}
       >
         {linkBusy ? 'Opening…' : 'Link goal'}
-      </span>
+      </button>
     </span>
   {/if}
-</button>
+</article>
 
 <style>
   .project-card {
@@ -218,17 +235,35 @@
       transform 140ms ease;
   }
 
-  .project-card:hover {
-    border-color: var(--border-strong, var(--v4-control-border));
-    background: var(--row-hover, var(--v4-active-row));
-    transform: translateY(-1px);
+  .project-open {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2, 8px);
+    width: 100%;
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    .project-card:hover {
+      border-color: var(--border-strong, var(--v4-control-border));
+      background: var(--row-hover, var(--v4-active-row));
+      transform: translateY(-1px);
+    }
   }
 
   .project-card:active {
     transform: translateY(0);
   }
 
-  .project-card:focus-visible {
+  .project-open:focus-visible,
+  .link-nudge:focus-visible {
     outline: 2px solid var(--blue, var(--v4-control-border));
     outline-offset: 2px;
   }
@@ -265,25 +300,6 @@
   }
   .status-tag[data-status='live'] {
     color: var(--emerald, var(--v4-ok));
-  }
-
-  .owner-chip {
-    display: inline-flex;
-    align-items: center;
-    max-width: 100%;
-    overflow: hidden;
-    padding: 1px 7px;
-    border: 1px solid var(--border, var(--v4-hairline));
-    border-radius: var(--v4-radius-pill, 999px);
-    background: var(--row-hover, var(--v4-control-faint));
-    color: var(--muted-2, var(--v4-text-2));
-    font-family: var(--font-mono);
-    font-size: var(--type-metadata, 10px);
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    line-height: 15px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
   }
 
   .status-dot {
@@ -498,7 +514,11 @@
   }
 
   .link-nudge {
+    padding: 0;
+    border: 0;
+    background: transparent;
     color: var(--muted-2, var(--v4-text-2));
+    font: inherit;
     font-size: var(--type-secondary, 11px);
     text-decoration: underline;
     text-underline-offset: 2px;
@@ -507,7 +527,6 @@
 
   .link-nudge.is-busy {
     opacity: 0.52;
-    pointer-events: none;
   }
 
   @keyframes dot-pulse {

@@ -29,6 +29,12 @@
     [key: string]: unknown;
   }
 
+  type SyncMutation =
+    | { kind: 'enabled'; next: boolean }
+    | { kind: 'mode'; next: 'all' | 'shared' };
+
+  type SyncMutationFailure = SyncMutation & { message: string };
+
   interface Props {
     slug: string;
     label?: string;
@@ -49,8 +55,10 @@
 
   let enabledState = $state(true);
   let mode = $state<'all' | 'shared' | 'custom' | null>(null);
-  let saving = $state(false);
+  let pendingMutation = $state<SyncMutation | null>(null);
+  let mutationFailure = $state<SyncMutationFailure | null>(null);
   let modeError = $state<string | null>(null);
+  const saving = $derived(pendingMutation !== null);
 
   $effect.pre(() => {
     enabledState = syncEnabled;
@@ -115,44 +123,59 @@
     );
   }
 
-  async function toggleEnabled(event: Event) {
-    event.stopPropagation();
+  function mutationErrorMessage(err: unknown): string {
+    if (err instanceof Error && err.message) return err.message;
+    if (typeof err === 'string' && err.trim()) return err;
+    return 'The sync preference could not be saved.';
+  }
+
+  async function applyEnabled(next: boolean, isRetry = false): Promise<void> {
     if (saving) return;
-    const next = !enabledState;
     const prev = enabledState;
-    saving = true;
+    pendingMutation = { kind: 'enabled', next };
+    if (!isRetry) mutationFailure = null;
     enabledState = next;
     try {
       await persistEnabled(next);
       onenabledchange?.(next);
+      mutationFailure = null;
     } catch (err) {
       enabledState = prev;
-      const msg = String(err);
+      const msg = mutationErrorMessage(err);
       console.error(`set_workspace_sync_enabled(${slug}, ${next}) failed:`, msg);
       Sentry.captureException(err instanceof Error ? err : new Error(msg), {
         tags: { slug, action: 'set-workspace-sync-enabled', enabled: String(next) },
       });
+      mutationFailure = { kind: 'enabled', next, message: msg };
     } finally {
-      saving = false;
+      pendingMutation = null;
     }
   }
 
-  async function setMode(next: 'all' | 'shared', event: MouseEvent) {
+  async function toggleEnabled(event: Event): Promise<void> {
     event.stopPropagation();
+    await applyEnabled(!enabledState);
+  }
+
+  async function applyMode(
+    next: 'all' | 'shared',
+    confirmReduction: boolean,
+    isRetry = false,
+  ): Promise<void> {
     if (!cloudReachable || saving || mode === next) return;
     // Reducing an All footprint can remove already-downloaded files that are
     // outside the member's Shared scope. Make that local consequence explicit
     // before writing the preference; unsynced edits remain protected by the
     // backend and are called out so this does not sound like data loss.
-    if (mode === 'all' && next === 'shared') {
+    if (confirmReduction && mode === 'all' && next === 'shared') {
       const confirmed = window.confirm(
         `Switch ${label ?? slug} to Shared? Files that are not shared with you may be removed from this Mac after the next sync. Unsynced edits are preserved.`,
       );
       if (!confirmed) return;
     }
     const prev = mode;
-    saving = true;
-    modeError = null;
+    pendingMutation = { kind: 'mode', next };
+    if (!isRetry) mutationFailure = null;
     mode = next;
     try {
       const cfg = await invoke<MembershipSyncConfig>('set_sync_mode', {
@@ -160,16 +183,35 @@
         mode: next,
       });
       mode = cfg.syncMode;
+      mutationFailure = null;
     } catch (err) {
       mode = prev;
-      const msg = String(err);
+      const msg = mutationErrorMessage(err);
       console.error(`set_sync_mode(${slug}, ${next}) failed:`, msg);
       Sentry.captureException(err instanceof Error ? err : new Error(msg), {
         tags: { slug, action: 'set-sync-mode', mode: next, source: 'frontend' },
       });
-      modeError = 'save failed';
+      mutationFailure = { kind: 'mode', next, message: msg };
     } finally {
-      saving = false;
+      pendingMutation = null;
+    }
+  }
+
+  async function setMode(next: 'all' | 'shared', event: MouseEvent): Promise<void> {
+    event.stopPropagation();
+    await applyMode(next, true);
+  }
+
+  async function retryMutation(event: MouseEvent): Promise<void> {
+    event.stopPropagation();
+    const failure = mutationFailure;
+    if (!failure || saving) return;
+    if (failure.kind === 'enabled') {
+      await applyEnabled(failure.next, true);
+    } else {
+      // The operator already confirmed an All → Shared reduction before the
+      // failed write. A network retry must not ask for the same consent twice.
+      await applyMode(failure.next, false, true);
     }
   }
 
@@ -185,10 +227,26 @@
   );
 </script>
 
-<span class="sidebar-sync-mode" class:saving title={wrapperTitle} data-testid="sidebar-sync-mode">
-  <label class="sidebar-sync-enabled" class:off={!enabledState}>
-    <input type="checkbox" checked={enabledState} onchange={toggleEnabled} />
-    <span>{enabledState ? 'On' : 'Off'}</span>
+<span
+  class="sidebar-sync-mode"
+  class:saving
+  title={wrapperTitle}
+  data-testid="sidebar-sync-mode"
+  aria-busy={saving}
+>
+  <label
+    class="sidebar-sync-enabled"
+    class:off={!enabledState}
+    class:pending={pendingMutation?.kind === 'enabled'}
+  >
+    <input
+      type="checkbox"
+      checked={enabledState}
+      onchange={toggleEnabled}
+      disabled={saving}
+      aria-busy={pendingMutation?.kind === 'enabled'}
+    />
+    <span>{pendingMutation?.kind === 'enabled' ? 'Saving…' : enabledState ? 'On' : 'Off'}</span>
   </label>
 
   {#if !isPersonal && enabledState}
@@ -217,9 +275,12 @@
         class:active={mode === 'shared'}
         disabled={!cloudReachable || saving}
         aria-pressed={mode === 'shared'}
+        aria-busy={pendingMutation?.kind === 'mode' && pendingMutation.next === 'shared'}
         onclick={(e) => setMode('shared', e)}
       >
-        Shared
+        {pendingMutation?.kind === 'mode' && pendingMutation.next === 'shared'
+          ? 'Saving…'
+          : 'Shared'}
       </button>
       <button
         type="button"
@@ -227,11 +288,30 @@
         class:active={mode === 'all'}
         disabled={!cloudReachable || saving}
         aria-pressed={mode === 'all'}
+        aria-busy={pendingMutation?.kind === 'mode' && pendingMutation.next === 'all'}
         onclick={(e) => setMode('all', e)}
       >
-        All
+        {pendingMutation?.kind === 'mode' && pendingMutation.next === 'all' ? 'Saving…' : 'All'}
       </button>
     {/if}
+  {/if}
+  {#if mutationFailure}
+    <span
+      class="sidebar-sync-mutation-error"
+      role="alert"
+      title={mutationFailure.message}
+      data-testid="sidebar-sync-mutation-error"
+    >
+      <span>Failed</span>
+      <button
+        type="button"
+        onclick={retryMutation}
+        disabled={saving || (mutationFailure.kind === 'mode' && !cloudReachable)}
+        aria-busy={saving}
+      >
+        {saving ? 'Retrying…' : 'Retry'}
+      </button>
+    </span>
   {/if}
 </span>
 
@@ -273,8 +353,11 @@
   }
 
   .sidebar-sync-mode.saving {
-    opacity: 0.7;
     cursor: progress;
+  }
+
+  .sidebar-sync-enabled.pending {
+    opacity: 0.72;
   }
 
   .sidebar-sync-mode-opt {
@@ -335,5 +418,31 @@
     font: inherit;
     opacity: 0.6;
     cursor: pointer;
+  }
+
+  .sidebar-sync-mutation-error {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    color: var(--v4-error);
+    font-size: var(--text-sm);
+    line-height: 1;
+  }
+
+  .sidebar-sync-mutation-error button {
+    padding: 0;
+    border: 0;
+    border-bottom: 1px solid currentColor;
+    border-radius: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .sidebar-sync-mutation-error button:disabled {
+    cursor: progress;
+    opacity: 0.58;
   }
 </style>

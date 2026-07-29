@@ -208,9 +208,7 @@ fn set_lifecycle_state(next: WatchDaemonState, category: DaemonFailureCategory) 
     sentry::add_breadcrumb(sentry::Breadcrumb {
         category: Some("daemon.lifecycle".into()),
         level: match category {
-            DaemonFailureCategory::None | DaemonFailureCategory::Cancelled => {
-                sentry::Level::Info
-            }
+            DaemonFailureCategory::None | DaemonFailureCategory::Cancelled => sentry::Level::Info,
             DaemonFailureCategory::Backoff | DaemonFailureCategory::Preflight => {
                 sentry::Level::Warning
             }
@@ -538,7 +536,10 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
     // diagnosis only: an npx cache/permission failure is environmental, while
     // an unexplained later runner exit remains alertable below.
     if let Err(msg) = hq_desktop_core::prewarm::materialize_hq_cloud_cache() {
-        log("daemon", &format!("npx cache materialization preflight failed: {msg}"));
+        log(
+            "daemon",
+            &format!("npx cache materialization preflight failed: {msg}"),
+        );
         note_environment_preflight_failure();
         release_daemon_guard();
         set_lifecycle_state(WatchDaemonState::Backoff, DaemonFailureCategory::Preflight);
@@ -655,8 +656,11 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
                             let (uptime, rss_kb, rss_age) = watcher_exit_diagnostics();
                             let diag = exit_diagnostic_suffix(uptime, rss_kb, rss_age);
                             let fingerprint_token = termination_fingerprint_token(code, signal);
-                            let fingerprint =
-                                ["sync", "auto-sync-watcher-termination", fingerprint_token.as_str()];
+                            let fingerprint = [
+                                "sync",
+                                "auto-sync-watcher-termination",
+                                fingerprint_token.as_str(),
+                            ];
                             crate::commands::sync::capture_sync_error_with_fingerprint(
                                 None,
                                 "(auto-sync)",
@@ -698,7 +702,10 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
 
         if let Err(e) = result {
             log("daemon", &format!("spawn failed: {e}"));
-            set_lifecycle_state(WatchDaemonState::Stopped, DaemonFailureCategory::SpawnFailed);
+            set_lifecycle_state(
+                WatchDaemonState::Stopped,
+                DaemonFailureCategory::SpawnFailed,
+            );
             // The watcher never started — Sync is silently dead until restart.
             crate::commands::sync::capture_sync_error(
                 None,
@@ -1229,9 +1236,7 @@ mod tests {
 
     #[test]
     fn app_owned_live_child_without_pid_file_is_not_force_cleared() {
-        use crate::commands::process::{
-            deregister_process, register_process, try_register_handle,
-        };
+        use crate::commands::process::{deregister_process, register_process, try_register_handle};
         let _serial = GUARD_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         clear_daemon_guard_stamp();
 
@@ -1290,7 +1295,10 @@ mod tests {
         let first = terminate_daemon_once(DaemonFailureCategory::Cancelled);
         assert!(first, "first termination should mark cancelled");
         let second = terminate_daemon_once(DaemonFailureCategory::HeartbeatStall);
-        assert!(!second, "second termination must not re-fire Job Object kill");
+        assert!(
+            !second,
+            "second termination must not re-fire Job Object kill"
+        );
 
         deregister_process(DAEMON_HANDLE);
         clear_daemon_guard_stamp();

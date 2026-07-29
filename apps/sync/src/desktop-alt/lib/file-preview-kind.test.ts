@@ -6,7 +6,7 @@ describe('filePreviewKind', () => {
     expect(filePreviewKind('companies/x/knowledge/a.md')).toBe('markdown');
     expect(filePreviewKind('assets/hq/aleena-avatar.png')).toBe('image');
     expect(filePreviewKind('assets/logo.JPG')).toBe('image');
-    expect(filePreviewKind('assets/hq/HQ.svg')).toBe('image');
+    expect(filePreviewKind('assets/hq/HQ.svg')).toBe('unknown');
     expect(filePreviewKind('docs/spec.pdf')).toBe('pdf');
     expect(filePreviewKind('src/foo.ts')).toBe('text');
     expect(filePreviewKind('config.yaml')).toBe('text');

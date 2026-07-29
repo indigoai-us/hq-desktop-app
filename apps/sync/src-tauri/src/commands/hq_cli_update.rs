@@ -52,14 +52,13 @@ use crate::util::paths;
 
 #[allow(unused_imports)]
 pub use hq_desktop_core::hq_cli_update::{
-    auto_update_enabled, cli_auto_update_enabled, cmp_semver, dismissed_cli_version,
-    classify_install_failure, get_local_version,
-    hq_version_string, install_argv, install_failure_report, is_cli_update_dismissed,
-    install_failure_detail, is_prefix_permission_failure, is_windows_locked_binary_failure,
-    npm_prefix_from_hq_bin, read_installed_version,
-    report_install_failure, report_unreadable_version, suppress_for_dismissal,
-    version_from_hq_binary, version_if_hq_cli, HqCliUpdateInfo, InstallFailureKind, NpmLatest,
-    DISMISSED_VERSION_KEY, HQ_CLI_PACKAGE,
+    auto_update_enabled, classify_install_failure, cli_auto_update_enabled, cmp_semver,
+    dismissed_cli_version, get_local_version, hq_version_string, install_argv,
+    install_failure_detail, install_failure_report, is_cli_update_dismissed,
+    is_prefix_permission_failure, is_windows_locked_binary_failure, npm_prefix_from_hq_bin,
+    read_installed_version, report_install_failure, report_unreadable_version,
+    suppress_for_dismissal, version_from_hq_binary, version_if_hq_cli, HqCliUpdateInfo,
+    InstallFailureKind, NpmLatest, DISMISSED_VERSION_KEY, HQ_CLI_PACKAGE,
 };
 
 /// npm registry endpoint that returns the dist-tag `latest` manifest. Cheap,
@@ -168,6 +167,17 @@ pub async fn check_hq_cli_update(app: AppHandle) -> Result<Option<HqCliUpdateInf
     Ok(result.filter(|info| !is_cli_update_dismissed(&info.latest)))
 }
 
+/// Fast, network-free identity probe for Settings/title surfaces.
+///
+/// `check_hq_cli_update` intentionally returns `None` both when the CLI is
+/// current and when it is missing, so it cannot power an always-visible
+/// version row by itself. Keep identity separate from update availability,
+/// exactly like the desktop app and HQ Core rows.
+#[tauri::command]
+pub fn get_hq_cli_version() -> Option<String> {
+    get_local_version()
+}
+
 /// Tauri command — record that the user dismissed the "CLI update available"
 /// notice for `version`. Persists `cliUpdateDismissedVersion` through the
 /// untyped-merge path (so it survives `save_settings`, which only writes typed
@@ -263,7 +273,10 @@ fn clean_partial_hq_cli_install(prefix: &str) {
             ),
             Err(e) => log(
                 "hq-cli-update",
-                &format!("failed to remove partial package dir {}: {e}", pkg.display()),
+                &format!(
+                    "failed to remove partial package dir {}: {e}",
+                    pkg.display()
+                ),
             ),
         }
     }
@@ -284,7 +297,10 @@ fn clean_partial_hq_cli_install(prefix: &str) {
                 ),
                 Err(e) => log(
                     "hq-cli-update",
-                    &format!("failed to remove temp staging dir {}: {e}", staging.display()),
+                    &format!(
+                        "failed to remove temp staging dir {}: {e}",
+                        staging.display()
+                    ),
                 ),
             }
         }
@@ -301,7 +317,10 @@ async fn run_npm_install(
 ) -> Result<std::process::Output, String> {
     let npm = npm.to_string();
     let path = path.to_string();
-    log("hq-cli-update", &format!("install: spawning {} {}", npm, args.join(" ")));
+    log(
+        "hq-cli-update",
+        &format!("install: spawning {} {}", npm, args.join(" ")),
+    );
     tauri::async_runtime::spawn_blocking(move || {
         let mut cmd = paths::spawn_command(&npm, &[]);
         cmd.args(&args).env("PATH", path).output()
@@ -403,11 +422,8 @@ pub async fn install_hq_cli_update(app: AppHandle) -> Result<HqCliUpdateInfo, St
 
     if !output.status.success() {
         let raw_detail = npm_output_detail(&output);
-        let failure_kind = classify_install_failure(
-            output.status.code(),
-            &raw_detail,
-            prefix.as_deref(),
-        );
+        let failure_kind =
+            classify_install_failure(output.status.code(), &raw_detail, prefix.as_deref());
         let detail = install_failure_detail(output.status.code(), &raw_detail, prefix.as_deref());
         log(
             "hq-cli-update",
@@ -513,9 +529,15 @@ mod tests {
     fn forced_retry_args_add_force_to_a_global_install() {
         let mut forced = install_argv(None);
         forced.push("--force".to_string());
-        assert!(forced.iter().any(|a| a == "--force"), "retry must carry --force");
+        assert!(
+            forced.iter().any(|a| a == "--force"),
+            "retry must carry --force"
+        );
         assert_eq!(forced[0], "install");
-        assert!(forced.iter().any(|a| a == "-g"), "must stay a global install");
+        assert!(
+            forced.iter().any(|a| a == "-g"),
+            "must stay a global install"
+        );
     }
 
     // feedback_44061f91: an ENOTEMPTY partial-install failure (leftover debris
@@ -621,8 +643,7 @@ mod tests {
     #[test]
     fn clean_partial_hq_cli_install_is_a_noop_when_scope_is_absent() {
         // A never-installed prefix (no scope dir) must not panic.
-        let base =
-            std::env::temp_dir().join(format!("hq-cli-clean-empty-{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("hq-cli-clean-empty-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         clean_partial_hq_cli_install(base.to_str().unwrap());
     }

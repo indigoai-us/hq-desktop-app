@@ -14,9 +14,12 @@
   let { issue, variant = 'inline', label = 'Copy prompt' }: Props = $props();
 
   let copied = $state(false);
+  let copying = $state(false);
   let copyError = $state<string | null>(null);
 
   async function copy() {
+    if (copying) return;
+    copying = true;
     const text = buildPrompt(issue);
     try {
       await navigator.clipboard.writeText(text);
@@ -27,6 +30,8 @@
       copyError = e instanceof Error ? e.message : String(e);
       console.error('CopyPromptButton clipboard write failed:', e);
       setTimeout(() => (copyError = null), 2500);
+    } finally {
+      copying = false;
     }
   }
 </script>
@@ -36,12 +41,17 @@
   class="copy-prompt-btn"
   class:compact={variant === 'compact'}
   class:copied
+  class:copying
   class:error={!!copyError}
   onclick={copy}
+  disabled={copying}
+  aria-busy={copying}
   title={copyError ?? `Copy a prompt for an HQ agent (Codex or Claude) to resolve this`}
   aria-label={`${label} for an HQ agent`}
 >
-  {#if copied}
+  {#if copying}
+    <span class="button-spinner" aria-hidden="true"></span>
+  {:else if copied}
     <!-- check -->
     <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
       <path d="M3.5 8.5l3 3 6-6.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
@@ -54,7 +64,7 @@
     </svg>
   {/if}
   <span class="copy-prompt-label">
-    {copied ? 'Copied' : copyError ? 'Copy failed' : label}
+    {copying ? 'Copying…' : copied ? 'Copied' : copyError ? 'Copy failed' : label}
   </span>
 </button>
 
@@ -87,6 +97,10 @@
     background: var(--popover-surface-strong, rgba(255, 255, 255, 0.16));
   }
 
+  .copy-prompt-btn:disabled {
+    cursor: wait;
+  }
+
   .copy-prompt-btn.copied {
     color: var(--popover-text, rgba(255, 255, 255, 0.86));
     border-color: var(--popover-highlight, rgba(255, 255, 255, 0.34));
@@ -100,6 +114,15 @@
 
   .copy-prompt-label {
     line-height: 1;
+  }
+
+  .button-spinner {
+    width: 11px;
+    height: 11px;
+    border: 1.5px solid currentColor;
+    border-right-color: transparent;
+    border-radius: 50%;
+    animation: button-spin 700ms linear infinite;
   }
 
   /* Compact variant: icon-only by default, label appears via tooltip. Used
@@ -119,5 +142,17 @@
     clip: rect(0, 0, 0, 0);
     white-space: nowrap;
     border: 0;
+  }
+
+  @keyframes button-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .button-spinner {
+      animation-duration: 1400ms;
+    }
   }
 </style>

@@ -5,6 +5,7 @@
  * share the same reducers. Rust emits `widget:notification` / `widget:occlusion`;
  * this module only owns in-memory stack semantics and window size math.
  */
+import { automatedAgentJoinNoticeKey } from '../lib/automatedNotices';
 
 /** Auto-collapse timeout for each visible stack row (ms). */
 export const WIDGET_ROW_TIMEOUT_MS = 8000;
@@ -18,14 +19,14 @@ export const WIDGET_IDLE_WIDTH = 66;
 /** Idle wordmark window height (logical px) — matches Rust WIDGET_H. */
 export const WIDGET_IDLE_HEIGHT = 43;
 
-/** One-line notification row width (mockup). */
-export const WIDGET_ROW_WIDTH = 244;
+/** Comfortable notification row width. */
+export const WIDGET_ROW_WIDTH = 348;
 
 /**
- * Window width with a visible stack: row (244) + 20px side slack for hover
+ * Window width with a visible stack: row + 20px side slack for hover
  * Open/Dismiss actions that sit at the row edge.
  */
-export const WIDGET_STACK_WIDTH = 264;
+export const WIDGET_STACK_WIDTH = 368;
 
 /** Lower mark area height (idle window height). */
 export const WIDGET_MARK_AREA = 43;
@@ -33,11 +34,11 @@ export const WIDGET_MARK_AREA = 43;
 /** Gap between the stack column and the wordmark (mockup margin-bottom). */
 export const WIDGET_STACK_MARGIN_BOTTOM = 12;
 
-/** Collapsed row height (mockup). */
-export const WIDGET_ROW_HEIGHT = 30;
+/** Collapsed row height. */
+export const WIDGET_ROW_HEIGHT = 48;
 
-/** Vertical gap between stacked rows (mockup). */
-export const WIDGET_ROW_GAP = 6;
+/** Vertical gap between stacked rows. */
+export const WIDGET_ROW_GAP = 8;
 
 /** Top padding / superscript headroom above the stack. */
 export const WIDGET_TOP_HEADROOM = 10;
@@ -46,41 +47,54 @@ export const WIDGET_TOP_HEADROOM = 10;
  * Extra window height when any visible row is type `message` so the
  * NotificationRow hover-expand (body + reply + reacts) fits without clipping.
  */
-export const WIDGET_MESSAGE_EXPAND_HEADROOM = 110;
+export const WIDGET_MESSAGE_EXPAND_HEADROOM = 144;
 
 /** Cap for the recent-notification history list (hover + future surfaces). */
 export const WIDGET_RECENT_MAX = 20;
 
 /**
  * Max rows shown in the wordmark hover/click popup (US-015).
- * Always lists the most recent N (or fewer when history is shorter).
- * Read/unread does not affect inclusion — only order + this cap.
+ *
+ * Seven leaves enough room for the orienting header, section labels, and
+ * destination footer on a 768px-tall display, including reply-expansion
+ * headroom. The full Messages window remains one click away in the footer.
+ * Repeated activity and messages collapse before this cap.
  */
-export const WIDGET_HOVER_MAX = 10;
+export const WIDGET_HOVER_MAX = 7;
+
+/**
+ * Ambient activity from one company/source inside this window becomes one
+ * compact row. Six hours keeps a working-session burst together without
+ * flattening separate days into one opaque notification.
+ */
+export const WIDGET_ACTIVITY_BURST_WINDOW_MS = 6 * 60 * 60 * 1000;
 
 /** localStorage key for persisted widget recent history (US-015). */
 export const WIDGET_RECENT_STORAGE_KEY = 'hq-widget-recent-v1';
 
-/** Compact hover-list row height. */
-export const WIDGET_HOVER_ROW_HEIGHT = 28;
+/** Comfortable two-line row height in the mini communications panel. */
+export const WIDGET_HOVER_ROW_HEIGHT = 58;
 
 /** Day-separator row height in the hover list. */
-export const WIDGET_HOVER_SEPARATOR_HEIGHT = 21;
+export const WIDGET_HOVER_SEPARATOR_HEIGHT = 22;
 
 /** Frosted popup panel width. */
-export const WIDGET_HOVER_PANEL_WIDTH = 264;
+export const WIDGET_HOVER_PANEL_WIDTH = 364;
 
 /** Gap between popup rows. */
 export const WIDGET_HOVER_ROW_GAP = 1;
 
 /** Vertical padding inside the hover frosted panel. */
-export const WIDGET_HOVER_LIST_PADDING = 12;
+export const WIDGET_HOVER_LIST_PADDING = 18;
+
+/** Orienting title and summary above mini-window conversations. */
+export const WIDGET_HOVER_HEADER_HEIGHT = 60;
 
 /**
  * Footer toolbar height inside the hover popup (Inbox + Desktop icon actions).
  * Includes top hairline gap + icon row + bottom pad.
  */
-export const WIDGET_HOVER_FOOTER_HEIGHT = 36;
+export const WIDGET_HOVER_FOOTER_HEIGHT = 48;
 
 /** NotificationRow-compatible type strings. */
 export type WidgetRowType =
@@ -133,6 +147,88 @@ export interface WidgetStackItem {
   expiresAt: number;
   /** Unread marker for recent/hover list (set true on addItem). */
   unread?: boolean;
+  /** Derived compact-panel member ids. Never persisted or used by full Inbox. */
+  compactGroupIds?: string[];
+  /** Derived compact-panel count. Omitted for a normal, ungrouped row. */
+  compactGroupCount?: number;
+  /** Unread members represented by a compact conversation/activity row. */
+  compactGroupUnreadCount?: number;
+}
+
+/** Minimal channel shape used to surface unread channels in the widget. */
+export interface WidgetChannelLike {
+  channelId: string;
+  name: string;
+  scope: string;
+  companyName?: string | null;
+  memberCount?: number;
+  members?: Array<{ displayName?: string | null }>;
+  unread?: number;
+  lastActivityAt?: string | null;
+  lastMessageAt?: string | null;
+  createdAt?: string | null;
+}
+
+function widgetChannelName(channel: WidgetChannelLike): string {
+  const name = channel.name.trim().replace(/^#+/, '');
+  if (name) return name;
+  const members = (channel.members ?? [])
+    .map((member) => member.displayName?.trim())
+    .filter((member): member is string => Boolean(member));
+  if (members.length > 0) {
+    const shown = members.slice(0, 3);
+    const extra = members.length - shown.length;
+    return extra > 0 ? `${shown.join(', ')} +${extra}` : shown.join(', ');
+  }
+  return channel.memberCount ? `Group · ${channel.memberCount}` : 'Group DM';
+}
+
+function widgetChannelTimestamp(channel: WidgetChannelLike, now: number): number {
+  for (const value of [
+    channel.lastMessageAt,
+    channel.lastActivityAt,
+    channel.createdAt,
+  ]) {
+    if (!value) continue;
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return now;
+}
+
+/**
+ * Convert an unread channel into a trusted, openable mini-window row.
+ *
+ * The current native channel event carries only an id and unread count, so the
+ * widget refreshes `list_channels` and renders honest channel context rather
+ * than inventing a sender or preview that the payload does not contain.
+ */
+export function channelToStackItem(
+  channel: WidgetChannelLike,
+  now: number,
+): WidgetStackItem {
+  const unread = Math.max(0, channel.unread ?? 0);
+  const groupDm = channel.scope === 'group';
+  const name = widgetChannelName(channel);
+  const context = groupDm
+    ? channel.memberCount
+      ? `Group DM · ${channel.memberCount} people`
+      : 'Group DM'
+    : channel.companyName?.trim() ||
+      (channel.scope === 'personal' ? 'Personal channel' : 'Channel');
+
+  return {
+    id: `channel:${channel.channelId}`,
+    type: 'mention',
+    actor: groupDm ? name : `#${name}`,
+    text: `${unread} unread · ${context}`,
+    ts: widgetChannelTimestamp(channel, now),
+    kind: 'channel',
+    clickActionId: 'open-channel',
+    data: channel,
+    expiresAt: 0,
+    unread: unread > 0,
+  };
 }
 
 /** Full stack state owned by Widget.svelte. */
@@ -435,6 +531,169 @@ export function unreadRecentCount(state: WidgetStackState): number {
  */
 export function hoverItems(state: WidgetStackState): WidgetStackItem[] {
   return state.recent.slice(0, WIDGET_HOVER_MAX);
+}
+
+function compactActivityContext(item: WidgetStackItem): string | null {
+  const record =
+    item.data && typeof item.data === 'object' && !Array.isArray(item.data)
+      ? (item.data as Record<string, unknown>)
+      : null;
+  const source =
+    record?.company ??
+    record?.companySlug ??
+    record?.company_slug ??
+    record?.companyName ??
+    record?.workspace ??
+    record?.repo ??
+    record?.source ??
+    '';
+  const normalized = String(source).trim().toLocaleLowerCase();
+  return normalized ? normalized : null;
+}
+
+function compactAutomatedDmKey(item: WidgetStackItem): string | null {
+  const data =
+    item.data && typeof item.data === 'object' && !Array.isArray(item.data)
+      ? (item.data as Record<string, unknown>)
+      : null;
+  return automatedAgentJoinNoticeKey({
+    kind: item.kind,
+    body: typeof data?.body === 'string' ? data.body : item.text,
+    fromPersonUid:
+      typeof data?.fromPersonUid === 'string' ? data.fromPersonUid : null,
+    fromEmail: typeof data?.fromEmail === 'string' ? data.fromEmail : null,
+    fromDisplayName:
+      typeof data?.fromDisplayName === 'string'
+        ? data.fromDisplayName
+        : item.actor,
+    details: typeof data?.details === 'string' ? data.details : null,
+    prompt: typeof data?.prompt === 'string' ? data.prompt : null,
+  });
+}
+
+/**
+ * Stable conversation identity for the mini messages window.
+ *
+ * Native history carries a person UID; older/persisted rows may only retain
+ * email, display name, or the visible actor. This projection is deliberately
+ * scoped to the compact widget: the full Inbox keeps every individual event.
+ */
+function compactDmConversationKey(item: WidgetStackItem): string | null {
+  if (item.kind !== 'dm' || item.type !== 'message') return null;
+  const data =
+    item.data && typeof item.data === 'object' && !Array.isArray(item.data)
+      ? (item.data as Record<string, unknown>)
+      : null;
+  for (const value of [
+    data?.fromPersonUid,
+    data?.fromEmail,
+    data?.fromDisplayName,
+    item.actor,
+  ]) {
+    if (typeof value !== 'string') continue;
+    const normalized = value.trim().toLocaleLowerCase();
+    if (normalized) return normalized;
+  }
+  return null;
+}
+
+function sameLocalDay(a: number, b: number): boolean {
+  const first = new Date(a);
+  const second = new Date(b);
+  return (
+    first.getFullYear() === second.getFullYear() &&
+    first.getMonth() === second.getMonth() &&
+    first.getDate() === second.getDate()
+  );
+}
+
+/**
+ * Collapse ambient sync/activity bursts for the compact communications panel.
+ *
+ * Direct messages compact by conversation so one active sender consumes one
+ * row instead of turning the mini messages window into an event log. Channels,
+ * mentions, shares, updates, meetings, and warnings remain individual.
+ * Repeated automated agent-join DMs compact using the same deliberately narrow
+ * rule as Inbox. The full audit trail remains in recent history; this helper is
+ * only consumed by Widget's mini-window projection.
+ */
+export function compactActivityBursts(
+  items: WidgetStackItem[],
+  windowMs = WIDGET_ACTIVITY_BURST_WINDOW_MS,
+): WidgetStackItem[] {
+  const output: WidgetStackItem[] = [];
+  const openClusters = new Map<
+    string,
+    { outputIndex: number; newestTs: number }
+  >();
+
+  for (const item of items) {
+    const activityEligible =
+      item.type === 'sync' &&
+      item.kind !== 'dm' &&
+      item.kind !== 'channel' &&
+      item.kind !== 'share' &&
+      item.kind !== 'update' &&
+      item.kind !== 'meeting';
+    const automatedDmKey = compactAutomatedDmKey(item);
+    const dmConversationKey = compactDmConversationKey(item);
+    const activityContext = activityEligible
+      ? compactActivityContext(item)
+      : null;
+    const key = automatedDmKey
+      ? `automated-dm:${automatedDmKey}`
+      : dmConversationKey
+        ? `dm:${dmConversationKey}`
+        : activityContext
+          ? `activity:${activityContext}`
+          : null;
+    if (!key) {
+      output.push(item);
+      continue;
+    }
+
+    const cluster = openClusters.get(key);
+    if (
+      !cluster ||
+      cluster.newestTs < item.ts ||
+      cluster.newestTs - item.ts > windowMs ||
+      !sameLocalDay(cluster.newestTs, item.ts)
+    ) {
+      openClusters.set(key, {
+        outputIndex: output.length,
+        newestTs: item.ts,
+      });
+      output.push(item);
+      continue;
+    }
+
+    const representative = output[cluster.outputIndex]!;
+    const memberIds = representative.compactGroupIds ?? [representative.id];
+    const unreadMembers =
+      representative.compactGroupUnreadCount ??
+      (representative.unread === true ? 1 : 0);
+    output[cluster.outputIndex] = {
+      ...representative,
+      unread: representative.unread === true || item.unread === true,
+      compactGroupIds: [...memberIds, item.id],
+      compactGroupCount: memberIds.length + 1,
+      compactGroupUnreadCount:
+        unreadMembers + (item.unread === true ? 1 : 0),
+    };
+  }
+
+  return output;
+}
+
+/**
+ * Compact mini-window rows, newest-first. Collapse before applying the visual
+ * cap so a seven-file burst consumes one row rather than hiding nine unrelated
+ * conversations behind it.
+ */
+export function compactHoverItems(
+  state: WidgetStackState,
+): WidgetStackItem[] {
+  return compactActivityBursts(state.recent).slice(0, WIDGET_HOVER_MAX);
 }
 
 /** Fields persisted for recent history (id, display, action, unread). */
@@ -780,7 +1039,7 @@ export function hoverRows(
  * Idle (no visible rows, regardless of queued): 66×43.
  * With N visible rows: width {@link WIDGET_STACK_WIDTH}, height from mark +
  * stack margin + rows + gaps + top headroom (+ message expand room).
- * Backend clamps to 66..340 × 43..480.
+ * Backend clamps to 66..380 × 43..720.
  */
 export function widgetWindowSize(state: WidgetStackState): { width: number; height: number } {
   const n = state.visible.length;
@@ -821,12 +1080,17 @@ export function widgetHoverWindowSize(
     WIDGET_STACK_MARGIN_BOTTOM +
     WIDGET_TOP_HEADROOM +
     WIDGET_HOVER_LIST_PADDING +
+    WIDGET_HOVER_HEADER_HEIGHT +
     WIDGET_HOVER_FOOTER_HEIGHT +
     items.length * WIDGET_HOVER_ROW_HEIGHT +
     (items.length > 1 ? (items.length - 1) * WIDGET_HOVER_ROW_GAP : 0) +
     separators * WIDGET_HOVER_SEPARATOR_HEIGHT;
 
-  if (items.some((item) => item.type === 'message')) {
+  if (
+    items.some(
+      (item) => item.type === 'message' && !item.compactGroupCount,
+    )
+  ) {
     height += WIDGET_MESSAGE_EXPAND_HEADROOM;
   }
 

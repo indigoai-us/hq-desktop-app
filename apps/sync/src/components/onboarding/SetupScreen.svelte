@@ -45,6 +45,7 @@
   let contentRetryInFlight = $state(false);
   let stagingSource = $state(false);
   let stagingSourceSaving = $state(false);
+  let stagingSourceError = $state<string | null>(null);
   const activeInstallHandles = new Set<string>();
   const activeContentHandles = new Set<string>();
 
@@ -260,10 +261,12 @@
       stagingSource = Boolean(
         await invoke<boolean>('set_staging_source', { enabled: next }),
       );
+      stagingSourceError = null;
       saved = true;
     } catch (err) {
       stagingSource = !next;
       console.error('Failed to save staging source:', err);
+      stagingSourceError = errorMessage(err);
     } finally {
       stagingSourceSaving = false;
     }
@@ -608,10 +611,24 @@
       onclick={handleToggleStagingSource}
       role="switch"
       aria-checked={stagingSource}
+      aria-busy={stagingSourceSaving}
     >
       <span class="toggle-knob" aria-hidden="true"></span>
       <span>Staging template</span>
     </button>
+    {#if stagingSourceError}
+      <div class="staging-toggle-error" role="alert" title={stagingSourceError}>
+        <span>Couldn’t change the template source.</span>
+        <button
+          type="button"
+          onclick={handleToggleStagingSource}
+          disabled={stagingSourceSaving}
+          aria-busy={stagingSourceSaving}
+        >
+          {stagingSourceSaving ? 'Retrying…' : 'Retry'}
+        </button>
+      </div>
+    {/if}
   </div>
 
   <ol class="stage-list" aria-label="Setup stages">
@@ -805,6 +822,34 @@
   .staging-toggle.active .toggle-knob::after {
     background: #7dd3a8;
     transform: translateX(14px);
+  }
+
+  .staging-toggle-error {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-2, 8px);
+    color: rgba(255, 210, 210, 0.82);
+    font-size: var(--text-xs, 12px);
+    line-height: 1.35;
+  }
+
+  .staging-toggle-error button {
+    appearance: none;
+    flex: 0 0 auto;
+    padding: 0;
+    border: 0;
+    border-bottom: 1px solid currentcolor;
+    border-radius: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-weight: 700;
+    cursor: pointer;
+  }
+
+  .staging-toggle-error button:disabled {
+    opacity: 0.58;
+    cursor: wait;
   }
 
   .stage-list {

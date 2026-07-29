@@ -7,7 +7,7 @@
 
   interface Props {
     state: string;
-    onfinish?: () => void;
+    onfinish?: () => void | Promise<void>;
     /**
      * `'onboarding'` (default) runs the full first-run wizard. `'reprompt'`
      * (US-005) shows ONLY the consent step to re-ask a person whose recorded
@@ -96,15 +96,15 @@
     // Marking first run complete again would be a lie, and its side effects
     // (writing realtimeSync/personalSyncEnabled defaults) are not wanted here.
     if (mode === 'onboarding' && typeof invoke === 'function') {
-      await invoke('mark_first_run_complete').catch(() => {});
+      await invoke('mark_first_run_complete');
     }
     await restorePopoverSize();
     // Hand off from the centered installer card to the compact popover anchored
     // next to the menu-bar tray icon.
     if (typeof invoke === 'function') {
-      await invoke('show_main_window_at_tray').catch(() => {});
+      await invoke('show_main_window_at_tray');
     }
-    onfinish?.();
+    await onfinish?.();
   }
 </script>
 

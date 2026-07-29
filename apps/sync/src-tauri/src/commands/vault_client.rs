@@ -525,8 +525,9 @@ impl VaultClient {
             .await?;
         let wrapper: serde_json::Value = self.handle_response(resp).await?;
         match wrapper.get("invites") {
-            Some(v) if !v.is_null() => serde_json::from_value(v.clone())
-                .map_err(|e| VaultClientError::Json(e.to_string())),
+            Some(v) if !v.is_null() => {
+                serde_json::from_value(v.clone()).map_err(|e| VaultClientError::Json(e.to_string()))
+            }
             _ => Ok(Vec::new()),
         }
     }
@@ -1465,9 +1466,7 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/v1/usage/opt-in"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(&json!({ "enabled": true })),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({ "enabled": true })))
             .mount(&server)
             .await;
 

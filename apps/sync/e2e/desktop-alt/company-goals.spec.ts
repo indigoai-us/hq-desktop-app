@@ -25,8 +25,11 @@ describe('desktop-alt company Goals view source contract (US-006 / DESKTOP-007)'
   });
 
   it('renders owner, target quarter, linked projects, and at-risk surfacing', () => {
-    expect(page).toContain('owner: {ownerLabel(selectedGoal.owner)}');
-    expect(page).toContain('target {quarterLabel(selectedGoal.timeframe)');
+    expect(page).toContain('function goalDetailMeta(objective: Objective)');
+    expect(page).toContain('owner ? `Owner ${owner}` : null');
+    expect(page).toContain('quarter ? `Target ${quarter}` : null');
+    expect(page).toContain('{#if goalDetailMeta(selectedGoal)}');
+    expect(page).toContain('{goalDetailMeta(selectedGoal)}');
     expect(page).toContain('data-testid="linked-projects"');
     expect(page).toContain('data-testid="linked-project-chip"');
     expect(page).toContain('data-testid="at-risk-note"');
@@ -43,7 +46,9 @@ describe('desktop-alt company Goals view source contract (US-006 / DESKTOP-007)'
   it('linked project chips drill into the existing project detail view', () => {
     expect(page).toContain("import ProjectDetailView from './ProjectDetailView.svelte'");
     expect(page).toContain('onclick={() => openProject(project)}');
-    expect(page).toContain('loadLocalProjectStories(project.prdPath)');
+    expect(page).toContain('loadLocalProjectStories(');
+    expect(page).toContain('project.prdPath,');
+    expect(page).toContain('project.provenance,');
     expect(page).toContain('<ProjectDetailView');
     // DESKTOP-005: task detail docks inside ProjectDetailView (no modal sibling).
     expect(page).toContain('selectedStory={selectedStory}');

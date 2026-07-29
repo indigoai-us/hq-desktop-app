@@ -29,10 +29,13 @@
   }: Props = $props();
 
   let dispatched = $state(false);
+  let dispatching = $state(false);
   let dispatchError = $state<string | null>(null);
   let copiedFallback = $state(false);
 
   async function dispatch() {
+    if (dispatching) return;
+    dispatching = true;
     const prompt = buildPrompt(issue);
     const url = buildClaudeCodeUrl({ folder, prompt });
     dispatchError = null;
@@ -70,6 +73,8 @@
         dispatchError = msg;
         setTimeout(() => (dispatchError = null), 4000);
       }
+    } finally {
+      dispatching = false;
     }
   }
 </script>
@@ -79,13 +84,18 @@
   class="open-claude-btn"
   class:compact={variant === 'compact'}
   class:dispatched
+  class:dispatching
   class:fallback={copiedFallback}
   class:error={!!dispatchError && !copiedFallback}
   onclick={dispatch}
+  disabled={dispatching}
+  aria-busy={dispatching}
   title={dispatchError ?? `Open Claude Code in your HQ folder with this error preloaded as a prompt`}
   aria-label={`${label} — open this error in Claude Code with a prefilled fix prompt`}
 >
-  {#if dispatched}
+  {#if dispatching}
+    <span class="button-spinner" aria-hidden="true"></span>
+  {:else if dispatched}
     <!-- check -->
     <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
       <path d="M3.5 8.5l3 3 6-6.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
@@ -97,7 +107,9 @@
     </svg>
   {/if}
   <span class="open-claude-label">
-    {#if dispatched}
+    {#if dispatching}
+      Opening…
+    {:else if dispatched}
       Opened
     {:else if copiedFallback}
       Prompt copied
@@ -138,6 +150,10 @@
     background: var(--popover-surface-strong, rgba(255, 255, 255, 0.16));
   }
 
+  .open-claude-btn:disabled {
+    cursor: wait;
+  }
+
   .open-claude-btn.dispatched,
   .open-claude-btn.fallback {
     color: var(--popover-text, rgba(255, 255, 255, 0.86));
@@ -154,6 +170,15 @@
     line-height: 1;
   }
 
+  .button-spinner {
+    width: 11px;
+    height: 11px;
+    border: 1.5px solid currentColor;
+    border-right-color: transparent;
+    border-radius: 50%;
+    animation: button-spin 700ms linear infinite;
+  }
+
   .open-claude-btn.compact {
     padding: 0.1875rem 0.3125rem;
   }
@@ -168,5 +193,17 @@
     clip: rect(0, 0, 0, 0);
     white-space: nowrap;
     border: 0;
+  }
+
+  @keyframes button-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .button-spinner {
+      animation-duration: 1400ms;
+    }
   }
 </style>

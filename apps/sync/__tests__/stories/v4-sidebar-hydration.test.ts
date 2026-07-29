@@ -170,4 +170,31 @@ describe('V4Sidebar hydration ownership', () => {
     });
     expect(pendingCalls).toBe(1);
   });
+
+  it('uses the loaded Inbox feed count so sidebar and header cannot disagree', async () => {
+    component = mount(V4Sidebar, {
+      target: host,
+      props: {
+        route: { kind: 'inbox' },
+        companies: [],
+        cloudReachable: true,
+      },
+    });
+    flushSync();
+    await vi.waitFor(() =>
+      expect(listeners.get('dm:unread-summary')).toBeTypeOf('function'),
+    );
+
+    window.dispatchEvent(
+      new CustomEvent('hq:notifications-unread-count', { detail: 6 }),
+    );
+    flushSync();
+    expect(host.querySelector('.v4-unread-badge')?.textContent).toBe('6');
+
+    window.dispatchEvent(
+      new CustomEvent('hq:notifications-unread-count', { detail: 0 }),
+    );
+    flushSync();
+    expect(host.querySelector('.v4-unread-badge')).toBeNull();
+  });
 });

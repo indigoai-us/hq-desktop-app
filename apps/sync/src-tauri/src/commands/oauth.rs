@@ -147,10 +147,7 @@ fn bind_loopback_listeners(port: u16) -> std::io::Result<Vec<TcpListener>> {
 /// send loopback redirects in a single small request; a peer that connects but
 /// sends no request is discarded after `READ_TIMEOUT` instead of pinning the
 /// listener thread and preventing Retry from releasing the callback port.
-fn read_request_line(
-    stream: &mut TcpStream,
-    cancelled: &AtomicBool,
-) -> std::io::Result<String> {
+fn read_request_line(stream: &mut TcpStream, cancelled: &AtomicBool) -> std::io::Result<String> {
     stream.set_nonblocking(true)?;
     let deadline = std::time::Instant::now() + READ_TIMEOUT;
     let mut buf = [0u8; 4096];
@@ -221,11 +218,7 @@ fn receive_loopback_callback(
                         Some((_code, _state, Some(error))) => {
                             let reason = format!("Provider error: {error}");
                             eprintln!("[oauth] callback rejected — {reason}");
-                            write_response(
-                                &mut stream,
-                                "400 Bad Request",
-                                &error_html(&reason),
-                            );
+                            write_response(&mut stream, "400 Bad Request", &error_html(&reason));
                             return Err(structured_error(
                                 "OAUTH_PROVIDER_ERROR",
                                 "Sign-in was cancelled or denied. Retry when you are ready.",
@@ -243,7 +236,9 @@ fn receive_loopback_callback(
                                     "400 Bad Request",
                                     &error_html(&reason),
                                 );
-                                return Err("OAuth state mismatch — possible CSRF, aborting.".into());
+                                return Err(
+                                    "OAuth state mismatch — possible CSRF, aborting.".into()
+                                );
                             }
                             eprintln!("[oauth] callback accepted — code length {}", code.len());
                             write_response(&mut stream, "200 OK", SUCCESS_HTML);
@@ -420,10 +415,7 @@ fn write_response(stream: &mut TcpStream, status: &str, body: &str) {
 /// It also surfaces a port-in-use conflict immediately, instead of after
 /// the user has already been sent to the provider's sign-in page.
 #[tauri::command]
-pub async fn start_oauth_login(
-    app: AppHandle,
-    provider: String,
-) -> Result<OAuthFlowInit, String> {
+pub async fn start_oauth_login(app: AppHandle, provider: String) -> Result<OAuthFlowInit, String> {
     let identity_provider = cognito_identity_provider(&provider)?;
     let state = uuid::Uuid::new_v4().to_string();
     let verifier = generate_code_verifier();
@@ -503,7 +495,7 @@ pub fn oauth_cancel_listen(state: Option<String>) -> Result<(), String> {
 
 /// Exchange an authorization code for tokens using the stored PKCE verifier.
 #[tauri::command]
-pub async fn oauth_exchange_code(code: String) -> Result<AuthState, String> {
+pub async fn oauth_exchange_code(app: AppHandle, code: String) -> Result<AuthState, String> {
     // Take the verifier out of storage (one-time use)
     let verifier = {
         let mut guard = pkce_store()
@@ -545,13 +537,10 @@ pub async fn oauth_exchange_code(code: String) -> Result<AuthState, String> {
         return Err(format!("Token exchange failed ({status}): {body_text}"));
     }
 
-    let token_resp: TokenResponse = response
-        .json()
-        .await
-        .map_err(|e| {
-            eprintln!("[oauth] token exchange response parse failed: {e}");
-            format!("Failed to parse token response: {e}")
-        })?;
+    let token_resp: TokenResponse = response.json().await.map_err(|e| {
+        eprintln!("[oauth] token exchange response parse failed: {e}");
+        format!("Failed to parse token response: {e}")
+    })?;
 
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -569,7 +558,7 @@ pub async fn oauth_exchange_code(code: String) -> Result<AuthState, String> {
         expires_at,
     };
 
-    cognito::set_tokens(&tokens).await?;
+    crate::commands::dm_notify::replace_notification_credentials(&app, &tokens).await?;
     eprintln!("[oauth] token exchange completed");
 
     Ok(AuthState {
@@ -597,9 +586,10 @@ pub async fn oauth_listen_for_code(app: AppHandle, state: String) -> Result<OAut
         if pending.state != state {
             return Err("OAuth state does not match the pending sign-in attempt.".into());
         }
-        pending.result.take().ok_or_else(|| {
-            "OAuth listener is already waiting for a callback.".to_string()
-        })?
+        pending
+            .result
+            .take()
+            .ok_or_else(|| "OAuth listener is already waiting for a callback.".to_string())?
     };
 
     let result = tokio::task::spawn_blocking(move || {

@@ -11,15 +11,21 @@
 
   let drafts = $state<Record<string, string>>({});
   let busy = $state<Record<string, boolean>>({});
+  let pendingOption = $state<Record<string, string | null>>({});
   let note = $state<Record<string, string>>({});
 
   const questions = $derived(agencyStore.questions);
 
   /** Deliver `answer` for `q` (shared by the option chips and the free-text box). */
-  async function deliver(q: AgencyQuestion, answer: string) {
+  async function deliver(
+    q: AgencyQuestion,
+    answer: string,
+    suggestedOption: string | null = null,
+  ) {
     const text = answer.trim();
     if (!text || busy[q.id]) return;
     busy = { ...busy, [q.id]: true };
+    pendingOption = { ...pendingOption, [q.id]: suggestedOption };
     try {
       const res = await submitAnswer(q, text);
       note = { ...note, [q.id]: res === 'already-answered' ? 'Already answered' : 'Sent ✓' };
@@ -29,6 +35,7 @@
       note = { ...note, [q.id]: 'Failed to send' };
     } finally {
       busy = { ...busy, [q.id]: false };
+      pendingOption = { ...pendingOption, [q.id]: null };
     }
   }
 
@@ -39,6 +46,14 @@
       e.preventDefault();
       send(q);
     }
+  }
+
+  function noteRole(message: string): 'alert' | 'status' {
+    return message === 'Failed to send' ? 'alert' : 'status';
+  }
+
+  function customAnswerPending(questionId: string): boolean {
+    return busy[questionId] && pendingOption[questionId] === null;
   }
 </script>
 
@@ -60,9 +75,21 @@
           </div>
           <p class="qtext">{q.question}</p>
           {#if q.options.length}
-            <div class="qopts" role="group" aria-label="Suggested answers">
+            <div
+              class="qopts"
+              role="group"
+              aria-label="Suggested answers"
+              aria-busy={busy[q.id]}
+            >
               {#each q.options as opt (opt)}
-                <button class="opt" onclick={() => deliver(q, opt)} disabled={busy[q.id]}>{opt}</button>
+                <button
+                  class="opt"
+                  onclick={() => deliver(q, opt, opt)}
+                  disabled={busy[q.id]}
+                  aria-busy={busy[q.id] && pendingOption[q.id] === opt}
+                >
+                  {busy[q.id] && pendingOption[q.id] === opt ? 'Sending…' : opt}
+                </button>
               {/each}
             </div>
           {/if}
@@ -78,10 +105,19 @@
                 class="send"
                 onclick={() => send(q)}
                 disabled={busy[q.id] || !(drafts[q.id] ?? '').trim()}
+                aria-busy={customAnswerPending(q.id)}
               >
-                {busy[q.id] ? 'Sending…' : 'Send'}
+                {customAnswerPending(q.id) ? 'Sending…' : 'Send'}
               </button>
-              {#if note[q.id]}<span class="note">{note[q.id]}</span>{/if}
+              {#if note[q.id]}
+                <span
+                  class="note"
+                  role={noteRole(note[q.id])}
+                  aria-live={noteRole(note[q.id]) === 'alert' ? 'assertive' : 'polite'}
+                >
+                  {note[q.id]}
+                </span>
+              {/if}
             </div>
           </div>
         </li>

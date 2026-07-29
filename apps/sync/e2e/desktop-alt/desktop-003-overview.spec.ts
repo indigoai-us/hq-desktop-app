@@ -80,7 +80,10 @@ describe('DESKTOP-003: actionable company overview', () => {
   });
 
   it('keeps Invite and New project visible; operational Settings moves under More', () => {
-    expect(companyPage).toContain('<button type="button" onclick={openInvite}>Invite</button>');
+    expect(companyPage).toContain('onclick={openInvite}');
+    expect(companyPage).toContain('disabled={inviteOpening}');
+    expect(companyPage).toContain('aria-busy={inviteOpening}');
+    expect(companyPage).toContain("{inviteOpening ? 'Opening…' : 'Invite'}");
     expect(companyPage).toContain("New project");
     expect(companyPage).toContain('onclick={() => void startNewProject()}');
     // Toolbar no longer surfaces Settings; ops live under sidebar More.
@@ -127,14 +130,14 @@ describe('DESKTOP-003: actionable company overview', () => {
   it('uses the five semantic type roles and explicit 3px title/meta slots', () => {
     expect(V4_TYPE_SCALE).toEqual({
       metadata: 13,
-      secondary: 13,
-      body: 14,
-      section: 14,
-      detail: 14,
+      secondary: 14,
+      body: 15,
+      section: 17,
+      detail: 24,
     });
     expect(V4_ROW_STACK_GAP_PX).toBe(3);
     expect(tokens).toContain('--type-metadata: 13px');
-    expect(tokens).toContain('--type-body: 14px');
+    expect(tokens).toContain('--type-body: 15px');
     expect(tokens).toContain('--v4-row-stack-gap: 3px');
 
     for (const src of [panel, goalCard, digest, needsYou]) {

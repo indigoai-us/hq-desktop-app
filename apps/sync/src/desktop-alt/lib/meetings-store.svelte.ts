@@ -54,6 +54,12 @@ interface CancelBotResult {
   recurringMeeting?: boolean;
 }
 
+interface CalendarSnapshot {
+  calendarsByAccount: Map<string, GoogleCalendar[]>;
+  enabledCalIdsByAccount: Map<string, Set<string>>;
+  calendarSummaryByKey: Map<string, string>;
+}
+
 // Poll cadence for the background refresh. Long enough to be cheap, short
 // enough that an agenda opened minutes later is already current.
 const POLL_INTERVAL_MS = 30_000;
@@ -97,11 +103,17 @@ let refreshBlocked = $state(false);
 let refreshFailureCount = 0;
 let lastRefreshErrorRaw = '';
 let loading = $state(false);
+// Concurrent polls/focus/manual refreshes share one operation. A committed
+// mutation can flag that operation for one more authoritative pass.
+let refreshInFlight: Promise<void> | null = null;
+let forceTrailingRefresh = false;
+let mutationRevision = 0;
 // Per-row optimistic lock for bot actions (invite / cancel / join-now), keyed
 // by calendar event id. The agenda reads it to disable a row's buttons + show a
 // spinner while its invoke is in flight. Re-assigned a cloned Set on every
 // mutation so Svelte 5 sees a fresh reference (it tracks Sets by identity).
-let rowPending = $state<Set<string>>(new Set());
+export type MeetingBotAction = 'invite' | 'uninvite' | 'join-now';
+let rowPending = $state<Map<string, MeetingBotAction>>(new Map());
 
 // Idempotency + lifecycle guards. The store outlives any single page, so we
 // only ever start the listeners/poll once for the app's lifetime.
@@ -139,28 +151,46 @@ function hydrateFromCache() {
  * cache already painted, log the error, and surface a message (auth failures
  * prompt re-sign-in) instead of faking "0 meetings".
  */
-async function refresh() {
-  if (loading) return;
-  loading = true;
-  membershipsError = '';
+function refresh(forceAfterMutation = false): Promise<void> {
+  if (refreshInFlight) {
+    if (forceAfterMutation) forceTrailingRefresh = true;
+    return refreshInFlight;
+  }
+
+  const run = async (): Promise<void> => {
+    loading = true;
+    try {
+      do {
+        forceTrailingRefresh = false;
+        const refreshRevision = mutationRevision;
+        await refreshOnce(refreshRevision);
+      } while (forceTrailingRefresh);
+    } finally {
+      loading = false;
+    }
+  };
+
+  const operation = run().finally(() => {
+    if (refreshInFlight === operation) refreshInFlight = null;
+  });
+  refreshInFlight = operation;
+  return operation;
+}
+
+async function refreshOnce(refreshRevision: number): Promise<void> {
+  let nextMembershipsError = '';
   try {
     const [evts, members, accts] = await Promise.all([
       invoke<MeetingEvent[]>('meetings_list_upcoming'),
       invoke<CompanyMembership[]>('meetings_list_memberships').catch((err) => {
         console.error('meetings_list_memberships failed:', err);
-        membershipsError = 'Could not load calendar routing.';
+        nextMembershipsError = 'Could not load calendar routing.';
         return [] as CompanyMembership[];
       }),
       invoke<GoogleAccount[]>('meetings_list_accounts').catch(
         () => [] as GoogleAccount[],
       ),
     ]);
-    events = evts ?? [];
-    const resetGate = meetingsRefreshGate(refreshFailureCount, null);
-    refreshFailureCount = resetGate.consecutiveFailures;
-    fetchError = resetGate.notice;
-    refreshBlocked = resetGate.refreshBlocked;
-    lastRefreshErrorRaw = '';
     const botEventIds = calendarEventIdsForBotLookup(evts ?? []);
     let eventBotsErr: unknown = null;
     let fullBotsErr: unknown = null;
@@ -183,21 +213,37 @@ async function refresh() {
       }),
     ]);
     const bots = mergeScheduledBotLookups(botEventIds, eventBots, fullBots);
+
+    // Calendar fan-out is part of the same snapshot. Holding these values
+    // locally prevents a pre-mutation poll from partially repainting the UI.
+    const calendarSnapshot = await loadCalendarsForAccounts(accts ?? []);
+
+    // A mutation committed while this pass was in flight. Its forced trailing
+    // pass owns the next paint; never apply this pre-mutation snapshot.
+    if (refreshRevision !== mutationRevision) return;
+
+    const resetGate = meetingsRefreshGate(refreshFailureCount, null);
+    refreshFailureCount = resetGate.consecutiveFailures;
+    let nextFetchError = resetGate.notice;
+    let nextRefreshBlocked = resetGate.refreshBlocked;
+    let nextLastRefreshErrorRaw = '';
     if (botEventIds.length > 0 && eventBots === null) {
-      fetchError = friendlyError(
+      nextFetchError = friendlyError(
         eventBotsErr,
         'Could not refresh meeting bot status.',
       );
-      refreshBlocked = false;
-      lastRefreshErrorRaw = String(eventBotsErr ?? '');
+      nextRefreshBlocked = false;
+      nextLastRefreshErrorRaw = String(eventBotsErr ?? '');
     } else if (botEventIds.length === 0 && fullBots === null) {
-      fetchError = friendlyError(
+      nextFetchError = friendlyError(
         fullBotsErr,
         'Could not refresh meeting bot status.',
       );
-      refreshBlocked = false;
-      lastRefreshErrorRaw = String(fullBotsErr ?? '');
+      nextRefreshBlocked = false;
+      nextLastRefreshErrorRaw = String(fullBotsErr ?? '');
     }
+
+    events = evts ?? [];
     if (bots !== null) {
       botsByEventId = buildBotMap(bots);
       allBots = bots;
@@ -208,15 +254,19 @@ async function refresh() {
     accountEmailById = new Map(
       (accts ?? []).map((a) => [a.accountId, a.email ?? '']),
     );
-
-    // Calendar fan-out is a second pass so the events render doesn't block
-    // on calendar metadata; per-account failures are non-fatal.
-    await loadCalendarsForAccounts(accts ?? []);
+    calendarsByAccount = calendarSnapshot.calendarsByAccount;
+    enabledCalIdsByAccount = calendarSnapshot.enabledCalIdsByAccount;
+    calendarSummaryByKey = calendarSnapshot.calendarSummaryByKey;
+    membershipsError = nextMembershipsError;
+    fetchError = nextFetchError;
+    refreshBlocked = nextRefreshBlocked;
+    lastRefreshErrorRaw = nextLastRefreshErrorRaw;
 
     // Persist AFTER everything (events + calendars) so the next paint — in
     // either window — hydrates a complete view.
     persistSnapshot();
   } catch (err) {
+    if (refreshRevision !== mutationRevision) return;
     // Keep the cached paint; surface the failure rather than blanking out.
     console.error('meetings refresh failed:', err);
     lastRefreshErrorRaw = String(err ?? '');
@@ -228,8 +278,6 @@ async function refresh() {
     refreshFailureCount = gate.consecutiveFailures;
     fetchError = gate.notice;
     refreshBlocked = gate.refreshBlocked;
-  } finally {
-    loading = false;
   }
 }
 
@@ -255,7 +303,9 @@ async function reportRefreshProblem(): Promise<ToastDescriptor> {
   }
 }
 
-async function loadCalendarsForAccounts(accts: GoogleAccount[]) {
+async function loadCalendarsForAccounts(
+  accts: GoogleAccount[],
+): Promise<CalendarSnapshot> {
   const nextByAccount = new Map<string, GoogleCalendar[]>();
   const nextEnabled = new Map<string, Set<string>>();
   const nextSummaries = new Map<string, string>();
@@ -281,9 +331,11 @@ async function loadCalendarsForAccounts(accts: GoogleAccount[]) {
       }
     }),
   );
-  calendarsByAccount = nextByAccount;
-  enabledCalIdsByAccount = nextEnabled;
-  calendarSummaryByKey = nextSummaries;
+  return {
+    calendarsByAccount: nextByAccount,
+    enabledCalIdsByAccount: nextEnabled,
+    calendarSummaryByKey: nextSummaries,
+  };
 }
 
 function persistSnapshot(): void {
@@ -340,16 +392,20 @@ function isActiveStatus(s: string): boolean {
 // pins the agenda as invoke-free). Payloads mirror the classic window exactly.
 // ---------------------------------------------------------------------------
 
-function lockRow(key: string): boolean {
+function lockRow(key: string, action: MeetingBotAction): boolean {
   if (rowPending.has(key)) return false;
-  rowPending = new Set(rowPending).add(key);
+  rowPending = new Map(rowPending).set(key, action);
   return true;
 }
 
 function unlockRow(key: string): void {
-  const next = new Set(rowPending);
+  const next = new Map(rowPending);
   next.delete(key);
   rowPending = next;
+}
+
+function markMutationCommitted(): void {
+  mutationRevision += 1;
 }
 
 /**
@@ -365,7 +421,7 @@ async function inviteBot(evt: MeetingEvent): Promise<ToastDescriptor | null> {
   const url = eventMeetingUrl(evt);
   if (!url) return { kind: 'warn', text: 'No meeting URL on this event.' };
   const key = evt.id;
-  if (!lockRow(key)) return null;
+  if (!lockRow(key, 'invite')) return null;
   try {
     await invoke<ScheduledBot>('meetings_invite_bot', {
       meetingUrl: url,
@@ -373,14 +429,16 @@ async function inviteBot(evt: MeetingEvent): Promise<ToastDescriptor | null> {
       calendarSeriesId: recurringSeriesId(evt),
       companyId: evt.sourceCompanyUid ?? null,
     });
-    await refresh();
+    markMutationCommitted();
+    await refresh(true);
     return { kind: 'info', text: 'Bot invited.' };
   } catch (err) {
     if (isAlreadyScheduledError(err)) {
+      markMutationCommitted();
       seedAlreadyInvited(evt, url);
       // Background refresh — do not block the already-invited paint, and do
       // not surface a fetch-error banner for a successful conflict recovery.
-      void refresh();
+      void refresh(true);
       return { kind: 'info', text: 'Already invited — refreshing.' };
     }
     return { kind: 'warn', text: friendlyError(err, "Couldn't invite the bot.") };
@@ -406,10 +464,11 @@ async function cancelBot(evt: MeetingEvent): Promise<ToastDescriptor | null> {
   const bot = botForEvent(evt, botsByEventId, allBots);
   if (!bot) return null;
   const key = evt.id;
-  if (!lockRow(key)) return null;
+  if (!lockRow(key, 'uninvite')) return null;
   try {
     const result = await invoke<CancelBotResult>('meetings_cancel_bot', { botId: bot.botId });
-    await refresh();
+    markMutationCommitted();
+    await refresh(true);
     if (result.scope === 'series' || result.recurringMeeting || (result.cancelledCount ?? 0) > 1) {
       return { kind: 'info', text: 'Bot uninvited from series.' };
     }
@@ -428,7 +487,7 @@ async function joinBotNow(evt: MeetingEvent): Promise<ToastDescriptor | null> {
   const url = eventMeetingUrl(evt);
   if (!url) return { kind: 'warn', text: 'No meeting URL on this event.' };
   const key = evt.id;
-  if (!lockRow(key)) return null;
+  if (!lockRow(key, 'join-now')) return null;
   try {
     await invoke<ScheduledBot>('meetings_join_bot_now', {
       meetingUrl: url,
@@ -436,7 +495,8 @@ async function joinBotNow(evt: MeetingEvent): Promise<ToastDescriptor | null> {
       calendarSeriesId: recurringSeriesId(evt),
       companyId: evt.sourceCompanyUid ?? null,
     });
-    await refresh();
+    markMutationCommitted();
+    await refresh(true);
     return { kind: 'info', text: "Bot's on the way." };
   } catch (err) {
     return { kind: 'warn', text: friendlyError(err, "Couldn't tell the bot to join.") };
@@ -476,14 +536,16 @@ async function inviteBotByUrl(
       calendarSeriesId: null,
       companyId,
     });
-    await refresh();
+    markMutationCommitted();
+    await refresh(true);
     const dest = urlInviteDestinationLabel(companyId, companyNamesByUid);
     return { kind: 'info', text: `Bot invited — meeting will save to ${dest}.` };
   } catch (err) {
     // URL invites have no calendar row to seed; still treat 409 as success +
     // background refresh (no warn toast / error banner).
     if (isAlreadyScheduledError(err)) {
-      void refresh();
+      markMutationCommitted();
+      void refresh(true);
       return { kind: 'info', text: 'Already invited — refreshing.' };
     }
     return { kind: 'warn', text: friendlyError(err, "Couldn't invite the bot.") };
@@ -591,7 +653,7 @@ export const meetingsStore = {
   get loading() {
     return loading;
   },
-  get pendingEventIds() {
+  get pendingActionsByEventId() {
     return rowPending;
   },
   refresh,

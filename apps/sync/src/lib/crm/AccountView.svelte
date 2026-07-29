@@ -18,7 +18,7 @@
    * server-side off the canonical ontology by hq-pro US-009). There are NO
    * network calls to Attio / Stripe / PandaDoc / Neon — the projection is read
    * LOCAL-FIRST with a vault-API fallback (the same pattern the Board surface
-   * uses for `board.json`). Missing legs degrade to an em-dash chip. All logic
+   * uses for `board.json`). Missing legs use explicit neutral copy. All logic
    * lives in the pure `account-view-model.ts`; this component is presentational.
    *
    * Design: the in-app V4 liquid-glass system + V4 status-dot palette (green
@@ -177,8 +177,7 @@
                 {orDash(card.source.ref)}
               </div>
             {:else}
-              <!-- Missing leg → em-dash chip (graceful degradation). -->
-              <div class="av-source-empty" data-testid="source-missing">—</div>
+              <div class="av-source-empty" data-testid="source-missing">Not connected</div>
             {/if}
           </div>
         {/each}
@@ -295,7 +294,9 @@
                       {orDash(contract.status)}
                     </span>
                   {:else}
-                    <span class="av-chip av-chip-empty" data-testid="contract-chip-empty">—</span>
+                    <span class="av-chip av-chip-empty" data-testid="contract-chip-empty"
+                      >Not connected</span
+                    >
                   {/if}
                 </td>
                 <td>
@@ -305,7 +306,9 @@
                       {orDash(billing.status)}
                     </span>
                   {:else}
-                    <span class="av-chip av-chip-empty" data-testid="billing-chip-empty">—</span>
+                    <span class="av-chip av-chip-empty" data-testid="billing-chip-empty"
+                      >Not connected</span
+                    >
                   {/if}
                 </td>
               </tr>

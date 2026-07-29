@@ -193,6 +193,8 @@
   let lastRefreshErrorRaw = '';
   let reportingRefreshProblem = $state(false);
   let toast = $state<{ kind: 'info' | 'warn'; text: string } | null>(null);
+  let integrationsOpening = $state(false);
+  let openingMeetingIds = $state(new Set<string>());
 
   // ── Live meeting-detect bridge ────────────────────────────────────────
   // Mirror of App.svelte's `ActiveMeeting` + the supporting picker data.
@@ -222,6 +224,18 @@
   }
   let activeMeetings = $state<ActiveMeeting[]>([]);
   let recordingMemberships = $state<ActiveMembership[]>([]);
+  type ActiveMeetingAction = 'start' | 'stop' | 'change-company';
+  type ActiveActionFailure = {
+    action: ActiveMeetingAction;
+    companyUid?: string | null;
+    message: string;
+  };
+  let activeActionPending = $state(
+    new Map<string, ActiveMeetingAction>(),
+  );
+  let activeActionFailures = $state(
+    new Map<string, ActiveActionFailure>(),
+  );
   // `defaultRecordingCompanyUid` is informational here — the row's
   // dropdown defaults to whatever App.svelte's resolver picked, so we
   // don't strictly need to know the default ourselves. Kept on the
@@ -237,11 +251,19 @@
     return platform || 'Meeting';
   }
 
-  function dispatchActiveAction(
-    action: 'start' | 'stop' | 'change-company',
+  async function dispatchActiveAction(
+    action: ActiveMeetingAction,
     windowId: string,
     companyUid?: string | null,
-  ) {
+  ): Promise<void> {
+    if (activeActionPending.has(windowId)) return;
+    const previous = activeMeetings.find((meeting) => meeting.windowId === windowId);
+    if (!previous) return;
+    const nextFailures = new Map(activeActionFailures);
+    nextFailures.delete(windowId);
+    activeActionFailures = nextFailures;
+    activeActionPending = new Map(activeActionPending).set(windowId, action);
+
     // Optimistic local mutation so the row reflects the intent without
     // waiting for App.svelte's snapshot re-broadcast (which can lag by
     // a tick over the cross-window event channel). The next snapshot
@@ -249,28 +271,61 @@
     // lives there, including 'starting' → 'recording' transitions
     // driven by SDK confirmation events.
     if (action === 'change-company') {
-      const idx = activeMeetings.findIndex((m) => m.windowId === windowId);
-      if (idx >= 0) {
-        activeMeetings[idx] = {
-          ...activeMeetings[idx],
+      activeMeetings = activeMeetings.map((meeting) =>
+        meeting.windowId === windowId
+          ? {
+          ...meeting,
           companyUid: companyUid ?? null,
           companyUserSet: true,
-        };
-      }
+            }
+          : meeting,
+      );
     } else if (action === 'start') {
-      const idx = activeMeetings.findIndex((m) => m.windowId === windowId);
-      if (idx >= 0) {
-        activeMeetings[idx] = { ...activeMeetings[idx], state: 'starting' };
-      }
+      activeMeetings = activeMeetings.map((meeting) =>
+        meeting.windowId === windowId
+          ? { ...meeting, state: 'starting' }
+          : meeting,
+      );
     } else if (action === 'stop') {
-      const idx = activeMeetings.findIndex((m) => m.windowId === windowId);
-      if (idx >= 0) {
-        activeMeetings[idx] = { ...activeMeetings[idx], state: 'stopping' };
-      }
+      activeMeetings = activeMeetings.map((meeting) =>
+        meeting.windowId === windowId
+          ? { ...meeting, state: 'stopping' }
+          : meeting,
+      );
     }
-    emit('meetings-window:action', { action, windowId, companyUid }).catch((err) => {
+
+    try {
+      await emit('meetings-window:action', { action, windowId, companyUid });
+    } catch (err) {
       console.warn('meetings-window:action emit failed', err);
-    });
+      activeMeetings = activeMeetings.map((meeting) =>
+        meeting.windowId === windowId ? previous : meeting,
+      );
+      activeActionFailures = new Map(activeActionFailures).set(windowId, {
+        action,
+        companyUid,
+        message:
+          action === 'change-company'
+            ? 'Couldn’t update the recording company.'
+            : action === 'start'
+              ? 'Couldn’t start recording.'
+              : 'Couldn’t stop recording.',
+      });
+    } finally {
+      const nextPending = new Map(activeActionPending);
+      nextPending.delete(windowId);
+      activeActionPending = nextPending;
+    }
+  }
+
+  function retryActiveAction(windowId: string): void {
+    const failure = activeActionFailures.get(windowId);
+    if (!failure) return;
+    void dispatchActiveAction(
+      failure.action,
+      windowId,
+      failure.companyUid,
+    );
   }
 
   /**
@@ -999,6 +1054,32 @@
     }, 4000);
   }
 
+  async function openIntegrations(): Promise<void> {
+    if (integrationsOpening) return;
+    integrationsOpening = true;
+    try {
+      await openExternal('https://hq.computer/integrations');
+    } catch (err) {
+      flashToast('warn', friendlyError(err, "Couldn't open HQ Console."));
+    } finally {
+      integrationsOpening = false;
+    }
+  }
+
+  async function openMeeting(eventId: string, url: string): Promise<void> {
+    if (openingMeetingIds.has(eventId)) return;
+    openingMeetingIds = new Set(openingMeetingIds).add(eventId);
+    try {
+      await openExternal(url);
+    } catch (err) {
+      flashToast('warn', friendlyError(err, "Couldn't open the meeting."));
+    } finally {
+      const next = new Set(openingMeetingIds);
+      next.delete(eventId);
+      openingMeetingIds = next;
+    }
+  }
+
   async function onReportRefreshProblem(): Promise<void> {
     if (reportingRefreshProblem) return;
     reportingRefreshProblem = true;
@@ -1616,8 +1697,12 @@
       <div class="active-meetings" aria-label="Active meetings">
         <p class="active-meetings-label">In progress</p>
         {#each activeMeetings as meeting (meeting.windowId)}
+          {@const pendingActiveAction = activeActionPending.get(meeting.windowId)}
+          {@const activeFailure = activeActionFailures.get(meeting.windowId)}
           {@const pickerDisabled =
-            meeting.state === 'starting' || meeting.state === 'stopping'}
+            meeting.state === 'starting' ||
+            meeting.state === 'stopping' ||
+            pendingActiveAction !== undefined}
           <div class="active-row" data-state={meeting.state}>
             <div class="active-info">
               <span class="active-platform">{activePlatformLabel(meeting.platform)} meeting</span>
@@ -1641,9 +1726,10 @@
               aria-label="Attribute recording to"
               value={meeting.companyUid ?? ''}
               disabled={pickerDisabled}
+              aria-busy={pendingActiveAction === 'change-company'}
               onchange={(e) => {
                 const v = (e.currentTarget as HTMLSelectElement).value;
-                dispatchActiveAction(
+                void dispatchActiveAction(
                   'change-company',
                   meeting.windowId,
                   v === '' ? null : v,
@@ -1659,18 +1745,37 @@
               <button
                 type="button"
                 class="active-action active-action-stop"
-                onclick={() => dispatchActiveAction('stop', meeting.windowId)}
+                onclick={() => void dispatchActiveAction('stop', meeting.windowId)}
+                disabled={pendingActiveAction !== undefined}
+                aria-busy={pendingActiveAction === 'stop'}
               >Stop</button>
             {:else if meeting.state === 'starting' || meeting.state === 'stopping'}
-              <button type="button" class="active-action" disabled>…</button>
+              <button type="button" class="active-action" disabled aria-busy="true">
+                {meeting.state === 'starting' ? 'Starting…' : 'Stopping…'}
+              </button>
             {:else}
               <button
                 type="button"
                 class="active-action active-action-record"
-                onclick={() => dispatchActiveAction('start', meeting.windowId)}
+                onclick={() => void dispatchActiveAction('start', meeting.windowId)}
+                disabled={pendingActiveAction !== undefined}
+                aria-busy={pendingActiveAction === 'start'}
               >Record</button>
             {/if}
           </div>
+          {#if activeFailure}
+            <div class="active-action-error" role="alert">
+              <span>{activeFailure.message}</span>
+              <button
+                type="button"
+                onclick={() => retryActiveAction(meeting.windowId)}
+                disabled={pendingActiveAction !== undefined}
+                aria-busy={pendingActiveAction !== undefined}
+              >
+                {pendingActiveAction !== undefined ? 'Retrying…' : 'Retry'}
+              </button>
+            </div>
+          {/if}
         {/each}
       </div>
     {/if}
@@ -1726,13 +1831,11 @@
         <button
           type="button"
           class="meetings-empty-btn"
-          onclick={() => {
-            openExternal('https://hq.computer/integrations').catch((err) => {
-              flashToast('warn', friendlyError(err, "Couldn't open HQ Console."));
-            });
-          }}
+          onclick={openIntegrations}
+          disabled={integrationsOpening}
+          aria-busy={integrationsOpening}
         >
-          Open HQ Console Integrations
+          {integrationsOpening ? 'Opening…' : 'Open HQ Console Integrations'}
         </button>
       </div>
     {:else if events.length === 0 && recordedBots.length === 0}
@@ -1821,21 +1924,27 @@
                   <button
                     type="button"
                     class="row-icon-btn row-icon-join"
-                    title="Open meeting in browser"
+                    title={openingMeetingIds.has(evt.id) ? 'Opening meeting…' : 'Open meeting in browser'}
                     aria-label="Open meeting in browser"
-                    onclick={() => {
-                      openExternal(url).catch((err) => {
-                        flashToast('warn', friendlyError(err, "Couldn't open the meeting."));
-                      });
-                    }}
+                    disabled={openingMeetingIds.has(evt.id)}
+                    aria-busy={openingMeetingIds.has(evt.id)}
+                    onclick={() => void openMeeting(evt.id, url)}
                   >
-                    <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
-                      <path d="M4 2h6v6M10 2L4.5 7.5M2 4v6h6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
-                    </svg>
+                    {#if openingMeetingIds.has(evt.id)}
+                      <span class="row-icon-spinner" aria-hidden="true"></span>
+                    {:else}
+                      <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                        <path d="M4 2h6v6M10 2L4.5 7.5M2 4v6h6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
+                      </svg>
+                    {/if}
                   </button>
                 {/if}
                 {#if !url}
-                  <span class="row-icon-btn row-icon-empty" title="No meeting URL on this event">—</span>
+                  <span
+                    class="row-icon-btn row-icon-empty"
+                    title="No meeting URL on this event"
+                    aria-hidden="true"
+                  ></span>
                 {:else if kind === 'invite'}
                   <button
                     type="button"
@@ -2171,6 +2280,24 @@
   .active-row[data-state='error'] {
     background: transparent;
     border-color: var(--c-divider);
+  }
+  .active-action-error {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: -4px;
+    color: var(--c-danger, #f87171);
+    font-size: var(--text-base);
+  }
+  .active-action-error button {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: currentColor;
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
   }
   .active-info {
     display: flex;
@@ -2563,8 +2690,8 @@
     border: 1px solid var(--pop-border);
     background: var(--pop-bg);
     box-shadow: var(--pop-shadow), inset 0 1px 0 var(--pop-highlight);
-    backdrop-filter: var(--glass-filter-soft, blur(12px) saturate(0%));
-    -webkit-backdrop-filter: var(--glass-filter-soft, blur(12px) saturate(0%));
+    backdrop-filter: var(--glass-filter-soft, blur(16px) saturate(112%) contrast(101%));
+    -webkit-backdrop-filter: var(--glass-filter-soft, blur(16px) saturate(112%) contrast(101%));
   }
   .filter-actions {
     display: flex;

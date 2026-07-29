@@ -7,6 +7,8 @@
  * so they are trivially unit-testable.
  */
 
+import type { WorkProvenance } from './provenance';
+
 // ---------------------------------------------------------------------------
 // Types (match the US-003 Rust command output shape)
 // ---------------------------------------------------------------------------
@@ -35,6 +37,8 @@ export interface Story {
   files?: string[];
   /** Optional model hint from prd.json. */
   model_hint?: string | null;
+  /** Explicit task owner/assignee/creator/source metadata, when declared. */
+  provenance?: WorkProvenance;
 }
 
 /** A project, as surfaced by the get_company_projects Rust command. */
@@ -61,6 +65,13 @@ export interface Project {
   storiesTotal: number;
   /** Number of stories that pass. */
   storiesComplete: number;
+  /** Explicit project owner/creator/source metadata, when declared. */
+  provenance?: WorkProvenance;
+  /**
+   * First-add author from local Git history when explicit responsibility is
+   * absent. Kept separate so cloud owner/creator metadata can still outrank it.
+   */
+  creatorFallback?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -659,7 +670,7 @@ export const PORTFOLIO_COLUMN_CAPTION: Record<PortfolioColumn, string> = {
   'not-started': 'Planned, no work begun',
   'in-progress': 'Started, no live run right now',
   active: 'Live execution signal present',
-  complete: 'All tasks passed',
+  complete: 'Passed or intentionally archived',
 };
 
 /** Board/List view mode for the company project portfolio. */
@@ -797,11 +808,10 @@ export function portfolioColumn(
 ): PortfolioColumn {
   const raw = (project.status ?? '').toLowerCase().trim();
   if (raw === 'archived') {
-    // Archived is terminal. If all stories pass, treat as Complete; otherwise
-    // keep it out of Active and park unfinished archives under In progress so
-    // they remain visible without a fifth column.
-    const rollup = deriveProjectState(project.storiesComplete, project.storiesTotal);
-    return rollup === 'complete' || project.storiesTotal === 0 ? 'complete' : 'in-progress';
+    // Archived is terminal even when work was intentionally stopped before
+    // every task passed. Never place it under In progress: that implies work is
+    // still underway and produces contradictory "ARCHIVED · active work" UI.
+    return 'complete';
   }
 
   if (
@@ -970,6 +980,9 @@ export function portfolioStateContext(
     case 'active':
       return 'Live execution signal present';
     case 'complete':
+      if ((project.status ?? '').toLowerCase().trim() === 'archived') {
+        return 'Archived';
+      }
       return progress.total > 0 && progress.complete >= progress.total
         ? 'All tasks passed'
         : 'Complete';

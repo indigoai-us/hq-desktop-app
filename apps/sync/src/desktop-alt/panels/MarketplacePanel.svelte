@@ -29,7 +29,7 @@
     type InstallTarget,
     type MarketplaceListing,
   } from '../lib/marketplace';
-  import { coverForListing, coverFallback } from '../lib/pack-covers';
+  import { coverForListing, coverFallback, coverTone } from '../lib/pack-covers';
   import type { WorkspacesResult } from '../../lib/workspaces';
 
   let listings = $state<MarketplaceListing[]>([]);
@@ -261,10 +261,10 @@
 
   <section class="your-listings" data-testid="marketplace-your-listings">
     <div>
-      <h2>YOUR LISTINGS</h2>
-      <p>Published packs you own will appear here with install metrics and review status.</p>
+      <h2>PUBLISHED LISTINGS</h2>
+      <p>Approved packs from marketplace creators, with version and author attribution.</p>
     </div>
-    <span>{listings.filter((listing) => listing.author).length} tracked</span>
+    <span>{listings.length} available</span>
   </section>
 
   {#if error}
@@ -310,7 +310,7 @@
           onclick={() => select(listing)}
           onkeydown={(event) => handleKeydown(event, listing)}
         >
-          <div class="cover" data-testid="marketplace-cover">
+          <div class={`cover tone-${coverTone(listing)}`} data-testid="marketplace-cover">
             {#if cover}
               <img class="cover-img" src={cover} alt="" loading="lazy" decoding="async" />
             {:else}
@@ -318,6 +318,7 @@
               <div class="cover-fallback" style={`background:${fb.gradient}`} aria-hidden="true">
                 <span class="cover-monogram">{fb.monogram}</span>
               </div>
+              <div class="cover-color" aria-hidden="true"></div>
             {/if}
             <div class="cover-scrim" aria-hidden="true"></div>
             <span class="kind-tag kind-chip">
@@ -344,7 +345,7 @@
               <span class="author" data-testid="marketplace-author">{authorLabel(listing)}</span>
             {/if}
             {#if listing.summary}
-              <p class="card-desc">{listing.summary}</p>
+              <p class="card-desc" title={listing.summary}>{listing.summary}</p>
             {/if}
           </div>
         </div>
@@ -369,7 +370,10 @@
     aria-label={`Listing: ${listingDisplayName(selected)}`}
     data-testid="marketplace-detail-panel"
   >
-    <div class="detail-cover" data-testid="marketplace-detail-cover">
+    <div
+      class={`detail-cover tone-${coverTone(selected)}`}
+      data-testid="marketplace-detail-cover"
+    >
       {#if detailCover}
         <img class="detail-cover-img" src={detailCover} alt="" />
       {:else}
@@ -377,6 +381,7 @@
         <div class="detail-cover-fallback" style={`background:${fb.gradient}`} aria-hidden="true">
           <span class="cover-monogram">{fb.monogram}</span>
         </div>
+        <div class="cover-color" aria-hidden="true"></div>
       {/if}
       <div class="detail-cover-scrim" aria-hidden="true"></div>
     </div>
@@ -484,9 +489,11 @@
           class="install-button"
           data-testid="marketplace-install-button"
           disabled={installing || !chosenTarget?.enabled}
+          aria-busy={installing}
           onclick={runInstall}
         >
           {#if installing}
+            <span class="install-spinner" data-testid="marketplace-install-spinner" aria-hidden="true"></span>
             Installing…
           {:else if chosenTarget?.scope.kind === 'company'}
             Install to {chosenTarget.label}
@@ -626,11 +633,13 @@
       box-shadow 160ms ease;
   }
 
-  .card:hover {
-    border-color: var(--v4-control-border);
-    background: var(--v4-raised);
-    transform: translateY(-2px);
-    box-shadow: var(--v4-shadow-card);
+  @media (hover: hover) and (pointer: fine) {
+    .card:hover {
+      border-color: var(--v4-control-border);
+      background: var(--v4-raised);
+      transform: translateY(-2px);
+      box-shadow: var(--v4-shadow-card);
+    }
   }
 
   .card:focus-visible {
@@ -659,11 +668,61 @@
   .cover-img {
     object-fit: cover;
     object-position: center;
-    filter: saturate(0%);
-    transition: transform 240ms ease;
+    filter: none;
+    opacity: 1;
+    mix-blend-mode: normal;
+    transition: transform 180ms cubic-bezier(0.23, 1, 0.32, 1);
   }
-  .card:hover .cover-img {
-    transform: scale(1.04);
+
+  /*
+   * Listings without artwork receive a stable, varied color identity. This
+   * layer is rendered only beside `.cover-fallback`; hosted and bundled image
+   * colors pass through untouched.
+   */
+  .cover-color {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    pointer-events: none;
+    background: linear-gradient(135deg, var(--cover-tint-a), var(--cover-tint-b));
+    mix-blend-mode: color;
+    opacity: 0.76;
+  }
+
+  .tone-0 {
+    --cover-tint-a: #e45b79;
+    --cover-tint-b: #7359c8;
+  }
+
+  .tone-1 {
+    --cover-tint-a: #17a995;
+    --cover-tint-b: #4972cf;
+  }
+
+  .tone-2 {
+    --cover-tint-a: #31a86e;
+    --cover-tint-b: #a252af;
+  }
+
+  .tone-3 {
+    --cover-tint-a: #e56d55;
+    --cover-tint-b: #447ac4;
+  }
+
+  .tone-4 {
+    --cover-tint-a: #8665c8;
+    --cover-tint-b: #1b9eb3;
+  }
+
+  .tone-5 {
+    --cover-tint-a: #cf5b95;
+    --cover-tint-b: #3a9b73;
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    .card:hover .cover-img {
+      transform: scale(1.04);
+    }
   }
 
   .cover-fallback {
@@ -684,7 +743,7 @@
   .cover-scrim {
     position: absolute;
     inset: 0;
-    z-index: 2;
+    z-index: 3;
     pointer-events: none;
     background: linear-gradient(
       to top,
@@ -698,7 +757,7 @@
   .kind-chip,
   .cover-version {
     position: absolute;
-    z-index: 3;
+    z-index: 4;
     top: var(--v4-space-2);
     backdrop-filter: blur(8px);
     -webkit-backdrop-filter: blur(8px);
@@ -740,7 +799,7 @@
   /* Pack name overlaid on the bottom of the art (over the scrim). */
   .card-name {
     position: absolute;
-    z-index: 3;
+    z-index: 4;
     inset-inline: var(--v4-space-3) var(--v4-space-3);
     bottom: var(--v4-space-2);
     margin: 0;
@@ -890,7 +949,7 @@
     position: fixed;
     inset: 0;
     z-index: 40;
-    background: color-mix(in srgb, var(--graphic-fg) 45%, transparent);
+    background: rgba(0, 0, 0, 0.14);
     animation: backdrop-fade 160ms ease;
   }
 
@@ -905,8 +964,8 @@
     max-width: 94vw;
     border-left: 1px solid var(--v4-hairline);
     background: var(--v4-popover);
-    backdrop-filter: var(--v4-glass-filter);
-    -webkit-backdrop-filter: var(--v4-glass-filter);
+    backdrop-filter: var(--v4-glass-filter-popover, var(--v4-glass-filter));
+    -webkit-backdrop-filter: var(--v4-glass-filter-popover, var(--v4-glass-filter));
     box-shadow: var(--v4-shadow-popover), inset 1px 0 0 var(--v4-glass-highlight);
     animation: panel-slide-in 200ms cubic-bezier(0.2, 0.7, 0.2, 1);
   }
@@ -929,10 +988,16 @@
     height: 100%;
   }
 
+  .detail-cover .cover-color {
+    z-index: 2;
+  }
+
   .detail-cover-img {
     object-fit: cover;
     object-position: center;
-    filter: saturate(0%);
+    filter: none;
+    opacity: 1;
+    mix-blend-mode: normal;
   }
 
   .detail-cover-fallback {
@@ -945,6 +1010,7 @@
   .detail-cover-scrim {
     position: absolute;
     inset: 0;
+    z-index: 3;
     pointer-events: none;
     background: linear-gradient(
       to bottom,
@@ -1136,6 +1202,10 @@
     font-size: var(--text-base);
     font-weight: 600;
     cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
     transition:
       opacity 140ms ease,
       filter 140ms ease;
@@ -1153,6 +1223,15 @@
   .install-button:disabled {
     opacity: 0.55;
     cursor: default;
+  }
+
+  .install-spinner {
+    width: 12px;
+    height: 12px;
+    border: 1.5px solid color-mix(in srgb, currentColor 35%, transparent);
+    border-top-color: currentColor;
+    border-radius: 50%;
+    animation: marketplace-spin 0.7s linear infinite;
   }
 
   .install-result {
@@ -1206,12 +1285,20 @@
     }
   }
 
+  @keyframes marketplace-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
   @media (prefers-reduced-motion: reduce) {
     .card,
+    .cover-img,
     .close-button {
       transition: none;
     }
-    .card:hover {
+    .card:hover,
+    .card:hover .cover-img {
       transform: none;
     }
     .card-skeleton,

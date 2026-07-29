@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { invoke } from '@tauri-apps/api/core';
   import type { SyncState } from '../lib/sync-model';
   import type { SettingsTab } from '../route';
   import VersionPopout from '../components/VersionPopout.svelte';
@@ -39,11 +40,11 @@
     /** Account initials for the profile control (e.g. "CE"). */
     accountInitials?: string | null;
     sidebarCollapsed?: boolean;
-    onsync?: () => void;
-    oncancel?: () => void;
-    onretry?: () => void;
-    onretryhydration?: () => void;
-    onresolveconflicts?: () => void;
+    onsync?: () => void | Promise<void>;
+    oncancel?: () => void | Promise<void>;
+    onretry?: () => void | Promise<void>;
+    onretryhydration?: () => void | Promise<void>;
+    onresolveconflicts?: () => void | Promise<void>;
     ontogglesidebar?: () => void;
     oncommand?: () => void;
     onaccount?: () => void;
@@ -95,14 +96,78 @@
   const initials = $derived((accountInitials ?? 'HQ').slice(0, 2).toUpperCase());
   let versionOpen = $state(false);
   let versionContainer: HTMLDivElement | null = $state(null);
+  let coreVersion = $state<string | null>(null);
+  let coreVersionLoading = $state(true);
+  let coreVersionError = $state(false);
+  let actionPending = $state(false);
+  let actionError = $state<string | null>(null);
+  let actionErrorDetail = $state('');
+  let actionContext = '';
+  let coreVersionLoadGeneration = 0;
+  const coreVersionLabel = $derived.by(() => {
+    if (coreVersionLoading) return 'Core checking…';
+    if (coreVersion) return `Core v${coreVersion}`;
+    return coreVersionError ? 'Core unavailable' : 'Core not detected';
+  });
 
-  function handleAction() {
-    if (model.recovery === 'hydration') onretryhydration?.();
-    else if (model.action.id === 'cancel') oncancel?.();
-    else if (model.action.id === 'retry') onretry?.();
-    else if (model.action.id === 'resolve') onresolveconflicts?.();
-    else onsync?.();
+  async function refreshCoreVersion() {
+    const generation = ++coreVersionLoadGeneration;
+    coreVersionLoading = true;
+    coreVersionError = false;
+    try {
+      const next = await invoke<string | null>('get_hq_version');
+      if (generation === coreVersionLoadGeneration) {
+        coreVersion = next;
+        coreVersionError = false;
+      }
+    } catch (err) {
+      if (generation !== coreVersionLoadGeneration) return;
+      console.error('titlebar: failed to read HQ Core version', err);
+      coreVersion = null;
+      coreVersionError = true;
+    } finally {
+      if (generation === coreVersionLoadGeneration) coreVersionLoading = false;
+    }
   }
+
+  async function handleAction(): Promise<void> {
+    if (actionPending) return;
+    actionPending = true;
+    actionError = null;
+    actionErrorDetail = '';
+    try {
+      if (model.recovery === 'hydration') await onretryhydration?.();
+      else if (model.action.id === 'cancel') await oncancel?.();
+      else if (model.action.id === 'retry') await onretry?.();
+      else if (model.action.id === 'resolve') await onresolveconflicts?.();
+      else await onsync?.();
+    } catch (err) {
+      console.error(`titlebar: ${model.action.id} action failed`, err);
+      actionErrorDetail = err instanceof Error ? err.message : String(err);
+      actionError =
+        model.recovery === 'hydration'
+          ? 'Couldn’t refresh'
+          : model.action.id === 'cancel'
+            ? 'Couldn’t cancel'
+            : model.action.id === 'resolve'
+              ? 'Couldn’t open conflicts'
+              : syncState === 'auth-error'
+                ? 'Couldn’t start sign-in'
+                : model.action.id === 'retry'
+                  ? 'Couldn’t retry'
+                  : 'Couldn’t start sync';
+    } finally {
+      actionPending = false;
+    }
+  }
+
+  $effect(() => {
+    const nextContext = `${syncState}:${model.recovery ?? ''}:${model.action.id}`;
+    if (nextContext === actionContext) return;
+    actionContext = nextContext;
+    actionError = null;
+    actionErrorDetail = '';
+  });
 
   $effect(() => {
     if (!versionOpen) return;
@@ -123,6 +188,16 @@
     return () => {
       window.removeEventListener('mousedown', onMouseDown);
       window.removeEventListener('keydown', onKeyDown);
+    };
+  });
+
+  $effect(() => {
+    // Read once on mount and again whenever the update popout opens/closes so
+    // a Core update completed in Settings becomes visible without relaunching.
+    versionOpen;
+    void refreshCoreVersion();
+    return () => {
+      coreVersionLoadGeneration += 1;
     };
   });
 </script>
@@ -163,6 +238,11 @@
   <div class="v4-drag-pad v4-drag-flex" data-tauri-drag-region aria-hidden="true"></div>
 
   <div class="v4-title-actions">
+    {#if actionError}
+      <span class="v4-action-error" role="alert" title={actionErrorDetail}>
+        {actionError}
+      </span>
+    {/if}
     <button
       type="button"
       class="v4-icon-btn"
@@ -179,16 +259,22 @@
       <button
         type="button"
         class="v4-action"
-        disabled={hydrationRefreshing}
-        aria-busy={hydrationRefreshing}
+        disabled={hydrationRefreshing || actionPending}
+        aria-busy={hydrationRefreshing || actionPending}
         onclick={handleAction}
       >
-        Retry
+        {hydrationRefreshing || actionPending ? 'Retrying…' : 'Retry'}
       </button>
     {:else if syncState === 'conflict'}
       <div class="v4-recovery-actions" data-tauri-drag-region="false">
-        <button type="button" class="v4-action" onclick={handleAction}>
-          Resolve conflicts
+        <button
+          type="button"
+          class="v4-action"
+          onclick={handleAction}
+          disabled={actionPending}
+          aria-busy={actionPending}
+        >
+          {actionPending ? 'Opening…' : 'Resolve conflicts'}
         </button>
         <CopyPromptButton
           variant="inline"
@@ -201,7 +287,15 @@
       </div>
     {:else if syncState === 'error' && errorMessage}
       <div class="v4-recovery-actions" data-tauri-drag-region="false">
-        <button type="button" class="v4-action" onclick={onretry}>Retry</button>
+        <button
+          type="button"
+          class="v4-action"
+          onclick={handleAction}
+          disabled={actionPending}
+          aria-busy={actionPending}
+        >
+          {actionPending ? 'Retrying…' : 'Retry'}
+        </button>
         <OpenInClaudeCodeButton
           variant="inline"
           label="Finish sync in Claude Code"
@@ -215,8 +309,20 @@
         />
       </div>
     {:else}
-      <button type="button" class="v4-action" onclick={handleAction}>
-        {model.action.label === 'Sync Now' ? 'Sync' : model.action.label}
+      <button
+        type="button"
+        class="v4-action"
+        onclick={handleAction}
+        disabled={actionPending}
+        aria-busy={actionPending}
+      >
+        {actionPending
+          ? model.action.id === 'cancel'
+            ? 'Cancelling…'
+            : 'Starting…'
+          : model.action.label === 'Sync Now'
+            ? 'Sync'
+            : model.action.label}
       </button>
     {/if}
     <div class="v4-version-wrap" bind:this={versionContainer}>
@@ -226,10 +332,23 @@
         data-testid="version-label"
         aria-expanded={versionOpen}
         aria-haspopup="dialog"
-        aria-label={`Version v${version}; open updates`}
+        aria-label={`HQ desktop app v${version}; ${coreVersionLabel}; ${
+          coreVersionError ? 'retry Core version and open updates' : 'open updates'
+        }`}
         onclick={() => (versionOpen = !versionOpen)}
       >
-        v{version}
+        <span class="v4-version-app">App v{version}</span>
+        <span class="v4-version-divider" aria-hidden="true">·</span>
+        <span class="v4-version-core" data-testid="core-version-label">
+          {coreVersionLabel}
+        </span>
+        {#if coreVersionError && !coreVersionLoading}
+          <span
+            class="v4-version-retry"
+            data-testid="core-version-retry"
+            aria-hidden="true"
+          >Retry</span>
+        {/if}
       </button>
       {#if versionOpen}
         <VersionPopout
@@ -392,17 +511,31 @@
     gap: 6px;
   }
 
+  .v4-action-error {
+    max-width: 150px;
+    overflow: hidden;
+    color: var(--v4-error);
+    font-size: var(--type-metadata, 10px);
+    font-weight: 550;
+    line-height: 1;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   .v4-version-wrap {
     position: relative;
     flex: 0 0 auto;
   }
 
   .v4-version {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
     height: 28px;
-    padding: 0 8px;
-    border: 1px solid transparent;
+    padding: 0 9px;
+    border: 1px solid var(--v4-hairline);
     border-radius: var(--v4-radius-button);
-    background: transparent;
+    background: var(--v4-control-faint);
     color: var(--v4-text-3);
     font-family: var(--font-mono);
     font-size: var(--type-metadata, 10px);
@@ -413,9 +546,28 @@
 
   .v4-version:hover,
   .v4-version[aria-expanded='true'] {
-    border-color: var(--v4-hairline);
-    background: var(--v4-control-faint);
+    border-color: var(--v4-control-border);
+    background: var(--v4-secondary-bg);
     color: var(--v4-text-1);
+  }
+
+  .v4-version-app {
+    color: var(--v4-text-3);
+    font-weight: 450;
+  }
+
+  .v4-version-divider {
+    color: var(--v4-hairline-strong, var(--v4-text-3));
+  }
+
+  .v4-version-core {
+    color: var(--v4-text-1);
+    font-weight: 650;
+  }
+
+  .v4-version-retry {
+    color: var(--v4-text-1);
+    font-weight: 500;
   }
 
   .v4-version:focus-visible {
@@ -424,6 +576,8 @@
   }
 
   .v4-icon-btn {
+    appearance: none;
+    -webkit-appearance: none;
     display: grid;
     place-items: center;
     width: 28px;
@@ -441,6 +595,15 @@
   .v4-icon-btn.active {
     border-color: var(--v4-hairline);
     background: var(--v4-control-faint);
+    color: var(--v4-text-1);
+  }
+
+  /* Pressed global controls stay visibly selected without inheriting the OS
+     accent color. aria-pressed remains the semantic source of truth. */
+  .v4-icon-btn[aria-pressed='true'] {
+    border-color: var(--v4-control-border);
+    background: color-mix(in srgb, var(--v4-text-1) 8%, transparent);
+    box-shadow: inset 0 0 0 1px var(--v4-hairline);
     color: var(--v4-text-1);
   }
 

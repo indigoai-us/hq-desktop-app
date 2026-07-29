@@ -52,7 +52,7 @@
     const warm = companyStore.deployments(slug);
     if (warm) {
       deployments = warm.map(normalizeDeployment);
-      loading = false;
+      loading = force;
     } else {
       deployments = [];
       loading = true;
@@ -116,6 +116,9 @@
   }
 
   function retry() {
+    if (loading) return;
+    error = null;
+    loading = true;
     reloadToken += 1;
   }
 
@@ -134,9 +137,15 @@
     // Single shared agent-handoff path (get_config → buildClaudeCodeUrl →
     // open_claude_code_link → clipboard fallback) used by every hq-* desktop
     // action; surfaces the plain-language result inline.
-    const result = await openAgentWorkflow(prompt, 'deploy workflow');
-    actionMessage = result.message;
-    deployBusy = false;
+    try {
+      const result = await openAgentWorkflow(prompt, 'deploy workflow');
+      actionMessage = result.message;
+    } catch (err) {
+      console.error('open deploy workflow failed:', err);
+      actionMessage = 'Could not open the deploy workflow.';
+    } finally {
+      deployBusy = false;
+    }
   }
 </script>
 
@@ -148,15 +157,13 @@
     </div>
 
     <div class="deployments-controls detail-primary-actions primary-actions" aria-label="Deployment controls">
-      <!-- On a load error `deployments` is cleared, so the counts would read
-           "0 active / 0 deploying / 0 paused" — indistinguishable from "no
-           deployments". Show em-dashes instead so the header reflects "unknown,
-           load failed" rather than fabricating an empty state. -->
-      <div class="counts" aria-label="Deployment state counts">
-        <span><strong>{error ? '—' : activeCount}</strong> active</span>
-        <span><strong>{error ? '—' : deployingCount}</strong> deploying</span>
-        <span><strong>{error ? '—' : pausedCount}</strong> paused</span>
-      </div>
+      {#if !error}
+        <div class="counts" aria-label="Deployment state counts">
+          <span><strong>{activeCount}</strong> active</span>
+          <span><strong>{deployingCount}</strong> deploying</span>
+          <span><strong>{pausedCount}</strong> paused</span>
+        </div>
+      {/if}
       <input
         class="deploy-search"
         bind:value={deploymentQuery}
@@ -169,6 +176,7 @@
         type="button"
         onclick={() => void openDeployWorkflow()}
         disabled={deployBusy || !resourcesEnabled}
+        aria-busy={deployBusy}
         title="Deploy with HQ"
       >
         {deployBusy ? 'Opening…' : 'Deploy'}
@@ -202,7 +210,9 @@
         <strong>Deployments unavailable</strong>
         <span>{error}</span>
       </div>
-      <button type="button" onclick={retry}>Retry</button>
+      <button type="button" onclick={retry} disabled={loading} aria-busy={loading}>
+        {loading ? 'Retrying…' : 'Retry'}
+      </button>
     </div>
   {/if}
 

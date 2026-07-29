@@ -500,10 +500,10 @@ export function resolveOutpostCard(
   return {
     tone,
     stateLabel: isUp ? 'UP' : 'DOWN',
-    runtimeLabel: status.runtime ? status.runtime.toUpperCase() : '—',
+    runtimeLabel: status.runtime ? status.runtime.toUpperCase() : 'Not reported',
     relayLabel: status.relayConnected ? 'connected' : 'disconnected',
     relayConnected: status.relayConnected,
-    metaLabel: metaParts.length ? metaParts.join(' · ') : '—',
+    metaLabel: metaParts.length ? metaParts.join(' · ') : 'Location not reported',
     staleNote,
   };
 }
@@ -516,7 +516,7 @@ export function resolveOutpostCard(
  */
 export function relativeActivity(iso: string, now: number = Date.now()): string {
   const then = activityMillis(iso);
-  if (then <= 0) return '—';
+  if (then <= 0) return 'Not recorded';
   const seconds = Math.max(0, Math.floor((now - then) / 1000));
   if (seconds < 5) return 'now';
   if (seconds < 60) return `${seconds}s`;

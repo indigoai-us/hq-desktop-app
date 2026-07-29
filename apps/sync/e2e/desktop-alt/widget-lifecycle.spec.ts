@@ -45,8 +45,16 @@ describe('US-006: widget lifecycle — appears on launch, default ON', () => {
   const widget = readRepoFile('src-tauri/src/commands/widget.rs');
   const capabilities = readRepoFile('src-tauri/capabilities/widget.json');
 
-  it('main.rs .setup() creates the widget window', () => {
-    expect(main).toContain('commands::widget::setup_widget_window(app.handle())');
+  it('main.rs starts the widget through the cache-gated AppHandle helper', () => {
+    expect(main).toContain('fn setup_startup_surfaces(');
+    expect(main).toContain('app: &tauri::AppHandle');
+    expect(main).toMatch(
+      /fn setup_startup_surfaces\([\s\S]*?commands::widget::setup_widget_window\(app\);/,
+    );
+    // macOS enters through the post-cache callback; other platforms call the
+    // same helper directly from Tauri setup.
+    expect(main).toContain('setup_startup_surfaces(&startup_app, first_run)');
+    expect(main).toContain('setup_startup_surfaces(app.handle(), first_run)?');
   });
 
   it('widget_enabled reads widgetEnabled from menubar.json and defaults true', () => {

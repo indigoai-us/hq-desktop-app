@@ -29,6 +29,7 @@ use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 use crate::commands::config::{read_hq_config_lenient, MenubarPrefs};
+use crate::util::hq_resolver;
 use crate::util::logfile::log;
 use crate::util::paths;
 
@@ -68,9 +69,10 @@ fn resolve_hq_folder() -> PathBuf {
 /// `HQ_NO_UPDATE_CHECK=1` is set so the CLI's version gate never tries to
 /// auto-update mid-call (which would race the command we asked for).
 async fn run_hq_json(args: &[&str]) -> Result<Value, String> {
-    let hq = paths::resolve_bin("hq");
+    let invocation = resolve_packages_hq();
+    let _npx_guard = invocation.npx_serial_guard().await;
     let folder = resolve_hq_folder();
-    let mut cmd = paths::tokio_spawn_command(&hq, &[]);
+    let mut cmd = invocation.command();
     let output = cmd
         .args(args)
         // `hq` is a `#!/usr/bin/env node` script; a Dock/launchd-spawned app
@@ -82,7 +84,13 @@ async fn run_hq_json(args: &[&str]) -> Result<Value, String> {
         .env("HQ_ROOT", &folder)
         .output()
         .await
-        .map_err(|e| format!("spawn `hq {}`: {e}", args.join(" ")))?;
+        .map_err(|e| {
+            format!(
+                "spawn `hq {}` ({}): {e}",
+                args.join(" "),
+                invocation.label()
+            )
+        })?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(format!(
@@ -95,6 +103,22 @@ async fn run_hq_json(args: &[&str]) -> Result<Value, String> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     serde_json::from_str(stdout.trim())
         .map_err(|e| format!("parse `hq {}` JSON: {e}", args.join(" ")))
+}
+
+/// Resolve `hq` for package lifecycle commands.
+///
+/// Package commands do not depend on the cloud-provisioning capabilities
+/// checked by the shared resolver. Prefer any discoverable local CLI here so a
+/// valid `hq packs` installation never becomes network/cache-dependent merely
+/// because it lacks an unrelated cloud command. Only a genuinely missing CLI
+/// uses the shared pinned-npx self-heal path.
+fn resolve_packages_hq() -> hq_resolver::HqInvocation {
+    let local = paths::resolve_bin("hq");
+    if local == "hq" {
+        hq_resolver::resolve_hq()
+    } else {
+        hq_resolver::HqInvocation::Local(local)
+    }
 }
 
 /// Summarize `hq packs list --json --check-updates` into the tiny popover
@@ -114,6 +138,79 @@ pub(crate) fn pack_update_summary(packs_view: &serde_json::Value) -> PackUpdateI
     PackUpdateInfo {
         count: names.len(),
         names,
+    }
+}
+
+/// Reconcile the CLI's pack-compatibility flags with the canonical HQ Core
+/// metadata used by the titlebar and Settings.
+///
+/// `hq packs list` is allowed to lag the desktop app's layout/version support.
+/// In particular, older CLI builds can either miss v15's `core/core.yaml` or
+/// apply general SemVer prerelease exclusion to a compatibility *floor*:
+/// `15.0.69-beta.3` then incorrectly fails `>=12.0.0`. Pack requirements are
+/// feature floors, not release-channel selectors, so a prerelease tag's numeric
+/// core version is authoritative unless the requirement itself names a
+/// prerelease.
+fn reconcile_hq_core_compatibility(packs_view: &mut Value, local_version: Option<&str>) {
+    let Some(local_version) = local_version
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return;
+    };
+    let Ok(current) =
+        semver::Version::parse(local_version.strip_prefix('v').unwrap_or(local_version))
+    else {
+        return;
+    };
+    let Some(view) = packs_view.as_object_mut() else {
+        return;
+    };
+
+    view.insert(
+        "hqVersion".to_string(),
+        Value::String(local_version.to_string()),
+    );
+
+    let Some(installed) = view.get_mut("installed").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for pack in installed {
+        let Some(requirement) = pack
+            .get("requiresHqCore")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            continue;
+        };
+        let Ok(requirement) = semver::VersionReq::parse(requirement) else {
+            continue;
+        };
+
+        let satisfied = if requirement.matches(&current) {
+            true
+        } else if current.pre.is_empty()
+            || requirement
+                .comparators
+                .iter()
+                .any(|comparator| !comparator.pre.is_empty())
+        {
+            false
+        } else {
+            // General SemVer matching excludes prereleases unless the range
+            // names one explicitly. For HQ Core feature floors, compare the
+            // same numeric release without its channel suffix.
+            requirement.matches(&semver::Version::new(
+                current.major,
+                current.minor,
+                current.patch,
+            ))
+        };
+
+        if let Some(pack) = pack.as_object_mut() {
+            pack.insert("hqCoreSatisfied".to_string(), Value::Bool(satisfied));
+        }
     }
 }
 
@@ -157,7 +254,11 @@ async fn gather_packages(check_updates: bool) -> PackagesView {
         vec!["packs", "list", "--json"]
     };
     let (packs, error) = match run_hq_json(&packs_args).await {
-        Ok(v) => (v, None),
+        Ok(mut value) => {
+            let local_version = hq_desktop_core::hq_version::get_local_version();
+            reconcile_hq_core_compatibility(&mut value, local_version.as_deref());
+            (value, None)
+        }
         Err(e) => (Value::Null, Some(e)),
     };
     // Registry listing is best-effort: it needs auth + network and may be
@@ -219,13 +320,18 @@ pub fn packages_window_ready() -> Option<Value> {
 /// `packages:progress` lines and a terminal `packages:complete` /
 /// `packages:error`. Used by install / update.
 async fn stream_hq(app: &AppHandle, op: &str, name: &str, args: Vec<String>) -> Result<(), String> {
-    let hq = paths::resolve_bin("hq");
+    let invocation = resolve_packages_hq();
+    let _npx_guard = invocation.npx_serial_guard().await;
     let folder = resolve_hq_folder();
     log(
         "packages",
-        &format!("stream `hq {}` (op={op}, name={name})", args.join(" ")),
+        &format!(
+            "stream `hq {}` via {} (op={op}, name={name})",
+            args.join(" "),
+            invocation.label()
+        ),
     );
-    let mut cmd = paths::tokio_spawn_command(&hq, &[]);
+    let mut cmd = invocation.command();
     let mut child = cmd
         .args(&args)
         // node-shebang PATH fix — see run_hq_json.
@@ -236,7 +342,13 @@ async fn stream_hq(app: &AppHandle, op: &str, name: &str, args: Vec<String>) -> 
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .map_err(|e| format!("spawn `hq {}`: {e}", args.join(" ")))?;
+        .map_err(|e| {
+            format!(
+                "spawn `hq {}` ({}): {e}",
+                args.join(" "),
+                invocation.label()
+            )
+        })?;
 
     // Relay both streams as progress lines. `hq install` prints human progress
     // to stdout/stderr; we surface every line so the window shows live status.
@@ -371,6 +483,63 @@ pub fn setup_pack_update_checker(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canonical_prerelease_core_clears_stale_pack_floor_failures() {
+        let mut view = serde_json::json!({
+            "hqVersion": null,
+            "installed": [
+                {
+                    "name": "design",
+                    "requiresHqCore": ">=12.0.0",
+                    "hqCoreSatisfied": false
+                },
+                {
+                    "name": "engineering",
+                    "requiresHqCore": ">=14.2.0",
+                    "hqCoreSatisfied": false
+                },
+                {
+                    "name": "future",
+                    "requiresHqCore": ">=16.0.0",
+                    "hqCoreSatisfied": true
+                }
+            ]
+        });
+
+        reconcile_hq_core_compatibility(&mut view, Some("15.0.69-beta.3"));
+
+        assert_eq!(view["hqVersion"], "15.0.69-beta.3");
+        assert_eq!(view["installed"][0]["hqCoreSatisfied"], true);
+        assert_eq!(view["installed"][1]["hqCoreSatisfied"], true);
+        assert_eq!(view["installed"][2]["hqCoreSatisfied"], false);
+    }
+
+    #[test]
+    fn compatibility_reconciliation_preserves_cli_results_without_canonical_evidence() {
+        let original = serde_json::json!({
+            "hqVersion": "13.0.0",
+            "installed": [
+                {
+                    "name": "unknown-range",
+                    "requiresHqCore": "workspace:*",
+                    "hqCoreSatisfied": false
+                },
+                {
+                    "name": "no-requirement",
+                    "hqCoreSatisfied": true
+                }
+            ]
+        });
+        let mut no_local_version = original.clone();
+        let mut invalid_local_version = original.clone();
+
+        reconcile_hq_core_compatibility(&mut no_local_version, None);
+        reconcile_hq_core_compatibility(&mut invalid_local_version, Some("not-a-version"));
+
+        assert_eq!(no_local_version, original);
+        assert_eq!(invalid_local_version, original);
+    }
 
     #[test]
     fn pack_update_summary_counts_true_update_flags_only() {

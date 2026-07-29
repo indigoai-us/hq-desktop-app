@@ -127,7 +127,10 @@ pub fn record_new_files(app: &AppHandle, e: &SyncNewFilesEvent) {
 /// desktop that listens.
 #[tauri::command]
 pub async fn open_activity_log(app: AppHandle) -> Result<(), String> {
-    log("activity", "open_activity_log → desktop destination home/activity");
+    log(
+        "activity",
+        "open_activity_log → desktop destination home/activity",
+    );
     crate::commands::desktop_alt::open_destination(
         app,
         crate::commands::desktop_alt::DesktopDestination::Activity,

@@ -15,6 +15,22 @@
     type PendingUpdateState,
   } from '../../lib/notificationFeedData';
   import { updateSettings, type SettingsPatch } from '../../lib/settings-mutations';
+  import {
+    APPEARANCE_CHANGE_EVENT,
+    readBrowserAppearancePreferences,
+    requestAppearancePreferenceChange,
+    windowOpacityFromTransparency,
+    windowTransparencyFromOpacity,
+    type AppearancePreferences,
+    type ColorTheme,
+  } from '../../lib/appearancePreferences';
+  import {
+    DESKTOP_ZOOM_CHANGE_EVENT,
+    MAX_DESKTOP_ZOOM,
+    MIN_DESKTOP_ZOOM,
+    readBrowserDesktopZoom,
+    requestDesktopZoom,
+  } from '../../lib/desktopZoom';
   import { isMac } from '../lib/platform';
   import WidgetSettings from '../../components/WidgetSettings.svelte';
   import '../v4/tokens.css';
@@ -28,6 +44,27 @@
 
   type Channel = 'stable' | 'beta' | 'alpha';
   type Platform = 'zoom' | 'meet' | 'teams' | 'slack' | 'webex';
+  type SettingsControlKey =
+    | 'sync-on-launch'
+    | 'realtime-sync'
+    | 'instant-sync'
+    | 'personal-sync'
+    | 'sync-notifications'
+    | 'share-notifications'
+    | 'dm-notifications'
+    | 'auto-update'
+    | 'staging-channel'
+    | 'release-channel'
+    | 'start-at-login'
+    | 'dock-icon'
+    | 'meeting-detection'
+    | 'meeting-platforms'
+    | 'default-recording-company';
+  type LiveControlKey =
+    | 'realtime-sync'
+    | 'instant-sync'
+    | 'start-at-login'
+    | 'dock-icon';
 
   // Exact upgrade command the v0.9.8 popover copied to the clipboard.
   const HQ_CLI_UPGRADE_CMD = 'npm install -g @indigoai-us/hq-cli@latest';
@@ -95,6 +132,14 @@
   };
 
   const platforms: Platform[] = ['zoom', 'meet', 'teams', 'slack', 'webex'];
+  const appearanceThemes: ReadonlyArray<{
+    id: ColorTheme;
+    label: string;
+  }> = [
+    { id: 'system', label: 'System' },
+    { id: 'light', label: 'Light' },
+    { id: 'dark', label: 'Dark' },
+  ];
 
   // Memberships drive the default-recording-company dropdown (mirrors the
   // classic Settings + MeetingsWindow URL-invite picker). Empty for users with
@@ -125,6 +170,10 @@
   // a pre-save snapshot cannot flip a newly changed control back.
   let settingsSavesInFlight = 0;
   let refreshAfterSettingsSaves = false;
+  // Keep feedback local to the preference being persisted. Different settings
+  // remain usable while a save is in flight, while repeated changes to the
+  // same setting are held until its optimistic patch has settled.
+  let pendingSettingsControls = $state<SettingsControlKey[]>([]);
   // GA gate (any signed-in user) — from `meetings_feature_enabled`. Gates the
   // Meeting-detection row, which graduated out of the Indigo dogfood.
   let meetingsEnabled = $state(false);
@@ -136,6 +185,7 @@
   let availableChannels = $state<Channel[]>(['stable']);
 
   let hqPath = $state<string | null>(null);
+  let hqFolderChanging = $state(false);
   // Default ON — mirrors the backend get_settings default; a fresh install
   // syncs on launch out of the box.
   let syncOnLaunch = $state(true);
@@ -190,9 +240,12 @@
   // preference. `'unknown'` = not yet read (row hidden until first resolve).
   let notifPermission = $state<'granted' | 'denied' | 'prompt' | 'unknown'>('unknown');
   let notifRequesting = $state(false);
+  let notifPermissionError = $state<string | null>(null);
+  let meetingPermissionsOpening = $state(false);
 
   // App version from tauri.conf.json via the Tauri API.
   let appVersion = $state('');
+  let appVersionLoadFailed = $state(false);
 
   // Manual "Check for Updates" transient result (app auto-updater).
   let updateChecking = $state(false);
@@ -204,34 +257,140 @@
 
   // hq CLI update notice — loaded via check_hq_cli_update; null = hide card.
   let hqCliUpdate = $state<{ local: string | null; latest: string } | null>(null);
+  let hqCliVersion = $state<string | null>(null);
+  let hqCliVersionLoading = $state(true);
+  let hqCliVersionError = $state(false);
+  let hqCliChecking = $state(false);
   let hqCliInstalling = $state(false);
+  let hqCliDismissing = $state(false);
+  let hqCliLoadGeneration = 0;
   let hqCliUpdateError = $state<string | null>(null);
+  let hqCliUpdateErrorContext = $state<
+    'check' | 'install' | 'dismiss' | null
+  >(null);
   let hqCliCmdCopied = $state(false);
+  let hqCliCmdCopying = $state(false);
+  let hqCliCmdCopyError = $state<string | null>(null);
 
   // Pack update notice — loaded via check_pack_update; hide when count is 0/null.
   let packUpdate = $state<{ count: number; names: string[] } | null>(null);
   let packsUpdating = $state(false);
   let packUpdateError = $state<string | null>(null);
 
-  // HQ core row — get_hq_version + check_core_state on load.
+  // HQ Core identity comes from the canonical local core/core.yaml read. Keep
+  // it independent from the slower channel/drift scan so a healthy install is
+  // never mislabeled "unknown" while check_core_state is still pending.
   let hqVersion = $state<string | null>(null);
+  let coreVersionLoading = $state(true);
+  let coreVersionError = $state(false);
+  let coreVersionLoadGeneration = 0;
   let coreState = $state<CoreState | null>(null);
+  let coreStateLoading = $state(true);
+  let coreStateError = $state(false);
+  let coreStateLoadGeneration = 0;
+  let coreRefreshing = $state(false);
   let coreInstalling = $state(false);
+  let coreInstallGeneration = 0;
+  let driftDetailOpening = $state(false);
+  let driftDetailError = $state<string | null>(null);
   // Transient install result for the HQ core row (v0.9.8 parity): 'ok' auto-
   // clears after ~6s; 'err' stays until the next run. log_path surfaces on err
   // so the user can open the rescue log for details.
   let coreInstallResult = $state<'ok' | 'err' | null>(null);
   let coreInstallLogPath = $state<string | null>(null);
   let coreInstallResultTimeout: ReturnType<typeof setTimeout> | null = null;
+  let coreLogCopyState = $state<'idle' | 'copying' | 'copied' | 'failed'>('idle');
+  let coreLogOpenState = $state<'idle' | 'opening' | 'opened' | 'failed'>('idle');
+  let coreLogCopyTimeout: ReturnType<typeof setTimeout> | null = null;
+  let coreLogOpenTimeout: ReturnType<typeof setTimeout> | null = null;
+  let signingOut = $state(false);
+  let quitting = $state(false);
+  let accountActionError = $state<string | null>(null);
+  let accountRetryAction = $state<'sign-out' | 'quit' | null>(null);
+  let liveControlErrors = $state<Record<LiveControlKey, string | null>>({
+    'realtime-sync': null,
+    'instant-sync': null,
+    'start-at-login': null,
+    'dock-icon': null,
+  });
+  let appearance = $state<AppearancePreferences>(
+    readBrowserAppearancePreferences(),
+  );
+  let interfaceZoom = $state(readBrowserDesktopZoom());
+  const windowOpacity = $derived(
+    windowOpacityFromTransparency(appearance.windowTransparency),
+  );
 
   const displayedChannel = $derived<Channel>(
     releaseChannel ?? (availableChannels.includes('beta') ? 'beta' : 'stable'),
   );
   const hqPathLabel = $derived(hqPath ? formatHqFolderMeta(hqPath) : 'HQ folder not set');
   const coreHasDrift = $derived((coreState?.driftReport.count ?? 0) > 0);
+  const coreChannelPending = $derived(
+    pendingSettingsControls.includes('staging-channel') ||
+      pendingSettingsControls.includes('release-channel'),
+  );
   const coreNeedsUpdate = $derived(
     !!coreState && (coreState.versionBehind || coreHasDrift),
   );
+  const coreBusy = $derived(
+    coreVersionLoading ||
+      coreStateLoading ||
+      coreRefreshing ||
+      coreInstalling ||
+      coreChannelPending,
+  );
+  const coreVersionLabel = $derived.by(() => {
+    if (coreVersionLoading) return 'Reading…';
+    if (hqVersion) return `v${hqVersion}`;
+    return coreVersionError ? 'Unavailable' : 'Not detected';
+  });
+  const coreStatusLabel = $derived.by(() => {
+    if (coreInstallResult === 'ok') return 'Update complete';
+    if (coreInstallResult === 'err') {
+      return coreInstallLogPath
+        ? 'Update failed. Review the install log or try again.'
+        : 'Update failed. Try again.';
+    }
+    if (coreChannelPending) return 'Updating channel…';
+    if (coreStateLoading) return 'Checking channel status…';
+    if (coreStateError) return 'Channel status unavailable';
+    if (!coreState) {
+      if (coreVersionLoading) return 'Reading installed metadata…';
+      return hqVersion ? 'Installed locally' : 'HQ folder metadata needs attention';
+    }
+    const channel = coreState.channel === 'staging' ? 'Staging' : 'Release';
+    if (coreState.versionBehind) {
+      return `${channel} channel · Update available to v${coreState.targetVersion}`;
+    }
+    if (coreHasDrift) {
+      const count = coreState.driftReport.count;
+      return `${channel} channel · ${count} drifted ${count === 1 ? 'file' : 'files'}`;
+    }
+    return `${channel} channel · Up to date`;
+  });
+  const hqCliVersionLabel = $derived.by(() => {
+    if (hqCliVersionLoading) return 'Reading…';
+    if (hqCliVersion) return `v${hqCliVersion}`;
+    return hqCliVersionError ? 'Unavailable' : 'Not installed';
+  });
+  const hqCliStatusLabel = $derived.by(() => {
+    if (hqCliInstalling) return 'Installing update…';
+    if (hqCliDismissing) return 'Dismissing update…';
+    if (hqCliUpdateError) {
+      if (hqCliUpdateErrorContext === 'install') {
+        return 'Update failed. Try again or copy the install command.';
+      }
+      if (hqCliUpdateErrorContext === 'dismiss') {
+        return 'Couldn’t dismiss update. Try again.';
+      }
+      return 'Update status unavailable';
+    }
+    if (hqCliUpdate) return `Update available to v${hqCliUpdate.latest}`;
+    if (hqCliVersionLoading || hqCliChecking) return 'Checking version and registry…';
+    if (!hqCliVersion) return 'Install the HQ CLI to use terminal workflows';
+    return 'Up to date';
+  });
   const coreUpdateLabel = $derived.by(() => {
     if (!coreState) return 'Update';
     if (coreState.channel === 'staging') {
@@ -242,6 +401,33 @@
       : `Restore v${coreState.targetVersion}`;
   });
 
+  function updateAppearance(patch: Partial<AppearancePreferences>): void {
+    appearance = requestAppearancePreferenceChange(patch);
+  }
+
+  function updateInterfaceZoom(value: number): void {
+    interfaceZoom = requestDesktopZoom(value);
+  }
+
+  onMount(() => {
+    const onAppearanceChange = (event: Event) => {
+      appearance = (
+        event as CustomEvent<AppearancePreferences>
+      ).detail;
+    };
+    const onZoomChange = (event: Event) => {
+      interfaceZoom = (
+        event as CustomEvent<{ zoom: number }>
+      ).detail.zoom;
+    };
+    window.addEventListener(APPEARANCE_CHANGE_EVENT, onAppearanceChange);
+    window.addEventListener(DESKTOP_ZOOM_CHANGE_EVENT, onZoomChange);
+    return () => {
+      window.removeEventListener(APPEARANCE_CHANGE_EVENT, onAppearanceChange);
+      window.removeEventListener(DESKTOP_ZOOM_CHANGE_EVENT, onZoomChange);
+    };
+  });
+
   onMount(() => {
     let cancelled = false;
     let unlistenUpdate: UnlistenFn | undefined;
@@ -249,38 +435,56 @@
 
     // Register before hydration so a background checker event cannot race
     // get_pending_update while Settings is mounting.
-    void (async () => {
-      try {
-        const [availableFn, clearedFn] = await Promise.all([
-          listen<UpdateInfo>('update:available', (event) => {
-            if (cancelled || !event.payload?.version) return;
-            appUpdateLoadGeneration += 1;
-            appUpdate = event.payload;
-            updateResult = null;
-          }),
-          listen('update:cleared', () => {
-            if (cancelled) return;
-            appUpdateLoadGeneration += 1;
-            appUpdate = null;
-            appUpdateInstalling = false;
-            updateResult = null;
-            if (updateResultTimeout) {
-              clearTimeout(updateResultTimeout);
-              updateResultTimeout = null;
-            }
-          }),
-        ]);
-        if (cancelled) {
-          availableFn();
-          clearedFn();
-          return;
+    const retainListener = (
+      registration: Promise<UnlistenFn>,
+      retain: (unlisten: UnlistenFn) => void,
+    ) => {
+      void registration
+        .then((unlisten) => {
+          if (cancelled) {
+            unlisten();
+            return;
+          }
+          retain(unlisten);
+        })
+        .catch((err) => {
+          console.error('settings: failed to listen for updater state', err);
+        });
+    };
+    retainListener(
+      listen<UpdateInfo>('update:available', (event) => {
+        if (cancelled || !event.payload?.version) return;
+        appUpdateLoadGeneration += 1;
+        updateChecking = false;
+        appUpdateInstalling = false;
+        appUpdate = event.payload;
+        updateResult = null;
+        if (updateResultTimeout) {
+          clearTimeout(updateResultTimeout);
+          updateResultTimeout = null;
         }
-        unlistenUpdate = availableFn;
-        unlistenUpdateCleared = clearedFn;
-      } catch (err) {
-        console.error('settings: failed to listen for updater state', err);
-      }
-    })();
+      }),
+      (unlisten) => {
+        unlistenUpdate = unlisten;
+      },
+    );
+    retainListener(
+      listen('update:cleared', () => {
+        if (cancelled) return;
+        appUpdateLoadGeneration += 1;
+        updateChecking = false;
+        appUpdate = null;
+        appUpdateInstalling = false;
+        updateResult = null;
+        if (updateResultTimeout) {
+          clearTimeout(updateResultTimeout);
+          updateResultTimeout = null;
+        }
+      }),
+      (unlisten) => {
+        unlistenUpdateCleared = unlisten;
+      },
+    );
 
     void loadSettings();
     void loadTelemetryConsent();
@@ -289,8 +493,12 @@
     getVersion()
       .then((v) => {
         appVersion = v;
+        appVersionLoadFailed = false;
       })
-      .catch((err) => console.error('Failed to read app version:', err));
+      .catch((err) => {
+        appVersionLoadFailed = true;
+        console.error('Failed to read app version:', err);
+      });
     // Non-prompting read so the Meeting permissions row reflects the current
     // macOS grant state; refreshed on focus (returning from System Settings).
     void loadMeetingPermissions();
@@ -302,11 +510,17 @@
     return () => {
       cancelled = true;
       appUpdateLoadGeneration += 1;
+      hqCliLoadGeneration += 1;
+      coreVersionLoadGeneration += 1;
+      coreStateLoadGeneration += 1;
+      coreInstallGeneration += 1;
       unlistenUpdate?.();
       unlistenUpdateCleared?.();
       window.removeEventListener('focus', onFocus);
       if (updateResultTimeout) clearTimeout(updateResultTimeout);
       if (coreInstallResultTimeout) clearTimeout(coreInstallResultTimeout);
+      if (coreLogCopyTimeout) clearTimeout(coreLogCopyTimeout);
+      if (coreLogOpenTimeout) clearTimeout(coreLogOpenTimeout);
       if (savedTimeout) clearTimeout(savedTimeout);
     };
   });
@@ -401,17 +615,69 @@
     return value === 'stable' || value === 'beta' || value === 'alpha';
   }
 
-  function togglePlatform(platform: Platform) {
+  function isSettingsControlPending(control: SettingsControlKey): boolean {
+    return pendingSettingsControls.includes(control);
+  }
+
+  function beginSettingsControl(control: SettingsControlKey): boolean {
+    if (isSettingsControlPending(control)) return false;
+    pendingSettingsControls = [...pendingSettingsControls, control];
+    return true;
+  }
+
+  function endSettingsControl(control: SettingsControlKey): void {
+    pendingSettingsControls = pendingSettingsControls.filter((item) => item !== control);
+  }
+
+  function setLiveControlError(
+    control: LiveControlKey,
+    message: string | null,
+  ): void {
+    liveControlErrors = { ...liveControlErrors, [control]: message };
+  }
+
+  async function restoreDaemonState(enabled: boolean): Promise<void> {
+    await invoke(enabled ? 'start_daemon' : 'stop_daemon');
+  }
+
+  async function persistSettingsControl(
+    control: SettingsControlKey,
+    patch: SettingsPatch,
+  ): Promise<boolean> {
+    if (!beginSettingsControl(control)) return false;
+    try {
+      return await saveSettings(patch);
+    } finally {
+      endSettingsControl(control);
+    }
+  }
+
+  async function togglePlatform(platform: Platform) {
+    // Detection enabled/platforms share one persisted object, so do not let
+    // either control overwrite the other's still-pending snapshot.
+    if (
+      isSettingsControlPending('meeting-detection') ||
+      isSettingsControlPending('meeting-platforms')
+    ) {
+      return;
+    }
     meetingDetectPlatforms = meetingDetectPlatforms.includes(platform)
       ? meetingDetectPlatforms.filter((item) => item !== platform)
       : [...meetingDetectPlatforms, platform];
-    void saveMeetingDetection();
+    await persistSettingsControl('meeting-platforms', {
+      meetingDetectNotify: {
+        enabled: meetingDetectEnabled,
+        platforms: [...meetingDetectPlatforms],
+      },
+    });
   }
 
   // Re-tether the HQ folder — mirrors the classic Settings "Change…" button so a
   // user who moved their HQ folder can fix it without opening the menubar popover
   // or hand-editing menubar.json.
   async function handlePickFolder() {
+    if (hqFolderChanging) return;
+    hqFolderChanging = true;
     try {
       const picked = await invoke<string | null>('pick_folder');
       if (picked !== null) {
@@ -420,6 +686,8 @@
       }
     } catch (err) {
       error = String(err);
+    } finally {
+      hqFolderChanging = false;
     }
   }
 
@@ -427,10 +695,14 @@
   // had no way to grant the Accessibility/Screen-Recording/Microphone access the
   // meeting SDK needs — users had to open the classic popover to reach it.
   async function handleOpenMeetingPermissionsWizard() {
+    if (meetingPermissionsOpening) return;
+    meetingPermissionsOpening = true;
     try {
       await invoke('open_meeting_permissions_window');
     } catch (err) {
       error = String(err);
+    } finally {
+      meetingPermissionsOpening = false;
     }
   }
 
@@ -491,7 +763,8 @@
   }
 
   function saveMeetingDetection(): Promise<boolean> {
-    return saveSettings({
+    if (isSettingsControlPending('meeting-platforms')) return Promise.resolve(false);
+    return persistSettingsControl('meeting-detection', {
       meetingDetectNotify: {
         enabled: meetingDetectEnabled,
         platforms: [...meetingDetectPlatforms],
@@ -622,16 +895,36 @@
   // Auto-sync drives whether the background daemon runs at all. Start or stop
   // it immediately so the change takes effect without an app restart.
   async function applyRealtimeSync() {
-    if (!(await saveSettings({ realtimeSync }))) return;
+    if (!beginSettingsControl('realtime-sync')) return;
+    const next = realtimeSync;
+    const previous = !next;
+    setLiveControlError('realtime-sync', null);
     try {
-      if (realtimeSync) {
-        await invoke('start_daemon');
-      } else {
-        await invoke('stop_daemon');
+      // Apply the live process state first so a failed daemon command never
+      // leaves a persisted preference claiming that Auto-sync is active.
+      await restoreDaemonState(next);
+      if (!(await saveSettings({ realtimeSync: next }))) {
+        realtimeSync = previous;
+        try {
+          await restoreDaemonState(previous);
+        } catch (rollbackError) {
+          console.error('Auto-sync daemon rollback failed:', rollbackError);
+        }
       }
     } catch (err) {
-      // Persisted state is authoritative; main.rs reconciles on next launch.
       console.error('Auto-sync daemon command failed:', err);
+      realtimeSync = previous;
+      setLiveControlError(
+        'realtime-sync',
+        'Couldn’t change Auto-sync. The saved setting was left unchanged. Toggle again to retry.',
+      );
+      try {
+        await restoreDaemonState(previous);
+      } catch (rollbackError) {
+        console.error('Auto-sync daemon recovery failed:', rollbackError);
+      }
+    } finally {
+      endSettingsControl('realtime-sync');
     }
   }
 
@@ -639,24 +932,85 @@
   // daemon is already running, bounce it so the new flag takes effect now; if
   // Auto-sync is off there's no process to bounce — the next start picks it up.
   async function applyInstantSync() {
-    if (!(await saveSettings({ instantSync }))) return;
-    if (!realtimeSync) return;
+    if (!beginSettingsControl('instant-sync')) return;
+    const next = instantSync;
+    const previous = !next;
+    let preferencePersisted = false;
+    setLiveControlError('instant-sync', null);
     try {
+      // The daemon reads Instant-sync from persisted settings at spawn time, so
+      // save before bouncing it. If activation fails below, immediately write
+      // the previous preference back.
+      if (!(await saveSettings({ instantSync: next }))) return;
+      preferencePersisted = true;
+      if (!realtimeSync) return;
       await invoke('stop_daemon');
       await invoke('start_daemon');
     } catch (err) {
       console.error('Instant-sync daemon restart failed:', err);
+      instantSync = previous;
+      if (preferencePersisted) {
+        const restored = await saveSettings({ instantSync: previous });
+        if (restored) instantSync = previous;
+      }
+      setLiveControlError(
+        'instant-sync',
+        'Couldn’t activate Instant sync, so the previous setting was restored. Toggle again to retry.',
+      );
+      if (realtimeSync) {
+        try {
+          await invoke('start_daemon');
+        } catch (rollbackError) {
+          console.error('Instant-sync daemon recovery failed:', rollbackError);
+        }
+      }
+    } finally {
+      endSettingsControl('instant-sync');
     }
   }
 
   // Start-at-login must reconcile the macOS LaunchAgent plist, not just persist
   // the flag — otherwise the login item never actually changes.
   async function applyStartAtLogin() {
-    if (!(await saveSettings({ startAtLogin }))) return;
+    if (!beginSettingsControl('start-at-login')) return;
+    const next = startAtLogin;
+    const previous = !next;
+    setLiveControlError('start-at-login', null);
     try {
-      await invoke('set_autostart_enabled', { enabled: startAtLogin });
+      await invoke('set_autostart_enabled', { enabled: next });
+      if (!(await saveSettings({ startAtLogin: next }))) {
+        startAtLogin = previous;
+        try {
+          await invoke('set_autostart_enabled', { enabled: previous });
+        } catch (rollbackError) {
+          console.error('Autostart rollback failed:', rollbackError);
+        }
+      }
     } catch (err) {
       console.error('Failed to set autostart:', err);
+      startAtLogin = previous;
+      setLiveControlError(
+        'start-at-login',
+        'Couldn’t change Start at login. The saved setting was left unchanged. Toggle again to retry.',
+      );
+      try {
+        await invoke('set_autostart_enabled', { enabled: previous });
+      } catch (rollbackError) {
+        console.error('Autostart recovery failed:', rollbackError);
+      }
+    } finally {
+      endSettingsControl('start-at-login');
+    }
+  }
+
+  async function applyStagingChannel() {
+    if (coreInstalling) return;
+    if (!beginSettingsControl('staging-channel')) return;
+    try {
+      if (!(await saveSettings({ stagingChannel }))) return;
+      await refreshCoreState();
+    } finally {
+      endSettingsControl('staging-channel');
     }
   }
 
@@ -671,16 +1025,29 @@
   async function applyDockIcon() {
     // `bind:checked` has already flipped `dockIcon`, so the pre-toggle value
     // is its negation — this is a two-state control.
+    if (!beginSettingsControl('dock-icon')) return;
     const previous = !dockIcon;
-    if (!(await saveSettings({ dockIcon }))) {
-      dockIcon = previous;
-      return;
-    }
+    setLiveControlError('dock-icon', null);
     try {
-      await invoke('apply_dock_icon');
-    } catch (err) {
-      console.error('Failed to apply dock icon:', err);
-      error = `Saved, but the Dock icon won't change until you restart HQ: ${String(err)}`;
+      if (!(await saveSettings({ dockIcon }))) {
+        dockIcon = previous;
+        setLiveControlError(
+          'dock-icon',
+          'Couldn’t save Dock visibility. The previous setting was restored.',
+        );
+        return;
+      }
+      try {
+        await invoke('apply_dock_icon');
+      } catch (err) {
+        console.error('Failed to apply dock icon:', err);
+        setLiveControlError(
+          'dock-icon',
+          'Saved. Restart HQ to finish changing Dock visibility.',
+        );
+      }
+    } finally {
+      endSettingsControl('dock-icon');
     }
   }
 
@@ -699,24 +1066,30 @@
 
   async function handleEnableNotifications() {
     if (notifRequesting) return;
+    notifRequesting = true;
+    notifPermissionError = null;
     // Once macOS has recorded a denial it will NOT re-show the system dialog,
     // so request_permission() would be a silent no-op. Deep-link to
     // System Settings > Notifications instead.
-    if (notifPermission === 'denied') {
-      try {
-        await openUrl('x-apple.systempreferences:com.apple.preference.notifications');
-      } catch (err) {
-        console.error('Failed to open System Settings:', err);
-      }
-      return;
-    }
-    notifRequesting = true;
     try {
+      if (notifPermission === 'denied') {
+        await openUrl('x-apple.systempreferences:com.apple.preference.notifications');
+        return;
+      }
       notifPermission = await invoke<'granted' | 'denied' | 'prompt'>(
         'notification_request_permission',
       );
     } catch (err) {
-      console.error('Failed to request notification permission:', err);
+      console.error(
+        notifPermission === 'denied'
+          ? 'Failed to open System Settings:'
+          : 'Failed to request notification permission:',
+        err,
+      );
+      notifPermissionError =
+        notifPermission === 'denied'
+          ? 'Couldn’t open Notification Settings. Try again.'
+          : 'Couldn’t request notification permission. Try again.';
     } finally {
       notifRequesting = false;
     }
@@ -727,8 +1100,9 @@
   async function loadUpdateSurfaces() {
     await Promise.all([
       refreshPendingAppUpdate(),
-      refreshHqCliUpdate(),
+      refreshHqCliSurface(),
       refreshPackUpdate(),
+      refreshCoreVersion(),
       refreshCoreState(),
     ]);
   }
@@ -751,17 +1125,52 @@
     }
   }
 
-  async function refreshHqCliUpdate() {
-    if (hqCliInstalling) return;
+  async function refreshHqCliUpdate(generation: number) {
     try {
       const info = await invoke<{ local: string | null; latest: string } | null>(
         'check_hq_cli_update',
       );
+      if (generation !== hqCliLoadGeneration) return;
       hqCliUpdate = info;
-      if (info) hqCliUpdateError = null;
+      hqCliUpdateError = null;
+      hqCliUpdateErrorContext = null;
     } catch (err) {
+      if (generation !== hqCliLoadGeneration) return;
       console.error('check_hq_cli_update failed:', err);
       hqCliUpdate = null;
+      hqCliUpdateError = String(err);
+      hqCliUpdateErrorContext = 'check';
+    }
+  }
+
+  async function refreshHqCliVersion(generation: number) {
+    hqCliVersionLoading = true;
+    hqCliVersionError = false;
+    try {
+      const version = await invoke<string | null>('get_hq_cli_version');
+      if (generation !== hqCliLoadGeneration) return;
+      hqCliVersion = version;
+    } catch (err) {
+      if (generation !== hqCliLoadGeneration) return;
+      console.error('get_hq_cli_version failed:', err);
+      hqCliVersion = null;
+      hqCliVersionError = true;
+    } finally {
+      if (generation === hqCliLoadGeneration) hqCliVersionLoading = false;
+    }
+  }
+
+  async function refreshHqCliSurface() {
+    if (hqCliChecking || hqCliInstalling || hqCliDismissing) return;
+    const generation = ++hqCliLoadGeneration;
+    hqCliChecking = true;
+    try {
+      await Promise.all([
+        refreshHqCliVersion(generation),
+        refreshHqCliUpdate(generation),
+      ]);
+    } finally {
+      if (generation === hqCliLoadGeneration) hqCliChecking = false;
     }
   }
 
@@ -777,32 +1186,69 @@
     }
   }
 
-  async function refreshCoreState() {
+  async function refreshCoreVersion() {
+    const generation = ++coreVersionLoadGeneration;
+    coreVersionLoading = true;
+    coreVersionError = false;
     try {
-      const [version, state] = await Promise.all([
-        invoke<string | null>('get_hq_version').catch(() => null),
-        invoke<CoreState | null>('check_core_state').catch(() => null),
-      ]);
+      const version = await invoke<string | null>('get_hq_version');
+      if (generation !== coreVersionLoadGeneration) return;
       hqVersion = version;
+    } catch (err) {
+      if (generation !== coreVersionLoadGeneration) return;
+      console.error('HQ Core version refresh failed:', err);
+      hqVersion = null;
+      coreVersionError = true;
+    } finally {
+      if (generation === coreVersionLoadGeneration) coreVersionLoading = false;
+    }
+  }
+
+  async function refreshCoreState() {
+    const generation = ++coreStateLoadGeneration;
+    coreStateLoading = true;
+    coreStateError = false;
+    try {
+      const state = await invoke<CoreState | null>('check_core_state');
+      if (generation !== coreStateLoadGeneration) return;
       coreState = state;
     } catch (err) {
-      console.error('core state refresh failed:', err);
+      if (generation !== coreStateLoadGeneration) return;
+      console.error('HQ Core state refresh failed:', err);
+      coreState = null;
+      coreStateError = true;
+    } finally {
+      if (generation === coreStateLoadGeneration) coreStateLoading = false;
+    }
+  }
+
+  async function handleRefreshCore() {
+    if (coreRefreshing || coreInstalling || coreChannelPending) return;
+    coreRefreshing = true;
+    try {
+      await Promise.all([refreshCoreVersion(), refreshCoreState()]);
+    } finally {
+      coreRefreshing = false;
     }
   }
 
   async function handleCheckForUpdates() {
     if (updateChecking) return;
+    const generation = ++appUpdateLoadGeneration;
     updateChecking = true;
     updateResult = null;
     if (updateResultTimeout) clearTimeout(updateResultTimeout);
     try {
       const info = await invoke<UpdateInfo | null>('check_for_updates');
+      if (generation !== appUpdateLoadGeneration) return;
       appUpdate = info;
       updateResult = info ? null : 'Up to date';
     } catch (err) {
+      if (generation !== appUpdateLoadGeneration) return;
       console.error('check_for_updates failed:', err);
       updateResult = 'Check failed';
     } finally {
+      if (generation !== appUpdateLoadGeneration) return;
       updateChecking = false;
       updateResultTimeout = setTimeout(() => {
         updateResult = null;
@@ -812,6 +1258,7 @@
 
   async function handleInstallAppUpdate() {
     if (!appUpdate || appUpdateInstalling) return;
+    const generation = ++appUpdateLoadGeneration;
     appUpdateInstalling = true;
     updateResult = null;
     if (updateResultTimeout) clearTimeout(updateResultTimeout);
@@ -819,8 +1266,10 @@
       // The backend downloads, installs, and restarts the app. On macOS this
       // call normally never returns because the process is replaced.
       await invoke('install_update');
+      if (generation !== appUpdateLoadGeneration) return;
       updateResult = 'Restarting…';
     } catch (err) {
+      if (generation !== appUpdateLoadGeneration) return;
       console.error('install_update failed:', err);
       updateResult = 'Install failed';
       appUpdateInstalling = false;
@@ -829,12 +1278,16 @@
 
   async function handleInstallHqCliUpdate() {
     if (hqCliInstalling) return;
+    const generation = ++hqCliLoadGeneration;
+    hqCliChecking = false;
     hqCliInstalling = true;
     hqCliUpdateError = null;
+    hqCliUpdateErrorContext = null;
     try {
       const info = await invoke<{ local: string | null; latest: string }>(
         'install_hq_cli_update',
       );
+      if (generation !== hqCliLoadGeneration) return;
       if (info.local && info.local === info.latest) {
         hqCliUpdate = null;
       } else {
@@ -842,28 +1295,49 @@
       }
       // Re-check after a successful install so a race with the registry is
       // reflected; leave the error path alone so "Update failed." sticks.
-      await refreshHqCliUpdate();
+      await Promise.all([
+        refreshHqCliVersion(generation),
+        refreshHqCliUpdate(generation),
+      ]);
     } catch (err) {
+      if (generation !== hqCliLoadGeneration) return;
       console.error('install_hq_cli_update failed:', err);
       hqCliUpdateError = String(err);
+      hqCliUpdateErrorContext = 'install';
     } finally {
-      hqCliInstalling = false;
+      if (generation === hqCliLoadGeneration) hqCliInstalling = false;
     }
   }
 
   async function handleDismissHqCliUpdate() {
-    const latest = hqCliUpdate?.latest;
+    if (hqCliDismissing || hqCliInstalling) return;
+    const dismissedUpdate = hqCliUpdate;
+    const latest = dismissedUpdate?.latest;
+    if (!latest) return;
+    const generation = ++hqCliLoadGeneration;
+    hqCliChecking = false;
     hqCliUpdate = null;
     hqCliUpdateError = null;
-    if (!latest) return;
+    hqCliUpdateErrorContext = null;
+    hqCliDismissing = true;
     try {
       await invoke('set_hq_cli_update_dismissed', { version: latest });
     } catch (err) {
+      if (generation !== hqCliLoadGeneration) return;
       console.error('set_hq_cli_update_dismissed failed:', err);
+      hqCliUpdate = dismissedUpdate;
+      hqCliUpdateError = String(err);
+      hqCliUpdateErrorContext = 'dismiss';
+    } finally {
+      if (generation === hqCliLoadGeneration) hqCliDismissing = false;
     }
   }
 
   async function copyHqCliCommand() {
+    if (hqCliCmdCopying) return;
+    hqCliCmdCopying = true;
+    hqCliCmdCopied = false;
+    hqCliCmdCopyError = null;
     try {
       await navigator.clipboard.writeText(HQ_CLI_UPGRADE_CMD);
       hqCliCmdCopied = true;
@@ -872,6 +1346,9 @@
       }, 1500);
     } catch (err) {
       console.error('copy hq CLI command failed:', err);
+      hqCliCmdCopyError = 'Couldn’t copy the install command. Try again.';
+    } finally {
+      hqCliCmdCopying = false;
     }
   }
 
@@ -892,19 +1369,99 @@
 
   async function handleOpenDriftDetail() {
     const report = coreState?.driftReport;
-    if (!report) return;
+    if (
+      !report ||
+      driftDetailOpening ||
+      coreStateLoading ||
+      coreRefreshing ||
+      coreChannelPending
+    ) return;
+    driftDetailOpening = true;
+    driftDetailError = null;
     try {
       await invoke('open_drift_detail', { report });
     } catch (err) {
       console.error('open_drift_detail failed:', err);
+      driftDetailError = 'Couldn’t open drift details. Try again.';
+    } finally {
+      driftDetailOpening = false;
+    }
+  }
+
+  function resetCoreLogActions(): void {
+    coreLogCopyState = 'idle';
+    coreLogOpenState = 'idle';
+    if (coreLogCopyTimeout) {
+      clearTimeout(coreLogCopyTimeout);
+      coreLogCopyTimeout = null;
+    }
+    if (coreLogOpenTimeout) {
+      clearTimeout(coreLogOpenTimeout);
+      coreLogOpenTimeout = null;
+    }
+  }
+
+  async function handleCopyCoreInstallLogPath(): Promise<void> {
+    const logPath = coreInstallLogPath;
+    if (!logPath || coreLogCopyState === 'copying') return;
+    if (coreLogCopyTimeout) clearTimeout(coreLogCopyTimeout);
+    coreLogCopyState = 'copying';
+    try {
+      await navigator.clipboard.writeText(logPath);
+      if (coreInstallLogPath !== logPath) return;
+      coreLogCopyState = 'copied';
+      coreLogCopyTimeout = setTimeout(() => {
+        if (coreInstallLogPath === logPath) coreLogCopyState = 'idle';
+        coreLogCopyTimeout = null;
+      }, 1800);
+    } catch (err) {
+      console.error('copy HQ Core install log path failed:', err);
+      if (coreInstallLogPath !== logPath) return;
+      coreLogCopyState = 'failed';
+      coreLogCopyTimeout = setTimeout(() => {
+        if (coreInstallLogPath === logPath) coreLogCopyState = 'idle';
+        coreLogCopyTimeout = null;
+      }, 4000);
+    }
+  }
+
+  async function handleOpenCoreInstallLog(): Promise<void> {
+    const logPath = coreInstallLogPath;
+    if (!logPath || coreLogOpenState === 'opening') return;
+    if (coreLogOpenTimeout) clearTimeout(coreLogOpenTimeout);
+    coreLogOpenState = 'opening';
+    try {
+      await openUrl(logPath);
+      if (coreInstallLogPath !== logPath) return;
+      coreLogOpenState = 'opened';
+      coreLogOpenTimeout = setTimeout(() => {
+        if (coreInstallLogPath === logPath) coreLogOpenState = 'idle';
+        coreLogOpenTimeout = null;
+      }, 1800);
+    } catch (err) {
+      console.error('open HQ Core install log failed:', err);
+      if (coreInstallLogPath !== logPath) return;
+      coreLogOpenState = 'failed';
+      coreLogOpenTimeout = setTimeout(() => {
+        if (coreInstallLogPath === logPath) coreLogOpenState = 'idle';
+        coreLogOpenTimeout = null;
+      }, 4000);
     }
   }
 
   async function handleInstallCore() {
-    if (coreInstalling || !coreState) return;
+    if (
+      coreInstalling ||
+      coreStateLoading ||
+      coreRefreshing ||
+      coreChannelPending ||
+      !coreState
+    ) return;
+    const generation = ++coreInstallGeneration;
     coreInstalling = true;
     coreInstallResult = null;
     coreInstallLogPath = null;
+    resetCoreLogActions();
     if (coreInstallResultTimeout) {
       clearTimeout(coreInstallResultTimeout);
       coreInstallResultTimeout = null;
@@ -922,6 +1479,7 @@
         log_tail: string;
         log_path: string;
       }>(command);
+      if (generation !== coreInstallGeneration) return;
       if (result.exit_code === 0) {
         coreInstallResult = 'ok';
         // Auto-clear "update done" after a few seconds (momentary confirm).
@@ -933,36 +1491,49 @@
         coreInstallResult = 'err';
         coreInstallLogPath = result.log_path || null;
       }
-      await refreshCoreState();
+      await Promise.all([refreshCoreVersion(), refreshCoreState()]);
     } catch (err) {
+      if (generation !== coreInstallGeneration) return;
       console.error(`${command} failed:`, err);
       coreInstallResult = 'err';
       coreInstallLogPath = null;
     } finally {
-      coreInstalling = false;
+      if (generation === coreInstallGeneration) coreInstalling = false;
     }
   }
 
   // Sign out via the same tray:sign-out event App.svelte already listens for
   // (sign_out + state reset), then surface the popover SignInPrompt.
   async function handleSignOut() {
+    if (signingOut || quitting) return;
+    signingOut = true;
+    accountActionError = null;
+    accountRetryAction = null;
     try {
       await emit('tray:sign-out');
-    } catch (err) {
-      console.error('emit tray:sign-out failed:', err);
-    }
-    try {
       await invoke('show_main_window');
     } catch (err) {
-      console.error('show_main_window failed:', err);
+      console.error('sign out failed:', err);
+      accountActionError = 'Couldn’t finish signing out. Try again.';
+      accountRetryAction = 'sign-out';
+    } finally {
+      signingOut = false;
     }
   }
 
   async function handleQuit() {
+    if (quitting || signingOut) return;
+    quitting = true;
+    accountActionError = null;
+    accountRetryAction = null;
     try {
       await invoke('quit_app');
     } catch (err) {
       console.error('quit_app failed:', err);
+      accountActionError = 'Couldn’t quit HQ. Try again.';
+      accountRetryAction = 'quit';
+    } finally {
+      quitting = false;
     }
   }
 
@@ -1037,21 +1608,112 @@
       <div class="settings-card">
         <div class="setting-row">
           <div><strong>HQ folder</strong><span>{hqPathLabel}</span></div>
-          <button type="button" class="row-button" onclick={handlePickFolder}>Change…</button>
+          <button
+            type="button"
+            class="row-button"
+            onclick={handlePickFolder}
+            disabled={hqFolderChanging}
+            aria-busy={hqFolderChanging}
+          >
+            {hqFolderChanging ? 'Choosing…' : 'Change…'}
+          </button>
         </div>
-        <label class="setting-row"><span><strong>Sync on launch</strong><small>Run a sync when the app starts.</small></span><input type="checkbox" bind:checked={syncOnLaunch} onchange={() => void saveSettings({ syncOnLaunch })} /></label>
-        <label class="setting-row"><span><strong>Auto-sync</strong><small>Sync every few minutes in the background.</small></span><input type="checkbox" bind:checked={realtimeSync} onchange={applyRealtimeSync} /></label>
-        <label class="setting-row"><span><strong>Instant sync</strong><small>Push local edits within seconds when eligible.</small></span><input type="checkbox" bind:checked={instantSync} onchange={applyInstantSync} /></label>
-        <label class="setting-row"><span><strong>Sync personal vault</strong><small>Include personal HQ files in the fanout.</small></span><input type="checkbox" bind:checked={personalSyncEnabled} onchange={() => void saveSettings({ personalSyncEnabled })} /></label>
+        <label class="setting-row">
+          <span><strong>Sync on launch</strong><small>Run a sync when the app starts.</small></span>
+          <input
+            type="checkbox"
+            bind:checked={syncOnLaunch}
+            onchange={() => void persistSettingsControl('sync-on-launch', { syncOnLaunch })}
+            disabled={isSettingsControlPending('sync-on-launch')}
+            aria-busy={isSettingsControlPending('sync-on-launch')}
+          />
+        </label>
+        <label class="setting-row">
+          <span>
+            <strong>Auto-sync</strong>
+            <small>Sync every few minutes in the background.</small>
+            {#if liveControlErrors['realtime-sync']}
+              <small
+                class="row-action-error"
+                role="alert"
+                data-testid="settings-realtime-sync-error"
+              >{liveControlErrors['realtime-sync']}</small>
+            {/if}
+          </span>
+          <input
+            type="checkbox"
+            bind:checked={realtimeSync}
+            onchange={applyRealtimeSync}
+            disabled={isSettingsControlPending('realtime-sync')}
+            aria-busy={isSettingsControlPending('realtime-sync')}
+          />
+        </label>
+        <label class="setting-row">
+          <span>
+            <strong>Instant sync</strong>
+            <small>Push local edits within seconds when eligible.</small>
+            {#if liveControlErrors['instant-sync']}
+              <small
+                class="row-action-error"
+                role="alert"
+                data-testid="settings-instant-sync-error"
+              >{liveControlErrors['instant-sync']}</small>
+            {/if}
+          </span>
+          <input
+            type="checkbox"
+            bind:checked={instantSync}
+            onchange={applyInstantSync}
+            disabled={isSettingsControlPending('instant-sync')}
+            aria-busy={isSettingsControlPending('instant-sync')}
+          />
+        </label>
+        <label class="setting-row">
+          <span><strong>Sync personal vault</strong><small>Include personal HQ files in the fanout.</small></span>
+          <input
+            type="checkbox"
+            bind:checked={personalSyncEnabled}
+            onchange={() => void persistSettingsControl('personal-sync', { personalSyncEnabled })}
+            disabled={isSettingsControlPending('personal-sync')}
+            aria-busy={isSettingsControlPending('personal-sync')}
+          />
+        </label>
       </div>
     </section>
 
     <section id="notifications" class="settings-section">
       <h2>Notifications</h2>
       <div class="settings-card">
-        <label class="setting-row"><span><strong>Sync notifications</strong><small>Notify when sync needs attention.</small></span><input type="checkbox" bind:checked={notifications} onchange={() => void saveSettings({ notifications })} /></label>
-        <label class="setting-row"><span><strong>Share notifications</strong><small>Show file-share activity from teammates.</small></span><input type="checkbox" bind:checked={shareNotifications} onchange={() => void saveSettings({ shareNotifications })} /></label>
-        <label class="setting-row"><span><strong>DM notifications</strong><small>Show direct messages in the menu bar.</small></span><input type="checkbox" bind:checked={dmNotifications} onchange={() => void saveSettings({ dmNotifications })} /></label>
+        <label class="setting-row">
+          <span><strong>Sync notifications</strong><small>Notify when sync needs attention.</small></span>
+          <input
+            type="checkbox"
+            bind:checked={notifications}
+            onchange={() => void persistSettingsControl('sync-notifications', { notifications })}
+            disabled={isSettingsControlPending('sync-notifications')}
+            aria-busy={isSettingsControlPending('sync-notifications')}
+          />
+        </label>
+        <label class="setting-row">
+          <span><strong>Share notifications</strong><small>Show file-share activity from teammates.</small></span>
+          <input
+            type="checkbox"
+            bind:checked={shareNotifications}
+            onchange={() => void persistSettingsControl('share-notifications', { shareNotifications })}
+            disabled={isSettingsControlPending('share-notifications')}
+            aria-busy={isSettingsControlPending('share-notifications')}
+          />
+        </label>
+        <label class="setting-row">
+          <span><strong>DM notifications</strong><small>Show direct messages in the menu bar.</small></span>
+          <input
+            type="checkbox"
+            bind:checked={dmNotifications}
+            onchange={() => void persistSettingsControl('dm-notifications', { dmNotifications })}
+            disabled={isSettingsControlPending('dm-notifications')}
+            aria-busy={isSettingsControlPending('dm-notifications')}
+          />
+        </label>
         <!-- macOS permission monitor — OS authorization, separate from the
              in-app toggles above. Hidden until the first state read resolves. -->
         {#if notifPermission !== 'unknown'}
@@ -1067,6 +1729,13 @@
                   Not enabled yet — allow to see sync &amp; share alerts
                 {/if}
               </small>
+              {#if notifPermissionError}
+                <small
+                  class="row-action-error"
+                  role="alert"
+                  data-testid="settings-notification-permission-error"
+                >{notifPermissionError}</small>
+              {/if}
             </span>
             {#if notifPermission === 'granted'}
               <span class="perm-pill">Enabled</span>
@@ -1076,9 +1745,12 @@
                 class="row-button"
                 onclick={handleEnableNotifications}
                 disabled={notifRequesting}
+                aria-busy={notifRequesting}
               >
                 {#if notifRequesting}
-                  Requesting…
+                  {notifPermission === 'denied' ? 'Opening…' : 'Requesting…'}
+                {:else if notifPermissionError}
+                  Try again
                 {:else if notifPermission === 'denied'}
                   Open Settings
                 {:else}
@@ -1105,17 +1777,55 @@
              silent, no-prompt install of the app itself (self-update +
              restart), the hq CLI, and hq-core (drift-safe rescue). Supersedes
              the old per-CLI "Auto-update HQ CLI" toggle. -->
-        <label class="setting-row"><span><strong>Automatic updates</strong><small>Install HQ, the app, and the CLI updates automatically in the background — no prompts.</small></span><input id="toggle-auto-update" type="checkbox" bind:checked={autoUpdate} onchange={() => void saveSettings({ autoUpdate })} aria-label="Automatic updates" /></label>
-        <label class="setting-row gated-row"><span><strong>HQ core staging channel</strong><small>@getindigo.ai only. Changes rescue and drift targets.</small></span><input type="checkbox" disabled={!isIndigoBuilder} bind:checked={stagingChannel} onchange={async () => { if (await saveSettings({ stagingChannel })) await refreshCoreState(); }} /><em>Gated</em></label>
-        <label class="setting-row gated-row"><span><strong>Release channel</strong><small>@getindigo.ai only. Stable is enforced for everyone else.</small></span><select disabled={availableChannels.length <= 1} bind:value={releaseChannel} onchange={() => void saveSettings({ releaseChannel })}><option value={null}>Default ({displayedChannel})</option>{#each availableChannels as channel (channel)}<option value={channel}>{channel}</option>{/each}</select><em>Gated</em></label>
+        <label class="setting-row">
+          <span><strong>Automatic updates</strong><small>Install HQ Core, desktop app, and CLI updates automatically in the background — no prompts.</small></span>
+          <input
+            id="toggle-auto-update"
+            type="checkbox"
+            bind:checked={autoUpdate}
+            onchange={() => void persistSettingsControl('auto-update', { autoUpdate })}
+            disabled={isSettingsControlPending('auto-update')}
+            aria-busy={isSettingsControlPending('auto-update')}
+            aria-label="Automatic updates"
+          />
+        </label>
+        <label class="setting-row gated-row">
+          <span><strong>HQ Core staging channel</strong><small>@getindigo.ai only. Changes rescue and drift targets.</small></span>
+          <input
+            type="checkbox"
+            disabled={isSettingsControlPending('staging-channel') || !isIndigoBuilder || coreInstalling}
+            aria-busy={isSettingsControlPending('staging-channel') || coreInstalling}
+            bind:checked={stagingChannel}
+            onchange={applyStagingChannel}
+          />
+          <em>Gated</em>
+        </label>
+        <label class="setting-row gated-row">
+          <span><strong>Release channel</strong><small>@getindigo.ai only. Stable is enforced for everyone else.</small></span>
+          <select
+            disabled={isSettingsControlPending('release-channel') || availableChannels.length <= 1 || coreInstalling}
+            aria-busy={isSettingsControlPending('release-channel') || coreInstalling}
+            bind:value={releaseChannel}
+            onchange={() => void persistSettingsControl('release-channel', { releaseChannel })}
+          >
+            <option value={null}>Default ({displayedChannel})</option>
+            {#each availableChannels as channel (channel)}
+              <option value={channel}>{channel}</option>
+            {/each}
+          </select>
+          <em>Gated</em>
+        </label>
         <div class="setting-row">
           <span>
-            <strong>Check for Updates</strong>
-            <small>
+            <strong>HQ desktop app</strong>
+            <small data-testid="settings-app-status">
               {updateResult ?? (appUpdate ? `v${appUpdate.version} ready` : 'Background checks run every 6 hours')}
             </small>
           </span>
           <div class="row-actions">
+            <span class="version-chip" data-testid="settings-app-version">
+              {appVersion ? `v${appVersion}` : appVersionLoadFailed ? 'Unavailable' : 'Reading…'}
+            </span>
             {#if appUpdate}
               <button
                 type="button"
@@ -1123,6 +1833,7 @@
                 data-testid="settings-install-app-update"
                 onclick={handleInstallAppUpdate}
                 disabled={appUpdateInstalling}
+                aria-busy={appUpdateInstalling}
               >
                 {appUpdateInstalling ? 'Installing…' : 'Restart to Update'}
               </button>
@@ -1130,30 +1841,96 @@
             <button
               type="button"
               class="row-button"
+              data-testid="settings-check-app-updates"
               onclick={handleCheckForUpdates}
               disabled={updateChecking || appUpdateInstalling}
+              aria-busy={updateChecking}
             >
               {updateChecking ? 'Checking…' : 'Check Now'}
             </button>
           </div>
         </div>
-        <div class="setting-row">
+        <div
+          class="setting-row core-update-row"
+          class:has-core-log={coreInstallResult === 'err' && coreInstallLogPath !== null}
+        >
           <span>
-            <strong>HQ core</strong>
-            <small>
-              {#if coreInstallResult === 'ok'}
-                update done
-              {:else if coreInstallResult === 'err'}
-                Update failed{#if coreInstallLogPath} — {coreInstallLogPath}{/if}
-              {:else}
-                {hqVersion ? `v${hqVersion}` : 'version unknown'}
-              {/if}
-            </small>
+            <strong>HQ Core</strong>
+            <small data-testid="settings-core-status">{coreStatusLabel}</small>
+            {#if driftDetailError}
+              <small
+                class="row-action-error"
+                role="alert"
+                data-testid="settings-drift-error"
+              >{driftDetailError}</small>
+            {/if}
+            {#if coreInstallResult === 'err' && coreInstallLogPath}
+              <small
+                class="core-log-path"
+                data-testid="settings-core-install-log-path"
+                title={coreInstallLogPath}
+              >
+                Install log: <code>{coreInstallLogPath}</code>
+              </small>
+            {/if}
           </span>
           <div class="row-actions">
+            <span class="version-chip core" data-testid="settings-core-version">
+              {coreVersionLabel}
+            </span>
+            {#if coreInstallResult === 'err' && coreInstallLogPath}
+              <button
+                type="button"
+                class="row-button"
+                data-testid="settings-copy-core-install-log-path"
+                onclick={handleCopyCoreInstallLogPath}
+                disabled={coreLogCopyState === 'copying'}
+                aria-busy={coreLogCopyState === 'copying'}
+                title={`Copy install log path: ${coreInstallLogPath}`}
+              >
+                {coreLogCopyState === 'copying'
+                  ? 'Copying…'
+                  : coreLogCopyState === 'copied'
+                    ? 'Path copied'
+                    : coreLogCopyState === 'failed'
+                      ? 'Copy failed'
+                      : 'Copy log path'}
+              </button>
+              <button
+                type="button"
+                class="row-button"
+                data-testid="settings-open-core-install-log"
+                onclick={handleOpenCoreInstallLog}
+                disabled={coreLogOpenState === 'opening'}
+                aria-busy={coreLogOpenState === 'opening'}
+                title={`Open install log: ${coreInstallLogPath}`}
+              >
+                {coreLogOpenState === 'opening'
+                  ? 'Opening…'
+                  : coreLogOpenState === 'opened'
+                    ? 'Opened'
+                    : coreLogOpenState === 'failed'
+                      ? 'Open failed'
+                      : 'Open log'}
+              </button>
+            {/if}
             {#if coreHasDrift}
-              <button type="button" class="row-button" onclick={handleOpenDriftDetail}>
-                {coreState?.driftReport.count} drifted
+              <button
+                type="button"
+                class="row-button"
+                onclick={handleOpenDriftDetail}
+                disabled={driftDetailOpening || coreStateLoading || coreRefreshing || coreChannelPending}
+                aria-busy={driftDetailOpening || coreStateLoading || coreRefreshing || coreChannelPending}
+              >
+                {coreChannelPending
+                  ? 'Saving channel…'
+                  : coreStateLoading || coreRefreshing
+                  ? 'Checking…'
+                  : driftDetailOpening
+                    ? 'Opening…'
+                    : driftDetailError
+                      ? 'Retry details'
+                    : `${coreState?.driftReport.count} drifted`}
               </button>
             {/if}
             {#if coreNeedsUpdate}
@@ -1161,49 +1938,107 @@
                 type="button"
                 class="row-button primary"
                 onclick={handleInstallCore}
-                disabled={coreInstalling}
+                disabled={coreInstalling || coreStateLoading || coreRefreshing || coreChannelPending}
+                aria-busy={coreInstalling || coreStateLoading || coreRefreshing || coreChannelPending}
               >
-                {coreInstalling ? 'Updating…' : coreUpdateLabel}
+                {coreChannelPending
+                  ? 'Saving channel…'
+                  : coreStateLoading || coreRefreshing
+                  ? 'Checking…'
+                  : coreInstalling
+                    ? 'Updating…'
+                    : coreUpdateLabel}
               </button>
             {/if}
+            <button
+              type="button"
+              class="row-button"
+              data-testid="settings-refresh-core"
+              onclick={handleRefreshCore}
+              disabled={coreBusy}
+              aria-busy={coreRefreshing || coreVersionLoading || coreStateLoading}
+            >
+              {coreRefreshing || coreVersionLoading || coreStateLoading ? 'Checking…' : 'Refresh'}
+            </button>
           </div>
         </div>
-      </div>
-
-      {#if hqCliUpdate}
-        <div class="settings-card notice-card">
-          <div class="setting-row notice-row">
-            <span>
-              <strong>hq CLI update: v{hqCliUpdate.latest}</strong>
-              <small>
-                {#if hqCliUpdateError}
-                  Update failed.
-                {:else if hqCliUpdate.local}
-                  You're on v{hqCliUpdate.local}
-                {:else}
-                  A newer CLI is available
-                {/if}
-              </small>
+        <div class="setting-row" data-testid="settings-cli-row">
+          <span>
+            <strong>HQ CLI</strong>
+            <small
+              data-testid="settings-cli-status"
+              role={hqCliUpdateError ? 'alert' : undefined}
+              aria-live="polite"
+            >{hqCliStatusLabel}</small>
+            {#if hqCliCmdCopyError}
+              <small
+                class="row-action-error"
+                role="alert"
+                data-testid="settings-cli-copy-error"
+              >{hqCliCmdCopyError}</small>
+            {/if}
+          </span>
+          <div class="row-actions">
+            <span class="version-chip" data-testid="settings-cli-version">
+              {hqCliVersionLabel}
             </span>
-            <div class="row-actions">
+            {#if hqCliUpdate}
               <button
                 type="button"
                 class="row-button primary"
                 onclick={handleInstallHqCliUpdate}
-                disabled={hqCliInstalling}
+                disabled={hqCliInstalling || hqCliChecking}
+                aria-busy={hqCliInstalling}
               >
-                {hqCliInstalling ? 'Installing…' : 'Update'}
+                {hqCliInstalling ? 'Installing…' : `Update to v${hqCliUpdate.latest}`}
               </button>
-              <button type="button" class="row-button" onclick={copyHqCliCommand}>
-                {hqCliCmdCopied ? 'Copied' : 'Copy command'}
+            {/if}
+            {#if !hqCliVersion || hqCliUpdateError}
+              <button
+                type="button"
+                class="row-button"
+                onclick={copyHqCliCommand}
+                disabled={hqCliCmdCopying}
+                aria-busy={hqCliCmdCopying}
+                title={HQ_CLI_UPGRADE_CMD}
+              >
+                {hqCliCmdCopying
+                  ? 'Copying…'
+                  : hqCliCmdCopied
+                    ? 'Command copied'
+                    : hqCliCmdCopyError
+                      ? 'Copy failed — retry'
+                    : 'Copy install command'}
               </button>
-              <button type="button" class="row-button" onclick={handleDismissHqCliUpdate}>
-                Dismiss
+            {/if}
+            {#if hqCliUpdate}
+              <button
+                type="button"
+                class="row-button"
+                onclick={handleDismissHqCliUpdate}
+                disabled={hqCliDismissing || hqCliInstalling}
+                aria-busy={hqCliDismissing || hqCliInstalling}
+              >
+                {hqCliDismissing
+                  ? 'Dismissing…'
+                  : hqCliUpdateErrorContext === 'dismiss'
+                    ? 'Retry dismiss'
+                    : 'Dismiss'}
               </button>
-            </div>
+            {/if}
+            <button
+              type="button"
+              class="row-button"
+              data-testid="settings-check-cli-updates"
+              onclick={refreshHqCliSurface}
+              disabled={hqCliChecking || hqCliInstalling || hqCliDismissing}
+              aria-busy={hqCliChecking}
+            >
+              {hqCliChecking ? 'Checking…' : 'Check Now'}
+            </button>
           </div>
         </div>
-      {/if}
+      </div>
 
       {#if packUpdate && packUpdate.count > 0}
         <div class="settings-card notice-card">
@@ -1221,8 +2056,11 @@
             <button
               type="button"
               class="row-button primary"
+              data-testid="settings-update-packs"
               onclick={handleUpdatePacks}
               disabled={packsUpdating}
+              aria-busy={packsUpdating}
+              aria-label={packsUpdating ? 'Updating installed packs' : 'Update installed packs'}
             >
               {packsUpdating ? 'Updating…' : 'Update'}
             </button>
@@ -1234,11 +2072,52 @@
     <section id="general" class="settings-section">
       <h2>General</h2>
       <div class="settings-card">
-        <label class="setting-row"><span><strong>Start at login</strong><small>Open HQ when your computer starts.</small></span><input type="checkbox" bind:checked={startAtLogin} onchange={applyStartAtLogin} /></label>
+        <label class="setting-row">
+          <span>
+            <strong>Start at login</strong>
+            <small>Open HQ when your computer starts.</small>
+            {#if liveControlErrors['start-at-login']}
+              <small
+                class="row-action-error"
+                role="alert"
+                data-testid="settings-start-at-login-error"
+              >{liveControlErrors['start-at-login']}</small>
+            {/if}
+          </span>
+          <input
+            type="checkbox"
+            bind:checked={startAtLogin}
+            onchange={applyStartAtLogin}
+            disabled={isSettingsControlPending('start-at-login')}
+            aria-busy={isSettingsControlPending('start-at-login')}
+          />
+        </label>
         {#if isMacOS}
           <!-- macOS-only: Windows and Linux have no activation policy, and HQ
                already owns a taskbar entry there, so the row would be a no-op. -->
-          <label class="setting-row"><span><strong>Show in Dock</strong><small>Keep an HQ icon in the Dock. Turn this off to run HQ from the menu bar only.</small></span><input id="toggle-dock-icon" data-testid="dock-icon-toggle" type="checkbox" bind:checked={dockIcon} onchange={applyDockIcon} aria-label="Show in Dock" /></label>
+          <label class="setting-row">
+            <span>
+              <strong>Show in Dock</strong>
+              <small>Keep an HQ icon in the Dock. Turn this off to run HQ from the menu bar only.</small>
+              {#if liveControlErrors['dock-icon']}
+                <small
+                  class="row-action-error"
+                  role="alert"
+                  data-testid="settings-dock-icon-error"
+                >{liveControlErrors['dock-icon']}</small>
+              {/if}
+            </span>
+            <input
+              id="toggle-dock-icon"
+              data-testid="dock-icon-toggle"
+              type="checkbox"
+              bind:checked={dockIcon}
+              onchange={applyDockIcon}
+              aria-label="Show in Dock"
+              disabled={isSettingsControlPending('dock-icon')}
+              aria-busy={isSettingsControlPending('dock-icon')}
+            />
+          </label>
         {/if}
         <label class="setting-row" data-testid="telemetry-row">
           <span>
@@ -1266,6 +2145,7 @@
             data-testid="telemetry-toggle"
             checked={telemetryEnabled === true}
             disabled={telemetryEnabled === null || telemetryBusy}
+            aria-busy={telemetryEnabled === null || telemetryBusy}
             onchange={(event) => {
               telemetryEnabled = event.currentTarget.checked;
               void applyTelemetryPreference();
@@ -1274,30 +2154,162 @@
         </label>
         <div class="setting-row">
           <span><strong>Version</strong><small>HQ desktop app build</small></span>
-          <span class="version-value">{appVersion ? `v${appVersion}` : '—'}</span>
+          <span class="version-value">
+            {appVersion ? `v${appVersion}` : appVersionLoadFailed ? 'Unavailable' : 'Reading…'}
+          </span>
         </div>
         <div class="setting-row">
-          <span><strong>Account</strong><small>Sign out returns you to the menu bar sign-in screen.</small></span>
+          <span>
+            <strong>Account</strong>
+            <small>Sign out returns you to the menu bar sign-in screen.</small>
+            {#if accountActionError}
+              <small
+                class="row-action-error"
+                role="alert"
+                data-testid="settings-account-error"
+              >{accountActionError}</small>
+            {/if}
+          </span>
           <div class="row-actions">
-            <button type="button" class="row-button" onclick={handleSignOut}>Sign out</button>
-            <button type="button" class="row-button danger" onclick={handleQuit}>Quit HQ</button>
+            <button
+              type="button"
+              class="row-button"
+              data-testid="settings-sign-out"
+              onclick={handleSignOut}
+              disabled={signingOut || quitting}
+              aria-busy={signingOut}
+            >
+              {signingOut
+                ? 'Signing out…'
+                : accountRetryAction === 'sign-out'
+                  ? 'Retry sign out'
+                  : 'Sign out'}
+            </button>
+            <button
+              type="button"
+              class="row-button danger"
+              data-testid="settings-quit"
+              onclick={handleQuit}
+              disabled={quitting || signingOut}
+              aria-busy={quitting}
+            >
+              {quitting
+                ? 'Quitting…'
+                : accountRetryAction === 'quit'
+                  ? 'Retry quit'
+                  : 'Quit HQ'}
+            </button>
           </div>
         </div>
       </div>
     </section>
+    </fieldset>
 
+    <section id="appearance" class="settings-section" data-testid="settings-appearance">
+      <h2>Appearance</h2>
+      <div class="settings-card">
+        <div class="setting-row appearance-row">
+          <span>
+            <strong>Theme</strong>
+            <small>Follow your system or keep HQ light or dark.</small>
+          </span>
+          <div class="theme-options" role="radiogroup" aria-label="Theme">
+            {#each appearanceThemes as theme (theme.id)}
+              <label class="theme-option">
+                <input
+                  type="radio"
+                  name="appearance-theme"
+                  value={theme.id}
+                  checked={appearance.colorTheme === theme.id}
+                  onchange={() => updateAppearance({ colorTheme: theme.id })}
+                />
+                <span>{theme.label}</span>
+              </label>
+            {/each}
+          </div>
+        </div>
+
+        <label class="setting-row appearance-row">
+          <span>
+            <strong>Window opacity</strong>
+            <small>100% is fully solid. Lower values reveal more native vibrancy.</small>
+          </span>
+          <span class="range-control">
+            <input
+              type="range"
+              min="0"
+              max="100"
+              step="5"
+              value={windowOpacity}
+              aria-label="Window opacity"
+              aria-valuetext={`${windowOpacity}%`}
+              oninput={(event) =>
+                updateAppearance({
+                  windowTransparency: windowTransparencyFromOpacity(
+                    event.currentTarget.valueAsNumber,
+                  ),
+                })}
+            />
+            <output aria-live="polite">{windowOpacity}%</output>
+          </span>
+        </label>
+
+        <label class="setting-row appearance-row">
+          <span>
+            <strong>Interface size</strong>
+            <small>Changes every HQ window. Use ⌘/Ctrl +, −, or 0 anytime.</small>
+          </span>
+          <span class="range-control">
+            <input
+              type="range"
+              min={MIN_DESKTOP_ZOOM}
+              max={MAX_DESKTOP_ZOOM}
+              step="0.1"
+              value={interfaceZoom}
+              aria-label="Interface size"
+              aria-valuetext={`${Math.round(interfaceZoom * 100)}%`}
+              oninput={(event) =>
+                updateInterfaceZoom(event.currentTarget.valueAsNumber)}
+            />
+            <output aria-live="polite">{Math.round(interfaceZoom * 100)}%</output>
+          </span>
+        </label>
+      </div>
+    </section>
+
+    <fieldset class="settings-controls" disabled={!settingsReady}>
     <section id="meetings" class="settings-section">
       <h2>Meetings</h2>
       <div class="settings-card">
-        <label class="setting-row" class:gated-row={!meetingsEnabled}><span><strong>Meeting detection</strong><small>Detect active meeting apps and surface recording actions.</small></span><input type="checkbox" disabled={!meetingsEnabled} bind:checked={meetingDetectEnabled} onchange={() => void saveMeetingDetection()} />{#if !meetingsEnabled}<em>Unavailable</em>{/if}</label>
+        <label class="setting-row" class:gated-row={!meetingsEnabled}>
+          <span><strong>Meeting detection</strong><small>Detect active meeting apps and surface recording actions.</small></span>
+          <input
+            type="checkbox"
+            disabled={isSettingsControlPending('meeting-detection') || isSettingsControlPending('meeting-platforms') || !meetingsEnabled}
+            aria-busy={isSettingsControlPending('meeting-detection')}
+            bind:checked={meetingDetectEnabled}
+            onchange={() => void saveMeetingDetection()}
+          />
+          {#if !meetingsEnabled}<em>Unavailable</em>{/if}
+        </label>
         {#if meetingDetectEnabled}
           <!-- Only shown when detection is on — otherwise the platform toggles
                looked actionable but changed nothing (detection was off). -->
           <div class="setting-row platform-row">
             <span><strong>Platforms</strong><small>Choose which meeting apps are watched.</small></span>
-            <div class="platforms">
+            <div
+              class="platforms"
+              aria-busy={isSettingsControlPending('meeting-platforms')}
+            >
               {#each platforms as platform (platform)}
-                <button type="button" class:active={meetingDetectPlatforms.includes(platform)} onclick={() => togglePlatform(platform)}>{platform}</button>
+                <button
+                  type="button"
+                  class:active={meetingDetectPlatforms.includes(platform)}
+                  onclick={() => togglePlatform(platform)}
+                  disabled={isSettingsControlPending('meeting-platforms') || isSettingsControlPending('meeting-detection')}
+                >
+                  {platform}
+                </button>
               {/each}
             </div>
           </div>
@@ -1317,10 +2329,14 @@
           <select
             value={defaultRecordingCompanyUid ?? ''}
             aria-label="Default recording company"
+            disabled={isSettingsControlPending('default-recording-company')}
+            aria-busy={isSettingsControlPending('default-recording-company')}
             onchange={(event) => {
               const v = event.currentTarget.value;
               defaultRecordingCompanyUid = v === '' ? null : v;
-              void saveSettings({ defaultRecordingCompanyUid });
+              void persistSettingsControl('default-recording-company', {
+                defaultRecordingCompanyUid,
+              });
             }}
           >
             <option value="">Personal</option>
@@ -1345,7 +2361,15 @@
               {/if}
             </small>
           </span>
-          <button type="button" class="row-button" onclick={handleOpenMeetingPermissionsWizard}>Manage</button>
+          <button
+            type="button"
+            class="row-button"
+            onclick={handleOpenMeetingPermissionsWizard}
+            disabled={meetingPermissionsOpening}
+            aria-busy={meetingPermissionsOpening}
+          >
+            {meetingPermissionsOpening ? 'Opening…' : 'Manage'}
+          </button>
         </div>
       </div>
     </section>
@@ -1385,6 +2409,8 @@
     flex-direction: column;
     gap: var(--v4-space-5);
     min-width: 0;
+    container-name: settings-main;
+    container-type: inline-size;
     /* The shell's .desktop-main-scroll is the single vertical scroller.
        Keeping this wrapper non-scrolling lets scrollIntoView move the section
        index to the requested anchor instead of stopping at a nested container. */
@@ -1504,6 +2530,10 @@
     cursor: progress;
   }
 
+  .row-action-error {
+    color: var(--v4-error);
+  }
+
   input,
   select {
     min-width: 0;
@@ -1551,12 +2581,18 @@
     cursor: default;
   }
 
+  input[aria-busy='true'],
+  select[aria-busy='true'],
+  .platforms[aria-busy='true'] {
+    cursor: progress;
+  }
+
   input[type='checkbox']:focus-visible {
     outline: 1.5px solid var(--v4-text-2);
     outline-offset: 2px;
   }
 
-  input:not([type='checkbox']),
+  input:not([type='checkbox']):not([type='radio']):not([type='range']),
   select {
     height: 30px;
     border: 1px solid var(--v4-hairline);
@@ -1579,6 +2615,117 @@
 
   :global(html[data-force-theme='light']) select {
     color-scheme: light;
+  }
+
+  .theme-options {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 16px;
+  }
+
+  .theme-option {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    min-height: 30px;
+    color: var(--v4-text-2);
+    font-size: var(--text-base);
+    cursor: pointer;
+  }
+
+  input[type='radio'] {
+    appearance: none;
+    -webkit-appearance: none;
+    display: grid;
+    place-items: center;
+    width: 14px;
+    height: 14px;
+    margin: 0;
+    border: 1px solid var(--v4-text-3);
+    border-radius: 50%;
+    background: transparent;
+  }
+
+  input[type='radio']::after {
+    content: '';
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--v4-text-1);
+    transform: scale(0);
+    transition: transform 120ms var(--ease-out);
+  }
+
+  input[type='radio']:checked {
+    border-color: var(--v4-text-1);
+  }
+
+  input[type='radio']:checked::after {
+    transform: scale(1);
+  }
+
+  input[type='radio']:checked + span {
+    color: var(--v4-text-1);
+    font-weight: 500;
+  }
+
+  input[type='radio']:focus-visible {
+    outline: 1.5px solid var(--v4-focus-ring);
+    outline-offset: 3px;
+  }
+
+  .range-control {
+    display: grid;
+    grid-template-columns: minmax(116px, 176px) 44px;
+    align-items: center;
+    justify-content: end;
+    gap: 10px;
+    min-width: 190px;
+  }
+
+  .range-control input[type='range'] {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 100%;
+    height: 20px;
+    margin: 0;
+    background: transparent;
+    cursor: pointer;
+  }
+
+  .range-control input[type='range']::-webkit-slider-runnable-track {
+    height: 2px;
+    border-radius: 1px;
+    background: var(--v4-hairline);
+  }
+
+  .range-control input[type='range']::-webkit-slider-thumb {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 14px;
+    height: 14px;
+    margin-top: -6px;
+    border: 1px solid var(--v4-control-border);
+    border-radius: 50%;
+    background: var(--v4-text-1);
+    box-shadow: var(--v4-shadow-card);
+  }
+
+  .range-control input[type='range']:focus-visible {
+    outline: none;
+  }
+
+  .range-control input[type='range']:focus-visible::-webkit-slider-thumb {
+    outline: 1.5px solid var(--v4-focus-ring);
+    outline-offset: 3px;
+  }
+
+  .range-control output {
+    color: var(--v4-text-2);
+    font-size: var(--text-base);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
   }
 
   .gated-row em {
@@ -1644,11 +2791,18 @@
     color: var(--v4-primary-fg);
   }
 
+  .platforms button:disabled {
+    opacity: 0.5;
+    cursor: progress;
+  }
+
   .row-actions {
     display: flex;
     flex-wrap: wrap;
     gap: 6px;
     justify-content: flex-end;
+    min-width: 0;
+    max-width: 100%;
   }
 
   .row-button.primary {
@@ -1664,6 +2818,10 @@
   .row-button:disabled {
     opacity: 0.5;
     cursor: default;
+  }
+
+  .row-button[aria-busy='true'] {
+    cursor: progress;
   }
 
   .perm-pill {
@@ -1685,6 +2843,28 @@
     white-space: nowrap;
   }
 
+  .version-chip {
+    display: inline-flex;
+    align-items: center;
+    min-height: 28px;
+    padding: 0 9px;
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-pill);
+    background: var(--v4-control-faint);
+    color: var(--v4-text-2);
+    font-family: var(--font-mono);
+    font-size: var(--type-metadata, var(--text-xs));
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+    white-space: nowrap;
+  }
+
+  .version-chip.core {
+    border-color: color-mix(in srgb, var(--v4-ok) 32%, var(--v4-hairline));
+    background: color-mix(in srgb, var(--v4-ok) 8%, var(--v4-control-faint));
+    color: var(--v4-text-1);
+  }
+
   .notice-card {
     margin-top: 8px;
     border-top: 1px solid var(--v4-rowline);
@@ -1699,8 +2879,88 @@
     font-family: var(--font-mono, ui-monospace, monospace);
   }
 
+  .core-log-path {
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .core-log-path code {
+    color: var(--v4-text-2);
+    overflow-wrap: anywhere;
+  }
+
+  /* A failed rescue adds recovery controls to an already action-rich row.
+     Give that exceptional state its own open two-line layout so status and
+     paths remain readable instead of donating nearly all width to buttons. */
+  .core-update-row.has-core-log {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+    gap: 8px;
+  }
+
+  .core-update-row.has-core-log small {
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+  }
+
+  .core-update-row.has-core-log .row-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
   code {
     font-family: var(--font-mono, ui-monospace, monospace);
     font-size: 0.92em;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    input[type='checkbox'],
+    input[type='checkbox']::after,
+    input[type='radio']::after {
+      transition: none;
+    }
+  }
+
+  @container settings-main (max-width: 760px) {
+    #updates .setting-row {
+      grid-template-columns: minmax(0, 1fr);
+      align-items: start;
+      gap: 8px;
+    }
+
+    #updates .setting-row small {
+      overflow: visible;
+      text-overflow: clip;
+      white-space: normal;
+    }
+
+    #updates .row-actions {
+      width: 100%;
+      justify-content: flex-start;
+    }
+
+    #updates .setting-row > input,
+    #updates .setting-row > select,
+    #updates .setting-row > em {
+      justify-self: start;
+    }
+
+    .appearance-row {
+      grid-template-columns: minmax(0, 1fr);
+      align-items: start;
+      gap: 8px;
+    }
+
+    .theme-options {
+      justify-content: flex-start;
+    }
+
+    .range-control {
+      width: min(100%, 280px);
+      justify-self: start;
+    }
   }
 </style>

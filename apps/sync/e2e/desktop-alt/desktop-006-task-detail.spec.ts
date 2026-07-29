@@ -63,7 +63,7 @@ describe('DESKTOP-006: stable task detail', () => {
     expect(detail).toContain('is-selected');
     expect(detail).toContain('aria-selected={isSelected}');
     // Split replaces board while detail is open; board returns when closed.
-    expect(detail).toContain('{#if selectedStory}');
+    expect(detail).toContain("{#if selectedStory && tab === 'tasks'}");
     expect(detail).toContain('data-testid="detail-board"');
     expect(detail).toContain('closeTaskDetail');
     expect(detail).toContain('data-testid="task-rail-close"');
@@ -155,6 +155,18 @@ describe('DESKTOP-006: stable task detail', () => {
     expect(detail).toContain('onselect={onselectStory}');
   });
 
+  it('closes task detail when navigating to another project tab', () => {
+    expect(detail).toContain('function selectTab(nextTab: Tab)');
+    expect(detail).toContain("if (nextTab !== 'tasks' && selectedStory)");
+    expect(detail).toContain("onclick={() => selectTab('overview')}");
+    expect(detail).toContain("onclick={() => selectTab('files')}");
+    expect(detail).toContain("onclick={() => selectTab('activity')}");
+    expect(detail).toContain("{#if selectedStory && tab === 'tasks'}");
+    expect(detail).toContain(
+      'class:has-task-detail={selectedStory != null && tab === \'tasks\'}',
+    );
+  });
+
   it('supports keyboard selection, visible focus, and safe responsive collapse', () => {
     expect(detail).toContain('handleRailKeydown');
     expect(detail).toContain("event.key === 'ArrowDown'");
@@ -203,10 +215,10 @@ describe('DESKTOP-006: stable task detail', () => {
   it('uses five type roles and 3px title/meta slots; preserves reduced motion/transparency', () => {
     expect(V4_TYPE_SCALE).toEqual({
       metadata: 13,
-      secondary: 13,
-      body: 14,
-      section: 14,
-      detail: 14,
+      secondary: 14,
+      body: 15,
+      section: 17,
+      detail: 24,
     });
     expect(V4_ROW_STACK_GAP_PX).toBe(3);
     expect(panel).toContain('--type-detail');

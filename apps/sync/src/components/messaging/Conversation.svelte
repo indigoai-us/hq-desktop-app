@@ -56,6 +56,8 @@
     showAuthors?: boolean;
     loading?: boolean;
     error?: string | null;
+    /** Retry a failed thread/channel hydration without replacing the pane. */
+    onretryload?: () => void | Promise<void>;
     // Composer state, owned by the parent so "Sending…"/disabled/error stays in
     // lockstep with the actual send call.
     sending?: boolean;
@@ -82,7 +84,7 @@
     ontogglereaction?: (messageId: string, emoji: string) => void;
     // Share timeline: called with a share-card bubble's ShareEvent when its
     // "Open in Claude" action is tapped (the host owns the deep link).
-    onopenshareinclaude?: (share: ShareEvent) => void;
+    onopenshareinclaude?: (share: ShareEvent) => void | Promise<void>;
     // When true, the reply composer is hidden and a static note renders in its
     // place. Used for read-only history or preview panes that have no writable
     // recipient yet.
@@ -97,6 +99,7 @@
     showAuthors = false,
     loading = false,
     error = null,
+    onretryload,
     sending = false,
     sendError = null,
     placeholder = 'Reply…',
@@ -114,21 +117,91 @@
   // the exact affordance the user clicked — a bubble can offer both a
   // copy-message and a copy-prompt action.
   let copied = $state<{ id: string; kind: CopyKind } | null>(null);
+  let copyingKeys = $state(new Set<string>());
+  let openingShareIds = $state(new Set<string>());
+  type MessageActionKind = CopyKind | 'open-share';
+  let actionFailures = $state(new Map<string, string>());
   const isCopied = (id: string, kind: CopyKind) =>
     copied?.id === id && copied?.kind === kind;
+  const actionKey = (id: string, kind: MessageActionKind) => `${id}:${kind}`;
+  const copyKey = (id: string, kind: CopyKind) => actionKey(id, kind);
+  const isCopying = (id: string, kind: CopyKind) => copyingKeys.has(copyKey(id, kind));
+  const actionFailure = (id: string, kind: MessageActionKind) =>
+    actionFailures.get(actionKey(id, kind)) ?? null;
+  const setActionFailure = (id: string, kind: MessageActionKind, message: string | null) => {
+    const next = new Map(actionFailures);
+    const key = actionKey(id, kind);
+    if (message) next.set(key, message);
+    else next.delete(key);
+    actionFailures = next;
+  };
   let scrollEl = $state<HTMLDivElement | null>(null);
+  let nearBottom = $state(true);
+  let newMessagesAvailable = $state(false);
+  let retryingLoad = $state(false);
+  let positionedInitialThread = false;
+  let previousMessageCount = 0;
+  let scrollUpdateGeneration = 0;
+  const NEAR_BOTTOM_PX = 72;
+  const MESSAGE_GROUP_WINDOW_MS = 5 * 60 * 1000;
 
-  async function scrollToBottom(): Promise<void> {
-    await tick();
-    if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight;
+  function isNearBottom(element: HTMLDivElement): boolean {
+    return element.scrollHeight - element.scrollTop - element.clientHeight <= NEAR_BOTTOM_PX;
   }
 
-  // Auto-scroll to the newest message whenever the thread changes (initial load,
-  // optimistic append, or new inbound). Mirrors DmDetail's prior scroll calls.
+  function handleThreadScroll(): void {
+    if (!scrollEl) return;
+    nearBottom = isNearBottom(scrollEl);
+    if (nearBottom) newMessagesAvailable = false;
+  }
+
+  function jumpToLatest(): void {
+    if (!scrollEl) return;
+    scrollEl.scrollTop = scrollEl.scrollHeight;
+    nearBottom = true;
+    newMessagesAvailable = false;
+  }
+
+  async function retryLoad(): Promise<void> {
+    if (!onretryload || retryingLoad || loading) return;
+    retryingLoad = true;
+    try {
+      await onretryload();
+    } finally {
+      retryingLoad = false;
+    }
+  }
+
+  // Preserve the reader's place when older content is in view. Initial hydration
+  // and already-bottomed conversations follow new content; otherwise a quiet
+  // jump affordance appears instead of stealing the scroll position.
   $effect(() => {
-    // Touch length so the effect re-runs on every append.
-    void messages.length;
-    void scrollToBottom();
+    const count = messages.length;
+    const previousCount = previousMessageCount;
+    const addedMessages = count > previousCount;
+    const shouldFollow = !positionedInitialThread || nearBottom;
+    const generation = ++scrollUpdateGeneration;
+    previousMessageCount = count;
+
+    if (count === 0) {
+      positionedInitialThread = false;
+      newMessagesAvailable = false;
+      nearBottom = true;
+      return;
+    }
+
+    void (async () => {
+      await tick();
+      if (generation !== scrollUpdateGeneration || !scrollEl) return;
+      if (shouldFollow) {
+        scrollEl.scrollTop = scrollEl.scrollHeight;
+        nearBottom = true;
+        newMessagesAvailable = false;
+      } else if (addedMessages) {
+        newMessagesAvailable = true;
+      }
+      positionedInitialThread = true;
+    })();
   });
 
   async function send(): Promise<void> {
@@ -183,6 +256,35 @@
     return dayKey(messages[index - 1]?.createdAt ?? '') !== dayKey(messages[index]?.createdAt ?? '');
   }
 
+  function senderKey(message: ConversationMessage): string {
+    return message.fromPersonUid.trim() || message.fromDisplayName.trim();
+  }
+
+  function messagesShareGroup(
+    previous: ConversationMessage | undefined,
+    current: ConversationMessage | undefined,
+  ): boolean {
+    if (!previous || !current) return false;
+    if (previous.direction !== current.direction) return false;
+    if (senderKey(previous) !== senderKey(current)) return false;
+    if (dayKey(previous.createdAt) !== dayKey(current.createdAt)) return false;
+
+    const previousTime = new Date(previous.createdAt).getTime();
+    const currentTime = new Date(current.createdAt).getTime();
+    if (Number.isNaN(previousTime) || Number.isNaN(currentTime)) return false;
+
+    const elapsed = currentTime - previousTime;
+    return elapsed >= 0 && elapsed <= MESSAGE_GROUP_WINDOW_MS;
+  }
+
+  function startsMessageGroup(index: number): boolean {
+    return !messagesShareGroup(messages[index - 1], messages[index]);
+  }
+
+  function endsMessageGroup(index: number): boolean {
+    return !messagesShareGroup(messages[index], messages[index + 1]);
+  }
+
   // Short relative-time stamp for the "last {time}" reply affordance (US-022).
   // Falls back to the absolute clock time for anything older than a day or
   // unparseable.
@@ -218,39 +320,109 @@
   // scoped "Copied!" feedback.
   async function copyText(id: string, kind: CopyKind, msg: ConversationMessage): Promise<void> {
     const text = copyableText(msg, kind);
-    if (!text) return;
+    const key = copyKey(id, kind);
+    if (!text || copyingKeys.has(key)) return;
+    copyingKeys = new Set(copyingKeys).add(key);
     try {
       await navigator.clipboard.writeText(text);
+      setActionFailure(id, kind, null);
       copied = { id, kind };
       setTimeout(() => {
         if (copied?.id === id && copied?.kind === kind) copied = null;
       }, 1800);
     } catch (err) {
       console.error('conversation: clipboard write failed', err);
+      setActionFailure(id, kind, 'Couldn’t copy this message.');
+    } finally {
+      const next = new Set(copyingKeys);
+      next.delete(key);
+      copyingKeys = next;
     }
+  }
+
+  async function openShare(id: string, share: ShareEvent): Promise<void> {
+    if (!onopenshareinclaude || openingShareIds.has(id)) return;
+    openingShareIds = new Set(openingShareIds).add(id);
+    try {
+      await onopenshareinclaude(share);
+      setActionFailure(id, 'open-share', null);
+    } catch (err) {
+      console.error('conversation: open share failed', err);
+      setActionFailure(id, 'open-share', 'Couldn’t open this share in Claude Code.');
+    } finally {
+      const next = new Set(openingShareIds);
+      next.delete(id);
+      openingShareIds = next;
+    }
+  }
+
+  function retryMessageAction(msg: ConversationMessage, kind: MessageActionKind): void {
+    if (kind === 'open-share') {
+      if (msg.share) void openShare(msg.eventId, msg.share);
+      return;
+    }
+    void copyText(msg.eventId, kind, msg);
+  }
+
+  function actionPending(id: string, kind: MessageActionKind): boolean {
+    return kind === 'open-share' ? openingShareIds.has(id) : isCopying(id, kind);
   }
 </script>
 
-<div class="dm-thread" bind:this={scrollEl}>
-  {#if loading}
-    <p class="dm-thread-status">Loading conversation…</p>
-  {/if}
-  {#if error}
-    <p class="dm-thread-status dm-thread-error" role="alert">{error}</p>
-  {/if}
+<div class="dm-thread-wrap">
+  <div
+    class="dm-thread"
+    bind:this={scrollEl}
+    onscroll={handleThreadScroll}
+    aria-busy={loading}
+  >
+    {#if loading}
+      <p class="dm-thread-status">
+        <span class="inline-spinner" aria-hidden="true"></span>
+        Loading conversation…
+      </p>
+    {/if}
+    {#if error}
+      <div class="dm-thread-status dm-thread-error" role="alert">
+        <span>{error}</span>
+        {#if onretryload}
+          <button
+            class="load-retry"
+            type="button"
+            onclick={() => void retryLoad()}
+            disabled={loading || retryingLoad}
+            aria-busy={loading || retryingLoad}
+          >
+            {#if loading || retryingLoad}
+              <span class="inline-spinner" aria-hidden="true"></span>
+            {/if}
+            {loading || retryingLoad ? 'Retrying…' : 'Retry'}
+          </button>
+        {/if}
+      </div>
+    {/if}
 
-  {#each messages as msg, index (msg.eventId)}
+    {#each messages as msg, index (msg.eventId)}
+    {@const groupStart = startsMessageGroup(index)}
+    {@const groupEnd = endsMessageGroup(index)}
     {#if startsNewDay(index)}
       <div class="date-separator" aria-label={formatDateSeparator(msg.createdAt)}>
         <span>{formatDateSeparator(msg.createdAt)}</span>
       </div>
     {/if}
-    <div class="dm-msg dm-msg-{msg.direction}">
-      {#if showAuthors && msg.direction === 'in'}
+      <div
+        class="dm-msg dm-msg-{msg.direction}"
+        class:dm-msg-group-start={groupStart}
+        class:dm-msg-group-end={groupEnd}
+      >
+      {#if showAuthors && msg.direction === 'in' && groupStart}
         <span class="dm-msg-author">{msg.fromDisplayName}</span>
+      {:else if showAuthors && msg.direction === 'in'}
+        <span class="sr-only">From {msg.fromDisplayName}</span>
       {/if}
       <div
         class="dm-bubble"
+        class:dm-bubble-share={!!msg.share}
         class:dm-bubble-thread-active={!!activeRootEventId && msg.rootEventId === activeRootEventId}
       >
         <!-- Copy the whole message. Hover/focus-revealed on every bubble so it
@@ -262,10 +434,26 @@
             class="dm-action"
             class:dm-action-done={isCopied(msg.eventId, 'body')}
             onclick={() => copyText(msg.eventId, 'body', msg)}
-            aria-label={isCopied(msg.eventId, 'body') ? 'Message copied' : 'Copy message'}
-            title={isCopied(msg.eventId, 'body') ? 'Copied!' : 'Copy message'}
+            disabled={isCopying(msg.eventId, 'body')}
+            aria-busy={isCopying(msg.eventId, 'body')}
+            aria-label={isCopying(msg.eventId, 'body')
+              ? 'Copying message'
+              : actionFailure(msg.eventId, 'body')
+                ? 'Copy message failed; retry'
+              : isCopied(msg.eventId, 'body')
+                ? 'Message copied'
+                : 'Copy message'}
+            title={isCopying(msg.eventId, 'body')
+              ? 'Copying…'
+              : actionFailure(msg.eventId, 'body')
+                ? 'Copy failed — retry'
+              : isCopied(msg.eventId, 'body')
+                ? 'Copied!'
+                : 'Copy message'}
           >
-            {#if isCopied(msg.eventId, 'body')}
+            {#if isCopying(msg.eventId, 'body')}
+              <span class="action-spinner" aria-hidden="true"></span>
+            {:else if isCopied(msg.eventId, 'body')}
               <svg width="13" height="13" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
                 <path d="M3 8.5L6.5 12L13 4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
               </svg>
@@ -303,7 +491,7 @@
             {/if}
           </div>
         {:else}
-          <p class="dm-bubble-body selectable-text">{@html renderMessageBodyMarkdown(msg.body)}</p>
+          <div class="dm-bubble-body selectable-text">{@html renderMessageBodyMarkdown(msg.body)}</div>
         {/if}
         {#if msg.details}
           <div class="dm-bubble-details selectable-text">{msg.details}</div>
@@ -314,23 +502,54 @@
               <button
                 class="btn btn-copy"
                 onclick={() => copyText(msg.eventId, 'prompt', msg)}
+                disabled={isCopying(msg.eventId, 'prompt')}
+                aria-busy={isCopying(msg.eventId, 'prompt')}
                 aria-label={msg.share ? 'Copy share prompt to clipboard' : 'Copy agent prompt to clipboard'}
               >
-                {isCopied(msg.eventId, 'prompt') ? 'Copied!' : 'Copy prompt'}
+                {isCopying(msg.eventId, 'prompt')
+                  ? 'Copying…'
+                  : actionFailure(msg.eventId, 'prompt')
+                    ? 'Retry copy'
+                  : isCopied(msg.eventId, 'prompt')
+                    ? 'Copied!'
+                    : 'Copy prompt'}
               </button>
             {/if}
             {#if msg.share && onopenshareinclaude}
               {@const share = msg.share}
               <button
                 class="btn btn-copy"
-                onclick={() => onopenshareinclaude(share)}
+                onclick={() => void openShare(msg.eventId, share)}
+                disabled={openingShareIds.has(msg.eventId)}
+                aria-busy={openingShareIds.has(msg.eventId)}
                 aria-label="Open share in Claude Code with prompt"
               >
-                Open in Claude ↗
+                {openingShareIds.has(msg.eventId)
+                  ? 'Opening…'
+                  : actionFailure(msg.eventId, 'open-share')
+                    ? 'Retry open'
+                    : 'Open in Claude ↗'}
               </button>
             {/if}
           </div>
         {/if}
+        {#each (['body', 'prompt', 'open-share'] as const) as actionKind}
+          {@const failure = actionFailure(msg.eventId, actionKind)}
+          {#if failure}
+            <div class="dm-action-error" role="alert">
+              <span>{failure}</span>
+              <button
+                class="dm-action-retry"
+                type="button"
+                disabled={actionPending(msg.eventId, actionKind)}
+                aria-busy={actionPending(msg.eventId, actionKind)}
+                onclick={() => retryMessageAction(msg, actionKind)}
+              >
+                {actionPending(msg.eventId, actionKind) ? 'Retrying…' : 'Retry'}
+              </button>
+            </div>
+          {/if}
+        {/each}
       </div>
       {#if hasReplies(msg)}
         <button
@@ -359,14 +578,31 @@
         <span class="dm-msg-pending">
           {sanitizeVisibleIdentifiers(msg.pendingLabel || 'Pending')}
         </span>
-      {:else}
+      {:else if groupEnd}
         <span class="dm-msg-time">{formatTime(msg.createdAt)}</span>
         {#if msg.direction === 'out'}
           <span class="dm-msg-time">Delivered</span>
         {/if}
+      {:else}
+        <span class="sr-only">
+          Sent at {formatTime(msg.createdAt)}{msg.direction === 'out' ? ' · Delivered' : ''}
+        </span>
       {/if}
-    </div>
-  {/each}
+      </div>
+    {/each}
+  </div>
+
+  {#if newMessagesAvailable}
+    <button
+      class="new-messages-jump"
+      type="button"
+      onclick={jumpToLatest}
+      aria-label="Jump to new messages"
+    >
+      New messages
+      <span aria-hidden="true">↓</span>
+    </button>
+  {/if}
 </div>
 
 {#if readonly}
@@ -390,7 +626,15 @@
       {:else}
         <span class="dm-reply-hint">⌘↵ to send</span>
       {/if}
-      <button class="btn btn-send" onclick={send} disabled={sending || replyText.trim().length === 0}>
+      <button
+        class="btn btn-send"
+        onclick={send}
+        disabled={sending || replyText.trim().length === 0}
+        aria-busy={sending}
+      >
+        {#if sending}
+          <span class="inline-spinner" aria-hidden="true"></span>
+        {/if}
         {sending ? 'Sending…' : 'Send'}
       </button>
     </div>
@@ -400,13 +644,21 @@
 <style>
   /* ── Thread (scrollable conversation) ─────────────────────────────────── */
 
+  .dm-thread-wrap {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    display: flex;
+  }
+
   .dm-thread {
     flex: 1;
+    min-height: 0;
     overflow-y: auto;
     padding: 1rem 1.25rem;
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
+    gap: 0;
     scrollbar-width: thin;
     scrollbar-color: var(--pop-muted) transparent;
   }
@@ -422,18 +674,87 @@
 
   .dm-thread-status {
     margin: 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
     font-size: var(--text-base);
     color: var(--pop-muted);
   }
 
   .dm-thread-error {
+    flex-wrap: wrap;
+    justify-content: center;
     color: var(--red, var(--popover-danger));
+  }
+
+  .load-retry,
+  .new-messages-jump {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.3125rem;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+    transition: transform 120ms cubic-bezier(0.23, 1, 0.32, 1);
+  }
+
+  .load-retry {
+    padding: 0.1875rem 0;
+    border-bottom: 1px solid currentColor;
+  }
+
+  .new-messages-jump {
+    position: absolute;
+    left: 50%;
+    bottom: 0.625rem;
+    z-index: 3;
+    padding: 0.375rem 0.625rem;
+    border: 1px solid var(--pop-border);
+    border-radius: 999px;
+    background: var(--pop-bg);
+    color: var(--pop-text);
+    box-shadow: 0 8px 24px color-mix(in srgb, #000 16%, transparent);
+    transform: translateX(-50%);
+    white-space: nowrap;
+  }
+
+  .load-retry:active:not(:disabled) {
+    transform: scale(0.97);
+  }
+
+  .new-messages-jump:active:not(:disabled) {
+    transform: translateX(-50%) scale(0.97);
+  }
+
+  .load-retry:focus-visible,
+  .new-messages-jump:focus-visible {
+    outline: 2px solid var(--pop-text);
+    outline-offset: 2px;
+  }
+
+  .load-retry:disabled {
+    cursor: progress;
+    opacity: 0.65;
   }
 
   .dm-msg {
     display: flex;
     flex-direction: column;
     max-width: min(80%, 420px);
+    margin-top: 0.1875rem;
+  }
+
+  .dm-msg-group-start {
+    margin-top: 0.75rem;
+  }
+
+  .date-separator + .dm-msg {
+    margin-top: 0.125rem;
   }
 
   .dm-msg-in {
@@ -512,6 +833,29 @@
     color: var(--emerald, var(--popover-success));
   }
 
+  .action-spinner {
+    width: 0.75rem;
+    height: 0.75rem;
+    border: 1.5px solid currentColor;
+    border-right-color: transparent;
+    border-radius: 50%;
+    animation: conversation-spin 0.75s linear infinite;
+  }
+
+  .inline-spinner {
+    width: 0.75rem;
+    height: 0.75rem;
+    flex: 0 0 auto;
+    border: 1.5px solid currentColor;
+    border-right-color: transparent;
+    border-radius: 50%;
+    animation: conversation-spin 0.72s linear infinite;
+  }
+
+  @keyframes conversation-spin {
+    to { transform: rotate(360deg); }
+  }
+
   .dm-msg-in .dm-bubble {
     background: var(--pop-hover);
     border-bottom-left-radius: 4px;
@@ -523,26 +867,255 @@
   }
 
   .dm-bubble-body {
+    --message-markdown-text: var(--fg, var(--pop-text, #e8e8e8));
+    --message-markdown-muted: var(--muted, var(--pop-muted, #a0a0a0));
+    --message-markdown-border: var(--border, var(--pop-divider, rgba(255, 255, 255, 0.14)));
+    --message-markdown-surface: var(--surface-raise, var(--c-field-bg, rgba(255, 255, 255, 0.06)));
+    min-width: 0;
+    max-width: 100%;
     margin: 0;
+    font-family: var(--font-sans, -apple-system, BlinkMacSystemFont, sans-serif);
     font-size: var(--text-base);
-    line-height: 1.45;
-    color: var(--pop-text);
-    white-space: pre-wrap;
-    word-break: break-word;
+    line-height: 1.55;
+    color: var(--message-markdown-text);
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: normal;
+  }
+
+  .dm-bubble-body > :global(:first-child) {
+    margin-top: 0;
+  }
+
+  .dm-bubble-body > :global(:last-child) {
+    margin-bottom: 0;
+  }
+
+  .dm-bubble-body :global(p) {
+    margin: 0.375rem 0;
+    color: inherit;
+  }
+
+  .dm-bubble-body :global(h1),
+  .dm-bubble-body :global(h2),
+  .dm-bubble-body :global(h3),
+  .dm-bubble-body :global(h4),
+  .dm-bubble-body :global(h5),
+  .dm-bubble-body :global(h6) {
+    margin: 1rem 0 0.4rem;
+    color: var(--message-markdown-text);
+    font-family: var(--font-display, var(--font-sans, -apple-system, BlinkMacSystemFont, sans-serif));
+    font-weight: 650;
+    line-height: 1.18;
+    letter-spacing: -0.02em;
+  }
+
+  .dm-bubble-body :global(h1) {
+    font-size: 1.42em;
+  }
+
+  .dm-bubble-body :global(h2) {
+    font-size: 1.28em;
+  }
+
+  .dm-bubble-body :global(h3) {
+    font-size: 1.14em;
+  }
+
+  .dm-bubble-body :global(h4),
+  .dm-bubble-body :global(h5),
+  .dm-bubble-body :global(h6) {
+    font-size: 1em;
+  }
+
+  .dm-bubble-body :global(ul),
+  .dm-bubble-body :global(ol) {
+    margin: 0.625rem 0;
+    padding-left: 1.4rem;
+  }
+
+  .dm-bubble-body :global(li) {
+    margin: 0.3rem 0;
+    padding-left: 0.2rem;
+    line-height: 1.5;
+  }
+
+  .dm-bubble-body :global(li > ul),
+  .dm-bubble-body :global(li > ol) {
+    margin: 0.1875rem 0;
+  }
+
+  .dm-bubble-body :global(.task-list) {
+    padding-left: 0;
+    list-style: none;
+  }
+
+  .dm-bubble-body :global(.task-list-item) {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+    padding-left: 0;
+  }
+
+  .dm-bubble-body :global(.task-list-item input) {
+    flex: 0 0 auto;
+    margin: 0.25em 0 0;
+    accent-color: var(--message-markdown-muted);
+  }
+
+  .dm-bubble-body :global(.task-list-content) {
+    min-width: 0;
   }
 
   .dm-bubble-body :global(a) {
-    color: var(--popover-text, #e8e8e8);
+    color: var(--message-markdown-text);
     text-decoration: underline;
+    text-decoration-color: color-mix(in srgb, currentColor 45%, transparent);
     text-underline-offset: 0.125rem;
+  }
+
+  .dm-bubble-body :global(a:hover) {
+    text-decoration-color: currentColor;
+  }
+
+  .dm-bubble-body :global(a:focus-visible) {
+    outline: 2px solid currentColor;
+    outline-offset: 2px;
+  }
+
+  .dm-bubble-body :global(strong) {
+    color: var(--message-markdown-text);
+    font-weight: 650;
+  }
+
+  .dm-bubble-body :global(del) {
+    color: var(--message-markdown-muted);
   }
 
   .dm-bubble-body :global(code) {
     padding: 0.0625rem 0.25rem;
     border-radius: 4px;
-    background: rgba(0, 0, 0, 0.24);
+    background: var(--message-markdown-surface);
+    color: var(--message-markdown-text);
     font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
     font-size: 0.92em;
+  }
+
+  .dm-bubble-body :global(pre) {
+    max-width: 100%;
+    margin: 0.625rem 0;
+    padding: 0.625rem 0.75rem;
+    overflow-x: auto;
+    border: 1px solid var(--message-markdown-border);
+    border-radius: 0;
+    background: var(--message-markdown-surface);
+    color: var(--message-markdown-text);
+    line-height: 1.5;
+    white-space: pre;
+    overflow-wrap: normal;
+    word-break: normal;
+    scrollbar-width: thin;
+    scrollbar-color: var(--message-markdown-muted) transparent;
+  }
+
+  .dm-bubble-body :global(pre code) {
+    padding: 0;
+    border-radius: 0;
+    background: transparent;
+    color: inherit;
+    font-size: 0.9em;
+    white-space: inherit;
+  }
+
+  .dm-bubble-body :global(blockquote) {
+    margin: 0.625rem 0;
+    padding: 0.0625rem 0 0.0625rem 0.75rem;
+    border-left: 2px solid var(--message-markdown-border);
+    background: transparent;
+    color: var(--message-markdown-muted);
+  }
+
+  .dm-bubble-body :global(blockquote p) {
+    color: inherit;
+  }
+
+  .dm-bubble-body :global(hr) {
+    margin: 0.75rem 0;
+    border: 0;
+    border-top: 1px solid var(--message-markdown-border);
+  }
+
+  .dm-bubble-body :global(img) {
+    display: block;
+    max-width: 100%;
+    height: auto;
+    margin: 0.625rem 0;
+    border-radius: 0;
+  }
+
+  .dm-bubble-body :global(.markdown-table-scroll) {
+    width: 100%;
+    max-width: 100%;
+    margin: 0.625rem 0;
+    overflow-x: auto;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    scrollbar-width: thin;
+    scrollbar-color: var(--message-markdown-muted) transparent;
+  }
+
+  .dm-bubble-body :global(.markdown-table-scroll:focus-visible) {
+    outline: 2px solid var(--message-markdown-text);
+    outline-offset: 2px;
+  }
+
+  .dm-bubble-body :global(table) {
+    width: 100%;
+    min-width: max-content;
+    border-spacing: 0;
+    border-collapse: collapse;
+    color: inherit;
+    font-size: 0.9em;
+    line-height: 1.4;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .dm-bubble-body :global(th),
+  .dm-bubble-body :global(td) {
+    padding: 0.4375rem 0.625rem;
+    border-right: 1px solid var(--message-markdown-border);
+    border-bottom: 1px solid var(--message-markdown-border);
+    text-align: left;
+    vertical-align: top;
+  }
+
+  .dm-bubble-body :global(th:first-child),
+  .dm-bubble-body :global(td:first-child) {
+    padding-left: 0;
+  }
+
+  .dm-bubble-body :global(th:last-child),
+  .dm-bubble-body :global(td:last-child) {
+    padding-right: 0;
+    border-right: 0;
+  }
+
+  .dm-bubble-body :global(tbody tr:last-child td) {
+    border-bottom: 0;
+  }
+
+  .dm-bubble-body :global(th) {
+    color: var(--message-markdown-text);
+    font-weight: 650;
+  }
+
+  .dm-bubble-body :global(.markdown-align-center) {
+    text-align: center;
+  }
+
+  .dm-bubble-body :global(.markdown-align-right) {
+    text-align: right;
   }
 
   .dm-bubble-details {
@@ -589,6 +1162,18 @@
     height: 1px;
     flex: 1;
     background: var(--pop-divider);
+  }
+
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
   }
 
   /* ── Thread reply-count affordance (US-022) ───────────────────────────── */
@@ -642,6 +1227,7 @@
     display: inline-flex;
     align-items: center;
     align-self: flex-start;
+    gap: 0.3125rem;
     padding: 0.3125rem 0.625rem;
     border-radius: 6px;
     font-size: var(--text-base);
@@ -665,6 +1251,53 @@
     display: flex;
     flex-wrap: wrap;
     gap: 0.375rem;
+  }
+
+  .dm-action-error {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.625rem;
+    margin-top: 0.375rem;
+    padding-top: 0.375rem;
+    border-top: 1px solid var(--pop-divider);
+    color: var(--popover-danger, var(--pop-text));
+    font-size: 0.6875rem;
+    line-height: 1.35;
+  }
+
+  .dm-action-retry {
+    flex: 0 0 auto;
+    padding: 0;
+    border: 0;
+    border-bottom: 1px solid currentColor;
+    border-radius: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-weight: 650;
+    cursor: pointer;
+    transition: transform 120ms cubic-bezier(0.23, 1, 0.32, 1);
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    .dm-action-retry:hover:not(:disabled) {
+      border-bottom-color: transparent;
+    }
+  }
+
+  .dm-action-retry:active:not(:disabled) {
+    transform: scale(0.97);
+  }
+
+  .dm-action-retry:focus-visible {
+    outline: 2px solid currentColor;
+    outline-offset: 2px;
+  }
+
+  .dm-action-retry:disabled {
+    cursor: progress;
+    opacity: 0.58;
   }
 
   /* ── Inline share card (share history in Messages) ────────────────────── */
@@ -829,6 +1462,167 @@
     cursor: default;
   }
 
+  /* ── Compact communications window ──────────────────────────────────────
+   * The native Messages mini window uses one outer glass material. Ordinary
+   * incoming prose stays directly on that canvas; only outbound speech gets a
+   * restrained neutral surface, and shared files remain true object cards.
+   * Full Messages keeps its separate override layer below unchanged.
+   * ────────────────────────────────────────────────────────────────────── */
+
+  :global(html[data-window='dm-detail']) .dm-thread {
+    padding: 1rem 1.375rem 1.25rem;
+    gap: 0;
+  }
+
+  :global(html[data-window='dm-detail']) .dm-msg {
+    max-width: min(84%, 560px);
+    margin-top: 0.25rem;
+  }
+
+  :global(html[data-window='dm-detail']) .dm-msg-group-start {
+    margin-top: 0.875rem;
+  }
+
+  :global(html[data-window='dm-detail']) .date-separator + .dm-msg {
+    margin-top: 0.1875rem;
+  }
+
+  :global(html[data-window='dm-detail']) .dm-msg-in .dm-bubble:not(.dm-bubble-share) {
+    padding: 0.125rem 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+  }
+
+  :global(html[data-window='dm-detail']) .dm-msg-out .dm-bubble:not(.dm-bubble-share) {
+    padding: 0.5rem 0.6875rem;
+    border: 1px solid color-mix(in srgb, var(--pop-text) 9%, transparent);
+    border-radius: 10px 10px 3px 10px;
+    background: color-mix(in srgb, var(--pop-text) 6%, transparent);
+  }
+
+  :global(html[data-window='dm-detail']) .dm-bubble.dm-bubble-share {
+    padding: 0.75rem;
+    border: 1px solid color-mix(in srgb, var(--pop-text) 12%, transparent);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--pop-text) 5%, transparent);
+  }
+
+  :global(html[data-window='dm-detail']) .dm-bubble-thread-active {
+    box-shadow: none;
+  }
+
+  :global(html[data-window='dm-detail']) .dm-action {
+    border: 0;
+    background: transparent;
+    color: var(--pop-muted);
+    transition: transform 120ms cubic-bezier(0.23, 1, 0.32, 1);
+  }
+
+  :global(html[data-window='dm-detail']) .dm-action:hover {
+    background: transparent;
+    color: var(--pop-text);
+  }
+
+  :global(html[data-window='dm-detail']) .thread-affordance {
+    gap: 0.25rem;
+    margin-top: 0.1875rem;
+    padding: 0.1875rem 0;
+    border: 0;
+    border-bottom: 1px solid transparent;
+    border-radius: 0;
+    background: transparent;
+    color: var(--pop-muted);
+    font-size: 0.6875rem;
+    font-weight: 560;
+    transition: transform 120ms cubic-bezier(0.23, 1, 0.32, 1);
+  }
+
+  :global(html[data-window='dm-detail']) .thread-affordance:hover {
+    border-bottom-color: var(--pop-muted);
+    background: transparent;
+    color: var(--pop-text);
+  }
+
+  :global(html[data-window='dm-detail']) .thread-affordance-count {
+    font-weight: 600;
+  }
+
+  :global(html[data-window='dm-detail']) .dm-msg-time,
+  :global(html[data-window='dm-detail']) .dm-msg-pending {
+    font-size: 0.65625rem;
+  }
+
+  :global(html[data-window='dm-detail']) .btn {
+    transition: transform 120ms cubic-bezier(0.23, 1, 0.32, 1);
+  }
+
+  :global(html[data-window='dm-detail']) .btn-copy {
+    padding: 0.1875rem 0;
+    border: 0;
+    border-bottom: 1px solid var(--pop-divider);
+    border-radius: 0;
+    background: transparent;
+    color: var(--pop-muted);
+  }
+
+  :global(html[data-window='dm-detail']) .btn-copy:hover {
+    background: transparent;
+    color: var(--pop-text);
+  }
+
+  :global(html[data-window='dm-detail']) .share-card-permission {
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+  }
+
+  :global(html[data-window='dm-detail']) .new-messages-jump {
+    border-color: color-mix(in srgb, var(--pop-text) 12%, transparent);
+    background: color-mix(in srgb, var(--pop-bg) 88%, transparent);
+    transition: transform 120ms cubic-bezier(0.23, 1, 0.32, 1);
+  }
+
+  :global(html[data-window='dm-detail']) .dm-action:active:not(:disabled),
+  :global(html[data-window='dm-detail']) .thread-affordance:active:not(:disabled),
+  :global(html[data-window='dm-detail']) .btn:active:not(:disabled) {
+    transform: scale(0.97);
+  }
+
+  :global(html[data-window='dm-detail']) .dm-action:focus-visible,
+  :global(html[data-window='dm-detail']) .thread-affordance:focus-visible,
+  :global(html[data-window='dm-detail']) .btn:focus-visible {
+    outline: 2px solid var(--pop-text);
+    outline-offset: 2px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .inline-spinner {
+      animation-duration: 1.4s;
+    }
+
+    .load-retry,
+    .new-messages-jump,
+    .dm-action-retry,
+    :global(html[data-window='dm-detail']) .dm-action,
+    :global(html[data-window='dm-detail']) .thread-affordance,
+    :global(html[data-window='dm-detail']) .btn {
+      transition: none;
+    }
+
+    .load-retry:active:not(:disabled),
+    .dm-action-retry:active:not(:disabled),
+    :global(html[data-window='dm-detail']) .dm-action:active:not(:disabled),
+    :global(html[data-window='dm-detail']) .thread-affordance:active:not(:disabled),
+    :global(html[data-window='dm-detail']) .btn:active:not(:disabled) {
+      transform: none;
+    }
+
+    .new-messages-jump:active:not(:disabled) {
+      transform: translateX(-50%);
+    }
+  }
+
   /* ──────────────────────────────────────────────────────────────────────
    * Messages-window override layer (desktop "Company OS" language).
    *
@@ -846,7 +1640,7 @@
 
   :global([data-window='messages']) .dm-thread {
     padding: var(--space-4) var(--space-5);
-    gap: var(--space-2);
+    gap: 0;
     scrollbar-color: var(--scrollbar-thumb) transparent;
   }
 
@@ -860,34 +1654,73 @@
   }
 
   :global([data-window='messages']) .dm-msg-author {
+    display: inline-flex;
+    align-items: center;
+    max-width: min(32ch, 100%);
+    margin: 0 0 var(--space-1);
+    padding: 2px 7px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--surface-raise);
     font-family: var(--font-mono);
     font-size: var(--text-micro);
     font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: var(--muted);
+    letter-spacing: 0;
+    color: var(--muted-2);
+    text-overflow: ellipsis;
+    text-transform: none;
+    white-space: nowrap;
+  }
+
+  :global([data-window='messages']) .dm-msg {
+    min-width: 0;
+    max-width: min(76%, 720px);
+    margin-top: var(--space-1);
+  }
+
+  :global([data-window='messages']) .dm-msg-group-start {
+    margin-top: var(--space-3);
+  }
+
+  :global([data-window='messages']) .date-separator + .dm-msg {
+    margin-top: var(--space-1);
   }
 
   :global([data-window='messages']) .dm-bubble {
-    padding: var(--space-2) var(--space-3);
-    border-radius: 16px;
-    border: 1px solid var(--border);
+    min-width: 0;
+    max-width: 100%;
+    padding: 2px 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
   }
 
   :global([data-window='messages']) .dm-msg-in .dm-bubble {
-    background: var(--surface-raise);
-    border-bottom-left-radius: var(--radius-sm);
+    background: transparent;
+    border-radius: 0;
   }
 
   :global([data-window='messages']) .dm-msg-out .dm-bubble {
-    background: var(--accent-soft);
-    border-color: var(--border-strong);
-    border-bottom-right-radius: var(--radius-sm);
+    padding: var(--space-2) var(--space-3);
+    border: 1px solid var(--border);
+    border-radius: 10px 10px 3px 10px;
+    background: var(--surface-raise);
+  }
+
+  /* A shared file is a real actionable object, so it keeps card treatment.
+     Ordinary incoming prose remains unboxed on the conversation canvas. */
+  :global([data-window='messages']) .dm-bubble-share {
+    padding: var(--space-3);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface-raise);
   }
 
   :global([data-window='messages']) .dm-bubble-body {
+    font-family: var(--font-sans, -apple-system, BlinkMacSystemFont, sans-serif);
     font-size: var(--text-base);
-    line-height: 1.5;
+    line-height: 1.55;
     color: var(--fg);
   }
 
@@ -951,27 +1784,32 @@
     color: var(--emerald, #7ee0a8);
   }
 
-  :global([data-window='messages']) .dm-reply {
+  :global([data-window='messages']) .dm-reply,
+  :global([data-window='desktop-alt']) .dm-reply {
     padding: var(--space-3) var(--space-5) var(--space-4);
     border-top: 1px solid var(--border);
-    background: var(--surface-panel);
+    /* The window already owns the material. Keep the composer structural so
+       its full-width footer cannot compound into an opaque bottom slab. */
+    background: transparent;
   }
 
-  :global([data-window='messages']) .dm-reply-input {
+  :global([data-window='messages']) .dm-reply-input,
+  :global([data-window='desktop-alt']) .dm-reply-input {
     border-radius: var(--radius-sm);
     border: 1px solid var(--border);
-    background: var(--surface-raise);
+    background: transparent;
     color: var(--fg);
     font-family: var(--font-sans);
     font-size: var(--text-base);
     line-height: 1.45;
   }
 
-  :global([data-window='messages']) .dm-reply-input:focus {
+  :global([data-window='messages']) .dm-reply-input:focus,
+  :global([data-window='desktop-alt']) .dm-reply-input:focus {
     border-color: var(--accent);
     outline: 1px solid var(--accent);
     outline-offset: -1px;
-    background: var(--surface-raise);
+    background: transparent;
   }
 
   :global([data-window='messages']) .dm-reply-hint {

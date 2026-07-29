@@ -9,3 +9,21 @@ export function shouldSkipSignIn(
 ): boolean {
   return state.authenticated;
 }
+
+/**
+ * Startup can race a short-lived backend pre-auth window even after the
+ * frontend auth snapshot flips true. Those expected authorization misses are
+ * not operational errors and must not fail live-preauth's console-error gate.
+ */
+export function isExpectedUnauthenticatedError(error: unknown): boolean {
+  const message =
+    error instanceof Error
+      ? error.message
+      : typeof error === 'object' &&
+          error !== null &&
+          'message' in error &&
+          typeof error.message === 'string'
+        ? error.message
+        : String(error);
+  return /\bnot signed in\b|\bunauthenticated\b/i.test(message);
+}

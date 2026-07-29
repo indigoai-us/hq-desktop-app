@@ -188,6 +188,27 @@ describe('Desktop hydration latest-request coordination', () => {
       /const nextActivity = Array\.isArray\(activityResponse\)/,
     );
   });
+
+  it('keeps Files fail-closed unless authoritative membership hydration succeeds', () => {
+    const app = readFileSync(
+      resolve(process.cwd(), 'src/desktop-alt/DesktopApp.svelte'),
+      'utf8',
+    );
+
+    expect(app).toContain('let filesAccessHydrated = $state(false)');
+    expect(app).toContain('let filesAccessSettled = $state(false)');
+    expect(app).toMatch(
+      /filesAccessHydrated\s*=\s*Array\.isArray\(result\?\.workspaces\)[\s\S]*?result\?\.cloudReachable === true[\s\S]*?!result\?\.error/,
+    );
+    expect(app).toMatch(
+      /catch \(err\) \{\s*if \(!isLatest\(\)\) return;\s*filesAccessHydrated = false;\s*filesAccessSettled = true;/,
+    );
+    expect(app).toContain(
+      'filesAccessHydrated ? fileAccessibleCompanies(renderCompanies) : []',
+    );
+    expect(app).toContain('accessReady={filesAccessHydrated}');
+    expect(app).not.toContain('accessReady={ready}');
+  });
 });
 
 describe('rendered hydration Retry state', () => {
@@ -222,11 +243,82 @@ describe('rendered hydration Retry state', () => {
     flushSync();
 
     const retry = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(
-      (button) => button.textContent?.trim() === 'Retry',
+      (button) => button.textContent?.trim() === 'Retrying…',
     );
     expect(retry).toBeTruthy();
     expect(retry?.disabled).toBe(true);
+    expect(retry?.getAttribute('aria-busy')).toBe('true');
     retry?.click();
     expect(onretryhydration).not.toHaveBeenCalled();
+  });
+
+  it('uses human Core states and retries a failed version read from the title bar', async () => {
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    let coreReads = 0;
+    invoke.mockImplementation(async (command: string) => {
+      if (command !== 'get_hq_version') return null;
+      coreReads += 1;
+      if (coreReads === 1) throw new Error('core metadata unavailable');
+      return '15.0.66-beta.1';
+    });
+    component = mount(V4TitleBar, {
+      target: host,
+      props: {
+        version: '0.10.33',
+        syncState: 'idle',
+        watchedCount: 4,
+      },
+    });
+    flushSync();
+
+    expect(
+      host.querySelector('[data-testid="core-version-label"]')?.textContent,
+    ).toContain('Core checking');
+    await vi.waitFor(() => {
+      flushSync();
+      expect(
+        host.querySelector('[data-testid="core-version-label"]')?.textContent,
+      ).toContain('Core unavailable');
+      expect(host.querySelector('[data-testid="core-version-retry"]')?.textContent).toContain(
+        'Retry',
+      );
+      expect(host.textContent).not.toContain('Core —');
+    });
+
+    host.querySelector<HTMLButtonElement>('[data-testid="version-label"]')?.click();
+    await vi.waitFor(() => {
+      flushSync();
+      expect(
+        host.querySelector('[data-testid="core-version-label"]')?.textContent,
+      ).toContain('Core v15.0.66-beta.1');
+      expect(host.querySelector('[data-testid="core-version-retry"]')).toBeNull();
+    });
+    expect(coreReads).toBeGreaterThanOrEqual(2);
+  });
+
+  it('labels a successful empty Core read as not detected, never as a dash', async () => {
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    invoke.mockImplementation(async (command: string) =>
+      command === 'get_hq_version' ? null : null,
+    );
+    component = mount(V4TitleBar, {
+      target: host,
+      props: {
+        version: '0.10.33',
+        syncState: 'idle',
+        watchedCount: 4,
+      },
+    });
+
+    await vi.waitFor(() => {
+      flushSync();
+      expect(
+        host.querySelector('[data-testid="core-version-label"]')?.textContent,
+      ).toContain('Core not detected');
+      expect(host.textContent).not.toContain('Core —');
+      expect(host.querySelector('[data-testid="core-version-retry"]')).toBeNull();
+    });
   });
 });

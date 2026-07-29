@@ -13,6 +13,7 @@
   import {
     meetingsStore,
     startMeetingsStore,
+    type MeetingBotAction,
     type ToastDescriptor,
   } from '../lib/meetings-store.svelte';
   import LiveNowCard from '../components/LiveNowCard.svelte';
@@ -55,9 +56,11 @@
   const fetchError = $derived(meetingsStore.fetchError);
   const refreshBlocked = $derived(meetingsStore.refreshBlocked);
   const loading = $derived(meetingsStore.loading);
-  // Per-row in-flight set for bot actions, owned by the store. Passed to the
-  // agenda so each row can disable its buttons + spin while its invoke runs.
-  const pendingEventIds = $derived(meetingsStore.pendingEventIds);
+  // Per-row operation map, owned by the store. Sibling actions disable while
+  // a request runs, but only the invoked control announces and paints busy.
+  const pendingActionsByEventId = $derived<Map<string, MeetingBotAction>>(
+    meetingsStore.pendingActionsByEventId,
+  );
 
   /** Deep-link focus from open_meetings_window / notification (US-004 routing). */
   let focusedMeetingId = $state<string | null>(null);
@@ -180,6 +183,9 @@
   // only renders it. `null` = nothing to surface (no-op dedupe / missing bot).
   let toast = $state<ToastDescriptor | null>(null);
   let meetingsFeatureEnabled = $state<boolean | null>(null);
+  let calendarOpening = $state(false);
+  let upNextJoining = $state(false);
+  let integrationsOpening = $state(false);
   function flashToast(kind: 'info' | 'warn', text: string): void {
     toast = { kind, text };
     setTimeout(() => {
@@ -248,14 +254,42 @@
     }
   }
 
-  function openCalendar(): void {
-    void openExternal('https://calendar.google.com');
+  async function openCalendar(): Promise<void> {
+    if (calendarOpening) return;
+    calendarOpening = true;
+    try {
+      await openExternal('https://calendar.google.com');
+    } catch (err) {
+      flashToast('warn', `Couldn't open Calendar: ${String(err)}`);
+    } finally {
+      calendarOpening = false;
+    }
   }
 
-  function joinUpNext(): void {
-    if (!upNext) return;
+  async function joinUpNext(): Promise<void> {
+    if (!upNext || upNextJoining) return;
     const url = eventMeetingUrl(upNext);
-    if (url) void openExternal(url);
+    if (!url) return;
+    upNextJoining = true;
+    try {
+      await openExternal(url);
+    } catch (err) {
+      flashToast('warn', `Couldn't open the meeting: ${String(err)}`);
+    } finally {
+      upNextJoining = false;
+    }
+  }
+
+  async function openIntegrations(): Promise<void> {
+    if (integrationsOpening) return;
+    integrationsOpening = true;
+    try {
+      await openExternal('https://hq.computer/integrations');
+    } catch (err) {
+      flashToast('warn', `Couldn't open HQ Console: ${String(err)}`);
+    } finally {
+      integrationsOpening = false;
+    }
   }
 
   onMount(() => {
@@ -340,7 +374,15 @@
           <span class="error-pill" title={fetchError}>Refresh issue</span>
           <span class="error-copy">{fetchError}</span>
           {#if refreshBlocked}
-            <button type="button" class="report-link" onclick={onReportProblem} disabled={reporting}>
+            <button
+              type="button"
+              class="report-link"
+              data-testid="meetings-report-problem"
+              onclick={onReportProblem}
+              disabled={reporting}
+              aria-busy={reporting}
+              aria-label={reporting ? 'Reporting refresh problem' : 'Report refresh problem'}
+            >
               {reporting ? 'Reporting…' : 'Report a problem'}
             </button>
           {/if}
@@ -348,11 +390,25 @@
       {/if}
     </div>
     <div class="actions detail-primary-actions">
-      <button type="button" class="btn subtle" onclick={openCalendar}>
+      <button
+        type="button"
+        class="btn subtle"
+        onclick={openCalendar}
+        disabled={calendarOpening}
+        aria-busy={calendarOpening}
+      >
         <span class="icon">{@render iconCalendar()}</span>
-        Open calendar
+        {calendarOpening ? 'Opening…' : 'Open calendar'}
       </button>
-      <button type="button" class="btn" onclick={() => void meetingsStore.refresh()} disabled={loading}>
+      <button
+        type="button"
+        class="btn"
+        data-testid="meetings-refresh"
+        onclick={() => void meetingsStore.refresh()}
+        disabled={loading}
+        aria-busy={loading}
+        aria-label={loading ? 'Refreshing meetings' : 'Refresh meetings'}
+      >
         <span class="icon">{@render iconSync()}</span>
         {loading ? 'Refreshing' : 'Refresh'}
       </button>
@@ -400,7 +456,10 @@
       <button
         type="button"
         class="btn url-invite-btn"
+        data-testid="meetings-url-invite"
         disabled={urlInviting || !isPlausibleMeetingUrl(urlInput.trim())}
+        aria-busy={urlInviting}
+        aria-label={urlInviting ? 'Inviting recording bot' : 'Invite recording bot'}
         onclick={onUrlInvite}
       >
         {urlInviting ? 'Inviting…' : 'Invite'}
@@ -418,7 +477,9 @@
 
     <!-- 2. Up next — compact strip, not a summary card. -->
     <section class="next-strip" aria-label="Up next" data-testid="meetings-up-next">
-      <div class="next-time">{upNext ? timeLabel(upNext) : '—'}</div>
+      <div class="next-time">
+        {#if upNext}{timeLabel(upNext)}{/if}
+      </div>
       <div class="next-copy">
         {#if upNext}
           {@const dur = durationLabel(upNext)}
@@ -432,7 +493,15 @@
         {/if}
       </div>
       {#if upNext && eventMeetingUrl(upNext)}
-        <button type="button" class="btn subtle next-join" onclick={joinUpNext}>Join</button>
+        <button
+          type="button"
+          class="btn subtle next-join"
+          onclick={joinUpNext}
+          disabled={upNextJoining}
+          aria-busy={upNextJoining}
+        >
+          {upNextJoining ? 'Joining…' : 'Join'}
+        </button>
       {/if}
     </section>
 
@@ -472,7 +541,7 @@
       {liveEventId}
       {botsByEventId}
       {scheduledBots}
-      {pendingEventIds}
+      {pendingActionsByEventId}
       {focusedMeetingId}
       {onInvite}
       {onUninvite}
@@ -505,7 +574,15 @@
               <div class="section-empty no-accounts">
                 <div class="na-title">No calendars connected yet</div>
                 <p class="na-copy">Connect a Google Calendar in HQ Console to start capturing meetings here.</p>
-                <button type="button" class="btn" onclick={() => void openExternal('https://hq.computer/integrations')}>Open HQ Console Integrations</button>
+                <button
+                  type="button"
+                  class="btn"
+                  onclick={openIntegrations}
+                  disabled={integrationsOpening}
+                  aria-busy={integrationsOpening}
+                >
+                  {integrationsOpening ? 'Opening…' : 'Open HQ Console Integrations'}
+                </button>
               </div>
             {:else}
               <div class="section-empty">No connected calendars in the cached snapshot.</div>

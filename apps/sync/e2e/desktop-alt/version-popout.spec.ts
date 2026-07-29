@@ -20,6 +20,8 @@ describe('desktop-alt version pop-out (US-017)', () => {
     expect(desktopApp).not.toContain('<DesktopStatusBar');
     expect(titleBar).toContain("import VersionPopout from '../components/VersionPopout.svelte'");
     expect(titleBar).toContain('data-testid="version-label"');
+    expect(titleBar).toContain('data-testid="core-version-label"');
+    expect(titleBar).toContain("'get_hq_version'");
     expect(titleBar).toContain('aria-expanded={versionOpen}');
     expect(titleBar).toContain('<VersionPopout');
     expect(titleBar).toContain("onOpenSettings?: (tab?: SettingsTab) => void");
@@ -30,19 +32,27 @@ describe('desktop-alt version pop-out (US-017)', () => {
     expect(desktopApp).toContain('onaccount={handleAccountMenu}');
   });
 
-  it('pop-out shows current version + status and Check for updates invokes check_for_updates', () => {
+  it('pop-out shows app + Core versions and Check all updates invokes both checks', () => {
     const popout = readRepoFile('src/desktop-alt/components/VersionPopout.svelte');
 
     expect(popout).toContain('data-testid="version-popout"');
     expect(popout).toContain('data-testid="version-popout-current"');
     expect(popout).toContain('data-testid="version-popout-latest"');
     expect(popout).toContain('data-testid="version-popout-status"');
+    expect(popout).toContain('data-testid="version-popout-core-current"');
+    expect(popout).toContain('data-testid="version-popout-core-status"');
     expect(popout).toContain('data-testid="version-popout-check"');
     expect(popout).toContain("role=\"dialog\"");
     expect(popout).toContain('aria-label="Version and updates"');
+    expect(popout).toContain('position: fixed');
+    expect(popout).toContain('z-index: 10000');
+    expect(popout).toContain('top: 48px');
+    expect(popout).toContain('--v4-popover-strong');
     expect(popout).toContain("'check_for_updates'");
+    expect(popout).toContain("'check_core_state'");
+    expect(popout).toContain("'get_hq_version'");
     expect(popout).toContain('Up to date');
-    expect(popout).toContain('Check for updates');
+    expect(popout).toContain('Check all updates');
     // Background-detected updates without a manual check.
     expect(popout).toContain("listen<UpdateInfo>('update:available'");
     // Hydrates an update the background checker already found (get_pending_update),
@@ -97,11 +107,10 @@ describe('desktop-alt version pop-out (US-017)', () => {
     expect(harness).toContain('const HARNESS_UPDATE');
     expect(harness).toContain('function hasSettingsUpdates(');
     expect(harness).toContain("scenario === 'update-available'");
+    expect(harness).toContain('check_for_updates: () =>');
+    expect(harness).toContain('get_pending_update: () =>');
     expect(harness).toContain(
-      'check_for_updates: () => (hasSettingsUpdates() ? HARNESS_UPDATE : null)',
-    );
-    expect(harness).toContain(
-      'get_pending_update: () => (hasSettingsUpdates() ? HARNESS_UPDATE : null)',
+      'hasSettingsUpdates() && !harnessAppUpdateInstalled ? HARNESS_UPDATE : null',
     );
   });
 });

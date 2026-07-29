@@ -82,10 +82,10 @@ export const V4_CHROME_LAYOUT = {
  */
 export const V4_TYPE_SCALE = {
   metadata: 13,
-  secondary: 13,
-  body: 14,
-  section: 14,
-  detail: 14,
+  secondary: 14,
+  body: 15,
+  section: 17,
+  detail: 24,
 } as const;
 
 /** Explicit gap between primary row title and secondary metadata (grid slots). */
@@ -277,8 +277,8 @@ export function sortV4CompaniesConnectedFirst(
         active,
         // DESKTOP-001: only the selected company expands; global destinations
         // collapse every company so children never compete with Inbox/etc.
-        expanded: active,
-        children: active
+        expanded: active && workspace.membershipStatus !== 'pending',
+        children: active && workspace.membershipStatus !== 'pending'
           ? V4_COMPANY_PRIMARY_ITEMS.map((item) => ({
               id: item.id,
               label: item.label,

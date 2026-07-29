@@ -58,10 +58,27 @@ describe('US-009: installed + marketplace packs live in one Library surface', ()
 
   it('shows BOTH installed and available/marketplace-sourced packs in the one panel', () => {
     const src = normalize(installedPanel);
-    // Installed packs group + an available-to-install group in the same surface.
+    // Installed packs group + a deduplicated available-to-install group in the
+    // same surface. Empty identities never become unusable install actions.
     expect(src).toContain('const installed = $derived(view?.packs?.installed ?? []);');
-    expect(src).toContain('const available = $derived(view?.packs?.available ?? []);');
+    expect(src).toContain('const installedIdentities = $derived(');
+    expect(src).toContain("const identity = packIdentity(pack.source);");
+    expect(src).toContain("return identity !== '' && !installedIdentities.has(identity);");
     expect(src).toContain('data-testid="installed-group"');
+  });
+
+  it('keeps duplicate CLI identities from crashing the Installed surface', () => {
+    const src = normalize(installedPanel);
+    expect(src).toContain(
+      "{#each installed as p, index (`installed:${p.name}:${p.source ?? p.transport ?? ''}:${index}`)}",
+    );
+    expect(src).toContain(
+      '{#each available as a, index (`available:${a.source}:${index}`)}',
+    );
+    expect(src).toContain(
+      '{#each registryAvailable as r, index (`registry:${r.slug}:${index}`)}',
+    );
+    expect(src).not.toContain('{#each installed as p (p.name)}');
   });
 });
 

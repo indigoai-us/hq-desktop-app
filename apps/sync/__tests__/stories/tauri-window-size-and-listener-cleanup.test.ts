@@ -33,7 +33,11 @@ describe('HQ-DESKTOP-39: late main-window listener cleanup', () => {
     expect(app).toContain("import { ListenerRegistry } from './lib/listener-registry'");
     expect(app).toContain('async function setupTrayListeners(unlisteners: ListenerRegistry)');
     expect(app).toContain('void setupTrayListeners(listenerRegistry)');
-    expect(app).toContain('return () => listenerRegistry.dispose();');
+    // Surface teardown must invalidate and cancel the channel-unread retry
+    // before disposing Tauri listeners so no late timer can re-register work.
+    expect(app).toMatch(
+      /return \(\) => \{[\s\S]*?channelUnreadDisposed = true;[\s\S]*?clearChannelUnreadRetry\(\);[\s\S]*?listenerRegistry\.dispose\(\);[\s\S]*?\};/,
+    );
   });
 
   it('unlistens handles that resolve after the surface is disposed', () => {

@@ -36,6 +36,7 @@
   let skillDetail = $state<SkillDetail | null>(null);
   let loading = $state(false);
   let error = $state<string | null>(null);
+  let reloadToken = $state(0);
 
   const title = $derived(
     item === null ? '' : item.kind === 'worker' ? item.worker.name : item.skill.name,
@@ -46,6 +47,7 @@
   // out-of-order completion when the user clicks through items quickly.
   $effect(() => {
     const current = item;
+    reloadToken;
     workerDetail = null;
     skillDetail = null;
     error = null;
@@ -95,6 +97,13 @@
       onclose();
     }
   }
+
+  function retryLoad(): void {
+    if (loading) return;
+    error = null;
+    loading = true;
+    reloadToken += 1;
+  }
 </script>
 
 <svelte:window onkeydown={item ? handleKeydown : undefined} />
@@ -112,6 +121,7 @@
     role="dialog"
     aria-modal="true"
     aria-label={`${kindLabel}: ${title}`}
+    aria-busy={loading}
     data-testid="library-detail-panel"
   >
     <header class="detail-header">
@@ -149,7 +159,19 @@
 
     <div class="detail-body">
       {#if error}
-        <div class="detail-error" role="alert">{error}</div>
+        <div class="detail-error" role="alert">
+          <span>{error}</span>
+          <button
+            type="button"
+            class="retry-button"
+            data-testid="library-detail-retry"
+            onclick={retryLoad}
+            disabled={loading}
+            aria-busy={loading}
+          >
+            {loading ? 'Loading…' : 'Retry'}
+          </button>
+        </div>
       {/if}
 
       {#if item.kind === 'worker'}
@@ -225,7 +247,7 @@
     position: fixed;
     inset: 0;
     z-index: 40;
-    background: color-mix(in srgb, var(--pop-bg) 46%, transparent);
+    background: rgba(0, 0, 0, 0.14);
     animation: backdrop-fade 160ms ease;
   }
 
@@ -240,8 +262,8 @@
     max-width: 94vw;
     border-left: 1px solid var(--v4-hairline);
     background: var(--v4-popover);
-    backdrop-filter: var(--v4-glass-filter);
-    -webkit-backdrop-filter: var(--v4-glass-filter);
+    backdrop-filter: var(--v4-glass-filter-popover, var(--v4-glass-filter));
+    -webkit-backdrop-filter: var(--v4-glass-filter-popover, var(--v4-glass-filter));
     box-shadow: var(--v4-shadow-popover), inset 1px 0 0 var(--v4-glass-highlight);
     animation: panel-slide-in 200ms cubic-bezier(0.2, 0.7, 0.2, 1);
   }
@@ -338,6 +360,10 @@
   }
 
   .detail-error {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--v4-space-3);
     padding: var(--v4-space-3) 0;
     border: 0;
     border-top: 1px solid var(--v4-hairline);
@@ -345,6 +371,29 @@
     background: transparent;
     color: var(--v4-error);
     font-size: var(--text-base);
+  }
+
+  .retry-button {
+    flex: 0 0 auto;
+    min-height: 28px;
+    padding: 0 var(--v4-space-3);
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-button);
+    background: transparent;
+    color: var(--v4-text-1);
+    font: inherit;
+    font-size: var(--text-base);
+    cursor: pointer;
+  }
+
+  .retry-button:disabled {
+    cursor: default;
+    opacity: 0.55;
+  }
+
+  .retry-button:focus-visible {
+    outline: 2px solid var(--v4-control-border);
+    outline-offset: 2px;
   }
 
   .detail-section {

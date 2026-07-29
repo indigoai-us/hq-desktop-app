@@ -41,8 +41,16 @@ describe('desktop-alt open-in-Claude-Code + activity drill-ins (US-012)', () => 
     // A `claude://.../?<query>` string would be reimplementation; assert none
     // exists (bare prose mentions of the scheme in comments are fine).
     expect(affordance).not.toMatch(/claude:\/\/[\w/]*\?/);
-    // Suppresses itself when the HQ folder isn't loaded yet (button contract).
-    expect(affordance).toContain('{#if folder}');
+    // Generic call sites suppress themselves until the HQ folder loads, while
+    // Files/Knowledge can render from an HQ-relative path because the native
+    // command owns folder resolution + authorization.
+    expect(affordance).toContain('{#if authorizedFile || folder}');
+    expect(affordance).toContain(
+      "invoke('open_authorized_file_in_claude', { path: file })",
+    );
+    expect(affordance).toContain(
+      'Never fall back to a renderer-built prompt for an authorization',
+    );
     expect(affordance).toContain('data-testid="open-in-claude-code"');
   });
 

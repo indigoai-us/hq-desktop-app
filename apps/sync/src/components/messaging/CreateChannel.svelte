@@ -37,12 +37,15 @@
     status: string;
   }
 
+  type LoadStatus = 'idle' | 'loading' | 'ready' | 'error';
+
   // "personal" or a companyUid.
   let scopeValue = $state<string>(
     untrack(() => presetCompanyUid ?? 'personal'),
   );
   let name = $state('');
   let companies = $state<{ companyUid: string; companyName: string | null }[]>([]);
+  let companiesStatus = $state<LoadStatus>('idle');
 
   // Initial invites — accumulated as the user picks them.
   let invitePick = $state<SelectedRecipient | null>(null);
@@ -52,22 +55,42 @@
   let createError = $state<string | null>(null);
 
   const isPersonal = $derived(scopeValue === 'personal');
+  const scopesLoading = $derived(companiesStatus === 'idle' || companiesStatus === 'loading');
+  const scopesFailed = $derived(companiesStatus === 'error');
+  const hasTrustedScopes = $derived(companies.length > 0);
+  const scopesReady = $derived(
+    isGroupDm || companiesStatus === 'ready' || hasTrustedScopes,
+  );
 
   // A group DM needs ≥2 other people (caller is the 3rd); a named channel needs
   // a name. Either way, not while a create is already in flight.
   const canCreate = $derived(
-    !creating && (isGroupDm ? invites.length >= 2 : name.trim().length > 0),
+    !creating
+      && scopesReady
+      && (isGroupDm ? invites.length >= 2 : name.trim().length > 0),
   );
 
   async function loadCompanies(): Promise<void> {
+    if (companiesStatus === 'loading') return;
+    companiesStatus = 'loading';
     try {
       const list = await invoke<MembershipRow[]>('meetings_list_memberships');
-      companies = (list ?? [])
+      const nextCompanies = (list ?? [])
         .filter((m) => m.status === 'active')
         .map((m) => ({ companyUid: m.companyUid, companyName: m.companyName }));
+      companies = nextCompanies;
+      companiesStatus = 'ready';
+      if (
+        scopeValue !== 'personal'
+        && !nextCompanies.some((company) => company.companyUid === scopeValue)
+      ) {
+        scopeValue = 'personal';
+      }
     } catch (err) {
       console.error('create-channel: meetings_list_memberships failed', err);
-      companies = [];
+      // Preserve the last trusted scope list so a refresh failure never
+      // silently collapses the selector to Personal-only.
+      companiesStatus = 'error';
     }
   }
 
@@ -119,6 +142,10 @@
     }
   }
 
+  function requestClose(): void {
+    if (!creating) onclose();
+  }
+
   function onNameKeydown(e: KeyboardEvent): void {
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
       e.preventDefault();
@@ -127,29 +154,36 @@
   }
 
   function onBackdropKeydown(e: KeyboardEvent): void {
-    if (e.key === 'Escape') onclose();
+    if (e.key === 'Escape') requestClose();
   }
 
   $effect(() => {
-    void loadCompanies();
+    if (!isGroupDm) untrack(() => void loadCompanies());
   });
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-<div class="create-backdrop" onclick={onclose} onkeydown={onBackdropKeydown} role="presentation">
+<div class="create-backdrop" onclick={requestClose} onkeydown={onBackdropKeydown} role="presentation">
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     class="create-sheet"
     role="dialog"
     aria-modal="true"
     aria-label={isGroupDm ? 'New group DM' : 'New channel'}
+    aria-busy={creating}
     tabindex="-1"
     onclick={(e) => e.stopPropagation()}
     onkeydown={onBackdropKeydown}
   >
     <header class="create-header">
       <h2>{isGroupDm ? 'New group DM' : 'New channel'}</h2>
-      <button class="create-close" type="button" onclick={onclose} aria-label="Close">×</button>
+      <button
+        class="create-close"
+        type="button"
+        onclick={requestClose}
+        aria-label="Close"
+        disabled={creating}
+      >×</button>
     </header>
 
     {#if !isGroupDm}
@@ -166,24 +200,68 @@
             aria-labelledby="channel-name-label"
             autocomplete="off"
             spellcheck="false"
+            disabled={creating}
           />
         </div>
       </div>
 
       <div class="create-field">
         <span class="create-label" id="channel-scope-label">Scope</span>
-        <select class="scope-select" bind:value={scopeValue} aria-labelledby="channel-scope-label">
-          <option value="personal">Personal</option>
-          {#each companies as co (co.companyUid)}
-            <!-- Never surface the raw cmp_… UID as a user-facing label. -->
-            <option value={co.companyUid}>{co.companyName?.trim() || 'Company'}</option>
-          {/each}
-        </select>
-        <p class="scope-hint">
-          {isPersonal
-            ? 'A personal channel — only people you invite can see it.'
-            : 'A company channel — discoverable by your teammates.'}
-        </p>
+        <div class="scope-control" aria-busy={scopesLoading}>
+          {#if !hasTrustedScopes && scopesLoading}
+            <p class="scope-status" id="channel-scope-status" role="status">
+              Loading available scopes…
+            </p>
+          {:else if !hasTrustedScopes && scopesFailed}
+            <div class="scope-status scope-error" id="channel-scope-status" role="alert">
+              <span>Company scopes couldn’t be loaded.</span>
+              <button
+                class="scope-retry"
+                type="button"
+                onclick={() => void loadCompanies()}
+                disabled={scopesLoading || creating}
+              >
+                {scopesLoading ? 'Retrying…' : 'Retry'}
+              </button>
+            </div>
+          {:else}
+            <select
+              class="scope-select"
+              bind:value={scopeValue}
+              aria-labelledby="channel-scope-label"
+              aria-describedby="channel-scope-hint channel-scope-status"
+              disabled={creating}
+            >
+              <option value="personal">Personal</option>
+              {#each companies as co (co.companyUid)}
+                <!-- Never surface the raw cmp_… UID as a user-facing label. -->
+                <option value={co.companyUid}>{co.companyName?.trim() || 'Company'}</option>
+              {/each}
+            </select>
+            <p class="scope-hint" id="channel-scope-hint">
+              {isPersonal
+                ? 'A personal channel — only people you invite can see it.'
+                : 'A company channel — discoverable by your teammates.'}
+            </p>
+            {#if scopesFailed}
+              <div class="scope-status scope-error" id="channel-scope-status" role="alert">
+                <span>Couldn’t refresh scopes. Showing saved options.</span>
+                <button
+                  class="scope-retry"
+                  type="button"
+                  onclick={() => void loadCompanies()}
+                  disabled={scopesLoading || creating}
+                >
+                  {scopesLoading ? 'Retrying…' : 'Retry'}
+                </button>
+              </div>
+            {:else if scopesLoading}
+              <p class="scope-status" id="channel-scope-status" role="status">
+                Refreshing available scopes…
+              </p>
+            {/if}
+          {/if}
+        </div>
       </div>
     {/if}
 
@@ -198,6 +276,7 @@
         bind:selected={invitePick}
         onselect={(r) => addInvite(r)}
         placeholder="Add someone…"
+        disabled={creating}
       />
       {#if invites.length > 0}
         <ul class="invite-chips">
@@ -209,6 +288,7 @@
                 type="button"
                 onclick={() => removeInvite(i.personUid)}
                 aria-label={`Remove ${inviteLabel(i)}`}
+                disabled={creating}
               >×</button>
             </li>
           {/each}
@@ -222,7 +302,13 @@
       {:else}
         <span class="create-hint">⌘↵ to create</span>
       {/if}
-      <button class="btn btn-send" type="button" onclick={create} disabled={!canCreate}>
+      <button
+        class="btn btn-send"
+        type="button"
+        onclick={create}
+        disabled={!canCreate}
+        aria-busy={creating}
+      >
         {creating ? 'Creating…' : isGroupDm ? 'Create group' : 'Create channel'}
       </button>
     </div>
@@ -251,8 +337,8 @@
     border-radius: var(--radius-popover);
     border: 1px solid var(--pop-border);
     background: var(--pop-bg);
-    backdrop-filter: var(--glass-filter, blur(28px) saturate(0%));
-    -webkit-backdrop-filter: var(--glass-filter, blur(28px) saturate(0%));
+    backdrop-filter: var(--glass-filter, blur(36px) saturate(118%) contrast(102%));
+    -webkit-backdrop-filter: var(--glass-filter, blur(36px) saturate(118%) contrast(102%));
     box-shadow: var(--pop-shadow), inset 0 1px 0 var(--pop-highlight);
     color: var(--pop-text);
     font-family: var(--font-sans);
@@ -285,6 +371,11 @@
   .create-close:hover {
     background: var(--pop-hover);
     color: var(--pop-text);
+  }
+
+  .create-close:disabled {
+    cursor: default;
+    opacity: 0.5;
   }
 
   .create-field {
@@ -367,6 +458,53 @@
     color: var(--pop-muted);
   }
 
+  .scope-control {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3125rem;
+  }
+
+  .scope-status {
+    display: flex;
+    align-items: center;
+    gap: 0.625rem;
+    min-height: 32px;
+    margin: 0;
+    padding: 0.25rem 0;
+    color: var(--pop-muted);
+    font-size: var(--text-base, 13px);
+    line-height: 1.35;
+  }
+
+  .scope-error {
+    justify-content: space-between;
+    color: var(--pop-text);
+  }
+
+  .scope-retry {
+    flex-shrink: 0;
+    padding: 2px 0;
+    border: none;
+    border-radius: 0;
+    background: transparent;
+    color: var(--pop-text);
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+
+  .scope-retry:focus-visible {
+    outline: 2px solid var(--c-field-border);
+    outline-offset: 2px;
+  }
+
+  .scope-retry:disabled {
+    cursor: default;
+    opacity: 0.55;
+  }
+
   .invite-chips {
     list-style: none;
     margin: 0.125rem 0 0;
@@ -403,6 +541,11 @@
 
   .invite-chip-remove:hover {
     color: var(--pop-text);
+  }
+
+  .invite-chip-remove:disabled {
+    cursor: default;
+    opacity: 0.5;
   }
 
   .create-footer {
@@ -464,6 +607,16 @@
 
     .create-sheet {
       background: var(--c-bg);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .create-close,
+    .scope-retry,
+    .invite-chip-remove,
+    .btn {
+      animation: none;
+      transition: none;
     }
   }
 </style>

@@ -53,20 +53,24 @@ async function flush(): Promise<void> {
   flushSync();
 }
 
-function mountWizard(onfinish = vi.fn()): ReturnType<typeof vi.fn> {
+function mountWizard(
+  onfinish = vi.fn(),
+  initialStep = 3,
+  aiTools = NO_AI_TOOLS,
+): ReturnType<typeof vi.fn> {
   tauri.invoke.mockImplementation(async (command: string) => {
     switch (command) {
       case 'resolve_hq_path':
         return '/Users/test/hq';
       case 'detect_ai_tools':
-        return NO_AI_TOOLS;
+        return aiTools;
       default:
         return undefined;
     }
   });
   component = mount(OnboardingWizard, {
     target: host,
-    props: { initialStep: 3, onfinish },
+    props: { initialStep, onfinish },
   });
   return onfinish;
 }
@@ -102,13 +106,48 @@ afterEach(async () => {
 
 describe('onboarding launch handoff', () => {
   it('finishes onboarding after each supported launcher opens', () => {
-    // Eight `await onfinish?.()` sites total: FIVE are the launch-handoff paths
-    // (the supported launchers plus the manual finish flows), and THREE were
-    // added by the US-005 consent re-prompt mode (answer, dismiss, and the
-    // offline finish), which closes the consent step directly instead of
-    // advancing to a ready screen that does not exist in that mode.
-    expect(wizardSource.match(/await onfinish\?\.\(\);/g)).toHaveLength(8);
+    // Every exit routes through one guarded recovery boundary. Launcher errors
+    // and native handoff errors must never be conflated.
+    expect(wizardSource.match(/await onfinish\?\.\(\);/g)).toHaveLength(1);
+    expect(wizardSource).toContain('async function finishWithRecovery()');
     expect(wizardSource).not.toContain('advanceTo(4)');
+  });
+
+  it('retries a failed native handoff without relaunching the AI tool', async () => {
+    const onfinish = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('tray handoff unavailable'))
+      .mockResolvedValue(undefined);
+    mountWizard(
+      onfinish,
+      4,
+      { ...NO_AI_TOOLS, claude_desktop: true, any: true },
+    );
+    await flush();
+
+    primaryButton().click();
+    await flush();
+    await vi.advanceTimersByTimeAsync(1);
+    await flush();
+
+    expect(
+      tauri.invoke.mock.calls.filter(([command]) => command === 'open_claude_code_link'),
+    ).toHaveLength(1);
+    const recovery = host.querySelector<HTMLElement>(
+      '[data-testid="launcher-finish-error"]',
+    );
+    expect(recovery?.textContent).toContain(
+      'The tool opened, but HQ couldn’t finish setup.',
+    );
+    expect(recovery?.textContent).not.toContain('Could not open Claude Code');
+
+    recovery?.querySelector<HTMLButtonElement>('button')?.click();
+    await flush();
+
+    expect(onfinish).toHaveBeenCalledTimes(2);
+    expect(
+      tauri.invoke.mock.calls.filter(([command]) => command === 'open_claude_code_link'),
+    ).toHaveLength(1);
   });
 
   it('renders exactly one ready-panel bottom-row button and removes Finish', () => {
@@ -120,7 +159,40 @@ describe('onboarding launch handoff', () => {
     const row = panel?.match(/<div class="btns">[\s\S]*?<\/div>/)?.[0];
     expect(row?.match(/<button\b/g)).toHaveLength(1);
     expect(row).toContain('class="btn btn-primary"');
-    expect(row).not.toContain('Finish');
+    expect(row).not.toMatch(/>\s*Finish\s*</);
+  });
+
+  it('keeps final Done pending and guarded until the handoff finishes', async () => {
+    let resolveFinish: (() => void) | undefined;
+    const onfinish = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveFinish = resolve;
+        }),
+    );
+    mountWizard(onfinish, 9);
+    await flush();
+
+    const done = host.querySelector<HTMLButtonElement>(
+      '[data-testid="onboarding-build"] .btn-primary',
+    );
+    expect(done).not.toBeNull();
+    done?.click();
+    await flush();
+
+    expect(onfinish).toHaveBeenCalledOnce();
+    expect(done?.textContent).toBe('Finishing…');
+    expect(done?.disabled).toBe(true);
+    expect(done?.getAttribute('aria-busy')).toBe('true');
+
+    done?.click();
+    expect(onfinish).toHaveBeenCalledOnce();
+
+    resolveFinish?.();
+    await flush();
+    expect(done?.textContent).toBe('Done');
+    expect(done?.disabled).toBe(false);
+    expect(done?.getAttribute('aria-busy')).toBe('false');
   });
 
   it('uses the injected timer cadence for download watching and deep-linking', async () => {

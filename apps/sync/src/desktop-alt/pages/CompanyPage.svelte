@@ -63,13 +63,14 @@
   let newProjectBusy = $state(false);
   let connectBusy = $state(false);
   let inviteBusy = $state(false);
+  let inviteOpening = $state(false);
 
   // Connectivity (vault/membership) — independent of the local Off toggle.
   const cloudBacked = $derived(
     company.state === 'synced' ||
-      company.state === 'cloud-only' ||
-      (company.kind === 'company' && Boolean(company.cloudUid)),
+      (company.state === 'cloud-only' && company.membershipStatus !== 'pending'),
   );
+  const connectionIssue = $derived(company.state === 'broken');
   // Local runner pause — suppress resource polling without rewriting connectivity.
   const syncEnabled = $derived(company.syncEnabled !== false);
 
@@ -79,12 +80,31 @@
   );
 
   const connectable = $derived(company.state === 'local-only' || company.state === 'broken');
-  const pendingInvite = $derived(
-    company.membershipStatus === 'pending' && company.state === 'cloud-only',
-  );
+  const pendingInvite = $derived(company.membershipStatus === 'pending');
 
-  function openInvite() {
-    void openExternal(companyInviteUrl(company.slug));
+  function inviteAge(value: string | null): string | null {
+    if (!value) return null;
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return null;
+    return new Intl.DateTimeFormat(undefined, {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+    }).format(parsed);
+  }
+
+  async function openInvite(): Promise<void> {
+    if (inviteOpening) return;
+    inviteOpening = true;
+    actionError = null;
+    actionNotice = null;
+    try {
+      await openExternal(companyInviteUrl(company.slug));
+    } catch (err) {
+      console.error('Open company invite failed:', err);
+      actionError = 'Could not open invitations in the HQ console.';
+    } finally {
+      inviteOpening = false;
+    }
   }
 
   // Company settings (sync rules, members, roles) live in the HQ web console,
@@ -183,7 +203,26 @@
   <header class="company-actions-row">
     <div></div>
     <div class="company-actions" aria-label="Company actions">
-      {#if connectable}
+      {#if pendingInvite}
+        <button
+          type="button"
+          onclick={openInvite}
+          disabled={inviteOpening}
+          aria-busy={inviteOpening}
+        >
+          {inviteOpening ? 'Opening…' : 'Review or decline'}
+        </button>
+        <button
+          type="button"
+          class="primary"
+          data-testid="company-accept-invite"
+          disabled={inviteBusy}
+          onclick={() => void handleAcceptPendingInvite()}
+          aria-busy={inviteBusy}
+        >
+          {inviteBusy ? 'Accepting…' : 'Accept invite'}
+        </button>
+      {:else if connectable}
         <button
           type="button"
           data-testid="company-connect"
@@ -194,6 +233,7 @@
               : "Create this company's cloud vault and start syncing it"}
           disabled={connectBusy || !cloudReachable}
           onclick={() => void handleConnect()}
+          aria-busy={connectBusy}
         >
           {#if connectBusy}
             Connecting…
@@ -204,22 +244,26 @@
           {/if}
         </button>
       {/if}
-      {#if pendingInvite}
+      {#if !pendingInvite}
+        <!-- DESKTOP-003: Invite + New project stay visible; Settings / ops live under More. -->
+        <button
+          type="button"
+          onclick={openInvite}
+          disabled={inviteOpening}
+          aria-busy={inviteOpening}
+        >
+          {inviteOpening ? 'Opening…' : 'Invite'}
+        </button>
         <button
           type="button"
           class="primary"
-          data-testid="company-accept-invite"
-          disabled={inviteBusy}
-          onclick={() => void handleAcceptPendingInvite()}
+          onclick={() => void startNewProject()}
+          disabled={newProjectBusy}
+          aria-busy={newProjectBusy}
         >
-          {inviteBusy ? 'Accepting…' : 'Accept invite'}
+          {newProjectBusy ? 'Opening…' : 'New project'}
         </button>
       {/if}
-      <!-- DESKTOP-003: Invite + New project stay visible; Settings / ops live under More. -->
-      <button type="button" onclick={openInvite}>Invite</button>
-      <button type="button" class="primary" onclick={() => void startNewProject()} disabled={newProjectBusy}>
-        {newProjectBusy ? 'Opening…' : 'New project'}
-      </button>
     </div>
   </header>
 
@@ -230,47 +274,75 @@
     <p class="company-action-notice" role="status">{actionNotice}</p>
   {/if}
 
-  {#key `${company.slug}:${tab}`}
-    <div class="company-panel">
-      {#if tab === 'overview'}
-        <CompanyBoardPanel
-          slug={company.slug}
-          {cloudBacked}
-          {syncEnabled}
-          {onopenprojects}
-          {onopengoals}
-          {onopeninbox}
-        />
-      {:else if tab === 'goals'}
-        <CompanyGoalsPage slug={company.slug} />
-      {:else if tab === 'projects'}
-        <CompanyProjectsPage slug={company.slug} onnewproject={startNewProject} />
-      {:else if tab === 'skills'}
-        <CompanyLibraryPanel slug={company.slug} forcedFilter="skills" />
-      {:else if tab === 'workers'}
-        <CompanyLibraryPanel slug={company.slug} forcedFilter="workers" />
-      {:else if tab === 'knowledge'}
-        <CompanyKnowledgePanel slug={company.slug} />
-      {:else if tab === 'team'}
-        <TeamPanel slug={company.slug} companyUid={company.cloudUid} />
-      {:else if isCompanyOperationsTab(tab)}
-        <!-- DESKTOP-010: Activity / Deployments / Secrets / Settings under More. -->
-        <CompanyOperationsPanel
-          slug={company.slug}
-          {cloudBacked}
-          {syncEnabled}
-          destination={operationsDestination}
-          ondestinationchange={(destination) => onopenoperations?.(destination)}
-        />
-      {/if}
-    </div>
-  {/key}
+  {#if pendingInvite}
+    <section class="invite-gate" aria-labelledby="pending-invite-title" data-testid="company-invite-gate">
+      <span class="invite-eyebrow">Pending invitation</span>
+      <h2 id="pending-invite-title">Join {company.displayName}</h2>
+      <p>
+        Accept before HQ loads this company’s projects, goals, files, activity, members, or
+        settings on this Mac.
+      </p>
+      <dl>
+        {#if company.invitedBy}
+          <div>
+            <dt>Invited by</dt>
+            <dd>{company.invitedBy}</dd>
+          </div>
+        {/if}
+        {#if inviteAge(company.invitedAt)}
+          <div>
+            <dt>Received</dt>
+            <dd>{inviteAge(company.invitedAt)}</dd>
+          </div>
+        {/if}
+      </dl>
+    </section>
+  {:else}
+    {#key `${company.slug}:${tab}`}
+      <div class="company-panel">
+        {#if tab === 'overview'}
+          <CompanyBoardPanel
+            slug={company.slug}
+            {cloudBacked}
+            {connectionIssue}
+            {syncEnabled}
+            {onopenprojects}
+            {onopengoals}
+            {onopeninbox}
+          />
+        {:else if tab === 'goals'}
+          <CompanyGoalsPage slug={company.slug} />
+        {:else if tab === 'projects'}
+          <CompanyProjectsPage slug={company.slug} />
+        {:else if tab === 'skills'}
+          <CompanyLibraryPanel slug={company.slug} forcedFilter="skills" />
+        {:else if tab === 'workers'}
+          <CompanyLibraryPanel slug={company.slug} forcedFilter="workers" />
+        {:else if tab === 'knowledge'}
+          <CompanyKnowledgePanel slug={company.slug} />
+        {:else if tab === 'team'}
+          <TeamPanel slug={company.slug} companyUid={company.cloudUid} />
+        {:else if isCompanyOperationsTab(tab)}
+          <!-- DESKTOP-010: Activity / Deployments / Secrets / Settings under More. -->
+          <CompanyOperationsPanel
+            slug={company.slug}
+            {cloudBacked}
+            {syncEnabled}
+            destination={operationsDestination}
+            ondestinationchange={(destination) => onopenoperations?.(destination)}
+          />
+        {/if}
+      </div>
+    {/key}
+  {/if}
 </section>
 
 <style>
   .company-page {
+    container: company-page / inline-size;
     display: grid;
     gap: var(--v4-space-5);
+    min-width: 0;
     font-family: var(--font-sans);
   }
 
@@ -316,10 +388,12 @@
       transform 120ms cubic-bezier(0.33, 1, 0.68, 1);
   }
 
-  .company-actions button:hover {
-    border-color: var(--v4-hairline);
-    background: var(--v4-active-row);
-    transform: translateY(-1px);
+  @media (hover: hover) and (pointer: fine) {
+    .company-actions button:hover {
+      border-color: var(--v4-hairline);
+      background: var(--v4-active-row);
+      transform: translateY(-1px);
+    }
   }
 
   .company-actions button.primary {
@@ -358,6 +432,69 @@
     animation: panel-enter 220ms cubic-bezier(0.33, 1, 0.68, 1);
   }
 
+  .invite-gate {
+    display: grid;
+    align-content: start;
+    gap: var(--v4-space-3);
+    max-width: 680px;
+    padding: var(--v4-space-6) 0 0;
+    border-top: 1px solid var(--v4-rowline);
+  }
+
+  .invite-eyebrow {
+    color: var(--v4-text-3);
+    font-size: var(--type-metadata);
+    font-weight: 650;
+    letter-spacing: 0.075em;
+    text-transform: uppercase;
+  }
+
+  .invite-gate h2,
+  .invite-gate p,
+  .invite-gate dl,
+  .invite-gate dd {
+    margin: 0;
+  }
+
+  .invite-gate h2 {
+    color: var(--v4-text-1);
+    font-size: var(--type-detail);
+    font-weight: 650;
+    letter-spacing: -0.02em;
+  }
+
+  .invite-gate p {
+    color: var(--v4-text-2);
+    font-size: var(--type-body);
+    line-height: 1.5;
+  }
+
+  .invite-gate dl {
+    display: grid;
+    gap: var(--v4-space-2);
+    padding-top: var(--v4-space-3);
+    border-top: 1px solid var(--v4-rowline);
+  }
+
+  .invite-gate dl div {
+    display: grid;
+    grid-template-columns: 100px minmax(0, 1fr);
+    gap: var(--v4-space-3);
+  }
+
+  .invite-gate dt,
+  .invite-gate dd {
+    font-size: var(--type-secondary);
+  }
+
+  .invite-gate dt {
+    color: var(--v4-text-3);
+  }
+
+  .invite-gate dd {
+    color: var(--v4-text-2);
+  }
+
   @keyframes panel-enter {
     from {
       opacity: 0;
@@ -370,15 +507,23 @@
     }
   }
 
-  @media (max-width: 720px) {
+  /* The persistent navigation rail means a 1040px native window can deliver
+     less than 800px here. Query the actual company canvas, not the viewport. */
+  @container company-page (max-width: 900px) {
+    .company-actions-row {
+      justify-content: flex-end;
+    }
+
     .company-actions {
+      flex-wrap: wrap;
+      justify-content: flex-end;
       width: 100%;
     }
 
     .company-actions button {
       min-width: 0;
-      max-width: none;
-      flex: 1 1 0;
+      max-width: 180px;
+      flex: 0 1 auto;
     }
   }
 

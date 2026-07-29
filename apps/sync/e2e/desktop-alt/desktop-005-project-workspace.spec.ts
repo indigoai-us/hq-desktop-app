@@ -215,13 +215,29 @@ describe('DESKTOP-005: project workspace', () => {
     )).toBe('companies/indigo/projects/hq-desktop-app');
   });
 
+  it('uses the full Files canvas with a proportional rail and responsive stacked preview', () => {
+    expect(detail).toContain('class="files-tree-header"');
+    expect(detail).toContain('class="files-tree-scroll"');
+    expect(detail).toContain('<h2>Project files</h2>');
+    expect(detail).toContain('aria-label="File preview"');
+    expect(detail).toMatch(
+      /\.files-layout\s*\{[\s\S]*?display:\s*grid;[\s\S]*?grid-template-columns:\s*minmax\(260px,\s*30%\)\s*minmax\(0,\s*1fr\);[\s\S]*?min-height:\s*clamp\(360px,\s*calc\(100dvh - 340px\),\s*680px\);[\s\S]*?border-radius:\s*0;[\s\S]*?background:\s*transparent;/,
+    );
+    expect(detail).toMatch(
+      /\.files-tree\s*\{[\s\S]*?grid-template-rows:\s*auto\s*minmax\(0,\s*1fr\);[\s\S]*?border-right:\s*1px solid var\(--v4-hairline\);[\s\S]*?background:\s*transparent;/,
+    );
+    expect(detail).toMatch(
+      /@container project-detail \(max-width: 760px\)[\s\S]*?\.files-layout\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\);[\s\S]*?grid-template-rows:\s*minmax\(180px,\s*38%\)\s*minmax\(260px,\s*1fr\);/,
+    );
+  });
+
   it('keeps main canvas naked with rounded task cards only; five type roles + 3px stack', () => {
     expect(V4_TYPE_SCALE).toEqual({
       metadata: 13,
-      secondary: 13,
-      body: 14,
-      section: 14,
-      detail: 14,
+      secondary: 14,
+      body: 15,
+      section: 17,
+      detail: 24,
     });
     expect(V4_ROW_STACK_GAP_PX).toBe(3);
     expect(detail).toContain('--type-detail');

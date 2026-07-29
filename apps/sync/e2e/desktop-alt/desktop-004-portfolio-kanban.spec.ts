@@ -78,9 +78,13 @@ describe('DESKTOP-004: project portfolio Kanban', () => {
     expect(page).toContain('data-testid="portfolio-owner-filter"');
     expect(page).toContain('data-testid="view-toggle-board"');
     expect(page).toContain('data-testid="view-toggle-list"');
-    expect(page).toContain('Owner · Anyone');
+    expect(page).toContain('Person · Anyone');
+    expect(page).toContain('Filter by project owner or creator');
     expect(page).toContain('New project');
-    expect(page).toContain('onclick={() => void onnewproject?.()}');
+    expect(page).toContain('async function createProject(): Promise<void>');
+    expect(page).toContain('onclick={createProject}');
+    expect(page).toContain('disabled={newProjectPending}');
+    expect(page).toContain('aria-busy={newProjectPending}');
     expect(page).toContain('class="primary-action"');
     // Control order: search → state → owner → (legacy) → Board/List.
     const tools = page.indexOf('data-testid="portfolio-tools"');
@@ -149,15 +153,15 @@ describe('DESKTOP-004: project portfolio Kanban', () => {
     expect(model).toContain('subagents: null');
   });
 
-  it('project cards expose name, description, goal, owner, progress, and state context', () => {
+  it('project cards expose name, description, goal, provenance, progress, and state context', () => {
     expect(row).toContain('projectDisplayName(project)');
     expect(row).toContain('project.description');
     expect(row).toContain('goalLabel');
-    expect(row).toContain('ownerLabel');
+    expect(row).toContain('<ProvenanceLine');
     expect(row).toContain('projectProgress');
     expect(row).toContain('stateContext');
     expect(page).toContain('goalLabel={goal}');
-    expect(page).toContain('ownerLabel={leadLabel(project)}');
+    expect(page).not.toContain('ownerLabel={leadLabel(project)}');
     expect(page).toContain('portfolioStateContext(column, project)');
     expect(page).toContain("liveRun={column === 'active' ? liveRun : null}");
   });
@@ -186,10 +190,10 @@ describe('DESKTOP-004: project portfolio Kanban', () => {
   it('uses five type roles and title/meta 3px stack', () => {
     expect(V4_TYPE_SCALE).toEqual({
       metadata: 13,
-      secondary: 13,
-      body: 14,
-      section: 14,
-      detail: 14,
+      secondary: 14,
+      body: 15,
+      section: 17,
+      detail: 24,
     });
     expect(V4_ROW_STACK_GAP_PX).toBe(3);
     expect(page).toContain('--type-detail');
@@ -215,17 +219,23 @@ describe('DESKTOP-004: project portfolio Kanban', () => {
     expect(page).toContain('data-testid="filtered-projects-empty-state"');
     expect(page).toContain('aria-busy={loading}');
     expect(page).toContain('get_company_project_creators');
-    expect(page).toContain("'Unassigned'");
-    // New project remains wired from the company page shell.
-    expect(companyPage).toContain('onnewproject={startNewProject}');
-    expect(companyPage).toContain('<CompanyProjectsPage');
+    expect(page).toContain("responsiblePerson(project.provenance, 'project')");
+    expect(page).toContain("'No goal'");
+    expect(page).not.toContain("ownerLabel={leadLabel(project)}");
+    // The company shell owns the always-visible action and exposes immediate
+    // pending feedback while the Projects page keeps an optional guarded hook
+    // for embedded callers.
+    expect(companyPage).toContain('onclick={() => void startNewProject()}');
+    expect(companyPage).toContain('disabled={newProjectBusy}');
+    expect(companyPage).toContain('aria-busy={newProjectBusy}');
+    expect(companyPage).toContain('<CompanyProjectsPage slug={company.slug} />');
   });
 
   it('allows the board to horizontal-scroll while primary controls stay visible', () => {
     expect(page).toMatch(/\.kanban-board\s*\{[\s\S]*?overflow-x:\s*auto;/);
     expect(page).toContain('flex-shrink: 0');
     expect(page).toContain('portfolio-tools');
-    expect(page).toContain('@container company-projects (max-width: 760px)');
+    expect(page).toContain('@container company-projects (max-width: 820px)');
     expect(page).toContain('prefers-reduced-motion: reduce');
   });
 });

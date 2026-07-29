@@ -31,6 +31,23 @@
   let error = $state<string | null>(null);
   /** Bumped by the focus / sync:complete refresh subscription to re-fetch. */
   let refreshNonce = $state(0);
+  const visibleCount = $derived(
+    forcedFilter === 'workers'
+      ? items.workers.length
+      : forcedFilter === 'skills'
+        ? items.skills.length
+        : items.workers.length + items.skills.length,
+  );
+  const title = $derived(
+    forcedFilter === 'workers' ? 'Workers' : forcedFilter === 'skills' ? 'Skills' : 'Library',
+  );
+  const summary = $derived(
+    forcedFilter === 'workers'
+      ? 'Company-scoped agents and specialist roles'
+      : forcedFilter === 'skills'
+        ? 'Company-scoped workflows and operating knowledge'
+        : 'Company-scoped workers and skills',
+  );
 
   $effect(() => {
     const activeSlug = slug;
@@ -96,6 +113,14 @@
       ? 'company-skills-panel'
       : 'company-library-panel'}
 >
+  <header class="company-library-header">
+    <div>
+      <h2>{title}</h2>
+      <p>{summary}</p>
+    </div>
+    <span>{loading ? 'Loading' : `${visibleCount} ${visibleCount === 1 ? 'item' : 'items'}`}</span>
+  </header>
+
   {#if !loading && !error && items.workers.length === 0 && items.skills.length === 0}
     <div class="empty-state">
       {#if forcedFilter === 'skills'}
@@ -113,7 +138,47 @@
 
 <style>
   .company-library {
+    display: grid;
+    gap: var(--v4-space-4);
     min-width: 0;
+  }
+
+  .company-library-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--v4-space-4);
+    padding-bottom: var(--v4-space-3);
+    border-bottom: 1px solid var(--v4-hairline);
+  }
+
+  .company-library-header div {
+    min-width: 0;
+  }
+
+  .company-library-header h2,
+  .company-library-header p {
+    margin: 0;
+  }
+
+  .company-library-header h2 {
+    color: var(--v4-text-1);
+    font-size: var(--type-section);
+    font-weight: 600;
+  }
+
+  .company-library-header p,
+  .company-library-header > span {
+    color: var(--v4-text-3);
+    font-size: var(--type-secondary);
+  }
+
+  .company-library-header p {
+    margin-top: var(--v4-row-stack-gap);
+  }
+
+  .company-library-header > span {
+    white-space: nowrap;
   }
 
   .empty-state {

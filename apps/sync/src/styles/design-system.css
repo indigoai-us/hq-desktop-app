@@ -24,6 +24,9 @@
 
 :root {
   --font-sans: 'Geist', -apple-system, system-ui, sans-serif;
+  --hq-window-transparency-factor: 0.65;
+  --hq-window-alpha-light: 0.35;
+  --hq-window-alpha-dark: 0.48;
 
   --page-bg:#eeeeee; --c-bg:#fff; --c-text:#000; --c-muted:#00000066;
   --c-btn-bg:#000; --c-btn-fg:#fff; --c-btn2-bg:#0000000d; --c-btn2-fg:#000;
@@ -33,13 +36,24 @@
   --c-choose-bg:#ffffff; --c-choose-border:#00000026; --c-choose-shadow:0 1px 1.5px rgba(0,0,0,0.1);
   --c-focus-ring:var(--c-text); --c-focus-offset:2px;
 
-  --pop-bg:rgba(250,250,250,0.68); --pop-text:#1d1d1d; --pop-muted:rgba(0,0,0,0.5);
+  --pop-bg:rgb(250 250 250 / clamp(0.42, calc(1 - var(--hq-window-transparency-factor) * 0.646), 1)); --pop-text:#1d1d1d; --pop-muted:rgba(0,0,0,0.5);
   --pop-border:rgba(0,0,0,0.1); --pop-divider:rgba(0,0,0,0.08); --pop-hover:rgba(0,0,0,0.055);
   --pop-icon:rgba(0,0,0,0.5); --pop-highlight:rgba(255,255,255,0.7); --pop-shadow:0 22px 55px rgba(0,0,0,0.22);
   --pop-accent:#1d1d1d; --pop-acc-fg:#fff;
   --pop-focus-ring:var(--pop-accent); --pop-focus-offset:2px;
-  --glass-filter:blur(28px) saturate(0%);
-  --glass-filter-soft:blur(12px) saturate(0%);
+  --glass-filter:blur(30px) saturate(130%) contrast(102%);
+  --glass-filter-soft:blur(16px) saturate(120%) contrast(101%);
+  /* Compact native windows use AppKit for the optical material. These colors
+     are only neutral contrast veils; keeping them below 50% lets the desktop
+     and nearby windows remain legible through the glass. */
+  --compact-glass-bg:rgb(246 246 246 / clamp(0.15, calc(1 - var(--hq-window-transparency-factor) * 1.015), 1));
+  --compact-glass-rail:rgba(0,0,0,0.035);
+  --compact-glass-selected:rgba(255,255,255,0.24);
+  --compact-glass-hairline:rgba(0,0,0,0.11);
+
+  --ease-out:cubic-bezier(0.23,1,0.32,1);
+  --ease-in-out:cubic-bezier(0.77,0,0.175,1);
+  --ease-drawer:cubic-bezier(0.32,0.72,0,1);
 
   --radius-structure:0;
   --radius-button:6px;
@@ -55,34 +69,64 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --page-bg:#101010; --c-bg:#2b2b2b; --c-text:#fff; --c-muted:#ffffff80;
+    --page-bg:#101010; --c-bg:#2b2b2b; --c-text:#fff; --c-muted:#ffffffb3;
     --c-btn-bg:#fff; --c-btn-fg:#000; --c-btn2-bg:#ffffff1f; --c-btn2-fg:#fff;
     --c-field-bg:#ffffff0d; --c-field-border:#ffffff1a; --check-border:#ffffff40;
     --check-bg:#fff; --check-fg:#000; --c-divider:#ffffff12; --dot:#ffffff3a; --dot-on:#fff;
     --graphic:rgba(255,255,255,0.92); --graphic-fg:#1a1a1a; --graphic-line:rgba(0,0,0,0.12);
     --c-choose-bg:#ffffff1f; --c-choose-border:#ffffff30; --c-choose-shadow:0 1px 1.5px rgba(0,0,0,0.3);
 
-    --pop-bg:rgba(42,42,42,0.74); --pop-text:#fff; --pop-muted:rgba(255,255,255,0.5);
+    --pop-bg:rgb(42 42 42 / clamp(0.46, calc(1 - var(--hq-window-transparency-factor) * 0.585), 1)); --pop-text:#fff; --pop-muted:rgba(255,255,255,0.68);
     --pop-border:rgba(255,255,255,0.14); --pop-divider:rgba(255,255,255,0.1); --pop-hover:rgba(255,255,255,0.08);
     --pop-icon:rgba(255,255,255,0.55); --pop-highlight:rgba(255,255,255,0.26); --pop-shadow:0 24px 60px rgba(0,0,0,0.55);
     --pop-accent:#fff; --pop-acc-fg:#111111;
+    --compact-glass-bg:rgb(24 24 24 / clamp(0.2, calc(1 - var(--hq-window-transparency-factor) * 0.892), 1));
+    --compact-glass-rail:rgba(0,0,0,0.06);
+    --compact-glass-selected:rgba(255,255,255,0.1);
+    --compact-glass-hairline:rgba(255,255,255,0.13);
   }
 }
 
 .dark,
 :root[data-force-theme='dark'] {
-  --page-bg:#101010; --c-bg:#2b2b2b; --c-text:#fff; --c-muted:#ffffff80;
+  --page-bg:#101010; --c-bg:#2b2b2b; --c-text:#fff; --c-muted:#ffffffb3;
   --c-btn-bg:#fff; --c-btn-fg:#000; --c-btn2-bg:#ffffff1f; --c-btn2-fg:#fff;
   --c-field-bg:#ffffff0d; --c-field-border:#ffffff1a; --check-border:#ffffff40;
   --check-bg:#fff; --check-fg:#000; --c-divider:#ffffff12; --dot:#ffffff3a; --dot-on:#fff;
   --graphic:rgba(255,255,255,0.92); --graphic-fg:#1a1a1a; --graphic-line:rgba(0,0,0,0.12);
   --c-choose-bg:#ffffff1f; --c-choose-border:#ffffff30; --c-choose-shadow:0 1px 1.5px rgba(0,0,0,0.3);
 
-  --pop-bg:rgba(42,42,42,0.74); --pop-text:#fff; --pop-muted:rgba(255,255,255,0.5);
+  --pop-bg:rgb(42 42 42 / clamp(0.46, calc(1 - var(--hq-window-transparency-factor) * 0.585), 1)); --pop-text:#fff; --pop-muted:rgba(255,255,255,0.68);
   --pop-border:rgba(255,255,255,0.14); --pop-divider:rgba(255,255,255,0.1); --pop-hover:rgba(255,255,255,0.08);
   --pop-icon:rgba(255,255,255,0.55); --pop-highlight:rgba(255,255,255,0.26); --pop-shadow:0 24px 60px rgba(0,0,0,0.55);
   --pop-accent:#fff; --pop-acc-fg:#111111;
+  --compact-glass-bg:rgb(24 24 24 / clamp(0.2, calc(1 - var(--hq-window-transparency-factor) * 0.892), 1));
+  --compact-glass-rail:rgba(0,0,0,0.06);
+  --compact-glass-selected:rgba(255,255,255,0.1);
+  --compact-glass-hairline:rgba(255,255,255,0.13);
   color-scheme:dark;
+}
+
+/* Accessibility keeps the same neutral hierarchy but removes every live blur.
+   Desktop V4 promotes its alpha tokens to solid values in its own token layer;
+   auxiliary windows already use solid page/control surfaces here. */
+@media (prefers-reduced-transparency: reduce) {
+  :root {
+    --glass-filter:none;
+    --glass-filter-soft:none;
+    --compact-glass-bg:#f4f4f4;
+    --compact-glass-rail:#ececec;
+    --compact-glass-selected:#dfdfdf;
+  }
+}
+
+@media (prefers-color-scheme: dark) and (prefers-reduced-transparency: reduce) {
+  :root {
+    --compact-glass-bg:#222222;
+    --compact-glass-rail:#292929;
+    --compact-glass-selected:#363636;
+    --compact-glass-hairline:rgba(255,255,255,0.13);
+  }
 }
 
 /* Deterministic visual-audit themes. These repeat every color-bearing shared
@@ -97,10 +141,38 @@
   --c-choose-bg:#ffffff; --c-choose-border:#00000026; --c-choose-shadow:0 1px 1.5px rgba(0,0,0,0.1);
   --c-focus-ring:var(--c-text);
 
-  --pop-bg:rgba(250,250,250,0.68); --pop-text:#1d1d1d; --pop-muted:rgba(0,0,0,0.5);
+  --pop-bg:rgb(250 250 250 / clamp(0.42, calc(1 - var(--hq-window-transparency-factor) * 0.646), 1)); --pop-text:#1d1d1d; --pop-muted:rgba(0,0,0,0.5);
   --pop-border:rgba(0,0,0,0.1); --pop-divider:rgba(0,0,0,0.08); --pop-hover:rgba(0,0,0,0.055);
   --pop-icon:rgba(0,0,0,0.5); --pop-highlight:rgba(255,255,255,0.7); --pop-shadow:0 22px 55px rgba(0,0,0,0.22);
   --pop-accent:#1d1d1d; --pop-acc-fg:#fff;
   --pop-focus-ring:var(--pop-accent);
+  --compact-glass-bg:rgb(246 246 246 / clamp(0.15, calc(1 - var(--hq-window-transparency-factor) * 1.015), 1));
+  --compact-glass-rail:rgba(0,0,0,0.035);
+  --compact-glass-selected:rgba(255,255,255,0.24);
+  --compact-glass-hairline:rgba(0,0,0,0.11);
   color-scheme:light;
+}
+
+/* Forced themes are user preferences in production, so their higher-specificity
+   material tokens must not defeat the operating system's accessibility setting. */
+@media (prefers-reduced-transparency: reduce) {
+  :root[data-force-theme='light'] {
+    --glass-filter:none;
+    --glass-filter-soft:none;
+    --pop-bg:#f7f7f7;
+    --compact-glass-bg:#f4f4f4;
+    --compact-glass-rail:#ececec;
+    --compact-glass-selected:#dfdfdf;
+    --compact-glass-hairline:rgba(0,0,0,0.11);
+  }
+
+  :root[data-force-theme='dark'] {
+    --glass-filter:none;
+    --glass-filter-soft:none;
+    --pop-bg:#262626;
+    --compact-glass-bg:#222222;
+    --compact-glass-rail:#292929;
+    --compact-glass-selected:#363636;
+    --compact-glass-hairline:rgba(255,255,255,0.13);
+  }
 }

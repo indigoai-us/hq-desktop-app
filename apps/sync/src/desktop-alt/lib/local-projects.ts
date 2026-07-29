@@ -14,6 +14,12 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import type { Project, Story } from './projects-model';
+import {
+  hasProvenance,
+  mergeProvenance,
+  normalizeProvenance,
+  type WorkProvenance,
+} from './provenance';
 
 /** Raw `LocalProject` wire shape from `get_local_projects`. */
 export interface LocalProjectWire {
@@ -25,8 +31,22 @@ export interface LocalProjectWire {
   prdPath?: string;
   createdAt?: string | null;
   updatedAt?: string | null;
+  creatorFallback?: string | null;
   storyCount: number;
   storiesComplete: number;
+  provenance?: unknown;
+  owner?: unknown;
+  ownerName?: unknown;
+  owner_name?: unknown;
+  creator?: unknown;
+  creatorName?: unknown;
+  creator_name?: unknown;
+  createdBy?: unknown;
+  created_by?: unknown;
+  createdByName?: unknown;
+  created_by_name?: unknown;
+  origin?: unknown;
+  source?: unknown;
 }
 
 /** Raw `LocalStory` wire shape (stories inside `get_local_project_prd`). */
@@ -42,6 +62,25 @@ export interface LocalStoryWire {
   notes?: string | null;
   files?: string[];
   model_hint?: string | null;
+  metadata?: unknown;
+  provenance?: unknown;
+  owner?: unknown;
+  ownerName?: unknown;
+  owner_name?: unknown;
+  assignee?: unknown;
+  assigneeName?: unknown;
+  assignee_name?: unknown;
+  assignedTo?: unknown;
+  assigned_to?: unknown;
+  creator?: unknown;
+  creatorName?: unknown;
+  creator_name?: unknown;
+  createdBy?: unknown;
+  created_by?: unknown;
+  createdByName?: unknown;
+  created_by_name?: unknown;
+  origin?: unknown;
+  source?: unknown;
 }
 
 /** Raw `LocalProjectPrd` wire shape from `get_local_project_prd`. */
@@ -51,6 +90,29 @@ export interface LocalProjectPrdWire {
   branchName?: string | null;
   userStories?: LocalStoryWire[];
   metadata?: unknown;
+  provenance?: unknown;
+  owner?: unknown;
+  ownerName?: unknown;
+  owner_name?: unknown;
+  assignee?: unknown;
+  assigneeName?: unknown;
+  assignee_name?: unknown;
+  assignedTo?: unknown;
+  assigned_to?: unknown;
+  creator?: unknown;
+  creatorName?: unknown;
+  creator_name?: unknown;
+  createdBy?: unknown;
+  created_by?: unknown;
+  createdByName?: unknown;
+  created_by_name?: unknown;
+  origin?: unknown;
+  source?: unknown;
+}
+
+/** Normalized PRD detail contract consumed by project surfaces. */
+export interface LocalProjectPrd extends LocalProjectPrdWire {
+  provenance: WorkProvenance;
 }
 
 /** Coerce a string|number priority to the numeric `Story.priority`. */
@@ -63,8 +125,63 @@ export function coercePriority(raw: string | number | null | undefined): number 
   return undefined;
 }
 
+/** Add an actionable file source without fabricating any person attribution. */
+function withOriginFallback(
+  provenance: WorkProvenance,
+  sourcePath: string | null | undefined,
+): WorkProvenance {
+  if (provenance.origin) return provenance;
+  const origin = normalizeProjectPath(sourcePath);
+  return origin ? { ...provenance, origin } : provenance;
+}
+
+function projectSourceFallback(
+  wire: Pick<LocalProjectWire, 'company' | 'prdPath'>,
+): string | null {
+  const prdPath = normalizeProjectPath(wire.prdPath);
+  if (prdPath) return prdPath;
+  const company = wire.company.trim();
+  return company ? `companies/${company}/board.json` : null;
+}
+
+/**
+ * Project provenance can supply authorship and source context for a task, but
+ * project responsibility is not task responsibility. Creator may flow down as
+ * the best available "created by" attribution; owner and assignee never do.
+ * Explicit task owner/assignee/creator/source fields still win in
+ * {@link toStory}.
+ */
+function storyProjectFallback(
+  provenance: WorkProvenance | null | undefined,
+): WorkProvenance {
+  const normalized = normalizeProvenance(provenance);
+  return {
+    owner: null,
+    assignee: null,
+    creator: normalized.creator,
+    origin: normalized.origin,
+  };
+}
+
 /** Map one `LocalProject` wire object into the US-004 `Project` shape. */
 export function toProject(wire: LocalProjectWire): Project {
+  const explicitProvenance = withOriginFallback(
+    normalizeProvenance(wire.provenance, wire),
+    projectSourceFallback(wire),
+  );
+  const creatorFallback =
+    typeof wire.creatorFallback === 'string' && wire.creatorFallback.trim()
+      ? wire.creatorFallback.trim()
+      : null;
+  const usesCreatorFallback = Boolean(
+    creatorFallback &&
+      !explicitProvenance.owner &&
+      !explicitProvenance.assignee &&
+      !explicitProvenance.creator,
+  );
+  const provenance = usesCreatorFallback
+    ? { ...explicitProvenance, creator: creatorFallback }
+    : explicitProvenance;
   return {
     id: wire.id,
     title: wire.title,
@@ -77,6 +194,8 @@ export function toProject(wire: LocalProjectWire): Project {
     updatedAt: wire.updatedAt ?? null,
     storiesTotal: Math.max(0, wire.storyCount ?? 0),
     storiesComplete: Math.max(0, wire.storiesComplete ?? 0),
+    provenance,
+    creatorFallback: usesCreatorFallback ? creatorFallback : null,
   };
 }
 
@@ -93,14 +212,19 @@ export function projectIdentity(
 ): string {
   const company = project.company.trim();
   const projectId = project.id.trim();
-  const prdPath = project.prdPath
+  const prdPath = normalizeProjectPath(project.prdPath);
+  return prdPath
+    ? `${company}:id:${projectId}:path:${prdPath}`
+    : `${company}:id:${projectId}`;
+}
+
+/** Normalize board/cloud path variants for provenance lookup and identity. */
+export function normalizeProjectPath(value: string | null | undefined): string {
+  return (value ?? '')
     .trim()
     .replaceAll('\\', '/')
     .replace(/\/+/g, '/')
     .replace(/^\.\//, '');
-  return prdPath
-    ? `${company}:id:${projectId}:path:${prdPath}`
-    : `${company}:id:${projectId}`;
 }
 
 /** Collapse exact duplicate scan results while preserving distinct board entries. */
@@ -131,7 +255,11 @@ export function withProjectStatus(
 }
 
 /** Map one `LocalStory` wire object into the US-004 `Story` shape. */
-export function toStory(wire: LocalStoryWire): Story {
+export function toStory(
+  wire: LocalStoryWire,
+  sourcePath?: string,
+  projectProvenance?: WorkProvenance | null,
+): Story {
   return {
     id: wire.id,
     title: wire.title,
@@ -144,7 +272,145 @@ export function toStory(wire: LocalStoryWire): Story {
     notes: wire.notes ?? null,
     files: wire.files ?? [],
     model_hint: wire.model_hint ?? null,
+    provenance: withOriginFallback(
+      mergeProvenance(
+        normalizeProvenance(wire.provenance, wire, wire.metadata),
+        storyProjectFallback(projectProvenance),
+      ),
+      sourcePath,
+    ),
   };
+}
+
+/** One best-effort project attribution row from the cloud board endpoint. */
+export interface ProjectProvenanceRecord {
+  id: string;
+  prdPath: string | null;
+  provenance: WorkProvenance;
+}
+
+export interface ProjectProvenanceIndex {
+  byPath: Record<string, WorkProvenance>;
+  byId: Record<string, WorkProvenance>;
+  ambiguousIds: Set<string>;
+}
+
+/** Fresh empty attribution index for reactive page state. */
+export function emptyProjectProvenanceIndex(): ProjectProvenanceIndex {
+  return {
+    byPath: {},
+    byId: {},
+    ambiguousIds: new Set<string>(),
+  };
+}
+
+function provenanceIdKey(id: string | null | undefined): string | null {
+  const clean = (id ?? '').trim();
+  return clean ? `id:${clean}` : null;
+}
+
+function provenancePathKey(path: string | null | undefined): string | null {
+  const clean = normalizeProjectPath(path);
+  return clean ? `path:${clean}` : null;
+}
+
+/**
+ * Read project attribution from the cloud board. The legacy command name is
+ * retained for compatibility; newer responses may add owner/origin alongside
+ * `creator`.
+ */
+export async function loadCompanyProjectProvenance(
+  slug: string,
+): Promise<ProjectProvenanceRecord[]> {
+  const response = await invoke<unknown>('get_company_project_creators', { slug });
+  if (!Array.isArray(response)) return [];
+  return response.flatMap((raw): ProjectProvenanceRecord[] => {
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return [];
+    const row = raw as Record<string, unknown>;
+    const provenance = normalizeProvenance(row.provenance, row);
+    if (!hasProvenance(provenance)) return [];
+    return [{
+      id: typeof row.id === 'string' ? row.id : '',
+      prdPath: typeof row.prdPath === 'string' ? row.prdPath : null,
+      provenance,
+    }];
+  });
+}
+
+/**
+ * Index cloud rows by normalized PRD path and by id only while the id is
+ * unique. Legacy boards may reuse an id for multiple PRDs; those ids are
+ * intentionally marked ambiguous instead of merging unrelated attribution.
+ */
+export function indexProjectProvenance(
+  records: readonly ProjectProvenanceRecord[],
+): ProjectProvenanceIndex {
+  const index = emptyProjectProvenanceIndex();
+  const idCounts = new Map<string, number>();
+  for (const record of records) {
+    const pathKey = provenancePathKey(record.prdPath);
+    if (pathKey) {
+      index.byPath[pathKey] = index.byPath[pathKey]
+        ? mergeProvenance(index.byPath[pathKey], record.provenance)
+        : record.provenance;
+    }
+
+    const idKey = provenanceIdKey(record.id);
+    if (!idKey) continue;
+    const count = (idCounts.get(idKey) ?? 0) + 1;
+    idCounts.set(idKey, count);
+    if (count === 1) {
+      index.byId[idKey] = record.provenance;
+    } else {
+      index.ambiguousIds.add(idKey);
+      delete index.byId[idKey];
+    }
+  }
+  return index;
+}
+
+/** Apply cloud fallback fields without replacing explicit local attribution. */
+export function applyProjectProvenance(
+  project: Project,
+  index: ProjectProvenanceIndex,
+): Project {
+  const pathKey = provenancePathKey(project.prdPath);
+  const idKey = provenanceIdKey(project.id);
+  const cloud =
+    (pathKey ? index.byPath[pathKey] : undefined) ??
+    (idKey && !index.ambiguousIds.has(idKey) ? index.byId[idKey] : undefined);
+  const local = normalizeProvenance(project.provenance);
+  const creatorFallback = project.creatorFallback?.trim() || null;
+  const localWithoutHistory =
+    creatorFallback && local.creator === creatorFallback
+      ? { ...local, creator: null }
+      : local;
+  const normalizedLocalOrigin = normalizeProjectPath(localWithoutHistory.origin);
+  const boardFallback = project.company.trim()
+    ? `companies/${project.company.trim()}/board.json`
+    : '';
+  const derivedOrigins = new Set(
+    [normalizeProjectPath(project.prdPath), boardFallback].filter(Boolean),
+  );
+  // Explicit local metadata wins cloud metadata, and explicit cloud metadata
+  // wins only the board/prd file path we derived as a last-resort source.
+  const localForMerge =
+    cloud?.origin && derivedOrigins.has(normalizedLocalOrigin)
+      ? { ...localWithoutHistory, origin: null }
+      : localWithoutHistory;
+  const explicit = mergeProvenance(localForMerge, cloud);
+  const withCreatorFallback =
+    creatorFallback &&
+    !explicit.owner &&
+    !explicit.assignee &&
+    !explicit.creator
+      ? { ...explicit, creator: creatorFallback }
+      : explicit;
+  const provenance = withOriginFallback(
+    withCreatorFallback,
+    localWithoutHistory.origin ?? projectSourceFallback(project),
+  );
+  return { ...project, provenance };
 }
 
 /** Load + normalise every local project across companies. */
@@ -251,15 +517,31 @@ export async function loadCompanyGoals(slug: string): Promise<CompanyGoals> {
 }
 
 /** Load + normalise the stories for a single project's prd.json. */
-export async function loadLocalProjectStories(prdPath: string): Promise<Story[]> {
+export async function loadLocalProjectStories(
+  prdPath: string,
+  projectProvenance?: WorkProvenance | null,
+): Promise<Story[]> {
   // The Rust command param is `prd_path`; Tauri v2 exposes it camelCased.
   const prd = await invoke<LocalProjectPrdWire>('get_local_project_prd', { prdPath });
-  return (prd?.userStories ?? []).map(toStory);
+  const inherited = mergeProvenance(
+    projectProvenance,
+    normalizeProvenance(prd.provenance, prd, prd.metadata),
+  );
+  return (prd?.userStories ?? []).map((story) =>
+    toStory(story, prdPath, inherited),
+  );
 }
 
-/** Load the raw PRD content needed by the project detail surface. */
-export async function loadLocalProjectPrd(prdPath: string): Promise<LocalProjectPrdWire> {
-  return invoke<LocalProjectPrdWire>('get_local_project_prd', { prdPath });
+/** Load PRD detail content with project-level provenance normalized. */
+export async function loadLocalProjectPrd(prdPath: string): Promise<LocalProjectPrd> {
+  const wire = await invoke<LocalProjectPrdWire>('get_local_project_prd', { prdPath });
+  return {
+    ...wire,
+    provenance: withOriginFallback(
+      normalizeProvenance(wire.provenance, wire, wire.metadata),
+      prdPath,
+    ),
+  };
 }
 
 /**

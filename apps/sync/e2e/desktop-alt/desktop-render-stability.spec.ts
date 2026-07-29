@@ -52,8 +52,9 @@ describe('desktop render stability', () => {
     expect(harness).toContain("scenario === 'sync-error'");
     expect(harness).toContain("emit('sync:conflict'");
     expect(harness).toContain("emit('sync:error'");
-    expect(mocks).toContain("harnessScenario() === 'drift'");
-    expect(mocks).toContain('check_core_state: () =>');
+    expect(mocks).toContain('function currentHarnessCoreState()');
+    expect(mocks).toContain("harnessScenario() !== 'drift'");
+    expect(mocks).toContain('check_core_state: () => currentHarnessCoreState()');
   });
 
   it('keeps the moderation harness populated and interactive', () => {

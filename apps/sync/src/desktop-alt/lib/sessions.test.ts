@@ -287,9 +287,9 @@ describe('relativeActivity (compact mono token)', () => {
     expect(relativeActivity('2026-06-15T16:00:00Z', now)).toBe('2h');
     expect(relativeActivity('2026-06-13T18:00:00Z', now)).toBe('2d');
   });
-  it('renders an em-dash for an empty/unparseable timestamp', () => {
-    expect(relativeActivity('', now)).toBe('—');
-    expect(relativeActivity('not-a-date', now)).toBe('—');
+  it('names an empty/unparseable timestamp instead of exposing a placeholder glyph', () => {
+    expect(relativeActivity('', now)).toBe('Not recorded');
+    expect(relativeActivity('not-a-date', now)).toBe('Not recorded');
   });
 });
 
@@ -519,12 +519,12 @@ describe('resolveOutpostCard (US-011 box-card up/down states)', () => {
     expect(card.staleNote).toMatch(/it reappears when the box reports in/);
   });
 
-  it('falls back to — for an unknown runtime / empty meta', () => {
+  it('names unavailable runtime and location metadata', () => {
     const card = resolveOutpostCard(
       outpostStatus({ runtime: '', ip: '', region: '' }),
       0,
     );
-    expect(card.runtimeLabel).toBe('—');
-    expect(card.metaLabel).toBe('—');
+    expect(card.runtimeLabel).toBe('Not reported');
+    expect(card.metaLabel).toBe('Location not reported');
   });
 });

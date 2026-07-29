@@ -3,6 +3,10 @@
   import { updateSettings } from '../lib/settings-mutations';
 
   type DisplayInfo = { name: string; primary: boolean };
+  type WidgetMutation =
+    | { setting: 'enabled'; value: boolean }
+    | { setting: 'display'; value: string | null };
+  type WidgetMutationFailure = WidgetMutation & { message: string };
 
   interface Props {
     /** Parent Settings already owns the same get_settings failure surface. */
@@ -15,9 +19,10 @@
   let widgetDisplay = $state<string | null>(null);
   let displays = $state<DisplayInfo[]>([]);
   let loading = $state(true);
-  let saving = $state(false);
-  let error = $state<string | null>(null);
+  let pendingSetting = $state<WidgetMutation['setting'] | null>(null);
+  let mutationFailure = $state<WidgetMutationFailure | null>(null);
   let loadError = $state<string | null>(null);
+  const saving = $derived(pendingSetting !== null);
 
   /** True when the stored display name is no longer among returned monitors. */
   const disconnectedDisplay = $derived(
@@ -30,7 +35,6 @@
 
   async function load() {
     loading = true;
-    error = null;
     loadError = null;
     try {
       const [settings, displayList] = await Promise.all([
@@ -89,53 +93,68 @@
     return String(err);
   }
 
-  async function handleToggle() {
+  function assignMutationValue(mutation: WidgetMutation): void {
+    if (mutation.setting === 'enabled') widgetEnabled = mutation.value;
+    else widgetDisplay = mutation.value;
+  }
+
+  function mutationPartial(
+    mutation: WidgetMutation,
+  ): { widgetEnabled?: boolean; widgetDisplay?: string | null } {
+    return mutation.setting === 'enabled'
+      ? { widgetEnabled: mutation.value }
+      : { widgetDisplay: mutation.value };
+  }
+
+  async function applyMutation(mutation: WidgetMutation, isRetry = false): Promise<void> {
     if (loading || saving) return;
-    const previous = widgetEnabled;
-    widgetEnabled = !widgetEnabled;
-    saving = true;
-    error = null;
+    const previousEnabled = widgetEnabled;
+    const previousDisplay = widgetDisplay;
+    pendingSetting = mutation.setting;
+    if (!isRetry) mutationFailure = null;
+    assignMutationValue(mutation);
     try {
-      await persist({ widgetEnabled });
+      await persist(mutationPartial(mutation));
+      mutationFailure = null;
     } catch (err) {
       if (isPhaseError(err, 'save')) {
-        widgetEnabled = previous;
-        error = errorMessage(err);
+        widgetEnabled = previousEnabled;
+        widgetDisplay = previousDisplay;
       } else {
         // Disk already has the new value; keep optimistic state and re-sync.
-        // load() clears error — restore after so the apply failure stays visible.
-        const msg = errorMessage(err);
         await load();
-        error = msg;
       }
+      mutationFailure = { ...mutation, message: errorMessage(err) };
     } finally {
-      saving = false;
+      pendingSetting = null;
     }
   }
 
-  async function handleDisplayChange(event: Event) {
-    if (loading || saving) return;
-    const previous = widgetDisplay;
+  async function handleToggle(): Promise<void> {
+    await applyMutation({ setting: 'enabled', value: !widgetEnabled });
+  }
+
+  async function handleDisplayChange(event: Event): Promise<void> {
     const value = (event.currentTarget as HTMLSelectElement).value;
-    widgetDisplay = value === '' ? null : value;
-    saving = true;
-    error = null;
-    try {
-      await persist({ widgetDisplay });
-    } catch (err) {
-      if (isPhaseError(err, 'save')) {
-        widgetDisplay = previous;
-        error = errorMessage(err);
-      } else {
-        // Disk already has the new value; keep optimistic state and re-sync.
-        // load() clears error — restore after so the apply failure stays visible.
-        const msg = errorMessage(err);
-        await load();
-        error = msg;
-      }
-    } finally {
-      saving = false;
-    }
+    await applyMutation({
+      setting: 'display',
+      value: value === '' ? null : value,
+    });
+  }
+
+  async function retryMutation(): Promise<void> {
+    const failure = mutationFailure;
+    if (!failure || saving) return;
+    await applyMutation(
+      failure.setting === 'enabled'
+        ? { setting: 'enabled', value: failure.value }
+        : { setting: 'display', value: failure.value },
+      true,
+    );
+  }
+
+  function mutationLabel(failure: WidgetMutationFailure): string {
+    return failure.setting === 'enabled' ? 'desktop widget setting' : 'widget display';
   }
 </script>
 
@@ -145,19 +164,25 @@
       <span class="setting-label">Desktop widget</span>
       <span class="setting-desc">Show the floating hq mark and its notifications on your desktop</span>
     </div>
-    <button
-      type="button"
-      class="toggle"
-      class:active={widgetEnabled}
-      onclick={handleToggle}
-      disabled={loading || saving}
-      role="switch"
-      aria-checked={widgetEnabled}
-      aria-label="Desktop widget"
-      data-testid="widget-toggle"
-    >
-      <span class="toggle-knob"></span>
-    </button>
+    <span class="setting-control">
+      {#if pendingSetting === 'enabled'}
+        <span class="setting-pending" role="status">Saving…</span>
+      {/if}
+      <button
+        type="button"
+        class="toggle"
+        class:active={widgetEnabled}
+        onclick={handleToggle}
+        disabled={loading || saving}
+        role="switch"
+        aria-checked={widgetEnabled}
+        aria-busy={pendingSetting === 'enabled'}
+        aria-label="Desktop widget"
+        data-testid="widget-toggle"
+      >
+        <span class="toggle-knob"></span>
+      </button>
+    </span>
   </div>
 
   {#if widgetEnabled}
@@ -166,29 +191,45 @@
         <span class="setting-label">Widget display</span>
         <span class="setting-desc">Which screen the widget anchors to (lower-right)</span>
       </div>
-      <select
-        class="display-picker"
-        data-testid="widget-display-picker"
-        aria-label="Widget display"
-        value={widgetDisplay ?? ''}
-        onchange={handleDisplayChange}
-        disabled={loading || saving}
-      >
-        <option value="">Primary (default)</option>
-        {#each displays as display (display.name)}
-          <option value={display.name}>
-            {display.primary ? `${display.name} (primary)` : display.name}
-          </option>
-        {/each}
-        {#if disconnectedDisplay}
-          <option value={disconnectedDisplay}>{disconnectedDisplay} (disconnected)</option>
+      <span class="setting-control">
+        {#if pendingSetting === 'display'}
+          <span class="setting-pending" role="status">Saving…</span>
         {/if}
-      </select>
+        <select
+          class="display-picker"
+          data-testid="widget-display-picker"
+          aria-label="Widget display"
+          aria-busy={pendingSetting === 'display'}
+          value={widgetDisplay ?? ''}
+          onchange={handleDisplayChange}
+          disabled={loading || saving}
+        >
+          <option value="">Primary (default)</option>
+          {#each displays as display (display.name)}
+            <option value={display.name}>
+              {display.primary ? `${display.name} (primary)` : display.name}
+            </option>
+          {/each}
+          {#if disconnectedDisplay}
+            <option value={disconnectedDisplay}>{disconnectedDisplay} (disconnected)</option>
+          {/if}
+        </select>
+      </span>
     </div>
   {/if}
 
-  {#if error}
-    <p class="error-line" role="alert">{error}</p>
+  {#if mutationFailure}
+    <div class="error-line" role="alert" data-testid="widget-setting-error">
+      <span>Couldn’t save the {mutationLabel(mutationFailure)}. {mutationFailure.message}</span>
+      <button
+        type="button"
+        onclick={retryMutation}
+        disabled={saving}
+        aria-busy={pendingSetting === mutationFailure.setting}
+      >
+        {pendingSetting === mutationFailure.setting ? 'Retrying…' : 'Retry'}
+      </button>
+    </div>
   {:else if loadError && showLoadError}
     <p class="error-line" role="alert">{loadError}</p>
   {/if}
@@ -218,6 +259,20 @@
     gap: 0.125rem;
     min-width: 0;
     flex: 1;
+  }
+
+  .setting-control {
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.5rem;
+    min-width: 0;
+  }
+
+  .setting-pending {
+    color: light-dark(rgba(0, 0, 0, 0.5), rgba(255, 255, 255, 0.55));
+    font-size: 0.6875rem;
+    line-height: 1;
   }
 
   .setting-label {
@@ -310,5 +365,37 @@
     font-size: 0.6875rem;
     line-height: 1.3;
     color: light-dark(#c0392b, #ff6b6b);
+  }
+
+  div.error-line {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+  }
+
+  .error-line button {
+    flex: 0 0 auto;
+    padding: 0;
+    border: 0;
+    border-bottom: 1px solid currentColor;
+    border-radius: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .error-line button:disabled {
+    cursor: progress;
+    opacity: 0.58;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .toggle,
+    .toggle-knob {
+      transition: none;
+    }
   }
 </style>

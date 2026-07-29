@@ -23,8 +23,10 @@
     type Story,
   } from '../lib/projects-model';
   import { relativeActivity } from '../lib/sessions';
+  import { createStoryMutationGuard } from './story-mutation-guard';
   import LabelChip from '../components/LabelChip.svelte';
   import OpenFileInClaudeCode from '../components/OpenFileInClaudeCode.svelte';
+  import ProvenanceLine from '../components/ProvenanceLine.svelte';
   import './tokens.css';
 
   interface Props {
@@ -63,10 +65,13 @@
   let footerBusy = $state<'prd' | 'run' | 'copy' | null>(null);
   let footerMessage = $state<string | null>(null);
   let hqFolderPath = $state('');
+  const passesMutationGuard = createStoryMutationGuard();
 
   $effect(() => {
     void story?.id;
     void story?.passes;
+    void prdPath;
+    passesMutationGuard.invalidate();
     passesOverride = null;
     error = null;
     footerBusy = null;
@@ -113,15 +118,24 @@
 
   async function setPasses(next: boolean) {
     if (!story || saving || next === currentPasses) return;
+    const targetStory = story;
+    const targetPrdPath = prdPath;
+    const target = passesMutationGuard.capture(targetStory.id, targetPrdPath);
     const previous = currentPasses;
     passesOverride = next;
     saving = true;
     error = null;
-    const result = await setStoryPasses(prdPath, story.id, previous, next);
+    const result = await setStoryPasses(
+      targetPrdPath,
+      targetStory.id,
+      previous,
+      next,
+    );
+    if (!passesMutationGuard.isCurrent(target, story?.id, prdPath)) return;
     saving = false;
     if (result.ok) {
       passesOverride = result.passes;
-      onStoryPassesChange?.(story.id, result.passes);
+      onStoryPassesChange?.(targetStory.id, result.passes);
     } else {
       passesOverride = previous;
       error = result.error;
@@ -254,14 +268,19 @@
       </button>
     </header>
 
-    <div class="status-control" aria-label="Story status" data-testid="task-status-control">
+    <div
+      class="status-control"
+      aria-label="Story status"
+      aria-busy={saving}
+      data-testid="task-status-control"
+    >
       <button
         type="button"
         class:active={!currentPasses}
         disabled={saving}
         onclick={() => setPasses(false)}
       >
-        To do
+        {saving && !currentPasses ? 'Saving…' : 'To do'}
       </button>
       <button
         type="button"
@@ -269,7 +288,7 @@
         disabled={saving}
         onclick={() => setPasses(true)}
       >
-        Done
+        {saving && currentPasses ? 'Saving…' : 'Done'}
       </button>
     </div>
 
@@ -326,6 +345,11 @@
       <section class="section">
         <h3>Hierarchy</h3>
         <p>{project ? projectDisplayName(project) : 'Project'} → {story.id}</p>
+      </section>
+
+      <section class="section" data-testid="task-detail-provenance">
+        <h3>Provenance</h3>
+        <ProvenanceLine provenance={story.provenance} kind="story" />
       </section>
 
       {#if story.description}
@@ -423,8 +447,9 @@
         data-testid="copy-story-id"
         onclick={() => void copyStoryId()}
         disabled={footerBusy !== null}
+        aria-busy={footerBusy === 'copy'}
       >
-        Copy ID
+        {footerBusy === 'copy' ? 'Copying…' : 'Copy ID'}
       </button>
       <button type="button" onclick={() => void openPrd()} disabled={footerBusy !== null || !prdPath}>
         {footerBusy === 'prd' ? 'Opening…' : 'Open PRD'}
@@ -462,8 +487,8 @@
     width: min(420px, 100vw);
     border-left: 1px solid var(--v4-hairline);
     background: var(--v4-popover);
-    backdrop-filter: var(--v4-glass-filter);
-    -webkit-backdrop-filter: var(--v4-glass-filter);
+    backdrop-filter: var(--v4-glass-filter-popover, var(--v4-glass-filter));
+    -webkit-backdrop-filter: var(--v4-glass-filter-popover, var(--v4-glass-filter));
     box-shadow: var(--v4-shadow-popover), inset 1px 0 0 var(--v4-glass-highlight);
   }
 
