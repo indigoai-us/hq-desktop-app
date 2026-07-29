@@ -32,6 +32,57 @@ function declaredColorChannels(source: string, property: string): number[][] {
   });
 }
 
+function balancedBlock(source: string, marker: string): string {
+  const markerIndex = source.indexOf(marker);
+  expect(markerIndex, `missing CSS block marker: ${marker}`).toBeGreaterThanOrEqual(0);
+  const openIndex = source.indexOf('{', markerIndex);
+  expect(openIndex, `missing opening brace after: ${marker}`).toBeGreaterThanOrEqual(0);
+
+  let depth = 0;
+  for (let index = openIndex; index < source.length; index += 1) {
+    if (source[index] === '{') depth += 1;
+    if (source[index] !== '}') continue;
+    depth -= 1;
+    if (depth === 0) return source.slice(openIndex + 1, index);
+  }
+
+  throw new Error(`unclosed CSS block after: ${marker}`);
+}
+
+function customProperty(block: string, property: string): string {
+  const match = block.match(new RegExp(`--${property}:\\s*([^;]+);`));
+  expect(match, `missing --${property}`).not.toBeNull();
+  return match?.[1].trim() ?? '';
+}
+
+function rgbaAlpha(value: string): number {
+  const match = value.match(
+    /^rgba\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*([\d.]+)\s*\)$/i,
+  );
+  expect(match, `expected rgba material, received: ${value}`).not.toBeNull();
+  return Number(match?.[1]);
+}
+
+function saturationPercent(value: string): number {
+  const match = value.match(/saturate\(\s*([\d.]+)(%)?\s*\)/i);
+  expect(match, `expected a saturation component, received: ${value}`).not.toBeNull();
+  const amount = Number(match?.[1]);
+  return match?.[2] ? amount : amount * 100;
+}
+
+function blurPixels(value: string): number {
+  const match = value.match(/blur\(\s*([\d.]+)px\s*\)/i);
+  expect(match, `expected a pixel blur component, received: ${value}`).not.toBeNull();
+  return Number(match?.[1]);
+}
+
+function expectSolidSurface(block: string, property: string): void {
+  const value = customProperty(block, property);
+  expect(value, `${property} must be a solid reduced-transparency fallback`).toMatch(
+    /^#[0-9a-f]{3,8}$/i,
+  );
+}
+
 describe('DESKTOP-012: neutral liquid-glass materials', () => {
   const tokens = readRepoFile('src/desktop-alt/v4/tokens.css');
   const designSystem = readRepoFile('src/styles/design-system.css');
@@ -57,12 +108,6 @@ describe('DESKTOP-012: neutral liquid-glass materials', () => {
   const harness = readRepoFile('dev-harness/Harness.svelte');
 
   it('uses achromatic light and dark surface, ink, accent, and shadow tokens', () => {
-    expect(tokens).toContain('--v4-ground: rgba(242, 242, 242, 0.82)');
-    expect(tokens).toContain('--v4-raised: rgba(255, 255, 255, 0.62)');
-    expect(tokens).toContain('--v4-chrome: rgba(232, 232, 232, 0.66)');
-    expect(tokens).toContain('--v4-ground: rgba(17, 17, 17, 0.82)');
-    expect(tokens).toContain('--v4-raised: rgba(48, 48, 48, 0.62)');
-    expect(tokens).toContain('--v4-chrome: rgba(30, 30, 30, 0.68)');
     expect(tokens).toContain('--v4-unread: var(--v4-text-1)');
     expect(tokens).toContain('--v4-shadow-popover:');
 
@@ -117,9 +162,80 @@ describe('DESKTOP-012: neutral liquid-glass materials', () => {
     }
   });
 
-  it('defines one neutral glass stack and routes every desktop chrome layer through it', () => {
-    expect(tokens).toContain('--v4-glass-filter: blur(28px) saturate(0%)');
-    expect(tokens).toContain('--v4-glass-filter-soft: blur(12px) saturate(0%)');
+  it('keeps broad light and dark materials visibly translucent with weighted hierarchy', () => {
+    const light = balancedBlock(tokens, ":root,\n:root[data-force-theme='light']");
+    const dark = balancedBlock(tokens, ".dark,\n:root[data-force-theme='dark']");
+    const lightCeilings = {
+      'v4-ground': 0.5,
+      'v4-chrome': 0.5,
+      'v4-sidebar': 0.5,
+      'v4-secondary-sidebar': 0.5,
+      'v4-raised': 0.6,
+      'v4-popover': 0.88,
+    } as const;
+    const darkCeilings = {
+      'v4-ground': 0.72,
+      'v4-chrome': 0.72,
+      'v4-sidebar': 0.74,
+      'v4-secondary-sidebar': 0.66,
+      'v4-raised': 0.78,
+      'v4-popover': 0.98,
+    } as const;
+
+    for (const [mode, block, ceilings] of [
+      ['light', light, lightCeilings],
+      ['dark', dark, darkCeilings],
+    ] as const) {
+      const alphas = Object.fromEntries(
+        Object.entries(ceilings).map(([property, ceiling]) => {
+          const alpha = rgbaAlpha(customProperty(block, property));
+          expect(alpha, `${mode} ${property} must remain visibly translucent`).toBeGreaterThan(
+            0.2,
+          );
+          expect(alpha, `${mode} ${property} exceeds its material alpha ceiling`).toBeLessThanOrEqual(
+            ceiling,
+          );
+          return [property, alpha];
+        }),
+      );
+
+      expect(alphas['v4-raised']).toBeGreaterThan(alphas['v4-ground']);
+      expect(alphas['v4-popover']).toBeGreaterThanOrEqual(alphas['v4-raised']);
+    }
+  });
+
+  it('defines one restrained live-vibrancy filter stack and routes desktop chrome through it', () => {
+    const primitives = balancedBlock(tokens, ':root {');
+    const canvasFilter = customProperty(primitives, 'v4-canvas-filter');
+    const standardFilter = customProperty(primitives, 'v4-glass-filter');
+    const softFilter = customProperty(primitives, 'v4-glass-filter-soft');
+    const popoverFilter = customProperty(primitives, 'v4-glass-filter-popover');
+    const canvasSaturation = saturationPercent(canvasFilter);
+    const standardSaturation = saturationPercent(standardFilter);
+    const softSaturation = saturationPercent(softFilter);
+    const popoverSaturation = saturationPercent(popoverFilter);
+
+    expect(canvasSaturation).toBeGreaterThanOrEqual(108);
+    expect(canvasSaturation).toBeLessThanOrEqual(135);
+    expect(standardSaturation).toBeGreaterThanOrEqual(108);
+    expect(standardSaturation).toBeLessThanOrEqual(135);
+    expect(softSaturation).toBeGreaterThanOrEqual(108);
+    expect(softSaturation).toBeLessThanOrEqual(135);
+    expect(popoverSaturation).toBeGreaterThanOrEqual(108);
+    expect(popoverSaturation).toBeLessThanOrEqual(135);
+    expect(canvasSaturation).toBeGreaterThanOrEqual(softSaturation);
+    expect(standardSaturation).toBeGreaterThanOrEqual(softSaturation);
+    expect(popoverSaturation).toBeGreaterThanOrEqual(standardSaturation);
+    expect(blurPixels(canvasFilter)).toBeGreaterThanOrEqual(12);
+    expect(blurPixels(canvasFilter)).toBeLessThanOrEqual(28);
+    expect(blurPixels(standardFilter)).toBeGreaterThanOrEqual(24);
+    expect(blurPixels(standardFilter)).toBeLessThanOrEqual(40);
+    expect(blurPixels(softFilter)).toBeGreaterThanOrEqual(8);
+    expect(blurPixels(softFilter)).toBeLessThanOrEqual(24);
+    expect(blurPixels(popoverFilter)).toBeGreaterThanOrEqual(32);
+    expect(blurPixels(popoverFilter)).toBeLessThanOrEqual(48);
+    expect(blurPixels(standardFilter)).toBeGreaterThan(blurPixels(softFilter));
+    expect(blurPixels(popoverFilter)).toBeGreaterThan(blurPixels(standardFilter));
     expect(tokens).toContain('--v4-glass-highlight: rgba(255, 255, 255, 0.58)');
     expect(tokens).toContain('--v4-glass-border: var(--v4-hairline)');
 
@@ -137,6 +253,68 @@ describe('DESKTOP-012: neutral liquid-glass materials', () => {
     }
   });
 
+  it('aliases legacy desktop surfaces onto the material stack instead of opaque shared defaults', () => {
+    const desktopScope = balancedBlock(
+      desktopCss,
+      "html[data-window='desktop-alt'],\nhtml[data-window='messages'] {",
+    );
+    const aliases = {
+      'page-bg': 'var(--v4-ground)',
+      'c-bg': 'var(--v4-raised)',
+      'pop-bg': 'var(--v4-popover)',
+      'glass-filter': 'var(--v4-glass-filter)',
+      'glass-filter-soft': 'var(--v4-glass-filter-soft)',
+    } as const;
+
+    for (const [legacy, material] of Object.entries(aliases)) {
+      expect(customProperty(desktopScope, legacy)).toBe(material);
+    }
+
+    // Forced themes power the browser visual harness and must resolve through
+    // the same translucent stack rather than replacing it with opaque literals.
+    expect(tokens.match(/--page-bg:\s*var\(--v4-ground\);/g)).toHaveLength(2);
+    expect(tokens.match(/--c-bg:\s*var\(--v4-raised\);/g)).toHaveLength(2);
+    expect(tokens.match(/--pop-bg:\s*var\(--v4-popover\);/g)).toHaveLength(2);
+  });
+
+  it('provides complete solid light and dark fallbacks when transparency is reduced', () => {
+    const reduced = balancedBlock(tokens, '@media (prefers-reduced-transparency: reduce)');
+    const light = balancedBlock(reduced, ":root,\n  :root[data-force-theme='light']");
+    const systemDarkMedia = balancedBlock(reduced, '@media (prefers-color-scheme: dark)');
+    const systemDark = balancedBlock(systemDarkMedia, ':root');
+    const forcedDark = balancedBlock(reduced, ".dark,\n  :root[data-force-theme='dark']");
+    const surfaces = [
+      'v4-ground',
+      'v4-raised',
+      'v4-inset',
+      'v4-chrome',
+      'v4-sidebar',
+      'v4-secondary-sidebar',
+      'v4-popover',
+    ];
+
+    for (const property of surfaces) {
+      expectSolidSurface(light, property);
+      expectSolidSurface(systemDark, property);
+      expectSolidSurface(forcedDark, property);
+    }
+    expect(customProperty(light, 'v4-glass-filter')).toBe('none');
+    expect(customProperty(light, 'v4-glass-filter-soft')).toBe('none');
+    expect(customProperty(light, 'v4-canvas-filter')).toBe('none');
+    expect(customProperty(light, 'v4-glass-filter-popover')).toBe('none');
+
+    const desktopReduced = balancedBlock(
+      desktopCss,
+      '@media (prefers-reduced-transparency: reduce)',
+    );
+    expect(desktopReduced).toMatch(
+      /html\[data-window='desktop-alt'\]\s*\{[\s\S]*?background:\s*var\(--bg\);/,
+    );
+    expect(desktopReduced).toMatch(
+      /html\[data-window='desktop-alt'\]\s+body\s*\{[\s\S]*?background:\s*var\(--bg-body\);/,
+    );
+  });
+
   it('does not double-compose the translucent canvas beneath glass chrome', () => {
     const shellRule = desktopCss.match(/\.desktop-shell\s*\{([\s\S]*?)\}/)?.[1] ?? '';
     const canvasRule =
@@ -147,28 +325,48 @@ describe('DESKTOP-012: neutral liquid-glass materials', () => {
     expect(desktopApp).not.toMatch(
       /\.desktop-shell\s*\{[\s\S]*?background:\s*var\(--v4-ground\)[\s\S]*?\}/,
     );
-    expect(canvasRule).toContain('backdrop-filter: var(--v4-glass-filter)');
-    expect(canvasRule).toContain('-webkit-backdrop-filter: var(--v4-glass-filter)');
+    expect(canvasRule).not.toContain('backdrop-filter:');
+    expect(canvasRule).not.toContain('-webkit-backdrop-filter:');
   });
 
-  it('keeps the shared popover system achromatic instead of reintroducing blue tint', () => {
+  it('keeps the shared popover system within the same neutral live-vibrancy bounds', () => {
+    const sharedPrimitives = balancedBlock(designSystem, ':root {');
+    const sharedFilter = customProperty(sharedPrimitives, 'glass-filter');
+    const sharedSoftFilter = customProperty(sharedPrimitives, 'glass-filter-soft');
+
     expect(designSystem).toContain('--page-bg:#eeeeee');
-    expect(designSystem).toContain('--pop-bg:rgba(250,250,250,0.68)');
-    expect(designSystem).toContain('--glass-filter:blur(28px) saturate(0%)');
+    expect(designSystem).toContain('--pop-bg:rgba(250,250,250,0.58)');
+    expect(saturationPercent(sharedFilter)).toBeGreaterThanOrEqual(118);
+    expect(saturationPercent(sharedFilter)).toBeLessThanOrEqual(135);
+    expect(saturationPercent(sharedSoftFilter)).toBeGreaterThanOrEqual(110);
+    expect(saturationPercent(sharedSoftFilter)).toBeLessThanOrEqual(125);
+    expect(blurPixels(sharedFilter)).toBeGreaterThan(blurPixels(sharedSoftFilter));
     expect(designSystem).not.toContain('rgba(20,22,40');
+
+    const widgetScope = balancedBlock(widget, '.wg {');
+    const widgetFilter = customProperty(widgetScope, 'glass-filter');
+    expect(saturationPercent(widgetFilter)).toBeGreaterThanOrEqual(165);
+    expect(saturationPercent(widgetFilter)).toBeLessThanOrEqual(180);
 
     expect(popover).toContain('--popover-blur: var(--glass-filter)');
     expect(popover).toContain('--popover-unread: var(--pop-text)');
     expect(popover).not.toMatch(/#(?:007aff|0a84ff|0a6cff)/i);
+    expect(popoverWindow).toContain('class:native-glass={nativeGlass}');
+    expect(popoverWindow).toMatch(
+      /\.mbpop\.native-glass\s*\{[\s\S]*?backdrop-filter:\s*none;/,
+    );
   });
 
-  it('does not color-amplify any glass surface in CSS or Svelte styles', () => {
+  it('keeps every literal backdrop saturation live but restrained', () => {
     const srcRoot = join(process.cwd(), 'src');
     const offenders = sourceFiles(srcRoot).flatMap((path) => {
       const source = readFileSync(path, 'utf8');
       return (source.match(/(?:-webkit-)?backdrop-filter:[^;]+;/g) ?? [])
         .filter((declaration) => /saturate\(/.test(declaration))
-        .filter((declaration) => !/saturate\((?:0|0%)\)/.test(declaration))
+        .filter((declaration) => {
+          const saturation = saturationPercent(declaration);
+          return saturation < 100 || saturation > 185;
+        })
         .map((declaration) => `${relative(srcRoot, path)}: ${declaration.trim()}`);
     });
 

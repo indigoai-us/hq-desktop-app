@@ -81,8 +81,11 @@ pub const WINDOW_LABEL: &str = "widget";
 const WIDGET_W: f64 = 66.0;
 const WIDGET_H: f64 = 43.0;
 /// Max size when the notification stack expands the window (US-003).
-const WIDGET_W_MAX: f64 = 340.0;
-const WIDGET_H_MAX: f64 = 480.0;
+const WIDGET_W_MAX: f64 = 380.0;
+const WIDGET_H_MAX: f64 = 720.0;
+const WIDGET_ZOOM_MIN: f64 = 0.8;
+const WIDGET_ZOOM_MAX: f64 = 1.6;
+const WIDGET_ZOOM_DEFAULT: f64 = 1.0;
 /// Margins from the display's visible edge. `MARGIN_RIGHT` is 8 so the mark's
 /// visual right margin stays 18px (8 window margin + 10px right padding in
 /// `.wg`). `MARGIN_BOTTOM` is 16 — the mark sits flush to the window bottom.
@@ -93,10 +96,11 @@ const MARGIN_BOTTOM: f64 = 16.0;
 /// ready-handshake. Oldest are dropped when over cap.
 const WIDGET_PENDING_CAP: usize = 50;
 
-/// Current logical size of the widget window. Starts at the idle wordmark
-/// size; `resize_widget` grows it for notification rows while re-anchoring so
-/// the lower-right corner stays fixed.
-static WIDGET_SIZE: Mutex<(f64, f64)> = Mutex::new((WIDGET_W, WIDGET_H));
+/// Current logical geometry of the widget window. Size and WebView zoom move
+/// atomically so out-of-order main-thread resize closures cannot pair a scaled
+/// viewport with stale anchor geometry.
+static WIDGET_GEOMETRY: Mutex<(f64, f64, f64)> =
+    Mutex::new((WIDGET_W, WIDGET_H, WIDGET_ZOOM_DEFAULT));
 
 /// Stack channel: `(ready, pending)`.
 ///
@@ -135,13 +139,12 @@ fn widget_enabled() -> bool {
 
 /// Optional `widgetDisplay` (display localized name). `None` = primary.
 fn configured_display_name() -> Option<String> {
-    read_menubar_json()
-        .and_then(|j| {
-            j.get("widgetDisplay")
-                .and_then(|v| v.as_str())
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-        })
+    read_menubar_json().and_then(|j| {
+        j.get("widgetDisplay")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    })
 }
 
 // ── Takeover (US-003) ───────────────────────────────────────────────────────────
@@ -231,19 +234,37 @@ pub async fn show_widget_notification(
         .map_err(|e| e.to_string())
 }
 
-/// Clamp requested widget size to the idle minimum and the stack maximum.
-fn clamp_widget_size(width: f64, height: f64) -> (f64, f64) {
+fn normalize_widget_zoom(zoom: f64) -> f64 {
+    if zoom.is_finite() {
+        zoom.clamp(WIDGET_ZOOM_MIN, WIDGET_ZOOM_MAX)
+    } else {
+        WIDGET_ZOOM_DEFAULT
+    }
+}
+
+/// Minimum idle and maximum expanded geometry at the active WebView zoom.
+fn widget_size_bounds(zoom: f64) -> ((f64, f64), (f64, f64)) {
+    let zoom = normalize_widget_zoom(zoom);
     (
-        width.clamp(WIDGET_W, WIDGET_W_MAX),
-        height.clamp(WIDGET_H, WIDGET_H_MAX),
+        (WIDGET_W * zoom, WIDGET_H * zoom),
+        (WIDGET_W_MAX * zoom, WIDGET_H_MAX * zoom),
     )
 }
 
-fn current_widget_size() -> (f64, f64) {
-    WIDGET_SIZE
+/// Clamp requested widget size to zoom-scaled idle and stack bounds.
+fn clamp_widget_size(width: f64, height: f64, zoom: f64) -> (f64, f64) {
+    let (minimum, maximum) = widget_size_bounds(zoom);
+    (
+        width.clamp(minimum.0, maximum.0),
+        height.clamp(minimum.1, maximum.1),
+    )
+}
+
+fn current_widget_geometry() -> (f64, f64, f64) {
+    WIDGET_GEOMETRY
         .lock()
         .map(|g| *g)
-        .unwrap_or((WIDGET_W, WIDGET_H))
+        .unwrap_or((WIDGET_W, WIDGET_H, WIDGET_ZOOM_DEFAULT))
 }
 
 // ── Anchoring ───────────────────────────────────────────────────────────────────
@@ -288,22 +309,17 @@ fn anchor_lower_right_dock_aware(
     primary_height: f64,
     w: f64,
     h: f64,
+    idle_height: f64,
 ) -> (f64, f64) {
     let band = vf_origin_y - frame_origin_y;
     if band <= 0.0 {
-        return anchor_lower_right(
-            vf_origin_x,
-            vf_origin_y,
-            vf_width,
-            primary_height,
-            w,
-            h,
-        );
+        return anchor_lower_right(vf_origin_x, vf_origin_y, vf_width, primary_height, w, h);
     }
     let x = vf_origin_x + vf_width - w - MARGIN_RIGHT;
     // Center the idle wordmark on the band; clamp so tiny bands never go below
-    // the screen frame. Use WIDGET_H (not h) so growth keeps lower-right fixed.
-    let y_cocoa = frame_origin_y + ((band - WIDGET_H) / 2.0).max(0.0);
+    // the screen frame. Use the zoom-scaled idle height (not h) so growth keeps
+    // the lower-right fixed without shifting the mark at non-default zoom.
+    let y_cocoa = frame_origin_y + ((band - idle_height) / 2.0).max(0.0);
     (x, primary_height - (y_cocoa + h))
 }
 
@@ -320,9 +336,9 @@ fn point_in_frame(px: f64, py: f64, fx: f64, fy: f64, fw: f64, fh: f64) -> bool 
 /// thread. Falls back to Tauri monitor APIs when Cocoa fails or off-macOS.
 /// Callers that need size and position to stay matched (e.g. `resize_widget`)
 /// must pass the same `(w, h)` they apply via `set_size`.
-fn widget_position_for(app: &AppHandle, w: f64, h: f64) -> tauri::LogicalPosition<f64> {
+fn widget_position_for(app: &AppHandle, w: f64, h: f64, zoom: f64) -> tauri::LogicalPosition<f64> {
     #[cfg(target_os = "macos")]
-    if let Some(pos) = widget_position_cocoa(w, h) {
+    if let Some(pos) = widget_position_cocoa(w, h, zoom) {
         return pos;
     }
     widget_position_fallback(app, w, h)
@@ -330,8 +346,8 @@ fn widget_position_for(app: &AppHandle, w: f64, h: f64) -> tauri::LogicalPositio
 
 /// Anchor using the currently tracked widget size (setup / re-anchor paths).
 fn widget_position(app: &AppHandle) -> tauri::LogicalPosition<f64> {
-    let (w, h) = current_widget_size();
-    widget_position_for(app, w, h)
+    let (w, h, zoom) = current_widget_geometry();
+    widget_position_for(app, w, h, zoom)
 }
 
 /// macOS: lower-right of the configured screen's `visibleFrame`, converted
@@ -339,7 +355,7 @@ fn widget_position(app: &AppHandle) -> tauri::LogicalPosition<f64> {
 /// `w`/`h` are the window size so the lower-right corner stays fixed
 /// at the same margins for any size.
 #[cfg(target_os = "macos")]
-fn widget_position_cocoa(w: f64, h: f64) -> Option<tauri::LogicalPosition<f64>> {
+fn widget_position_cocoa(w: f64, h: f64, zoom: f64) -> Option<tauri::LogicalPosition<f64>> {
     use objc2::{class, msg_send, runtime::AnyObject};
     use objc2_core_foundation::CGRect;
 
@@ -392,6 +408,7 @@ fn widget_position_cocoa(w: f64, h: f64) -> Option<tauri::LogicalPosition<f64>> 
         let vf: CGRect = msg_send![target, visibleFrame];
         let primary_frame: CGRect = msg_send![primary, frame];
         let target_frame: CGRect = msg_send![target, frame];
+        let (minimum, _) = widget_size_bounds(zoom);
 
         let (x, y) = anchor_lower_right_dock_aware(
             vf.origin.x,
@@ -401,6 +418,7 @@ fn widget_position_cocoa(w: f64, h: f64) -> Option<tauri::LogicalPosition<f64>> 
             primary_frame.size.height,
             w,
             h,
+            minimum.1,
         );
 
         Some(tauri::LogicalPosition::new(x, y))
@@ -482,14 +500,20 @@ pub fn anchor_widget(app: &AppHandle) {
 /// Grow/shrink the widget window to fit notification rows while keeping the
 /// wordmark visually fixed at the lower-right (window expands up/left).
 #[tauri::command]
-pub async fn resize_widget(app: AppHandle, width: f64, height: f64) -> Result<(), String> {
-    let (w, h) = clamp_widget_size(width, height);
-    if let Ok(mut size) = WIDGET_SIZE.lock() {
-        *size = (w, h);
+pub async fn resize_widget(
+    app: AppHandle,
+    width: f64,
+    height: f64,
+    zoom: f64,
+) -> Result<(), String> {
+    let zoom = normalize_widget_zoom(zoom);
+    let (w, h) = clamp_widget_size(width, height, zoom);
+    if let Ok(mut geometry) = WIDGET_GEOMETRY.lock() {
+        *geometry = (w, h, zoom);
     }
     log(
         LOG_TAG,
-        &format!("resize: {w:.0}×{h:.0} (requested {width:.0}×{height:.0})"),
+        &format!("resize: {w:.0}×{h:.0} zoom={zoom:.1} (requested {width:.0}×{height:.0})"),
     );
 
     #[cfg(target_os = "macos")]
@@ -501,13 +525,13 @@ pub async fn resize_widget(app: AppHandle, width: f64, height: f64) -> Result<()
             };
             // Re-read latest requested size so out-of-order main-thread
             // closures always apply a matched size+position pair.
-            let (w, h) = current_widget_size();
+            let (w, h, zoom) = current_widget_geometry();
             if let Err(e) = window.set_size(tauri::LogicalSize::new(w, h)) {
                 // Log but do not return early — tao keeps top-left fixed on
                 // resize, so we must still re-anchor even when set_size fails.
                 log(LOG_TAG, &format!("resize set_size failed: {e}"));
             }
-            let pos = widget_position_for(&app, w, h);
+            let pos = widget_position_for(&app, w, h, zoom);
             if let Err(e) = window.set_position(pos) {
                 log(LOG_TAG, &format!("resize set_position failed: {e}"));
             } else {
@@ -524,11 +548,11 @@ pub async fn resize_widget(app: AppHandle, width: f64, height: f64) -> Result<()
     {
         if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
             // Re-read latest requested size (same convergence as macOS path).
-            let (w, h) = current_widget_size();
+            let (w, h, zoom) = current_widget_geometry();
             if let Err(e) = window.set_size(tauri::LogicalSize::new(w, h)) {
                 log(LOG_TAG, &format!("resize set_size failed: {e}"));
             }
-            let pos = widget_position_for(&app, w, h);
+            let pos = widget_position_for(&app, w, h, zoom);
             if let Err(e) = window.set_position(pos) {
                 log(LOG_TAG, &format!("resize set_position failed: {e}"));
             } else {
@@ -568,7 +592,10 @@ pub async fn set_widget_focusable(app: AppHandle, focusable: bool) -> Result<(),
                     );
                     if focusable {
                         if let Err(e) = window.set_focus() {
-                            log(LOG_TAG, &format!("set_widget_focusable: set_focus failed: {e}"));
+                            log(
+                                LOG_TAG,
+                                &format!("set_widget_focusable: set_focus failed: {e}"),
+                            );
                         }
                     }
                 }
@@ -596,7 +623,10 @@ pub async fn set_widget_focusable(app: AppHandle, focusable: bool) -> Result<(),
                 );
                 if focusable {
                     if let Err(e) = window.set_focus() {
-                        log(LOG_TAG, &format!("set_widget_focusable: set_focus failed: {e}"));
+                        log(
+                            LOG_TAG,
+                            &format!("set_widget_focusable: set_focus failed: {e}"),
+                        );
                     }
                 }
             }
@@ -748,10 +778,7 @@ pub async fn widget_ready(app: AppHandle) -> Result<(), String> {
     let drained = pending.len();
     for payload in pending {
         if let Err(e) = app.emit_to(WINDOW_LABEL, "widget:notification", &payload) {
-            log(
-                LOG_TAG,
-                &format!("widget_ready: drain emit failed: {e}"),
-            );
+            log(LOG_TAG, &format!("widget_ready: drain emit failed: {e}"));
         }
     }
     if drained > 0 {
@@ -781,8 +808,8 @@ pub fn setup_widget_window(app: &AppHandle) {
     }
 
     // Reset size tracking for a fresh window (idle wordmark).
-    if let Ok(mut size) = WIDGET_SIZE.lock() {
-        *size = (WIDGET_W, WIDGET_H);
+    if let Ok(mut geometry) = WIDGET_GEOMETRY.lock() {
+        *geometry = (WIDGET_W, WIDGET_H, WIDGET_ZOOM_DEFAULT);
     }
 
     // New webview is not ready until it mounts listeners and invokes
@@ -1080,11 +1107,15 @@ pub async fn list_displays(app: tauri::AppHandle) -> Result<Vec<DisplayInfo>, St
         let (tx, rx) = std::sync::mpsc::channel::<Vec<DisplayInfo>>();
         let app_for_main = app.clone();
         let hop = app_for_main.clone().run_on_main_thread(move || {
-            let list = list_displays_cocoa().unwrap_or_else(|| list_displays_fallback(&app_for_main));
+            let list =
+                list_displays_cocoa().unwrap_or_else(|| list_displays_fallback(&app_for_main));
             let _ = tx.send(list);
         });
         if hop.is_err() {
-            log(LOG_TAG, "list_displays: run_on_main_thread failed — fallback");
+            log(
+                LOG_TAG,
+                "list_displays: run_on_main_thread failed — fallback",
+            );
             return Ok(list_displays_fallback(&app));
         }
         match rx.recv_timeout(std::time::Duration::from_secs(2)) {
@@ -1096,7 +1127,10 @@ pub async fn list_displays(app: tauri::AppHandle) -> Result<Vec<DisplayInfo>, St
                 Ok(list)
             }
             Err(_) => {
-                log(LOG_TAG, "list_displays: main-thread recv timeout — fallback");
+                log(
+                    LOG_TAG,
+                    "list_displays: main-thread recv timeout — fallback",
+                );
                 Ok(list_displays_fallback(&app))
             }
         }
@@ -1255,10 +1289,7 @@ pub async fn apply_widget_settings(app: tauri::AppHandle) -> Result<(), String> 
         match rx.recv_timeout(std::time::Duration::from_secs(2)) {
             Ok(result) => result,
             Err(_) => {
-                log(
-                    LOG_TAG,
-                    "apply_widget_settings: main-thread recv timeout",
-                );
+                log(LOG_TAG, "apply_widget_settings: main-thread recv timeout");
                 Err("apply_widget_settings timed out waiting for main thread".into())
             }
         }
@@ -1332,10 +1363,10 @@ mod tests {
 
     #[test]
     fn clamp_widget_size_holds_idle_minimum() {
-        assert_eq!(clamp_widget_size(0.0, 0.0), (WIDGET_W, WIDGET_H));
-        assert_eq!(clamp_widget_size(10.0, 5.0), (WIDGET_W, WIDGET_H));
+        assert_eq!(clamp_widget_size(0.0, 0.0, 1.0), (WIDGET_W, WIDGET_H));
+        assert_eq!(clamp_widget_size(10.0, 5.0, 1.0), (WIDGET_W, WIDGET_H));
         assert_eq!(
-            clamp_widget_size(WIDGET_W, WIDGET_H),
+            clamp_widget_size(WIDGET_W, WIDGET_H, 1.0),
             (WIDGET_W, WIDGET_H)
         );
     }
@@ -1343,20 +1374,31 @@ mod tests {
     #[test]
     fn clamp_widget_size_holds_maximum() {
         assert_eq!(
-            clamp_widget_size(999.0, 999.0),
+            clamp_widget_size(999.0, 999.0, 1.0),
             (WIDGET_W_MAX, WIDGET_H_MAX)
         );
         assert_eq!(
-            clamp_widget_size(WIDGET_W_MAX, WIDGET_H_MAX),
+            clamp_widget_size(WIDGET_W_MAX, WIDGET_H_MAX, 1.0),
             (WIDGET_W_MAX, WIDGET_H_MAX)
         );
     }
 
     #[test]
     fn clamp_widget_size_passes_through_in_range() {
-        assert_eq!(clamp_widget_size(200.0, 120.0), (200.0, 120.0));
-        assert_eq!(clamp_widget_size(100.0, 43.0), (100.0, 43.0));
-        assert_eq!(clamp_widget_size(66.0, 300.0), (66.0, 300.0));
+        assert_eq!(clamp_widget_size(200.0, 120.0, 1.0), (200.0, 120.0));
+        assert_eq!(clamp_widget_size(100.0, 43.0, 1.0), (100.0, 43.0));
+        assert_eq!(clamp_widget_size(66.0, 300.0, 1.0), (66.0, 300.0));
+    }
+
+    #[test]
+    fn widget_size_bounds_follow_supported_zoom_without_clipping() {
+        for zoom in [0.8, 1.0, 1.6] {
+            let (minimum, maximum) = widget_size_bounds(zoom);
+            assert_eq!(minimum, (WIDGET_W * zoom, WIDGET_H * zoom));
+            assert_eq!(maximum, (WIDGET_W_MAX * zoom, WIDGET_H_MAX * zoom),);
+            assert_eq!(clamp_widget_size(0.0, 0.0, zoom), minimum,);
+            assert_eq!(clamp_widget_size(f64::MAX, f64::MAX, zoom), maximum,);
+        }
     }
 
     #[test]
@@ -1372,14 +1414,12 @@ mod tests {
 
     #[test]
     fn route_widget_notification_buffers_when_not_ready() {
-        let (emit, next) =
-            route_widget_notification(false, Vec::new(), sample_payload("a"), 50);
+        let (emit, next) = route_widget_notification(false, Vec::new(), sample_payload("a"), 50);
         assert!(!emit);
         assert_eq!(next.len(), 1);
         assert_eq!(next[0].kind, "a");
 
-        let (emit2, next2) =
-            route_widget_notification(false, next, sample_payload("b"), 50);
+        let (emit2, next2) = route_widget_notification(false, next, sample_payload("b"), 50);
         assert!(!emit2);
         assert_eq!(
             next2.iter().map(|p| p.kind.as_str()).collect::<Vec<_>>(),
@@ -1398,10 +1438,7 @@ mod tests {
         }
         // Cap 2: kept newest (k1, k2); dropped oldest k0.
         assert_eq!(
-            pending
-                .iter()
-                .map(|p| p.kind.as_str())
-                .collect::<Vec<_>>(),
+            pending.iter().map(|p| p.kind.as_str()).collect::<Vec<_>>(),
             vec!["k1", "k2"]
         );
     }
@@ -1414,14 +1451,12 @@ mod tests {
         let vf_w = 1512.0;
         let primary_h = 982.0;
 
-        let (x_idle, y_idle) =
-            anchor_lower_right(vf_ox, vf_oy, vf_w, primary_h, 66.0, 43.0);
-        let (x_grown, y_grown) =
-            anchor_lower_right(vf_ox, vf_oy, vf_w, primary_h, 340.0, 480.0);
+        let (x_idle, y_idle) = anchor_lower_right(vf_ox, vf_oy, vf_w, primary_h, 66.0, 43.0);
+        let (x_grown, y_grown) = anchor_lower_right(vf_ox, vf_oy, vf_w, primary_h, 380.0, 720.0);
 
         // Lower-right corner (x+w, y+h) is size-invariant.
-        assert_eq!(x_idle + 66.0, x_grown + 340.0);
-        assert_eq!(y_idle + 43.0, y_grown + 480.0);
+        assert_eq!(x_idle + 66.0, x_grown + 380.0);
+        assert_eq!(y_idle + 43.0, y_grown + 720.0);
     }
 
     #[test]
@@ -1432,7 +1467,7 @@ mod tests {
         let primary_h = 982.0;
 
         let idle = anchor_lower_right(vf_ox, vf_oy, vf_w, primary_h, 66.0, 43.0);
-        let _grown = anchor_lower_right(vf_ox, vf_oy, vf_w, primary_h, 340.0, 480.0);
+        let _grown = anchor_lower_right(vf_ox, vf_oy, vf_w, primary_h, 380.0, 720.0);
         let idle_again = anchor_lower_right(vf_ox, vf_oy, vf_w, primary_h, 66.0, 43.0);
 
         assert_eq!(idle_again, idle);
@@ -1459,7 +1494,7 @@ mod tests {
         assert!(point_in_frame(110.0, 40.0, fx, fy, fw, fh)); // right
         assert!(point_in_frame(50.0, 20.0, fx, fy, fw, fh)); // bottom
         assert!(point_in_frame(50.0, 70.0, fx, fy, fw, fh)); // top
-        // Corners.
+                                                             // Corners.
         assert!(point_in_frame(10.0, 20.0, fx, fy, fw, fh));
         assert!(point_in_frame(110.0, 70.0, fx, fy, fw, fh));
     }
@@ -1498,14 +1533,13 @@ mod tests {
         let w = 66.0;
         let h = 43.0;
 
-        let (x, y) = anchor_lower_right_dock_aware(
-            vf_ox, vf_oy, vf_w, frame_oy, primary_h, w, h,
-        );
+        let (x, y) =
+            anchor_lower_right_dock_aware(vf_ox, vf_oy, vf_w, frame_oy, primary_h, w, h, WIDGET_H);
 
         let y_cocoa = 13.5;
         assert_eq!(x, vf_ox + vf_w - w - MARGIN_RIGHT); // 1438.0
         assert_eq!(y, primary_h - (y_cocoa + h)); // 925.5
-        // Idle widget vertical center sits on band center.
+                                                  // Idle widget vertical center sits on band center.
         assert_eq!(y_cocoa + h / 2.0, 35.0);
         assert_eq!((vf_oy - frame_oy) / 2.0, 35.0);
     }
@@ -1522,7 +1556,7 @@ mod tests {
         let h = 43.0;
 
         let dock_aware =
-            anchor_lower_right_dock_aware(vf_ox, vf_oy, vf_w, frame_oy, primary_h, w, h);
+            anchor_lower_right_dock_aware(vf_ox, vf_oy, vf_w, frame_oy, primary_h, w, h, WIDGET_H);
         let baseline = anchor_lower_right(vf_ox, vf_oy, vf_w, primary_h, w, h);
         assert_eq!(dock_aware, baseline);
     }
@@ -1544,14 +1578,14 @@ mod tests {
         assert_eq!(vf_oy, frame_oy);
 
         let dock_aware =
-            anchor_lower_right_dock_aware(vf_ox, vf_oy, vf_w, frame_oy, primary_h, w, h);
+            anchor_lower_right_dock_aware(vf_ox, vf_oy, vf_w, frame_oy, primary_h, w, h, WIDGET_H);
         let baseline = anchor_lower_right(vf_ox, vf_oy, vf_w, primary_h, w, h);
         assert_eq!(dock_aware, baseline);
     }
 
     #[test]
     fn dock_aware_lower_right_corner_invariant_across_sizes() {
-        // Bottom dock band=70; grow idle 66×43 → stack 340×480 keeps
+        // Bottom dock band=70; grow idle 66×43 → panel 380×720 keeps
         // lower-right corner fixed (anchor-drift regression).
         let vf_ox = 0.0;
         let vf_oy = 70.0;
@@ -1560,14 +1594,14 @@ mod tests {
         let primary_h = 982.0;
 
         let (x_idle, y_idle) = anchor_lower_right_dock_aware(
-            vf_ox, vf_oy, vf_w, frame_oy, primary_h, 66.0, 43.0,
+            vf_ox, vf_oy, vf_w, frame_oy, primary_h, 66.0, 43.0, WIDGET_H,
         );
         let (x_grown, y_grown) = anchor_lower_right_dock_aware(
-            vf_ox, vf_oy, vf_w, frame_oy, primary_h, 340.0, 480.0,
+            vf_ox, vf_oy, vf_w, frame_oy, primary_h, 380.0, 720.0, WIDGET_H,
         );
 
-        assert_eq!(x_idle + 66.0, x_grown + 340.0);
-        assert_eq!(y_idle + 43.0, y_grown + 480.0);
+        assert_eq!(x_idle + 66.0, x_grown + 380.0);
+        assert_eq!(y_idle + 43.0, y_grown + 720.0);
     }
 
     #[test]
@@ -1582,9 +1616,8 @@ mod tests {
         let w = 66.0;
         let h = 43.0;
 
-        let (x, y) = anchor_lower_right_dock_aware(
-            vf_ox, vf_oy, vf_w, frame_oy, primary_h, w, h,
-        );
+        let (x, y) =
+            anchor_lower_right_dock_aware(vf_ox, vf_oy, vf_w, frame_oy, primary_h, w, h, WIDGET_H);
 
         // Bottom edge centered on the band relative to the display's own frame.
         let y_cocoa = frame_oy + (70.0 - WIDGET_H) / 2.0; // -1066.5
@@ -1607,9 +1640,8 @@ mod tests {
         let band = vf_oy - frame_oy;
         assert!(band < WIDGET_H);
 
-        let (x, y) = anchor_lower_right_dock_aware(
-            vf_ox, vf_oy, vf_w, frame_oy, primary_h, w, h,
-        );
+        let (x, y) =
+            anchor_lower_right_dock_aware(vf_ox, vf_oy, vf_w, frame_oy, primary_h, w, h, WIDGET_H);
         let y_cocoa = frame_oy; // clamped
         assert_eq!(x, vf_ox + vf_w - w - MARGIN_RIGHT);
         assert_eq!(y, primary_h - (y_cocoa + h));

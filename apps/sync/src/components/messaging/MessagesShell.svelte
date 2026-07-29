@@ -168,6 +168,9 @@
   let contacts = $state<Contact[]>([]);
   let loadingContacts = $state(false);
   let contactsError = $state<string | null>(null);
+  let contactsLoadGeneration = 0;
+  let contactMutationRevision = 0;
+  const contactMutationRevisions = new Map<string, number>();
 
   // Pending incoming connection requests (US-011 / DESKTOP-002). Rendered as
   // ordinary recency-sorted rail rows (not a Requests tab). Selecting a row
@@ -177,6 +180,12 @@
   let loadingRequests = $state(false);
   let requestsError = $state<string | null>(null);
   let selectedRequest = $state<DmRequest | null>(null);
+  let requestsLoadGeneration = 0;
+  let requestMutationRevision = 0;
+  const requestMutations = new Map<
+    string,
+    { revision: number; request: DmRequest | null }
+  >();
 
   // Channels (US-018). `list_channels` is the source of truth for the rail;
   // `channel:new-message` / `channel:updated` keep it live. `selectedChannel`
@@ -186,6 +195,12 @@
   let loadingChannels = $state(false);
   let channelsError = $state<string | null>(null);
   let selectedChannel = $state<Channel | null>(null);
+  let channelsLoadGeneration = 0;
+  let channelMutationRevision = 0;
+  const channelMutations = new Map<
+    string,
+    { revision: number; channel: Channel }
+  >();
   let companyLabels = $state<CompanyLabel[]>([]);
   // Create-channel overlay (null = closed). Holds the preset company scope the
   // "+ New channel" affordance was clicked under (undefined slot = personal).
@@ -219,9 +234,11 @@
   let messages = $state<ThreadMessage[]>([]);
   let loadingThread = $state(false);
   let threadError = $state<string | null>(null);
+  let threadLoadGeneration = 0;
 
   let sending = $state(false);
   let sendError = $state<string | null>(null);
+  let dmSendGeneration = 0;
 
   // Share history (client-side merge): the peer's share events from the same
   // notification-history fetch the rail already makes. Rendered as:
@@ -293,6 +310,7 @@
       await invoke('open_claude_code_link', { url });
     } catch (err) {
       console.error('messages: open_claude_code_link failed', err);
+      throw err;
     }
   }
 
@@ -369,7 +387,10 @@
       scope: 'channel',
       channelId: selectedChannel.channelId,
       withPersonUid: null,
-      title: `Thread · #${selectedChannel.name}`,
+      title:
+        selectedChannel.scope === 'group'
+          ? `Thread · ${channelDisplayName(selectedChannel)}`
+          : `Thread · #${channelDisplayName(selectedChannel)}`,
       showAuthors: true,
     };
   }
@@ -395,6 +416,7 @@
   // flips Pending→active is consumed in US-011 — here we only render the Pending
   // state from the send response.
   function handleComposeSent(result: ComposeSendResult): void {
+    invalidateDmWork();
     composing = false;
     const r = result.recipient;
     const peer: Contact = {
@@ -405,8 +427,10 @@
       source: null,
       lastMessageAt: new Date().toISOString(),
     };
+    selectedChannel = null;
     selectedRequest = null;
     selectedShareEvents = [];
+    openThread = null;
     selected = peer;
     threadError = null;
     sendError = null;
@@ -490,7 +514,10 @@
       .sort((a, b) => (b.unread ?? 0) - (a.unread ?? 0))
       .map((ch) => ({
         id: `ch:${ch.channelId}`,
-        title: `# ${channelDisplayName(ch)}`,
+        title:
+          ch.scope === 'group'
+            ? channelDisplayName(ch)
+            : `# ${channelDisplayName(ch)}`,
         detail: `${ch.unread} unread`,
       }));
 
@@ -502,9 +529,7 @@
         detail: contactSubline(c) ?? 'Sent you a message',
       }));
 
-    return [...channelItems, ...dmItems]
-      .slice(0, CATCH_UP_LIMIT)
-      .map((item, index) => ({ ...item, rank: index + 1 }));
+    return [...channelItems, ...dmItems].slice(0, CATCH_UP_LIMIT);
   });
 
   // DESKTOP-002 unified rail: channels + DMs + connection requests + shared HQ
@@ -564,6 +589,21 @@
       (a, b) => b.time - a.time || a.key.localeCompare(b.key),
     );
   });
+  const RAIL_RENDER_BATCH = 60;
+  let railVisibleCount = $state(RAIL_RENDER_BATCH);
+  const visibleRailItems = $derived(railItems.slice(0, railVisibleCount));
+  const remainingRailItems = $derived(Math.max(0, railItems.length - visibleRailItems.length));
+
+  $effect(() => {
+    // A completely reloaded source list should return to the bounded first
+    // window. Live recency updates do not discard data; the explicit Show more
+    // affordance keeps the full archive reachable.
+    contacts.length;
+    channels.length;
+    requests.length;
+    shareHistory.length;
+    railVisibleCount = RAIL_RENDER_BATCH;
+  });
 
   function handleCatchUpOpen(item: CatchUpItem): void {
     if (item.id.startsWith('ch:')) {
@@ -580,6 +620,7 @@
   }
 
   function selectRequest(req: DmRequest): void {
+    invalidateDmWork();
     selected = null;
     selectedChannel = null;
     openThread = null;
@@ -592,6 +633,7 @@
   }
 
   function selectShare(share: ShareEvent): void {
+    invalidateDmWork();
     selected = null;
     selectedChannel = null;
     openThread = null;
@@ -637,6 +679,52 @@
       return date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
     }
     return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  }
+
+  function channelActivityAt(channel: Channel): string | null {
+    if (channel.lastActivityAt) return channel.lastActivityAt;
+    if (channel.lastMessageAt) return channel.lastMessageAt;
+    if (channel.arrivedAt && Number.isFinite(channel.arrivedAt)) {
+      return new Date(channel.arrivedAt).toISOString();
+    }
+    return channel.createdAt ?? null;
+  }
+
+  function formatChannelTime(channel: Channel): string | null {
+    const value = channelActivityAt(channel);
+    if (!value) return null;
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return null;
+
+    const now = new Date();
+    const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const startYesterday = startToday - 24 * 60 * 60 * 1000;
+    const time = date.getTime();
+
+    if (time >= startToday) {
+      return date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+    }
+    if (time >= startYesterday) return 'Yesterday';
+    if (date.getFullYear() === now.getFullYear()) {
+      return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    }
+    return date.toLocaleDateString(undefined, {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+    });
+  }
+
+  function channelProvenance(channel: Channel, company: string | null): string {
+    if (channel.scope === 'group') {
+      const memberCount = channel.memberCount ?? channel.members?.length ?? 0;
+      return memberCount > 0
+        ? `Group DM · ${memberCount} ${memberCount === 1 ? 'person' : 'people'}`
+        : 'Group DM';
+    }
+    if (company) return `Channel · ${company}`;
+    if (channel.scope === 'personal') return 'Personal channel';
+    return 'Channel';
   }
 
   function requestSubline(req: DmRequest): string {
@@ -695,6 +783,26 @@
           : contact,
       ),
     );
+    noteContactMutation(personUid);
+  }
+
+  function noteContactMutation(personUid: string): void {
+    contactMutationRevision += 1;
+    contactMutationRevisions.set(personUid, contactMutationRevision);
+  }
+
+  function mergeContactMutations(
+    snapshot: Contact[],
+    afterRevision: number,
+  ): Contact[] {
+    if (contactMutationRevision === afterRevision) return snapshot;
+    const merged = new Map(snapshot.map((contact) => [contact.personUid, contact]));
+    for (const contact of contacts) {
+      if ((contactMutationRevisions.get(contact.personUid) ?? 0) > afterRevision) {
+        merged.set(contact.personUid, contact);
+      }
+    }
+    return sortContactsByRecentActivity([...merged.values()]);
   }
 
   function dmEventTime(dm: DmEvent): number {
@@ -749,8 +857,25 @@
     }
     if (latestByPeer.size === 0) return;
 
+    const byPerson = new Map(contacts.map((contact) => [contact.personUid, contact]));
+    for (const [personUid, dm] of latestByPeer) {
+      const existing = byPerson.get(personUid);
+      byPerson.set(personUid, {
+        personUid,
+        email: dm.fromEmail,
+        displayName: dm.fromDisplayName || dm.fromEmail,
+        companyUid: existing?.companyUid ?? null,
+        source: existing?.source ?? 'realtime',
+        ...existing,
+        lastMessageAt: dm.createdAt || existing?.lastMessageAt || null,
+        previewBody: dm.body,
+        previewAt: dm.createdAt || existing?.previewAt || existing?.lastMessageAt || null,
+        previewDirection: 'in',
+      });
+      noteContactMutation(personUid);
+    }
     contacts = sortContactsByRecentActivity(
-      contacts.map((contact) => {
+      [...byPerson.values()].map((contact) => {
         const dm = latestByPeer.get(contact.personUid);
         if (!dm) return contact;
         return {
@@ -812,44 +937,56 @@
   }
 
   async function loadContacts(): Promise<void> {
+    const generation = ++contactsLoadGeneration;
+    const mutationRevision = contactMutationRevision;
     loadingContacts = true;
     contactsError = null;
     try {
-      const [resp, historyEvents] = await Promise.all([
+      const [resp, history] = await Promise.all([
         invoke<ContactsResponse>('list_contacts'),
         loadContactHistoryEvents(),
       ]);
+      if (generation !== contactsLoadGeneration) return;
+      shareHistory = history.shares;
       // Overlay "Shared a file" previews for contacts whose newest item is a
       // share (before sorting, so the share recency bumps the row up).
-      const nextContacts = sortContactsByRecentActivity(
-        applySharePreviews(
-          mergeContactPreviews(resp.contacts ?? [], historyEvents),
-          shareHistory,
+      const nextContacts = mergeContactMutations(
+        sortContactsByRecentActivity(
+          applySharePreviews(
+            mergeContactPreviews(resp.contacts ?? [], history.events),
+            history.shares,
+          ),
+          history.events,
         ),
-        historyEvents,
+        mutationRevision,
       );
       contacts = nextContacts;
       void hydrateContactPreviews(nextContacts);
     } catch (err) {
+      if (generation !== contactsLoadGeneration) return;
       contactsError = typeof err === 'string' ? err : 'Could not load conversations';
       contacts = [];
       console.error('messages: list_contacts failed', err);
     } finally {
-      loadingContacts = false;
+      if (generation === contactsLoadGeneration) loadingContacts = false;
     }
   }
 
-  async function loadContactHistoryEvents(): Promise<ConversationEventRecencyFields[]> {
+  async function loadContactHistoryEvents(): Promise<{
+    events: ConversationEventRecencyFields[];
+    shares: ShareEvent[];
+  }> {
     try {
       const history = await invoke<NotificationHistoryResponse>('fetch_notification_history', {
         limit: 200,
       });
-      // Same fetch feeds the share timeline + rail share previews.
-      shareHistory = history.shares ?? [];
-      return history.dms ?? [];
+      return {
+        events: history.dms ?? [],
+        shares: history.shares ?? [],
+      };
     } catch (err) {
       console.error('messages: fetch_notification_history failed', err);
-      return [];
+      return { events: [], shares: [] };
     }
   }
 
@@ -865,7 +1002,34 @@
     }
   }
 
+  function recordRequestMutation(
+    pairKey: string,
+    request: DmRequest | null,
+  ): void {
+    requestMutationRevision += 1;
+    requestMutations.set(pairKey, {
+      revision: requestMutationRevision,
+      request,
+    });
+  }
+
+  function mergeRequestMutations(
+    snapshot: DmRequest[],
+    afterRevision: number,
+  ): DmRequest[] {
+    if (requestMutationRevision === afterRevision) return snapshot;
+    const merged = new Map(snapshot.map((request) => [request.pairKey, request]));
+    for (const [pairKey, mutation] of requestMutations) {
+      if (mutation.revision <= afterRevision) continue;
+      if (mutation.request) merged.set(pairKey, mutation.request);
+      else merged.delete(pairKey);
+    }
+    return [...merged.values()];
+  }
+
   async function loadRequests(): Promise<void> {
+    const generation = ++requestsLoadGeneration;
+    const mutationRevision = requestMutationRevision;
     loadingRequests = true;
     requestsError = null;
     try {
@@ -879,29 +1043,57 @@
           enrichRequestFromContacts(request, response.contacts ?? []),
         );
       }
-      requests = next;
+      if (generation !== requestsLoadGeneration) return;
+      requests = mergeRequestMutations(next, mutationRevision);
     } catch (err) {
+      if (generation !== requestsLoadGeneration) return;
       requestsError =
         typeof err === 'string' ? err : 'Could not load connection requests';
       requests = [];
       console.error('messages: list_dm_requests failed', err);
     } finally {
-      loadingRequests = false;
+      if (generation === requestsLoadGeneration) loadingRequests = false;
     }
   }
 
+  function recordChannelMutation(channel: Channel): void {
+    channelMutationRevision += 1;
+    channelMutations.set(channel.channelId, {
+      revision: channelMutationRevision,
+      channel,
+    });
+  }
+
+  function mergeChannelMutations(
+    snapshot: Channel[],
+    afterRevision: number,
+  ): Channel[] {
+    if (channelMutationRevision === afterRevision) return snapshot;
+    let merged = snapshot;
+    for (const mutation of channelMutations.values()) {
+      if (mutation.revision > afterRevision) {
+        merged = upsertChannel(merged, mutation.channel);
+      }
+    }
+    return merged;
+  }
+
   async function loadChannels(): Promise<void> {
+    const generation = ++channelsLoadGeneration;
+    const mutationRevision = channelMutationRevision;
     loadingChannels = true;
     channelsError = null;
     try {
       const resp = await invoke<ChannelsResponse | null>('list_channels');
-      channels = resp?.channels ?? [];
+      if (generation !== channelsLoadGeneration) return;
+      channels = mergeChannelMutations(resp?.channels ?? [], mutationRevision);
     } catch (err) {
+      if (generation !== channelsLoadGeneration) return;
       channelsError = typeof err === 'string' ? err : 'Could not load channels';
       channels = [];
       console.error('messages: list_channels failed', err);
     } finally {
-      loadingChannels = false;
+      if (generation === channelsLoadGeneration) loadingChannels = false;
     }
   }
 
@@ -931,6 +1123,7 @@
   }
 
   function selectChannel(c: Channel): void {
+    invalidateDmWork();
     selectedChannel = c;
     // Opening a channel clears DM / request / share selection so the pane
     // shows this channel.
@@ -942,6 +1135,8 @@
     // Opening a channel optimistically clears its rail unread; ChannelView also
     // calls mark_channel_read server-side.
     channels = clearChannelUnread(channels, c.channelId);
+    const cleared = channels.find((channel) => channel.channelId === c.channelId);
+    if (cleared) recordChannelMutation(cleared);
   }
 
   function openCreateChannel(companyUid: string | null): void {
@@ -959,6 +1154,7 @@
   function handleChannelCreated(channel: Channel): void {
     creatingChannel = false;
     channels = upsertChannel(channels, channel);
+    recordChannelMutation(channel);
     selectChannel(channel);
   }
 
@@ -966,6 +1162,7 @@
   // it in the rail + keep the selected reference fresh.
   function handleChannelChange(channel: Channel): void {
     channels = upsertChannel(channels, channel);
+    recordChannelMutation(channel);
     if (selectedChannel?.channelId === channel.channelId) {
       selectedChannel = channel;
     }
@@ -973,6 +1170,8 @@
 
   function handleChannelRead(channelId: string): void {
     channels = clearChannelUnread(channels, channelId);
+    const channel = channels.find((item) => item.channelId === channelId);
+    if (channel) recordChannelMutation(channel);
   }
 
   // A request card resolved (Accept / Decline / Block succeeded). Prune it from
@@ -981,6 +1180,7 @@
   // by the thread.
   function handleRequestResolved(req: DmRequest, action: RequestAction): void {
     requests = removeRequest(requests, req.pairKey);
+    recordRequestMutation(req.pairKey, null);
     if (selectedRequest?.pairKey === req.pairKey) selectedRequest = null;
     if (action === 'accept') {
       const peer: Contact = {
@@ -1017,6 +1217,7 @@
       source: null,
     };
     if (peer.personUid.startsWith('email:')) {
+      invalidateDmWork();
       selected = peer;
       selectedChannel = null;
       selectedRequest = null;
@@ -1031,7 +1232,17 @@
     }
   }
 
+  function invalidateDmWork(): void {
+    threadLoadGeneration += 1;
+    dmSendGeneration += 1;
+    loadingThread = false;
+    sending = false;
+  }
+
   async function selectContact(c: Contact): Promise<void> {
+    const generation = ++threadLoadGeneration;
+    dmSendGeneration += 1;
+    sending = false;
     selected = c;
     // Opening a DM clears channel / request / share selection so the pane shows
     // this conversation.
@@ -1048,20 +1259,34 @@
       const resp = await invoke<ThreadResponse>('fetch_dm_thread', {
         withPersonUid: c.personUid,
       });
+      if (
+        generation !== threadLoadGeneration ||
+        selected?.personUid !== c.personUid
+      ) return;
       // Server returns newest-first; render chronologically (oldest → newest).
       messages = appendLiveInbound([...(resp.messages ?? [])].reverse(), c.personUid);
       const preview = previewFromMessages(resp.messages ?? []);
       if (preview) applyContactPreview(c.personUid, preview);
     } catch (err) {
+      if (
+        generation !== threadLoadGeneration ||
+        selected?.personUid !== c.personUid
+      ) return;
       threadError = typeof err === 'string' ? err : 'Could not load this conversation';
       messages = [];
       console.error('messages: fetch_dm_thread failed', err);
     } finally {
-      loadingThread = false;
+      if (
+        generation === threadLoadGeneration &&
+        selected?.personUid === c.personUid
+      ) {
+        loadingThread = false;
+      }
     }
   }
 
   function openAgentThread(): void {
+    invalidateDmWork();
     selectedChannel = null;
     selectedRequest = null;
     selectedShareEvents = [];
@@ -1101,10 +1326,23 @@
     ].join('\n');
   }
 
-  async function sendAgentPrompt(text: string): Promise<void> {
+  function dmSendIsCurrent(peer: Contact, generation: number): boolean {
+    return (
+      generation === dmSendGeneration &&
+      selected?.personUid === peer.personUid
+    );
+  }
+
+  async function sendAgentPrompt(
+    text: string,
+    peer: Contact,
+    generation: number,
+  ): Promise<void> {
+    const folder = hqFolderPath;
     const prompt = buildAgentPrompt(text);
-    const url = buildClaudeCodeUrl({ folder: hqFolderPath, prompt });
+    const url = buildClaudeCodeUrl({ folder, prompt });
     await invoke('open_claude_code_link', { url });
+    if (!dmSendIsCurrent(peer, generation)) return;
     messages = [
       ...messages,
       {
@@ -1124,7 +1362,7 @@
         fromEmail: '',
         fromDisplayName: 'Your agent',
         body: 'Opened in Claude Code.',
-        details: hqFolderPath ? `Workspace: ${hqFolderPath}` : null,
+        details: folder ? `Workspace: ${folder}` : null,
         prompt,
         createdAt: new Date().toISOString(),
         direction: 'in',
@@ -1134,22 +1372,25 @@
 
   async function sendReply(text: string): Promise<void> {
     if (!text || sending || !selected) return;
+    const peer = selected;
+    const generation = ++dmSendGeneration;
     sending = true;
     sendError = null;
     try {
-      if (selected.source === 'agent') {
-        await sendAgentPrompt(text);
-      } else if (selected.personUid.startsWith('email:')) {
+      if (peer.source === 'agent') {
+        await sendAgentPrompt(text, peer, generation);
+      } else if (peer.personUid.startsWith('email:')) {
         // Unresolved (email-only) peer — e.g. "Message the sharer" on a legacy
         // share row with no issuerPersonUid. Route through the compose-flow
         // command, which addresses by email and may hold the message behind a
         // connection request (202).
         const sentAt = new Date().toISOString();
         const outcome = await invoke<{ state: string }>('send_dm_to_email', {
-          toEmail: selected.email,
+          toEmail: peer.email,
           toPersonUid: null,
           body: text,
         });
+        if (!dmSendIsCurrent(peer, generation)) return;
         const pending = outcome?.state === 'connectionRequested';
         messages = [
           ...messages,
@@ -1165,13 +1406,14 @@
             direction: 'out',
             pending,
             pendingLabel: pending
-              ? `Pending — waiting for ${displayLabel(selected)} to accept`
+              ? `Pending — waiting for ${displayLabel(peer)} to accept`
               : null,
           },
         ];
       } else {
         const sentAt = new Date().toISOString();
-        await invoke('send_dm', { toPersonUid: selected.personUid, body: text });
+        await invoke('send_dm', { toPersonUid: peer.personUid, body: text });
+        if (!dmSendIsCurrent(peer, generation)) return;
         // Optimistic append — the durable copy lands in the mirror and shows on
         // the next thread load.
         messages = [
@@ -1190,7 +1432,7 @@
         ];
         contacts = sortContactsByRecentActivity(
           contacts.map((contact) =>
-            contact.personUid === selected?.personUid
+            contact.personUid === peer.personUid
               ? {
                   ...contact,
                   lastMessageAt: sentAt,
@@ -1201,17 +1443,19 @@
               : contact,
           ),
         );
+        noteContactMutation(peer.personUid);
       }
     } catch (err) {
+      if (!dmSendIsCurrent(peer, generation)) return;
       sendError =
         typeof err === 'string'
           ? err
-          : selected.source === 'agent'
+          : peer.source === 'agent'
             ? 'Failed to open Claude Code'
             : 'Failed to send message';
       console.error('messages: send failed', err);
     } finally {
-      sending = false;
+      if (dmSendIsCurrent(peer, generation)) sending = false;
     }
   }
 
@@ -1254,6 +1498,7 @@
     // pairKey so a re-emit doesn't double-add.
     registerListener<DmRequest>('dm:request-new', (e) => {
       requests = addRequest(requests, e.payload);
+      recordRequestMutation(e.payload.pairKey, e.payload);
     });
 
     // A pending request resolved elsewhere (accepted/declined/blocked, or pruned
@@ -1263,6 +1508,7 @@
       'dm:request-update',
       (e) => {
         requests = removeRequest(requests, e.payload.pairKey);
+        recordRequestMutation(e.payload.pairKey, null);
         if (selectedRequest?.pairKey === e.payload.pairKey) {
           selectedRequest = null;
         }
@@ -1285,6 +1531,8 @@
         } else {
           channels = bumpChannelUnread(channels, channelId, 1);
         }
+        const channel = channels.find((item) => item.channelId === channelId);
+        if (channel) recordChannelMutation(channel);
       },
     );
 
@@ -1322,6 +1570,7 @@
     // Upsert it into the rail so it shows live without a manual refresh.
     registerListener<Channel>('channel:updated', (e) => {
       channels = upsertChannel(channels, e.payload);
+      recordChannelMutation(e.payload);
       if (selectedChannel?.channelId === e.payload.channelId) {
         selectedChannel = e.payload;
       }
@@ -1346,10 +1595,16 @@
 </script>
 
 <div class="messages-window" class:embedded data-window="messages">
-  <!-- DESKTOP-002: source-list rail (glass) + naked main canvas. Compact header
-       — no redundant "Messages" page title; no People/Requests tabs. -->
+  <!-- DESKTOP-002: source-list rail (glass) + naked main canvas. The rail owns
+       orientation and compose; no People/Requests tabs or redundant page chrome. -->
   <aside class="rail" aria-label="Conversations">
     <header class="rail-header" data-tauri-drag-region>
+      <div class="rail-heading">
+        <h2>Messages</h2>
+        <span>
+          {railItems.length} {railItems.length === 1 ? 'conversation' : 'conversations'}
+        </span>
+      </div>
       <div class="primary-actions">
         <button
           class="new-message-btn"
@@ -1357,6 +1612,7 @@
           onclick={openCompose}
           title="New message"
           aria-label="New message"
+          aria-haspopup="dialog"
         >
           + New message
         </button>
@@ -1365,13 +1621,20 @@
 
     <div class="rail-body">
       {#snippet dmRow(c: Contact)}
+        {@const isActive =
+          selected?.personUid === c.personUid &&
+          !selectedRequest &&
+          selectedShareEvents.length === 0}
         <li>
           <button
             class="contact-row"
-            class:active={selected?.personUid === c.personUid && !selectedRequest && selectedShareEvents.length === 0}
+            class:active={isActive}
             type="button"
-            onclick={() => selectContact(c)}
+            onclick={() => void selectContact(c)}
             title={contactSubline(c) ? `${displayLabel(c)} — ${contactSubline(c)}` : displayLabel(c)}
+            aria-current={isActive ? 'page' : undefined}
+            aria-busy={isActive && loadingThread}
+            data-provenance="direct-message"
           >
             <span class="contact-avatar" aria-hidden="true">{initials(c)}</span>
             <span class="contact-meta">
@@ -1383,9 +1646,13 @@
                   </time>
                 {/if}
               </span>
-              {#if contactSubline(c)}
-                <span class="contact-sub">{contactSubline(c)}</span>
-              {/if}
+              <span class="contact-sub">
+                <span class="contact-provenance">Direct message</span>
+                {#if contactSubline(c)}
+                  <span class="contact-separator" aria-hidden="true"> · </span>
+                  {contactSubline(c)}
+                {/if}
+              </span>
             </span>
           </button>
         </li>
@@ -1393,39 +1660,68 @@
 
       {#snippet channelRow(ch: Channel)}
         {@const company = companyNameFor(ch, companyLabels)}
+        {@const isGroupDm = ch.scope === 'group'}
+        {@const isActive = selectedChannel?.channelId === ch.channelId}
+        {@const activityAt = channelActivityAt(ch)}
         <li>
           <button
             class="contact-row channel-row"
-            class:active={selectedChannel?.channelId === ch.channelId}
+            class:active={isActive}
             type="button"
             onclick={() => selectChannel(ch)}
-            title={`#${channelDisplayName(ch)}${company ? ` — ${company}` : ''}`}
+            title={`${isGroupDm ? '' : '#'}${channelDisplayName(ch)}${
+              company ? ` — ${company}` : ''
+            }`}
+            aria-current={isActive ? 'page' : undefined}
+            data-provenance={isGroupDm ? 'group-dm' : 'channel'}
           >
-            <span class="contact-avatar channel-avatar" aria-hidden="true">#</span>
+            <span
+              class="contact-avatar channel-avatar"
+              class:group-avatar={isGroupDm}
+              aria-hidden="true"
+            >
+              {#if isGroupDm}
+                <svg width="15" height="15" viewBox="0 0 18 18" fill="none">
+                  <circle cx="6.25" cy="6.25" r="2.25" stroke="currentColor" stroke-width="1.35" />
+                  <circle cx="12.25" cy="7" r="1.75" stroke="currentColor" stroke-width="1.25" />
+                  <path d="M2.75 14c.35-2.15 1.55-3.3 3.5-3.3s3.15 1.15 3.5 3.3M10 13.55c.3-1.65 1.2-2.55 2.7-2.55 1.45 0 2.35.85 2.65 2.55" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
+                </svg>
+              {:else}
+                #
+              {/if}
+            </span>
             <span class="contact-meta">
               <span class="contact-top">
                 <span class="contact-name">{channelDisplayName(ch)}</span>
                 {#if (ch.unread ?? 0) > 0}
                   <span class="unread-badge" aria-label={`${ch.unread} unread`}>{ch.unread}</span>
                 {/if}
+                {#if formatChannelTime(ch)}
+                  <time class="contact-time" datetime={activityAt ?? undefined}>
+                    {formatChannelTime(ch)}
+                  </time>
+                {/if}
               </span>
-              {#if company}
-                <span class="contact-sub">{company}</span>
-              {/if}
+              <span class="contact-sub">
+                <span class="contact-provenance">{channelProvenance(ch, company)}</span>
+              </span>
             </span>
           </button>
         </li>
       {/snippet}
 
       {#snippet requestRow(req: DmRequest)}
+        {@const isActive = selectedRequest?.pairKey === req.pairKey}
         <li>
           <button
             class="contact-row request-row"
-            class:active={selectedRequest?.pairKey === req.pairKey}
+            class:active={isActive}
             type="button"
             onclick={() => selectRequest(req)}
             title={`${requestDisplayName(req)} — connection request`}
             data-testid="request-rail-row"
+            data-provenance="connection-request"
+            aria-current={isActive ? 'page' : undefined}
           >
             <span class="contact-avatar request-avatar" aria-hidden="true">{requestInitials(req)}</span>
             <span class="contact-meta">
@@ -1435,7 +1731,11 @@
                   <time class="contact-time" datetime={req.createdAt}>{formatRequestTime(req)}</time>
                 {/if}
               </span>
-              <span class="contact-sub">{requestSubline(req)}</span>
+              <span class="contact-sub">
+                <span class="contact-provenance">Connection request</span>
+                <span class="contact-separator" aria-hidden="true"> · </span>
+                {requestSubline(req)}
+              </span>
             </span>
           </button>
         </li>
@@ -1443,14 +1743,17 @@
 
       {#snippet shareRow(share: ShareEvent)}
         {@const firstPath = share.paths[0] ?? ''}
+        {@const isActive = selectedShareEvents.some((e) => e.eventId === share.eventId)}
         <li>
           <button
             class="contact-row share-row"
-            class:active={selectedShareEvents.some((e) => e.eventId === share.eventId)}
+            class:active={isActive}
             type="button"
             onclick={() => selectShare(share)}
             title={firstPath ? `${shareRowLabel(share)} — ${shareTitle(firstPath)}` : shareRowLabel(share)}
             data-testid="share-rail-row"
+            data-provenance="shared-path"
+            aria-current={isActive ? 'page' : undefined}
           >
             <span class="contact-avatar share-avatar" aria-hidden="true">
               <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -1465,7 +1768,11 @@
                   <time class="contact-time" datetime={share.createdAt}>{formatShareTime(share)}</time>
                 {/if}
               </span>
-              <span class="contact-sub">{shareRowSubline(share)}</span>
+              <span class="contact-sub">
+                <span class="contact-provenance">Shared path</span>
+                <span class="contact-separator" aria-hidden="true"> · </span>
+                {shareRowSubline(share)}
+              </span>
             </span>
           </button>
         </li>
@@ -1486,20 +1793,42 @@
       {:else if contactsError}
         <div class="rail-status rail-error" role="alert">
           <p>{contactsError}</p>
-          <button type="button" class="rail-retry" onclick={() => loadContacts()}>Retry</button>
+          <button
+            type="button"
+            class="rail-retry"
+            onclick={() => loadContacts()}
+            disabled={loadingContacts}
+            aria-busy={loadingContacts}
+          >{loadingContacts ? 'Retrying…' : 'Retry'}</button>
         </div>
       {:else}
         {#if requestsError}
           <div class="rail-status rail-error" role="alert">
             <p>{requestsError}</p>
-            <button type="button" class="rail-retry" onclick={() => loadRequests()}>Retry</button>
+            <button
+              type="button"
+              class="rail-retry"
+              onclick={() => loadRequests()}
+              disabled={loadingRequests}
+              aria-busy={loadingRequests}
+            >{loadingRequests ? 'Retrying…' : 'Retry'}</button>
           </div>
         {/if}
         <div class="rail-actions">
-          <button type="button" class="rail-action" onclick={() => openCreateChannel(null)}>
+          <button
+            type="button"
+            class="rail-action"
+            onclick={() => openCreateChannel(null)}
+            aria-haspopup="dialog"
+          >
             + New channel
           </button>
-          <button type="button" class="rail-action" onclick={openCreateGroupDm}>
+          <button
+            type="button"
+            class="rail-action"
+            onclick={openCreateGroupDm}
+            aria-haspopup="dialog"
+          >
             + New group DM
           </button>
         </div>
@@ -1510,15 +1839,21 @@
               class:active={selected?.source === 'agent'}
               type="button"
               onclick={openAgentThread}
+              aria-current={selected?.source === 'agent' ? 'page' : undefined}
+              data-provenance="agent"
             >
               <span class="contact-avatar bolt-avatar" aria-hidden="true">⚡</span>
               <span class="contact-meta">
                 <span class="contact-name">Your agent</span>
-                <span class="contact-sub">Watching for work that needs you</span>
+                <span class="contact-sub">
+                  <span class="contact-provenance">Agent</span>
+                  <span class="contact-separator" aria-hidden="true"> · </span>
+                  Watching for work that needs you
+                </span>
               </span>
             </button>
           </li>
-          {#each railItems as item (item.key)}
+          {#each visibleRailItems as item (item.key)}
             {#if item.kind === 'dm'}
               {@render dmRow(item.contact)}
             {:else if item.kind === 'channel'}
@@ -1530,6 +1865,20 @@
             {/if}
           {/each}
         </ul>
+        {#if remainingRailItems > 0}
+          <button
+            type="button"
+            class="rail-show-more"
+            onclick={() =>
+              (railVisibleCount = Math.min(
+                railItems.length,
+                railVisibleCount + RAIL_RENDER_BATCH,
+              ))}
+          >
+            Show {Math.min(RAIL_RENDER_BATCH, remainingRailItems)} more
+            <span>{visibleRailItems.length} of {railItems.length}</span>
+          </button>
+        {/if}
         {#if railItems.length === 0}
           <p class="rail-status">No conversations yet.</p>
         {/if}
@@ -1660,26 +2009,51 @@
     background: transparent;
   }
 
-  /* ── Left rail (source-list / liquid-glass control layer) ────────────── */
+  /* ── Left rail ────────────────────────────────────────────────────────── */
 
   .rail {
-    width: 300px;
+    width: 320px;
     flex-shrink: 0;
     display: flex;
     flex-direction: column;
     border-right: 1px solid var(--border);
-    background: var(--surface-rail);
+    /* Local separation only: the window/desktop canvas already owns the live
+       material, so this rail must not stack another glass sheet over it. */
+    background: color-mix(in srgb, var(--v4-text-1, var(--fg)) 5%, transparent);
     min-height: 0;
   }
 
-  /* Compact header: primary actions only — no redundant "Messages" title. */
+  /* The rail header is wayfinding, not another boxed toolbar. */
   .rail-header {
     display: flex;
     align-items: center;
-    justify-content: flex-end;
-    gap: var(--space-2);
-    padding: var(--space-3) var(--space-4) var(--space-2);
+    justify-content: space-between;
+    gap: var(--space-3);
+    padding: var(--space-4) var(--space-4) var(--space-3);
     flex-shrink: 0;
+  }
+
+  .rail-heading {
+    min-width: 0;
+    display: grid;
+    gap: 2px;
+  }
+
+  .rail-heading h2 {
+    margin: 0;
+    color: var(--fg);
+    font-family: var(--font-display);
+    font-size: var(--type-section, var(--text-section));
+    font-weight: 650;
+    letter-spacing: -0.015em;
+    line-height: 1.15;
+  }
+
+  .rail-heading span {
+    color: var(--muted);
+    font-size: var(--type-metadata, var(--text-micro));
+    font-variant-numeric: tabular-nums;
+    line-height: 1.2;
   }
 
   .rail-header .primary-actions {
@@ -1697,21 +2071,20 @@
 
   .new-message-btn {
     flex-shrink: 0;
-    border: 1px solid var(--border-strong);
-    background: var(--surface-raise);
+    border: 0;
+    border-radius: 0;
+    background: transparent;
     color: var(--fg);
     font-family: var(--font-sans);
     font-size: var(--type-secondary, var(--text-sm));
-    font-weight: 500;
-    padding: var(--space-1) var(--space-2);
-    border-radius: var(--radius-sm);
+    font-weight: 600;
+    padding: var(--space-1) 0;
     cursor: pointer;
-    transition: background-color 0.12s ease, border-color 0.12s ease;
+    transition: color 0.12s ease, opacity 0.12s ease;
   }
 
   .new-message-btn:hover {
-    background: var(--row-hover);
-    border-color: var(--border-strong);
+    color: var(--muted-2);
   }
 
   .new-message-btn:focus-visible {
@@ -1723,7 +2096,7 @@
     flex: 1;
     overflow-y: auto;
     min-height: 0;
-    padding: var(--space-1) var(--space-2) var(--space-3);
+    padding: var(--space-1) var(--space-3) var(--space-4);
   }
 
   .rail-status {
@@ -1761,6 +2134,11 @@
     border-color: var(--border-strong);
   }
 
+  .rail-retry:disabled {
+    opacity: 0.58;
+    cursor: wait;
+  }
+
   .rail-retry:focus-visible {
     outline: 2px solid var(--border-strong);
     outline-offset: 1px;
@@ -1775,29 +2153,28 @@
      buttons matching the desktop language. */
   .rail-actions {
     display: flex;
-    gap: var(--space-1);
-    padding: var(--space-1) var(--space-1) var(--space-2);
+    gap: var(--space-3);
+    padding: var(--space-2) var(--space-2) var(--space-3);
+    border-bottom: 1px solid var(--border);
   }
 
   .rail-action {
-    flex: 1;
-    border: 1px solid var(--border);
-    background: var(--surface-raise);
+    flex: 0 1 auto;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
     color: var(--muted-2);
     font-family: var(--font-sans);
     font-size: var(--text-micro);
     font-weight: 500;
-    padding: var(--space-1) var(--space-2);
-    border-radius: var(--radius-sm);
+    padding: var(--space-1) 0;
     cursor: pointer;
     white-space: nowrap;
-    transition: background-color 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+    transition: color 0.12s ease;
   }
 
   .rail-action:hover {
-    background: var(--row-hover);
     color: var(--fg);
-    border-color: var(--border-strong);
   }
 
   .rail-action:focus-visible {
@@ -1812,6 +2189,11 @@
     font-family: var(--font-display);
     font-size: var(--text-base);
     font-weight: 600;
+  }
+
+  .channel-avatar.group-avatar {
+    color: var(--muted-2);
+    font-family: var(--font-sans);
   }
 
   /* Unread count on a channel row — neutral, tabular, no decoration color. */
@@ -1840,16 +2222,44 @@
     padding: 0;
     display: flex;
     flex-direction: column;
-    gap: 1px;
+    gap: 3px;
+  }
+
+  .rail-show-more {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: calc(100% - var(--space-4));
+    margin: var(--space-2);
+    padding: var(--space-2) 0;
+    border: 0;
+    border-top: 1px solid var(--border);
+    border-radius: 0;
+    background: transparent;
+    color: var(--fg);
+    font: inherit;
+    font-size: var(--text-base);
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .rail-show-more span {
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .rail-show-more:hover {
+    color: var(--fg);
   }
 
   .contact-row {
     display: flex;
     align-items: center;
-    gap: var(--space-2);
+    gap: 10px;
     width: 100%;
+    min-height: 58px;
     text-align: left;
-    padding: var(--space-2);
+    padding: 9px var(--space-2);
     border: none;
     border-radius: 0;
     background: transparent;
@@ -1870,6 +2280,15 @@
     box-shadow: inset 0 -1px 0 var(--border);
   }
 
+  .contact-row.active .contact-name {
+    font-weight: 700;
+  }
+
+  .contact-row.active .contact-avatar {
+    border-color: var(--border-strong);
+    color: var(--fg);
+  }
+
   .contact-row:focus-visible {
     outline: 2px solid var(--border-strong);
     outline-offset: -2px;
@@ -1877,9 +2296,9 @@
 
   .contact-avatar {
     flex-shrink: 0;
-    width: 26px;
-    height: 26px;
-    border-radius: 7px;
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -1893,7 +2312,7 @@
   }
 
   .agent-row {
-    margin-bottom: var(--space-1);
+    margin-bottom: var(--space-2);
     border-bottom: 1px solid var(--border);
   }
 
@@ -1915,7 +2334,7 @@
 
   .contact-top {
     display: flex;
-    align-items: baseline;
+    align-items: center;
     gap: var(--space-2);
     min-width: 0;
   }
@@ -1945,6 +2364,15 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .contact-provenance {
+    color: var(--muted-2);
+    font-weight: 600;
+  }
+
+  .contact-separator {
+    color: var(--muted);
   }
 
   .request-avatar,
@@ -2044,7 +2472,7 @@
     flex-direction: column;
     min-height: 0;
     border-left: 1px solid var(--border);
-    background: var(--surface-rail);
+    background: color-mix(in srgb, var(--v4-text-1, var(--fg)) 5%, transparent);
   }
 
   /* Narrow: overlay the conversation pane instead of squeezing a third column
@@ -2067,7 +2495,7 @@
     }
 
     .rail {
-      flex-basis: min(260px, 42%);
+      flex-basis: min(280px, 44%);
     }
   }
 

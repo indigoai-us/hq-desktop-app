@@ -26,6 +26,7 @@
    */
   import {
     dirEntryToLazyNode,
+    fileTreeRowMeta,
     filterLazyNodes,
     flattenLazy,
     parentPathOf,
@@ -66,8 +67,12 @@
   let expanded = $state(new Set<string>());
   // Per-directory load state keyed by path so a spinner / re-fetch guard works.
   let loadingPaths = $state(new Set<string>());
+  // Failed folders stay unloaded and retryable instead of becoming false-empty.
+  let loadErrorPaths = $state(new Set<string>());
   let rootLoading = $state(false);
   let rootError = $state<string | null>(null);
+  let rootRetryNonce = $state(0);
+  let treeGeneration = 0;
   // Keyboard focus path (roving tabindex) — independent of file selection.
   let focusedPath = $state<string | null>(null);
 
@@ -75,9 +80,13 @@
   // against an out-of-order completion when the user switches the filter fast.
   $effect(() => {
     const base = rootPath;
+    void rootRetryNonce;
+    const generation = treeGeneration + 1;
+    treeGeneration = generation;
     roots = [];
     expanded = new Set();
     loadingPaths = new Set();
+    loadErrorPaths = new Set();
     rootError = null;
     rootLoading = true;
     focusedPath = null;
@@ -85,17 +94,19 @@
     let cancelled = false;
     void loadChildren(base)
       .then((entries) => {
-        if (!cancelled) roots = entries.map(dirEntryToLazyNode);
+        if (!cancelled && generation === treeGeneration) {
+          roots = entries.map(dirEntryToLazyNode);
+        }
       })
       .catch((err) => {
         console.error('list_hq_dir failed:', err);
-        if (!cancelled) {
+        if (!cancelled && generation === treeGeneration) {
           rootError = String(err);
           roots = [];
         }
       })
       .finally(() => {
-        if (!cancelled) rootLoading = false;
+        if (!cancelled && generation === treeGeneration) rootLoading = false;
       });
 
     return () => {
@@ -144,22 +155,34 @@
 
   async function ensureLoaded(node: LazyNode): Promise<void> {
     if (node.loaded || loadingPaths.has(node.path)) return;
+    const generation = treeGeneration;
     const next = new Set(loadingPaths);
     next.add(node.path);
     loadingPaths = next;
+    const clearedErrors = new Set(loadErrorPaths);
+    clearedErrors.delete(node.path);
+    loadErrorPaths = clearedErrors;
     try {
       const entries = await loadChildren(node.path);
+      if (generation !== treeGeneration) return;
       roots = withLoadedChildren(roots, node.path, entries.map(dirEntryToLazyNode));
     } catch (err) {
       console.error('list_hq_dir failed:', err);
-      // Mark loaded with empty children so we don't spin forever; the empty
-      // folder simply shows nothing under it.
-      roots = withLoadedChildren(roots, node.path, []);
+      if (generation !== treeGeneration) return;
+      const failed = new Set(loadErrorPaths);
+      failed.add(node.path);
+      loadErrorPaths = failed;
     } finally {
+      if (generation !== treeGeneration) return;
       const done = new Set(loadingPaths);
       done.delete(node.path);
       loadingPaths = done;
     }
+  }
+
+  function retryRoot(): void {
+    if (rootLoading) return;
+    rootRetryNonce += 1;
   }
 
   function toggle(node: LazyNode): void {
@@ -183,6 +206,12 @@
     }
   }
 
+  function onDirectoryClick(event: MouseEvent, node: LazyNode): void {
+    const target = event.target;
+    if (target instanceof Element && target.closest('.ft-node-error')) return;
+    onRowClick(node);
+  }
+
   function focusRow(path: string): void {
     focusedPath = path;
     queueMicrotask(() => {
@@ -199,6 +228,14 @@
    * or collapse folders.
    */
   function handleTreeKeydown(event: KeyboardEvent): void {
+    // Retry and other contextual actions remain normal buttons. Only a focused
+    // treeitem participates in the tree's roving Arrow/Enter/Space behavior.
+    if (
+      !(event.target instanceof HTMLElement) ||
+      event.target.getAttribute('role') !== 'treeitem'
+    ) {
+      return;
+    }
     if (rows.length === 0) return;
     const paths = rows.map((r) => r.node.path);
     const index = focusedPath ? paths.indexOf(focusedPath) : -1;
@@ -255,23 +292,11 @@
     }
   }
 
-  function rowMeta(node: LazyNode): string {
-    const parent = parentPathOf(node.path);
-    if (!parent) return node.isDir ? 'Folder' : 'File';
-    // Show path relative to tree root when possible.
-    const relative =
-      rootPath && parent.startsWith(`${rootPath}/`)
-        ? parent.slice(rootPath.length + 1)
-        : rootPath && parent === rootPath
-          ? '.'
-          : parent;
-    return relative || (node.isDir ? 'Folder' : 'File');
-  }
 </script>
 
 <div
   class="file-tree"
-  role="tree"
+  role={!rootLoading && !rootError && rows.length > 0 ? 'tree' : undefined}
   tabindex="-1"
   aria-label="Files"
   data-testid="company-file-tree"
@@ -280,45 +305,89 @@
   {#if rootLoading}
     <div class="ft-status" aria-label="Loading files" data-testid="file-tree-loading">Loading…</div>
   {:else if rootError}
-    <div class="ft-status" role="alert" data-testid="file-tree-error">Files unavailable</div>
+    <div class="ft-status ft-root-error" role="alert" data-testid="file-tree-error">
+      <span>Files unavailable</span>
+      <button
+        type="button"
+        class="ft-retry"
+        data-testid="file-tree-root-retry"
+        onclick={retryRoot}
+        disabled={rootLoading}
+        aria-busy={rootLoading}
+      >
+        {rootLoading ? 'Retrying…' : 'Retry'}
+      </button>
+    </div>
   {:else if rows.length === 0}
     <div class="ft-status" data-testid="file-tree-empty">
       {filtering ? 'No matching files' : 'No files'}
     </div>
   {:else}
     {#each rows as { node, depth } (node.path)}
+      {@const meta = fileTreeRowMeta(node, rootPath)}
       {#if node.isDir}
-        <button
-          type="button"
-          class="ft-row ft-dir"
+        <div
+          class="ft-dir-item"
           class:focused={node.path === focusedPath}
-          style={`padding-left: ${8 + depth * 14}px`}
           role="treeitem"
+          aria-label={meta ? `${node.name}, ${meta}` : node.name}
           aria-expanded={filtering ? true : expanded.has(node.path)}
           aria-selected={node.path === selectedPath}
+          aria-busy={loadingPaths.has(node.path)}
           tabindex={node.path === focusedPath ? 0 : -1}
           data-testid="file-tree-row"
           data-path={node.path}
-          onclick={() => onRowClick(node)}
+          onclick={(event) => onDirectoryClick(event, node)}
+          onkeydown={(event) => {
+            event.stopPropagation();
+            handleTreeKeydown(event);
+          }}
         >
-          <span
-            class="ft-chevron"
-            class:open={filtering || expanded.has(node.path)}
-            class:hidden={!node.hasChildren && !node.loaded}
+          <div
+            class="ft-row ft-dir"
+            style={`padding-left: ${8 + depth * 14}px`}
             aria-hidden="true"
           >
-            <svg viewBox="0 0 12 12" width="12" height="12">
-              <path d="M4.5 2.5 L8 6 L4.5 9.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
-            </svg>
-          </span>
-          <span class="ft-copy title-stack">
-            <span class="ft-label">{node.name}</span>
-            <span class="ft-meta">{rowMeta(node)}</span>
-          </span>
-          {#if loadingPaths.has(node.path)}
-            <span class="ft-spinner" aria-hidden="true"></span>
+            <span
+              class="ft-chevron"
+              class:open={filtering || expanded.has(node.path)}
+              class:hidden={!node.hasChildren && !node.loaded}
+            >
+              <svg viewBox="0 0 12 12" width="12" height="12">
+                <path d="M4.5 2.5 L8 6 L4.5 9.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+            </span>
+            <span class="ft-copy title-stack">
+              <span class="ft-label">{node.name}</span>
+              {#if meta}
+                <span class="ft-meta">{meta}</span>
+              {/if}
+            </span>
+            {#if loadingPaths.has(node.path)}
+              <span class="ft-spinner"></span>
+            {/if}
+          </div>
+          {#if loadErrorPaths.has(node.path) && (filtering || expanded.has(node.path))}
+            <div
+              class="ft-node-error"
+              style={`padding-left: ${26 + depth * 14}px`}
+              role="alert"
+              data-testid="file-tree-node-error"
+            >
+              <span>Couldn’t load this folder</span>
+              <button
+                type="button"
+                class="ft-retry"
+                data-testid="file-tree-node-retry"
+                onclick={() => void ensureLoaded(node)}
+                disabled={loadingPaths.has(node.path)}
+                aria-busy={loadingPaths.has(node.path)}
+              >
+                {loadingPaths.has(node.path) ? 'Retrying…' : 'Retry'}
+              </button>
+            </div>
           {/if}
-        </button>
+        </div>
       {:else}
         <button
           type="button"
@@ -336,7 +405,9 @@
         >
           <span class="ft-copy title-stack">
             <span class="ft-label">{node.name}</span>
-            <span class="ft-meta">{rowMeta(node)}</span>
+            {#if meta}
+              <span class="ft-meta">{meta}</span>
+            {/if}
           </span>
         </button>
       {/if}
@@ -351,6 +422,11 @@
     gap: 1px;
     min-width: 0;
     font-family: var(--font-sans);
+  }
+
+  .ft-dir-item {
+    min-width: 0;
+    outline: none;
   }
 
   .ft-row {
@@ -380,6 +456,11 @@
   }
 
   .ft-row:focus-visible {
+    outline: 2px solid var(--v4-focus-ring, var(--v4-text-1));
+    outline-offset: 1px;
+  }
+
+  .ft-dir-item:focus-visible > .ft-row {
     outline: 2px solid var(--v4-focus-ring, var(--v4-text-1));
     outline-offset: 1px;
   }
@@ -488,5 +569,48 @@
     color: var(--v4-text-3);
     font-size: var(--type-body, var(--text-base));
     text-align: center;
+  }
+
+  .ft-root-error,
+  .ft-node-error {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+  }
+
+  .ft-node-error {
+    justify-content: flex-start;
+    min-height: 28px;
+    padding-block: 3px;
+    padding-right: 8px;
+    color: var(--v4-text-3);
+    font-size: var(--type-metadata, var(--text-micro));
+  }
+
+  .ft-retry {
+    padding: 2px 0;
+    border: 0;
+    border-bottom: 1px solid transparent;
+    border-radius: 0;
+    background: transparent;
+    color: var(--v4-text-2);
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .ft-retry:hover {
+    border-bottom-color: currentColor;
+    color: var(--v4-text-1);
+  }
+
+  .ft-retry:focus-visible {
+    outline: 2px solid var(--v4-focus-ring, var(--v4-text-1));
+    outline-offset: 2px;
+  }
+
+  .ft-retry:disabled {
+    opacity: 0.6;
   }
 </style>

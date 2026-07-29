@@ -3,6 +3,7 @@
 /// Tauri build (that uses vite.config.ts). Run: npm run dev:preview
 import { defineConfig } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
+import pkg from './package.json' with { type: 'json' };
 import { resolve } from 'node:path';
 
 const mock = (f: string) => resolve(__dirname, 'dev-harness/mocks', f);
@@ -10,7 +11,7 @@ const mock = (f: string) => resolve(__dirname, 'dev-harness/mocks', f);
 export default defineConfig({
   plugins: [svelte()],
   define: {
-    __APP_VERSION__: JSON.stringify('0.0.0-preview'),
+    __APP_VERSION__: JSON.stringify(pkg.version),
   },
   resolve: {
     alias: {

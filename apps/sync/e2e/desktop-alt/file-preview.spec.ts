@@ -11,15 +11,14 @@ import { readRepoFile } from './harness';
  * Acceptance criteria covered:
  *   1. Markdown files are detected by extension and rendered as HTML via
  *      renderMarkdown, not shown as raw text.
- *   2. Open-in-Claude-Code reuses OpenFileInClaudeCode.svelte (claude:// path)
- *      — FilePreviewPane does NOT hand-roll a claude:// scheme and does NOT
- *      route that action through plugin-shell open().
+ *   2. Open-in-Claude-Code reuses OpenFileInClaudeCode.svelte in authorized
+ *      mode, so the renderer supplies only the HQ-relative file path.
  *   3. Binary / oversized files drive the unsupported placeholder via .catch();
  *      the open actions render in the header independent of preview success.
  *   4. get_company_file_content is invoked with { path } (binary/oversized
  *      triggers the catch path, which drives the unsupported state).
- *   5. Reveal in Finder uses plugin-shell open() (shell:allow-open grant) for
- *      reveal only — it is not used for Open-in-Claude-Code.
+ *   5. Reveal in Finder uses the same native canonical-path + live-membership
+ *      authorization boundary as preview.
  *   6. Files mode wires the tree + preview: FilesModeSidebar owns the tree and
  *      file select, DesktopApp renders FilePreviewPane in the main area driven
  *      by the selected path (US-009 moved this off the per-company panel).
@@ -39,6 +38,14 @@ describe('desktop-alt file preview pane + open actions (US-004 file-explorer)', 
   const tree = readRepoFile(
     'src/desktop-alt/components/CompanyFileTree.svelte',
   );
+  const openFile = readRepoFile(
+    'src/desktop-alt/components/OpenFileInClaudeCode.svelte',
+  );
+  const rust = readRepoFile('src-tauri/src/commands/desktop_alt.rs');
+  const mainRs = readRepoFile('src-tauri/src/main.rs');
+  const tauriConfig = readRepoFile('src-tauri/tauri.conf.json');
+  const cargoToml = readRepoFile('src-tauri/Cargo.toml');
+  const capability = readRepoFile('src-tauri/capabilities/desktop-alt.json');
 
   // -------------------------------------------------------------------------
   // US-004 e2eTest 1: Markdown detection + renderMarkdown rendering
@@ -85,10 +92,14 @@ describe('desktop-alt file preview pane + open actions (US-004 file-explorer)', 
       "import OpenFileInClaudeCode from './OpenFileInClaudeCode.svelte'",
     );
 
-    // Renders it, passing the selected file path + hqFolderPath as folder.
+    // Files/Knowledge mode sends only the selected HQ-relative path.
     expect(preview).toContain('<OpenFileInClaudeCode');
     expect(preview).toContain('file={path}');
-    expect(preview).toContain('folder={hqFolderPath}');
+    expect(preview).toContain('authorizedFile');
+    expect(preview).not.toContain('folder={hqFolderPath}');
+    expect(openFile).toContain(
+      "invoke('open_authorized_file_in_claude', { path: file })",
+    );
 
     // The open-in-claude-code testid originates from the reused component.
     // FilePreviewPane does NOT independently produce this testid — it comes
@@ -105,24 +116,32 @@ describe('desktop-alt file preview pane + open actions (US-004 file-explorer)', 
     // No hand-rolled claude:// query string in FilePreviewPane source.
     expect(preview).not.toMatch(/claude:\/\/[\w/]*\?/);
 
-    // plugin-shell open() is imported — but used ONLY for Reveal in Finder,
-    // not for Open-in-Claude-Code.  Assert it is present (reveal needs it):
-    expect(preview).toContain("from '@tauri-apps/plugin-shell'");
-    // And that it is NOT invoked near the open-in-claude-code path — the
-    // import is used exclusively in the revealInFinder function.
+    // Neither action exposes a local filesystem path to plugin-shell.
+    expect(preview).not.toContain("@tauri-apps/plugin-shell");
     expect(preview).toContain('async function revealInFinder');
-    expect(preview).toContain('await open(absolutePath)');
+    expect(preview).toContain('const actedPath = path');
+    expect(preview).toContain(
+      "await invoke('reveal_authorized_file', { path: actedPath })",
+    );
+    expect(preview).toContain('generation === revealGeneration');
   });
 
   // -------------------------------------------------------------------------
   // US-004 e2eTest 3: Binary / oversized drives unsupported placeholder;
   //                   open actions render in header regardless of state
   // -------------------------------------------------------------------------
-  it('previews images and PDFs via convertFileSrc (shared by Knowledge + Files mode)', () => {
-    expect(preview).toContain("import { convertFileSrc, invoke } from '@tauri-apps/api/core'");
+  it('previews images and PDFs via an authorized, size-capped native byte command', () => {
+    expect(preview).toContain("import { invoke } from '@tauri-apps/api/core'");
     expect(preview).toContain("from '../lib/file-preview-kind'");
     expect(preview).toContain('filePreviewKind');
-    expect(preview).toContain('convertFileSrc(abs)');
+    expect(preview).toContain(
+      "invoke<AuthorizedFilePreview>('get_authorized_file_preview'",
+    );
+    expect(preview).toContain(
+      'mediaUrl = `data:${mimeType};base64,${dataBase64}`',
+    );
+    expect(preview).not.toContain('convertFileSrc');
+    expect(preview).not.toContain('absolutePath');
     expect(preview).toContain('data-testid="file-preview-image"');
     expect(preview).toContain('data-testid="file-preview-pdf"');
     // Knowledge panel reuses the same pane.
@@ -187,27 +206,38 @@ describe('desktop-alt file preview pane + open actions (US-004 file-explorer)', 
   });
 
   // -------------------------------------------------------------------------
-  // Additional acceptance criteria: Reveal in Finder uses plugin-shell open()
+  // Additional acceptance criteria: reveal stays inside native authorization.
   // -------------------------------------------------------------------------
-  it('uses plugin-shell open() for Reveal in Finder only — not for claude:// dispatch', () => {
-    // plugin-shell open() is imported.
-    expect(preview).toContain("import { open } from '@tauri-apps/plugin-shell'");
-
+  it('uses HQ-relative native authorization for Reveal in Finder', () => {
     // Reveal button carries the correct testid.
     expect(preview).toContain('data-testid="reveal-in-finder"');
 
-    // open() is called inside the revealInFinder function (the absolute path).
-    expect(preview).toContain('await open(absolutePath)');
+    expect(preview).toContain('const actedPath = path');
+    expect(preview).toContain(
+      "await invoke('reveal_authorized_file', { path: actedPath })",
+    );
+    expect(preview).toContain('generation === revealGeneration');
+    expect(preview).not.toContain("@tauri-apps/plugin-shell");
+    expect(preview).not.toContain('absolutePath');
+  });
 
-    // absolutePath is built from hqFolderPath + '/' + path.
-    expect(preview).toContain('hqFolderPath');
-    expect(preview).toContain('absolutePath');
-
-    // Reveal self-suppresses when hqFolderPath is empty ({#if absolutePath}).
-    expect(preview).toContain('{#if absolutePath}');
-
-    // open() is NOT used for any claude:// dispatch in FilePreviewPane.
-    expect(preview).not.toMatch(/open\(['"]claude:\/\//);
+  it('registers native file actions and removes wildcard/ambient renderer file access', () => {
+    expect(rust).toContain('pub async fn get_authorized_file_preview(');
+    expect(rust).toContain('pub async fn reveal_authorized_file(');
+    expect(rust).toContain('pub async fn open_authorized_file_in_claude(');
+    expect(rust).toContain('resolve_authorized_file_target(&path).await?');
+    expect(rust).toContain('revalidate_authorized_file_target(&target).await?');
+    expect(rust).toContain('MAX_MEDIA_PREVIEW_BYTES');
+    expect(rust).not.toContain('"svg" => Some("image/svg+xml")');
+    expect(mainRs).toContain('commands::desktop_alt::get_authorized_file_preview');
+    expect(mainRs).toContain('commands::desktop_alt::reveal_authorized_file');
+    expect(mainRs).toContain('commands::desktop_alt::open_authorized_file_in_claude');
+    expect(mainRs).not.toContain('commands::process::spawn_process');
+    expect(mainRs).not.toContain('commands::process::cancel_process');
+    expect(tauriConfig).not.toContain('"assetProtocol"');
+    expect(tauriConfig).not.toContain('"**"');
+    expect(cargoToml).not.toContain('"protocol-asset"');
+    expect(capability).toContain('"core:image:deny-from-path"');
   });
 
   // -------------------------------------------------------------------------
@@ -223,15 +253,20 @@ describe('desktop-alt file preview pane + open actions (US-004 file-explorer)', 
     expect(sidebar).toContain('onselectfile?: (path: string) => void');
 
     // The shell renders FilePreviewPane in the main content area, driven by the
-    // route-carried selected path + the loaded HQ root.
+    // route-carried selected path only.
     expect(desktopApp).toContain(
       "import FilePreviewPane from './components/FilePreviewPane.svelte'",
     );
     expect(desktopApp).toContain('<FilePreviewPane path={filesSelectedPath}');
-    expect(desktopApp).toContain('hqFolderPath={hqFolderPath ?? \'\'}');
+    expect(desktopApp).not.toContain(
+      '<FilePreviewPane path={filesSelectedPath} hqFolderPath=',
+    );
 
-    // A file select flows: tree onselect → onselectfile → files route path.
-    expect(desktopApp).toContain('onselectfile={(path) =>');
+    // A file select flows through the membership-guarded route helper before
+    // the selected path can mount the raw file preview.
+    expect(desktopApp).toContain('onselectfile={navigateFilesPath}');
+    expect(desktopApp).toContain('function navigateFilesPath(path: string)');
+    expect(desktopApp).toContain('isFilesRouteAllowed(');
     expect(desktopApp).toContain(
       "navigate({ kind: 'files', slug: filesActiveSlug ?? undefined, path })",
     );

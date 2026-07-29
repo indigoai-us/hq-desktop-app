@@ -2,6 +2,7 @@
   import type { Story, StoryLiveRunView } from '../lib/projects-model';
   import { relativeActivity } from '../lib/sessions';
   import LabelChip from './LabelChip.svelte';
+  import ProvenanceLine from './ProvenanceLine.svelte';
 
   /**
    * StoryCard — a single project task as a movable work object (DESKTOP-005).
@@ -92,6 +93,13 @@
   <div class="title-stack">
     <h4 class="story-title" title={story.title}>{story.title}</h4>
   </div>
+
+  <ProvenanceLine
+    provenance={story.provenance}
+    kind="story"
+    testid="story-card-provenance"
+    compact
+  />
 
   {#if labels.length > 0}
     <div class="labels">

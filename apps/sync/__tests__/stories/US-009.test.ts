@@ -63,6 +63,20 @@ describe('US-009: installed + marketplace packs live in one Library surface', ()
     expect(src).toContain('const available = $derived(view?.packs?.available ?? []);');
     expect(src).toContain('data-testid="installed-group"');
   });
+
+  it('keeps duplicate CLI identities from crashing the Installed surface', () => {
+    const src = normalize(installedPanel);
+    expect(src).toContain(
+      "{#each installed as p, index (`installed:${p.name}:${p.source ?? p.transport ?? ''}:${index}`)}",
+    );
+    expect(src).toContain(
+      '{#each available as a, index (`available:${a.source}:${index}`)}',
+    );
+    expect(src).toContain(
+      '{#each registryAvailable as r, index (`registry:${r.slug}:${index}`)}',
+    );
+    expect(src).not.toContain('{#each installed as p (p.name)}');
+  });
 });
 
 describe('US-009: the standalone Packages destination is removed', () => {

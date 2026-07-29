@@ -41,7 +41,7 @@
     onUninvite?: (evt: MeetingEvent) => void;
     onJoinNow?: (evt: MeetingEvent) => void;
     /** Open a meeting URL in the system browser (Tauri shell open, passed in). */
-    onOpenExternal?: (url: string) => void;
+    onOpenExternal?: (url: string) => void | Promise<void>;
   }
 
   let {
@@ -61,6 +61,21 @@
   }: Props = $props();
 
   const upNextId = $derived(upNext?.id ?? null);
+  let openingEventIds = $state(new Set<string>());
+
+  async function openMeeting(eventId: string, url: string): Promise<void> {
+    if (openingEventIds.has(eventId)) return;
+    openingEventIds = new Set(openingEventIds).add(eventId);
+    try {
+      await onOpenExternal(url);
+    } catch (err) {
+      console.error('meetings: failed to open meeting URL', err);
+    } finally {
+      const next = new Set(openingEventIds);
+      next.delete(eventId);
+      openingEventIds = next;
+    }
+  }
 
   $effect(() => {
     const id = focusedMeetingId?.trim();
@@ -153,13 +168,19 @@
                 <button
                   type="button"
                   class="row-icon-btn row-icon-join"
-                  title="Open meeting in browser"
+                  title={openingEventIds.has(event.id) ? 'Opening meeting…' : 'Open meeting in browser'}
                   aria-label="Open meeting in browser"
-                  onclick={() => onOpenExternal(url)}
+                  disabled={openingEventIds.has(event.id)}
+                  aria-busy={openingEventIds.has(event.id)}
+                  onclick={() => void openMeeting(event.id, url)}
                 >
-                  <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
-                    <path d="M4 2h6v6M10 2L4.5 7.5M2 4v6h6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
-                  </svg>
+                  {#if openingEventIds.has(event.id)}
+                    <span class="row-icon-spinner" aria-hidden="true"></span>
+                  {:else}
+                    <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                      <path d="M4 2h6v6M10 2L4.5 7.5M2 4v6h6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
+                    </svg>
+                  {/if}
                 </button>
               {/if}
               {#if !url}
@@ -367,8 +388,8 @@
   }
 
   .meeting-row.focused {
-    background: color-mix(in srgb, var(--v4-accent, #c9a227) 12%, transparent);
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--v4-accent, #c9a227) 35%, transparent);
+    background: var(--v4-active-row);
+    box-shadow: inset 0 0 0 1px var(--v4-hairline);
   }
 
   .mtime {

@@ -64,6 +64,8 @@ afterEach(async () => {
     component = null;
   }
   host?.remove();
+  delete (window as unknown as { __TAURI_INTERNALS__?: unknown })
+    .__TAURI_INTERNALS__;
   vi.clearAllMocks();
   vi.useRealTimers();
 });
@@ -221,12 +223,22 @@ describe('US-012: never hide under pointer or during reply', () => {
       expect(stillInput!.value).toBe('drafting a reply');
     });
 
-    it('sending the reply (Enter) releases the hold and auto-hide resumes', () => {
+    it('sending the reply (Enter) releases the hold and auto-hide resumes', async () => {
       vi.useFakeTimers();
       const now = Date.now();
       mountWidget({
         initialItems: [
-          stackItem({ id: 'dm5', type: 'message', kind: 'dm', actor: 'Corey', text: 'brb' }, now),
+          stackItem(
+            {
+              id: 'dm5',
+              type: 'message',
+              kind: 'dm',
+              actor: 'Corey',
+              text: 'brb',
+              data: { fromPersonUid: 'person-corey' },
+            },
+            now,
+          ),
         ],
       });
 
@@ -249,10 +261,31 @@ describe('US-012: never hide under pointer or during reply', () => {
       flushSync();
       expect(host.querySelector('[data-testid="notification-row"]')).toBeTruthy();
 
+      // This is the successful-send contract. Failure preservation is covered
+      // separately in widget-native-behavior.test.ts.
+      const nativeInvoke = vi.fn().mockResolvedValue(undefined);
+      Object.defineProperty(window, '__TAURI_INTERNALS__', {
+        configurable: true,
+        enumerable: false,
+        writable: true,
+        value: { invoke: nativeInvoke },
+      });
+      // Resolve the dynamic bridge module before dispatch so the assertion
+      // waits on the send itself rather than module loading.
+      await import('@tauri-apps/api/core');
+
       // Enter submits: draft clears, input blurs, hold releases.
       input.dispatchEvent(
         new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
       );
+      await vi.waitFor(() =>
+        expect(nativeInvoke).toHaveBeenCalledWith(
+          'send_dm',
+          { toPersonUid: 'person-corey', body: 'on my way' },
+          undefined,
+        ),
+      );
+      await Promise.resolve();
       flushSync();
       expect(host.querySelector<HTMLInputElement>('input.nr-reply')?.value ?? '').toBe('');
 

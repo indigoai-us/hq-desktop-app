@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use crate::config::{read_hq_config_lenient, MenubarPrefs};
 use crate::paths;
 
@@ -41,9 +43,18 @@ pub fn get_local_version() -> Option<String> {
         menubar_prefs.as_ref().and_then(|p| p.hq_path.as_deref()),
     );
 
+    get_local_version_from_hq_folder(&hq_folder)
+}
+
+/// Read the installed HQ Core version from a resolved HQ root.
+///
+/// Keeping the filesystem read separate from preference/path resolution makes
+/// the canonical metadata contract directly testable: `core/core.yaml` wins,
+/// with root `core.yaml` retained only for pre-v14 installs.
+pub fn get_local_version_from_hq_folder(hq_folder: &Path) -> Option<String> {
     // Canonical first (v14+), legacy fallback (pre-v14). Two stat
-    // syscalls in the miss path is fine — this runs every 6h, not on
-    // a hot loop.
+    // syscalls in the miss path are cheap enough for titlebar/settings
+    // hydration as well as the six-hour background checks.
     let canonical = hq_folder.join("core").join("core.yaml");
     let legacy = hq_folder.join("core.yaml");
     let core_yaml = if canonical.is_file() {
@@ -72,6 +83,58 @@ pub fn strip_v_prefix(s: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_version_reads_canonical_core_metadata() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("core")).unwrap();
+        std::fs::write(
+            root.path().join("core").join("core.yaml"),
+            "version: 1\nhqVersion: \"15.0.66-beta.1\"\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            get_local_version_from_hq_folder(root.path()).as_deref(),
+            Some("15.0.66-beta.1")
+        );
+    }
+
+    #[test]
+    fn local_version_falls_back_to_legacy_metadata() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(
+            root.path().join("core.yaml"),
+            "version: 1\nhqVersion: \"13.4.2\"\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            get_local_version_from_hq_folder(root.path()).as_deref(),
+            Some("13.4.2")
+        );
+    }
+
+    #[test]
+    fn canonical_core_metadata_wins_over_legacy() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("core")).unwrap();
+        std::fs::write(
+            root.path().join("core").join("core.yaml"),
+            "version: 1\nhqVersion: \"15.0.0\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.path().join("core.yaml"),
+            "version: 1\nhqVersion: \"13.9.0\"\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            get_local_version_from_hq_folder(root.path()).as_deref(),
+            Some("15.0.0")
+        );
+    }
 
     #[test]
     fn strip_v_prefix_handles_both_conventions() {

@@ -117,3 +117,25 @@ export function conversationRows(
 
   return order.slice(0, PANE_ROW_CAP).map((k) => byKey.get(k)!);
 }
+
+/**
+ * Count distinct unread conversations across the complete notification input.
+ * Unlike `conversationRows`, this intentionally has no rail rendering cap: a
+ * badge must not hide attention merely because the source list shows 30 rows.
+ */
+export function countUnreadConversations(
+  items: Item[],
+  lastReadTs: number,
+  viewedIds: ReadonlySet<string>,
+): number {
+  const unreadKeys = new Set<string>();
+  for (const item of items) {
+    if (
+      (item.kind === 'dm' || item.kind === 'share') &&
+      rowUnread(item, lastReadTs, viewedIds)
+    ) {
+      unreadKeys.add(conversationKey(item));
+    }
+  }
+  return unreadKeys.size;
+}

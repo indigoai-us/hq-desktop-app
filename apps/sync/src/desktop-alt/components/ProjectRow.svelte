@@ -19,7 +19,9 @@
     type Project,
     type ProjectLiveRunView,
   } from '../lib/projects-model';
+  import { mergeProvenance, normalizeProvenance } from '../lib/provenance';
   import { relativeActivity } from '../lib/sessions';
+  import ProvenanceLine from './ProvenanceLine.svelte';
 
   interface Props {
     project: Project;
@@ -27,8 +29,10 @@
     showCompany?: boolean;
     /** Linked goal title when known; omit when unlinked. */
     goalLabel?: string | null;
-    /** Owner / lead label when known. */
+    /** Genuine owner label from a legacy portfolio caller, when known. */
     ownerLabel?: string | null;
+    /** The cloud attribution lookup failed; local provenance remains authoritative. */
+    provenanceUnavailable?: boolean;
     /**
      * Live run view for Active cards. Only pass when a real live signal exists.
      * When null/undefined, the quiet state-context line is used instead.
@@ -49,6 +53,7 @@
     showCompany = true,
     goalLabel = null,
     ownerLabel = null,
+    provenanceUnavailable = false,
     liveRun = null,
     stateContext = null,
     now = Date.now(),
@@ -62,7 +67,13 @@
   const progress = $derived(projectProgress(project.storiesComplete, project.storiesTotal));
   const hasProgress = $derived(progress.total > 0);
   const showPortfolioMeta = $derived(
-    goalLabel !== null || ownerLabel !== null || stateContext !== null || liveRun !== null,
+    goalLabel !== null || stateContext !== null || liveRun !== null,
+  );
+  const cardProvenance = $derived(
+    mergeProvenance(
+      project.provenance,
+      normalizeProvenance(ownerLabel ? { owner: ownerLabel } : null),
+    ),
   );
 
   function activate() {
@@ -84,14 +95,10 @@
   onclick={activate}
 >
   <div class="card-head">
-    {#if ownerLabel}
-      <span class="owner-chip" title={ownerLabel}>{ownerLabel}</span>
-    {:else}
-      <span class="status-tag" data-status={status}>
-        <span class="status-dot" class:is-live={isLive} data-status={status} aria-hidden="true"></span>
-        {PROJECT_LIST_STATUS_LABEL[status]}
-      </span>
-    {/if}
+    <span class="status-tag" data-status={status}>
+      <span class="status-dot" class:is-live={isLive} data-status={status} aria-hidden="true"></span>
+      {PROJECT_LIST_STATUS_LABEL[status]}
+    </span>
     {#if showCompany && project.company && !showPortfolioMeta}
       <span class="pill company" title={project.company}>{project.company}</span>
     {/if}
@@ -103,6 +110,13 @@
       <p class="card-desc">{project.description}</p>
     {/if}
   </div>
+
+  <ProvenanceLine
+    provenance={cardProvenance}
+    kind="project"
+    testid="project-card-provenance"
+    unavailable={provenanceUnavailable}
+  />
 
   {#if showPortfolioMeta}
     <div class="card-context">
@@ -218,10 +232,12 @@
       transform 140ms ease;
   }
 
-  .project-card:hover {
-    border-color: var(--border-strong, var(--v4-control-border));
-    background: var(--row-hover, var(--v4-active-row));
-    transform: translateY(-1px);
+  @media (hover: hover) and (pointer: fine) {
+    .project-card:hover {
+      border-color: var(--border-strong, var(--v4-control-border));
+      background: var(--row-hover, var(--v4-active-row));
+      transform: translateY(-1px);
+    }
   }
 
   .project-card:active {
@@ -265,25 +281,6 @@
   }
   .status-tag[data-status='live'] {
     color: var(--emerald, var(--v4-ok));
-  }
-
-  .owner-chip {
-    display: inline-flex;
-    align-items: center;
-    max-width: 100%;
-    overflow: hidden;
-    padding: 1px 7px;
-    border: 1px solid var(--border, var(--v4-hairline));
-    border-radius: var(--v4-radius-pill, 999px);
-    background: var(--row-hover, var(--v4-control-faint));
-    color: var(--muted-2, var(--v4-text-2));
-    font-family: var(--font-mono);
-    font-size: var(--type-metadata, 10px);
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    line-height: 15px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
   }
 
   .status-dot {

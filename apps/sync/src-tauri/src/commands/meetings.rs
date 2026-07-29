@@ -701,6 +701,9 @@ pub async fn meetings_notify_detected(
     use chrono::Utc;
     use tauri::Emitter;
 
+    #[cfg(target_os = "macos")]
+    crate::webview_asset_cache::wait_until_ready().await;
+
     // 1. Top-level notifications pref.
     let settings = get_settings().await?;
     if !settings.notifications.unwrap_or(true) {

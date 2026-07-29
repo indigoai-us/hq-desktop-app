@@ -45,8 +45,19 @@ type InvokeOptions = {
   settingsDeferred?: Promise<Record<string, unknown>>;
   save?: (prefs: Record<string, unknown>) => Promise<void>;
   cliUpdate?: { local: string | null; latest: string } | null;
+  checkCli?: () => Promise<{ local: string | null; latest: string } | null>;
+  dismissCli?: (version: string) => Promise<void>;
+  cliVersion?: string | null;
   installCli?: () => Promise<{ local: string | null; latest: string }>;
   installApp?: () => Promise<void>;
+  checkApp?: () => Promise<{ version: string } | null>;
+  coreVersion?: string | null | Promise<string | null>;
+  coreState?: unknown | Promise<unknown>;
+  installCore?: () => Promise<{
+    exit_code: number;
+    log_tail: string;
+    log_path: string;
+  }>;
 };
 
 function deferred<T>() {
@@ -115,16 +126,26 @@ function stubInvoke(options: InvokeOptions = {}): void {
           allRequiredGranted: true,
         };
       case 'check_pack_update':
-      case 'check_core_state':
         return null;
+      case 'check_core_state':
+        return options.coreState ?? null;
       case 'check_hq_cli_update':
-        return options.cliUpdate ?? null;
+        return options.checkCli?.() ?? options.cliUpdate ?? null;
+      case 'get_hq_cli_version':
+        return options.cliVersion ?? '0.19.4';
       case 'install_hq_cli_update':
         return options.installCli?.();
+      case 'set_hq_cli_update_dismissed':
+        return options.dismissCli?.(String(args?.version ?? ''));
       case 'install_update':
         return options.installApp?.();
+      case 'check_for_updates':
+        return options.checkApp?.() ?? null;
       case 'get_hq_version':
-        return '15.0.16';
+        return options.coreVersion ?? '15.0.16';
+      case 'install_hq_core_update':
+      case 'run_replace_from_staging':
+        return options.installCore?.();
       case 'get_pending_update':
         return options.pendingUpdate ?? null;
       case 'list_displays':
@@ -158,7 +179,7 @@ async function mountSettings(): Promise<void> {
 async function waitForSettingsReady(): Promise<void> {
   await vi.waitFor(() => {
     flushSync();
-    expect(host.querySelector('[aria-busy="false"]')).toBeTruthy();
+    expect(host.querySelector('.settings-page[aria-busy="false"]')).toBeTruthy();
   });
 }
 
@@ -194,6 +215,121 @@ afterEach(async () => {
 });
 
 describe('Settings deep regressions', () => {
+  it.each(['update:available', 'update:cleared'])(
+    'releases the %s settings listener when the sibling registration rejects',
+    async (fulfilledEvent) => {
+      const retainedUnlisten = vi.fn();
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      tauri.listen.mockImplementation(async (event: string) => {
+        if (event === fulfilledEvent) return retainedUnlisten;
+        throw new Error('event bridge unavailable');
+      });
+      stubInvoke();
+
+      await mountSettings();
+      await vi.waitFor(() => {
+        expect(consoleError).toHaveBeenCalledWith(
+          'settings: failed to listen for updater state',
+          expect.any(Error),
+        );
+      });
+
+      await unmount(component!);
+      component = null;
+      expect(retainedUnlisten).toHaveBeenCalledOnce();
+      consoleError.mockRestore();
+    },
+  );
+
+  it.each(['update:available', 'update:cleared'])(
+    'releases the %s settings listener while the sibling registration never settles',
+    async (fulfilledEvent) => {
+      const retainedUnlisten = vi.fn();
+      const never = new Promise<() => void>(() => undefined);
+      tauri.listen.mockImplementation(async (event: string) => {
+        if (event === fulfilledEvent) return retainedUnlisten;
+        return never;
+      });
+      stubInvoke();
+
+      await mountSettings();
+      await Promise.resolve();
+      await unmount(component!);
+      component = null;
+
+      expect(retainedUnlisten).toHaveBeenCalledOnce();
+    },
+  );
+
+  it('always shows the HQ CLI identity and status independently from update availability', async () => {
+    stubInvoke({ cliVersion: '0.19.4', cliUpdate: null });
+
+    await mountSettings();
+    await waitForSettingsReady();
+
+    await vi.waitFor(() => {
+      flushSync();
+      expect(host.querySelector('[data-testid="settings-cli-version"]')?.textContent).toContain(
+        'v0.19.4',
+      );
+      expect(host.querySelector('[data-testid="settings-cli-status"]')?.textContent).toContain(
+        'Up to date',
+      );
+    });
+    expect(host.querySelector('[data-testid="settings-check-cli-updates"]')).toBeTruthy();
+  });
+
+  it('shows the canonical HQ Core version without waiting for the slower state scan', async () => {
+    const coreState = deferred<null>();
+    stubInvoke({
+      coreVersion: '15.0.66-beta.1',
+      coreState: coreState.promise,
+    });
+
+    await mountSettings();
+    await waitForSettingsReady();
+
+    await vi.waitFor(() => {
+      flushSync();
+      expect(
+        host.querySelector('[data-testid="settings-core-version"]')?.textContent,
+      ).toContain('v15.0.66-beta.1');
+    });
+    expect(
+      host.querySelector('[data-testid="settings-core-status"]')?.textContent,
+    ).toContain('Checking channel status');
+    expect(host.textContent).not.toContain('version unknown');
+
+    coreState.resolve(null);
+  });
+
+  it('immediately disables and labels the app update check while it is pending', async () => {
+    const check = deferred<{ version: string } | null>();
+    stubInvoke({ checkApp: () => check.promise });
+    await mountSettings();
+    await waitForSettingsReady();
+
+    const button = host.querySelector<HTMLButtonElement>(
+      '[data-testid="settings-check-app-updates"]',
+    );
+    expect(button).toBeTruthy();
+    button!.click();
+    flushSync();
+
+    expect(button!.disabled).toBe(true);
+    expect(button!.getAttribute('aria-busy')).toBe('true');
+    expect(button!.textContent?.trim()).toBe('Checking…');
+
+    check.resolve(null);
+    await vi.waitFor(() => {
+      flushSync();
+      expect(button!.disabled).toBe(false);
+      expect(host.querySelector('[data-testid="settings-app-status"]')?.textContent).toContain(
+        'Up to date',
+      );
+    });
+  });
+
   it('hydrates a pending app update and reacts to later background update events', async () => {
     stubInvoke({
       pendingUpdate: {
@@ -249,6 +385,106 @@ describe('Settings deep regressions', () => {
 
     expect(host.textContent).not.toContain('Install failed');
     consoleError.mockRestore();
+  });
+
+  it('ignores an app-install rejection after native state has already cleared', async () => {
+    const install = deferred<void>();
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    stubInvoke({
+      pendingUpdate: {
+        status: 'pending',
+        update: { version: '0.10.34' },
+      },
+      installApp: () => install.promise,
+    });
+    await mountSettings();
+    await waitForSettingsReady();
+    const installButton = await vi.waitFor(() => {
+      const match = host.querySelector<HTMLButtonElement>(
+        '[data-testid="settings-install-app-update"]',
+      );
+      expect(match).toBeTruthy();
+      return match!;
+    });
+
+    installButton.click();
+    flushSync();
+    updateClearedListener?.({ payload: undefined });
+    flushSync();
+    install.reject(new Error('No update available'));
+    await install.promise.catch(() => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    flushSync();
+
+    expect(host.textContent).not.toContain('Install failed');
+    expect(host.querySelector('[data-testid="settings-install-app-update"]')).toBeNull();
+    consoleError.mockRestore();
+  });
+
+  it('keeps a newer app update authoritative over an older install completion', async () => {
+    const install = deferred<void>();
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    stubInvoke({
+      pendingUpdate: {
+        status: 'pending',
+        update: { version: '0.10.34' },
+      },
+      installApp: () => install.promise,
+    });
+    await mountSettings();
+    await waitForSettingsReady();
+    const installButton = await vi.waitFor(() => {
+      const match = host.querySelector<HTMLButtonElement>(
+        '[data-testid="settings-install-app-update"]',
+      );
+      expect(match).toBeTruthy();
+      return match!;
+    });
+
+    installButton.click();
+    updateListener?.({ payload: { version: '0.10.35' } });
+    flushSync();
+    install.reject(new Error('superseded install'));
+    await install.promise.catch(() => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    flushSync();
+
+    expect(host.textContent).toContain('v0.10.35 ready');
+    expect(host.textContent).not.toContain('Install failed');
+    expect(
+      host.querySelector<HTMLButtonElement>('[data-testid="settings-install-app-update"]')
+        ?.disabled,
+    ).toBe(false);
+    consoleError.mockRestore();
+  });
+
+  it('does not resurrect a cleared update when an older manual check settles', async () => {
+    const check = deferred<{ version: string } | null>();
+    stubInvoke({ checkApp: () => check.promise });
+    await mountSettings();
+    await waitForSettingsReady();
+    await vi.waitFor(() => expect(updateClearedListener).toBeTypeOf('function'));
+
+    const button = host.querySelector<HTMLButtonElement>(
+      '[data-testid="settings-check-app-updates"]',
+    );
+    button?.click();
+    flushSync();
+    expect(button?.disabled).toBe(true);
+
+    updateClearedListener?.({ payload: undefined });
+    flushSync();
+    expect(button?.disabled).toBe(false);
+
+    check.resolve({ version: '0.10.35' });
+    await check.promise;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    flushSync();
+
+    expect(host.textContent).not.toContain('v0.10.35 ready');
+    expect(
+      host.querySelector('[data-testid="settings-install-app-update"]'),
+    ).toBeNull();
   });
 
   it('revalidates the default recording company when memberships change on focus', async () => {
@@ -573,15 +809,454 @@ describe('Settings deep regressions', () => {
     await mountSettings();
     await waitForSettingsReady();
 
-    await vi.waitFor(() => expect(host.textContent).toContain('hq CLI update: v0.20.0'));
-    const cliCard = Array.from(host.querySelectorAll<HTMLElement>('.notice-card')).find((card) =>
-      card.textContent?.includes('hq CLI update:'),
-    );
-    const update = Array.from(cliCard?.querySelectorAll('button') ?? []).find(
-      (button) => button.textContent?.trim() === 'Update',
+    const cliRow = await vi.waitFor(() => {
+      const row = host.querySelector<HTMLElement>('[data-testid="settings-cli-row"]');
+      expect(row?.textContent).toContain('HQ CLI');
+      expect(row?.textContent).toContain('Update available to v0.20.0');
+      return row!;
+    });
+    const update = Array.from(cliRow.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'Update to v0.20.0',
     );
     update?.click();
 
-    await vi.waitFor(() => expect(cliCard?.textContent).toContain('Update failed.'));
+    await vi.waitFor(() => expect(cliRow.textContent).toContain('Update failed.'));
+  });
+
+  it('prevents dismissing a CLI update while its install is in flight', async () => {
+    const install = deferred<{ local: string | null; latest: string }>();
+    stubInvoke({
+      cliUpdate: { local: '0.19.4', latest: '0.20.0' },
+      installCli: () => install.promise,
+    });
+    await mountSettings();
+    await waitForSettingsReady();
+
+    const cliRow = await vi.waitFor(() => {
+      const row = host.querySelector<HTMLElement>('[data-testid="settings-cli-row"]');
+      expect(row?.textContent).toContain('Update to v0.20.0');
+      return row!;
+    });
+    Array.from(cliRow.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent?.trim() === 'Update to v0.20.0')
+      ?.click();
+    flushSync();
+
+    const dismiss = Array.from(cliRow.querySelectorAll<HTMLButtonElement>('button')).find(
+      (button) => button.textContent?.trim() === 'Dismiss',
+    );
+    expect(dismiss).toBeTruthy();
+    expect(dismiss?.disabled).toBe(true);
+    dismiss?.click();
+    expect(tauri.invoke).not.toHaveBeenCalledWith(
+      'set_hq_cli_update_dismissed',
+      expect.anything(),
+    );
+
+    install.resolve({ local: '0.20.0', latest: '0.20.0' });
+  });
+
+  it('keeps a dismissed CLI update hidden when an older check settles', async () => {
+    const staleCheck = deferred<{ local: string | null; latest: string } | null>();
+    let checks = 0;
+    stubInvoke({
+      checkCli: async () => {
+        checks += 1;
+        if (checks === 1) return { local: '0.19.4', latest: '0.20.0' };
+        return staleCheck.promise;
+      },
+      dismissCli: async () => undefined,
+    });
+    await mountSettings();
+    await waitForSettingsReady();
+
+    const cliRow = await vi.waitFor(() => {
+      const row = host.querySelector<HTMLElement>('[data-testid="settings-cli-row"]');
+      expect(row?.textContent).toContain('Update to v0.20.0');
+      return row!;
+    });
+    host
+      .querySelector<HTMLButtonElement>('[data-testid="settings-check-cli-updates"]')
+      ?.click();
+    flushSync();
+    const dismiss = Array.from(cliRow.querySelectorAll<HTMLButtonElement>('button')).find(
+      (button) => button.textContent?.trim() === 'Dismiss',
+    );
+    expect(dismiss).toBeTruthy();
+    dismiss?.click();
+    await vi.waitFor(() => {
+      flushSync();
+      expect(cliRow.textContent).not.toContain('Update to v0.20.0');
+    });
+
+    staleCheck.resolve({ local: '0.19.4', latest: '0.20.0' });
+    await staleCheck.promise;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    flushSync();
+
+    expect(cliRow.textContent).not.toContain('Update to v0.20.0');
+  });
+
+  it('restores a CLI update with inline retry feedback when dismiss persistence fails', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    stubInvoke({
+      cliUpdate: { local: '0.19.4', latest: '0.20.0' },
+      dismissCli: async () => {
+        throw new Error('preferences unavailable');
+      },
+    });
+    await mountSettings();
+    await waitForSettingsReady();
+
+    const cliRow = await vi.waitFor(() => {
+      const row = host.querySelector<HTMLElement>('[data-testid="settings-cli-row"]');
+      expect(row?.textContent).toContain('Update to v0.20.0');
+      return row!;
+    });
+    Array.from(cliRow.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent?.trim() === 'Dismiss')
+      ?.click();
+
+    await vi.waitFor(() => {
+      flushSync();
+      expect(cliRow.textContent).toContain('Update to v0.20.0');
+      expect(
+        host.querySelector('[data-testid="settings-cli-status"]')?.textContent,
+      ).toContain('Couldn’t dismiss update. Try again.');
+      expect(cliRow.textContent).toContain('Retry dismiss');
+    });
+    consoleError.mockRestore();
+  });
+
+  it('blocks a stale Core install while channel state is refreshing', async () => {
+    const initialState = {
+      channel: 'release',
+      targetRepo: 'indigo/hq-core',
+      targetVersion: '15.0.17',
+      targetRef: 'v15.0.17',
+      localVersion: '15.0.16',
+      floorSha: null,
+      isEligible: true,
+      versionBehind: true,
+      driftReport: {
+        baselineStatus: 'Available',
+        updateRequired: true,
+        count: 0,
+        modified: [],
+        missing: [],
+        added: [],
+        scannedAt: '2026-07-27T00:00:00Z',
+        hqVersion: '15.0.16',
+        targetRepo: 'indigo/hq-core',
+        targetRef: 'v15.0.17',
+      },
+      unchangedCount: 0,
+      userOnlyCount: 0,
+      scannedAt: '2026-07-27T00:00:00Z',
+    };
+    const stagingState = {
+      ...initialState,
+      channel: 'staging',
+      targetVersion: '15.0.18-beta.1',
+      targetRef: 'staging',
+    };
+    const refresh = deferred<typeof stagingState>();
+    let stateChecks = 0;
+    stubInvoke({
+      coreState: null,
+      installCore: async () => ({
+        exit_code: 0,
+        log_tail: '',
+        log_path: '',
+      }),
+    });
+    const originalInvoke = tauri.invoke.getMockImplementation()!;
+    tauri.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === 'check_core_state') {
+        stateChecks += 1;
+        if (stateChecks === 1) return initialState;
+        if (stateChecks === 2) return refresh.promise;
+        return stagingState;
+      }
+      return originalInvoke(command, args);
+    });
+    await mountSettings();
+    await waitForSettingsReady();
+
+    const update = await vi.waitFor(() => {
+      const match = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(
+        (button) => button.textContent?.trim() === 'Update to v15.0.17',
+      );
+      expect(match).toBeTruthy();
+      return match!;
+    });
+    host.querySelector<HTMLButtonElement>('[data-testid="settings-refresh-core"]')?.click();
+    flushSync();
+    expect(update.disabled).toBe(true);
+    update.click();
+    expect(tauri.invoke).not.toHaveBeenCalledWith('install_hq_core_update');
+
+    refresh.resolve(stagingState);
+    const stagingUpdate = await vi.waitFor(() => {
+      flushSync();
+      const match = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(
+        (button) => button.textContent?.trim() === 'Update to Staging',
+      );
+      expect(match).toBeTruthy();
+      return match!;
+    });
+    stagingUpdate.click();
+    await vi.waitFor(() => {
+      expect(tauri.invoke).toHaveBeenCalledWith('run_replace_from_staging');
+    });
+  });
+
+  it('locks Core channel controls while an install is in flight', async () => {
+    const install = deferred<{
+      exit_code: number;
+      log_tail: string;
+      log_path: string;
+    }>();
+    stubInvoke({
+      coreState: {
+        channel: 'release',
+        targetRepo: 'indigo/hq-core',
+        targetVersion: '15.0.17',
+        targetRef: 'v15.0.17',
+        localVersion: '15.0.16',
+        floorSha: null,
+        isEligible: true,
+        versionBehind: true,
+        driftReport: {
+          baselineStatus: 'Available',
+          updateRequired: true,
+          count: 0,
+          modified: [],
+          missing: [],
+          added: [],
+          scannedAt: '2026-07-27T00:00:00Z',
+          hqVersion: '15.0.16',
+          targetRepo: 'indigo/hq-core',
+          targetRef: 'v15.0.17',
+        },
+        unchangedCount: 0,
+        userOnlyCount: 0,
+        scannedAt: '2026-07-27T00:00:00Z',
+      },
+      installCore: () => install.promise,
+    });
+    await mountSettings();
+    await waitForSettingsReady();
+
+    const update = await vi.waitFor(() => {
+      const match = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(
+        (button) => button.textContent?.trim() === 'Update to v15.0.17',
+      );
+      expect(match).toBeTruthy();
+      return match!;
+    });
+    update.click();
+    flushSync();
+
+    expect(checkbox('HQ Core staging channel').disabled).toBe(true);
+    const releaseChannel = Array.from(
+      host.querySelectorAll<HTMLSelectElement>('select'),
+    ).find((select) =>
+      select.closest('label')?.textContent?.includes('Release channel'),
+    );
+    expect(releaseChannel?.disabled).toBe(true);
+
+    install.resolve({ exit_code: 0, log_tail: '', log_path: '' });
+  });
+
+  it('blocks Core install while a channel preference is still saving', async () => {
+    const save = deferred<void>();
+    stubInvoke({
+      save: () => save.promise,
+      coreState: {
+        channel: 'release',
+        targetRepo: 'indigo/hq-core',
+        targetVersion: '15.0.17',
+        targetRef: 'v15.0.17',
+        localVersion: '15.0.16',
+        floorSha: null,
+        isEligible: true,
+        versionBehind: true,
+        driftReport: {
+          baselineStatus: 'Available',
+          updateRequired: true,
+          count: 0,
+          modified: [],
+          missing: [],
+          added: [],
+          scannedAt: '2026-07-27T00:00:00Z',
+          hqVersion: '15.0.16',
+          targetRepo: 'indigo/hq-core',
+          targetRef: 'v15.0.17',
+        },
+        unchangedCount: 0,
+        userOnlyCount: 0,
+        scannedAt: '2026-07-27T00:00:00Z',
+      },
+      installCore: async () => ({
+        exit_code: 0,
+        log_tail: '',
+        log_path: '',
+      }),
+    });
+    await mountSettings();
+    await waitForSettingsReady();
+
+    const update = await vi.waitFor(() => {
+      const match = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(
+        (button) => button.textContent?.trim() === 'Update to v15.0.17',
+      );
+      expect(match).toBeTruthy();
+      return match!;
+    });
+    const staging = checkbox('HQ Core staging channel');
+    staging.checked = !staging.checked;
+    staging.dispatchEvent(new Event('change', { bubbles: true }));
+    flushSync();
+
+    expect(update.disabled).toBe(true);
+    update.click();
+    expect(tauri.invoke).not.toHaveBeenCalledWith('install_hq_core_update');
+    expect(tauri.invoke).not.toHaveBeenCalledWith('run_replace_from_staging');
+
+    save.resolve();
+  });
+
+  it('keeps a failed Core install log usable with pending, success, and error feedback', async () => {
+    const logPath = '/Users/test/Library/Logs/HQ/hq-core-update.log';
+    const install = deferred<{
+      exit_code: number;
+      log_tail: string;
+      log_path: string;
+    }>();
+    const clipboardWrite = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: clipboardWrite },
+    });
+    stubInvoke({
+      coreState: {
+        channel: 'release',
+        targetRepo: 'indigo/hq-core',
+        targetVersion: '15.0.17',
+        targetRef: 'v15.0.17',
+        localVersion: '15.0.16',
+        floorSha: null,
+        isEligible: true,
+        versionBehind: true,
+        driftReport: {
+          baselineStatus: 'Available',
+          updateRequired: true,
+          count: 0,
+          modified: [],
+          missing: [],
+          added: [],
+          scannedAt: '2026-07-27T00:00:00Z',
+          hqVersion: '15.0.16',
+          targetRepo: 'indigo/hq-core',
+          targetRef: 'v15.0.17',
+        },
+        unchangedCount: 0,
+        userOnlyCount: 0,
+        scannedAt: '2026-07-27T00:00:00Z',
+      },
+      installCore: () => install.promise,
+    });
+    await mountSettings();
+    await waitForSettingsReady();
+
+    const update = await vi.waitFor(() => {
+      flushSync();
+      const match = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(
+        (button) => button.textContent?.trim() === 'Update to v15.0.17',
+      );
+      expect(match).toBeTruthy();
+      return match!;
+    });
+    update.click();
+    flushSync();
+    expect(update.disabled).toBe(true);
+    expect(update.getAttribute('aria-busy')).toBe('true');
+    expect(update.textContent?.trim()).toBe('Updating…');
+
+    install.resolve({
+      exit_code: 1,
+      log_tail: 'permission denied',
+      log_path: logPath,
+    });
+
+    const copy = await vi.waitFor(() => {
+      flushSync();
+      const status = host.querySelector('[data-testid="settings-core-status"]');
+      expect(status?.textContent).toContain('Update failed. Review the install log');
+      expect(status?.textContent).not.toContain(logPath);
+      expect(
+        host.querySelector('[data-testid="settings-core-install-log-path"]')?.textContent,
+      ).toContain(logPath);
+      expect(
+        host
+          .querySelector('[data-testid="settings-core-install-log-path"]')
+          ?.closest('.core-update-row')
+          ?.classList.contains('has-core-log'),
+      ).toBe(true);
+      const match = host.querySelector<HTMLButtonElement>(
+        '[data-testid="settings-copy-core-install-log-path"]',
+      );
+      expect(match).toBeTruthy();
+      return match!;
+    });
+    const open = host.querySelector<HTMLButtonElement>(
+      '[data-testid="settings-open-core-install-log"]',
+    );
+    expect(open).toBeTruthy();
+
+    const copyPending = deferred<void>();
+    clipboardWrite.mockImplementationOnce(() => copyPending.promise);
+    copy.click();
+    flushSync();
+    expect(copy.disabled).toBe(true);
+    expect(copy.getAttribute('aria-busy')).toBe('true');
+    expect(copy.textContent?.trim()).toBe('Copying…');
+    copyPending.resolve();
+    await vi.waitFor(() => {
+      flushSync();
+      expect(copy.textContent?.trim()).toBe('Path copied');
+    });
+    expect(clipboardWrite).toHaveBeenCalledWith(logPath);
+
+    const openPending = deferred<void>();
+    tauri.open.mockImplementationOnce(() => openPending.promise);
+    open!.click();
+    flushSync();
+    expect(open!.disabled).toBe(true);
+    expect(open!.getAttribute('aria-busy')).toBe('true');
+    expect(open!.textContent?.trim()).toBe('Opening…');
+    openPending.resolve();
+    await vi.waitFor(() => {
+      flushSync();
+      expect(open!.textContent?.trim()).toBe('Opened');
+    });
+    expect(tauri.open).toHaveBeenCalledWith(logPath);
+
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    clipboardWrite.mockRejectedValueOnce(new Error('clipboard unavailable'));
+    copy.click();
+    await vi.waitFor(() => {
+      flushSync();
+      expect(copy.textContent?.trim()).toBe('Copy failed');
+    });
+
+    tauri.open.mockRejectedValueOnce(new Error('no log viewer'));
+    open!.click();
+    await vi.waitFor(() => {
+      flushSync();
+      expect(open!.textContent?.trim()).toBe('Open failed');
+    });
+    consoleError.mockRestore();
   });
 });

@@ -15,7 +15,7 @@ const desktopApp = read('src/desktop-alt/DesktopApp.svelte');
 const harness = read('dev-harness/mocks/core.ts');
 
 describe('US-017: version pop-out in desktop status bar', () => {
-  it('version label opens an upward-anchored pop-out with a11y + close affordances', () => {
+  it('version label opens a viewport-fixed pop-out with a11y + close affordances', () => {
     const s = normalize(statusBar);
     const p = normalize(popout);
 
@@ -24,8 +24,11 @@ describe('US-017: version pop-out in desktop status bar', () => {
     expect(statusBar).toContain('<VersionPopout');
     expect(statusBar).toContain('aria-expanded={versionOpen}');
     expect(s).toContain('position: relative');
-    expect(p).toContain('bottom: calc(100% + 8px)');
-    expect(p).toContain('right: 0');
+    expect(p).toContain('position: fixed');
+    expect(p).toContain('bottom: 40px');
+    expect(p).toContain('right: 12px');
+    expect(p).toContain('z-index: 10000');
+    expect(p).toContain('top: 48px');
     expect(popout).toContain('role="dialog"');
     expect(popout).toContain('aria-label="Version and updates"');
     // Click-away + Escape live on the status bar while the pop-out is open.
@@ -55,7 +58,7 @@ describe('US-017: version pop-out in desktop status bar', () => {
     expect(harness).toContain('function hasSettingsUpdates(');
     expect(harness).toContain("scenario === 'update-available'");
     expect(harness).toContain(
-      'get_pending_update: () => (hasSettingsUpdates() ? HARNESS_UPDATE : null)',
+      'hasSettingsUpdates() && !harnessAppUpdateInstalled ? HARNESS_UPDATE : null',
     );
     expect(harness).toContain('install_update: () => {');
   });

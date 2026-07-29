@@ -630,6 +630,19 @@ function dedupeBySlug(workspaces: Workspace[]): Workspace[] {
   return out;
 }
 
+/**
+ * Workspaces that are safe to represent as part of the user's portfolio.
+ * Pending invites are intentionally limited to NEEDS YOU until accepted: a
+ * pending membership does not grant company access and must never look like an
+ * already-connected "Member" row.
+ */
+function portfolioWorkspaces(workspaces: Workspace[]): Workspace[] {
+  return dedupeBySlug(workspaces).filter(
+    (workspace) =>
+      workspace.kind === 'personal' || workspace.membershipStatus !== 'pending',
+  );
+}
+
 export interface HomeStat {
   label: string;
   value: string;
@@ -646,8 +659,20 @@ export function getHomePortfolioStats(input: {
   workspaces: Workspace[];
   projects: Project[];
 }): HomeStat[] {
-  const companies = dedupeBySlug(input.workspaces).filter((w) => w.kind === 'company');
-  const active = input.projects.filter(isActiveProject);
+  const portfolio = portfolioWorkspaces(input.workspaces);
+  const acceptedPortfolioSlugs = new Set(
+    portfolio.map((workspace) => workspace.slug),
+  );
+  const companies = portfolio.filter(
+    (workspace) => workspace.kind === 'company',
+  );
+  // `get_local_projects` scans disk independently from membership hydration,
+  // so it can include stale projects for a pending/revoked/unknown company.
+  // Only accepted portfolio work may contribute to Home aggregates.
+  const active = input.projects.filter(
+    (project) =>
+      acceptedPortfolioSlugs.has(project.company) && isActiveProject(project),
+  );
   const openStories = active.reduce(
     (sum, p) => sum + Math.max(0, p.storiesTotal - p.storiesComplete),
     0,
@@ -696,7 +721,7 @@ export function getHomeCompanyRows(input: {
     byCompany.set(p.company, agg);
   }
 
-  return dedupeBySlug(input.workspaces).map((w) => {
+  return portfolioWorkspaces(input.workspaces).map((w) => {
     const agg = byCompany.get(w.slug);
     const projects =
       agg && agg.active > 0 ? `${agg.active.toLocaleString()} active` : agg ? 'no active' : '—';

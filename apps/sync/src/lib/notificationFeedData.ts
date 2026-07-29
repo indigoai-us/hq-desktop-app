@@ -22,6 +22,19 @@ import type {
   UpdateInfo,
 } from './notificationGroups';
 
+/** Same-webview signal that keeps Inbox chrome aligned with the loaded feed. */
+export const NOTIFICATION_UNREAD_COUNT_EVENT =
+  'hq:notifications-unread-count';
+
+export function broadcastNotificationUnreadCount(count: number): void {
+  if (typeof window === 'undefined') return;
+  window.dispatchEvent(
+    new CustomEvent<number>(NOTIFICATION_UNREAD_COUNT_EVENT, {
+      detail: Math.max(0, Math.round(count)),
+    }),
+  );
+}
+
 // ── Wire types (mirror the Rust structs, camelCase) ──────────────────────────
 export interface ActivityEntry {
   company: string;

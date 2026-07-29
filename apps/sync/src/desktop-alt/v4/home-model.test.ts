@@ -495,6 +495,46 @@ describe('getHomePortfolioStats', () => {
     expect(stats[0]).toEqual({ label: 'Company', value: '1' });
   });
 
+  it('does not count pending invites as portfolio membership before acceptance', () => {
+    const stats = getHomePortfolioStats({
+      workspaces: [
+        workspace({ slug: 'indigo', membershipStatus: 'active' }),
+        workspace({
+          slug: 'sender-agency',
+          displayName: 'Sender Agency',
+          state: 'cloud-only',
+          membershipStatus: 'pending',
+          hasLocalFolder: false,
+        }),
+      ],
+      projects: [
+        project({
+          id: 'accepted',
+          company: 'indigo',
+          storiesTotal: 5,
+          storiesComplete: 2,
+        }),
+        project({
+          id: 'pending',
+          company: 'sender-agency',
+          storiesTotal: 9,
+          storiesComplete: 1,
+        }),
+        project({
+          id: 'unknown',
+          company: 'revoked-company',
+          storiesTotal: 7,
+          storiesComplete: 0,
+        }),
+      ],
+    });
+    expect(stats).toEqual([
+      { label: 'Company', value: '1' },
+      { label: 'Active projects', value: '1' },
+      { label: 'Open stories', value: '3' },
+    ]);
+  });
+
   it('never invents storage / latency / sparkline tiles', () => {
     const stats = getHomePortfolioStats({ workspaces: [], projects: [] });
     const labels = stats.map((s) => s.label.toLowerCase()).join(' ');
@@ -527,6 +567,26 @@ describe('getHomeCompanyRows', () => {
     expect(personal.projects).toBe('—'); // no local projects for personal
     expect(personal.stories).toBe('—');
     expect(personal.lastChange).toBe('—');
+  });
+
+  it('keeps pending invites in Needs you and out of the accepted portfolio table', () => {
+    const rows = getHomeCompanyRows({
+      workspaces: [
+        workspace({ slug: 'indigo', displayName: 'Indigo', membershipStatus: 'active' }),
+        workspace({
+          slug: 'sender-agency',
+          displayName: 'Sender Agency',
+          state: 'cloud-only',
+          membershipStatus: 'pending',
+          role: null,
+          hasLocalFolder: false,
+        }),
+      ],
+      projects: [],
+    });
+
+    expect(rows.map((row) => row.slug)).toEqual(['indigo']);
+    expect(rows.some((row) => row.name === 'Sender Agency')).toBe(false);
   });
 
   it('maps workspace state to a status tone and dedupes duplicate slugs', () => {

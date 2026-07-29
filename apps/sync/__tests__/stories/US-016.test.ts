@@ -74,10 +74,17 @@ describe('US-016: V4 connective tissue stays complete', () => {
     const palette = normalize(commandPalette);
 
     expect(desktopApp).toContain('COMPANY_SECTIONS');
-    // US-007: the palette iterates the sidebar-ordered (connected-first) rows.
-    expect(desktopApp).toContain('orderedCompanies.flatMap((row, index) => [');
-    expect(desktopApp).toContain('label: `Go to ${row.label} ${section.label}`');
-    expect(desktopApp).toContain("action: () => navigate({ kind: 'company', slug: row.slug, tab: section.id })");
+    // Every company root stays reachable, while deep destinations are limited
+    // to the active company so large installs do not multiply commands.
+    expect(desktopApp).toContain('...orderedCompanies.map((row, index) => ({');
+    expect(desktopApp).toContain('label: `Go to ${row.label}`');
+    expect(app).toContain('...(activeCompany ? COMPANY_SECTIONS.filter');
+    expect(desktopApp).toContain(
+      'label: `Go to ${activeCompany.displayName} ${section.label}`',
+    );
+    expect(desktopApp).toContain(
+      "navigate({ kind: 'company', slug: activeCompany.slug, tab: section.id })",
+    );
 
     expect(commandPalette).toContain("label: 'ACTIONS'");
     expect(commandPalette).toContain("label: 'NAVIGATE'");

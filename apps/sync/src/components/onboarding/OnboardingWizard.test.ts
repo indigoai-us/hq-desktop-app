@@ -53,7 +53,10 @@ async function flush(): Promise<void> {
   flushSync();
 }
 
-function mountWizard(onfinish = vi.fn()): ReturnType<typeof vi.fn> {
+function mountWizard(
+  onfinish = vi.fn(),
+  initialStep = 3,
+): ReturnType<typeof vi.fn> {
   tauri.invoke.mockImplementation(async (command: string) => {
     switch (command) {
       case 'resolve_hq_path':
@@ -66,7 +69,7 @@ function mountWizard(onfinish = vi.fn()): ReturnType<typeof vi.fn> {
   });
   component = mount(OnboardingWizard, {
     target: host,
-    props: { initialStep: 3, onfinish },
+    props: { initialStep, onfinish },
   });
   return onfinish;
 }
@@ -102,12 +105,10 @@ afterEach(async () => {
 
 describe('onboarding launch handoff', () => {
   it('finishes onboarding after each supported launcher opens', () => {
-    // Eight `await onfinish?.()` sites total: FIVE are the launch-handoff paths
-    // (the supported launchers plus the manual finish flows), and THREE were
-    // added by the US-005 consent re-prompt mode (answer, dismiss, and the
-    // offline finish), which closes the consent step directly instead of
-    // advancing to a ready screen that does not exist in that mode.
-    expect(wizardSource.match(/await onfinish\?\.\(\);/g)).toHaveLength(8);
+    // Nine `await onfinish?.()` sites total: FIVE are the launch-handoff paths,
+    // THREE are the US-005 consent re-prompt outcomes (answer, dismiss, and the
+    // offline finish), and ONE is the guarded final Done flow.
+    expect(wizardSource.match(/await onfinish\?\.\(\);/g)).toHaveLength(9);
     expect(wizardSource).not.toContain('advanceTo(4)');
   });
 
@@ -121,6 +122,39 @@ describe('onboarding launch handoff', () => {
     expect(row?.match(/<button\b/g)).toHaveLength(1);
     expect(row).toContain('class="btn btn-primary"');
     expect(row).not.toContain('Finish');
+  });
+
+  it('keeps final Done pending and guarded until the handoff finishes', async () => {
+    let resolveFinish: (() => void) | undefined;
+    const onfinish = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveFinish = resolve;
+        }),
+    );
+    mountWizard(onfinish, 9);
+    await flush();
+
+    const done = host.querySelector<HTMLButtonElement>(
+      '[data-testid="onboarding-build"] .btn-primary',
+    );
+    expect(done).not.toBeNull();
+    done?.click();
+    await flush();
+
+    expect(onfinish).toHaveBeenCalledOnce();
+    expect(done?.textContent).toBe('Finishing…');
+    expect(done?.disabled).toBe(true);
+    expect(done?.getAttribute('aria-busy')).toBe('true');
+
+    done?.click();
+    expect(onfinish).toHaveBeenCalledOnce();
+
+    resolveFinish?.();
+    await flush();
+    expect(done?.textContent).toBe('Done');
+    expect(done?.disabled).toBe(false);
+    expect(done?.getAttribute('aria-busy')).toBe('false');
   });
 
   it('uses the injected timer cadence for download watching and deep-linking', async () => {

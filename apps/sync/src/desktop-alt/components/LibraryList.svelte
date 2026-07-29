@@ -26,7 +26,21 @@
 
   let { items, query = '', onselect }: Props = $props();
 
-  const visible = $derived(filterLibraryItems(items ?? [], query));
+  const RENDER_BATCH = 48;
+  let visibleLimit = $state(RENDER_BATCH);
+  const filtered = $derived(filterLibraryItems(items ?? [], query));
+  const visible = $derived(filtered.slice(0, visibleLimit));
+  const remaining = $derived(Math.max(0, filtered.length - visible.length));
+
+  // Library can contain hundreds of skills and workers. Reset to one bounded
+  // render window whenever the source collection or query changes; this keeps
+  // search and tab switches responsive without hiding the total or discarding
+  // any item.
+  $effect(() => {
+    items;
+    query;
+    visibleLimit = RENDER_BATCH;
+  });
 
   /** Scope chip text + accent class. */
   function scope(item: LibraryItem): { label: string; cls: string } {
@@ -116,6 +130,18 @@
       </button>
     {/each}
   </div>
+  {#if remaining > 0}
+    <div class="collection-footer">
+      <span>{visible.length} of {filtered.length}</span>
+      <button
+        type="button"
+        onclick={() => (visibleLimit = Math.min(filtered.length, visibleLimit + RENDER_BATCH))}
+        aria-label={`Show ${Math.min(RENDER_BATCH, remaining)} more library items`}
+      >
+        Show {Math.min(RENDER_BATCH, remaining)} more
+      </button>
+    </div>
+  {/if}
 {/if}
 
 <style>
@@ -147,10 +173,12 @@
       transform 140ms ease;
   }
 
-  .lib-card:hover {
-    border-color: var(--v4-control-border);
-    background: var(--v4-active-row);
-    transform: translateY(-1px);
+  @media (hover: hover) and (pointer: fine) {
+    .lib-card:hover {
+      border-color: var(--v4-control-border);
+      background: var(--v4-active-row);
+      transform: translateY(-1px);
+    }
   }
 
   .lib-card:focus-visible {
@@ -290,6 +318,38 @@
   .empty-state span {
     color: var(--v4-text-2);
     font-size: var(--text-base);
+  }
+
+  .collection-footer {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--v4-space-3);
+    padding: var(--v4-space-4) 0 var(--v4-space-2);
+    color: var(--v4-text-3);
+    font-size: var(--text-base);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .collection-footer button {
+    padding: 0;
+    border: 0;
+    border-bottom: 1px solid var(--v4-rowline);
+    border-radius: 0;
+    background: transparent;
+    color: var(--v4-text-1);
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .collection-footer button:hover {
+    border-bottom-color: var(--v4-text-2);
+  }
+
+  .collection-footer button:focus-visible {
+    outline: 2px solid var(--v4-control-border);
+    outline-offset: 4px;
   }
 
   @media (prefers-reduced-motion: reduce) {

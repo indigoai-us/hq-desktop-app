@@ -55,6 +55,9 @@
   // Per-row connect state. Keys are slugs; absent = idle, true = in flight,
   // string = error message from the last attempt. Reset on next click.
   let connectState = $state<Record<string, true | string>>({});
+  // External company navigation is independently scoped per row. A failed
+  // shell handoff stays visible and the same row becomes the retry target.
+  let openState = $state<Record<string, true | string>>({});
 
   /**
    * Short, human-readable label per local-env failure kind. Kept in this
@@ -133,11 +136,18 @@
   }
 
   async function handleOpenCompany(w: Workspace) {
-    if (!isCompanyClickable(w)) return;
+    if (!isCompanyClickable(w) || openState[w.slug] === true) return;
+    openState = { ...openState, [w.slug]: true };
     try {
       await open(`https://hq.computer/companies/${w.slug}`);
+      const { [w.slug]: _done, ...rest } = openState;
+      openState = rest;
     } catch (err) {
       console.error('Failed to open company URL:', err);
+      openState = {
+        ...openState,
+        [w.slug]: err instanceof Error ? err.message : String(err),
+      };
     }
   }
 
@@ -225,8 +235,18 @@
             class="row-link"
             type="button"
             onclick={() => handleOpenCompany(w)}
-            title={`Open ${w.displayName} in HQ`}
-            aria-label={`Open ${w.displayName} in HQ`}
+            disabled={openState[w.slug] === true}
+            aria-busy={openState[w.slug] === true}
+            title={openState[w.slug] === true
+              ? `Opening ${w.displayName}…`
+              : typeof openState[w.slug] === 'string'
+                ? `Retry opening ${w.displayName} in HQ`
+                : `Open ${w.displayName} in HQ`}
+            aria-label={openState[w.slug] === true
+              ? `Opening ${w.displayName}`
+              : typeof openState[w.slug] === 'string'
+                ? `Retry opening ${w.displayName} in HQ`
+                : `Open ${w.displayName} in HQ`}
           ></button>
         {/if}
         <div class="row-main">
@@ -235,11 +255,12 @@
             {#if w.slug !== w.displayName.toLowerCase().replace(/\s+/g, '-')}
               <span class="row-slug">{w.slug}</span>
             {/if}
+            {#if openState[w.slug] === true}
+              <span class="row-open-spinner" aria-hidden="true"></span>
+            {/if}
             {#if w.lastSyncedAt && w.state !== 'broken'}
-              <!-- Inline with the name, right-aligned (margin-left: auto in
-                   CSS), hover-only via .row-meta-lastsync. Excluded for
-                   broken rows so the row-meta-line below carries the
-                   reconnect affordance without competing meta. -->
+              <!-- Always-visible timestamp keeps chronology available to
+                   pointer, keyboard, and touch users. -->
               <span class="row-meta-lastsync" title={`Last sync · ${formatLastSynced(w.lastSyncedAt)}`}>
                 {formatLastSynced(w.lastSyncedAt)}
               </span>
@@ -305,6 +326,11 @@
             </span>
           {:else if w.state === 'personal' && !w.cloudUid}
             <span class="row-meta">Cloud unreachable</span>
+          {/if}
+          {#if typeof openState[w.slug] === 'string'}
+            <span class="row-meta row-open-error" role="alert" title={openState[w.slug] as string}>
+              Couldn’t open HQ — select this row to retry
+            </span>
           {/if}
         </div>
 
@@ -527,17 +553,10 @@
   }
 
   .row-slug {
-    /* Sans-serif (inherit from body) + pill (v0.1.85). Was monospace bare
-       text — felt out of place next to the rest of the UI which is all
-       system sans. Pill background separates the slug from the displayName
-       without leaning on a different font family. */
     font-family: inherit;
     font-size: 0.6875rem;
-    font-weight: 500;
+    font-weight: 450;
     line-height: 1;
-    padding: 0.1875rem 0.4375rem;
-    border-radius: 999px;
-    background: var(--popover-surface, var(--pop-hover));
     color: var(--popover-text-muted, var(--pop-muted));
     flex-shrink: 0;
   }
@@ -549,15 +568,9 @@
     line-height: 1.3;
   }
 
-  /* Last-sync time, sitting inline at the right edge of the name line
-     (margin-left: auto pushes it). Hover-only so the steady-state row is
-     just the name + slug pill — keeps the list dense, surfaces the
-     timestamp on demand. State/info metas (cloud-only, broken,
-     connect-failed) below the name line stay visible without this
-     modifier — those carry an action or unrecoverable status that
-     shouldn't require hover to discover. */
+  /* Last-sync time sits inline at the right edge of the name line. */
   .row-meta-lastsync {
-    display: none;
+    display: inline;
     margin-left: auto;
     font-size: 0.6875rem;
     color: var(--popover-text-muted, var(--pop-muted));
@@ -566,8 +579,19 @@
     flex-shrink: 0;
   }
 
-  .workspace-row:hover .row-meta-lastsync {
-    display: inline;
+  .row-open-error {
+    position: relative;
+    z-index: 1;
+  }
+
+  .row-open-spinner {
+    width: 10px;
+    height: 10px;
+    flex: 0 0 10px;
+    border: 1.5px solid var(--popover-divider, var(--pop-border));
+    border-top-color: var(--popover-text, var(--pop-text));
+    border-radius: 50%;
+    animation: row-spin 0.7s linear infinite;
   }
 
   /* Sync-mode toggle: revealed only on row hover / keyboard focus so it

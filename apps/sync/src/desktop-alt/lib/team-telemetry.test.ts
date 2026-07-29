@@ -157,6 +157,41 @@ describe('normalizeCompanyTeamTelemetry', () => {
       { skill: 'deploy', count: 3 },
     ]);
   });
+
+  it('collapses only exact duplicate member UIDs without hiding same-name people', () => {
+    const view = normalizeCompanyTeamTelemetry({
+      members: [
+        {
+          personUid: 'prs_ada',
+          displayName: 'Ada',
+          events: 3,
+          skills: { plan: 2 },
+        },
+        {
+          personUid: 'prs_ada',
+          email: 'ada@example.com',
+          events: 5,
+          skills: { plan: 4, deploy: 1 },
+        },
+        {
+          personUid: 'prs_other_ada',
+          displayName: 'Ada',
+          events: 1,
+        },
+      ],
+    });
+
+    expect(view.members).toHaveLength(2);
+    const merged = view.members.find((member) => member.id === 'prs_ada');
+    expect(merged?.displayName).toBe('Ada');
+    expect(merged?.email).toBe('ada@example.com');
+    expect(merged?.events).toBe(5);
+    expect(merged?.topSkills).toEqual([
+      { skill: 'plan', count: 4 },
+      { skill: 'deploy', count: 1 },
+    ]);
+    expect(view.members.filter((member) => member.displayName === 'Ada')).toHaveLength(2);
+  });
 });
 
 describe('teamTelemetryErrorMessage', () => {

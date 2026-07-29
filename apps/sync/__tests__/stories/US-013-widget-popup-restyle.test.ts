@@ -1,11 +1,11 @@
 // @vitest-environment happy-dom
 //
-// US-013: Restyle widget click popup to locked design (scenes 8-10).
-// Behavioral mounts (no Tauri) + source contracts for the frosted panel chrome.
+// US-013: Restyle the widget click popup as a first-class communications surface.
+// Behavioral mounts (no Tauri) + source contracts for the single-material panel.
 //
 // e2eTests from the PRD:
-// 1. Given the pinned popup, when rendered, then no header/tabs/buttons/footer
-//    chrome exists and rows are one line with day separators.
+// 1. Given the pinned popup, when rendered, then one orienting header and clear
+//    destination frame roomy, flat conversation/activity rows.
 // 2. Given an actionable row, when hovered, then text pills replace the
 //    timestamp; at rest the row shows the timestamp.
 
@@ -85,7 +85,7 @@ afterEach(async () => {
 
 describe('US-013: pinned popup matches locked design (scenes 8-10)', () => {
   describe('single frosted panel, no extra chrome', () => {
-    it('pinned popup renders only day separators and rows — no header/tabs/buttons/footer chrome', () => {
+    it('pinned popup renders an orienting header, flat sections, and clear destinations', () => {
       // Deterministic clock so day labels never shift across midnight in CI.
       vi.useFakeTimers();
       vi.setSystemTime(new Date(2026, 6, 15, 12, 0, 0)); // Jul 15 2026, 12:00 local
@@ -102,13 +102,15 @@ describe('US-013: pinned popup matches locked design (scenes 8-10)', () => {
 
       const list = pinOpen();
 
-      // Panel shell: body (rows) + icon footer (Inbox / Desktop). No tabs/header chrome.
+      // One material shell: orienting header + flat body + destination footer.
       const children = [...list.children];
+      expect(children.some((c) => c.classList.contains('hl-header'))).toBe(true);
       expect(children.some((c) => c.classList.contains('hl-body'))).toBe(true);
       expect(children.some((c) => c.classList.contains('hl-footer'))).toBe(true);
       expect(list.querySelector('[role="tablist"], [role="tab"]')).toBeNull();
-      expect(list.querySelector('.hl-header, .hl-tabs')).toBeNull();
-      // Footer is icon-only jumps, not a full chrome bar.
+      expect(list.querySelector('.hl-title')?.textContent).toBe('Messages');
+      expect(list.querySelector('.hl-tabs')).toBeNull();
+      expect(list.querySelector('.hl-section-label')?.textContent).toBe('Activity');
       expect(list.querySelector('[data-testid="widget-hover-inbox"]')).toBeTruthy();
       expect(list.querySelector('[data-testid="widget-hover-desktop"]')).toBeTruthy();
 
@@ -122,7 +124,7 @@ describe('US-013: pinned popup matches locked design (scenes 8-10)', () => {
       }
     });
 
-    it('rows carry the unread dot between the type icon and the source text', () => {
+    it('rows carry the unread dot before their two-line communication copy', () => {
       const now = Date.now();
       mountWidget({
         initialItems: [
@@ -136,7 +138,7 @@ describe('US-013: pinned popup matches locked design (scenes 8-10)', () => {
       const kids = [...primaryAction!.children];
       const iconIdx = kids.findIndex((el) => el.classList.contains('nr-icon'));
       const dotIdx = kids.findIndex((el) => el.classList.contains('nr-unread'));
-      const textIdx = kids.findIndex((el) => el.classList.contains('nr-text'));
+      const textIdx = kids.findIndex((el) => el.classList.contains('nr-comfortable-copy'));
       expect(iconIdx).toBeGreaterThanOrEqual(0);
       expect(dotIdx).toBe(iconIdx + 1);
       expect(textIdx).toBe(dotIdx + 1);
@@ -176,14 +178,11 @@ describe('US-013: pinned popup matches locked design (scenes 8-10)', () => {
       expect(dismiss.querySelector('svg')).toBeNull();
     });
 
-    it('CSS contract: hover swaps the timestamp for the action pills', () => {
-      // The swap is pure CSS (:hover / :focus-within) — happy-dom does not
-      // compute it, so lock the rules at the source.
-      expect(rowSource).toContain('.nr:not(.nr-message):hover .nr-ts');
+    it('CSS contract: hover reveals actions without hiding timestamp context', () => {
+      // Action reveal is pure CSS (:hover / :focus-within), but timestamps stay
+      // stable so scanning the feed never causes metadata to jump.
+      expect(rowSource).not.toContain('.nr:not(.nr-message):hover .nr-ts');
       expect(rowSource).toContain('.nr:not(.nr-message):hover .nr-actions');
-      const tsHideIdx = rowSource.indexOf('.nr:not(.nr-message):hover .nr-ts');
-      const tsHideBlock = rowSource.slice(tsHideIdx, rowSource.indexOf('}', tsHideIdx));
-      expect(tsHideBlock).toContain('display: none');
     });
 
     it('Dismiss pill removes the row from the pinned popup', () => {
@@ -236,18 +235,42 @@ describe('US-013: pinned popup matches locked design (scenes 8-10)', () => {
       const panelIdx = style.indexOf('.hover-list {');
       expect(panelIdx).toBeGreaterThan(-1);
       const panel = style.slice(panelIdx, style.indexOf('}', panelIdx));
-      expect(panel).toContain('width: 264px');
+      expect(panel).toContain('width: 364px');
       expect(panel).toContain('border-radius: var(--radius-popover, 8px)');
-      expect(panel).toContain('padding: 6px 6px 4px');
-      expect(panel).toContain(
-        'backdrop-filter: var(--glass-filter, blur(28px) saturate(0%))',
-      );
+      expect(panel).toContain('padding: 0');
+      expect(panel).toContain('max-height: calc(100vh - 61px)');
+      expect(panel).toContain('backdrop-filter: var(--glass-filter,');
+      expect(panel).not.toMatch(/saturate\(\s*0%?\s*\)/);
       expect(panel).toContain('transform-origin: bottom right');
-      expect(panel).toContain('widget-bloom');
-      // Row gap lives on the body; footer is a separate icon toolbar.
+      expect(panel).toContain(
+        'animation: widget-panel-in 110ms cubic-bezier(0.23, 1, 0.32, 1) backwards',
+      );
+      expect(panel).not.toMatch(/cubic-bezier\([^)]*1\.3/);
+      // Rows stay inside the shared material; footer has one clear text action.
       expect(style).toContain('.hl-body');
       expect(style).toContain('.hl-footer');
+      expect(style).toContain('.hl-open-messages');
       expect(style).toContain('.hl-icon-btn');
+    });
+
+    it('uses fast Emil motion plus explicit press and focus-visible feedback', () => {
+      const style = widgetSource.slice(widgetSource.indexOf('<style>'));
+
+      expect(style).toContain(
+        'animation: widget-arrive 180ms cubic-bezier(0.23, 1, 0.32, 1) backwards',
+      );
+      expect(style).toContain('transform: scale(0.98) translateY(4px)');
+      expect(style).toContain('.hl-close:active:not(:disabled)');
+      expect(style).toContain('.ctx-item:active:not(:disabled)');
+      expect(style).toContain('.wm:active');
+      expect(style).toContain('.hl-close:focus-visible');
+      expect(style).toContain('.hl-open-messages:focus-visible');
+      expect(style).toContain('.hl-icon-btn:focus-visible');
+      expect(style).toContain('.ctx-item:focus-visible');
+      expect(style).toContain('.wm:focus-visible');
+      expect(style).not.toContain('transition: all');
+      expect(style).not.toMatch(/\bease-in\b/);
+      expect(style).not.toMatch(/scale\(\s*0\s*\)/);
     });
 
     it('rows inside the panel drop their own glass — transparent with panel-scoped hover tint', () => {
@@ -256,7 +279,7 @@ describe('US-013: pinned popup matches locked design (scenes 8-10)', () => {
       expect(rowIdx).toBeGreaterThan(-1);
       const row = style.slice(rowIdx, style.indexOf('}', rowIdx));
       expect(row).toContain('background: transparent');
-      expect(row).toContain('min-height: 28px');
+      expect(row).toContain('min-height: 58px');
       expect(row).toContain('border-radius: 0');
       expect(row).not.toContain('backdrop-filter');
       expect(row).not.toContain('box-shadow');
@@ -272,7 +295,7 @@ describe('US-013: pinned popup matches locked design (scenes 8-10)', () => {
       expect(sep).toContain('color: var(--row-muted)');
     });
 
-    it('hover window sizing tracks the 264px panel', () => {
+    it('hover window sizing tracks the wider communications panel', () => {
       const one = [stackItem({ id: 'a' }, Date.now())];
       expect(widgetHoverWindowSize(one, 0).width).toBe(WIDGET_HOVER_PANEL_WIDTH + 20);
     });

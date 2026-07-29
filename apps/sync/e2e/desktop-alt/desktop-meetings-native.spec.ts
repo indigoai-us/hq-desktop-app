@@ -92,10 +92,10 @@ describe('Meetings native: compact IA and preserved actions', () => {
   it('uses the five type roles and 3px title/meta slots', () => {
     expect(V4_TYPE_SCALE).toEqual({
       metadata: 13,
-      secondary: 13,
-      body: 14,
-      section: 14,
-      detail: 14,
+      secondary: 14,
+      body: 15,
+      section: 17,
+      detail: 24,
     });
     expect(V4_ROW_STACK_GAP_PX).toBe(3);
 

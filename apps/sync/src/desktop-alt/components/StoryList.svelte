@@ -13,6 +13,7 @@
     type TaskColumn,
   } from '../lib/projects-model';
   import LabelChip from './LabelChip.svelte';
+  import ProvenanceLine from './ProvenanceLine.svelte';
 
   interface Props {
     /** The stories to render (US-004 Story shape). */
@@ -90,6 +91,9 @@
               {/if}
             </div>
           {/if}
+        </div>
+        <div class="story-provenance" data-testid="story-list-provenance">
+          <ProvenanceLine provenance={item.story.provenance} kind="story" compact />
         </div>
         <span class="state-badge" data-column={item.column}>{columnOf(item.column)}</span>
         {#if prio}
@@ -207,6 +211,12 @@
     overflow: hidden;
   }
 
+  .story-provenance {
+    flex: 0 1 220px;
+    min-width: 120px;
+    overflow: hidden;
+  }
+
   .state-badge,
   .priority-badge,
   .label-overflow {
@@ -285,6 +295,19 @@
   @media (prefers-reduced-motion: reduce) {
     .story-row {
       transition: none;
+    }
+  }
+
+  @container (max-width: 720px) {
+    .story-row {
+      flex-wrap: wrap;
+    }
+
+    .story-provenance {
+      order: 10;
+      flex: 1 1 calc(100% - 92px);
+      min-width: 0;
+      margin-left: 92px;
     }
   }
 </style>

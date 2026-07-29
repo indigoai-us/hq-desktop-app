@@ -119,7 +119,7 @@ describe('US-003: Notification takeover with queue-on-occlusion', () => {
       );
     });
 
-    it('behavioral: Widget mounts seeded rows as one-line NotificationRows in the frost stack, newest first', () => {
+    it('behavioral: multiple seeded rows share one grouped glass shell with flat children, newest first', () => {
       const now = 50_000;
       const older = bannerToStackItem(
         {
@@ -148,6 +148,8 @@ describe('US-003: Notification takeover with queue-on-occlusion', () => {
 
       const stack = host.querySelector('[data-testid="widget-stack"]');
       expect(stack).toBeTruthy();
+      expect(stack!.classList.contains('stack-grouped')).toBe(true);
+      expect(stack!.classList.contains('stack-single')).toBe(false);
 
       const frostRows = stack!.querySelectorAll('.frost');
       expect(frostRows.length).toBe(2);
@@ -163,12 +165,33 @@ describe('US-003: Notification takeover with queue-on-occlusion', () => {
       expect(rows[0]?.getAttribute('data-expanded')).toBe('false');
       expect(rows[1]?.getAttribute('data-expanded')).toBe('false');
 
-      // Frost wrapper present around each NotificationRow
+      // Flat wrappers remain for keyed row behavior, but the parent owns the
+      // only material and the children have no card chrome.
       expect(frostRows[0]?.querySelector('[data-testid="notification-row"]')).toBeTruthy();
-      expect(widgetSource).toMatch(/\.frost\s*\{/);
       expect(widgetSource).toMatch(
-        /backdrop-filter:\s*var\(--glass-filter,\s*blur\(28px\)\s*saturate\(0%\)\)/,
+        /\.stack-grouped,\s*\.stack-single \.frost\s*\{[\s\S]*?backdrop-filter:\s*var\(--glass-filter,/,
       );
+      const frostBlock = widgetSource.match(/\n  \.frost\s*\{[^}]+\}/s)?.[0] ?? '';
+      expect(frostBlock).toContain('border-radius: 0');
+      expect(frostBlock).toContain('background: transparent');
+      expect(frostBlock).not.toContain('backdrop-filter');
+      expect(widgetSource).toContain('.stack-grouped .frost + .frost');
+      expect(widgetSource).not.toMatch(
+        /backdrop-filter:\s*var\(--glass-filter,[^;]*saturate\(\s*0%?\s*\)/,
+      );
+    });
+
+    it('behavioral: a single transient alert remains one true toast card', () => {
+      mountWidget({
+        initialItems: [
+          stackItem({ id: 'single', type: 'message', kind: 'dm', text: 'hello' }),
+        ],
+      });
+
+      const stack = host.querySelector('[data-testid="widget-stack"]');
+      expect(stack?.classList.contains('stack-single')).toBe(true);
+      expect(stack?.classList.contains('stack-grouped')).toBe(false);
+      expect(stack?.querySelectorAll('.frost')).toHaveLength(1);
     });
   });
 

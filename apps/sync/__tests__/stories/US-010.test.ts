@@ -45,7 +45,7 @@ describe('US-010: Activity panel reads company activity via Tauri command', () =
     expect(page).not.toContain('Activity panel - wired in US-010');
     expect(panel).toContain('void companyStore.loadActivity<Partial<CompanyActivity>>(slug');
     expect(panel).toContain('return () => { cancelled = true; };');
-    expect(panel).toContain('function retry() { reloadToken += 1; }');
+    expect(panel).toContain('function retry() { if (loading) return; error = null; loading = true; reloadToken += 1; }');
     expect(panel).toContain("console.error('get_company_activity failed:', err)");
     expect(tauriMain).toContain('commands::desktop_alt::get_company_activity');
   });
@@ -86,7 +86,9 @@ describe('US-010: Activity panel reads company activity via Tauri command', () =
     expect(panel).toContain('<div class="chart-skeleton" aria-label="Loading edits over time">');
     expect(panel).toContain('<div class="contributor-skeleton" aria-label="Loading top contributors">');
     expect(panel).toContain('<div class="recent-skeleton" aria-label="Loading recent files">');
-    expect((activityPanel.match(/No activity yet/g) ?? []).length).toBeGreaterThanOrEqual(3);
+    expect((activityPanel.match(/No activity yet/g) ?? []).length).toBe(2);
+    expect(panel).toContain('No file activity yet');
+    expect(panel).toContain('Recent file details are unavailable.');
     expect(panel).toContain('{#if loading}');
     expect(panel).toContain('{:else if activity.sparkline.length > 0}');
     expect(panel).toContain('{:else if activity.top.length > 0}');

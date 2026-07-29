@@ -14,6 +14,7 @@ import GlobalErrorBoundary from './components/GlobalErrorBoundary.svelte';
 import { mount } from 'svelte';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { beforeSend } from "./sentry-before-send";
+import { installDesktopZoom } from './lib/desktopZoom';
 
 Sentry.init({
   dsn: import.meta.env.VITE_SENTRY_DSN,
@@ -32,6 +33,9 @@ const windowLabel = getCurrentWindow().label;
 document.documentElement.dataset.window = windowLabel;
 const isWindows = /Windows/i.test(navigator.userAgent);
 document.documentElement.dataset.platform = isWindows ? 'windows' : 'other';
+// One persisted preference governs every HQ WebView: desktop, Messages,
+// meetings, detail sheets, the widget, and the compact menubar surface.
+installDesktopZoom();
 
 let Component: typeof App;
 if (windowLabel === 'meetings-window') {

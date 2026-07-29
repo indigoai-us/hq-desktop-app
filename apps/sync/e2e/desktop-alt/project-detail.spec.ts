@@ -23,14 +23,17 @@ import { readRepoFile } from './harness';
  */
 
 describe('desktop-alt markdown helper (US-009)', () => {
-  it('escapes raw HTML so source markup can never reach the DOM', () => {
+  it('rebuilds the narrow README HTML subset without passing source attributes through', () => {
     expect(escapeHtml('<script>alert(1)</script>')).toBe(
       '&lt;script&gt;alert(1)&lt;/script&gt;',
     );
-    // A README that embeds raw HTML renders it escaped, not live.
+    // A README image is rebuilt from safe attributes; handlers never survive.
     const html = renderMarkdown('Hello <img src=x onerror=alert(1)>');
-    expect(html).not.toContain('<img');
-    expect(html).toContain('&lt;img');
+    expect(html).toContain(
+      '<img src="x" alt="" loading="lazy" decoding="async" />',
+    );
+    expect(html).not.toContain('onerror');
+    expect(html).not.toContain('alert(1)');
   });
 
   it('renders headings, lists, code, and emphasis to safe tags', () => {

@@ -51,6 +51,7 @@
     showConflictModal?: boolean;
     conflictCount?: number;
     conflictCompany?: string;
+    messagesUnreadCount?: number;
     updateAvailable?: { version: string; body?: string; date?: string } | null;
     updateInstalling?: boolean;
     onsync: () => void;
@@ -92,6 +93,7 @@
     showConflictModal = false,
     conflictCount = 0,
     conflictCompany = '',
+    messagesUnreadCount = 0,
     updateAvailable = null,
     updateInstalling = false,
     onsync,
@@ -106,11 +108,17 @@
   let popoverContentEl: HTMLElement | null = $state(null);
   let popoverMainContentEl: HTMLElement | null = $state(null);
   let opening = $state(false);
+  let openingHQ = $state(false);
+  let openingMessages = $state(false);
+  let openingUpdates = $state(false);
   let openingTimer: number | null = null;
   let syncStatus = $state<SyncStatus | null>(null);
   let syncStatusLoading = $state(true);
   let syncStatusError = $state('');
   let lastWindowHeight = $state(0);
+  // AppKit owns the optical material in the native menubar window. Browser
+  // previews and non-macOS fallbacks retain the CSS filter below.
+  const nativeGlass = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
   const visibleCloudError = $derived(
     sanitizeVisibleIdentifiers(cloudError, { companies: workspaces ?? [] }),
   );
@@ -125,10 +133,38 @@
   }
 
   async function openHQ() {
+    if (openingHQ) return;
+    openingHQ = true;
     try {
       await invoke('open_desktop_alt_window', { route: 'inbox' });
     } catch (e) {
       console.error('popover: open_desktop_alt_window failed', e);
+    } finally {
+      openingHQ = false;
+    }
+  }
+
+  async function openMessages() {
+    if (openingMessages) return;
+    openingMessages = true;
+    try {
+      await invoke('open_communications_window');
+    } catch (e) {
+      console.error('popover: open communications failed', e);
+    } finally {
+      openingMessages = false;
+    }
+  }
+
+  async function openUpdates() {
+    if (openingUpdates) return;
+    openingUpdates = true;
+    try {
+      await invoke('open_desktop_alt_window', { route: 'settings:updates' });
+    } catch (e) {
+      console.error('popover: open updates failed', e);
+    } finally {
+      openingUpdates = false;
     }
   }
 
@@ -391,7 +427,13 @@
   });
 </script>
 
-<div class="popover mbpop show" class:opening bind:this={popoverEl} data-testid="popover-root">
+<div
+  class="popover mbpop show"
+  class:opening
+  class:native-glass={nativeGlass}
+  bind:this={popoverEl}
+  data-testid="popover-root"
+>
   <div class="mbpop-content" bind:this={popoverContentEl}>
   <div class="mbp-main">
     <div class="mbp-main-content" bind:this={popoverMainContentEl}>
@@ -416,6 +458,48 @@
       </div>
     {/if}
 
+    <button
+      class="mbp-messages-entry"
+      type="button"
+      data-testid="popover-open-messages"
+      onclick={() => void openMessages()}
+      disabled={openingMessages}
+      aria-busy={openingMessages}
+      aria-label={`Open Messages, ${messagesUnreadCount} ${
+        messagesUnreadCount === 1 ? 'item' : 'items'
+      } need attention`}
+    >
+      <span class="mbp-messages-icon" aria-hidden="true">
+        <svg width="17" height="17" viewBox="0 0 20 20" fill="none">
+          <path
+            d="M4.25 4.5h11.5A1.75 1.75 0 0 1 17.5 6.25v6.5a1.75 1.75 0 0 1-1.75 1.75H9l-3.8 2.35.7-2.35H4.25a1.75 1.75 0 0 1-1.75-1.75v-6.5A1.75 1.75 0 0 1 4.25 4.5Z"
+            stroke="currentColor"
+            stroke-width="1.35"
+            stroke-linejoin="round"
+          />
+        </svg>
+      </span>
+      <span class="mbp-messages-copy">
+        <span class="mbp-messages-title">Messages</span>
+        <span class="mbp-messages-sub">
+          {messagesUnreadCount > 0
+            ? `${messagesUnreadCount} need attention`
+            : 'DMs, channels, requests, and shares'}
+        </span>
+      </span>
+      <span
+        class="mbp-messages-count"
+        aria-label={`${messagesUnreadCount} ${
+          messagesUnreadCount === 1 ? 'item' : 'items'
+        } need attention`}
+      >
+        {messagesUnreadCount > 99 ? '99+' : messagesUnreadCount}
+      </span>
+      <span class="mbp-messages-open" aria-hidden="true">
+        {openingMessages ? 'Opening…' : 'Open'}
+      </span>
+    </button>
+
     <!-- Notifications panel body — slim label + unread count + Mark all read.
          System notices (conflict / update / membership / auth / errors) pin to
          the top as one-line rows in the same locked row design, then the data
@@ -437,8 +521,10 @@
             type="button"
             data-testid="popover-open-hq"
             onclick={() => void openHQ()}
+            disabled={openingHQ}
+            aria-busy={openingHQ}
           >
-            Open HQ
+            {openingHQ ? 'Opening…' : 'Open HQ'}
           </button>
         </div>
       </div>
@@ -491,6 +577,15 @@
             HQ v{updateAvailable.version}{updateAvailable.body ? ` — ${updateAvailable.body}` : ''}
           </span>
           <span class="snr-actions">
+            <button
+              type="button"
+              class="mbp-mini"
+              onclick={() => void openUpdates()}
+              disabled={openingUpdates}
+              aria-busy={openingUpdates}
+            >
+              {openingUpdates ? 'Opening…' : 'View updates'}
+            </button>
             <button
               type="button"
               class="mbp-mini primary"
@@ -594,7 +689,7 @@
       <NotificationFeed
         bind:this={feedEl}
         showDayLabels={false}
-        includeUpdates={false}
+        includeUpdates={!updateAvailable}
         hideEmptyState={hasSystemNotices}
         onunreadchange={(n) => (unreadCount = n)}
       />
@@ -646,12 +741,17 @@
   .mbpop {
     color: var(--pop-text);
     background: var(--pop-bg);
-    backdrop-filter: var(--glass-filter, blur(28px) saturate(0%));
-    -webkit-backdrop-filter: var(--glass-filter, blur(28px) saturate(0%));
+    backdrop-filter: var(--glass-filter, blur(36px) saturate(118%) contrast(102%));
+    -webkit-backdrop-filter: var(--glass-filter, blur(36px) saturate(118%) contrast(102%));
     border: 0.5px solid var(--pop-border);
     border-radius: var(--radius-popover);
     box-shadow: var(--pop-shadow), inset 0 1px 0 var(--pop-highlight);
     overflow: hidden;
+  }
+
+  .mbpop.native-glass {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
   }
 
   /* Windows: Mica/Acrylic is applied natively (window_effects). Keep an
@@ -736,11 +836,11 @@
   .snr {
     display: flex;
     align-items: center;
-    gap: 10px;
-    min-height: 30px;
-    padding: 0 11px;
+    gap: 8px;
+    min-height: 38px;
+    padding: 0 8px;
     border-radius: 0;
-    font-size: 12px;
+    font-size: 12.5px;
     color: var(--pop-text);
     transition: background-color 0.15s ease;
     box-sizing: border-box;
@@ -772,9 +872,15 @@
   .snr-text {
     flex: 1;
     min-width: 0;
-    white-space: nowrap;
+    display: -webkit-box;
+    padding: 7px 0;
+    line-height: 1.32;
+    white-space: normal;
     overflow: hidden;
     text-overflow: ellipsis;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
     font-weight: 450;
     color: var(--pop-text);
   }
@@ -808,8 +914,8 @@
   .mbp-status {
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 11px 14px 12px;
+    gap: 9px;
+    padding: 12px;
   }
 
   .mbp-status .gd {
@@ -838,14 +944,14 @@
 
   .mbp-s1 {
     color: var(--pop-text);
-    font-size: 13px;
-    font-weight: 500;
+    font-size: 13.5px;
+    font-weight: 600;
     white-space: nowrap;
   }
 
   .mbp-s2 {
     color: var(--pop-muted);
-    font-size: 11px;
+    font-size: 11.5px;
     margin-left: auto;
     min-width: 0;
     overflow: hidden;
@@ -875,8 +981,105 @@
     transition: width 0.25s ease-out;
   }
 
+  .mbp-messages-entry {
+    width: 100%;
+    min-height: 58px;
+    display: grid;
+    grid-template-columns: 20px minmax(0, 1fr) auto auto;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border: 0;
+    border-top: 0.5px solid var(--pop-divider);
+    border-radius: 0;
+    background: transparent;
+    color: var(--pop-text);
+    font-family: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition: background-color 0.14s ease, color 0.14s ease;
+  }
+
+  .mbp-messages-entry:hover,
+  .mbp-messages-entry:focus-visible {
+    background: var(--pop-hover);
+  }
+
+  .mbp-messages-entry:focus-visible {
+    outline: 1.5px solid var(--popover-focus-ring, var(--pop-accent));
+    outline-offset: -2px;
+  }
+
+  .mbp-messages-entry:disabled {
+    cursor: wait;
+  }
+
+  .mbp-messages-icon {
+    width: 20px;
+    height: 20px;
+    display: grid;
+    place-items: center;
+    color: var(--pop-muted);
+  }
+
+  .mbp-messages-copy {
+    min-width: 0;
+    display: grid;
+    gap: 2px;
+  }
+
+  .mbp-messages-title {
+    font-size: 13.5px;
+    font-weight: 650;
+    line-height: 1.2;
+  }
+
+  .mbp-messages-sub {
+    overflow: hidden;
+    color: var(--pop-muted);
+    font-size: 11.5px;
+    line-height: 1.25;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .mbp-messages-count {
+    min-width: 22px;
+    padding: 2px 6px;
+    border-radius: 999px;
+    background: var(--pop-hover);
+    color: var(--pop-text);
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1.3;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .mbp-messages-open {
+    min-width: 29px;
+    color: var(--pop-muted);
+    font-size: 11px;
+    font-weight: 600;
+    text-align: right;
+  }
+
+  .mbp-messages-entry[aria-busy='true'] .mbp-messages-icon {
+    animation: mbp-messages-pulse 0.8s ease-in-out infinite alternate;
+  }
+
+  @keyframes mbp-messages-pulse {
+    from {
+      opacity: 0.42;
+    }
+
+    to {
+      opacity: 1;
+    }
+  }
+
   .mbp-sec {
-    padding: 6px;
+    padding: 6px 3px;
     border-top: 0.5px solid var(--pop-divider);
   }
 
@@ -885,11 +1088,11 @@
     align-items: center;
     gap: 6px;
     color: var(--pop-muted);
-    font-size: 10px;
-    font-weight: 600;
-    letter-spacing: 0.5px;
+    font-size: 11px;
+    font-weight: 650;
+    letter-spacing: 0.45px;
     text-transform: uppercase;
-    padding: 6px 8px 4px;
+    padding: 7px 4px 5px;
   }
 
   .mbp-unread-count {
@@ -933,8 +1136,8 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 6px;
-    padding-right: 8px;
+    gap: 5px;
+    padding: 0 4px 3px;
   }
 
   .mbp-sec-actions {
@@ -946,12 +1149,12 @@
 
   .mbp-sec-action {
     border: 0;
-    padding: 2px 6px;
+    padding: 3px 5px;
     border-radius: 6px;
     background: transparent;
     color: var(--pop-muted);
     font-family: inherit;
-    font-size: 10.5px;
+    font-size: 11px;
     font-weight: 600;
     cursor: pointer;
   }
@@ -972,5 +1175,41 @@
   .mbp-sec-action:focus-visible {
     outline: 1.5px solid var(--popover-focus-ring, var(--pop-accent));
     outline-offset: var(--popover-focus-offset, 2px);
+  }
+
+  /* The native popover is intentionally narrow. Preserve actor, message, and
+     timestamp hierarchy instead of spending the text lane on a second type
+     label that is already communicated by the row icon. */
+  .mbp-sec :global(.nr) {
+    min-height: 38px;
+    padding: 0 8px;
+    font-size: 12.5px;
+  }
+
+  .mbp-sec :global(.nr-primary-action),
+  .mbp-sec :global(.nr-primary-content) {
+    min-height: 38px;
+    gap: 8px;
+  }
+
+  .mbp-sec :global(.nr-meta-type) {
+    display: none;
+  }
+
+  .mbp-sec :global(.nr-actor-pill) {
+    max-width: min(12ch, 40%);
+    padding-inline: 5px;
+  }
+
+  .mbp-sec :global(.nr-ts) {
+    font-size: 11px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .mbp-messages-entry,
+    .mbp-messages-entry[aria-busy='true'] .mbp-messages-icon {
+      animation: none;
+      transition: none;
+    }
   }
 </style>

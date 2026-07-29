@@ -831,6 +831,7 @@ dependencies = [
  "fs2",
  "ignore",
  "reqwest",
+ "rustix",
  "semver",
  "sentry",
  "serde",

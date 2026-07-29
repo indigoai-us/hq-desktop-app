@@ -6,7 +6,10 @@
 export type FilePreviewKind = 'markdown' | 'image' | 'text' | 'pdf' | 'unknown';
 
 const IMAGE_EXT =
-  /\.(png|jpe?g|gif|webp|svg|ico|bmp|avif|tiff?|heic|heif)$/i;
+  /\.(png|jpe?g|gif|webp|ico|bmp|avif|tiff?|heic|heif)$/i;
+// SVG is active XML content. Keep it out of both the media embed and UTF-8
+// fallback so a preview can never inject scripts or external references.
+const UNSAFE_EMBED_EXT = /\.svg$/i;
 const MARKDOWN_EXT = /\.(md|markdown)$/i;
 const PDF_EXT = /\.pdf$/i;
 /** Extensions we treat as UTF-8 text for the monospace preview path. */
@@ -16,6 +19,7 @@ const TEXT_EXT =
 export function filePreviewKind(path: string): FilePreviewKind {
   const p = path.trim();
   if (!p) return 'unknown';
+  if (UNSAFE_EMBED_EXT.test(p)) return 'unknown';
   if (MARKDOWN_EXT.test(p)) return 'markdown';
   if (IMAGE_EXT.test(p)) return 'image';
   if (PDF_EXT.test(p)) return 'pdf';

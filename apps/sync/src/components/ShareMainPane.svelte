@@ -22,6 +22,7 @@
   let { events }: Props = $props();
 
   let copyFeedback = $state<string | null>(null);
+  let pendingAction = $state<string | null>(null);
 
   // Share reactions: one controller for the pane; map keyed by share eventId.
   const reactionCtl = new ShareReactionController();
@@ -48,6 +49,9 @@
   // issuer. Prefers the canonical issuerPersonUid; a legacy row (empty uid)
   // falls back to the email-addressed compose flow inside the shell.
   async function messageSharer(evt: ShareEvent): Promise<void> {
+    const key = `${evt.eventId}:message`;
+    if (pendingAction) return;
+    pendingAction = key;
     try {
       await invoke('open_messages_window', {
         target: {
@@ -58,10 +62,15 @@
       });
     } catch (err) {
       console.error('share-notify ShareMainPane: open_messages_window failed', err);
+    } finally {
+      pendingAction = null;
     }
   }
 
   async function copyPrompt(evt: ShareEvent): Promise<void> {
+    const key = `${evt.eventId}:copy`;
+    if (pendingAction) return;
+    pendingAction = key;
     try {
       await navigator.clipboard.writeText(buildPrompt(evt));
       copyFeedback = evt.eventId;
@@ -70,10 +79,15 @@
       }, 1800);
     } catch (err) {
       console.error('Clipboard write failed:', err);
+    } finally {
+      pendingAction = null;
     }
   }
 
   async function openInClaude(evt: ShareEvent): Promise<void> {
+    const key = `${evt.eventId}:claude`;
+    if (pendingAction) return;
+    pendingAction = key;
     // Open Claude Code with the templated prompt pre-filled and cwd at
     // the user's HQ folder. Same UX as the notification body-click in
     // App.svelte; we deep-link via the `open_claude_code_link` Tauri
@@ -101,6 +115,8 @@
       await invoke('open_claude_code_link', { url });
     } catch (err) {
       console.error('share-notify ShareMainPane: open_claude_code_link failed', err);
+    } finally {
+      pendingAction = null;
     }
   }
 
@@ -173,23 +189,35 @@
           <button
             class="btn btn-copy"
             onclick={() => copyPrompt(evt)}
+            disabled={pendingAction !== null}
+            aria-busy={pendingAction === `${evt.eventId}:copy`}
             aria-label="Copy prompt to clipboard"
           >
-            {copyFeedback === evt.eventId ? 'Copied!' : 'Copy prompt'}
+            {pendingAction === `${evt.eventId}:copy`
+              ? 'Copying…'
+              : copyFeedback === evt.eventId
+                ? 'Copied'
+                : 'Copy prompt'}
           </button>
           <button
             class="btn btn-console"
             onclick={() => openInClaude(evt)}
+            disabled={pendingAction !== null}
+            aria-busy={pendingAction === `${evt.eventId}:claude`}
             aria-label="Open in Claude Code with prompt"
           >
-            Open in Claude ↗
+            {pendingAction === `${evt.eventId}:claude` ? 'Opening…' : 'Open in Claude ↗'}
           </button>
           <button
             class="btn btn-console"
             onclick={() => messageSharer(evt)}
+            disabled={pendingAction !== null}
+            aria-busy={pendingAction === `${evt.eventId}:message`}
             aria-label={`Message ${evt.issuerDisplayName}`}
           >
-            Message {evt.issuerDisplayName.split(/\s+/)[0] || 'sharer'}
+            {pendingAction === `${evt.eventId}:message`
+              ? 'Opening…'
+              : `Message ${evt.issuerDisplayName.split(/\s+/)[0] || 'sharer'}`}
           </button>
         </div>
       </article>
@@ -364,7 +392,7 @@
     color: var(--pop-text, var(--fg));
   }
 
-  .btn-copy:hover {
+  .btn-copy:hover:not(:disabled) {
     background: var(--c-field-bg, var(--surface-panel));
   }
 
@@ -374,7 +402,7 @@
     border: 1px solid var(--pop-border, var(--border));
   }
 
-  .btn-console:hover {
+  .btn-console:hover:not(:disabled) {
     background: var(--pop-hover, var(--row-hover));
     color: var(--pop-text, var(--fg));
   }
@@ -382,5 +410,10 @@
   .btn:focus-visible {
     outline: 2px solid var(--v4-focus-ring, var(--v4-text-1, var(--c-text)));
     outline-offset: 2px;
+  }
+
+  .btn:disabled {
+    opacity: 0.58;
+    cursor: wait;
   }
 </style>

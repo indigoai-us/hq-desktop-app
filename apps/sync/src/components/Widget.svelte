@@ -11,7 +11,7 @@
    * Mountable with zero Tauri APIs (happy-dom US-002 / US-003 tests). Listeners
    * and invokes only run when `__TAURI_INTERNALS__` is present.
    */
-  import { onMount, untrack } from 'svelte';
+  import { onMount, tick, untrack } from 'svelte';
   import NotificationRow from './NotificationRow.svelte';
   import type { NotificationRowType } from './NotificationRow.svelte';
   import {
@@ -21,6 +21,8 @@
     WIDGET_RECENT_STORAGE_KEY,
     addItem,
     bannerToStackItem,
+    channelToStackItem,
+    compactHoverItems,
     deserializeRecent,
     dismissItem,
     dismissRecent,
@@ -43,6 +45,12 @@
     getLastReadTs,
     loadNotificationTimeline,
   } from '../lib/notificationFeedData';
+  import type { Channel } from '../lib/channels';
+  import {
+    DESKTOP_ZOOM_CHANGE_EVENT,
+    normalizeDesktopZoom,
+    scaleDesktopWindowSize,
+  } from '../lib/desktopZoom';
 
   let {
     /** Initial/test seed for the queued superscript when the stack is empty. */
@@ -53,6 +61,15 @@
     queued?: number;
     initialItems?: WidgetStackItem[];
   } = $props();
+
+  function currentDesktopZoom(): number {
+    if (typeof document === 'undefined') return 1;
+    return normalizeDesktopZoom(
+      Number(document.documentElement.dataset.desktopZoom) / 100,
+    );
+  }
+
+  let desktopZoom = $state(untrack(currentDesktopZoom));
 
   // Capture once on mount — tests seed rows; runtime stack is event-driven.
   // US-015: without initialItems, hydrate recent from localStorage (never visible).
@@ -104,6 +121,14 @@
   let replyHolds = $state(new Set<string>());
   /** Secondary actions currently in flight; prevents duplicate install taps. */
   let actioningIds = $state(new Set<string>());
+  /** Window jumps stay visible and disabled until their native invoke settles. */
+  let navigationPending = $state<'inbox' | 'desktop' | null>(null);
+  /** Native history hydration is distinct from a trusted, genuinely empty inbox. */
+  let historyHydration = $state<'idle' | 'loading' | 'ready' | 'error'>('idle');
+  /** Keeps the explicit history Retry action mounted with progress feedback. */
+  let historyRetryPending = $state(false);
+  /** A double desktop-open failure remains visible until retry or dismissal. */
+  let desktopNavigationError = $state<string | null>(null);
   /** Last-request-wins guard for history/update hydration across native events. */
   let historyLoadGeneration = 0;
 
@@ -152,7 +177,7 @@
   let idSeq = 0;
   let expiryTimer: ReturnType<typeof setInterval> | undefined;
   /** Last size sent to `resize_widget` (non-reactive — avoids effect loops). */
-  let lastSent: { width: number; height: number } | null = null;
+  let lastSent: { width: number; height: number; zoom: number } | null = null;
 
   /** Hover recent-list open state + collapse delay timer. */
   let hoverOpen = $state(false);
@@ -161,16 +186,88 @@
   /** Wordmark right-click menu (Inbox + Open desktop view). */
   let contextMenuOpen = $state(false);
   let hoverCloseTimer: ReturnType<typeof setTimeout> | undefined;
+  let wordmarkElement = $state<HTMLElement | null>(null);
+  let contextMenuElement = $state<HTMLElement | null>(null);
+  let hoverListElement = $state<HTMLElement | null>(null);
 
   /** Tracks native focusable state (non-reactive — avoids effect loops). */
   let widgetFocusable = false;
 
-  const hoverList = $derived(
-    hoverOpen ? hoverRows(hoverItems(stack), Date.now()) : [],
+  const hoverDisplayItems = $derived(hoverOpen ? compactHoverItems(stack) : []);
+  const hoverList = $derived(hoverRows(hoverDisplayItems, Date.now()));
+  const hoverMessageRows = $derived(
+    hoverOpen
+      ? hoverRows(
+          hoverDisplayItems.filter((item) => isConversationItem(item)),
+          Date.now(),
+        )
+      : [],
   );
+  const hoverActivityRows = $derived(
+    hoverOpen
+      ? hoverRows(
+          hoverDisplayItems.filter((item) => !isConversationItem(item)),
+          Date.now(),
+        )
+      : [],
+  );
+  const hoverConversationUnread = $derived(
+    hoverItems(stack).filter(
+      (item) => isConversationItem(item) && item.unread === true,
+    ).length,
+  );
+
+  function isConversationItem(item: WidgetStackItem): boolean {
+    return item.kind === 'dm' || item.kind === 'channel';
+  }
+
+  function channelUnreadFor(item: WidgetStackItem): number {
+    if (item.kind !== 'channel' || !item.data || typeof item.data !== 'object') {
+      return 0;
+    }
+    const unread = (item.data as { unread?: unknown }).unread;
+    return typeof unread === 'number' && Number.isFinite(unread)
+      ? Math.max(0, Math.round(unread))
+      : 0;
+  }
 
   function hasTauri(): boolean {
     return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+  }
+
+  function notificationSourceLabel(item: WidgetStackItem): string {
+    switch (item.kind) {
+      case 'dm':
+        return 'Direct message';
+      case 'channel': {
+        const scope =
+          item.data && typeof item.data === 'object' && 'scope' in item.data
+            ? String((item.data as { scope?: unknown }).scope ?? '')
+            : '';
+        const company =
+          item.data && typeof item.data === 'object' && 'companyName' in item.data
+            ? String((item.data as { companyName?: unknown }).companyName ?? '').trim()
+            : '';
+        if (scope === 'group') return 'Group DM';
+        return company ? `Channel · ${company}` : 'Channel';
+      }
+      case 'share':
+        return 'Shared';
+      case 'new-file':
+        return item.compactGroupCount && item.compactGroupCount > 1
+          ? `Activity · ${item.compactGroupCount} updates`
+          : 'Activity';
+      case 'update':
+        return 'Update';
+      case 'meeting':
+        return 'Meeting';
+      default:
+        return item.type === 'sync'
+          ? item.compactGroupCount && item.compactGroupCount > 1
+            ? `Activity · ${item.compactGroupCount} updates`
+            : 'Activity'
+          : 'Notice';
+    }
   }
 
   /**
@@ -204,6 +301,17 @@
     }
   }
 
+  function focusSoon(element: HTMLElement | null): void {
+    void tick().then(() => element?.focus());
+  }
+
+  async function focusFirstContextItem(): Promise<void> {
+    await tick();
+    contextMenuElement
+      ?.querySelector<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')
+      ?.focus();
+  }
+
   function openHoverList(): void {
     if (hoverCloseTimer !== undefined) {
       clearTimeout(hoverCloseTimer);
@@ -222,10 +330,11 @@
   }
 
   /** Close a click-pinned list and clear unread (mark-on-leave watermark). */
-  function closePinned(): void {
+  function closePinned(restoreFocus = false): void {
     pinned = false;
     hoverOpen = false;
     contextMenuOpen = false;
+    desktopNavigationError = null;
     if (hoverCloseTimer !== undefined) {
       clearTimeout(hoverCloseTimer);
       hoverCloseTimer = undefined;
@@ -237,6 +346,7 @@
     // A quick-reply input may have flipped the native window focusable while
     // the list was pinned — always restore non-activating mode on close.
     void setWidgetFocusable(false);
+    if (restoreFocus) focusSoon(wordmarkElement);
   }
 
   /**
@@ -248,8 +358,10 @@
     // openHoverList's reply-hold guard.
     if (replyHolds.size > 0) return;
     contextMenuOpen = false;
+    desktopNavigationError = null;
     pinned = true;
     openHoverList();
+    void setWidgetFocusable(true).then(() => focusSoon(hoverListElement));
   }
 
   function togglePinned(): void {
@@ -260,8 +372,11 @@
     }
   }
 
-  function closeContextMenu(): void {
+  function closeContextMenu(restoreFocus = false): void {
     contextMenuOpen = false;
+    desktopNavigationError = null;
+    void setWidgetFocusable(false);
+    if (restoreFocus) focusSoon(wordmarkElement);
   }
 
   function handleWordmarkContextMenu(e: MouseEvent): void {
@@ -272,56 +387,117 @@
     // Context menu replaces the hover list while open (same chrome slot).
     hoverOpen = false;
     pinned = false;
+    desktopNavigationError = null;
     contextMenuOpen = true;
+    void setWidgetFocusable(true).then(() => focusFirstContextItem());
   }
 
   function handleWordmarkKeydown(e: KeyboardEvent): void {
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
       togglePinned();
-    } else if (e.key === 'Escape' && contextMenuOpen) {
+    } else if (e.key === 'Escape' && (contextMenuOpen || pinned)) {
       e.preventDefault();
-      closeContextMenu();
+      if (contextMenuOpen) closeContextMenu(true);
+      else closePinned(true);
     }
   }
 
+  function handleContextMenuKeydown(e: KeyboardEvent): void {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      closeContextMenu(true);
+      return;
+    }
+    if (
+      e.key !== 'ArrowDown' &&
+      e.key !== 'ArrowUp' &&
+      e.key !== 'Home' &&
+      e.key !== 'End'
+    ) {
+      return;
+    }
+    const items = [
+      ...(contextMenuElement?.querySelectorAll<HTMLButtonElement>(
+        '[role="menuitem"]:not(:disabled)',
+      ) ?? []),
+    ];
+    if (items.length === 0) return;
+    e.preventDefault();
+    const current = items.indexOf(document.activeElement as HTMLButtonElement);
+    let next = 0;
+    if (e.key === 'End') next = items.length - 1;
+    else if (e.key === 'Home') next = 0;
+    else if (e.key === 'ArrowDown') next = current < 0 ? 0 : (current + 1) % items.length;
+    else next = current < 0 ? items.length - 1 : (current - 1 + items.length) % items.length;
+    items[next]?.focus();
+  }
+
+  function handleHoverListKeydown(e: KeyboardEvent): void {
+    if (e.key !== 'Escape' || !pinned) return;
+    e.preventDefault();
+    e.stopPropagation();
+    closePinned(true);
+  }
+
   /**
-   * Open the two-pane Inbox quick window (side pane + detail/reply canvas).
+   * Open the two-pane communications window (side pane + detail/reply canvas).
    * Used by context menu + mini-popup footer icons.
    */
   async function menuOpenInbox(): Promise<void> {
-    closeContextMenu();
-    // Dismiss the mini list so it doesn't sit on top of the new window.
-    if (pinned || hoverOpen) closePinned();
+    if (navigationPending) return;
+    navigationPending = 'inbox';
     if (!hasTauri()) {
+      closeContextMenu();
       openMiniInbox();
+      navigationPending = null;
       return;
     }
     try {
       const { invoke } = await import('@tauri-apps/api/core');
-      await invoke('open_inbox_window');
+      await invoke('open_communications_window');
+      if (pinned || hoverOpen) closePinned();
+      else closeContextMenu();
     } catch (err) {
-      console.error('widget: open_inbox_window failed', err);
+      console.error('widget: open_communications_window failed', err);
       openMiniInbox();
+    } finally {
+      navigationPending = null;
     }
   }
 
   /** Open the full desktop app (tray "Open desktop view" path). */
   async function menuOpenDesktop(): Promise<void> {
-    closeContextMenu();
-    if (pinned || hoverOpen) closePinned();
-    if (!hasTauri()) return;
+    if (navigationPending) return;
+    navigationPending = 'desktop';
+    if (!hasTauri()) {
+      closeContextMenu();
+      navigationPending = null;
+      return;
+    }
+    let opened = false;
     try {
       const { invoke } = await import('@tauri-apps/api/core');
       await invoke('open_desktop_alt_window');
+      opened = true;
     } catch (err) {
       console.error('widget: open_desktop_alt_window failed', err);
       try {
         const { invoke } = await import('@tauri-apps/api/core');
         await invoke('show_main_window');
+        opened = true;
       } catch (err2) {
         console.error('widget: show_main_window fallback failed', err2);
+        desktopNavigationError =
+          'Couldn’t open HQ. Check that the desktop app is available, then retry.';
       }
+    } finally {
+      if (opened) {
+        if (pinned || hoverOpen) closePinned();
+        else closeContextMenu();
+      }
+      navigationPending = null;
     }
   }
 
@@ -396,6 +572,8 @@
       // localStorage-hydrated rows (action surface stripped) usable.
       if (item.kind === 'dm' && item.data) {
         await invoke('open_dm_detail', { event: item.data });
+      } else if (item.kind === 'channel') {
+        await invoke('open_communications_window', { channel: item.data });
       } else if (item.kind === 'share' && item.data) {
         await invoke('open_share_detail', { events: [item.data] });
       } else if (item.kind === 'new-file' || item.type === 'sync') {
@@ -408,13 +586,14 @@
             route: `company:${company}:activity`,
           });
         } else {
-          // No company slug — open the two-pane Inbox quick window.
-          await invoke('open_inbox_window');
+          // No company slug — open the two-pane communications window.
+          await invoke('open_communications_window');
         }
       } else if (item.kind === 'update') {
-        // The row body is navigation, never a surprise restart. Inbox owns the
-        // first-class update notification and its explicit Update now action.
-        await invoke('open_inbox_window');
+        // The row body is navigation, never a surprise restart. Updates have a
+        // first-class destination; never strand this notification in a generic
+        // Inbox that may not have updater history hydrated yet.
+        await invoke('open_desktop_alt_window', { route: 'settings:updates' });
       } else if (item.kind === 'meeting') {
         await invoke('show_main_window');
       } else if (item.clickActionId) {
@@ -432,18 +611,18 @@
           payload,
         });
       } else {
-        // Display-only / unknown — two-pane Inbox, not full desktop-alt.
-        await invoke('open_inbox_window');
+        // Display-only / unknown — two-pane communications, not full desktop.
+        await invoke('open_communications_window');
       }
-    } catch (err) {
-      console.error('widget: open failed', err);
-    } finally {
       applyStack(dismissItem(stack, item.id));
       // Opening the last row unmounts .stack without a pointerleave —
       // clear the pointer hold so the next notification still auto-hides.
       if (stack.visible.length === 0) {
         setPointerHold(false);
       }
+    } catch (err) {
+      console.error('widget: open failed', err);
+      throw err;
     }
   }
 
@@ -467,14 +646,15 @@
         actionLabel: item.actionLabel,
       };
       await invoke('banner_action', { action: item.actionId, payload });
+      applyStack(dismissItem(stack, item.id));
+      if (stack.visible.length === 0) setPointerHold(false);
     } catch (err) {
       console.error('widget: action failed', err);
+      throw err;
     } finally {
       const next = new Set(actioningIds);
       next.delete(item.id);
       actioningIds = next;
-      applyStack(dismissItem(stack, item.id));
-      if (stack.visible.length === 0) setPointerHold(false);
     }
   }
 
@@ -486,14 +666,42 @@
   async function refreshRecentFromHistory(): Promise<void> {
     if (!hasTauri()) return;
     const generation = ++historyLoadGeneration;
+    historyHydration = 'loading';
     try {
       const timeline = await loadNotificationTimeline();
       if (generation !== historyLoadGeneration) return;
+      if (timeline.historyState === 'failed') {
+        throw new Error('Native notification history is unavailable');
+      }
       const items = timeline.items;
       const lastRead = getLastReadTs();
       const historyRows = items.map((it) => historyFeedItemToStackItem(it, lastRead));
+      let channelRows: WidgetStackItem[] | null = null;
+      try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        const response = await invoke<{ channels?: Channel[] } | null>('list_channels');
+        channelRows = (response?.channels ?? [])
+          .filter((channel) => (channel.unread ?? 0) > 0)
+          .map((channel) => channelToStackItem(channel, Date.now()));
+      } catch (err) {
+        // Keep the last trusted channel rows if this independent fetch fails.
+        console.error('widget: list_channels failed', err);
+      }
+      if (generation !== historyLoadGeneration) return;
       const updatesAuthoritative = timeline.updateState === 'resolved';
       const hasPendingUpdate = items.some((it) => it.kind === 'update');
+      const mergedHistory = mergeRecentWithHistory(stack.recent, historyRows, {
+        updatesAuthoritative,
+      });
+      const mergedRecent =
+        channelRows === null
+          ? mergedHistory
+          : [
+              ...channelRows,
+              ...mergedHistory.filter((item) => item.kind !== 'channel'),
+            ]
+              .sort((a, b) => b.ts - a.ts)
+              .slice(0, 20);
       applyStack({
         ...stack,
         visible:
@@ -504,12 +712,24 @@
           updatesAuthoritative && !hasPendingUpdate
             ? stack.queued.filter((it) => it.kind !== 'update')
             : stack.queued,
-        recent: mergeRecentWithHistory(stack.recent, historyRows, {
-          updatesAuthoritative,
-        }),
+        recent: mergedRecent,
       });
+      historyHydration = 'ready';
     } catch (err) {
       console.error('widget: fetch_notification_history failed', err);
+      if (generation === historyLoadGeneration) {
+        historyHydration = 'error';
+      }
+    }
+  }
+
+  async function retryRecentHistory(): Promise<void> {
+    if (historyRetryPending || historyHydration === 'loading') return;
+    historyRetryPending = true;
+    try {
+      await refreshRecentFromHistory();
+    } finally {
+      historyRetryPending = false;
     }
   }
 
@@ -520,10 +740,15 @@
    * non-activating window, and resets pinned/hoverOpen) so auto-hide and
    * window sizing never wedge on an empty invisible panel.
    */
-  function handleHoverDismiss(id: string): void {
-    setReplyHold(id, false);
-    applyStack(dismissRecent(stack, id));
-    if (hoverItems(stack).length === 0) {
+  function handleHoverDismiss(item: WidgetStackItem): void {
+    const ids = item.compactGroupIds ?? [item.id];
+    let next = stack;
+    for (const id of ids) {
+      setReplyHold(id, false);
+      next = dismissRecent(next, id);
+    }
+    applyStack(next);
+    if (compactHoverItems(stack).length === 0) {
       closePinned();
     }
   }
@@ -543,20 +768,22 @@
   /**
    * Mirror NotificationFeed.replyDm: real `send_dm` to the message author.
    * DmEvent serializes camelCase; peer is `fromPersonUid` on `item.data`.
-   * Only meaningful when Tauri is present; no-ops otherwise. Errors log only
-   * — the row stays visible.
+   * Failures propagate to NotificationRow so the draft stays visible and can
+   * be retried. The native window remains focusable after failure.
    */
   async function replyDm(item: WidgetStackItem, text: string): Promise<void> {
-    if (!hasTauri()) return;
+    if (!hasTauri()) throw new Error('Quick reply requires the HQ desktop bridge');
     const peer = (item.data as { fromPersonUid?: string } | null)?.fromPersonUid;
-    if (!peer || !text.trim()) return;
+    if (!peer || !text.trim()) {
+      throw new Error('Quick reply is missing a recipient or message');
+    }
     try {
       const { invoke } = await import('@tauri-apps/api/core');
       await invoke('send_dm', { toPersonUid: peer, body: text.trim() });
+      void setWidgetFocusable(false);
     } catch (err) {
       console.error('widget: send_dm failed', err);
-    } finally {
-      void setWidgetFocusable(false);
+      throw err;
     }
   }
 
@@ -591,18 +818,30 @@
       if (pinned) closePinned();
     }
 
+    function handleDesktopZoomChange(event: Event): void {
+      const detail = (event as CustomEvent<{ zoom?: unknown }>).detail;
+      desktopZoom = normalizeDesktopZoom(detail?.zoom);
+    }
+
     document.addEventListener('pointerdown', handleClickAway, true);
     window.addEventListener('blur', handleWindowBlur);
+    window.addEventListener(DESKTOP_ZOOM_CHANGE_EVENT, handleDesktopZoomChange);
 
     if (!hasTauri()) {
+      historyHydration = 'ready';
       return () => {
         document.removeEventListener('pointerdown', handleClickAway, true);
         window.removeEventListener('blur', handleWindowBlur);
+        window.removeEventListener(
+          DESKTOP_ZOOM_CHANGE_EVENT,
+          handleDesktopZoomChange,
+        );
         if (expiryTimer !== undefined) clearInterval(expiryTimer);
         if (hoverCloseTimer !== undefined) clearTimeout(hoverCloseTimer);
       };
     }
 
+    historyHydration = 'loading';
     let unlistenNotif: (() => void) | undefined;
     let unlistenOcc: (() => void) | undefined;
     let unlistenClickAway: (() => void) | undefined;
@@ -610,6 +849,8 @@
     let unlistenSync: (() => void) | undefined;
     let unlistenUpdate: (() => void) | undefined;
     let unlistenUpdateCleared: (() => void) | undefined;
+    let unlistenChannelMessage: (() => void) | undefined;
+    let unlistenChannelUpdated: (() => void) | undefined;
     let historyReloadTimer: ReturnType<typeof setTimeout> | undefined;
     let cancelled = false;
 
@@ -617,6 +858,7 @@
       // Invalidate an in-flight response as soon as the native state changes;
       // the debounced replacement load will receive a newer generation.
       historyLoadGeneration += 1;
+      historyHydration = 'loading';
       if (historyReloadTimer !== undefined) clearTimeout(historyReloadTimer);
       historyReloadTimer = setTimeout(() => {
         historyReloadTimer = undefined;
@@ -657,6 +899,8 @@
       unlistenSync = await listen('sync:complete', scheduleHistoryRefresh);
       unlistenUpdate = await listen('update:available', scheduleHistoryRefresh);
       unlistenUpdateCleared = await listen('update:cleared', scheduleHistoryRefresh);
+      unlistenChannelMessage = await listen('channel:new-message', scheduleHistoryRefresh);
+      unlistenChannelUpdated = await listen('channel:updated', scheduleHistoryRefresh);
 
       const { invoke } = await import('@tauri-apps/api/core');
       if (cancelled) return;
@@ -673,6 +917,10 @@
       historyLoadGeneration += 1;
       document.removeEventListener('pointerdown', handleClickAway, true);
       window.removeEventListener('blur', handleWindowBlur);
+      window.removeEventListener(
+        DESKTOP_ZOOM_CHANGE_EVENT,
+        handleDesktopZoomChange,
+      );
       unlistenNotif?.();
       unlistenOcc?.();
       unlistenClickAway?.();
@@ -680,6 +928,8 @@
       unlistenSync?.();
       unlistenUpdate?.();
       unlistenUpdateCleared?.();
+      unlistenChannelMessage?.();
+      unlistenChannelUpdated?.();
       if (historyReloadTimer !== undefined) {
         clearTimeout(historyReloadTimer);
         historyReloadTimer = undefined;
@@ -704,9 +954,12 @@
       // Two-row menu + chrome — same width as hover panel; slightly taller
       // than the empty-state panel so both items have full hit targets.
       size = widgetEmptyHoverWindowSize();
-      size = { width: size.width, height: size.height + 28 };
+      size = {
+        width: size.width,
+        height: size.height + 28 + (desktopNavigationError ? 48 : 0),
+      };
     } else if (hoverOpen) {
-      const items = hoverItems(stack);
+      const items = compactHoverItems(stack);
       // Pinned-open with no recent rows: grow for the empty-state panel so a
       // wordmark click always produces visible feedback (US-010). Hover-only
       // with zero items stays idle-sized — no empty panel flash.
@@ -718,29 +971,118 @@
           items,
           rows.filter((r) => r.separator).length,
         );
+        if (historyHydration === 'loading' || historyHydration === 'error') {
+          size = { width: size.width, height: size.height + 46 };
+        }
+      }
+      if (desktopNavigationError) {
+        size = { width: size.width, height: size.height + 48 };
       }
     } else {
       size = widgetWindowSize(stack);
     }
+    size = scaleDesktopWindowSize(size, desktopZoom);
     if (!hasTauri()) return;
     if (
       lastSent &&
       lastSent.width === size.width &&
-      lastSent.height === size.height
+      lastSent.height === size.height &&
+      lastSent.zoom === desktopZoom
     ) {
       return;
     }
-    lastSent = size;
+    lastSent = { ...size, zoom: desktopZoom };
     void import('@tauri-apps/api/core').then(({ invoke }) => {
       void invoke('resize_widget', {
         width: size.width,
         height: size.height,
+        zoom: desktopZoom,
       }).catch((err: unknown) => {
         console.error('widget: resize_widget failed', err);
       });
     });
   });
 </script>
+
+{#snippet miniCommunicationRow(row: { separator: string | null; item: WidgetStackItem })}
+  {#if row.separator}<div class="hl-sep">{row.separator}</div>{/if}
+  <div class="hl-row" data-kind={row.item.kind}>
+    <NotificationRow
+      type={row.item.type as NotificationRowType}
+      actor={row.item.actor}
+      sourceLabel={notificationSourceLabel(row.item)}
+      text={row.item.text}
+      ts={row.item.ts}
+      unread={row.item.unread ?? false}
+      badgeCount={channelUnreadFor(row.item)}
+      comfortable
+      actionLabel={row.item.actionLabel ?? undefined}
+      actionDisabled={actioningIds.has(row.item.id)}
+      textDismiss
+      onopen={() => handleOpen(row.item)}
+      onaction={row.item.actionId ? () => handleAction(row.item) : undefined}
+      ondismiss={() => handleHoverDismiss(row.item)}
+      onreply={row.item.kind === 'dm'
+        ? (text) => replyDm(row.item, text)
+        : undefined}
+      onreact={row.item.kind === 'dm'
+        ? (emoji) => reactDm(row.item, emoji)
+        : undefined}
+      onholdchange={(h) => setReplyHold(row.item.id, h)}
+    />
+  </div>
+{/snippet}
+
+{#snippet historyFeedback(compact = false)}
+  <div
+    class="hl-history-feedback"
+    class:hl-history-feedback-compact={compact}
+    data-testid={historyHydration === 'error'
+      ? 'widget-history-error'
+      : 'widget-history-loading'}
+    role={historyHydration === 'error' ? 'alert' : 'status'}
+    aria-live="polite"
+  >
+    <div class="hl-history-message">
+      {#if historyHydration === 'loading'}
+        <span class="widget-nav-spinner" aria-hidden="true"></span>
+      {/if}
+      <span>
+        <strong>
+          {historyHydration === 'error'
+            ? 'Couldn’t refresh messages'
+            : historyRetryPending
+              ? 'Retrying message refresh'
+              : 'Checking for messages'}
+        </strong>
+        <small>
+          {historyHydration === 'error'
+            ? 'Saved activity is still available.'
+            : compact
+              ? 'Showing saved activity while HQ checks for newer items.'
+              : 'HQ is loading conversations and recent activity.'}
+        </small>
+      </span>
+    </div>
+    {#if historyHydration === 'error' || historyRetryPending}
+      <button
+        class="hl-inline-retry"
+        type="button"
+        data-testid="widget-history-retry"
+        aria-busy={historyRetryPending}
+        disabled={historyRetryPending}
+        onclick={() => void retryRecentHistory()}
+      >
+        {#if historyRetryPending}
+          <span class="widget-nav-spinner" aria-hidden="true"></span>
+          Retrying…
+        {:else}
+          Retry
+        {/if}
+      </button>
+    {/if}
+  </div>
+{/snippet}
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
@@ -762,8 +1104,10 @@
       class="ctx-menu frost-panel"
       data-testid="widget-context-menu"
       role="menu"
-      tabindex="0"
+      tabindex="-1"
       aria-label="HQ widget"
+      bind:this={contextMenuElement}
+      onkeydown={handleContextMenuKeydown}
       onpointerenter={() => setPointerHold(true)}
       onpointerleave={() => setPointerHold(false)}
     >
@@ -772,88 +1116,172 @@
         type="button"
         role="menuitem"
         data-testid="widget-menu-inbox"
+        aria-busy={navigationPending === 'inbox'}
+        disabled={navigationPending !== null}
         onclick={() => void menuOpenInbox()}
       >
-        Inbox
+        {#if navigationPending === 'inbox'}
+          <span class="widget-nav-spinner" data-testid="widget-navigation-spinner" aria-hidden="true"></span>
+          Opening messages…
+        {:else}
+          Messages
+        {/if}
       </button>
       <button
         class="ctx-item"
         type="button"
         role="menuitem"
         data-testid="widget-menu-desktop"
+        aria-busy={navigationPending === 'desktop'}
+        disabled={navigationPending !== null}
         onclick={() => void menuOpenDesktop()}
       >
-        Open desktop view
+        {#if navigationPending === 'desktop'}
+          <span class="widget-nav-spinner" data-testid="widget-navigation-spinner" aria-hidden="true"></span>
+          Opening desktop…
+        {:else if desktopNavigationError}
+          Retry desktop
+        {:else}
+          Open desktop view
+        {/if}
       </button>
+      {#if desktopNavigationError}
+        <div
+          class="ctx-error"
+          data-testid="widget-desktop-error"
+          role="alert"
+          aria-live="assertive"
+        >
+          {desktopNavigationError}
+        </div>
+      {/if}
     </div>
   {:else if hoverOpen && (hoverList.length > 0 || pinned)}
     <div
       class="hover-list frost-panel"
       data-testid="widget-hover-list"
+      role="dialog"
+      aria-label="Messages and notifications"
+      tabindex="-1"
+      bind:this={hoverListElement}
+      onkeydown={handleHoverListKeydown}
       onpointerenter={() => setPointerHold(true)}
       onpointerleave={() => setPointerHold(false)}
     >
-      <div class="hl-body">
-        {#if hoverList.length === 0}
-          <div class="hl-empty" data-testid="widget-empty-state">No recent notifications</div>
-        {:else}
-          {#each hoverList as row (row.item.id)}
-            {#if row.separator}<div class="hl-sep">{row.separator}</div>{/if}
-            <div class="hl-row">
-              <NotificationRow
-                type={row.item.type as NotificationRowType}
-                actor={row.item.actor}
-                text={row.item.text}
-                ts={row.item.ts}
-                unread={row.item.unread ?? false}
-                actionLabel={row.item.actionLabel ?? undefined}
-                actionDisabled={actioningIds.has(row.item.id)}
-                textDismiss
-                onopen={() => void handleOpen(row.item)}
-                onaction={row.item.actionId
-                  ? () => void handleAction(row.item)
-                  : undefined}
-                ondismiss={() => handleHoverDismiss(row.item.id)}
-                onreply={row.item.kind === 'dm'
-                  ? (text) => void replyDm(row.item, text)
-                  : undefined}
-                onreact={row.item.kind === 'dm'
-                  ? (emoji) => void reactDm(row.item, emoji)
-                  : undefined}
-                onholdchange={(h) => setReplyHold(row.item.id, h)}
-              />
-            </div>
-          {/each}
+      <div class="hl-header">
+        <div class="hl-heading">
+          <span class="hl-title">Messages</span>
+          <span class="hl-summary">
+            {#if hoverConversationUnread > 0}
+              {hoverConversationUnread} new {hoverConversationUnread === 1 ? 'conversation' : 'conversations'}
+            {:else}
+              Conversations and recent activity
+            {/if}
+          </span>
+        </div>
+        {#if pinned}
+          <button class="hl-close" type="button" aria-label="Close messages" onclick={() => closePinned(true)}>
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" />
+            </svg>
+          </button>
         {/if}
       </div>
-      <!-- Icon-only jumps: two-pane Inbox + full desktop (title = hover label). -->
-      <div class="hl-footer" data-testid="widget-hover-footer" role="toolbar" aria-label="Open">
+      <div class="hl-body">
+        {#if hoverList.length === 0}
+          {#if historyHydration === 'loading' || historyHydration === 'error'}
+            {@render historyFeedback()}
+          {:else}
+            <div class="hl-empty" data-testid="widget-empty-state">
+              <span class="hl-empty-title">You’re caught up</span>
+              <span class="hl-empty-copy">New messages, channel activity, and shared work will appear here.</span>
+            </div>
+          {/if}
+        {:else}
+          {#if historyHydration === 'loading' || historyHydration === 'error'}
+            {@render historyFeedback(true)}
+          {/if}
+          {#if hoverMessageRows.length > 0}
+            <section class="hl-section" aria-labelledby="widget-conversations-label">
+              <div class="hl-section-label" id="widget-conversations-label">Conversations</div>
+              {#each hoverMessageRows as row (row.item.id)}
+                {@render miniCommunicationRow(row)}
+              {/each}
+            </section>
+          {/if}
+          {#if hoverActivityRows.length > 0}
+            <section class="hl-section" aria-labelledby="widget-activity-label">
+              <div class="hl-section-label" id="widget-activity-label">Activity</div>
+              {#each hoverActivityRows as row (row.item.id)}
+                {@render miniCommunicationRow(row)}
+              {/each}
+            </section>
+          {/if}
+        {/if}
+      </div>
+      {#if desktopNavigationError}
+        <div
+          class="hl-desktop-error"
+          data-testid="widget-desktop-error"
+          role="alert"
+          aria-live="assertive"
+        >
+          <span>{desktopNavigationError}</span>
+          <button
+            class="hl-inline-retry"
+            type="button"
+            aria-busy={navigationPending === 'desktop'}
+            disabled={navigationPending !== null}
+            onclick={() => void menuOpenDesktop()}
+          >
+            {#if navigationPending === 'desktop'}
+              <span class="widget-nav-spinner" aria-hidden="true"></span>
+              Retrying…
+            {:else}
+              Retry
+            {/if}
+          </button>
+        </div>
+      {/if}
+      <div class="hl-footer" data-testid="widget-hover-footer" role="toolbar" aria-label="Message destinations">
         <button
-          class="hl-icon-btn"
+          class="hl-open-messages"
           type="button"
           data-testid="widget-hover-inbox"
-          title="Inbox"
-          aria-label="Inbox"
+          aria-label="Open messages"
+          aria-busy={navigationPending === 'inbox'}
+          disabled={navigationPending !== null}
           onclick={() => void menuOpenInbox()}
         >
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-            <path
-              d="M2.5 3h11a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H6l-3.5 2.6V11h0a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z"
-              stroke="currentColor"
-              stroke-width="1.35"
-              stroke-linejoin="round"
-            />
-          </svg>
+          {#if navigationPending === 'inbox'}
+            <span class="widget-nav-spinner" data-testid="widget-navigation-spinner" aria-hidden="true"></span>
+            Opening…
+          {:else}
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path
+                d="M2.5 3h11a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H6l-3.5 2.6V11h0a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z"
+                stroke="currentColor"
+                stroke-width="1.35"
+                stroke-linejoin="round"
+              />
+            </svg>
+            Open messages
+          {/if}
         </button>
         <button
           class="hl-icon-btn"
           type="button"
           data-testid="widget-hover-desktop"
-          title="Desktop"
-          aria-label="Desktop"
+          title="Open full HQ"
+          aria-label={desktopNavigationError ? 'Retry opening full HQ' : 'Open full HQ'}
+          aria-busy={navigationPending === 'desktop'}
+          disabled={navigationPending !== null}
           onclick={() => void menuOpenDesktop()}
         >
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          {#if navigationPending === 'desktop'}
+            <span class="widget-nav-spinner" data-testid="widget-navigation-spinner" aria-hidden="true"></span>
+          {:else}
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
             <rect
               x="1.75"
               y="2.5"
@@ -869,7 +1297,8 @@
               stroke-width="1.35"
               stroke-linecap="round"
             />
-          </svg>
+            </svg>
+          {/if}
         </button>
       </div>
     </div>
@@ -878,6 +1307,8 @@
   {#if stack.visible.length > 0 && !hoverOpen}
     <div
       class="stack"
+      class:stack-single={stack.visible.length === 1}
+      class:stack-grouped={stack.visible.length > 1}
       data-testid="widget-stack"
       onpointerenter={() => setPointerHold(true)}
       onpointerleave={() => setPointerHold(false)}
@@ -887,15 +1318,16 @@
           <NotificationRow
             type={item.type as NotificationRowType}
             actor={item.actor}
+            sourceLabel={notificationSourceLabel(item)}
             text={item.text}
             ts={item.ts}
             actionLabel={item.actionLabel ?? undefined}
             actionDisabled={actioningIds.has(item.id)}
-            onopen={() => void handleOpen(item)}
-            onaction={item.actionId ? () => void handleAction(item) : undefined}
+            onopen={() => handleOpen(item)}
+            onaction={item.actionId ? () => handleAction(item) : undefined}
             ondismiss={() => handleDismiss(item.id)}
-            onreply={item.kind === 'dm' ? (text) => void replyDm(item, text) : undefined}
-            onreact={item.kind === 'dm' ? (emoji) => void reactDm(item, emoji) : undefined}
+            onreply={item.kind === 'dm' ? (text) => replyDm(item, text) : undefined}
+            onreact={item.kind === 'dm' ? (emoji) => reactDm(item, emoji) : undefined}
             onholdchange={(h) => setReplyHold(item.id, h)}
           />
         </div>
@@ -906,10 +1338,11 @@
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <span
     class="wm"
+    bind:this={wordmarkElement}
     role="button"
     tabindex="0"
     aria-label="HQ notifications"
-    aria-haspopup="menu"
+    aria-haspopup="dialog"
     aria-expanded={contextMenuOpen || pinned || hoverOpen}
     onmouseenter={openHoverList}
     onclick={togglePinned}
@@ -955,22 +1388,27 @@
     align-items: flex-end;
     justify-content: flex-end;
     /* Headroom above/right of the mark for the queued-count superscript. */
-    padding: 10px 10px 0 0;
+    padding: 8px 8px 2px 0;
     box-sizing: border-box;
     background: transparent;
     overflow: hidden;
     /* Stack/row appearance tokens — light default; dark overrides below. */
-    --row-bg: rgba(250, 250, 250, 0.6);
-    --row-bg-hover: rgba(250, 250, 250, 0.92);
+    --row-bg: rgba(250, 250, 250, 0.5);
+    --row-bg-hover: rgba(250, 250, 250, 0.74);
     --row-border: rgba(255, 255, 255, 0.6);
     --row-fg: #1d1d1d;
-    --row-muted: rgba(0, 0, 0, 0.45);
+    --row-muted: rgba(0, 0, 0, 0.52);
     --row-shadow: 0 8px 22px rgba(0, 0, 0, 0.16);
     --row-highlight: rgba(255, 255, 255, 0.75);
     --row-hover-bg: rgba(0, 0, 0, 0.06);
     --reply-bg: rgba(0, 0, 0, 0.05);
     --reply-border: rgba(0, 0, 0, 0.14);
     --qd-fg: #333333;
+    /* The widget has no window-sized native material because that would turn
+       its transparent click-through canvas into a visible rectangle. Keep the
+       stronger pre-redesign sampling local to its actual glass shells. */
+    --glass-filter: blur(30px) saturate(175%) contrast(103%);
+    --glass-filter-soft: blur(16px) saturate(145%) contrast(102%);
   }
 
   /* Notification stack — column of one-line rows ABOVE the wordmark. */
@@ -978,21 +1416,37 @@
     display: flex;
     flex-direction: column;
     align-items: flex-end;
-    gap: 6px;
-    margin-bottom: 12px;
+    gap: 0;
+    margin-bottom: 10px;
     flex-shrink: 0;
   }
 
-  /* Frosted glass shell around NotificationRow (mockup .row chrome). */
-  .frost {
-    width: 244px;
+  /* A single transient alert is a real toast card. When two or more alerts are
+     live, `.stack-grouped` owns ONE glass material and its NotificationRows
+     become flat divided children — never a pile of rounded glass boxes. */
+  .stack-grouped,
+  .stack-single .frost {
+    border: 0.5px solid var(--row-border);
     border-radius: var(--radius-popover, 8px);
     background: var(--row-bg);
-    -webkit-backdrop-filter: var(--glass-filter, blur(28px) saturate(0%));
-    backdrop-filter: var(--glass-filter, blur(28px) saturate(0%));
-    border: 0.5px solid var(--row-border);
+    -webkit-backdrop-filter: var(--glass-filter, blur(36px) saturate(118%) contrast(102%));
+    backdrop-filter: var(--glass-filter, blur(36px) saturate(118%) contrast(102%));
     box-shadow: var(--row-shadow), inset 0 1px 0 var(--row-highlight);
-    animation: widget-slide 0.4s cubic-bezier(0.34, 1.3, 0.64, 1) backwards;
+  }
+
+  .stack-grouped {
+    width: 348px;
+    overflow: hidden;
+    box-sizing: border-box;
+  }
+
+  .frost {
+    width: 348px;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+    animation: widget-arrive 180ms cubic-bezier(0.23, 1, 0.32, 1) backwards;
     box-sizing: border-box;
     overflow: hidden;
     /* Bridge NotificationRow's popover tokens onto the widget scheme. */
@@ -1004,24 +1458,34 @@
     --popover-divider: var(--reply-border);
   }
 
+  .stack-grouped .frost {
+    width: 100%;
+  }
+
+  .stack-grouped .frost + .frost {
+    border-top: 0.5px solid color-mix(in srgb, var(--row-border) 78%, transparent);
+  }
+
   /* Hover recent-notification list — single frosted panel above the mark. */
   .hover-list {
-    width: 264px;
+    width: 364px;
+    max-height: calc(100vh - 61px);
     border-radius: var(--radius-popover, 8px);
-    padding: 6px 6px 4px;
+    padding: 0;
     display: flex;
     flex-direction: column;
     gap: 0;
     background: var(--row-bg);
-    -webkit-backdrop-filter: var(--glass-filter, blur(28px) saturate(0%));
-    backdrop-filter: var(--glass-filter, blur(28px) saturate(0%));
+    -webkit-backdrop-filter: var(--glass-filter, blur(36px) saturate(118%) contrast(102%));
+    backdrop-filter: var(--glass-filter, blur(36px) saturate(118%) contrast(102%));
     border: 0.5px solid var(--row-border);
     box-shadow: var(--row-shadow), inset 0 1px 0 var(--row-highlight);
-    margin-bottom: 12px;
+    margin-bottom: 10px;
     transform-origin: bottom right;
-    animation: widget-bloom 0.32s cubic-bezier(0.34, 1.3, 0.64, 1) backwards;
+    animation: widget-panel-in 110ms cubic-bezier(0.23, 1, 0.32, 1) backwards;
     box-sizing: border-box;
     flex-shrink: 0;
+    overflow: hidden;
     /* Bridge NotificationRow's popover tokens (same as .frost). */
     --popover-text: var(--row-fg);
     --popover-text-muted: var(--row-muted);
@@ -1034,20 +1498,141 @@
   .hl-body {
     display: flex;
     flex-direction: column;
-    gap: 1px;
+    gap: 0;
     min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-color: var(--row-border) transparent;
+    scrollbar-width: thin;
   }
 
-  /* Icon toolbar: Inbox (two-pane) + Desktop — titles provide hover labels. */
+  .hl-header {
+    min-height: 60px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 11px 14px 10px 16px;
+    border-bottom: 0.5px solid var(--row-border);
+    box-sizing: border-box;
+    flex-shrink: 0;
+  }
+
+  .hl-heading {
+    min-width: 0;
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .hl-title {
+    color: var(--row-fg);
+    font-size: 14.5px;
+    font-weight: 680;
+    letter-spacing: -0.012em;
+  }
+
+  .hl-summary {
+    overflow: hidden;
+    color: var(--row-muted);
+    font-size: 11px;
+    line-height: 1.25;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .hl-close {
+    width: 28px;
+    height: 28px;
+    display: inline-grid;
+    place-items: center;
+    flex: 0 0 auto;
+    padding: 0;
+    border: 0;
+    border-radius: var(--radius-button, 6px);
+    background: transparent;
+    color: var(--row-muted);
+    cursor: pointer;
+    transition:
+      background-color 120ms ease,
+      color 120ms ease,
+      transform 120ms cubic-bezier(0.23, 1, 0.32, 1);
+  }
+
+  .hl-close:hover {
+    background: var(--row-hover-bg);
+    color: var(--row-fg);
+  }
+
+  .hl-close:focus-visible {
+    background: var(--row-hover-bg);
+    color: var(--row-fg);
+    outline: 2px solid var(--row-fg);
+    outline-offset: -2px;
+  }
+
+  .hl-section {
+    padding: 0 8px;
+  }
+
+  .hl-section + .hl-section {
+    margin-top: 7px;
+    padding-top: 7px;
+    border-top: 0.5px solid var(--row-border);
+  }
+
+  .hl-section-label {
+    padding: 10px 8px 5px;
+    color: var(--row-muted);
+    font-size: 9.5px;
+    font-weight: 680;
+    letter-spacing: 0.075em;
+    text-transform: uppercase;
+  }
+
+  /* One clear mini-window destination plus a quiet full-app escape hatch. */
   .hl-footer {
     display: flex;
     align-items: center;
-    justify-content: flex-end;
-    gap: 2px;
-    margin-top: 4px;
-    padding: 4px 2px 2px;
+    gap: 6px;
+    min-height: 48px;
+    padding: 7px 10px;
     border-top: 0.5px solid var(--row-border);
     flex-shrink: 0;
+    box-sizing: border-box;
+  }
+
+  .hl-open-messages {
+    min-width: 0;
+    height: 32px;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    flex: 1;
+    padding: 0 8px;
+    border: 0;
+    border-radius: var(--radius-button, 6px);
+    background: transparent;
+    color: var(--row-fg);
+    font: inherit;
+    font-size: 11.5px;
+    font-weight: 650;
+    text-align: left;
+    cursor: pointer;
+    transition:
+      background-color 120ms ease,
+      color 120ms ease,
+      transform 120ms cubic-bezier(0.23, 1, 0.32, 1);
+  }
+
+  .hl-open-messages:hover {
+    background: var(--row-hover-bg);
+  }
+
+  .hl-open-messages:focus-visible {
+    background: var(--row-hover-bg);
+    outline: 2px solid var(--row-fg);
+    outline-offset: -2px;
   }
 
   .hl-icon-btn {
@@ -1063,31 +1648,63 @@
     justify-content: center;
     cursor: pointer;
     padding: 0;
+    transition:
+      background-color 120ms ease,
+      color 120ms ease,
+      transform 120ms cubic-bezier(0.23, 1, 0.32, 1);
   }
 
-  .hl-icon-btn:hover,
+  .hl-icon-btn:hover {
+    background: var(--row-hover-bg);
+    color: var(--row-fg);
+  }
+
   .hl-icon-btn:focus-visible {
     background: var(--row-hover-bg);
     color: var(--row-fg);
-    outline: none;
+    outline: 2px solid var(--row-fg);
+    outline-offset: -2px;
+  }
+
+  .hl-close:active:not(:disabled),
+  .hl-open-messages:active:not(:disabled),
+  .hl-icon-btn:active:not(:disabled) {
+    transform: scale(0.97);
+  }
+
+  .hl-icon-btn:disabled,
+  .hl-open-messages:disabled,
+  .ctx-item:disabled {
+    cursor: progress;
+    opacity: 0.62;
+  }
+
+  .widget-nav-spinner {
+    width: 11px;
+    height: 11px;
+    flex: 0 0 auto;
+    border: 1.5px solid color-mix(in srgb, currentColor 28%, transparent);
+    border-top-color: currentColor;
+    border-radius: 50%;
+    animation: widget-nav-spin 0.7s linear infinite;
   }
 
   /* Wordmark right-click menu — same frost chrome as the mini inbox. */
   .ctx-menu {
-    width: 200px;
+    width: 224px;
     border-radius: var(--radius-popover, 8px);
     padding: 4px;
     display: flex;
     flex-direction: column;
     gap: 1px;
     background: var(--row-bg);
-    -webkit-backdrop-filter: var(--glass-filter, blur(28px) saturate(0%));
-    backdrop-filter: var(--glass-filter, blur(28px) saturate(0%));
+    -webkit-backdrop-filter: var(--glass-filter, blur(36px) saturate(118%) contrast(102%));
+    backdrop-filter: var(--glass-filter, blur(36px) saturate(118%) contrast(102%));
     border: 0.5px solid var(--row-border);
     box-shadow: var(--row-shadow), inset 0 1px 0 var(--row-highlight);
     margin-bottom: 12px;
     transform-origin: bottom right;
-    animation: widget-bloom 0.28s cubic-bezier(0.34, 1.3, 0.64, 1) backwards;
+    animation: widget-panel-in 110ms cubic-bezier(0.23, 1, 0.32, 1) backwards;
     box-sizing: border-box;
     flex-shrink: 0;
   }
@@ -1105,16 +1722,44 @@
     border-radius: var(--radius-button, 6px);
     cursor: pointer;
     line-height: 1.25;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    transition:
+      background-color 120ms ease,
+      color 120ms ease,
+      transform 120ms cubic-bezier(0.23, 1, 0.32, 1);
   }
 
-  .ctx-item:hover,
+  @keyframes widget-nav-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  .ctx-item:hover {
+    background: var(--row-hover-bg);
+  }
+
   .ctx-item:focus-visible {
     background: var(--row-hover-bg);
-    outline: none;
+    outline: 2px solid var(--row-fg);
+    outline-offset: -2px;
+  }
+
+  .ctx-item:active:not(:disabled) {
+    transform: scale(0.98);
+  }
+
+  .ctx-error {
+    padding: 6px 12px 9px;
+    color: var(--row-muted);
+    font-size: 10.5px;
+    line-height: 1.4;
   }
 
   .hl-sep {
-    padding: 7px 11px 3px;
+    padding: 7px 8px 3px 31px;
     font-size: 9px;
     font-weight: 650;
     letter-spacing: 0.9px;
@@ -1124,19 +1769,132 @@
 
   /* Empty pinned list — one row of muted copy so a wordmark click always shows feedback. */
   .hl-empty {
-    min-height: 28px;
+    min-height: 116px;
     display: flex;
-    align-items: center;
+    flex-direction: column;
+    align-items: flex-start;
     justify-content: center;
-    padding: 0 11px;
-    font-size: 12px;
+    gap: 5px;
+    padding: 20px 24px;
     color: var(--row-muted);
     box-sizing: border-box;
   }
 
+  .hl-empty-title {
+    color: var(--row-fg);
+    font-size: 13px;
+    font-weight: 650;
+  }
+
+  .hl-empty-copy {
+    max-width: 28ch;
+    font-size: 11.5px;
+    line-height: 1.45;
+  }
+
+  .hl-history-feedback,
+  .hl-desktop-error {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 16px;
+    color: var(--row-muted);
+    font-size: 10.5px;
+    line-height: 1.35;
+    box-sizing: border-box;
+  }
+
+  .hl-history-feedback {
+    min-height: 116px;
+    justify-content: space-between;
+  }
+
+  .hl-history-feedback-compact {
+    min-height: 46px;
+    border-bottom: 0.5px solid var(--row-border);
+  }
+
+  .hl-desktop-error {
+    min-height: 48px;
+    border-top: 0.5px solid var(--row-border);
+    flex-shrink: 0;
+  }
+
+  .hl-desktop-error > span {
+    min-width: 0;
+    flex: 1;
+  }
+
+  .hl-history-message {
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex: 1;
+  }
+
+  .hl-history-message > span:last-child {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .hl-history-message strong {
+    color: var(--row-fg);
+    font-size: 11.5px;
+    font-weight: 650;
+  }
+
+  .hl-history-message small {
+    color: var(--row-muted);
+    font: inherit;
+  }
+
+  .hl-inline-retry {
+    appearance: none;
+    height: 28px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    flex: 0 0 auto;
+    padding: 0 9px;
+    border: 0;
+    border-radius: var(--radius-button, 6px);
+    background: transparent;
+    color: var(--row-fg);
+    font: inherit;
+    font-size: 10.5px;
+    font-weight: 650;
+    cursor: pointer;
+    transition:
+      background-color 120ms ease,
+      transform 120ms cubic-bezier(0.23, 1, 0.32, 1);
+  }
+
+  .hl-inline-retry:hover {
+    background: var(--row-hover-bg);
+  }
+
+  .hl-inline-retry:focus-visible {
+    outline: 2px solid var(--row-fg);
+    outline-offset: -2px;
+  }
+
+  .hl-inline-retry:active:not(:disabled) {
+    transform: scale(0.97);
+  }
+
+  .hl-inline-retry:disabled {
+    cursor: progress;
+    opacity: 0.62;
+  }
+
   .hl-row :global(.nr) {
-    min-height: 28px;
-    font-size: 12px;
+    min-height: 58px;
+    padding-inline: 8px;
+    font-size: 12.5px;
     border-radius: 0;
     background: transparent;
     color: var(--row-fg);
@@ -1152,6 +1910,30 @@
   .hl-row :global(.nr-message.nr-expanded) {
     background: transparent;
     box-shadow: inset 0 -1px 0 var(--row-border);
+  }
+
+  .hl-row + .hl-row {
+    border-top: 0.5px solid color-mix(in srgb, var(--row-border) 70%, transparent);
+  }
+
+  .hl-row :global(.nr-primary-action),
+  .hl-row :global(.nr-primary-content),
+  .frost :global(.nr-primary-action),
+  .frost :global(.nr-primary-content) {
+    gap: 7px;
+  }
+
+  .hl-row :global(.nr-meta-type),
+  .frost :global(.nr-meta-type) {
+    max-width: 15ch;
+    font-size: 10px;
+    letter-spacing: 0.02em;
+  }
+
+  .hl-row :global(.nr-actor-pill),
+  .frost :global(.nr-actor-pill) {
+    max-width: min(16ch, 46%);
+    padding-inline: 5px;
   }
 
   .hl-row :global(.nr-open),
@@ -1172,6 +1954,8 @@
     background: transparent;
     color: var(--row-fg);
     width: 100%;
+    padding-inline: 7px;
+    font-size: 12.5px;
     box-sizing: border-box;
   }
 
@@ -1182,7 +1966,7 @@
 
   .frost :global(.nr:not(.nr-message):hover),
   .frost :global(.nr:not(.nr-message):focus-within) {
-    background: var(--row-bg-hover);
+    background: var(--row-hover-bg);
   }
 
   .frost :global(.nr-open),
@@ -1198,9 +1982,36 @@
     color: var(--row-fg);
   }
 
-  @keyframes widget-slide {
+  .hl-row :global(button),
+  .frost :global(button) {
+    transition: transform 120ms cubic-bezier(0.23, 1, 0.32, 1);
+  }
+
+  .hl-row :global(.nr-primary-action:active:not(:disabled)),
+  .frost :global(.nr-primary-action:active:not(:disabled)) {
+    transform: scale(0.995);
+  }
+
+  .hl-row :global(.nr-open:active:not(:disabled)),
+  .hl-row :global(.nr-dismiss:active:not(:disabled)),
+  .hl-row :global(.nr-react:active:not(:disabled)),
+  .hl-row :global(.nr-retry:active:not(:disabled)),
+  .frost :global(.nr-open:active:not(:disabled)),
+  .frost :global(.nr-dismiss:active:not(:disabled)),
+  .frost :global(.nr-react:active:not(:disabled)),
+  .frost :global(.nr-retry:active:not(:disabled)) {
+    transform: scale(0.97);
+  }
+
+  .hl-row :global(button:focus-visible),
+  .frost :global(button:focus-visible) {
+    outline: 2px solid var(--row-fg);
+    outline-offset: -2px;
+  }
+
+  @keyframes widget-arrive {
     from {
-      transform: translateY(10px);
+      transform: translateY(8px);
       opacity: 0;
     }
     to {
@@ -1209,9 +2020,9 @@
     }
   }
 
-  @keyframes widget-bloom {
+  @keyframes widget-panel-in {
     from {
-      transform: scale(0.92) translateY(8px);
+      transform: scale(0.98) translateY(4px);
       opacity: 0;
     }
     to {
@@ -1225,7 +2036,9 @@
     display: inline-flex;
     color: var(--wm-fg);
     opacity: 0.38;
-    transition: opacity 0.18s ease;
+    transition:
+      opacity 120ms ease,
+      transform 120ms cubic-bezier(0.23, 1, 0.32, 1);
     flex-shrink: 0;
     cursor: pointer;
     /* Light default; dark overrides below. */
@@ -1238,6 +2051,16 @@
     opacity: 1;
   }
 
+  .wm:focus-visible {
+    opacity: 1;
+    outline: 2px solid currentColor;
+    outline-offset: 3px;
+  }
+
+  .wm:active {
+    transform: scale(0.97);
+  }
+
   .wm :global(svg) {
     width: 56px;
     height: auto;
@@ -1248,8 +2071,8 @@
   /* Plain superscript — no background, border, or border-radius. */
   .qd {
     position: absolute;
-    top: -9px;
-    right: -9px;
+    top: -7px;
+    right: -6px;
     font-size: 10px;
     font-weight: 700;
     font-variant-numeric: tabular-nums;
@@ -1260,11 +2083,11 @@
 
   @media (prefers-color-scheme: dark) {
     .wg {
-      --row-bg: rgba(30, 30, 30, 0.55);
-      --row-bg-hover: rgba(38, 38, 38, 0.85);
+      --row-bg: rgba(30, 30, 30, 0.44);
+      --row-bg-hover: rgba(38, 38, 38, 0.66);
       --row-border: rgba(255, 255, 255, 0.14);
       --row-fg: #fff;
-      --row-muted: rgba(255, 255, 255, 0.48);
+      --row-muted: rgba(255, 255, 255, 0.62);
       --row-shadow: 0 8px 22px rgba(0, 0, 0, 0.32);
       --row-highlight: rgba(255, 255, 255, 0.16);
       --row-hover-bg: rgba(255, 255, 255, 0.1);
@@ -1284,11 +2107,11 @@
      Override the whole material stack, not only the idle mark, so populated
      notification, mini-inbox, reply, and context-menu states stay coherent. */
   :global(html[data-force-theme='light']) .wg {
-    --row-bg: rgba(250, 250, 250, 0.6);
-    --row-bg-hover: rgba(250, 250, 250, 0.92);
+    --row-bg: rgba(250, 250, 250, 0.5);
+    --row-bg-hover: rgba(250, 250, 250, 0.74);
     --row-border: rgba(255, 255, 255, 0.6);
     --row-fg: #1d1d1d;
-    --row-muted: rgba(0, 0, 0, 0.45);
+    --row-muted: rgba(0, 0, 0, 0.52);
     --row-shadow: 0 8px 22px rgba(0, 0, 0, 0.16);
     --row-highlight: rgba(255, 255, 255, 0.75);
     --row-hover-bg: rgba(0, 0, 0, 0.06);
@@ -1298,11 +2121,11 @@
   }
 
   :global(html[data-force-theme='dark']) .wg {
-    --row-bg: rgba(30, 30, 30, 0.55);
-    --row-bg-hover: rgba(38, 38, 38, 0.85);
+    --row-bg: rgba(30, 30, 30, 0.44);
+    --row-bg-hover: rgba(38, 38, 38, 0.66);
     --row-border: rgba(255, 255, 255, 0.14);
     --row-fg: #fff;
-    --row-muted: rgba(255, 255, 255, 0.48);
+    --row-muted: rgba(255, 255, 255, 0.62);
     --row-shadow: 0 8px 22px rgba(0, 0, 0, 0.32);
     --row-highlight: rgba(255, 255, 255, 0.16);
     --row-hover-bg: rgba(255, 255, 255, 0.1);
@@ -1331,6 +2154,36 @@
     .hover-list,
     .ctx-menu {
       animation: none;
+    }
+
+    .hl-close,
+    .hl-open-messages,
+    .hl-icon-btn,
+    .hl-inline-retry,
+    .ctx-item,
+    .wm,
+    .hl-row :global(button),
+    .frost :global(button) {
+      transition: none;
+    }
+
+    .wm:active,
+    .ctx-item:active:not(:disabled),
+    .hl-close:active:not(:disabled),
+    .hl-open-messages:active:not(:disabled),
+    .hl-icon-btn:active:not(:disabled),
+    .hl-inline-retry:active:not(:disabled),
+    .hl-row :global(.nr-primary-action:active:not(:disabled)),
+    .hl-row :global(.nr-open:active:not(:disabled)),
+    .hl-row :global(.nr-dismiss:active:not(:disabled)),
+    .hl-row :global(.nr-react:active:not(:disabled)),
+    .hl-row :global(.nr-retry:active:not(:disabled)),
+    .frost :global(.nr-primary-action:active:not(:disabled)),
+    .frost :global(.nr-open:active:not(:disabled)),
+    .frost :global(.nr-dismiss:active:not(:disabled)),
+    .frost :global(.nr-react:active:not(:disabled)),
+    .frost :global(.nr-retry:active:not(:disabled)) {
+      transform: none;
     }
   }
 </style>

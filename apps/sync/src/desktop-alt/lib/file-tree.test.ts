@@ -1,9 +1,15 @@
 import { describe, expect, it } from 'vitest';
+import type { Workspace } from '../../lib/workspaces';
 import {
+  companySlugForHqPath,
   dirEntryToLazyNode,
+  fileAccessibleCompanies,
+  fileTreeRowMeta,
   filterLazyNodes,
+  filterFileEntriesForMembership,
   flattenLazy,
   flattenTree,
+  isFilesRouteAllowed,
   parentPathOf,
   sortNodes,
   type DirEntry,
@@ -33,6 +39,146 @@ function file(name: string, path: string): FileNode {
 function dir(name: string, path: string, children: FileNode[] = []): FileNode {
   return { name, path, isDir: true, children };
 }
+
+function workspace(overrides: Partial<Workspace> = {}): Workspace {
+  return {
+    slug: 'indigo',
+    displayName: 'Indigo',
+    kind: 'company',
+    state: 'synced',
+    cloudUid: 'cmp_indigo',
+    bucketName: 'indigo-bucket',
+    hasLocalFolder: true,
+    localPath: '/tmp/HQ/companies/indigo',
+    membershipStatus: 'active',
+    role: 'member',
+    syncEnabled: true,
+    lastSyncedAt: null,
+    brokenReason: null,
+    invitedBy: null,
+    invitedAt: null,
+    ...overrides,
+  };
+}
+
+describe('Files membership boundary', () => {
+  const active = workspace();
+  const pending = workspace({
+    slug: 'sender-agency',
+    displayName: 'Sender Agency',
+    state: 'cloud-only',
+    hasLocalFolder: false,
+    localPath: null,
+    membershipStatus: 'pending',
+    role: null,
+  });
+
+  it('keeps pending invites out of company filters while retaining accepted companies', () => {
+    const localOnly = workspace({
+      slug: 'local-notebook',
+      displayName: 'Local Notebook',
+      state: 'local-only',
+      cloudUid: null,
+      bucketName: null,
+      membershipStatus: null,
+    });
+    const companies = fileAccessibleCompanies([
+      active,
+      pending,
+      workspace({ slug: 'paused', membershipStatus: 'paused' }),
+      workspace({ slug: 'offline-cloud', membershipStatus: null }),
+      localOnly,
+      workspace({ slug: 'personal', kind: 'personal', state: 'personal' }),
+    ]);
+    expect(companies.map((company) => company.slug)).toEqual(['indigo', 'local-notebook']);
+  });
+
+  it('extracts company slugs only from company-scoped HQ paths', () => {
+    expect(companySlugForHqPath('companies/indigo/knowledge/overview.md')).toBe('indigo');
+    expect(companySlugForHqPath('./companies/sender-agency')).toBe('sender-agency');
+    expect(companySlugForHqPath('personal/knowledge/overview.md')).toBeNull();
+  });
+
+  it('rejects traversal, absolute, backslash, and ambiguous HQ paths before resolving a company', () => {
+    expect(companySlugForHqPath('companies/indigo/../sender-agency/secret.md')).toBeNull();
+    expect(companySlugForHqPath('companies\\sender-agency\\secret.md')).toBeNull();
+    expect(companySlugForHqPath('/companies/sender-agency/secret.md')).toBeNull();
+    expect(companySlugForHqPath('C:/companies/sender-agency/secret.md')).toBeNull();
+    expect(companySlugForHqPath('companies//sender-agency/secret.md')).toBeNull();
+  });
+
+  it('rejects pending, unknown, mismatched, and escaped company file routes', () => {
+    const workspaces = [active, pending];
+    expect(isFilesRouteAllowed({ slug: 'indigo' }, workspaces)).toBe(true);
+    expect(
+      isFilesRouteAllowed(
+        { slug: 'indigo', path: 'companies/indigo/knowledge/overview.md' },
+        workspaces,
+      ),
+    ).toBe(true);
+    expect(isFilesRouteAllowed({ slug: 'sender-agency' }, workspaces)).toBe(false);
+    expect(
+      isFilesRouteAllowed(
+        { path: 'companies/sender-agency/knowledge/overview.md' },
+        workspaces,
+      ),
+    ).toBe(false);
+    expect(
+      isFilesRouteAllowed(
+        { slug: 'indigo', path: 'companies/other/overview.md' },
+        workspaces,
+      ),
+    ).toBe(false);
+    expect(
+      isFilesRouteAllowed({ slug: 'indigo', path: 'personal/overview.md' }, workspaces),
+    ).toBe(false);
+    expect(
+      isFilesRouteAllowed(
+        {
+          slug: 'indigo',
+          path: 'companies/indigo/../sender-agency/secret.md',
+        },
+        workspaces,
+      ),
+    ).toBe(false);
+    expect(
+      isFilesRouteAllowed(
+        { slug: 'indigo', path: 'companies\\indigo\\knowledge\\overview.md' },
+        workspaces,
+      ),
+    ).toBe(false);
+    expect(
+      isFilesRouteAllowed(
+        { slug: 'indigo', path: '/companies/indigo/knowledge/overview.md' },
+        workspaces,
+      ),
+    ).toBe(false);
+    expect(isFilesRouteAllowed({ slug: '../sender-agency' }, workspaces)).toBe(false);
+  });
+
+  it('filters pending and unknown company folders from HQ-root lazy results', () => {
+    const entries: DirEntry[] = [
+      { name: 'indigo', path: 'companies/indigo', isDir: true, hasChildren: true },
+      {
+        name: 'sender-agency',
+        path: 'companies/sender-agency',
+        isDir: true,
+        hasChildren: true,
+      },
+      { name: 'unknown', path: 'companies/unknown', isDir: true, hasChildren: true },
+      {
+        name: 'escaped',
+        path: 'companies/indigo/../sender-agency',
+        isDir: true,
+        hasChildren: true,
+      },
+      { name: 'personal', path: 'personal', isDir: true, hasChildren: true },
+    ];
+    expect(
+      filterFileEntriesForMembership(entries, [active, pending]).map((entry) => entry.path),
+    ).toEqual(['companies/indigo', 'personal']);
+  });
+});
 
 describe('file-tree sortNodes (US-006)', () => {
   it('sorts folders before files', () => {
@@ -345,5 +491,49 @@ describe('file-tree lazy helpers (US-010)', () => {
   it('parentPathOf returns the parent HQ-relative segment', () => {
     expect(parentPathOf('companies/x/knowledge/a.md')).toBe('companies/x/knowledge');
     expect(parentPathOf('readme.md')).toBe('');
+  });
+});
+
+describe('file-tree row metadata', () => {
+  it('omits the filesystem dot sentinel for direct children of a scoped root', () => {
+    const rootPath = 'companies/boring-ecom/knowledge';
+
+    expect(
+      fileTreeRowMeta(
+        {
+          path: `${rootPath}/agents`,
+          isDir: true,
+        },
+        rootPath,
+      ),
+    ).toBeNull();
+    expect(
+      fileTreeRowMeta(
+        {
+          path: `${rootPath}/README.md`,
+          isDir: false,
+        },
+        rootPath,
+      ),
+    ).toBeNull();
+  });
+
+  it('keeps meaningful relative ancestry for nested rows', () => {
+    const rootPath = 'companies/boring-ecom/knowledge';
+
+    expect(
+      fileTreeRowMeta(
+        {
+          path: `${rootPath}/agents/README.md`,
+          isDir: false,
+        },
+        rootPath,
+      ),
+    ).toBe('agents');
+  });
+
+  it('keeps type metadata for top-level rows in the unscoped HQ tree', () => {
+    expect(fileTreeRowMeta({ path: 'companies', isDir: true }, '')).toBe('Folder');
+    expect(fileTreeRowMeta({ path: 'README.md', isDir: false }, '')).toBe('File');
   });
 });

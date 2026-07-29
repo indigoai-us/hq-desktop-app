@@ -47,7 +47,12 @@ fn main() {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
         println!("cargo:rerun-if-changed=helper/hq-tray-helper.swift");
         let status = std::process::Command::new("swiftc")
-            .args(["-O", "helper/hq-tray-helper.swift", "-o", "helper/hq-tray-helper"])
+            .args([
+                "-O",
+                "helper/hq-tray-helper.swift",
+                "-o",
+                "helper/hq-tray-helper",
+            ])
             .status()
             .expect("build.rs: failed to invoke swiftc to build hq-tray-helper");
         assert!(

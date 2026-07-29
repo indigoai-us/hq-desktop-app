@@ -3,24 +3,27 @@
  * DESKTOP-012: the material palette is deliberately achromatic. Every broad
  * surface, ink, hairline, and shadow uses equal RGB channels; only true
  * semantic states (success, warning, error) retain color. Translucent region
- * fills sit over the native window material, while shared neutral filters keep
- * wallpaper color from leaking back into the interface.
+ * fills sit over the native window material. Their tints stay neutral while a
+ * restrained amount of live backdrop color keeps the material visibly vibrant.
  */
 :root {
-  /* Readable desktop ramp: normal canvas text is 14px; sparse metadata is 13px. */
+  /* Readable desktop ramp with visible hierarchy. Metadata stays compact but
+     never drops below 13px; page/detail headings have real display scale. */
   --type-metadata: 13px;
-  --type-secondary: 13px;
-  --type-body: 14px;
-  --type-section: 14px;
-  --type-detail: 14px;
+  --type-secondary: 14px;
+  --type-body: 15px;
+  --type-section: 17px;
+  --type-detail: 24px;
 
   /* Primary row title + secondary metadata stack */
   --v4-row-stack-gap: 3px;
 
-  /* Neutral glass primitives. The soft filter is for compact overlays; the
-     standard filter is for chrome, drawers, and floating panels. */
-  --v4-glass-filter: blur(28px) saturate(0%);
-  --v4-glass-filter-soft: blur(12px) saturate(0%);
+  /* Neutral glass primitives. Large native-backed regions need less blur than
+     detached sheets; small controls use the softest material. */
+  --v4-canvas-filter: blur(18px) saturate(112%) contrast(101%);
+  --v4-glass-filter: blur(28px) saturate(122%) contrast(102%);
+  --v4-glass-filter-soft: blur(14px) saturate(110%) contrast(101%);
+  --v4-glass-filter-popover: blur(34px) saturate(130%) contrast(102%);
   --v4-glass-highlight: rgba(255, 255, 255, 0.58);
   --v4-glass-border: var(--v4-hairline);
 
@@ -52,13 +55,14 @@
    QA remains deterministic even when the host OS is dark. */
 :root,
 :root[data-force-theme='light'] {
-  --v4-ground: rgba(242, 242, 242, 0.82);
-  --v4-raised: rgba(255, 255, 255, 0.62);
+  --v4-ground: rgba(242, 242, 242, 0.34);
+  --v4-raised: rgba(255, 255, 255, 0.5);
   --v4-inset: rgba(0, 0, 0, 0.045);
-  --v4-chrome: rgba(232, 232, 232, 0.66);
-  --v4-sidebar: rgba(224, 224, 224, 0.6);
-  --v4-secondary-sidebar: rgba(238, 238, 238, 0.58);
-  --v4-popover: rgba(250, 250, 250, 0.72);
+  --v4-chrome: rgba(232, 232, 232, 0.32);
+  --v4-sidebar: rgba(224, 224, 224, 0.36);
+  --v4-secondary-sidebar: rgba(238, 238, 238, 0.26);
+  --v4-popover: rgba(250, 250, 250, 0.68);
+  --v4-popover-strong: rgba(250, 250, 250, 0.86);
   --v4-hairline: rgba(0, 0, 0, 0.12);
   --v4-rowline: rgba(0, 0, 0, 0.08);
 
@@ -86,19 +90,20 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --v4-ground: rgba(17, 17, 17, 0.82);
-    --v4-raised: rgba(48, 48, 48, 0.62);
+    --v4-ground: rgba(17, 17, 17, 0.48);
+    --v4-raised: rgba(48, 48, 48, 0.58);
     --v4-inset: rgba(0, 0, 0, 0.32);
-    --v4-chrome: rgba(30, 30, 30, 0.68);
-    --v4-sidebar: rgba(24, 24, 24, 0.64);
-    --v4-secondary-sidebar: rgba(26, 26, 26, 0.6);
-    --v4-popover: rgba(42, 42, 42, 0.76);
+    --v4-chrome: rgba(30, 30, 30, 0.46);
+    --v4-sidebar: rgba(24, 24, 24, 0.5);
+    --v4-secondary-sidebar: rgba(26, 26, 26, 0.42);
+    --v4-popover: rgba(42, 42, 42, 0.72);
+    --v4-popover-strong: rgba(36, 36, 36, 0.86);
     --v4-hairline: rgba(255, 255, 255, 0.12);
     --v4-rowline: rgba(255, 255, 255, 0.08);
     --v4-text-1: #f2f2f2;
-    --v4-text-2: rgba(242, 242, 242, 0.72);
-    --v4-text-3: rgba(242, 242, 242, 0.48);
-    --v4-idle: rgba(242, 242, 242, 0.28);
+    --v4-text-2: rgba(250, 250, 250, 0.84);
+    --v4-text-3: rgba(250, 250, 250, 0.68);
+    --v4-idle: rgba(250, 250, 250, 0.42);
     --v4-ok: var(--popover-success, #41d870);
     --v4-warn: #f59e0b;
     --v4-error: var(--popover-danger, #ef4444);
@@ -120,19 +125,20 @@
 
 .dark,
 :root[data-force-theme='dark'] {
-  --v4-ground: rgba(17, 17, 17, 0.82);
-  --v4-raised: rgba(48, 48, 48, 0.62);
+  --v4-ground: rgba(17, 17, 17, 0.48);
+  --v4-raised: rgba(48, 48, 48, 0.58);
   --v4-inset: rgba(0, 0, 0, 0.32);
-  --v4-chrome: rgba(30, 30, 30, 0.68);
-  --v4-sidebar: rgba(24, 24, 24, 0.64);
-  --v4-secondary-sidebar: rgba(26, 26, 26, 0.6);
-  --v4-popover: rgba(42, 42, 42, 0.76);
+  --v4-chrome: rgba(30, 30, 30, 0.46);
+  --v4-sidebar: rgba(24, 24, 24, 0.5);
+  --v4-secondary-sidebar: rgba(26, 26, 26, 0.42);
+  --v4-popover: rgba(42, 42, 42, 0.72);
+  --v4-popover-strong: rgba(36, 36, 36, 0.86);
   --v4-hairline: rgba(255, 255, 255, 0.12);
   --v4-rowline: rgba(255, 255, 255, 0.08);
   --v4-text-1: #f2f2f2;
-  --v4-text-2: rgba(242, 242, 242, 0.72);
-  --v4-text-3: rgba(242, 242, 242, 0.48);
-  --v4-idle: rgba(242, 242, 242, 0.28);
+  --v4-text-2: rgba(250, 250, 250, 0.84);
+  --v4-text-3: rgba(250, 250, 250, 0.68);
+  --v4-idle: rgba(250, 250, 250, 0.42);
   --v4-ok: var(--popover-success, #41d870);
   --v4-warn: #f59e0b;
   --v4-error: var(--popover-danger, #ef4444);
@@ -155,8 +161,8 @@
    production windows never set data-force-theme; they continue to follow the
    system appearance through prefers-color-scheme. */
 :root[data-force-theme='light'] {
-  --page-bg: #eeeeee;
-  --c-bg: #fff;
+  --page-bg: var(--v4-ground);
+  --c-bg: var(--v4-raised);
   --c-text: #000;
   --c-muted: #00000066;
   --c-btn-bg: #000;
@@ -167,7 +173,7 @@
   --c-field-border: #00000014;
   --c-divider: #00000010;
   --dot: #0000003a;
-  --pop-bg: rgba(250, 250, 250, 0.68);
+  --pop-bg: var(--v4-popover);
   --pop-text: #1d1d1d;
   --pop-muted: rgba(0, 0, 0, 0.5);
   --pop-border: rgba(0, 0, 0, 0.1);
@@ -176,10 +182,10 @@
 }
 
 :root[data-force-theme='dark'] {
-  --page-bg: #101010;
-  --c-bg: #2b2b2b;
+  --page-bg: var(--v4-ground);
+  --c-bg: var(--v4-raised);
   --c-text: #fff;
-  --c-muted: #ffffff80;
+  --c-muted: #ffffffb3;
   --c-btn-bg: #fff;
   --c-btn-fg: #000;
   --c-btn2-bg: #ffffff1f;
@@ -188,9 +194,9 @@
   --c-field-border: #ffffff1a;
   --c-divider: #ffffff12;
   --dot: #ffffff3a;
-  --pop-bg: rgba(42, 42, 42, 0.74);
+  --pop-bg: var(--v4-popover);
   --pop-text: #fff;
-  --pop-muted: rgba(255, 255, 255, 0.5);
+  --pop-muted: rgba(255, 255, 255, 0.68);
   --pop-border: rgba(255, 255, 255, 0.14);
   --pop-hover: rgba(255, 255, 255, 0.08);
   color-scheme: dark;
@@ -208,8 +214,11 @@
     --v4-sidebar: #e0e0e0;
     --v4-secondary-sidebar: #eeeeee;
     --v4-popover: #fafafa;
+    --v4-popover-strong: #fafafa;
+    --v4-canvas-filter: none;
     --v4-glass-filter: none;
     --v4-glass-filter-soft: none;
+    --v4-glass-filter-popover: none;
   }
 
   @media (prefers-color-scheme: dark) {
@@ -221,6 +230,7 @@
       --v4-sidebar: #181818;
       --v4-secondary-sidebar: #1a1a1a;
       --v4-popover: #2a2a2a;
+      --v4-popover-strong: #242424;
     }
   }
 
@@ -233,6 +243,7 @@
     --v4-sidebar: #181818;
     --v4-secondary-sidebar: #1a1a1a;
     --v4-popover: #2a2a2a;
+    --v4-popover-strong: #242424;
   }
 }
 
@@ -247,6 +258,7 @@
     --v4-sidebar: rgba(224, 224, 224, 0.98);
     --v4-secondary-sidebar: rgba(238, 238, 238, 0.98);
     --v4-popover: rgba(250, 250, 250, 0.98);
+    --v4-popover-strong: rgba(250, 250, 250, 0.98);
   }
 
   @media (prefers-color-scheme: dark) {
@@ -257,6 +269,7 @@
       --v4-sidebar: rgba(24, 24, 24, 0.98);
       --v4-secondary-sidebar: rgba(26, 26, 26, 0.98);
       --v4-popover: rgba(42, 42, 42, 0.98);
+      --v4-popover-strong: rgba(36, 36, 36, 0.98);
     }
   }
 
@@ -268,5 +281,6 @@
     --v4-sidebar: rgba(24, 24, 24, 0.98);
     --v4-secondary-sidebar: rgba(26, 26, 26, 0.98);
     --v4-popover: rgba(42, 42, 42, 0.98);
+    --v4-popover-strong: rgba(36, 36, 36, 0.98);
   }
 }

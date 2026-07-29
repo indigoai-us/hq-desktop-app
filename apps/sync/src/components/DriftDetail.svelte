@@ -41,6 +41,7 @@
   // for different intents in principle (Added never restores, but the
   // composite key keeps the map shape consistent).
   let restoreState = $state<Record<string, 'idle' | 'in-flight' | 'done' | string>>({});
+  let openState = $state<Record<string, 'local' | 'upstream' | null>>({});
 
   // Header/help baseline label. Release reports carry a bare semver
   // (`14.2.1`) that reads naturally with a `v` prefix; staging reports
@@ -151,14 +152,20 @@
   }
 
   async function viewUpstream(entry: DriftEntry) {
+    if (openState[entry.path]) return;
+    openState = { ...openState, [entry.path]: 'upstream' };
     try {
       await openInBrowser(upstreamBlobUrl(entry));
     } catch (e) {
       console.error('open upstream failed:', e);
+    } finally {
+      openState = { ...openState, [entry.path]: null };
     }
   }
 
   async function openLocal(entry: DriftEntry) {
+    if (openState[entry.path]) return;
+    openState = { ...openState, [entry.path]: 'local' };
     // Delegate to the existing conflict-resolution editor opener — it
     // already handles `code`/`subl`/`open -t` fallbacks. Path is
     // relative to the HQ root, so the Rust side prefixes with the
@@ -167,6 +174,8 @@
       await invoke('open_in_editor', { path: entry.path });
     } catch (e) {
       console.error('open_in_editor failed:', e);
+    } finally {
+      openState = { ...openState, [entry.path]: null };
     }
   }
 
@@ -275,12 +284,18 @@
   <button
     class="drift-icon-btn"
     onclick={() => openLocal(entry)}
-    title="Open the local file in your editor"
-    aria-label="Open the local file in your editor"
+    disabled={openState[entry.path] != null}
+    aria-busy={openState[entry.path] === 'local'}
+    title={openState[entry.path] === 'local' ? 'Opening local file…' : 'Open the local file in your editor'}
+    aria-label={openState[entry.path] === 'local' ? 'Opening local file' : 'Open the local file in your editor'}
   >
-    <svg width="13" height="13" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-      <path d="M11 2.6l2.4 2.4M3 13l.6-2.5 7-7 1.9 1.9-7 7L3 13z" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" />
-    </svg>
+    {#if openState[entry.path] === 'local'}
+      <span class="drift-mini-spinner" aria-hidden="true"></span>
+    {:else}
+      <svg width="13" height="13" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <path d="M11 2.6l2.4 2.4M3 13l.6-2.5 7-7 1.9 1.9-7 7L3 13z" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" />
+      </svg>
+    {/if}
   </button>
 {/snippet}
 
@@ -288,12 +303,18 @@
   <button
     class="drift-icon-btn"
     onclick={() => viewUpstream(entry)}
-    title="View the upstream version on GitHub"
-    aria-label="View the upstream version on GitHub"
+    disabled={openState[entry.path] != null}
+    aria-busy={openState[entry.path] === 'upstream'}
+    title={openState[entry.path] === 'upstream' ? 'Opening upstream version…' : 'View the upstream version on GitHub'}
+    aria-label={openState[entry.path] === 'upstream' ? 'Opening upstream version' : 'View the upstream version on GitHub'}
   >
-    <svg width="13" height="13" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-      <path d="M9 3h4v4M13 3l-6.5 6.5M11.5 9.2v2.8a1.7 1.7 0 0 1-1.7 1.7H4A1.7 1.7 0 0 1 2.3 12V6.2A1.7 1.7 0 0 1 4 4.5h2.8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" />
-    </svg>
+    {#if openState[entry.path] === 'upstream'}
+      <span class="drift-mini-spinner" aria-hidden="true"></span>
+    {:else}
+      <svg width="13" height="13" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <path d="M9 3h4v4M13 3l-6.5 6.5M11.5 9.2v2.8a1.7 1.7 0 0 1-1.7 1.7H4A1.7 1.7 0 0 1 2.3 12V6.2A1.7 1.7 0 0 1 4 4.5h2.8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" />
+      </svg>
+    {/if}
   </button>
 {/snippet}
 

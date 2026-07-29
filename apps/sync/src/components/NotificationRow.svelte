@@ -18,6 +18,8 @@
     type: NotificationRowType;
     /** Bold leading name (e.g. "Corey"); omit for ambient rows. */
     actor?: string;
+    /** Compact, visible source/type metadata (for example "Direct message"). */
+    sourceLabel?: string;
     text: string;
     /** Epoch ms — rendered as a right-aligned relative timestamp. */
     ts: number;
@@ -33,9 +35,9 @@
      */
     hoverExpand?: boolean;
     /** Explicit accessible Open action. */
-    onopen?: () => void;
+    onopen?: () => void | Promise<void>;
     /** Optional secondary action, distinct from opening the row destination. */
-    onaction?: () => void;
+    onaction?: () => void | Promise<void>;
     /** Hover dismiss (×). */
     ondismiss?: () => void;
     /** Text for the hover open pill; when absent keep 'Open'. */
@@ -45,9 +47,9 @@
     /** When true the dismiss button renders as a text pill reading 'Dismiss'. */
     textDismiss?: boolean;
     /** Message rows: quick-reply submit. */
-    onreply?: (text: string) => void;
+    onreply?: (text: string) => void | Promise<void>;
     /** Message rows: emoji react tap. */
-    onreact?: (emoji: string) => void;
+    onreact?: (emoji: string) => void | Promise<void>;
     /**
      * Fired when reply hold transitions: focus on the reply input or a non-empty
      * draft suspends auto-hide; blur + empty draft releases it.
@@ -57,11 +59,16 @@
     badgeCount?: number;
     /** Marks the actor as an AI agent — renders a subtle agent glyph after the name. */
     agentActor?: boolean;
+    /** Roomier two-line hierarchy for the widget communications panel. */
+    comfortable?: boolean;
+    /** Optional initials used by conversation rails instead of a generic glyph. */
+    identityLabel?: string;
   }
 
   let {
     type,
     actor,
+    sourceLabel,
     text,
     ts,
     unread = false,
@@ -78,6 +85,8 @@
     onholdchange,
     badgeCount = 0,
     agentActor = false,
+    comfortable = false,
+    identityLabel,
   }: Props = $props();
 
   let hovered = $state(false);
@@ -85,6 +94,15 @@
   let replyText = $state('');
   let replyFocused = $state(false);
   let replyInputEl: HTMLInputElement | undefined = $state();
+  let openPending = $state(false);
+  let actionPending = $state(false);
+  let replyPending = $state(false);
+  let replyError = $state<string | null>(null);
+  let reactionPending = $state<string | null>(null);
+  let reactionError = $state<string | null>(null);
+  let failedReaction = $state<string | null>(null);
+  let openError = $state<string | null>(null);
+  let actionError = $state<string | null>(null);
 
   const isMessage = $derived(type === 'message');
   /** Draft or focus keeps the message expanded even on transient hover-out. */
@@ -94,8 +112,24 @@
   const expanded = $derived(
     isMessage && hoverExpand && (hovered || focusWithin || replyHold),
   );
+  const resolvedSourceLabel = $derived(sourceLabel ?? sourceLabelForType(type));
+  const unreadLabel = $derived(
+    badgeCount > 0 ? `${badgeCount} unread` : unread ? 'Unread' : null,
+  );
   const primaryActionLabel = $derived(
-    actor ? `Open notification from ${actor}` : `Open ${type} notification`,
+    `${
+      actor
+        ? `Open ${resolvedSourceLabel} from ${actor}: ${text}`
+        : `Open ${resolvedSourceLabel}: ${text}`
+    }${unreadLabel ? `, ${unreadLabel}` : ''}`,
+  );
+  const visibleActionPending = $derived(onaction ? actionPending : openPending);
+  const timestampIso = $derived(new Date(ts).toISOString());
+  const timestampTitle = $derived(
+    new Intl.DateTimeFormat(undefined, {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+    }).format(new Date(ts)),
   );
 
   // Non-reactive last-notified value — only fire onholdchange on transitions.
@@ -133,21 +167,123 @@
     focusWithin = false;
   }
 
+  function isPromiseLike(value: void | Promise<void>): value is Promise<void> {
+    return value != null && typeof (value as Promise<void>).then === 'function';
+  }
+
   function handleOpen(): void {
-    onopen?.();
+    if (!onopen || openPending) return;
+    openError = null;
+    openPending = true;
+    try {
+      const result = onopen();
+      if (isPromiseLike(result)) {
+        void result
+          .catch((error) => {
+            console.error('notification-row: open failed', error);
+            openError = 'Couldn’t open this item.';
+          })
+          .finally(() => {
+            openPending = false;
+          });
+        return;
+      }
+    } catch (error) {
+      console.error('notification-row: open failed', error);
+      openError = 'Couldn’t open this item.';
+    }
+    openPending = false;
   }
 
   function handleAction(): void {
-    (onaction ?? onopen)?.();
+    if (!onaction) {
+      handleOpen();
+      return;
+    }
+    if (actionPending || actionDisabled) return;
+    actionError = null;
+    actionPending = true;
+    try {
+      const result = onaction();
+      if (isPromiseLike(result)) {
+        void result
+          .catch((error) => {
+            console.error('notification-row: action failed', error);
+            actionError = 'Couldn’t complete that action.';
+          })
+          .finally(() => {
+            actionPending = false;
+          });
+        return;
+      }
+    } catch (error) {
+      console.error('notification-row: action failed', error);
+      actionError = 'Couldn’t complete that action.';
+    }
+    actionPending = false;
+  }
+
+  function completeReply(): void {
+    replyText = '';
+    replyError = null;
+    // Auto-hide resumes after send.
+    // Update the hold synchronously instead of relying solely on a native blur
+    // event, which may be skipped if the row/window loses focus mid-send.
+    replyFocused = false;
+    replyInputEl?.blur();
   }
 
   function submitReply(): void {
     const value = replyText.trim();
-    if (!value || !onreply) return;
-    onreply(value);
-    replyText = '';
-    // Auto-hide resumes after send.
-    replyInputEl?.blur();
+    if (!value || !onreply || replyPending) return;
+    replyPending = true;
+    try {
+      const result = onreply(value);
+      if (isPromiseLike(result)) {
+        void result
+          .then(completeReply)
+          .catch((error) => {
+            console.error('notification-row: reply failed', error);
+            replyError = 'Couldn’t send. Your reply is still here.';
+          })
+          .finally(() => {
+            replyPending = false;
+          });
+        return;
+      }
+      completeReply();
+    } catch (error) {
+      console.error('notification-row: reply failed', error);
+      replyError = 'Couldn’t send. Your reply is still here.';
+    }
+    replyPending = false;
+  }
+
+  function react(emoji: string): void {
+    if (!onreact || reactionPending) return;
+    reactionError = null;
+    failedReaction = null;
+    reactionPending = emoji;
+    try {
+      const result = onreact(emoji);
+      if (isPromiseLike(result)) {
+        void result
+          .catch((error) => {
+            console.error('notification-row: reaction failed', error);
+            failedReaction = emoji;
+            reactionError = 'Couldn’t add that reaction.';
+          })
+          .finally(() => {
+            reactionPending = null;
+          });
+        return;
+      }
+    } catch (error) {
+      console.error('notification-row: reaction failed', error);
+      failedReaction = emoji;
+      reactionError = 'Couldn’t add that reaction.';
+    }
+    reactionPending = null;
   }
 
   function onReplyKeydown(e: KeyboardEvent): void {
@@ -158,8 +294,28 @@
     } else if (e.key === 'Escape') {
       e.preventDefault();
       replyText = '';
+      replyError = null;
       // Releases hold; normal collapse resumes.
       replyInputEl?.blur();
+    }
+  }
+
+  function sourceLabelForType(value: NotificationRowType): string {
+    switch (value) {
+      case 'message':
+        return 'Message';
+      case 'mention':
+        return 'Mention';
+      case 'share':
+        return 'Shared file';
+      case 'sync':
+        return 'Workspace';
+      case 'deploy':
+        return 'Deployment';
+      case 'meeting':
+        return 'Meeting';
+      default:
+        return 'System';
     }
   }
 
@@ -176,13 +332,37 @@
         <span class="nr-unread" aria-label="Unread"></span>
       {/if}
       <span class="nr-text nr-text-head">
-        {#if actor}<b>{actor}</b>{/if}
+        {#if actor}<span class="nr-actor-pill" data-testid="notification-actor" title={actor}>{actor}</span>{/if}
       </span>
       <span class="nr-trail">
-        <span class="nr-ts">{relativeTime(ts)}</span>
+        <span class="nr-meta-type" data-testid="notification-source">{resolvedSourceLabel}</span>
+        <time class="nr-ts" datetime={timestampIso} title={timestampTitle}>{relativeTime(ts)}</time>
       </span>
     </span>
     <span class="nr-body">{text}</span>
+  {:else if comfortable}
+    {#if identityLabel}
+      <span class="nr-identity" aria-hidden="true">{identityLabel}</span>
+    {:else}
+      <span class="nr-icon" aria-hidden="true">
+        {@render typeIcon(type)}
+      </span>
+    {/if}
+    {#if unread && badgeCount === 0}
+      <span class="nr-unread" aria-label="Unread"></span>
+    {/if}
+    <span class="nr-comfortable-copy">
+      <span class="nr-comfortable-top">
+        <span class="nr-comfortable-actor">
+          {actor ?? resolvedSourceLabel}
+          {#if agentActor}<span class="nr-agent" data-testid="agent-badge" title="Agent" aria-label="Agent sender"><svg width="10" height="10" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M5 6.5h6v5.5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6.5Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M8 2.5v2M5.5 4.5 4 3.5M10.5 4.5 12 3.5M6.5 9h3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></span>{/if}
+        </span>
+        <span class="nr-comfortable-context">{resolvedSourceLabel}</span>
+        {#if badgeCount > 0}<span class="nr-count" data-testid="unread-count" aria-label="{badgeCount} unread">{badgeCount}</span>{/if}
+        <time class="nr-ts" datetime={timestampIso} title={timestampTitle}>{relativeTime(ts)}</time>
+      </span>
+      <span class="nr-comfortable-preview">{text}</span>
+    </span>
   {:else}
     <span class="nr-icon" aria-hidden="true">
       {@render typeIcon(type)}
@@ -190,14 +370,13 @@
     {#if unread && badgeCount === 0}
       <span class="nr-unread" aria-label="Unread"></span>
     {/if}
-    <span class="nr-text">
-      {#if actor}<b>{actor}</b>{#if agentActor}<span class="nr-agent" data-testid="agent-badge" title="Agent" aria-label="Agent sender"><svg width="10" height="10" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M5 6.5h6v5.5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6.5Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M8 2.5v2M5.5 4.5 4 3.5M10.5 4.5 12 3.5M6.5 9h3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></span>{/if}{' '}{/if}{text}
+    <span class="nr-text" title={actor ? `${actor}: ${text}` : text}>
+      {#if actor}<span class="nr-actor-pill" data-testid="notification-actor" title={actor}>{actor}</span>{#if agentActor}<span class="nr-agent" data-testid="agent-badge" title="Agent" aria-label="Agent sender"><svg width="10" height="10" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M5 6.5h6v5.5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6.5Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M8 2.5v2M5.5 4.5 4 3.5M10.5 4.5 12 3.5M6.5 9h3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></span>{/if}{' '}{/if}{text}
     </span>
     <span class="nr-trail">
       {#if badgeCount > 0}<span class="nr-count" data-testid="unread-count" aria-label="{badgeCount} unread">{badgeCount}</span>{/if}
-      <span class="nr-ts">
-        {relativeTime(ts)}
-      </span>
+      <span class="nr-meta-type" data-testid="notification-source">{resolvedSourceLabel}</span>
+      <time class="nr-ts" datetime={timestampIso} title={timestampTitle}>{relativeTime(ts)}</time>
     </span>
   {/if}
 {/snippet}
@@ -207,8 +386,12 @@
   class:nr-message={isMessage}
   class:nr-expanded={expanded}
   class:nr-selected={selected}
+  class:nr-comfortable={comfortable}
+  class:nr-has-error={openError !== null || actionError !== null}
   role="group"
-  aria-label={actor ? `${actor} ${type} notification` : `${type} notification`}
+  aria-label={`${actor ? `${actor} ` : ''}${type} notification${
+    unreadLabel ? `, ${unreadLabel}` : ''
+  }`}
   data-testid="notification-row"
   data-type={type}
   data-expanded={expanded}
@@ -224,9 +407,14 @@
       class:nr-primary-expanded={expanded}
       type="button"
       aria-label={primaryActionLabel}
-      onclick={handleOpen}
+      aria-busy={openPending}
+      disabled={openPending}
+      onclick={() => void handleOpen()}
     >
       {@render primaryContent()}
+      {#if openPending}
+        <span class="nr-spinner" data-testid="notification-pending" aria-hidden="true"></span>
+      {/if}
     </button>
   {:else}
     <div class="nr-primary-content" class:nr-primary-expanded={expanded}>
@@ -244,6 +432,8 @@
         placeholder="Reply…"
         bind:this={replyInputEl}
         bind:value={replyText}
+        disabled={replyPending}
+        aria-invalid={replyError !== null}
         onfocus={() => {
           replyFocused = true;
         }}
@@ -256,12 +446,56 @@
         <button
           class="nr-react"
           type="button"
-          onclick={() => onreact?.(emoji)}
+          disabled={replyPending || reactionPending !== null}
+          aria-busy={reactionPending === emoji}
+          onclick={() => void react(emoji)}
           aria-label={`React with ${emoji}`}
         >
-          {emoji}
+          {#if reactionPending === emoji}
+            <span class="nr-spinner nr-spinner-small" aria-hidden="true"></span>
+          {:else}
+            {emoji}
+          {/if}
         </button>
       {/each}
+      {#if replyPending}
+        <span class="nr-reply-status" data-testid="notification-reply-pending" aria-live="polite">Sending…</span>
+      {/if}
+      {#if replyError}
+        <span
+          class="nr-reply-error"
+          data-testid="notification-reply-error"
+          role="alert"
+        >
+          <span>{replyPending ? 'Retrying…' : replyError}</span>
+          <button
+            class="nr-retry"
+            type="button"
+            data-testid="notification-reply-retry"
+            disabled={replyPending}
+            aria-busy={replyPending}
+            onclick={() => void submitReply()}
+          >
+            {replyPending ? 'Sending…' : 'Retry'}
+          </button>
+        </span>
+      {/if}
+      {#if reactionError}
+        <span class="nr-reply-error" role="alert">
+          <span>{reactionError}</span>
+          <button
+            class="nr-retry"
+            type="button"
+            disabled={reactionPending !== null}
+            aria-busy={reactionPending !== null}
+            onclick={() => {
+              if (failedReaction) react(failedReaction);
+            }}
+          >
+            {reactionPending ? 'Retrying…' : 'Retry'}
+          </button>
+        </span>
+      {/if}
     </div>
   {:else if !isMessage && (onopen || onaction || ondismiss)}
     <span class="nr-actions">
@@ -270,10 +504,14 @@
           class="nr-open"
           type="button"
           aria-label={actionLabel ?? primaryActionLabel}
-          onclick={handleAction}
-          disabled={actionDisabled}
+          aria-busy={visibleActionPending}
+          onclick={() => void handleAction()}
+          disabled={actionDisabled || visibleActionPending}
         >
-          {actionLabel ?? 'Open'}
+          {#if visibleActionPending}
+            <span class="nr-spinner nr-spinner-small" aria-hidden="true"></span>
+          {/if}
+          {visibleActionPending ? 'Working…' : (actionLabel ?? 'Open')}
         </button>
       {/if}
       {#if ondismiss}
@@ -298,6 +536,23 @@
           {/if}
         </button>
       {/if}
+    </span>
+  {/if}
+  {#if openError || actionError}
+    <span class="nr-action-error" role="alert">
+      <span>{openError ?? actionError}</span>
+      <button
+        class="nr-retry"
+        type="button"
+        disabled={openPending || actionPending}
+        aria-busy={openPending || actionPending}
+        onclick={() => {
+          if (openError) handleOpen();
+          else handleAction();
+        }}
+      >
+        {openPending || actionPending ? 'Retrying…' : 'Retry'}
+      </button>
     </span>
   {/if}
 </div>
@@ -380,8 +635,85 @@
     border-radius: 0;
     font-size: 12px;
     color: var(--popover-text);
-    transition: background-color 0.15s ease;
+    transition: background-color 120ms var(--ease-out);
     box-sizing: border-box;
+  }
+
+  .nr-comfortable {
+    min-height: 58px;
+    padding-block: 8px;
+  }
+
+  .nr-has-error {
+    flex-wrap: wrap;
+  }
+
+  .nr-comfortable .nr-primary-action,
+  .nr-comfortable .nr-primary-content {
+    min-height: 42px;
+    gap: 11px;
+  }
+
+  .nr-comfortable-copy {
+    display: flex;
+    min-width: 0;
+    flex: 1;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .nr-comfortable-top {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    gap: 7px;
+  }
+
+  .nr-comfortable-actor {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--popover-text);
+    font-size: 12.5px;
+    font-weight: 650;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .nr-comfortable-context {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--popover-text-muted);
+    font-size: 10.5px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .nr-comfortable-top .nr-ts {
+    margin-left: auto;
+  }
+
+  .nr-comfortable-preview {
+    display: -webkit-box;
+    overflow: hidden;
+    color: color-mix(in srgb, var(--popover-text) 78%, var(--popover-text-muted));
+    font-size: 11.5px;
+    font-weight: 450;
+    line-height: 1.32;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 1;
+    line-clamp: 1;
+  }
+
+  .nr-action-error {
+    display: flex;
+    flex: 1 0 100%;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 3px 0 2px 22px;
+    color: var(--popover-danger, var(--popover-text));
+    font-size: 10.5px;
+    line-height: 1.3;
   }
 
   /* Selected row in a list (quick-window side pane) — persistent, not hover. */
@@ -422,11 +754,20 @@
   .nr-primary-action {
     appearance: none;
     cursor: pointer;
+    transition: transform 120ms var(--ease-out);
+  }
+
+  .nr-primary-action:disabled {
+    cursor: progress;
   }
 
   .nr-primary-action:focus-visible {
-    outline: 2px solid var(--popover-text-muted);
+    outline: 2px solid var(--popover-text);
     outline-offset: -2px;
+  }
+
+  .nr-primary-action:active:not(:disabled) {
+    transform: scale(0.995);
   }
 
   .nr-primary-expanded {
@@ -453,6 +794,21 @@
     color: var(--popover-text-muted);
   }
 
+  .nr-identity {
+    width: 30px;
+    height: 30px;
+    flex: 0 0 30px;
+    display: grid;
+    place-items: center;
+    border: 1px solid var(--popover-divider);
+    border-radius: 8px;
+    background: var(--popover-action-hover);
+    color: var(--popover-text);
+    font-size: 10px;
+    font-weight: 680;
+    letter-spacing: 0.02em;
+  }
+
   .nr-text {
     flex: 1;
     min-width: 0;
@@ -463,9 +819,19 @@
     color: var(--popover-text);
   }
 
-  .nr-text b,
-  .nr-text-head b {
-    font-weight: 600;
+  .nr-actor-pill {
+    display: inline-block;
+    max-width: min(15ch, 42%);
+    padding: 1px 6px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: var(--popover-action-hover);
+    color: var(--popover-text);
+    font-weight: 650;
+    line-height: 1.35;
+    text-overflow: ellipsis;
+    vertical-align: -2px;
+    white-space: nowrap;
   }
 
   .nr-text-head {
@@ -492,6 +858,18 @@
     gap: 5px;
   }
 
+  .nr-meta-type {
+    max-width: 13ch;
+    overflow: hidden;
+    color: var(--popover-text-muted);
+    font-size: 9.5px;
+    font-weight: 600;
+    letter-spacing: 0.035em;
+    text-overflow: ellipsis;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+
   .nr-unread {
     width: 5px;
     height: 5px;
@@ -505,9 +883,10 @@
     font-weight: 600;
     min-width: 16px;
     height: 15px;
+    border: 1px solid var(--popover-divider, var(--pop-border));
     border-radius: 8px;
-    background: var(--popover-unread);
-    color: white;
+    background: var(--popover-action-hover);
+    color: var(--popover-text);
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -535,11 +914,6 @@
     margin-left: 0;
   }
 
-  .nr:not(.nr-message):hover .nr-ts,
-  .nr:not(.nr-message):focus-within .nr-ts {
-    display: none;
-  }
-
   .nr:not(.nr-message):hover .nr-actions,
   .nr:not(.nr-message):focus-within .nr-actions {
     width: auto;
@@ -565,6 +939,7 @@
     align-items: center;
     justify-content: center;
     line-height: 1;
+    transition: transform 120ms var(--ease-out);
   }
 
   .nr-dismiss {
@@ -590,6 +965,28 @@
     opacity: 0.55;
   }
 
+  .nr-open:active:not(:disabled),
+  .nr-dismiss:active:not(:disabled),
+  .nr-react:active:not(:disabled),
+  .nr-retry:active:not(:disabled) {
+    transform: scale(0.97);
+  }
+
+  .nr-spinner {
+    width: 11px;
+    height: 11px;
+    flex: 0 0 auto;
+    border: 1.5px solid color-mix(in srgb, currentColor 30%, transparent);
+    border-top-color: currentColor;
+    border-radius: 50%;
+    animation: nr-spin 0.7s linear infinite;
+  }
+
+  .nr-spinner-small {
+    width: 9px;
+    height: 9px;
+  }
+
   /* Expanded message layout */
   .nr-head {
     display: flex;
@@ -613,6 +1010,7 @@
 
   .nr-foot {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 6px;
     padding-left: 22px;
@@ -637,8 +1035,10 @@
     color: var(--popover-text-muted);
   }
 
-  .nr-reply:focus {
-    outline: none;
+  .nr-reply:focus-visible {
+    border-color: var(--popover-text-muted);
+    outline: 2px solid var(--popover-text-muted);
+    outline-offset: 1px;
   }
 
   .nr-react {
@@ -654,9 +1054,82 @@
     font-family: inherit;
   }
 
+  .nr-react:disabled,
+  .nr-reply:disabled {
+    cursor: progress;
+    opacity: 0.58;
+  }
+
+  .nr-reply-status {
+    color: var(--popover-text-muted);
+    font-size: 10px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  .nr-reply-error {
+    display: flex;
+    flex: 1 0 100%;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    color: var(--popover-danger, var(--popover-text));
+    font-size: 10px;
+    line-height: 1.3;
+  }
+
+  .nr-retry {
+    flex: 0 0 auto;
+    padding: 0;
+    border: 0;
+    border-bottom: 1px solid currentColor;
+    border-radius: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-weight: 650;
+    cursor: pointer;
+  }
+
+  .nr-retry:focus-visible {
+    outline: 1.5px solid currentColor;
+    outline-offset: 2px;
+  }
+
+  .nr-retry:disabled {
+    cursor: progress;
+    opacity: 0.58;
+  }
+
+  @keyframes nr-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
   @media (prefers-reduced-motion: reduce) {
+    .nr,
+    .nr-primary-action,
+    .nr-open,
+    .nr-dismiss,
+    .nr-react,
+    .nr-retry {
+      transition: none;
+    }
+
     .nr {
       transition: none;
+    }
+    .nr-spinner {
+      animation-duration: 1.4s;
+    }
+
+    .nr-primary-action:active:not(:disabled),
+    .nr-open:active:not(:disabled),
+    .nr-dismiss:active:not(:disabled),
+    .nr-react:active:not(:disabled),
+    .nr-retry:active:not(:disabled) {
+      transform: none;
     }
   }
 </style>

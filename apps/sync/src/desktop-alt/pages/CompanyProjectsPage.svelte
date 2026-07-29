@@ -11,13 +11,23 @@
   import { invoke } from '@tauri-apps/api/core';
   import { buildClaudeCodeUrl } from '../../lib/claude-code-link';
   import {
+    applyProjectProvenance,
+    emptyProjectProvenanceIndex,
+    indexProjectProvenance,
     loadCompanyGoals,
+    loadCompanyProjectProvenance,
     loadLocalProjects,
     loadLocalProjectStories,
     projectIdentity,
+    type ProjectProvenanceIndex,
     type Objective,
     withProjectStatus,
   } from '../lib/local-projects';
+  import {
+    PROJECT_RENDER_BATCH,
+    progressiveWindow,
+  } from '../lib/progressive-collection';
+  import { normalizeProvenance } from '../lib/provenance';
   import {
     compareProjectsByRecency,
     groupProjectsByPortfolioColumn,
@@ -41,6 +51,7 @@
   import { sessionsStore, startSessionsStore } from '../lib/sessions-store.svelte';
   import ProjectDetailView from './ProjectDetailView.svelte';
   import ProjectRow from '../components/ProjectRow.svelte';
+  import ProvenanceLine from '../components/ProvenanceLine.svelte';
   import '../v4/tokens.css';
 
   interface Props {
@@ -72,11 +83,19 @@
   let projectFilter = $state<ProjectFilter>('all');
   let actionBusy = $state<string | null>(null);
   let actionMessage = $state<string | null>(null);
+  let newProjectPending = $state(false);
   let selected = $state<Project | null>(null);
   let stories = $state<Story[]>([]);
   let storiesLoading = $state(false);
   let storiesError = $state<string | null>(null);
   let selectedStoryId = $state<string | null>(null);
+  /**
+   * Project story reads are independent native requests. A user can return to
+   * the portfolio and open another project before the first request settles,
+   * so every selection owns a generation and may only commit to that exact
+   * company/project pair.
+   */
+  let storyLoadGeneration = 0;
   /**
    * The workspace list is refreshed in the background and may re-deliver the
    * same company slug through props. Keep the open project/task workspace in
@@ -84,10 +103,46 @@
    * reset local navigation.
    */
   let loadedSlug: string | null = null;
-  // project board-id / prdPath → creator (display name). Best-effort, from the
-  // cloud board; empty when unavailable so Lead falls back to "Unassigned".
-  let creatorByKey = $state<Record<string, string>>({});
+  // Best-effort cloud attribution fills only fields absent from local metadata.
+  let cloudProvenance = $state<ProjectProvenanceIndex>(
+    emptyProjectProvenanceIndex(),
+  );
+  let provenanceUnavailable = $state(false);
+  let visibleByColumn = $state<Record<PortfolioColumn, number>>({
+    'not-started': PROJECT_RENDER_BATCH,
+    'in-progress': PROJECT_RENDER_BATCH,
+    active: PROJECT_RENDER_BATCH,
+    complete: PROJECT_RENDER_BATCH,
+  });
   let now = $state(Date.now());
+
+  function invalidateStoryLoad(): void {
+    storyLoadGeneration += 1;
+    storiesLoading = false;
+  }
+
+  function isCurrentStoryLoad(
+    generation: number,
+    companySlug: string,
+    selectedIdentity: string,
+  ): boolean {
+    return (
+      generation === storyLoadGeneration &&
+      slug === companySlug &&
+      selected !== null &&
+      projectIdentity(selected) === selectedIdentity
+    );
+  }
+
+  async function createProject(): Promise<void> {
+    if (!onnewproject || newProjectPending) return;
+    newProjectPending = true;
+    try {
+      await onnewproject();
+    } finally {
+      newProjectPending = false;
+    }
+  }
 
   onMount(() => {
     startSessionsStore();
@@ -100,16 +155,19 @@
   const companyProjects = $derived(
     projects
       .filter((project) => project.company === slug)
+      .map((project) => applyProjectProvenance(project, cloudProvenance))
       .sort(compareProjectsByRecency),
   );
 
   const sessions = $derived(sessionsStore.sessions);
 
-  function leadLabel(project: Project): string {
-    const byId = creatorByKey[project.id];
-    if (byId) return byId;
-    const byPath = project.prdPath ? creatorByKey[project.prdPath] : undefined;
-    return byPath ?? 'Unassigned';
+  function leadLabel(project: Project): string | null {
+    const owner = normalizeProvenance(project.provenance).owner;
+    return owner && owner !== 'Unassigned' ? owner : null;
+  }
+
+  function showMoreProjects(column: PortfolioColumn, nextCount: number): void {
+    visibleByColumn = { ...visibleByColumn, [column]: nextCount };
   }
 
   function normalizeId(value: string | null | undefined): string {
@@ -185,7 +243,7 @@
     const names = new Set<string>();
     for (const project of companyProjects) {
       const lead = leadLabel(project);
-      if (lead && lead !== 'Unassigned') names.add(lead);
+      if (lead) names.add(lead);
     }
     return [...names].sort((a, b) => a.localeCompare(b));
   });
@@ -210,6 +268,20 @@
 
   const liveCount = $derived(portfolioGroups.active.length);
 
+  $effect(() => {
+    void searchQuery;
+    void stateFilter;
+    void ownerFilter;
+    void projectFilter;
+    void viewMode;
+    visibleByColumn = {
+      'not-started': PROJECT_RENDER_BATCH,
+      'in-progress': PROJECT_RENDER_BATCH,
+      active: PROJECT_RENDER_BATCH,
+      complete: PROJECT_RENDER_BATCH,
+    };
+  });
+
   const selectedStory = $derived(
     selectedStoryId === null
       ? null
@@ -223,13 +295,15 @@
     loadedSlug = activeSlug;
 
     if (companyChanged) {
+      invalidateStoryLoad();
       objectives = [];
       projects = [];
       selected = null;
       stories = [];
       storiesError = null;
       selectedStoryId = null;
-      creatorByKey = {};
+      cloudProvenance = emptyProjectProvenanceIndex();
+      provenanceUnavailable = false;
     }
 
     if (!activeSlug) {
@@ -239,26 +313,21 @@
 
     loading = true;
     let cancelled = false;
+    provenanceUnavailable = false;
 
-    // Best-effort, decoupled from the gating load below: a creators fetch must
-    // never error the Projects page or block it — the Lead column simply stays
-    // "Unassigned" if it fails or the board isn't reachable.
-    void invoke<Array<{ id: string; prdPath?: string | null; creator: string }>>(
-      'get_company_project_creators',
-      { slug: activeSlug },
-    )
+    // Best-effort and decoupled: cloud attribution must never gate local work.
+    void loadCompanyProjectProvenance(activeSlug)
       .then((rows) => {
         if (cancelled) return;
-        const map: Record<string, string> = {};
-        for (const row of rows ?? []) {
-          if (!row?.creator) continue;
-          if (row.id) map[row.id] = row.creator;
-          if (row.prdPath) map[row.prdPath] = row.creator;
+        cloudProvenance = indexProjectProvenance(rows);
+        provenanceUnavailable = false;
+        if (selected) {
+          selected = applyProjectProvenance(selected, cloudProvenance);
         }
-        creatorByKey = map;
       })
       .catch((err) => {
         console.warn(`get_company_project_creators(${activeSlug}) failed:`, err);
+        if (!cancelled) provenanceUnavailable = true;
       });
 
     void (async () => {
@@ -272,9 +341,10 @@
         projects = allProjects;
         if (!companyChanged && selected) {
           const selectedIdentity = projectIdentity(selected);
-          selected =
+          const refreshed =
             allProjects.find((project) => projectIdentity(project) === selectedIdentity) ??
             selected;
+          selected = applyProjectProvenance(refreshed, cloudProvenance);
         }
       } catch (err) {
         console.error('CompanyProjectsPage load failed:', err);
@@ -364,6 +434,10 @@
   }
 
   async function openProject(project: Project): Promise<void> {
+    const companySlug = slug;
+    const selectedIdentity = projectIdentity(project);
+    const generation = storyLoadGeneration + 1;
+    storyLoadGeneration = generation;
     selected = project;
     stories = [];
     storiesError = null;
@@ -376,14 +450,19 @@
 
     storiesLoading = true;
     try {
-      stories = await loadLocalProjectStories(project.prdPath);
+      const nextStories = await loadLocalProjectStories(project.prdPath);
+      if (!isCurrentStoryLoad(generation, companySlug, selectedIdentity)) return;
+      stories = nextStories;
     } catch (err) {
+      if (!isCurrentStoryLoad(generation, companySlug, selectedIdentity)) return;
       console.error('get_local_project_prd failed:', err);
       const detail = err instanceof Error ? err.message : String(err);
       storiesError = `Could not load this project’s stories — ${detail}`;
       stories = [];
     } finally {
-      storiesLoading = false;
+      if (isCurrentStoryLoad(generation, companySlug, selectedIdentity)) {
+        storiesLoading = false;
+      }
     }
   }
 
@@ -394,6 +473,7 @@
   }
 
   function backToProjects(): void {
+    invalidateStoryLoad();
     selected = null;
     stories = [];
     storiesError = null;
@@ -442,6 +522,7 @@
       onselectStory={openStory}
       onStatusChange={onProjectStatusChange}
       selectedStory={selectedStory}
+      {provenanceUnavailable}
       oncloseStory={closeStory}
       onselectDependency={selectStoryById}
       {onStoryPassesChange}
@@ -463,9 +544,17 @@
         {#if actionMessage}
           <span class="action-status" role="status">{actionMessage}</span>
         {/if}
-        <button type="button" class="primary-action" onclick={() => void onnewproject?.()}>
-          New project
-        </button>
+        {#if onnewproject}
+          <button
+            type="button"
+            class="primary-action"
+            onclick={createProject}
+            disabled={newProjectPending}
+            aria-busy={newProjectPending}
+          >
+            {newProjectPending ? 'Opening…' : 'New project'}
+          </button>
+        {/if}
       </div>
     </header>
 
@@ -580,6 +669,11 @@
         >
           {#each PORTFOLIO_COLUMNS as column (column)}
             {@const columnProjects = portfolioGroups[column]}
+            {@const renderWindow = progressiveWindow(
+              columnProjects,
+              visibleByColumn[column],
+              PROJECT_RENDER_BATCH,
+            )}
             <section
               class="kanban-column"
               data-testid={`portfolio-column-${column}`}
@@ -601,7 +695,7 @@
                     <span>No projects</span>
                   </div>
                 {:else}
-                  {#each columnProjects as project (projectIdentity(project))}
+                  {#each renderWindow.items as project (projectIdentity(project))}
                     {@const liveRun = projectLiveRunView(project, sessions, now)}
                     {@const goal = linkedGoalLabel(project)}
                     <ProjectRow
@@ -609,6 +703,7 @@
                       showCompany={false}
                       goalLabel={goal}
                       ownerLabel={leadLabel(project)}
+                      {provenanceUnavailable}
                       liveRun={column === 'active' ? liveRun : null}
                       stateContext={portfolioStateContext(column, project)}
                       {now}
@@ -617,6 +712,17 @@
                       linkBusy={actionBusy === `link-${projectIdentity(project)}`}
                     />
                   {/each}
+                  {#if renderWindow.remaining > 0}
+                    <button
+                      type="button"
+                      class="show-more-projects"
+                      data-testid={`show-more-projects-${column}`}
+                      onclick={() => showMoreProjects(column, renderWindow.nextCount)}
+                    >
+                      Show {renderWindow.nextCount - renderWindow.items.length} more
+                      <span>· {renderWindow.remaining} remaining</span>
+                    </button>
+                  {/if}
                 {/if}
               </div>
             </section>
@@ -627,18 +733,23 @@
           <div class="project-table-head">
             <span>Project</span>
             <span>Goal</span>
-            <span>Owner</span>
+            <span>Provenance</span>
             <span>Tasks</span>
             <span>Updated</span>
           </div>
           {#each PORTFOLIO_COLUMNS as column (column)}
             {@const columnProjects = portfolioGroups[column]}
+            {@const renderWindow = progressiveWindow(
+              columnProjects,
+              visibleByColumn[column],
+              PROJECT_RENDER_BATCH,
+            )}
             {#if columnProjects.length > 0}
               <div class="project-group-label">
                 <span>{PORTFOLIO_COLUMN_LABEL[column]}</span>
                 <span class="group-count">{columnProjects.length}</span>
               </div>
-              {#each columnProjects as project (projectIdentity(project))}
+              {#each renderWindow.items as project (projectIdentity(project))}
                 {@const progress = projectProgress(project.storiesComplete, project.storiesTotal)}
                 {@const goal = linkedGoalLabel(project)}
                 <div
@@ -672,7 +783,13 @@
                     </span>
                   </div>
                   <div class="list-goal">{goal ?? '—'}</div>
-                  <div class="list-owner">{leadLabel(project)}</div>
+                  <div class="list-provenance" data-testid="project-list-provenance">
+                    <ProvenanceLine
+                      provenance={project.provenance}
+                      kind="project"
+                      unavailable={provenanceUnavailable}
+                    />
+                  </div>
                   <div class="list-progress" aria-label={`${progress.percent}% complete`}>
                     <span class="progress-copy">
                       <span>{progress.complete} / {progress.total}</span>
@@ -685,6 +802,17 @@
                   <div class="list-updated">{listUpdatedLabel(project)}</div>
                 </div>
               {/each}
+              {#if renderWindow.remaining > 0}
+                <button
+                  type="button"
+                  class="show-more-projects list-show-more"
+                  data-testid={`show-more-projects-${column}`}
+                  onclick={() => showMoreProjects(column, renderWindow.nextCount)}
+                >
+                  Show {renderWindow.nextCount - renderWindow.items.length} more
+                  <span>· {renderWindow.remaining} remaining</span>
+                </button>
+              {/if}
             {/if}
           {/each}
         </div>
@@ -945,6 +1073,19 @@
     }
   }
 
+  /* Viewport width includes the 220px primary rail. Use the actual project
+     canvas too so all four columns remain visible at the 960px native minimum. */
+  @container company-projects (max-width: 900px) {
+    .kanban-board {
+      grid-template-columns: repeat(4, minmax(160px, 1fr));
+      gap: 8px;
+    }
+
+    .kanban-column {
+      min-width: 160px;
+    }
+  }
+
   .live-dot {
     width: 6px;
     height: 6px;
@@ -977,6 +1118,40 @@
     font-size: var(--type-secondary, 11px);
   }
 
+  .show-more-projects {
+    width: 100%;
+    min-height: 30px;
+    padding: 5px 8px;
+    border: 0;
+    border-top: 1px solid var(--v4-rowline);
+    border-radius: 0;
+    background: transparent;
+    color: var(--v4-text-2);
+    font: inherit;
+    font-size: var(--type-secondary, 11px);
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .show-more-projects span {
+    color: var(--v4-text-3);
+  }
+
+  .show-more-projects:hover {
+    background: var(--v4-active-row);
+    color: var(--v4-text-1);
+  }
+
+  .show-more-projects:focus-visible {
+    outline: 2px solid var(--v4-control-border);
+    outline-offset: -2px;
+  }
+
+  .list-show-more {
+    min-width: 680px;
+    padding: 7px 4px;
+  }
+
   /* List surface — hairline table, no giant rounded well. */
   .project-list-surface {
     min-width: 0;
@@ -988,10 +1163,15 @@
   .project-table-head,
   .project-list-row {
     display: grid;
-    grid-template-columns: minmax(200px, 1.4fr) minmax(110px, 0.7fr) 88px 120px 72px;
+    grid-template-columns:
+      minmax(210px, 1.25fr)
+      minmax(96px, 0.6fr)
+      minmax(220px, 1.1fr)
+      105px
+      74px;
     align-items: center;
-    gap: 12px;
-    min-width: 680px;
+    gap: 10px;
+    min-width: 745px;
     padding: 0 4px;
   }
 
@@ -1062,7 +1242,6 @@
 
   .list-desc,
   .list-goal,
-  .list-owner,
   .list-updated {
     overflow: hidden;
     color: var(--v4-text-3);
@@ -1075,6 +1254,14 @@
     display: flex;
     align-items: center;
     gap: 7px;
+  }
+
+  .list-provenance {
+    min-width: 0;
+    padding: 7px 0;
+    color: var(--v4-text-3);
+    font-size: var(--type-secondary, 11px);
+    white-space: normal;
   }
 
   .list-progress {
@@ -1185,7 +1372,7 @@
     }
   }
 
-  @container company-projects (max-width: 760px) {
+  @container company-projects (max-width: 820px) {
     .projects-header {
       flex-direction: column;
       align-items: stretch;
@@ -1222,10 +1409,16 @@
       width: 100%;
     }
 
-    /* Board may horizontal-scroll; primary tools stay visible above. */
+    /* Keep all four columns visible at the native minimum; the board remains
+       horizontally scrollable if content or user font scaling needs more. */
     .kanban-board,
     .board-loading {
-      grid-template-columns: repeat(4, minmax(205px, 1fr));
+      grid-template-columns: repeat(4, minmax(160px, 1fr));
+      gap: 8px;
+    }
+
+    .kanban-column {
+      min-width: 160px;
     }
 
     .project-table-head {
@@ -1242,8 +1435,12 @@
 
     .list-progress,
     .list-goal,
-    .list-owner,
+    .list-provenance,
     .list-updated {
+      min-width: 0;
+    }
+
+    .list-show-more {
       min-width: 0;
     }
   }

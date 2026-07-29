@@ -2,11 +2,33 @@ import { describe, expect, it } from 'vitest';
 
 import {
   isMarketplaceOrigin,
+  isMissingPackagesToolError,
   isPromptRenderable,
+  friendlyPackagesError,
   shortSource,
   type InstalledPack,
   type PackInitialization,
 } from './packages';
+
+describe('friendlyPackagesError', () => {
+  it('turns a missing CLI spawn failure into actionable product language', () => {
+    expect(
+      friendlyPackagesError('spawn `hq packs list --json`: No such file or directory (os error 2)'),
+    ).toBe('HQ tools need repair before installed packs can be loaded.');
+  });
+
+  it('keeps network and unknown failures concise', () => {
+    expect(friendlyPackagesError('network request timed out')).toContain('connection');
+    expect(friendlyPackagesError('unexpected parser failure')).toContain('technical details');
+    expect(friendlyPackagesError(null)).toBeNull();
+  });
+
+  it('only offers CLI repair for missing executable failures', () => {
+    expect(isMissingPackagesToolError('spawn npx: ENOENT')).toBe(true);
+    expect(isMissingPackagesToolError('network request timed out')).toBe(false);
+    expect(isMissingPackagesToolError(null)).toBe(false);
+  });
+});
 
 /**
  * US-009 — the suppress/show gate for a pack's author-written

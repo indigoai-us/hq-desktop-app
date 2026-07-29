@@ -71,6 +71,7 @@
 
   let opening = $state<PermissionId | null>(null);
   let refreshing = $state(false);
+  let prompting = $state(false);
   let lastFetchedAt = $state<number | null>(null);
 
   // Convenience accessors that pull from the shared reactive store.
@@ -156,11 +157,15 @@
     //
     // Safe to call repeatedly; first call shows native prompts for any
     // permission still in NotDetermined, subsequent calls are silent.
+    if (prompting) return;
+    prompting = true;
     try {
       await invoke('permissions_force_native_register');
       await loadMeetingPermissions();
     } catch (err) {
       console.error('permissions_force_native_register failed:', err);
+    } finally {
+      prompting = false;
     }
   }
 
@@ -241,8 +246,13 @@
         <strong>Try the quick path first.</strong>
         Click below — HQ will trigger the native macOS prompt for anything still pending.
       </div>
-      <button class="primary-btn" onclick={handleRunNativeRegister}>
-        Trigger prompts
+      <button
+        class="primary-btn"
+        onclick={handleRunNativeRegister}
+        disabled={prompting}
+        aria-busy={prompting}
+      >
+        {prompting ? 'Triggering…' : 'Trigger prompts'}
       </button>
     </div>
   {/if}
@@ -311,7 +321,7 @@
   :global(html[data-window='meeting-permissions'] body) {
     margin: 0;
     padding: 0;
-    background: var(--page-bg);
+    background: transparent;
     color: var(--c-text);
     font-family: var(--font-sans);
     font-size: 13px;
@@ -327,7 +337,7 @@
     flex-direction: column;
     height: 100vh;
     overflow: hidden;
-    background: var(--page-bg);
+    background: var(--compact-glass-bg);
   }
 
   header {

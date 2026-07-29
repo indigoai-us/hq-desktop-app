@@ -1,9 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Project } from './projects-model';
 import {
+  applyProjectProvenance,
   dedupeProjects,
+  indexProjectProvenance,
+  loadCompanyProjectProvenance,
+  loadLocalProjectPrd,
+  loadLocalProjectStories,
   loadLocalProjects,
   projectIdentity,
+  toProject,
+  toStory,
   withProjectStatus,
 } from './local-projects';
 
@@ -133,5 +140,304 @@ describe('local project identity', () => {
 
     await expect(loadLocalProjects()).resolves.toEqual([]);
     expect(invokeMock).toHaveBeenCalledWith('get_local_projects');
+  });
+});
+
+describe('local/cloud provenance adapter', () => {
+  beforeEach(() => {
+    invokeMock.mockReset();
+  });
+
+  it('keeps normalized project provenance from the local Rust contract', () => {
+    expect(
+      toProject({
+        id: 'p-1',
+        title: 'Launch',
+        company: 'indigo',
+        storyCount: 2,
+        storiesComplete: 0,
+        provenance: {
+          owner: 'Maya',
+          creator: 'Corey',
+          origin: 'HQ plan',
+        },
+      }),
+    ).toMatchObject({
+      provenance: {
+        owner: 'Maya',
+        assignee: null,
+        creator: 'Corey',
+        origin: 'HQ plan',
+      },
+    });
+  });
+
+  it('uses an actionable project file as origin without guessing a person', () => {
+    expect(
+      toProject({
+        id: 'p-1',
+        title: 'Launch',
+        company: 'indigo',
+        prdPath: '.\\companies\\indigo\\projects\\launch\\prd.json',
+        storyCount: 2,
+        storiesComplete: 0,
+      }).provenance,
+    ).toEqual({
+      owner: null,
+      assignee: null,
+      creator: null,
+      origin: 'companies/indigo/projects/launch/prd.json',
+    });
+
+    expect(
+      toProject({
+        id: 'board-only',
+        title: 'Board only',
+        company: 'indigo',
+        storyCount: 0,
+        storiesComplete: 0,
+      }).provenance?.origin,
+    ).toBe('companies/indigo/board.json');
+  });
+
+  it('normalizes legacy task assignee/creator/source aliases and metadata fallbacks', () => {
+    expect(
+      toStory({
+        id: 'US-001',
+        title: 'Trace it',
+        assigneeName: 'Ada',
+        created_by: { email: 'corey@example.com' },
+        metadata: { owner: 'Maya', source: 'Linear import' },
+      }),
+    ).toMatchObject({
+      provenance: {
+        owner: 'Maya',
+        assignee: 'Ada',
+        creator: 'corey@example.com',
+        origin: 'Linear import',
+      },
+    });
+  });
+
+  it('uses the loaded PRD path for stories without explicit source metadata', async () => {
+    invokeMock.mockResolvedValue({
+      name: 'Launch',
+      userStories: [
+        { id: 'US-001', title: 'Trace it' },
+        { id: 'US-002', title: 'Imported', source: 'Linear import' },
+      ],
+    });
+
+    const stories = await loadLocalProjectStories(
+      '.\\companies\\indigo\\projects\\launch\\prd.json',
+    );
+
+    expect(invokeMock).toHaveBeenCalledWith('get_local_project_prd', {
+      prdPath: '.\\companies\\indigo\\projects\\launch\\prd.json',
+    });
+    expect(stories[0].provenance).toEqual({
+      owner: null,
+      assignee: null,
+      creator: null,
+      origin: 'companies/indigo/projects/launch/prd.json',
+    });
+    expect(stories[1].provenance?.origin).toBe('Linear import');
+  });
+
+  it('indexes cloud attribution by normalized path and id, then fills only missing local fields', async () => {
+    invokeMock.mockResolvedValue([
+      {
+        id: 'p-1',
+        prdPath: '.\\companies\\indigo\\projects\\launch\\prd.json',
+        creator: 'Cloud Creator',
+        owner: 'Cloud Owner',
+        origin: 'Cloud board',
+      },
+    ]);
+
+    const records = await loadCompanyProjectProvenance('indigo');
+    expect(invokeMock).toHaveBeenCalledWith('get_company_project_creators', {
+      slug: 'indigo',
+    });
+    const index = indexProjectProvenance(records);
+    const merged = applyProjectProvenance(
+      project({
+        id: 'p-1',
+        prdPath: 'companies/indigo/projects/launch/prd.json',
+        provenance: {
+          owner: 'Local Owner',
+          assignee: null,
+          creator: null,
+          origin: null,
+        },
+      }),
+      index,
+    );
+
+    expect(merged.provenance).toEqual({
+      owner: 'Local Owner',
+      assignee: null,
+      creator: 'Cloud Creator',
+      origin: 'Cloud board',
+    });
+  });
+
+  it('uses an id fallback only when that id identifies one cloud project', () => {
+    const unique = indexProjectProvenance([
+      {
+        id: 'p-1',
+        prdPath: 'companies/indigo/projects/launch/prd.json',
+        provenance: {
+          owner: 'Maya',
+          assignee: null,
+          creator: null,
+          origin: 'Cloud board',
+        },
+      },
+    ]);
+    expect(
+      applyProjectProvenance(
+        project({
+          id: 'p-1',
+          prdPath: 'companies/indigo/projects/moved-launch/prd.json',
+        }),
+        unique,
+      ).provenance,
+    ).toMatchObject({ owner: 'Maya' });
+
+    const repeated = indexProjectProvenance([
+      {
+        id: 'p-1',
+        prdPath: 'companies/indigo/projects/launch-a/prd.json',
+        provenance: {
+          owner: 'Maya',
+          assignee: null,
+          creator: null,
+          origin: 'Cloud board',
+        },
+      },
+      {
+        id: 'p-1',
+        prdPath: 'companies/indigo/projects/launch-b/prd.json',
+        provenance: {
+          owner: 'Ada',
+          assignee: null,
+          creator: null,
+          origin: 'Cloud board',
+        },
+      },
+    ]);
+
+    expect(
+      applyProjectProvenance(
+        project({
+          id: 'p-1',
+          prdPath: 'companies/indigo/projects/launch-a/prd.json',
+        }),
+        repeated,
+      ).provenance,
+    ).toMatchObject({ owner: 'Maya' });
+    expect(
+      applyProjectProvenance(
+        project({
+          id: 'p-1',
+          prdPath: 'companies/indigo/projects/unmatched/prd.json',
+        }),
+        repeated,
+      ).provenance,
+    ).toEqual({
+      owner: null,
+      assignee: null,
+      creator: null,
+      origin: 'companies/indigo/projects/unmatched/prd.json',
+    });
+  });
+
+  it('ranks explicit local origin above cloud and cloud above a derived file path', () => {
+    const index = indexProjectProvenance([
+      {
+        id: 'p-1',
+        prdPath: 'companies/indigo/projects/launch/prd.json',
+        provenance: {
+          owner: null,
+          assignee: null,
+          creator: null,
+          origin: 'Cloud board',
+        },
+      },
+    ]);
+    const derived = toProject({
+      id: 'p-1',
+      title: 'Launch',
+      company: 'indigo',
+      prdPath: 'companies/indigo/projects/launch/prd.json',
+      storyCount: 0,
+      storiesComplete: 0,
+    });
+
+    expect(applyProjectProvenance(derived, index).provenance?.origin).toBe(
+      'Cloud board',
+    );
+    expect(
+      applyProjectProvenance(
+        {
+          ...derived,
+          provenance: { ...derived.provenance!, origin: 'Local plan' },
+        },
+        index,
+      ).provenance?.origin,
+    ).toBe('Local plan');
+  });
+
+  it('normalizes project-level PRD provenance for detail fallback', async () => {
+    invokeMock.mockResolvedValue({
+      name: 'Launch',
+      description: 'Ship it',
+      provenance: {
+        creator: { displayName: 'Corey' },
+      },
+      metadata: {
+        owner: 'Maya',
+        source: 'HQ plan',
+      },
+      userStories: [],
+    });
+
+    await expect(loadLocalProjectPrd('companies/indigo/projects/launch/prd.json'))
+      .resolves.toMatchObject({
+        provenance: {
+          owner: 'Maya',
+          assignee: null,
+          creator: 'Corey',
+          origin: 'HQ plan',
+        },
+      });
+  });
+
+  it('uses the PRD path for detail provenance when metadata has no source', async () => {
+    invokeMock.mockResolvedValue({
+      name: 'Launch',
+      description: 'Ship it',
+      metadata: {},
+      userStories: [],
+    });
+
+    await expect(loadLocalProjectPrd('./companies/indigo/projects/launch/prd.json'))
+      .resolves.toMatchObject({
+        provenance: {
+          owner: null,
+          assignee: null,
+          creator: null,
+          origin: 'companies/indigo/projects/launch/prd.json',
+        },
+      });
+  });
+
+  it('drops cloud rows that carry no displayable attribution', async () => {
+    invokeMock.mockResolvedValue([
+      { id: 'p-1', creator: '  ', owner: null, source: { uid: 'opaque' } },
+    ]);
+
+    await expect(loadCompanyProjectProvenance('indigo')).resolves.toEqual([]);
   });
 });

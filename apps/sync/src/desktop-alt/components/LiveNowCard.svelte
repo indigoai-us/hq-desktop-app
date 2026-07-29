@@ -31,6 +31,7 @@
   // detections the user can attribute. Scheduled-bot rows carry baked
   // attribution from the calendar event, so they get no picker.
   const showCompanyPicker = $derived(!!meeting && !meeting.windowId.startsWith('scheduled-bot:'));
+  let joining = $state(false);
 
   function platformLabel(platform?: string): string {
     if (!platform) return '';
@@ -64,8 +65,16 @@
     return `${hrs}h ago`;
   }
 
-  function join(): void {
-    if (joinUrl) void openExternal(joinUrl);
+  async function join(): Promise<void> {
+    if (!joinUrl || joining) return;
+    joining = true;
+    try {
+      await openExternal(joinUrl);
+    } catch (err) {
+      console.error('meetings: failed to open live meeting', err);
+    } finally {
+      joining = false;
+    }
   }
 </script>
 
@@ -127,9 +136,15 @@
           </button>
         {/if}
         {#if joinUrl}
-          <button type="button" class="btn" onclick={join}>
+          <button
+            type="button"
+            class="btn"
+            onclick={join}
+            disabled={joining}
+            aria-busy={joining}
+          >
             <span class="btn-icon">{@render iconVideo(13)}</span>
-            Join
+            {joining ? 'Joining…' : 'Join'}
           </button>
         {/if}
       </div>

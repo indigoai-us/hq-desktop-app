@@ -66,4 +66,83 @@ describe('US-006 / US-008: NotificationRow message hover-expand (mounted)', () =
     expect(host.querySelector('.nr-reply')).toBeNull();
     expect(host.querySelectorAll('.nr-react')).toHaveLength(0);
   });
+
+  it('preserves a failed quick-reply draft and retries it explicitly', async () => {
+    let rejectFirst!: (reason?: unknown) => void;
+    const firstSend = new Promise<void>((_, reject) => {
+      rejectFirst = reject;
+    });
+    let resolveRetry!: () => void;
+    const retrySend = new Promise<void>((resolve) => {
+      resolveRetry = resolve;
+    });
+    const onreply = vi
+      .fn<(text: string) => Promise<void>>()
+      .mockReturnValueOnce(firstSend)
+      .mockReturnValueOnce(retrySend);
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    component = mount(NotificationRow, {
+      target: host,
+      props: {
+        type: 'message',
+        actor: 'Corey',
+        text: 'ship it when ready',
+        ts: Date.parse('2026-06-15T18:00:00.000Z'),
+        onreply,
+      },
+    });
+    flushSync();
+
+    const row = host.querySelector<HTMLElement>('[data-testid="notification-row"]')!;
+    row.dispatchEvent(new Event('mouseenter'));
+    flushSync();
+    const input = host.querySelector<HTMLInputElement>('.nr-reply')!;
+    input.value = 'Keep this draft';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'Enter',
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    flushSync();
+
+    expect(onreply).toHaveBeenCalledWith('Keep this draft');
+    expect(input.disabled).toBe(true);
+    expect(host.querySelector('[data-testid="notification-reply-pending"]')).toBeTruthy();
+
+    rejectFirst(new Error('offline'));
+    await vi.waitFor(() => {
+      flushSync();
+      expect(host.querySelector('[data-testid="notification-reply-error"]')).toBeTruthy();
+    });
+    expect(input.value).toBe('Keep this draft');
+    expect(input.disabled).toBe(false);
+    expect(input.getAttribute('aria-invalid')).toBe('true');
+
+    host
+      .querySelector<HTMLButtonElement>('[data-testid="notification-reply-retry"]')!
+      .click();
+    flushSync();
+    const retry = host.querySelector<HTMLButtonElement>(
+      '[data-testid="notification-reply-retry"]',
+    )!;
+    expect(retry.disabled).toBe(true);
+    expect(retry.getAttribute('aria-busy')).toBe('true');
+    expect(retry.textContent?.trim()).toBe('Sending…');
+    expect(host.querySelector('[data-testid="notification-reply-error"]')?.textContent).toContain(
+      'Retrying…',
+    );
+    resolveRetry();
+    await vi.waitFor(() => {
+      flushSync();
+      expect(onreply).toHaveBeenCalledTimes(2);
+      expect(input.value).toBe('');
+      expect(host.querySelector('[data-testid="notification-reply-error"]')).toBeNull();
+    });
+
+    consoleError.mockRestore();
+  });
 });

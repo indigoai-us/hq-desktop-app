@@ -193,6 +193,8 @@
   let lastRefreshErrorRaw = '';
   let reportingRefreshProblem = $state(false);
   let toast = $state<{ kind: 'info' | 'warn'; text: string } | null>(null);
+  let integrationsOpening = $state(false);
+  let openingMeetingIds = $state(new Set<string>());
 
   // ── Live meeting-detect bridge ────────────────────────────────────────
   // Mirror of App.svelte's `ActiveMeeting` + the supporting picker data.
@@ -999,6 +1001,32 @@
     }, 4000);
   }
 
+  async function openIntegrations(): Promise<void> {
+    if (integrationsOpening) return;
+    integrationsOpening = true;
+    try {
+      await openExternal('https://hq.computer/integrations');
+    } catch (err) {
+      flashToast('warn', friendlyError(err, "Couldn't open HQ Console."));
+    } finally {
+      integrationsOpening = false;
+    }
+  }
+
+  async function openMeeting(eventId: string, url: string): Promise<void> {
+    if (openingMeetingIds.has(eventId)) return;
+    openingMeetingIds = new Set(openingMeetingIds).add(eventId);
+    try {
+      await openExternal(url);
+    } catch (err) {
+      flashToast('warn', friendlyError(err, "Couldn't open the meeting."));
+    } finally {
+      const next = new Set(openingMeetingIds);
+      next.delete(eventId);
+      openingMeetingIds = next;
+    }
+  }
+
   async function onReportRefreshProblem(): Promise<void> {
     if (reportingRefreshProblem) return;
     reportingRefreshProblem = true;
@@ -1726,13 +1754,11 @@
         <button
           type="button"
           class="meetings-empty-btn"
-          onclick={() => {
-            openExternal('https://hq.computer/integrations').catch((err) => {
-              flashToast('warn', friendlyError(err, "Couldn't open HQ Console."));
-            });
-          }}
+          onclick={openIntegrations}
+          disabled={integrationsOpening}
+          aria-busy={integrationsOpening}
         >
-          Open HQ Console Integrations
+          {integrationsOpening ? 'Opening…' : 'Open HQ Console Integrations'}
         </button>
       </div>
     {:else if events.length === 0 && recordedBots.length === 0}
@@ -1821,17 +1847,19 @@
                   <button
                     type="button"
                     class="row-icon-btn row-icon-join"
-                    title="Open meeting in browser"
+                    title={openingMeetingIds.has(evt.id) ? 'Opening meeting…' : 'Open meeting in browser'}
                     aria-label="Open meeting in browser"
-                    onclick={() => {
-                      openExternal(url).catch((err) => {
-                        flashToast('warn', friendlyError(err, "Couldn't open the meeting."));
-                      });
-                    }}
+                    disabled={openingMeetingIds.has(evt.id)}
+                    aria-busy={openingMeetingIds.has(evt.id)}
+                    onclick={() => void openMeeting(evt.id, url)}
                   >
-                    <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
-                      <path d="M4 2h6v6M10 2L4.5 7.5M2 4v6h6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
-                    </svg>
+                    {#if openingMeetingIds.has(evt.id)}
+                      <span class="row-icon-spinner" aria-hidden="true"></span>
+                    {:else}
+                      <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                        <path d="M4 2h6v6M10 2L4.5 7.5M2 4v6h6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
+                      </svg>
+                    {/if}
                   </button>
                 {/if}
                 {#if !url}
@@ -2563,8 +2591,8 @@
     border: 1px solid var(--pop-border);
     background: var(--pop-bg);
     box-shadow: var(--pop-shadow), inset 0 1px 0 var(--pop-highlight);
-    backdrop-filter: var(--glass-filter-soft, blur(12px) saturate(0%));
-    -webkit-backdrop-filter: var(--glass-filter-soft, blur(12px) saturate(0%));
+    backdrop-filter: var(--glass-filter-soft, blur(16px) saturate(112%) contrast(101%));
+    -webkit-backdrop-filter: var(--glass-filter-soft, blur(16px) saturate(112%) contrast(101%));
   }
   .filter-actions {
     display: flex;

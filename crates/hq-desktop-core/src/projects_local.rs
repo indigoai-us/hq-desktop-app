@@ -33,12 +33,33 @@
 //! `board.json` is skipped (logged), never panicked on — one bad file must not
 //! blank the whole list.
 
+use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
 
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 
 use crate::config::{read_hq_config_lenient, MenubarPrefs};
+use crate::desktop_alt::{
+    canonical_hq_relative_path, company_slug_for_hq_path, validate_hq_relative_path,
+};
 use crate::paths;
+
+/// Explicit attribution for a project or story. All fields remain optional so
+/// older board/prd files deserialize unchanged and the UI can render honest
+/// Unassigned / Unknown source fallbacks.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkProvenance {
+    #[serde(default)]
+    pub owner: Option<String>,
+    #[serde(default)]
+    pub assignee: Option<String>,
+    #[serde(default)]
+    pub creator: Option<String>,
+    #[serde(default)]
+    pub origin: Option<String>,
+}
 
 /// One project row for the Projects list. Merges `board.json` project metadata
 /// with `prd.json` story counts where a `prd_path` links them. Projects that
@@ -70,6 +91,9 @@ pub struct LocalProject {
     pub story_count: u32,
     /// Stories whose `passes == true`.
     pub stories_complete: u32,
+    /// Explicit owner/creator/source metadata, when declared.
+    #[serde(default)]
+    pub provenance: WorkProvenance,
 }
 
 /// A single user story, mirroring the prd.json story shape the Kanban + detail
@@ -102,6 +126,9 @@ pub struct LocalStory {
     pub depends_on: Vec<String>,
     #[serde(default)]
     pub notes: Option<String>,
+    /// Explicit owner/assignee/creator/source metadata, when declared.
+    #[serde(default)]
+    pub provenance: WorkProvenance,
 }
 
 /// A parsed prd.json returned by `get_local_project_prd`.
@@ -119,6 +146,9 @@ pub struct LocalProjectPrd {
     /// Pass-through metadata object (company, goal, createdAt, …).
     #[serde(default)]
     pub metadata: serde_json::Value,
+    /// Project-level attribution normalized from top-level + metadata fields.
+    #[serde(default)]
+    pub provenance: WorkProvenance,
 }
 
 // ---- company goals (objectives + initiatives) ------------------------------
@@ -333,6 +363,10 @@ pub struct BoardProject {
     created_at: Option<String>,
     #[serde(default)]
     updated_at: Option<String>,
+    #[serde(default, flatten)]
+    attribution: RawAttribution,
+    #[serde(default)]
+    provenance: RawAttribution,
 }
 
 /// `prd.json` — the raw on-disk shape. Stories use camelCase keys, so this
@@ -349,6 +383,10 @@ pub struct PrdFile {
     user_stories: Vec<PrdStory>,
     #[serde(default)]
     metadata: serde_json::Value,
+    #[serde(default, flatten)]
+    attribution: RawAttribution,
+    #[serde(default)]
+    provenance: RawAttribution,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -373,10 +411,150 @@ pub struct PrdStory {
     depends_on: Vec<String>,
     #[serde(default)]
     notes: Option<String>,
+    #[serde(default)]
+    metadata: serde_json::Value,
+    #[serde(default, flatten)]
+    attribution: RawAttribution,
+    #[serde(default)]
+    provenance: RawAttribution,
+}
+
+/// Permissive input shape for current and legacy provenance aliases. Values are
+/// kept as JSON so both strings and small person/source objects are accepted.
+#[derive(Debug, Deserialize, Default, Clone)]
+pub struct RawAttribution {
+    #[serde(default, alias = "ownerName", alias = "owner_name")]
+    owner: Option<serde_json::Value>,
+    #[serde(
+        default,
+        alias = "assigneeName",
+        alias = "assignee_name",
+        alias = "assignedTo",
+        alias = "assigned_to"
+    )]
+    assignee: Option<serde_json::Value>,
+    #[serde(
+        default,
+        alias = "creatorName",
+        alias = "creator_name",
+        alias = "createdByName",
+        alias = "created_by_name",
+        alias = "createdBy",
+        alias = "created_by"
+    )]
+    creator: Option<serde_json::Value>,
+    #[serde(default, alias = "source", alias = "sourceName", alias = "source_name")]
+    origin: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct RawProvenanceCarrier {
+    #[serde(default, flatten)]
+    attribution: RawAttribution,
+    #[serde(default)]
+    provenance: RawAttribution,
+}
+
+fn clean_label(value: &serde_json::Value, keys: &[&str]) -> Option<String> {
+    if let Some(value) = value.as_str() {
+        let value = value.trim();
+        return (!value.is_empty()).then(|| value.to_string());
+    }
+    let object = value.as_object()?;
+    keys.iter().find_map(|key| {
+        object
+            .get(*key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    })
+}
+
+fn person_label(value: &Option<serde_json::Value>) -> Option<String> {
+    value.as_ref().and_then(|value| {
+        clean_label(
+            value,
+            &[
+                "displayName",
+                "display_name",
+                "name",
+                "email",
+                "handle",
+                "label",
+            ],
+        )
+    })
+}
+
+fn origin_label(value: &Option<serde_json::Value>) -> Option<String> {
+    value
+        .as_ref()
+        .and_then(|value| clean_label(value, &["label", "name", "type", "provider", "source"]))
+}
+
+fn metadata_provenance(metadata: &serde_json::Value) -> RawProvenanceCarrier {
+    serde_json::from_value(metadata.clone()).unwrap_or_default()
+}
+
+/// Normalize multiple sources ordered most → least authoritative. Canonical
+/// nested `provenance` wins over legacy direct fields within each source, while
+/// missing fields fall through independently.
+fn normalize_work_provenance(sources: &[(&RawAttribution, &RawAttribution)]) -> WorkProvenance {
+    let first_person =
+        |field: fn(&RawAttribution) -> &Option<serde_json::Value>| -> Option<String> {
+            sources.iter().find_map(|(direct, nested)| {
+                person_label(field(nested)).or_else(|| person_label(field(direct)))
+            })
+        };
+    let origin = sources.iter().find_map(|(direct, nested)| {
+        origin_label(&nested.origin).or_else(|| origin_label(&direct.origin))
+    });
+    WorkProvenance {
+        owner: first_person(|value| &value.owner),
+        assignee: first_person(|value| &value.assignee),
+        creator: first_person(|value| &value.creator),
+        origin,
+    }
+}
+
+fn merge_work_provenance(primary: WorkProvenance, fallback: WorkProvenance) -> WorkProvenance {
+    WorkProvenance {
+        owner: primary.owner.or(fallback.owner),
+        assignee: primary.assignee.or(fallback.assignee),
+        creator: primary.creator.or(fallback.creator),
+        origin: primary.origin.or(fallback.origin),
+    }
+}
+
+/// Attach the real HQ-relative file that defines the work when no declared
+/// source/origin exists. This intentionally fills only `origin`: a file path is
+/// useful provenance, but it is not evidence of an owner or creator.
+fn with_origin_fallback(mut provenance: WorkProvenance, source_path: &str) -> WorkProvenance {
+    if provenance.origin.is_none() {
+        let source_path = normalize_rel(source_path.trim());
+        if !source_path.is_empty() {
+            provenance.origin = Some(source_path);
+        }
+    }
+    provenance
+}
+
+fn prd_provenance(prd: &PrdFile) -> WorkProvenance {
+    let metadata = metadata_provenance(&prd.metadata);
+    normalize_work_provenance(&[
+        (&prd.attribution, &prd.provenance),
+        (&metadata.attribution, &metadata.provenance),
+    ])
 }
 
 impl From<PrdStory> for LocalStory {
     fn from(s: PrdStory) -> Self {
+        let metadata = metadata_provenance(&s.metadata);
+        let provenance = normalize_work_provenance(&[
+            (&s.attribution, &s.provenance),
+            (&metadata.attribution, &metadata.provenance),
+        ]);
         LocalStory {
             id: s.id,
             title: s.title,
@@ -387,20 +565,32 @@ impl From<PrdStory> for LocalStory {
             labels: s.labels,
             depends_on: s.depends_on,
             notes: s.notes,
+            provenance,
         }
     }
 }
 
 impl From<PrdFile> for LocalProjectPrd {
     fn from(p: PrdFile) -> Self {
+        let provenance = prd_provenance(&p);
         LocalProjectPrd {
             name: p.name,
             description: p.description,
             branch_name: p.branch_name,
             user_stories: p.user_stories.into_iter().map(LocalStory::from).collect(),
             metadata: p.metadata,
+            provenance,
         }
     }
+}
+
+fn local_project_prd_with_source(prd: PrdFile, source_path: &str) -> LocalProjectPrd {
+    let mut local = LocalProjectPrd::from(prd);
+    local.provenance = with_origin_fallback(local.provenance, source_path);
+    for story in &mut local.user_stories {
+        story.provenance = with_origin_fallback(std::mem::take(&mut story.provenance), source_path);
+    }
+    local
 }
 
 /// `(total, complete)` story counts for a parsed prd.
@@ -446,6 +636,117 @@ pub fn resolve_hq_folder() -> PathBuf {
     )
 }
 
+/// Canonical, HQ-contained project file resolved from an HQ-relative path.
+///
+/// The lexical and canonical company identities must match. This prevents a
+/// path under `companies/alpha` from resolving through a symlink into
+/// `companies/beta` (or out of HQ entirely) while preserving legitimate
+/// personal/root project files whose scope is not company-owned.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedProjectPath {
+    pub absolute_path: PathBuf,
+    pub relative_path: String,
+    pub company_slug: Option<String>,
+}
+
+fn matching_project_company_scope(
+    lexical_path: &str,
+    canonical_path: &str,
+) -> Result<Option<String>, String> {
+    let lexical_company = company_slug_for_hq_path(lexical_path)?;
+    let canonical_company = company_slug_for_hq_path(canonical_path)?;
+    let company_root_mismatch = (lexical_path == "companies" || canonical_path == "companies")
+        && lexical_path != canonical_path;
+    if company_root_mismatch || lexical_company != canonical_company {
+        return Err("project path resolves across HQ company boundaries".to_string());
+    }
+    Ok(lexical_company)
+}
+
+/// Resolve an existing project file through symlinks while enforcing its
+/// required filename and canonical company scope.
+pub fn resolve_project_path(
+    hq_root: &Path,
+    rel_path: &str,
+    expected_filename: &str,
+) -> Result<ResolvedProjectPath, String> {
+    let normalized = validate_hq_relative_path(rel_path, false)?;
+    if Path::new(&normalized)
+        .file_name()
+        .and_then(|name| name.to_str())
+        != Some(expected_filename)
+    {
+        return Err(format!(
+            "project path must point at a {expected_filename} file"
+        ));
+    }
+
+    let canonical = canonical_hq_relative_path(hq_root, &normalized, false)?;
+    if Path::new(&canonical)
+        .file_name()
+        .and_then(|name| name.to_str())
+        != Some(expected_filename)
+    {
+        return Err(format!(
+            "project path resolves to a non-{expected_filename} file"
+        ));
+    }
+    let company_slug = matching_project_company_scope(&normalized, &canonical)?;
+    let canonical_root =
+        std::fs::canonicalize(hq_root).map_err(|e| format!("could not resolve HQ folder: {e}"))?;
+    let absolute_path = canonical_root.join(&canonical);
+    if !absolute_path.is_file() {
+        return Err(format!("project file not found: {rel_path:?}"));
+    }
+    Ok(ResolvedProjectPath {
+        absolute_path,
+        relative_path: canonical,
+        company_slug,
+    })
+}
+
+fn reject_project_write_symlinks(hq_root: &Path, rel_path: &str) -> Result<(), String> {
+    let normalized = validate_hq_relative_path(rel_path, false)?;
+    let mut current =
+        std::fs::canonicalize(hq_root).map_err(|e| format!("could not resolve HQ folder: {e}"))?;
+    for segment in normalized.split('/') {
+        current.push(segment);
+        let metadata = std::fs::symlink_metadata(&current)
+            .map_err(|e| format!("could not inspect project write target {rel_path:?}: {e}"))?;
+        if metadata.file_type().is_symlink() {
+            return Err(format!(
+                "project write target must not contain symlinks: {rel_path:?}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Resolve a write target and refuse every symlink component. Reads may follow
+/// same-company aliases after canonical authorization; writes deliberately do
+/// not, because an atomic rename through an aliased parent can mutate a target
+/// outside the caller's intended path.
+pub fn resolve_project_write_path(
+    hq_root: &Path,
+    rel_path: &str,
+    expected_filename: &str,
+) -> Result<ResolvedProjectPath, String> {
+    reject_project_write_symlinks(hq_root, rel_path)?;
+    resolve_project_path(hq_root, rel_path, expected_filename)
+}
+
+fn require_same_project_write_target(
+    hq_root: &Path,
+    original: &ResolvedProjectPath,
+    expected_filename: &str,
+) -> Result<(), String> {
+    let current = resolve_project_write_path(hq_root, &original.relative_path, expected_filename)?;
+    if current != *original {
+        return Err("project write target changed during authorization".to_string());
+    }
+    Ok(())
+}
+
 /// List projects across every company by scanning the local HQ tree.
 ///
 /// Reads `companies/<slug>/board.json` for project metadata and
@@ -460,6 +761,25 @@ pub fn resolve_hq_folder() -> PathBuf {
 /// Pure, testable scanner — takes an explicit HQ root so tests can point it at a
 /// fixture tree. Never panics: unreadable dirs/files are skipped.
 pub fn scan_local_projects(hq_root: &Path) -> Vec<LocalProject> {
+    scan_local_projects_scoped(hq_root, None)
+}
+
+/// Scan only the explicitly authorized canonical company slugs.
+///
+/// Filtering happens before board/PRD content is opened, so an unauthorized
+/// local folder is never parsed and a symlinked company alias cannot borrow a
+/// different tenant's canonical identity.
+pub fn scan_local_projects_for_companies(
+    hq_root: &Path,
+    authorized_companies: &HashSet<String>,
+) -> Vec<LocalProject> {
+    scan_local_projects_scoped(hq_root, Some(authorized_companies))
+}
+
+fn scan_local_projects_scoped(
+    hq_root: &Path,
+    authorized_companies: Option<&HashSet<String>>,
+) -> Vec<LocalProject> {
     let companies_dir = hq_root.join("companies");
     let entries = match std::fs::read_dir(&companies_dir) {
         Ok(e) => e,
@@ -472,21 +792,38 @@ pub fn scan_local_projects(hq_root: &Path) -> Vec<LocalProject> {
 
     for entry in entries.flatten() {
         let company_path = entry.path();
-        if !company_path.is_dir() {
-            continue;
-        }
         let slug = match company_path.file_name().and_then(|n| n.to_str()) {
             Some(s) if !s.starts_with('.') => s.to_string(),
             _ => continue,
         };
+        if authorized_companies.is_some_and(|allowed| !allowed.contains(&slug)) {
+            continue;
+        }
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_dir() || file_type.is_symlink() {
+            continue;
+        }
+        let company_rel = format!("companies/{slug}");
+        if canonical_hq_relative_path(hq_root, &company_rel, false).as_deref()
+            != Ok(company_rel.as_str())
+        {
+            continue;
+        }
 
         // Track which prd.json paths a board already accounts for, so we can
         // append unlinked prds afterward without duplicating.
         let mut linked_prds: std::collections::HashSet<String> = std::collections::HashSet::new();
 
         // 1. board.json projects (with prd-linked story counts where possible).
-        let board_path = company_path.join("board.json");
-        if let Some(board) = read_json_lenient::<BoardFile>(&board_path) {
+        let board_rel = format!("companies/{slug}/board.json");
+        let board_source = format!("companies/{slug}/board.json");
+        let board = resolve_project_path(hq_root, &board_rel, "board.json")
+            .ok()
+            .filter(|target| target.company_slug.as_deref() == Some(slug.as_str()))
+            .and_then(|target| read_json_lenient::<BoardFile>(&target.absolute_path));
+        if let Some(board) = board {
             for project in board.projects {
                 let BoardProject {
                     id,
@@ -496,29 +833,32 @@ pub fn scan_local_projects(hq_root: &Path) -> Vec<LocalProject> {
                     prd_path,
                     created_at,
                     updated_at,
+                    attribution,
+                    provenance,
                 } = project;
                 let prd_details = prd_path.as_deref().and_then(|rel| {
-                    let abs = hq_root.join(rel);
-                    // Only count prds that live inside the HQ folder.
-                    if is_within(hq_root, &abs) {
-                        read_json_lenient::<PrdFile>(&abs).map(|prd| {
-                            let (story_count, stories_complete) = story_counts(&prd);
-                            (
-                                story_count,
-                                stories_complete,
-                                prd_created_at(&prd),
-                                prd_updated_at(&prd),
-                            )
+                    resolve_project_path(hq_root, rel, "prd.json")
+                        .ok()
+                        .filter(|target| target.company_slug.as_deref() == Some(slug.as_str()))
+                        .and_then(|target| {
+                            read_json_lenient::<PrdFile>(&target.absolute_path).map(|prd| {
+                                let (story_count, stories_complete) = story_counts(&prd);
+                                (
+                                    story_count,
+                                    stories_complete,
+                                    prd_created_at(&prd),
+                                    prd_updated_at(&prd),
+                                    prd_provenance(&prd),
+                                )
+                            })
                         })
-                    } else {
-                        None
-                    }
                 });
                 if let Some(rel) = prd_path.as_deref() {
                     linked_prds.insert(normalize_rel(rel));
                 }
-                let (story_count, stories_complete, prd_created, prd_updated) =
-                    prd_details.unwrap_or((0, 0, None, None));
+                let (story_count, stories_complete, prd_created, prd_updated, prd_provenance) =
+                    prd_details.unwrap_or((0, 0, None, None, WorkProvenance::default()));
+                let board_provenance = normalize_work_provenance(&[(&attribution, &provenance)]);
                 let id = if id.trim().is_empty() {
                     title.clone()
                 } else {
@@ -539,6 +879,10 @@ pub fn scan_local_projects(hq_root: &Path) -> Vec<LocalProject> {
                     updated_at: updated_at.or(prd_updated),
                     story_count,
                     stories_complete,
+                    provenance: with_origin_fallback(
+                        merge_work_provenance(board_provenance, prd_provenance),
+                        &board_source,
+                    ),
                 });
             }
         }
@@ -554,12 +898,19 @@ pub fn scan_local_projects(hq_root: &Path) -> Vec<LocalProject> {
             if linked_prds.contains(&normalize_rel(&rel)) {
                 continue;
             }
-            let Some(prd) = read_json_lenient::<PrdFile>(&prd_path) else {
+            let Ok(target) = resolve_project_path(hq_root, &rel, "prd.json") else {
+                continue;
+            };
+            if target.company_slug.as_deref() != Some(slug.as_str()) {
+                continue;
+            }
+            let Some(prd) = read_json_lenient::<PrdFile>(&target.absolute_path) else {
                 continue;
             };
             let (story_count, stories_complete) = story_counts(&prd);
             let created_at = prd_created_at(&prd);
             let updated_at = prd_updated_at(&prd);
+            let provenance = with_origin_fallback(prd_provenance(&prd), &rel);
             // Project name from prd, falling back to the parent dir name.
             let dir_name = prd_path
                 .parent()
@@ -583,6 +934,7 @@ pub fn scan_local_projects(hq_root: &Path) -> Vec<LocalProject> {
                 updated_at,
                 story_count,
                 stories_complete,
+                provenance,
             });
         }
     }
@@ -597,20 +949,21 @@ pub fn scan_local_projects(hq_root: &Path) -> Vec<LocalProject> {
 /// Pure body for `get_local_project_prd` — takes an explicit HQ root so it's
 /// unit-testable and the traversal guard is verifiable.
 pub fn read_project_prd(hq_root: &Path, prd_path: &str) -> Result<LocalProjectPrd, String> {
-    let rel = prd_path.trim();
-    if rel.is_empty() {
-        return Err("prd_path is required".to_string());
-    }
-    let abs = hq_root.join(rel);
-    if !is_within(hq_root, &abs) {
-        return Err(format!("prd_path escapes the HQ folder: {prd_path:?}"));
-    }
-    if abs.file_name().and_then(|n| n.to_str()) != Some("prd.json") {
+    let normalized = validate_hq_relative_path(prd_path, false)?;
+    if Path::new(&normalized)
+        .file_name()
+        .and_then(|name| name.to_str())
+        != Some("prd.json")
+    {
         return Err("prd_path must point at a prd.json file".to_string());
     }
-    let prd = read_json_lenient::<PrdFile>(&abs)
+    if !hq_root.join(&normalized).exists() {
+        return Err(format!("could not read or parse prd.json at {prd_path:?}"));
+    }
+    let target = resolve_project_path(hq_root, prd_path, "prd.json")?;
+    let prd = read_json_lenient::<PrdFile>(&target.absolute_path)
         .ok_or_else(|| format!("could not read or parse prd.json at {prd_path:?}"))?;
-    Ok(LocalProjectPrd::from(prd))
+    Ok(local_project_prd_with_source(prd, &target.relative_path))
 }
 
 /// Read a project's sibling `README.md` by the project's HQ-folder-relative
@@ -628,29 +981,20 @@ pub fn read_project_prd(hq_root: &Path, prd_path: &str) -> Result<LocalProjectPr
 /// `<dir>/README.md`. Reuses the same lexical `is_within` guard so a malicious
 /// `prd_path` can't escape the HQ folder.
 pub fn read_project_readme(hq_root: &Path, prd_path: &str) -> Result<Option<String>, String> {
-    let rel = prd_path.trim();
-    if rel.is_empty() {
-        return Err("prd_path is required".to_string());
-    }
-    let prd_abs = hq_root.join(rel);
-    if !is_within(hq_root, &prd_abs) {
-        return Err(format!("prd_path escapes the HQ folder: {prd_path:?}"));
-    }
-    if prd_abs.file_name().and_then(|n| n.to_str()) != Some("prd.json") {
-        return Err("prd_path must point at a prd.json file".to_string());
-    }
-    let Some(dir) = prd_abs.parent() else {
+    let prd_target = resolve_project_path(hq_root, prd_path, "prd.json")?;
+    let Some(dir) = Path::new(&prd_target.relative_path).parent() else {
         return Ok(None);
     };
-    let readme = dir.join("README.md");
-    // Defense-in-depth: the derived README must also stay inside the HQ folder.
-    if !is_within(hq_root, &readme) {
-        return Err("README path escapes the HQ folder".to_string());
-    }
-    if !readme.is_file() {
+    let readme_rel = dir.join("README.md").to_string_lossy().replace('\\', "/");
+    let candidate = hq_root.join(&readme_rel);
+    if !candidate.exists() {
         return Ok(None);
     }
-    match std::fs::read_to_string(&readme) {
+    let readme_target = resolve_project_path(hq_root, &readme_rel, "README.md")?;
+    if readme_target.company_slug != prd_target.company_slug {
+        return Err("README path resolves across HQ company boundaries".to_string());
+    }
+    match std::fs::read_to_string(&readme_target.absolute_path) {
         Ok(content) => Ok(Some(content)),
         Err(e) => Err(format!("could not read README.md: {e}")),
     }
@@ -685,15 +1029,17 @@ pub fn read_company_goals(hq_root: &Path, company_slug: &str) -> Result<CompanyG
     if slug.contains('/') || slug.contains('\\') || slug == "." || slug == ".." {
         return Err(format!("invalid company_slug: {company_slug:?}"));
     }
-    let board_path = hq_root.join("companies").join(slug).join("board.json");
-    // Defense-in-depth: the resolved path must stay inside the HQ folder.
-    if !is_within(hq_root, &board_path) {
-        return Err(format!(
-            "company_slug escapes the HQ folder: {company_slug:?}"
-        ));
+    let board_rel = format!("companies/{slug}/board.json");
+    let board_path = hq_root.join(&board_rel);
+    if !board_path.exists() {
+        return Ok(CompanyGoals::default());
+    }
+    let target = resolve_project_path(hq_root, &board_rel, "board.json")?;
+    if target.company_slug.as_deref() != Some(slug) {
+        return Err("goals path resolves across HQ company boundaries".to_string());
     }
     // Missing/unparseable board.json → empty goals (not an error).
-    Ok(read_json_lenient::<BoardGoalsFile>(&board_path)
+    Ok(read_json_lenient::<BoardGoalsFile>(&target.absolute_path)
         .map(CompanyGoals::from)
         .unwrap_or_default())
 }
@@ -734,21 +1080,223 @@ pub fn read_crm_projection(
     if slug.contains('/') || slug.contains('\\') || slug == "." || slug == ".." {
         return Err(format!("invalid company_slug: {company_slug:?}"));
     }
-    let projection_path = hq_root
-        .join("companies")
-        .join(slug)
-        .join("crm-projection.json");
-    // Defense-in-depth: the resolved path must stay inside the HQ folder.
-    if !is_within(hq_root, &projection_path) {
-        return Err(format!(
-            "company_slug escapes the HQ folder: {company_slug:?}"
-        ));
+    let projection_rel = format!("companies/{slug}/crm-projection.json");
+    let projection_path = hq_root.join(&projection_rel);
+    if !projection_path.exists() {
+        return Ok(serde_json::Value::Null);
+    }
+    let target = resolve_project_path(hq_root, &projection_rel, "crm-projection.json")?;
+    if target.company_slug.as_deref() != Some(slug) {
+        return Err("CRM path resolves across HQ company boundaries".to_string());
     }
     // Missing/unparseable crm-projection.json → JSON null (fall back to vault).
-    Ok(read_json_lenient::<serde_json::Value>(&projection_path).unwrap_or(serde_json::Value::Null))
+    Ok(
+        read_json_lenient::<serde_json::Value>(&target.absolute_path)
+            .unwrap_or(serde_json::Value::Null),
+    )
 }
 
 // ---- writes (US-010) -------------------------------------------------------
+
+#[cfg(test)]
+thread_local! {
+    static PROJECT_WRITE_START_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
+    static PROJECT_WRITE_BEFORE_COMMIT_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
+    static PROJECT_WRITE_AT_EXCHANGE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
+}
+
+#[cfg(test)]
+fn set_project_write_start_hook(hook: impl FnOnce() + 'static) {
+    PROJECT_WRITE_START_HOOK.with(|slot| {
+        *slot.borrow_mut() = Some(Box::new(hook));
+    });
+}
+
+#[cfg(test)]
+fn run_project_write_start_hook() {
+    PROJECT_WRITE_START_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook();
+        }
+    });
+}
+
+#[cfg(not(test))]
+fn run_project_write_start_hook() {}
+
+#[cfg(test)]
+fn set_project_write_before_commit_hook(hook: impl FnOnce() + 'static) {
+    PROJECT_WRITE_BEFORE_COMMIT_HOOK.with(|slot| {
+        *slot.borrow_mut() = Some(Box::new(hook));
+    });
+}
+
+#[cfg(test)]
+fn run_project_write_before_commit_hook() {
+    PROJECT_WRITE_BEFORE_COMMIT_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook();
+        }
+    });
+}
+
+#[cfg(not(test))]
+fn run_project_write_before_commit_hook() {}
+
+#[cfg(test)]
+fn set_project_write_at_exchange_hook(hook: impl FnOnce() + 'static) {
+    PROJECT_WRITE_AT_EXCHANGE_HOOK.with(|slot| {
+        *slot.borrow_mut() = Some(Box::new(hook));
+    });
+}
+
+#[cfg(test)]
+fn run_project_write_at_exchange_hook() {
+    PROJECT_WRITE_AT_EXCHANGE_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook();
+        }
+    });
+}
+
+#[cfg(not(test))]
+fn run_project_write_at_exchange_hook() {}
+
+const PROJECT_WRITE_LOCK_DIR: &str = ".hq-desktop-locks";
+const PROJECT_WRITE_LOCK_FILE: &str = "project-json-writes.lock";
+
+struct ProjectWriteLock(std::fs::File);
+
+impl Drop for ProjectWriteLock {
+    fn drop(&mut self) {
+        let _ = FileExt::unlock(&self.0);
+    }
+}
+
+fn ensure_project_lock_directory(path: &Path, label: &str) -> Result<(), String> {
+    match std::fs::create_dir(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(format!("could not create {label}: {error}")),
+    }
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|error| format!("could not inspect {label}: {error}"))?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(format!("{label} must be a real directory"));
+    }
+    Ok(())
+}
+
+/// Acquire a stable, root-wide lock for project JSON mutations.
+///
+/// The lock lives in local `workspace/` state rather than beside a synced
+/// board/PRD. It must be a separate, stable inode: locking the target file
+/// itself would stop coordinating as soon as the atomic rename replaces that
+/// inode.
+fn acquire_project_write_lock(hq_root: &Path) -> Result<ProjectWriteLock, String> {
+    let canonical_root =
+        std::fs::canonicalize(hq_root).map_err(|e| format!("could not resolve HQ folder: {e}"))?;
+    let workspace = canonical_root.join("workspace");
+    ensure_project_lock_directory(&workspace, "HQ workspace lock directory")?;
+
+    let lock_dir = workspace.join(PROJECT_WRITE_LOCK_DIR);
+    ensure_project_lock_directory(&lock_dir, "project write lock directory")?;
+
+    let canonical_lock_dir = std::fs::canonicalize(&lock_dir)
+        .map_err(|e| format!("could not resolve project write lock directory: {e}"))?;
+    if !canonical_lock_dir.starts_with(&canonical_root) {
+        return Err("project write lock directory escaped the HQ folder".to_string());
+    }
+
+    let lock_path = canonical_lock_dir.join(PROJECT_WRITE_LOCK_FILE);
+    if std::fs::symlink_metadata(&lock_path)
+        .map(|metadata| metadata.file_type().is_symlink())
+        .unwrap_or(false)
+    {
+        return Err("project write lock file must not be a symlink".to_string());
+    }
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(&lock_path)
+        .map_err(|e| format!("could not open project write lock: {e}"))?;
+    file.lock_exclusive()
+        .map_err(|e| format!("could not acquire project write lock: {e}"))?;
+    Ok(ProjectWriteLock(file))
+}
+
+fn error_with_preserved_version(
+    error: String,
+    preserved: Option<&DisplacedAtomicJsonWrite>,
+) -> String {
+    match preserved {
+        Some(displaced) => format!(
+            "{error}; the newest displaced version was preserved at {}",
+            displaced.path.display()
+        ),
+        None => error,
+    }
+}
+
+/// Apply one JSON field mutation with a linearizable displaced-target loop.
+///
+/// Each exchange puts the prepared candidate at `target` and retains the exact
+/// directory entry it displaced. If those bytes are not the version we
+/// expected to replace, an external writer won before the exchange; reparse
+/// those displaced bytes, reapply only our mutation, and exchange again. A
+/// quiet exchange displaces our expected candidate and is the linearization
+/// point. Unlike a check-then-rename preflight, no unseen target version is
+/// overwritten without first being preserved.
+fn commit_json_mutation_with_exchange<Mutate, Validate>(
+    target: &Path,
+    initial_snapshot: Vec<u8>,
+    mut mutate: Mutate,
+    mut validate_target: Validate,
+) -> Result<(), String>
+where
+    Mutate: FnMut(&[u8]) -> Result<serde_json::Value, String>,
+    Validate: FnMut() -> Result<(), String>,
+{
+    let mut mutation_base = initial_snapshot.clone();
+    let mut expected_visible = initial_snapshot;
+    let mut preserved_base: Option<DisplacedAtomicJsonWrite> = None;
+
+    loop {
+        let tree = mutate(&mutation_base)
+            .map_err(|error| error_with_preserved_version(error, preserved_base.as_ref()))?;
+        let prepared = prepare_atomic_json_write(target, &tree)
+            .map_err(|error| error_with_preserved_version(error, preserved_base.as_ref()))?;
+
+        run_project_write_before_commit_hook();
+        validate_target()
+            .map_err(|error| error_with_preserved_version(error, preserved_base.as_ref()))?;
+        let exchanged = prepared
+            .exchange(target)
+            .map_err(|error| error_with_preserved_version(error, preserved_base.as_ref()))?;
+
+        // The new candidate was built from `preserved_base` and is now visible,
+        // so that older recovery copy is no longer the only carrier of its
+        // fields.
+        if let Some(previous) = preserved_base.take() {
+            previous.discard();
+        }
+
+        let displaced_bytes = exchanged.displaced.read_bytes()?;
+        if displaced_bytes == expected_visible {
+            exchanged.displaced.discard();
+            return validate_target();
+        }
+
+        mutation_base = displaced_bytes;
+        expected_visible = exchanged.candidate_bytes;
+        preserved_base = Some(exchanged.displaced);
+        std::thread::yield_now();
+    }
+}
 
 /// Persist a project's `status` (and refresh its `updated_at`) back to the
 /// company `board.json` under the resolved HQ folder.
@@ -765,13 +1313,14 @@ pub fn read_crm_projection(
 ///
 /// Safety/correctness (AC #1, #2):
 ///   * Indigo-gated, same as the readers.
-///   * `is_within` lexical guard rejects any `..`/absolute escape, and the target
-///     must be a `board.json` — only `companies/*/board.json` is writable.
+///   * Canonical containment rejects traversal and cross-company aliases; every
+///     write-path component must be a real non-symlink filesystem entry.
+///   * The target must be a `board.json`.
 ///   * The write is atomic + round-trip-validated: we parse the existing JSON,
-///     mutate the matching project in the parsed tree, re-serialize, write to a
-///     sibling temp file, then rename over the original. A parse/serialize
-///     failure aborts before any rename, so a bad write can never corrupt the
-///     file in place.
+///     mutate the matching project, fsync a sibling candidate, atomically
+///     exchange it with the target, and inspect the exact displaced bytes.
+///     Concurrent external versions are merged forward until a quiet exchange;
+///     parse/serialize failures never discard the displaced version.
 ///
 /// Pure body for `set_local_project_status` — explicit HQ root for testing.
 pub fn write_project_status(
@@ -781,77 +1330,76 @@ pub fn write_project_status(
     prd_path: Option<&str>,
     status: &str,
 ) -> Result<(), String> {
-    let rel = board_path.trim();
-    if rel.is_empty() {
-        return Err("board_path is required".to_string());
-    }
     let project_id = project_id.trim();
     if project_id.is_empty() {
         return Err("project_id is required".to_string());
     }
-    let abs = hq_root.join(rel);
-    if !is_within(hq_root, &abs) {
-        return Err(format!("board_path escapes the HQ folder: {board_path:?}"));
-    }
-    if abs.file_name().and_then(|n| n.to_str()) != Some("board.json") {
-        return Err("board_path must point at a board.json file".to_string());
-    }
-
-    // Parse the existing JSON into a generic tree (preserving every field we
-    // don't touch), mutate the matching project, re-serialize.
-    let bytes = std::fs::read(&abs)
-        .map_err(|e| format!("could not read board.json at {board_path:?}: {e}"))?;
-    let mut tree: serde_json::Value = serde_json::from_slice(&bytes)
-        .map_err(|e| format!("board.json at {board_path:?} is not valid JSON: {e}"))?;
-
-    let projects = tree
-        .get_mut("projects")
-        .and_then(|p| p.as_array_mut())
-        .ok_or_else(|| "board.json has no `projects` array".to_string())?;
-
+    // Test-only scheduling hook: both writers reach the lock boundary together,
+    // proving that the cross-process lock serializes their complete mutations.
+    run_project_write_start_hook();
+    let _write_lock = acquire_project_write_lock(hq_root)?;
+    let target = resolve_project_write_path(hq_root, board_path, "board.json")?;
     let expected_prd_path = normalize_project_identity_path(prd_path);
-    let matching_indices: Vec<usize> = projects
-        .iter()
-        .enumerate()
-        .filter(|(_, project)| {
-            project.get("id").and_then(|value| value.as_str()) == Some(project_id)
-                && normalize_project_identity_path(
-                    project.get("prd_path").and_then(|value| value.as_str()),
-                ) == expected_prd_path
-        })
-        .map(|(index, _)| index)
-        .collect();
 
-    let target_index = match matching_indices.as_slice() {
-        [index] => *index,
-        [] => {
-            return Err(format!(
-                "no project with id {project_id:?} and prd_path {expected_prd_path:?} in board.json"
-            ))
-        }
-        _ => {
-            return Err(format!(
-                "multiple projects with id {project_id:?} and prd_path {expected_prd_path:?} in board.json"
-            ))
-        }
-    };
-    let target = projects
-        .get_mut(target_index)
-        .ok_or_else(|| "matched project index disappeared".to_string())?;
+    require_same_project_write_target(hq_root, &target, "board.json")?;
+    let snapshot = std::fs::read(&target.absolute_path)
+        .map_err(|e| format!("could not read board.json at {board_path:?}: {e}"))?;
+    commit_json_mutation_with_exchange(
+        &target.absolute_path,
+        snapshot,
+        |base| {
+            let mut tree: serde_json::Value = serde_json::from_slice(base)
+                .map_err(|e| format!("board.json at {board_path:?} is not valid JSON: {e}"))?;
 
-    let obj = target
-        .as_object_mut()
-        .ok_or_else(|| "matched project is not a JSON object".to_string())?;
-    obj.insert(
-        "status".to_string(),
-        serde_json::Value::String(status.to_string()),
-    );
-    obj.insert(
-        "updated_at".to_string(),
-        serde_json::Value::String(now_iso8601()),
-    );
+            let projects = tree
+                .get_mut("projects")
+                .and_then(|p| p.as_array_mut())
+                .ok_or_else(|| "board.json has no `projects` array".to_string())?;
 
-    atomic_write_json(&abs, &tree)
+            let matching_indices: Vec<usize> = projects
+                .iter()
+                .enumerate()
+                .filter(|(_, project)| {
+                    project.get("id").and_then(|value| value.as_str()) == Some(project_id)
+                        && normalize_project_identity_path(
+                            project.get("prd_path").and_then(|value| value.as_str()),
+                        ) == expected_prd_path
+                })
+                .map(|(index, _)| index)
+                .collect();
+
+            let target_index = match matching_indices.as_slice() {
+                [index] => *index,
+                [] => {
+                    return Err(format!(
+                        "no project with id {project_id:?} and prd_path {expected_prd_path:?} in board.json"
+                    ))
+                }
+                _ => {
+                    return Err(format!(
+                        "multiple projects with id {project_id:?} and prd_path {expected_prd_path:?} in board.json"
+                    ))
+                }
+            };
+            let project_value = projects
+                .get_mut(target_index)
+                .ok_or_else(|| "matched project index disappeared".to_string())?;
+
+            let obj = project_value
+                .as_object_mut()
+                .ok_or_else(|| "matched project is not a JSON object".to_string())?;
+            obj.insert(
+                "status".to_string(),
+                serde_json::Value::String(status.to_string()),
+            );
+            obj.insert(
+                "updated_at".to_string(),
+                serde_json::Value::String(now_iso8601()),
+            );
+            Ok(tree)
+        },
+        || require_same_project_write_target(hq_root, &target, "board.json"),
+    )
 }
 
 /// Match the frontend's project identity normalization: trim whitespace,
@@ -884,88 +1432,333 @@ pub fn write_story_passes(
     story_id: &str,
     passes: bool,
 ) -> Result<(), String> {
-    let rel = prd_path.trim();
-    if rel.is_empty() {
-        return Err("prd_path is required".to_string());
-    }
     if story_id.trim().is_empty() {
         return Err("story_id is required".to_string());
     }
-    let abs = hq_root.join(rel);
-    if !is_within(hq_root, &abs) {
-        return Err(format!("prd_path escapes the HQ folder: {prd_path:?}"));
-    }
-    if abs.file_name().and_then(|n| n.to_str()) != Some("prd.json") {
-        return Err("prd_path must point at a prd.json file".to_string());
-    }
+    run_project_write_start_hook();
+    let _write_lock = acquire_project_write_lock(hq_root)?;
+    let target = resolve_project_write_path(hq_root, prd_path, "prd.json")?;
 
-    let bytes =
-        std::fs::read(&abs).map_err(|e| format!("could not read prd.json at {prd_path:?}: {e}"))?;
-    let mut tree: serde_json::Value = serde_json::from_slice(&bytes)
-        .map_err(|e| format!("prd.json at {prd_path:?} is not valid JSON: {e}"))?;
+    require_same_project_write_target(hq_root, &target, "prd.json")?;
+    let snapshot = std::fs::read(&target.absolute_path)
+        .map_err(|e| format!("could not read prd.json at {prd_path:?}: {e}"))?;
+    commit_json_mutation_with_exchange(
+        &target.absolute_path,
+        snapshot,
+        |base| {
+            let mut tree: serde_json::Value = serde_json::from_slice(base)
+                .map_err(|e| format!("prd.json at {prd_path:?} is not valid JSON: {e}"))?;
 
-    let stories = tree
-        .get_mut("userStories")
-        .and_then(|s| s.as_array_mut())
-        .ok_or_else(|| "prd.json has no `userStories` array".to_string())?;
+            let stories = tree
+                .get_mut("userStories")
+                .and_then(|s| s.as_array_mut())
+                .ok_or_else(|| "prd.json has no `userStories` array".to_string())?;
 
-    let target = stories
-        .iter_mut()
-        .find(|s| s.get("id").and_then(|v| v.as_str()) == Some(story_id))
-        .ok_or_else(|| format!("no story with id {story_id:?} in prd.json"))?;
+            let story_value = stories
+                .iter_mut()
+                .find(|s| s.get("id").and_then(|v| v.as_str()) == Some(story_id))
+                .ok_or_else(|| format!("no story with id {story_id:?} in prd.json"))?;
 
-    let obj = target
-        .as_object_mut()
-        .ok_or_else(|| "matched story is not a JSON object".to_string())?;
-    obj.insert("passes".to_string(), serde_json::Value::Bool(passes));
-
-    atomic_write_json(&abs, &tree)
+            let obj = story_value
+                .as_object_mut()
+                .ok_or_else(|| "matched story is not a JSON object".to_string())?;
+            obj.insert("passes".to_string(), serde_json::Value::Bool(passes));
+            Ok(tree)
+        },
+        || require_same_project_write_target(hq_root, &target, "prd.json"),
+    )
 }
 
-/// Atomically write a JSON value to `target` (2-space indent + trailing
-/// newline): serialize first (so a serialize failure aborts before any I/O),
-/// write to a sibling `.tmp` file, fsync it, then rename over the target. The
-/// rename is atomic on the same filesystem, so a reader never sees a partial
-/// file and a crash mid-write leaves the original intact.
-pub fn atomic_write_json(target: &Path, value: &serde_json::Value) -> Result<(), String> {
+struct PreparedAtomicJsonWrite {
+    temp_path: PathBuf,
+    serialized: Vec<u8>,
+    exchanged: bool,
+}
+
+impl PreparedAtomicJsonWrite {
+    fn exchange(mut self, target: &Path) -> Result<AtomicJsonExchange, String> {
+        run_project_write_at_exchange_hook();
+        let displaced_path = atomic_exchange_file(&self.temp_path, target)?;
+        self.exchanged = true;
+        Ok(AtomicJsonExchange {
+            candidate_bytes: std::mem::take(&mut self.serialized),
+            displaced: DisplacedAtomicJsonWrite::capture(displaced_path)?,
+        })
+    }
+}
+
+impl Drop for PreparedAtomicJsonWrite {
+    fn drop(&mut self) {
+        if !self.exchanged {
+            // A failed pre-exchange operation never touched the target.
+            let _ = std::fs::remove_file(&self.temp_path);
+        }
+    }
+}
+
+struct AtomicJsonExchange {
+    candidate_bytes: Vec<u8>,
+    displaced: DisplacedAtomicJsonWrite,
+}
+
+/// Exact target bytes displaced by one atomic exchange.
+///
+/// This intentionally has no deleting `Drop`: if parsing, reading, or a later
+/// exchange fails, preserving this hidden sibling is safer than discarding the
+/// only copy of an external writer's version.
+struct DisplacedAtomicJsonWrite {
+    path: PathBuf,
+    bytes: Vec<u8>,
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn read_displaced_regular_file(path: &Path) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+
+    let descriptor = rustix::fs::open(
+        path,
+        rustix::fs::OFlags::RDONLY
+            | rustix::fs::OFlags::CLOEXEC
+            | rustix::fs::OFlags::NOFOLLOW,
+        rustix::fs::Mode::empty(),
+    )
+    .map_err(|error| {
+        format!(
+            "could not read displaced project JSON at {} without following links: {error}; the path was preserved",
+            path.display()
+        )
+    })?;
+    let mut file = std::fs::File::from(descriptor);
+    let metadata = file.metadata().map_err(|error| {
+        format!(
+            "could not inspect displaced project JSON at {}: {error}; the path was preserved",
+            path.display()
+        )
+    })?;
+    if !metadata.is_file() {
+        return Err(format!(
+            "could not read displaced project JSON at {}: entry is not a regular file; the path was preserved",
+            path.display()
+        ));
+    }
+
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).map_err(|error| {
+        format!(
+            "could not read displaced project JSON at {}: {error}; the path was preserved",
+            path.display()
+        )
+    })?;
+    Ok(bytes)
+}
+
+#[cfg(target_os = "windows")]
+fn read_displaced_regular_file(path: &Path) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+
+    // WinBase.h: open the reparse point itself rather than traversing it.
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+        .map_err(|error| {
+            format!(
+                "could not read displaced project JSON at {} without following reparse points: {error}; the path was preserved",
+                path.display()
+            )
+        })?;
+    let metadata = file.metadata().map_err(|error| {
+        format!(
+            "could not inspect displaced project JSON at {}: {error}; the path was preserved",
+            path.display()
+        )
+    })?;
+    if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 || !metadata.is_file() {
+        return Err(format!(
+            "could not read displaced project JSON at {}: entry is not a regular non-reparse file; the path was preserved",
+            path.display()
+        ));
+    }
+
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).map_err(|error| {
+        format!(
+            "could not read displaced project JSON at {}: {error}; the path was preserved",
+            path.display()
+        )
+    })?;
+    Ok(bytes)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+fn read_displaced_regular_file(path: &Path) -> Result<Vec<u8>, String> {
+    Err(format!(
+        "could not read displaced project JSON at {}: secure no-follow reads are unsupported on this platform; the path was preserved",
+        path.display()
+    ))
+}
+
+impl DisplacedAtomicJsonWrite {
+    fn capture(path: PathBuf) -> Result<Self, String> {
+        let bytes = read_displaced_regular_file(&path)?;
+        Ok(Self { path, bytes })
+    }
+
+    fn read_bytes(&self) -> Result<Vec<u8>, String> {
+        Ok(self.bytes.clone())
+    }
+
+    fn discard(self) {
+        if let Err(error) = std::fs::remove_file(&self.path) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                eprintln!(
+                    "[projects-local] could not remove merged displaced file {}: {error}",
+                    self.path.display()
+                );
+            }
+        }
+    }
+}
+
+/// Serialize and durably flush a sibling replacement file without changing the
+/// visible target yet.
+fn prepare_atomic_json_write(
+    target: &Path,
+    value: &serde_json::Value,
+) -> Result<PreparedAtomicJsonWrite, String> {
     let mut serialized = serde_json::to_string_pretty(value)
         .map_err(|e| format!("could not serialize JSON: {e}"))?;
     serialized.push('\n');
+    let serialized = serialized.into_bytes();
 
     let dir = target
         .parent()
         .ok_or_else(|| "target has no parent directory".to_string())?;
-    // Unique temp name (pid + nanos) so concurrent writes can't clobber a shared
-    // temp file. Same dir as the target → rename stays on one filesystem.
-    let tmp_name = format!(
-        ".{}.{}.{}.tmp",
-        target
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("board.json"),
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0),
-    );
-    let tmp_path = dir.join(tmp_name);
+    let target_name = target
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("board.json");
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
 
-    {
+    for attempt in 0..100u32 {
+        let tmp_path = dir.join(format!(
+            ".{target_name}.{}.{}.{attempt}.tmp",
+            std::process::id(),
+            nanos,
+        ));
+        let mut file = match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp_path)
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(format!("could not create temp file: {error}")),
+        };
+
         use std::io::Write;
-        let mut f = std::fs::File::create(&tmp_path)
-            .map_err(|e| format!("could not create temp file: {e}"))?;
-        f.write_all(serialized.as_bytes())
-            .map_err(|e| format!("could not write temp file: {e}"))?;
-        f.sync_all()
-            .map_err(|e| format!("could not flush temp file: {e}"))?;
+        if let Err(error) = file.write_all(&serialized).and_then(|()| file.sync_all()) {
+            drop(file);
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(format!("could not prepare temp file: {error}"));
+        }
+        drop(file);
+        return Ok(PreparedAtomicJsonWrite {
+            temp_path: tmp_path,
+            serialized,
+            exchanged: false,
+        });
     }
 
-    std::fs::rename(&tmp_path, target).map_err(|e| {
-        // Best-effort cleanup so a failed rename doesn't leave a stray temp file.
-        let _ = std::fs::remove_file(&tmp_path);
-        format!("could not commit write: {e}")
-    })
+    Err(format!(
+        "could not create a unique temp file beside {}",
+        target.display()
+    ))
+}
+
+/// Atomically exchange two same-directory files. On success `target` contains
+/// the candidate and `temp` contains the exact target entry it displaced.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn atomic_exchange_file(temp: &Path, target: &Path) -> Result<PathBuf, String> {
+    rustix::fs::renameat_with(
+        rustix::fs::CWD,
+        temp,
+        rustix::fs::CWD,
+        target,
+        rustix::fs::RenameFlags::EXCHANGE,
+    )
+    .map_err(|error| format!("could not atomically exchange project JSON: {error}"))?;
+    Ok(temp.to_path_buf())
+}
+
+/// Windows has no rename-exchange primitive. `ReplaceFileW` performs the
+/// equivalent linearizable replacement and moves the exact old target to the
+/// requested backup path. The replacement temp is fsynced before this call;
+/// Microsoft's `REPLACEFILE_WRITE_THROUGH` flag is explicitly unsupported.
+#[cfg(target_os = "windows")]
+fn atomic_exchange_file(temp: &Path, target: &Path) -> Result<PathBuf, String> {
+    use std::os::windows::ffi::OsStrExt;
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn ReplaceFileW(
+            replaced: *const u16,
+            replacement: *const u16,
+            backup: *const u16,
+            flags: u32,
+            exclude: *mut std::ffi::c_void,
+            reserved: *mut std::ffi::c_void,
+        ) -> i32;
+    }
+
+    let backup_path = temp.with_extension("displaced");
+    if std::fs::symlink_metadata(&backup_path).is_ok() {
+        return Err(format!(
+            "could not reserve displaced project JSON path {}",
+            backup_path.display()
+        ));
+    }
+
+    let temp_wide: Vec<u16> = temp.as_os_str().encode_wide().chain([0]).collect();
+    let target_wide: Vec<u16> = target.as_os_str().encode_wide().chain([0]).collect();
+    let backup_wide: Vec<u16> = backup_path.as_os_str().encode_wide().chain([0]).collect();
+    let replaced = unsafe {
+        ReplaceFileW(
+            target_wide.as_ptr(),
+            temp_wide.as_ptr(),
+            backup_wide.as_ptr(),
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    if replaced == 0 {
+        let backup_note = if backup_path.exists() {
+            format!(
+                "; the displaced original may be preserved at {}",
+                backup_path.display()
+            )
+        } else {
+            String::new()
+        };
+        return Err(format!(
+            "could not atomically exchange project JSON: {}{backup_note}",
+            std::io::Error::last_os_error(),
+        ));
+    }
+    Ok(backup_path)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+fn atomic_exchange_file(_temp: &Path, _target: &Path) -> Result<PathBuf, String> {
+    Err("atomic project JSON exchange is unsupported on this platform".to_string())
 }
 
 /// Current UTC time as an ISO-8601 / RFC-3339 `Z` string (no chrono dep).
@@ -1052,16 +1845,28 @@ pub fn portable_diagnostic_path(path: &Path) -> String {
 /// nested layout beyond one level — board.json links cover archived prds.
 pub fn find_prd_files(projects_dir: &Path) -> Vec<PathBuf> {
     let mut found = Vec::new();
+    if !std::fs::symlink_metadata(projects_dir)
+        .map(|metadata| metadata.file_type().is_dir())
+        .unwrap_or(false)
+    {
+        return found;
+    }
     let Ok(entries) = std::fs::read_dir(projects_dir) else {
         return found;
     };
     for entry in entries.flatten() {
-        let dir = entry.path();
-        if !dir.is_dir() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_dir() || file_type.is_symlink() {
             continue;
         }
+        let dir = entry.path();
         let candidate = dir.join("prd.json");
-        if candidate.is_file() {
+        if std::fs::symlink_metadata(&candidate)
+            .map(|metadata| metadata.file_type().is_file())
+            .unwrap_or(false)
+        {
             found.push(candidate);
         }
     }
@@ -1213,6 +2018,13 @@ mod tests {
         assert_eq!(acme[0].stories_complete, 0);
         assert_eq!(acme[0].created_at.as_deref(), Some("2026-06-05T00:00:00Z"));
         assert_eq!(acme[0].updated_at.as_deref(), Some("2026-06-06T00:00:00Z"));
+        assert!(acme[0].provenance.owner.is_none());
+        assert!(acme[0].provenance.creator.is_none());
+        assert_eq!(
+            acme[0].provenance.origin.as_deref(),
+            Some("companies/acme/projects/widget/prd.json"),
+            "an unlinked project points back to its defining PRD",
+        );
 
         // indigo: two board projects. Flagship links a real prd → 3 stories, 2 done.
         let flagship = projects
@@ -1228,6 +2040,13 @@ mod tests {
             flagship.prd_path.as_deref(),
             Some("companies/indigo/projects/flagship/prd.json")
         );
+        assert!(flagship.provenance.owner.is_none());
+        assert!(flagship.provenance.creator.is_none());
+        assert_eq!(
+            flagship.provenance.origin.as_deref(),
+            Some("companies/indigo/board.json"),
+            "a board project points back to its defining board",
+        );
 
         // The board project whose prd_path is missing → 0/0, still listed.
         let broken = projects
@@ -1237,6 +2056,10 @@ mod tests {
         assert_eq!(broken.story_count, 0);
         assert_eq!(broken.stories_complete, 0);
         assert_eq!(broken.created_at.as_deref(), Some("2026-05-01T00:00:00Z"));
+        assert_eq!(
+            broken.provenance.origin.as_deref(),
+            Some("companies/indigo/board.json"),
+        );
 
         // The flagship prd is board-linked, so it must NOT also appear as an
         // unlinked prd row (no duplicate).
@@ -1277,8 +2100,104 @@ mod tests {
         assert_eq!(us1.priority.as_ref().and_then(|v| v.as_str()), Some("P0"));
         assert_eq!(us1.labels, vec!["x"]);
         assert_eq!(us1.notes.as_deref(), Some("n"));
+        assert!(us1.provenance.owner.is_none());
+        assert!(us1.provenance.creator.is_none());
+        assert_eq!(
+            us1.provenance.origin.as_deref(),
+            Some("companies/indigo/projects/flagship/prd.json"),
+            "stories point back to their defining PRD",
+        );
+        assert_eq!(
+            prd.provenance.origin.as_deref(),
+            Some("companies/indigo/projects/flagship/prd.json"),
+        );
         // metadata passes through.
         assert_eq!(prd.metadata["company"], "indigo");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn provenance_normalizes_board_prd_and_story_aliases_without_inventing_people() {
+        let root = std::env::temp_dir().join(format!(
+            "hq-projects-provenance-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        let company = root.join("companies").join("indigo");
+        let project_dir = company.join("projects").join("launch");
+        fs::create_dir_all(&project_dir).unwrap();
+        fs::write(
+            project_dir.join("prd.json"),
+            r#"{
+                "name":"Launch",
+                "metadata":{
+                    "owner":"PRD owner",
+                    "createdBy":{"displayName":"Corey"},
+                    "source":"Local PRD"
+                },
+                "userStories":[{
+                    "id":"US-001",
+                    "title":"Trace origin",
+                    "assignee_name":"Ada",
+                    "created_by":{"email":"corey@example.com"},
+                    "metadata":{"owner":{"name":"Maya"},"source":"Linear import"}
+                },{
+                    "id":"US-002",
+                    "title":"Legacy story"
+                }]
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            company.join("board.json"),
+            r#"{
+                "projects":[{
+                    "id":"p-1",
+                    "title":"Launch",
+                    "prd_path":"companies/indigo/projects/launch/prd.json",
+                    "owner":{"displayName":"Board owner"},
+                    "origin":"HQ plan"
+                }]
+            }"#,
+        )
+        .unwrap();
+
+        let projects = scan_local_projects(&root);
+        let project = projects.iter().find(|project| project.id == "p-1").unwrap();
+        assert_eq!(project.provenance.owner.as_deref(), Some("Board owner"));
+        assert_eq!(project.provenance.creator.as_deref(), Some("Corey"));
+        assert_eq!(project.provenance.origin.as_deref(), Some("HQ plan"));
+        assert!(project.provenance.assignee.is_none());
+
+        let prd = read_project_prd(&root, "companies/indigo/projects/launch/prd.json")
+            .expect("provenance PRD parses");
+        let attributed = &prd.user_stories[0];
+        assert_eq!(attributed.provenance.owner.as_deref(), Some("Maya"));
+        assert_eq!(attributed.provenance.assignee.as_deref(), Some("Ada"));
+        assert_eq!(
+            attributed.provenance.creator.as_deref(),
+            Some("corey@example.com")
+        );
+        assert_eq!(
+            attributed.provenance.origin.as_deref(),
+            Some("Linear import")
+        );
+        assert_eq!(prd.provenance.owner.as_deref(), Some("PRD owner"));
+        assert_eq!(prd.provenance.creator.as_deref(), Some("Corey"));
+        assert_eq!(prd.provenance.origin.as_deref(), Some("Local PRD"));
+        let legacy = &prd.user_stories[1].provenance;
+        assert!(legacy.owner.is_none());
+        assert!(legacy.assignee.is_none());
+        assert!(legacy.creator.is_none());
+        assert_eq!(
+            legacy.origin.as_deref(),
+            Some("companies/indigo/projects/launch/prd.json"),
+            "a missing story source falls back to the real PRD without guessing a person",
+        );
+
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -1834,6 +2753,544 @@ mod tests {
         assert!(
             write_story_passes(&root, "../../evil/prd.json", "US-003", true).is_err(),
             "traversal must be rejected"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn atomic_exchange_preserves_the_exact_displaced_target() {
+        let root = make_fixture_tree();
+        let target = root.join("companies/indigo/board.json");
+        let original = fs::read(&target).unwrap();
+        let candidate = serde_json::json!({"projects": [], "candidate": true});
+        let prepared = prepare_atomic_json_write(&target, &candidate).unwrap();
+        let expected_candidate = prepared.serialized.clone();
+
+        let exchanged = prepared.exchange(&target).unwrap();
+
+        assert_eq!(fs::read(&target).unwrap(), expected_candidate);
+        assert_eq!(
+            exchanged.displaced.read_bytes().unwrap(),
+            original,
+            "the exchange must retain the exact bytes that occupied the target at its linearization point"
+        );
+        exchanged.displaced.discard();
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn displaced_read_stays_bound_to_the_entry_captured_by_exchange() {
+        use std::os::unix::fs::symlink;
+
+        let root = make_fixture_tree();
+        let target = root.join("companies/indigo/board.json");
+        let original = fs::read(&target).unwrap();
+        let outside = root.with_extension("outside-secret.json");
+        let outside_bytes = br#"{"tenant":"outside","secret":true}"#;
+        fs::write(&outside, outside_bytes).unwrap();
+
+        let candidate = serde_json::json!({"projects": [], "candidate": true});
+        let prepared = prepare_atomic_json_write(&target, &candidate).unwrap();
+        let exchanged = prepared.exchange(&target).unwrap();
+        let displaced_path = exchanged.displaced.path.clone();
+        let preserved_original = displaced_path.with_extension("original");
+
+        fs::rename(&displaced_path, &preserved_original).unwrap();
+        symlink(&outside, &displaced_path).unwrap();
+
+        assert_eq!(
+            exchanged.displaced.read_bytes().unwrap(),
+            original,
+            "a post-exchange path substitution must not redirect the displaced-byte read"
+        );
+
+        fs::remove_file(&displaced_path).unwrap();
+        fs::remove_file(&preserved_original).unwrap();
+        let _ = fs::remove_file(&outside);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn displaced_regular_file_reader_refuses_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let root = make_fixture_tree();
+        let outside = root.with_extension("outside-secret.json");
+        let alias = root.join("companies/indigo/.displaced-alias");
+        fs::write(&outside, br#"{"tenant":"outside","secret":true}"#).unwrap();
+        symlink(&outside, &alias).unwrap();
+
+        let error = read_displaced_regular_file(&alias).unwrap_err();
+        assert!(
+            error.contains("could not read displaced project JSON"),
+            "the refusal should retain an actionable displaced-file error: {error}"
+        );
+
+        let _ = fs::remove_file(&alias);
+        let _ = fs::remove_file(&outside);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn displaced_regular_file_reader_refuses_non_files() {
+        let root = make_fixture_tree();
+        let directory = root.join("companies/indigo/displaced-directory");
+        fs::create_dir(&directory).unwrap();
+
+        let error = read_displaced_regular_file(&directory).unwrap_err();
+        assert!(
+            error.contains("not a regular"),
+            "the refusal should distinguish a non-file displaced entry: {error}"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn project_atomic_exchange_prepares_temp_before_the_swap() {
+        let root = make_fixture_tree();
+        let board_path = root.join("companies/indigo/board.json");
+        set_project_write_before_commit_hook({
+            let board_path = board_path.clone();
+            move || {
+                let target_name = board_path.file_name().unwrap().to_string_lossy();
+                let temp_prefix = format!(".{target_name}.");
+                let has_prepared_temp = fs::read_dir(board_path.parent().unwrap())
+                    .unwrap()
+                    .filter_map(Result::ok)
+                    .any(|entry| {
+                        let name = entry.file_name();
+                        let name = name.to_string_lossy();
+                        name.starts_with(&temp_prefix) && name.ends_with(".tmp")
+                    });
+                assert!(
+                    has_prepared_temp,
+                    "the durable temp file must exist before the atomic exchange"
+                );
+            }
+        });
+
+        write_project_status(
+            &root,
+            "companies/indigo/board.json",
+            "in-proj-001",
+            Some("companies/indigo/projects/flagship/prd.json"),
+            "completed",
+        )
+        .unwrap();
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn concurrent_project_status_writes_preserve_both_mutations() {
+        let root = make_fixture_tree();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let mut writers = Vec::new();
+
+        for (project_id, prd_path, status) in [
+            (
+                "in-proj-001",
+                "companies/indigo/projects/flagship/prd.json",
+                "completed",
+            ),
+            (
+                "in-proj-002",
+                "companies/indigo/projects/missing/prd.json",
+                "planned",
+            ),
+        ] {
+            let root = root.clone();
+            let barrier = barrier.clone();
+            writers.push(std::thread::spawn(move || {
+                set_project_write_start_hook(move || {
+                    barrier.wait();
+                });
+                write_project_status(
+                    &root,
+                    "companies/indigo/board.json",
+                    project_id,
+                    Some(prd_path),
+                    status,
+                )
+            }));
+        }
+
+        for writer in writers {
+            writer.join().expect("writer thread panicked").unwrap();
+        }
+
+        let board: serde_json::Value =
+            serde_json::from_slice(&fs::read(root.join("companies/indigo/board.json")).unwrap())
+                .unwrap();
+        let projects = board["projects"].as_array().unwrap();
+        let status = |id: &str| {
+            projects
+                .iter()
+                .find(|project| project["id"] == id)
+                .and_then(|project| project["status"].as_str())
+                .unwrap()
+        };
+        assert_eq!(status("in-proj-001"), "completed");
+        assert_eq!(status("in-proj-002"), "planned");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn concurrent_story_pass_writes_preserve_both_mutations() {
+        let root = make_fixture_tree();
+        let prd_rel = "companies/indigo/projects/flagship/prd.json";
+        fs::write(
+            root.join(prd_rel),
+            r#"{"userStories":[{"id":"US-001","passes":false},{"id":"US-002","passes":false}]}"#,
+        )
+        .unwrap();
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let mut writers = Vec::new();
+        for story_id in ["US-001", "US-002"] {
+            let root = root.clone();
+            let barrier = barrier.clone();
+            writers.push(std::thread::spawn(move || {
+                set_project_write_start_hook(move || {
+                    barrier.wait();
+                });
+                write_story_passes(
+                    &root,
+                    "companies/indigo/projects/flagship/prd.json",
+                    story_id,
+                    true,
+                )
+            }));
+        }
+
+        for writer in writers {
+            writer.join().expect("writer thread panicked").unwrap();
+        }
+
+        let prd: serde_json::Value =
+            serde_json::from_slice(&fs::read(root.join(prd_rel)).unwrap()).unwrap();
+        let stories = prd["userStories"].as_array().unwrap();
+        assert!(
+            stories
+                .iter()
+                .all(|story| story["passes"].as_bool() == Some(true)),
+            "both concurrent story mutations must survive: {stories:#?}",
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn project_status_write_preserves_an_external_edit_before_commit() {
+        let root = make_fixture_tree();
+        let board_path = root.join("companies/indigo/board.json");
+        set_project_write_before_commit_hook({
+            let board_path = board_path.clone();
+            move || {
+                let mut board: serde_json::Value =
+                    serde_json::from_slice(&fs::read(&board_path).unwrap()).unwrap();
+                board["external_sync_marker"] = serde_json::Value::Bool(true);
+                fs::write(&board_path, serde_json::to_vec_pretty(&board).unwrap()).unwrap();
+            }
+        });
+
+        write_project_status(
+            &root,
+            "companies/indigo/board.json",
+            "in-proj-001",
+            Some("companies/indigo/projects/flagship/prd.json"),
+            "completed",
+        )
+        .unwrap();
+
+        let board: serde_json::Value =
+            serde_json::from_slice(&fs::read(&board_path).unwrap()).unwrap();
+        assert_eq!(board["external_sync_marker"], true);
+        let project = board["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|project| project["id"] == "in-proj-001")
+            .unwrap();
+        assert_eq!(project["status"], "completed");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn story_pass_write_preserves_an_external_edit_before_commit() {
+        let root = make_fixture_tree();
+        let prd_path = root.join("companies/indigo/projects/flagship/prd.json");
+        set_project_write_before_commit_hook({
+            let prd_path = prd_path.clone();
+            move || {
+                let mut prd: serde_json::Value =
+                    serde_json::from_slice(&fs::read(&prd_path).unwrap()).unwrap();
+                prd["metadata"]["externalSync"] = serde_json::Value::Bool(true);
+                fs::write(&prd_path, serde_json::to_vec_pretty(&prd).unwrap()).unwrap();
+            }
+        });
+
+        write_story_passes(
+            &root,
+            "companies/indigo/projects/flagship/prd.json",
+            "US-003",
+            true,
+        )
+        .unwrap();
+
+        let prd: serde_json::Value = serde_json::from_slice(&fs::read(&prd_path).unwrap()).unwrap();
+        assert_eq!(prd["metadata"]["externalSync"], true);
+        let story = prd["userStories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|story| story["id"] == "US-003")
+            .unwrap();
+        assert_eq!(story["passes"], true);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn project_write_preserves_an_external_edit_at_the_exchange_boundary() {
+        let root = make_fixture_tree();
+        let board_path = root.join("companies/indigo/board.json");
+        set_project_write_at_exchange_hook({
+            let board_path = board_path.clone();
+            move || {
+                let mut board: serde_json::Value =
+                    serde_json::from_slice(&fs::read(&board_path).unwrap()).unwrap();
+                board["exchange_boundary_marker"] = serde_json::Value::Bool(true);
+                fs::write(&board_path, serde_json::to_vec_pretty(&board).unwrap()).unwrap();
+            }
+        });
+
+        write_project_status(
+            &root,
+            "companies/indigo/board.json",
+            "in-proj-001",
+            Some("companies/indigo/projects/flagship/prd.json"),
+            "completed",
+        )
+        .unwrap();
+
+        let board: serde_json::Value =
+            serde_json::from_slice(&fs::read(&board_path).unwrap()).unwrap();
+        assert_eq!(
+            board["exchange_boundary_marker"], true,
+            "an edit arriving after the last preflight read must be merged, not overwritten"
+        );
+        let project = board["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|project| project["id"] == "in-proj-001")
+            .unwrap();
+        assert_eq!(project["status"], "completed");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn project_write_preserves_an_unparseable_displaced_version_for_recovery() {
+        let root = make_fixture_tree();
+        let board_path = root.join("companies/indigo/board.json");
+        let external_bytes = b"{ external writer left incomplete JSON".to_vec();
+        set_project_write_at_exchange_hook({
+            let board_path = board_path.clone();
+            let external_bytes = external_bytes.clone();
+            move || fs::write(&board_path, external_bytes).unwrap()
+        });
+
+        let error = write_project_status(
+            &root,
+            "companies/indigo/board.json",
+            "in-proj-001",
+            Some("companies/indigo/projects/flagship/prd.json"),
+            "completed",
+        )
+        .unwrap_err();
+
+        assert!(
+            error.contains("newest displaced version was preserved at"),
+            "the recovery location must be actionable: {error}"
+        );
+        let preserved = fs::read_dir(board_path.parent().unwrap())
+            .unwrap()
+            .filter_map(Result::ok)
+            .find(|entry| fs::read(entry.path()).ok().as_deref() == Some(external_bytes.as_slice()))
+            .expect("the exact unparseable external version must remain on disk");
+        assert_ne!(preserved.path(), board_path);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn project_readers_reject_cross_company_and_outside_symlink_aliases() {
+        use std::os::unix::fs::symlink;
+
+        let root = make_fixture_tree();
+        let outside = root.with_extension("outside");
+        fs::create_dir_all(root.join("companies/active/projects/alias")).unwrap();
+        fs::create_dir_all(root.join("companies/active/projects/readme")).unwrap();
+        fs::create_dir_all(root.join("companies/pending/projects/secret")).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+
+        fs::write(
+            root.join("companies/pending/projects/secret/prd.json"),
+            r#"{"name":"Pending secret","userStories":[]}"#,
+        )
+        .unwrap();
+        symlink(
+            root.join("companies/pending/projects/secret/prd.json"),
+            root.join("companies/active/projects/alias/prd.json"),
+        )
+        .unwrap();
+        assert!(
+            read_project_prd(&root, "companies/active/projects/alias/prd.json").is_err(),
+            "an active-company alias must not read a different company's PRD",
+        );
+
+        fs::write(
+            root.join("companies/active/projects/readme/prd.json"),
+            r#"{"name":"Safe","userStories":[]}"#,
+        )
+        .unwrap();
+        fs::write(outside.join("README.md"), "outside secret").unwrap();
+        symlink(
+            outside.join("README.md"),
+            root.join("companies/active/projects/readme/README.md"),
+        )
+        .unwrap();
+        assert!(
+            read_project_readme(&root, "companies/active/projects/readme/prd.json",).is_err(),
+            "a README alias must not escape the HQ root",
+        );
+
+        fs::create_dir_all(root.join("companies/active")).unwrap();
+        fs::create_dir_all(root.join("companies/pending")).unwrap();
+        fs::write(
+            root.join("companies/pending/board.json"),
+            r#"{"objectives":[{"id":"secret"}],"initiatives":[]}"#,
+        )
+        .unwrap();
+        symlink(
+            root.join("companies/pending/board.json"),
+            root.join("companies/active/board.json"),
+        )
+        .unwrap();
+        assert!(
+            read_company_goals(&root, "active").is_err(),
+            "goals must not follow a board alias into another company",
+        );
+
+        fs::write(outside.join("crm-projection.json"), r#"{"secret":true}"#).unwrap();
+        symlink(
+            outside.join("crm-projection.json"),
+            root.join("companies/active/crm-projection.json"),
+        )
+        .unwrap();
+        assert!(
+            read_crm_projection(&root, "active").is_err(),
+            "CRM must not follow a projection alias outside HQ",
+        );
+
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn project_writers_refuse_symlink_targets_and_symlinked_parents() {
+        use std::os::unix::fs::symlink;
+
+        let root = make_fixture_tree();
+        let outside = root.with_extension("writer-outside");
+        fs::create_dir_all(root.join("companies/active/projects")).unwrap();
+        fs::create_dir_all(outside.join("project")).unwrap();
+
+        let outside_board = outside.join("board.json");
+        fs::write(
+            &outside_board,
+            r#"{"projects":[{"id":"p1","status":"active"}]}"#,
+        )
+        .unwrap();
+        symlink(&outside_board, root.join("companies/active/board.json")).unwrap();
+        let board_before = fs::read(&outside_board).unwrap();
+        assert!(
+            write_project_status(&root, "companies/active/board.json", "p1", None, "complete",)
+                .is_err(),
+            "a board.json symlink must be refused",
+        );
+        assert_eq!(
+            fs::read(&outside_board).unwrap(),
+            board_before,
+            "the external board must not be mutated",
+        );
+
+        fs::write(
+            outside.join("project/prd.json"),
+            r#"{"userStories":[{"id":"US-001","passes":false}]}"#,
+        )
+        .unwrap();
+        symlink(
+            outside.join("project"),
+            root.join("companies/active/projects/escape"),
+        )
+        .unwrap();
+        let prd_before = fs::read(outside.join("project/prd.json")).unwrap();
+        assert!(
+            write_story_passes(
+                &root,
+                "companies/active/projects/escape/prd.json",
+                "US-001",
+                true,
+            )
+            .is_err(),
+            "a symlinked parent directory must be refused",
+        );
+        assert_eq!(
+            fs::read(outside.join("project/prd.json")).unwrap(),
+            prd_before,
+            "the external PRD must not be mutated",
+        );
+
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scoped_project_scan_filters_before_following_company_aliases() {
+        use std::collections::HashSet;
+        use std::os::unix::fs::symlink;
+
+        let root = make_fixture_tree();
+        symlink(
+            root.join("companies/acme"),
+            root.join("companies/acme-alias"),
+        )
+        .unwrap();
+
+        let allowed = HashSet::from(["indigo".to_string(), "acme-alias".to_string()]);
+        let projects = scan_local_projects_for_companies(&root, &allowed);
+
+        assert!(
+            projects.iter().all(|project| project.company == "indigo"),
+            "only the canonical authorized company should be scanned: {projects:#?}",
+        );
+        assert!(
+            projects
+                .iter()
+                .all(|project| project.company != "acme-alias"),
+            "a company-directory alias must not create a second tenant identity",
         );
 
         let _ = fs::remove_dir_all(&root);

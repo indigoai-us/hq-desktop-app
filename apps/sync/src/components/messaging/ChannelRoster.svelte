@@ -235,8 +235,8 @@
     border-radius: var(--radius-popover);
     border: 1px solid var(--pop-border);
     background: var(--pop-bg);
-    backdrop-filter: var(--glass-filter, blur(28px) saturate(0%));
-    -webkit-backdrop-filter: var(--glass-filter, blur(28px) saturate(0%));
+    backdrop-filter: var(--glass-filter, blur(36px) saturate(118%) contrast(102%));
+    -webkit-backdrop-filter: var(--glass-filter, blur(36px) saturate(118%) contrast(102%));
     box-shadow: var(--pop-shadow), inset 0 1px 0 var(--pop-highlight);
     color: var(--pop-text);
     overflow: hidden;

@@ -32,15 +32,19 @@ export function useCompanySummary(options: { slug: () => string | null; enabled?
   // in-flight `get_company_summary` before its (correct) counts could commit —
   // leaving the UI stuck on zeros while the backend returned real data.
   //
-  // Fix: only react to an actual slug-VALUE change. A monotonic request id (not
-  // an effect-cleanup flag) discards out-of-order completions when the slug
-  // changes rapidly, so the loaded summary sticks across identity churn.
+  // Fix: react to an actual slug-VALUE change or to sync being re-enabled. A
+  // monotonic request id (not an effect-cleanup flag) discards out-of-order
+  // completions when the slug changes rapidly, so the loaded summary sticks
+  // across identity churn.
   let activeSlug: string | null = null;
+  let wasEnabled = true;
   let requestId = 0;
 
   $effect(() => {
     const slug = options.slug();
     const enabled = options.enabled?.() ?? true;
+    const reenabled = enabled && !wasEnabled;
+    wasEnabled = enabled;
     // Subscribe to background cache refreshes (interval / focus / invalidate).
     const revision = companyStore.revision;
     if (!enabled) {
@@ -51,7 +55,7 @@ export function useCompanySummary(options: { slug: () => string | null; enabled?
       loading = false;
       return;
     }
-    if (slug === activeSlug) {
+    if (slug === activeSlug && !reenabled) {
       // Same company — apply any newer cache entry from a background poll.
       if (slug) {
         const warm = companyStore.summary(slug);
@@ -75,7 +79,7 @@ export function useCompanySummary(options: { slug: () => string | null; enabled?
     summary = warm ?? emptyCompanySummary();
     loading = warm === null;
 
-    void companyStore.loadSummary(slug)
+    void companyStore.loadSummary(slug, reenabled)
       .then((result) => {
         if (myRequest === requestId) {
           summary = result;

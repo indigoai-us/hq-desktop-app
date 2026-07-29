@@ -1,13 +1,18 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
-  import { buildNotificationGroups, type Item } from '../lib/notificationGroups';
+  import {
+    buildNotificationGroups,
+    type DayGroup,
+    type Item,
+  } from '../lib/notificationGroups';
   import {
     loadNotificationTimeline,
     getLastReadTs,
     markAllNotificationsRead,
     isUnread,
     countUnread,
+    broadcastNotificationUnreadCount,
   } from '../lib/notificationFeedData';
   import NotificationRow from './NotificationRow.svelte';
 
@@ -56,9 +61,15 @@
   let items = $state<Item[]>([]);
   let lastReadTs = $state(getLastReadTs());
   let updateInstalling = $state(false);
-  let updateError = $state<string | null>(null);
+  let updateActionGeneration = $state(0);
   let partialError = $state<string | null>(null);
   let loadGeneration = 0;
+  const INITIAL_RENDER_LIMIT = { compact: 32, comfortable: 60 } as const;
+  let renderLimit = $state(0);
+
+  $effect(() => {
+    renderLimit = Math.max(renderLimit, INITIAL_RENDER_LIMIT[density]);
+  });
 
   /** Session-local dismiss — no backend dismiss API. Keys are item ids or
    *  cluster keys filtered out of the rendered groups. */
@@ -80,6 +91,9 @@
       const next = await loadNotificationTimeline(undefined, { includeUpdates });
       if (generation !== loadGeneration) return;
       items = next.items;
+      // Preserve an expanded chronology across event-driven refreshes. Group
+      // slicing naturally clamps the visible result if the new set is smaller.
+      renderLimit = Math.max(renderLimit, INITIAL_RENDER_LIMIT[density]);
       const missingSources: string[] = [];
       if (next.historyState === 'failed') missingSources.push('cloud notifications');
       if (next.activityState === 'failed') missingSources.push('local activity');
@@ -98,7 +112,6 @@
     } catch (e) {
       if (generation !== loadGeneration) return;
       error = typeof e === 'string' ? e : 'Could not load notifications.';
-      items = [];
       onloadstatechange?.(false);
     } finally {
       if (generation === loadGeneration) loading = false;
@@ -115,19 +128,69 @@
     lastReadTs = markAllNotificationsRead();
   }
 
-  // Day grouping + per-(company, actor) collapse of new-file rows lives in the
-  // pure, unit-tested notificationGroups module. Session-dismissed ids are
-  // stripped before grouping so clusters recompute without dismissed members.
-  // Unread count uses the same visible set so dismiss keeps the badge in sync.
-  const visibleItems = $derived(items.filter((it) => !dismissed.has(it.id)));
-  const groups = $derived(buildNotificationGroups(visibleItems));
+  // Group the complete chronology before applying the render cap. Otherwise a
+  // large workspace sync is split into misleading partial clusters at each
+  // page boundary. Cluster dismissals are filtered at the row layer, while
+  // individual dismissals are removed before grouping so surviving clusters
+  // recompute their counts.
+  const undismissedItems = $derived(items.filter((it) => !dismissed.has(it.id)));
+  const allGroups = $derived(buildNotificationGroups(undismissedItems));
+  const visibleGroups = $derived.by((): DayGroup[] =>
+    allGroups
+      .map((group) => ({
+        ...group,
+        rows: group.rows.filter(
+          (row) => row.type === 'single' || !dismissed.has(row.key),
+        ),
+      }))
+      .filter((group) => group.rows.length > 0),
+  );
+  const visibleItems = $derived.by(() =>
+    visibleGroups.flatMap((group) =>
+      group.rows.flatMap((row) =>
+        row.type === 'single' ? [row.item] : row.items,
+      ),
+    ),
+  );
+  const totalVisibleRows = $derived(
+    visibleGroups.reduce((total, group) => total + group.rows.length, 0),
+  );
+  const groups = $derived.by((): DayGroup[] => {
+    let rowsLeft = renderLimit;
+    const page: DayGroup[] = [];
+    for (const group of visibleGroups) {
+      if (rowsLeft <= 0) break;
+      const rows = group.rows.slice(0, rowsLeft);
+      if (rows.length > 0) page.push({ ...group, rows });
+      rowsLeft -= rows.length;
+    }
+    return page;
+  });
+  const renderedRowCount = $derived(
+    groups.reduce((total, group) => total + group.rows.length, 0),
+  );
+  const remainingCount = $derived(
+    Math.max(0, totalVisibleRows - renderedRowCount),
+  );
   const unreadCount = $derived(countUnread(visibleItems, lastReadTs));
   $effect(() => {
     onunreadchange?.(unreadCount);
+    broadcastNotificationUnreadCount(unreadCount);
   });
   $effect(() => {
     onitemschange?.(visibleItems.length);
   });
+
+  function showMore(): void {
+    renderLimit = Math.min(
+      totalVisibleRows,
+      renderLimit + INITIAL_RENDER_LIMIT[density],
+    );
+  }
+
+  function retryLoad(): void {
+    void load();
+  }
 
   async function openDm(it: Item): Promise<void> {
     if (!it.dm) return;
@@ -135,6 +198,7 @@
       await invoke('open_dm_detail', { event: it.dm });
     } catch (e) {
       console.error('notification-feed: open_dm_detail failed', e);
+      throw e;
     }
   }
 
@@ -144,6 +208,7 @@
       await invoke('open_share_detail', { events: [it.share] });
     } catch (e) {
       console.error('notification-feed: open_share_detail failed', e);
+      throw e;
     }
   }
 
@@ -155,6 +220,7 @@
       });
     } catch (e) {
       console.error('notification-feed: open activity failed', e);
+      throw e;
     }
   }
 
@@ -163,18 +229,20 @@
       await invoke('open_desktop_alt_window', { route: 'settings:updates' });
     } catch (e) {
       console.error('notification-feed: open updates failed', e);
+      throw e;
     }
   }
 
   async function installUpdate(): Promise<void> {
     if (updateInstalling) return;
     updateInstalling = true;
-    updateError = null;
     try {
       await invoke('install_update');
     } catch (e) {
       console.error('notification-feed: install_update failed', e);
-      updateError = 'Update failed. Open Updates in Settings and try again.';
+      // NotificationRow owns the localized error + Retry affordance. Re-throw
+      // without also creating a competing feed-level alert.
+      throw e;
     } finally {
       updateInstalling = false;
     }
@@ -183,11 +251,16 @@
   /** Mirror DmDetail's composer: real send_dm to the message author. */
   async function replyDm(it: Item, text: string): Promise<void> {
     const peer = it.dm?.fromPersonUid;
-    if (!peer || !text.trim()) return;
+    if (!peer || !text.trim()) {
+      throw new Error('Quick reply is missing a recipient or message');
+    }
     try {
       await invoke('send_dm', { toPersonUid: peer, body: text.trim() });
     } catch (e) {
       console.error('notification-feed: send_dm failed', e);
+      // NotificationRow owns the draft. Propagate the failure so it keeps the
+      // text visible and offers a retry instead of reporting false success.
+      throw e;
     }
   }
 
@@ -216,8 +289,10 @@
       }, 400);
     };
     const scheduleUpdateCleared = () => {
-      updateError = null;
       updateInstalling = false;
+      // Remount the updater row so its localized retry error cannot outlive
+      // authoritative native state saying the pending update has cleared.
+      updateActionGeneration += 1;
       scheduleReload();
     };
 
@@ -256,16 +331,41 @@
 </script>
 
 <div class="notif-feed" class:notif-comfortable={density === 'comfortable'} data-density={density}>
-  {#if updateError}
-    <p class="notif-status notif-error" role="alert">{updateError}</p>
+  {#if loading && items.length > 0}
+    <div class="notif-refreshing" role="status" aria-live="polite">
+      <span class="notif-spinner" aria-hidden="true"></span>
+      Refreshing notifications
+    </div>
   {/if}
   {#if partialError}
-    <p class="notif-status notif-partial-error" role="alert">{partialError}</p>
+    <div class="notif-status notif-partial-error" role="alert">
+      <span>{partialError}</span>
+      <button type="button" onclick={retryLoad}>Retry</button>
+    </div>
+  {/if}
+  {#if error && items.length > 0}
+    <div class="notif-status notif-partial-error" role="alert">
+      <span>Could not refresh notifications. Showing the last available activity.</span>
+      <button type="button" onclick={retryLoad}>Retry</button>
+    </div>
   {/if}
   {#if loading && items.length === 0}
-    <p class="notif-status">Loading…</p>
-  {:else if error}
-    <p class="notif-status notif-error" role="alert">{error}</p>
+    <div class="notif-skeleton" aria-label="Loading notifications" role="status">
+      {#each Array(5) as _}
+        <div class="notif-skeleton-row">
+          <span class="notif-skeleton-icon"></span>
+          <span class="notif-skeleton-copy">
+            <span></span>
+            <span></span>
+          </span>
+        </div>
+      {/each}
+    </div>
+  {:else if error && items.length === 0}
+    <div class="notif-status notif-error" role="alert">
+      <span>{error}</span>
+      <button type="button" onclick={retryLoad}>Retry</button>
+    </div>
   {:else if items.length === 0}
     {#if !hideEmptyState}
       <div class="notif-empty" role="status">
@@ -297,57 +397,71 @@
                 <NotificationRow
                   type="message"
                   actor={it.actor}
+                  sourceLabel="Direct message"
                   text={it.dm.body}
                   ts={it.ts}
                   unread={isUnread(it, lastReadTs)}
+                  comfortable={density === 'comfortable'}
                   onopen={() => openDm(it)}
-                  onreply={(text) => void replyDm(it, text)}
-                  onreact={(emoji) => void reactDm(it, emoji)}
+                  onreply={(text) => replyDm(it, text)}
+                  onreact={(emoji) => reactDm(it, emoji)}
                 />
               {:else if it.kind === 'share'}
                 <NotificationRow
                   type="share"
                   actor={it.actor}
+                  sourceLabel="Shared file"
                   text={it.summary}
                   ts={it.ts}
                   unread={isUnread(it, lastReadTs)}
+                  comfortable={density === 'comfortable'}
                   onopen={() => openShare(it)}
                   ondismiss={() => dismiss(it.id)}
                 />
               {:else if it.kind === 'new-file'}
                 <NotificationRow
                   type="sync"
+                  actor={it.file?.company}
+                  sourceLabel="Workspace activity"
                   text={it.summary}
                   ts={it.ts}
                   unread={isUnread(it, lastReadTs)}
+                  comfortable={density === 'comfortable'}
                   onopen={
                     it.file?.company
-                      ? () => void openCompanyActivity(it.file!.company)
+                      ? () => openCompanyActivity(it.file!.company)
                       : undefined
                   }
                   ondismiss={() => dismiss(it.id)}
                 />
               {:else if it.kind === 'update' && it.update}
-                <NotificationRow
-                  type="system"
-                  actor="HQ"
-                  text={it.summary}
-                  ts={it.ts}
-                  unread={isUnread(it, lastReadTs)}
-                  onopen={() => void openUpdateSettings()}
-                  onaction={() => void installUpdate()}
-                  actionLabel={updateInstalling ? 'Updating…' : 'Update now'}
-                  actionDisabled={updateInstalling}
-                />
+                {#key `${it.id}:${updateActionGeneration}`}
+                  <NotificationRow
+                    type="system"
+                    actor="HQ"
+                    sourceLabel="App update"
+                    text={it.summary}
+                    ts={it.ts}
+                    unread={isUnread(it, lastReadTs)}
+                    comfortable={density === 'comfortable'}
+                    onopen={() => openUpdateSettings()}
+                    onaction={() => installUpdate()}
+                    actionLabel={updateInstalling ? 'Updating…' : 'Update now'}
+                    actionDisabled={updateInstalling}
+                  />
+                {/key}
               {/if}
-            {:else if !dismissed.has(row.key)}
+            {:else}
               <NotificationRow
                 type="sync"
+                actor={row.company}
+                sourceLabel="Workspace activity"
                 text={`${row.count} new files in ${row.company}`}
                 ts={row.latestTs}
                 unread={row.items.some((it) => isUnread(it, lastReadTs))}
+                comfortable={density === 'comfortable'}
                 onopen={
-                  row.company ? () => void openCompanyActivity(row.company) : undefined
+                  row.company ? () => openCompanyActivity(row.company) : undefined
                 }
                 ondismiss={() => dismiss(row.key)}
               />
@@ -356,6 +470,16 @@
         </div>
       </div>
     {/each}
+    {#if remainingCount > 0}
+      <button
+        class="notif-show-more"
+        type="button"
+        data-testid="notification-show-more"
+        onclick={showMore}
+      >
+        Show {Math.min(INITIAL_RENDER_LIMIT[density], remainingCount)} more
+      </button>
+    {/if}
   {/if}
 </div>
 
@@ -376,8 +500,48 @@
   .notif-error {
     color: var(--popover-danger);
   }
+  .notif-error button,
+  .notif-partial-error button {
+    margin-left: 8px;
+    padding: 2px 0;
+    border: 0;
+    border-bottom: 1px solid currentColor;
+    border-radius: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-weight: 650;
+    cursor: pointer;
+    transition: transform 120ms var(--ease-out);
+  }
+  .notif-error button:active {
+    transform: scale(0.97);
+  }
   .notif-partial-error {
     padding-block: 8px;
+    color: var(--popover-text-muted);
+  }
+  .notif-partial-error button:active {
+    transform: scale(0.97);
+  }
+
+  .notif-refreshing {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    min-height: 28px;
+    color: var(--popover-text-muted);
+    font-size: 11px;
+  }
+
+  .notif-spinner {
+    width: 10px;
+    height: 10px;
+    border: 1.5px solid color-mix(in srgb, currentColor 28%, transparent);
+    border-top-color: currentColor;
+    border-radius: 50%;
+    animation: notif-spin 0.7s linear infinite;
   }
 
   .notif-empty {
@@ -387,6 +551,56 @@
     gap: 8px;
     padding: 28px 16px;
     color: var(--popover-text-muted);
+  }
+
+  .notif-skeleton {
+    display: flex;
+    flex-direction: column;
+    padding: 4px;
+  }
+
+  .notif-skeleton-row {
+    min-height: 56px;
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    padding: 8px;
+    border-bottom: 1px solid var(--popover-divider);
+    box-sizing: border-box;
+  }
+
+  .notif-skeleton-icon,
+  .notif-skeleton-copy span {
+    display: block;
+    background: var(--popover-action-hover);
+    animation: notif-pulse 1s linear infinite alternate;
+  }
+
+  .notif-skeleton-icon {
+    width: 30px;
+    height: 30px;
+    flex: 0 0 30px;
+    border-radius: 8px;
+  }
+
+  .notif-skeleton-copy {
+    min-width: 0;
+    flex: 1;
+    display: grid;
+    gap: 6px;
+  }
+
+  .notif-skeleton-copy span {
+    height: 7px;
+    border-radius: 2px;
+  }
+
+  .notif-skeleton-copy span:first-child {
+    width: 48%;
+  }
+
+  .notif-skeleton-copy span:last-child {
+    width: 82%;
   }
   .notif-empty-bell {
     opacity: 0.7;
@@ -409,7 +623,12 @@
   .notif-day-label {
     position: sticky;
     top: 0;
-    background: var(--popover-bg);
+    background:
+      linear-gradient(
+        to bottom,
+        color-mix(in srgb, var(--popover-bg) 82%, transparent) 68%,
+        transparent
+      );
     color: var(--popover-text-muted);
     font-size: 11px;
     font-weight: 600;
@@ -449,5 +668,66 @@
     font-size: 14px;
     color: var(--popover-text-heading, var(--popover-text));
     font-weight: 600;
+  }
+
+  .notif-show-more {
+    align-self: center;
+    margin: 10px 0 4px;
+    padding: 7px 10px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--popover-text-muted);
+    font: inherit;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: transform 120ms var(--ease-out);
+  }
+
+  .notif-show-more:hover,
+  .notif-show-more:focus-visible {
+    background: var(--popover-action-hover);
+    color: var(--popover-text);
+    outline: none;
+  }
+
+  .notif-show-more:active {
+    transform: scale(0.97);
+  }
+
+  @keyframes notif-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  @keyframes notif-pulse {
+    from { opacity: 0.42; }
+    to { opacity: 0.88; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .notif-error button,
+    .notif-partial-error button,
+    .notif-show-more {
+      transition: none;
+    }
+
+    .notif-spinner,
+    .notif-skeleton-icon,
+    .notif-skeleton-copy span {
+      animation: none;
+    }
+
+    .notif-spinner {
+      animation-duration: 1.4s;
+    }
+
+    .notif-error button:active,
+    .notif-partial-error button:active,
+    .notif-show-more:active {
+      transform: none;
+    }
   }
 </style>

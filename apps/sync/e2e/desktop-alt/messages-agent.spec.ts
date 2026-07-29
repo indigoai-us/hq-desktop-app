@@ -7,9 +7,18 @@ describe('desktop-alt Messages agent handoff', () => {
   it('routes the Your agent conversation to Claude Code instead of a fake DM', () => {
     expect(shell).toContain("import { buildClaudeCodeUrl } from '../../lib/claude-code-link'");
     expect(shell).toContain("import { hqSkillMarkdownLink } from '../../lib/hq-skill-link'");
-    expect(shell).toContain('function sendAgentPrompt(text: string)');
+    expect(shell).toContain('async function sendAgentPrompt(');
+    expect(shell).toContain('peer: Contact');
+    expect(shell).toContain('generation: number');
     expect(shell).toContain("hqSkillMarkdownLink('startwork', hqFolderPath)");
-    expect(shell).toContain('buildClaudeCodeUrl({ folder: hqFolderPath, prompt })');
+    // Capture the selected peer, send generation, and workspace before the
+    // async handoff so a late completion cannot mutate a newer conversation.
+    expect(shell).toContain('const peer = selected');
+    expect(shell).toContain('const generation = ++dmSendGeneration');
+    expect(shell).toContain('const folder = hqFolderPath');
+    expect(shell).toContain('buildClaudeCodeUrl({ folder, prompt })');
+    expect(shell).toContain('await sendAgentPrompt(text, peer, generation)');
+    expect(shell).toContain('if (!dmSendIsCurrent(peer, generation)) return');
     expect(shell).toContain("invoke('open_claude_code_link', { url })");
     expect(shell).toContain("personUid: 'agent:self'");
     const oldAbsoluteSkillPath = [

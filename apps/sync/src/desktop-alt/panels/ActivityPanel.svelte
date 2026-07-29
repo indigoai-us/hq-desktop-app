@@ -96,6 +96,13 @@
   const filteredRecent = $derived(activity.recent.filter((entry) => matchesDirection(entry, activityDirection)));
   const recentGroups = $derived(groupRecentActivity(filteredRecent));
   const recentCount = $derived(filteredRecent.length);
+  const recentSummaryLabel = $derived.by(() => {
+    if (recentCount > 0) return `${recentCount} of ${activity.stats.files7}`;
+    if (activity.stats.files7 > 0) {
+      return `${activity.stats.files7} ${activity.stats.files7 === 1 ? 'file' : 'files'} in summary`;
+    }
+    return 'No files';
+  });
 
   $effect(() => {
     const token = reloadToken;
@@ -115,7 +122,7 @@
     const warm = companyStore.activity(slug);
     if (warm != null) {
       activity = normalizeActivity(warm as Partial<CompanyActivity>);
-      loading = false;
+      loading = force;
     } else {
       activity = emptyActivity();
       loading = true;
@@ -230,6 +237,9 @@
   }
 
   function retry() {
+    if (loading) return;
+    error = null;
+    loading = true;
     reloadToken += 1;
   }
 </script>
@@ -248,7 +258,9 @@
         <strong>Activity unavailable</strong>
         <span>{error}</span>
       </div>
-      <button type="button" onclick={retry}>Retry</button>
+      <button type="button" onclick={retry} disabled={loading} aria-busy={loading}>
+        {loading ? 'Retrying…' : 'Retry'}
+      </button>
     </div>
   {/if}
 
@@ -350,7 +362,7 @@
     <header class="card-header">
       <div class="recent-heading">
         <h3 id="recent-files-title">Recent files</h3>
-        <span>{recentCount} of {activity.stats.files7}</span>
+        <span>{recentSummaryLabel}</span>
       </div>
       <div class="direction-toggle" role="group" aria-label="Activity direction">
         <button
@@ -417,7 +429,14 @@
         {/each}
       </div>
     {:else}
-      <div class="empty-state">No activity yet</div>
+      <div class="empty-state">
+        {#if activity.stats.files7 > 0}
+          Recent file details are unavailable. The summary reports {activity.stats.files7}
+          changed {activity.stats.files7 === 1 ? 'file' : 'files'} in the last 14 days.
+        {:else}
+          No file activity yet
+        {/if}
+      </div>
     {/if}
   </section>
 </section>

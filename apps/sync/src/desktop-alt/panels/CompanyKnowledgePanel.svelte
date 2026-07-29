@@ -24,7 +24,6 @@
   let { slug }: Props = $props();
 
   let selectedPath = $state<string | null>(null);
-  let hqFolderPath = $state('');
   let searchQuery = $state('');
 
   const rootPath = $derived(`companies/${slug}/knowledge`);
@@ -34,22 +33,6 @@
     slug;
     selectedPath = null;
     searchQuery = '';
-  });
-
-  // HQ root for open/reveal/copy actions — fetched once on mount.
-  $effect(() => {
-    let cancelled = false;
-    void invoke<{ hqFolderPath?: string }>('get_config')
-      .then((config) => {
-        if (!cancelled) hqFolderPath = config.hqFolderPath ?? '';
-      })
-      .catch((err) => {
-        console.error('CompanyKnowledgePanel get_config failed:', err);
-        if (!cancelled) hqFolderPath = '';
-      });
-    return () => {
-      cancelled = true;
-    };
   });
 
   /** True iff `path` sits at or under this company's knowledge subtree. The
@@ -151,7 +134,7 @@
       >
         Knowledge
       </button>
-      <FilePreviewPane path={selectedPath} {hqFolderPath} />
+      <FilePreviewPane path={selectedPath} />
     {:else}
       <div class="knowledge-empty" data-testid="company-knowledge-empty">
         <span class="knowledge-empty-title">Select a knowledge file</span>

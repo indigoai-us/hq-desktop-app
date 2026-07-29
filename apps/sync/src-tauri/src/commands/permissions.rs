@@ -276,23 +276,92 @@ pub async fn open_meeting_permissions_window(app: tauri::AppHandle) -> Result<()
     let icon = tauri::image::Image::from_bytes(HQ_ICON_PNG)
         .map_err(|e| format!("load window icon: {e}"))?;
 
-    tauri::WebviewWindowBuilder::new(&app, LABEL, tauri::WebviewUrl::App("index.html".into()))
-        .title("Meeting Permissions")
-        // Sized so all four permission rows + footer fit without the inner
-        // scrollbar appearing (`.perm-list` overflow:auto). Width gives the
-        // `.perm-reason` text a 480px column so the SDK rationale doesn't wrap
-        // onto a third line per row, which made the wizard look cramped.
-        .inner_size(640.0, 700.0)
-        .min_inner_size(560.0, 600.0)
-        .resizable(true)
-        .decorations(true)
-        .icon(icon)
-        .map_err(|e| format!("attach window icon: {e}"))?
-        .visible(true)
-        .build()
-        .map_err(|e| e.to_string())?;
+    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+    let mut builder =
+        tauri::WebviewWindowBuilder::new(&app, LABEL, tauri::WebviewUrl::App("index.html".into()))
+            .title("Meeting Permissions")
+            // Sized so all four permission rows + footer fit without the inner
+            // scrollbar appearing (`.perm-list` overflow:auto). Width gives the
+            // `.perm-reason` text a 480px column so the SDK rationale doesn't wrap
+            // onto a third line per row, which made the wizard look cramped.
+            .inner_size(640.0, 700.0)
+            .min_inner_size(560.0, 600.0)
+            .resizable(true)
+            .decorations(true)
+            .icon(icon)
+            .map_err(|e| format!("attach window icon: {e}"))?
+            // Hide the transparent webview until its first complete frame so the
+            // user never sees the pre-material system-gray under-page layer.
+            .visible(false);
+
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder
+            .transparent(true)
+            .on_page_load(|loaded_window, payload| {
+                if payload.event() != tauri::webview::PageLoadEvent::Finished {
+                    return;
+                }
+                let window = loaded_window;
+                let dispatcher = window.clone();
+                let _ = dispatcher.run_on_main_thread(move || {
+                    crate::glass::refresh_liquid_glass_window(&window);
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                });
+            });
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        builder = builder.visible(true);
+    }
+
+    let window = builder.build().map_err(|e| e.to_string())?;
+
+    #[cfg(target_os = "macos")]
+    {
+        // WKWebView otherwise paints an opaque system color above AppKit's
+        // material even when the Tauri window itself is transparent.
+        let _ = window.with_webview(|webview| {
+            use objc2::{class, msg_send, runtime::AnyObject};
+            // SAFETY: with_webview executes on AppKit's main thread and the
+            // selectors below are public WKWebView/AppKit APIs.
+            unsafe {
+                let wk = webview.inner() as *mut AnyObject;
+                let clear: *mut AnyObject = msg_send![class!(NSColor), clearColor];
+                let _: () = msg_send![wk, setUnderPageBackgroundColor: clear];
+                let _: () = msg_send![
+                    wk,
+                    setValue: clear,
+                    forKey: permissions_ns_string("backgroundColor")
+                ];
+            }
+        });
+
+        let glass_window = window.clone();
+        let _ = app.run_on_main_thread(move || {
+            crate::glass::apply_compact_communications_glass_window(&glass_window);
+        });
+    }
 
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn permissions_ns_string(value: &str) -> *mut objc2::runtime::AnyObject {
+    use objc2::{class, msg_send};
+    // SAFETY: bytes remain valid for the duration of the NSString creation;
+    // the autoreleased object is retained by the immediately following KVC.
+    unsafe {
+        let bytes = value.as_ptr() as *const std::ffi::c_void;
+        msg_send![
+            class!(NSString),
+            stringWithBytes: bytes,
+            length: value.len(),
+            encoding: 4_usize
+        ]
+    }
 }
 
 /// Open System Settings to the privacy pane for `permission`.

@@ -18,6 +18,7 @@ const read = (p: string) => readFileSync(resolve(process.cwd(), p), 'utf8');
 const normalize = (s: string) => s.replace(/\s+/g, ' ');
 
 const popover = read('src/components/Popover.svelte');
+const app = read('src/App.svelte');
 const feed = read('src/components/NotificationFeed.svelte');
 const settingsPage = read('src/desktop-alt/pages/SettingsPage.svelte');
 
@@ -46,6 +47,50 @@ describe('notifications-first popover (feed-folded system notices)', () => {
     expect(p).toContain('const systemNoticeCount = $derived(');
     expect(p).toContain('const notifBadge = $derived(unreadCount + systemNoticeCount)');
     expect(p).toContain("{notifBadge > 99 ? '99+' : notifBadge}");
+  });
+
+  it('hydrates updater history when no explicit updater prop is present and routes details to Updates', () => {
+    const p = normalize(popover);
+    expect(p).toContain('includeUpdates={!updateAvailable}');
+    expect(p).toContain("route: 'settings:updates'");
+    expect(p).toContain('let openingUpdates = $state(false)');
+    expect(p).toContain('aria-busy={openingUpdates}');
+    expect(p).toContain("{openingUpdates ? 'Opening…' : 'View updates'}");
+  });
+
+  it('restores a flat Messages entry with the aggregate DM, request, and channel count', () => {
+    const p = normalize(popover);
+    const a = normalize(app);
+
+    expect(p).toContain('data-testid="popover-open-messages"');
+    expect(p).toContain("invoke('open_communications_window')");
+    expect(p).toContain('let openingMessages = $state(false)');
+    expect(p).toContain('disabled={openingMessages}');
+    expect(p).toContain('aria-busy={openingMessages}');
+    expect(p).toContain('{messagesUnreadCount > 99 ? \'99+\' : messagesUnreadCount}');
+
+    expect(a).toContain('const messagesUnreadCount = $derived(');
+    expect(a).toContain('Math.max(0, unreadSummary.unreadDms)');
+    expect(a).toContain('Math.max(0, unreadSummary.pendingRequests)');
+    expect(a).toContain('Math.max(0, unreadSummary.channelUnread)');
+    expect(a).toContain("invoke<ChannelsUnreadResponse | null>('list_channels')");
+    expect(a).toContain("'channel:new-message'");
+    expect(a).toContain("'channel:updated'");
+    expect(a).toContain('{messagesUnreadCount}');
+
+    expect(popover).toMatch(
+      /\.mbp-messages-entry\s*\{[\s\S]*?border-radius:\s*0;[\s\S]*?background:\s*transparent;/,
+    );
+  });
+
+  it('preserves a readable actor/message/timestamp lane at the native compact width', () => {
+    expect(popover).toContain('.mbp-sec :global(.nr)');
+    expect(popover).toContain('font-size: 12.5px');
+    expect(popover).toContain('.mbp-sec :global(.nr-meta-type)');
+    expect(popover).toMatch(
+      /\.mbp-sec :global\(\.nr-meta-type\)\s*\{\s*display:\s*none;/,
+    );
+    expect(popover).toContain('-webkit-line-clamp: 2');
   });
 
   it('keeps the detailed conflict resolver as its own card, mutually exclusive with the summary row', () => {

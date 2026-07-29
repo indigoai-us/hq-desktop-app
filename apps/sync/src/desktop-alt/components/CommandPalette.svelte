@@ -25,6 +25,7 @@
   let highlightedIndex = $state(0);
   let inputEl: HTMLInputElement | null = $state(null);
   let paletteEl: HTMLDivElement | null = $state(null);
+  let executingId = $state<string | null>(null);
 
   function fuzzyMatch(value: string, needle: string): boolean {
     const haystack = value.toLowerCase();
@@ -84,7 +85,11 @@
   });
 
   async function execute(command: CommandPaletteItem | undefined) {
-    if (!command) return;
+    if (!command || executingId) return;
+    executingId = command.id;
+    // Give the selected row an immediate pending state before a native invoke
+    // or navigation can block/replace this surface.
+    await tick();
     // Always close the palette, even if the action throws — otherwise a single
     // failing command left the palette stuck open and modal over the whole app.
     try {
@@ -125,7 +130,7 @@
       return;
     }
 
-    if (event.key === 'Escape') {
+    if (event.key === 'Escape' && !executingId) {
       event.preventDefault();
       onclose();
       return;
@@ -156,13 +161,20 @@
   }
 </script>
 
-<div class="command-backdrop" role="presentation" onclick={onclose}>
+<div
+  class="command-backdrop"
+  role="presentation"
+  onclick={() => {
+    if (!executingId) onclose();
+  }}
+>
   <div
     bind:this={paletteEl}
     class="command-palette"
     role="dialog"
     aria-modal="true"
     aria-labelledby="command-palette-title"
+    aria-busy={!!executingId}
     tabindex="-1"
     onkeydown={handleKeydown}
     onclick={(event) => event.stopPropagation()}
@@ -197,6 +209,8 @@
                 type="button"
                 role="option"
                 aria-selected={index === highlightedIndex}
+                aria-busy={executingId === command.id}
+                disabled={!!executingId}
                 onfocus={() => {
                   highlightedIndex = index;
                 }}
@@ -207,9 +221,11 @@
               >
                 <span class="command-copy">
                   <strong>{command.label}</strong>
-                  <span>{command.detail}</span>
+                  <span>{executingId === command.id ? 'Opening…' : command.detail}</span>
                 </span>
-                {#if command.shortcut}
+                {#if executingId === command.id}
+                  <span class="command-spinner" aria-hidden="true"></span>
+                {:else if command.shortcut}
                   <kbd>{command.shortcut}</kbd>
                 {/if}
               </button>
@@ -232,7 +248,7 @@
     align-items: flex-start;
     justify-content: center;
     padding: 72px 20px 20px;
-    background: color-mix(in srgb, var(--v4-ground) 48%, transparent);
+    background: rgba(0, 0, 0, 0.14);
   }
 
   .command-palette {
@@ -241,8 +257,8 @@
     border: 1px solid var(--pop-border);
     border-radius: var(--v4-radius-popover);
     background: var(--v4-popover, var(--pop-bg));
-    backdrop-filter: var(--v4-glass-filter);
-    -webkit-backdrop-filter: var(--v4-glass-filter);
+    backdrop-filter: var(--v4-glass-filter-popover, var(--v4-glass-filter));
+    -webkit-backdrop-filter: var(--v4-glass-filter-popover, var(--v4-glass-filter));
     box-shadow: var(--v4-shadow-popover, var(--pop-shadow)), inset 0 1px 0 var(--v4-glass-highlight);
     color: var(--pop-text);
     transform-origin: top center;
@@ -345,6 +361,14 @@
       box-shadow 120ms ease;
   }
 
+  .command-list button:disabled {
+    cursor: wait;
+  }
+
+  .command-list button:disabled:not([aria-busy='true']) {
+    opacity: 0.48;
+  }
+
   .command-list button.highlighted,
   .command-list button:focus-visible {
     background: var(--pop-hover);
@@ -387,6 +411,16 @@
       border-color 120ms ease,
       background-color 120ms ease,
       color 120ms ease;
+  }
+
+  .command-spinner {
+    width: 13px;
+    height: 13px;
+    flex: 0 0 auto;
+    border: 1.5px solid var(--pop-border);
+    border-top-color: var(--pop-text);
+    border-radius: 50%;
+    animation: command-spin 700ms linear infinite;
   }
 
   .command-list button.highlighted kbd {
@@ -438,6 +472,18 @@
     from {
       opacity: 0;
       transform: translateY(-8px) scale(0.985);
+    }
+  }
+
+  @keyframes command-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .command-spinner {
+      animation-duration: 1400ms;
     }
   }
 </style>

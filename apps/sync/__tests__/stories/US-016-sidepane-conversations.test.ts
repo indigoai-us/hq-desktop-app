@@ -145,6 +145,14 @@ describe('US-016: side pane conversation grouping', () => {
       expect(rowSource).toContain('data-type={type}');
       expect(rowSource).toContain("t === 'message'");
       expect(rowSource).toContain("t === 'share'");
+      expect(rowSource).toContain(
+        'border: 1px solid var(--popover-divider, var(--pop-border));',
+      );
+      expect(rowSource).toContain('background: var(--popover-action-hover);');
+      expect(rowSource).toContain('color: var(--popover-text);');
+      expect(rowSource).not.toMatch(
+        /\.nr-count\s*\{[\s\S]*?background:\s*var\(--popover-unread\)[\s\S]*?color:\s*white/,
+      );
     });
   });
 

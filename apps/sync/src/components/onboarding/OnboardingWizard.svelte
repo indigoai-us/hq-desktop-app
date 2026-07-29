@@ -195,6 +195,8 @@
   let commandCopied = $state(false);
   let pathCopied = $state(false);
   let importPromptCopied = $state(false);
+  let copyingAction = $state<'path' | 'command' | 'import' | null>(null);
+  let finishing = $state(false);
 
   const displayPath = $derived(
     resolvedPath ? friendlyPath(resolvedPath, homeDir) : 'Resolving ~/hq...',
@@ -958,15 +960,43 @@
   }
 
   async function handleCopyCommand() {
-    await copyText(manualCommand, (value) => (commandCopied = value));
+    if (copyingAction) return;
+    copyingAction = 'command';
+    try {
+      await copyText(manualCommand, (value) => (commandCopied = value));
+    } finally {
+      copyingAction = null;
+    }
   }
 
   async function handleCopyPath() {
-    await copyText(installPath ?? '~/hq', (value) => (pathCopied = value));
+    if (copyingAction) return;
+    copyingAction = 'path';
+    try {
+      await copyText(installPath ?? '~/hq', (value) => (pathCopied = value));
+    } finally {
+      copyingAction = null;
+    }
   }
 
   async function handleCopyImportPrompt() {
-    await copyText('/import-claude', (value) => (importPromptCopied = value));
+    if (copyingAction) return;
+    copyingAction = 'import';
+    try {
+      await copyText('/import-claude', (value) => (importPromptCopied = value));
+    } finally {
+      copyingAction = null;
+    }
+  }
+
+  async function handleFinish(): Promise<void> {
+    if (finishing) return;
+    finishing = true;
+    try {
+      await onfinish?.();
+    } finally {
+      finishing = false;
+    }
   }
 
   async function handleRevealFolder() {
@@ -1769,12 +1799,38 @@
           {/if}
           {#if manualToolsVisible}
             <div class="manual-tools" aria-label="Manual setup options">
-              <button type="button" onclick={handleRevealFolder} disabled={revealingFolder}>
+              <button
+                type="button"
+                onclick={handleRevealFolder}
+                disabled={revealingFolder}
+                aria-busy={revealingFolder}
+              >
                 {revealingFolder ? 'Revealing…' : 'Reveal folder'}
               </button>
-              <button type="button" onclick={handleCopyPath}>{pathCopied ? 'Path copied' : 'Copy path'}</button>
-              <button type="button" onclick={handleCopyCommand}>{commandCopied ? 'Command copied' : 'Copy command'}</button>
-              <button type="button" onclick={handleCopyImportPrompt}>{importPromptCopied ? 'Import copied' : 'Copy /import-claude'}</button>
+              <button
+                type="button"
+                onclick={handleCopyPath}
+                disabled={copyingAction !== null}
+                aria-busy={copyingAction === 'path'}
+              >
+                {copyingAction === 'path' ? 'Copying…' : pathCopied ? 'Path copied' : 'Copy path'}
+              </button>
+              <button
+                type="button"
+                onclick={handleCopyCommand}
+                disabled={copyingAction !== null}
+                aria-busy={copyingAction === 'command'}
+              >
+                {copyingAction === 'command' ? 'Copying…' : commandCopied ? 'Command copied' : 'Copy command'}
+              </button>
+              <button
+                type="button"
+                onclick={handleCopyImportPrompt}
+                disabled={copyingAction !== null}
+                aria-busy={copyingAction === 'import'}
+              >
+                {copyingAction === 'import' ? 'Copying…' : importPromptCopied ? 'Import copied' : 'Copy /import-claude'}
+              </button>
             </div>
           {/if}
           <div class="btns">
@@ -1850,7 +1906,7 @@
         >
           <h2 class="h" id="onboarding-title-build">Open a fresh session and build</h2>
           <p class="body">Start with “/brainstorm” to get going. Working on a specific company? Send “/startwork acme” and describe what you want. Then it’s the same rhythm every time: start work, handoff, repeat.</p>
-          <div class="btns split"><button class="btn btn-secondary" type="button" onclick={() => goBackTo(8)}>Back</button><button class="btn btn-primary" type="button" onclick={() => void onfinish?.()}>Done</button></div>
+          <div class="btns split"><button class="btn btn-secondary" type="button" onclick={() => goBackTo(8)}>Back</button><button class="btn btn-primary" type="button" onclick={handleFinish} disabled={finishing} aria-busy={finishing}>{finishing ? 'Finishing…' : 'Done'}</button></div>
         </section>
       </div>
     </div>

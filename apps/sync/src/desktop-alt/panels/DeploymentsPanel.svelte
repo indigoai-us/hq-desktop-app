@@ -52,7 +52,7 @@
     const warm = companyStore.deployments(slug);
     if (warm) {
       deployments = warm.map(normalizeDeployment);
-      loading = false;
+      loading = force;
     } else {
       deployments = [];
       loading = true;
@@ -116,6 +116,9 @@
   }
 
   function retry() {
+    if (loading) return;
+    error = null;
+    loading = true;
     reloadToken += 1;
   }
 
@@ -134,9 +137,15 @@
     // Single shared agent-handoff path (get_config → buildClaudeCodeUrl →
     // open_claude_code_link → clipboard fallback) used by every hq-* desktop
     // action; surfaces the plain-language result inline.
-    const result = await openAgentWorkflow(prompt, 'deploy workflow');
-    actionMessage = result.message;
-    deployBusy = false;
+    try {
+      const result = await openAgentWorkflow(prompt, 'deploy workflow');
+      actionMessage = result.message;
+    } catch (err) {
+      console.error('open deploy workflow failed:', err);
+      actionMessage = 'Could not open the deploy workflow.';
+    } finally {
+      deployBusy = false;
+    }
   }
 </script>
 
@@ -169,6 +178,7 @@
         type="button"
         onclick={() => void openDeployWorkflow()}
         disabled={deployBusy || !resourcesEnabled}
+        aria-busy={deployBusy}
         title="Deploy with HQ"
       >
         {deployBusy ? 'Opening…' : 'Deploy'}
@@ -202,7 +212,9 @@
         <strong>Deployments unavailable</strong>
         <span>{error}</span>
       </div>
-      <button type="button" onclick={retry}>Retry</button>
+      <button type="button" onclick={retry} disabled={loading} aria-busy={loading}>
+        {loading ? 'Retrying…' : 'Retry'}
+      </button>
     </div>
   {/if}
 

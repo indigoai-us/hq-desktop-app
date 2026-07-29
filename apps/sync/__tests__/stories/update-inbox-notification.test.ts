@@ -34,6 +34,7 @@ let listeners: Map<string, Listener>;
 let unlisteners: Map<string, ReturnType<typeof vi.fn>>;
 let installShouldFail: boolean;
 let historyShouldFail: boolean;
+let openShouldFail: boolean;
 let storageValues: Map<string, string>;
 
 function mountFeed(onloadstatechange?: (loaded: boolean) => void): HTMLElement {
@@ -69,6 +70,7 @@ beforeEach(() => {
   unlisteners = new Map();
   installShouldFail = false;
   historyShouldFail = false;
+  openShouldFail = false;
   storageValues = new Map();
   vi.stubGlobal('localStorage', {
     get length() {
@@ -96,7 +98,10 @@ beforeEach(() => {
     }
     if (command === 'get_activity_log') return [];
     if (command === 'get_pending_update') return pendingUpdate;
-    if (command === 'open_desktop_alt_window') return undefined;
+    if (command === 'open_desktop_alt_window') {
+      if (openShouldFail) throw new Error('window route unavailable');
+      return undefined;
+    }
     if (command === 'install_update') {
       if (installShouldFail) throw new Error('signature rejected');
       return undefined;
@@ -186,14 +191,37 @@ describe('Inbox app-update notification', () => {
     await vi.waitFor(() => {
       flushSync();
       expect(host.querySelector('[role="alert"]')?.textContent).toContain(
-        'Update failed',
+        'Couldn’t complete that action.',
       );
     });
+    expect(row.querySelector<HTMLButtonElement>('.nr-retry')).not.toBeNull();
     expect(row.querySelector<HTMLButtonElement>('.nr-open')!.disabled).toBe(false);
 
     listeners.get('update:cleared')!({ payload: undefined });
     flushSync();
     expect(host.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it('keeps failed notification navigation retryable in the row', async () => {
+    openShouldFail = true;
+    mountFeed();
+    const row = await waitForUpdateRow();
+    row.querySelector<HTMLButtonElement>('.nr-primary-action')!.click();
+
+    await vi.waitFor(() => {
+      flushSync();
+      expect(row.querySelector('[role="alert"]')?.textContent).toContain(
+        'Couldn’t open this item.',
+      );
+    });
+    expect(row.querySelector<HTMLButtonElement>('.nr-primary-action')!.disabled).toBe(false);
+
+    openShouldFail = false;
+    row.querySelector<HTMLButtonElement>('.nr-retry')!.click();
+    await vi.waitFor(() => {
+      flushSync();
+      expect(row.querySelector('[role="alert"]')).toBeNull();
+    });
   });
 
   it('keeps a trusted update visible when cloud notification history fails', async () => {

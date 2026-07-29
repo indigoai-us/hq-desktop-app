@@ -58,7 +58,7 @@ describe('US-011: Deployments panel reads hq-deploy subdomains via Tauri command
     expect(panel).toContain('if (!slug || !resourcesEnabled)');
     expect(panel).toContain('void companyStore.loadDeployments(slug');
     expect(panel).toContain('return () => { cancelled = true; };');
-    expect(panel).toContain('function retry() { reloadToken += 1; }');
+    expect(panel).toContain('function retry() { if (loading) return; error = null; loading = true; reloadToken += 1; }');
     expect(panel).toContain("console.error('get_company_deployments failed:', err)");
     expect(tauriMain).toContain('commands::desktop_alt::get_company_deployments');
   });
@@ -168,7 +168,10 @@ describe('US-011: Deployments panel reads hq-deploy subdomains via Tauri command
     const row = normalize(deploymentRow);
 
     expect(row).toContain("import { open } from '@tauri-apps/plugin-shell';");
-    expect(row).toContain('async function openDeployment() { await open(`https://${deployment.url}`); }');
+    expect(row).toContain('async function openDeployment() { if (opening) return; opening = true; openError = false;');
+    expect(row).toContain('await open(`https://${deployment.url}`)');
+    expect(row).toContain('disabled={opening}');
+    expect(row).toContain('aria-busy={opening}');
     expect(row).toContain('title="Open in browser"');
     expect(row).toContain('onclick={openDeployment}');
     expect(desktopAltCapability).toContain('"shell:allow-open"');
@@ -180,7 +183,7 @@ describe('US-011: Deployments panel reads hq-deploy subdomains via Tauri command
     expect(panel).toContain('{#if error}');
     expect(panel).toContain('<div class="deployments-error" role="alert">');
     expect(panel).toContain('<strong>Deployments unavailable</strong>');
-    expect(panel).toContain('<button type="button" onclick={retry}>Retry</button>');
+    expect(panel).toContain('<button type="button" onclick={retry} disabled={loading} aria-busy={loading}> {loading ? \'Retrying…\' : \'Retry\'} </button>');
     expect(panel).toContain('<section class="deployments-card" aria-labelledby="deployments-list-title" aria-busy={loading}>');
     expect(panel).toContain('<div class="deployment-skeleton" aria-label="Loading deployments">');
     expect(panel).toContain('{:else if deployments.length > 0}');

@@ -15,11 +15,22 @@
    */
   interface Props {
     card: HomeCardModel;
-    onaction?: (id: string) => void;
+    onaction?: (id: string) => void | Promise<void>;
     children?: Snippet;
   }
 
   let { card, onaction, children }: Props = $props();
+  let pendingActionId = $state<string | null>(null);
+
+  async function handleAction(id: string): Promise<void> {
+    if (!onaction || pendingActionId) return;
+    pendingActionId = id;
+    try {
+      await onaction(id);
+    } finally {
+      pendingActionId = null;
+    }
+  }
 </script>
 
 <div class={`v4-card ${card.tone}`} data-testid="needs-you-card">
@@ -36,10 +47,11 @@
           <button
             type="button"
             class={`v4-card-action ${action.kind}`}
-            disabled={action.disabled}
-            onclick={() => onaction?.(action.id)}
+            disabled={action.disabled || pendingActionId !== null}
+            aria-busy={pendingActionId === action.id}
+            onclick={() => void handleAction(action.id)}
           >
-            {action.label}
+            {pendingActionId === action.id ? `${action.label}…` : action.label}
           </button>
         {/each}
       </div>

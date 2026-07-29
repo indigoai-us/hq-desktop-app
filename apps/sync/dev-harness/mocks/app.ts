@@ -1,6 +1,6 @@
 // Mock of @tauri-apps/api/app for the preview harness.
 export async function getVersion(): Promise<string> {
-  return '0.2.0-beta.4';
+  return __APP_VERSION__;
 }
 
 export async function getName(): Promise<string> {

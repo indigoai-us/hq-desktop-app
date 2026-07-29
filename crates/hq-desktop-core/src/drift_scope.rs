@@ -71,8 +71,7 @@ pub fn persist_core_drift_baseline(
         std::fs::remove_file(&path)
             .map_err(|e| format!("replace existing baseline {}: {e}", path.display()))?;
     }
-    std::fs::rename(&temp, &path)
-        .map_err(|e| format!("commit baseline {}: {e}", path.display()))
+    std::fs::rename(&temp, &path).map_err(|e| format!("commit baseline {}: {e}", path.display()))
 }
 
 pub fn load_core_drift_baseline(
@@ -443,13 +442,16 @@ fn is_probable_text(content: &[u8]) -> bool {
 /// SHA is [`drift_blob_sha`] (EOL-normalized for text). Size is the raw
 /// on-disk length so the UI still reflects what the user has locally.
 ///
-/// Symlink files are skipped; symlink directories are not descended
+/// Declared runtime/materialization exclusions are pruned before descent, so a
+/// large ignored tree such as `.claude/worktrees/` never incurs file reads or
+/// hashing. Symlink files are skipped; symlink directories are not descended
 /// (`follow_links(false)`), matching Unix pack wire-ups.
 pub fn walk_local_under_scope(
     hq_folder: &Path,
     locked: &[String],
 ) -> BTreeMap<String, (String, u64)> {
     let mut out = BTreeMap::new();
+    let excluded = excluded_scope_paths_for(hq_folder);
     for scope in locked {
         let (rel, is_dir) = if let Some(prefix) = scope.strip_suffix('/') {
             (prefix.to_string(), true)
@@ -464,6 +466,13 @@ pub fn walk_local_under_scope(
             for entry in walkdir::WalkDir::new(&abs)
                 .follow_links(false)
                 .into_iter()
+                .filter_entry(|entry| {
+                    let Ok(rel_path) = entry.path().strip_prefix(hq_folder) else {
+                        return false;
+                    };
+                    let rel_str = rel_path.to_string_lossy().replace('\\', "/");
+                    !path_in_excluded_scope(&rel_str, &excluded)
+                })
                 .filter_map(|e| e.ok())
             {
                 if !entry.file_type().is_file() {
@@ -486,6 +495,9 @@ pub fn walk_local_under_scope(
                 out.insert(rel_str, (sha, size));
             }
         } else {
+            if path_in_excluded_scope(&rel, &excluded) {
+                continue;
+            }
             // Leaf scope. Use `symlink_metadata` (NOT `is_file`, which
             // follows symlinks) so master-sync-generated symlinks like
             // `AGENTS.md → .claude/CLAUDE.md` are skipped instead of
@@ -686,12 +698,10 @@ contributes:
         )
         .unwrap();
         assert_eq!(loaded.normalized_blobs, blobs);
-        assert!(load_core_drift_baseline(
-            tmp.path(),
-            "indigoai-us/hq-core",
-            "0123456789abcdef"
-        )
-        .is_none());
+        assert!(
+            load_core_drift_baseline(tmp.path(), "indigoai-us/hq-core", "0123456789abcdef")
+                .is_none()
+        );
     }
 
     #[test]
@@ -699,16 +709,14 @@ contributes:
         let tmp = tempfile::tempdir().unwrap();
         let mut first = BTreeMap::new();
         first.insert("core/policies/example.md".into(), git_blob_sha(b"hello\n"));
-        persist_core_drift_baseline(
-            tmp.path(),
-            "indigoai-us/hq-core",
-            "0123456789abcdef",
-            first,
-        )
-        .unwrap();
+        persist_core_drift_baseline(tmp.path(), "indigoai-us/hq-core", "0123456789abcdef", first)
+            .unwrap();
 
         let mut second = BTreeMap::new();
-        second.insert("core/policies/example.md".into(), git_blob_sha(b"goodbye\n"));
+        second.insert(
+            "core/policies/example.md".into(),
+            git_blob_sha(b"goodbye\n"),
+        );
         persist_core_drift_baseline(
             tmp.path(),
             "indigoai-us/hq-core",
@@ -761,6 +769,27 @@ contributes:
         assert_eq!(
             map.get("core/policies/example.md").unwrap().1,
             b"---\nid: x\n---\nbody\n".len() as u64
+        );
+    }
+
+    #[test]
+    fn walk_local_prunes_excluded_runtime_trees() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        test_write(root, ".claude/CLAUDE.md", b"tracked instructions\n");
+        test_write(
+            root,
+            ".claude/worktrees/agent-123/repo/large-runtime-file.txt",
+            b"runtime worktree content\n",
+        );
+
+        let locked = vec![".claude/".to_string()];
+        let map = walk_local_under_scope(root, &locked);
+
+        assert!(map.contains_key(".claude/CLAUDE.md"));
+        assert!(
+            !map.contains_key(".claude/worktrees/agent-123/repo/large-runtime-file.txt"),
+            "excluded runtime worktrees must be pruned before drift hashing"
         );
     }
 }

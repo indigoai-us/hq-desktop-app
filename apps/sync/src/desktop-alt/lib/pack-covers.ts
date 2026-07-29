@@ -51,6 +51,17 @@ export function coverForListing(listing: MarketplaceListing): string | null {
 }
 
 /**
+ * Pick one of six restrained palettes for a generated fallback cover.
+ *
+ * Hosted and bundled artwork always keeps its original colors. Listings without
+ * artwork use this stable slug-derived palette so their fallback identity does
+ * not jump when search results reorder.
+ */
+export function coverTone(listing: MarketplaceListing): number {
+  return hashString(listing.slug || listing.name || listing.id || '') % 6;
+}
+
+/**
  * A deterministic, branded fallback for a listing with no cover art: neutral
  * theme-token proportions derived from the slug plus the pack's leading initial.
  * Pure + DOM-free so it is unit-testable.

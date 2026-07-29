@@ -331,7 +331,11 @@
 
   {#if isAdmin !== true}
     <!-- AC3: default-deny. Unknown (still checking) and non-admin both lock. -->
-    <section class="section locked" data-testid="moderation-locked">
+    <section
+      class="section locked"
+      data-testid="moderation-locked"
+      aria-busy={isAdmin === null}
+    >
       <h3 class="section-title">Locked</h3>
       <p class="locked-text">
         {#if isAdmin === null}
@@ -364,6 +368,7 @@
         aria-selected={subView === 'requests'}
         data-testid="moderation-subnav-requests"
         onclick={showRequests}
+        aria-busy={appsLoading}
       >
         Requests
       </button>
@@ -380,6 +385,7 @@
           data-testid="moderation-refresh"
           onclick={loadQueue}
           disabled={queueLoading}
+          aria-busy={queueLoading}
         >
           {queueLoading ? 'Loading…' : 'Refresh'}
         </button>
@@ -535,6 +541,7 @@
                 ? 'Approve and publish'
                 : 'Acknowledge the instruction review to enable Approve'}
               onclick={() => decide('approve')}
+              aria-busy={deciding}
             >
               {deciding ? 'Working…' : 'Approve'}
             </button>
@@ -557,6 +564,7 @@
             data-testid="moderation-reject"
             disabled={deciding || rejectNote.trim().length === 0}
             onclick={() => decide('reject')}
+            aria-busy={deciding}
           >
             {deciding ? 'Working…' : 'Reject'}
           </button>
@@ -661,6 +669,7 @@
               data-testid="moderation-confirm-yank"
               disabled={yanking}
               onclick={runYank}
+              aria-busy={yanking}
             >
               {yanking ? 'Yanking…' : 'Confirm yank'}
             </button>
@@ -703,6 +712,7 @@
           data-testid="moderation-requests-refresh"
           onclick={loadApplications}
           disabled={appsLoading}
+          aria-busy={appsLoading}
         >
           {appsLoading ? 'Loading…' : 'Refresh'}
         </button>
@@ -774,6 +784,7 @@
                   data-testid="moderation-request-approve"
                   disabled={appDeciding === app.applicationId}
                   onclick={() => decideApplication(app, 'approve')}
+                  aria-busy={appDeciding === app.applicationId}
                 >
                   {appDeciding === app.applicationId ? 'Working…' : 'Approve'}
                 </button>
@@ -784,6 +795,7 @@
                   disabled={appDeciding === app.applicationId ||
                     (denyNotes[app.applicationId] ?? '').trim().length === 0}
                   onclick={() => decideApplication(app, 'deny')}
+                  aria-busy={appDeciding === app.applicationId}
                 >
                   {appDeciding === app.applicationId ? 'Working…' : 'Deny'}
                 </button>
@@ -939,6 +951,15 @@
     display: flex;
     gap: var(--v4-space-2);
     margin-top: var(--v4-space-1);
+    justify-content: flex-end;
+  }
+
+  .request-actions .approve,
+  .request-actions .reject {
+    flex: 0 0 auto;
+    min-width: 92px;
+    height: 32px;
+    padding: 0 var(--v4-space-3);
   }
 
   .locked-text {
@@ -1438,7 +1459,7 @@
     width: 6px;
     height: 6px;
     border-radius: 50%;
-    background: var(--v4-warn);
+    background: var(--v4-error);
     content: '';
   }
 
@@ -1454,6 +1475,10 @@
   .yank-button:disabled {
     opacity: 0.5;
     cursor: default;
+  }
+
+  .yank-button:disabled::before {
+    background: var(--v4-text-3);
   }
 
   .confirm-row {
@@ -1496,7 +1521,7 @@
     width: 6px;
     height: 6px;
     border-radius: 50%;
-    background: var(--v4-warn);
+    background: var(--v4-error);
     content: '';
   }
 

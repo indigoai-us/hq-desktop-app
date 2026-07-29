@@ -43,6 +43,7 @@ use std::sync::{Mutex, OnceLock};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 use crate::commands::cognito;
+use crate::commands::messages::Channel;
 use crate::commands::sync::resolve_vault_api_url;
 use crate::util::client_info::build_client;
 use crate::util::logfile::log;
@@ -92,20 +93,106 @@ pub const EVENT_THREAD_NEW_REPLY: &str = "thread:new-reply";
 pub const EVENT_MESSAGE_REACTION: &str = "message:reaction";
 
 /// Label of the DM detail window (mirrors share-detail).
-/// Also the unified "Inbox" quick window (side pane + detail canvas) used by
-/// Open Inbox / widget menu — same shell, not the full desktop-alt app.
+/// Also the unified Messages quick window (side pane + detail canvas) used by
+/// the widget and notification entry points — not the full desktop-alt app.
 const DM_DETAIL_LABEL: &str = "dm-detail";
 
-/// Default size for the two-pane Inbox / DM detail window (side pane + canvas).
-const INBOX_WINDOW_W: f64 = 820.0;
-const INBOX_WINDOW_H: f64 = 640.0;
+/// Default size for the two-pane Messages / DM detail window.
+const COMMUNICATIONS_WINDOW_W: f64 = 820.0;
+const COMMUNICATIONS_WINDOW_H: f64 = 640.0;
 
 /// Tauri event the DM detail window listens for to receive its event payload.
 const EVENT_DM_DETAIL_EVENT: &str = "dm:detail-event";
 
-/// Open the window as Inbox (no forced DM) — clears the main canvas selection
+/// Open the window as Messages (no forced DM) — clears the main canvas selection
 /// so the user picks a conversation from the side pane.
 const EVENT_DM_INBOX_OPEN: &str = "dm:inbox-open";
+
+/// A channel notification can open the same singleton compact communications
+/// window as DMs. Cold opens stash the target until the renderer's ready
+/// handshake; genuinely warm opens take it immediately and emit to the mounted
+/// listener. Merely having built the native window does not make its renderer
+/// ready — there is a real gap before `DmDetail.svelte` mounts its listener.
+const EVENT_COMMUNICATIONS_CHANNEL_OPEN: &str = "communications:open-channel";
+
+enum CommunicationsOpenTarget {
+    Inbox,
+    Channel(Channel),
+}
+
+#[derive(Default)]
+struct CommunicationsWindowState {
+    renderer_ready: bool,
+    pending_target: Option<CommunicationsOpenTarget>,
+}
+
+impl CommunicationsWindowState {
+    fn queue(&mut self, channel: Option<Channel>) {
+        self.pending_target = Some(match channel {
+            Some(channel) => CommunicationsOpenTarget::Channel(channel),
+            None => CommunicationsOpenTarget::Inbox,
+        });
+    }
+
+    fn take_if_ready(&mut self) -> Option<CommunicationsOpenTarget> {
+        self.renderer_ready
+            .then(|| self.pending_target.take())
+            .flatten()
+    }
+
+    fn mark_ready_and_take(&mut self) -> Option<CommunicationsOpenTarget> {
+        self.renderer_ready = true;
+        self.pending_target.take()
+    }
+}
+
+static COMMUNICATIONS_WINDOW_STATE: OnceLock<Mutex<CommunicationsWindowState>> = OnceLock::new();
+
+fn communications_window_state() -> &'static Mutex<CommunicationsWindowState> {
+    COMMUNICATIONS_WINDOW_STATE.get_or_init(|| Mutex::new(CommunicationsWindowState::default()))
+}
+
+fn set_pending_communications_channel(channel: Option<Channel>) {
+    communications_window_state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .queue(channel);
+}
+
+fn clear_pending_communications_target() {
+    communications_window_state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .pending_target = None;
+}
+
+fn mark_communications_renderer_not_ready() {
+    communications_window_state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .renderer_ready = false;
+}
+
+fn take_communications_target_if_ready() -> Option<CommunicationsOpenTarget> {
+    communications_window_state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take_if_ready()
+}
+
+fn mark_communications_renderer_ready_and_take() -> Option<CommunicationsOpenTarget> {
+    communications_window_state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .mark_ready_and_take()
+}
+
+fn communications_renderer_ready() -> bool {
+    communications_window_state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .renderer_ready
+}
 
 // ── Wire types ─────────────────────────────────────────────────────────────────
 
@@ -1839,48 +1926,136 @@ async fn post_ack(event_ids: Vec<String>) {
     }
 }
 
-// ── DM detail / Inbox quick window ──────────────────────────────────────────────
+// ── DM detail / Messages quick window ───────────────────────────────────────────
 //
 // Mirrors `open_share_detail` / `share_detail_window_ready` in share_notify.rs:
 // stash the event in managed state, create the window hidden, and let the
 // renderer's ready-handshake (`dm_detail_window_ready`) pull the payload + show
 // the window — avoids the race where emit_to fires before the JS listener mounts.
 //
-// The same webview is the product "Inbox" surface: left side pane (conversations)
-// + right canvas (thread / share detail). Prefer this over `open_desktop_alt_window`
-// for Open Inbox / notification Open — desktop-alt is the full Company OS shell.
+// The same webview is the compact Messages surface: left side pane
+// (conversations) + right canvas (thread / share detail). Desktop-alt remains
+// the full Company OS shell.
 
-fn ensure_inbox_window(app: &AppHandle) -> Result<bool, String> {
-    // Returns true if the window already existed (caller should show/focus/emit).
+fn ensure_communications_window(app: &AppHandle) -> Result<bool, String> {
+    // Existing does not necessarily mean ready: a newly-built webview has a
+    // startup gap before its listener + ready handshake complete.
     if app.get_webview_window(DM_DETAIL_LABEL).is_some() {
         return Ok(true);
     }
 
-    tauri::WebviewWindowBuilder::new(
+    mark_communications_renderer_not_ready();
+
+    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+    let mut builder = tauri::WebviewWindowBuilder::new(
         app,
         DM_DETAIL_LABEL,
         tauri::WebviewUrl::App("index.html".into()),
     )
-    .title("Inbox")
-    .inner_size(INBOX_WINDOW_W, INBOX_WINDOW_H)
+    .title("Messages")
+    .inner_size(COMMUNICATIONS_WINDOW_W, COMMUNICATIONS_WINDOW_H)
     .min_inner_size(640.0, 480.0)
     .resizable(true)
     .decorations(true)
-    .visible(false)
-    .build()
-    .map_err(|e| e.to_string())?;
+    .visible(false);
+
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder
+            // The webview must be transparent for the native Liquid Glass
+            // backing to sample the desktop and windows behind Messages.
+            //
+            // Keep the standard decorated titlebar here. Overlay would place
+            // traffic lights over DmDetail's 20px-aligned custom heading; that
+            // component intentionally has no macOS-only safe-area gutter.
+            // AppKit's titlebar remains native material, while the content view
+            // receives the compact communications glass below.
+            .transparent(true)
+            .on_page_load(|loaded_window, payload| {
+                if payload.event() != tauri::webview::PageLoadEvent::Finished {
+                    return;
+                }
+                let window = loaded_window;
+                let dispatcher = window.clone();
+                let _ = dispatcher.run_on_main_thread(move || {
+                    crate::glass::refresh_liquid_glass_window(&window);
+                });
+            });
+    }
+
+    let window = builder.build().map_err(|e| e.to_string())?;
+
+    #[cfg(target_os = "macos")]
+    {
+        // WKWebView retains an opaque system under-page color even on a
+        // transparent Tauri window unless it is explicitly cleared.
+        let _ = window.with_webview(|webview| {
+            use objc2::{class, msg_send, runtime::AnyObject};
+            // SAFETY: with_webview runs on AppKit's main thread; the selectors
+            // are public WebKit/AppKit APIs and the WKWebView is live.
+            unsafe {
+                let wk = webview.inner() as *mut AnyObject;
+                let clear: *mut AnyObject = msg_send![class!(NSColor), clearColor];
+                let _: () = msg_send![wk, setUnderPageBackgroundColor: clear];
+                let _: () = msg_send![
+                    wk,
+                    setValue: clear,
+                    forKey: communications_ns_string("backgroundColor")
+                ];
+            }
+        });
+
+        let glass_window = window.clone();
+        let _ = app.run_on_main_thread(move || {
+            crate::glass::apply_compact_communications_glass_window(&glass_window);
+        });
+    }
 
     Ok(false)
 }
 
-fn show_focus_inbox_window(app: &AppHandle) -> Result<(), String> {
+/// Build an autoreleased NSString for WKWebView background-color KVC.
+#[cfg(target_os = "macos")]
+fn communications_ns_string(value: &str) -> *mut objc2::runtime::AnyObject {
+    use objc2::{class, msg_send};
+    // SAFETY: the bytes are valid UTF-8 for the duration of this message, and
+    // NSString returns an autoreleased object retained by the KVC call.
+    unsafe {
+        let bytes = value.as_ptr() as *const std::ffi::c_void;
+        msg_send![
+            class!(NSString),
+            stringWithBytes: bytes,
+            length: value.len(),
+            encoding: 4usize
+        ]
+    }
+}
+
+fn show_focus_communications_window(app: &AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window(DM_DETAIL_LABEL) {
-        let _ = window.set_size(tauri::LogicalSize::new(INBOX_WINDOW_W, INBOX_WINDOW_H));
-        let _ = window.set_title("Inbox");
+        let _ = window.set_size(tauri::LogicalSize::new(
+            COMMUNICATIONS_WINDOW_W,
+            COMMUNICATIONS_WINDOW_H,
+        ));
+        let _ = window.set_title("Messages");
         window.show().map_err(|e| e.to_string())?;
         window.set_focus().map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+fn emit_communications_target(
+    app: &AppHandle,
+    target: CommunicationsOpenTarget,
+) -> Result<(), String> {
+    match target {
+        CommunicationsOpenTarget::Channel(channel) => app
+            .emit_to(DM_DETAIL_LABEL, EVENT_COMMUNICATIONS_CHANNEL_OPEN, channel)
+            .map_err(|e| e.to_string()),
+        CommunicationsOpenTarget::Inbox => app
+            .emit_to(DM_DETAIL_LABEL, EVENT_DM_INBOX_OPEN, serde_json::json!({}))
+            .map_err(|e| e.to_string()),
+    }
 }
 
 /// Open Inbox as a typed desktop destination (US-004 WindowRouter).
@@ -1898,20 +2073,60 @@ pub async fn open_inbox_window(app: AppHandle) -> Result<(), String> {
     .await
 }
 
+/// Open the dedicated mini communications window without forcing a specific DM.
+///
+/// This explicit route intentionally coexists with [`open_inbox_window`]:
+/// Inbox remains a full-desktop destination, while compact messaging entry
+/// points can opt into the reusable two-pane `dm-detail` surface. A cold window
+/// is shown by [`dm_detail_window_ready`] after its listeners mount; a warm
+/// window is focused immediately and reset to its conversation chooser.
+#[tauri::command]
+pub async fn open_communications_window(
+    app: AppHandle,
+    channel: Option<Channel>,
+) -> Result<(), String> {
+    log(LOG_TAG, "COMMUNICATIONS_WINDOW_OPEN");
+
+    // A prior notification may have stashed a single DM for the ready
+    // handshake. Clear it before opening the general communications surface so
+    // a cold window cannot unexpectedly reopen that stale conversation.
+    if let Some(state) = app.try_state::<PendingDmEvents>() {
+        *state.0.lock().unwrap_or_else(|p| p.into_inner()) = Vec::new();
+    }
+
+    set_pending_communications_channel(channel);
+    let existed = match ensure_communications_window(&app) {
+        Ok(existed) => existed,
+        Err(error) => {
+            clear_pending_communications_target();
+            return Err(error);
+        }
+    };
+    if existed {
+        // A second click can land after native creation but before the JS
+        // listener is mounted. Leave the latest target queued in that case;
+        // `dm_detail_window_ready` owns the first emit.
+        if let Some(target) = take_communications_target_if_ready() {
+            show_focus_communications_window(&app)?;
+            emit_communications_target(&app, target)?;
+        }
+    }
+
+    Ok(())
+}
+
 /// Tauri command: open (or focus) the DM detail window for a single DM event.
 /// Invoked by App.svelte's `notification:dm-action` listener on the "open" action.
 #[tauri::command]
 pub async fn open_dm_detail(app: AppHandle, event: DmEvent) -> Result<(), String> {
+    clear_pending_communications_target();
     if let Some(state) = app.try_state::<PendingDmEvents>() {
         *state.0.lock().unwrap_or_else(|p| p.into_inner()) = vec![event.clone()];
     }
 
-    let existed = ensure_inbox_window(&app)?;
-    if existed {
-        show_focus_inbox_window(&app)?;
-        let _ = app
-            .get_webview_window(DM_DETAIL_LABEL)
-            .and_then(|w| w.set_title("Direct Message").ok());
+    let existed = ensure_communications_window(&app)?;
+    if existed && communications_renderer_ready() {
+        show_focus_communications_window(&app)?;
         app.emit_to(DM_DETAIL_LABEL, EVENT_DM_DETAIL_EVENT, &event)
             .map_err(|e| e.to_string())?;
         return Ok(());
@@ -1928,21 +2143,27 @@ pub async fn dm_detail_window_ready(app: AppHandle) -> Result<(), String> {
         .try_state::<PendingDmEvents>()
         .map(|s| s.0.lock().unwrap_or_else(|p| p.into_inner()).clone())
         .unwrap_or_default();
+    let communications_target = mark_communications_renderer_ready_and_take();
 
     if let Some(event) = events.first() {
         app.emit_to(DM_DETAIL_LABEL, EVENT_DM_DETAIL_EVENT, event)
             .map_err(|e| e.to_string())?;
-        let _ = app
-            .get_webview_window(DM_DETAIL_LABEL)
-            .and_then(|w| w.set_title("Direct Message").ok());
+    } else if let Some(target) = communications_target {
+        emit_communications_target(&app, target)?;
     } else {
-        // Inbox open with no forced DM — empty canvas + side pane.
+        // General Messages open with no forced DM — empty canvas + side pane.
         app.emit_to(DM_DETAIL_LABEL, EVENT_DM_INBOX_OPEN, serde_json::json!({}))
             .map_err(|e| e.to_string())?;
+        let _ = app
+            .get_webview_window(DM_DETAIL_LABEL)
+            .and_then(|w| w.set_title("Messages").ok());
     }
 
     if let Some(window) = app.get_webview_window(DM_DETAIL_LABEL) {
-        let _ = window.set_size(tauri::LogicalSize::new(INBOX_WINDOW_W, INBOX_WINDOW_H));
+        let _ = window.set_size(tauri::LogicalSize::new(
+            COMMUNICATIONS_WINDOW_W,
+            COMMUNICATIONS_WINDOW_H,
+        ));
         let _ = window.show();
         let _ = window.set_focus();
     }
@@ -1977,6 +2198,34 @@ mod tests {
             created_at: None,
             members: None,
         }
+    }
+
+    #[test]
+    fn communications_target_waits_through_created_but_not_ready_window() {
+        let mut state = CommunicationsWindowState::default();
+
+        // The first click creates the native window, but its JS listener has
+        // not mounted yet. A second click during that gap replaces the target
+        // without emitting into an unready renderer.
+        state.queue(Some(mk_channel("first", 1)));
+        assert!(state.take_if_ready().is_none());
+        state.queue(Some(mk_channel("second", 2)));
+        assert!(state.take_if_ready().is_none());
+
+        match state.mark_ready_and_take() {
+            Some(CommunicationsOpenTarget::Channel(channel)) => {
+                assert_eq!(channel.channel_id, "second");
+            }
+            _ => panic!("latest cold-start channel must reach the ready handshake"),
+        }
+
+        // Once the renderer is genuinely warm, later opens can emit
+        // immediately instead of waiting for another ready handshake.
+        state.queue(None);
+        assert!(matches!(
+            state.take_if_ready(),
+            Some(CommunicationsOpenTarget::Inbox)
+        ));
     }
 
     #[test]

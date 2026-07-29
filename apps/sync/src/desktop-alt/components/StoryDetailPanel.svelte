@@ -330,7 +330,7 @@
     position: fixed;
     inset: 0;
     z-index: 40;
-    background: rgba(0, 0, 0, 0.45);
+    background: rgba(0, 0, 0, 0.14);
     animation: backdrop-fade 160ms ease;
   }
 
@@ -345,8 +345,8 @@
     max-width: 92vw;
     border-left: 1px solid var(--border);
     background: var(--v4-popover);
-    backdrop-filter: var(--v4-glass-filter);
-    -webkit-backdrop-filter: var(--v4-glass-filter);
+    backdrop-filter: var(--v4-glass-filter-popover, var(--v4-glass-filter));
+    -webkit-backdrop-filter: var(--v4-glass-filter-popover, var(--v4-glass-filter));
     box-shadow: var(--v4-shadow-popover), inset 1px 0 0 var(--v4-glass-highlight);
     animation: panel-slide-in 200ms cubic-bezier(0.2, 0.7, 0.2, 1);
   }

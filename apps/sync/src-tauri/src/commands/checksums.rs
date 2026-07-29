@@ -234,13 +234,8 @@ fn create_core_yaml_temp(target: &Path) -> Result<(PathBuf, fs::File), String> {
 /// durability-flushed overwrite (the legacy `hq-installer` behavior).
 #[cfg(not(windows))]
 fn atomic_replace(src: &Path, dst: &Path) -> Result<(), String> {
-    fs::rename(src, dst).map_err(|e| {
-        format!(
-            "atomic rename {} -> {}: {e}",
-            src.display(),
-            dst.display()
-        )
-    })
+    fs::rename(src, dst)
+        .map_err(|e| format!("atomic rename {} -> {}: {e}", src.display(), dst.display()))
 }
 
 #[cfg(windows)]
@@ -744,8 +739,8 @@ recommended_packages:
         let tmp = TempDir::new().unwrap();
         write_synthetic_hq_tree(tmp.path());
 
-        let result = compute_checksums_at(tmp.path())
-            .expect("compute_checksums against synthetic tree");
+        let result =
+            compute_checksums_at(tmp.path()).expect("compute_checksums against synthetic tree");
         let yaml = fs::read_to_string(tmp.path().join("core/core.yaml")).unwrap();
 
         assert_eq!(

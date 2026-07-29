@@ -5,6 +5,7 @@
   "windows": ["new-files-detail"],
   "permissions": [
     "core:default",
+    "core:webview:allow-set-webview-zoom",
     "core:event:default",
     "core:window:allow-close",
     "core:window:allow-set-focus"

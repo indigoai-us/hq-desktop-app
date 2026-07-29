@@ -115,6 +115,10 @@
     }
   }
 
+  function retryThread(): Promise<void> {
+    return loadThread(event);
+  }
+
   /**
    * Append a freshly-arrived inbound DM to the open thread when it's from the
    * peer this pane is scoped to. Deduped by eventId. DMs from other peers are
@@ -209,6 +213,7 @@
   showAuthors={false}
   loading={loadingThread}
   error={threadError}
+  onretryload={retryThread}
   {sending}
   {sendError}
   placeholder={`Reply to ${event.fromDisplayName}…`}

@@ -525,8 +525,9 @@ impl VaultClient {
             .await?;
         let wrapper: serde_json::Value = self.handle_response(resp).await?;
         match wrapper.get("invites") {
-            Some(v) if !v.is_null() => serde_json::from_value(v.clone())
-                .map_err(|e| VaultClientError::Json(e.to_string())),
+            Some(v) if !v.is_null() => {
+                serde_json::from_value(v.clone()).map_err(|e| VaultClientError::Json(e.to_string()))
+            }
             _ => Ok(Vec::new()),
         }
     }

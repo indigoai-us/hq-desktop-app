@@ -76,6 +76,8 @@
   let pendingAvatarPath = $state<string | null>(null);
   /** The currently-rendered avatar URL (from a prior upload / save echo). */
   let avatarUrl = $state<string | null>(null);
+  /** Native file picker is open; keep the control honest while it resolves. */
+  let choosingAvatar = $state(false);
 
   let saving = $state(false);
   let saveError = $state<string | null>(null);
@@ -99,7 +101,7 @@
     socialLinks.some((l) => l.url.trim().length > 0 && socialUrlHint(l.url) !== null),
   );
   const canSave = $derived(
-    !saving && tipUrlHint === null && !hasInvalidSocialUrl,
+    !saving && !choosingAvatar && tipUrlHint === null && !hasInvalidSocialUrl,
   );
 
   const avatarPreviewName = $derived(
@@ -135,7 +137,9 @@
 
   // ── Avatar ───────────────────────────────────────────────────────────────
   async function chooseAvatar(): Promise<void> {
-    if (saving) return;
+    if (saving || choosingAvatar) return;
+    choosingAvatar = true;
+    saveError = null;
     try {
       const picked = await pickAvatarFile();
       if (picked) {
@@ -144,6 +148,8 @@
       }
     } catch (err) {
       saveError = err instanceof Error ? err.message : String(err);
+    } finally {
+      choosingAvatar = false;
     }
   }
 
@@ -290,6 +296,7 @@
         data-testid="profile-claim-button"
         onclick={claim}
         disabled={!canClaim}
+        aria-busy={claiming}
       >
         {claiming ? 'Claiming…' : 'Claim handle'}
       </button>
@@ -327,9 +334,14 @@
               class="btn btn-secondary"
               data-testid="profile-avatar-choose"
               onclick={chooseAvatar}
-              disabled={saving}
+              disabled={saving || choosingAvatar}
+              aria-busy={choosingAvatar}
             >
-              {pendingAvatarPath || avatarUrl ? 'Change image…' : 'Upload image…'}
+              {choosingAvatar
+                ? 'Choosing…'
+                : pendingAvatarPath || avatarUrl
+                  ? 'Change image…'
+                  : 'Upload image…'}
             </button>
             {#if avatarPreviewName}
               <span class="avatar-chosen" title={pendingAvatarPath}>{avatarPreviewName}</span>
@@ -424,6 +436,7 @@
           data-testid="profile-save"
           onclick={save}
           disabled={!canSave}
+          aria-busy={saving}
         >
           {saving ? 'Saving…' : 'Save profile'}
         </button>
@@ -447,6 +460,7 @@
           data-testid="profile-preview-refresh"
           onclick={loadPreview}
           disabled={previewLoading}
+          aria-busy={previewLoading}
         >
           {previewLoading ? 'Loading…' : preview ? 'Refresh' : 'Load preview'}
         </button>

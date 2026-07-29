@@ -892,7 +892,10 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
         }
         Err(err) => {
             let msg = format!("HQ Sync could not prepare its npm cache: {err}");
-            log("sync", &format!("BAIL: npx cache materialization task: {err}"));
+            log(
+                "sync",
+                &format!("BAIL: npx cache materialization task: {err}"),
+            );
             deregister_process(SYNC_HANDLE);
             return Err(msg);
         }
@@ -955,7 +958,10 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
             j
         }
         Err(ResolveJwtError::NeedsReauth) => {
-            log("sync", "PAUSE: session needs reauth before sync can continue");
+            log(
+                "sync",
+                "PAUSE: session needs reauth before sync can continue",
+            );
             let _ = app.emit(
                 EVENT_SYNC_AUTH_ERROR,
                 SyncAuthErrorEvent {
@@ -1369,11 +1375,9 @@ pub fn cancel_sync() -> bool {
 mod tests {
     use super::*;
     use crate::commands::cognito::CognitoTokens;
+    use crate::util::test_support::{scoped_home, ENV_MUTEX};
     use std::fs;
-    use std::sync::Mutex;
     use tempfile::TempDir;
-
-    static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
     #[test]
     fn resolve_vault_api_url_defaults_to_hq_computer() {
@@ -1381,10 +1385,9 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         fs::create_dir_all(tmp.path().join(".hq")).unwrap();
 
+        let _home = scoped_home(tmp.path());
         std::env::remove_var("HQ_VAULT_API_URL");
-        std::env::set_var("HOME", tmp.path());
         let base = resolve_vault_api_url().unwrap();
-        std::env::remove_var("HOME");
 
         assert_eq!(base, "https://hqapi.hq.computer");
     }
@@ -1577,14 +1580,13 @@ mod tests {
             r#"{"workspaceSyncEnabled":{"acme":false,"zeta":true}}"#,
         )
         .unwrap();
-        std::env::set_var("HOME", tmp.path());
+        let _home = scoped_home(tmp.path());
         let args = build_sync_spawn_args("/Users/test/HQ", true, &SyncRunScope::All);
         let scoped = build_sync_spawn_args(
             "/Users/test/HQ",
             true,
             &SyncRunScope::Company("zeta".into()),
         );
-        std::env::remove_var("HOME");
 
         let env = args.env.expect("env");
         assert_eq!(
@@ -1662,7 +1664,10 @@ mod tests {
         let args = build_sync_spawn_args("/Users/test/HQ", true, &SyncRunScope::All);
         let env = args.env.unwrap();
         assert_eq!(env.get("HQ_ROOT"), Some(&"/Users/test/HQ".to_string()));
-        assert_eq!(env.len(), 2);
+        assert!(
+            env.get("PATH").is_some_and(|path| !path.is_empty()),
+            "PATH must be present so npx and its node shebang resolve"
+        );
     }
 
     #[test]

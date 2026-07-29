@@ -36,15 +36,15 @@ describe('desktop markdown rendering', () => {
     expect(html).toContain('<td><code>a | b</code></td>');
   });
 
-  it('degrades malformed table delimiters to escaped paragraph text', () => {
+  it('degrades malformed table delimiters to safe paragraph text', () => {
     const html = renderMarkdown(
       ['| Name | Value |', '| --- | :-- |', '| safe | <script> |'].join('\n'),
     );
 
     expect(html).not.toContain('<table>');
     expect(html).toContain('| Name | Value |');
-    expect(html).toContain('&lt;script&gt;');
     expect(html).not.toContain('<script>');
+    expect(html).not.toContain('&lt;script&gt;');
   });
 
   it('renders nested lists and multi-line list items without losing content', () => {
@@ -127,6 +127,105 @@ describe('desktop markdown rendering', () => {
     expect(html).toContain('*literal*');
   });
 
+  it('renders the narrow raw HTML subset commonly used to center README artwork', () => {
+    const html = renderMarkdown(
+      [
+        '<p align="center" class="ignored" onclick="alert(1)">',
+        '  <img src="https://example.com/hq.png" alt="HQ" width="180" height="80" style="display:none" onerror="alert(2)">',
+        '  <br>',
+        '  **The operating system for teams.**',
+        '</p>',
+      ].join('\n'),
+    );
+
+    expect(html).toBe(
+      '<p class="markdown-align-center"><img src="https://example.com/hq.png" alt="HQ" loading="lazy" decoding="async" width="180" height="80" /> <br /> <strong>The operating system for teams.</strong></p>',
+    );
+    expect(html).not.toContain('&lt;p');
+    expect(html).not.toContain('onclick');
+    expect(html).not.toContain('onerror');
+    expect(html).not.toContain('style=');
+  });
+
+  it('renders README details and summary blocks while continuing to parse Markdown', () => {
+    const html = renderMarkdown(
+      [
+        '<details open ontoggle="alert(1)">',
+        '<summary>Install **HQ**</summary>',
+        '',
+        'Run `hq setup`.',
+        '',
+        '- Verify sync',
+        '</details>',
+      ].join('\n'),
+    );
+
+    expect(html).toBe(
+      '<details open><summary>Install <strong>HQ</strong></summary><p>Run <code>hq setup</code>.</p>\n<ul><li>Verify sync</li></ul></details>',
+    );
+    expect(html).not.toContain('&lt;details');
+    expect(html).not.toContain('ontoggle');
+  });
+
+  it('suppresses unsafe and unsupported raw HTML without exposing executable markup', () => {
+    const html = renderMarkdown(
+      [
+        '<!-- internal README note -->',
+        '<p align="center">',
+        '<img src="javascript:alert(1)" alt="unsafe" onerror="alert(2)">',
+        '<script>alert("script")</script>',
+        '<style>body { display: none }</style>',
+        '<iframe src="https://example.com">frame fallback</iframe>',
+        '<img-widget src="https://example.com/tracker.png"></img-widget>',
+        '<a href="javascript:alert(3)">Visible label</a>',
+        '</p>',
+      ].join('\n'),
+    );
+
+    expect(html).toContain('<p class="markdown-align-center">');
+    expect(html).toContain('unsafe');
+    expect(html).toContain('Visible label');
+    expect(html).not.toContain('&lt;');
+    expect(html).not.toContain('<img');
+    expect(html).not.toContain('<script');
+    expect(html).not.toContain('<style');
+    expect(html).not.toContain('<iframe');
+    expect(html).not.toContain('<img ');
+    expect(html).not.toContain('tracker.png');
+    expect(html).not.toContain('<a ');
+    expect(html).not.toContain('javascript:');
+    expect(html).not.toContain('onerror');
+    expect(html).not.toContain('script")');
+    expect(html).not.toContain('display: none');
+    expect(html).not.toContain('frame fallback');
+    expect(html).not.toContain('internal README note');
+  });
+
+  it('preserves raw HTML examples inside inline and fenced code', () => {
+    const html = renderMarkdown(
+      [
+        'Inline `<script>alert(1)</script>` example.',
+        '',
+        '```html',
+        '<iframe src="https://example.com">fallback</iframe>',
+        '```',
+        '',
+        '    <p align="center">literal paragraph</p>',
+        '    <script>alert(2)</script>',
+      ].join('\n'),
+    );
+
+    expect(html).toContain(
+      '<code>&lt;script&gt;alert(1)&lt;/script&gt;</code>',
+    );
+    expect(html).toContain(
+      '<pre><code class="language-html">&lt;iframe src=&quot;https://example.com&quot;&gt;fallback&lt;/iframe&gt;</code></pre>',
+    );
+    expect(html).toContain(
+      '<pre><code>&lt;p align=&quot;center&quot;&gt;literal paragraph&lt;/p&gt;\n&lt;script&gt;alert(2)&lt;/script&gt;</code></pre>',
+    );
+  });
+
   it('requires table headers and delimiters to have the same column count', () => {
     const html = renderMarkdown(['A | B', '--- | --- | ---', '1 | 2'].join('\n'));
 
@@ -134,13 +233,14 @@ describe('desktop markdown rendering', () => {
     expect(html).toContain('A | B');
   });
 
-  it('escapes raw HTML and never emits unsafe link or image schemes', () => {
+  it('suppresses unsafe raw HTML and never emits unsafe link or image schemes', () => {
     const html = renderMarkdown(
       '<script>alert(1)</script>\n\n[bad](javascript:alert(1)) ![bad](data:text/html,x)',
     );
 
-    expect(html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
     expect(html).not.toContain('<script>');
+    expect(html).not.toContain('&lt;script&gt;');
+    expect(html).not.toContain('alert(1)');
     expect(html).not.toContain('javascript:');
     expect(html).not.toContain('data:text/html');
     expect(html).not.toContain('<img');

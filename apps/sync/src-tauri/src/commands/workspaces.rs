@@ -63,10 +63,10 @@ use crate::util::logfile::log;
 pub use hq_desktop_core::workspaces::{
     add_manifest_entry_for_synced_company, discover_local_companies, folder_enumeration_fallback,
     humanize_slug, last_synced_at, list_local_company_folders, patch_manifest_with_cloud_info,
-    read_local_company_name, read_manifest, read_workspace_sync_enabled_map, resolve_hq_folder_path,
-    strip_manifest_cloud_info, workspace_sync_enabled_for_slug, write_workspace_sync_enabled,
-    CompaniesManifest, CompanyManifestEntry, LocalCompanyEntry, ManifestLoad, Workspace, WorkspaceKind,
-    WorkspaceState, WorkspacesResult,
+    read_local_company_name, read_manifest, read_workspace_sync_enabled_map,
+    resolve_hq_folder_path, strip_manifest_cloud_info, workspace_sync_enabled_for_slug,
+    write_workspace_sync_enabled, CompaniesManifest, CompanyManifestEntry, LocalCompanyEntry,
+    ManifestLoad, Workspace, WorkspaceKind, WorkspaceState, WorkspacesResult,
 };
 
 /// Detect manifest entries whose `cloud_uid` points at an entity that's no
@@ -687,17 +687,15 @@ pub async fn claim_pending_company_invite(
     });
     let person = match persons.into_iter().next() {
         Some(p) => p,
-        None => {
-            match crate::commands::personal::create_person_entity_from_cognito(&vault).await? {
-                Some(p) => p,
-                None => {
-                    return Err(
+        None => match crate::commands::personal::create_person_entity_from_cognito(&vault).await? {
+            Some(p) => p,
+            None => {
+                return Err(
                         "No person entity for this account — sign out and back in, then try Accept again."
                             .into(),
                     );
-                }
             }
-        }
+        },
     };
 
     let before_pending = vault

@@ -24,6 +24,8 @@
   import { friendlyCompanyLabel } from './lib/company-label';
   import { ListenerRegistry } from './lib/listener-registry';
   import type { Workspace, WorkspacesResult } from './lib/workspaces';
+  import type { Channel } from './lib/channels';
+  import { ChannelUnreadTracker } from './lib/channelUnreadTracker';
   import { loadMeetingDetectEligible } from './lib/permissionState.svelte';
   import { buildClaudeCodeUrl } from './lib/claude-code-link';
   import { emitDesktopTelemetry } from './lib/desktop-telemetry';
@@ -209,6 +211,15 @@
     pendingRequests: 0,
     channelUnread: 0,
   });
+  const messagesUnreadCount = $derived(
+    Math.max(0, unreadSummary.unreadDms) +
+      Math.max(0, unreadSummary.pendingRequests) +
+      Math.max(0, unreadSummary.channelUnread),
+  );
+  const channelUnreadTracker = new ChannelUnreadTracker();
+  const CHANNEL_UNREAD_RETRY_MS = 1_000;
+  let channelUnreadRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  let channelUnreadDisposed = false;
 
   // Memberships drive the company picker in the active-meetings row.
   // Loaded once on mount (same source as MeetingsWindow's URL-invite
@@ -601,10 +612,64 @@
     }
   }
 
-  // Track the pending connection-request count once on mount. Messaging UI now
-  // lives in the desktop view, so the menubar no longer renders an unread badge;
-  // this count is kept only so the incoming-request listeners below can surface
-  // a native "wants to connect" banner. Errors degrade to the zeroed default.
+  interface ChannelsUnreadResponse {
+    channels?: Channel[];
+  }
+
+  function applyChannelUnread(channelId: string, unread: number): void {
+    unreadSummary = {
+      ...unreadSummary,
+      channelUnread: channelUnreadTracker.applyEvent(channelId, unread),
+    };
+  }
+
+  function clearChannelUnreadRetry(): void {
+    if (channelUnreadRetryTimer === null) return;
+    clearTimeout(channelUnreadRetryTimer);
+    channelUnreadRetryTimer = null;
+  }
+
+  function scheduleChannelUnreadRetry(): void {
+    if (
+      channelUnreadDisposed ||
+      channelUnreadTracker.hasCompleteSnapshot() ||
+      channelUnreadRetryTimer !== null
+    ) return;
+    channelUnreadRetryTimer = setTimeout(() => {
+      channelUnreadRetryTimer = null;
+      if (!channelUnreadDisposed) void loadChannelUnreadCount();
+    }, CHANNEL_UNREAD_RETRY_MS);
+  }
+
+  async function loadChannelUnreadCount(): Promise<void> {
+    const snapshotToken = channelUnreadTracker.beginSnapshot();
+    try {
+      const response = await invoke<ChannelsUnreadResponse | null>('list_channels');
+      const channelUnread = channelUnreadTracker.commitSnapshot(
+        snapshotToken,
+        response?.channels ?? [],
+      );
+      if (channelUnread === null) {
+        scheduleChannelUnreadRetry();
+        return;
+      }
+      clearChannelUnreadRetry();
+      unreadSummary = {
+        ...unreadSummary,
+        channelUnread,
+      };
+    } catch (err) {
+      channelUnreadTracker.abandonSnapshot(snapshotToken);
+      // Channels are additive to the badge. Preserve the last-known aggregate
+      // when their endpoint is temporarily unavailable.
+      console.error('list_channels unread summary failed:', err);
+      scheduleChannelUnreadRetry();
+    }
+  }
+
+  // Reconcile the menu-bar Messages count from the existing DM/request summary
+  // and the existing channel list. There is still no independent poller:
+  // startup, popover focus, and the established realtime events drive refreshes.
   async function loadUnreadSummary() {
     try {
       const s = await invoke<{ unreadDms: number; pendingRequests: number }>(
@@ -618,6 +683,7 @@
     } catch (err) {
       console.error('get_unread_summary failed:', err);
     }
+    await loadChannelUnreadCount();
   }
 
   // Unified "Update" action — dispatches to the right rescue command based
@@ -952,6 +1018,7 @@
           //    (transient core.yaml/folder-resolution race) without a relaunch
           // Set is a typed contract in lib/popover-refresh — see its test.
           refreshOnPopoverOpen({ loadWorkspaces, refreshHqCliUpdate, loadHqVersion });
+          void loadUnreadSummary();
           // Re-read the auto-update pref so a Settings toggle takes effect on
           // the next popover open, not just on relaunch.
           void loadAutoUpdatePref();
@@ -965,6 +1032,33 @@
       await listen('tray:sync-now', () => {
         handleSyncNow();
       })
+    );
+
+    // Channel activity is part of the same menu-bar Messages count as DMs and
+    // connection requests. The poller provides an authoritative per-channel
+    // unread count; update the aggregate immediately without creating another
+    // polling path.
+    unlisteners.push(
+      await listen<{ channelId: string; unread?: number }>(
+        'channel:new-message',
+        (e) => {
+          const previous = channelUnreadTracker.get(e.payload.channelId);
+          applyChannelUnread(
+            e.payload.channelId,
+            e.payload.unread ?? previous + 1,
+          );
+        },
+      ),
+    );
+
+    unlisteners.push(
+      await listen<Channel>('channel:updated', (e) => {
+        if (typeof e.payload.unread === 'number') {
+          applyChannelUnread(e.payload.channelId, e.payload.unread);
+        } else {
+          void loadChannelUnreadCount();
+        }
+      }),
     );
 
     unlisteners.push(
@@ -1937,6 +2031,7 @@
   $effect(() => {
     // Performance: mark app init
     performance.mark('app-init');
+    channelUnreadDisposed = false;
 
     checkAuth();
     loadConfig();
@@ -1980,7 +2075,11 @@
         meetingsEnabled = false;
       });
 
-    return () => listenerRegistry.dispose();
+    return () => {
+      channelUnreadDisposed = true;
+      clearChannelUnreadRetry();
+      listenerRegistry.dispose();
+    };
   });
 
   // ── Silent auto-update (master `autoUpdate` pref) ──────────────────────────
@@ -2197,6 +2296,7 @@
       {showConflictModal}
       conflictCount={syncConflictCount}
       conflictCompany={syncConflictCompany}
+      {messagesUnreadCount}
       {updateAvailable}
       {updateInstalling}
       onsync={handleSyncNow}

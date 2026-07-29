@@ -82,7 +82,7 @@ describe('US-007: Company page shell — V4 sections + crumb (sections moved to 
     // Settings / operational controls live under sidebar More. Console settings
     // helper remains for the company settings URL path.
     expect(page).toContain("import { open as openExternal } from '@tauri-apps/plugin-shell';");
-    expect(page).toContain('<button type="button" onclick={openInvite}>Invite</button>');
+    expect(page).toContain('<button type="button" onclick={openInvite} disabled={inviteOpening} aria-busy={inviteOpening} > {inviteOpening ? \'Opening…\' : \'Invite\'} </button>');
     expect(page).not.toContain(
       '<button type="button" onclick={openCompanySettings}>Settings</button>',
     );
@@ -154,7 +154,7 @@ describe('US-007: Company page shell — V4 sections + crumb (sections moved to 
       deployments: 0,
       secrets: 0,
     });
-    expect(summary).toContain('void companyStore.loadSummary(slug)');
+    expect(summary).toContain('void companyStore.loadSummary(slug, reenabled)');
     expect(summary).toContain('summary = emptyCompanySummary();');
     // company-summary was refactored from an effect-cleanup `cancelled` flag to
     // a monotonic request id that discards out-of-order completions.

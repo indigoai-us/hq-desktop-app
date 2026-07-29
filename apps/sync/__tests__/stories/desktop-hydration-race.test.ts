@@ -188,6 +188,27 @@ describe('Desktop hydration latest-request coordination', () => {
       /const nextActivity = Array\.isArray\(activityResponse\)/,
     );
   });
+
+  it('keeps Files fail-closed unless authoritative membership hydration succeeds', () => {
+    const app = readFileSync(
+      resolve(process.cwd(), 'src/desktop-alt/DesktopApp.svelte'),
+      'utf8',
+    );
+
+    expect(app).toContain('let filesAccessHydrated = $state(false)');
+    expect(app).toContain('let filesAccessSettled = $state(false)');
+    expect(app).toMatch(
+      /filesAccessHydrated\s*=\s*Array\.isArray\(result\?\.workspaces\)[\s\S]*?result\?\.cloudReachable === true[\s\S]*?!result\?\.error/,
+    );
+    expect(app).toMatch(
+      /catch \(err\) \{\s*if \(!isLatest\(\)\) return;\s*filesAccessHydrated = false;\s*filesAccessSettled = true;/,
+    );
+    expect(app).toContain(
+      'filesAccessHydrated ? fileAccessibleCompanies(renderCompanies) : []',
+    );
+    expect(app).toContain('accessReady={filesAccessHydrated}');
+    expect(app).not.toContain('accessReady={ready}');
+  });
 });
 
 describe('rendered hydration Retry state', () => {
@@ -222,10 +243,11 @@ describe('rendered hydration Retry state', () => {
     flushSync();
 
     const retry = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(
-      (button) => button.textContent?.trim() === 'Retry',
+      (button) => button.textContent?.trim() === 'Retrying…',
     );
     expect(retry).toBeTruthy();
     expect(retry?.disabled).toBe(true);
+    expect(retry?.getAttribute('aria-busy')).toBe('true');
     retry?.click();
     expect(onretryhydration).not.toHaveBeenCalled();
   });

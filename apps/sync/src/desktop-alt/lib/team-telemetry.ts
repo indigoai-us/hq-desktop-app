@@ -146,6 +146,43 @@ function sortMembers(list: TeamMember[]): TeamMember[] {
 }
 
 /**
+ * Telemetry can repeat an exact person UID when a reporting window overlaps.
+ * Collapse only that authoritative identity key — never display-name/email —
+ * so two real people who share a name remain separate. Counts use the maximum
+ * observed value rather than summing duplicate snapshots.
+ */
+function mergeDuplicateMember(existing: TeamMember, incoming: TeamMember): TeamMember {
+  const skillCounts = new Map(existing.topSkills.map((skill) => [skill.skill, skill.count]));
+  for (const skill of incoming.topSkills) {
+    skillCounts.set(skill.skill, Math.max(skillCounts.get(skill.skill) ?? 0, skill.count));
+  }
+
+  const maxDefined = (a: number | undefined, b: number | undefined): number | undefined => {
+    if (a == null) return b;
+    if (b == null) return a;
+    return Math.max(a, b);
+  };
+
+  return {
+    ...existing,
+    displayName:
+      existing.displayName === 'Unknown member' && incoming.displayName !== 'Unknown member'
+        ? incoming.displayName
+        : existing.displayName,
+    email: existing.email ?? incoming.email,
+    role: existing.role ?? incoming.role,
+    topSkills: Array.from(skillCounts, ([skill, count]) => ({ skill, count }))
+      .sort((a, b) => b.count - a.count || a.skill.localeCompare(b.skill))
+      .slice(0, 5),
+    activeProjects: Array.from(
+      new Set([...existing.activeProjects, ...incoming.activeProjects]),
+    ),
+    events: maxDefined(existing.events, incoming.events),
+    sessions: maxDefined(existing.sessions, incoming.sessions),
+  };
+}
+
+/**
  * Normalize a company telemetry JSON body into a mixed member list with kind
  * labels and top skills. Production uses `members` with top-level `skills`,
  * `events`, and `distinctSessions`; the legacy console/harness shape used
@@ -168,8 +205,7 @@ export function normalizeCompanyTeamTelemetry(
   }
 
   const projectsMap = options?.activeProjectsByMemberId ?? {};
-  const humans: TeamMember[] = [];
-  const agents: TeamMember[] = [];
+  const membersById = new Map<string, TeamMember>();
 
   for (const row of rawMembers) {
     if (!row || typeof row !== 'object') continue;
@@ -219,10 +255,16 @@ export function normalizeCompanyTeamTelemetry(
       events: finiteNumber(r.events ?? totals?.events),
       sessions: finiteNumber(r.distinctSessions ?? totals?.distinctSessions),
     };
-    if (kind === 'agent') agents.push(member);
-    else humans.push(member);
+    const existing = membersById.get(personUid);
+    membersById.set(
+      personUid,
+      existing ? mergeDuplicateMember(existing, member) : member,
+    );
   }
 
+  const normalizedMembers = Array.from(membersById.values());
+  const humans = normalizedMembers.filter((member) => member.kind === 'human');
+  const agents = normalizedMembers.filter((member) => member.kind === 'agent');
   const sortedHumans = sortMembers(humans);
   const sortedAgents = sortMembers(agents);
   // One ranked list — humans and agents interleaved by activity, not tabs.

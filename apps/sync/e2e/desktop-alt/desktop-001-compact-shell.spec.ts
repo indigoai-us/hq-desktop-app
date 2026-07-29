@@ -45,6 +45,16 @@ function workspace(overrides: Partial<Workspace> = {}): Workspace {
   };
 }
 
+function firstRgbaAlpha(source: string, property: string): number {
+  const match = source.match(
+    new RegExp(
+      `--${property}:\\s*rgba\\(\\s*\\d+\\s*,\\s*\\d+\\s*,\\s*\\d+\\s*,\\s*([\\d.]+)\\s*\\)`,
+    ),
+  );
+  expect(match, `${property} must have a translucent rgba default`).not.toBeNull();
+  return Number(match?.[1]);
+}
+
 describe('DESKTOP-001: compact native shell', () => {
   const companies = [
     workspace({}),
@@ -198,12 +208,18 @@ describe('DESKTOP-001: compact native shell', () => {
     expect(sidebar).toContain("child.id === 'more'");
   });
 
-  it('light-mode tokens keep translucent chrome darker than canvas and raised lighter than canvas', () => {
+  it('light-mode material roles stay visibly translucent with weighted hierarchy', () => {
     const tokens = readRepoFile('src/desktop-alt/v4/tokens.css');
-    expect(tokens).toContain('--v4-ground: rgba(242, 242, 242, 0.82)');
-    expect(tokens).toContain('--v4-chrome: rgba(232, 232, 232, 0.66)');
-    expect(tokens).toContain('--v4-sidebar: rgba(224, 224, 224, 0.6)');
-    expect(tokens).toContain('--v4-raised: rgba(255, 255, 255, 0.62)');
+    const ground = firstRgbaAlpha(tokens, 'v4-ground');
+    const chrome = firstRgbaAlpha(tokens, 'v4-chrome');
+    const sidebar = firstRgbaAlpha(tokens, 'v4-sidebar');
+    const raised = firstRgbaAlpha(tokens, 'v4-raised');
+
+    expect(ground).toBeLessThanOrEqual(0.5);
+    expect(chrome).toBeLessThanOrEqual(0.5);
+    expect(sidebar).toBeLessThanOrEqual(0.5);
+    expect(raised).toBeGreaterThan(ground);
+    expect(raised).toBeLessThanOrEqual(0.6);
     expect(tokens).toContain('DESKTOP-012');
   });
 });

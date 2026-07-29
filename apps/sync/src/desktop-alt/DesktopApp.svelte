@@ -2,7 +2,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { getCurrentWindow } from '@tauri-apps/api/window';
-  import { onMount, tick } from 'svelte';
+  import { onDestroy, onMount, tick } from 'svelte';
   import { loadMeetingsCache } from '../lib/meetingsCache';
   import {
     MESSAGE_PERSON_EVENT,
@@ -30,6 +30,10 @@
   import ModerationPanel from './panels/ModerationPanel.svelte';
   import { startMeetingsStore } from './lib/meetings-store.svelte';
   import { loadLocalProjects } from './lib/local-projects';
+  import {
+    fileAccessibleCompanies,
+    isFilesRouteAllowed,
+  } from './lib/file-tree';
   import { LatestRequestCoordinator, type LatestRequestCheck } from './lib/latest-request';
   import type { Project } from './lib/projects-model';
   import { emitDesktopTelemetry } from '../lib/desktop-telemetry';
@@ -237,9 +241,18 @@
   // Flips true once the newest real-state load (workspaces + status + activity)
   // resolves, so a superseded mount request cannot keep the shell skeletonized.
   let ready = $state(false);
+  // Files is a raw filesystem surface, so generic desktop hydration is not an
+  // access grant. It stays fail-closed until the newest workspace request has
+  // successfully hydrated authoritative cloud membership state. Cached
+  // workspaces may paint chrome, but can never authorize a tree or preview.
+  let filesAccessHydrated = $state(false);
+  let filesAccessSettled = $state(false);
   let refreshingRealState = $state(false);
   const refreshCoordinator = new LatestRequestCoordinator();
   let commandPaletteOpen = $state(false);
+  let navigationPending = $state(false);
+  let navigationSequence = 0;
+  let desktopDestroyed = false;
   // DESKTOP-001: primary sidebar can collapse; titlebar owns the toggle.
   let sidebarCollapsed = $state(false);
   let meetingEvents = $state<MeetingEvent[]>([]);
@@ -293,12 +306,39 @@
   // Files mode (US-009): the active company + selected file live IN THE ROUTE,
   // so they survive a reload (persisted below) and reactive updates don't
   // remount the shell (routeKey is 'files' regardless of slug/path).
+  const filesCompanies = $derived(
+    filesAccessHydrated ? fileAccessibleCompanies(renderCompanies) : [],
+  );
+  const filesRouteAllowed = $derived(
+    route.kind === 'files' &&
+      filesAccessHydrated &&
+      isFilesRouteAllowed(
+        { slug: route.slug ?? null, path: route.path ?? null },
+        filesCompanies,
+      ),
+  );
   const filesActiveSlug = $derived<string | null>(
-    route.kind === 'files' ? route.slug ?? null : null,
+    filesRouteAllowed && route.kind === 'files' ? route.slug ?? null : null,
   );
   const filesSelectedPath = $derived<string | null>(
-    route.kind === 'files' ? route.path ?? null : null,
+    filesRouteAllowed && route.kind === 'files' ? route.path ?? null : null,
   );
+  // A persisted or native deep link can predate the latest membership state.
+  // Once hydration confirms the route targets a pending/unknown company, clear
+  // its scope and selected file before any raw filesystem surface can mount.
+  $effect(() => {
+    if (!filesAccessSettled || route.kind !== 'files') return;
+    if (
+      filesAccessHydrated &&
+      isFilesRouteAllowed(
+        { slug: route.slug ?? null, path: route.path ?? null },
+        filesCompanies,
+      )
+    ) {
+      return;
+    }
+    route = { kind: 'files' };
+  });
   // Secondary (contextual) sidebar — Library / Settings only (DESKTOP-001
   // removed the permanent company secondary column). Null hides the column.
   const secondarySidebar = $derived(
@@ -433,23 +473,26 @@
       : []),
     // Companies start at ⌘5 (after the four primary destinations), in sidebar
     // (connected-first) order.
-    ...orderedCompanies.flatMap((row, index) => [
-      {
-        id: `command-go-company-${row.slug}`,
-        label: `Go to ${row.label}`,
-        detail: 'Show company overview',
-        shortcut: companyHotkey(index),
-        action: () => navigate({ kind: 'company', slug: row.slug }),
-      },
-      ...COMPANY_SECTIONS.filter((section) => section.id !== DEFAULT_COMPANY_TAB).map(
-        (section) => ({
-          id: `command-go-company-${row.slug}-${section.id}`,
-          label: `Go to ${row.label} ${section.label}`,
-          detail: `Show ${row.label} ${section.label.toLowerCase()}`,
-          action: () => navigate({ kind: 'company', slug: row.slug, tab: section.id }),
-        }),
-      ),
-    ]),
+    ...orderedCompanies.map((row, index) => ({
+      id: `command-go-company-${row.slug}`,
+      label: `Go to ${row.label}`,
+      detail: 'Show company overview',
+      shortcut: companyHotkey(index),
+      action: () => navigate({ kind: 'company', slug: row.slug }),
+    })),
+    // Keep the palette useful with hundreds of companies: expose every company
+    // root, but only materialize deep section commands for the active company.
+    ...(activeCompany
+      ? COMPANY_SECTIONS.filter((section) => section.id !== DEFAULT_COMPANY_TAB).map(
+          (section) => ({
+            id: `command-go-company-${activeCompany.slug}-${section.id}`,
+            label: `Go to ${activeCompany.displayName} ${section.label}`,
+            detail: `Show ${activeCompany.displayName} ${section.label.toLowerCase()}`,
+            action: () =>
+              navigate({ kind: 'company', slug: activeCompany.slug, tab: section.id }),
+          }),
+        )
+      : []),
   ]);
 
   // Plain-language error summary for the V4 title bar's error state.
@@ -496,21 +539,73 @@
     navigate({ kind: 'messages' });
   }
 
-  function navigate(nextRoute: DesktopRoute) {
-    userNavigated = true;
-    // Remember where we were before entering Files mode so the exit control can
-    // restore it. US-010: Files now defaults to the HQ ROOT tree (no company),
-    // so a slug-less files route is the intended default — do NOT auto-pick a
-    // company; the mini list is an optional filter.
+  function afterPaint(): Promise<void> {
+    return new Promise((resolve) => {
+      if (typeof requestAnimationFrame === 'function') {
+        requestAnimationFrame(() => resolve());
+      } else {
+        setTimeout(resolve, 0);
+      }
+    });
+  }
+
+  async function commitNavigation(nextRoute: DesktopRoute, sequence: number): Promise<void> {
+    // First commit the pending indicator, then wait for an actual paint before
+    // mounting the destination. This makes feedback visible even when the next
+    // route has a large synchronous render.
+    await tick();
+    await afterPaint();
+    if (desktopDestroyed || sequence !== navigationSequence) return;
+
     if (nextRoute.kind === 'files' && route.kind !== 'files') {
       routeBeforeFiles = route;
     }
     route = nextRoute;
+
+    // Clear only after Svelte has committed the destination and the browser has
+    // had a paint opportunity. A newer navigation owns the indicator if one
+    // arrived while this route was mounting.
+    await tick();
+    await afterPaint();
+    if (!desktopDestroyed && sequence === navigationSequence) {
+      navigationPending = false;
+    }
   }
+
+  function navigate(nextRoute: DesktopRoute) {
+    userNavigated = true;
+    const sequence = ++navigationSequence;
+    navigationPending = true;
+    void commitNavigation(nextRoute, sequence);
+  }
+
+  onDestroy(() => {
+    desktopDestroyed = true;
+    navigationSequence += 1;
+  });
 
   /** Leave Files mode, restoring the view the user came from (default Home). */
   function exitFilesMode() {
     navigate(routeBeforeFiles ?? { kind: 'home' });
+  }
+
+  function navigateFilesCompany(slug: string | null) {
+    if (!filesAccessHydrated) return;
+    if (slug && !isFilesRouteAllowed({ slug }, filesCompanies)) return;
+    navigate({ kind: 'files', slug: slug ?? undefined });
+  }
+
+  function navigateFilesPath(path: string) {
+    if (
+      !filesAccessHydrated ||
+      !isFilesRouteAllowed(
+        { slug: filesActiveSlug, path },
+        filesCompanies,
+      )
+    ) {
+      return;
+    }
+    navigate({ kind: 'files', slug: filesActiveSlug ?? undefined, path });
   }
 
   // Persist Files-mode routes for reload survival (US-009). Non-files routes
@@ -619,12 +714,24 @@
   }
 
   async function loadWorkspaces(isLatest: LatestRequestCheck) {
+    if (isLatest()) {
+      filesAccessHydrated = false;
+      filesAccessSettled = false;
+    }
     try {
       const result = await invoke<Partial<WorkspacesResult> | null>(
         'list_syncable_workspaces',
       );
       const nextWorkspaces = Array.isArray(result?.workspaces) ? result.workspaces : [];
       if (!isLatest()) return;
+      // The command deliberately returns local workspaces when cloud membership
+      // hydration fails. That fallback is useful for non-sensitive chrome, but
+      // it is not authoritative enough to grant raw Files access.
+      filesAccessHydrated =
+        Array.isArray(result?.workspaces) &&
+        result?.cloudReachable === true &&
+        !result?.error;
+      filesAccessSettled = true;
       const nextCompanies = getDesktopCompanies(nextWorkspaces);
       workspaces = nextWorkspaces;
       cloudReachable = result?.cloudReachable === true;
@@ -667,6 +774,8 @@
       landingResolved = true;
     } catch (err) {
       if (!isLatest()) return;
+      filesAccessHydrated = false;
+      filesAccessSettled = true;
       console.error('list_syncable_workspaces failed:', err);
       cloudReachable = false;
       workspaceError =
@@ -838,10 +947,12 @@
     }
   }
 
-  function handleCompareConflict(path: string) {
-    void invoke('open_in_editor', { path }).catch((err) =>
-      console.error('open_in_editor failed:', err),
-    );
+  async function handleCompareConflict(path: string): Promise<void> {
+    try {
+      await invoke('open_in_editor', { path });
+    } catch (err) {
+      console.error('open_in_editor failed:', err);
+    }
   }
 
   async function handleResolveAggregateConflicts() {
@@ -888,12 +999,14 @@
     driftDismissed = true;
   }
 
-  function handleViewDrift() {
+  async function handleViewDrift(): Promise<void> {
     const report = coreState?.driftReport;
     if (!report) return;
-    void invoke('open_drift_detail', { report }).catch((err) =>
-      console.error('open_drift_detail failed:', err),
-    );
+    try {
+      await invoke('open_drift_detail', { report });
+    } catch (err) {
+      console.error('open_drift_detail failed:', err);
+    }
   }
 
   // One click clears the stale device session and opens the compact provider
@@ -906,10 +1019,12 @@
     }
   }
 
-  function handleOpenActivityLog() {
-    void invoke('open_activity_log').catch((err) =>
-      console.error('open_activity_log failed:', err),
-    );
+  async function handleOpenActivityLog(): Promise<void> {
+    try {
+      await invoke('open_activity_log');
+    } catch (err) {
+      console.error('open_activity_log failed:', err);
+    }
   }
 
   async function handleCancelSync() {
@@ -1524,13 +1639,12 @@
     {#if !sidebarCollapsed}
       {#if route.kind === 'files'}
         <FilesModeSidebar
-          companies={renderCompanies}
+          companies={filesCompanies}
           activeSlug={filesActiveSlug}
           selectedPath={filesSelectedPath}
-          onselectcompany={(slug) =>
-            navigate({ kind: 'files', slug: slug ?? undefined })}
-          onselectfile={(path) =>
-            navigate({ kind: 'files', slug: filesActiveSlug ?? undefined, path })}
+          accessReady={filesAccessHydrated}
+          onselectcompany={navigateFilesCompany}
+          onselectfile={navigateFilesPath}
           onexit={exitFilesMode}
         />
       {:else}
@@ -1558,7 +1672,10 @@
       />
     {/if}
 
-    <div class="desktop-content">
+    <div class="desktop-content" aria-busy={navigationPending}>
+      <div class="route-progress" class:active={navigationPending} aria-hidden="true">
+        <span></span>
+      </div>
       <main class="desktop-main" aria-label="Desktop content">
         <div class="desktop-main-scroll">
         {#key routeKey}
@@ -1652,8 +1769,17 @@
             {/if}
           {:else if route.kind === 'files'}
             <div class="files-main">
-              {#if filesSelectedPath}
-                <FilePreviewPane path={filesSelectedPath} hqFolderPath={hqFolderPath ?? ''} />
+              {#if !filesAccessHydrated}
+                <div class="files-empty" role="status">
+                  <strong>{filesAccessSettled ? 'Files unavailable' : 'Loading files…'}</strong>
+                  <span>
+                    {filesAccessSettled
+                      ? 'Reconnect HQ to verify workspace access before opening the file tree.'
+                      : 'Confirming workspace access before opening the HQ tree.'}
+                  </span>
+                </div>
+              {:else if filesSelectedPath}
+                <FilePreviewPane path={filesSelectedPath} />
               {:else}
                 <div class="files-empty">
                   <strong>Select a file to preview it</strong>
@@ -1719,6 +1845,39 @@
     background: transparent;
   }
 
+  .desktop-content {
+    position: relative;
+  }
+
+  .route-progress {
+    position: absolute;
+    top: 0;
+    right: 0;
+    left: 0;
+    z-index: 20;
+    height: 2px;
+    overflow: hidden;
+    pointer-events: none;
+    opacity: 0;
+  }
+
+  .route-progress span {
+    display: block;
+    width: 42%;
+    height: 100%;
+    background: color-mix(in srgb, var(--v4-text-1) 74%, transparent);
+    box-shadow: 0 0 10px color-mix(in srgb, var(--v4-text-1) 28%, transparent);
+    transform: translateX(-120%);
+  }
+
+  .route-progress.active {
+    opacity: 1;
+  }
+
+  .route-progress.active span {
+    animation: route-progress 620ms cubic-bezier(0.2, 0.72, 0.2, 1) infinite;
+  }
+
   /* Files mode main area: full-height host so the preview pane fills it and
      scrolls internally (no floating card around it — the prior overlap bug). */
   .files-main {
@@ -1767,8 +1926,10 @@
     padding: 9px 10px 9px 12px;
     border: 1px solid var(--v4-hairline);
     border-radius: 8px;
-    background: var(--v4-raised);
-    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+    background: var(--v4-popover);
+    backdrop-filter: var(--v4-glass-filter-popover, var(--v4-glass-filter));
+    -webkit-backdrop-filter: var(--v4-glass-filter-popover, var(--v4-glass-filter));
+    box-shadow: var(--v4-shadow-popover), inset 0 1px 0 var(--v4-glass-highlight);
   }
 
   .toast-dot {
@@ -1777,6 +1938,14 @@
     height: 6px;
     border-radius: 999px;
     background: var(--v4-idle);
+  }
+
+  @media (prefers-reduced-transparency: reduce) {
+    .action-toast {
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
+      box-shadow: var(--v4-shadow-popover);
+    }
   }
 
   .action-toast.ok .toast-dot {
@@ -1827,6 +1996,20 @@
     from {
       opacity: 0;
       transform: translateY(8px);
+    }
+  }
+
+  @keyframes route-progress {
+    to {
+      transform: translateX(340%);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .route-progress.active span {
+      width: 100%;
+      animation: none;
+      transform: none;
     }
   }
 </style>

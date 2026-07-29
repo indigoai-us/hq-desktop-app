@@ -25,6 +25,8 @@
   import {
     shortSource,
     isPromptRenderable,
+    friendlyPackagesError,
+    isMissingPackagesToolError,
     type PackagesView,
     type InstalledPack,
     type AvailablePack,
@@ -34,28 +36,69 @@
 
   let view = $state<PackagesView | null>(null);
   let loading = $state(true);
+  let refreshing = $state(false);
   let busy = $state<{ op: string; name: string } | null>(null);
   let logLines = $state<string[]>([]);
   let errorMsg = $state<string | null>(null);
+  let errorContext = $state<'read' | 'mutation'>('read');
+  let updateProbeError = $state<string | null>(null);
+  let repairCommandState = $state<'idle' | 'copying' | 'copied' | 'failed'>('idle');
+  let repairCommandTimer: ReturnType<typeof setTimeout> | null = null;
   let confirmUninstall = $state<string | null>(null);
   // Per-pack "copied" feedback for the Get started copy button, keyed by pack name.
   let copiedPack = $state<string | null>(null);
+  let copyingPack = $state<string | null>(null);
   let copiedTimer: ReturnType<typeof setTimeout> | null = null;
   // Separate "copied" feedback for the (moderation-gated) setup-prompt copy button.
   let copiedPrompt = $state<string | null>(null);
+  let copyingPrompt = $state<string | null>(null);
   let copiedPromptTimer: ReturnType<typeof setTimeout> | null = null;
 
   const installed = $derived(view?.packs?.installed ?? []);
   const available = $derived(view?.packs?.available ?? []);
   const registryAvailable = $derived(view?.registry?.available ?? []);
+  const hasPackSnapshot = $derived(Boolean(view?.packs));
   const updatesCount = $derived(installed.filter((p) => p.updateAvailable).length);
+  const HQ_CLI_INSTALL_COMMAND = 'npm install -g @indigoai-us/hq-cli@latest';
 
   async function refresh(): Promise<void> {
+    if (refreshing) return;
+    refreshing = true;
     try {
-      view = await invoke<PackagesView>('list_packages');
-      errorMsg = view?.error ?? null;
+      const next = await invoke<PackagesView>('list_packages');
+      if (next.packs) {
+        view = next;
+        errorMsg = null;
+      } else {
+        // Preserve a successful snapshot when a later refresh cannot start the
+        // CLI. On a cold load retain the failed payload so the empty state stays
+        // honest while the actionable error is shown.
+        if (!view) view = next;
+        errorMsg = next.error ?? 'Installed packs could not be loaded';
+        errorContext = 'read';
+      }
     } catch (e) {
       errorMsg = String(e);
+      errorContext = 'read';
+    } finally {
+      refreshing = false;
+    }
+  }
+
+  async function copyRepairCommand(): Promise<void> {
+    if (repairCommandState === 'copying') return;
+    repairCommandState = 'copying';
+    try {
+      await navigator.clipboard.writeText(HQ_CLI_INSTALL_COMMAND);
+      repairCommandState = 'copied';
+      if (repairCommandTimer) clearTimeout(repairCommandTimer);
+      repairCommandTimer = setTimeout(() => {
+        repairCommandState = 'idle';
+        repairCommandTimer = null;
+      }, 1800);
+    } catch (error) {
+      console.error('installed-packs: repair command copy failed', error);
+      repairCommandState = 'failed';
     }
   }
 
@@ -67,6 +110,7 @@
       await invoke('install_package', { source, registry });
     } catch (e) {
       errorMsg = String(e);
+      errorContext = 'mutation';
       busy = null;
     }
   }
@@ -79,6 +123,7 @@
       await invoke('update_package', { name });
     } catch (e) {
       errorMsg = String(e);
+      errorContext = 'mutation';
       busy = null;
     }
   }
@@ -94,6 +139,7 @@
       await refresh();
     } catch (e) {
       errorMsg = String(e);
+      errorContext = 'mutation';
     } finally {
       busy = null;
     }
@@ -120,12 +166,24 @@
       unlisteners.push(
         await listen<PackagesDone>('packages:error', (e) => {
           errorMsg = e.payload.message ?? 'Operation failed';
+          errorContext = 'mutation';
           busy = null;
         }),
       );
       unlisteners.push(
         await listen<PackagesView>('packages:updates', (e) => {
-          view = e.payload;
+          if (e.payload.error || !e.payload.packs) {
+            // A background network/update probe must never erase a valid local
+            // installed-pack snapshot.
+            updateProbeError = e.payload.error ?? 'Update check failed';
+            return;
+          }
+          view = {
+            packs: e.payload.packs,
+            registry: e.payload.registry ?? view?.registry ?? null,
+            error: null,
+          };
+          updateProbeError = null;
         }),
       );
 
@@ -137,7 +195,10 @@
       checkUpdates();
     })();
 
-    return () => unlisteners.forEach((u) => u());
+    return () => {
+      unlisteners.forEach((u) => u());
+      if (repairCommandTimer) clearTimeout(repairCommandTimer);
+    };
   });
 
   function contributeSummary(p: InstalledPack): string {
@@ -168,7 +229,8 @@
 
   async function copyGetStarted(p: InstalledPack): Promise<void> {
     const line = getStartedLine(p);
-    if (!line) return;
+    if (!line || copyingPack) return;
+    copyingPack = p.name;
     try {
       await navigator.clipboard.writeText(line);
       copiedPack = p.name;
@@ -179,6 +241,8 @@
       }, 1800);
     } catch (err) {
       console.error('installed-packs: clipboard write failed', err);
+    } finally {
+      copyingPack = null;
     }
   }
 
@@ -192,9 +256,10 @@
    * stray caller can never exfiltrate un-moderated prose to the clipboard.
    */
   async function copySetupPrompt(p: InstalledPack): Promise<void> {
-    if (!isPromptRenderable(p)) return;
+    if (!isPromptRenderable(p) || copyingPrompt) return;
     const prompt = p.initialization?.prompt;
     if (!prompt) return;
+    copyingPrompt = p.name;
     try {
       await navigator.clipboard.writeText(prompt);
       copiedPrompt = p.name;
@@ -205,6 +270,8 @@
       }, 1800);
     } catch (err) {
       console.error('installed-packs: setup-prompt clipboard write failed', err);
+    } finally {
+      copyingPrompt = null;
     }
   }
 
@@ -218,6 +285,8 @@
     <p class="count" aria-live="polite">
       {#if loading}
         Loading…
+      {:else if !hasPackSnapshot}
+        Installed packs unavailable
       {:else}
         {installed.length}
         {installed.length === 1 ? 'pack' : 'packs'} installed
@@ -233,12 +302,54 @@
       class="refresh"
       data-testid="installed-refresh"
       onclick={refresh}
-      disabled={!!busy}>Refresh</button
+      disabled={!!busy || refreshing}
+      aria-busy={refreshing}>{refreshing ? 'Refreshing…' : 'Refresh'}</button
     >
   </div>
 
   {#if errorMsg}
-    <div class="state-error" role="alert" data-testid="installed-error">{errorMsg}</div>
+    <div class="state-error" role="alert" data-testid="installed-error">
+      <div class="state-error-copy">
+        <strong>{friendlyPackagesError(errorMsg)}</strong>
+        <span>
+          {errorContext === 'read'
+            ? hasPackSnapshot
+              ? 'The last successful installed-pack view is preserved.'
+              : 'No installed-pack data was available yet. Repair the HQ CLI, then refresh.'
+            : 'The operation did not finish. Review the details before retrying.'}
+        </span>
+      </div>
+      {#if !hasPackSnapshot || isMissingPackagesToolError(errorMsg)}
+        <button
+          type="button"
+          class="repair-link"
+          onclick={copyRepairCommand}
+          disabled={repairCommandState === 'copying'}
+          aria-busy={repairCommandState === 'copying'}
+          title={HQ_CLI_INSTALL_COMMAND}
+        >
+          {repairCommandState === 'copying'
+            ? 'Copying…'
+            : repairCommandState === 'copied'
+              ? 'Command copied'
+              : repairCommandState === 'failed'
+                ? 'Copy failed'
+                : hasPackSnapshot
+                  ? 'Copy repair command'
+                  : 'Copy install command'}
+        </button>
+      {/if}
+      <details>
+        <summary>Technical details</summary>
+        <code>{errorMsg}</code>
+      </details>
+    </div>
+  {/if}
+
+  {#if updateProbeError}
+    <p class="probe-note" role="status" title={updateProbeError}>
+      Update availability could not be refreshed. Installed packs remain available.
+    </p>
   {/if}
 
   {#if busy}
@@ -260,7 +371,7 @@
         <div class="card-skeleton"></div>
       {/each}
     </div>
-  {:else}
+  {:else if hasPackSnapshot}
     <section class="group" data-testid="installed-group">
       <h2 class="group-title">Installed</h2>
       {#if installed.length === 0}
@@ -269,7 +380,13 @@
           <span>Browse the Marketplace tab to find and install packs.</span>
         </div>
       {/if}
-      {#each installed as p (p.name)}
+      <!--
+        `hq packs list` can surface the same display name more than once while
+        legacy package and pack records coexist. Names are therefore not valid
+        Svelte identities. Include origin + position so duplicate rows remain
+        inspectable instead of crashing the entire Library surface.
+      -->
+      {#each installed as p, index (`installed:${p.name}:${p.source ?? p.transport ?? ''}:${index}`)}
         <div class="row" data-testid="installed-row">
           <div class="row-main">
             <div class="row-title">
@@ -296,10 +413,16 @@
                   class="get-started-copy"
                   data-testid="installed-get-started-copy"
                   onclick={() => copyGetStarted(p)}
+                  disabled={!!copyingPack}
+                  aria-busy={copyingPack === p.name}
                   aria-label={`Copy "Run ${cmd} to get started"`}
                   title={`Run ${cmd} to get started`}
                 >
-                  {copiedPack === p.name ? 'Copied' : 'Copy'}
+                  {copyingPack === p.name
+                    ? 'Copying…'
+                    : copiedPack === p.name
+                      ? 'Copied'
+                      : 'Copy'}
                 </button>
               </div>
             {/if}
@@ -323,10 +446,16 @@
                     class="setup-prompt-copy"
                     data-testid="installed-setup-prompt-copy"
                     onclick={() => copySetupPrompt(p)}
+                    disabled={!!copyingPrompt}
+                    aria-busy={copyingPrompt === p.name}
                     aria-label={`Copy ${p.name} setup prompt`}
                     title="Copy the pack author's setup prompt"
                   >
-                    {copiedPrompt === p.name ? 'Copied' : 'Copy setup prompt'}
+                    {copyingPrompt === p.name
+                      ? 'Copying…'
+                      : copiedPrompt === p.name
+                        ? 'Copied'
+                        : 'Copy setup prompt'}
                   </button>
                 </div>
                 <pre class="setup-prompt-text">{p.initialization?.prompt}</pre>
@@ -360,7 +489,7 @@
     {#if available.length > 0 || registryAvailable.length > 0}
       <section class="group" data-testid="installed-available-group">
         <h2 class="group-title">Available from packs.yaml</h2>
-        {#each available as a (a.source)}
+        {#each available as a, index (`available:${a.source}:${index}`)}
           <div class="row">
             <div class="row-main">
               <div class="row-title">
@@ -376,7 +505,7 @@
             </div>
           </div>
         {/each}
-        {#each registryAvailable as r (r.slug)}
+        {#each registryAvailable as r, index (`registry:${r.slug}:${index}`)}
           <div class="row">
             <div class="row-main">
               <div class="row-title">
@@ -634,7 +763,7 @@
       color 140ms ease;
   }
 
-  .get-started-copy:hover {
+  .get-started-copy:hover:not(:disabled) {
     border-color: var(--v4-control-border);
     background: var(--v4-control-faint);
     color: var(--v4-text-1);
@@ -643,6 +772,12 @@
   .get-started-copy:focus-visible {
     outline: 2px solid var(--v4-control-border);
     outline-offset: 2px;
+  }
+
+  .get-started-copy:disabled,
+  .setup-prompt-copy:disabled {
+    opacity: 0.58;
+    cursor: wait;
   }
 
   /* ---- moderation-approved author setup prompt (US-009, gated) ----------- */
@@ -696,7 +831,7 @@
       color 140ms ease;
   }
 
-  .setup-prompt-copy:hover {
+  .setup-prompt-copy:hover:not(:disabled) {
     border-color: var(--v4-control-border);
     background: var(--v4-control-faint);
     color: var(--v4-text-1);
@@ -839,13 +974,73 @@
 
   /* ---- states ----------------------------------------------------------- */
   .state-error {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--v4-space-3);
     padding: var(--v4-space-3) 0;
     border: 0;
     border-top: 1px solid var(--v4-rowline);
     border-radius: 0;
     background: transparent;
-    color: var(--v4-error);
+    color: var(--v4-text-2);
     font-size: var(--text-base);
+  }
+
+  .state-error-copy {
+    display: flex;
+    flex: 1 1 320px;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .state-error-copy strong {
+    color: var(--v4-text-1);
+    font-weight: 600;
+  }
+
+  .state-error-copy span {
+    color: var(--v4-text-3);
+  }
+
+  .repair-link {
+    padding: 0;
+    border: 0;
+    border-bottom: 1px solid var(--v4-rowline);
+    border-radius: 0;
+    background: transparent;
+    color: var(--v4-text-1);
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .repair-link:hover:not(:disabled) {
+    border-bottom-color: var(--v4-text-2);
+  }
+
+  .repair-link:disabled {
+    color: var(--v4-text-3);
+    cursor: wait;
+  }
+
+  .state-error details {
+    flex: 0 0 100%;
+    color: var(--v4-text-3);
+    font-size: var(--text-micro);
+  }
+
+  .state-error summary {
+    width: fit-content;
+    cursor: pointer;
+  }
+
+  .state-error code {
+    display: block;
+    margin-top: var(--v4-space-2);
+    color: var(--v4-text-3);
+    font-family: var(--font-mono);
+    overflow-wrap: anywhere;
   }
 
   .state-empty {
@@ -868,7 +1063,8 @@
     font-size: var(--text-base);
   }
 
-  .offline-note {
+  .offline-note,
+  .probe-note {
     margin: 0;
     color: var(--v4-text-3);
     font-size: var(--text-micro);
@@ -904,6 +1100,7 @@
   @media (prefers-reduced-motion: reduce) {
     .refresh,
     .action,
+    .repair-link,
     .get-started-copy,
     .setup-prompt-copy {
       transition: none;

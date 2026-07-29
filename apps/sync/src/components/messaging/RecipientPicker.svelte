@@ -1,3 +1,7 @@
+<script module lang="ts">
+  let recipientPickerSequence = 0;
+</script>
+
 <script lang="ts">
   // Recipient autocomplete for the New Message compose flow (US-010).
   //
@@ -13,6 +17,7 @@
   // emits the chosen recipient via the `onselect` callback and notifies the
   // parent of query changes via `onquerychange`.
   import { invoke } from '@tauri-apps/api/core';
+  import { untrack } from 'svelte';
   import {
     buildSuggestions,
     flattenRows,
@@ -33,6 +38,8 @@
     status: string;
   }
 
+  type LoadStatus = 'idle' | 'loading' | 'ready' | 'error';
+
   interface Props {
     // The currently selected recipient (null until one is chosen). Owned by the
     // parent so it can clear the picker after a send.
@@ -52,13 +59,14 @@
   let query = $state('');
   let open = $state(false);
   let activeIndex = $state(0);
+  const listboxId = `recipient-suggestions-${++recipientPickerSequence}`;
 
   let contacts = $state<ContactLike[]>([]);
   let companies = $state<CompanyInfo[]>([]);
   let membersByCompany = $state<Record<string, ContactLike[]>>({});
-
-  // Companies whose members we've already fetched (avoid re-fetching per keystroke).
-  const fetchedCompanies = new Set<string>();
+  let contactsStatus = $state<LoadStatus>('idle');
+  let companiesStatus = $state<LoadStatus>('idle');
+  let memberStatuses = $state<Record<string, LoadStatus>>({});
 
   const groups = $derived<SuggestionGroup[]>(
     query.trim().length === 0 && !selected
@@ -66,40 +74,91 @@
       : buildSuggestions({ query, contacts, membersByCompany, companies }),
   );
   const flatRows = $derived<SuggestionRow[]>(flattenRows(groups));
+  const membersLoading = $derived(
+    Object.values(memberStatuses).some((status) => status === 'loading'),
+  );
+  const membersFailed = $derived(
+    Object.values(memberStatuses).some((status) => status === 'error'),
+  );
+  const discoveryLoading = $derived(
+    contactsStatus === 'idle'
+      || contactsStatus === 'loading'
+      || companiesStatus === 'idle'
+      || companiesStatus === 'loading'
+      || membersLoading,
+  );
+  const discoveryFailed = $derived(
+    contactsStatus === 'error' || companiesStatus === 'error' || membersFailed,
+  );
+  const showDiscoveryPanel = $derived(open && query.trim().length > 0);
+  const hasVisibleResults = $derived(groups.length > 0);
 
   async function loadContacts(): Promise<void> {
+    if (contactsStatus === 'loading') return;
+    contactsStatus = 'loading';
     try {
       const resp = await invoke<ContactsResponse>('list_contacts');
       contacts = resp.contacts ?? [];
+      contactsStatus = 'ready';
     } catch (err) {
       console.error('recipient-picker: list_contacts failed', err);
-      contacts = [];
+      // Keep the last trusted directory visible when a refresh fails.
+      contactsStatus = 'error';
     }
   }
 
   async function loadCompanies(): Promise<void> {
+    if (companiesStatus === 'loading') return;
+    companiesStatus = 'loading';
     try {
       const list = await invoke<MembershipRow[]>('meetings_list_memberships');
-      companies = (list ?? [])
+      const nextCompanies = (list ?? [])
         .filter((m) => m.status === 'active')
         .map((m) => ({ companyUid: m.companyUid, companyName: m.companyName }));
+      const activeCompanyUids = new Set(nextCompanies.map((company) => company.companyUid));
+      companies = nextCompanies;
+      membersByCompany = Object.fromEntries(
+        Object.entries(membersByCompany).filter(([companyUid]) => activeCompanyUids.has(companyUid)),
+      );
+      memberStatuses = Object.fromEntries(
+        Object.entries(memberStatuses).filter(([companyUid]) => activeCompanyUids.has(companyUid)),
+      );
+      companiesStatus = 'ready';
+
+      // The user may have started typing while memberships were still loading.
+      if (query.trim().length > 0) {
+        for (const company of nextCompanies) void loadCompanyMembers(company.companyUid);
+      }
     } catch (err) {
       console.error('recipient-picker: meetings_list_memberships failed', err);
-      companies = [];
+      // Keep the last trusted memberships visible when a refresh fails.
+      companiesStatus = 'error';
     }
   }
 
   async function loadCompanyMembers(companyUid: string): Promise<void> {
-    if (fetchedCompanies.has(companyUid)) return;
-    fetchedCompanies.add(companyUid);
+    const status = memberStatuses[companyUid];
+    if (status === 'loading' || status === 'ready') return;
+    memberStatuses = { ...memberStatuses, [companyUid]: 'loading' };
     try {
       const resp = await invoke<ContactsResponse>('list_company_members', { companyUid });
       membersByCompany = { ...membersByCompany, [companyUid]: resp.contacts ?? [] };
+      memberStatuses = { ...memberStatuses, [companyUid]: 'ready' };
     } catch (err) {
       console.error('recipient-picker: list_company_members failed', companyUid, err);
-      // Leave it unset; the group simply won't appear.
-      fetchedCompanies.delete(companyUid);
+      // Do not clear a previously trusted member list.
+      memberStatuses = { ...memberStatuses, [companyUid]: 'error' };
     }
+  }
+
+  async function retryDiscovery(): Promise<void> {
+    const retries: Promise<void>[] = [];
+    if (contactsStatus === 'error') retries.push(loadContacts());
+    if (companiesStatus === 'error') retries.push(loadCompanies());
+    for (const [companyUid, status] of Object.entries(memberStatuses)) {
+      if (status === 'error') retries.push(loadCompanyMembers(companyUid));
+    }
+    await Promise.all(retries);
   }
 
   function onInput(value: string): void {
@@ -155,19 +214,35 @@
     return flatRows[activeIndex] === row;
   }
 
+  function optionId(row: SuggestionRow): string {
+    return `${listboxId}-option-${flatRows.indexOf(row)}`;
+  }
+
   $effect(() => {
-    void loadContacts();
-    void loadCompanies();
+    untrack(() => {
+      void loadContacts();
+      void loadCompanies();
+    });
+  });
+
+  $effect(() => {
+    if (flatRows.length === 0) {
+      activeIndex = 0;
+    } else if (activeIndex >= flatRows.length) {
+      activeIndex = flatRows.length - 1;
+    }
   });
 </script>
 
-<div class="recipient-picker">
+<div class="recipient-picker" aria-busy={discoveryLoading}>
   <input
     class="recipient-input"
     type="text"
     role="combobox"
     aria-expanded={open}
-    aria-controls="recipient-suggestions"
+    aria-controls={listboxId}
+    aria-activedescendant={open && flatRows[activeIndex] ? optionId(flatRows[activeIndex]) : undefined}
+    aria-busy={discoveryLoading}
     aria-autocomplete="list"
     autocomplete="off"
     spellcheck="false"
@@ -179,40 +254,65 @@
     onfocus={() => (open = query.trim().length > 0)}
   />
 
-  {#if open && groups.length > 0}
-    <ul class="suggestions" id="recipient-suggestions" role="listbox">
-      {#each groups as group (group.key)}
-        {#if group.label}
-          <li class="group-heading" role="presentation">{group.label}</li>
-        {/if}
-        {#each group.rows as row (group.key + ':' + (row.recipient.personUid ?? row.recipient.email))}
-          <li role="presentation">
-            <button
-              type="button"
-              class="suggestion"
-              class:active={isActive(row)}
-              class:freetext={row.freeText}
-              role="option"
-              aria-selected={isActive(row)}
-              onmousedown={(e) => {
-                // mousedown (not click) so it fires before the input blur closes
-                // the list.
-                e.preventDefault();
-                choose(row);
-              }}
-            >
-              <span class="suggestion-primary">{row.primary}</span>
-              {#if row.secondary}
-                <span class="suggestion-secondary">{row.secondary}</span>
-              {/if}
-              {#if !row.freeText && row.recipient.connectionState !== 'active'}
-                <span class="suggestion-tag">{row.recipient.connectionState === 'blocked' ? 'blocked' : 'not connected'}</span>
-              {/if}
-            </button>
-          </li>
+  {#if showDiscoveryPanel}
+    <div class="suggestions">
+      <ul class="suggestion-list" id={listboxId} role="listbox">
+        {#each groups as group (group.key)}
+          {#if group.label}
+            <li class="group-heading" role="presentation">{group.label}</li>
+          {/if}
+          {#each group.rows as row (group.key + ':' + (row.recipient.personUid ?? row.recipient.email))}
+            <li role="presentation">
+              <button
+                id={optionId(row)}
+                type="button"
+                class="suggestion"
+                class:active={isActive(row)}
+                class:freetext={row.freeText}
+                role="option"
+                aria-selected={isActive(row)}
+                onmousedown={(e) => {
+                  // mousedown (not click) so it fires before the input blur closes
+                  // the list.
+                  e.preventDefault();
+                  choose(row);
+                }}
+              >
+                <span class="suggestion-primary">{row.primary}</span>
+                {#if row.secondary}
+                  <span class="suggestion-secondary">{row.secondary}</span>
+                {/if}
+                {#if !row.freeText && row.recipient.connectionState !== 'active'}
+                  <span class="suggestion-tag">{row.recipient.connectionState === 'blocked' ? 'blocked' : 'not connected'}</span>
+                {/if}
+              </button>
+            </li>
+          {/each}
         {/each}
-      {/each}
-    </ul>
+      </ul>
+
+      {#if discoveryFailed}
+        <div class="discovery-status discovery-error" role="alert">
+          <span>
+            {hasVisibleResults
+              ? 'Some people couldn’t be refreshed. Showing saved results.'
+              : 'People couldn’t be loaded.'}
+          </span>
+          <button
+            class="discovery-retry"
+            type="button"
+            onclick={() => void retryDiscovery()}
+            disabled={discoveryLoading}
+          >
+            {discoveryLoading ? 'Retrying…' : 'Retry'}
+          </button>
+        </div>
+      {:else if discoveryLoading}
+        <div class="discovery-status" role="status">Looking up people…</div>
+      {:else if !hasVisibleResults}
+        <div class="discovery-status" role="status">No matching people.</div>
+      {/if}
+    </div>
   {/if}
 </div>
 
@@ -259,19 +359,23 @@
     top: calc(100% + 4px);
     left: 0;
     right: 0;
-    margin: 0;
     padding: var(--space-1);
-    list-style: none;
     max-height: 248px;
     overflow-y: auto;
     border-radius: var(--radius-md);
     border: 1px solid var(--pop-border);
     background: var(--pop-bg);
-    backdrop-filter: var(--glass-filter-soft, blur(12px) saturate(0%));
-    -webkit-backdrop-filter: var(--glass-filter-soft, blur(12px) saturate(0%));
+    backdrop-filter: var(--glass-filter-soft, blur(16px) saturate(112%) contrast(101%));
+    -webkit-backdrop-filter: var(--glass-filter-soft, blur(16px) saturate(112%) contrast(101%));
     box-shadow: var(--pop-shadow), inset 0 1px 0 var(--pop-highlight);
     scrollbar-width: thin;
     scrollbar-color: var(--scrollbar-thumb) transparent;
+  }
+
+  .suggestion-list {
+    margin: 0;
+    padding: 0;
+    list-style: none;
   }
 
   .group-heading {
@@ -352,5 +456,58 @@
     border-radius: var(--radius-sm);
     background: var(--surface-raise);
     color: var(--muted-2);
+  }
+
+  .discovery-status {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-height: 30px;
+    padding: var(--space-2);
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: var(--text-base);
+    line-height: 1.35;
+  }
+
+  .suggestion-list:empty + .discovery-status {
+    border-top: none;
+  }
+
+  .discovery-error {
+    justify-content: space-between;
+  }
+
+  .discovery-retry {
+    flex-shrink: 0;
+    padding: 2px 0;
+    border: none;
+    border-radius: 0;
+    background: transparent;
+    color: var(--fg);
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+
+  .discovery-retry:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  .discovery-retry:disabled {
+    cursor: default;
+    opacity: 0.6;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .suggestions,
+    .suggestion,
+    .discovery-retry {
+      animation: none;
+      transition: none;
+    }
   }
 </style>

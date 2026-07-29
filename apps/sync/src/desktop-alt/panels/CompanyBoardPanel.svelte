@@ -14,13 +14,23 @@
    * cancel flag, error state. Main canvas is naked: whitespace + hairlines.
    */
   import {
+    applyProjectProvenance,
+    emptyProjectProvenanceIndex,
+    indexProjectProvenance,
+    loadCompanyProjectProvenance,
     loadLocalProjects,
     loadLocalProjectStories,
     loadCompanyGoals,
     projectIdentity,
     type Objective,
+    type ProjectProvenanceIndex,
     withProjectStatus,
   } from '../lib/local-projects';
+  import type { WorkProvenance } from '../lib/provenance';
+  import {
+    OVERVIEW_PROJECT_LIMIT,
+    progressiveWindow,
+  } from '../lib/progressive-collection';
   import {
     classifyStories,
     projectDisplayName,
@@ -37,6 +47,7 @@
   import GoalCard from '../v4/GoalCard.svelte';
   import NeedsYouCard from '../v4/NeedsYouCard.svelte';
   import OverviewActivityDigest from '../components/OverviewActivityDigest.svelte';
+  import ProvenanceLine from '../components/ProvenanceLine.svelte';
   import type { HomeCardModel } from '../v4/home-model';
   import '../v4/tokens.css';
 
@@ -45,6 +56,8 @@
     slug: string;
     /** False for local folders that are not cloud-backed yet. */
     cloudBacked?: boolean;
+    /** Cloud membership/manifest mismatch: local values may be cached or stale. */
+    connectionIssue?: boolean;
     /** Local sync Off — pause resource fetches without rewriting connectivity. */
     syncEnabled?: boolean;
     /** Navigate to company Projects (toolbar + overview links). */
@@ -58,6 +71,7 @@
   let {
     slug,
     cloudBacked = true,
+    connectionIssue = false,
     syncEnabled = true,
     onopenprojects,
     onopengoals,
@@ -69,6 +83,7 @@
     priority: number | null;
     labels: string[];
     state: StoryState | null;
+    provenance: WorkProvenance | null;
   }
 
   interface RowStatus {
@@ -76,7 +91,7 @@
     tone: 'ok' | 'warn' | 'error' | 'idle';
   }
 
-  const resourcesEnabled = $derived(cloudBacked && syncEnabled);
+  const resourcesEnabled = $derived(cloudBacked && !connectionIssue && syncEnabled);
   const summaryState = useCompanySummary({ slug: () => slug, enabled: () => resourcesEnabled });
   const boardState = useCompanyBoard({ slug: () => slug, enabled: () => resourcesEnabled });
 
@@ -85,6 +100,10 @@
   let objectives = $state<Objective[]>([]);
   let loading = $state(true);
   let error = $state<string | null>(null);
+  let cloudProvenance = $state<ProjectProvenanceIndex>(
+    emptyProjectProvenanceIndex(),
+  );
+  let provenanceUnavailable = $state(false);
 
   // ---- in-flight story details, loaded lazily per project ------------------
   // Keyed by stable project identity. Best-effort: a failed load omits story metadata and
@@ -107,7 +126,9 @@
   // Projects already scoped to this company (the Rust command returns ALL
   // companies; we filter by slug here, exactly as the task specifies).
   const companyProjects = $derived(
-    projects.filter((project) => project.company === slug),
+    projects
+      .filter((project) => project.company === slug)
+      .map((project) => applyProjectProvenance(project, cloudProvenance)),
   );
 
   // In-flight projects: rollup is in-progress or live, emphasised (live first).
@@ -123,6 +144,15 @@
         return rank(a) - rank(b) || projectDisplayName(a).localeCompare(projectDisplayName(b));
       }),
   );
+  const overviewProjectWindow = $derived(
+    progressiveWindow(
+      inFlightProjects,
+      OVERVIEW_PROJECT_LIMIT,
+      OVERVIEW_PROJECT_LIMIT,
+    ),
+  );
+  const visibleInFlightProjects = $derived(overviewProjectWindow.items);
+  const inFlightRemaining = $derived(overviewProjectWindow.remaining);
 
   const boardCards = $derived([
     ...boardState.board.inbox,
@@ -148,6 +178,7 @@
 
   /** Honest cloud label — never invents health beyond backed/error state. */
   const cloudPulse = $derived.by((): { label: string; tone: 'ok' | 'warn' | 'error' | 'idle' } => {
+    if (connectionIssue) return { label: 'cached data · reconnect needed', tone: 'error' };
     if (!cloudBacked) return { label: 'local only', tone: 'idle' };
     if (!syncEnabled) return { label: 'sync paused', tone: 'warn' };
     if (error || boardState.error || summaryState.error) {
@@ -185,7 +216,15 @@
         actions: [{ id: 'inspect', label: 'Inspect', kind: 'secondary' }],
       });
     }
-    if (!cloudBacked) {
+    if (connectionIssue) {
+      cards.push({
+        id: 'connection-issue',
+        title: 'Cloud connection needs repair',
+        sub: 'Counts below are local cached data until reconnect succeeds',
+        tone: 'error',
+        actions: [{ id: 'inspect-local', label: 'Inspect', kind: 'secondary' }],
+      });
+    } else if (!cloudBacked) {
       cards.push({
         id: 'local-only',
         title: 'This company is local only',
@@ -224,6 +263,8 @@
     projects = [];
     objectives = [];
     inFlightStory = {};
+    cloudProvenance = emptyProjectProvenanceIndex();
+    provenanceUnavailable = false;
     error = null;
     selected = null;
     stories = [];
@@ -237,6 +278,20 @@
 
     loading = true;
     let cancelled = false;
+
+    void loadCompanyProjectProvenance(activeSlug)
+      .then((records) => {
+        if (cancelled) return;
+        cloudProvenance = indexProjectProvenance(records);
+        provenanceUnavailable = false;
+        if (selected) {
+          selected = applyProjectProvenance(selected, cloudProvenance);
+        }
+      })
+      .catch((err) => {
+        console.warn(`get_company_project_creators(${activeSlug}) failed:`, err);
+        if (!cancelled) provenanceUnavailable = true;
+      });
 
     void (async () => {
       try {
@@ -267,7 +322,7 @@
   // Lazily load the in-flight projects' current story titles. Keyed on the set
   // of in-flight project prdPaths so it re-runs when the project set changes.
   $effect(() => {
-    const targets = inFlightProjects.filter((project) => project.prdPath);
+    const targets = visibleInFlightProjects.filter((project) => project.prdPath);
     if (targets.length === 0) return;
 
     let cancelled = false;
@@ -292,6 +347,7 @@
               priority: current?.story.priority ?? null,
               labels: current?.story.labels ?? [],
               state: current?.state ?? null,
+              provenance: current?.story.provenance ?? null,
             },
           };
         } catch (err) {
@@ -299,7 +355,13 @@
           if (!cancelled) {
             inFlightStory = {
               ...inFlightStory,
-              [identity]: { storyTitle: null, priority: null, labels: [], state: null },
+              [identity]: {
+                storyTitle: null,
+                priority: null,
+                labels: [],
+                state: null,
+                provenance: null,
+              },
             };
           }
         }
@@ -555,6 +617,7 @@
       onselectStory={openStory}
       onStatusChange={onProjectStatusChange}
       selectedStory={selectedStory}
+      {provenanceUnavailable}
       oncloseStory={closeStory}
       onselectDependency={selectStoryById}
       {onStoryPassesChange}
@@ -629,14 +692,21 @@
           >
             <header class="section-header">
               <h2 id="board-inflight-title">In flight</h2>
-              <button
-                type="button"
-                class="section-link"
-                data-testid="overview-view-projects"
-                onclick={() => onopenprojects?.()}
-              >
-                View projects
-              </button>
+              <div class="section-actions">
+                {#if inFlightRemaining > 0}
+                  <span data-testid="overview-projects-remaining">
+                    {inFlightRemaining} more
+                  </span>
+                {/if}
+                <button
+                  type="button"
+                  class="section-link"
+                  data-testid="overview-view-projects"
+                  onclick={() => onopenprojects?.()}
+                >
+                  View projects
+                </button>
+              </div>
             </header>
 
             {#if loading}
@@ -649,7 +719,7 @@
               <p class="empty-inline">Nothing in flight</p>
             {:else}
               <div class="work-list" data-testid="inflight-list">
-                {#each inFlightProjects as project (projectIdentity(project))}
+                {#each visibleInFlightProjects as project (projectIdentity(project))}
                   {@const detail = inFlightStory[projectIdentity(project)]}
                   {@const progress = projectProgress(project.storiesComplete, project.storiesTotal)}
                   {@const status = rowStatus(project, detail)}
@@ -661,6 +731,28 @@
                     >
                       <span class="work-title">{projectDisplayName(project)}</span>
                       <span class="work-meta">{projectMeta(project, detail)}</span>
+                      <div class="work-provenance" data-testid="inflight-provenance">
+                        <span class="provenance-kind">Project</span>
+                        <ProvenanceLine
+                          provenance={project.provenance}
+                          kind="project"
+                          compact
+                          unavailable={provenanceUnavailable}
+                        />
+                      </div>
+                      {#if detail?.storyTitle}
+                        <div
+                          class="work-story-provenance"
+                          data-testid="inflight-story-provenance"
+                        >
+                          <span class="provenance-kind">Task</span>
+                          <ProvenanceLine
+                            provenance={detail.provenance}
+                            kind="story"
+                            compact
+                          />
+                        </div>
+                      {/if}
                     </button>
                     <span class="goal-chip" data-testid="inflight-goal-chip">{goalChip(project)}</span>
                     <span class="status-pill" class:review={status.tone === 'warn'}>
@@ -746,6 +838,7 @@
 
 <style>
   .company-board {
+    container: company-board / inline-size;
     display: flex;
     flex-direction: column;
     gap: 0;
@@ -862,6 +955,13 @@
     min-width: 0;
   }
 
+  .section-actions {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    min-width: 0;
+  }
+
   .section-header h2 {
     margin: 0;
     color: var(--v4-text-1);
@@ -946,7 +1046,7 @@
     grid-template-columns: minmax(0, 1fr) minmax(72px, 100px) auto minmax(72px, 96px);
     align-items: center;
     gap: 12px;
-    min-height: 48px;
+    min-height: 56px;
     padding: 8px 0;
     border-bottom: 1px solid var(--v4-rowline);
   }
@@ -983,6 +1083,27 @@
     max-width: 100%;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .work-provenance,
+  .work-story-provenance {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .work-provenance :global(.provenance-line),
+  .work-story-provenance :global(.provenance-line) {
+    flex: 1 1 auto;
+  }
+
+  .provenance-kind {
+    flex: 0 0 auto;
+    color: var(--v4-text-3);
+    font-size: var(--type-metadata, var(--text-micro));
+    line-height: 1.2;
   }
 
   .work-title {
@@ -1126,7 +1247,9 @@
     }
   }
 
-  @media (max-width: 980px) {
+  /* Adapt to the canvas after the persistent sidebar has taken its share.
+     A viewport query leaves this two-column layout clipped around 960–1120px. */
+  @container company-board (max-width: 900px) {
     .overview-columns {
       grid-template-columns: 1fr;
     }
@@ -1162,7 +1285,7 @@
     }
   }
 
-  @media (max-width: 560px) {
+  @container company-board (max-width: 560px) {
     .work-row {
       grid-template-columns: minmax(0, 1fr);
     }

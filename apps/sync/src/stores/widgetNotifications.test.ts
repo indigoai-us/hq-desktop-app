@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
+  WIDGET_ACTIVITY_BURST_WINDOW_MS,
   WIDGET_HOVER_FOOTER_HEIGHT,
+  WIDGET_HOVER_HEADER_HEIGHT,
   WIDGET_HOVER_LIST_PADDING,
   WIDGET_HOVER_MAX,
   WIDGET_HOVER_PANEL_WIDTH,
@@ -13,6 +15,7 @@ import {
   WIDGET_MESSAGE_EXPAND_HEADROOM,
   WIDGET_RECENT_MAX,
   WIDGET_ROW_GAP,
+  WIDGET_ROW_HEIGHT,
   WIDGET_ROW_TIMEOUT_MS,
   WIDGET_STACK_MARGIN_BOTTOM,
   WIDGET_STACK_MAX,
@@ -20,6 +23,9 @@ import {
   WIDGET_TOP_HEADROOM,
   addItem,
   bannerToStackItem,
+  channelToStackItem,
+  compactActivityBursts,
+  compactHoverItems,
   dayLabel,
   deserializeRecent,
   dismissItem,
@@ -263,8 +269,15 @@ describe('widgetWindowSize', () => {
       ...emptyWidgetStack(),
       visible: [item({ id: '1', type: 'share' })],
     };
-    // 43 + 12 + 30 + 0 + 10 = 95
-    expect(widgetWindowSize(one)).toEqual({ width: WIDGET_STACK_WIDTH, height: 95 });
+    const oneHeight =
+      WIDGET_MARK_AREA +
+      WIDGET_STACK_MARGIN_BOTTOM +
+      WIDGET_ROW_HEIGHT +
+      WIDGET_TOP_HEADROOM;
+    expect(widgetWindowSize(one)).toEqual({
+      width: WIDGET_STACK_WIDTH,
+      height: oneHeight,
+    });
 
     const twoMsg = {
       ...emptyWidgetStack(),
@@ -273,10 +286,13 @@ describe('widgetWindowSize', () => {
         item({ id: '2', type: 'share' }),
       ],
     };
-    // 43 + 12 + 60 + 6 + 10 + 110 = 241
     expect(widgetWindowSize(twoMsg)).toEqual({
       width: WIDGET_STACK_WIDTH,
-      height: 95 + 30 + 6 + WIDGET_MESSAGE_EXPAND_HEADROOM,
+      height:
+        oneHeight +
+        WIDGET_ROW_HEIGHT +
+        WIDGET_ROW_GAP +
+        WIDGET_MESSAGE_EXPAND_HEADROOM,
     });
   });
 });
@@ -311,6 +327,114 @@ describe('addItem → recent', () => {
     expect(state.queued.map((q) => q.id)).toEqual(['q1']);
     expect(state.recent.map((r) => r.id)).toEqual(['q1']);
     expect(state.recent[0]?.unread).toBe(true);
+  });
+});
+
+describe('compact activity bursts', () => {
+  const activity = (
+    id: string,
+    actor: string,
+    ts: number,
+    company = 'indigo',
+  ): WidgetStackItem =>
+    item({
+      id,
+      type: 'sync',
+      kind: 'new-file',
+      actor,
+      text: `${id}.md`,
+      ts,
+      data: { company, path: `${id}.md` },
+      unread: true,
+    });
+
+  it('collapses one actor/source/time burst into one newest representative', () => {
+    const now = Date.parse('2026-07-28T18:10:00-06:00');
+    const grouped = compactActivityBursts([
+      activity('latest', 'richard@sender.agency', now),
+      activity('middle', 'richard@sender.agency', now - 2 * 60_000),
+      activity('oldest', 'richard@sender.agency', now - 5 * 60_000),
+    ]);
+
+    expect(grouped).toHaveLength(1);
+    expect(grouped[0]).toMatchObject({
+      id: 'latest',
+      text: 'latest.md',
+      compactGroupCount: 3,
+      compactGroupIds: ['latest', 'middle', 'oldest'],
+      unread: true,
+    });
+  });
+
+  it('does not combine different actors, companies, days, or time windows', () => {
+    const now = Date.parse('2026-07-28T18:10:00-06:00');
+    const grouped = compactActivityBursts([
+      activity('base', 'Richard', now, 'indigo'),
+      activity('actor', 'Maya', now - 1_000, 'indigo'),
+      activity('company', 'Richard', now - 2_000, 'amass'),
+      activity(
+        'later',
+        'Richard',
+        now - WIDGET_ACTIVITY_BURST_WINDOW_MS - 1,
+        'indigo',
+      ),
+      activity(
+        'yesterday',
+        'Richard',
+        Date.parse('2026-07-27T23:59:00-06:00'),
+        'indigo',
+      ),
+    ]);
+
+    expect(grouped.map((entry) => entry.id)).toEqual([
+      'base',
+      'actor',
+      'company',
+      'later',
+      'yesterday',
+    ]);
+    expect(grouped.every((entry) => entry.compactGroupCount == null)).toBe(true);
+  });
+
+  it('keeps messages, channels, shares, updates, and warnings individual', () => {
+    const now = Date.parse('2026-07-28T18:10:00-06:00');
+    const rows = [
+      item({ id: 'dm-1', type: 'message', kind: 'dm', actor: 'Richard', ts: now }),
+      item({ id: 'dm-2', type: 'message', kind: 'dm', actor: 'Richard', ts: now - 1 }),
+      item({ id: 'channel-1', type: 'mention', kind: 'channel', actor: '#design', ts: now - 2 }),
+      item({ id: 'share-1', type: 'share', kind: 'share', actor: 'Richard', ts: now - 3 }),
+      item({ id: 'update-1', type: 'system', kind: 'update', actor: 'HQ', ts: now - 4 }),
+      item({ id: 'warning-1', type: 'system', kind: 'system', actor: 'HQ', ts: now - 5 }),
+    ];
+
+    expect(compactActivityBursts(rows)).toEqual(rows);
+  });
+
+  it('collapses before the visual cap so unrelated older rows remain visible', () => {
+    const now = Date.parse('2026-07-28T18:10:00-06:00');
+    const repeated = Array.from({ length: 7 }, (_, index) =>
+      activity('activity-' + index, 'Richard', now - index * 1_000),
+    );
+    const unique = Array.from({ length: 9 }, (_, index) =>
+      item({
+        id: `message-${index}`,
+        type: 'message',
+        kind: 'dm',
+        actor: `Person ${index}`,
+        ts: now - 10_000 - index,
+      }),
+    );
+    const state = {
+      ...emptyWidgetStack(),
+      recent: [...repeated, ...unique],
+    };
+
+    const visible = compactHoverItems(state);
+    expect(visible).toHaveLength(WIDGET_HOVER_MAX);
+    expect(visible[0]?.compactGroupCount).toBe(7);
+    expect(visible.at(-1)?.id).toBe('message-8');
+    // The underlying recent history remains the full individual audit trail.
+    expect(state.recent).toHaveLength(16);
   });
 });
 
@@ -577,6 +701,7 @@ describe('widgetHoverWindowSize', () => {
       WIDGET_STACK_MARGIN_BOTTOM +
       WIDGET_TOP_HEADROOM +
       WIDGET_HOVER_LIST_PADDING +
+      WIDGET_HOVER_HEADER_HEIGHT +
       WIDGET_HOVER_FOOTER_HEIGHT +
       WIDGET_HOVER_ROW_HEIGHT;
     expect(widgetHoverWindowSize(one, 0)).toEqual({
@@ -590,6 +715,7 @@ describe('widgetHoverWindowSize', () => {
       WIDGET_STACK_MARGIN_BOTTOM +
       WIDGET_TOP_HEADROOM +
       WIDGET_HOVER_LIST_PADDING +
+      WIDGET_HOVER_HEADER_HEIGHT +
       WIDGET_HOVER_FOOTER_HEIGHT +
       2 * WIDGET_HOVER_ROW_HEIGHT +
       WIDGET_HOVER_ROW_GAP +
@@ -607,6 +733,7 @@ describe('widgetHoverWindowSize', () => {
       WIDGET_STACK_MARGIN_BOTTOM +
       WIDGET_TOP_HEADROOM +
       WIDGET_HOVER_LIST_PADDING +
+      WIDGET_HOVER_HEADER_HEIGHT +
       WIDGET_HOVER_FOOTER_HEIGHT +
       2 * WIDGET_HOVER_ROW_HEIGHT +
       WIDGET_HOVER_ROW_GAP;
@@ -632,6 +759,7 @@ describe('widgetEmptyHoverWindowSize', () => {
         WIDGET_STACK_MARGIN_BOTTOM +
         WIDGET_TOP_HEADROOM +
         WIDGET_HOVER_LIST_PADDING +
+        WIDGET_HOVER_HEADER_HEIGHT +
         WIDGET_HOVER_FOOTER_HEIGHT +
         WIDGET_HOVER_ROW_HEIGHT,
     });
@@ -756,6 +884,51 @@ describe('historyFeedItemToStackItem', () => {
       actionLabel: 'Update now',
       unread: true,
     });
+  });
+});
+
+describe('channelToStackItem', () => {
+  it('maps an unread company channel to an honest, distinct communication row', () => {
+    const channel = {
+      channelId: 'chn_launch',
+      name: '#launch',
+      scope: 'company',
+      companyName: 'Indigo',
+      unread: 4,
+      lastMessageAt: '2026-07-27T20:30:00Z',
+    };
+
+    const row = channelToStackItem(channel, Date.parse('2026-07-27T21:00:00Z'));
+
+    expect(row).toMatchObject({
+      id: 'channel:chn_launch',
+      kind: 'channel',
+      type: 'mention',
+      actor: '#launch',
+      text: '4 unread · Indigo',
+      unread: true,
+      data: channel,
+    });
+    expect(row.ts).toBe(Date.parse(channel.lastMessageAt));
+  });
+
+  it('labels a group DM by its people and never gives it a channel hash', () => {
+    const row = channelToStackItem(
+      {
+        channelId: 'grp_1',
+        name: '',
+        scope: 'group',
+        memberCount: 3,
+        members: [{ displayName: 'Maya' }, { displayName: 'Erin' }],
+        unread: 2,
+      },
+      1234,
+    );
+
+    expect(row.actor).toBe('Maya, Erin');
+    expect(row.actor).not.toContain('#');
+    expect(row.text).toBe('2 unread · Group DM · 3 people');
+    expect(row.ts).toBe(1234);
   });
 });
 

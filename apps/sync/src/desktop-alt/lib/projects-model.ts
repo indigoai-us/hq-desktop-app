@@ -7,6 +7,8 @@
  * so they are trivially unit-testable.
  */
 
+import type { WorkProvenance } from './provenance';
+
 // ---------------------------------------------------------------------------
 // Types (match the US-003 Rust command output shape)
 // ---------------------------------------------------------------------------
@@ -35,6 +37,8 @@ export interface Story {
   files?: string[];
   /** Optional model hint from prd.json. */
   model_hint?: string | null;
+  /** Explicit task owner/assignee/creator/source metadata, when declared. */
+  provenance?: WorkProvenance;
 }
 
 /** A project, as surfaced by the get_company_projects Rust command. */
@@ -61,6 +65,8 @@ export interface Project {
   storiesTotal: number;
   /** Number of stories that pass. */
   storiesComplete: number;
+  /** Explicit project owner/creator/source metadata, when declared. */
+  provenance?: WorkProvenance;
 }
 
 // ---------------------------------------------------------------------------

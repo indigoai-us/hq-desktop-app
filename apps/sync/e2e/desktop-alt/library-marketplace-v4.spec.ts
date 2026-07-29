@@ -28,14 +28,15 @@ describe('desktop-alt V4 library and marketplace family (US-014)', () => {
     expect(secondarySidebar).toContain("aria-current={footer.active ? 'page' : undefined}");
   });
 
-  it('marketplace has listings, install/installed states, README preview, and YOUR LISTINGS', () => {
+  it('marketplace has listings, install/installed states, README preview, and honest published-listing context', () => {
     expect(marketplace).toContain('data-testid="marketplace-card"');
     expect(marketplace).toContain('data-testid="marketplace-install-button"');
     expect(marketplace).toContain('Installed.');
     expect(marketplace).toContain('data-testid="marketplace-readme-preview"');
     expect(marketplace).toContain('README preview');
     expect(marketplace).toContain('data-testid="marketplace-your-listings"');
-    expect(marketplace).toContain('YOUR LISTINGS');
+    expect(marketplace).toContain('PUBLISHED LISTINGS');
+    expect(marketplace).not.toContain('Published packs you own');
   });
 
   it('the browser harness provides deterministic populated marketplace data', () => {

@@ -64,7 +64,7 @@ describe('US-022: ThreadPanel right-side panel', () => {
     expect(p).toContain('class="thread-root"');
     expect(p).toContain("import { renderMessageBodyMarkdown } from '../../lib/messageMarkdown';");
     expect(p).toContain(
-      '<p class="thread-root-body">{@html renderMessageBodyMarkdown(root.body)}</p>',
+      '<div class="thread-root-body selectable-text">{@html renderMessageBodyMarkdown(root.body)}</div>',
     );
     // Replies + composer reuse the shared Conversation.
     expect(p).toContain('<Conversation');
@@ -90,9 +90,11 @@ describe('US-022: ThreadPanel right-side panel', () => {
   it('updates live on thread:new-reply (append + bump count)', () => {
     const p = normalize(threadPanel);
     expect(p).toContain("'thread:new-reply'");
-    expect(p).toContain('if (e.payload.rootEventId !== rootEventId) return;');
+    expect(p).toContain(
+      'e.payload.rootEventId !== identity.rootEventId || !identityIsCurrent(identity)',
+    );
     expect(p).toContain('appendReply(e.payload.reply);');
-    expect(p).toContain('onreplycount?.(rootEventId, replyCount);');
+    expect(p).toContain('onreplycount?.(identity.rootEventId, replyCount);');
   });
 });
 

@@ -64,7 +64,7 @@ describe('US-012: Secrets panel reads metadata only with no plaintext values', (
     expect(panel).toContain('if (!slug || !resourcesEnabled)');
     expect(panel).toContain('void companyStore.loadSecrets(slug');
     expect(panel).toContain('return () => { cancelled = true; };');
-    expect(panel).toContain('function retry() { reloadToken += 1; }');
+    expect(panel).toContain('function retry() { if (loading) return; error = null; loading = true; reloadToken += 1; }');
     expect(panel).toContain("console.error('get_company_secrets failed:', err)");
     expect(tauriMain).toContain('commands::desktop_alt::get_company_secrets');
   });
@@ -150,10 +150,13 @@ describe('US-012: Secrets panel reads metadata only with no plaintext values', (
     const panel = normalize(secretsPanel);
     const row = normalize(secretEnvRow);
 
-    expect(panel).toContain('secrets = Array.isArray(result) ? result.map(normalizeSecretEnv) : [];');
-    expect(panel).toContain('const items = Array.isArray(entry.items) ? entry.items.map(normalizeSecretItem) : [];');
-    expect(panel).toContain('env: stringOrFallback(entry.env, \'unknown\')');
-    expect(panel).toContain('count: numberOrFallback(entry.count, items.length)');
+    expect(panel).toContain('secrets = Array.isArray(result) ? normalizeSecretEnvs(result) : [];');
+    expect(panel).toContain('function normalizeSecretEnvs(entries: SecretEnvPayload[]): SecretEnv[]');
+    expect(panel).toContain("const label = stringOrFallback(entry.env, 'unknown')");
+    expect(panel).toContain('const identity = label.trim().toLowerCase()');
+    expect(panel).toContain('entry.key ? [ normalizeSecretItem({ key: entry.key, upd: entry.upd, rot: entry.rot, })');
+    expect(panel).toContain('current.items.set(item.key.trim().toLowerCase(), item)');
+    expect(panel).toContain('count: normalizedItems.length || declaredCount');
     expect(panel).toContain('key: stringOrFallback(item.key, \'UNTITLED_KEY\')');
     expect(panel).toContain('upd: stringOrFallback(item.upd, \'-\')');
     expect(panel).toContain('rot: stringOrFallback(item.rot, \'-\')');

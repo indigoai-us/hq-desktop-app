@@ -37,6 +37,7 @@
 
   // ── State ──────────────────────────────────────────────────────────────────
   let selectedPath = $state<string | null>(null);
+  let choosing = $state(false);
   let submitting = $state(false);
   let progress = $state<string[]>([]);
   /** Success outcome (listing id + pending_review status). */
@@ -59,7 +60,7 @@
   let applicationReason = $state('');
   let applicationHandle = $state('');
 
-  const canSubmit = $derived(!!selectedPath && !submitting);
+  const canSubmit = $derived(!!selectedPath && !choosing && !submitting);
   const canSubmitApplication = $derived(
     applicationReason.trim().length > 0 && !requesting,
   );
@@ -75,7 +76,9 @@
   }
 
   async function choose(): Promise<void> {
-    if (submitting) return;
+    if (choosing || submitting) return;
+    choosing = true;
+    errorMessage = null;
     try {
       const picked = await pickPackDirectory();
       if (picked) {
@@ -85,6 +88,8 @@
     } catch (err) {
       // A picker failure is non-fatal — surface it inline so the user can retry.
       errorMessage = err instanceof Error ? err.message : String(err);
+    } finally {
+      choosing = false;
     }
   }
 
@@ -168,9 +173,10 @@
         class="btn btn-secondary"
         data-testid="submit-choose"
         onclick={choose}
-        disabled={submitting}
+        disabled={choosing || submitting}
+        aria-busy={choosing}
       >
-        {selectedPath ? 'Change folder…' : 'Choose folder…'}
+        {choosing ? 'Choosing…' : selectedPath ? 'Change folder…' : 'Choose folder…'}
       </button>
 
       {#if selectedPath}
@@ -188,6 +194,7 @@
       data-testid="submit-publish"
       onclick={submit}
       disabled={!canSubmit}
+      aria-busy={submitting}
     >
       {submitting ? 'Submitting…' : 'Submit for review'}
     </button>
@@ -280,6 +287,7 @@
           data-testid="submit-request-access-button"
           onclick={submitApplication}
           disabled={!canSubmitApplication}
+          aria-busy={requesting}
         >
           {requesting ? 'Submitting…' : 'Submit application'}
         </button>

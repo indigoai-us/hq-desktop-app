@@ -113,6 +113,13 @@ fn top_right_position(app: &AppHandle) -> tauri::LogicalPosition<f64> {
 /// When widget takeover is active (US-003), forwards to the widget stack and
 /// never opens the dm-banner window.
 pub async fn show_banner(app: AppHandle, payload: BannerPayload) -> Result<(), String> {
+    // A stale custom-protocol response can survive an app-bundle replacement
+    // in WKWebView's shared cache. Never create, reveal, or route into either
+    // notification webview until the per-version eviction/reload gate is
+    // terminal. Other platforms keep their existing immediate behavior.
+    #[cfg(target_os = "macos")]
+    crate::webview_asset_cache::wait_until_ready().await;
+
     // US-003: widget owns every DM/share/meeting/update while widget mode is on.
     if crate::commands::widget::takeover_active(&app) {
         log(

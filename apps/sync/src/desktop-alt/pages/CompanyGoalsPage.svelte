@@ -11,12 +11,17 @@
   import { invoke } from '@tauri-apps/api/core';
   import { buildClaudeCodeUrl } from '../../lib/claude-code-link';
   import {
+    applyProjectProvenance,
+    emptyProjectProvenanceIndex,
+    indexProjectProvenance,
     loadCompanyGoals,
+    loadCompanyProjectProvenance,
     loadLocalProjects,
     loadLocalProjectStories,
     projectIdentity,
     type KeyResult,
     type Objective,
+    type ProjectProvenanceIndex,
   } from '../lib/local-projects';
   import {
     projectDisplayName,
@@ -24,6 +29,7 @@
     type Story,
   } from '../lib/projects-model';
   import ProjectDetailView from './ProjectDetailView.svelte';
+  import ProvenanceLine from '../components/ProvenanceLine.svelte';
 
   import '../v4/tokens.css';
 
@@ -43,6 +49,10 @@
 
   let objectives = $state<Objective[]>([]);
   let projects = $state<Project[]>([]);
+  let cloudProvenance = $state<ProjectProvenanceIndex>(
+    emptyProjectProvenanceIndex(),
+  );
+  let provenanceUnavailable = $state(false);
   let loading = $state(true);
   let error = $state<string | null>(null);
 
@@ -58,7 +68,11 @@
   let actionBusy = $state<string | null>(null);
   let actionMessage = $state<string | null>(null);
 
-  const companyProjects = $derived(projects.filter((project) => project.company === slug));
+  const companyProjects = $derived(
+    projects
+      .filter((project) => project.company === slug)
+      .map((project) => applyProjectProvenance(project, cloudProvenance)),
+  );
   const linkedProjectCount = $derived.by(() => {
     const ids = new Set<string>();
     for (const objective of objectives) {
@@ -94,6 +108,8 @@
     const activeSlug = slug;
     objectives = [];
     projects = [];
+    cloudProvenance = emptyProjectProvenanceIndex();
+    provenanceUnavailable = false;
     error = null;
     selectedGoalId = null;
     selected = null;
@@ -108,6 +124,20 @@
 
     loading = true;
     let cancelled = false;
+
+    void loadCompanyProjectProvenance(activeSlug)
+      .then((records) => {
+        if (cancelled) return;
+        cloudProvenance = indexProjectProvenance(records);
+        provenanceUnavailable = false;
+        if (selected) {
+          selected = applyProjectProvenance(selected, cloudProvenance);
+        }
+      })
+      .catch((err) => {
+        console.warn(`get_company_project_creators(${activeSlug}) failed:`, err);
+        if (!cancelled) provenanceUnavailable = true;
+      });
 
     void (async () => {
       try {
@@ -449,6 +479,7 @@
       onselectStory={openStory}
       onStatusChange={onProjectStatusChange}
       selectedStory={selectedStory}
+      {provenanceUnavailable}
       oncloseStory={closeStory}
       onselectDependency={selectStoryById}
       {onStoryPassesChange}
@@ -472,6 +503,7 @@
           data-testid="new-goal-button"
           onclick={newGoal}
           disabled={actionBusy !== null}
+          aria-busy={actionBusy === 'new-goal'}
         >
           {actionBusy === 'new-goal' ? 'Opening…' : 'New goal'}
         </button>
@@ -624,6 +656,7 @@
                     data-testid="review-proposal-button"
                     onclick={() => reviewProposal(selectedGoal)}
                     disabled={actionBusy !== null}
+                    aria-busy={actionBusy === `review-${selectedGoal.id || selectedGoal.title}`}
                   >
                     {actionBusy === `review-${selectedGoal.id || selectedGoal.title}` ? 'Opening…' : 'Review proposal'}
                   </button>
@@ -637,14 +670,23 @@
                     <span class="muted-chip">None</span>
                   {:else}
                     {#each selectedLinked.slice(0, 3) as project (projectIdentity(project))}
-                      <button
-                        type="button"
-                        class="project-chip"
-                        data-testid="linked-project-chip"
-                        onclick={() => openProject(project)}
-                      >
-                        {projectDisplayName(project)}
-                      </button>
+                      <div class="project-chip">
+                        <button
+                          type="button"
+                          class="project-chip-action"
+                          data-testid="linked-project-chip"
+                          onclick={() => openProject(project)}
+                        >
+                          {projectDisplayName(project)}
+                        </button>
+                        <ProvenanceLine
+                          provenance={project.provenance}
+                          kind="project"
+                          testid="linked-project-provenance"
+                          compact
+                          unavailable={provenanceUnavailable}
+                        />
+                      </div>
                     {/each}
                     {#if overflowCount(selectedLinked) > 0}
                       <span class="muted-chip">+{overflowCount(selectedLinked)}</span>
@@ -757,7 +799,7 @@
 
   .new-goal-button:focus-visible,
   .review-proposal-button:focus-visible,
-  .project-chip:focus-visible,
+  .project-chip-action:focus-visible,
   .goal-list-row:focus-visible,
   .goal-detail-back:focus-visible {
     outline: 2px solid var(--v4-text-1);
@@ -1147,7 +1189,6 @@
     min-width: 0;
   }
 
-  .project-chip,
   .muted-chip {
     display: inline-flex;
     max-width: 220px;
@@ -1168,10 +1209,32 @@
   }
 
   .project-chip {
+    display: grid;
+    gap: 3px;
+    min-width: 0;
+    max-width: 260px;
+    padding: 5px 8px;
+    border-radius: var(--v4-radius-button);
+    background: var(--v4-control-faint);
+  }
+
+  .project-chip-action {
+    min-width: 0;
+    overflow: hidden;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--v4-text-2);
+    font: inherit;
+    font-size: var(--type-secondary, var(--text-sm));
+    font-weight: 500;
+    text-align: left;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     cursor: pointer;
   }
 
-  .project-chip:hover {
+  .project-chip-action:hover {
     color: var(--v4-text-1);
   }
 

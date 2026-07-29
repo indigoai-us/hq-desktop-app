@@ -11,6 +11,12 @@
     syncEnabled?: boolean;
   }
 
+  interface SecretEnvPayload extends Partial<SecretEnv> {
+    key?: string;
+    upd?: string;
+    rot?: string;
+  }
+
   let { slug, cloudBacked = true, syncEnabled = true }: Props = $props();
   const resourcesEnabled = $derived(cloudBacked && syncEnabled);
 
@@ -42,8 +48,8 @@
 
     const warm = companyStore.secrets(slug);
     if (warm) {
-      secrets = warm.map(normalizeSecretEnv);
-      loading = false;
+      secrets = normalizeSecretEnvs(warm);
+      loading = force;
     } else {
       secrets = [];
       loading = true;
@@ -52,7 +58,7 @@
     void companyStore.loadSecrets(slug, force)
       .then((result) => {
         if (!cancelled) {
-          secrets = Array.isArray(result) ? result.map(normalizeSecretEnv) : [];
+          secrets = Array.isArray(result) ? normalizeSecretEnvs(result) : [];
         }
       })
       .catch((err) => {
@@ -73,13 +79,56 @@
     };
   });
 
-  function normalizeSecretEnv(entry: Partial<SecretEnv>): SecretEnv {
-    const items = Array.isArray(entry.items) ? entry.items.map(normalizeSecretItem) : [];
-    return {
-      env: stringOrFallback(entry.env, 'unknown'),
-      count: numberOrFallback(entry.count, items.length),
-      items,
-    };
+  /**
+   * The cloud endpoint has shipped both grouped `{ env, items }` payloads and
+   * legacy flat `{ env, key }` rows. Normalize both, merge repeated
+   * environments, and de-duplicate keys so the UI never renders duplicate
+   * Production/Staging sections.
+   */
+  function normalizeSecretEnvs(entries: SecretEnvPayload[]): SecretEnv[] {
+    const grouped = new Map<
+      string,
+      { label: string; declaredCount: number; items: Map<string, SecretItem> }
+    >();
+
+    for (const entry of entries) {
+      const label = stringOrFallback(entry.env, 'unknown');
+      const identity = label.trim().toLowerCase();
+      const current = grouped.get(identity) ?? {
+        label,
+        declaredCount: 0,
+        items: new Map<string, SecretItem>(),
+      };
+      current.declaredCount = Math.max(
+        current.declaredCount,
+        numberOrFallback(entry.count, 0),
+      );
+
+      const payloadItems = Array.isArray(entry.items)
+        ? entry.items.map(normalizeSecretItem)
+        : entry.key
+          ? [
+              normalizeSecretItem({
+                key: entry.key,
+                upd: entry.upd,
+                rot: entry.rot,
+              }),
+            ]
+          : [];
+      for (const item of payloadItems) {
+        current.items.set(item.key.trim().toLowerCase(), item);
+      }
+      grouped.set(identity, current);
+    }
+
+    return Array.from(grouped.values(), ({ label, declaredCount, items }) => {
+      const normalizedItems = Array.from(items.values());
+      return {
+        env: label,
+        count: normalizedItems.length || declaredCount,
+        items: normalizedItems,
+      };
+    });
   }
 
   function normalizeSecretItem(item: Partial<SecretItem>): SecretItem {
@@ -99,6 +148,9 @@
   }
 
   function retry() {
+    if (loading) return;
+    error = null;
+    loading = true;
     reloadToken += 1;
   }
 
@@ -161,6 +213,7 @@
       type="button"
       onclick={() => void openSecretsPrompt('export')}
       disabled={actionBusy !== null || !resourcesEnabled}
+      aria-busy={actionBusy === 'export'}
       title="Export via HQ secrets workflow"
     >
       {actionBusy === 'export' ? 'Opening…' : 'Export .env'}
@@ -170,6 +223,7 @@
       type="button"
       onclick={() => void openSecretsPrompt('new')}
       disabled={actionBusy !== null || !resourcesEnabled}
+      aria-busy={actionBusy === 'new'}
       title="Create via HQ secrets workflow"
     >
       {actionBusy === 'new' ? 'Opening…' : 'New key'}
@@ -202,7 +256,9 @@
         <strong>Secrets unavailable</strong>
         <span>{error}</span>
       </div>
-      <button type="button" onclick={retry}>Retry</button>
+      <button type="button" onclick={retry} disabled={loading} aria-busy={loading}>
+        {loading ? 'Retrying…' : 'Retry'}
+      </button>
     </div>
   {/if}
 

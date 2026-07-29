@@ -136,6 +136,7 @@ function defaultInvoke(command: string): unknown {
   if (command === 'fetch_notification_history') return history;
   if (command === 'get_activity_log') return [];
   if (command === 'get_pending_update') return pendingUpdate;
+  if (command === 'list_channels') return { channels: [] };
   return undefined;
 }
 
@@ -149,6 +150,8 @@ async function waitForNativeReady(): Promise<void> {
   await vi.waitFor(() => {
     expect([...listeners.keys()].sort()).toEqual(
       [
+        'channel:new-message',
+        'channel:updated',
         'dm:unread-summary',
         'sync:complete',
         'update:available',
@@ -257,6 +260,7 @@ afterEach(async () => {
   popoverStyle.remove();
   designSystemStyle.remove();
   delete document.documentElement.dataset.forceTheme;
+  delete document.documentElement.dataset.desktopZoom;
   delete (window as unknown as { __TAURI_INTERNALS__?: unknown })
     .__TAURI_INTERNALS__;
   vi.clearAllMocks();
@@ -272,12 +276,52 @@ afterAll(() => {
 
 describe('Widget restored native standalone behavior', () => {
   it.each([
+    { zoom: 0.8, width: 53, height: 35 },
+    { zoom: 1, width: 66, height: 43 },
+    { zoom: 1.6, width: 106, height: 69 },
+  ])(
+    'resizes its fixed native viewport with the initial $zoom zoom',
+    async ({ zoom, width, height }) => {
+      document.documentElement.dataset.desktopZoom = String(zoom * 100);
+      mountWidget();
+      await waitForNativeReady();
+
+      expect(tauri.invoke).toHaveBeenCalledWith('resize_widget', {
+        width,
+        height,
+        zoom,
+      });
+    },
+  );
+
+  it('resizes an already-mounted widget when the global zoom changes', async () => {
+    document.documentElement.dataset.desktopZoom = '100';
+    mountWidget();
+    await waitForNativeReady();
+    tauri.invoke.mockClear();
+
+    window.dispatchEvent(
+      new CustomEvent('hq:desktop-zoom-change', {
+        detail: { zoom: 1.6 },
+      }),
+    );
+
+    await vi.waitFor(() => {
+      expect(tauri.invoke).toHaveBeenCalledWith('resize_widget', {
+        width: 106,
+        height: 69,
+        zoom: 1.6,
+      });
+    });
+  });
+
+  it.each([
     {
       theme: 'light',
       page: '#eeeeee',
       popDivider: 'rgba(0,0,0,0.08)',
       popIcon: 'rgba(0,0,0,0.5)',
-      rowBg: 'rgba(250, 250, 250, 0.6)',
+      rowBg: 'rgba(250, 250, 250, 0.5)',
       rowFg: '#1d1d1d',
       replyBg: 'rgba(0, 0, 0, 0.05)',
       qdFg: '#333333',
@@ -292,7 +336,7 @@ describe('Widget restored native standalone behavior', () => {
       page: '#101010',
       popDivider: 'rgba(255,255,255,0.1)',
       popIcon: 'rgba(255,255,255,0.55)',
-      rowBg: 'rgba(30, 30, 30, 0.55)',
+      rowBg: 'rgba(30, 30, 30, 0.44)',
       rowFg: '#fff',
       replyBg: 'rgba(255, 255, 255, 0.08)',
       qdFg: '#d4d4d4',
@@ -385,7 +429,7 @@ describe('Widget restored native standalone behavior', () => {
 
     await unmount(component!);
     component = null;
-    expect([...unlisteners.values()]).toHaveLength(7);
+    expect([...unlisteners.values()]).toHaveLength(9);
     for (const unlisten of unlisteners.values()) {
       expect(unlisten).toHaveBeenCalledOnce();
     }
@@ -427,7 +471,7 @@ describe('Widget restored native standalone behavior', () => {
     expect(host.querySelector('[data-testid="widget-context-menu"]')).toBeNull();
   });
 
-  it('opens Inbox and the full desktop from the native context menu', async () => {
+  it('opens the mini communications window and full desktop from the native context menu', async () => {
     mountWidget();
     await waitForNativeReady();
     const wordmark = host.querySelector<HTMLElement>('.wm')!;
@@ -441,7 +485,9 @@ describe('Widget restored native standalone behavior', () => {
       .click();
     await vi.waitFor(() => {
       expect(
-        tauri.invoke.mock.calls.some(([command]) => command === 'open_inbox_window'),
+        tauri.invoke.mock.calls.some(
+          ([command]) => command === 'open_communications_window',
+        ),
       ).toBe(true);
     });
     expect(host.querySelector('[data-testid="widget-context-menu"]')).toBeNull();
@@ -517,6 +563,30 @@ describe('Widget restored native standalone behavior', () => {
       events: [share],
     });
 
+    const channel = {
+      channelId: 'channel-design',
+      name: 'design',
+      scope: 'company',
+      companyUid: 'company-indigo',
+      companyName: 'Indigo',
+      membership: 'joined',
+      unread: 3,
+    };
+    tauri.invoke.mockClear();
+    await openVisibleNotification(
+      notification({
+        kind: 'channel',
+        title: '#design',
+        body: '3 unread · Indigo',
+        clickActionId: 'open-channel',
+        data: channel,
+      }),
+    );
+    expect(tauri.invoke).toHaveBeenCalledWith('open_communications_window', {
+      channel,
+    });
+
+    tauri.invoke.mockClear();
     await openVisibleNotification(
       notification({
         kind: 'new-file',
@@ -538,9 +608,12 @@ describe('Widget restored native standalone behavior', () => {
       }),
     );
     expect(
-      tauri.invoke.mock.calls.some(([command]) => command === 'open_inbox_window'),
+      tauri.invoke.mock.calls.some(
+        ([command]) => command === 'open_communications_window',
+      ),
     ).toBe(true);
 
+    tauri.invoke.mockClear();
     await openVisibleNotification(
       notification({
         kind: 'update',
@@ -551,9 +624,9 @@ describe('Widget restored native standalone behavior', () => {
         actionLabel: 'Update now',
       }),
     );
-    expect(
-      tauri.invoke.mock.calls.some(([command]) => command === 'open_inbox_window'),
-    ).toBe(true);
+    expect(tauri.invoke).toHaveBeenCalledWith('open_desktop_alt_window', {
+      route: 'settings:updates',
+    });
 
     emitNative(
       'widget:notification',
@@ -586,6 +659,7 @@ describe('Widget restored native standalone behavior', () => {
       }),
     );
 
+    tauri.invoke.mockClear();
     await openVisibleNotification(
       notification({
         kind: 'update',
@@ -594,10 +668,11 @@ describe('Widget restored native standalone behavior', () => {
         clickActionId: 'open',
       }),
     );
-    expect(
-      tauri.invoke.mock.calls.some(([command]) => command === 'open_inbox_window'),
-    ).toBe(true);
+    expect(tauri.invoke).toHaveBeenCalledWith('open_desktop_alt_window', {
+      route: 'settings:updates',
+    });
 
+    tauri.invoke.mockClear();
     await openVisibleNotification(
       notification({
         kind: 'meeting',
@@ -631,8 +706,56 @@ describe('Widget restored native standalone behavior', () => {
       }),
     );
     expect(
-      tauri.invoke.mock.calls.some(([command]) => command === 'open_inbox_window'),
+      tauri.invoke.mock.calls.some(
+        ([command]) => command === 'open_communications_window',
+      ),
     ).toBe(true);
+  });
+
+  it('retains a failed open with accessible retry and dismisses only after success', async () => {
+    failedCommands.add('open_communications_window');
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    mountWidget();
+    await waitForNativeReady();
+
+    emitNative(
+      'widget:notification',
+      notification({
+        kind: 'system',
+        title: 'Needs attention',
+        body: 'Open the communications window',
+        clickActionId: '',
+      }),
+    );
+    const row = host.querySelector<HTMLElement>(
+      '[data-testid="widget-stack"] [data-testid="notification-row"]',
+    )!;
+    row.querySelector<HTMLButtonElement>('.nr-primary-action')!.click();
+
+    await vi.waitFor(() => {
+      flushSync();
+      expect(row.querySelector('.nr-action-error')?.textContent).toContain(
+        'Couldn’t open this item.',
+      );
+    });
+    expect(host.querySelector('[data-testid="widget-stack"]')).toBeTruthy();
+    expect(row.querySelector('.nr-primary-action')?.getAttribute('aria-busy')).toBe(
+      'false',
+    );
+
+    failedCommands.delete('open_communications_window');
+    row.querySelector<HTMLButtonElement>('.nr-action-error .nr-retry')!.click();
+    await vi.waitFor(() => {
+      flushSync();
+      expect(host.querySelector('[data-testid="widget-stack"]')).toBeNull();
+    });
+    expect(
+      tauri.invoke.mock.calls.filter(
+        ([command]) => command === 'open_communications_window',
+      ),
+    ).toHaveLength(2);
+
+    consoleError.mockRestore();
   });
 
   it('rehydrates a persisted update from trusted pending state with separate actions', async () => {
@@ -683,9 +806,9 @@ describe('Widget restored native standalone behavior', () => {
 
     row.querySelector<HTMLButtonElement>('.nr-primary-action')!.click();
     await vi.waitFor(() => {
-      expect(
-        tauri.invoke.mock.calls.some(([command]) => command === 'open_inbox_window'),
-      ).toBe(true);
+      expect(tauri.invoke).toHaveBeenCalledWith('open_desktop_alt_window', {
+        route: 'settings:updates',
+      });
     });
 
     row.querySelector<HTMLButtonElement>('.nr-open')!.click();
@@ -844,6 +967,74 @@ describe('Widget restored native standalone behavior', () => {
     expect(host.querySelector('[data-testid="widget-stack"]')).toBeTruthy();
   });
 
+  it('keeps a failed widget quick-reply draft focusable and retries without false success', async () => {
+    failedCommands.add('send_dm');
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    mountWidget();
+    await waitForNativeReady();
+    emitNative(
+      'widget:notification',
+      notification({
+        kind: 'dm',
+        title: 'Maya',
+        body: 'Can you retry this?',
+        data: { eventId: 'dm-failed', fromPersonUid: 'person-1' },
+      }),
+    );
+
+    const row = host.querySelector<HTMLElement>(
+      '[data-testid="widget-stack"] [data-testid="notification-row"]',
+    )!;
+    row.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+    flushSync();
+    const input = row.querySelector<HTMLInputElement>('.nr-reply')!;
+    input.focus();
+    input.value = 'Do not lose me';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'Enter',
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+
+    await vi.waitFor(() => {
+      flushSync();
+      expect(row.querySelector('[data-testid="notification-reply-error"]')).toBeTruthy();
+    });
+    expect(input.value).toBe('Do not lose me');
+    expect(
+      tauri.invoke.mock.calls.some(
+        ([command, args]) =>
+          command === 'set_widget_focusable' &&
+          (args as { focusable?: boolean } | undefined)?.focusable === false,
+      ),
+    ).toBe(false);
+
+    failedCommands.delete('send_dm');
+    row
+      .querySelector<HTMLButtonElement>('[data-testid="notification-reply-retry"]')!
+      .click();
+    await vi.waitFor(() => {
+      flushSync();
+      expect(input.value).toBe('');
+      expect(row.querySelector('[data-testid="notification-reply-error"]')).toBeNull();
+      expect(
+        tauri.invoke.mock.calls.filter(([command]) => command === 'send_dm'),
+      ).toHaveLength(2);
+      expect(
+        tauri.invoke.mock.calls.some(
+          ([command, args]) =>
+            command === 'set_widget_focusable' &&
+            (args as { focusable?: boolean } | undefined)?.focusable === false,
+        ),
+      ).toBe(true);
+    });
+
+    consoleError.mockRestore();
+  });
+
   it('hydrates retained notification history into the mini inbox', async () => {
     history = {
       dms: [
@@ -915,6 +1106,252 @@ describe('Widget restored native standalone behavior', () => {
       expect(
         host.querySelector('[data-testid="widget-hover-list"]')?.textContent,
       ).toContain('launch.md'),
+    );
+  });
+
+  it('distinguishes pending native history hydration from a genuinely caught-up inbox', async () => {
+    const historyRequest = deferred<NotificationHistory>();
+    tauri.invoke.mockImplementation(async (command: string) => {
+      if (command === 'fetch_notification_history') return historyRequest.promise;
+      return defaultInvoke(command);
+    });
+
+    mountWidget();
+    await waitForNativeReady();
+    host.querySelector<HTMLElement>('.wm')!.click();
+    flushSync();
+
+    const list = host.querySelector('[data-testid="widget-hover-list"]');
+    expect(list).toBeTruthy();
+    expect(list?.querySelector('[data-testid="widget-history-loading"]')).toBeTruthy();
+    expect(list?.textContent).toContain('Checking for messages');
+    expect(list?.textContent).not.toContain('You’re caught up');
+
+    historyRequest.resolve({ dms: [], shares: [], files: [] });
+    await vi.waitFor(() => {
+      flushSync();
+      expect(
+        host.querySelector('[data-testid="widget-history-loading"]'),
+      ).toBeNull();
+      expect(
+        host.querySelector('[data-testid="widget-empty-state"]')?.textContent,
+      ).toContain('You’re caught up');
+    });
+  });
+
+  it('retains saved rows when history hydration fails and exposes a pending retry', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    localStorage.setItem(
+      WIDGET_RECENT_STORAGE_KEY,
+      JSON.stringify([
+        {
+          id: 'saved-dm',
+          type: 'message',
+          actor: 'Maya',
+          text: 'Saved conversation',
+          ts: Date.parse('2026-07-27T15:00:00Z'),
+          kind: 'dm',
+          clickActionId: 'open-dm',
+          data: { eventId: 'saved-dm', fromPersonUid: 'person-1' },
+          expiresAt: 0,
+          unread: true,
+        },
+      ]),
+    );
+    failedCommands.add('fetch_notification_history');
+
+    mountWidget();
+    await waitForNativeReady();
+    host.querySelector<HTMLElement>('.wm')!.click();
+
+    await vi.waitFor(() => {
+      flushSync();
+      expect(
+        host.querySelector('[data-testid="widget-history-error"]')?.textContent,
+      ).toContain('Couldn’t refresh messages');
+    });
+    expect(
+      host.querySelector('[data-testid="widget-hover-list"]')?.textContent,
+    ).toContain('Saved conversation');
+
+    const retryRequest = deferred<NotificationHistory>();
+    failedCommands.delete('fetch_notification_history');
+    tauri.invoke.mockImplementation(async (command: string) => {
+      if (command === 'fetch_notification_history') return retryRequest.promise;
+      return defaultInvoke(command);
+    });
+    host
+      .querySelector<HTMLButtonElement>('[data-testid="widget-history-retry"]')!
+      .click();
+
+    await vi.waitFor(() => {
+      flushSync();
+      const retry = host.querySelector<HTMLButtonElement>(
+        '[data-testid="widget-history-retry"]',
+      );
+      expect(retry).toBeTruthy();
+      expect(retry?.disabled).toBe(true);
+      expect(retry?.getAttribute('aria-busy')).toBe('true');
+      expect(retry?.textContent).toContain('Retrying');
+      expect(
+        host.querySelector('[data-testid="widget-hover-list"]')?.textContent,
+      ).toContain('Saved conversation');
+    });
+
+    retryRequest.resolve({ dms: [], shares: [], files: [] });
+    await vi.waitFor(() => {
+      flushSync();
+      expect(host.querySelector('[data-testid="widget-history-error"]')).toBeNull();
+      expect(host.querySelector('[data-testid="widget-history-retry"]')).toBeNull();
+      expect(
+        host.querySelector('[data-testid="widget-hover-list"]')?.textContent,
+      ).toContain('Saved conversation');
+    });
+    consoleError.mockRestore();
+  });
+
+  it('keeps the menu open with an accessible retry when both desktop commands fail', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    failedCommands.add('open_desktop_alt_window');
+    failedCommands.add('show_main_window');
+    mountWidget();
+    await waitForNativeReady();
+
+    const wordmark = host.querySelector<HTMLElement>('.wm')!;
+    wordmark.dispatchEvent(
+      new MouseEvent('contextmenu', { bubbles: true, cancelable: true }),
+    );
+    flushSync();
+    host
+      .querySelector<HTMLButtonElement>('[data-testid="widget-menu-desktop"]')!
+      .click();
+
+    await vi.waitFor(() => {
+      flushSync();
+      expect(
+        host.querySelector('[data-testid="widget-desktop-error"]')?.textContent,
+      ).toContain('Couldn’t open HQ');
+    });
+    expect(host.querySelector('[data-testid="widget-context-menu"]')).toBeTruthy();
+    expect(
+      host.querySelector('[data-testid="widget-menu-desktop"]')?.textContent,
+    ).toContain('Retry desktop');
+
+    const desktopRequest = deferred<void>();
+    failedCommands.delete('open_desktop_alt_window');
+    failedCommands.delete('show_main_window');
+    tauri.invoke.mockImplementation(async (command: string) => {
+      if (command === 'open_desktop_alt_window') return desktopRequest.promise;
+      return defaultInvoke(command);
+    });
+    host
+      .querySelector<HTMLButtonElement>('[data-testid="widget-menu-desktop"]')!
+      .click();
+
+    await vi.waitFor(() => {
+      flushSync();
+      const retry = host.querySelector<HTMLButtonElement>(
+        '[data-testid="widget-menu-desktop"]',
+      );
+      expect(retry).toBeTruthy();
+      expect(retry?.disabled).toBe(true);
+      expect(retry?.getAttribute('aria-busy')).toBe('true');
+      expect(retry?.textContent).toContain('Opening desktop');
+    });
+    expect(host.querySelector('[data-testid="widget-context-menu"]')).toBeTruthy();
+
+    desktopRequest.resolve();
+    await vi.waitFor(() => {
+      flushSync();
+      expect(host.querySelector('[data-testid="widget-context-menu"]')).toBeNull();
+    });
+    consoleError.mockRestore();
+  });
+
+  it('moves focus into pinned surfaces, supports menu arrows, and restores focus on Escape', async () => {
+    mountWidget();
+    await waitForNativeReady();
+    const wordmark = host.querySelector<HTMLElement>('.wm')!;
+    wordmark.focus();
+    wordmark.dispatchEvent(
+      new MouseEvent('contextmenu', { bubbles: true, cancelable: true }),
+    );
+    flushSync();
+
+    const inbox = host.querySelector<HTMLButtonElement>(
+      '[data-testid="widget-menu-inbox"]',
+    )!;
+    const desktop = host.querySelector<HTMLButtonElement>(
+      '[data-testid="widget-menu-desktop"]',
+    )!;
+    await vi.waitFor(() => expect(document.activeElement).toBe(inbox));
+
+    inbox.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'ArrowDown',
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    expect(document.activeElement).toBe(desktop);
+
+    desktop.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'Home',
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    expect(document.activeElement).toBe(inbox);
+
+    inbox.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'Escape',
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    flushSync();
+    expect(host.querySelector('[data-testid="widget-context-menu"]')).toBeNull();
+    await vi.waitFor(() => expect(document.activeElement).toBe(wordmark));
+
+    wordmark.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'Enter',
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    flushSync();
+    const panel = host.querySelector<HTMLElement>(
+      '[data-testid="widget-hover-list"]',
+    )!;
+    await vi.waitFor(() => expect(document.activeElement).toBe(panel));
+    panel.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'Escape',
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    flushSync();
+    expect(host.querySelector('[data-testid="widget-hover-list"]')).toBeNull();
+    await vi.waitFor(() => expect(document.activeElement).toBe(wordmark));
+  });
+
+  it('neutralizes widget press transforms when reduced motion is requested', () => {
+    const source = readFileSync(
+      resolve(process.cwd(), 'src/components/Widget.svelte'),
+      'utf8',
+    );
+    const reducedMotion = source.slice(
+      source.indexOf('@media (prefers-reduced-motion: reduce)'),
+    );
+    expect(reducedMotion).toMatch(
+      /\.wm:active[\s\S]*?\.ctx-item:active[\s\S]*?transform:\s*none/,
+    );
+    expect(reducedMotion).toMatch(
+      /\.hl-open-messages:active[\s\S]*?transform:\s*none/,
     );
   });
 });

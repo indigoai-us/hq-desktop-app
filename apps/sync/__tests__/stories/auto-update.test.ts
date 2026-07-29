@@ -35,7 +35,9 @@ describe('master automatic-updates switch', () => {
     expect(settings).toContain(
       "import { updateSettings, type SettingsPatch } from '../../lib/settings-mutations'",
     );
-    expect(s).toContain('saveSettings({ autoUpdate })');
+    expect(s).toContain("persistSettingsControl('auto-update', { autoUpdate })");
+    expect(s).toContain("disabled={isSettingsControlPending('auto-update')}");
+    expect(s).toContain("aria-busy={isSettingsControlPending('auto-update')}");
   });
 
   it('App silently installs app + core updates when autoUpdate is on, guarded', () => {

@@ -5,6 +5,7 @@ import { mount } from 'svelte';
 import '@fontsource-variable/geist-mono/wght.css';
 import '../styles/design-system.css';
 import GlobalErrorBoundary from '../components/GlobalErrorBoundary.svelte';
+import { installDesktopZoom } from '../lib/desktopZoom';
 import DesktopApp from './DesktopApp.svelte';
 
 const windowLabel = getCurrentWindow().label;
@@ -14,6 +15,7 @@ document.documentElement.dataset.window = windowLabel;
 // Layouts; HQ toolbar sits below — US-003).
 const isWindows = /Windows/i.test(navigator.userAgent);
 document.documentElement.dataset.platform = isWindows ? 'windows' : 'other';
+installDesktopZoom();
 
 const target = document.getElementById('desktop-alt');
 

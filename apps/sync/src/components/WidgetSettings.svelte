@@ -311,4 +311,11 @@
     line-height: 1.3;
     color: light-dark(#c0392b, #ff6b6b);
   }
+
+  @media (prefers-reduced-motion: reduce) {
+    .toggle,
+    .toggle-knob {
+      transition: none;
+    }
+  }
 </style>

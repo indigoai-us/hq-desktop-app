@@ -80,7 +80,10 @@ describe('DESKTOP-004: project portfolio Kanban', () => {
     expect(page).toContain('data-testid="view-toggle-list"');
     expect(page).toContain('Owner · Anyone');
     expect(page).toContain('New project');
-    expect(page).toContain('onclick={() => void onnewproject?.()}');
+    expect(page).toContain('async function createProject(): Promise<void>');
+    expect(page).toContain('onclick={createProject}');
+    expect(page).toContain('disabled={newProjectPending}');
+    expect(page).toContain('aria-busy={newProjectPending}');
     expect(page).toContain('class="primary-action"');
     // Control order: search → state → owner → (legacy) → Board/List.
     const tools = page.indexOf('data-testid="portfolio-tools"');
@@ -186,10 +189,10 @@ describe('DESKTOP-004: project portfolio Kanban', () => {
   it('uses five type roles and title/meta 3px stack', () => {
     expect(V4_TYPE_SCALE).toEqual({
       metadata: 13,
-      secondary: 13,
-      body: 14,
-      section: 14,
-      detail: 14,
+      secondary: 14,
+      body: 15,
+      section: 17,
+      detail: 24,
     });
     expect(V4_ROW_STACK_GAP_PX).toBe(3);
     expect(page).toContain('--type-detail');
@@ -216,16 +219,20 @@ describe('DESKTOP-004: project portfolio Kanban', () => {
     expect(page).toContain('aria-busy={loading}');
     expect(page).toContain('get_company_project_creators');
     expect(page).toContain("'Unassigned'");
-    // New project remains wired from the company page shell.
-    expect(companyPage).toContain('onnewproject={startNewProject}');
-    expect(companyPage).toContain('<CompanyProjectsPage');
+    // The company shell owns the always-visible action and exposes immediate
+    // pending feedback while the Projects page keeps an optional guarded hook
+    // for embedded callers.
+    expect(companyPage).toContain('onclick={() => void startNewProject()}');
+    expect(companyPage).toContain('disabled={newProjectBusy}');
+    expect(companyPage).toContain('aria-busy={newProjectBusy}');
+    expect(companyPage).toContain('<CompanyProjectsPage slug={company.slug} />');
   });
 
   it('allows the board to horizontal-scroll while primary controls stay visible', () => {
     expect(page).toMatch(/\.kanban-board\s*\{[\s\S]*?overflow-x:\s*auto;/);
     expect(page).toContain('flex-shrink: 0');
     expect(page).toContain('portfolio-tools');
-    expect(page).toContain('@container company-projects (max-width: 760px)');
+    expect(page).toContain('@container company-projects (max-width: 820px)');
     expect(page).toContain('prefers-reduced-motion: reduce');
   });
 });

@@ -5,8 +5,10 @@
   "windows": ["dm-detail"],
   "permissions": [
     "core:default",
+    "core:webview:allow-set-webview-zoom",
     "core:event:default",
     "core:window:allow-close",
+    "core:window:allow-start-dragging",
     "core:window:allow-set-focus"
   ]
 }

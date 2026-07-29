@@ -12,6 +12,8 @@ mod tray;
 mod tray_helper;
 mod updater;
 mod util;
+#[cfg(target_os = "macos")]
+mod webview_asset_cache;
 
 /// Set the macOS application icon image at runtime.
 ///
@@ -93,6 +95,102 @@ const SENTRY_IDENTITY: hq_telemetry::SentryIdentity<'static> = hq_telemetry::Sen
     flavor: "desktop",
 };
 
+fn register_global_shortcuts(app: &tauri::AppHandle) {
+    use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
+
+    for (label, code) in [("Opt+Shift+H", Code::KeyH), ("Opt+Shift+O", Code::KeyO)] {
+        let shortcut = Shortcut::new(Some(Modifiers::ALT | Modifiers::SHIFT), code);
+        if let Err(error) = app.global_shortcut().register(shortcut) {
+            util::logfile::log(
+                "ui",
+                &format!("global shortcut {label} register FAILED: {error}"),
+            );
+        }
+    }
+}
+
+/// Start every background source that can deliver a user-visible notification
+/// or construct the shared banner webview.
+///
+/// This macOS-only group runs from the frontend-cache ready callback. The
+/// UNUserNotificationCenter delegate is intentionally registered earlier so
+/// macOS does not lose a cold-launch click; its response handler independently
+/// awaits this same readiness boundary.
+#[cfg(target_os = "macos")]
+fn setup_notification_producers(app: &tauri::AppHandle) {
+    use tauri::Listener;
+
+    updater::setup_update_checker(app);
+    commands::share_notify::setup_share_notify_poller(app.clone());
+
+    commands::meetings::setup_unattributed_meeting_poller(app.clone());
+
+    // Instant-DM push receiver — MQTT-over-WSS to AWS IoT Core. Wakes the
+    // singleton DM poll path; the interval poll remains the long-stop.
+    commands::dm_mqtt::setup_dm_mqtt_receiver(app.clone());
+
+    // Post-sync top-up remains additive to the independent interval poll.
+    let poll_handle = app.clone();
+    app.listen(crate::events::EVENT_SYNC_ALL_COMPLETE, move |_event| {
+        let handle = poll_handle.clone();
+        tauri::async_runtime::spawn(async move {
+            commands::share_notify::poll_once(handle).await;
+        });
+    });
+}
+
+fn setup_startup_surfaces(
+    app: &tauri::AppHandle,
+    first_run: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    tray::setup_tray(app)?;
+
+    if first_run {
+        tray::show_window_centered(app);
+        util::logfile::log("app", "first-run launch: centered onboarding card");
+    }
+
+    // US-002: always-on-top HQ wordmark widget (lower-right of the
+    // configured display). Gated by widgetEnabled in menubar.json
+    // (default on). Non-activating, appearance-reactive.
+    commands::widget::setup_widget_window(app);
+
+    // macOS: the menu-bar item lives in a separate native helper process
+    // (tao parks an in-process status item off-screen on Tahoe).
+    #[cfg(target_os = "macos")]
+    tray_helper::spawn_and_poll(app);
+
+    register_global_shortcuts(app);
+    Ok(())
+}
+
+fn surface_existing_instance(app: &tauri::AppHandle) {
+    #[cfg(target_os = "windows")]
+    {
+        tray::show_window_at_tray(app);
+        util::logfile::log(
+            "app",
+            "single-instance: showed main popover at tray on second launch",
+        );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+        util::logfile::log(
+            "app",
+            "single-instance: focused existing window on second launch",
+        );
+    } else {
+        util::logfile::log(
+            "app",
+            "single-instance: second launch with no window to focus",
+        );
+    }
+}
+
 fn main() {
     // Sentry init + the PII/secret scrubber live in the hq-telemetry crate. The
     // build-time values (DSN/version/environment, emitted by build.rs) are read
@@ -151,6 +249,12 @@ fn main() {
     }
 
     tauri::Builder::default()
+        .on_page_load(|webview, payload| {
+            #[cfg(target_os = "macos")]
+            webview_asset_cache::handle_page_load(webview.label(), payload.event());
+            #[cfg(not(target_os = "macos"))]
+            let _ = (webview, payload);
+        })
         // single-instance MUST be the first plugin: it runs before any other
         // plugin can create a window or spawn a process, so a second launch is
         // collapsed back into the already-running instance. macOS routes a
@@ -166,30 +270,16 @@ fn main() {
                 commands::desktop_alt::ActivationSource::TaskbarSecondProcess,
             );
 
-            #[cfg(target_os = "windows")]
-            {
-                tray::show_window_at_tray(app);
-                crate::util::logfile::log(
+            #[cfg(target_os = "macos")]
+            if webview_asset_cache::defer_activation_while_pending() {
+                util::logfile::log(
                     "app",
-                    "single-instance: showed main popover at tray on second launch",
+                    "single-instance: activation deferred until startup cache gate completes",
                 );
+                return;
             }
 
-            #[cfg(not(target_os = "windows"))]
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.unminimize();
-                let _ = window.set_focus();
-                crate::util::logfile::log(
-                    "app",
-                    "single-instance: focused existing window on second launch",
-                );
-            } else {
-                crate::util::logfile::log(
-                    "app",
-                    "single-instance: second launch with no window to focus",
-                );
-            }
+            surface_existing_instance(app);
         }))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_http::init())
@@ -401,6 +491,7 @@ fn main() {
             updater::available_channels,
             updater::is_indigo_user,
             commands::hq_cli_update::check_hq_cli_update,
+            commands::hq_cli_update::get_hq_cli_version,
             commands::hq_cli_update::install_hq_cli_update,
             commands::hq_cli_update::set_hq_cli_update_dismissed,
             commands::hq_core_update::get_hq_version,
@@ -450,6 +541,9 @@ fn main() {
             commands::desktop_alt::get_company_crm_projection_vault,
             commands::desktop_alt::get_company_file_tree,
             commands::desktop_alt::get_company_file_content,
+            commands::desktop_alt::get_authorized_file_preview,
+            commands::desktop_alt::reveal_authorized_file,
+            commands::desktop_alt::open_authorized_file_in_claude,
             commands::desktop_alt::list_hq_dir,
             commands::projects_local::get_local_projects,
             commands::projects_local::get_local_project_prd,
@@ -514,6 +608,7 @@ fn main() {
             commands::dm_notify::poll_dm_inbox,
             commands::dm_notify::open_dm_detail,
             commands::dm_notify::open_inbox_window,
+            commands::dm_notify::open_communications_window,
             commands::dm_notify::dm_detail_window_ready,
             commands::dm_notify::send_dm,
             commands::dm_notify::send_dm_to_email,
@@ -666,22 +761,35 @@ fn main() {
                 }
             }
 
-            tray::setup_tray(app.handle())?;
-            if first_run {
-                tray::show_window_centered(app.handle());
-                util::logfile::log("app", "first-run launch: centered onboarding card");
+            // WKWebView keeps cache entries for Tauri's stable custom-protocol
+            // origin across app-bundle replacements. Keep every user-reachable
+            // startup surface gated until disk/memory cache eviction and the
+            // hidden-main reload have both been dispatched. The callback runs
+            // immediately in dev, when this version is already complete, or
+            // when eviction cannot be scheduled.
+            #[cfg(target_os = "macos")]
+            {
+                let startup_app = app.handle().clone();
+                webview_asset_cache::evict_frontend_asset_cache_once(
+                    app.handle(),
+                    env!("APP_VERSION"),
+                    move || {
+                        if let Err(error) = setup_startup_surfaces(&startup_app, first_run) {
+                            util::logfile::log(
+                                "app",
+                                &format!("startup surface setup failed after cache gate: {error}"),
+                            );
+                        }
+                        setup_notification_producers(&startup_app);
+                        if webview_asset_cache::take_deferred_activation() {
+                            surface_existing_instance(&startup_app);
+                        }
+                    },
+                );
             }
 
-            // US-002: always-on-top HQ wordmark widget (lower-right of the
-            // configured display). Gated by widgetEnabled in menubar.json
-            // (default on). Non-activating, appearance-reactive.
-            commands::widget::setup_widget_window(app.handle());
-
-            // macOS: the menu-bar item lives in a separate native helper process
-            // (tao parks an in-process status item off-screen on Tahoe). Spawn
-            // it + start the command-file poller.
-            #[cfg(target_os = "macos")]
-            tray_helper::spawn_and_poll(app.handle());
+            #[cfg(not(target_os = "macos"))]
+            setup_startup_surfaces(app.handle(), first_run)?;
 
             // Hard version-gate against hq-pro fires at 5s (BEFORE the soft
             // updater at 10s) so a known-bad release can be yanked before the
@@ -689,6 +797,7 @@ fn main() {
             // `apps/hq-pro/src/vault-service/handlers/client-version-check.ts`.
             // See `commands::version_gate` for the rationale.
             commands::version_gate::setup_version_gate(app.handle());
+            #[cfg(not(target_os = "macos"))]
             updater::setup_update_checker(app.handle());
             commands::telemetry::setup_daily_active_emit();
             // Surface live progress for ANY sync (auto-sync / CLI), not just
@@ -698,52 +807,36 @@ fn main() {
             // is on, so a crash/kill doesn't leave sync silently quiet.
             commands::daemon::setup_daemon_supervisor(app.handle());
 
-            // Share-notification poller. Gated solely on the shareNotifications
-            // menubar preference (the @getindigo.ai dogfood gate was removed
-            // 2026-05-26 — see share_notify::should_poll). Gate is checked
-            // inside share_notify, not here, so it is never scattered.
-            //
-            // Delivery runs on an independent timer (launch poll + interval),
-            // so notifications no longer depend on a sync completing — see the
-            // 2026-05-28 incident report. The post-sync poll below is a
-            // latency optimization layered on top, not the sole trigger.
+            // Preserve the existing non-macOS notification startup order:
+            // updater registration above follows the hard version gate, while
+            // share/DM producers and the post-sync top-up start after the daemon
+            // supervisor. macOS starts the same producers only from the cache
+            // readiness callback.
+            #[cfg(not(target_os = "macos"))]
             {
                 use tauri::Listener;
-                // (a) Launch poll (5s delay) + independent interval timer.
-                commands::share_notify::setup_share_notify_poller(app.handle().clone());
-                #[cfg(target_os = "macos")]
-                commands::meetings::setup_unattributed_meeting_poller(app.handle().clone());
 
-                // (a') Instant-DM push receiver — MQTT-over-WSS to AWS IoT Core.
-                // Wakes `poll_dm_once` on push so DMs arrive in near-real-time
-                // instead of waiting up to 60s. The interval poll above is the
-                // long-stop, so this is purely additive — any MQTT failure falls
-                // back to it silently. The receiver is platform-neutral (rumqttc
-                // + aws-sigv4 over WSS) and GA for macOS and Windows.
-                #[cfg(any(target_os = "macos", target_os = "windows"))]
+                commands::share_notify::setup_share_notify_poller(app.handle().clone());
+                #[cfg(target_os = "windows")]
                 commands::dm_mqtt::setup_dm_mqtt_receiver(app.handle().clone());
 
-                // (a'') Clickable meeting-detected notifications. Installs a
-                // UNUserNotificationCenter delegate (once) and stashes the
-                // AppHandle so a *cold* banner click — no desktop-alt window
-                // open, hence no frontend listener — can still open the
-                // "HQ Meetings" window straight from Rust. Safe to call when
-                // unbundled (guards on bundleIdentifier internally).
-                #[cfg(target_os = "macos")]
-                commands::un_notify::register_delegate(app.handle());
-
-                // (b) Post-sync poll — low-latency top-up after a sync run.
                 let poll_handle = app.handle().clone();
                 app.listen(
                     crate::events::EVENT_SYNC_ALL_COMPLETE,
                     move |_event| {
-                        let h = poll_handle.clone();
+                        let handle = poll_handle.clone();
                         tauri::async_runtime::spawn(async move {
-                            commands::share_notify::poll_once(h).await;
+                            commands::share_notify::poll_once(handle).await;
                         });
                     },
                 );
             }
+
+            // Install the clickable-meeting notification delegate immediately
+            // so macOS can deliver a cold-launch response. Its handler awaits
+            // the cache-ready signal before opening any webview destination.
+            #[cfg(target_os = "macos")]
+            commands::un_notify::register_delegate(app.handle());
 
             // Mission Control polling loop (US-005). Re-scans the local Claude/
             // Codex fleet on a configurable interval (HQ_SYNC_SESSIONS_POLL_SECS,
@@ -793,23 +886,6 @@ fn main() {
                     });
                 }
                 _ => {}
-            }
-
-            // Register global shortcuts so the popover and larger desktop
-            // window can be summoned from any app. Registration can fail if
-            // another app already holds a chord — log and continue so the
-            // rest of the app still launches.
-            {
-                use tauri_plugin_global_shortcut::GlobalShortcutExt;
-                for (label, code) in [("Opt+Shift+H", Code::KeyH), ("Opt+Shift+O", Code::KeyO)] {
-                    let shortcut = Shortcut::new(Some(Modifiers::ALT | Modifiers::SHIFT), code);
-                    if let Err(e) = app.global_shortcut().register(shortcut) {
-                        util::logfile::log(
-                            "ui",
-                            &format!("global shortcut {label} register FAILED: {e}"),
-                        );
-                    }
-                }
             }
 
             commands::hq_cli_update::setup_hq_cli_update_checker(app.handle());

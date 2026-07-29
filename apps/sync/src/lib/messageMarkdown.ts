@@ -1,5 +1,5 @@
-import { renderInline } from './markdown';
+import { renderMarkdown } from './markdown';
 
 export function renderMessageBodyMarkdown(body: string): string {
-  return renderInline(body);
+  return renderMarkdown(body);
 }

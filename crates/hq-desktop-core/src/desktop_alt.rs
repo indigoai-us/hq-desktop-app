@@ -254,18 +254,21 @@ pub fn parse_crm_projection_response(
     serde_json::from_str(trimmed).map_err(|e| format!("crm-projection parse: {e}"))
 }
 
-/// Per-project creator for the Projects list Lead column. The cloud board model
-/// already derives each project's creator from its prd.json's S3 `created-by`
-/// author metadata (resolved honestly server-side — never fabricated), so we
-/// just expose it here. Rows are matchable to `get_local_projects` by board
-/// `id` (same board.json project id) or by `prdPath`. Only projects that
-/// actually carry a creator are returned; everything else stays "Unassigned".
+/// Per-project attribution for Projects surfaces. The legacy command/type name
+/// remains for compatibility, while optional owner/origin fields extend the
+/// established creator row without breaking older webviews.
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectCreator {
     pub id: String,
     pub prd_path: Option<String>,
+    /// Kept as a string for the original command contract; empty when the row
+    /// is retained for owner/origin but no displayable creator exists.
     pub creator: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -280,27 +283,77 @@ pub struct BoardCreatorProject {
     pub id: String,
     #[serde(default, rename = "prdPath")]
     pub prd_path: Option<String>,
-    #[serde(default, rename = "createdByName")]
-    pub created_by_name: Option<String>,
+    #[serde(
+        default,
+        rename = "createdByName",
+        alias = "creatorName",
+        alias = "creator"
+    )]
+    pub created_by_name: Option<serde_json::Value>,
+    #[serde(default, rename = "owner", alias = "ownerName", alias = "owner_name")]
+    pub owner: Option<serde_json::Value>,
+    #[serde(default, rename = "origin", alias = "source")]
+    pub origin: Option<serde_json::Value>,
 }
-/// Pure parse of the board JSON into creator rows: keep only projects that
-/// carry a non-empty `createdByName`, so the frontend map only contains real
-/// creators (everything else stays "Unassigned"). Testable in isolation.
+
+fn attribution_label(value: &Option<serde_json::Value>, keys: &[&str]) -> Option<String> {
+    let value = value.as_ref()?;
+    if let Some(value) = value.as_str() {
+        let value = value.trim();
+        return (!value.is_empty()).then(|| value.to_string());
+    }
+    let object = value.as_object()?;
+    keys.iter().find_map(|key| {
+        object
+            .get(*key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    })
+}
+
+/// Pure parse of cloud board JSON into backward-compatible attribution rows.
+/// Rows with no displayable creator, owner, or origin are omitted.
 pub fn parse_project_creators(text: &str) -> Result<Vec<ProjectCreator>, String> {
     let env: BoardCreatorEnvelope = serde_json::from_str(text).map_err(|e| e.to_string())?;
     Ok(env
         .projects
         .into_iter()
         .filter_map(|p| {
-            let creator = p.created_by_name?;
-            let creator = creator.trim().to_string();
-            if creator.is_empty() {
+            let creator = attribution_label(
+                &p.created_by_name,
+                &[
+                    "displayName",
+                    "display_name",
+                    "name",
+                    "email",
+                    "handle",
+                    "label",
+                ],
+            );
+            let owner = attribution_label(
+                &p.owner,
+                &[
+                    "displayName",
+                    "display_name",
+                    "name",
+                    "email",
+                    "handle",
+                    "label",
+                ],
+            );
+            let origin =
+                attribution_label(&p.origin, &["label", "name", "type", "provider", "source"]);
+            if creator.is_none() && owner.is_none() && origin.is_none() {
                 return None;
             }
             Some(ProjectCreator {
                 id: p.id,
                 prd_path: p.prd_path,
-                creator,
+                creator: creator.unwrap_or_default(),
+                owner,
+                origin,
             })
         })
         .collect())
@@ -1310,6 +1363,118 @@ pub fn lexically_normalize(path: &Path) -> PathBuf {
     out
 }
 
+/// Validate and normalize the forward-slash HQ-relative path contract.
+///
+/// `allow_root` permits an empty path for the lazy explorer's HQ-root listing.
+pub fn validate_hq_relative_path(rel_path: &str, allow_root: bool) -> Result<String, String> {
+    let value = rel_path.trim();
+    if value.is_empty() {
+        return allow_root
+            .then(String::new)
+            .ok_or_else(|| "invalid HQ-relative path: path is required".to_string());
+    }
+    if value.starts_with('/') || value.contains('\\') || value.contains('\0') {
+        return Err(format!("invalid HQ-relative path: {rel_path:?}"));
+    }
+
+    let mut segments: Vec<&str> = Vec::new();
+    for segment in value.split('/') {
+        match segment {
+            "." => continue,
+            "" | ".." => {
+                return Err(format!("invalid HQ-relative path: {rel_path:?}"));
+            }
+            _ if segment.contains(':') => {
+                // Reject Windows drive paths and alternate data streams on
+                // every platform so the wire contract has one meaning.
+                return Err(format!("invalid HQ-relative path: {rel_path:?}"));
+            }
+            _ => segments.push(segment),
+        }
+    }
+
+    if segments.is_empty() {
+        return allow_root
+            .then(String::new)
+            .ok_or_else(|| "invalid HQ-relative path: path is required".to_string());
+    }
+    Ok(segments.join("/"))
+}
+
+/// Resolve the company addressed by a valid HQ-relative path.
+pub fn company_slug_for_hq_path(rel_path: &str) -> Result<Option<String>, String> {
+    let normalized = validate_hq_relative_path(rel_path, true)?;
+    let mut segments = normalized.split('/');
+    if segments.next() != Some("companies") {
+        return Ok(None);
+    }
+    Ok(segments
+        .next()
+        .filter(|slug| !slug.is_empty())
+        .map(str::to_string))
+}
+
+/// Resolve an existing HQ-relative path through filesystem symlinks and return
+/// its canonical HQ-relative spelling. The canonical target must remain under
+/// the canonical HQ root.
+pub fn canonical_hq_relative_path(
+    hq_root: &Path,
+    rel_path: &str,
+    allow_root: bool,
+) -> Result<String, String> {
+    let normalized = validate_hq_relative_path(rel_path, allow_root)?;
+    let candidate = if normalized.is_empty() {
+        hq_root.to_path_buf()
+    } else {
+        hq_root.join(&normalized)
+    };
+    let canonical_root =
+        std::fs::canonicalize(hq_root).map_err(|e| format!("could not resolve HQ folder: {e}"))?;
+    let canonical_candidate = std::fs::canonicalize(&candidate)
+        .map_err(|e| format!("could not resolve {rel_path:?}: {e}"))?;
+    let relative = canonical_candidate
+        .strip_prefix(&canonical_root)
+        .map_err(|_| format!("path escapes the HQ folder: {rel_path:?}"))?;
+
+    let mut segments: Vec<String> = Vec::new();
+    for component in relative.components() {
+        match component {
+            Component::Normal(value) => {
+                let value = value
+                    .to_str()
+                    .ok_or_else(|| format!("path is not valid UTF-8: {rel_path:?}"))?;
+                segments.push(value.to_string());
+            }
+            Component::CurDir => {}
+            _ => return Err(format!("invalid canonical HQ path: {rel_path:?}")),
+        }
+    }
+    if segments.is_empty() && !allow_root {
+        return Err("invalid HQ-relative path: path is required".to_string());
+    }
+    Ok(segments.join("/"))
+}
+
+/// Whether a resolved company workspace grants local Files access.
+pub fn workspace_grants_company_file_access(workspaces: &[Workspace], slug: &str) -> bool {
+    let Some(workspace) = workspaces
+        .iter()
+        .find(|workspace| workspace.slug == slug && workspace.has_local_folder)
+    else {
+        return false;
+    };
+
+    match workspace.membership_status.as_deref() {
+        Some("active") => true,
+        // A genuinely local-only company is authored on this machine and has
+        // no cloud identity to authorize. Cloud-bound folders fail closed
+        // when live membership hydration is unavailable.
+        None => workspace.state == WorkspaceState::LocalOnly && workspace.cloud_uid.is_none(),
+        // Pending, paused, revoked, and future unknown statuses fail closed.
+        Some(_) => false,
+    }
+}
+
 /// Curated dev-noise exclusion set for the local file explorer.
 ///
 /// These entry names are filtered out at **every level** of the tree so users
@@ -1373,16 +1538,26 @@ pub fn build_file_tree(hq_root: &Path, slug: &str) -> Result<FileNode, String> {
     if slug.is_empty() {
         return Err("company slug is required".to_string());
     }
-    let root = hq_root.join("companies").join(slug);
-    // Defense-in-depth: a slug containing `..` (or separators) must not let the
-    // walk escape the HQ folder.
-    if !is_within(hq_root, &root) {
-        return Err(format!("company slug escapes the HQ folder: {slug:?}"));
+    let rel = format!("companies/{slug}");
+    let normalized = validate_hq_relative_path(&rel, false)?;
+    if normalized != rel
+        || company_slug_for_hq_path(&normalized)?.as_deref() != Some(slug)
+        || normalized.split('/').count() != 2
+    {
+        return Err(format!("invalid company slug: {slug:?}"));
     }
+    let canonical_root =
+        std::fs::canonicalize(hq_root).map_err(|e| format!("could not resolve HQ folder: {e}"))?;
+    let canonical_rel = canonical_hq_relative_path(&canonical_root, &normalized, false)?;
+    if canonical_rel != normalized {
+        return Err(format!(
+            "company folder resolves across HQ company boundaries: {slug:?}"
+        ));
+    }
+    let root = canonical_root.join(&canonical_rel);
     if !root.is_dir() {
         return Err(format!("company '{slug}' has no local folder"));
     }
-    let rel = format!("companies/{slug}");
     build_node(&root, slug.to_string(), rel)
 }
 
@@ -1396,6 +1571,15 @@ pub fn build_node(abs: &Path, name: String, rel_path: String) -> Result<FileNode
         let entries = std::fs::read_dir(abs)
             .map_err(|e| format!("could not read directory {rel_path:?}: {e}"))?;
         for entry in entries.flatten() {
+            if entry
+                .file_type()
+                .map(|file_type| file_type.is_symlink())
+                .unwrap_or(true)
+            {
+                // A symlink can alias another company (or leave HQ entirely).
+                // Files exposes authored nodes only.
+                continue;
+            }
             let child_name = match entry.file_name().into_string() {
                 Ok(n) => n,
                 // Non-UTF-8 names can't round-trip through the JSON path
@@ -1431,6 +1615,149 @@ pub fn read_file_content(hq_root: &Path, rel_path: &str) -> Result<String, Strin
     read_file_content_capped(hq_root, rel_path, MAX_FILE_BYTES)
 }
 
+#[cfg(test)]
+thread_local! {
+    static FILE_READ_AFTER_SIZE_CHECK_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
+}
+
+#[cfg(test)]
+fn set_file_read_after_size_check_hook(hook: impl FnOnce() + 'static) {
+    FILE_READ_AFTER_SIZE_CHECK_HOOK.with(|slot| {
+        *slot.borrow_mut() = Some(Box::new(hook));
+    });
+}
+
+#[cfg(test)]
+fn run_file_read_after_size_check_hook() {
+    FILE_READ_AFTER_SIZE_CHECK_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook();
+        }
+    });
+}
+
+#[cfg(not(test))]
+fn run_file_read_after_size_check_hook() {}
+
+#[cfg(unix)]
+fn open_regular_file_no_follow(path: &Path) -> Result<std::fs::File, String> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    // O_NOFOLLOW differs between the Linux family and BSD/Darwin family.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    const O_NOFOLLOW: i32 = 0x0002_0000;
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    const O_NOFOLLOW: i32 = 0x0000_0100;
+
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(O_NOFOLLOW)
+        .open(path)
+        .map_err(|e| format!("could not open preview file without following symlinks: {e}"))?;
+    let metadata = file
+        .metadata()
+        .map_err(|e| format!("could not inspect opened preview file: {e}"))?;
+    if !metadata.is_file() {
+        return Err("preview target is not a regular file".to_string());
+    }
+    Ok(file)
+}
+
+#[cfg(windows)]
+fn open_regular_file_no_follow(path: &Path) -> Result<std::fs::File, String> {
+    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+        .map_err(|e| {
+            format!("could not open preview file without following reparse points: {e}")
+        })?;
+    let metadata = file
+        .metadata()
+        .map_err(|e| format!("could not inspect opened preview file: {e}"))?;
+    if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err("preview target must not be a symlink or reparse point".to_string());
+    }
+    if !metadata.is_file() {
+        return Err("preview target is not a regular file".to_string());
+    }
+    Ok(file)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn open_regular_file_no_follow(path: &Path) -> Result<std::fs::File, String> {
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|e| format!("could not inspect preview file: {e}"))?;
+    if metadata.file_type().is_symlink() {
+        return Err("preview target must not be a symlink".to_string());
+    }
+    if !metadata.is_file() {
+        return Err("preview target is not a regular file".to_string());
+    }
+    std::fs::File::open(path).map_err(|e| format!("could not open preview file: {e}"))
+}
+
+/// Read raw file bytes under the same strict/canonical HQ-relative contract.
+pub fn read_file_bytes_capped(
+    hq_root: &Path,
+    rel_path: &str,
+    max_bytes: u64,
+) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+
+    let rel = validate_hq_relative_path(rel_path, false)?;
+    let canonical_root =
+        std::fs::canonicalize(hq_root).map_err(|e| format!("could not resolve HQ folder: {e}"))?;
+    let relative = Path::new(&rel);
+    let file_name = relative
+        .file_name()
+        .ok_or_else(|| format!("file not found: {rel_path:?}"))?;
+    let parent = relative.parent().unwrap_or_else(|| Path::new(""));
+    let parent_rel = parent
+        .to_str()
+        .ok_or_else(|| format!("path is not valid UTF-8: {rel_path:?}"))?;
+    let canonical_parent = canonical_hq_relative_path(hq_root, parent_rel, true)?;
+    let canonical_rel = if canonical_parent.is_empty() {
+        file_name.to_string_lossy().to_string()
+    } else {
+        format!("{canonical_parent}/{}", file_name.to_string_lossy())
+    };
+    if company_slug_for_hq_path(&rel)? != company_slug_for_hq_path(&canonical_rel)? {
+        return Err("file path resolves across HQ company boundaries".to_string());
+    }
+
+    let canonical_abs = canonical_root.join(&canonical_rel);
+    let file = open_regular_file_no_follow(&canonical_abs)?;
+    let initial_len = file
+        .metadata()
+        .map_err(|e| format!("could not inspect opened preview file: {e}"))?
+        .len();
+    if initial_len > max_bytes {
+        return Err(format!(
+            "file is too large to preview ({initial_len} bytes; limit is {max_bytes} bytes)"
+        ));
+    }
+
+    run_file_read_after_size_check_hook();
+    let mut bytes = Vec::new();
+    file.take(max_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("could not read {rel_path:?}: {e}"))?;
+    let actual_len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+    if actual_len > max_bytes {
+        return Err(format!(
+            "file is too large to preview ({actual_len} bytes read; limit is {max_bytes} bytes)"
+        ));
+    }
+    Ok(bytes)
+}
+
 /// Size-cap-parameterized core of `read_file_content`. Split out so tests can
 /// exercise the real cap path with a tiny `max_bytes` instead of writing a
 /// 50MB fixture. Mirrors `IgnoreFilter::within_size_limit`: the cap is checked
@@ -1440,27 +1767,7 @@ pub fn read_file_content_capped(
     rel_path: &str,
     max_bytes: u64,
 ) -> Result<String, String> {
-    let rel = rel_path.trim();
-    if rel.is_empty() {
-        return Err("path is required".to_string());
-    }
-    let abs = hq_root.join(rel);
-    if !is_within(hq_root, &abs) {
-        return Err(format!("path escapes the HQ folder: {rel_path:?}"));
-    }
-    if !abs.is_file() {
-        return Err(format!("file not found: {rel_path:?}"));
-    }
-    // Check the size cap from metadata FIRST — never read an oversized file.
-    let len = std::fs::metadata(&abs)
-        .map_err(|e| format!("could not stat {rel_path:?}: {e}"))?
-        .len();
-    if len > max_bytes {
-        return Err(format!(
-            "file is too large to preview ({len} bytes; limit is {max_bytes} bytes)"
-        ));
-    }
-    let bytes = std::fs::read(&abs).map_err(|e| format!("could not read {rel_path:?}: {e}"))?;
+    let bytes = read_file_bytes_capped(hq_root, rel_path, max_bytes)?;
     String::from_utf8(bytes).map_err(|_| format!("cannot preview binary file: {rel_path:?}"))
 }
 // ---- Lazy HQ-root file explorer (US-010) ----------------------------------
@@ -1488,12 +1795,12 @@ pub struct DirEntry {
 /// Pure body for `list_hq_dir` — takes an explicit HQ root so the traversal
 /// guard + noise filter + sort order are unit-testable without the gate.
 pub fn list_dir_entries(hq_root: &Path, rel_path: &str) -> Result<Vec<DirEntry>, String> {
-    // Empty / "." / "/" all mean the HQ root.
-    let rel = rel_path.trim().trim_matches('/');
-    let abs = if rel.is_empty() || rel == "." {
+    // Empty / "." mean the HQ root.
+    let rel = validate_hq_relative_path(rel_path, true)?;
+    let abs = if rel.is_empty() {
         hq_root.to_path_buf()
     } else {
-        hq_root.join(rel)
+        hq_root.join(&rel)
     };
 
     // Defense-in-depth: reject any path that escapes the HQ folder.
@@ -1504,10 +1811,22 @@ pub fn list_dir_entries(hq_root: &Path, rel_path: &str) -> Result<Vec<DirEntry>,
         return Err(format!("directory not found: {rel_path:?}"));
     }
 
-    let entries = std::fs::read_dir(&abs)
+    let canonical_rel = canonical_hq_relative_path(hq_root, &rel, true)?;
+    let canonical_root =
+        std::fs::canonicalize(hq_root).map_err(|e| format!("could not resolve HQ folder: {e}"))?;
+    let canonical_abs = canonical_root.join(canonical_rel);
+
+    let entries = std::fs::read_dir(&canonical_abs)
         .map_err(|e| format!("could not read directory {rel_path:?}: {e}"))?;
     let mut out: Vec<DirEntry> = Vec::new();
     for entry in entries.flatten() {
+        if entry
+            .file_type()
+            .map(|file_type| file_type.is_symlink())
+            .unwrap_or(true)
+        {
+            continue;
+        }
         let name = match entry.file_name().into_string() {
             Ok(n) => n,
             // Non-UTF-8 names can't round-trip through the JSON contract — skip.
@@ -1518,7 +1837,7 @@ pub fn list_dir_entries(hq_root: &Path, rel_path: &str) -> Result<Vec<DirEntry>,
         if is_dev_noise(&name, is_dir) {
             continue;
         }
-        let child_rel = if rel.is_empty() || rel == "." {
+        let child_rel = if rel.is_empty() {
             name.clone()
         } else {
             format!("{rel}/{name}")
@@ -1550,6 +1869,13 @@ pub fn dir_has_visible_children(abs: &Path) -> bool {
         return false;
     };
     for entry in entries.flatten() {
+        if entry
+            .file_type()
+            .map(|file_type| file_type.is_symlink())
+            .unwrap_or(true)
+        {
+            continue;
+        }
         let Ok(name) = entry.file_name().into_string() else {
             continue;
         };
@@ -1688,6 +2014,43 @@ mod tests {
             .unwrap()
             .is_empty());
         assert!(super::parse_project_creators("not json").is_err());
+    }
+
+    #[test]
+    fn parse_project_creators_preserves_optional_owner_and_origin_without_requiring_creator() {
+        let body = r#"{
+            "projects": [
+                {
+                    "id":"p1",
+                    "prdPath":"companies/co/projects/a/prd.json",
+                    "createdByName":"Corey",
+                    "ownerName":"Maya",
+                    "source":"Linear import"
+                },
+                {
+                    "id":"p2",
+                    "owner":{"displayName":"Ada"},
+                    "origin":"HQ plan"
+                },
+                {
+                    "id":"p3",
+                    "owner":{"uid":"opaque-only"},
+                    "source":" "
+                }
+            ]
+        }"#;
+        let rows = super::parse_project_creators(body).expect("parses");
+        assert_eq!(rows.len(), 2, "opaque/blank attribution is omitted");
+
+        let p1 = rows.iter().find(|row| row.id == "p1").unwrap();
+        assert_eq!(p1.creator, "Corey");
+        assert_eq!(p1.owner.as_deref(), Some("Maya"));
+        assert_eq!(p1.origin.as_deref(), Some("Linear import"));
+
+        let p2 = rows.iter().find(|row| row.id == "p2").unwrap();
+        assert!(p2.creator.is_empty());
+        assert_eq!(p2.owner.as_deref(), Some("Ada"));
+        assert_eq!(p2.origin.as_deref(), Some("HQ plan"));
     }
 
     #[test]
@@ -2650,8 +3013,12 @@ mod tests {
 
     mod file_explorer {
         use super::super::{
-            build_file_tree, read_file_content, read_file_content_capped, FileNode,
+            build_file_tree, canonical_hq_relative_path, company_slug_for_hq_path,
+            read_file_bytes_capped, read_file_content, read_file_content_capped,
+            set_file_read_after_size_check_hook, validate_hq_relative_path,
+            workspace_grants_company_file_access, FileNode,
         };
+        use crate::workspaces::{Workspace, WorkspaceKind, WorkspaceState};
         use std::fs;
         use std::path::PathBuf;
         use tempfile::TempDir;
@@ -2882,19 +3249,197 @@ mod tests {
             assert!(build_file_tree(&root, "nope").is_err());
         }
 
+        #[cfg(unix)]
+        #[test]
+        fn build_file_tree_rejects_company_root_symlink_aliases() {
+            use std::os::unix::fs::symlink;
+
+            let tmp = TempDir::new().unwrap();
+            let root = tmp.path().to_path_buf();
+            let pending = root.join("companies").join("pending");
+            fs::create_dir_all(&pending).unwrap();
+            fs::write(pending.join("secret.md"), "secret").unwrap();
+
+            let active = root.join("companies").join("active");
+            symlink(&pending, &active).unwrap();
+            assert!(build_file_tree(&root, "active").is_err());
+
+            fs::remove_file(&active).unwrap();
+            let outside = TempDir::new().unwrap();
+            fs::write(outside.path().join("outside.md"), "outside").unwrap();
+            symlink(outside.path(), &active).unwrap();
+            assert!(build_file_tree(&root, "active").is_err());
+        }
+
+        #[test]
+        fn hq_relative_path_contract_rejects_ambiguous_or_traversing_inputs() {
+            assert_eq!(
+                validate_hq_relative_path("./companies/indigo/policies/foo.md", false).unwrap(),
+                "companies/indigo/policies/foo.md"
+            );
+            assert_eq!(validate_hq_relative_path("", true).unwrap(), "");
+
+            for invalid in [
+                "companies/indigo/../pending/secret.md",
+                "companies\\pending\\secret.md",
+                "/companies/pending/secret.md",
+                "C:/companies/pending/secret.md",
+                "companies//pending/secret.md",
+                "companies/pending/file.txt:stream",
+                "companies/pending/\0secret.md",
+            ] {
+                assert!(
+                    validate_hq_relative_path(invalid, false).is_err(),
+                    "accepted ambiguous path: {invalid:?}"
+                );
+            }
+            assert!(validate_hq_relative_path("   ", false).is_err());
+        }
+
+        #[test]
+        fn company_path_resolution_runs_after_strict_path_validation() {
+            assert_eq!(
+                company_slug_for_hq_path("companies/indigo/knowledge/overview.md").unwrap(),
+                Some("indigo".to_string())
+            );
+            assert_eq!(
+                company_slug_for_hq_path("./personal/knowledge/overview.md").unwrap(),
+                None
+            );
+            assert!(company_slug_for_hq_path("companies/indigo/../pending/secret.md").is_err());
+            assert!(company_slug_for_hq_path("companies\\pending\\secret.md").is_err());
+        }
+
+        fn company_workspace(
+            slug: &str,
+            state: WorkspaceState,
+            membership_status: Option<&str>,
+        ) -> Workspace {
+            Workspace {
+                slug: slug.to_string(),
+                display_name: slug.to_string(),
+                kind: WorkspaceKind::Company,
+                state,
+                cloud_uid: None,
+                bucket_name: None,
+                has_local_folder: true,
+                local_path: Some(format!("/tmp/HQ/companies/{slug}")),
+                membership_status: membership_status.map(str::to_string),
+                role: Some("member".to_string()),
+                sync_enabled: true,
+                last_synced_at: None,
+                broken_reason: None,
+                invited_by: None,
+                invited_at: None,
+            }
+        }
+
+        #[test]
+        fn company_file_access_requires_active_or_local_owned_workspace() {
+            let workspaces = vec![
+                company_workspace("active", WorkspaceState::Synced, Some("active")),
+                company_workspace("pending", WorkspaceState::Synced, Some("pending")),
+                company_workspace("paused", WorkspaceState::Synced, Some("paused")),
+                company_workspace("local", WorkspaceState::LocalOnly, None),
+                company_workspace("offline", WorkspaceState::Synced, None),
+            ];
+
+            assert!(workspace_grants_company_file_access(&workspaces, "active"));
+            assert!(workspace_grants_company_file_access(&workspaces, "local"));
+            assert!(!workspace_grants_company_file_access(
+                &workspaces,
+                "offline"
+            ));
+            assert!(!workspace_grants_company_file_access(
+                &workspaces,
+                "pending"
+            ));
+            assert!(!workspace_grants_company_file_access(&workspaces, "paused"));
+            assert!(!workspace_grants_company_file_access(
+                &workspaces,
+                "unknown"
+            ));
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn canonical_company_resolution_exposes_cross_scope_symlink_aliases() {
+            use std::os::unix::fs::symlink;
+
+            let tmp = TempDir::new().unwrap();
+            let root = tmp.path().to_path_buf();
+            let active = root.join("companies").join("active");
+            let pending = root.join("companies").join("pending");
+            let personal = root.join("personal");
+            fs::create_dir_all(&active).unwrap();
+            fs::create_dir_all(&pending).unwrap();
+            fs::create_dir_all(&personal).unwrap();
+            fs::write(pending.join("secret.md"), "not granted").unwrap();
+            fs::write(personal.join("private.md"), "personal").unwrap();
+            symlink(&pending, active.join("pending-link")).unwrap();
+            symlink(&personal, active.join("personal-link")).unwrap();
+
+            assert_eq!(
+                canonical_hq_relative_path(
+                    &root,
+                    "companies/active/pending-link/secret.md",
+                    false,
+                )
+                .unwrap(),
+                "companies/pending/secret.md"
+            );
+            assert_eq!(
+                canonical_hq_relative_path(
+                    &root,
+                    "companies/active/personal-link/private.md",
+                    false,
+                )
+                .unwrap(),
+                "personal/private.md"
+            );
+
+            // Recursive and lazy tree payloads omit symlinks entirely, so an
+            // allowed company cannot expose another scope's entry names.
+            let tree = build_file_tree(&root, "active").unwrap();
+            assert!(tree.children.is_empty());
+            let entries = super::super::list_dir_entries(&root, "companies/active").unwrap();
+            assert!(entries.is_empty());
+        }
+
         #[test]
         fn read_file_content_rejects_path_traversal() {
             let tmp = TempDir::new().unwrap();
             let root = tmp.path().to_path_buf();
             let err = read_file_content(&root, "../../etc/passwd").unwrap_err();
-            assert!(err.contains("escapes the HQ folder"), "got: {err}");
+            assert!(err.contains("invalid HQ-relative path"), "got: {err}");
 
             // Absolute path also escapes.
             let abs_err = read_file_content(&root, "/etc/passwd").unwrap_err();
-            assert!(abs_err.contains("escapes the HQ folder"), "got: {abs_err}");
+            assert!(
+                abs_err.contains("invalid HQ-relative path"),
+                "got: {abs_err}"
+            );
 
             // Empty path is rejected.
             assert!(read_file_content(&root, "   ").is_err());
+        }
+
+        #[test]
+        fn read_file_content_rejects_cross_company_parent_traversal() {
+            let tmp = TempDir::new().unwrap();
+            let root = tmp.path().to_path_buf();
+            let pending = root.join("companies").join("pending");
+            fs::create_dir_all(&pending).unwrap();
+            fs::write(pending.join("secret.md"), "not granted").unwrap();
+
+            let err =
+                read_file_content(&root, "companies/indigo/../pending/secret.md").unwrap_err();
+            assert!(err.contains("invalid HQ-relative path"), "got: {err}");
+            let slash_err = read_file_content(&root, "companies\\pending\\secret.md").unwrap_err();
+            assert!(
+                slash_err.contains("invalid HQ-relative path"),
+                "got: {slash_err}"
+            );
         }
 
         #[test]
@@ -2939,6 +3484,64 @@ mod tests {
             assert_eq!(
                 read_file_content_capped(&root, "companies/test/ok.txt", 4).unwrap(),
                 "abcd"
+            );
+        }
+
+        #[test]
+        fn read_file_bytes_capped_supports_binary_media_without_losing_the_cap() {
+            let tmp = TempDir::new().unwrap();
+            let root = tmp.path().to_path_buf();
+            let dir = root.join("companies").join("test");
+            fs::create_dir_all(&dir).unwrap();
+            let binary = [0xff, 0xd8, 0xff, 0x00, 0x80];
+            fs::write(dir.join("photo.jpg"), binary).unwrap();
+
+            assert_eq!(
+                read_file_bytes_capped(&root, "companies/test/photo.jpg", 5).unwrap(),
+                binary
+            );
+            let err = read_file_bytes_capped(&root, "companies/test/photo.jpg", 4).unwrap_err();
+            assert!(err.contains("too large to preview"), "got: {err}");
+            assert!(
+                read_file_bytes_capped(&root, "companies/test/../pending/secret.jpg", 5,).is_err()
+            );
+        }
+
+        #[test]
+        fn read_file_bytes_capped_enforces_limit_on_bytes_actually_read() {
+            let tmp = TempDir::new().unwrap();
+            let root = tmp.path().to_path_buf();
+            let dir = root.join("companies").join("test");
+            fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("changing.jpg");
+            fs::write(&path, b"1234").unwrap();
+
+            set_file_read_after_size_check_hook({
+                let path = path.clone();
+                move || fs::write(path, b"1234567890").unwrap()
+            });
+
+            let error =
+                read_file_bytes_capped(&root, "companies/test/changing.jpg", 4).unwrap_err();
+            assert!(error.contains("too large to preview"), "got: {error}");
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn read_file_bytes_capped_rejects_a_final_component_symlink() {
+            use std::os::unix::fs::symlink;
+
+            let tmp = TempDir::new().unwrap();
+            let root = tmp.path().to_path_buf();
+            let dir = root.join("companies").join("test");
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("real.jpg"), b"image").unwrap();
+            symlink(dir.join("real.jpg"), dir.join("alias.jpg")).unwrap();
+
+            let error = read_file_bytes_capped(&root, "companies/test/alias.jpg", 16).unwrap_err();
+            assert!(
+                error.contains("symlink") || error.contains("could not open"),
+                "got: {error}",
             );
         }
 
@@ -3052,19 +3655,35 @@ mod tests {
 
             // Traversal escapes the HQ folder.
             let err = list_dir_entries(&root, "../../etc").unwrap_err();
-            assert!(err.contains("escapes the HQ folder"), "got: {err}");
+            assert!(err.contains("invalid HQ-relative path"), "got: {err}");
             // A `..` segment embedded mid-path also escapes.
             let mid_err = list_dir_entries(&root, "repos/../../etc").unwrap_err();
-            assert!(mid_err.contains("escapes the HQ folder"), "got: {mid_err}");
-            // A leading slash is normalized to an HQ-relative segment (so an
-            // "absolute"-looking input can never read outside the HQ folder);
-            // `/etc` becomes `etc`, which simply does not exist under the root.
+            assert!(
+                mid_err.contains("invalid HQ-relative path"),
+                "got: {mid_err}"
+            );
+            // Absolute-looking input is rejected by the cross-platform path
+            // contract rather than repaired into a different relative path.
             let abs_err = list_dir_entries(&root, "/etc").unwrap_err();
-            assert!(abs_err.contains("directory not found"), "got: {abs_err}");
+            assert!(
+                abs_err.contains("invalid HQ-relative path"),
+                "got: {abs_err}"
+            );
             // Nonexistent dir.
             assert!(list_dir_entries(&root, "nope").is_err());
             // A file path (not a dir) is rejected.
             assert!(list_dir_entries(&root, "README.md").is_err());
+        }
+
+        #[test]
+        fn list_dir_entries_rejects_cross_company_parent_traversal() {
+            use super::super::list_dir_entries;
+            let tmp = TempDir::new().unwrap();
+            let root = make_hq_root(&tmp);
+            fs::create_dir_all(root.join("companies").join("pending")).unwrap();
+
+            let err = list_dir_entries(&root, "companies/indigo/../pending").unwrap_err();
+            assert!(err.contains("invalid HQ-relative path"), "got: {err}");
         }
     }
 }

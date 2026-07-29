@@ -132,6 +132,27 @@ describe('US-001 V4 sidebar active-state mapping', () => {
     );
   });
 
+  it('never expands tenant navigation for an unaccepted company invite', () => {
+    const pending = company({
+      slug: 'sender-agency',
+      displayName: 'Sender Agency',
+      state: 'cloud-only',
+      membershipStatus: 'pending',
+      hasLocalFolder: false,
+      localPath: null,
+    });
+    const model = getV4SidebarModel(
+      { kind: 'company', slug: 'sender-agency', tab: 'projects' },
+      [pending],
+    );
+    const row = model.companies[0];
+
+    expect(row.pendingInvite).toBe(true);
+    expect(row.active).toBe(true);
+    expect(row.expanded).toBe(false);
+    expect(row.children).toEqual([]);
+  });
+
   it('keeps Skills and Workers visible and highlights their company child routes', () => {
     for (const tab of ['skills', 'workers'] as const) {
       const model = getV4SidebarModel({ kind: 'company', slug: 'hpo', tab }, workspaces);

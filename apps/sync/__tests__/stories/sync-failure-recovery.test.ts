@@ -157,7 +157,11 @@ describe('rendered desktop sync failure recovery', () => {
   });
 
   it('falls back to the clipboard when Claude cannot open', async () => {
-    invoke.mockRejectedValueOnce(new Error('Claude Code is not installed'));
+    invoke.mockImplementation((command: string) =>
+      command === 'get_hq_version'
+        ? Promise.resolve('15.0.16')
+        : Promise.reject(new Error('Claude Code is not installed')),
+    );
     renderFailure();
     const button = host.querySelector<HTMLButtonElement>(
       '[aria-label^="Finish sync in Claude Code"]',

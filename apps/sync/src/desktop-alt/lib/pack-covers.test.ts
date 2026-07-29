@@ -4,6 +4,7 @@ import {
   BUNDLED_PACK_COVERS,
   coverFallback,
   coverForListing,
+  coverTone,
 } from './pack-covers';
 import type { MarketplaceListing } from './marketplace';
 
@@ -91,5 +92,26 @@ describe('coverFallback — deterministic branded placeholder', () => {
     const fb = coverFallback(listing({ slug: '', name: '' }));
     expect(fb.monogram).toBe('?');
     expect(fb.gradient).toMatch(/^linear-gradient\(/);
+  });
+});
+
+describe('coverTone — stable marketplace color identity', () => {
+  it('returns one of the six supported tones and stays stable for a slug', () => {
+    const a = coverTone(listing({ slug: 'impeccable' }));
+    const b = coverTone(listing({ slug: 'impeccable', name: 'Renamed pack' }));
+
+    expect(a).toBe(b);
+    expect(a).toBeGreaterThanOrEqual(0);
+    expect(a).toBeLessThan(6);
+  });
+
+  it('does not collapse every listing onto one palette', () => {
+    const tones = new Set(
+      ['engineering', 'gstack', 'impeccable', 'magicpath-agent-skills'].map((slug) =>
+        coverTone(listing({ slug })),
+      ),
+    );
+
+    expect(tones.size).toBeGreaterThan(1);
   });
 });

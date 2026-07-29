@@ -105,6 +105,7 @@ async function waitForHydration(): Promise<void> {
   await vi.waitFor(() => {
     flushSync();
     expect(toggle().disabled).toBe(false);
+    expect(button('version-popout-check').disabled).toBe(false);
   });
 }
 
@@ -141,6 +142,41 @@ afterEach(async () => {
 });
 
 describe('VersionPopout restored updater behavior', () => {
+  it('separates the desktop app build from HQ Core and exposes Core channel status', async () => {
+    tauri.invoke.mockImplementation(async (command: string) => {
+      if (command === 'get_pending_update') return null;
+      if (command === 'get_settings') return { autoUpdate: true };
+      if (command === 'get_hq_version') return '15.0.66-beta.1';
+      if (command === 'check_core_state') {
+        return {
+          channel: 'staging',
+          targetVersion: '15.0.67-beta.1',
+          localVersion: '15.0.66-beta.1',
+          versionBehind: true,
+          driftReport: { count: 0 },
+        };
+      }
+      throw new Error(`Unexpected invoke: ${command}`);
+    });
+
+    mountPopout();
+    await waitForHydration();
+
+    await vi.waitFor(() => {
+      expect(
+        host.querySelector('[data-testid="version-popout-core-current"]')?.textContent,
+      ).toContain('v15.0.66-beta.1');
+    });
+    expect(
+      host.querySelector('[data-testid="version-popout-app-current"]')?.textContent,
+    ).toContain('v0.10.33');
+    expect(
+      host.querySelector('[data-testid="version-popout-core-status"]')?.textContent,
+    ).toContain('Staging · Update available to v15.0.67-beta.1');
+    expect(host.textContent).toContain('Desktop app');
+    expect(host.textContent).toContain('HQ Core');
+  });
+
   it('hydrates the pending updater result and the saved automatic-update preference', async () => {
     tauri.invoke.mockImplementation(async (command: string) => {
       if (command === 'get_pending_update') return { version: '0.10.34' };
@@ -156,7 +192,9 @@ describe('VersionPopout restored updater behavior', () => {
     expect(
       host.querySelector('[data-testid="version-popout-current"]')?.textContent,
     ).toBe('v0.10.33');
-    expect(toggle().disabled).toBe(true);
+    expect(
+      host.querySelector('[data-testid="version-popout-auto-loading"]'),
+    ).toBeTruthy();
 
     await waitForHydration();
 
@@ -218,6 +256,68 @@ describe('VersionPopout restored updater behavior', () => {
     await Promise.resolve();
     flushSync();
     expect(latest()).toBe('v0.10.33');
+  });
+
+  it('does not resurrect an update after native state clears during a manual check', async () => {
+    const check = deferred<UpdateInfo | null>();
+    tauri.invoke.mockImplementation((command: string) => {
+      if (command === 'get_pending_update') return Promise.resolve(null);
+      if (command === 'get_settings') return Promise.resolve({ autoUpdate: true });
+      if (command === 'get_hq_version') return Promise.resolve('15.0.66');
+      if (command === 'check_core_state') return Promise.resolve(null);
+      if (command === 'check_for_updates') return check.promise;
+      return Promise.reject(new Error(`Unexpected invoke: ${command}`));
+    });
+
+    mountPopout();
+    await waitForHydration();
+    await vi.waitFor(() => expect(clearListener).toBeTypeOf('function'));
+
+    button('version-popout-check').click();
+    flushSync();
+    expect(status()).toBe('Checking…');
+
+    clearListener?.({ payload: undefined });
+    flushSync();
+    expect(status()).toBe('Up to date');
+
+    check.resolve({ version: '0.10.35' });
+    await check.promise;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    flushSync();
+
+    expect(status()).toBe('Up to date');
+    expect(latest()).toBe('v0.10.33');
+    expect(button('version-popout-check').disabled).toBe(false);
+  });
+
+  it('does not let a stale empty manual check erase a newer updater event', async () => {
+    const check = deferred<UpdateInfo | null>();
+    tauri.invoke.mockImplementation((command: string) => {
+      if (command === 'get_pending_update') return Promise.resolve(null);
+      if (command === 'get_settings') return Promise.resolve({ autoUpdate: true });
+      if (command === 'get_hq_version') return Promise.resolve('15.0.66');
+      if (command === 'check_core_state') return Promise.resolve(null);
+      if (command === 'check_for_updates') return check.promise;
+      return Promise.reject(new Error(`Unexpected invoke: ${command}`));
+    });
+
+    mountPopout();
+    await waitForHydration();
+    await vi.waitFor(() => expect(updateListener).toBeTypeOf('function'));
+
+    button('version-popout-check').click();
+    updateListener?.({ payload: { version: '0.10.36' } });
+    flushSync();
+    expect(status()).toBe('Update available');
+
+    check.resolve(null);
+    await check.promise;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    flushSync();
+
+    expect(status()).toBe('Update available');
+    expect(latest()).toBe('v0.10.36');
   });
 
   it('does not treat native unchecked state as authoritative absence', async () => {
@@ -303,9 +403,9 @@ describe('VersionPopout restored updater behavior', () => {
     flushSync();
     expect(status()).toBe('Downloading…');
     expect(button('version-popout-check').disabled).toBe(true);
-    expect(
-      host.querySelector('[data-testid="version-popout-restart"]'),
-    ).toBeNull();
+    expect(button('version-popout-restart').disabled).toBe(true);
+    expect(button('version-popout-restart').getAttribute('aria-busy')).toBe('true');
+    expect(button('version-popout-restart').textContent).toContain('Downloading');
 
     install.resolve();
     await vi.waitFor(() => expect(status()).toBe('Restart to apply'));
@@ -331,6 +431,102 @@ describe('VersionPopout restored updater behavior', () => {
     expect(button('version-popout-restart').disabled).toBe(false);
   });
 
+  it('keeps authoritative cleared state when an in-flight install rejects afterward', async () => {
+    const install = deferred<void>();
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    tauri.invoke.mockImplementation((command: string) => {
+      if (command === 'get_pending_update') {
+        return Promise.resolve({ version: '0.10.34' });
+      }
+      if (command === 'get_settings') return Promise.resolve({ autoUpdate: true });
+      if (command === 'install_update') return install.promise;
+      return Promise.reject(new Error(`Unexpected invoke: ${command}`));
+    });
+
+    mountPopout();
+    await waitForHydration();
+    await vi.waitFor(() => expect(clearListener).toBeTypeOf('function'));
+    button('version-popout-restart').click();
+    flushSync();
+    expect(status()).toBe('Downloading…');
+
+    clearListener?.({ payload: undefined });
+    flushSync();
+    install.reject(new Error('No update available'));
+    await install.promise.catch(() => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    flushSync();
+
+    expect(status()).toBe('Up to date');
+    expect(latest()).toBe('v0.10.33');
+    expect(host.querySelector('[data-testid="version-popout-restart"]')).toBeNull();
+    expect(consoleError).not.toHaveBeenCalledWith(
+      'install_update failed:',
+      expect.anything(),
+    );
+    consoleError.mockRestore();
+  });
+
+  it('keeps a newer updater event when an older install completes afterward', async () => {
+    const install = deferred<void>();
+    tauri.invoke.mockImplementation((command: string) => {
+      if (command === 'get_pending_update') {
+        return Promise.resolve({ version: '0.10.34' });
+      }
+      if (command === 'get_settings') return Promise.resolve({ autoUpdate: true });
+      if (command === 'install_update') return install.promise;
+      return Promise.reject(new Error(`Unexpected invoke: ${command}`));
+    });
+
+    mountPopout();
+    await waitForHydration();
+    await vi.waitFor(() => expect(updateListener).toBeTypeOf('function'));
+    button('version-popout-restart').click();
+    flushSync();
+    expect(status()).toBe('Downloading…');
+
+    updateListener?.({ payload: { version: '0.10.36' } });
+    install.resolve();
+    await install.promise;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    flushSync();
+
+    expect(status()).toBe('Update available');
+    expect(latest()).toBe('v0.10.36');
+    expect(button('version-popout-restart').disabled).toBe(false);
+  });
+
+  it('ignores an install rejection that settles after the popout unmounts', async () => {
+    const install = deferred<void>();
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    tauri.invoke.mockImplementation((command: string) => {
+      if (command === 'get_pending_update') {
+        return Promise.resolve({ version: '0.10.34' });
+      }
+      if (command === 'get_settings') return Promise.resolve({ autoUpdate: true });
+      if (command === 'install_update') return install.promise;
+      return Promise.reject(new Error(`Unexpected invoke: ${command}`));
+    });
+
+    mountPopout();
+    await waitForHydration();
+    await vi.waitFor(() => expect(status()).toBe('Update available'));
+    button('version-popout-restart').click();
+    flushSync();
+
+    await unmount(component!);
+    component = null;
+    install.reject(new Error('window closed'));
+    await install.promise.catch(() => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(consoleError).not.toHaveBeenCalledWith(
+      'install_update failed:',
+      expect.anything(),
+    );
+    consoleError.mockRestore();
+  });
+
   it('persists automatic updates optimistically and rolls back a failed save', async () => {
     const save = deferred<void>();
     settings.update.mockReturnValueOnce(save.promise);
@@ -348,9 +544,13 @@ describe('VersionPopout restored updater behavior', () => {
       flushSync();
       expect(toggle().checked).toBe(true);
       expect(toggle().disabled).toBe(false);
+      expect(
+        host.querySelector('[data-testid="version-popout-auto-feedback"]')
+          ?.textContent,
+      ).toContain('Couldn’t save automatic updates');
     });
 
-    toggle().click();
+    button('version-popout-auto-retry').click();
     await vi.waitFor(() =>
       expect(settings.update).toHaveBeenLastCalledWith({ autoUpdate: false }),
     );
@@ -358,21 +558,34 @@ describe('VersionPopout restored updater behavior', () => {
     expect(toggle().checked).toBe(false);
   });
 
-  it('remains usable with safe defaults when updater hydration is unavailable', async () => {
+  it('does not invent an automatic-update default when hydration fails and recovers on Retry', async () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     tauri.listen.mockRejectedValueOnce(new Error('events unavailable'));
+    let settingsAttempts = 0;
     tauri.invoke.mockImplementation(async (command: string) => {
       if (command === 'get_pending_update') throw new Error('updater unavailable');
-      if (command === 'get_settings') throw new Error('settings unavailable');
+      if (command === 'get_settings') {
+        settingsAttempts += 1;
+        if (settingsAttempts === 1) throw new Error('settings unavailable');
+        return { autoUpdate: false };
+      }
       throw new Error(`Unexpected invoke: ${command}`);
     });
 
     mountPopout();
-    await waitForHydration();
+    await vi.waitFor(() => {
+      flushSync();
+      expect(
+        host.querySelector('[data-testid="version-popout-auto-feedback"]')
+          ?.textContent,
+      ).toContain('Couldn’t load the automatic update preference');
+    });
 
     expect(status()).toBe('Up to date');
     expect(latest()).toBe('v0.10.33');
-    expect(toggle().checked).toBe(true);
+    expect(
+      host.querySelector('[data-testid="version-popout-auto-toggle"]'),
+    ).toBeNull();
     expect(button('version-popout-check').disabled).toBe(false);
     expect(consoleError).toHaveBeenCalledWith(
       'version-popout: failed to listen for updater state',
@@ -382,6 +595,17 @@ describe('VersionPopout restored updater behavior', () => {
       'get_pending_update failed:',
       expect.any(Error),
     );
+    expect(consoleError).toHaveBeenCalledWith(
+      'version-popout: automatic update preference load failed',
+      expect.any(Error),
+    );
+
+    button('version-popout-auto-retry').click();
+    await waitForHydration();
+    expect(toggle().checked).toBe(false);
+    expect(
+      host.querySelector('[data-testid="version-popout-auto-feedback"]'),
+    ).toBeNull();
   });
 
   it('releases a listener that resolves after the popout has already unmounted', async () => {
@@ -395,6 +619,50 @@ describe('VersionPopout restored updater behavior', () => {
 
     await vi.waitFor(() => expect(tauri.unlisten).toHaveBeenCalledTimes(2));
   });
+
+  it.each(['update:available', 'update:cleared'])(
+    'releases the %s listener when the sibling registration rejects',
+    async (fulfilledEvent) => {
+      const retainedUnlisten = vi.fn();
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      tauri.listen.mockImplementation(async (event: string) => {
+        if (event === fulfilledEvent) return retainedUnlisten;
+        throw new Error('event bridge unavailable');
+      });
+
+      mountPopout();
+      await vi.waitFor(() => {
+        expect(consoleError).toHaveBeenCalledWith(
+          'version-popout: failed to listen for updater state',
+          expect.any(Error),
+        );
+      });
+
+      await unmount(component!);
+      component = null;
+      expect(retainedUnlisten).toHaveBeenCalledOnce();
+      consoleError.mockRestore();
+    },
+  );
+
+  it.each(['update:available', 'update:cleared'])(
+    'releases the fulfilled %s listener even when its sibling never settles',
+    async (fulfilledEvent) => {
+      const retainedUnlisten = vi.fn();
+      const neverSettles = new Promise<() => void>(() => undefined);
+      tauri.listen.mockImplementation((event: string) =>
+        event === fulfilledEvent ? Promise.resolve(retainedUnlisten) : neverSettles,
+      );
+
+      mountPopout();
+      await vi.waitFor(() => expect(tauri.listen).toHaveBeenCalledTimes(2));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      await unmount(component!);
+      component = null;
+      expect(retainedUnlisten).toHaveBeenCalledOnce();
+    },
+  );
 
   it('opens the Updates settings tab, closes the popout, and releases its listener', async () => {
     const onOpenSettings = vi.fn();

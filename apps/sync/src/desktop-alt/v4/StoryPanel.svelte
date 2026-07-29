@@ -25,6 +25,7 @@
   import { relativeActivity } from '../lib/sessions';
   import LabelChip from '../components/LabelChip.svelte';
   import OpenFileInClaudeCode from '../components/OpenFileInClaudeCode.svelte';
+  import ProvenanceLine from '../components/ProvenanceLine.svelte';
   import './tokens.css';
 
   interface Props {
@@ -328,6 +329,11 @@
         <p>{project ? projectDisplayName(project) : 'Project'} → {story.id}</p>
       </section>
 
+      <section class="section" data-testid="task-detail-provenance">
+        <h3>Provenance</h3>
+        <ProvenanceLine provenance={story.provenance} kind="story" />
+      </section>
+
       {#if story.description}
         <section class="section" data-testid="task-detail-description">
           <h3>Description</h3>
@@ -462,8 +468,8 @@
     width: min(420px, 100vw);
     border-left: 1px solid var(--v4-hairline);
     background: var(--v4-popover);
-    backdrop-filter: var(--v4-glass-filter);
-    -webkit-backdrop-filter: var(--v4-glass-filter);
+    backdrop-filter: var(--v4-glass-filter-popover, var(--v4-glass-filter));
+    -webkit-backdrop-filter: var(--v4-glass-filter-popover, var(--v4-glass-filter));
     box-shadow: var(--v4-shadow-popover), inset 1px 0 0 var(--v4-glass-highlight);
   }
 

@@ -6,6 +6,7 @@ import {
   isAgentSender,
   conversationKey,
   conversationRows,
+  countUnreadConversations,
 } from './quickWindowPane';
 import type { Item, DmEvent, ShareEvent } from './notificationGroups';
 
@@ -299,5 +300,35 @@ describe('conversationRows', () => {
     const rows = conversationRows(items, 0, new Set());
     expect(rows).toHaveLength(1);
     expect(rows[0].latest.id).toBe('dm:1');
+  });
+});
+
+describe('countUnreadConversations', () => {
+  it('counts distinct unread senders beyond the rendered 30-row rail cap', () => {
+    const items = Array.from({ length: 35 }, (_, index) =>
+      dmItem(`dm:${index}`, 100 + index, {
+        fromPersonUid: `person-${index}`,
+        actor: `Person ${index}`,
+      }),
+    );
+
+    expect(conversationRows(items, 0, new Set())).toHaveLength(30);
+    expect(countUnreadConversations(items, 0, new Set())).toBe(35);
+  });
+
+  it('counts multiple unread messages from one sender as one conversation', () => {
+    const items = [
+      dmItem('dm:one', 200, {
+        fromPersonUid: 'person-one',
+        actor: 'One',
+      }),
+      dmItem('dm:two', 190, {
+        fromPersonUid: 'person-one',
+        actor: 'One',
+      }),
+    ];
+
+    expect(countUnreadConversations(items, 0, new Set())).toBe(1);
+    expect(countUnreadConversations(items, 0, new Set(['dm:one', 'dm:two']))).toBe(0);
   });
 });

@@ -12,7 +12,7 @@
    */
   interface Props {
     groups: HomeDigestGroup[];
-    onopenlog?: () => void;
+    onopenlog?: () => void | Promise<void>;
   }
 
   let { groups, onopenlog }: Props = $props();
@@ -20,6 +20,7 @@
   // Newest group starts expanded (matches home-healthy.png); the rest are
   // collapsed until clicked. Keyed by group id so toggles survive reorders.
   let expanded = $state<Record<string, boolean>>({});
+  let openingLog = $state(false);
 
   function isExpanded(id: string, index: number): boolean {
     return expanded[id] ?? index === 0;
@@ -28,6 +29,16 @@
   function toggle(id: string, index: number) {
     expanded = { ...expanded, [id]: !isExpanded(id, index) };
   }
+
+  async function openLog(): Promise<void> {
+    if (!onopenlog || openingLog) return;
+    openingLog = true;
+    try {
+      await onopenlog();
+    } finally {
+      openingLog = false;
+    }
+  }
 </script>
 
 <section class="v4-digest" aria-label="Today across your companies">
@@ -35,8 +46,14 @@
     <h2 class="v4-digest-title">Today across your companies</h2>
     <p class="v4-digest-tools">
       grouped by person ·
-      <button type="button" class="v4-digest-log" onclick={() => onopenlog?.()}>
-        raw event log →
+      <button
+        type="button"
+        class="v4-digest-log"
+        onclick={openLog}
+        disabled={openingLog}
+        aria-busy={openingLog}
+      >
+        {openingLog ? 'opening event log…' : 'raw event log →'}
       </button>
     </p>
   </div>
