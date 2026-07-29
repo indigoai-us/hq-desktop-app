@@ -1,19 +1,19 @@
 //! macOS Dock icon presence.
 //!
-//! HQ ships with a Dock icon by default. The bundle stays `LSUIElement=true`
-//! (see `Info.plist`) so the process still *launches* as an accessory — that
-//! keeps the login-item start silent and means a user who has opted out never
-//! sees a Dock icon flash before the policy settles. The effective posture is
-//! decided from the `dockIcon` preference:
+//! HQ is a menu-bar app by default — no Dock icon — and users opt in to a Dock
+//! icon from Settings. The bundle is `LSUIElement=true` (see `Info.plist`), so
+//! the process launches as an accessory and the default needs no runtime work
+//! at all; an opted-in user is promoted from there. The posture is decided from
+//! the `dockIcon` preference:
 //!
-//!   * `dockIcon: true` (default, absent → true) → `ActivationPolicy::Regular`.
-//!     Dock icon, Cmd-Tab entry, standard app menu bar. Promoting an
-//!     `LSUIElement` process with `-[NSApplication setActivationPolicy:]` is
-//!     the supported way to do this; it's the same technique every menubar app
-//!     with a "Show in Dock" preference uses.
-//!   * `dockIcon: false` → `ActivationPolicy::Accessory`. The classic
-//!     menubar-only posture this app shipped with: the tray icon is the only
-//!     surface.
+//!   * `dockIcon: false` (**default**, absent → false) →
+//!     `ActivationPolicy::Accessory`. The classic menubar-only posture this app
+//!     has always shipped: the tray icon is the only surface.
+//!   * `dockIcon: true` → `ActivationPolicy::Regular`. Dock icon, Cmd-Tab
+//!     entry, standard app menu bar. Promoting an `LSUIElement` process with
+//!     `-[NSApplication setActivationPolicy:]` is the supported way to do this;
+//!     it's the same technique every menubar app with a "Show in Dock"
+//!     preference uses.
 //!
 //! The Dock icon *image* is already registered at launch — `main.rs` calls
 //! `set_app_icon_from_bytes` with the bundled HQ mark, so the Dock renders the
@@ -50,23 +50,26 @@ const LOG_TAG: &str = "dock";
 
 /// Resolve the effective `dockIcon` preference.
 ///
-/// Default-ON: `None` prefs (no menubar.json at all) and a missing `dockIcon`
-/// key both mean "show the Dock icon", so upgrading installs pick the icon up
-/// without touching Settings. Only an explicit `false` opts out.
+/// Default-OFF: `None` prefs (no menubar.json at all) and a missing `dockIcon`
+/// key both mean "no Dock icon", so a fresh install and every existing install
+/// keep the menubar-only posture they have today. Only an explicit `true`
+/// opts in. This is the opposite polarity to `start_at_login` /
+/// `widget_enabled` — Dock presence is a deliberate user choice here, not a
+/// default we push.
 ///
 /// Kept pure (takes parsed prefs) so the default contract is unit testable on
 /// any platform, without a Tauri runtime or a real `~/.hq/menubar.json`.
 pub fn effective_dock_icon(prefs: Option<&MenubarPrefs>) -> bool {
-    prefs.and_then(|p| p.dock_icon).unwrap_or(true)
+    prefs.and_then(|p| p.dock_icon).unwrap_or(false)
 }
 
 /// Read `dockIcon` from ~/.hq/menubar.json (best-effort), applying the
-/// default-on semantics of [`effective_dock_icon`].
+/// default-off semantics of [`effective_dock_icon`].
 ///
 /// Any failure to locate, read, or parse the file resolves to the default
-/// (icon shown) rather than silently demoting the app to accessory — a
-/// corrupt prefs file must not make HQ disappear from the Dock. The read
-/// failure is logged so the Connect diagnostics surface still shows it.
+/// (no Dock icon) — the shipped menubar-only posture, so a corrupt prefs file
+/// degrades to the app's historical behaviour rather than to a surprise. The
+/// read failure is logged so the Connect diagnostics surface still shows it.
 pub fn dock_icon_pref() -> bool {
     effective_dock_icon(read_prefs().as_ref())
 }
@@ -131,10 +134,15 @@ pub fn policy_for(show_dock_icon: bool) -> tauri::ActivationPolicy {
 /// `apply_activation_policy`, which unconditionally re-applies the **stored**
 /// aux-state value — clobbering anything set imperatively beforehand. Since
 /// tao's stored default is `Regular`, using the AppHandle setter here would
-/// leave every launch on `Regular` no matter what the user chose, silently
-/// breaking the opt-out. tao delays the apply on purpose (their comment: the
-/// menu bar isn't interactable otherwise), so storing the value is the
-/// supported path, not a workaround.
+/// leave every launch on `Regular` no matter what the user chose — which for a
+/// default-off preference means every user gets a Dock icon they never asked
+/// for. tao delays the apply on purpose (their comment: the menu bar isn't
+/// interactable otherwise), so storing the value is the supported path, not a
+/// workaround.
+///
+/// Note this is why the launch call is unconditional rather than "only when
+/// opted in": tao would otherwise apply its own `Regular` default and the
+/// menubar-only posture would never happen.
 ///
 /// Returns `()` because the `&mut App` setter is infallible.
 #[cfg(target_os = "macos")]
@@ -230,26 +238,26 @@ mod tests {
     }
 
     #[test]
-    fn test_effective_dock_icon_defaults_on_when_no_prefs() {
-        // No menubar.json at all (fresh install) -> Dock icon shown.
-        assert!(effective_dock_icon(None));
+    fn test_effective_dock_icon_defaults_off_when_no_prefs() {
+        // No menubar.json at all (fresh install) -> menubar-only, no Dock icon.
+        assert!(!effective_dock_icon(None));
     }
 
     #[test]
-    fn test_effective_dock_icon_defaults_on_when_field_missing() {
-        // menubar.json exists but predates the pref -> Dock icon shown, so
-        // upgrading installs gain the icon without touching Settings.
-        assert!(effective_dock_icon(Some(&prefs_with_dock(None))));
+    fn test_effective_dock_icon_defaults_off_when_field_missing() {
+        // menubar.json exists but predates the pref -> existing installs keep
+        // the menubar-only posture; upgrading never adds a Dock icon silently.
+        assert!(!effective_dock_icon(Some(&prefs_with_dock(None))));
     }
 
     #[test]
-    fn test_effective_dock_icon_explicit_true() {
+    fn test_effective_dock_icon_explicit_true_opts_in() {
+        // The ONLY way to get a Dock icon.
         assert!(effective_dock_icon(Some(&prefs_with_dock(Some(true)))));
     }
 
     #[test]
-    fn test_effective_dock_icon_explicit_false_opts_out() {
-        // The ONLY way back to the menubar-only accessory posture.
+    fn test_effective_dock_icon_explicit_false() {
         assert!(!effective_dock_icon(Some(&prefs_with_dock(Some(false)))));
     }
 

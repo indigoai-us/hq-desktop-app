@@ -219,19 +219,19 @@ pub struct MenubarPrefs {
     /// None = primary display.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub widget_display: Option<String>,
-    /// macOS Dock icon on/off. When true (the default), HQ runs under
+    /// macOS Dock icon on/off. When true, HQ runs under
     /// `NSApplicationActivationPolicyRegular` — Dock icon, Cmd-Tab entry, and
-    /// the standard app menu bar. When false, HQ keeps the classic
-    /// menubar-only posture (`…PolicyAccessory`): tray icon only, no Dock
-    /// presence, no Cmd-Tab entry.
+    /// the standard app menu bar. When false (**the default**), HQ keeps the
+    /// classic menubar-only posture (`…PolicyAccessory`): tray icon only, no
+    /// Dock presence, no Cmd-Tab entry.
     ///
-    /// Absent in pre-dock-icon menubar.json files → treated as true (see
-    /// `commands::dock::effective_dock_icon`), so existing installs gain the
-    /// Dock icon on upgrade and an explicit `false` is the only way back to
-    /// the accessory posture. Applied at launch from `main.rs` `.setup()` and
-    /// re-applied without a restart by `apply_dock_icon`, which the Settings
-    /// toggle calls after `save_settings` (same save-then-apply contract as
-    /// `widget_enabled` → `apply_widget_settings`).
+    /// Absent in pre-dock-icon menubar.json files → treated as false (see
+    /// `commands::dock::effective_dock_icon`), so a fresh install and every
+    /// existing install keep the menubar-only posture, and an explicit `true`
+    /// is the only way to get a Dock icon. Applied at launch from `main.rs`
+    /// `.setup()` and re-applied without a restart by `apply_dock_icon`, which
+    /// the Settings toggle calls after `save_settings` (same save-then-apply
+    /// contract as `widget_enabled` → `apply_widget_settings`).
     ///
     /// Inert on Windows/Linux — neither platform has an activation policy, and
     /// the app already owns a taskbar presence there.

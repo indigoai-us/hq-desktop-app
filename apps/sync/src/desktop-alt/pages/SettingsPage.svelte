@@ -156,9 +156,9 @@
   let stagingChannel = $state(true);
   let releaseChannel = $state<Channel | null>(null);
   let startAtLogin = $state(true);
-  // Dock icon default-ON, mirroring `dock::effective_dock_icon` in Rust, so
+  // Dock icon default-OFF, mirroring `dock::effective_dock_icon` in Rust, so
   // the toggle shows the true posture before the first read resolves.
-  let dockIcon = $state(true);
+  let dockIcon = $state(false);
   let meetingDetectEnabled = $state(true);
   let meetingDetectPlatforms = $state<string[]>([...platforms]);
   let defaultRecordingCompanyUid = $state<string | null>(null);
@@ -346,7 +346,7 @@
     autoUpdate = settings.autoUpdate ?? true;
     stagingChannel = settings.stagingChannel ?? true;
     startAtLogin = settings.startAtLogin ?? true;
-    dockIcon = settings.dockIcon ?? true;
+    dockIcon = settings.dockIcon ?? false;
     meetingDetectEnabled = settings.meetingDetectNotify?.enabled ?? true;
     meetingDetectPlatforms = settings.meetingDetectNotify?.platforms ?? [...platforms];
     // Keep only active memberships; validate the stored default against the
@@ -1238,7 +1238,7 @@
         {#if isMacOS}
           <!-- macOS-only: Windows and Linux have no activation policy, and HQ
                already owns a taskbar entry there, so the row would be a no-op. -->
-          <label class="setting-row"><span><strong>Show in Dock</strong><small>Keep an HQ icon in the Dock. Turn this off to run from the menu bar only.</small></span><input id="toggle-dock-icon" data-testid="dock-icon-toggle" type="checkbox" bind:checked={dockIcon} onchange={applyDockIcon} aria-label="Show in Dock" /></label>
+          <label class="setting-row"><span><strong>Show in Dock</strong><small>Add an HQ icon to the Dock. Off by default — HQ runs from the menu bar.</small></span><input id="toggle-dock-icon" data-testid="dock-icon-toggle" type="checkbox" bind:checked={dockIcon} onchange={applyDockIcon} aria-label="Show in Dock" /></label>
         {/if}
         <label class="setting-row" data-testid="telemetry-row">
           <span>
