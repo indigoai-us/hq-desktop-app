@@ -1249,11 +1249,17 @@ impl CodexRolloutScanner {
             return None;
         }
         let start_offset = self.reader.stream_position().ok()?;
+        let continuing_oversized_line = self.context.discarding_partial_line;
+        let read_limit = if continuing_oversized_line {
+            max_bytes
+        } else {
+            max_bytes.min(MAX_CODEX_LINE_BYTES)
+        };
         self.line.clear();
         let bytes_read = self
             .reader
             .by_ref()
-            .take(max_bytes)
+            .take(read_limit)
             .read_until(b'\n', &mut self.line)
             .ok()?;
         if bytes_read == 0 {
@@ -1264,10 +1270,14 @@ impl CodexRolloutScanner {
         let ended_line = self.line.last() == Some(&b'\n') || reached_eof;
 
         if !ended_line {
-            self.context.discarding_partial_line = true;
-            return Some((None, end_offset, self.context.clone()));
+            if continuing_oversized_line || bytes_read as u64 >= MAX_CODEX_LINE_BYTES {
+                self.context.discarding_partial_line = true;
+                return Some((None, end_offset, self.context.clone()));
+            }
+            self.reader.seek(SeekFrom::Start(start_offset)).ok()?;
+            return None;
         }
-        if self.context.discarding_partial_line {
+        if continuing_oversized_line {
             self.context.discarding_partial_line = false;
             return Some((None, end_offset, self.context.clone()));
         }
@@ -1329,6 +1339,7 @@ fn usage_ack_is_complete(ack: &UsageAck, event_count: usize) -> bool {
 const MAX_BATCH_BYTES: usize = 1_000_000;
 const MAX_CODEX_BATCHES_PER_SYNC: usize = 4;
 const MAX_CODEX_SCAN_BYTES_PER_SYNC: u64 = 4 * 1024 * 1024;
+const MAX_CODEX_LINE_BYTES: u64 = 64 * 1024;
 
 fn per_rollout_scan_budget(pending_count: usize) -> u64 {
     (MAX_CODEX_SCAN_BYTES_PER_SYNC / pending_count.max(1) as u64).max(1)
@@ -2526,11 +2537,12 @@ mod codex_telemetry_tests {
         let home = setup_home();
         write_menubar(home.path(), r#"{"machineId":"mid-d"}"#);
 
-        // Generate ~50 rows with a large gitBranch so sanitized rows are ~25 KB each
-        // 50 * 25 KB ≈ 1.25 MB > 1 MB → should produce ≥2 batches
-        let long_branch = "x".repeat(25_000);
+        // Each row carries two valid maximum-size allowlisted fields. Their
+        // aggregate wire payload exceeds 1 MB without relying on rejected data.
+        const EVENT_COUNT: usize = 150;
+        let bounded_path = "x".repeat(MAX_PATH_BYTES);
         let mut lines = Vec::new();
-        for i in 0..50usize {
+        for i in 0..EVENT_COUNT {
             let row = json!({
                 "type": "user",
                 "timestamp": format!("2026-04-25T10:00:{:02}Z", i % 60),
@@ -2539,15 +2551,15 @@ mod codex_telemetry_tests {
                 "parentUuid": null,
                 "userType": "human",
                 "entrypoint": "cli",
-                "cwd": "/Users/x",
-                "gitBranch": long_branch,
+                "cwd": bounded_path.clone(),
+                "gitBranch": bounded_path.clone(),
                 "version": "1.0",
                 "message": {"role": "user", "content": [{"type": "text", "text": "hi"}], "id": "m"}
             });
             lines.push(serde_json::to_string(&row).unwrap());
         }
         let lines_str: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
-        write_jsonl(home.path(), "proj", "large.jsonl", &lines_str);
+        let path = write_jsonl(home.path(), "proj", "large.jsonl", &lines_str);
 
         std::env::set_var("HOME", home.path());
         std::env::set_var("HQ_VAULT_API_URL", server.uri());
@@ -2571,12 +2583,25 @@ mod codex_telemetry_tests {
             posts.len()
         );
 
-        // Last batch must be < 1 MB
-        let last_post = posts.last().unwrap();
-        assert!(
-            last_post.body.len() < MAX_BATCH_BYTES,
-            "last batch must be < 1 MB, got {} bytes",
-            last_post.body.len()
+        let submitted_events: usize = posts
+            .iter()
+            .map(|post| {
+                assert!(
+                    post.body.len() <= MAX_BATCH_BYTES,
+                    "every batch must be at most 1 MB, got {} bytes",
+                    post.body.len()
+                );
+                serde_json::from_slice::<Value>(&post.body).unwrap()["events"]
+                    .as_array()
+                    .unwrap()
+                    .len()
+            })
+            .sum();
+        assert_eq!(submitted_events, EVENT_COUNT);
+        let cursor = read_cursor(home.path());
+        assert_eq!(
+            cursor.files[&normalize_cursor_file_key(&path)].offset,
+            fs::metadata(path).unwrap().len()
         );
     }
 
@@ -2619,11 +2644,11 @@ mod codex_telemetry_tests {
         let home = setup_home();
         write_menubar(home.path(), r#"{"machineId":"mid-midwithdraw"}"#);
 
-        // Enough rows to force multiple 1 MB batches (same shape as the rollover
-        // test): ~50 rows * ~25 KB ≈ 1.25 MB → ≥2 batches.
-        let long_branch = "x".repeat(25_000);
+        // Use the same valid bounded aggregate as the rollover test so this
+        // genuinely reaches a second flush.
+        let bounded_path = "x".repeat(MAX_PATH_BYTES);
         let mut lines = Vec::new();
-        for i in 0..50usize {
+        for i in 0..150usize {
             let row = json!({
                 "type": "user",
                 "timestamp": format!("2026-04-25T10:00:{:02}Z", i % 60),
@@ -2632,8 +2657,8 @@ mod codex_telemetry_tests {
                 "parentUuid": null,
                 "userType": "human",
                 "entrypoint": "cli",
-                "cwd": "/Users/x",
-                "gitBranch": long_branch,
+                "cwd": bounded_path.clone(),
+                "gitBranch": bounded_path.clone(),
                 "version": "1.0",
                 "message": {"role": "user", "content": [{"type": "text", "text": "hi"}], "id": "m"}
             });
@@ -3529,6 +3554,40 @@ mod codex_telemetry_tests {
     }
 
     #[test]
+    fn ordinary_line_crossing_scan_slice_rewinds_and_emits_next_cycle() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("rollout.jsonl");
+        let record = json!({
+            "timestamp": "2026-07-29T10:00:00Z",
+            "uuid": "slice-boundary-event",
+            "type": "event_msg",
+            "payload": {"type": "token_count", "info": {"last_token_usage": {
+                "input_tokens": 1, "output_tokens": 2
+            }}}
+        })
+        .to_string()
+            + "\n";
+        fs::write(&path, &record).unwrap();
+        let saved = CodexUsageContext {
+            turn_model: Some("slice-model".to_string()),
+            ..CodexUsageContext::default()
+        };
+
+        let mut first =
+            CodexRolloutScanner::open(&path, 0, "rollout", Some(saved.clone())).unwrap();
+        assert!(first.next_bounded((record.len() / 2) as u64).is_none());
+        assert_eq!(first.reader.stream_position().unwrap(), 0);
+
+        let mut next_cycle = CodexRolloutScanner::open(&path, 0, "rollout", Some(saved)).unwrap();
+        let (row, offset, context) = next_cycle.next_bounded(record.len() as u64).unwrap();
+        let row = row.unwrap();
+        assert_eq!(row["uuid"], "slice-boundary-event");
+        assert_eq!(row["model"], "slice-model");
+        assert_eq!(offset, record.len() as u64);
+        assert!(!context.discarding_partial_line);
+    }
+
+    #[test]
     fn sanitizer_rejects_nested_and_unbounded_scalar_metadata() {
         let secret = "private-prompt-fragment";
         let row = sanitize_row(&json!({
@@ -3947,13 +4006,14 @@ mod codex_telemetry_tests {
         let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let home = setup_home();
         write_menubar(home.path(), r#"{"machineId":"codex-bounded"}"#);
-        let large_timestamp = "t".repeat(350_000);
+        const EVENT_COUNT: usize = 600;
+        let bounded_path = "x".repeat(MAX_PATH_BYTES);
         let mut records = vec![
-            json!({"type":"session_meta","payload":{"id":"bounded-session","cwd":"/repo","gitBranch":"main"}}),
+            json!({"type":"session_meta","payload":{"id":"bounded-session","cwd":bounded_path.clone(),"gitBranch":bounded_path.clone()}}),
             json!({"type":"turn_context","payload":{"model":"gpt-bounded"}}),
         ];
-        for index in 1..=13 {
-            records.push(json!({"timestamp":format!("{index}-{large_timestamp}"),"uuid":format!("u{index}"),"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":2,"output_tokens":3}}}}));
+        for index in 1..=EVENT_COUNT {
+            records.push(json!({"timestamp":format!("2026-07-29T10:{:02}:{:02}Z", (index / 60) % 60, index % 60),"uuid":format!("u{index}"),"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":2,"output_tokens":3}}}}));
         }
         let rollout = records
             .into_iter()
@@ -3972,6 +4032,14 @@ mod codex_telemetry_tests {
             .unwrap();
         let first_posts = post_bodies(&server).await;
         assert_eq!(first_posts.len(), MAX_CODEX_BATCHES_PER_SYNC);
+        let first_sent: usize = first_posts
+            .iter()
+            .map(|body| body["events"].as_array().unwrap().len())
+            .sum();
+        assert!(first_sent > 0 && first_sent < EVENT_COUNT);
+        assert!(first_posts
+            .iter()
+            .all(|body| { serde_json::to_vec(body).unwrap().len() <= MAX_BATCH_BYTES }));
         let partial = read_cursor(home.path()).files[&codex_key].clone();
         assert!(partial.offset > 0 && partial.offset < rollout.len() as u64);
         assert_eq!(
@@ -3995,19 +4063,27 @@ mod codex_telemetry_tests {
         std::env::remove_var("HQ_VAULT_API_URL");
 
         let all_posts = post_bodies(&server).await;
-        let resumed_events: Vec<&Value> = all_posts[MAX_CODEX_BATCHES_PER_SYNC..]
+        let resumed_posts = &all_posts[MAX_CODEX_BATCHES_PER_SYNC..];
+        assert!(!resumed_posts.is_empty());
+        assert!(resumed_posts
+            .iter()
+            .all(|body| { serde_json::to_vec(body).unwrap().len() <= MAX_BATCH_BYTES }));
+        let resumed_events: Vec<&Value> = resumed_posts
             .iter()
             .flat_map(|body| body["events"].as_array().unwrap())
             .collect();
         assert_eq!(
             resumed_events.len(),
-            5,
+            EVENT_COUNT - first_sent,
             "second sync sends exactly the unacked tail"
         );
         assert!(resumed_events
             .iter()
             .all(|event| event["model"] == "gpt-bounded"));
-        assert_eq!(resumed_events.first().unwrap()["uuid"], "u9");
+        assert_eq!(
+            resumed_events.first().unwrap()["uuid"],
+            format!("u{}", first_sent + 1)
+        );
         assert_eq!(
             read_cursor(home.path()).files[&codex_key].offset,
             rollout.len() as u64
