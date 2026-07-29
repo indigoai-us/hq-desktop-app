@@ -15,6 +15,7 @@ pub mod daemon;
 pub mod desktop_alt;
 pub mod dm_mqtt;
 pub mod dm_notify;
+pub mod dock;
 pub mod drift_detail;
 pub mod feedback;
 pub mod first_push;

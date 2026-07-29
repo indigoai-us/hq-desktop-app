@@ -69,6 +69,7 @@ mod tests {
             telemetry_enabled: None,
             widget_enabled: None,
             widget_display: None,
+            dock_icon: None,
         }
     }
 
@@ -102,6 +103,9 @@ mod tests {
             widget_enabled: Some(prefs.widget_enabled.unwrap_or(true)),
             // Pass-through — None = primary display.
             widget_display: prefs.widget_display,
+            // Dock icon defaults OFF when absent (existing installs keep the
+            // menubar-only posture; explicit `true` is the only opt-in).
+            dock_icon: Some(prefs.dock_icon.unwrap_or(false)),
         }
     }
 
@@ -176,6 +180,7 @@ mod tests {
             telemetry_enabled: Some(false),
             widget_enabled: Some(false),
             widget_display: Some("DELL U2720Q".to_string()),
+            dock_icon: Some(false),
         };
 
         let result = apply_defaults(prefs);
@@ -201,6 +206,8 @@ mod tests {
         // explicit widget_enabled false + display pass through
         assert_eq!(result.widget_enabled, Some(false));
         assert_eq!(result.widget_display, Some("DELL U2720Q".to_string()));
+        // explicit dock_icon false round-trips as false (same as the default)
+        assert_eq!(result.dock_icon, Some(false));
     }
 
     #[test]
@@ -226,6 +233,7 @@ mod tests {
             telemetry_enabled: Some(true),
             widget_enabled: Some(true),
             widget_display: Some("Built-in Retina Display".to_string()),
+            dock_icon: Some(true),
         };
 
         let json = serde_json::to_string_pretty(&prefs).unwrap();
