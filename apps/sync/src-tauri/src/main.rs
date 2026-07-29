@@ -562,6 +562,7 @@ fn main() {
             commands::widget::widget_ready,
             commands::widget::list_displays,
             commands::widget::apply_widget_settings,
+            commands::dock::apply_dock_icon,
             commands::compat::check_ai_tools,
             commands::compat::device_fingerprint,
             commands::compat::keychain_set,
@@ -623,20 +624,34 @@ fn main() {
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             commands::autostart::ensure_autostart_on_launch();
 
-            // macOS menubar-app activation policy. `Accessory` = no Dock
-            // icon, no entry in CMD-Tab, no top-of-screen app menu bar.
-            // The tray icon is the only surface. Without this the app
-            // appears in the Dock whenever the window is shown.
+            // macOS activation policy, driven by the `dockIcon` pref
+            // (default ON). `Regular` = Dock icon + CMD-Tab entry + app menu
+            // bar; `Accessory` = the classic menubar-only posture where the
+            // tray icon is the only surface. The bundle stays LSUIElement, so
+            // the process launches as an accessory either way and a user who
+            // opted out never sees a Dock icon flash before we settle here.
+            // Re-applied without a restart by `apply_dock_icon` when the
+            // Settings toggle flips. Already on the main thread inside
+            // `.setup()`, so call the shared helper directly.
             #[cfg(target_os = "macos")]
-            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            {
+                let show_dock_icon = commands::dock::dock_icon_pref();
+                if let Err(e) = commands::dock::set_activation_policy(app.handle(), show_dock_icon)
+                {
+                    // Non-fatal: a failed policy set leaves the launch-time
+                    // accessory posture, which is the app's historical
+                    // behaviour — the tray still works.
+                    util::logfile::log("dock", &format!("launch apply failed: {e}"));
+                }
+            }
 
-            // Brand the app's runtime icon image. With Accessory activation
-            // policy there's no Dock icon, but the meetings window (and any
-            // future detached windows) still show up in Mission Control /
-            // Cmd-Tab — by default with a generic folder icon because no
-            // .app bundle icon is registered at runtime. Setting
-            // NSApp.applicationIconImage gives those surfaces the HQ mark
-            // to render even though the Dock stays empty.
+            // Brand the app's runtime icon image. This is what the Dock
+            // renders under `Regular` policy; under `Accessory` the Dock stays
+            // empty but the meetings window (and any future detached windows)
+            // still show up in Mission Control / Cmd-Tab — by default with a
+            // generic folder icon because no .app bundle icon is registered at
+            // runtime. Setting NSApp.applicationIconImage gives every one of
+            // those surfaces the HQ mark to render.
             #[cfg(target_os = "macos")]
             {
                 const HQ_ICON_PNG: &[u8] = include_bytes!("../icons/128x128@2x.png");
@@ -939,6 +954,30 @@ fn main() {
             // Quit, `quit_app`, Cmd-Q), all of which call `app.exit(0)`.
             if let tauri::RunEvent::ExitRequested { .. } = event {
                 commands::process::terminate_all_for_exit(std::time::Duration::from_millis(500));
+            }
+
+            // Dock-icon click on the already-running app. Without this the
+            // Dock icon (default-on via the `dockIcon` pref) would bounce and
+            // do nothing, because the popover is a hidden window the OS has no
+            // reason to unhide on its own.
+            //
+            // US-004 WindowRouter: a Dock click is the same class of
+            // activation as a taskbar / second-process launch, so it takes the
+            // ShowCompact branch — always surface the compact popover, never
+            // toggle it back off (a click on a Dock icon that hides the window
+            // reads as a no-op) and never auto-open the full desktop.
+            //
+            // `has_visible_windows` is deliberately ignored: the always-on-top
+            // floating widget counts as a visible window, so honouring the flag
+            // would make the Dock icon inert for every user who has the widget
+            // enabled (the default on macOS).
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = event {
+                let _ = commands::desktop_alt::activation_policy(
+                    commands::desktop_alt::ActivationSource::TaskbarSecondProcess,
+                );
+                tray::show_window_at_tray(_app_handle);
+                util::logfile::log("dock", "dock icon clicked: showed compact popover");
             }
         });
 }

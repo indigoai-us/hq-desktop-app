@@ -1,0 +1,129 @@
+/**
+ * macOS Dock icon — default-on, with a Settings opt-out.
+ *
+ * Source-contract coverage for the wiring that cannot be exercised from a
+ * Linux/CI vitest run: the launch-time activation policy, the live re-apply
+ * command, the Dock-click (Reopen) route, and the Settings toggle's
+ * save-then-apply contract. The pure default semantics (`absent → shown`,
+ * `explicit false → hidden`) are covered by Rust unit tests in
+ * `src-tauri/src/commands/dock.rs`, which run under `cargo test --workspace`.
+ */
+
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { describe, expect, it } from 'vitest';
+
+const repoRoot = join(process.cwd());
+
+function readRepo(...parts: string[]): string {
+  const path = join(repoRoot, ...parts);
+  expect(existsSync(path), `missing ${parts.join('/')}`).toBe(true);
+  return readFileSync(path, 'utf8');
+}
+
+const readDock = () => readRepo('src-tauri/src/commands/dock.rs');
+const readMain = () => readRepo('src-tauri/src/main.rs');
+const readSettingsRs = () => readRepo('src-tauri/src/commands/settings.rs');
+const readSettingsPage = () => readRepo('src/desktop-alt/pages/SettingsPage.svelte');
+
+describe('Dock icon: default-on with a Settings opt-out', () => {
+  describe('preference plumbing', () => {
+    it('types dockIcon on MenubarPrefs so the toggle round-trips instead of being wiped', () => {
+      const src = readRepo('../../crates/hq-desktop-core/src/config.rs');
+      expect(src).toMatch(/pub dock_icon: Option<bool>/);
+      // `skip_serializing_if` keeps "never chosen" distinguishable from
+      // "explicitly enabled" on disk.
+      expect(src).toMatch(
+        /#\[serde\(default, skip_serializing_if = "Option::is_none"\)\]\s*\n\s*pub dock_icon/,
+      );
+    });
+
+    it('defaults dockIcon ON in get_settings for both the no-file and on-disk branches', () => {
+      const src = readSettingsRs();
+      expect(src).toMatch(/dock_icon: Some\(true\)/);
+      expect(src).toMatch(/dock_icon: Some\(prefs\.dock_icon\.unwrap_or\(true\)\)/);
+    });
+
+    it('resolves the pref default-on in Rust, so an upgrade gains the icon untouched', () => {
+      const src = readDock();
+      expect(src).toMatch(/fn\s+effective_dock_icon/);
+      expect(src).toMatch(/prefs\.and_then\(\|p\| p\.dock_icon\)\.unwrap_or\(true\)/);
+    });
+
+    it('logs unreadable prefs rather than silently presenting as never-configured', () => {
+      const src = readDock();
+      expect(src).toMatch(/menubar\.json read failed/);
+      expect(src).toMatch(/menubar\.json parse failed/);
+      expect(src).toMatch(/menubar\.json path unresolved/);
+    });
+  });
+
+  describe('activation policy', () => {
+    it('maps the pref to Regular / Accessory in one shared helper', () => {
+      const src = readDock();
+      expect(src).toMatch(/fn\s+set_activation_policy/);
+      expect(src).toMatch(/tauri::ActivationPolicy::Regular/);
+      expect(src).toMatch(/tauri::ActivationPolicy::Accessory/);
+    });
+
+    it('applies the pref at launch instead of hardcoding Accessory', () => {
+      const src = readMain();
+      expect(src).toMatch(/commands::dock::dock_icon_pref\(\)/);
+      expect(src).toMatch(/commands::dock::set_activation_policy\(app\.handle\(\), show_dock_icon\)/);
+      // The old unconditional demotion must be gone — it would pin every user
+      // to the menubar-only posture regardless of the preference.
+      expect(src).not.toMatch(/app\.set_activation_policy\(tauri::ActivationPolicy::Accessory\)/);
+    });
+
+    it('keeps LSUIElement so an opted-out user never sees a Dock icon flash at login', () => {
+      const plist = readRepo('src-tauri/Info.plist');
+      expect(plist).toMatch(/<key>LSUIElement<\/key>\s*\n\s*<true\/>/);
+    });
+
+    it('exposes apply_dock_icon and registers it as an invokable command', () => {
+      expect(readDock()).toMatch(/pub async fn apply_dock_icon/);
+      expect(readMain()).toMatch(/commands::dock::apply_dock_icon/);
+    });
+  });
+
+  describe('Dock click', () => {
+    it('routes Reopen to the compact popover so the icon is not inert', () => {
+      const src = readMain();
+      expect(src).toMatch(/tauri::RunEvent::Reopen/);
+      expect(src).toMatch(/ActivationSource::TaskbarSecondProcess/);
+      expect(src).toMatch(/tray::show_window_at_tray\(_app_handle\)/);
+    });
+
+    it('ignores has_visible_windows — the always-on-top widget would mask it', () => {
+      // Destructuring the flag would make the Dock icon a no-op for every user
+      // running the floating widget (the macOS default).
+      expect(readMain()).not.toMatch(/RunEvent::Reopen\s*\{\s*has_visible_windows/);
+    });
+  });
+
+  describe('Settings toggle', () => {
+    it('renders a macOS-only Show in Dock row', () => {
+      const src = readSettingsPage();
+      expect(src).toMatch(/Show in Dock/);
+      expect(src).toMatch(/data-testid="dock-icon-toggle"/);
+      expect(src).toMatch(/\{#if isMacOS\}/);
+    });
+
+    it('hydrates the toggle default-on, matching the Rust resolver', () => {
+      expect(readSettingsPage()).toMatch(/dockIcon = settings\.dockIcon \?\? true;/);
+    });
+
+    it('persists first, then re-applies live so the change is not deferred to relaunch', () => {
+      const src = readSettingsPage();
+      expect(src).toMatch(/async function applyDockIcon/);
+      expect(src).toMatch(/saveSettings\(\{ dockIcon \}\)/);
+      expect(src).toMatch(/invoke\('apply_dock_icon'\)/);
+    });
+
+    it('reverts the optimistic checkbox when the save fails', () => {
+      const src = readSettingsPage();
+      expect(src).toMatch(/const previous = !dockIcon;/);
+      expect(src).toMatch(/dockIcon = previous;/);
+    });
+  });
+});

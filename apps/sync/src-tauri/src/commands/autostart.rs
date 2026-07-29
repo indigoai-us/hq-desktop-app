@@ -166,6 +166,7 @@ mod tests {
             telemetry_enabled: None,
             widget_enabled: None,
             widget_display: None,
+            dock_icon: None,
         }
     }
 

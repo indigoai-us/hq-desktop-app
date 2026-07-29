@@ -15,12 +15,16 @@
     type PendingUpdateState,
   } from '../../lib/notificationFeedData';
   import { updateSettings, type SettingsPatch } from '../../lib/settings-mutations';
+  import { isMac } from '../lib/platform';
   import WidgetSettings from '../../components/WidgetSettings.svelte';
   import '../v4/tokens.css';
 
   // The secondary sidebar drives which section is in view; this page renders all
   // sections in one scroll and reacts to `activeTab` by scrolling it into view.
   let { activeTab = 'sync' }: { activeTab?: SettingsTab } = $props();
+
+  // Evaluated once: the host OS cannot change while the window is open.
+  const isMacOS = isMac();
 
   type Channel = 'stable' | 'beta' | 'alpha';
   type Platform = 'zoom' | 'meet' | 'teams' | 'slack' | 'webex';
@@ -48,6 +52,7 @@
     } | null;
     defaultRecordingCompanyUid?: string | null;
     telemetryEnabled?: boolean | null;
+    dockIcon?: boolean | null;
   }
 
   interface UpdateInfo {
@@ -151,6 +156,9 @@
   let stagingChannel = $state(true);
   let releaseChannel = $state<Channel | null>(null);
   let startAtLogin = $state(true);
+  // Dock icon default-ON, mirroring `dock::effective_dock_icon` in Rust, so
+  // the toggle shows the true posture before the first read resolves.
+  let dockIcon = $state(true);
   let meetingDetectEnabled = $state(true);
   let meetingDetectPlatforms = $state<string[]>([...platforms]);
   let defaultRecordingCompanyUid = $state<string | null>(null);
@@ -338,6 +346,7 @@
     autoUpdate = settings.autoUpdate ?? true;
     stagingChannel = settings.stagingChannel ?? true;
     startAtLogin = settings.startAtLogin ?? true;
+    dockIcon = settings.dockIcon ?? true;
     meetingDetectEnabled = settings.meetingDetectNotify?.enabled ?? true;
     meetingDetectPlatforms = settings.meetingDetectNotify?.platforms ?? [...platforms];
     // Keep only active memberships; validate the stored default against the
@@ -648,6 +657,30 @@
       await invoke('set_autostart_enabled', { enabled: startAtLogin });
     } catch (err) {
       console.error('Failed to set autostart:', err);
+    }
+  }
+
+  // The Dock icon must change NOW, not at next launch — so persist first, then
+  // re-apply the activation policy from the freshly written preference. Same
+  // save-then-apply contract as the widget toggle.
+  //
+  // A failed save reverts the optimistic checkbox (nothing was written). A
+  // failed apply keeps the new value — disk is already authoritative — but
+  // still surfaces the error, because until the next launch the visible Dock
+  // state and the toggle disagree.
+  async function applyDockIcon() {
+    // `bind:checked` has already flipped `dockIcon`, so the pre-toggle value
+    // is its negation — this is a two-state control.
+    const previous = !dockIcon;
+    if (!(await saveSettings({ dockIcon }))) {
+      dockIcon = previous;
+      return;
+    }
+    try {
+      await invoke('apply_dock_icon');
+    } catch (err) {
+      console.error('Failed to apply dock icon:', err);
+      error = `Saved, but the Dock icon won't change until you restart HQ: ${String(err)}`;
     }
   }
 
@@ -1202,6 +1235,11 @@
       <h2>General</h2>
       <div class="settings-card">
         <label class="setting-row"><span><strong>Start at login</strong><small>Open HQ when your computer starts.</small></span><input type="checkbox" bind:checked={startAtLogin} onchange={applyStartAtLogin} /></label>
+        {#if isMacOS}
+          <!-- macOS-only: Windows and Linux have no activation policy, and HQ
+               already owns a taskbar entry there, so the row would be a no-op. -->
+          <label class="setting-row"><span><strong>Show in Dock</strong><small>Keep an HQ icon in the Dock. Turn this off to run from the menu bar only.</small></span><input id="toggle-dock-icon" data-testid="dock-icon-toggle" type="checkbox" bind:checked={dockIcon} onchange={applyDockIcon} aria-label="Show in Dock" /></label>
+        {/if}
         <label class="setting-row" data-testid="telemetry-row">
           <span>
             <strong>Usage telemetry</strong>

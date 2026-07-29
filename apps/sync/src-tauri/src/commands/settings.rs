@@ -62,6 +62,9 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
             widget_enabled: Some(default_widget_enabled()),
             // None = primary display.
             widget_display: None,
+            // Dock icon defaults ON — a fresh install shows up in the Dock
+            // without the user finding the toggle first.
+            dock_icon: Some(true),
         });
     }
 
@@ -141,6 +144,12 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
         widget_enabled: Some(prefs.widget_enabled.unwrap_or_else(default_widget_enabled)),
         // Pass-through — None = primary display (NSScreen.localizedName match).
         widget_display: prefs.widget_display,
+        // Dock icon defaults ON. Absent in pre-dock-icon menubar.json files →
+        // true, so existing installs gain the Dock icon on upgrade. Mirrors
+        // `dock::effective_dock_icon`, which is what actually drives the
+        // activation policy at launch and on toggle; this branch only keeps
+        // the Settings round-trip honest.
+        dock_icon: Some(prefs.dock_icon.unwrap_or(true)),
     })
 }
 

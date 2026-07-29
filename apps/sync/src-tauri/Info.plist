@@ -22,6 +22,18 @@
 -->
 <plist version="1.0">
 <dict>
+    <!--
+      LSUIElement stays true so the process always LAUNCHES as an accessory.
+      It is no longer the final word on Dock presence: `commands/dock.rs` reads
+      the `dockIcon` preference (default ON) during `.setup()` and promotes the
+      app to NSApplicationActivationPolicyRegular — Dock icon, Cmd-Tab entry,
+      app menu bar — unless the user has explicitly turned the Dock icon off.
+
+      Launching accessory-first is deliberate: a user who opted out must never
+      see a Dock icon appear and then vanish at every login, and promoting an
+      LSUIElement process with -[NSApplication setActivationPolicy:] is the
+      supported direction (demoting a Regular launch is the flaky one).
+    -->
     <key>LSUIElement</key>
     <true/>
     <key>NSMicrophoneUsageDescription</key>
