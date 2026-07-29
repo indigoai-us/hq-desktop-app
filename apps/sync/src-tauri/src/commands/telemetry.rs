@@ -51,8 +51,18 @@ impl Default for TelemetryCursor {
     }
 }
 
+fn telemetry_home_dir() -> Option<std::path::PathBuf> {
+    #[cfg(test)]
+    if let Some(home) = std::env::var_os("HQ_TEST_HOME") {
+        if !home.is_empty() {
+            return Some(home.into());
+        }
+    }
+    paths::home_dir()
+}
+
 fn cursor_path() -> Option<std::path::PathBuf> {
-    paths::home_dir().map(|h| h.join(".hq/telemetry-cursor.json"))
+    telemetry_home_dir().map(|h| h.join(".hq/telemetry-cursor.json"))
 }
 
 fn normalize_cursor_key_with_separator(raw: &str, separator: char) -> String {
@@ -943,7 +953,7 @@ pub fn setup_daily_active_emit() {
 }
 
 fn read_machine_id() -> String {
-    let home = paths::home_dir().unwrap_or_default();
+    let home = telemetry_home_dir().unwrap_or_default();
     let path = home.join(".hq/menubar.json");
     if let Ok(contents) = fs::read_to_string(&path) {
         if let Ok(v) = serde_json::from_str::<Value>(&contents) {
@@ -1400,7 +1410,7 @@ pub async fn send_telemetry_if_opted_in<R: tauri::Runtime>(
     }
 
     // 3. Load cursor and schedule Codex rollouts only after opt-in succeeds.
-    let home = paths::home_dir().ok_or("home dir unavailable")?;
+    let home = telemetry_home_dir().ok_or("home dir unavailable")?;
     let cursor = load_cursor();
     let loaded_files = cursor.files.clone();
     let codex_candidates = codex_candidate_entries(&home.join(".codex"), &cursor);
@@ -1844,7 +1854,7 @@ async fn flush_batch(
 #[cfg(test)]
 mod codex_telemetry_tests {
     use super::*;
-    use crate::util::test_support::ENV_MUTEX;
+    use crate::util::test_support::{scoped_home, ENV_MUTEX};
     use serde_json::json;
     use std::fs;
     use tempfile::TempDir;
@@ -4334,7 +4344,7 @@ mod codex_telemetry_tests {
         }
         let codex_path = write_codex_rollout(home.path(), &rollout);
         let codex_key = codex_path.to_string_lossy().to_string();
-        std::env::set_var("HOME", home.path());
+        let _home_scope = scoped_home(home.path());
         std::env::set_var("HQ_VAULT_API_URL", server.uri());
         let handle = make_app_handle();
 
@@ -4346,7 +4356,15 @@ mod codex_telemetry_tests {
             "zero-token slice must not POST"
         );
         let partial = read_cursor(home.path()).files[&codex_key].clone();
-        assert!(partial.offset >= MAX_CODEX_SCAN_BYTES_PER_SYNC);
+        let fair_slice = per_rollout_scan_budget(1);
+        assert!(
+            partial.offset <= fair_slice,
+            "scan progress must remain inside the per-rollout byte slice"
+        );
+        assert!(
+            partial.offset >= fair_slice.saturating_sub(MAX_CODEX_LINE_BYTES),
+            "rewinding the boundary record may leave at most one valid line uncommitted"
+        );
         assert!(partial.offset < rollout.len() as u64);
         assert!(
             partial.offset > malformed_end,
@@ -4360,7 +4378,6 @@ mod codex_telemetry_tests {
         send_telemetry_if_opted_in(&handle, "/hq", "tok")
             .await
             .unwrap();
-        std::env::remove_var("HOME");
         std::env::remove_var("HQ_VAULT_API_URL");
         assert!(post_bodies(&server).await.is_empty());
         assert_eq!(
