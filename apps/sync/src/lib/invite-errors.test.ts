@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isAlreadyScheduledError } from './invite-errors';
+import { isAlreadyScheduledError, isPlanRequiredError } from './invite-errors';
 
 describe('isAlreadyScheduledError', () => {
   it('matches the atomic dedup-lock 409 (bot-already-scheduling)', () => {
@@ -32,5 +32,30 @@ describe('isAlreadyScheduledError', () => {
     expect(isAlreadyScheduledError('bot/invite fetch: connection reset')).toBe(false);
     expect(isAlreadyScheduledError(null)).toBe(false);
     expect(isAlreadyScheduledError(undefined)).toBe(false);
+  });
+});
+
+describe('isPlanRequiredError', () => {
+  it('matches the flattened 402 response with the required Team plan', () => {
+    expect(
+      isPlanRequiredError(
+        'bot/invite HTTP 402: {"requiredPlan":"agents-500","code":"MEETING_PLAN_REQUIRED"}',
+      ),
+    ).toBe(true);
+  });
+
+  it('matches each backend plan-required sentinel without a status', () => {
+    expect(isPlanRequiredError('requiredPlan agents-500')).toBe(true);
+    expect(isPlanRequiredError('MEETING_PLAN_REQUIRED')).toBe(true);
+  });
+
+  it('does NOT match already-scheduled or unrelated errors', () => {
+    expect(
+      isPlanRequiredError(
+        'bot/invite HTTP 409: {"code":"bot-already-scheduled"}',
+      ),
+    ).toBe(false);
+    expect(isPlanRequiredError('bot/invite HTTP 500: server error')).toBe(false);
+    expect(isPlanRequiredError(null)).toBe(false);
   });
 });

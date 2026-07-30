@@ -5,7 +5,10 @@ import {
   seedActiveMeetingsFromBackend,
 } from '../../lib/activeMeetings';
 import { loadMeetingsCache, saveMeetingsCache } from '../../lib/meetingsCache';
-import { isAlreadyScheduledError } from '../../lib/invite-errors';
+import {
+  isAlreadyScheduledError,
+  isPlanRequiredError,
+} from '../../lib/invite-errors';
 import {
   buildRefreshProblemReport,
   botForEvent,
@@ -38,6 +41,11 @@ export interface ToastDescriptor {
   kind: 'info' | 'warn';
   text: string;
 }
+
+const PLAN_REQUIRED_TOAST: ToastDescriptor = {
+  kind: 'warn',
+  text: 'Meetings need the $500/mo Team plan—upgrade in HQ Console to record.',
+};
 
 /** Return shape of `meetings_list_calendars_for_account` — the per-account
  *  calendar list plus the user's enabled selection. Mirrors the inline type
@@ -441,6 +449,7 @@ async function inviteBot(evt: MeetingEvent): Promise<ToastDescriptor | null> {
       void refresh(true);
       return { kind: 'info', text: 'Already invited — refreshing.' };
     }
+    if (isPlanRequiredError(err)) return PLAN_REQUIRED_TOAST;
     return { kind: 'warn', text: friendlyError(err, "Couldn't invite the bot.") };
   } finally {
     unlockRow(key);
@@ -499,6 +508,7 @@ async function joinBotNow(evt: MeetingEvent): Promise<ToastDescriptor | null> {
     await refresh(true);
     return { kind: 'info', text: "Bot's on the way." };
   } catch (err) {
+    if (isPlanRequiredError(err)) return PLAN_REQUIRED_TOAST;
     return { kind: 'warn', text: friendlyError(err, "Couldn't tell the bot to join.") };
   } finally {
     unlockRow(key);
@@ -548,6 +558,7 @@ async function inviteBotByUrl(
       void refresh(true);
       return { kind: 'info', text: 'Already invited — refreshing.' };
     }
+    if (isPlanRequiredError(err)) return PLAN_REQUIRED_TOAST;
     return { kind: 'warn', text: friendlyError(err, "Couldn't invite the bot.") };
   }
 }
