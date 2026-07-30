@@ -1,3 +1,5 @@
+import { safeUnlisten } from './listener-registry';
+
 export type NotificationActionKind = 'dm' | 'share' | 'update' | 'meeting';
 
 export interface BannerActionEvent {
@@ -111,7 +113,9 @@ export class BannerActionRouter {
     while (!this.stopped) {
       let candidate: Unlisten | null = null;
       try {
-        candidate = await this.listen(EVENT_BANNER_ACTION, this.handle);
+        candidate = safeUnlisten(
+          await this.listen(EVENT_BANNER_ACTION, this.handle),
+        );
         if (this.stopped) {
           candidate();
           return;

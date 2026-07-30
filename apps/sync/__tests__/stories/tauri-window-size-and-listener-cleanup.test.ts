@@ -83,7 +83,8 @@ describe('HQ-DESKTOP-39: late main-window listener cleanup', () => {
       if (path.endsWith('.test.ts')) return false;
       const source = readFileSync(path, 'utf8');
       return (
-        source.includes('@tauri-apps/api/event') &&
+        (source.includes('@tauri-apps/api/event') ||
+          source.includes('this.listen(')) &&
         (source.includes('listen(') || source.includes('.onFocusChanged('))
       );
     });
