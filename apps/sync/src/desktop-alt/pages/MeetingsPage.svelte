@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+  import { safeUnlisten } from '../../lib/listener-registry';
   import { open as openExternal } from '@tauri-apps/plugin-shell';
   import { onMount } from 'svelte';
   import {
@@ -320,7 +321,7 @@
           if (id) focusMeetingRow(id);
         });
         if (cancelled) {
-          unlisten?.();
+          safeUnlisten(unlisten)();
           return;
         }
         try {
@@ -336,7 +337,7 @@
 
     return () => {
       cancelled = true;
-      unlisten?.();
+      safeUnlisten(unlisten)();
       if (focusClearTimer) clearTimeout(focusClearTimer);
     };
   });

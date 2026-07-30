@@ -14,7 +14,38 @@ function staleUnlisten(): () => never {
   };
 }
 
+/**
+ * Tauri's event API types an unlisten handle as returning void, but the actual
+ * handle delegates to its async `_unlisten` implementation. A stale-map error
+ * therefore arrives as a rejected promise rather than a synchronous throw.
+ */
+function asyncStaleUnlisten(): () => Promise<never> {
+  return async () => {
+    throw new TypeError(
+      "undefined is not an object (evaluating 'listeners[eventId].handlerId')",
+    );
+  };
+}
+
 describe('safeUnlisten', () => {
+  it('absorbs the async stale-map rejection without emitting an unhandled rejection', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const unhandled: unknown[] = [];
+    const onUnhandledRejection = (reason: unknown) => unhandled.push(reason);
+    process.on('unhandledRejection', onUnhandledRejection);
+
+    try {
+      safeUnlisten(asyncStaleUnlisten())();
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+      expect(unhandled).toEqual([]);
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      process.off('unhandledRejection', onUnhandledRejection);
+      warn.mockRestore();
+    }
+  });
+
   it('does not throw when the underlying unlisten throws the stale-map TypeError', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const safe = safeUnlisten(staleUnlisten());
@@ -33,6 +64,17 @@ describe('safeUnlisten', () => {
     expect(inner).toHaveBeenCalledTimes(1);
   });
 
+  it('shares one wrapper when the same underlying handle is registered twice', () => {
+    const inner = vi.fn();
+    const first = safeUnlisten(inner);
+    const second = safeUnlisten(inner);
+
+    first();
+    second();
+
+    expect(inner).toHaveBeenCalledTimes(1);
+  });
+
   it('tolerates a null/undefined handle', () => {
     expect(() => safeUnlisten(null)()).not.toThrow();
     expect(() => safeUnlisten(undefined)()).not.toThrow();
@@ -40,6 +82,31 @@ describe('safeUnlisten', () => {
 });
 
 describe('ListenerRegistry', () => {
+  it('releases every handle when a middle teardown rejects asynchronously', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const unhandled: unknown[] = [];
+    const onUnhandledRejection = (reason: unknown) => unhandled.push(reason);
+    process.on('unhandledRejection', onUnhandledRejection);
+
+    try {
+      const reg = new ListenerRegistry();
+      const before = vi.fn();
+      const after = vi.fn();
+      reg.push(before, asyncStaleUnlisten(), after);
+
+      expect(() => reg.dispose()).not.toThrow();
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+      expect(before).toHaveBeenCalledTimes(1);
+      expect(after).toHaveBeenCalledTimes(1);
+      expect(unhandled).toEqual([]);
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      process.off('unhandledRejection', onUnhandledRejection);
+      warn.mockRestore();
+    }
+  });
+
   it('releases every handle even when one throws the stale-map TypeError', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const reg = new ListenerRegistry();

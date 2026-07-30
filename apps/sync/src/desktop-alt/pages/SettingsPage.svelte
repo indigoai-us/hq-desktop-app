@@ -3,6 +3,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { getVersion } from '@tauri-apps/api/app';
   import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event';
+  import { safeUnlisten } from '../../lib/listener-registry';
   import { open as openUrl } from '@tauri-apps/plugin-shell';
   import { formatHqFolderMeta, type SettingsTab } from '../route';
   import { emitDesktopTelemetry } from '../../lib/desktop-telemetry';
@@ -465,10 +466,10 @@
       void registration
         .then((unlisten) => {
           if (cancelled) {
-            unlisten();
+            safeUnlisten(unlisten)();
             return;
           }
-          retain(unlisten);
+          retain(safeUnlisten(unlisten));
         })
         .catch((err) => {
           console.error('settings: failed to listen for updater state', err);
@@ -537,8 +538,8 @@
       coreVersionLoadGeneration += 1;
       coreStateLoadGeneration += 1;
       coreInstallGeneration += 1;
-      unlistenUpdate?.();
-      unlistenUpdateCleared?.();
+      safeUnlisten(unlistenUpdate)();
+      safeUnlisten(unlistenUpdateCleared)();
       window.removeEventListener('focus', onFocus);
       if (updateResultTimeout) clearTimeout(updateResultTimeout);
       if (coreInstallResultTimeout) clearTimeout(coreInstallResultTimeout);

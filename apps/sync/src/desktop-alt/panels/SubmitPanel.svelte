@@ -25,6 +25,7 @@
    * shared desktop-alt CSS variables, and explicit idle/busy/error/success states.
    */
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+  import { safeUnlisten } from '../../lib/listener-registry';
   import { onMount } from 'svelte';
   import {
     looksApplicationPending,
@@ -147,7 +148,7 @@
         },
       );
     })();
-    return () => unlisten?.();
+    return () => safeUnlisten(unlisten)();
   });
 
   /** Short, friendly basename for the selected path (full path shown as title). */

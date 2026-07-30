@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
+  import { safeUnlisten } from '../lib/listener-registry';
   import { buildClaudeCodeUrl } from '../lib/claude-code-link';
   import { shareAclLabel, sharePathPrefix, shareTitle } from '../lib/share-path';
   import { buildSharePrompt } from '../lib/shareTimeline';
@@ -165,8 +166,9 @@
     listen<ReactionEvent>('message:reaction', (event) => {
       reactionCtl.applyEvent(event.payload);
     }).then((fn) => {
-      if (disposed) fn();
-      else unlistenReaction = fn;
+      const safe = safeUnlisten(fn);
+      if (disposed) safe();
+      else unlistenReaction = safe;
     });
 
     return () => {

@@ -22,6 +22,21 @@
  */
 import type { UnlistenFn } from '@tauri-apps/api/event';
 
+const wrappedUnlisteners = new WeakMap<UnlistenFn, UnlistenFn>();
+
+function isThenable(value: unknown): value is PromiseLike<unknown> {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'then' in value &&
+    typeof value.then === 'function'
+  );
+}
+
+function reportTeardownError(error: unknown): void {
+  console.warn('safeUnlisten: ignoring listener teardown error', error);
+}
+
 /**
  * Wrap a Tauri unlisten handle so tearing the listener down is idempotent and
  * never throws.
@@ -33,17 +48,28 @@ import type { UnlistenFn } from '@tauri-apps/api/event';
  * double/stale teardown degrades to a no-op instead of crashing the surface.
  */
 export function safeUnlisten(unlisten: UnlistenFn | null | undefined): UnlistenFn {
+  if (!unlisten) return () => {};
+
+  const existing = wrappedUnlisteners.get(unlisten);
+  if (existing) return existing;
+
   let called = false;
-  return () => {
+  const safe = () => {
     if (called) return;
     called = true;
     try {
-      unlisten?.();
+      const result: unknown = unlisten();
+      if (isThenable(result)) {
+        void Promise.resolve(result).catch(reportTeardownError);
+      }
     } catch (err) {
       // Already gone — exactly the end state we want. Never let teardown throw.
-      console.warn('safeUnlisten: ignoring listener teardown error', err);
+      reportTeardownError(err);
     }
   };
+
+  wrappedUnlisteners.set(unlisten, safe);
+  return safe;
 }
 
 /**

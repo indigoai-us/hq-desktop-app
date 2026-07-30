@@ -6,6 +6,7 @@
   import '../styles/popover.css';
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
+  import { safeUnlisten } from '../lib/listener-registry';
   import type { Item, ShareEvent } from '../lib/notificationGroups';
   import type { Channel } from '../lib/channels';
   import { defaultSelectedId } from '../lib/quickWindowPane';
@@ -153,9 +154,9 @@
         selectedShareEvents = [];
       });
       if (cancelled) {
-        unlistenDetail?.();
-        unlistenChannel?.();
-        unlistenInbox?.();
+        safeUnlisten(unlistenDetail)();
+        safeUnlisten(unlistenChannel)();
+        safeUnlisten(unlistenInbox)();
         return;
       }
       // Ready-handshake: Rust emits a stashed opening DM only after listeners
@@ -165,9 +166,9 @@
 
     return () => {
       cancelled = true;
-      unlistenDetail?.();
-      unlistenChannel?.();
-      unlistenInbox?.();
+      safeUnlisten(unlistenDetail)();
+      safeUnlisten(unlistenChannel)();
+      safeUnlisten(unlistenInbox)();
     };
   });
 </script>

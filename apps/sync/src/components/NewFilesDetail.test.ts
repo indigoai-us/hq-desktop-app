@@ -47,7 +47,9 @@ beforeEach(() => {
       handler: (event: { payload: NewFilePayload[] }) => void,
     ) => {
       if (eventName === 'new-files:list') tauri.listHandler = handler;
-      return tauri.unlisten;
+      // Tauri returns one unlisten closure per registration. The shared spy is
+      // kept only as the observable invocation counter.
+      return vi.fn(() => tauri.unlisten());
     },
   );
 });

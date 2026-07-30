@@ -11,6 +11,7 @@
   // live `channel:new-message` refresh for the channel it's showing.
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
+  import { safeUnlisten } from '../../lib/listener-registry';
   import { untrack } from 'svelte';
   import Conversation, { type ConversationMessage } from './Conversation.svelte';
   import ChannelRoster from './ChannelRoster.svelte';
@@ -294,8 +295,9 @@
     const unlisteners: Array<() => void> = [];
     let disposed = false;
     const track = (unlisten: () => void) => {
-      if (disposed) unlisten();
-      else unlisteners.push(unlisten);
+      const safe = safeUnlisten(unlisten);
+      if (disposed) safe();
+      else unlisteners.push(safe);
     };
     void listen<{ channelId: string; unread?: number }>('channel:new-message', (e) => {
       if (e.payload.channelId === current.channelId) {

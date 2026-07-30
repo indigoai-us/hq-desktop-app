@@ -1,4 +1,5 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
@@ -15,6 +16,14 @@ const onboarding = readFileSync(root('src/components/Onboarding.svelte'), 'utf8'
 const nativeMain = readFileSync(root('src-tauri/src/main.rs'), 'utf8');
 const app = readFileSync(root('src/App.svelte'), 'utf8');
 const listenerRegistry = readFileSync(root('src/lib/listener-registry.ts'), 'utf8');
+
+function sourceFiles(directory: string): string[] {
+  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) return sourceFiles(path);
+    return /\.(?:ts|svelte)$/.test(entry.name) ? [path] : [];
+  });
+}
 
 describe('HQ-DESKTOP-38: main-window resize ACL', () => {
   it('authorizes the main window to resize itself', () => {
@@ -63,7 +72,29 @@ describe('HQ-DESKTOP-39: late main-window listener cleanup', () => {
     // `safeUnlisten` runs the handle at most once inside a try/catch so that
     // throw can neither crash the surface nor skip sibling handles.
     expect(listenerRegistry).toContain('export function safeUnlisten(');
-    expect(listenerRegistry).toMatch(/try \{[\s\S]*?unlisten\?\.\(\)[\s\S]*?\} catch/);
+    expect(listenerRegistry).toMatch(
+      /const result: unknown = unlisten\(\);[\s\S]*?Promise\.resolve\(result\)\.catch/,
+    );
     expect(listenerRegistry).toMatch(/if \(called\) return;[\s\S]*?called = true;/);
+  });
+
+  it('routes every Tauri listener surface through safeUnlisten or ListenerRegistry', () => {
+    const listenerSurfaces = sourceFiles(root('src')).filter((path) => {
+      if (path.endsWith('.test.ts')) return false;
+      const source = readFileSync(path, 'utf8');
+      return (
+        source.includes('@tauri-apps/api/event') &&
+        (source.includes('listen(') || source.includes('.onFocusChanged('))
+      );
+    });
+
+    expect(listenerSurfaces).not.toEqual([]);
+    for (const path of listenerSurfaces) {
+      const source = readFileSync(path, 'utf8');
+      expect(
+        source.includes('safeUnlisten') || source.includes('ListenerRegistry'),
+        `${path} registers a Tauri listener without the shared teardown boundary`,
+      ).toBe(true);
+    }
   });
 });
