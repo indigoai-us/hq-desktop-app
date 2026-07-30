@@ -776,7 +776,7 @@ This final paragraph verifies spacing after a thematic break.
     note: 'Already-installed users are NOT auto-removed in v1.',
   }),
   get_company_deployments: () => [
-    { sub: 'app', url: 'app.hq.computer', state: 'active', lastDeploy: '8m ago', size: '18.4 MB', ver: 'v0.10.33', pwd: false },
+    { sub: 'app', url: 'app.example.hq.computer', state: 'active', lastDeploy: '8m ago', size: '18.4 MB', ver: 'v0.10.33', pwd: false },
     { sub: 'preview', url: 'preview.hq.computer', state: 'deploying', lastDeploy: 'just now', size: '18.3 MB', ver: 'v0.10.34-rc.1', pwd: true },
     { sub: 'docs', url: 'docs.hq.computer', state: 'paused', lastDeploy: '3d ago', size: '6.8 MB', ver: 'v4.2.0', pwd: false },
   ],
