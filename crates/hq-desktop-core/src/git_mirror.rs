@@ -1426,10 +1426,17 @@ mod tests {
         );
         assert!(wt.join(".git").is_file(), "expected a linked worktree");
 
+        // Compared by trailing components, not prefix: macOS resolves the
+        // tempdir's `/var` through a symlink to `/private/var`, so the
+        // absolute prefix legitimately differs from `main.path()`.
         let git_dir = git_dir_of(&wt);
         assert!(
-            git_dir.starts_with(main.path().join(".git")),
-            "worktree git dir must resolve under the main repo, got {git_dir:?}"
+            git_dir.ends_with(Path::new("worktrees").join("wt")),
+            "worktree git dir must resolve to the main repo's per-worktree dir, got {git_dir:?}"
+        );
+        assert!(
+            git_dir.is_dir(),
+            "the resolved git dir must be a real directory, not the `.git` file"
         );
         assert!(
             index_lock_path(&git_dir).parent() == Some(git_dir.as_path())
