@@ -271,7 +271,7 @@
   aria-label="Conversations"
   aria-busy={loading || loadingChannels}
 >
-  <section class="qw-section" aria-labelledby="quick-conversations-label">
+  <section class="qw-section" aria-label="Message sources">
     {#if (loading || loadingChannels) && railEntries.length === 0}
       <div class="qw-skeleton-list" aria-label="Loading conversations" role="status">
         {#each Array(5) as _}

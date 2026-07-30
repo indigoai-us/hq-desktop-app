@@ -69,6 +69,8 @@ describe('quick communications window hierarchy', () => {
     expect(sidePane).toContain('orderQuickWindowChannels(channels)');
     expect(sidePane).toContain('.sort((a, b) => b.timestamp - a.timestamp)');
     expect(sidePane).not.toContain('.slice(0, 12)');
+    expect(sidePane).toContain('aria-label="Message sources"');
+    expect(sidePane).not.toContain('aria-labelledby="quick-conversations-label"');
     expect(sidePane).toContain('id="quick-conversations-label">Direct messages');
     expect(sidePane).toContain('<div class="qw-side-label">Channels</div>');
     expect(sidePane).not.toContain('sourceLabel=');
