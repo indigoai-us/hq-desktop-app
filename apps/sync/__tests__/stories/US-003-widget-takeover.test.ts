@@ -118,9 +118,14 @@ describe('US-003: Notification takeover with queue-on-occlusion', () => {
       expect(dmNotifyRs).toMatch(gate);
       expect(shareNotifyRs).toMatch(gate);
       expect(meetingsRs).toMatch(gate);
-      // Updater centralizes the gate so manual and background checks cannot
-      // drift; both call sites route through the shared announcer.
+      // Updater centralizes the gate, but manual checks and automatic recovery
+      // pass PersistentOnly so they cannot flash a separate update window.
       expect(updaterRs).toMatch(gate);
+      expect(updaterRs).toContain(
+        'should_raise_transient_update_surface(announcement)',
+      );
+      expect(updaterRs).toContain('UpdateAnnouncement::PersistentOnly');
+      expect(updaterRs).toContain('UpdateAnnouncement::TransientBanner');
       expect(
         (updaterRs.match(/record_and_announce_update\(/g) ?? []).length,
       ).toBeGreaterThanOrEqual(

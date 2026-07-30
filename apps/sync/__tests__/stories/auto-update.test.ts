@@ -51,6 +51,9 @@ describe('master automatic-updates switch', () => {
     expect(appUpdater).toContain('UPDATE_SYNC_RETRY_INTERVAL');
     expect(appUpdater).toContain('automatic install failed — offering manual recovery');
     expect(appUpdater).toContain('record_and_announce_update');
+    expect(appUpdater).toContain('UpdateAnnouncement::PersistentOnly');
+    expect(appUpdater).toContain('UpdateAnnouncement::TransientBanner');
+    expect(appUpdater).toContain('should_raise_transient_update_surface');
   });
 
   it('App keeps the shared preference hydrated for Core updates', () => {

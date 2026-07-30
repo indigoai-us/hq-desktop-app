@@ -125,6 +125,20 @@ enum BackgroundUpdateAction {
     Announce,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UpdateAnnouncement {
+    /// Keep the update in shared state and notify mounted app surfaces without
+    /// creating a separate window.
+    PersistentOnly,
+    /// Also raise the compact banner/widget for users who deliberately opted
+    /// out of automatic installation.
+    TransientBanner,
+}
+
+fn should_raise_transient_update_surface(announcement: UpdateAnnouncement) -> bool {
+    announcement == UpdateAnnouncement::TransientBanner
+}
+
 fn background_update_action(
     automatic_updates: bool,
     sync_in_progress: bool,
@@ -337,6 +351,7 @@ async fn record_and_announce_update(
     ticket: UpdateCheckTicket,
     discovered: UpdateInfo,
     authoritative: bool,
+    announcement: UpdateAnnouncement,
 ) -> Result<Option<UpdateInfo>, String> {
     let transition = apply_discovered_to_app(app, ticket, discovered, authoritative)?;
     let info = transition.status.pending_info();
@@ -346,12 +361,15 @@ async fn record_and_announce_update(
 
     let info = info.expect("an applied available transition always stores update info");
     let _ = app.emit("update:available", &info);
-    // Also raise the custom banner so a version drop surfaces even with
-    // the popover closed (gated on customBanner; purely additive — the
-    // in-app UI above is unchanged).
+    // Only opted-out background discovery raises a transient surface. Manual
+    // checks already have a visible caller, while automatic-install recovery
+    // is represented persistently in Settings, the version popout, and Inbox.
+    // Opening a separate banner for either case makes the desktop look like
+    // windows are flashing while the user is already working in it.
     // US-003: widget takeover must never fall back to native banners.
-    if crate::commands::banner::custom_banner_enabled()
-        || crate::commands::widget::takeover_active(app)
+    if should_raise_transient_update_surface(announcement)
+        && (crate::commands::banner::custom_banner_enabled()
+            || crate::commands::widget::takeover_active(app))
     {
         let _ = crate::commands::banner::show_update_banner(
             app.clone(),
@@ -436,7 +454,14 @@ pub async fn check_for_updates(app: AppHandle) -> Result<Option<UpdateInfo>, Str
                 update.body.clone(),
                 update.date.map(|d| d.to_string()),
             );
-            record_and_announce_update(&app, ticket, info, authoritative).await
+            record_and_announce_update(
+                &app,
+                ticket,
+                info,
+                authoritative,
+                UpdateAnnouncement::PersistentOnly,
+            )
+            .await
         }
         Ok(None) => {
             // Up to date — clear any previously stored pending update so a
@@ -491,7 +516,14 @@ pub async fn install_update(app: AppHandle) -> Result<(), String> {
                 update.body.clone(),
                 update.date.map(|d| d.to_string()),
             );
-            let _ = record_and_announce_update(&app, ticket, info, authoritative).await?;
+            let _ = record_and_announce_update(
+                &app,
+                ticket,
+                info,
+                authoritative,
+                UpdateAnnouncement::PersistentOnly,
+            )
+            .await?;
             // Download and install
             update
                 .download_and_install(|_, _| {}, || {})
@@ -620,6 +652,7 @@ pub fn setup_update_checker(app: &AppHandle) {
                                                                     ticket,
                                                                     info,
                                                                     authoritative,
+                                                                    UpdateAnnouncement::PersistentOnly,
                                                                 )
                                                                 .await
                                                             {
@@ -652,6 +685,7 @@ pub fn setup_update_checker(app: &AppHandle) {
                                                 ticket,
                                                 info,
                                                 authoritative,
+                                                UpdateAnnouncement::TransientBanner,
                                             )
                                             .await
                                             {
@@ -824,6 +858,16 @@ mod tests {
             background_update_action(false, true),
             BackgroundUpdateAction::Announce
         );
+    }
+
+    #[test]
+    fn persistent_update_announcements_never_open_a_transient_window() {
+        assert!(!should_raise_transient_update_surface(
+            UpdateAnnouncement::PersistentOnly
+        ));
+        assert!(should_raise_transient_update_surface(
+            UpdateAnnouncement::TransientBanner
+        ));
     }
 
     #[test]
