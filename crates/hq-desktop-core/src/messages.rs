@@ -88,9 +88,21 @@ pub struct Channel {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub visibility: Option<String>,
     /// Caller's membership: "joined" | "invited" | "none".
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ///
+    /// Newer servers send a membership object while older ones sent this
+    /// string directly. Normalize both wire shapes here so all desktop
+    /// consumers retain the existing string contract.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_membership"
+    )]
     pub membership: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        alias = "unreadCount",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub unread: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub member_count: Option<u32>,
@@ -102,6 +114,27 @@ pub struct Channel {
     /// unnamed group DM by its people. Present only for group-scoped channels.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub members: Option<Vec<ChannelParticipant>>,
+}
+
+fn deserialize_membership<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum MembershipWire {
+        Legacy(String),
+        Current {
+            #[serde(default)]
+            joined: bool,
+        },
+    }
+
+    let membership = Option::<MembershipWire>::deserialize(deserializer)?;
+    Ok(membership.map(|membership| match membership {
+        MembershipWire::Legacy(value) => value,
+        MembershipWire::Current { joined } => if joined { "joined" } else { "invited" }.to_string(),
+    }))
 }
 
 /// A group-DM participant as returned on the channels list — enough to label the
@@ -444,6 +477,51 @@ mod tests {
         assert_eq!(c.membership.as_deref(), Some("invited"));
         assert_eq!(c.unread, Some(3));
         assert_eq!(c.member_count, Some(12));
+    }
+
+    #[test]
+    fn channels_response_accepts_current_production_wire_shape() {
+        let response: ChannelsResponse = serde_json::from_value(serde_json::json!({
+            "channels": [{
+                "channelId": "chn_group",
+                "name": "",
+                "slug": "",
+                "scope": "group",
+                "createdBy": "prs_owner",
+                "postPolicy": "all",
+                "visibility": "invite",
+                "createdAt": "2026-07-29T18:30:00Z",
+                "updatedAt": "2026-07-29T18:35:00Z",
+                "memberCount": 3,
+                "unreadCount": 4,
+                "membership": {
+                    "joined": true,
+                    "following": true,
+                    "muted": false,
+                    "role": "member",
+                    "source": "direct",
+                    "lastReadAt": null
+                },
+                "members": [{
+                    "personUid": "prs_aleena",
+                    "participantType": "human",
+                    "displayName": "Aleena Hassaan"
+                }]
+            }]
+        }))
+        .expect("the current channels response parses");
+
+        let channel = response.channels.first().expect("channel present");
+        assert_eq!(channel.membership.as_deref(), Some("joined"));
+        assert_eq!(channel.unread, Some(4));
+        assert_eq!(
+            channel
+                .members
+                .as_ref()
+                .and_then(|members| members.first())
+                .map(|member| member.display_name.as_str()),
+            Some("Aleena Hassaan"),
+        );
     }
 
     #[test]
