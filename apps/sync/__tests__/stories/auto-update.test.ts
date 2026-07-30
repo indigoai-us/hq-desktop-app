@@ -16,6 +16,7 @@ const normalize = (s: string) => s.replace(/\s+/g, ' ');
 
 const app = read('src/App.svelte');
 const settings = read('src/desktop-alt/pages/SettingsPage.svelte');
+const appUpdater = read('src-tauri/src/updater.rs');
 const cliUpdate = read('src-tauri/src/commands/hq_cli_update.rs');
 const settingsRs = read('src-tauri/src/commands/settings.rs');
 
@@ -40,23 +41,33 @@ describe('master automatic-updates switch', () => {
     expect(s).toContain("aria-busy={isSettingsControlPending('auto-update')}");
   });
 
-  it('App silently installs app + core updates when autoUpdate is on, guarded', () => {
+  it('native Rust installs app updates without depending on a mounted WebView', () => {
+    expect(appUpdater).toContain(
+      'hq_desktop_core::hq_cli_update::auto_update_enabled()',
+    );
+    expect(appUpdater).toContain('BackgroundUpdateAction::Install');
+    expect(appUpdater).toContain('download_and_install');
+    expect(appUpdater).toContain('BackgroundUpdateAction::DeferForSync');
+    expect(appUpdater).toContain('UPDATE_SYNC_RETRY_INTERVAL');
+    expect(appUpdater).toContain('automatic install failed — offering manual recovery');
+    expect(appUpdater).toContain('record_and_announce_update');
+    expect(appUpdater).toContain('UpdateAnnouncement::PersistentOnly');
+    expect(appUpdater).toContain('UpdateAnnouncement::TransientBanner');
+    expect(appUpdater).toContain('should_raise_transient_update_surface');
+  });
+
+  it('App keeps the shared preference hydrated for Core updates', () => {
     const a = normalize(app);
     // Reads the pref (default on) + refreshes it on focus.
     expect(a).toContain('async function loadAutoUpdatePref()');
     expect(a).toContain('autoUpdate = s?.autoUpdate ?? true');
-    // App self-update effect: gated on autoUpdate, deferred while syncing,
-    // deduped by version, reuses the guarded install path.
-    expect(a).toContain('if (!autoUpdate) return; const info = updateAvailable;');
-    expect(a).toContain('if (autoAppUpdatedVersion === info.version) return;');
-    expect(a).toContain('void handleInstallUpdate();');
+    expect(a).not.toContain('autoAppUpdatedVersion');
     // Core update effect: only on a genuine version bump for eligible users,
     // deduped by target version, deferred while syncing.
     expect(a).toContain('if (!s || !s.isEligible || !s.versionBehind) return;');
     expect(a).toContain('if (autoCoreUpdatedVersion === s.targetVersion) return;');
     expect(a).toContain('void handleInstallCore();');
-    // Both effects hold off mid-sync so the app never restarts under a sync.
-    expect(app.match(/if \(syncState === 'syncing'\) return;/g)?.length ?? 0).toBeGreaterThanOrEqual(2);
+    expect(app).toContain("if (syncState === 'syncing') return;");
   });
 
   it('the CLI background auto-installer gates on the master switch', () => {

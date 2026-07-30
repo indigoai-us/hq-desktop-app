@@ -119,20 +119,21 @@ describe('US-016: side pane conversation grouping', () => {
   });
 
   describe('type distinction (source-contract)', () => {
-    it('QuickWindowSidePane wires conversation rows with badgeCount, agentActor, and type map', () => {
+    it('QuickWindowSidePane renders compact Slack-like rows without message previews', () => {
       // Selected conversation reads as caught-up: badge suppressed on the
       // active row (covers the opening event's default selection too).
-      expect(paneSource).toContain('badgeCount={isSelected ? 0 : row.unreadCount}');
+      expect(paneSource).toContain('data-testid="quick-unread-count"');
       expect(paneSource).toContain(
         '{@const isSelected = selectedId != null && row.ids.includes(selectedId)}',
       );
       // Selecting a row hands the whole conversation to the main pane.
-      expect(paneSource).toContain('onopen={() => onselect(row.latest, row.ids, row.items)}');
-      expect(paneSource).toContain('agentActor={row.agent}');
-      expect(paneSource).toContain("row.kind === 'dm' ? 'message' : 'share'");
-      expect(paneSource).toContain(
-        ".qw-side-list :global(.nr[data-type='share'] .nr-icon) { color: var(--pop-text, #e8e8e8); }",
-      );
+      expect(paneSource).toContain('onclick={() => onselect(row.latest, row.ids, row.items)}');
+      expect(paneSource).toContain('class:agent-avatar={row.agent}');
+      expect(paneSource).toContain('data-kind={row.kind}');
+      expect(paneSource).toContain('id="quick-conversations-label">Direct messages');
+      expect(paneSource).toContain('<div class="qw-side-label">Channels</div>');
+      expect(paneSource).not.toContain('text={row.latest');
+      expect(paneSource).not.toContain('sourceLabel=');
       expect(paneSource).toContain('conversationRows');
       expect(paneSource).toContain('No conversations');
       expect(paneSource).toContain('includeUpdates: false');

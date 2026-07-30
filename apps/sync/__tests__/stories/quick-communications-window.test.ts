@@ -59,17 +59,23 @@ describe('quick communications window hierarchy', () => {
     expect(sidePane).toContain('selectedChannelId?: string | null');
     expect(sidePane).toContain("channel.scope === 'group'");
     expect(sidePane).toContain("channelAvatar(channel)");
-    expect(sidePane).toContain('formatChannelTime(channel)');
     expect(sidePane).toContain('channel.unread');
     expect(sidePane).toContain("'other' : 'others'");
     expect(sidePane).toContain('data-testid="quick-channel-row"');
+    expect(sidePane).toContain('data-testid="quick-conversation-row"');
+    expect(sidePane).toContain('data-provenance="group-dm"');
     expect(sidePane).toContain("kind: 'conversation'");
     expect(sidePane).toContain("kind: 'channel'");
+    expect(sidePane).toContain('orderQuickWindowChannels(channels)');
     expect(sidePane).toContain('.sort((a, b) => b.timestamp - a.timestamp)');
-    expect(sidePane).toContain('id="quick-conversations-label">Conversations');
-    expect(sidePane).toContain('identityLabel={senderIdentity');
-    expect(sidePane).toMatch(/\.channel-row\s*\{[\s\S]*?border-radius:\s*0/);
-    expect(sidePane).not.toMatch(/\.channel-row\s*\{[\s\S]*?border-left:/);
+    expect(sidePane).not.toContain('.slice(0, 12)');
+    expect(sidePane).toContain('aria-label="Message sources"');
+    expect(sidePane).not.toContain('aria-labelledby="quick-conversations-label"');
+    expect(sidePane).toContain('id="quick-conversations-label">Direct messages');
+    expect(sidePane).toContain('<div class="qw-side-label">Channels</div>');
+    expect(sidePane).not.toContain('sourceLabel=');
+    expect(sidePane).not.toContain('text={row.latest');
+    expect(sidePane).not.toMatch(/\.conversation-row\s*\{[\s\S]*?border-left:/);
   });
 
   it('keeps group-DM language human after the conversation is selected', () => {
@@ -80,12 +86,11 @@ describe('quick communications window hierarchy', () => {
     expect(channelView).toContain('placeholder={`Message ${conversationLabel}…`}');
   });
 
-  it('uses roomy loading placeholders instead of collapsing the rail to one status line', () => {
+  it('uses loading placeholders instead of collapsing the rail to one status line', () => {
     expect(sidePane).toContain('class="qw-skeleton-row"');
     expect(sidePane).toContain('aria-label="Loading conversations"');
     expect(sidePane).toContain('aria-busy={loading || loadingChannels}');
-    expect(sidePane).toContain('comfortable');
-    expect(sidePane).toMatch(/\.qw-side-list :global\(\.nr\)[\s\S]*?min-height:\s*66px/);
+    expect(sidePane).toMatch(/\.conversation-row\s*\{[\s\S]*?min-height:\s*34px/);
   });
 
   it('keeps one native material, a browser fallback, and flat structural descendants', () => {

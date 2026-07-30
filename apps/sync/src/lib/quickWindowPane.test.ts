@@ -7,6 +7,8 @@ import {
   conversationKey,
   conversationRows,
   countUnreadConversations,
+  orderQuickWindowChannels,
+  quickWindowChannelTimestamp,
 } from './quickWindowPane';
 import type { Item, DmEvent, ShareEvent } from './notificationGroups';
 
@@ -380,5 +382,46 @@ describe('countUnreadConversations', () => {
 
     expect(countUnreadConversations(items, 0, new Set())).toBe(1);
     expect(countUnreadConversations(items, 0, new Set(['dm:one', 'dm:two']))).toBe(0);
+  });
+});
+
+describe('orderQuickWindowChannels', () => {
+  it('keeps group DMs even when more than twelve newer named channels exist', () => {
+    const namedChannels = Array.from({ length: 12 }, (_, index) => ({
+      channelId: `company-${index}`,
+      scope: 'company',
+      unread: 0,
+      createdAt: new Date(2_000 + index).toISOString(),
+    }));
+    const groupDm = {
+      channelId: 'group-dm',
+      scope: 'group',
+      unread: 0,
+      createdAt: new Date(1_000).toISOString(),
+    };
+
+    const ordered = orderQuickWindowChannels([...namedChannels, groupDm]);
+
+    expect(ordered).toHaveLength(13);
+    expect(ordered.map((channel) => channel.channelId)).toContain('group-dm');
+  });
+
+  it('orders unread first, then falls back through server and arrival timestamps', () => {
+    const ordered = orderQuickWindowChannels([
+      { channelId: 'created', scope: 'group', createdAt: '2026-07-30T10:00:00Z' },
+      { channelId: 'activity', scope: 'company', lastActivityAt: '2026-07-30T12:00:00Z' },
+      { channelId: 'arrival', scope: 'personal', arrivedAt: Date.parse('2026-07-30T11:00:00Z') },
+      { channelId: 'unread', scope: 'group', unread: 1, createdAt: '2020-01-01T00:00:00Z' },
+    ]);
+
+    expect(ordered.map((channel) => channel.channelId)).toEqual([
+      'unread',
+      'activity',
+      'arrival',
+      'created',
+    ]);
+    expect(quickWindowChannelTimestamp(ordered[1])).toBe(
+      Date.parse('2026-07-30T12:00:00Z'),
+    );
   });
 });

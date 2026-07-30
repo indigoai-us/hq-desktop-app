@@ -115,6 +115,45 @@ struct PendingUpdateTransition {
 
 static UPDATE_INSTALL_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 static UPDATE_CHECK_SERIALIZER: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(21_600);
+const UPDATE_SYNC_RETRY_INTERVAL: Duration = Duration::from_secs(30);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BackgroundUpdateAction {
+    Install,
+    DeferForSync,
+    Announce,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UpdateAnnouncement {
+    /// Keep the update in shared state and notify mounted app surfaces without
+    /// creating a separate window.
+    PersistentOnly,
+    /// Also raise the compact banner/widget for users who deliberately opted
+    /// out of automatic installation.
+    TransientBanner,
+}
+
+fn should_raise_transient_update_surface(announcement: UpdateAnnouncement) -> bool {
+    announcement == UpdateAnnouncement::TransientBanner
+}
+
+fn background_update_action(
+    automatic_updates: bool,
+    sync_in_progress: bool,
+) -> BackgroundUpdateAction {
+    match (automatic_updates, sync_in_progress) {
+        (true, false) => BackgroundUpdateAction::Install,
+        (true, true) => BackgroundUpdateAction::DeferForSync,
+        (false, _) => BackgroundUpdateAction::Announce,
+    }
+}
+
+fn sync_in_progress() -> bool {
+    hq_desktop_core::sync_progress::read_fresh_snapshot()
+        .is_some_and(|snapshot| snapshot.status == "syncing")
+}
 
 /// Process-wide lease preventing separate app surfaces from starting the same
 /// download concurrently. Dropping the lease resets the flag on every returning
@@ -312,6 +351,7 @@ async fn record_and_announce_update(
     ticket: UpdateCheckTicket,
     discovered: UpdateInfo,
     authoritative: bool,
+    announcement: UpdateAnnouncement,
 ) -> Result<Option<UpdateInfo>, String> {
     let transition = apply_discovered_to_app(app, ticket, discovered, authoritative)?;
     let info = transition.status.pending_info();
@@ -321,12 +361,15 @@ async fn record_and_announce_update(
 
     let info = info.expect("an applied available transition always stores update info");
     let _ = app.emit("update:available", &info);
-    // Also raise the custom banner so a version drop surfaces even with
-    // the popover closed (gated on customBanner; purely additive — the
-    // in-app UI above is unchanged).
+    // Only opted-out background discovery raises a transient surface. Manual
+    // checks already have a visible caller, while automatic-install recovery
+    // is represented persistently in Settings, the version popout, and Inbox.
+    // Opening a separate banner for either case makes the desktop look like
+    // windows are flashing while the user is already working in it.
     // US-003: widget takeover must never fall back to native banners.
-    if crate::commands::banner::custom_banner_enabled()
-        || crate::commands::widget::takeover_active(app)
+    if should_raise_transient_update_surface(announcement)
+        && (crate::commands::banner::custom_banner_enabled()
+            || crate::commands::widget::takeover_active(app))
     {
         let _ = crate::commands::banner::show_update_banner(
             app.clone(),
@@ -411,7 +454,14 @@ pub async fn check_for_updates(app: AppHandle) -> Result<Option<UpdateInfo>, Str
                 update.body.clone(),
                 update.date.map(|d| d.to_string()),
             );
-            record_and_announce_update(&app, ticket, info, authoritative).await
+            record_and_announce_update(
+                &app,
+                ticket,
+                info,
+                authoritative,
+                UpdateAnnouncement::PersistentOnly,
+            )
+            .await
         }
         Ok(None) => {
             // Up to date — clear any previously stored pending update so a
@@ -466,7 +516,14 @@ pub async fn install_update(app: AppHandle) -> Result<(), String> {
                 update.body.clone(),
                 update.date.map(|d| d.to_string()),
             );
-            let _ = record_and_announce_update(&app, ticket, info, authoritative).await?;
+            let _ = record_and_announce_update(
+                &app,
+                ticket,
+                info,
+                authoritative,
+                UpdateAnnouncement::PersistentOnly,
+            )
+            .await?;
             // Download and install
             update
                 .download_and_install(|_, _| {}, || {})
@@ -524,8 +581,14 @@ pub async fn is_indigo_user() -> bool {
 }
 
 /// Spawns a background task that checks for updates on launch (after 10s delay)
-/// and every 6 hours thereafter. Emits `update:available` events but does NOT
-/// auto-install — the user must initiate installation.
+/// and every 6 hours thereafter.
+///
+/// Automatic updates are installed natively here instead of depending on a
+/// particular WebView to receive `update:available`. That frontend-owned
+/// handshake was lossy: users whose hidden popover had not mounted (or missed
+/// the event) were left with an unexpected manual Install prompt. An active sync
+/// defers the attempt for 30 seconds; an install failure falls back to the
+/// ordinary update notification so the user still has a recovery path.
 pub fn setup_update_checker(app: &AppHandle) {
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -533,6 +596,7 @@ pub fn setup_update_checker(app: &AppHandle) {
         tokio::time::sleep(Duration::from_secs(10)).await;
 
         loop {
+            let mut next_check = UPDATE_CHECK_INTERVAL;
             {
                 let _check_guard = UPDATE_CHECK_SERIALIZER.lock().await;
                 let ticket = begin_app_check(&handle);
@@ -548,17 +612,88 @@ pub fn setup_update_checker(app: &AppHandle) {
                                         update.body.clone(),
                                         update.date.map(|d| d.to_string()),
                                     );
-                                    if let Err(e) = record_and_announce_update(
-                                        &handle,
-                                        ticket,
-                                        info,
-                                        authoritative,
-                                    )
-                                    .await
-                                    {
-                                        eprintln!(
-                                            "[updater] failed to store background update: {e}"
-                                        );
+                                    match background_update_action(
+                                        hq_desktop_core::hq_cli_update::auto_update_enabled(),
+                                        sync_in_progress(),
+                                    ) {
+                                        BackgroundUpdateAction::Install => {
+                                            match UpdateInstallGuard::acquire(
+                                                &UPDATE_INSTALL_IN_PROGRESS,
+                                            ) {
+                                                Some(_install_guard) => {
+                                                    log(
+                                                        "updater",
+                                                        &format!(
+                                                            "automatic update enabled — installing {}",
+                                                            info.version
+                                                        ),
+                                                    );
+                                                    match update
+                                                        .download_and_install(|_, _| {}, || {})
+                                                        .await
+                                                    {
+                                                        Ok(()) => {
+                                                            log(
+                                                                "updater",
+                                                                "automatic update installed — restarting",
+                                                            );
+                                                            handle.restart();
+                                                        }
+                                                        Err(error) => {
+                                                            log(
+                                                                "updater",
+                                                                &format!(
+                                                                    "automatic install failed — offering manual recovery: {error}"
+                                                                ),
+                                                            );
+                                                            if let Err(record_error) =
+                                                                record_and_announce_update(
+                                                                    &handle,
+                                                                    ticket,
+                                                                    info,
+                                                                    authoritative,
+                                                                    UpdateAnnouncement::PersistentOnly,
+                                                                )
+                                                                .await
+                                                            {
+                                                                eprintln!(
+                                                                    "[updater] failed to store background update: {record_error}"
+                                                                );
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                None => {
+                                                    log(
+                                                        "updater",
+                                                        "automatic install already in progress — retrying soon",
+                                                    );
+                                                    next_check = UPDATE_SYNC_RETRY_INTERVAL;
+                                                }
+                                            }
+                                        }
+                                        BackgroundUpdateAction::DeferForSync => {
+                                            log(
+                                                "updater",
+                                                "automatic update deferred while sync is active",
+                                            );
+                                            next_check = UPDATE_SYNC_RETRY_INTERVAL;
+                                        }
+                                        BackgroundUpdateAction::Announce => {
+                                            if let Err(e) = record_and_announce_update(
+                                                &handle,
+                                                ticket,
+                                                info,
+                                                authoritative,
+                                                UpdateAnnouncement::TransientBanner,
+                                            )
+                                            .await
+                                            {
+                                                eprintln!(
+                                                    "[updater] failed to store background update: {e}"
+                                                );
+                                            }
+                                        }
                                     }
                                 }
                                 Ok(None) => {
@@ -580,8 +715,7 @@ pub fn setup_update_checker(app: &AppHandle) {
                     Err(e) => eprintln!("[updater] failed to start background check: {e}"),
                 }
             }
-            // Wait 6 hours before next check
-            tokio::time::sleep(Duration::from_secs(21600)).await;
+            tokio::time::sleep(next_check).await;
         }
     });
 }
@@ -695,6 +829,45 @@ mod tests {
         drop(first);
 
         assert!(UpdateInstallGuard::acquire(&in_progress).is_some());
+    }
+
+    #[test]
+    fn automatic_background_updates_install_without_announcing() {
+        assert_eq!(
+            background_update_action(true, false),
+            BackgroundUpdateAction::Install
+        );
+    }
+
+    #[test]
+    fn automatic_background_updates_defer_during_sync() {
+        assert_eq!(
+            background_update_action(true, true),
+            BackgroundUpdateAction::DeferForSync
+        );
+        assert_eq!(UPDATE_SYNC_RETRY_INTERVAL, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn opted_out_background_updates_keep_the_manual_notification() {
+        assert_eq!(
+            background_update_action(false, false),
+            BackgroundUpdateAction::Announce
+        );
+        assert_eq!(
+            background_update_action(false, true),
+            BackgroundUpdateAction::Announce
+        );
+    }
+
+    #[test]
+    fn persistent_update_announcements_never_open_a_transient_window() {
+        assert!(!should_raise_transient_update_surface(
+            UpdateAnnouncement::PersistentOnly
+        ));
+        assert!(should_raise_transient_update_surface(
+            UpdateAnnouncement::TransientBanner
+        ));
     }
 
     #[test]

@@ -19,19 +19,16 @@
 //! must be allow-listed in
 //! `capabilities/desktop-alt.json` + registered in `main.rs`.
 //!
-//! ## Vault fallback (AC #3)
+//! ## Empty local state
 //!
 //! These commands are the *local* fast path. When the HQ folder cannot be
 //! resolved to a real directory on disk, or no `companies/*/projects/*/prd.json`
-//! exist, `get_local_projects` returns an **empty list** rather than erroring —
-//! the desktop-alt frontend already calls the vault-backed `get_company_board`
-//! (see `commands/desktop_alt.rs`) and treats an empty local list as "fall back
-//! to the vault board". We deliberately do not call the vault API from inside
-//! this module: keeping the local reader pure (filesystem only, no network, no
-//! auth) makes it trivially testable and keeps the fallback decision in the
-//! caller where the company context lives. A malformed individual `prd.json` /
-//! `board.json` is skipped (logged), never panicked on — one bad file must not
-//! blank the whole list.
+//! exist, `get_local_projects` returns an **empty list** rather than erroring.
+//! This module deliberately has no vault/network fallback: keeping the local
+//! reader pure (filesystem only, no network, no auth) makes it testable and
+//! leaves any alternate data source to the caller. A malformed unlinked
+//! `prd.json` or `board.json` is skipped (logged), never panicked on — one bad
+//! file must not blank the whole list.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
@@ -92,7 +89,7 @@ pub struct LocalProject {
     /// Latest project update timestamp from board.json or prd metadata, when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<String>,
-    /// Total user stories in the linked prd (0 if no prd or unparseable).
+    /// Total user stories in the linked PRD (0 if the existing PRD is unparseable).
     pub story_count: u32,
     /// Stories whose `passes == true`.
     pub stories_complete: u32,
@@ -1164,10 +1161,9 @@ fn project_creator_fallback_path(project: &LocalProject) -> Option<String> {
     (path.starts_with(&project_prefix) && path.ends_with("/prd.json")).then_some(path)
 }
 
-/// Keep a board-declared PRD identity only when it belongs to that board's
-/// company. Existing paths are canonicalized so a same-company spelling cannot
-/// hide a cross-company symlink; missing same-company paths remain useful as
-/// legacy identities for a project whose PRD has not synced down yet.
+/// Keep a board-declared PRD identity only when it resolves to an existing file
+/// inside that board's company. Existing paths are canonicalized so a
+/// same-company spelling cannot hide a cross-company symlink.
 fn validated_board_prd_path(hq_root: &Path, company: &str, raw_path: &str) -> Option<String> {
     let normalized = validate_hq_relative_path(raw_path, false).ok()?;
     if Path::new(&normalized)
@@ -1193,7 +1189,7 @@ fn validated_board_prd_path(hq_root: &Path, company: &str, raw_path: &str) -> Op
 
     let candidate = hq_root.join(&normalized);
     if !candidate.exists() {
-        return Some(normalized);
+        return None;
     }
     let target = resolve_project_path(hq_root, &normalized, "prd.json").ok()?;
     (target.company_slug.as_deref() == Some(company)).then_some(target.relative_path)
@@ -1232,9 +1228,10 @@ fn apply_git_creator_fallbacks(hq_root: &Path, projects: &mut [LocalProject]) {
 /// only as a `prd.json` (no board entry) are still listed.
 ///
 /// Returns an **empty list** (not an error) when the HQ folder doesn't resolve
-/// to a directory or has no companies — the frontend treats empty-local as
-/// "fall back to the vault board" (see module docs, AC #3). Individual
-/// malformed `board.json` / `prd.json` files are skipped, never fatal.
+/// to a directory or has no companies. Individual malformed `board.json` files
+/// and unlinked malformed `prd.json` files are skipped, never fatal. A board
+/// row with an existing but malformed PRD remains visible with 0/0 counts so
+/// diagnostics can still identify the damaged project file.
 /// Pure, testable scanner — takes an explicit HQ root so tests can point it at a
 /// fixture tree. Never panics: unreadable dirs/files are skipped.
 pub fn scan_local_projects(hq_root: &Path) -> Vec<LocalProject> {
@@ -1260,8 +1257,7 @@ fn scan_local_projects_scoped(
     let companies_dir = hq_root.join("companies");
     let entries = match std::fs::read_dir(&companies_dir) {
         Ok(e) => e,
-        // No companies dir (HQ folder unresolved or empty) → empty list so the
-        // caller falls back to the vault.
+        // No companies dir (HQ folder unresolved or empty) → empty local list.
         Err(_) => return Vec::new(),
     };
 
@@ -1313,29 +1309,28 @@ fn scan_local_projects_scoped(
                     attribution,
                     provenance,
                 } = project;
-                let prd_path = prd_path
+                let Some(prd_path) = prd_path
                     .as_deref()
-                    .and_then(|rel| validated_board_prd_path(hq_root, &slug, rel));
-                let prd_details = prd_path.as_deref().and_then(|rel| {
-                    resolve_project_path(hq_root, rel, "prd.json")
-                        .ok()
-                        .filter(|target| target.company_slug.as_deref() == Some(slug.as_str()))
-                        .and_then(|target| {
-                            read_project_target_json::<PrdFile>(&target).map(|prd| {
-                                let (story_count, stories_complete) = story_counts(&prd);
-                                (
-                                    story_count,
-                                    stories_complete,
-                                    prd_created_at(&prd),
-                                    prd_updated_at(&prd),
-                                    prd_provenance(&prd),
-                                )
-                            })
+                    .and_then(|rel| validated_board_prd_path(hq_root, &slug, rel))
+                else {
+                    continue;
+                };
+                let prd_details = resolve_project_path(hq_root, &prd_path, "prd.json")
+                    .ok()
+                    .filter(|target| target.company_slug.as_deref() == Some(slug.as_str()))
+                    .and_then(|target| {
+                        read_project_target_json::<PrdFile>(&target).map(|prd| {
+                            let (story_count, stories_complete) = story_counts(&prd);
+                            (
+                                story_count,
+                                stories_complete,
+                                prd_created_at(&prd),
+                                prd_updated_at(&prd),
+                                prd_provenance(&prd),
+                            )
                         })
-                });
-                if let Some(rel) = prd_path.as_deref() {
-                    linked_prds.insert(rel.to_string());
-                }
+                    });
+                linked_prds.insert(prd_path.clone());
                 let (story_count, stories_complete, prd_created, prd_updated, prd_provenance) =
                     prd_details.unwrap_or((0, 0, None, None, WorkProvenance::default()));
                 let board_provenance = normalize_work_provenance(&[(&attribution, &provenance)]);
@@ -1347,14 +1342,14 @@ fn scan_local_projects_scoped(
                 out.push(LocalProject {
                     id,
                     title: if title.trim().is_empty() {
-                        prd_path.clone().unwrap_or_default()
+                        prd_path.clone()
                     } else {
                         title
                     },
                     description,
                     company: slug.clone(),
                     status,
-                    prd_path,
+                    prd_path: Some(prd_path),
                     created_at: created_at.or(prd_created),
                     updated_at: updated_at.or(prd_updated),
                     story_count,
@@ -2525,13 +2520,20 @@ mod tests {
             }
         }"#;
         fs::write(proj.join("prd.json"), prd).unwrap();
+        let damaged = indigo.join("projects").join("damaged");
+        fs::create_dir_all(&damaged).unwrap();
+        fs::write(damaged.join("prd.json"), "{ present but not valid json ]").unwrap();
 
-        // board.json: one project links the prd above, one is a garbage-prd link.
+        // board.json: one project links the prd above, one points at a missing
+        // PRD, one has no project file identity, and one retains an existing
+        // but malformed PRD for the diagnostics path.
         let board = r#"{
             "company": "indigo",
             "projects": [
                 {"id":"in-proj-001","title":"Flagship","description":"d","status":"active","prd_path":"companies/indigo/projects/flagship/prd.json","created_at":"2026-06-02T00:00:00Z","updated_at":"2026-06-04T00:00:00Z"},
-                {"id":"in-proj-002","title":"Broken","status":"archived","prd_path":"companies/indigo/projects/missing/prd.json","created_at":"2026-05-01T00:00:00Z"}
+                {"id":"in-proj-002","title":"Broken","status":"archived","prd_path":"companies/indigo/projects/missing/prd.json","created_at":"2026-05-01T00:00:00Z"},
+                {"id":"in-proj-003","title":"Board only","status":"in_progress","created_at":"2026-05-02T00:00:00Z"},
+                {"id":"in-proj-004","title":"Damaged","status":"active","prd_path":"companies/indigo/projects/damaged/prd.json","created_at":"2026-05-03T00:00:00Z"}
             ]
         }"#;
         fs::write(indigo.join("board.json"), board).unwrap();
@@ -2590,7 +2592,7 @@ mod tests {
             "an unlinked project points back to its defining PRD",
         );
 
-        // indigo: two board projects. Flagship links a real prd → 3 stories, 2 done.
+        // Indigo's healthy linked project retains its board metadata and PRD counts.
         let flagship = projects
             .iter()
             .find(|p| p.id == "in-proj-001")
@@ -2612,23 +2614,19 @@ mod tests {
             "a board project points back to its defining board",
         );
 
-        // The board project whose prd_path is missing → 0/0, still listed.
-        let broken = projects
+        assert!(
+            projects.iter().all(|project| project.id != "in-proj-002"),
+            "a stale board row with a missing PRD must not reach project surfaces",
+        );
+        assert!(
+            projects.iter().all(|project| project.id != "in-proj-003"),
+            "a board row without a project file must not reach project surfaces",
+        );
+        let damaged = projects
             .iter()
-            .find(|p| p.id == "in-proj-002")
-            .expect("broken board project still listed");
-        assert_eq!(broken.story_count, 0);
-        assert_eq!(broken.stories_complete, 0);
-        assert_eq!(broken.created_at.as_deref(), Some("2026-05-01T00:00:00Z"));
-        assert_eq!(
-            broken.prd_path.as_deref(),
-            Some("companies/indigo/projects/missing/prd.json"),
-            "a missing same-company PRD remains a useful legacy identity",
-        );
-        assert_eq!(
-            broken.provenance.origin.as_deref(),
-            Some("companies/indigo/board.json"),
-        );
+            .find(|project| project.id == "in-proj-004")
+            .expect("an existing malformed PRD remains available for diagnostics");
+        assert_eq!((damaged.story_count, damaged.stories_complete), (0, 0));
 
         // The flagship prd is board-linked, so it must NOT also appear as an
         // unlinked prd row (no duplicate).
@@ -2679,20 +2677,9 @@ mod tests {
 
         let allowed = HashSet::from(["alpha".to_string()]);
         let projects = scan_local_projects_for_companies(&root, &allowed);
-        assert_eq!(projects.len(), 1);
-        let project = &projects[0];
-        assert_eq!(project.company, "alpha");
-        assert_eq!(project.id, "alpha-project");
         assert!(
-            project.prd_path.is_none(),
-            "a board row must not carry another company's PRD identity into Alpha UI"
-        );
-        assert_eq!(project.story_count, 0);
-        assert_eq!(project.stories_complete, 0);
-        assert!(project.creator_fallback.is_none());
-        assert_eq!(
-            project.provenance.origin.as_deref(),
-            Some("companies/alpha/board.json"),
+            projects.is_empty(),
+            "a board row without a readable same-company PRD must not reach Alpha UI",
         );
 
         let _ = fs::remove_dir_all(&root);
