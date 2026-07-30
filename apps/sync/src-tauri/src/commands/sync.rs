@@ -35,14 +35,15 @@
 //! kind of bump.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use chrono::SecondsFormat;
 use hq_desktop_core::sync_outcome::{
     classify_error_event, describe_exit, should_alert_on_nonzero_exit,
     should_synthesize_all_complete, termination_fingerprint_token,
 };
+use hq_desktop_core::toolchain::ManagedToolchain;
 use tauri::{AppHandle, Emitter};
 
 use crate::commands::cognito;
@@ -681,21 +682,33 @@ pub(crate) fn handle_runner_stderr_line(app: &AppHandle, totals: &Mutex<RunTotal
 // Tauri commands
 // ─────────────────────────────────────────────────────────────────────────────
 
-// ── Runner preflights (HQ-SYNC-2 / HQ-SYNC-E) ───────────────────────────────
+// ── Runner preflights (HQ-SYNC-2 / HQ-SYNC-E / HQ-DESKTOP-B3) ───────────────
 //
 // Proactive, best-effort checks run just before spawning the runner so a
 // known-doomed spawn is turned into one clear, user-actionable message instead
 // of a silent crash (a Node too old to start the runner, or node/npx not
 // resolvable at all — which falls through to a bare shell and exits 127,
-// crash-looping the watcher). Both are expected *environment* faults, never an
-// hq-sync/hq-cloud defect, so they are NOT captured to Sentry. Every probe
-// fails OPEN: one we couldn't run (missing binary, non-zero exit, unparseable
-// output) returns `None`, so the preflight can only ever prevent a doomed
-// spawn, never block a sync that would have worked.
+// crash-looping the watcher). Every probe fails OPEN: one we couldn't run
+// (missing binary, non-zero exit, unparseable output) returns `None`, so the
+// preflight can only ever prevent a doomed spawn, never block a sync that
+// would have worked.
+//
+// A machine with no usable Node is an expected *environment* fault and stays
+// local-only. HQ's own managed Node disappearing is not: the runner then falls
+// back to whatever Node is on PATH, which on one reported machine was a
+// nvm-era v8, so every sync bailed "Node too old" while the user's real Node
+// was v24. That case is repaired here rather than reported as the user's
+// problem, and it is the one preflight failure that alarms (see the daemon's
+// capture policy).
 
 /// Node major-version floor the sync runner requires — its deps use APIs added
 /// in Node 20 and it crashes at startup on anything older.
 const MIN_NODE_MAJOR: u32 = 20;
+
+/// Minimum gap between managed-Node repair attempts. A machine that cannot
+/// install (offline, locked down, out of disk) must not re-download the
+/// runtime on every click of Sync Now.
+const TOOLCHAIN_REPAIR_COOLDOWN: Duration = Duration::from_secs(15 * 60);
 
 /// Parse the major from `node --version` output (`v20.11.1` → `20`).
 fn parse_node_major(version_output: &str) -> Option<u32> {
@@ -709,34 +722,98 @@ fn is_node_too_old(major: u32) -> bool {
 }
 
 /// Clear, non-technical message when the user's Node is too old to run the
-/// runner — names the floor, their current major, and the single fix.
-fn node_too_old_message(current_major: u32) -> String {
+/// runner — names the floor, their current major, where it came from, and the
+/// single fix.
+fn node_too_old_message(current_major: u32, node_path: Option<&str>) -> String {
+    let found = match node_path {
+        Some(path) => format!(" (Node {current_major} at {path})"),
+        None => format!(" (Node {current_major})"),
+    };
     format!(
-        "HQ Sync needs Node {MIN_NODE_MAJOR} or newer to sync — this computer is running Node {current_major}. \
+        "HQ Sync needs Node {MIN_NODE_MAJOR} or newer to sync — this computer is running Node {current_major}{found}. \
          Please update Node (https://nodejs.org), then try Sync again."
     )
 }
 
-/// Construct the Node probe using the same platform rules as the runner.
+/// The half of the message that holds however the repair went: HQ's own Node
+/// is the missing piece, and what the runner reached for in its place.
+///
+/// Naming both paths is the whole point — the reported user's system Node was
+/// fine, and being told to update it sent them nowhere.
+fn managed_node_diagnosis(
+    expected_node: &str,
+    found_major: Option<u32>,
+    found_path: Option<&str>,
+) -> String {
+    let Some(found_major) = found_major else {
+        return format!(
+            "HQ Sync's own Node runtime is missing from {expected_node} and this computer has no \
+             other Node to fall back to, so sync can't start"
+        );
+    };
+    let found = match found_path {
+        Some(path) => format!("Node {found_major} at {path}"),
+        None => format!("Node {found_major}"),
+    };
+    format!(
+        "HQ Sync's own Node runtime is missing from {expected_node}, so sync fell back to the {found} \
+         already on this computer — too old to run the sync engine. Your own Node install is fine; \
+         HQ's copy is the broken one"
+    )
+}
+
+/// The case the generic "update Node" advice gets wrong, before HQ has tried to
+/// put its runtime back.
+fn managed_node_missing_message(
+    expected_node: &str,
+    found_major: Option<u32>,
+    found_path: Option<&str>,
+) -> String {
+    format!(
+        "{}. Click Sync Now to let HQ reinstall it.",
+        managed_node_diagnosis(expected_node, found_major, found_path)
+    )
+}
+
+/// Same diagnosis, after HQ tried to reinstall its runtime and could not.
+fn managed_node_repair_failed_message(
+    expected_node: &str,
+    found_major: Option<u32>,
+    found_path: Option<&str>,
+    reason: &str,
+) -> String {
+    format!(
+        "{}. HQ could not reinstall it: {reason}. Reinstall HQ Sync, or install Node \
+         {MIN_NODE_MAJOR} or newer (https://nodejs.org).",
+        managed_node_diagnosis(expected_node, found_major, found_path)
+    )
+}
+
+/// Construct a Node probe using the same platform rules as the runner.
 /// Windows must execute the native `node.exe`; Unix keeps `env node` so
 /// nvm/volta/asdf installations remain discoverable through `child_path()`.
-fn node_version_command() -> std::process::Command {
+fn node_command(args: &[&str]) -> std::process::Command {
     #[cfg(target_os = "windows")]
     let mut cmd = {
         let node = paths::resolve_bin("node");
-        paths::spawn_command(&node, &["--version"])
+        paths::spawn_command(&node, args)
     };
 
     #[cfg(not(target_os = "windows"))]
     let mut cmd = {
         let mut command = std::process::Command::new("/usr/bin/env");
         paths::no_window(&mut command);
-        command.args(["node", "--version"]);
+        command.arg("node");
+        command.args(args);
         command
     };
 
     cmd.env("PATH", paths::child_path());
     cmd
+}
+
+fn node_version_command() -> std::process::Command {
+    node_command(&["--version"])
 }
 
 /// Execute a runtime preflight with enough breadcrumbs to diagnose GUI PATH
@@ -773,19 +850,152 @@ fn run_runner_probe(
     }
 }
 
-/// Best-effort Node-version preflight. Returns `Some(major)` only when the Node
-/// the runner would use is *positively* too old, else `None` (fails OPEN).
+/// Best-effort Node-version probe: the major version the runner would get, or
+/// `None` when no Node answered at all (missing binary, non-zero exit,
+/// unparseable output).
+///
 /// Resolves Node exactly as the runner's `#!/usr/bin/env node` shebang does
 /// (`env node` against the same `child_path()` we hand the spawned `npx`), which
 /// matters under nvm where that can differ from `resolve_bin("node")`.
-fn preflight_node_too_old() -> Option<u32> {
+fn probe_node_major() -> Option<u32> {
     let output = run_runner_probe("node-version", node_version_command())?;
     if !output.status.success() {
         return None;
     }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let major = parse_node_major(&stdout)?;
-    is_node_too_old(major).then_some(major)
+    parse_node_major(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// Which Node actually answered. `env node` reports `/usr/bin/env` as the
+/// program it ran, so the interpreter's own `execPath` is the only honest way
+/// to name the binary in an error message. Run only on the failing path, where
+/// one more spawn costs nothing.
+fn probe_node_exec_path() -> Option<String> {
+    let output = run_runner_probe("node-exec-path", node_command(&["-p", "process.execPath"]))?;
+    if !output.status.success() {
+        return None;
+    }
+    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!path.is_empty()).then_some(path)
+}
+
+/// What the runtime preflight concluded about the Node the runner would run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum NodePreflight {
+    /// Usable, or not positively diagnosable — the preflight fails OPEN.
+    Usable,
+    /// HQ's own Node is gone and whatever answered in its place — an older
+    /// Node, or nothing at all — can't run the engine. HQ owns both the
+    /// breakage and the repair.
+    ManagedNodeMissing {
+        expected_node: String,
+        found_major: Option<u32>,
+        found_path: Option<String>,
+    },
+    /// HQ never managed a Node here and the machine's own Node is too old.
+    TooOld {
+        major: u32,
+        path: Option<String>,
+    },
+}
+
+/// Pure classification of a probe result against the managed toolchain's
+/// state, extracted so the whole decision table is testable without spawning.
+///
+/// A modern Node keeps the run going whatever shape the toolchain is in: a
+/// missing managed runtime is worth repairing, but never worth blocking a sync
+/// that would have worked.
+fn classify_node_preflight(
+    toolchain: &ManagedToolchain,
+    probed_major: Option<u32>,
+    probed_path: Option<String>,
+) -> NodePreflight {
+    if probed_major.is_some_and(|major| !is_node_too_old(major)) {
+        return NodePreflight::Usable;
+    }
+
+    match toolchain.missing_node() {
+        // HQ's Node is gone. Whether PATH offered an older one or nothing at
+        // all, the diagnosis and the repair are identical — and "nothing at
+        // all" is the *common* shape of this fault, since HQ's Node is the only
+        // one on plenty of machines.
+        Some(expected_node) => NodePreflight::ManagedNodeMissing {
+            expected_node: expected_node.to_string_lossy().into_owned(),
+            found_major: probed_major,
+            found_path: probed_path,
+        },
+        // No Node answered and none was HQ's to provide: the resolution
+        // preflight owns that message, so fail OPEN here.
+        None => match probed_major {
+            Some(major) => NodePreflight::TooOld {
+                major,
+                path: probed_path,
+            },
+            None => NodePreflight::Usable,
+        },
+    }
+}
+
+/// Probe the runner's Node and classify it against the managed toolchain.
+fn preflight_node() -> NodePreflight {
+    let probed_major = probe_node_major();
+    // Only worth a second spawn on the failing path, and only when something
+    // actually answered.
+    let probed_path = probed_major
+        .filter(|major| is_node_too_old(*major))
+        .and_then(|_| probe_node_exec_path());
+    classify_node_preflight(
+        &hq_desktop_core::toolchain::classify(),
+        probed_major,
+        probed_path,
+    )
+}
+
+/// Why a preflight refused to start the runner. The daemon uses this to decide
+/// whether a bail is worth a central alert.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PreflightFailure {
+    /// HQ's own Node runtime vanished — HQ's defect, and repairable by HQ.
+    ManagedNodeMissing,
+    /// The machine's Node is below the floor and HQ never managed one here.
+    NodeTooOld,
+    /// Neither node nor npx resolves at all — a machine setup gap.
+    RunnerUnresolvable,
+}
+
+/// A refused preflight: the user-facing message plus why it was refused.
+pub(crate) struct PreflightBail {
+    pub(crate) message: String,
+    pub(crate) failure: PreflightFailure,
+}
+
+impl NodePreflight {
+    fn into_bail(self) -> Option<PreflightBail> {
+        match self {
+            NodePreflight::Usable => None,
+            NodePreflight::ManagedNodeMissing {
+                expected_node,
+                found_major,
+                found_path,
+            } => Some(PreflightBail {
+                message: managed_node_missing_message(
+                    &expected_node,
+                    found_major,
+                    found_path.as_deref(),
+                ),
+                failure: PreflightFailure::ManagedNodeMissing,
+            }),
+            NodePreflight::TooOld { major, path } => Some(PreflightBail {
+                message: node_too_old_message(major, path.as_deref()),
+                failure: PreflightFailure::NodeTooOld,
+            }),
+        }
+    }
+}
+
+/// Node-runtime preflight for callers that cannot repair (the daemon). Returns
+/// the bail to surface, or `None` when the runner's Node is fine.
+pub(crate) fn preflight_node_bail() -> Option<PreflightBail> {
+    preflight_node().into_bail()
 }
 
 /// Message when the runner's interpreter (node/npx) isn't resolvable at all —
@@ -825,6 +1035,61 @@ pub(crate) fn preflight_runner_unresolvable() -> Option<String> {
     runner_unresolvable_reason(node_resolves, npx_resolves)
 }
 
+/// Outcome of an attempt to reinstall HQ's managed Node.
+enum ToolchainRepair {
+    Repaired,
+    Failed(String),
+    /// Suppressed by the cooldown — a previous attempt was too recent.
+    Skipped,
+}
+
+static LAST_TOOLCHAIN_REPAIR: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
+
+/// Pure cooldown decision, extracted so it is testable without a clock.
+fn repair_is_due(since_last_attempt: Option<Duration>, cooldown: Duration) -> bool {
+    since_last_attempt.map_or(true, |elapsed| elapsed >= cooldown)
+}
+
+/// Take the repair slot if the cooldown has elapsed, stamping the attempt.
+fn claim_repair_slot(cooldown: Duration) -> bool {
+    let mut last = LAST_TOOLCHAIN_REPAIR
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if !repair_is_due(last.map(|at| at.elapsed()), cooldown) {
+        return false;
+    }
+    *last = Some(Instant::now());
+    true
+}
+
+/// Reinstall HQ's managed Node.
+///
+/// This is the same installer onboarding runs: it checksums the download,
+/// extracts to a staging directory, verifies the version, and only then
+/// activates by atomic replacement — so a failed attempt leaves the machine in
+/// the (already broken) state it was in rather than a half-install.
+async fn repair_managed_node(app: &AppHandle) -> ToolchainRepair {
+    if !claim_repair_slot(TOOLCHAIN_REPAIR_COOLDOWN) {
+        log(
+            "sync",
+            "managed Node reinstall skipped — attempted too recently",
+        );
+        return ToolchainRepair::Skipped;
+    }
+    log("sync", "managed Node runtime missing — reinstalling");
+    match crate::commands::install_deps::install_node(app.clone()).await {
+        Ok(detail) => {
+            log("sync", &format!("managed Node reinstall: {detail}"));
+            ToolchainRepair::Repaired
+        }
+        Err(e) => {
+            log("sync", &format!("managed Node reinstall failed: {e}"));
+            ToolchainRepair::Failed(e)
+        }
+    }
+}
+
 /// Spawn `hq-sync-runner` for all companies or one company as a child process.
 ///
 /// - Only one sync can run at a time (singleton handle).
@@ -855,17 +1120,75 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
         eprintln!("ensure_machine_id failed: {e}");
     }
 
-    // Runner preflights (HQ-SYNC-2 / HQ-SYNC-E): bail up front with one clear,
-    // user-actionable message — surfaced via the command error the popover shows
-    // — instead of a doomed spawn (crash-loop). Both fail OPEN and are expected
-    // environment faults, so they are never captured to Sentry. Deregister the
-    // handle we just took so a later, fixed-environment sync isn't blocked.
-    if let Some(current_major) = preflight_node_too_old() {
-        log("sync", &format!("BAIL: node too old (v{current_major})"));
-        #[cfg(debug_assertions)]
-        eprintln!("[sync] BAIL: node too old (v{current_major})");
-        deregister_process(SYNC_HANDLE);
-        return Err(node_too_old_message(current_major));
+    // Runner preflights (HQ-SYNC-2 / HQ-SYNC-E / HQ-DESKTOP-B3): bail up front
+    // with one clear, user-actionable message — surfaced via the command error
+    // the popover shows — instead of a doomed spawn (crash-loop). Both fail
+    // OPEN. Deregister the handle we just took so a later, fixed-environment
+    // sync isn't blocked.
+    match preflight_node() {
+        NodePreflight::Usable => {}
+        NodePreflight::ManagedNodeMissing {
+            expected_node,
+            found_major,
+            found_path,
+        } => {
+            // Do not accept the downgrade silently: HQ shipped this runtime,
+            // so reinstall it and re-probe before deciding anything is wrong
+            // with the user's machine.
+            log(
+                "sync",
+                &format!(
+                    "managed Node missing at {expected_node} — PATH fell back to {}",
+                    match found_major {
+                        Some(major) => format!(
+                            "v{major} at {}",
+                            found_path.as_deref().unwrap_or("an unknown path")
+                        ),
+                        None => "no Node at all".to_string(),
+                    }
+                ),
+            );
+            let repair = repair_managed_node(&app).await;
+            let recovered = matches!(repair, ToolchainRepair::Repaired)
+                && matches!(preflight_node(), NodePreflight::Usable);
+            if !recovered {
+                let message = match repair {
+                    // The user just clicked Sync Now, so never answer with
+                    // "click Sync Now" — say what actually happened.
+                    ToolchainRepair::Skipped => managed_node_repair_failed_message(
+                        &expected_node,
+                        found_major,
+                        found_path.as_deref(),
+                        "a reinstall was already attempted recently",
+                    ),
+                    ToolchainRepair::Failed(reason) => managed_node_repair_failed_message(
+                        &expected_node,
+                        found_major,
+                        found_path.as_deref(),
+                        &reason,
+                    ),
+                    ToolchainRepair::Repaired => managed_node_repair_failed_message(
+                        &expected_node,
+                        found_major,
+                        found_path.as_deref(),
+                        "the reinstalled runtime still isn't usable",
+                    ),
+                };
+                log("sync", &format!("BAIL: {message}"));
+                #[cfg(debug_assertions)]
+                eprintln!("[sync] BAIL: managed node missing at {expected_node}");
+                deregister_process(SYNC_HANDLE);
+                return Err(message);
+            }
+            log("sync", "managed Node runtime repaired — continuing");
+        }
+        NodePreflight::TooOld { major, path } => {
+            log("sync", &format!("BAIL: node too old (v{major})"));
+            #[cfg(debug_assertions)]
+            eprintln!("[sync] BAIL: node too old (v{major})");
+            deregister_process(SYNC_HANDLE);
+            return Err(node_too_old_message(major, path.as_deref()));
+        }
     }
     if let Some(msg) = preflight_runner_unresolvable() {
         log("sync", &format!("BAIL: runner unresolvable: {msg}"));
@@ -1991,7 +2314,7 @@ mod tests {
         assert!(is_node_too_old(MIN_NODE_MAJOR - 1));
         assert!(!is_node_too_old(MIN_NODE_MAJOR));
         assert!(!is_node_too_old(22));
-        let msg = node_too_old_message(18);
+        let msg = node_too_old_message(18, None);
         assert!(
             msg.contains("Node 20"),
             "message must name the floor: {msg}"
@@ -2003,12 +2326,191 @@ mod tests {
     }
 
     #[test]
+    fn node_too_old_message_names_the_binary_that_answered() {
+        let msg = node_too_old_message(8, Some("/usr/local/bin/node"));
+        assert!(
+            msg.contains("/usr/local/bin/node"),
+            "message must name which Node was selected: {msg}"
+        );
+    }
+
+    #[test]
     fn runner_unresolvable_only_when_an_interpreter_is_missing() {
         // Both present → proceed; any missing → one actionable bail message.
         assert!(runner_unresolvable_reason(true, true).is_none());
         assert!(runner_unresolvable_reason(false, true).is_some());
         assert!(runner_unresolvable_reason(true, false).is_some());
         assert!(runner_unresolvable_reason(false, false).is_some());
+    }
+
+    // ── Managed Node runtime (HQ-DESKTOP-B3) ─────────────────────────────
+
+    fn provisioned_but_empty() -> ManagedToolchain {
+        ManagedToolchain::Incomplete {
+            expected_node: std::path::PathBuf::from(
+                "/Users/x/Library/Application Support/Indigo HQ/toolchain/node/bin/node",
+            ),
+        }
+    }
+
+    #[test]
+    fn a_modern_node_is_usable_whatever_the_toolchain_looks_like() {
+        // Fail OPEN stays fail OPEN: a missing managed runtime is worth
+        // repairing, never worth blocking a sync that would have worked.
+        for toolchain in [
+            ManagedToolchain::NotProvisioned,
+            provisioned_but_empty(),
+            ManagedToolchain::Present {
+                node: std::path::PathBuf::from("/toolchain/node/bin/node"),
+            },
+        ] {
+            assert_eq!(
+                classify_node_preflight(&toolchain, Some(22), None),
+                NodePreflight::Usable,
+                "{toolchain:?} with Node 22 must proceed"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unprobeable_node_with_no_managed_runtime_is_usable() {
+        // Nothing answered and HQ never promised one — "we don't know" is the
+        // resolution preflight's message to give, not a bail from here.
+        assert_eq!(
+            classify_node_preflight(&ManagedToolchain::NotProvisioned, None, None),
+            NodePreflight::Usable
+        );
+    }
+
+    #[test]
+    fn hqs_node_vanishing_is_diagnosed_even_when_nothing_answers() {
+        // On a machine where HQ's Node was the *only* Node, its disappearance
+        // leaves no fallback to be "too old" — the probe simply gets nothing.
+        // Reading that as usable would skip the repair entirely and leave the
+        // resolution preflight telling the user to install a Node that HQ was
+        // supposed to have provided.
+        let preflight = classify_node_preflight(&provisioned_but_empty(), None, None);
+        assert_eq!(
+            preflight,
+            NodePreflight::ManagedNodeMissing {
+                expected_node:
+                    "/Users/x/Library/Application Support/Indigo HQ/toolchain/node/bin/node"
+                        .to_string(),
+                found_major: None,
+                found_path: None,
+            }
+        );
+        assert_eq!(
+            preflight.clone().into_bail().unwrap().failure,
+            PreflightFailure::ManagedNodeMissing
+        );
+
+        let NodePreflight::ManagedNodeMissing { expected_node, .. } = preflight else {
+            unreachable!()
+        };
+        let msg = managed_node_missing_message(&expected_node, None, None);
+        assert!(
+            msg.contains("no other Node"),
+            "message must say nothing was there to fall back to: {msg}"
+        );
+        assert!(
+            !msg.contains("Node 0"),
+            "must not invent a version nobody reported: {msg}"
+        );
+    }
+
+    #[test]
+    fn an_empty_managed_toolchain_blames_hq_not_the_user() {
+        // REGRESSION (B3): the reported machine had an empty managed
+        // `node/bin`, so `env node` found a nvm-era v8 and every cycle bailed
+        // "Node too old" — pointing the user at nodejs.org while their own
+        // Node was v24 and fine.
+        let preflight = classify_node_preflight(
+            &provisioned_but_empty(),
+            Some(8),
+            Some("/usr/local/bin/node".to_string()),
+        );
+        let NodePreflight::ManagedNodeMissing {
+            expected_node,
+            found_major,
+            found_path,
+        } = preflight
+        else {
+            panic!("expected a managed-runtime diagnosis, got {preflight:?}");
+        };
+        assert_eq!(found_major, Some(8));
+        assert_eq!(found_path.as_deref(), Some("/usr/local/bin/node"));
+
+        let msg = managed_node_missing_message(&expected_node, found_major, found_path.as_deref());
+        assert!(
+            msg.contains("toolchain/node/bin/node"),
+            "message must name HQ's own missing runtime: {msg}"
+        );
+        assert!(
+            msg.contains("/usr/local/bin/node"),
+            "message must name the Node that answered instead: {msg}"
+        );
+        assert!(
+            !msg.contains("nodejs.org"),
+            "the user's Node is fine — do not send them to nodejs.org: {msg}"
+        );
+    }
+
+    #[test]
+    fn an_old_node_without_a_managed_toolchain_is_the_users_to_fix() {
+        assert_eq!(
+            classify_node_preflight(&ManagedToolchain::NotProvisioned, Some(8), None),
+            NodePreflight::TooOld {
+                major: 8,
+                path: None
+            }
+        );
+    }
+
+    #[test]
+    fn a_failed_repair_says_so_instead_of_promising_another() {
+        let msg = managed_node_repair_failed_message(
+            "/toolchain/node/bin/node",
+            Some(8),
+            Some("/usr/local/bin/node"),
+            "checksum verification failed",
+        );
+        assert!(msg.contains("checksum verification failed"), "{msg}");
+        assert!(
+            !msg.contains("Click Sync Now"),
+            "must not loop the user back into a repair that just failed: {msg}"
+        );
+    }
+
+    #[test]
+    fn each_bail_carries_the_failure_that_decides_whether_to_alert() {
+        assert!(NodePreflight::Usable.into_bail().is_none());
+        assert_eq!(
+            classify_node_preflight(&provisioned_but_empty(), Some(8), None)
+                .into_bail()
+                .unwrap()
+                .failure,
+            PreflightFailure::ManagedNodeMissing
+        );
+        assert_eq!(
+            classify_node_preflight(&ManagedToolchain::NotProvisioned, Some(8), None)
+                .into_bail()
+                .unwrap()
+                .failure,
+            PreflightFailure::NodeTooOld
+        );
+    }
+
+    #[test]
+    fn repair_waits_out_its_cooldown() {
+        let cooldown = TOOLCHAIN_REPAIR_COOLDOWN;
+        assert!(repair_is_due(None, cooldown), "first attempt always runs");
+        assert!(repair_is_due(Some(cooldown), cooldown));
+        assert!(repair_is_due(Some(cooldown * 2), cooldown));
+        assert!(
+            !repair_is_due(Some(Duration::from_secs(30)), cooldown),
+            "a machine that cannot install must not re-download every sync"
+        );
     }
 
     #[test]

@@ -16,7 +16,7 @@ use crate::commands::process::{
     run_process_impl, try_register_handle, ProcessEvent,
 };
 use crate::commands::status::{journal_for_daemon_sync_complete, write_journal};
-use crate::commands::sync::RunTotals;
+use crate::commands::sync::{PreflightFailure, RunTotals};
 use crate::events::{SyncEvent, EVENT_SYNC_ALL_COMPLETE};
 use crate::util::logfile::log;
 use crate::util::paths;
@@ -513,18 +513,22 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
         }
     }
 
+    // Node-runtime preflight (HQ-DESKTOP-B3). The daemon previously checked
+    // only runner *resolvability*, so a machine whose managed Node had vanished
+    // — leaving `env node` to find an ancient one on PATH — started a watcher
+    // that could only fail later. Fail honestly up front instead.
+    if let Some(bail) = crate::commands::sync::preflight_node_bail() {
+        report_preflight_bail(bail.failure, &bail.message);
+        release_daemon_guard();
+        set_lifecycle_state(WatchDaemonState::Stopped, DaemonFailureCategory::Preflight);
+        return Err(bail.message);
+    }
+
     // Runner-resolution preflight (HQ-DESKTOP-37 / HQ-DESKTOP-2R): bail before
     // spawning a watcher that can only exit 127 and get hot-respawned by the
-    // supervisor. A missing Node/npm interpreter is an expected machine setup
-    // gap, not an application failure: return the install guidance to the UI
-    // and retain a local diagnostic, but do not send an error event to Sentry.
+    // supervisor.
     if let Some(msg) = crate::commands::sync::preflight_runner_unresolvable() {
-        match runner_preflight_capture_policy() {
-            RunnerPreflightCapturePolicy::LocalLogOnly => log(
-                "daemon",
-                &format!("runner unresolvable — local-only preflight: {msg}"),
-            ),
-        }
+        report_preflight_bail(PreflightFailure::RunnerUnresolvable, &msg);
         release_daemon_guard();
         set_lifecycle_state(WatchDaemonState::Stopped, DaemonFailureCategory::Preflight);
         return Err(msg);
@@ -772,17 +776,59 @@ fn is_benign_watcher_exit(code: Option<i32>, signal: Option<i32>) -> bool {
     matches!(code, Some(1 | 2)) && signal.is_none() && !is_fault_signal(signal)
 }
 
-/// Capture policy for a preflight which positively established that the Node
-/// runner cannot resolve. This is an expected environment/setup gap; the UI
-/// receives install guidance and the daemon logs it locally, but it must never
-/// create an error-level Sentry event.
+/// Capture policy for a preflight that positively refused to start the watcher.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RunnerPreflightCapturePolicy {
     LocalLogOnly,
+    CaptureRateLimited,
 }
 
-fn runner_preflight_capture_policy() -> RunnerPreflightCapturePolicy {
-    RunnerPreflightCapturePolicy::LocalLogOnly
+/// Which preflight refusals are worth a central alert.
+///
+/// A machine with no Node, or an old Node HQ never installed, is a setup gap
+/// the user fixes; alerting on it flooded #hq-alerts, and with auto-sync
+/// retrying every 30 seconds that silence (`0cfae9cc`) has to stay. But it was
+/// applied to the whole preflight, which also silenced the case where HQ's
+/// *own* Node runtime disappeared. That one is an HQ defect, it is invisible to
+/// the user (the daemon just never completes a cycle), and it ran for days with
+/// nothing paging — so it alerts again, rate-limited exactly like a crash-loop.
+fn runner_preflight_capture_policy(failure: PreflightFailure) -> RunnerPreflightCapturePolicy {
+    match failure {
+        PreflightFailure::RunnerUnresolvable | PreflightFailure::NodeTooOld => {
+            RunnerPreflightCapturePolicy::LocalLogOnly
+        }
+        PreflightFailure::ManagedNodeMissing => RunnerPreflightCapturePolicy::CaptureRateLimited,
+    }
+}
+
+/// Log — and, for the arms that warrant it, alert on — a refused preflight.
+fn report_preflight_bail(failure: PreflightFailure, message: &str) {
+    match runner_preflight_capture_policy(failure) {
+        RunnerPreflightCapturePolicy::LocalLogOnly => log(
+            "daemon",
+            &format!("preflight refused ({failure:?}) — local-only: {message}"),
+        ),
+        RunnerPreflightCapturePolicy::CaptureRateLimited => {
+            let consecutive = note_runner_preflight_failure();
+            if should_capture_crash(consecutive) {
+                crate::commands::sync::capture_sync_error(
+                    None,
+                    "(auto-sync)",
+                    &format!(
+                        "auto-sync watcher cannot start ({failure:?}): {message} \
+                         (consecutive #{consecutive}, further repeats rate-limited)"
+                    ),
+                );
+            } else {
+                log(
+                    "daemon",
+                    &format!(
+                        "preflight refused ({failure:?}) #{consecutive} — capture rate-limited: {message}"
+                    ),
+                );
+            }
+        }
+    }
 }
 
 /// A non-zero exit this soon after spawn is a crash-loop failure — distinct from
@@ -835,6 +881,9 @@ struct WatcherCrashState {
     spawn_at: Option<Instant>,
     /// The supervisor must not respawn before this instant (backoff window).
     backoff_until: Option<Instant>,
+    /// Consecutive alertable preflight refusals. Tracked separately from
+    /// `consecutive` because these happen before a watcher is ever spawned.
+    preflight_fails: u32,
     /// Last RSS (KB) sampled from the live watcher, and when — enriches an
     /// unexpected-exit capture so a `signal=9` (jetsam/OOM vs manual kill) can be
     /// told apart after the fact. Best-effort; never changes whether a crash is
@@ -853,10 +902,21 @@ fn crash_state() -> &'static Mutex<WatcherCrashState> {
 fn note_watcher_spawned() {
     let mut st = crash_state().lock().unwrap();
     st.spawn_at = Some(Instant::now());
+    // A spawn proves the runtime resolved, so the preflight failure streak is
+    // over and a future episode gets a fresh first alert.
+    st.preflight_fails = 0;
     // Fresh watcher — drop the previous watcher's RSS sample so a crash capture
     // never reports a stale footprint from a process that already died.
     st.last_rss_kb = None;
     st.last_rss_at = None;
+}
+
+/// Record an alertable preflight refusal and return the consecutive count so
+/// the caller can rate-limit captures.
+fn note_runner_preflight_failure() -> u32 {
+    let mut st = crash_state().lock().unwrap();
+    st.preflight_fails = st.preflight_fails.saturating_add(1);
+    st.preflight_fails
 }
 
 /// Update the crash-loop state on an unexpected watcher exit and return the
@@ -1621,11 +1681,53 @@ mod tests {
         assert!(!should_reset_after_recovery(None, window));
     }
 
+    // ── Preflight capture policy (HQ-DESKTOP-B3) ─────────────────────────
+    //
+    // These replace `runner_unresolvable_preflight_is_local_log_only`, which
+    // asserted that *every* preflight refusal stayed local. That assertion was
+    // deliberately narrowed, not weakened: the silence it pinned is still
+    // required for a machine that simply has no Node, but it also hid HQ's own
+    // Node runtime going missing — a defect that left a whole team with no
+    // background sync for days and paged nobody.
+
     #[test]
-    fn runner_unresolvable_preflight_is_local_log_only() {
+    fn the_users_own_environment_stays_local_log_only() {
+        // Auto-sync retries every 30s, so anything the user must fix would
+        // alert at failure 1, 2, 4, 8, … forever. Neither of these is ours.
+        for failure in [
+            PreflightFailure::RunnerUnresolvable,
+            PreflightFailure::NodeTooOld,
+        ] {
+            assert_eq!(
+                runner_preflight_capture_policy(failure),
+                RunnerPreflightCapturePolicy::LocalLogOnly,
+                "{failure:?} is the user's environment — it must not page anyone"
+            );
+        }
+    }
+
+    #[test]
+    fn a_broken_hq_runtime_alerts() {
         assert_eq!(
-            runner_preflight_capture_policy(),
-            RunnerPreflightCapturePolicy::LocalLogOnly
+            runner_preflight_capture_policy(PreflightFailure::ManagedNodeMissing),
+            RunnerPreflightCapturePolicy::CaptureRateLimited,
+            "HQ's own Node going missing is our defect and must reach #hq-alerts"
+        );
+    }
+
+    #[test]
+    fn preflight_failure_streak_resets_after_a_successful_spawn() {
+        {
+            let mut st = crash_state().lock().unwrap();
+            *st = WatcherCrashState::default();
+        }
+        assert_eq!(note_runner_preflight_failure(), 1);
+        assert_eq!(note_runner_preflight_failure(), 2);
+        note_watcher_spawned();
+        assert_eq!(
+            note_runner_preflight_failure(),
+            1,
+            "a healthy spawn must let the next episode alert again"
         );
     }
 
