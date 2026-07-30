@@ -785,19 +785,19 @@ enum RunnerPreflightCapturePolicy {
 
 /// Which preflight refusals are worth a central alert.
 ///
-/// A machine with no Node at all is a setup gap the user fixes, and alerting on
-/// it flooded #hq-alerts — that silence (`0cfae9cc`) stays. But it was applied
-/// to the whole preflight, which also silenced the case where HQ's *own* Node
-/// runtime disappeared and the runner quietly fell back to a too-old one. That
-/// is an HQ defect, it is invisible to the user (the daemon just never
-/// completes a cycle), and it hit an entire team for days with nothing paging.
-/// Those two arms alert again, rate-limited exactly like a crash-loop.
+/// A machine with no Node, or an old Node HQ never installed, is a setup gap
+/// the user fixes; alerting on it flooded #hq-alerts, and with auto-sync
+/// retrying every 30 seconds that silence (`0cfae9cc`) has to stay. But it was
+/// applied to the whole preflight, which also silenced the case where HQ's
+/// *own* Node runtime disappeared. That one is an HQ defect, it is invisible to
+/// the user (the daemon just never completes a cycle), and it ran for days with
+/// nothing paging — so it alerts again, rate-limited exactly like a crash-loop.
 fn runner_preflight_capture_policy(failure: PreflightFailure) -> RunnerPreflightCapturePolicy {
     match failure {
-        PreflightFailure::RunnerUnresolvable => RunnerPreflightCapturePolicy::LocalLogOnly,
-        PreflightFailure::ManagedNodeMissing | PreflightFailure::NodeTooOld => {
-            RunnerPreflightCapturePolicy::CaptureRateLimited
+        PreflightFailure::RunnerUnresolvable | PreflightFailure::NodeTooOld => {
+            RunnerPreflightCapturePolicy::LocalLogOnly
         }
+        PreflightFailure::ManagedNodeMissing => RunnerPreflightCapturePolicy::CaptureRateLimited,
     }
 }
 
@@ -1691,25 +1691,28 @@ mod tests {
     // background sync for days and paged nobody.
 
     #[test]
-    fn a_machine_without_node_stays_local_log_only() {
-        assert_eq!(
-            runner_preflight_capture_policy(PreflightFailure::RunnerUnresolvable),
-            RunnerPreflightCapturePolicy::LocalLogOnly
-        );
-    }
-
-    #[test]
-    fn a_broken_hq_runtime_alerts() {
+    fn the_users_own_environment_stays_local_log_only() {
+        // Auto-sync retries every 30s, so anything the user must fix would
+        // alert at failure 1, 2, 4, 8, … forever. Neither of these is ours.
         for failure in [
-            PreflightFailure::ManagedNodeMissing,
+            PreflightFailure::RunnerUnresolvable,
             PreflightFailure::NodeTooOld,
         ] {
             assert_eq!(
                 runner_preflight_capture_policy(failure),
-                RunnerPreflightCapturePolicy::CaptureRateLimited,
-                "{failure:?} must reach #hq-alerts"
+                RunnerPreflightCapturePolicy::LocalLogOnly,
+                "{failure:?} is the user's environment — it must not page anyone"
             );
         }
+    }
+
+    #[test]
+    fn a_broken_hq_runtime_alerts() {
+        assert_eq!(
+            runner_preflight_capture_policy(PreflightFailure::ManagedNodeMissing),
+            RunnerPreflightCapturePolicy::CaptureRateLimited,
+            "HQ's own Node going missing is our defect and must reach #hq-alerts"
+        );
     }
 
     #[test]

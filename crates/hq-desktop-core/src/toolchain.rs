@@ -53,10 +53,15 @@ pub fn classify() -> ManagedToolchain {
 /// Classify a specific set of toolchain roots, most-canonical first.
 ///
 /// A usable Node in any root wins, because that is the one the child PATH will
-/// find. Otherwise the first root that exists on disk is the one whose missing
-/// Node gets reported — a root directory is the installer's own footprint, so
-/// its presence is what distinguishes "HQ's Node vanished" from "HQ never put
-/// a Node here".
+/// find. Otherwise the first root with a Node *directory* is the one whose
+/// missing executable gets reported.
+///
+/// The footprint has to be the `node` directory rather than the toolchain root:
+/// the root is shared with HQ's managed git and rsync, and on Windows Node is
+/// normally installed through Winget or Scoop and never lands under the root at
+/// all. Keying off the root would report a missing HQ Node on any machine that
+/// merely has managed git — inverting the blame this whole module exists to get
+/// right.
 pub fn classify_roots(roots: &[PathBuf]) -> ManagedToolchain {
     let mut missing: Option<PathBuf> = None;
 
@@ -65,7 +70,7 @@ pub fn classify_roots(roots: &[PathBuf]) -> ManagedToolchain {
         if node.is_file() {
             return ManagedToolchain::Present { node };
         }
-        if missing.is_none() && root.is_dir() {
+        if missing.is_none() && paths::managed_node_dir_in(root).is_dir() {
             missing = Some(node);
         }
     }
@@ -123,11 +128,18 @@ mod tests {
     }
 
     #[test]
-    fn toolchain_root_without_a_node_subdirectory_is_incomplete() {
+    fn a_toolchain_holding_only_git_never_claims_a_missing_node() {
+        // The toolchain root is shared with HQ's managed git and rsync, and on
+        // Windows Node is normally installed via Winget/Scoop and never lands
+        // under the root. Blaming HQ's Node because managed git exists would
+        // invert the diagnosis on a large share of machines.
         let tmp = tempfile::TempDir::new().unwrap();
-        assert!(classify_roots(&[tmp.path().to_path_buf()])
-            .missing_node()
-            .is_some());
+        std::fs::create_dir_all(tmp.path().join("git").join("bin")).unwrap();
+
+        assert_eq!(
+            classify_roots(&[tmp.path().to_path_buf()]),
+            ManagedToolchain::NotProvisioned
+        );
     }
 
     #[test]
@@ -137,7 +149,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let empty = tmp.path().join("canonical");
         let populated = tmp.path().join("legacy");
-        std::fs::create_dir_all(&empty).unwrap();
+        std::fs::create_dir_all(paths::managed_node_dir_in(&empty)).unwrap();
         let node = write_node(&populated);
 
         assert_eq!(

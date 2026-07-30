@@ -106,11 +106,26 @@ pub fn extract_last_sync(head: &str) -> Option<String> {
     (!stamp.is_empty()).then(|| stamp.to_string())
 }
 
+/// Read the head of a journal as text, tolerating a cut mid-character.
+///
+/// The byte limit lands wherever it lands, and a vault with non-ASCII filenames
+/// puts multibyte sequences well inside it. Decoding strictly would reject the
+/// whole head — including the `lastSync` sitting in its first hundred bytes —
+/// and leave the badge stale for exactly the users most likely to hit it, so a
+/// trailing partial character is dropped instead.
 fn read_journal_head(path: &Path) -> Option<String> {
     let file = std::fs::File::open(path).ok()?;
-    let mut head = String::new();
-    file.take(JOURNAL_HEAD_BYTES).read_to_string(&mut head).ok()?;
-    Some(head)
+    let mut bytes = Vec::new();
+    file.take(JOURNAL_HEAD_BYTES).read_to_end(&mut bytes).ok()?;
+    Some(match String::from_utf8(bytes) {
+        Ok(head) => head,
+        Err(e) => {
+            let valid = e.utf8_error().valid_up_to();
+            let mut bytes = e.into_bytes();
+            bytes.truncate(valid);
+            String::from_utf8(bytes).ok()?
+        }
+    })
 }
 
 /// Is `candidate` a later timestamp than `current`?
@@ -608,6 +623,27 @@ mod tests {
         std::fs::write(
             tmp.path().join("sync-journal.indigo.json.last-good"),
             engine_journal("2028-01-01T00:00:00Z"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            newest_engine_sync_at_in(tmp.path()),
+            Some("2026-07-30T18:04:11Z".to_string())
+        );
+    }
+
+    #[test]
+    fn test_a_multibyte_journal_still_yields_its_stamp() {
+        // The head cut lands wherever it lands, and a vault with non-ASCII
+        // filenames puts multibyte sequences across it. Rejecting the whole
+        // head would strand the badge for exactly those users.
+        let tmp = tempfile::tempdir().unwrap();
+        let padding = "é".repeat(JOURNAL_HEAD_BYTES as usize);
+        std::fs::write(
+            tmp.path().join("sync-journal.indigo.json"),
+            format!(
+                r#"{{"version":"1","lastSync":"2026-07-30T18:04:11Z","files":{{"{padding}.md":{{"hash":"abc"}}}}}}"#
+            ),
         )
         .unwrap();
 

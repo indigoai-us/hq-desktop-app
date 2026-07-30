@@ -82,20 +82,31 @@ pub fn managed_toolchain_roots() -> Vec<PathBuf> {
     }
 }
 
+/// Directory the managed Node install occupies under a toolchain root.
+///
+/// This — not the toolchain root — is HQ's Node-specific footprint. The root
+/// is shared with the managed git and rsync installs, so its mere existence
+/// says nothing about whether HQ ever put a Node on this machine.
+pub fn managed_node_dir_in(root: &Path) -> PathBuf {
+    root.join("node")
+}
+
 /// Absolute path the managed Node executable occupies under a toolchain root.
 ///
 /// The installer lays Node out differently per platform: the darwin tarball
 /// keeps its `bin/` directory, while the Windows zip is flattened straight
 /// into `toolchain\node`.
 pub fn managed_node_executable_in(root: &Path) -> PathBuf {
+    let node_dir = managed_node_dir_in(root);
+
     #[cfg(target_os = "windows")]
     {
-        root.join("node").join("node.exe")
+        node_dir.join("node.exe")
     }
 
     #[cfg(not(target_os = "windows"))]
     {
-        root.join("node").join("bin").join("node")
+        node_dir.join("bin").join("node")
     }
 }
 
