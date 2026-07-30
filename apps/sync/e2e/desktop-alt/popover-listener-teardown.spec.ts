@@ -9,12 +9,17 @@ import { flushSync, mount, unmount } from 'svelte';
 const STALE_MAP_ERROR =
   "undefined is not an object (evaluating 'listeners[eventId].handlerId')";
 
-const unlistenHandles: Array<() => Promise<never>> = [];
+type TeardownMode = 'async-reject' | 'sync-throw';
 
-function staleUnlisten(): () => Promise<never> {
-  const unlisten = async () => {
-    throw new TypeError(STALE_MAP_ERROR);
-  };
+const unlistenHandles: Array<ReturnType<typeof vi.fn>> = [];
+let teardownMode: TeardownMode = 'async-reject';
+
+function staleUnlisten(): ReturnType<typeof vi.fn> {
+  const unlisten = vi.fn(() => {
+    const error = new TypeError(STALE_MAP_ERROR);
+    if (teardownMode === 'sync-throw') throw error;
+    return Promise.reject(error);
+  });
   unlistenHandles.push(unlisten);
   return unlisten;
 }
@@ -87,38 +92,50 @@ afterEach(async () => {
 });
 
 describe('HQ-DESKTOP-39: popover stale Tauri listener teardown', () => {
-  it('does not emit an unhandled rejection when the real popover unmounts', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const unhandled: unknown[] = [];
-    const onUnhandledRejection = (reason: unknown) => unhandled.push(reason);
-    process.on('unhandledRejection', onUnhandledRejection);
+  it.each([
+    ['an async rejection', 'async-reject'],
+    ['a synchronous throw', 'sync-throw'],
+  ] as const)(
+    'contains %s across repeated real popover mount/unmount churn',
+    async (_label, mode) => {
+      teardownMode = mode;
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const unhandled: unknown[] = [];
+      const onUnhandledRejection = (reason: unknown) => unhandled.push(reason);
+      process.on('unhandledRejection', onUnhandledRejection);
 
-    try {
-      const { default: Popover } = await import('../../src/components/Popover.svelte');
-      component = mount(Popover, {
-        target: host,
-        props: {
-          syncState: 'idle',
-          config: null,
-          onsync: vi.fn(),
-        },
-      });
-      flushSync();
-      await Promise.resolve();
-      await Promise.resolve();
+      try {
+        const { default: Popover } = await import('../../src/components/Popover.svelte');
+        for (let cycle = 0; cycle < 3; cycle += 1) {
+          component = mount(Popover, {
+            target: host,
+            props: {
+              syncState: 'idle',
+              config: null,
+              onsync: vi.fn(),
+            },
+          });
+          flushSync();
+          await Promise.resolve();
+          await Promise.resolve();
 
-      await unmount(component);
-      component = null;
-      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+          await unmount(component);
+          component = null;
+        }
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
 
-      // Popover owns two listeners and its real NotificationFeed child owns
-      // additional native listeners. Every mounted handle must be released.
-      expect(unlistenHandles.length).toBeGreaterThanOrEqual(2);
-      expect(unhandled).toEqual([]);
-      expect(warn).toHaveBeenCalledTimes(unlistenHandles.length);
-    } finally {
-      process.off('unhandledRejection', onUnhandledRejection);
-      warn.mockRestore();
-    }
-  });
+        // Popover owns two listeners and its real NotificationFeed child owns
+        // additional native listeners. Every mounted handle must be released.
+        expect(unlistenHandles.length).toBeGreaterThanOrEqual(6);
+        for (const unlisten of unlistenHandles) {
+          expect(unlisten).toHaveBeenCalledTimes(1);
+        }
+        expect(unhandled).toEqual([]);
+        expect(warn).toHaveBeenCalledTimes(unlistenHandles.length);
+      } finally {
+        process.off('unhandledRejection', onUnhandledRejection);
+        warn.mockRestore();
+      }
+    },
+  );
 });
