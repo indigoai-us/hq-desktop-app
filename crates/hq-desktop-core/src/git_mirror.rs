@@ -40,7 +40,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{ErrorKind, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::sync::Mutex;
+use std::sync::{mpsc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use chrono::SecondsFormat;
@@ -153,6 +153,11 @@ const GIT_PUSH_TIMEOUT: Duration = Duration::from_secs(300);
 
 const GIT_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
+/// How long to wait for a child's pipes to reach EOF once the child itself has
+/// exited. Descendants that inherited the descriptors can outlive git, so this
+/// wait is bounded like every other one here.
+const PIPE_DRAIN_GRACE: Duration = Duration::from_secs(10);
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Stale `.git/index.lock` reaping
 // ─────────────────────────────────────────────────────────────────────────────
@@ -189,8 +194,31 @@ fn should_reap_index_lock(state: IndexLockState, min_age: Duration) -> bool {
         && state.age.map(|age| age >= min_age).unwrap_or(false)
 }
 
-fn index_lock_path(hq_folder: &str) -> PathBuf {
-    Path::new(hq_folder).join(".git").join("index.lock")
+/// Resolve the repository's git directory. In a linked worktree (and in a
+/// submodule) `.git` is a *file* pointing elsewhere, so appending to it yields
+/// "Not a directory" — which would silently disable the mirror for those
+/// shapes. Ask git rather than assuming the layout.
+fn resolve_git_dir(hq_folder: &str) -> Result<PathBuf, String> {
+    let out = git_output(
+        hq_folder,
+        &["rev-parse", "--absolute-git-dir"],
+        GIT_INDEX_TIMEOUT,
+    )?;
+    if !out.status.success() {
+        return Err(format!(
+            "git rev-parse --absolute-git-dir failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    let dir = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if dir.is_empty() {
+        return Err("git rev-parse --absolute-git-dir returned nothing".to_string());
+    }
+    Ok(PathBuf::from(dir))
+}
+
+fn index_lock_path(git_dir: &Path) -> PathBuf {
+    git_dir.join("index.lock")
 }
 
 /// `(holder_present, git_process_running)`. Both probes fail closed: if we
@@ -282,18 +310,50 @@ fn read_index_lock_state(lock_path: &Path, now: SystemTime) -> IndexLockState {
     }
 }
 
+/// A lock that is demonstrably orphaned (unheld, no git process, past the
+/// grace period) but *not* empty. We deliberately do not remove it: a writer
+/// killed mid-write leaves a partial index behind, and so does a live writer
+/// we failed to observe — the two are indistinguishable from the outside, and
+/// guessing wrong corrupts the index. But this is the wedged state, so it gets
+/// an actionable signal rather than another routine log line.
+fn is_orphaned_but_nonempty(state: IndexLockState, min_age: Duration) -> bool {
+    state.exists
+        && state.size_bytes > 0
+        && !state.holder_present
+        && !state.git_process_running
+        && state.age.map(|age| age >= min_age).unwrap_or(false)
+}
+
 /// Remove `.git/index.lock` when — and only when — the full safety
 /// conjunction holds. Returns whether a lock was actually removed.
-fn reap_index_lock_if_stale(hq_folder: &str, min_age: Duration, now: SystemTime) -> bool {
-    let lock_path = index_lock_path(hq_folder);
+fn reap_index_lock_if_stale(
+    hq_folder: &str,
+    git_dir: &Path,
+    min_age: Duration,
+    now: SystemTime,
+) -> bool {
+    let lock_path = index_lock_path(git_dir);
     let state = read_index_lock_state(&lock_path, now);
     if !should_reap_index_lock(state, min_age) {
-        if state.exists {
+        if is_orphaned_but_nonempty(state, min_age) {
+            let message = format!(
+                "{hq_folder}: {} is {}s old with no holder and no git process, but is not \
+                 empty ({}B), so HQ will not remove it automatically — a partial index and a \
+                 live writer look identical from outside. Every HQ git write stays blocked \
+                 until it is deleted. Quit HQ Sync, confirm no git is running, then delete {}.",
+                lock_path.display(),
+                state.age.map(|a| a.as_secs()).unwrap_or(0),
+                state.size_bytes,
+                lock_path.display(),
+            );
+            log(LOG_TAG, &message);
+            report_wedged_index_lock(state.size_bytes);
+        } else if state.exists {
             log(
                 LOG_TAG,
                 &format!(
-                    "{hq_folder}: leaving .git/index.lock in place \
-                     (size={}B, age={}, holder={}, git-running={})",
+                    "{hq_folder}: leaving {} in place (size={}B, age={}, holder={}, git-running={})",
+                    lock_path.display(),
                     state.size_bytes,
                     state
                         .age
@@ -311,8 +371,9 @@ fn reap_index_lock_if_stale(hq_folder: &str, min_age: Duration, now: SystemTime)
             log(
                 LOG_TAG,
                 &format!(
-                    "{hq_folder}: reaped orphaned .git/index.lock \
+                    "{hq_folder}: reaped orphaned {} \
                      (0 bytes, no holder, no git process, age {}s) — HQ git writes unblocked",
+                    lock_path.display(),
                     state.age.map(|a| a.as_secs()).unwrap_or(0)
                 ),
             );
@@ -321,11 +382,32 @@ fn reap_index_lock_if_stale(hq_folder: &str, min_age: Duration, now: SystemTime)
         Err(err) => {
             log(
                 LOG_TAG,
-                &format!("{hq_folder}: could not remove stale .git/index.lock: {err}"),
+                &format!(
+                    "{hq_folder}: could not remove stale {}: {err}",
+                    lock_path.display()
+                ),
             );
             false
         }
     }
+}
+
+/// The one lock state the reaper cannot safely clear. Surfaced centrally so a
+/// wedged machine shows up in triage instead of only in a local log file.
+fn report_wedged_index_lock(size_bytes: u64) {
+    sentry::with_scope(
+        |scope| {
+            scope.set_tag("git_mirror_kind", "index-lock-wedged");
+            scope.set_tag("lock_size_bytes", size_bytes.to_string());
+        },
+        || {
+            sentry::capture_message(
+                "[git-mirror] .git/index.lock is orphaned but non-empty; HQ git writes are \
+                 blocked and automatic recovery is unsafe",
+                sentry::Level::Warning,
+            );
+        },
+    );
 }
 
 /// Launch-time self-heal. A lock orphaned by a killed run blocks every HQ git
@@ -344,7 +426,12 @@ pub fn reap_stale_index_lock_on_launch() {
     if !Path::new(&hq_folder).join(".git").exists() {
         return;
     }
-    reap_index_lock_if_stale(&hq_folder, STALE_LOCK_MIN_AGE, SystemTime::now());
+    match resolve_git_dir(&hq_folder) {
+        Ok(git_dir) => {
+            reap_index_lock_if_stale(&hq_folder, &git_dir, STALE_LOCK_MIN_AGE, SystemTime::now());
+        }
+        Err(e) => log(LOG_TAG, &format!("{hq_folder}: {e}")),
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -365,10 +452,8 @@ impl Drop for MirrorLock {
     }
 }
 
-fn mirror_lock_path(hq_folder: &str) -> PathBuf {
-    Path::new(hq_folder)
-        .join(".git")
-        .join("hq-sync-mirror.lock")
+fn mirror_lock_path(git_dir: &Path) -> PathBuf {
+    git_dir.join("hq-sync-mirror.lock")
 }
 
 /// "Someone else holds this lock" is spelled differently per platform: unix
@@ -456,10 +541,20 @@ pub fn mirror_after_sync(hq_folder: &str) {
         *last = Some(now);
     }
 
+    // Every lock path hangs off the real git directory, which is not
+    // `<hq_folder>/.git` in a linked worktree or a submodule.
+    let git_dir = match resolve_git_dir(hq_folder) {
+        Ok(dir) => dir,
+        Err(e) => {
+            log(LOG_TAG, &format!("{hq_folder}: {e}"));
+            return;
+        }
+    };
+
     // Cross-process exclusion. A second HQ process (a stale menubar instance,
-    // a relaunch mid-run) would otherwise race us for `.git/index.lock` and
-    // leave one behind.
-    let _mirror_lock = match try_acquire_mirror_lock(&mirror_lock_path(hq_folder)) {
+    // a relaunch mid-run) would otherwise race us for `index.lock` and leave
+    // one behind.
+    let _mirror_lock = match try_acquire_mirror_lock(&mirror_lock_path(&git_dir)) {
         Ok(Some(lock)) => lock,
         Ok(None) => {
             log(
@@ -474,20 +569,20 @@ pub fn mirror_after_sync(hq_folder: &str) {
         }
     };
 
-    if let Err(e) = run_mirror(hq_folder) {
+    if let Err(e) = run_mirror(hq_folder, &git_dir) {
         log(LOG_TAG, &format!("{hq_folder}: {e}"));
-        // Failure path: our git child may have died holding `.git/index.lock`.
-        // We hold the mirror lock and every child we spawned has been reaped,
-        // so an empty, unheld lock at this instant is ours and orphaned — no
-        // age grace needed. The other conjuncts still apply.
-        reap_index_lock_if_stale(hq_folder, Duration::ZERO, SystemTime::now());
+        // Failure path: our git child may have died holding `index.lock`. We
+        // hold the mirror lock and every child we spawned has been reaped, so
+        // an empty, unheld lock at this instant is ours and orphaned — no age
+        // grace needed. The other conjuncts still apply.
+        reap_index_lock_if_stale(hq_folder, &git_dir, Duration::ZERO, SystemTime::now());
     }
 }
 
-fn run_mirror(hq_folder: &str) -> Result<(), String> {
+fn run_mirror(hq_folder: &str, git_dir: &Path) -> Result<(), String> {
     // Pre-run self-heal: clear an orphaned lock from an earlier killed run so
     // this cycle isn't the third one in a row to fail for the same reason.
-    reap_index_lock_if_stale(hq_folder, STALE_LOCK_MIN_AGE, SystemTime::now());
+    reap_index_lock_if_stale(hq_folder, git_dir, STALE_LOCK_MIN_AGE, SystemTime::now());
 
     run_git(hq_folder, &["add", "-A"], GIT_INDEX_TIMEOUT)?;
 
@@ -685,33 +780,54 @@ fn git_output(cwd: &str, args: &[&str], timeout: Duration) -> Result<Output, Str
     // child blocks on a full pipe buffer would hang until the timeout even
     // for commands that finished their work — and `git ls-tree` on a large
     // HQ tree easily exceeds the buffer.
-    let mut child_stdout = child.stdout.take();
-    let mut child_stderr = child.stderr.take();
-    let stdout_reader = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        if let Some(pipe) = child_stdout.as_mut() {
-            let _ = pipe.read_to_end(&mut buf);
-        }
-        buf
-    });
-    let stderr_reader = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        if let Some(pipe) = child_stderr.as_mut() {
-            let _ = pipe.read_to_end(&mut buf);
-        }
-        buf
-    });
+    //
+    // The readers report through channels rather than `join`, because killing
+    // git kills only git: a hook, a credential helper or an ssh ControlMaster
+    // it spawned inherits these descriptors and can hold them open long after
+    // its parent is gone. Joining would then block forever, stranding the
+    // mirror thread and both of its locks — the timeout would be advertised
+    // but never actually returned.
+    let label = args.join(" ");
+    let stdout_rx = drain_pipe(child.stdout.take());
+    let stderr_rx = drain_pipe(child.stderr.take());
 
-    let status = wait_with_timeout(&mut child, timeout, &args.join(" "));
-    // Killing the child closes both pipes, so the readers always finish.
-    let stdout = stdout_reader.join().unwrap_or_default();
-    let stderr = stderr_reader.join().unwrap_or_default();
+    let status = wait_with_timeout(&mut child, timeout, &label)?;
+
+    // A stalled drain must never look like empty output: `count_staged_
+    // deletions` reading an empty stdout as "zero deletions" would wave a mass
+    // delete straight through the guard. Fail the run instead.
+    let stdout = stdout_rx
+        .recv_timeout(PIPE_DRAIN_GRACE)
+        .map_err(|_| {
+            format!(
+                "git {label} exited but its output could not be read within {}s \
+                 (a helper process is still holding the pipe)",
+                PIPE_DRAIN_GRACE.as_secs()
+            )
+        })?;
+    // stderr is diagnostic only, so a stall there must not fail a command that
+    // otherwise succeeded.
+    let stderr = stderr_rx.recv_timeout(PIPE_DRAIN_GRACE).unwrap_or_default();
 
     Ok(Output {
-        status: status?,
+        status,
         stdout,
         stderr,
     })
+}
+
+/// Read a child pipe to EOF on its own thread and deliver the bytes over a
+/// channel. The thread is deliberately never joined — see [`git_output`].
+fn drain_pipe<R: Read + Send + 'static>(pipe: Option<R>) -> mpsc::Receiver<Vec<u8>> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(mut pipe) = pipe {
+            let _ = pipe.read_to_end(&mut buf);
+        }
+        let _ = tx.send(buf);
+    });
+    rx
 }
 
 /// Poll a child to completion, killing it once `timeout` elapses. Extracted so
@@ -965,6 +1081,18 @@ mod tests {
         }
     }
 
+    /// `run_mirror` takes the resolved git directory; resolve it the same way
+    /// production does so the tests exercise that path too.
+    fn run_mirror_at(dir: &Path) -> Result<(), String> {
+        let hq = dir.to_str().unwrap();
+        let git_dir = resolve_git_dir(hq)?;
+        run_mirror(hq, &git_dir)
+    }
+
+    fn git_dir_of(dir: &Path) -> PathBuf {
+        resolve_git_dir(dir.to_str().unwrap()).expect("git dir resolves")
+    }
+
     /// Most tests bypass `mirror_after_sync` and call `run_mirror` directly
     /// so the process-wide `MIRROR_LOCK` doesn't make parallel cargo-test
     /// threads race each other. The single test that does exercise the
@@ -991,7 +1119,7 @@ mod tests {
             .success());
 
         let before = rev_count(tmp.path());
-        run_mirror(tmp.path().to_str().unwrap()).expect("mirror ok");
+        run_mirror_at(tmp.path()).expect("mirror ok");
         let after = rev_count(tmp.path());
         assert_eq!(before, after, "no-change mirror must not add commits");
     }
@@ -1008,7 +1136,7 @@ mod tests {
         let before = rev_count(tmp.path());
 
         fs::write(tmp.path().join("new-file.txt"), "hello").unwrap();
-        run_mirror(tmp.path().to_str().unwrap()).expect("mirror ok");
+        run_mirror_at(tmp.path()).expect("mirror ok");
 
         let after = rev_count(tmp.path());
         assert_eq!(after, before + 1, "expected exactly one new commit");
@@ -1034,7 +1162,7 @@ mod tests {
         let before = rev_count(tmp.path());
 
         fs::write(&f, "edited").unwrap();
-        run_mirror(tmp.path().to_str().unwrap()).expect("mirror ok");
+        run_mirror_at(tmp.path()).expect("mirror ok");
 
         assert_eq!(rev_count(tmp.path()), before + 1);
     }
@@ -1054,7 +1182,7 @@ mod tests {
 
         // No `git remote add`, no upstream branch.
         fs::write(tmp.path().join("x"), "y").unwrap();
-        run_mirror(tmp.path().to_str().unwrap()).expect("mirror ok");
+        run_mirror_at(tmp.path()).expect("mirror ok");
         assert_eq!(rev_count(tmp.path()), before + 1);
     }
 
@@ -1086,7 +1214,7 @@ mod tests {
             .success());
 
         fs::write(work.path().join("new"), "data").unwrap();
-        run_mirror(work.path().to_str().unwrap()).expect("mirror ok");
+        run_mirror_at(work.path()).expect("mirror ok");
 
         // Remote (bare repo) should now have the same HEAD as local.
         let local_head =
@@ -1116,7 +1244,7 @@ mod tests {
         let before = rev_count(tmp.path());
 
         delete_files(tmp.path(), 0..50);
-        run_mirror(tmp.path().to_str().unwrap()).expect("mirror reports success");
+        run_mirror_at(tmp.path()).expect("mirror reports success");
 
         assert_eq!(
             rev_count(tmp.path()),
@@ -1142,7 +1270,7 @@ mod tests {
 
         // 5 deletions: 5% of the tree and under the absolute floor.
         delete_files(tmp.path(), 0..5);
-        run_mirror(tmp.path().to_str().unwrap()).expect("mirror ok");
+        run_mirror_at(tmp.path()).expect("mirror ok");
 
         assert_eq!(rev_count(tmp.path()), before + 1);
     }
@@ -1157,7 +1285,7 @@ mod tests {
         let before = rev_count(tmp.path());
 
         delete_files(tmp.path(), 0..50);
-        let result = run_mirror(tmp.path().to_str().unwrap());
+        let result = run_mirror_at(tmp.path());
 
         std::env::remove_var(BULK_OVERRIDE_ENV);
         result.expect("mirror ok");
@@ -1181,7 +1309,7 @@ mod tests {
             let name = format!("file-{i:04}.md");
             fs::rename(tmp.path().join(&name), moved.join(&name)).unwrap();
         }
-        run_mirror(tmp.path().to_str().unwrap()).expect("mirror ok");
+        run_mirror_at(tmp.path()).expect("mirror ok");
 
         assert_eq!(
             rev_count(tmp.path()),
@@ -1202,7 +1330,8 @@ mod tests {
         seed_repo(tmp.path(), 5);
         let before = rev_count(tmp.path());
 
-        let lock = index_lock_path(tmp.path().to_str().unwrap());
+        let git_dir = git_dir_of(tmp.path());
+        let lock = index_lock_path(&git_dir);
         fs::write(&lock, b"").unwrap();
         assert!(lock.exists());
 
@@ -1210,6 +1339,7 @@ mod tests {
         // it were an hour from now rather than by rewriting its mtime.
         let reaped = reap_index_lock_if_stale(
             tmp.path().to_str().unwrap(),
+            &git_dir,
             STALE_LOCK_MIN_AGE,
             SystemTime::now() + Duration::from_secs(3600),
         );
@@ -1219,7 +1349,7 @@ mod tests {
         assert!(!lock.exists());
 
         fs::write(tmp.path().join("after-reap.md"), "content").unwrap();
-        run_mirror(tmp.path().to_str().unwrap()).expect("mirror ok");
+        run_mirror_at(tmp.path()).expect("mirror ok");
         assert_eq!(rev_count(tmp.path()), before + 1);
     }
 
@@ -1233,11 +1363,11 @@ mod tests {
         seed_repo(tmp.path(), 5);
         let before = rev_count(tmp.path());
 
-        let lock = index_lock_path(tmp.path().to_str().unwrap());
+        let lock = index_lock_path(&git_dir_of(tmp.path()));
         fs::write(&lock, b"").unwrap();
         fs::write(tmp.path().join("blocked.md"), "content").unwrap();
 
-        let result = run_mirror(tmp.path().to_str().unwrap());
+        let result = run_mirror_at(tmp.path());
         set_probe_override(None);
 
         assert!(
@@ -1253,10 +1383,71 @@ mod tests {
     }
 
     #[test]
+    fn nonempty_orphaned_lock_is_reported_but_never_removed() {
+        let _serial = serial();
+        set_probe_override(Some((false, false)));
+
+        let tmp = TempDir::new().unwrap();
+        seed_repo(tmp.path(), 5);
+        let git_dir = git_dir_of(tmp.path());
+        let lock = index_lock_path(&git_dir);
+        fs::write(&lock, b"partial index data").unwrap();
+
+        let state = read_index_lock_state(&lock, SystemTime::now() + Duration::from_secs(3600));
+        let reaped = reap_index_lock_if_stale(
+            tmp.path().to_str().unwrap(),
+            &git_dir,
+            STALE_LOCK_MIN_AGE,
+            SystemTime::now() + Duration::from_secs(3600),
+        );
+        set_probe_override(None);
+
+        assert!(
+            is_orphaned_but_nonempty(state, STALE_LOCK_MIN_AGE),
+            "this is the state that gets escalated rather than reaped"
+        );
+        assert!(!reaped, "a non-empty lock must never be removed");
+        assert!(lock.exists());
+        fs::remove_file(&lock).unwrap();
+    }
+
+    #[test]
+    fn lock_paths_follow_a_linked_worktree() {
+        // In a linked worktree `.git` is a file, so appending `.git/…` would
+        // yield "Not a directory" and silently disable the mirror.
+        let main = TempDir::new().unwrap();
+        let trees = TempDir::new().unwrap();
+        seed_repo(main.path(), 3);
+        let wt = trees.path().join("wt");
+        assert!(
+            git(main.path(), &["worktree", "add", "-q", wt.to_str().unwrap()])
+                .status
+                .success()
+        );
+        assert!(wt.join(".git").is_file(), "expected a linked worktree");
+
+        let git_dir = git_dir_of(&wt);
+        assert!(
+            git_dir.starts_with(main.path().join(".git")),
+            "worktree git dir must resolve under the main repo, got {git_dir:?}"
+        );
+        assert!(
+            index_lock_path(&git_dir).parent() == Some(git_dir.as_path())
+                && mirror_lock_path(&git_dir).parent() == Some(git_dir.as_path())
+        );
+
+        // And the mirror still works there.
+        fs::write(wt.join("new.md"), "content").unwrap();
+        let before = rev_count(&wt);
+        run_mirror_at(&wt).expect("mirror ok in a linked worktree");
+        assert_eq!(rev_count(&wt), before + 1);
+    }
+
+    #[test]
     fn mirror_lock_is_exclusive_across_holders_and_released_on_drop() {
         let tmp = TempDir::new().unwrap();
         init_repo(tmp.path());
-        let path = mirror_lock_path(tmp.path().to_str().unwrap());
+        let path = mirror_lock_path(&git_dir_of(tmp.path()));
 
         let first = try_acquire_mirror_lock(&path).unwrap();
         assert!(first.is_some(), "first acquirer must win the lock");
