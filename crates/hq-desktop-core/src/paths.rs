@@ -60,6 +60,45 @@ fn legacy_managed_toolchain_dir() -> Option<PathBuf> {
     Some(PathBuf::from(local_app).join("Indigo HQ").join("toolchain"))
 }
 
+/// Every managed-toolchain root this platform may have, most-canonical first.
+///
+/// Windows installs moved from `Indigo HQ` to `IndigoHQ`, so an upgraded
+/// machine can still be running out of the legacy directory. Empty when the
+/// platform's base directory can't be resolved at all.
+pub fn managed_toolchain_roots() -> Vec<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        [managed_toolchain_dir(), legacy_managed_toolchain_dir()]
+            .into_iter()
+            .flatten()
+            .collect()
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        home_dir()
+            .map(|home| vec![managed_toolchain_dir(&home)])
+            .unwrap_or_default()
+    }
+}
+
+/// Absolute path the managed Node executable occupies under a toolchain root.
+///
+/// The installer lays Node out differently per platform: the darwin tarball
+/// keeps its `bin/` directory, while the Windows zip is flattened straight
+/// into `toolchain\node`.
+pub fn managed_node_executable_in(root: &Path) -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        root.join("node").join("node.exe")
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        root.join("node").join("bin").join("node")
+    }
+}
+
 pub fn home_dir() -> Option<PathBuf> {
     if let Some(home) = std::env::var_os("HOME") {
         if !home.is_empty() {
