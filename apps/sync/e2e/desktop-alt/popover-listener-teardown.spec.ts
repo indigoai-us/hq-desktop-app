@@ -56,12 +56,25 @@ vi.mock('@tauri-apps/api/window', () => ({
   }),
 }));
 
-let host: HTMLElement;
+// Compile Popover once during suite collection. Under full-suite parallel load,
+// this cold Svelte import can exceed the per-test timeout even though the
+// teardown churn itself takes only milliseconds.
+const { default: Popover } = await import('../../src/components/Popover.svelte');
+
+let host: HTMLElement | null = null;
 let component: Record<string, unknown> | null = null;
 let originalResizeObserver: typeof ResizeObserver | undefined;
+let unhandled: unknown[] = [];
+let onUnhandledRejection: ((reason: unknown) => void) | null = null;
+let warn: ReturnType<typeof vi.spyOn> | null = null;
 
 beforeEach(() => {
   unlistenHandles.length = 0;
+  teardownMode = 'async-reject';
+  unhandled = [];
+  onUnhandledRejection = (reason: unknown) => unhandled.push(reason);
+  process.on('unhandledRejection', onUnhandledRejection);
+  warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
   host = document.createElement('div');
   document.body.appendChild(host);
   originalResizeObserver = globalThis.ResizeObserver;
@@ -75,11 +88,16 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  if (onUnhandledRejection) {
+    process.off('unhandledRejection', onUnhandledRejection);
+    onUnhandledRejection = null;
+  }
   if (component) {
     await unmount(component);
     component = null;
   }
   host?.remove();
+  host = null;
   if (originalResizeObserver) {
     Object.defineProperty(globalThis, 'ResizeObserver', {
       configurable: true,
@@ -88,6 +106,7 @@ afterEach(async () => {
   } else {
     Reflect.deleteProperty(globalThis, 'ResizeObserver');
   }
+  warn = null;
   vi.restoreAllMocks();
 });
 
@@ -99,43 +118,32 @@ describe('HQ-DESKTOP-39: popover stale Tauri listener teardown', () => {
     'contains %s across repeated real popover mount/unmount churn',
     async (_label, mode) => {
       teardownMode = mode;
-      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-      const unhandled: unknown[] = [];
-      const onUnhandledRejection = (reason: unknown) => unhandled.push(reason);
-      process.on('unhandledRejection', onUnhandledRejection);
+      for (let cycle = 0; cycle < 3; cycle += 1) {
+        component = mount(Popover, {
+          target: host!,
+          props: {
+            syncState: 'idle',
+            config: null,
+            onsync: vi.fn(),
+          },
+        });
+        flushSync();
+        await Promise.resolve();
+        await Promise.resolve();
 
-      try {
-        const { default: Popover } = await import('../../src/components/Popover.svelte');
-        for (let cycle = 0; cycle < 3; cycle += 1) {
-          component = mount(Popover, {
-            target: host,
-            props: {
-              syncState: 'idle',
-              config: null,
-              onsync: vi.fn(),
-            },
-          });
-          flushSync();
-          await Promise.resolve();
-          await Promise.resolve();
-
-          await unmount(component);
-          component = null;
-        }
-        await new Promise<void>((resolve) => setTimeout(resolve, 0));
-
-        // Popover owns two listeners and its real NotificationFeed child owns
-        // additional native listeners. Every mounted handle must be released.
-        expect(unlistenHandles.length).toBeGreaterThanOrEqual(6);
-        for (const unlisten of unlistenHandles) {
-          expect(unlisten).toHaveBeenCalledTimes(1);
-        }
-        expect(unhandled).toEqual([]);
-        expect(warn).toHaveBeenCalledTimes(unlistenHandles.length);
-      } finally {
-        process.off('unhandledRejection', onUnhandledRejection);
-        warn.mockRestore();
+        await unmount(component);
+        component = null;
       }
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+      // Popover owns two listeners and its real NotificationFeed child owns
+      // additional native listeners. Every mounted handle must be released.
+      expect(unlistenHandles.length).toBeGreaterThanOrEqual(6);
+      for (const unlisten of unlistenHandles) {
+        expect(unlisten).toHaveBeenCalledTimes(1);
+      }
+      expect(unhandled).toEqual([]);
+      expect(warn).toHaveBeenCalledTimes(unlistenHandles.length);
     },
   );
 });
