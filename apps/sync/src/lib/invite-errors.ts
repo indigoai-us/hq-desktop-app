@@ -22,3 +22,23 @@ export function isAlreadyScheduledError(err: unknown): boolean {
   const msg = String(err ?? '');
   return msg.includes('409') || msg.includes('bot-already-schedu');
 }
+
+/**
+ * Classify a bot invite/join failure as requiring the Meetings Team plan.
+ *
+ * The server rejects recording-bot scheduling with HTTP 402 when the company
+ * is not on the required Team plan. See hq-pro `bot.controller.ts`, which
+ * returns 402 with `requiredPlan: "agents-500"`. The error reaches the
+ * frontend as a flattened Tauri command-error string (`bot/invite HTTP 402:
+ * {…}`), so match the status and the body sentinels rather than a structured
+ * error object.
+ */
+export function isPlanRequiredError(err: unknown): boolean {
+  const msg = String(err ?? '');
+  return (
+    msg.includes('402') ||
+    msg.includes('requiredPlan') ||
+    msg.includes('agents-500') ||
+    msg.includes('MEETING_PLAN_REQUIRED')
+  );
+}

@@ -19,12 +19,66 @@ vi.mock('../../lib/activeMeetings', () => ({
 
 import { meetingsStore } from './meetings-store.svelte';
 
+const planRequiredError =
+  'bot/invite HTTP 402: {"requiredPlan":"agents-500","code":"MEETING_PLAN_REQUIRED"}';
+const planRequiredToast = {
+  kind: 'warn' as const,
+  text: 'Meetings need the $500/mo Team plan—upgrade in HQ Console to record.',
+};
+const event: MeetingEvent = {
+  id: 'event-plan-required',
+  summary: 'Roadmap',
+  status: 'confirmed',
+  start: { dateTime: '2026-07-29T17:00:00.000Z' },
+  end: { dateTime: '2026-07-29T17:30:00.000Z' },
+  meetingUrl: 'https://meet.google.com/abc-defg-hij',
+};
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((next) => {
     resolve = next;
   });
   return { promise, resolve };
+}
+
+async function expectPlanGateDoesNotCommitOrRefresh(
+  action: () => Promise<unknown>,
+  expectedCommand: string,
+  expectedPayload: object,
+) {
+  const upcoming = deferred<MeetingEvent[]>();
+  let upcomingCalls = 0;
+  invoke.mockImplementation((command: string) => {
+    if (command === 'meetings_list_upcoming') {
+      upcomingCalls += 1;
+      return upcoming.promise;
+    }
+    if (
+      command === 'meetings_list_memberships' ||
+      command === 'meetings_list_accounts' ||
+      command === 'meetings_list_scheduled_bots'
+    ) {
+      return Promise.resolve([]);
+    }
+    if (command === 'meetings_invite_bot' || command === 'meetings_join_bot_now') {
+      return Promise.reject(planRequiredError);
+    }
+    throw new Error(`Unexpected invoke: ${command}`);
+  });
+
+  const poll = meetingsStore.refresh();
+  expect(upcomingCalls).toBe(1);
+
+  await expect(action()).resolves.toEqual(planRequiredToast);
+  expect(invoke).toHaveBeenCalledWith(expectedCommand, expectedPayload);
+
+  // The in-flight snapshot applies only if the denial did not call
+  // markMutationCommitted(). A refresh would also queue a second poll.
+  upcoming.resolve([]);
+  await poll;
+  expect(upcomingCalls).toBe(1);
+  expect(saveMeetingsCache).toHaveBeenCalledTimes(1);
 }
 
 beforeEach(() => {
@@ -101,5 +155,46 @@ describe('meetings store refresh coordination', () => {
     // The stale pass was discarded; only the authoritative trailing snapshot
     // reached the cache.
     expect(saveMeetingsCache).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('meetings store Team-plan gate', () => {
+  it('returns the plan warning without committing or refreshing for a row invite', async () => {
+    await expectPlanGateDoesNotCommitOrRefresh(
+      () => meetingsStore.inviteBot(event),
+      'meetings_invite_bot',
+      {
+        meetingUrl: event.meetingUrl,
+        calendarEventId: event.id,
+        calendarSeriesId: null,
+        companyId: null,
+      },
+    );
+  });
+
+  it('returns the plan warning without committing or refreshing for a URL invite', async () => {
+    await expectPlanGateDoesNotCommitOrRefresh(
+      () => meetingsStore.inviteBotByUrl(event.meetingUrl!, 'company-1'),
+      'meetings_invite_bot',
+      {
+        meetingUrl: event.meetingUrl,
+        calendarEventId: null,
+        calendarSeriesId: null,
+        companyId: 'company-1',
+      },
+    );
+  });
+
+  it('returns the plan warning without committing or refreshing for join now', async () => {
+    await expectPlanGateDoesNotCommitOrRefresh(
+      () => meetingsStore.joinBotNow(event),
+      'meetings_join_bot_now',
+      {
+        meetingUrl: event.meetingUrl,
+        calendarEventId: event.id,
+        calendarSeriesId: null,
+        companyId: null,
+      },
+    );
   });
 });
