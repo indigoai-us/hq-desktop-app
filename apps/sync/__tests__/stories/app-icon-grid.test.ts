@@ -105,33 +105,61 @@ function decodePng(buf: Buffer): Decoded {
 
 const alphaAt = (d: Decoded, x: number, y: number) => d.rgba[(y * d.width + x) * 4 + 3];
 
-function opaqueBounds(d: Decoded, threshold = 0) {
+type Measured = {
+  width: number;
+  height: number;
+  corners: number[];
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+  /** First opaque x on the row just inside the body's top edge — the corner arc. */
+  topEdgeFirstOpaque: number;
+  mean: { r: number; g: number; b: number; samples: number };
+};
+
+/**
+ * Decode and measure ONCE for the whole file.
+ *
+ * Vitest runs test files in parallel, and this file shares a runner with
+ * `tray-message-badge-native.test.ts`, which compiles Rust under a 5s timeout.
+ * Decoding a 1024x1024 PNG per test and re-scanning all ~1M pixels several
+ * times starved that compile and made it time out in CI. One decode plus one
+ * pass keeps this file cheap enough to be a good neighbour.
+ */
+let measured: Measured | null = null;
+
+function icon(): Measured {
+  if (measured) return measured;
+
+  const d = decodePng(readFileSync(iconPath));
   let minX = d.width;
   let minY = d.height;
   let maxX = -1;
   let maxY = -1;
-  for (let y = 0; y < d.height; y++) {
-    for (let x = 0; x < d.width; x++) {
-      if (alphaAt(d, x, y) > threshold) {
-        if (x < minX) minX = x;
-        if (y < minY) minY = y;
-        if (x > maxX) maxX = x;
-        if (y > maxY) maxY = y;
-      }
-    }
-  }
-  return { minX, minY, maxX, maxY };
-}
-
-function meanOpaqueRgb(d: Decoded) {
   let r = 0;
   let g = 0;
   let b = 0;
   let n = 0;
-  for (let y = 0; y < d.height; y += 4) {
-    for (let x = 0; x < d.width; x += 4) {
-      const i = (y * d.width + x) * 4;
-      if (d.rgba[i + 3] > 200) {
+  const topRow = MARGIN + 1;
+  let topEdgeFirstOpaque = -1;
+
+  for (let y = 0; y < d.height; y++) {
+    const rowStart = y * d.width * 4;
+    for (let x = 0; x < d.width; x++) {
+      const i = rowStart + x * 4;
+      const a = d.rgba[i + 3];
+      if (a === 0) continue;
+
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (x > maxX) maxX = x;
+      if (y > maxY) maxY = y;
+
+      if (y === topRow && topEdgeFirstOpaque < 0) topEdgeFirstOpaque = x;
+
+      // Sample on a 4px lattice for the mean, matching the generator's check.
+      if (a > 200 && (x & 3) === 0 && (y & 3) === 0) {
         r += d.rgba[i];
         g += d.rgba[i + 1];
         b += d.rgba[i + 2];
@@ -139,54 +167,54 @@ function meanOpaqueRgb(d: Decoded) {
       }
     }
   }
-  return { r: Math.round(r / n), g: Math.round(g / n), b: Math.round(b / n), samples: n };
+
+  measured = {
+    width: d.width,
+    height: d.height,
+    corners: [
+      alphaAt(d, 0, 0),
+      alphaAt(d, d.width - 1, 0),
+      alphaAt(d, 0, d.height - 1),
+      alphaAt(d, d.width - 1, d.height - 1),
+    ],
+    minX,
+    minY,
+    maxX,
+    maxY,
+    topEdgeFirstOpaque,
+    mean: { r: Math.round(r / n), g: Math.round(g / n), b: Math.round(b / n), samples: n },
+  };
+  return measured;
 }
 
 describe('app icon: Apple macOS icon grid', () => {
   it('has a generated source at the full 1024 canvas', () => {
     expect(existsSync(iconPath), 'run scripts/generate-app-icon.py').toBe(true);
-    const d = decodePng(readFileSync(iconPath));
+    const d = icon();
     expect([d.width, d.height]).toEqual([CANVAS, CANVAS]);
   });
 
   it('has fully transparent corners — the regression that shipped', () => {
-    const d = decodePng(readFileSync(iconPath));
-    const corners = [
-      alphaAt(d, 0, 0),
-      alphaAt(d, CANVAS - 1, 0),
-      alphaAt(d, 0, CANVAS - 1),
-      alphaAt(d, CANVAS - 1, CANVAS - 1),
-    ];
     // Opaque corners mean a full-bleed square: the exact defect that made HQ
     // look oversized and hard-edged next to every other Dock icon.
-    expect(corners).toEqual([0, 0, 0, 0]);
+    expect(icon().corners).toEqual([0, 0, 0, 0]);
   });
 
   it('insets the body by the grid margin on every side', () => {
-    const d = decodePng(readFileSync(iconPath));
-    const { minX, minY, maxX, maxY } = opaqueBounds(d);
+    const { minX, minY, maxX, maxY } = icon();
     expect({ minX, minY }).toEqual({ minX: MARGIN, minY: MARGIN });
     expect({ maxX, maxY }).toEqual({ maxX: MARGIN + BODY - 1, maxY: MARGIN + BODY - 1 });
   });
 
   it('rounds the corners rather than shipping a plain square', () => {
-    const d = decodePng(readFileSync(iconPath));
-    // One row inside the body's top edge, opacity must start well inward of the
-    // body edge — that inset IS the corner arc. A square would start at MARGIN.
-    const y = MARGIN + 1;
-    let firstOpaque = -1;
-    for (let x = 0; x < CANVAS; x++) {
-      if (alphaAt(d, x, y) > 0) {
-        firstOpaque = x;
-        break;
-      }
-    }
-    expect(firstOpaque).toBeGreaterThan(MARGIN + 40);
+    // On the row just inside the body's top edge, opacity must start well
+    // inward of the body edge — that inset IS the corner arc. A plain square
+    // would start opaque at MARGIN.
+    expect(icon().topEdgeFirstOpaque).toBeGreaterThan(MARGIN + 40);
   });
 
   it('still carries HQ artwork, not the stale near-black app-icon.svg design', () => {
-    const d = decodePng(readFileSync(iconPath));
-    const { r, g, b, samples } = meanOpaqueRgb(d);
+    const { r, g, b, samples } = icon().mean;
     expect(samples).toBeGreaterThan(1000);
     // Shipped brand mark is a light pink/violet gradient (~212,141,227). The
     // stale SVG rasterises to ~(52,44,50); regenerating from it would rebrand
