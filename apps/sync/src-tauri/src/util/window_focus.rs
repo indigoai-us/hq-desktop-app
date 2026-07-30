@@ -14,6 +14,8 @@
 //!   `NSWindow.makeKeyAndOrderFront` / `orderFrontRegardless`.
 //! - Other targets: show + set_focus.
 
+#[cfg(target_os = "macos")]
+use tauri::Manager;
 use tauri::WebviewWindow;
 
 /// Show `window` and pull it above other apps (best-effort on every OS).
@@ -53,7 +55,7 @@ fn raise_webview(window: &WebviewWindow, keep_on_top: bool) {
     #[cfg(target_os = "macos")]
     {
         let _ = keep_on_top;
-        force_foreground_macos(window);
+        force_foreground_macos_on_main(window);
     }
 
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
@@ -64,12 +66,79 @@ fn raise_webview(window: &WebviewWindow, keep_on_top: bool) {
     let _ = window.set_focus();
 }
 
+/// True when the caller is on the AppKit main thread.
+#[cfg(target_os = "macos")]
+fn is_main_thread() -> bool {
+    use objc2::{class, msg_send};
+
+    // SAFETY: `+[NSThread isMainThread]` is a public class method that is
+    // explicitly safe to send from any thread — asking the question cannot
+    // itself be a threading violation.
+    unsafe { msg_send![class!(NSThread), isMainThread] }
+}
+
+/// Run the raw AppKit activation on the main thread, hopping if necessary.
+///
+/// **This guard is load-bearing — do not inline it away.** `force_foreground_macos`
+/// sends `makeKeyAndOrderFront:` / `activateIgnoringOtherApps:` directly. On
+/// macOS 26 AppKit hard-traps those off the main thread with
+/// `EXC_BREAKPOINT` + "Must only be used from the main thread", killing the
+/// process — it is not a warning and not best-effort.
+///
+/// Every `async` `#[tauri::command]` body runs on a tokio worker, not the main
+/// thread, and three of them reach here:
+///
+///   * `commands::banner::show_main_window`          (the update banner's action)
+///   * `commands::compat::launch_menubar_app`
+///   * `commands::notification_history::open_notification_history`
+///
+/// That is how a user clicking **Update** crashed HQ 0.10.35: the banner action
+/// invoked `show_main_window`, which called straight through to AppKit from a
+/// worker thread. Non-async commands (`bring_main_window_to_front`,
+/// `open_settings_window`, `show_main_window_at_tray`) already run on the main
+/// thread, and the OAuth / tray / auth paths hop explicitly — so the defect was
+/// only ever the async trio.
+///
+/// The guard lives here, at the one place that genuinely requires the main
+/// thread, rather than in each caller: that fixes all three at once and means a
+/// future async caller cannot reintroduce the crash.
+#[cfg(target_os = "macos")]
+fn force_foreground_macos_on_main(window: &WebviewWindow) {
+    if is_main_thread() {
+        force_foreground_macos(window);
+        return;
+    }
+
+    // Re-resolve the window by label on the main thread rather than sending a
+    // `WebviewWindow` across: it keeps the closure `Send` without relying on
+    // the handle staying valid, and a window that closed in between simply
+    // does nothing instead of touching a stale `NSWindow`.
+    let app = window.app_handle().clone();
+    let label = window.label().to_string();
+    let hop = app.clone().run_on_main_thread(move || {
+        if let Some(win) = app.get_webview_window(&label) {
+            force_foreground_macos(&win);
+        }
+    });
+    if hop.is_err() {
+        // Better a window that did not come forward than a dead process.
+        crate::util::logfile::log(
+            "window-focus",
+            "raise: could not reach the main thread; skipped AppKit activation",
+        );
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn force_foreground_macos(window: &WebviewWindow) {
     use objc2::{class, msg_send, runtime::AnyObject};
 
-    // Must run on the AppKit main thread (callers use run_on_main_thread for
-    // the OAuth callback path; tray click handlers are already on main).
+    // MAIN THREAD ONLY — reached via `force_foreground_macos_on_main`, which
+    // enforces that. macOS 26 traps these selectors off the main thread.
+    debug_assert!(
+        is_main_thread(),
+        "force_foreground_macos must run on the AppKit main thread"
+    );
     unsafe {
         let app_cls = class!(NSApplication);
         let app: *mut AnyObject = msg_send![app_cls, sharedApplication];
