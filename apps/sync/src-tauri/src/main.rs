@@ -906,6 +906,14 @@ fn main() {
             commands::packages::setup_pack_update_checker(app.handle());
             commands::hq_core_state::setup_core_state_checker(app.handle());
 
+            // Clear a `.git/index.lock` orphaned by a mirror run that was
+            // killed before it could finish. Until this happens, every HQ git
+            // write — the mirror, the autocommit hook, the handoff finalizer —
+            // fails, and the app is the only party that knows the run died.
+            // Off the setup thread because the reaper probes for a live
+            // holder, which spawns a short-lived child process.
+            std::thread::spawn(commands::git_mirror::reap_stale_index_lock_on_launch);
+
             // Fire-and-forget: warm the npx cache for
             // `@indigoai-us/hq-cloud@<HQ_CLOUD_VERSION>` so the user's
             // first click of "Sync Now" doesn't eat the 3–10s first-time
