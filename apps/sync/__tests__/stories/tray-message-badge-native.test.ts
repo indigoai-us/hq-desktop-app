@@ -6,6 +6,20 @@ import { describe, expect, it } from 'vitest';
 
 const nativeIt = process.platform === 'darwin' ? it : it.skip;
 
+/**
+ * Both cases shell out to a compiler (`rustc`, and `xcrun swiftc` on macOS).
+ * Vitest's default 5s per-test budget is not appropriate for that: the compile
+ * itself is fast (~0.3s measured) but it runs on a shared CI runner alongside
+ * ~200 other test files, and process spawn + toolchain resolution under that
+ * contention regularly blew past 5s. It timed out on at least two unrelated
+ * branches (`fix/desktop-visual-hierarchy-origin` run 30484093669, and
+ * `wt/dock-icon-shape`) while passing on main — a coin-flip, not a signal.
+ *
+ * The assertions are untouched; only the budget is. Still bounded, so a genuine
+ * hang fails rather than hanging CI forever.
+ */
+const COMPILE_TIMEOUT_MS = 120_000;
+
 describe('native HQ menu-bar badge verification', () => {
   it('passes the portable helper-build planning and metadata tests', () => {
     const support = resolve(
@@ -35,7 +49,7 @@ describe('native HQ menu-bar badge verification', () => {
     } finally {
       rmSync(outputDirectory, { recursive: true, force: true });
     }
-  });
+  }, COMPILE_TIMEOUT_MS);
 
   nativeIt('typechecks the production helper and passes its deterministic AppKit harness', () => {
     const helper = resolve(

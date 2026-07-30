@@ -204,6 +204,47 @@ Feature-flagged behind `autostartDaemon: true` in `~/.hq/menubar.json` (default:
 
 State files: `.hq-sync.pid`, `.hq-sync-daemon.json` in the HQ folder.
 
+## App Icon (Dock)
+
+`src-tauri/icons/*` are generated, not hand-edited. Pipeline:
+
+```
+src-tauri/icons/source/app-icon-master.png   full-bleed 1024 brand artwork
+  -> python3 scripts/generate-app-icon.py    puts it on Apple's icon grid
+  -> src-tauri/icons/app-icon.png            1024 canvas, grid-aligned
+  -> pnpm tauri icon src-tauri/icons/app-icon.png -o src-tauri/icons
+```
+
+**macOS does NOT mask or inset app icons.** Whatever the bundle ships is drawn
+into the Dock tile verbatim, so the rounded-rect shape and the margin around it
+must be baked into the artwork. HQ shipped a full-bleed 512x512 square with
+fully opaque corners, so the Dock rendered a hard-edged square that read
+visibly larger than the inset squircles every other Mac app ships.
+
+Apple's grid on a 1024 canvas: body **824x824 centred** (100px transparent
+margin every side), corner radius **185.4**. The mask is supersampled 4x and
+downsampled with `Image.BOX` — a coverage mask is an area-average, and `LANCZOS`
+rings, leaving faint alpha ~3px OUTSIDE the geometric edge (measured bbox
+97..927 instead of 100..924) plus a halo.
+
+⚠ **`src-tauri/icons/app-icon.svg` is STALE — never regenerate from it.** It
+describes a near-black tile with a gradient wordmark; HQ actually ships a
+pink/violet gradient tile with a white wordmark (shipped raster mean opaque RGB
+~(212,141,227); the SVG rasterises to ~(52,44,50)). Running `tauri icon` against
+it silently rebrands the app. The master PNG was recovered from the 1024x1024
+`ic10` representation inside the previously shipped `icon.icns`.
+
+`__tests__/stories/app-icon-grid.test.ts` decodes the generated PNG and asserts
+transparent corners, the exact grid inset, corner rounding, and that the mean
+colour is still the pink brand — so both a full-bleed regeneration and an
+accidental rebrand fail in CI. It also fails against the pre-fix icon (verified),
+so it is not a vacuous guard.
+
+Note the runtime `NSApp.applicationIconImage` override in `main.rs` still feeds
+the Dock `128x128@2x.png` (256px), which is exactly the Dock's max size
+(128pt @2x) — adequate, but it does replace the multi-rep `.icns` for every
+surface, so a larger source would be needed if a bigger rendering ever matters.
+
 ## Tray Icon
 
 4 embedded PNG icons (`src-tauri/icons/tray-*.png`) are generated from the official HQ mark at `src-tauri/icons/source/HQ.svg` by `scripts/generate-tray-icons.py`. The generated canvases are 38x22 at @1x and 76x44 at @2x, monochrome black on transparent so macOS can template-invert them for light/dark menu bars. Runtime icons are cached via `OnceLock` after first decode. State swaps go through the `set_state_icon()` helper, which calls `set_icon()` then re-asserts `set_icon_as_template(true)` — macOS drops `isTemplate` on every `set_icon()`, so without the re-assert the template glyph would render as raw pixels after the first state change.
