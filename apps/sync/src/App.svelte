@@ -500,17 +500,15 @@
   let notificationActionRetrying = $state(false);
   let notificationActionRecoveryGeneration = 0;
 
-  // Master automatic-updates switch (`autoUpdate` pref, default ON). When on,
-  // the app installs updates silently without asking: the menubar app itself
-  // (self-update + restart, below) and hq-core (drift-safe rescue, below). The
-  // `hq` CLI auto-installer gates on the same pref in Rust
-  // (`hq_cli_update::auto_update_enabled`). Loaded on mount + refreshed on
-  // focus so flipping the Settings toggle takes effect without a relaunch.
+  // Master automatic-updates switch (`autoUpdate` pref, default ON). Native
+  // Rust background workers own the app and CLI installs so they cannot miss a
+  // hidden-WebView event; this surface owns the hq-core drift-safe rescue below.
+  // Loaded on mount + refreshed on focus so flipping the Settings toggle takes
+  // effect without a relaunch.
   let autoUpdate = $state(true);
-  // Session dedup so a failed silent install doesn't hammer the same version
-  // (a fresh 6h check / next launch retries). Plain (non-reactive) `let` so
-  // read/writing them inside the auto-install effects never re-triggers them.
-  let autoAppUpdatedVersion: string | null = null;
+  // Session dedup so a failed Core rescue doesn't hammer the same version (a
+  // fresh 6h check / next launch retries). Plain (non-reactive) `let` so
+  // reading/writing it inside the auto-install effect never re-triggers it.
   let autoCoreUpdatedVersion: string | null = null;
 
   // hq CLI updater state — populated by `hq-cli-update:available` from the
@@ -2235,26 +2233,8 @@
     };
   });
 
-  // ── Silent auto-update (master `autoUpdate` pref) ──────────────────────────
-  // Silent app self-update: when auto-update is on and the background checker
-  // reports a newer version, install it without asking. Deferred while a sync
-  // is running — never yank the app out mid-sync; the effect re-runs when
-  // `syncState` flips back to idle. Deduped by version so a failed install
-  // (e.g. transient network) doesn't hammer; the 6h re-check / next launch
-  // retries. `updateInstalling` blocks re-entry (and on macOS the process is
-  // usually replaced before it flips back). `handleInstallUpdate` is the same
-  // guarded path the in-app Install button uses.
-  $effect(() => {
-    if (!autoUpdate) return;
-    const info = updateAvailable;
-    if (!info || updateInstalling) return;
-    if (syncState === 'syncing') return;
-    if (autoAppUpdatedVersion === info.version) return;
-    autoAppUpdatedVersion = info.version;
-    void handleInstallUpdate();
-  });
-
-  // Silent hq-core update: when auto-update is on and the user is version-behind
+  // ── Silent hq-core update (master `autoUpdate` pref) ───────────────────────
+  // When auto-update is on and the user is version-behind
   // on an eligible channel, run the drift-safe rescue in the background (edits
   // to locked core files are preserved as `personal/` overrides — nothing is
   // destroyed). Only fires on `versionBehind` (a genuine new release), NOT on

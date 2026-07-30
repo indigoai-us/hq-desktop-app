@@ -9,6 +9,8 @@
   import {
     countUnreadConversations,
     conversationRows,
+    orderQuickWindowChannels,
+    quickWindowChannelTimestamp,
     type ConversationRow,
   } from '../lib/quickWindowPane';
   import {
@@ -16,7 +18,6 @@
     companyNameFor,
     type Channel,
   } from '../lib/channels';
-  import NotificationRow from './NotificationRow.svelte';
 
   // Source list for the quick communications window. DM/share conversations
   // retain the existing grouped history semantics; channels are an optional
@@ -58,16 +59,7 @@
   let channelLoadGeneration = 0;
 
   const rows = $derived(conversationRows(items, lastReadTs, viewedIds));
-  const orderedChannels = $derived.by(() =>
-    channels
-      .slice()
-      .sort((a, b) => {
-        const unreadDelta = (b.unread ?? 0) - (a.unread ?? 0);
-        if (unreadDelta !== 0) return unreadDelta;
-        return channelTimestamp(b) - channelTimestamp(a);
-      })
-      .slice(0, 12),
-  );
+  const orderedChannels = $derived(orderQuickWindowChannels(channels));
   type RailEntry =
     | { kind: 'conversation'; key: string; timestamp: number; row: ConversationRow }
     | { kind: 'channel'; key: string; timestamp: number; channel: Channel };
@@ -87,50 +79,21 @@
       })),
     ].sort((a, b) => b.timestamp - a.timestamp),
   );
+  const directEntries = $derived(
+    railEntries.filter(
+      (entry) => entry.kind === 'conversation' || entry.channel.scope === 'group',
+    ),
+  );
+  const channelEntries = $derived(
+    orderedChannels.filter((channel) => channel.scope !== 'group'),
+  );
   const attentionCount = $derived(
     countUnreadConversations(items, lastReadTs, viewedIds) +
       channels.filter((channel) => (channel.unread ?? 0) > 0).length,
   );
 
   function channelTimestamp(channel: Channel): number {
-    for (const value of [
-      channel.lastActivityAt,
-      channel.lastMessageAt,
-      channel.createdAt,
-    ]) {
-      const parsed = Date.parse(value ?? '');
-      if (Number.isFinite(parsed)) return parsed;
-    }
-    return channel.arrivedAt ?? 0;
-  }
-
-  function formatChannelTime(channel: Channel): string | null {
-    const timestamp = channelTimestamp(channel);
-    if (!timestamp) return null;
-    const date = new Date(timestamp);
-    const now = new Date();
-    const startToday = new Date(
-      now.getFullYear(),
-      now.getMonth(),
-      now.getDate(),
-    ).getTime();
-    if (timestamp >= startToday) {
-      return date.toLocaleTimeString(undefined, {
-        hour: 'numeric',
-        minute: '2-digit',
-      });
-    }
-    if (date.getFullYear() === now.getFullYear()) {
-      return date.toLocaleDateString(undefined, {
-        month: 'short',
-        day: 'numeric',
-      });
-    }
-    return date.toLocaleDateString(undefined, {
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric',
-    });
+    return quickWindowChannelTimestamp(channel);
   }
 
   function channelTitle(channel: Channel): string {
@@ -309,8 +272,6 @@
   aria-busy={loading || loadingChannels}
 >
   <section class="qw-section" aria-labelledby="quick-conversations-label">
-    <div class="qw-side-label" id="quick-conversations-label">Conversations</div>
-
     {#if (loading || loadingChannels) && railEntries.length === 0}
       <div class="qw-skeleton-list" aria-label="Loading conversations" role="status">
         {#each Array(5) as _}
@@ -325,69 +286,90 @@
       </div>
     {:else if railEntries.length > 0}
       <div class="qw-side-list">
-        {#each railEntries as entry (entry.key)}
+        {#if directEntries.length > 0}
+          <div class="qw-side-label" id="quick-conversations-label">Direct messages</div>
+        {/if}
+        {#each directEntries as entry (entry.key)}
           {#if entry.kind === 'conversation'}
             {@const row = entry.row}
             {@const isSelected = selectedId != null && row.ids.includes(selectedId)}
-            <NotificationRow
-              type={row.kind === 'dm' ? 'message' : 'share'}
-              actor={row.actor}
-              identityLabel={senderIdentity(row.actor, row.agent)}
-              sourceLabel={row.kind === 'dm'
-                ? row.ids.length > 1
-                  ? `Direct messages · ${row.ids.length}`
-                  : 'Direct message'
-                : row.ids.length > 1
-                  ? `Shared files · ${row.ids.length}`
-                  : 'Shared file'}
-              text={row.latest.kind === 'dm' ? (row.latest.dm?.body ?? row.latest.summary) : row.latest.summary}
-              ts={row.latest.ts}
-              unread={!isSelected && row.unreadCount > 0}
-              badgeCount={isSelected ? 0 : row.unreadCount}
-              agentActor={row.agent}
-              selected={isSelected}
-              hoverExpand={false}
-              comfortable
-              onopen={() => onselect(row.latest, row.ids, row.items)}
-            />
+            <button
+              type="button"
+              class="conversation-row"
+              class:active={isSelected}
+              class:unread={!isSelected && row.unreadCount > 0}
+              data-testid="quick-conversation-row"
+              data-kind={row.kind}
+              aria-current={isSelected ? 'true' : undefined}
+              aria-label={`${row.actor}${row.kind === 'share' ? ', shared files' : ''}${!isSelected && row.unreadCount > 0 ? `, ${row.unreadCount} unread` : ''}`}
+              onclick={() => onselect(row.latest, row.ids, row.items)}
+            >
+              <span class="conversation-avatar" class:agent-avatar={row.agent} aria-hidden="true">
+                {senderIdentity(row.actor, row.agent)}
+              </span>
+              <strong>{row.actor}</strong>
+              {#if row.kind === 'share'}
+                <span class="row-kind" title="Shared files" aria-hidden="true">↗</span>
+              {/if}
+              {#if !isSelected && row.unreadCount > 0}
+                <span class="row-unread-count" data-testid="quick-unread-count">
+                  {row.unreadCount > 99 ? '99+' : row.unreadCount}
+                </span>
+              {/if}
+            </button>
           {:else}
             {@const channel = entry.channel}
             {@const isSelected = selectedChannelId === channel.channelId}
-            {@const time = formatChannelTime(channel)}
             <button
               type="button"
-              class="channel-row"
+              class="conversation-row group-dm-row"
               class:active={isSelected}
+              class:unread={!isSelected && (channel.unread ?? 0) > 0}
               data-testid="quick-channel-row"
+              data-provenance="group-dm"
               aria-current={isSelected ? 'true' : undefined}
               aria-label={`${channelTitle(channel)}, ${channelContext(channel)}${channel.unread ? `, ${channel.unread} unread` : ''}`}
               onclick={() => selectChannel(channel)}
             >
-              <span
-                class="channel-avatar"
-                class:group-avatar={channel.scope === 'group'}
-                aria-hidden="true"
-              >
+              <span class="conversation-avatar group-avatar" aria-hidden="true">
                 {channelAvatar(channel)}
               </span>
-              <span class="channel-copy">
-                <span class="channel-title-line">
-                  <strong>{channelTitle(channel)}</strong>
-                  {#if time}
-                    <time datetime={channel.lastActivityAt ?? channel.lastMessageAt ?? channel.createdAt ?? undefined}>
-                      {time}
-                    </time>
-                  {/if}
+              <strong>{channelTitle(channel)}</strong>
+              {#if !isSelected && (channel.unread ?? 0) > 0}
+                <span class="row-unread-count" data-testid="quick-unread-count">
+                  {(channel.unread ?? 0) > 99 ? '99+' : channel.unread}
                 </span>
-                <span class="channel-context">
-                  <span>{channelContext(channel)}</span>
-                  {#if !isSelected && (channel.unread ?? 0) > 0}
-                    <b aria-label={`${channel.unread} unread`}>{channel.unread}</b>
-                  {/if}
-                </span>
-              </span>
+              {/if}
             </button>
           {/if}
+        {/each}
+
+        {#if channelEntries.length > 0}
+          <div class="qw-side-label">Channels</div>
+        {/if}
+        {#each channelEntries as channel (`channel:${channel.channelId}`)}
+          {@const isSelected = selectedChannelId === channel.channelId}
+          <button
+            type="button"
+            class="conversation-row channel-row"
+            class:active={isSelected}
+            class:unread={!isSelected && (channel.unread ?? 0) > 0}
+            data-testid="quick-channel-row"
+            data-provenance="channel"
+            aria-current={isSelected ? 'true' : undefined}
+            aria-label={`${channelTitle(channel)}, ${channelContext(channel)}${channel.unread ? `, ${channel.unread} unread` : ''}`}
+            onclick={() => selectChannel(channel)}
+          >
+            <span class="channel-symbol" aria-hidden="true">
+              {channel.visibility === 'private' ? '⌑' : '#'}
+            </span>
+            <strong>{channelDisplayName(channel)}</strong>
+            {#if !isSelected && (channel.unread ?? 0) > 0}
+              <span class="row-unread-count" data-testid="quick-unread-count">
+                {(channel.unread ?? 0) > 99 ? '99+' : channel.unread}
+              </span>
+            {/if}
+          </button>
         {/each}
       </div>
     {/if}
@@ -417,13 +399,13 @@
 
 <style>
   .qw-side-pane {
-    width: 292px;
+    width: 276px;
     flex-shrink: 0;
     display: flex;
     flex-direction: column;
     gap: 0;
     border-right: 1px solid var(--pop-divider);
-    padding: 12px 10px 18px;
+    padding: 10px 8px 18px;
     overflow-y: auto;
     box-sizing: border-box;
     scrollbar-width: thin;
@@ -448,13 +430,13 @@
 
   .qw-side-label {
     flex-shrink: 0;
-    padding: 8px 8px 7px;
+    padding: 12px 8px 5px;
     color: var(--pop-muted);
     font-size: 10.5px;
     font-weight: 650;
     letter-spacing: 0.055em;
     line-height: 1.2;
-    text-transform: uppercase;
+    text-transform: none;
   }
 
   .qw-side-status {
@@ -471,161 +453,118 @@
     min-height: 0;
   }
 
-  .qw-side-list :global(.nr) {
-    min-height: 66px;
-    padding: 9px 8px;
-    border-radius: 0;
-    box-shadow: inset 0 -1px 0 var(--pop-divider);
-  }
-
-  .qw-side-list :global(.nr-primary-action),
-  .qw-side-list :global(.nr-primary-content) {
-    gap: 10px;
-  }
-
-  .qw-side-list :global(.nr-comfortable-top) {
-    gap: 6px;
-  }
-
-  .qw-side-list :global(.nr-comfortable-actor) {
-    max-width: 13ch;
-  }
-
-  .qw-side-list :global(.nr-comfortable-context) {
-    max-width: 8ch;
-    font-size: 9.5px;
-    font-weight: 620;
-    letter-spacing: 0.035em;
-    text-transform: uppercase;
-  }
-
-  .qw-side-list :global(.nr-comfortable-preview) {
-    color: var(--pop-muted);
-    font-size: 11.5px;
-    line-height: 1.35;
-  }
-
-  .qw-side-list :global(.nr-selected) {
-    background: var(--compact-glass-selected, var(--pop-hover));
-  }
-
-  /* US-016: subtle type hierarchy without spending a colored accent. */
-  .qw-side-list :global(.nr[data-type='share'] .nr-icon) { color: var(--pop-text, #e8e8e8); }
-  .qw-side-list :global(.nr[data-type='system'] .nr-icon) { color: var(--pop-muted); }
-
-  .channel-row {
+  .conversation-row {
     width: 100%;
-    min-height: 58px;
+    min-height: 34px;
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 8px;
+    gap: 8px;
+    padding: 4px 8px;
     border: 0;
-    border-bottom: 1px solid var(--pop-divider);
-    border-radius: 0;
+    border-radius: 7px;
     background: transparent;
-    color: var(--pop-text);
+    color: var(--pop-muted);
     font: inherit;
     text-align: left;
     cursor: pointer;
-    transition: transform 120ms var(--ease-out);
+    transition: transform 110ms var(--ease-out);
   }
 
-  .channel-row.active {
+  .conversation-row.active {
     background: var(--compact-glass-selected, var(--pop-hover));
+    color: var(--pop-text);
   }
 
-  .channel-row:focus-visible {
+  .conversation-row.unread {
+    color: var(--pop-text);
+  }
+
+  .conversation-row:focus-visible {
     outline: 2px solid var(--pop-text);
     outline-offset: -2px;
   }
 
-  .channel-row:active {
-    transform: scale(0.99);
+  .conversation-row:active {
+    transform: scale(0.98);
   }
 
-  .channel-avatar {
-    width: 30px;
-    height: 30px;
-    flex: 0 0 30px;
+  .conversation-row > strong {
+    min-width: 0;
+    flex: 1;
+    overflow: hidden;
+    font-size: 13px;
+    font-weight: 500;
+    line-height: 1.25;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .conversation-row.unread > strong {
+    font-weight: 700;
+  }
+
+  .conversation-avatar {
+    width: 22px;
+    height: 22px;
+    flex: 0 0 22px;
     display: grid;
     place-items: center;
-    border: 1px solid var(--pop-divider);
-    border-radius: 8px;
+    border-radius: 6px;
     background: var(--pop-hover);
     color: var(--pop-text);
-    font-size: 13px;
+    font-size: 9.5px;
     font-weight: 650;
   }
 
+  .agent-avatar {
+    color: var(--pop-muted);
+  }
+
   .group-avatar {
-    font-size: 10px;
+    border: 1px solid var(--pop-divider);
+    background: transparent;
+    font-size: 9px;
     letter-spacing: 0.025em;
   }
 
-  .channel-copy,
+  .channel-symbol {
+    width: 22px;
+    flex: 0 0 22px;
+    color: currentColor;
+    font-size: 19px;
+    font-weight: 400;
+    line-height: 1;
+    text-align: center;
+  }
+
+  .row-kind {
+    flex: 0 0 auto;
+    color: var(--pop-muted);
+    font-size: 11px;
+  }
+
+  .row-unread-count {
+    min-width: 17px;
+    height: 17px;
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 5px;
+    border: 1px solid var(--pop-divider);
+    border-radius: 999px;
+    background: var(--pop-hover);
+    color: var(--pop-text);
+    font-size: 9.5px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+  }
+
   .qw-skeleton-copy {
     min-width: 0;
     flex: 1;
     display: grid;
     gap: 4px;
-  }
-
-  .channel-title-line,
-  .channel-context {
-    min-width: 0;
-    display: flex;
-    align-items: baseline;
-    gap: 8px;
-  }
-
-  .channel-title-line strong {
-    min-width: 0;
-    flex: 1;
-    overflow: hidden;
-    color: var(--pop-text);
-    font-size: 13px;
-    font-weight: 650;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .channel-title-line time {
-    flex: 0 0 auto;
-    color: var(--pop-muted);
-    font-size: 10.5px;
-    font-variant-numeric: tabular-nums;
-  }
-
-  .channel-context {
-    color: var(--pop-muted);
-    font-size: 11.5px;
-  }
-
-  .channel-context > span {
-    min-width: 0;
-    flex: 1;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .channel-context b {
-    min-width: 17px;
-    height: 16px;
-    flex: 0 0 auto;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    padding: 0 4px;
-    border: 1px solid var(--pop-divider);
-    border-radius: 8px;
-    background: var(--pop-hover);
-    color: var(--pop-text);
-    font-size: 10px;
-    font-weight: 650;
-    font-variant-numeric: tabular-nums;
-    line-height: 1;
   }
 
   .qw-skeleton-row {
@@ -725,13 +664,14 @@
   }
 
   @media (hover: hover) and (pointer: fine) {
-    .channel-row:hover {
+    .conversation-row:hover {
       background: var(--pop-hover);
+      color: var(--pop-text);
     }
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .channel-row,
+    .conversation-row,
     .qw-load-error button {
       transition: none;
     }
@@ -743,7 +683,7 @@
       opacity: 0.66;
     }
 
-    .channel-row:active,
+    .conversation-row:active,
     .qw-load-error button:active:not(:disabled) {
       transform: none;
     }

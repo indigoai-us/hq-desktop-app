@@ -15,6 +15,46 @@ import { isUnread } from './notificationFeedData';
 /** Max rows shown in a quick-window side pane (newest-first feed is already sorted). */
 const PANE_ITEM_CAP = 30;
 
+export interface QuickWindowChannelRecency {
+  scope: string;
+  unread?: number | null;
+  lastActivityAt?: string | null;
+  lastMessageAt?: string | null;
+  createdAt?: string | null;
+  arrivedAt?: number | null;
+}
+
+/** Resolve the best available activity timestamp for a compact-window channel. */
+export function quickWindowChannelTimestamp(channel: QuickWindowChannelRecency): number {
+  for (const value of [
+    channel.lastActivityAt,
+    channel.lastMessageAt,
+    channel.createdAt,
+  ]) {
+    const parsed = Date.parse(value ?? '');
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return channel.arrivedAt ?? 0;
+}
+
+/**
+ * Order every channel visible to the caller for the compact Messages rail.
+ *
+ * This intentionally has no rendering cap. Group DMs share the channels API
+ * with named channels, so truncating that source can make an otherwise valid
+ * group conversation disappear completely. The rail scrolls and is the only
+ * compact-window path back to an older group DM.
+ */
+export function orderQuickWindowChannels<T extends QuickWindowChannelRecency>(
+  channels: T[],
+): T[] {
+  return channels.slice().sort((a, b) => {
+    const unreadDelta = (b.unread ?? 0) - (a.unread ?? 0);
+    if (unreadDelta !== 0) return unreadDelta;
+    return quickWindowChannelTimestamp(b) - quickWindowChannelTimestamp(a);
+  });
+}
+
 /**
  * Keep only kinds that have an in-window main pane (`dm` / `share`).
  * `new-file` rows open a different surface and are excluded. Preserves input

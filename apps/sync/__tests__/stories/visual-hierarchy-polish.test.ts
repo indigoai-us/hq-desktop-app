@@ -370,16 +370,17 @@ describe('visual hierarchy polish: scoped surface contracts', () => {
   const desktop = read('src/desktop-alt/DesktopApp.svelte');
   const harness = read('dev-harness/mocks/core.ts');
 
-  it('keeps notification hierarchy shared across Inbox, popover, widget, and quick pane', () => {
+  it('keeps rich notification hierarchy in feeds while the quick pane stays navigational', () => {
     expect(row).toContain('sourceLabel?: string');
     expect(feed).toContain('sourceLabel="Direct message"');
     expect(feed).toContain('sourceLabel="Shared file"');
     expect(feed).toContain('sourceLabel="Workspace activity"');
     expect(feed).toContain('sourceLabel="App update"');
     expect(inbox).toContain('density="comfortable"');
-    expect(quickPane).toContain('row.ids.length > 1');
-    expect(quickPane).toContain('`Direct messages · ${row.ids.length}`');
-    expect(quickPane).toContain('`Shared files · ${row.ids.length}`');
+    expect(quickPane).toContain('id="quick-conversations-label">Direct messages');
+    expect(quickPane).toContain('<div class="qw-side-label">Channels</div>');
+    expect(quickPane).not.toContain('text={row.latest');
+    expect(quickPane).not.toContain('sourceLabel=');
     expect(widget).toContain('sourceLabel={notificationSourceLabel(row.item)}');
   });
 
