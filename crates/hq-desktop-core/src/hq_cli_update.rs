@@ -1060,7 +1060,12 @@ fn read_installed_version_probe(
         .join("package.json");
     let bytes = match std::fs::read(&pkg_json) {
         Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
             return (None, VersionProbeOutcome::PackageNotFound)
         }
         Err(_) => return (None, VersionProbeOutcome::ManifestReadOrParseFailed),
@@ -1956,6 +1961,8 @@ mod tests {
         let invalid_utf8 = tmp.path().join("invalid-utf8-npm");
         let empty = tmp.path().join("empty-npm");
         let absent_package = tmp.path().join("absent-package-npm");
+        let non_directory_root = tmp.path().join("non-directory-root");
+        let non_directory_package = tmp.path().join("non-directory-package-npm");
         let malformed_package = tmp.path().join("malformed-package-npm");
         write_executable(&nonzero, "#!/bin/sh\nexit 5\n");
         write_executable(&invalid_utf8, "#!/bin/sh\nprintf '\\377'\n");
@@ -1963,6 +1970,14 @@ mod tests {
         write_executable(
             &absent_package,
             &format!("#!/bin/sh\nprintf '%s\\n' '{}'\n", tmp.path().display()),
+        );
+        std::fs::write(&non_directory_root, b"not a directory").unwrap();
+        write_executable(
+            &non_directory_package,
+            &format!(
+                "#!/bin/sh\nprintf '%s\\n' '{}'\n",
+                non_directory_root.display()
+            ),
         );
         let npm_root = tmp.path().join("npm-root");
         let package = npm_root.join("@indigoai-us/hq-cli/package.json");
@@ -1987,6 +2002,10 @@ mod tests {
         );
         assert_eq!(
             read_installed_version_probe(absent_package.to_str().unwrap(), "").1,
+            VersionProbeOutcome::PackageNotFound
+        );
+        assert_eq!(
+            read_installed_version_probe(non_directory_package.to_str().unwrap(), "").1,
             VersionProbeOutcome::PackageNotFound
         );
         assert_eq!(
