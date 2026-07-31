@@ -119,22 +119,26 @@ describe('US-016: side pane conversation grouping', () => {
   });
 
   describe('type distinction (source-contract)', () => {
-    it('QuickWindowSidePane wires conversation rows with badgeCount, agentActor, and type map', () => {
+    it('QuickWindowSidePane renders compact Slack-like rows without message previews', () => {
       // Selected conversation reads as caught-up: badge suppressed on the
       // active row (covers the opening event's default selection too).
-      expect(paneSource).toContain('badgeCount={isSelected ? 0 : row.unreadCount}');
+      expect(paneSource).toContain('data-testid="quick-unread-count"');
       expect(paneSource).toContain(
         '{@const isSelected = selectedId != null && row.ids.includes(selectedId)}',
       );
       // Selecting a row hands the whole conversation to the main pane.
-      expect(paneSource).toContain('onopen={() => onselect(row.latest, row.ids, row.items)}');
-      expect(paneSource).toContain('agentActor={row.agent}');
-      expect(paneSource).toContain("row.kind === 'dm' ? 'message' : 'share'");
-      expect(paneSource).toContain(
-        ".qw-side-list :global(.nr[data-type='share'] .nr-icon) { color: var(--pop-text, #e8e8e8); }",
-      );
+      expect(paneSource).toContain('onclick={() => onselect(row.latest, row.ids, row.items)}');
+      expect(paneSource).toContain('class:agent-avatar={row.agent}');
+      expect(paneSource).toContain('data-kind={row.kind}');
+      expect(paneSource).toContain('id="quick-conversations-label">Direct messages');
+      expect(paneSource).toContain('<div class="qw-side-label">Channels</div>');
+      expect(paneSource).not.toContain('text={row.latest');
+      expect(paneSource).not.toContain('sourceLabel=');
       expect(paneSource).toContain('conversationRows');
       expect(paneSource).toContain('No conversations');
+      expect(paneSource).toContain('includeUpdates: false');
+      expect(paneSource).not.toContain('markAllNotificationsRead');
+      expect(paneSource).not.toContain("window.addEventListener('pagehide'");
     });
 
     it('NotificationRow exposes unread-count pill and type icons via data-type', () => {
@@ -142,6 +146,14 @@ describe('US-016: side pane conversation grouping', () => {
       expect(rowSource).toContain('data-type={type}');
       expect(rowSource).toContain("t === 'message'");
       expect(rowSource).toContain("t === 'share'");
+      expect(rowSource).toContain(
+        'border: 1px solid var(--popover-divider, var(--pop-border));',
+      );
+      expect(rowSource).toContain('background: var(--popover-action-hover);');
+      expect(rowSource).toContain('color: var(--popover-text);');
+      expect(rowSource).not.toMatch(
+        /\.nr-count\s*\{[\s\S]*?background:\s*var\(--popover-unread\)[\s\S]*?color:\s*white/,
+      );
     });
   });
 

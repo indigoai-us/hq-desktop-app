@@ -263,6 +263,38 @@ pub struct VendSelfResult {
 pub struct TelemetryOptInResponse {
     pub enabled: bool,
     pub updated_at: Option<String>,
+    /// `Some(true)` when the server has NO recorded consent for this caller —
+    /// distinct from `enabled: false`, which is a real opt-out.
+    ///
+    /// `None` means the server never sent the field, i.e. it predates the
+    /// conditional-write rollout. That is load-bearing: such a server also
+    /// IGNORES `onlyIfUnset` and writes unconditionally, so a replay against it
+    /// could overwrite a real choice. Treating `None` as "do not replay" makes
+    /// this field double as the capability probe.
+    #[serde(default)]
+    pub unset: Option<bool>,
+    /// The `prs_*` this answer belongs to, so a client can refuse to replay a
+    /// cached answer that belongs to a different account.
+    #[serde(default)]
+    pub person_uid: Option<String>,
+    /// The consent version whose wording the person was shown when they
+    /// answered. `None` means the record predates versioning (and is therefore
+    /// stale). Surfaced to the settings screen as provenance (AC5).
+    #[serde(default)]
+    pub consent_version: Option<u32>,
+    /// Which surface produced the answer (`onboarding` / `settings` /
+    /// `administrative`, or the interim `admin-backfill-*` marker). `None` on
+    /// servers that predate provenance.
+    #[serde(default)]
+    pub source: Option<String>,
+    /// The Cognito subject that recorded the answer. `None` on older servers.
+    #[serde(default)]
+    pub answered_by: Option<String>,
+    /// Whether the record is stale per the cross-repo contract (predates
+    /// versioning, was set administratively, or was answered against an older
+    /// wording). `None` on servers that predate the field.
+    #[serde(default)]
+    pub stale: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -493,8 +525,9 @@ impl VaultClient {
             .await?;
         let wrapper: serde_json::Value = self.handle_response(resp).await?;
         match wrapper.get("invites") {
-            Some(v) if !v.is_null() => serde_json::from_value(v.clone())
-                .map_err(|e| VaultClientError::Json(e.to_string())),
+            Some(v) if !v.is_null() => {
+                serde_json::from_value(v.clone()).map_err(|e| VaultClientError::Json(e.to_string()))
+            }
             _ => Ok(Vec::new()),
         }
     }
@@ -610,6 +643,27 @@ impl VaultClient {
         self.handle_response(resp).await
     }
 
+    /// The Cognito `sub` carried by THIS client's bearer token, i.e. the account
+    /// its requests are actually authenticated as.
+    ///
+    /// Deliberately derived from the client's own token rather than from
+    /// whatever is currently on disk: signing out does not cancel an in-flight
+    /// sync, so a long-running operation can still be holding account A's token
+    /// after account B has signed in. Anything that compares a local record
+    /// against "who am I" must use the identity the requests will carry, or it
+    /// can apply one account's decision under another's credentials.
+    ///
+    /// The bearer here is a Cognito ACCESS token; the decoder is named for the
+    /// id_token but only base64-decodes the JWT payload, and `sub` is present on
+    /// both. A malformed/opaque token yields `None`, which callers treat as
+    /// "cannot prove identity" — the safe direction.
+    pub fn caller_subject(&self) -> Option<String> {
+        hq_desktop_core::cognito::decode_id_token_claims(&self.auth_token)
+            .ok()
+            .and_then(|c| c.sub)
+            .filter(|s| !s.is_empty())
+    }
+
     /// `GET /v1/usage/opt-in` — check whether the authenticated user has opted in to telemetry.
     pub async fn get_telemetry_opt_in(&self) -> Result<TelemetryOptInResponse, VaultClientError> {
         let resp = self
@@ -622,12 +676,52 @@ impl VaultClient {
     }
 
     /// `POST /v1/usage/opt-in` — persist the authenticated user's telemetry preference.
+    ///
+    /// The DELIBERATE-CHOICE form: writes unconditionally, because an explicit
+    /// answer from the onboarding prompt or the settings toggle must always win.
     pub async fn post_telemetry_opt_in(&self, enabled: bool) -> Result<(), VaultClientError> {
+        self.post_telemetry_opt_in_opts(enabled, false, None, None)
+            .await
+    }
+
+    /// `POST /v1/usage/opt-in` with an optional "only if never answered" guard.
+    ///
+    /// `only_if_unset` is for REPLAYING an answer the user already gave, where
+    /// the cached copy may be stale. The server then writes only while the
+    /// consent has never been recorded, so a real opt-out made from another
+    /// device can never be clobbered. Losing that race answers 200 with
+    /// `applied: false` — a success, because someone recorded a real answer
+    /// first and it stands.
+    ///
+    /// `surface` and `consent_version` are the answer's provenance: which
+    /// surface produced it (`onboarding`/`settings`) and which wording the
+    /// person was shown. They are forwarded to the server as `surface` and
+    /// `consentVersion`; the server accepts them and is forward-compatible when
+    /// they are absent.
+    pub async fn post_telemetry_opt_in_opts(
+        &self,
+        enabled: bool,
+        only_if_unset: bool,
+        surface: Option<&str>,
+        consent_version: Option<u32>,
+    ) -> Result<(), VaultClientError> {
+        let mut payload = serde_json::Map::new();
+        payload.insert("enabled".into(), serde_json::json!(enabled));
+        if only_if_unset {
+            payload.insert("onlyIfUnset".into(), serde_json::json!(true));
+        }
+        if let Some(surface) = surface {
+            payload.insert("surface".into(), serde_json::json!(surface));
+        }
+        if let Some(version) = consent_version {
+            payload.insert("consentVersion".into(), serde_json::json!(version));
+        }
+        let payload = serde_json::Value::Object(payload);
         let resp = self
             .client
             .post(format!("{}{}", self.base_url, "/v1/usage/opt-in"))
             .bearer_auth(&self.auth_token)
-            .json(&serde_json::json!({ "enabled": enabled }))
+            .json(&payload)
             .send()
             .await?;
         let status = resp.status();
@@ -1286,5 +1380,101 @@ mod tests {
             .unwrap();
         assert_eq!(cfg.sync_mode, "shared");
         assert!(!cfg.is_default);
+    }
+
+    #[tokio::test]
+    async fn post_telemetry_opt_in_carries_surface_and_consent_version() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/usage/opt-in"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        client(&server.uri())
+            .post_telemetry_opt_in_opts(true, false, Some("onboarding"), Some(1))
+            .await
+            .unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert_eq!(body["enabled"], json!(true));
+        assert_eq!(body["surface"], json!("onboarding"));
+        assert_eq!(body["consentVersion"], json!(1));
+        // A deliberate answer never carries the self-heal guard.
+        assert!(body.get("onlyIfUnset").is_none());
+    }
+
+    #[tokio::test]
+    async fn post_telemetry_opt_in_omits_absent_provenance() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/usage/opt-in"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        // The convenience wrapper sends no provenance.
+        client(&server.uri())
+            .post_telemetry_opt_in(false)
+            .await
+            .unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert_eq!(body["enabled"], json!(false));
+        assert!(body.get("surface").is_none());
+        assert!(body.get("consentVersion").is_none());
+        assert!(body.get("onlyIfUnset").is_none());
+    }
+
+    #[tokio::test]
+    async fn get_telemetry_opt_in_parses_provenance_fields() {
+        // US-003 AC5: the GET response now carries provenance the settings
+        // screen renders — consentVersion, source, answeredBy, stale.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/usage/opt-in"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({
+                "enabled": false,
+                "updatedAt": "2026-07-27T10:00:00Z",
+                "unset": false,
+                "personUid": "prs_abc",
+                "consentVersion": 1,
+                "source": "settings",
+                "answeredBy": "sub-A",
+                "stale": false,
+            })))
+            .mount(&server)
+            .await;
+
+        let resp = client(&server.uri()).get_telemetry_opt_in().await.unwrap();
+        assert!(!resp.enabled);
+        assert_eq!(resp.updated_at.as_deref(), Some("2026-07-27T10:00:00Z"));
+        assert_eq!(resp.consent_version, Some(1));
+        assert_eq!(resp.source.as_deref(), Some("settings"));
+        assert_eq!(resp.answered_by.as_deref(), Some("sub-A"));
+        assert_eq!(resp.stale, Some(false));
+    }
+
+    #[tokio::test]
+    async fn get_telemetry_opt_in_tolerates_absent_provenance() {
+        // An older server omits the new fields entirely; they must degrade to
+        // None rather than fail to deserialize.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/usage/opt-in"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({ "enabled": true })))
+            .mount(&server)
+            .await;
+
+        let resp = client(&server.uri()).get_telemetry_opt_in().await.unwrap();
+        assert!(resp.enabled);
+        assert_eq!(resp.consent_version, None);
+        assert_eq!(resp.source, None);
+        assert_eq!(resp.answered_by, None);
+        assert_eq!(resp.stale, None);
     }
 }

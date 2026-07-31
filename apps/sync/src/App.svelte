@@ -18,12 +18,29 @@
   import { conflictStore, type ConflictFile } from './stores/conflicts';
   import { transferCountDelta } from './lib/transfer-count';
   import { effectiveTotalFiles as computeEffectiveTotalFiles } from './lib/effective-total-files';
-  import { shouldSkipSignIn } from './lib/auth';
+  import {
+    isExpectedUnauthenticatedError,
+    shouldSkipSignIn,
+  } from './lib/auth';
   import { shouldRecheckAuthOnFocus } from './lib/authRecheckGate';
   import { isOnboardingState, type LifecycleState } from './lib/lifecycle';
   import { friendlyCompanyLabel } from './lib/company-label';
   import { ListenerRegistry } from './lib/listener-registry';
   import type { Workspace, WorkspacesResult } from './lib/workspaces';
+  import type { Channel } from './lib/channels';
+  import { ChannelUnreadTracker } from './lib/channelUnreadTracker';
+  import { UnreadSummaryTracker } from './lib/unreadSummaryTracker';
+  import { TrayMessageBadgePublisher } from './lib/trayMessageBadge';
+  import { RecordingActionAckCoordinator } from './lib/recordingActionAck';
+  import {
+    BannerActionRouter,
+    type BannerActionEvent,
+    type NotificationActionKind,
+  } from './lib/bannerActionRouter';
+  import {
+    surfaceNativeNotificationRetry,
+    type NativeNotificationRecovery,
+  } from './lib/nativeNotificationRecovery';
   import { loadMeetingDetectEligible } from './lib/permissionState.svelte';
   import { buildClaudeCodeUrl } from './lib/claude-code-link';
   import { emitDesktopTelemetry } from './lib/desktop-telemetry';
@@ -38,6 +55,8 @@
     clearStopWatchdog,
     resolveStopTimeout,
   } from './lib/stopWatchdog';
+  import { TELEMETRY_CONSENT_VERSION } from './lib/consent-version';
+  import { markConsentRepromptShown } from './lib/onboarding-telemetry';
   import './styles/popover.css';
 
   interface Config {
@@ -70,6 +89,12 @@
   let expiresAt = $state('');
   let checking = $state(true);
   let lifecycleState = $state<string | null>(null);
+  // US-005: when the server reports this person's recorded consent as stale
+  // (pre-versioned, administrative, or below the current version), the blocking
+  // consent step is shown once. `null` means no re-prompt is due; otherwise it
+  // carries the `prs_*` the "shown once" guard is keyed to. Server-authoritative
+  // and fail-quiet: an unreachable server leaves this null and never blocks.
+  let consentReprompt = $state<{ personUid: string } | null>(null);
   let syncState = $state<'idle' | 'syncing' | 'error' | 'conflict' | 'setup-needed' | 'auth-error'>('idle');
   // True while a manual "Sync Now" owns the progress UI — its richer
   // stdout-driven stream (fanout-aware) drives the card. Gates out the
@@ -201,6 +226,26 @@
     pendingRequests: 0,
     channelUnread: 0,
   });
+  const messagesUnreadCount = $derived(
+    Math.max(0, unreadSummary.unreadDms) +
+      Math.max(0, unreadSummary.pendingRequests) +
+      Math.max(0, unreadSummary.channelUnread),
+  );
+  const trayMessageBadgePublisher = new TrayMessageBadgePublisher(
+    (count) => invoke<void>('set_tray_message_badge', { count }),
+    (error) => console.error('set_tray_message_badge failed:', error),
+  );
+  const channelUnreadTracker = new ChannelUnreadTracker();
+  const unreadSummaryTracker = new UnreadSummaryTracker();
+  const CHANNEL_UNREAD_RETRY_MS = 1_000;
+  let channelUnreadRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  let channelUnreadDisposed = false;
+
+  $effect(() => {
+    void trayMessageBadgePublisher.publish(
+      authenticated ? messagesUnreadCount : 0,
+    );
+  });
 
   // Memberships drive the company picker in the active-meetings row.
   // Loaded once on mount (same source as MeetingsWindow's URL-invite
@@ -267,6 +312,7 @@
     companyUserSet?: boolean;
   }
   let activeMeetings = $state<ActiveMeeting[]>([]);
+  const recordingActionAcks = new RecordingActionAckCoordinator();
 
   function upsertActiveMeeting(m: ActiveMeeting) {
     const idx = activeMeetings.findIndex((x) => x.windowId === m.windowId);
@@ -300,7 +346,7 @@
       : null;
   }
 
-  async function handleStartRecording(windowId: string) {
+  async function handleStartRecording(windowId: string, throwOnError = false) {
     updateActiveMeeting(windowId, { state: 'starting', error: undefined });
     // Resolve the company at START time, not just whatever was frozen on
     // the row at detection. The detection may have fired before the
@@ -319,20 +365,27 @@
       updateActiveMeeting(windowId, { companyUid });
     }
     try {
-      const recordingId = await invoke<string>('start_recording', {
-        windowId,
-        companyUid,
+      await recordingActionAcks.start(windowId, async () => {
+        const recordingId = await invoke<string>('start_recording', {
+          windowId,
+          companyUid,
+        });
+        updateActiveMeeting(windowId, { recordingId });
+        return recordingId;
       });
-      updateActiveMeeting(windowId, { recordingId });
-      // The actual flip to `recording` happens on the `recording:started`
-      // event listener below — that confirms the SDK accepted the start,
-      // not just that the bridge dispatched it.
+      // Resolution means BOTH bridge dispatch and the matching
+      // `recording:started` lifecycle event completed. Concurrent clicks and
+      // post-timeout retries share the same semantic operation by window id.
     } catch (err) {
       console.error('start_recording failed:', err);
       updateActiveMeeting(windowId, {
         state: 'error',
         error: typeof err === 'string' ? err : String(err),
       });
+      // Most meeting surfaces render the row-level error above and intentionally
+      // remain fire-and-forget. The acknowledged notification path opts into a
+      // rejection so its banner/widget row cannot disappear on a failed start.
+      if (throwOnError) throw err;
     }
   }
 
@@ -436,18 +489,26 @@
   // clicks and lets the button show a spinner. On macOS the process usually
   // terminates before the promise resolves, so this rarely flips back.
   let updateInstalling = $state(false);
+  // Last self-update failure. The menubar popover owns the visible recovery
+  // control, while App owns this state because it invokes the native updater.
+  let updateInstallError = $state<string | null>(null);
+  // If even the compact native-action Retry banner cannot be created, retain
+  // the failed action here until its in-popover retry succeeds.
+  let notificationActionRecovery = $state<NativeNotificationRecovery | null>(
+    null,
+  );
+  let notificationActionRetrying = $state(false);
+  let notificationActionRecoveryGeneration = 0;
 
-  // Master automatic-updates switch (`autoUpdate` pref, default ON). When on,
-  // the app installs updates silently without asking: the menubar app itself
-  // (self-update + restart, below) and hq-core (drift-safe rescue, below). The
-  // `hq` CLI auto-installer gates on the same pref in Rust
-  // (`hq_cli_update::auto_update_enabled`). Loaded on mount + refreshed on
-  // focus so flipping the Settings toggle takes effect without a relaunch.
+  // Master automatic-updates switch (`autoUpdate` pref, default ON). Native
+  // Rust background workers own the app and CLI installs so they cannot miss a
+  // hidden-WebView event; this surface owns the hq-core drift-safe rescue below.
+  // Loaded on mount + refreshed on focus so flipping the Settings toggle takes
+  // effect without a relaunch.
   let autoUpdate = $state(true);
-  // Session dedup so a failed silent install doesn't hammer the same version
-  // (a fresh 6h check / next launch retries). Plain (non-reactive) `let` so
-  // read/writing them inside the auto-install effects never re-triggers them.
-  let autoAppUpdatedVersion: string | null = null;
+  // Session dedup so a failed Core rescue doesn't hammer the same version (a
+  // fresh 6h check / next launch retries). Plain (non-reactive) `let` so
+  // reading/writing it inside the auto-install effect never re-triggers it.
   let autoCoreUpdatedVersion: string | null = null;
 
   // hq CLI updater state — populated by `hq-cli-update:available` from the
@@ -593,23 +654,115 @@
     }
   }
 
-  // Track the pending connection-request count once on mount. Messaging UI now
-  // lives in the desktop view, so the menubar no longer renders an unread badge;
-  // this count is kept only so the incoming-request listeners below can surface
-  // a native "wants to connect" banner. Errors degrade to the zeroed default.
+  interface ChannelsUnreadResponse {
+    channels?: Channel[];
+  }
+
+  function applyChannelUnread(channelId: string, unread: number): void {
+    if (!authenticated) return;
+    unreadSummary = {
+      ...unreadSummary,
+      channelUnread: channelUnreadTracker.applyEvent(channelId, unread),
+    };
+  }
+
+  function clearChannelUnreadRetry(): void {
+    if (channelUnreadRetryTimer === null) return;
+    clearTimeout(channelUnreadRetryTimer);
+    channelUnreadRetryTimer = null;
+  }
+
+  function resetUnreadSummary(): void {
+    clearChannelUnreadRetry();
+    unreadSummaryTracker.reset();
+    channelUnreadTracker.reset();
+    unreadSummary = {
+      unreadDms: 0,
+      pendingRequests: 0,
+      channelUnread: 0,
+    };
+  }
+
+  function scheduleChannelUnreadRetry(): void {
+    if (
+      !authenticated ||
+      channelUnreadDisposed ||
+      channelUnreadTracker.hasCompleteSnapshot() ||
+      channelUnreadRetryTimer !== null
+    ) return;
+    channelUnreadRetryTimer = setTimeout(() => {
+      channelUnreadRetryTimer = null;
+      if (authenticated && !channelUnreadDisposed) void loadChannelUnreadCount();
+    }, CHANNEL_UNREAD_RETRY_MS);
+  }
+
+  async function loadChannelUnreadCount(): Promise<void> {
+    if (!authenticated || channelUnreadDisposed) return;
+    const snapshotToken = channelUnreadTracker.beginSnapshot();
+    try {
+      const response = await invoke<ChannelsUnreadResponse | null>('list_channels');
+      if (!authenticated || channelUnreadDisposed) {
+        channelUnreadTracker.abandonSnapshot(snapshotToken);
+        return;
+      }
+      const channelUnread = channelUnreadTracker.commitSnapshot(
+        snapshotToken,
+        response?.channels ?? [],
+      );
+      if (channelUnread === null) {
+        scheduleChannelUnreadRetry();
+        return;
+      }
+      clearChannelUnreadRetry();
+      unreadSummary = {
+        ...unreadSummary,
+        channelUnread,
+      };
+    } catch (err) {
+      channelUnreadTracker.abandonSnapshot(snapshotToken);
+      if (!authenticated || channelUnreadDisposed) return;
+      // Channels are additive to the badge. Preserve the last-known aggregate
+      // when their endpoint is temporarily unavailable.
+      if (!isExpectedUnauthenticatedError(err)) {
+        console.error('list_channels unread summary failed:', err);
+      }
+      scheduleChannelUnreadRetry();
+    }
+  }
+
+  // Reconcile the menu-bar Messages count from the existing DM/request summary
+  // and the existing channel list. There is still no independent poller:
+  // startup, popover focus, and the established realtime events drive refreshes.
   async function loadUnreadSummary() {
+    if (!authenticated) {
+      resetUnreadSummary();
+      return;
+    }
+    const snapshot = unreadSummaryTracker.beginSnapshot();
     try {
       const s = await invoke<{ unreadDms: number; pendingRequests: number }>(
         'get_unread_summary',
       );
+      if (!authenticated) return;
+      const reconciled = unreadSummaryTracker.commitSnapshot(
+        snapshot,
+        {
+          unreadDms: s.unreadDms ?? 0,
+          pendingRequests: s.pendingRequests ?? 0,
+        },
+        unreadSummary,
+      );
+      if (reconciled === null) return;
       unreadSummary = {
-        unreadDms: s.unreadDms ?? 0,
-        pendingRequests: s.pendingRequests ?? 0,
+        ...reconciled,
         channelUnread: unreadSummary.channelUnread,
       };
     } catch (err) {
-      console.error('get_unread_summary failed:', err);
+      if (authenticated && !isExpectedUnauthenticatedError(err)) {
+        console.error('get_unread_summary failed:', err);
+      }
     }
+    if (authenticated) await loadChannelUnreadCount();
   }
 
   // Unified "Update" action — dispatches to the right rescue command based
@@ -766,6 +919,11 @@
   }
 
   async function handleSignOut() {
+    // Invalidate every in-flight frontend snapshot before waiting on backend
+    // token deletion, and ignore any late native events while signed out.
+    authenticated = false;
+    expiresAt = '';
+    resetUnreadSummary();
     // Clear the persisted Cognito tokens (file + in-memory cache) in the backend
     // so the app doesn't silently re-authenticate on the next launch — a
     // frontend-only flag left the token file on disk. We reset the UI to the
@@ -776,8 +934,6 @@
     } catch (err) {
       console.error('Sign out: failed to clear stored tokens', err);
     }
-    authenticated = false;
-    expiresAt = '';
   }
 
   async function handleResolveConflict(path: string, strategy: 'keep-local' | 'keep-remote') {
@@ -896,9 +1052,10 @@
     }
   }
 
-  async function handleInstallUpdate() {
+  async function handleInstallUpdate(throwOnError = false) {
     if (updateInstalling) return;
     updateInstalling = true;
+    updateInstallError = null;
     try {
       // Backend re-runs updater.check() inside install_update because
       // tauri_plugin_updater::Update is not Clone — we can't stash the
@@ -908,7 +1065,12 @@
       await invoke('install_update');
     } catch (err) {
       console.error('install_update failed:', err);
+      updateInstallError = 'Couldn’t install the update. Try again.';
       updateInstalling = false;
+      // Preserve the existing in-popover error state for ordinary callers.
+      // Custom notification actions request propagation so Rust can reject the
+      // original banner_action IPC and leave the Retry affordance mounted.
+      if (throwOnError) throw err;
     }
   }
 
@@ -919,9 +1081,148 @@
       );
       // Backend also emits `update:available` on hit, so the listener
       // picks it up — but set it here too in case the listener races.
-      if (info) updateAvailable = info;
+      if (info) {
+        updateInstallError = null;
+        updateAvailable = info;
+      }
     } catch (err) {
       console.error('check_for_updates failed:', err);
+    }
+  }
+
+  function buildSharedPrompt(evt: any): string {
+    const paths = Array.isArray(evt?.paths) ? evt.paths.join(', ') : '';
+    const note = typeof evt?.note === 'string' && evt.note.trim()
+      ? evt.note.trim()
+      : '(no note)';
+    const sender =
+      typeof evt?.issuerDisplayName === 'string' && evt.issuerDisplayName.trim()
+        ? evt.issuerDisplayName.trim()
+        : 'A teammate';
+    return `${sender} shared these files with me: ${paths}\n\nTheir note: ${note}.`;
+  }
+
+  /**
+   * Execute the real destination operation for both custom and native
+   * notification actions. Unsupported or incomplete payloads reject instead
+   * of being mistaken for success by the acknowledgement bridge.
+   */
+  async function executeNotificationAction(
+    kind: NotificationActionKind,
+    action: string,
+    data: any,
+  ): Promise<void> {
+    if (kind === 'dm') {
+      if (action === 'copy') {
+        const prompt = typeof data?.prompt === 'string' ? data.prompt.trim() : '';
+        if (!prompt) throw new Error('DM prompt is unavailable');
+        await navigator.clipboard.writeText(prompt);
+        return;
+      }
+      if (action === 'open') {
+        if (!data) throw new Error('DM event is unavailable');
+        await invoke('open_dm_detail', { event: data });
+        return;
+      }
+    } else if (kind === 'share') {
+      if (action === 'claude') {
+        const folder = config?.hqFolderPath ?? '';
+        const url = buildClaudeCodeUrl({
+          folder,
+          prompt: buildSharedPrompt(data),
+        });
+        await invoke('open_claude_code_link', { url });
+        return;
+      }
+      if (action === 'copy') {
+        const prompt = buildSharedPrompt(data);
+        if (!Array.isArray(data?.paths) || data.paths.length === 0) {
+          throw new Error('Shared paths are unavailable');
+        }
+        await navigator.clipboard.writeText(prompt);
+        return;
+      }
+      if (action === 'open') {
+        if (!data) throw new Error('Share event is unavailable');
+        await invoke('open_share_detail', { events: [data] });
+        return;
+      }
+    } else if (kind === 'update') {
+      if (action === 'update') {
+        await invoke('show_main_window');
+        await handleInstallUpdate(true);
+        return;
+      }
+      if (action === 'open') {
+        await invoke('show_main_window');
+        return;
+      }
+    } else if (kind === 'meeting') {
+      const windowId = typeof data?.windowId === 'string' ? data.windowId : '';
+      const meetingId = typeof data?.meetingId === 'string' ? data.meetingId : '';
+      if (action === 'record' && windowId) {
+        await handleStartRecording(windowId, true);
+        void invoke('meetings_clear_prompt_badge').catch(() => {});
+        return;
+      }
+      if (action === 'assign' && meetingId) {
+        await invoke('open_meetings_window', { focusMeetingId: meetingId });
+        void invoke('meetings_clear_prompt_badge').catch(() => {});
+        return;
+      }
+      if (action === 'open') {
+        await invoke('show_main_window');
+        void invoke('meetings_clear_prompt_badge').catch(() => {});
+        return;
+      }
+    }
+
+    throw new Error('Unsupported notification action');
+  }
+
+  /**
+   * Native macOS notification actions do not have a mounted row to preserve.
+   * On failure, raise the same custom banner with a safe Retry action so the
+   * user sees recovery rather than a console-only error.
+   */
+  async function showNativeNotificationRetry(
+    kind: 'dm' | 'share',
+    action: string,
+    data: any,
+  ): Promise<void> {
+    const recovery = await surfaceNativeNotificationRetry(
+      { kind, action, data },
+      {
+        showRetryBanner: ({ kind, action, data }) =>
+          invoke('show_action_retry_banner', { kind, action, data }),
+        showMainWindow: () => invoke('show_main_window'),
+        onError: (message, error) => console.error(message, error),
+      },
+    );
+    if (recovery) {
+      notificationActionRecoveryGeneration += 1;
+      notificationActionRecovery = recovery;
+    }
+  }
+
+  async function handleRetryNotificationAction(): Promise<void> {
+    if (!notificationActionRecovery || notificationActionRetrying) return;
+    const recovery = notificationActionRecovery;
+    const recoveryGeneration = notificationActionRecoveryGeneration;
+    notificationActionRetrying = true;
+    try {
+      await executeNotificationAction(
+        recovery.kind,
+        recovery.action,
+        recovery.data,
+      );
+      if (notificationActionRecoveryGeneration === recoveryGeneration) {
+        notificationActionRecovery = null;
+      }
+    } catch (error) {
+      console.error('notification in-app retry failed', error);
+    } finally {
+      notificationActionRetrying = false;
     }
   }
 
@@ -944,6 +1245,7 @@
           //    (transient core.yaml/folder-resolution race) without a relaunch
           // Set is a typed contract in lib/popover-refresh — see its test.
           refreshOnPopoverOpen({ loadWorkspaces, refreshHqCliUpdate, loadHqVersion });
+          if (authenticated) void loadUnreadSummary();
           // Re-read the auto-update pref so a Settings toggle takes effect on
           // the next popover open, not just on relaunch.
           void loadAutoUpdatePref();
@@ -957,6 +1259,27 @@
       await listen('tray:sync-now', () => {
         handleSyncNow();
       })
+    );
+
+    // Exact channel unread snapshots include increases and read/decrement
+    // transitions, so the aggregate and native menu-bar count cannot stick.
+    unlisteners.push(
+      await listen<{ channelId: string; unread: number }>(
+        'channel:unread-changed',
+        (e) => {
+          applyChannelUnread(e.payload.channelId, e.payload.unread);
+        },
+      ),
+    );
+
+    unlisteners.push(
+      await listen<Channel>('channel:updated', (e) => {
+        if (typeof e.payload.unread === 'number') {
+          applyChannelUnread(e.payload.channelId, e.payload.unread);
+        } else {
+          void loadChannelUnreadCount();
+        }
+      }),
     );
 
     unlisteners.push(
@@ -1025,6 +1348,7 @@
         // popover, even though the runner exits with code 0.
         authenticated = false;
         expiresAt = '';
+        resetUnreadSummary();
         await invoke('set_tray_state', { state: 'reauth' });
       })
     );
@@ -1034,6 +1358,7 @@
         syncState = 'auth-error';
         authenticated = false;
         expiresAt = '';
+        resetUnreadSummary();
         await invoke('set_tray_state', { state: 'reauth' });
       })
     );
@@ -1351,9 +1676,17 @@
       await listen<{ version: string; body?: string; date?: string }>(
         'update:available',
         (event) => {
+          updateInstallError = null;
           updateAvailable = event.payload;
         }
       )
+    );
+    unlisteners.push(
+      await listen('update:cleared', () => {
+        updateAvailable = null;
+        updateInstalling = false;
+        updateInstallError = null;
+      })
     );
 
     // --- hq CLI updater event listener ---
@@ -1479,6 +1812,7 @@
       await listen<{ windowId: string; platform: string; startedAt: string }>(
         'recording:started',
         (event) => {
+          recordingActionAcks.started(event.payload.windowId);
           clearStopWatchdog(event.payload.windowId);
           updateActiveMeeting(event.payload.windowId, {
             state: 'recording',
@@ -1491,6 +1825,10 @@
       await listen<{ windowId: string; platform: string; endedAt: string }>(
         'recording:ended',
         (event) => {
+          recordingActionAcks.failed(
+            event.payload.windowId,
+            'Recording ended before startup confirmation.',
+          );
           clearStopWatchdog(event.payload.windowId);
           // Recording over — drop the row. (Future: keep the row for a
           // few seconds showing "Saved" so the user gets confirmation
@@ -1503,10 +1841,12 @@
       await listen<{ cmd: string; windowId: string; message: string }>(
         'recording:error',
         (event) => {
+          const message = `${event.payload.cmd}: ${event.payload.message}`;
+          recordingActionAcks.failed(event.payload.windowId, message);
           clearStopWatchdog(event.payload.windowId);
           updateActiveMeeting(event.payload.windowId, {
             state: 'error',
-            error: `${event.payload.cmd}: ${event.payload.message}`,
+            error: message,
           });
         },
       ),
@@ -1516,6 +1856,10 @@
         'meeting:closed',
         (event) => {
           const { windowId } = event.payload;
+          recordingActionAcks.failed(
+            windowId,
+            'Meeting closed before recording startup confirmation.',
+          );
           // The call ended (host ended it / everyone left) — the SDK's only
           // call-ended signal. Defense-in-depth: if the bridge's auto-stop was
           // missed and this row is still recording (or mid start/stop),
@@ -1686,52 +2030,11 @@
         };
       }>('notification:share-action', async (e) => {
         const { action, event: evt } = e.payload;
-
-        // Shared prompt-template helper. Kept in sync with
-        // ShareDetail.svelte::buildPrompt (which still owns the in-window
-        // "Copy prompt" button). Moving to a shared module is a TODO once
-        // a third consumer appears.
-        const buildPrompt = () => {
-          const pathList = evt.paths.join(', ');
-          const note = evt.note?.trim() || '(no note)';
-          return `${evt.issuerDisplayName} shared these files with me: ${pathList}\n\nTheir note: ${note}.`;
-        };
-
-        if (action === 'claude') {
-          // Body-click → open Claude Code with the templated prompt
-          // pre-filled in the input. Mirrors the pattern used by:
-          //   * OpenInClaudeCodeButton (`lib/claude-code-link.ts`)
-          //   * hq-installer's launch_claude_code_link flow
-          //   * Popover.svelte fixHqCliUpdateInHq CTA
-          //
-          // User feedback 2026-05-26: prefer opening Claude Code over a
-          // bare clipboard copy — the recipient almost always wants to
-          // continue the share in an LLM session, so save them the
-          // paste step.
-          const folder = config?.hqFolderPath ?? '';
-          try {
-            const url = buildClaudeCodeUrl({ folder, prompt: buildPrompt() });
-            await invoke('open_claude_code_link', { url });
-          } catch (err) {
-            console.error('share-notify: open_claude_code_link failed', err);
-          }
-        } else if (action === 'copy') {
-          // Dropdown "Copy prompt" → clipboard write (no app launch).
-          // Intentionally redundant with the body-click → Claude path for
-          // users who already have a Claude session running, are pasting
-          // into a different app, or want the literal text without any
-          // side effects (user direction 2026-05-26).
-          try {
-            await navigator.clipboard.writeText(buildPrompt());
-          } catch (err) {
-            console.error('share-notify: clipboard write failed', err);
-          }
-        } else if (action === 'open') {
-          try {
-            await invoke('open_share_detail', { events: [evt] });
-          } catch (err) {
-            console.error('share-notify: open_share_detail failed', err);
-          }
+        try {
+          await executeNotificationAction('share', action, evt);
+        } catch (err) {
+          console.error('share notification action failed', err);
+          await showNativeNotificationRetry('share', action, evt);
         }
       })
     );
@@ -1759,20 +2062,11 @@
         };
       }>('notification:dm-action', async (e) => {
         const { action, event: dm } = e.payload;
-        if (action === 'copy') {
-          const prompt = dm.prompt?.trim();
-          if (!prompt) return;
-          try {
-            await navigator.clipboard.writeText(prompt);
-          } catch (err) {
-            console.error('dm-notify: clipboard write failed', err);
-          }
-        } else if (action === 'open') {
-          try {
-            await invoke('open_dm_detail', { event: dm });
-          } catch (err) {
-            console.error('dm-notify: open_dm_detail failed', err);
-          }
+        try {
+          await executeNotificationAction('dm', action, dm);
+        } catch (err) {
+          console.error('DM notification action failed', err);
+          await showNativeNotificationRetry('dm', action, dm);
         }
       })
     );
@@ -1787,6 +2081,8 @@
       await listen<{ unreadDms: number; pendingRequests: number }>(
         'dm:unread-summary',
         (e) => {
+          if (!authenticated) return;
+          unreadSummaryTracker.noteDmEvent();
           unreadSummary = {
             unreadDms: e.payload.unreadDms ?? 0,
             // Preserve the last-known request count when the event omits it
@@ -1809,15 +2105,23 @@
     // ("{name} wants to connect") — separate copy from a normal incoming DM.
     unlisteners.push(
       await listen<DmRequest>('dm:request-new', async (e) => {
-        const req = await enrichIncomingRequest(e.payload);
+        if (!authenticated) return;
+        const authEpoch = unreadSummaryTracker.captureAuthEpoch();
+        unreadSummaryTracker.noteRequestEvent();
         // Bump the popover request-count accent immediately (the poll path emits
-        // 0 for requests on dm:unread-summary by design, so we own this count
-        // off the request events).
+        // 0 for requests on dm:unread-summary by design). This must happen
+        // before contact enrichment awaits, otherwise a concurrent summary can
+        // include the request and the later increment double-counts it.
         unreadSummary = {
           unreadDms: unreadSummary.unreadDms,
           pendingRequests: unreadSummary.pendingRequests + 1,
           channelUnread: unreadSummary.channelUnread,
         };
+        const req = await enrichIncomingRequest(e.payload);
+        if (
+          !authenticated ||
+          !unreadSummaryTracker.isAuthEpochCurrent(authEpoch)
+        ) return;
 
         // Distinct native banner — "{name} wants to connect" — so a connection
         // request is visually different from a normal DM banner. Best-effort:
@@ -1839,6 +2143,8 @@
       await listen<{ pairKey: string; state?: string; withPersonUid?: string }>(
         'dm:request-update',
         (e) => {
+          if (!authenticated) return;
+          unreadSummaryTracker.noteRequestEvent();
           // A pending request resolved (accepted / declined / blocked / pruned).
           // Decrement the popover request-count accent (never below zero). The
           // optimistic Pending→active bubble flip and the Requests-list prune
@@ -1854,75 +2160,29 @@
       )
     );
 
-    // --- Unified custom-banner action listener ---
-    // The custom in-app banner (commands/banner.rs) fires ONE event for every
-    // source; we route by `kind`. This is the action path for the custom
-    // banner surface — the native `notification:dm-action` /
-    // `notification:share-action` handlers above still serve the native path
-    // (when `customBanner` is off). `data` is the original source event,
-    // serialized camelCase, so it slots straight into the open_* commands.
-    unlisteners.push(
-      await listen<{ kind: string; action: string; data: any }>(
-        'notification:banner-action',
-        async (e) => {
-          const { kind, action, data } = e.payload;
-          try {
-            if (kind === 'dm') {
-              if (action === 'copy') {
-                const prompt = (data?.prompt ?? '').trim();
-                if (prompt) await navigator.clipboard.writeText(prompt);
-              } else if (action === 'open') {
-                await invoke('open_dm_detail', { event: data });
-              }
-            } else if (kind === 'share') {
-              if (action === 'open') {
-                await invoke('open_share_detail', { events: [data] });
-              } else if (action === 'copy') {
-                const paths = Array.isArray(data?.paths) ? data.paths.join(', ') : '';
-                if (paths) await navigator.clipboard.writeText(paths);
-              }
-            } else if (kind === 'update') {
-              if (action === 'update') {
-                // The update banner's "Update now" chip must land the user on
-                // the popover's in-app update banner AND start the install there
-                // via the SAME guarded path the in-app Install button uses — so
-                // it flips to "Installing…" with dedupe + error handling. A bare
-                // invoke('install_update') here installed invisibly: the popover
-                // never opened and updateInstalling never flipped, so it read as
-                // "nothing happened" until the app abruptly restarted.
-                await invoke('show_main_window');
-                await handleInstallUpdate();
-              } else if (action === 'open') {
-                await invoke('show_main_window');
-              }
-            } else if (kind === 'meeting') {
-              // Mirrors the native `notification:meeting-action` handler:
-              // record → start recording the detected window; open → focus the
-              // popover (active-meetings row). Either way clear the prompt badge.
-              const windowId = data?.windowId ?? '';
-              const meetingId = data?.meetingId ?? '';
-              if (action === 'record' && windowId) {
-                await handleStartRecording(windowId);
-                invoke('meetings_clear_prompt_badge').catch(() => {});
-              } else if (action === 'assign' && meetingId) {
-                await invoke('open_meetings_window', { focusMeetingId: meetingId });
-                invoke('meetings_clear_prompt_badge').catch(() => {});
-              } else if (action === 'open') {
-                await invoke('show_main_window');
-                invoke('meetings_clear_prompt_badge').catch(() => {});
-              }
-            }
-          } catch (err) {
-            console.error('banner-action failed', kind, action, err);
-          }
-        }
-      )
-    );
   }
+
+  // Install the critical ACK route independently and before the broad tray
+  // listener bundle. Rust accepts banner actions only after this listener has
+  // completed its explicit readiness handshake.
+  $effect(() => {
+    const router = new BannerActionRouter({
+      listen: (event, handler) => listen<BannerActionEvent>(event, handler),
+      invoke: (command, args) => invoke(command, args),
+      execute: ({ kind, action, data }) =>
+        executeNotificationAction(kind, action, data),
+      onError: (message, error) => console.error(message, error),
+    });
+    void router.start();
+    return () => {
+      void router.dispose();
+    };
+  });
 
   $effect(() => {
     // Performance: mark app init
     performance.mark('app-init');
+    channelUnreadDisposed = false;
 
     checkAuth();
     loadConfig();
@@ -1933,7 +2193,6 @@
     // open instead of waiting 30s for the bg checker.
     loadCoreState();
     loadAutoUpdatePref();
-    loadUnreadSummary();
     const listenerRegistry = new ListenerRegistry();
     void setupTrayListeners(listenerRegistry).catch((err) => {
       // A failed registration must not turn into an unhandled rejection.
@@ -1966,29 +2225,16 @@
         meetingsEnabled = false;
       });
 
-    return () => listenerRegistry.dispose();
+    return () => {
+      channelUnreadDisposed = true;
+      clearChannelUnreadRetry();
+      recordingActionAcks.dispose();
+      listenerRegistry.dispose();
+    };
   });
 
-  // ── Silent auto-update (master `autoUpdate` pref) ──────────────────────────
-  // Silent app self-update: when auto-update is on and the background checker
-  // reports a newer version, install it without asking. Deferred while a sync
-  // is running — never yank the app out mid-sync; the effect re-runs when
-  // `syncState` flips back to idle. Deduped by version so a failed install
-  // (e.g. transient network) doesn't hammer; the 6h re-check / next launch
-  // retries. `updateInstalling` blocks re-entry (and on macOS the process is
-  // usually replaced before it flips back). `handleInstallUpdate` is the same
-  // guarded path the in-app Install button uses.
-  $effect(() => {
-    if (!autoUpdate) return;
-    const info = updateAvailable;
-    if (!info || updateInstalling) return;
-    if (syncState === 'syncing') return;
-    if (autoAppUpdatedVersion === info.version) return;
-    autoAppUpdatedVersion = info.version;
-    void handleInstallUpdate();
-  });
-
-  // Silent hq-core update: when auto-update is on and the user is version-behind
+  // ── Silent hq-core update (master `autoUpdate` pref) ───────────────────────
+  // When auto-update is on and the user is version-behind
   // on an eligible channel, run the drift-safe rescue in the background (edits
   // to locked core files are preserved as `personal/` overrides — nothing is
   // destroyed). Only fires on `versionBehind` (a genuine new release), NOT on
@@ -2068,6 +2314,59 @@
     } finally {
       checking = false;
     }
+    if (authenticated) void loadUnreadSummary();
+    else resetUnreadSummary();
+    // US-005: once signed in and NOT in first-run onboarding, ask the server
+    // whether this person's recorded consent is stale and should be re-asked.
+    // Non-blocking and fail-quiet — the Popover renders immediately; if a
+    // re-prompt is due it swaps in on the next tick.
+    if (authenticated && !isOnboardingState(lifecycleState)) {
+      void checkConsentReprompt();
+    }
+  }
+
+  /**
+   * US-005: query the server-authoritative re-prompt decision and, if due,
+   * arm the blocking consent step. Fail-quiet: any error (unreachable server,
+   * no token) leaves `consentReprompt` null so the app is never blocked, and we
+   * simply try again on the next launch.
+   */
+  async function checkConsentReprompt() {
+    try {
+      const status = await invoke<{ shouldReprompt: boolean; personUid: string | null }>(
+        'consent_reprompt_status',
+        { consentVersion: TELEMETRY_CONSENT_VERSION },
+      );
+      if (status.shouldReprompt && status.personUid) {
+        // Finding #8: write the "shown once" guard the moment the prompt is
+        // DISPLAYED, not only after the person answers or dismisses. Otherwise
+        // closing or crashing after it appears re-shows it next launch. The
+        // guard write is awaited BEFORE arming, and a write FAILURE must not
+        // silently cause a repeat: if it did not persist, we do not display the
+        // prompt this launch (we simply try again next launch, where the guard
+        // write can be retried) rather than showing an unguarded prompt that
+        // would nag every launch.
+        const persisted = await markConsentRepromptShown(
+          TELEMETRY_CONSENT_VERSION,
+          status.personUid,
+        );
+        if (!persisted) {
+          console.warn(
+            'consent reprompt guard did not persist; deferring the prompt to a later launch',
+          );
+          return;
+        }
+        consentReprompt = { personUid: status.personUid };
+      }
+    } catch (err) {
+      console.warn('consent reprompt check failed (non-fatal):', err);
+    }
+  }
+
+  async function handleConsentRepromptFinish() {
+    // The person answered or dismissed; the guard is persisted server/local-side.
+    // Return to the normal popover and refresh consent-dependent surfaces.
+    consentReprompt = null;
   }
 
   async function handleOnboardingFinish() {
@@ -2078,11 +2377,13 @@
 
   async function handleAuthSuccess(auth: { authenticated: boolean; expiresAt: string }) {
     const shouldResumeSync = syncState === 'auth-error';
+    resetUnreadSummary();
     authenticated = auth.authenticated;
     expiresAt = auth.expiresAt;
     syncState = 'idle';
     syncErrorMessage = '';
     await invoke('set_tray_state', { state: 'idle' });
+    void loadUnreadSummary();
     if (shouldResumeSync) {
       await handleSyncNow();
     }
@@ -2098,6 +2399,15 @@
     <Onboarding
       state={(lifecycleState ?? 'NeedsInstall') as LifecycleState}
       onfinish={handleOnboardingFinish}
+    />
+  {:else if authenticated && consentReprompt}
+    <!-- US-005: blocking re-prompt for a stale/administrative/pre-versioned
+         consent record. Same consent UI as onboarding, answered exactly once. -->
+    <Onboarding
+      state="SteadyState"
+      mode="reprompt"
+      repromptPersonUid={consentReprompt.personUid}
+      onfinish={handleConsentRepromptFinish}
     />
   {:else if authenticated}
     <Popover
@@ -2123,13 +2433,18 @@
       {showConflictModal}
       conflictCount={syncConflictCount}
       conflictCompany={syncConflictCompany}
+      {messagesUnreadCount}
       {updateAvailable}
       {updateInstalling}
+      {updateInstallError}
+      {notificationActionRecovery}
+      {notificationActionRetrying}
       onsync={handleSyncNow}
       onresolve={handleResolveConflict}
       onopen={handleOpenInEditor}
       ondismissconflicts={handleDismissConflicts}
       oninstallupdate={handleInstallUpdate}
+      onretrynotificationaction={handleRetryNotificationAction}
       bindStatsRefresh={(fn) => (syncStatsRefresh = fn)}
     />
   {:else}

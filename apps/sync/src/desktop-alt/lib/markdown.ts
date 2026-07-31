@@ -4,19 +4,22 @@
  * Choice: rather than pull in a markdown dependency (`marked` + a DOM
  * sanitizer) into this Tauri webview — which would add bundle weight and a
  * `dangerouslySetInnerHTML`-equivalent surface that needs CSP carve-outs — we
- * implement the document constructs used by HQ knowledge files by hand. The output
- * is built from HTML-escaped text and a fixed set of safe tags (headings,
- * paragraphs, lists, code, blockquote, links, bold/italic), so there is no path
- * for raw HTML in the source README to reach the DOM: every `<`/`>`/`&` in user
- * content is escaped *before* any markup is emitted, and the only attributes we
- * ever produce are fixed accessibility attributes plus validated `href`/`src`
- * values. No `eval`, no raw source HTML, no external libs.
+ * implement the document constructs used by HQ knowledge files by hand. The
+ * output is built from escaped text and a fixed set of safe tags. A narrow
+ * README-oriented HTML subset (`p`/`div` alignment, `img`, `br`, and
+ * `details`/`summary`) is parsed and rebuilt from validated values; raw source
+ * HTML is never passed through. The only attributes emitted are fixed
+ * accessibility attributes, safe presentation values, and validated `href`
+ * values. Inline image markup degrades to its alt text so the webview never
+ * performs a renderer-side image request. No `eval`, no arbitrary source HTML,
+ * no external libs.
  *
  * Supported: ATX + Setext headings, paragraphs and hard line breaks, unordered,
  * ordered, and GFM task lists, fenced/indented code, inline code, bold, italic,
- * strikethrough, links, images, autolinks, blockquotes, horizontal rules, and
- * GFM tables. Unsupported constructs degrade to escaped plain text — never raw
- * HTML.
+ * strikethrough, links, image fallbacks, autolinks, wikilink labels,
+ * blockquotes, horizontal rules, and GFM tables, plus the sanitized README HTML
+ * subset above. Unsupported HTML tags are suppressed while their ordinary text
+ * remains visible.
  *
  * Pure (no Svelte runes, no Tauri imports) so it is trivially unit-testable.
  */
@@ -51,11 +54,90 @@ export function safeHref(rawUrl: string): string | null {
   return null;
 }
 
-/** Images use the same strict URL boundary, excluding mailto and anchors. */
-export function safeImageSrc(rawUrl: string): string | null {
-  const src = safeHref(rawUrl);
-  if (src === null || /^(?:mailto:|#)/i.test(src)) return null;
-  return src;
+/**
+ * Images from untrusted Markdown must not initiate a renderer-side file or
+ * network request.
+ *
+ * Unlike links, remote http(s) images are not passive: rendering one tells the
+ * remote server that a specific message or file was opened and exposes network
+ * metadata. Relative Markdown images are not safe to resolve against the Tauri
+ * app origin either: they point at the packaged UI rather than the selected HQ
+ * document and render as broken, oversized frames. Degrade every inline image
+ * to its alt text here. Authorized native image previews use their own
+ * size-capped data URL path outside this renderer.
+ */
+export function safeImageSrc(_rawUrl: string): string | null {
+  return null;
+}
+
+/**
+ * Remove a conventional YAML frontmatter envelope from the start of a
+ * Markdown document. HQ knowledge metadata belongs to the file model, not the
+ * rendered article body, so showing it as a paragraph makes an otherwise valid
+ * document look broken.
+ *
+ * Be deliberately conservative: a leading horizontal rule remains ordinary
+ * Markdown unless it has a closing delimiter and at least one YAML-style key.
+ */
+function withoutYamlFrontmatter(source: string): string {
+  const normalized = source.startsWith('\uFEFF') ? source.slice(1) : source;
+  const lines = normalized.split('\n');
+  if (lines[0]?.trim() !== '---') return normalized;
+
+  const closingIndex = lines
+    .slice(1, 201)
+    .findIndex((line) => /^(?:---|\.\.\.)\s*\r?$/.test(line));
+  if (closingIndex < 0) return normalized;
+
+  const delimiterIndex = closingIndex + 1;
+  const metadata = lines.slice(1, delimiterIndex);
+  const hasYamlKey = metadata.some((line) =>
+    /^[A-Za-z_][A-Za-z0-9_-]*\s*:\s*(?:.*)?\r?$/.test(line),
+  );
+  if (!hasYamlKey) return normalized;
+
+  return lines.slice(delimiterIndex + 1).join('\n').replace(/^\s*\n/, '');
+}
+
+type RawHtmlAttributes = Map<string, string | null>;
+
+/** Parse attributes for whitelisted tags; callers still choose which names survive. */
+function parseRawHtmlAttributes(raw: string): RawHtmlAttributes {
+  const attributes: RawHtmlAttributes = new Map();
+  const pattern =
+    /([a-z_:][a-z0-9:._-]*)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/gi;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(raw)) !== null) {
+    const name = match[1].toLowerCase();
+    if (!attributes.has(name)) {
+      attributes.set(name, match[2] ?? match[3] ?? match[4] ?? null);
+    }
+  }
+  return attributes;
+}
+
+function safeImageDimension(raw: string | null | undefined): string | null {
+  if (raw === null || raw === undefined || !/^\d{1,4}$/.test(raw.trim())) return null;
+  const value = Number(raw);
+  return value > 0 && value <= 4096 ? String(value) : null;
+}
+
+function renderRawHtmlImage(rawAttributes: string): string {
+  const attributes = parseRawHtmlAttributes(rawAttributes);
+  const alt = attributes.get('alt') ?? '';
+  const src = safeImageSrc(attributes.get('src') ?? '');
+  if (src === null) return escapeHtml(alt ?? '');
+
+  const title = attributes.get('title');
+  const width = safeImageDimension(attributes.get('width'));
+  const height = safeImageDimension(attributes.get('height'));
+  const optional = [
+    title ? ` title="${escapeHtml(title)}"` : '',
+    width ? ` width="${width}"` : '',
+    height ? ` height="${height}"` : '',
+  ].join('');
+
+  return `<img src="${escapeHtml(src)}" alt="${escapeHtml(alt ?? '')}" loading="lazy" decoding="async"${optional} />`;
 }
 
 /**
@@ -82,6 +164,15 @@ export function renderInline(text: string): string {
     stash(`<code>${escapeHtml(code.trim())}</code>`),
   );
 
+  // Rebuild the tiny inline HTML subset used by READMEs. Attributes from source
+  // never pass through: images retain only validated src/alt/title/dimensions,
+  // and line breaks are emitted without attributes.
+  work = work.replace(
+    /<img(?=\s|\/?>)((?:[^>"']|"[^"]*"|'[^']*')*)\/?>/gi,
+    (_match, attributes: string) => stash(renderRawHtmlImage(attributes)),
+  );
+  work = work.replace(/<br(?=\s|\/?>)[^<>]*\/?>/gi, () => stash('<br />'));
+
   // Images precede links because image syntax contains link syntax.
   work = work.replace(
     /!\[([^\]]*)\]\(([^)\s]+)(?:\s+["'][^"']*["'])?\)/g,
@@ -90,6 +181,22 @@ export function renderInline(text: string): string {
       if (src === null) return stash(escapeHtml(alt));
       return stash(
         `<img src="${escapeHtml(src)}" alt="${escapeHtml(alt)}" loading="lazy" decoding="async" />`,
+      );
+    },
+  );
+
+  // HQ knowledge uses Obsidian-style wikilinks extensively. The desktop does
+  // not yet expose a canonical ontology router, so render the human label
+  // cleanly instead of leaking `[[path|label]]` syntax or inventing a broken
+  // navigation target.
+  work = work.replace(
+    /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g,
+    (_match, target: string, explicitLabel: string | undefined) => {
+      const cleanTarget = target.trim();
+      const fallbackLabel = cleanTarget.split('/').filter(Boolean).at(-1) ?? cleanTarget;
+      const label = explicitLabel?.trim() || fallbackLabel;
+      return stash(
+        `<span class="markdown-wikilink" title="${escapeHtml(cleanTarget)}">${renderInlineEmphasis(escapeHtml(label))}</span>`,
       );
     },
   );
@@ -123,11 +230,26 @@ export function renderInline(text: string): string {
       ),
   );
 
+  // Suppress all remaining tag-shaped source instead of displaying literal
+  // HTML. The pattern requires whitespace or `>` after the tag name, so
+  // CommonMark autolinks such as <https://example.com> are not mistaken for
+  // elements.
+  work = work.replace(/<\/?[a-z][a-z0-9-]*(?:\s+[^<>]*?)?\s*\/?>/gi, '');
+
   work = renderInlineEmphasis(escapeHtml(work));
-  return work.replace(
-    /\u0000FRAGMENT(\d+)\u0000/g,
-    (_match, index: string) => fragments[Number(index)] ?? '',
-  );
+  // Link labels may themselves contain an earlier stashed fragment (for
+  // example [`hq setup`](https://example.com)). Restore until stable so a
+  // nested code span never leaks a literal "FRAGMENT0" token into the UI.
+  let restored = work;
+  for (let depth = 0; depth <= fragments.length; depth += 1) {
+    const next = restored.replace(
+      /\u0000FRAGMENT(\d+)\u0000/g,
+      (_match, index: string) => fragments[Number(index)] ?? '',
+    );
+    if (next === restored) break;
+    restored = next;
+  }
+  return restored;
 }
 
 /** Apply bold and italic (asterisk or underscore) to already-escaped text. */
@@ -141,7 +263,7 @@ function renderInlineEmphasis(escaped: string): string {
     .replace(/(^|\W)_([^_]+)_(?=\W|$)/g, '$1<em>$2</em>');
 }
 
-/** Split a GFM table row without treating escaped/code-span pipes as columns. */
+/** Split a GFM table row without treating escaped/code/wikilink pipes as columns. */
 function splitTableRow(line: string): string[] {
   let body = line.trim();
   if (body.startsWith('|')) body = body.slice(1);
@@ -151,6 +273,7 @@ function splitTableRow(line: string): string[] {
   let cell = '';
   let escaped = false;
   let codeTicks = 0;
+  let inWikilink = false;
 
   for (let index = 0; index < body.length; index += 1) {
     const character = body[index];
@@ -171,7 +294,19 @@ function splitTableRow(line: string): string[] {
       index += run - 1;
       continue;
     }
-    if (character === '|' && codeTicks === 0) {
+    if (codeTicks === 0 && character === '[' && body[index + 1] === '[') {
+      inWikilink = true;
+      cell += '[[';
+      index += 1;
+      continue;
+    }
+    if (codeTicks === 0 && inWikilink && character === ']' && body[index + 1] === ']') {
+      inWikilink = false;
+      cell += ']]';
+      index += 1;
+      continue;
+    }
+    if (character === '|' && codeTicks === 0 && !inWikilink) {
       cells.push(cell.trim());
       cell = '';
       continue;
@@ -226,6 +361,124 @@ function renderParagraph(lines: string[]): string {
     })
     .join('');
   return `<p>${content}</p>`;
+}
+
+interface RawHtmlContainer {
+  attributes: RawHtmlAttributes;
+  body: string;
+  nextIndex: number;
+}
+
+/**
+ * Consume a complete line-oriented HTML container. Incomplete containers fall
+ * back to ordinary escaped/suppressed text rather than swallowing the document.
+ */
+function consumeRawHtmlContainer(
+  lines: string[],
+  startIndex: number,
+  tag: 'p' | 'div' | 'details',
+): RawHtmlContainer | null {
+  const opening = lines[startIndex].match(
+    new RegExp(`^\\s*<${tag}(?=\\s|>)([^>]*)>([\\s\\S]*)$`, 'i'),
+  );
+  if (!opening) return null;
+
+  const closing = new RegExp(`<\\/${tag}\\s*>`, 'i');
+  const body: string[] = [];
+  let index = startIndex;
+  let remainder = opening[2];
+
+  while (index < lines.length) {
+    const closeAt = remainder.search(closing);
+    if (closeAt >= 0) {
+      body.push(remainder.slice(0, closeAt));
+      return {
+        attributes: parseRawHtmlAttributes(opening[1]),
+        body: body.join('\n'),
+        nextIndex: index + 1,
+      };
+    }
+    body.push(remainder);
+    index += 1;
+    remainder = lines[index] ?? '';
+  }
+
+  return null;
+}
+
+function rawAlignment(attributes: RawHtmlAttributes): 'left' | 'center' | 'right' | null {
+  const alignment = attributes.get('align')?.trim().toLowerCase();
+  return alignment === 'left' || alignment === 'center' || alignment === 'right'
+    ? alignment
+    : null;
+}
+
+function suppressUnsafeRawHtmlChunk(source: string): string {
+  const codeSpans: string[] = [];
+  const protectedSource = source.replace(/(`+)([\s\S]*?)\1/g, (code) => {
+    const index = codeSpans.push(code) - 1;
+    return `\u0000RAWCODE${index}\u0000`;
+  });
+  return protectedSource
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(
+      /<(script|style|iframe)(?=\s|>)[^>]*>[\s\S]*?<\/\1\s*>/gi,
+      '',
+    )
+    .replace(
+      /\u0000RAWCODE(\d+)\u0000/g,
+      (_match, index: string) => codeSpans[Number(index)] ?? '',
+    );
+}
+
+/**
+ * Remove active/hidden raw HTML blocks before Markdown tokenization while
+ * preserving examples inside inline and fenced code.
+ */
+function suppressUnsafeRawHtml(source: string): string {
+  const lines = source.replace(/\r\n?/g, '\n').split('\n');
+  const output: string[] = [];
+  let ordinary: string[] = [];
+  let fence: { marker: string; minimumLength: number } | null = null;
+
+  const flushOrdinary = () => {
+    if (ordinary.length === 0) return;
+    output.push(...suppressUnsafeRawHtmlChunk(ordinary.join('\n')).split('\n'));
+    ordinary = [];
+  };
+
+  for (const line of lines) {
+    if (fence) {
+      output.push(line);
+      const closingFence = new RegExp(
+        `^\\s*${fence.marker}{${fence.minimumLength},}\\s*$`,
+      );
+      if (closingFence.test(line)) fence = null;
+      continue;
+    }
+
+    const openingFence = line.match(/^\s*(`{3,}|~{3,})\s*([a-z0-9_+-]*)\s*$/i);
+    if (openingFence) {
+      flushOrdinary();
+      output.push(line);
+      fence = {
+        marker: openingFence[1][0],
+        minimumLength: openingFence[1].length,
+      };
+      continue;
+    }
+
+    if (/^(?: {4}|\t)/.test(line)) {
+      flushOrdinary();
+      output.push(line);
+      continue;
+    }
+
+    ordinary.push(line);
+  }
+
+  flushOrdinary();
+  return output.join('\n');
 }
 
 interface ListMarker {
@@ -335,8 +588,8 @@ function renderListBlock(lines: string[], startIndex: number): { html: string; n
  * and ordered lists, blockquotes, horizontal rules, and paragraphs. Anything not
  * matched flows into a paragraph of inline-rendered (escaped) text.
  */
-export function renderMarkdown(source: string): string {
-  const lines = source.replace(/\r\n?/g, '\n').split('\n');
+function renderMarkdownCore(source: string): string {
+  const lines = suppressUnsafeRawHtml(source).split('\n');
   const out: string[] = [];
 
   let i = 0;
@@ -350,6 +603,51 @@ export function renderMarkdown(source: string): string {
 
   while (i < lines.length) {
     const line = lines[i];
+    const isIndentedCode = /^(?: {4}|\t)/.test(line);
+
+    // Common README alignment wrapper. The container and its attributes are
+    // rebuilt; arbitrary classes, styles, and event handlers are discarded.
+    const rawParagraph = isIndentedCode
+      ? null
+      : consumeRawHtmlContainer(lines, i, 'p') ??
+        consumeRawHtmlContainer(lines, i, 'div');
+    if (rawParagraph) {
+      flushParagraph();
+      const alignment = rawAlignment(rawParagraph.attributes);
+      const className = alignment ? ` class="markdown-align-${alignment}"` : '';
+      const content = rawParagraph.body
+        .split('\n')
+        .map((part) => part.trim())
+        .filter(Boolean)
+        .join(' ');
+      out.push(`<p${className}>${renderInline(content)}</p>`);
+      i = rawParagraph.nextIndex;
+      continue;
+    }
+
+    // README disclosure block. Only the boolean `open` state survives; summary
+    // contents and the body return through the safe inline/block renderers.
+    const rawDetails = isIndentedCode
+      ? null
+      : consumeRawHtmlContainer(lines, i, 'details');
+    if (rawDetails) {
+      flushParagraph();
+      const summary = rawDetails.body.match(
+        /^\s*<summary(?=\s|>)[^>]*>([\s\S]*?)<\/summary\s*>/i,
+      );
+      const summaryHtml = summary
+        ? `<summary>${renderInline(summary[1].trim())}</summary>`
+        : '';
+      const detailsBody = (summary
+        ? rawDetails.body.slice(summary[0].length)
+        : rawDetails.body
+      ).trim();
+      const bodyHtml = detailsBody ? renderMarkdownCore(detailsBody) : '';
+      const open = rawDetails.attributes.has('open') ? ' open' : '';
+      out.push(`<details${open}>${summaryHtml}${bodyHtml}</details>`);
+      i = rawDetails.nextIndex;
+      continue;
+    }
 
     // Fenced code block: ``` / ~~~, with an optional safe language class.
     const fence = line.match(/^\s*(`{3,}|~{3,})\s*([a-z0-9_+-]*)\s*$/i);
@@ -453,7 +751,7 @@ export function renderMarkdown(source: string): string {
         quote.push(lines[i].replace(/^\s*>\s?/, ''));
         i += 1;
       }
-      out.push(`<blockquote>${renderMarkdown(quote.join('\n'))}</blockquote>`);
+      out.push(`<blockquote>${renderMarkdownCore(quote.join('\n'))}</blockquote>`);
       continue;
     }
 
@@ -482,4 +780,20 @@ export function renderMarkdown(source: string): string {
 
   flushParagraph();
   return out.join('\n');
+}
+
+/**
+ * Render arbitrary Markdown without treating a YAML-shaped prefix as hidden
+ * metadata. Messages and recursive blocks use this lossless entry point.
+ */
+export function renderMarkdown(source: string): string {
+  return renderMarkdownCore(source);
+}
+
+/**
+ * Render one top-level HQ file/knowledge document. Frontmatter is removed once
+ * at this boundary; nested quotes and disclosure bodies remain ordinary text.
+ */
+export function renderMarkdownDocument(source: string): string {
+  return renderMarkdownCore(withoutYamlFrontmatter(source));
 }

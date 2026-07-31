@@ -415,8 +415,8 @@
     border: 1px solid var(--v4-control-border);
     border-radius: var(--v4-radius-popover);
     background: var(--v4-popover);
-    backdrop-filter: var(--v4-glass-filter);
-    -webkit-backdrop-filter: var(--v4-glass-filter);
+    backdrop-filter: var(--v4-glass-filter-popover, var(--v4-glass-filter));
+    -webkit-backdrop-filter: var(--v4-glass-filter-popover, var(--v4-glass-filter));
     box-shadow: var(--v4-shadow-popover), inset 0 1px 0 var(--v4-glass-highlight);
   }
 

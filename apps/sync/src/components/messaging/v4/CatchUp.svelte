@@ -5,7 +5,6 @@
     id: string;
     title: string;
     detail: string;
-    rank?: number;
   }
 
   interface Props {
@@ -33,7 +32,6 @@
     <div class="ranked-list">
       {#each items as item (item.id)}
         <button type="button" class="ranked-card" onclick={() => onopen?.(item)}>
-          <span class="rank">{item.rank ?? ''}</span>
           <span class="text">
             <strong>{sanitizeVisibleIdentifiers(item.title)}</strong>
             <small>{item.detail}</small>
@@ -111,7 +109,6 @@
     display: flex;
     align-items: center;
     min-width: 0;
-    gap: 9px;
     width: 100%;
     padding: 9px 0;
     border: 0;
@@ -133,16 +130,10 @@
     outline-offset: 1px;
   }
 
-  .rank {
-    width: 22px;
-    color: var(--fg-data);
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
-  }
-
   .text {
     display: grid;
     gap: 2px;
+    width: 100%;
     min-width: 0;
   }
 

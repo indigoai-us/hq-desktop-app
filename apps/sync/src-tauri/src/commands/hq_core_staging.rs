@@ -538,10 +538,7 @@ pub async fn run_replace_from_staging() -> Result<RescueRunResult, String> {
     if exit_code == 0 {
         let client = authed_client(&token)?;
         let commit = crate::commands::hq_core_state::persist_remote_baseline(
-            &hq_folder,
-            &client,
-            &repo,
-            "main",
+            &hq_folder, &client, &repo, "main",
         )
         .await
         .map_err(|e| format!("staging update applied but baseline persistence failed: {e}"))?;

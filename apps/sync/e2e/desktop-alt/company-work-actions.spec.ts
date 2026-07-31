@@ -63,7 +63,13 @@ describe('desktop-alt company work actions are functional', () => {
     expect(companyBoardStore).toContain('function shapeBoard(raw: CompanyBoard | null | undefined)');
     expect(companyBoardStore).toContain('raw?.inbox ?? []');
     expect(messages).toContain("invoke<ChannelsResponse | null>('list_channels')");
-    expect(messages).toContain('channels = resp?.channels ?? []');
+    // Null still normalizes to an empty snapshot, then any realtime mutations
+    // that landed during the request are replayed instead of being erased.
+    expect(messages).toContain('const mutationRevision = channelMutationRevision');
+    expect(messages).toContain(
+      'channels = mergeChannelMutations(resp?.channels ?? [], mutationRevision)',
+    );
+    expect(messages).toContain('if (mutation.revision > afterRevision)');
   });
 
   it('wires Deployments find and deploy workflow controls', () => {

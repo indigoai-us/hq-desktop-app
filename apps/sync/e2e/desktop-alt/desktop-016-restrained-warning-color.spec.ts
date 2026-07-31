@@ -96,6 +96,13 @@ describe('DESKTOP-016: restrained warning color', () => {
     }
 
     expect(storyDetail).not.toMatch(/rgba\(\s*245,\s*158,\s*11/i);
+    expect(rule(meetingsAgenda, '.meeting-row.focused')).toContain(
+      'background: var(--v4-active-row)',
+    );
+    expect(rule(meetingsAgenda, '.meeting-row.focused')).toContain(
+      'box-shadow: inset 0 0 0 1px var(--v4-hairline)',
+    );
+    expect(meetingsAgenda).not.toContain('#c9a227');
     expect(rule(agencyTeams, '.waiting')).toContain('color: var(--v4-text-3)');
     expect(agencyTeams.match(/var\(--v4-warn\)/g) ?? []).toHaveLength(1);
     expect(rule(deploymentRow, '.status-dot.paused')).toContain(

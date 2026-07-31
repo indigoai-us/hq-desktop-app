@@ -16,13 +16,13 @@ function normalize(source: string): string {
 }
 
 describe('US-004 / US-001: chrome-free menubar notification panel', () => {
-  it('removes desktop-view CTA, header chrome, and tabs from the popover', () => {
+  it('removes legacy desktop chrome and tabs from the popover', () => {
     const compactSource = normalize(popoverSource);
 
-    // Desktop-view toggle left the menubar (US-001); launcher returns in US-005.
+    // Keep the compact surface free of legacy header/footer chrome. The
+    // explicit text-only desktop launcher lives beside the notification tools.
     expect(compactSource).not.toContain('data-testid="desktop-alt-toggle"');
     expect(compactSource).not.toContain('class="mbp-foot"');
-    expect(compactSource).not.toContain('Open desktop view');
     expect(compactSource).not.toContain('class="mbp-head"');
     expect(compactSource).not.toContain('data-testid="popover-settings-gear"');
     expect(compactSource).not.toContain('data-testid="popover-overflow-button"');
@@ -53,11 +53,15 @@ describe('US-004 / US-001: chrome-free menubar notification panel', () => {
     expect(compactSource).toContain('class="mbp-unread-count"');
   });
 
-  it('offers Open HQ jump to the full desktop window at the inbox route', () => {
-    expect(popoverSource).toContain('data-testid="popover-open-hq"');
-    expect(popoverSource).toContain("open_desktop_alt_window");
-    expect(popoverSource).toContain("route: 'inbox'");
-    expect(popoverSource).not.toContain('Open desktop view');
+  it('offers an explicit jump to the full desktop without forcing an Inbox route', () => {
+    const openDesktopStart = popoverSource.indexOf('async function openDesktop');
+    const openDesktopEnd = popoverSource.indexOf('async function openMessages', openDesktopStart);
+    const openDesktopBody = popoverSource.slice(openDesktopStart, openDesktopEnd);
+
+    expect(popoverSource).toContain('data-testid="popover-open-desktop"');
+    expect(popoverSource).toContain('Open desktop');
+    expect(openDesktopBody).toContain("invoke('open_desktop_alt_window')");
+    expect(openDesktopBody).not.toContain("route: 'inbox'");
     expect(popoverSource).not.toContain('data-testid="desktop-alt-toggle"');
   });
 

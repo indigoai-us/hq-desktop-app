@@ -30,6 +30,17 @@ pub fn setup_lifecycle(app: &AppHandle) {
         .unwrap_or_else(Map::new);
     let (install_completed, first_run_completed, had_machine_id) = menubar_flags(&menubar);
 
+    // Compulsory consent: an installed machine whose consent is unanswered must
+    // be routed back through onboarding, not waved through as an already-set-up
+    // machine (finding #2 — quitting at the consent step bypassed consent). The
+    // `telemetryOptInAnsweredAt` provenance marker is written the moment the
+    // person answers, so its presence is the "consent was answered here" signal.
+    let consent_answered = menubar
+        .get("telemetryOptInAnsweredAt")
+        .and_then(Value::as_str)
+        .map(|s| !s.is_empty())
+        .unwrap_or(false);
+
     let config = match crate::commands::config::read_hq_config_lenient() {
         Ok(config) => config,
         Err(e) => {
@@ -69,6 +80,7 @@ pub fn setup_lifecycle(app: &AppHandle) {
         hq_root_valid,
         has_auth,
         install_in_progress: crate::commands::install_manifest::install_in_progress_from_disk(),
+        consent_answered,
     };
     let verdict = classify_lifecycle(inputs);
 
@@ -101,7 +113,7 @@ pub fn setup_lifecycle(app: &AppHandle) {
     log(
         "lifecycle",
         &format!(
-            "setup_lifecycle: state={} install_completed={} first_run_completed={} had_machine_id={} config_valid={} hq_root_valid={} has_auth={} install_in_progress={} backfill={}",
+            "setup_lifecycle: state={} install_completed={} first_run_completed={} had_machine_id={} config_valid={} hq_root_valid={} has_auth={} install_in_progress={} consent_answered={} backfill={}",
             lifecycle_state_str(verdict.state),
             install_completed,
             first_run_completed,
@@ -110,6 +122,7 @@ pub fn setup_lifecycle(app: &AppHandle) {
             hq_root_valid,
             has_auth,
             inputs.install_in_progress,
+            consent_answered,
             verdict.needs_install_backfill,
         ),
     );

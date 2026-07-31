@@ -2,6 +2,10 @@
   import { invoke } from '@tauri-apps/api/core';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { updateSettings } from '../../lib/settings-mutations';
+  import {
+    resolvePendingUpdateState,
+    type PendingUpdateState,
+  } from '../../lib/notificationFeedData';
   import type { SettingsTab } from '../route';
 
   interface Props {
@@ -17,6 +21,14 @@
     date?: string;
   }
 
+  interface CoreState {
+    channel: 'release' | 'staging';
+    targetVersion: string;
+    localVersion: string | null;
+    versionBehind: boolean;
+    driftReport: { count: number };
+  }
+
   let { version, onOpenSettings, onclose, placement = 'above' }: Props = $props();
 
   /** null = no newer version known; string = latest available from check/event. */
@@ -24,9 +36,27 @@
   /** Transient / install lifecycle beyond the basic available/up-to-date split. */
   let phase = $state<'idle' | 'checking' | 'downloading' | 'ready' | 'error'>('idle');
   let errorMessage = $state<string | null>(null);
-  let autoUpdate = $state(true);
+  // Null means no preference has been confirmed yet. Pending and failed writes
+  // are separate so the last trusted setting survives every retry path.
+  let autoUpdate = $state<boolean | null>(null);
   let autoUpdateLoading = $state(true);
   let autoUpdateSaving = $state(false);
+  let pendingAutoUpdate = $state<boolean | null>(null);
+  let failedAutoUpdate = $state<boolean | null>(null);
+  let autoUpdateLoadError = $state<string | null>(null);
+  let autoUpdateSaveError = $state<string | null>(null);
+  let autoUpdateLoadGeneration = 0;
+  let autoUpdateSaveGeneration = 0;
+  let updateLoadGeneration = 0;
+  let installActionGeneration = 0;
+  let updaterDisposed = false;
+  let coreVersion = $state<string | null>(null);
+  let coreVersionLoading = $state(true);
+  let coreVersionError = $state(false);
+  let coreState = $state<CoreState | null>(null);
+  let coreStateLoading = $state(true);
+  let coreStateError = $state(false);
+  let coreLoadGeneration = 0;
 
   const statusLabel = $derived.by(() => {
     if (phase === 'checking') return 'Checking…';
@@ -39,77 +69,219 @@
 
   const latestDisplay = $derived(latestVersion ?? version);
   const showRestart = $derived(
-    Boolean(latestVersion) && phase !== 'downloading' && phase !== 'checking',
+    Boolean(latestVersion) && phase !== 'checking',
+  );
+  const displayedAutoUpdate = $derived(pendingAutoUpdate ?? autoUpdate ?? false);
+  const coreVersionDisplay = $derived.by(() => {
+    if (coreVersionLoading) return 'Reading…';
+    if (coreVersion) return `v${coreVersion}`;
+    return coreVersionError ? 'Unavailable' : 'Not detected';
+  });
+  const coreStatusLabel = $derived.by(() => {
+    if (coreStateLoading) return 'Checking channel status…';
+    if (coreStateError) return 'Channel status unavailable';
+    if (!coreState) {
+      return coreVersion
+        ? 'Installed locally · Channel status unavailable'
+        : 'HQ folder metadata needs attention';
+    }
+    const channel = coreState.channel === 'staging' ? 'Staging' : 'Release';
+    if (coreState.versionBehind) {
+      return `${channel} · Update available to v${coreState.targetVersion}`;
+    }
+    const driftCount = coreState.driftReport?.count ?? 0;
+    if (driftCount > 0) {
+      return `${channel} · ${driftCount} drifted ${driftCount === 1 ? 'file' : 'files'}`;
+    }
+    return `${channel} · Up to date`;
+  });
+  const checkingAnyUpdate = $derived(
+    phase === 'checking' || coreVersionLoading || coreStateLoading,
   );
 
   $effect(() => {
+    updaterDisposed = false;
     let cancelled = false;
-    let unlisten: UnlistenFn | undefined;
+    let unlistenAvailable: UnlistenFn | undefined;
+    let unlistenCleared: UnlistenFn | undefined;
 
     // Register the listener FIRST (no awaits before it) so an
     // `update:available` fired while other hydration calls are in flight
     // is never missed.
-    void (async () => {
+    const reportListenerError = (reason: unknown) => {
+      console.error(
+        'version-popout: failed to listen for updater state',
+        reason,
+      );
+    };
+    const retainListener = (
+      register: () => Promise<UnlistenFn>,
+      retain: (unlisten: UnlistenFn) => void,
+    ) => {
       try {
-        const fn = await listen<UpdateInfo>('update:available', (event) => {
+        void register()
+          .then((unlisten) => {
+            if (cancelled) {
+              unlisten();
+              return;
+            }
+            retain(unlisten);
+          })
+          .catch(reportListenerError);
+      } catch (reason) {
+        reportListenerError(reason);
+      }
+    };
+
+    retainListener(
+      () =>
+        listen<UpdateInfo>('update:available', (event) => {
           if (cancelled) return;
           const next = event.payload?.version;
           if (!next) return;
+          updateLoadGeneration += 1;
+          // install_update announces the same version again immediately before
+          // downloading it. Preserve that action, but let a different native
+          // version supersede every eventual completion from the older install.
+          const sameInstall =
+            phase === 'downloading' && latestVersion === next;
+          if (!sameInstall) installActionGeneration += 1;
           latestVersion = next;
-          if (phase === 'error') {
+          errorMessage = null;
+          if (phase !== 'downloading') {
             phase = 'idle';
-            errorMessage = null;
           }
-        });
-        if (cancelled) {
-          fn();
-          return;
-        }
-        unlisten = fn;
-      } catch (err) {
-        console.error('version-popout: failed to listen for update:available', err);
-      }
-    })();
+        }),
+      (unlisten) => {
+        unlistenAvailable = unlisten;
+      },
+    );
+    retainListener(
+      () =>
+        listen('update:cleared', () => {
+          if (cancelled) return;
+          updateLoadGeneration += 1;
+          installActionGeneration += 1;
+          latestVersion = null;
+          phase = 'idle';
+          errorMessage = null;
+        }),
+      (unlisten) => {
+        unlistenCleared = unlisten;
+      },
+    );
 
     // Hydrate an update the background checker already found — without
     // this, an update detected before the pop-out opened would read
     // "Up to date" until a manual check.
     void (async () => {
+      const generation = ++updateLoadGeneration;
       try {
-        const pending = await invoke<UpdateInfo | null>('get_pending_update');
-        if (!cancelled && pending?.version) {
-          latestVersion = pending.version;
+        const pending = await invoke<PendingUpdateState | UpdateInfo | null>(
+          'get_pending_update',
+        );
+        if (cancelled || generation !== updateLoadGeneration) return;
+        const resolved = resolvePendingUpdateState(pending);
+        if (resolved.state === 'resolved') {
+          latestVersion = resolved.value?.version ?? null;
         }
       } catch (err) {
+        if (cancelled || generation !== updateLoadGeneration) return;
         console.error('get_pending_update failed:', err);
       }
     })();
 
-    void (async () => {
-      try {
-        const prefs = await invoke<{ autoUpdate?: boolean | null }>('get_settings');
-        if (!cancelled) {
-          autoUpdate = prefs?.autoUpdate ?? true;
-        }
-      } catch {
-        if (!cancelled) autoUpdate = true;
-      } finally {
-        if (!cancelled) autoUpdateLoading = false;
-      }
-    })();
+    void loadAutoUpdate();
+
+    // The installed Core identity is a cheap local read; channel state may
+    // involve a slower scan/network lookup. refreshCoreInfo commits each one
+    // independently so the version never waits behind the state scan.
+    void refreshCoreInfo();
 
     return () => {
       cancelled = true;
-      unlisten?.();
+      updaterDisposed = true;
+      updateLoadGeneration += 1;
+      installActionGeneration += 1;
+      coreLoadGeneration += 1;
+      autoUpdateLoadGeneration += 1;
+      autoUpdateSaveGeneration += 1;
+      unlistenAvailable?.();
+      unlistenCleared?.();
     };
   });
 
+  async function loadAutoUpdate() {
+    const generation = ++autoUpdateLoadGeneration;
+    autoUpdateLoading = true;
+    autoUpdateLoadError = null;
+    try {
+      const prefs = await invoke<{ autoUpdate?: boolean | null }>('get_settings');
+      if (generation !== autoUpdateLoadGeneration) return;
+      autoUpdate = prefs?.autoUpdate ?? true;
+    } catch (err) {
+      if (generation !== autoUpdateLoadGeneration) return;
+      console.error('version-popout: automatic update preference load failed', err);
+      // Preserve a previously trusted value when a refresh fails.
+      autoUpdateLoadError = 'Couldn’t load the automatic update preference.';
+    } finally {
+      if (generation === autoUpdateLoadGeneration) {
+        autoUpdateLoading = false;
+      }
+    }
+  }
+
+  async function refreshCoreInfo() {
+    const generation = ++coreLoadGeneration;
+    coreVersionLoading = true;
+    coreStateLoading = true;
+    coreVersionError = false;
+    coreStateError = false;
+
+    const versionRead = invoke<string | null>('get_hq_version')
+      .then((value) => {
+        if (generation !== coreLoadGeneration) return;
+        coreVersion = value;
+      })
+      .catch((err) => {
+        if (generation !== coreLoadGeneration) return;
+        console.error('version-popout: HQ Core version refresh failed', err);
+        coreVersion = null;
+        coreVersionError = true;
+      })
+      .finally(() => {
+        if (generation === coreLoadGeneration) coreVersionLoading = false;
+      });
+
+    const stateRead = invoke<CoreState | null>('check_core_state')
+      .then((value) => {
+        if (generation !== coreLoadGeneration) return;
+        coreState = value;
+      })
+      .catch((err) => {
+        if (generation !== coreLoadGeneration) return;
+        console.error('version-popout: HQ Core state refresh failed', err);
+        coreState = null;
+        coreStateError = true;
+      })
+      .finally(() => {
+        if (generation === coreLoadGeneration) coreStateLoading = false;
+      });
+
+    await Promise.allSettled([versionRead, stateRead]);
+  }
+
   async function handleCheckForUpdates() {
-    if (phase === 'checking' || phase === 'downloading') return;
+    if (checkingAnyUpdate || phase === 'downloading') return;
+    const generation = ++updateLoadGeneration;
     phase = 'checking';
     errorMessage = null;
     try {
-      const info = await invoke<UpdateInfo | null>('check_for_updates');
+      const [info] = await Promise.all([
+        invoke<UpdateInfo | null>('check_for_updates'),
+        refreshCoreInfo(),
+      ]);
+      if (generation !== updateLoadGeneration) return;
       if (info?.version) {
         latestVersion = info.version;
         phase = 'idle';
@@ -118,6 +290,7 @@
         phase = 'idle';
       }
     } catch (err) {
+      if (generation !== updateLoadGeneration) return;
       console.error('check_for_updates failed:', err);
       errorMessage = 'Check failed';
       phase = 'error';
@@ -126,35 +299,75 @@
 
   async function handleRestartToUpdate() {
     if (phase === 'downloading' || !latestVersion) return;
+    const generation = ++installActionGeneration;
     phase = 'downloading';
     errorMessage = null;
     try {
       // Backend re-runs updater.check() inside install_update; on macOS the
       // process is usually replaced before this promise resolves.
       await invoke('install_update');
+      if (updaterDisposed || generation !== installActionGeneration) return;
       // Returned without restarting — prompt the user to apply.
       phase = 'ready';
     } catch (err) {
+      if (updaterDisposed || generation !== installActionGeneration) return;
       console.error('install_update failed:', err);
       errorMessage = 'Install failed';
       phase = 'error';
+    } finally {
+      // A different-version event keeps the native action visually busy until
+      // its promise settles, then reveals the authoritative newer version. A
+      // cleared event already moved the phase to idle and needs no further write.
+      if (
+        !updaterDisposed &&
+        generation !== installActionGeneration &&
+        phase === 'downloading'
+      ) {
+        phase = 'idle';
+      }
     }
   }
 
-  async function handleToggleAutoUpdate() {
-    if (autoUpdateLoading || autoUpdateSaving) return;
-    const previous = autoUpdate;
-    const next = !autoUpdate;
-    autoUpdate = next;
+  async function saveAutoUpdate(next: boolean) {
+    if (autoUpdateLoading || autoUpdateSaving || autoUpdate === null) return;
+    const trustedValue = autoUpdate;
+    const generation = ++autoUpdateSaveGeneration;
+    pendingAutoUpdate = next;
     autoUpdateSaving = true;
+    autoUpdateSaveError = null;
+    failedAutoUpdate = null;
     try {
       await updateSettings({ autoUpdate: next });
+      if (generation !== autoUpdateSaveGeneration) return;
+      autoUpdate = next;
     } catch (err) {
+      if (generation !== autoUpdateSaveGeneration) return;
       console.error('save_settings (autoUpdate) failed:', err);
-      autoUpdate = previous;
+      autoUpdate = trustedValue;
+      failedAutoUpdate = next;
+      autoUpdateSaveError = 'Couldn’t save automatic updates.';
     } finally {
-      autoUpdateSaving = false;
+      if (generation === autoUpdateSaveGeneration) {
+        pendingAutoUpdate = null;
+        autoUpdateSaving = false;
+      }
     }
+  }
+
+  function handleToggleAutoUpdate(event: Event) {
+    if (autoUpdateLoading || autoUpdateSaving || autoUpdate === null) return;
+    const next = (event.currentTarget as HTMLInputElement).checked;
+    void saveAutoUpdate(next);
+  }
+
+  function retryAutoUpdateLoad() {
+    if (autoUpdateLoading) return;
+    void loadAutoUpdate();
+  }
+
+  function retryAutoUpdateSave() {
+    if (failedAutoUpdate === null) return;
+    void saveAutoUpdate(failedAutoUpdate);
   }
 
   function handleOpenSettings() {
@@ -170,18 +383,44 @@
   role="dialog"
   aria-label="Version and updates"
 >
-  <div class="vp-rows">
-    <div class="vp-row">
-      <span class="vp-label">Current</span>
-      <span class="vp-value mono" data-testid="version-popout-current">v{version}</span>
+  <div class="vp-product">
+    <div class="vp-product-heading">
+      <strong>Desktop app</strong>
+      <span class="vp-kind">APP</span>
     </div>
-    <div class="vp-row">
-      <span class="vp-label">Latest</span>
-      <span class="vp-value mono" data-testid="version-popout-latest">v{latestDisplay}</span>
+    <div class="vp-rows">
+      <div class="vp-row">
+        <span class="vp-label">Installed</span>
+        <span class="vp-value mono" data-testid="version-popout-current">
+          <span data-testid="version-popout-app-current">v{version}</span>
+        </span>
+      </div>
+      <div class="vp-row">
+        <span class="vp-label">Latest</span>
+        <span class="vp-value mono" data-testid="version-popout-latest">v{latestDisplay}</span>
+      </div>
+      <div class="vp-row">
+        <span class="vp-label">Status</span>
+        <span class="vp-status" data-testid="version-popout-status">{statusLabel}</span>
+      </div>
     </div>
-    <div class="vp-row">
-      <span class="vp-label">Status</span>
-      <span class="vp-status" data-testid="version-popout-status">{statusLabel}</span>
+  </div>
+
+  <div class="vp-product core">
+    <div class="vp-product-heading">
+      <strong>HQ Core</strong>
+      <span class="vp-kind core">CORE</span>
+    </div>
+    <div class="vp-rows">
+      <div class="vp-row">
+        <span class="vp-label">Installed</span>
+        <span class="vp-value mono" data-testid="version-popout-core-current">
+          {coreVersionDisplay}
+        </span>
+      </div>
+      <div class="vp-core-status" data-testid="version-popout-core-status">
+        {coreStatusLabel}
+      </div>
     </div>
   </div>
 
@@ -190,10 +429,16 @@
       type="button"
       class="vp-btn"
       data-testid="version-popout-check"
-      disabled={phase === 'checking' || phase === 'downloading'}
+      disabled={checkingAnyUpdate || phase === 'downloading'}
+      aria-busy={checkingAnyUpdate}
       onclick={handleCheckForUpdates}
     >
-      {phase === 'checking' ? 'Checking…' : 'Check for updates'}
+      {#if checkingAnyUpdate}
+        <span class="vp-inline-spinner" aria-hidden="true"></span>
+        Checking app + Core…
+      {:else}
+        Check all updates
+      {/if}
     </button>
 
     {#if showRestart}
@@ -202,29 +447,98 @@
         class="vp-btn vp-btn-primary"
         data-testid="version-popout-restart"
         disabled={phase === 'downloading'}
+        aria-busy={phase === 'downloading'}
         onclick={handleRestartToUpdate}
       >
-        {phase === 'downloading' ? 'Downloading…' : 'Restart to update'}
+        {#if phase === 'downloading'}
+          <span class="vp-inline-spinner" aria-hidden="true"></span>
+          Downloading…
+        {:else}
+          Restart to update
+        {/if}
       </button>
     {/if}
   </div>
 
   <div class="vp-divider" aria-hidden="true"></div>
 
-  <label class="vp-toggle-row">
-    <span class="vp-toggle-copy">
-      <strong>Automatic updates</strong>
-      <small>Install app updates in the background</small>
-    </span>
-    <input
-      type="checkbox"
-      data-testid="version-popout-auto-toggle"
-      checked={autoUpdate}
-      disabled={autoUpdateLoading || autoUpdateSaving}
-      onchange={handleToggleAutoUpdate}
-      aria-label="Automatic updates"
-    />
-  </label>
+  <div class="vp-toggle-block" aria-busy={autoUpdateLoading || autoUpdateSaving}>
+    <div class="vp-toggle-row">
+      <label
+        class="vp-toggle-copy"
+        for="version-popout-auto-toggle"
+        id="version-popout-auto-description"
+      >
+        <strong>Automatic updates</strong>
+        <small>Install app, HQ Core, and CLI updates in the background</small>
+      </label>
+      {#if autoUpdate !== null}
+        <input
+          id="version-popout-auto-toggle"
+          type="checkbox"
+          data-testid="version-popout-auto-toggle"
+          checked={displayedAutoUpdate}
+          disabled={autoUpdateLoading || autoUpdateSaving}
+          onchange={handleToggleAutoUpdate}
+          aria-label="Automatic updates"
+          aria-describedby="version-popout-auto-description"
+          aria-busy={autoUpdateSaving}
+        />
+      {:else if autoUpdateLoading}
+        <span
+          class="vp-toggle-state"
+          data-testid="version-popout-auto-loading"
+          role="status"
+        >
+          <span class="vp-inline-spinner" aria-hidden="true"></span>
+          Reading…
+        </span>
+      {/if}
+    </div>
+
+    {#if autoUpdateSaving}
+      <div class="vp-inline-feedback" data-testid="version-popout-auto-feedback" role="status">
+        <span class="vp-inline-spinner" aria-hidden="true"></span>
+        Saving automatic updates…
+      </div>
+    {:else if autoUpdateSaveError}
+      <div
+        class="vp-inline-feedback is-error"
+        id="version-popout-auto-feedback"
+        data-testid="version-popout-auto-feedback"
+        role="alert"
+      >
+        <span>{autoUpdateSaveError}</span>
+        <button
+          type="button"
+          class="vp-inline-retry"
+          data-testid="version-popout-auto-retry"
+          onclick={retryAutoUpdateSave}
+        >
+          Retry
+        </button>
+      </div>
+    {:else if autoUpdateLoadError}
+      <div
+        class="vp-inline-feedback is-error"
+        id="version-popout-auto-feedback"
+        data-testid="version-popout-auto-feedback"
+        role="alert"
+      >
+        <span>{autoUpdateLoadError}</span>
+        <button
+          type="button"
+          class="vp-inline-retry"
+          data-testid="version-popout-auto-retry"
+          disabled={autoUpdateLoading}
+          aria-busy={autoUpdateLoading}
+          onclick={retryAutoUpdateLoad}
+        >
+          {autoUpdateLoading ? 'Retrying…' : 'Retry'}
+        </button>
+      </div>
+    {/if}
+  </div>
 
   <button
     type="button"
@@ -238,33 +552,92 @@
 
 <style>
   .version-popout {
-    position: absolute;
-    bottom: calc(100% + 8px);
-    right: 0;
-    z-index: 200;
-    width: 260px;
-    padding: 12px;
+    position: fixed;
+    right: 12px;
+    bottom: 40px;
+    z-index: 10000;
+    width: 336px;
+    max-width: calc(100vw - 24px);
+    max-height: calc(100vh - 56px);
+    box-sizing: border-box;
+    overflow-y: auto;
+    padding: 16px;
     border: 1px solid var(--border-strong, var(--pop-border, rgba(120, 120, 120, 0.3)));
     border-radius: var(--v4-radius-popover);
     opacity: 1;
-    background: var(--v4-popover, var(--pop-bg, rgba(42, 42, 42, 0.76)));
-    backdrop-filter: var(--v4-glass-filter);
-    -webkit-backdrop-filter: var(--v4-glass-filter);
+    background: var(
+      --v4-popover-strong,
+      var(--v4-popover, var(--pop-bg, rgba(42, 42, 42, 0.82)))
+    );
+    backdrop-filter: var(--v4-glass-filter-popover, var(--v4-glass-filter));
+    -webkit-backdrop-filter: var(--v4-glass-filter-popover, var(--v4-glass-filter));
     box-shadow: var(--v4-shadow-popover, var(--pop-shadow)), inset 0 1px 0 var(--v4-glass-highlight);
     color: var(--fg, var(--c-text, inherit));
     font-size: var(--text-xs, 13px);
-    line-height: 1.35;
+    line-height: 1.4;
+    transform-origin: bottom right;
   }
 
   .version-popout.below {
-    top: calc(100% + 8px);
+    top: 48px;
     bottom: auto;
+    transform-origin: top right;
+  }
+
+  .vp-product {
+    display: grid;
+    gap: 10px;
+    padding: 2px 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+  }
+
+  .vp-product + .vp-product {
+    margin-top: 14px;
+    padding-top: 14px;
+    border-top: 1px solid var(--border-strong);
+  }
+
+  .vp-product.core {
+    background: transparent;
+  }
+
+  .vp-product-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .vp-product-heading strong {
+    color: var(--fg);
+    font-size: var(--text-sm, 13px);
+    font-weight: 650;
+  }
+
+  .vp-kind {
+    display: inline-flex;
+    align-items: center;
+    min-height: 18px;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 9px;
+    font-weight: 650;
+    letter-spacing: 0.06em;
+  }
+
+  .vp-kind.core {
+    color: var(--muted);
   }
 
   .vp-rows {
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 8px;
   }
 
   .vp-row {
@@ -289,6 +662,15 @@
     color: var(--fg);
   }
 
+  .vp-core-status {
+    overflow: hidden;
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.4;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   .mono {
     font-family: var(--font-mono);
     color: var(--fg-data, var(--fg));
@@ -297,17 +679,18 @@
   .vp-actions {
     display: flex;
     flex-direction: column;
-    gap: 6px;
-    margin-top: 12px;
+    gap: 8px;
+    margin-top: 16px;
   }
 
   .vp-btn {
     display: flex;
     align-items: center;
     justify-content: center;
+    gap: 6px;
     width: 100%;
-    min-height: 28px;
-    padding: 4px 10px;
+    min-height: 34px;
+    padding: 6px 12px;
     border: 1px solid var(--border-strong);
     border-radius: 6px;
     background: var(--row-active);
@@ -316,6 +699,7 @@
     font-size: inherit;
     font-weight: 600;
     cursor: pointer;
+    transition: transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
   }
 
   .vp-btn:hover:not(:disabled) {
@@ -333,6 +717,10 @@
     cursor: default;
   }
 
+  .vp-btn:active:not(:disabled) {
+    transform: scale(0.98);
+  }
+
   .vp-btn-primary {
     background: var(--fg);
     border-color: var(--fg);
@@ -346,8 +734,14 @@
 
   .vp-divider {
     height: 1px;
-    margin: 12px 0;
+    margin: 16px 0;
     background: var(--border-strong);
+  }
+
+  .vp-toggle-block {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
   }
 
   .vp-toggle-row {
@@ -355,14 +749,14 @@
     align-items: center;
     justify-content: space-between;
     gap: 12px;
-    cursor: pointer;
   }
 
   .vp-toggle-copy {
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: 4px;
     min-width: 0;
+    cursor: pointer;
   }
 
   .vp-toggle-copy strong {
@@ -373,8 +767,8 @@
 
   .vp-toggle-copy small {
     color: var(--muted);
-    font-size: 11px;
-    line-height: 1.3;
+    font-size: 12px;
+    line-height: 1.4;
   }
 
   .vp-toggle-row input[type='checkbox'] {
@@ -421,11 +815,76 @@
     cursor: default;
   }
 
+  .vp-toggle-state,
+  .vp-inline-feedback {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    color: var(--muted);
+    font-size: 11px;
+    line-height: 1.35;
+  }
+
+  .vp-toggle-state {
+    flex: 0 0 auto;
+  }
+
+  .vp-inline-feedback {
+    justify-content: flex-start;
+  }
+
+  .vp-inline-feedback.is-error {
+    color: var(--v4-error, var(--muted));
+  }
+
+  .vp-inline-retry {
+    appearance: none;
+    padding: 0;
+    border: 0;
+    border-bottom: 1px solid currentColor;
+    border-radius: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .vp-inline-retry:hover:not(:disabled) {
+    border-bottom-color: transparent;
+  }
+
+  .vp-inline-retry:focus-visible {
+    outline: 2px solid var(--v4-focus-ring, var(--v4-control-border, currentColor));
+    outline-offset: var(--v4-focus-offset, 2px);
+  }
+
+  .vp-inline-retry:disabled {
+    cursor: progress;
+    opacity: 0.55;
+  }
+
+  .vp-inline-spinner {
+    width: 10px;
+    height: 10px;
+    flex: 0 0 auto;
+    border: 1px solid currentColor;
+    border-right-color: transparent;
+    border-radius: 50%;
+    animation: vp-spin 0.7s linear infinite;
+  }
+
+  @keyframes vp-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
   .vp-settings-link {
     display: block;
     width: 100%;
-    margin-top: 10px;
-    padding: 0;
+    margin-top: 14px;
+    padding: 2px 0 0;
     border: 0;
     background: transparent;
     color: var(--muted);
@@ -446,6 +905,16 @@
       backdrop-filter: none;
       -webkit-backdrop-filter: none;
       box-shadow: var(--v4-shadow-popover, var(--pop-shadow));
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .vp-toggle-row input[type='checkbox']::after {
+      transition: none;
+    }
+
+    .vp-inline-spinner {
+      animation: none;
     }
   }
 </style>

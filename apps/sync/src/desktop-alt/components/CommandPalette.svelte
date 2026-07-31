@@ -19,12 +19,24 @@
     label: 'ACTIONS' | 'NAVIGATE';
     items: CommandPaletteItem[];
   }
+  interface CommandActionError {
+    command: CommandPaletteItem;
+    message: string;
+  }
 
   let { commands, onclose }: Props = $props();
   let query = $state('');
   let highlightedIndex = $state(0);
   let inputEl: HTMLInputElement | null = $state(null);
   let paletteEl: HTMLDivElement | null = $state(null);
+  let executingId = $state<string | null>(null);
+  let actionError = $state<CommandActionError | null>(null);
+
+  function errorMessage(error: unknown): string {
+    if (error instanceof Error && error.message) return error.message;
+    if (typeof error === 'string' && error.trim()) return error;
+    return 'The command was rejected before it could finish.';
+  }
 
   function fuzzyMatch(value: string, needle: string): boolean {
     const haystack = value.toLowerCase();
@@ -84,15 +96,20 @@
   });
 
   async function execute(command: CommandPaletteItem | undefined) {
-    if (!command) return;
-    // Always close the palette, even if the action throws — otherwise a single
-    // failing command left the palette stuck open and modal over the whole app.
+    if (!command || executingId) return;
+    executingId = command.id;
+    if (actionError?.command.id !== command.id) actionError = null;
+    // Give the selected row an immediate pending state before a native invoke
+    // or navigation can block/replace this surface.
+    await tick();
     try {
       await command.action();
+      onclose();
     } catch (err) {
       console.error('command-palette: action failed', err);
+      actionError = { command, message: errorMessage(err) };
     } finally {
-      onclose();
+      executingId = null;
     }
   }
 
@@ -125,7 +142,7 @@
       return;
     }
 
-    if (event.key === 'Escape') {
+    if (event.key === 'Escape' && !executingId) {
       event.preventDefault();
       onclose();
       return;
@@ -156,13 +173,20 @@
   }
 </script>
 
-<div class="command-backdrop" role="presentation" onclick={onclose}>
+<div
+  class="command-backdrop"
+  role="presentation"
+  onclick={() => {
+    if (!executingId) onclose();
+  }}
+>
   <div
     bind:this={paletteEl}
     class="command-palette"
     role="dialog"
     aria-modal="true"
     aria-labelledby="command-palette-title"
+    aria-busy={!!executingId}
     tabindex="-1"
     onkeydown={handleKeydown}
     onclick={(event) => event.stopPropagation()}
@@ -184,6 +208,21 @@
 
     <h2 id="command-palette-title">Command palette</h2>
 
+    {#if actionError}
+      {@const failure = actionError}
+      <div class="command-action-error" role="alert" title={failure.message}>
+        <span>Couldn’t run <strong>{failure.command.label}</strong>.</span>
+        <button
+          type="button"
+          onclick={() => void execute(failure.command)}
+          disabled={!!executingId}
+          aria-busy={executingId === failure.command.id}
+        >
+          {executingId === failure.command.id ? 'Retrying…' : 'Retry'}
+        </button>
+      </div>
+    {/if}
+
     <div id="command-palette-list" class="command-list" role="listbox" aria-label="Commands">
       {#if commandSections.length > 0}
         {#each commandSections as section (section.id)}
@@ -197,6 +236,8 @@
                 type="button"
                 role="option"
                 aria-selected={index === highlightedIndex}
+                aria-busy={executingId === command.id}
+                disabled={!!executingId}
                 onfocus={() => {
                   highlightedIndex = index;
                 }}
@@ -207,9 +248,11 @@
               >
                 <span class="command-copy">
                   <strong>{command.label}</strong>
-                  <span>{command.detail}</span>
+                  <span>{executingId === command.id ? 'Opening…' : command.detail}</span>
                 </span>
-                {#if command.shortcut}
+                {#if executingId === command.id}
+                  <span class="command-spinner" aria-hidden="true"></span>
+                {:else if command.shortcut}
                   <kbd>{command.shortcut}</kbd>
                 {/if}
               </button>
@@ -231,18 +274,22 @@
     display: flex;
     align-items: flex-start;
     justify-content: center;
-    padding: 72px 20px 20px;
-    background: color-mix(in srgb, var(--v4-ground) 48%, transparent);
+    padding: clamp(48px, 9vh, 72px) 20px 20px;
+    background: rgba(0, 0, 0, 0.14);
   }
 
   .command-palette {
+    display: flex;
+    flex-direction: column;
     width: min(560px, 100%);
+    max-height: min(640px, calc(100dvh - 96px));
+    min-height: 0;
     overflow: hidden;
     border: 1px solid var(--pop-border);
     border-radius: var(--v4-radius-popover);
     background: var(--v4-popover, var(--pop-bg));
-    backdrop-filter: var(--v4-glass-filter);
-    -webkit-backdrop-filter: var(--v4-glass-filter);
+    backdrop-filter: var(--v4-glass-filter-popover, var(--v4-glass-filter));
+    -webkit-backdrop-filter: var(--v4-glass-filter-popover, var(--v4-glass-filter));
     box-shadow: var(--v4-shadow-popover, var(--pop-shadow)), inset 0 1px 0 var(--v4-glass-highlight);
     color: var(--pop-text);
     transform-origin: top center;
@@ -262,6 +309,7 @@
     align-items: center;
     gap: 10px;
     height: 48px;
+    flex: 0 0 auto;
     padding: 0 12px;
     border-bottom: 1px solid var(--pop-divider);
     background: var(--pop-hover);
@@ -299,10 +347,50 @@
   }
 
   .command-list {
-    max-height: min(360px, calc(100vh - 160px));
+    flex: 1 1 auto;
+    min-height: 0;
     overflow-y: auto;
+    overscroll-behavior: contain;
     padding: 6px;
+    scroll-padding-block: 6px;
     scrollbar-color: var(--pop-muted) transparent;
+    scrollbar-gutter: stable;
+    scrollbar-width: thin;
+  }
+
+  .command-action-error {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--pop-divider);
+    color: var(--v4-error, #ef4444);
+    font-size: var(--text-base);
+    line-height: 17px;
+  }
+
+  .command-action-error span {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .command-action-error button {
+    flex: 0 0 auto;
+    padding: 0;
+    border: 0;
+    border-bottom: 1px solid currentcolor;
+    border-radius: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-weight: 700;
+    cursor: pointer;
+  }
+
+  .command-action-error button:disabled {
+    opacity: 0.58;
+    cursor: wait;
   }
 
   .command-section + .command-section {
@@ -339,10 +427,19 @@
     font: inherit;
     text-align: left;
     cursor: pointer;
+    scroll-margin-block: 6px;
     transition:
       background-color 120ms ease,
       color 120ms ease,
       box-shadow 120ms ease;
+  }
+
+  .command-list button:disabled {
+    cursor: wait;
+  }
+
+  .command-list button:disabled:not([aria-busy='true']) {
+    opacity: 0.48;
   }
 
   .command-list button.highlighted,
@@ -387,6 +484,16 @@
       border-color 120ms ease,
       background-color 120ms ease,
       color 120ms ease;
+  }
+
+  .command-spinner {
+    width: 13px;
+    height: 13px;
+    flex: 0 0 auto;
+    border: 1.5px solid var(--pop-border);
+    border-top-color: var(--pop-text);
+    border-radius: 50%;
+    animation: command-spin 700ms linear infinite;
   }
 
   .command-list button.highlighted kbd {
@@ -438,6 +545,18 @@
     from {
       opacity: 0;
       transform: translateY(-8px) scale(0.985);
+    }
+  }
+
+  @keyframes command-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .command-spinner {
+      animation-duration: 1400ms;
     }
   }
 </style>

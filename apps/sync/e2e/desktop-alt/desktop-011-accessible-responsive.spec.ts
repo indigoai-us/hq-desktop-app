@@ -14,6 +14,37 @@ import { readRepoFile } from './harness';
  * drag regions only.
  */
 
+const DEFAULT_WINDOW_TRANSPARENCY_FACTOR = 0.65;
+
+function firstLiquidGlassAlpha(
+  source: string,
+  property: string,
+  factor = DEFAULT_WINDOW_TRANSPARENCY_FACTOR,
+): number {
+  const declaration = source.match(new RegExp(`--${property}:\\s*([^;]+);`));
+  expect(declaration, `missing --${property}`).not.toBeNull();
+  const value = declaration?.[1].trim() ?? '';
+  const expression = value.match(
+    /^rgb\(\s*\d+\s+\d+\s+\d+\s*\/\s*clamp\(\s*([\d.]+)\s*,\s*calc\(\s*1\s*-\s*var\(--hq-window-transparency-factor(?:\s*,\s*([\d.]+))?\)\s*\*\s*([\d.]+)\s*\)\s*,\s*([\d.]+)\s*\)\s*\)$/i,
+  );
+  expect(
+    expression,
+    `${property} must use the window-transparency liquid-glass expression; received: ${value}`,
+  ).not.toBeNull();
+
+  const floor = Number(expression?.[1]);
+  const fallback = expression?.[2];
+  const multiplier = Number(expression?.[3]);
+  const ceiling = Number(expression?.[4]);
+  if (fallback !== undefined) {
+    expect(Number(fallback), `${property} must retain the 0.65 default factor`).toBe(
+      DEFAULT_WINDOW_TRANSPARENCY_FACTOR,
+    );
+  }
+  expect(ceiling, `${property} must resolve fully opaque at factor 0`).toBe(1);
+  return Math.min(ceiling, Math.max(floor, 1 - factor * multiplier));
+}
+
 describe('DESKTOP-011: accessible responsive native behavior', () => {
   const tokens = readRepoFile('src/desktop-alt/v4/tokens.css');
   const desktopCss = readRepoFile('src/desktop-alt/styles/desktop-alt.css');
@@ -21,44 +52,60 @@ describe('DESKTOP-011: accessible responsive native behavior', () => {
   const sidebar = readRepoFile('src/desktop-alt/v4/V4Sidebar.svelte');
   const secondary = readRepoFile('src/desktop-alt/v4/V4SecondarySidebar.svelte');
   const messages = readRepoFile('src/components/messaging/MessagesShell.svelte');
+  const home = readRepoFile('src/desktop-alt/pages/HomePage.svelte');
+  const company = readRepoFile('src/desktop-alt/pages/CompanyPage.svelte');
+  const overview = readRepoFile('src/desktop-alt/panels/CompanyBoardPanel.svelte');
+  const projects = readRepoFile('src/desktop-alt/pages/CompanyProjectsPage.svelte');
+  const projectDetail = readRepoFile('src/desktop-alt/pages/ProjectDetailView.svelte');
   const model = readRepoFile('src/desktop-alt/v4/model.ts');
 
-  it('uses a readable 14px canvas ramp with 13px reserved for metadata', () => {
+  it('uses a readable five-step canvas ramp with real heading hierarchy', () => {
     expect(V4_TYPE_SCALE).toEqual({
       metadata: 13,
-      secondary: 13,
-      body: 14,
-      section: 14,
-      detail: 14,
+      secondary: 14,
+      body: 15,
+      section: 17,
+      detail: 24,
     });
     expect(model).toContain('V4_TYPE_SCALE');
     expect(tokens).toContain('--type-metadata: 13px');
-    expect(tokens).toContain('--type-secondary: 13px');
-    expect(tokens).toContain('--type-body: 14px');
-    expect(tokens).toContain('--type-section: 14px');
-    expect(tokens).toContain('--type-detail: 14px');
+    expect(tokens).toContain('--type-secondary: 14px');
+    expect(tokens).toContain('--type-body: 15px');
+    expect(tokens).toContain('--type-section: 17px');
+    expect(tokens).toContain('--type-detail: 24px');
     expect(desktopCss).toMatch(
-      /\.desktop-main-scroll,\s*\.desktop-main-scroll \*\s*\{[\s\S]*?font-size:\s*14px !important;[\s\S]*?font-weight:\s*400 !important;/,
+      /\.desktop-main-scroll\s*\{[\s\S]*?font-size:\s*var\(--type-body,\s*15px\);/,
     );
+    expect(desktopCss).not.toMatch(/\.desktop-main-scroll \*\s*\{[\s\S]*?font-size:/);
+    expect(desktopCss).not.toContain('font-weight: 400 !important');
   });
 
   it('normalizes legacy --text-* aliases onto the five semantic sizes', () => {
     expect(desktopCss).toContain('--text-micro: var(--type-metadata, 13px)');
-    expect(desktopCss).toContain('--text-xs: var(--type-secondary, 13px)');
-    expect(desktopCss).toContain('--text-sm: var(--type-secondary, 13px)');
-    expect(desktopCss).toContain('--text-base: var(--type-body, 14px)');
-    expect(desktopCss).toContain('--text-section: var(--type-section, 14px)');
-    expect(desktopCss).toContain('--text-lg: var(--type-detail, 14px)');
-    expect(desktopCss).toContain('--text-kpi: var(--type-detail, 14px)');
+    expect(desktopCss).toContain('--text-xs: var(--type-secondary, 14px)');
+    expect(desktopCss).toContain('--text-sm: var(--type-secondary, 14px)');
+    expect(desktopCss).toContain('--text-base: var(--type-body, 15px)');
+    expect(desktopCss).toContain('--text-section: var(--type-section, 17px)');
+    expect(desktopCss).toContain('--text-lg: var(--type-detail, 24px)');
+    expect(desktopCss).toContain('--text-kpi: var(--type-detail, 24px)');
     // Shared stylesheet mounts the token layer for desktop + messages.
     expect(desktopCss).toContain("@import '../v4/tokens.css'");
   });
 
-  it('keeps light sidebar/chrome darker than canvas and raised lighter than canvas', () => {
-    expect(tokens).toContain('--v4-ground: rgba(242, 242, 242, 0.82)');
-    expect(tokens).toContain('--v4-chrome: rgba(232, 232, 232, 0.66)');
-    expect(tokens).toContain('--v4-sidebar: rgba(224, 224, 224, 0.6)');
-    expect(tokens).toContain('--v4-raised: rgba(255, 255, 255, 0.62)');
+  it('keeps light material roles translucent and weighted by hierarchy', () => {
+    const properties = ['v4-ground', 'v4-chrome', 'v4-sidebar', 'v4-raised'] as const;
+    const [ground, chrome, sidebarAlpha, raised] = properties.map((property) =>
+      firstLiquidGlassAlpha(tokens, property),
+    );
+
+    expect(ground).toBeLessThanOrEqual(0.5);
+    expect(chrome).toBeLessThanOrEqual(0.5);
+    expect(sidebarAlpha).toBeLessThanOrEqual(0.5);
+    expect(raised).toBeGreaterThan(ground);
+    expect(raised).toBeLessThanOrEqual(0.6);
+    for (const property of properties) {
+      expect(firstLiquidGlassAlpha(tokens, property, 0)).toBe(1);
+    }
     expect(desktopCss).toContain('--surface-rail: var(--v4-sidebar');
     expect(desktopCss).toContain('--surface-panel: var(--v4-ground');
     expect(desktopCss).toContain('--surface-raise: var(--v4-raised');
@@ -75,7 +122,7 @@ describe('DESKTOP-011: accessible responsive native behavior', () => {
     expect(tokens).toContain('--v4-text-1: #111111');
     // Dark surface tokens exist alongside the light text.
     expect(tokens).toMatch(
-      /@media \(prefers-color-scheme: dark\)\s*\{[\s\S]*?--v4-chrome:\s*rgba\(30, 30, 30/,
+      /@media \(prefers-color-scheme: dark\)\s*\{[\s\S]*?--v4-chrome:\s*rgb\(30 30 30\s*\/\s*clamp\(/,
     );
   });
 
@@ -121,6 +168,9 @@ describe('DESKTOP-011: accessible responsive native behavior', () => {
     expect(desktopCss).toContain('@media (prefers-reduced-transparency: reduce)');
     expect(tokens).toContain('@media (prefers-reduced-transparency: reduce)');
     expect(tokens).toContain('--v4-chrome: #e8e8e8');
+    expect(tokens).toMatch(
+      /@supports not \(\(backdrop-filter:\s*blur\(1px\)\)[\s\S]*?@media \(prefers-reduced-transparency:\s*reduce\)\s*\{[\s\S]*?--v4-fallback-material-alpha:\s*1/,
+    );
     expect(titleBar).toContain('@media (prefers-reduced-transparency: reduce)');
     expect(titleBar).toContain('@media (prefers-reduced-motion: reduce)');
     expect(messages).toContain('@media (prefers-reduced-motion: reduce)');
@@ -137,6 +187,17 @@ describe('DESKTOP-011: accessible responsive native behavior', () => {
     expect(messages).toContain('@media (max-width: 720px)');
     expect(messages).toMatch(/\.thread-column\s*\{[\s\S]*?position:\s*absolute/);
     expect(messages).toMatch(/\.rail-header\s+\.new-message-btn\s*\{[\s\S]*?flex:\s*0\s+0\s+auto/);
+  });
+
+  it('adapts compact desktop routes to their post-sidebar canvas width', () => {
+    expect(desktopCss).toContain('@media (max-width: 1120px)');
+    expect(home).toContain('@container home (max-width: 900px)');
+    expect(company).toContain('container: company-page / inline-size');
+    expect(company).toContain('@container company-page (max-width: 900px)');
+    expect(overview).toContain('container: company-board / inline-size');
+    expect(overview).toContain('@container company-board (max-width: 900px)');
+    expect(projects).toContain('@container company-projects (max-width: 900px)');
+    expect(projectDetail).toContain('@container project-detail (max-width: 900px)');
   });
 
   it('restricts titlebar drag to padded noninteractive spacers only', () => {

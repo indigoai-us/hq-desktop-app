@@ -496,6 +496,7 @@ mod tests {
             hq_root_valid: false,
             has_auth: true,
             install_in_progress: manifest_indicates_install_in_progress(&manifest),
+            consent_answered: false,
         });
 
         assert_eq!(verdict.state, LifecycleState::InstallResume);

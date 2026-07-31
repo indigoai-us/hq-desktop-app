@@ -4,6 +4,7 @@ import type { CompanyBoard } from './company-board.svelte';
 import type { DeploymentEntry } from '../components/DeploymentRow.svelte';
 import type { SecretEnv } from '../components/SecretEnvRow.svelte';
 import { createResourceCache } from './resource-cache.svelte';
+import { withActivityRequestDeadline } from './activity-request';
 
 export type CompanyResource = 'summary' | 'board' | 'activity' | 'deployments' | 'secrets';
 
@@ -16,7 +17,11 @@ let timer: ReturnType<typeof setInterval> | null = null;
 const loaders = {
   summary: (slug: string) => invoke<CompanySummary>('get_company_summary', { slug }),
   board: (slug: string) => invoke<CompanyBoard>('get_company_board', { slug }),
-  activity: (slug: string) => invoke<unknown>('get_company_activity', { slug }),
+  // Bound the promise stored by the shared cache, not only an individual
+  // panel's projection of it. A timed-out native request then clears
+  // `inFlight`, so Retry and focus refreshes can issue a fresh request.
+  activity: (slug: string) =>
+    withActivityRequestDeadline(invoke<unknown>('get_company_activity', { slug })),
   deployments: (slug: string) =>
     invoke<Partial<DeploymentEntry>[]>('get_company_deployments', { slug }).then((v) =>
       Array.isArray(v) ? v : [],

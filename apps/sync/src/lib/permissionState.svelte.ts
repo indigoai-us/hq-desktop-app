@@ -105,13 +105,16 @@ export async function loadMeetingDetectEligible(): Promise<boolean> {
  * On error, leaves the previous snapshot in place (don't blow away a
  * good value because of a transient Tauri IPC hiccup).
  */
-export async function loadMeetingPermissions(): Promise<MeetingPermissionsSnapshot | null> {
+export async function loadMeetingPermissions(
+  options: { throwOnError?: boolean } = {},
+): Promise<MeetingPermissionsSnapshot | null> {
   try {
     const snapshot = await invoke<MeetingPermissionsSnapshot>('meetings_permissions_state');
     permissionState.meetingPermissions = snapshot;
     return snapshot;
   } catch (err) {
     console.error('meetings_permissions_state failed:', err);
+    if (options.throwOnError) throw err;
     return permissionState.meetingPermissions;
   }
 }

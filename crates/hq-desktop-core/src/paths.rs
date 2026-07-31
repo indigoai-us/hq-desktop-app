@@ -60,6 +60,56 @@ fn legacy_managed_toolchain_dir() -> Option<PathBuf> {
     Some(PathBuf::from(local_app).join("Indigo HQ").join("toolchain"))
 }
 
+/// Every managed-toolchain root this platform may have, most-canonical first.
+///
+/// Windows installs moved from `Indigo HQ` to `IndigoHQ`, so an upgraded
+/// machine can still be running out of the legacy directory. Empty when the
+/// platform's base directory can't be resolved at all.
+pub fn managed_toolchain_roots() -> Vec<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        [managed_toolchain_dir(), legacy_managed_toolchain_dir()]
+            .into_iter()
+            .flatten()
+            .collect()
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        home_dir()
+            .map(|home| vec![managed_toolchain_dir(&home)])
+            .unwrap_or_default()
+    }
+}
+
+/// Directory the managed Node install occupies under a toolchain root.
+///
+/// This — not the toolchain root — is HQ's Node-specific footprint. The root
+/// is shared with the managed git and rsync installs, so its mere existence
+/// says nothing about whether HQ ever put a Node on this machine.
+pub fn managed_node_dir_in(root: &Path) -> PathBuf {
+    root.join("node")
+}
+
+/// Absolute path the managed Node executable occupies under a toolchain root.
+///
+/// The installer lays Node out differently per platform: the darwin tarball
+/// keeps its `bin/` directory, while the Windows zip is flattened straight
+/// into `toolchain\node`.
+pub fn managed_node_executable_in(root: &Path) -> PathBuf {
+    let node_dir = managed_node_dir_in(root);
+
+    #[cfg(target_os = "windows")]
+    {
+        node_dir.join("node.exe")
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        node_dir.join("bin").join("node")
+    }
+}
+
 pub fn home_dir() -> Option<PathBuf> {
     if let Some(home) = std::env::var_os("HOME") {
         if !home.is_empty() {
@@ -165,6 +215,17 @@ pub fn resolve_bin(name: &str) -> String {
 /// precedence without depending on the developer machine's actual HOME or
 /// shell configuration.
 #[cfg(not(target_os = "windows"))]
+fn user_cli_dirs(home: &Path) -> Vec<PathBuf> {
+    vec![
+        home.join(".npm-global").join("bin"),
+        // pnpm's default global executable directory on macOS.
+        home.join("Library").join("pnpm"),
+        // pnpm's default global executable directory on Linux.
+        home.join(".local").join("share").join("pnpm"),
+    ]
+}
+
+#[cfg(not(target_os = "windows"))]
 fn resolve_bin_in_dirs(home: Option<&Path>, name: &str) -> Option<String> {
     if let Some(home) = home {
         // Managed HQ toolchain (installed by hq-installer). Match
@@ -179,10 +240,12 @@ fn resolve_bin_in_dirs(home: Option<&Path>, name: &str) -> Option<String> {
             }
         }
 
-        // User npm prefix after the managed toolchain.
-        let candidate = home.join(".npm-global").join("bin").join(name);
-        if candidate.exists() {
-            return Some(candidate.to_string_lossy().to_string());
+        // User-level npm/pnpm prefixes after the managed toolchain.
+        for dir in user_cli_dirs(home) {
+            let candidate = dir.join(name);
+            if candidate.exists() {
+                return Some(candidate.to_string_lossy().to_string());
+            }
         }
     }
 
@@ -202,12 +265,23 @@ fn extended_search_dirs() -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = Vec::new();
 
     if let Some(toolchain) = managed_toolchain_dir() {
-        dirs.push(toolchain.join("bin"));
         dirs.push(toolchain.join("node"));
+        // Keep this order aligned with hq-installer's
+        // `extended_search_path()`. Windows npm global shims and the
+        // drive-letter-translating rsync wrapper live directly in
+        // `npm-prefix`; the Core rescue must see that wrapper before the raw
+        // rsync.exe in `bin`.
+        dirs.push(toolchain.join("npm-prefix"));
+        dirs.push(toolchain.join("bin"));
+        dirs.push(toolchain.join("git").join("cmd"));
+        dirs.push(toolchain.join("git").join("mingw64").join("bin"));
     }
     if let Some(legacy) = legacy_managed_toolchain_dir() {
-        dirs.push(legacy.join("bin"));
         dirs.push(legacy.join("node"));
+        dirs.push(legacy.join("npm-prefix"));
+        dirs.push(legacy.join("bin"));
+        dirs.push(legacy.join("git").join("cmd"));
+        dirs.push(legacy.join("git").join("mingw64").join("bin"));
     }
 
     if let Some(home) = home_dir() {
@@ -385,10 +459,11 @@ pub fn child_path() -> String {
                     }
                 }
             }
-            // User-level npm prefix (no-sudo installs).
-            let npm_global = home.join(".npm-global").join("bin");
-            if npm_global.exists() {
-                parts.push(npm_global.to_string_lossy().to_string());
+            // User-level npm/pnpm prefixes (no-sudo installs).
+            for dir in user_cli_dirs(&home) {
+                if dir.exists() {
+                    parts.push(dir.to_string_lossy().to_string());
+                }
             }
         }
 
@@ -675,6 +750,34 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_windows_search_dirs_match_managed_installer_tool_order() {
+        let toolchain =
+            managed_toolchain_dir().expect("Windows test environment must define LOCALAPPDATA");
+        let dirs = extended_search_dirs();
+        let node = dirs.iter().position(|dir| dir == &toolchain.join("node"));
+        let npm = dirs
+            .iter()
+            .position(|dir| dir == &toolchain.join("npm-prefix"));
+        let wrappers = dirs.iter().position(|dir| dir == &toolchain.join("bin"));
+        let git_cmd = dirs
+            .iter()
+            .position(|dir| dir == &toolchain.join("git").join("cmd"));
+        let git_mingw = dirs.iter().position(|dir| {
+            dir == &toolchain.join("git").join("mingw64").join("bin")
+        });
+
+        assert!(
+            matches!((node, npm, wrappers), (Some(n), Some(p), Some(w)) if n < p && p < w),
+            "managed node, npm shims, and wrappers must match installer precedence: {dirs:?}"
+        );
+        assert!(
+            git_cmd.is_some() && git_mingw.is_some(),
+            "Core rescue must inherit the managed MinGit command and helper directories: {dirs:?}"
+        );
+    }
+
     #[cfg(not(target_os = "windows"))]
     #[test]
     fn test_resolve_bin_in_dirs_prefers_managed_toolchain_over_user_npm_global() {
@@ -691,6 +794,35 @@ mod tests {
         assert_eq!(
             resolve_bin_in_dirs(Some(tmp.path()), name),
             Some(expected.to_string_lossy().to_string())
+        );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn test_resolve_bin_in_dirs_finds_macos_pnpm_global_binary() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let name = "hq-test-bin";
+        let expected = tmp.path().join("Library/pnpm").join(name);
+        std::fs::create_dir_all(expected.parent().unwrap()).unwrap();
+        std::fs::write(&expected, b"#!/bin/sh\n").unwrap();
+
+        assert_eq!(
+            resolve_bin_in_dirs(Some(tmp.path()), name),
+            Some(expected.to_string_lossy().to_string())
+        );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn test_user_cli_dirs_include_npm_and_pnpm_defaults() {
+        let home = PathBuf::from("/Users/testuser");
+        assert_eq!(
+            user_cli_dirs(&home),
+            vec![
+                PathBuf::from("/Users/testuser/.npm-global/bin"),
+                PathBuf::from("/Users/testuser/Library/pnpm"),
+                PathBuf::from("/Users/testuser/.local/share/pnpm"),
+            ]
         );
     }
 

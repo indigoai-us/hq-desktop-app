@@ -1,5 +1,6 @@
 node_modules/
 dist/
+coverage/
 target/
 # Compiled menu-bar helper — build.rs rebuilds it from hq-tray-helper.swift.
 src-tauri/helper/hq-tray-helper

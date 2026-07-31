@@ -116,7 +116,11 @@ describe('DESKTOP-010: scoped company operations', () => {
     expect(deployments).toContain('No provisioned subdomains for this company.');
     expect(deploymentRow).toContain("import { open } from '@tauri-apps/plugin-shell'");
     expect(deploymentRow).toContain('async function openDeployment()');
-    expect(deploymentRow).toContain('title="Open in browser"');
+    expect(deploymentRow).toContain(
+      "title={openError ? 'Could not open — retry' : 'Open in browser'}",
+    );
+    expect(deploymentRow).toContain("{opening ? 'Retrying…' : 'Retry'}");
+    expect(deploymentRow).toContain('onclick={openDeployment}');
     // Honesty: no fake rollback confirm that reverts nothing.
     expect(deploymentRow).not.toContain('rollbackConfirm');
 
@@ -174,10 +178,10 @@ describe('DESKTOP-010: scoped company operations', () => {
   it('uses five semantic type roles and 3px title/meta stacks', () => {
     expect(V4_TYPE_SCALE).toEqual({
       metadata: 13,
-      secondary: 13,
-      body: 14,
-      section: 14,
-      detail: 14,
+      secondary: 14,
+      body: 15,
+      section: 17,
+      detail: 24,
     });
     expect(V4_ROW_STACK_GAP_PX).toBe(3);
     expect(tokens).toContain('--v4-row-stack-gap: 3px');

@@ -49,6 +49,8 @@
     error: null,
     empty: true,
   });
+  let externalActionBusy = $state<'invite' | 'console' | null>(null);
+  let externalActionError = $state<string | null>(null);
   /** Stable selected member in the list/detail workspace. */
   let selectedMemberId = $state<string | null>(null);
 
@@ -131,12 +133,32 @@
     selectedMemberId = null;
   }
 
-  function openInvite(): void {
-    void openExternal(companyInviteUrl(slug));
+  async function openExternalDestination(
+    destination: 'invite' | 'console',
+    url: string,
+  ): Promise<void> {
+    if (externalActionBusy) return;
+    externalActionBusy = destination;
+    externalActionError = null;
+    try {
+      await openExternal(url);
+    } catch (err) {
+      console.error(`Open team ${destination} failed:`, err);
+      externalActionError =
+        destination === 'invite'
+          ? 'Could not open invitations in the HQ console.'
+          : 'Could not open the company team in the HQ console.';
+    } finally {
+      externalActionBusy = null;
+    }
   }
 
-  function openConsole(): void {
-    void openExternal(companyConsoleUrl(slug));
+  async function openInvite(): Promise<void> {
+    await openExternalDestination('invite', companyInviteUrl(slug));
+  }
+
+  async function openConsole(): Promise<void> {
+    await openExternalDestination('console', companyConsoleUrl(slug));
   }
 
   function memberListMeta(member: TeamMember): string {
@@ -158,17 +180,6 @@
       parts.push(member.topSkills[0].skill);
     }
     return parts.join(' · ');
-  }
-
-  function activitySummary(member: TeamMember): string | null {
-    const parts: string[] = [];
-    if (member.sessions != null) {
-      parts.push(`${member.sessions} ${member.sessions === 1 ? 'session' : 'sessions'}`);
-    }
-    if (member.events != null) {
-      parts.push(`${member.events} ${member.events === 1 ? 'event' : 'events'}`);
-    }
-    return parts.length > 0 ? parts.join(' · ') : null;
   }
 
   /**
@@ -234,21 +245,31 @@
         class="team-action-button"
         data-testid="team-invite"
         aria-label="Invite teammate in HQ console"
-        onclick={openInvite}
+        onclick={() => void openInvite()}
+        disabled={externalActionBusy !== null}
+        aria-busy={externalActionBusy === 'invite'}
       >
-        Invite
+        {externalActionBusy === 'invite' ? 'Opening…' : 'Invite'}
       </button>
       <button
         type="button"
         class="team-action-button secondary"
         data-testid="team-open-console"
         aria-label="Open company team in HQ console"
-        onclick={openConsole}
+        onclick={() => void openConsole()}
+        disabled={externalActionBusy !== null}
+        aria-busy={externalActionBusy === 'console'}
       >
-        Open console
+        {externalActionBusy === 'console' ? 'Opening…' : 'Open console'}
       </button>
     </div>
   </header>
+
+  {#if externalActionError}
+    <p class="team-error" role="alert" data-testid="team-action-error">
+      {externalActionError}
+    </p>
+  {/if}
 
   {#if loading}
     <p class="team-status" data-testid="team-loading" aria-busy="true">Loading team…</p>
@@ -336,48 +357,62 @@
                   </span>
                 {/if}
                 <span class="team-detail-meta" data-testid="team-detail-meta">
-                  {memberTypeRoleLabel(selectedMember)}
-                  {#if activitySummary(selectedMember)}
-                    · {activitySummary(selectedMember)}
-                  {/if}
+                  Activity summary · last 30 days
                 </span>
               </div>
             </header>
 
-            {#if selectedMember.topSkills.length > 0}
-              <section class="team-section" aria-label="Top skills" data-testid="team-member-skills">
-                <h4 class="section-label">Top skills</h4>
-                <div class="chip-row">
-                  {#each selectedMember.topSkills as skill (skill.skill)}
-                    <span class="skill-chip" data-testid="team-skill-chip">
-                      {skill.skill}
-                      <span class="skill-n">{skill.count}</span>
-                    </span>
-                  {/each}
-                </div>
-              </section>
-            {/if}
+            <dl class="team-member-facts" data-testid="team-member-facts">
+              <div>
+                <dt>Type & role</dt>
+                <dd>{memberTypeRoleLabel(selectedMember)}</dd>
+              </div>
+              <div>
+                <dt>Sessions</dt>
+                <dd>{selectedMember.sessions ?? 'Unavailable'}</dd>
+              </div>
+              <div>
+                <dt>Events</dt>
+                <dd>{selectedMember.events ?? 'Unavailable'}</dd>
+              </div>
+            </dl>
 
-            {#if selectedMember.activeProjects.length > 0}
-              <section
-                class="team-section"
-                aria-label="Active projects"
-                data-testid="team-member-projects"
-              >
-                <h4 class="section-label">Active projects</h4>
-                <div class="chip-row">
-                  {#each selectedMember.activeProjects as project (project)}
-                    <span class="project-chip" data-testid="team-project-chip">{project}</span>
-                  {/each}
-                </div>
-              </section>
-            {/if}
+            <div class="team-section-grid">
+              {#if selectedMember.topSkills.length > 0}
+                <section class="team-section" aria-label="Top skills" data-testid="team-member-skills">
+                  <h4 class="section-label">Top skills</h4>
+                  <div class="chip-row">
+                    {#each selectedMember.topSkills as skill (skill.skill)}
+                      <span class="skill-chip" data-testid="team-skill-chip">
+                        {skill.skill}
+                        <span class="skill-n">{skill.count}</span>
+                      </span>
+                    {/each}
+                  </div>
+                </section>
+              {/if}
 
-            {#if selectedMember.topSkills.length === 0 && selectedMember.activeProjects.length === 0}
-              <p class="team-status subtle" data-testid="team-detail-no-activity">
-                No skill usage or active projects recorded in this window.
-              </p>
-            {/if}
+              {#if selectedMember.activeProjects.length > 0}
+                <section
+                  class="team-section"
+                  aria-label="Active projects"
+                  data-testid="team-member-projects"
+                >
+                  <h4 class="section-label">Active projects</h4>
+                  <div class="chip-row">
+                    {#each selectedMember.activeProjects as project (project)}
+                      <span class="project-chip" data-testid="team-project-chip">{project}</span>
+                    {/each}
+                  </div>
+                </section>
+              {/if}
+
+              {#if selectedMember.topSkills.length === 0 && selectedMember.activeProjects.length === 0}
+                <p class="team-status subtle" data-testid="team-detail-no-activity">
+                  No skill usage or active projects recorded in this window.
+                </p>
+              {/if}
+            </div>
           </article>
         {:else}
           <div class="team-detail-empty" data-testid="team-detail-empty">
@@ -399,7 +434,7 @@
     flex-direction: column;
     gap: var(--v4-space-4, 16px);
     min-width: 0;
-    min-height: 0;
+    min-height: clamp(360px, calc(100dvh - 170px), 620px);
     height: 100%;
     font-family: var(--font-sans);
     background: transparent;
@@ -473,6 +508,11 @@
     color: var(--v4-text-1);
   }
 
+  .team-action-button:disabled {
+    cursor: default;
+    opacity: 0.55;
+  }
+
   .team-action-button:focus-visible,
   .team-member-row:focus-visible,
   .team-detail-back:focus-visible {
@@ -482,6 +522,8 @@
 
   /* DESKTOP-009: naked canvas, hairline list/detail split — no rounded outer shell. */
   .team-workspace {
+    display: grid;
+    grid-template-columns: minmax(280px, 34%) minmax(0, 1fr);
     flex: 1 1 auto;
     min-height: 0;
     min-width: 0;
@@ -588,11 +630,11 @@
   .team-detail {
     display: flex;
     flex-direction: column;
-    gap: var(--v4-space-4, 16px);
+    gap: var(--v4-space-5, 20px);
     min-width: 0;
     min-height: 0;
     height: 100%;
-    padding: var(--v4-space-4, 16px);
+    padding: 12px 18px 20px;
     overflow-y: auto;
     background: transparent;
   }
@@ -654,6 +696,57 @@
     white-space: nowrap;
   }
 
+  .team-member-facts {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0;
+    margin: 0;
+    padding: 12px 0;
+    border-top: 1px solid var(--v4-rowline);
+    border-bottom: 1px solid var(--v4-rowline);
+  }
+
+  .team-member-facts div {
+    display: grid;
+    gap: var(--v4-row-stack-gap, 3px);
+    min-width: 0;
+    padding: 0 14px;
+  }
+
+  .team-member-facts div:first-child {
+    padding-left: 0;
+  }
+
+  .team-member-facts div + div {
+    border-left: 1px solid var(--v4-rowline);
+  }
+
+  .team-member-facts dt,
+  .team-member-facts dd {
+    overflow: hidden;
+    margin: 0;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .team-member-facts dt {
+    color: var(--v4-text-3);
+    font-size: var(--type-metadata, 13px);
+  }
+
+  .team-member-facts dd {
+    color: var(--v4-text-1);
+    font-size: var(--type-body, 15px);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .team-section-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 28px;
+    min-width: 0;
+  }
+
   .team-section {
     display: grid;
     gap: 8px;
@@ -670,19 +763,25 @@
   }
 
   .chip-row {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
+    display: grid;
+    gap: 0;
+    border-top: 1px solid var(--v4-rowline);
   }
 
   .skill-chip,
   .project-chip {
-    font-size: var(--type-secondary, 11px);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-width: 0;
+    padding: 8px 0;
+    border: 0;
+    border-bottom: 1px solid var(--v4-rowline);
+    border-radius: 0;
+    background: transparent;
     color: var(--v4-text-2);
-    padding: 2px 8px;
-    background: var(--v4-raised, rgba(255, 255, 255, 0.03));
-    border-radius: 6px;
-    border: 1px solid var(--v4-hairline);
+    font-size: var(--type-secondary, 14px);
   }
 
   .skill-n {
@@ -747,27 +846,105 @@
   @media (max-width: 820px) {
     /* When detail is open, shared .list-detail hides the list pane.
        Surface a back control so the list remains reachable. */
+    .team-workspace {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
     .team-workspace[data-detail-open='true'] .team-detail-back {
       display: inline-flex;
       align-items: center;
     }
+
+    .team-workspace[data-detail-open='false'] .team-detail-pane {
+      display: none;
+    }
   }
 
   @media (max-width: 720px) {
+    .team-panel {
+      /* The desktop keeps its 220px global sidebar at compact widths and the
+         page canvas contributes 18px padding on each side. Some parent panels
+         retain their wide intrinsic size, so explicitly cap Team to the
+         actually visible company canvas instead of letting its controls render
+         beyond the clipped viewport. */
+      inline-size: calc(100dvw - 256px);
+      max-inline-size: 100%;
+    }
+
     .team-header {
       align-items: stretch;
       flex-direction: column;
+      gap: 10px;
     }
 
-    .team-actions,
-    .team-action-button {
+    .team-heading {
       width: 100%;
+    }
+
+    .team-meta {
+      overflow: visible;
+      overflow-wrap: anywhere;
+      text-overflow: clip;
+      white-space: normal;
+    }
+
+    .team-actions {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+      min-width: 0;
+      width: 100%;
+    }
+
+    .team-actions .team-action-button {
+      width: 100%;
+      min-width: 0;
+      height: auto;
+      min-height: 30px;
+      padding: 6px 10px;
+      line-height: 1.2;
+      overflow-wrap: anywhere;
+      white-space: normal;
     }
 
     .team-detail-title-row {
       align-items: flex-start;
       flex-direction: column;
       gap: 4px;
+    }
+
+    .team-detail-title-row h3,
+    .team-detail-email,
+    .team-detail-meta {
+      overflow: visible;
+      overflow-wrap: anywhere;
+      text-overflow: clip;
+      white-space: normal;
+    }
+
+    .team-member-facts,
+    .team-section-grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .team-member-facts div {
+      padding: 8px 0;
+    }
+
+    .team-member-facts div:first-child {
+      padding-top: 0;
+    }
+
+    .team-member-facts div + div {
+      border-top: 1px solid var(--v4-rowline);
+      border-left: 0;
+    }
+
+    .team-member-facts dt,
+    .team-member-facts dd {
+      overflow: visible;
+      overflow-wrap: anywhere;
+      text-overflow: clip;
+      white-space: normal;
     }
   }
 

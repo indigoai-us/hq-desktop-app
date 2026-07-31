@@ -137,10 +137,13 @@ describe('DESKTOP-009: team activity and access', () => {
     expect(panel).toMatch(
       /\.team-member-row\.is-selected\s*\{[\s\S]*?border-radius:\s*0;/,
     );
-    // True controls and compact chips may retain a compact radius.
+    // True controls and type labels may retain a compact radius; telemetry
+    // collections are flat rows rather than nested rounded containers.
     expect(panel).toContain('border-radius: var(--v4-radius-button)');
     expect(panel).toContain('border-radius: var(--v4-radius-pill');
-    expect(panel).toMatch(/\.skill-chip,[\s\S]*?border-radius:\s*6px;/);
+    expect(panel).toMatch(
+      /\.skill-chip,[\s\S]*?border:\s*0;[\s\S]*?border-radius:\s*0;[\s\S]*?background:\s*transparent;/,
+    );
     // No card chrome / shadow on the workspace shell.
     expect(panel).not.toContain('var(--v4-radius-card');
     expect(panel).not.toContain('var(--v4-shadow-card)');
@@ -151,10 +154,10 @@ describe('DESKTOP-009: team activity and access', () => {
   it('uses five semantic type roles and 3px title/meta stacks', () => {
     expect(V4_TYPE_SCALE).toEqual({
       metadata: 13,
-      secondary: 13,
-      body: 14,
-      section: 14,
-      detail: 14,
+      secondary: 14,
+      body: 15,
+      section: 17,
+      detail: 24,
     });
     expect(V4_ROW_STACK_GAP_PX).toBe(3);
     expect(tokens).toContain('--v4-row-stack-gap: 3px');
@@ -165,6 +168,22 @@ describe('DESKTOP-009: team activity and access', () => {
     expect(panel).toContain('--type-metadata');
     expect(panel).toContain('var(--v4-row-stack-gap, 3px)');
     expect(panel).toContain('title-stack');
+  });
+
+  it('fills the desktop canvas with a proportional team rail and explicit facts', () => {
+    expect(panel).toContain('data-testid="team-member-facts"');
+    expect(panel).toContain('Type & role');
+    expect(panel).toContain("selectedMember.sessions ?? 'Unavailable'");
+    expect(panel).toContain("selectedMember.events ?? 'Unavailable'");
+    expect(panel).toMatch(
+      /\.team-panel\s*\{[\s\S]*?min-height:\s*clamp\(360px,\s*calc\(100dvh - 170px\),\s*620px\);/,
+    );
+    expect(panel).toMatch(
+      /\.team-workspace\s*\{[\s\S]*?display:\s*grid;[\s\S]*?grid-template-columns:\s*minmax\(280px,\s*34%\)\s*minmax\(0,\s*1fr\);[\s\S]*?border-radius:\s*0;/,
+    );
+    expect(panel).toMatch(
+      /\.team-section-grid\s*\{[\s\S]*?grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\);/,
+    );
   });
 
   it('supports keyboard selection, focus-visible, and responsive collapse with actions retained', () => {
@@ -184,6 +203,27 @@ describe('DESKTOP-009: team activity and access', () => {
     expect(panel).toContain('data-testid="team-detail-back"');
     expect(panel).toContain('@media (max-width: 820px)');
     expect(panel).toContain('@media (max-width: 720px)');
+    expect(panel).toContain(
+      ".team-workspace[data-detail-open='false'] .team-detail-pane",
+    );
+    // Narrow company canvases can be only ~180px after the global sidebar.
+    // Actions must reflow by their actual available width rather than giving
+    // two flex children width:100%, which pushes the second control off-canvas.
+    expect(panel).toMatch(
+      /@media \(max-width: 720px\)[\s\S]*?\.team-actions\s*\{[\s\S]*?display:\s*grid;[\s\S]*?grid-template-columns:\s*repeat\(auto-fit,\s*minmax\(120px,\s*1fr\)\);[\s\S]*?width:\s*100%;/,
+    );
+    expect(panel).toMatch(
+      /@media \(max-width: 720px\)[\s\S]*?\.team-panel\s*\{[\s\S]*?inline-size:\s*calc\(100dvw - 256px\);[\s\S]*?max-inline-size:\s*100%;/,
+    );
+    expect(panel).toMatch(
+      /\.team-actions \.team-action-button\s*\{[\s\S]*?width:\s*100%;[\s\S]*?min-width:\s*0;[\s\S]*?white-space:\s*normal;/,
+    );
+    expect(panel).toMatch(
+      /\.team-meta\s*\{[\s\S]*?overflow:\s*visible;[\s\S]*?overflow-wrap:\s*anywhere;[\s\S]*?white-space:\s*normal;/,
+    );
+    expect(panel).toMatch(
+      /\.team-detail-title-row h3,[\s\S]*?\.team-detail-meta\s*\{[\s\S]*?overflow-wrap:\s*anywhere;[\s\S]*?white-space:\s*normal;/,
+    );
     // Invite + open-console stay in primary-actions (unshrunk under list-detail).
     expect(panel).toContain('detail-primary-actions primary-actions');
     expect(desktopCss).toMatch(

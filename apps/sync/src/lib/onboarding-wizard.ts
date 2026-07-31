@@ -6,19 +6,33 @@ export interface WizardStep {
 
 export interface WizardState {
   installPath: string | null;
+  /**
+   * Whether the telemetry consent question has been answered. Starts `false`
+   * (genuinely unanswered — no pre-selected option) so the consent step's
+   * continue action stays disabled until the person picks share or decline.
+   */
+  consentAnswered: boolean;
 }
 
 export const WIZARD_STEPS: WizardStep[] = [
   { index: 0, id: 'welcome-signin', label: 'Welcome' },
   { index: 1, id: 'directory', label: 'Location' },
   { index: 2, id: 'setup', label: 'Setup' },
-  { index: 3, id: 'ready', label: 'Ready' },
+  // Consent is its own step, placed AFTER setup: the person entity is
+  // provisioned during setup, so by the time we ask, the opt-in write has an
+  // entity to land on (the old sign-in-panel checkbox posted before the entity
+  // existed, so the answer 404'd and was silently dropped).
+  { index: 3, id: 'consent', label: 'Consent' },
+  { index: 4, id: 'ready', label: 'Ready' },
 ];
 
 const FIRST_STEP_INDEX = WIZARD_STEPS[0].index;
 const SETUP_STEP_INDEX = 2;
+const CONSENT_STEP_INDEX = 3;
 const FINAL_STEP_INDEX = WIZARD_STEPS[WIZARD_STEPS.length - 1].index;
 const completedSteps = new Set<number>();
+
+export { CONSENT_STEP_INDEX, SETUP_STEP_INDEX };
 
 export const AUTH_GATED_STEPS: number[] = [SETUP_STEP_INDEX];
 
@@ -39,6 +53,10 @@ export function getStepValidity(
       return state.installPath !== null && state.installPath.length > 0;
     case SETUP_STEP_INDEX:
       return false;
+    case CONSENT_STEP_INDEX:
+      // Continue is disabled until the person answers the telemetry question.
+      // No option is pre-selected, so this is false on first render.
+      return state.consentAnswered;
     default:
       return true;
   }

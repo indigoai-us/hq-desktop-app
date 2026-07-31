@@ -34,9 +34,13 @@ describe('desktop-alt Messages catch-up digest', () => {
     expect(shell).toContain("((c.previewDirection ?? c.lastMessageDirection) ?? '') === 'in'");
     expect(shell).toContain("id: `dm:${c.personUid}`");
     expect(shell).toContain("id: `ch:${ch.channelId}`");
-    // It's a ranked digest (top slice), not the whole list.
+    expect(shell).toContain("ch.scope === 'group'");
+    expect(shell).toContain(': `# ${channelDisplayName(ch)}`');
+    // It's a compact prioritized digest (top slice), not the whole list.
     expect(shell).toContain('CATCH_UP_LIMIT');
-    expect(shell).toContain('rank: index + 1');
+    expect(shell).toContain('.slice(0, CATCH_UP_LIMIT)');
+    // Ordering is enough hierarchy; avoid arbitrary number furniture in the UI.
+    expect(catchUp).not.toContain('class="rank"');
   });
 
   it('routes an opened digest item back to its real conversation', () => {

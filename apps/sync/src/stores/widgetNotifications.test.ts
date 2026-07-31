@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
+  WIDGET_ACTIVITY_BURST_WINDOW_MS,
   WIDGET_HOVER_FOOTER_HEIGHT,
+  WIDGET_HOVER_HEADER_HEIGHT,
   WIDGET_HOVER_LIST_PADDING,
   WIDGET_HOVER_MAX,
   WIDGET_HOVER_PANEL_WIDTH,
@@ -13,6 +15,7 @@ import {
   WIDGET_MESSAGE_EXPAND_HEADROOM,
   WIDGET_RECENT_MAX,
   WIDGET_ROW_GAP,
+  WIDGET_ROW_HEIGHT,
   WIDGET_ROW_TIMEOUT_MS,
   WIDGET_STACK_MARGIN_BOTTOM,
   WIDGET_STACK_MAX,
@@ -20,6 +23,9 @@ import {
   WIDGET_TOP_HEADROOM,
   addItem,
   bannerToStackItem,
+  channelToStackItem,
+  compactActivityBursts,
+  compactHoverItems,
   dayLabel,
   deserializeRecent,
   dismissItem,
@@ -95,6 +101,8 @@ describe('bannerToStackItem', () => {
     );
     expect(withActions.actionId).toBe('install-update');
     expect(withActions.actionLabel).toBe('Update now');
+    expect(withActions.id).toBe('update:0.9.9');
+    expect(withActions.updateVersion).toBe('0.9.9');
 
     const without = bannerToStackItem(
       {
@@ -261,8 +269,15 @@ describe('widgetWindowSize', () => {
       ...emptyWidgetStack(),
       visible: [item({ id: '1', type: 'share' })],
     };
-    // 43 + 12 + 30 + 0 + 10 = 95
-    expect(widgetWindowSize(one)).toEqual({ width: WIDGET_STACK_WIDTH, height: 95 });
+    const oneHeight =
+      WIDGET_MARK_AREA +
+      WIDGET_STACK_MARGIN_BOTTOM +
+      WIDGET_ROW_HEIGHT +
+      WIDGET_TOP_HEADROOM;
+    expect(widgetWindowSize(one)).toEqual({
+      width: WIDGET_STACK_WIDTH,
+      height: oneHeight,
+    });
 
     const twoMsg = {
       ...emptyWidgetStack(),
@@ -271,10 +286,13 @@ describe('widgetWindowSize', () => {
         item({ id: '2', type: 'share' }),
       ],
     };
-    // 43 + 12 + 60 + 6 + 10 + 110 = 241
     expect(widgetWindowSize(twoMsg)).toEqual({
       width: WIDGET_STACK_WIDTH,
-      height: 95 + 30 + 6 + WIDGET_MESSAGE_EXPAND_HEADROOM,
+      height:
+        oneHeight +
+        WIDGET_ROW_HEIGHT +
+        WIDGET_ROW_GAP +
+        WIDGET_MESSAGE_EXPAND_HEADROOM,
     });
   });
 });
@@ -309,6 +327,267 @@ describe('addItem → recent', () => {
     expect(state.queued.map((q) => q.id)).toEqual(['q1']);
     expect(state.recent.map((r) => r.id)).toEqual(['q1']);
     expect(state.recent[0]?.unread).toBe(true);
+  });
+});
+
+describe('compact activity bursts', () => {
+  const activity = (
+    id: string,
+    actor: string,
+    ts: number,
+    company = 'indigo',
+  ): WidgetStackItem =>
+    item({
+      id,
+      type: 'sync',
+      kind: 'new-file',
+      actor,
+      text: `${id}.md`,
+      ts,
+      data: { company, path: `${id}.md` },
+      unread: true,
+    });
+
+  it('collapses one source/session burst into one newest representative', () => {
+    const now = Date.parse('2026-07-28T18:10:00-06:00');
+    const grouped = compactActivityBursts([
+      activity('latest', 'richard@sender.agency', now),
+      activity('middle', 'richard@sender.agency', now - 2 * 60_000),
+      activity('oldest', 'richard@sender.agency', now - 5 * 60_000),
+    ]);
+
+    expect(grouped).toHaveLength(1);
+    expect(grouped[0]).toMatchObject({
+      id: 'latest',
+      text: 'latest.md',
+      compactGroupCount: 3,
+      compactGroupIds: ['latest', 'middle', 'oldest'],
+      unread: true,
+    });
+  });
+
+  it('combines contributors within a company but separates companies, days, and sessions', () => {
+    const now = Date.parse('2026-07-28T18:10:00-06:00');
+    const grouped = compactActivityBursts([
+      activity('base', 'Richard', now, 'indigo'),
+      activity('actor', 'Maya', now - 1_000, 'indigo'),
+      activity('company', 'Richard', now - 2_000, 'amass'),
+      activity(
+        'later',
+        'Richard',
+        now - WIDGET_ACTIVITY_BURST_WINDOW_MS - 1,
+        'indigo',
+      ),
+      activity(
+        'yesterday',
+        'Richard',
+        Date.parse('2026-07-27T23:59:00-06:00'),
+        'indigo',
+      ),
+    ]);
+
+    expect(grouped.map((entry) => entry.id)).toEqual([
+      'base',
+      'company',
+      'later',
+      'yesterday',
+    ]);
+    expect(grouped[0]).toMatchObject({
+      compactGroupCount: 2,
+      compactGroupIds: ['base', 'actor'],
+    });
+    expect(grouped.slice(1).every((entry) => entry.compactGroupCount == null)).toBe(true);
+  });
+
+  it('keeps different conversations, channels, shares, updates, and warnings individual', () => {
+    const now = Date.parse('2026-07-28T18:10:00-06:00');
+    const rows = [
+      item({ id: 'dm-1', type: 'message', kind: 'dm', actor: 'Richard', ts: now }),
+      item({ id: 'dm-2', type: 'message', kind: 'dm', actor: 'Maya', ts: now - 1 }),
+      item({ id: 'channel-1', type: 'mention', kind: 'channel', actor: '#design', ts: now - 2 }),
+      item({ id: 'share-1', type: 'share', kind: 'share', actor: 'Richard', ts: now - 3 }),
+      item({ id: 'update-1', type: 'system', kind: 'update', actor: 'HQ', ts: now - 4 }),
+      item({ id: 'warning-1', type: 'system', kind: 'system', actor: 'HQ', ts: now - 5 }),
+    ];
+
+    expect(compactActivityBursts(rows)).toEqual(rows);
+  });
+
+  it('projects a same-sender DM burst as one latest, directly-openable conversation', () => {
+    const now = new Date(2026, 6, 28, 18, 10).getTime();
+    const latestData = {
+      eventId: 'dm-latest',
+      fromPersonUid: 'prs_richard',
+      fromEmail: 'richard@sender.agency',
+      body: 'Latest project update',
+    };
+    const grouped = compactActivityBursts([
+      item({
+        id: 'dm-latest',
+        type: 'message',
+        kind: 'dm',
+        actor: 'richard@sender.agency',
+        text: 'Latest project update',
+        ts: now,
+        data: latestData,
+        unread: true,
+      }),
+      item({
+        id: 'dm-middle',
+        type: 'message',
+        kind: 'dm',
+        actor: 'Richard',
+        text: 'Different project update',
+        ts: now - 60_000,
+        data: {
+          eventId: 'dm-middle',
+          fromPersonUid: 'prs_richard',
+          fromEmail: 'richard@sender.agency',
+        },
+        unread: false,
+      }),
+      item({
+        id: 'dm-oldest',
+        type: 'message',
+        kind: 'dm',
+        actor: 'Richard Sender',
+        text: 'Oldest project update',
+        ts: now - 120_000,
+        data: {
+          eventId: 'dm-oldest',
+          fromPersonUid: 'prs_richard',
+        },
+        unread: true,
+      }),
+    ]);
+
+    expect(grouped).toHaveLength(1);
+    expect(grouped[0]).toMatchObject({
+      id: 'dm-latest',
+      text: 'Latest project update',
+      data: latestData,
+      compactGroupCount: 3,
+      compactGroupUnreadCount: 2,
+      compactGroupIds: ['dm-latest', 'dm-middle', 'dm-oldest'],
+      unread: true,
+    });
+  });
+
+  it('uses normalized sender fallback for persisted DMs without native identity data', () => {
+    const now = new Date(2026, 6, 28, 18, 10).getTime();
+    const grouped = compactActivityBursts([
+      item({
+        id: 'dm-1',
+        type: 'message',
+        kind: 'dm',
+        actor: ' Richard@Sender.Agency ',
+        text: 'First',
+        ts: now,
+        data: null,
+      }),
+      item({
+        id: 'dm-2',
+        type: 'message',
+        kind: 'dm',
+        actor: 'richard@sender.agency',
+        text: 'Second',
+        ts: now - 1,
+        data: null,
+      }),
+    ]);
+
+    expect(grouped).toHaveLength(1);
+    expect(grouped[0]?.compactGroupCount).toBe(2);
+  });
+
+  it('compacts repeated automated agent-join DMs but keeps different ordinary senders separate', () => {
+    // Keep the fixture on the same local calendar day in every CI timezone.
+    const now = new Date(2026, 6, 28, 18, 10).getTime();
+    const joinText = '🤖 A new agent (an agent) just joined the company.';
+    const rows = [
+      item({
+        id: 'join-1',
+        type: 'message',
+        kind: 'dm',
+        actor: 'Provisioner one',
+        text: joinText,
+        ts: now,
+        data: { body: joinText, fromPersonUid: 'agt_join_1' },
+      }),
+      item({
+        id: 'join-2',
+        type: 'message',
+        kind: 'dm',
+        actor: 'Provisioner two',
+        text: joinText,
+        ts: now - 60 * 60_000,
+        data: { body: joinText, fromPersonUid: 'agt_join_2' },
+      }),
+      item({ id: 'ok-1', type: 'message', kind: 'dm', actor: 'Maya', text: 'OK', ts: now - 2 }),
+      item({ id: 'ok-2', type: 'message', kind: 'dm', actor: 'Izzy', text: 'OK', ts: now - 3 }),
+    ];
+
+    const grouped = compactActivityBursts(rows);
+    expect(grouped).toHaveLength(3);
+    expect(grouped[0]).toMatchObject({
+      id: 'join-1',
+      compactGroupCount: 2,
+      compactGroupIds: ['join-1', 'join-2'],
+    });
+    expect(grouped.slice(1).map((entry) => entry.id)).toEqual(['ok-1', 'ok-2']);
+  });
+
+  it('keeps human DMs mentioning a new agent as separate conversations', () => {
+    const now = Date.parse('2026-07-28T18:10:00-06:00');
+    const prose = 'I heard a new agent joined, so I updated our onboarding notes.';
+    const rows = [
+      item({
+        id: 'maya',
+        type: 'message',
+        kind: 'dm',
+        actor: 'Maya',
+        text: prose,
+        ts: now,
+        data: { body: prose, fromPersonUid: 'prs_maya' },
+      }),
+      item({
+        id: 'izzy',
+        type: 'message',
+        kind: 'dm',
+        actor: 'Izzy',
+        text: prose,
+        ts: now - 1,
+        data: { body: prose, fromPersonUid: 'prs_izzy' },
+      }),
+    ];
+    expect(compactActivityBursts(rows)).toEqual(rows);
+  });
+
+  it('collapses before the visual cap so unrelated older rows remain visible', () => {
+    const now = Date.parse('2026-07-28T18:10:00-06:00');
+    const repeated = Array.from({ length: 7 }, (_, index) =>
+      activity('activity-' + index, 'Richard', now - index * 1_000),
+    );
+    const unique = Array.from({ length: 9 }, (_, index) =>
+      item({
+        id: `message-${index}`,
+        type: 'message',
+        kind: 'dm',
+        actor: `Person ${index}`,
+        ts: now - 10_000 - index,
+      }),
+    );
+    const state = {
+      ...emptyWidgetStack(),
+      recent: [...repeated, ...unique],
+    };
+
+    const visible = compactHoverItems(state);
+    expect(visible).toHaveLength(WIDGET_HOVER_MAX);
+    expect(visible[0]?.compactGroupCount).toBe(7);
+    expect(visible.at(-1)?.id).toBe('message-5');
+    // The underlying recent history remains the full individual audit trail.
+    expect(state.recent).toHaveLength(16);
   });
 });
 
@@ -575,6 +854,7 @@ describe('widgetHoverWindowSize', () => {
       WIDGET_STACK_MARGIN_BOTTOM +
       WIDGET_TOP_HEADROOM +
       WIDGET_HOVER_LIST_PADDING +
+      WIDGET_HOVER_HEADER_HEIGHT +
       WIDGET_HOVER_FOOTER_HEIGHT +
       WIDGET_HOVER_ROW_HEIGHT;
     expect(widgetHoverWindowSize(one, 0)).toEqual({
@@ -588,6 +868,7 @@ describe('widgetHoverWindowSize', () => {
       WIDGET_STACK_MARGIN_BOTTOM +
       WIDGET_TOP_HEADROOM +
       WIDGET_HOVER_LIST_PADDING +
+      WIDGET_HOVER_HEADER_HEIGHT +
       WIDGET_HOVER_FOOTER_HEIGHT +
       2 * WIDGET_HOVER_ROW_HEIGHT +
       WIDGET_HOVER_ROW_GAP +
@@ -605,6 +886,7 @@ describe('widgetHoverWindowSize', () => {
       WIDGET_STACK_MARGIN_BOTTOM +
       WIDGET_TOP_HEADROOM +
       WIDGET_HOVER_LIST_PADDING +
+      WIDGET_HOVER_HEADER_HEIGHT +
       WIDGET_HOVER_FOOTER_HEIGHT +
       2 * WIDGET_HOVER_ROW_HEIGHT +
       WIDGET_HOVER_ROW_GAP;
@@ -612,6 +894,32 @@ describe('widgetHoverWindowSize', () => {
       width: WIDGET_HOVER_PANEL_WIDTH + 20,
       height: base + WIDGET_MESSAGE_EXPAND_HEADROOM,
     });
+  });
+
+  it('does not reserve reply headroom for a grouped conversation that cannot expand', () => {
+    const groupedMessage = [
+      item({
+        id: 'latest',
+        type: 'message',
+        kind: 'dm',
+        compactGroupCount: 10,
+        compactGroupIds: Array.from({ length: 10 }, (_, index) => `dm-${index}`),
+      }),
+    ];
+    const base =
+      WIDGET_MARK_AREA +
+      WIDGET_STACK_MARGIN_BOTTOM +
+      WIDGET_TOP_HEADROOM +
+      WIDGET_HOVER_LIST_PADDING +
+      WIDGET_HOVER_HEADER_HEIGHT +
+      WIDGET_HOVER_FOOTER_HEIGHT +
+      WIDGET_HOVER_ROW_HEIGHT;
+
+    expect(widgetHoverWindowSize(groupedMessage, 0)).toEqual({
+      width: WIDGET_HOVER_PANEL_WIDTH + 20,
+      height: base,
+    });
+    expect(base).toBeLessThan(300);
   });
 });
 
@@ -630,6 +938,7 @@ describe('widgetEmptyHoverWindowSize', () => {
         WIDGET_STACK_MARGIN_BOTTOM +
         WIDGET_TOP_HEADROOM +
         WIDGET_HOVER_LIST_PADDING +
+        WIDGET_HOVER_HEADER_HEIGHT +
         WIDGET_HOVER_FOOTER_HEIGHT +
         WIDGET_HOVER_ROW_HEIGHT,
     });
@@ -724,10 +1033,86 @@ describe('historyFeedItemToStackItem', () => {
       unread: false,
     });
   });
+
+  it('maps trusted pending update → system with separate Open and Update now actions', () => {
+    const update = {
+      version: '0.10.36-beta.1',
+      body: 'Inbox notification repair',
+      date: '2026-07-27T15:00:00Z',
+    };
+    const row = historyFeedItemToStackItem(
+      {
+        id: 'update:0.10.36-beta.1',
+        kind: 'update',
+        actor: 'HQ',
+        summary: 'Version 0.10.36-beta.1 is ready to install.',
+        ts: 6_000,
+        update,
+      },
+      lastRead,
+    );
+    expect(row).toMatchObject({
+      id: 'update:0.10.36-beta.1',
+      type: 'system',
+      actor: 'HQ',
+      text: 'Version 0.10.36-beta.1 is ready to install.',
+      kind: 'update',
+      clickActionId: 'open',
+      data: update,
+      actionId: 'update',
+      actionLabel: 'Update now',
+      unread: true,
+    });
+  });
+});
+
+describe('channelToStackItem', () => {
+  it('maps an unread company channel to an honest, distinct communication row', () => {
+    const channel = {
+      channelId: 'chn_launch',
+      name: '#launch',
+      scope: 'company',
+      companyName: 'Indigo',
+      unread: 4,
+      lastMessageAt: '2026-07-27T20:30:00Z',
+    };
+
+    const row = channelToStackItem(channel, Date.parse('2026-07-27T21:00:00Z'));
+
+    expect(row).toMatchObject({
+      id: 'channel:chn_launch',
+      kind: 'channel',
+      type: 'mention',
+      actor: '#launch',
+      text: '4 unread · Indigo',
+      unread: true,
+      data: channel,
+    });
+    expect(row.ts).toBe(Date.parse(channel.lastMessageAt));
+  });
+
+  it('labels a group DM by its people and never gives it a channel hash', () => {
+    const row = channelToStackItem(
+      {
+        channelId: 'grp_1',
+        name: '',
+        scope: 'group',
+        memberCount: 3,
+        members: [{ displayName: 'Maya' }, { displayName: 'Erin' }],
+        unread: 2,
+      },
+      1234,
+    );
+
+    expect(row.actor).toBe('Maya, Erin');
+    expect(row.actor).not.toContain('#');
+    expect(row.text).toBe('2 unread · Group DM · 3 people');
+    expect(row.ts).toBe(1234);
+  });
 });
 
 describe('mergeRecentWithHistory', () => {
-  it('prefers openable history over display-only local twin', () => {
+  it('prefers trusted history and replaces a display-only local update', () => {
     const local: WidgetStackItem[] = [
       item({
         id: 'dm:e1',
@@ -771,16 +1156,137 @@ describe('mergeRecentWithHistory', () => {
         },
         0,
       ),
+      historyFeedItemToStackItem(
+        {
+          id: 'update:0.10.36-beta.1',
+          kind: 'update',
+          actor: 'HQ',
+          summary: 'Version 0.10.36-beta.1 is ready to install.',
+          ts: 9_100,
+          update: {
+            version: '0.10.36-beta.1',
+            body: 'Inbox notification repair',
+            date: '2026-07-27T15:00:00Z',
+          },
+        },
+        0,
+      ),
     ];
 
     const merged = mergeRecentWithHistory(local, history);
-    expect(merged.map((r) => r.id)).toEqual(['wn-update', 'share:s1', 'dm:e1']);
+    expect(merged.map((r) => r.id)).toEqual([
+      'update:0.10.36-beta.1',
+      'share:s1',
+      'dm:e1',
+    ]);
     expect(merged.find((r) => r.id === 'dm:e1')).toMatchObject({
       clickActionId: 'open',
       data: { eventId: 'e1' },
       unread: true,
     });
-    expect(merged.find((r) => r.id === 'wn-update')?.kind).toBe('update');
+    expect(merged.filter((r) => r.kind === 'update')).toEqual([
+      expect.objectContaining({
+        id: 'update:0.10.36-beta.1',
+        clickActionId: 'open',
+        actionId: 'update',
+        actionLabel: 'Update now',
+        data: expect.objectContaining({ version: '0.10.36-beta.1' }),
+      }),
+    ]);
+  });
+
+  it('drops a stale persisted update when native state has no pending update', () => {
+    const restored = deserializeRecent(
+      JSON.stringify([
+        item({
+          id: 'wn-stale-update',
+          kind: 'update',
+          text: 'HQ 0.10.35 — Ready to install',
+          clickActionId: 'update',
+          data: { version: 'tampered' },
+          actionId: 'update',
+          actionLabel: 'Update now',
+          unread: true,
+        }),
+      ]),
+    );
+
+    expect(restored[0]).toMatchObject({
+      kind: 'update',
+      clickActionId: '',
+      data: null,
+      actionId: undefined,
+      actionLabel: undefined,
+    });
+    expect(
+      mergeRecentWithHistory(restored, [], { updatesAuthoritative: true }),
+    ).toEqual([]);
+  });
+
+  it('preserves read state only for the matching trusted update version', () => {
+    const version = '0.10.36-beta.1';
+    const local = [
+      item({
+        id: `update:${version}`,
+        kind: 'update',
+        updateVersion: version,
+        unread: false,
+        clickActionId: '',
+        data: null,
+      }),
+    ];
+    const trusted = [
+      historyFeedItemToStackItem(
+        {
+          id: `update:${version}`,
+          kind: 'update',
+          actor: 'HQ',
+          summary: `Version ${version} is ready to install.`,
+          ts: 9_100,
+          update: { version },
+        },
+        0,
+      ),
+    ];
+
+    const refreshed = mergeRecentWithHistory(local, trusted, {
+      updatesAuthoritative: true,
+    });
+    expect(refreshed).toEqual([
+      expect.objectContaining({
+        id: `update:${version}`,
+        updateVersion: version,
+        unread: false,
+        actionId: 'update',
+        actionLabel: 'Update now',
+      }),
+    ]);
+
+    const nextVersion = '0.10.37-beta.1';
+    const changed = mergeRecentWithHistory(
+      local,
+      [
+        historyFeedItemToStackItem(
+          {
+            id: `update:${nextVersion}`,
+            kind: 'update',
+            actor: 'HQ',
+            summary: `Version ${nextVersion} is ready to install.`,
+            ts: 9_200,
+            update: { version: nextVersion },
+          },
+          0,
+        ),
+      ],
+      { updatesAuthoritative: true },
+    );
+    expect(changed).toEqual([
+      expect.objectContaining({
+        id: `update:${nextVersion}`,
+        updateVersion: nextVersion,
+        unread: true,
+      }),
+    ]);
   });
 
   it('caps at WIDGET_RECENT_MAX newest-first', () => {

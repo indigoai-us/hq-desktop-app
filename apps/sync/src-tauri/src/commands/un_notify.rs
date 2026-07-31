@@ -63,6 +63,12 @@ define_class!(
                 crate::tray::set_prompt_badge(app, pending);
                 let app = app.clone();
                 tauri::async_runtime::spawn(async move {
+                    // Keep the delegate registered during app launch so macOS
+                    // does not drop a cold notification response, but defer the
+                    // user-visible destination until bundled frontend cache
+                    // eviction/reload has reached a terminal ready state.
+                    crate::webview_asset_cache::wait_until_ready().await;
+
                     // Land on the Meetings screen — this banner is a
                     // meeting-detected prompt, so the click should surface the
                     // detected meeting (with its Record control), not the

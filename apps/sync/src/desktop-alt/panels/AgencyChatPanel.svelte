@@ -11,9 +11,25 @@
   const selected = $derived(agencyStore.selected);
   const messages = $derived(agencyStore.messages);
 
+  interface FailedSend {
+    text: string;
+    message: string;
+    company: string;
+    team: string;
+  }
+
   let draft = $state('');
   let busy = $state(false);
+  let sendingSource = $state<'compose' | 'retry' | null>(null);
+  let failedSend = $state<FailedSend | null>(null);
   let scroller = $state<HTMLDivElement | undefined>(undefined);
+  const visibleFailedSend = $derived(
+    failedSend &&
+      selected?.company === failedSend.company &&
+      selected?.team === failedSend.team
+      ? failedSend
+      : null,
+  );
 
   // Stick to the bottom as the conversation grows.
   $effect(() => {
@@ -27,17 +43,44 @@
     return `${company}/${team}`;
   }
 
-  async function send() {
-    const text = draft.trim();
-    if (!text || busy) return;
+  function sendFailureMessage(error: unknown): string {
+    if (error instanceof Error && error.message) return error.message;
+    if (typeof error === 'string' && error.trim()) return error;
+    return 'The message could not be delivered.';
+  }
+
+  async function send(retry?: FailedSend) {
+    const target = selected;
+    const isRetry = retry !== undefined;
+    const text = (retry?.text ?? draft).trim();
+    if (
+      !target ||
+      !text ||
+      busy ||
+      (retry && (retry.company !== target.company || retry.team !== target.team))
+    ) {
+      return;
+    }
     busy = true;
+    sendingSource = isRetry ? 'retry' : 'compose';
+    if (!isRetry) failedSend = null;
     try {
       await sendAgencyMessage(text);
-      draft = '';
+      // A send can finish after the operator has started writing their next
+      // message. Only clear the exact draft that was submitted.
+      if (draft.trim() === text) draft = '';
+      failedSend = null;
     } catch (err) {
       console.error('send failed:', err);
+      failedSend = {
+        text,
+        message: sendFailureMessage(err),
+        company: target.company,
+        team: target.team,
+      };
     } finally {
       busy = false;
+      sendingSource = null;
     }
   }
 
@@ -96,10 +139,29 @@
         bind:value={draft}
         onkeydown={onKey}
       ></textarea>
-      <button class="send" onclick={send} disabled={busy || !draft.trim()}>
-        {busy ? 'Sending…' : 'Send'}
+      <button
+        class="send"
+        type="button"
+        onclick={() => void send()}
+        disabled={busy || !draft.trim()}
+        aria-busy={busy && sendingSource === 'compose'}
+      >
+        {busy && sendingSource === 'compose' ? 'Sending…' : 'Send'}
       </button>
     </div>
+    {#if visibleFailedSend}
+      <div class="send-error" role="alert" title={visibleFailedSend.message}>
+        <span>Couldn’t send that message. Your draft is still here.</span>
+        <button
+          type="button"
+          onclick={() => void send(visibleFailedSend!)}
+          disabled={busy}
+          aria-busy={busy && sendingSource === 'retry'}
+        >
+          {busy && sendingSource === 'retry' ? 'Retrying…' : 'Retry'}
+        </button>
+      </div>
+    {/if}
   {/if}
 </div>
 
@@ -164,4 +226,30 @@
     font: inherit; font-weight: 600; font-size: var(--text-base); padding: 8px 16px; cursor: pointer;
   }
   .send:disabled { opacity: 0.45; cursor: default; }
+  .send-error {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding-top: 8px;
+    border-top: 1px solid var(--v4-rowline);
+    color: var(--v4-error);
+    font-size: var(--text-base);
+  }
+  .send-error button {
+    flex: 0 0 auto;
+    padding: 0;
+    border: 0;
+    border-bottom: 1px solid currentColor;
+    border-radius: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .send-error button:disabled {
+    cursor: progress;
+    opacity: 0.58;
+  }
 </style>

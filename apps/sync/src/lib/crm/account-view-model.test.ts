@@ -287,19 +287,19 @@ describe('buildAccountDetail', () => {
 // ── small display helpers ────────────────────────────────────────────────────
 
 describe('display helpers', () => {
-  it('orDash falls back to an em-dash for empty / missing values', () => {
+  it('orDash uses explicit neutral copy for empty / missing values', () => {
     expect(orDash('hello')).toBe('hello');
-    expect(orDash('')).toBe('—');
-    expect(orDash('   ')).toBe('—');
-    expect(orDash(null)).toBe('—');
-    expect(orDash(undefined)).toBe('—');
+    expect(orDash('')).toBe('Not recorded');
+    expect(orDash('   ')).toBe('Not recorded');
+    expect(orDash(null)).toBe('Not recorded');
+    expect(orDash(undefined)).toBe('Not recorded');
   });
 
   it('relativeTime renders a human age and em-dashes empties', () => {
     const now = Date.parse('2026-06-15T00:00:00Z');
     expect(relativeTime('2026-06-15T00:00:00Z', now)).toBe('just now');
     expect(relativeTime('2026-06-14T22:00:00Z', now)).toBe('2h ago');
-    expect(relativeTime('', now)).toBe('—');
-    expect(relativeTime('not-a-date', now)).toBe('—');
+    expect(relativeTime('', now)).toBe('Not recorded');
+    expect(relativeTime('not-a-date', now)).toBe('Not recorded');
   });
 });

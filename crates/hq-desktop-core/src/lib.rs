@@ -6,6 +6,7 @@ pub mod activity;
 pub mod agency;
 pub mod banner;
 pub mod client_info;
+pub mod claude_launch;
 pub mod cognito;
 pub mod config;
 pub mod conflicts;
@@ -40,13 +41,16 @@ pub mod recall_sdk;
 pub mod recordings_ledger;
 pub mod release_channel;
 pub mod run_cli_provision;
+pub mod scope_gate;
 pub mod sessions;
 pub mod settings;
 pub mod share_notify;
+pub mod skill_catalog;
 pub mod staging;
 pub mod status;
 pub mod sync_outcome;
 pub mod sync_progress;
+pub mod toolchain;
 pub mod workspaces;
 
 #[cfg(test)]

@@ -4,6 +4,7 @@
   import Sparkline from '../components/Sparkline.svelte';
   import StatTile from '../components/StatTile.svelte';
   import OpenFileInClaudeCode from '../components/OpenFileInClaudeCode.svelte';
+  import { ActivityRequestTimeoutError } from '../lib/activity-request';
 
   interface Props {
     slug: string;
@@ -96,6 +97,16 @@
   const filteredRecent = $derived(activity.recent.filter((entry) => matchesDirection(entry, activityDirection)));
   const recentGroups = $derived(groupRecentActivity(filteredRecent));
   const recentCount = $derived(filteredRecent.length);
+  const recentSummaryLabel = $derived.by(() => {
+    if (recentCount > 0) return `${recentCount} of ${activity.stats.files7}`;
+    if (activity.stats.files7 > 0) {
+      return `${activity.stats.files7} ${activity.stats.files7 === 1 ? 'file' : 'files'} in summary`;
+    }
+    return 'No files';
+  });
+  const activityPeriodLabel = $derived(
+    loading ? 'Loading activity' : error ? 'Refresh failed' : 'Last 14 days',
+  );
 
   $effect(() => {
     const token = reloadToken;
@@ -115,7 +126,7 @@
     const warm = companyStore.activity(slug);
     if (warm != null) {
       activity = normalizeActivity(warm as Partial<CompanyActivity>);
-      loading = false;
+      loading = force;
     } else {
       activity = emptyActivity();
       loading = true;
@@ -130,7 +141,10 @@
       .catch((err) => {
         console.error('get_company_activity failed:', err);
         if (!cancelled) {
-          error = String(err);
+          error =
+            err instanceof ActivityRequestTimeoutError
+              ? 'The activity service took too long to respond. Try again.'
+              : 'Couldn’t load activity. Check your connection and try again.';
           if (companyStore.activity(slug) == null) activity = emptyActivity();
         }
       })
@@ -230,6 +244,9 @@
   }
 
   function retry() {
+    if (loading) return;
+    error = null;
+    loading = true;
     reloadToken += 1;
   }
 </script>
@@ -238,7 +255,7 @@
   <header class="activity-toolbar">
     <div class="activity-title title-stack">
       <h2 id="activity-panel-title">Activity</h2>
-      <span>{loading ? 'Loading activity' : 'Last 14 days'}</span>
+      <span>{activityPeriodLabel}</span>
     </div>
   </header>
 
@@ -248,7 +265,9 @@
         <strong>Activity unavailable</strong>
         <span>{error}</span>
       </div>
-      <button type="button" onclick={retry}>Retry</button>
+      <button type="button" onclick={retry} disabled={loading} aria-busy={loading}>
+        {loading ? 'Retrying…' : 'Retry'}
+      </button>
     </div>
   {/if}
 
@@ -350,7 +369,7 @@
     <header class="card-header">
       <div class="recent-heading">
         <h3 id="recent-files-title">Recent files</h3>
-        <span>{recentCount} of {activity.stats.files7}</span>
+        <span>{recentSummaryLabel}</span>
       </div>
       <div class="direction-toggle" role="group" aria-label="Activity direction">
         <button
@@ -417,7 +436,14 @@
         {/each}
       </div>
     {:else}
-      <div class="empty-state">No activity yet</div>
+      <div class="empty-state">
+        {#if activity.stats.files7 > 0}
+          Recent file details are unavailable. The summary reports {activity.stats.files7}
+          changed {activity.stats.files7 === 1 ? 'file' : 'files'} in the last 14 days.
+        {:else}
+          No file activity yet
+        {/if}
+      </div>
     {/if}
   </section>
 </section>

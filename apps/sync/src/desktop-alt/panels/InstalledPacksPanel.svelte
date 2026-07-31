@@ -24,7 +24,10 @@
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import {
     shortSource,
+    packIdentity,
     isPromptRenderable,
+    friendlyPackagesError,
+    isMissingPackagesToolError,
     type PackagesView,
     type InstalledPack,
     type AvailablePack,
@@ -34,66 +37,142 @@
 
   let view = $state<PackagesView | null>(null);
   let loading = $state(true);
-  let busy = $state<{ op: string; name: string } | null>(null);
+  let refreshing = $state(false);
+  let busy = $state<{ op: string; id: string; label: string } | null>(null);
   let logLines = $state<string[]>([]);
   let errorMsg = $state<string | null>(null);
+  let errorContext = $state<'read' | 'mutation'>('read');
+  let updateProbeError = $state<string | null>(null);
+  let repairCommandState = $state<'idle' | 'copying' | 'copied' | 'failed'>('idle');
+  let repairCommandError = $state<string | null>(null);
+  let repairCommandTimer: ReturnType<typeof setTimeout> | null = null;
   let confirmUninstall = $state<string | null>(null);
   // Per-pack "copied" feedback for the Get started copy button, keyed by pack name.
   let copiedPack = $state<string | null>(null);
+  let copyingPack = $state<string | null>(null);
   let copiedTimer: ReturnType<typeof setTimeout> | null = null;
   // Separate "copied" feedback for the (moderation-gated) setup-prompt copy button.
   let copiedPrompt = $state<string | null>(null);
+  let copyingPrompt = $state<string | null>(null);
   let copiedPromptTimer: ReturnType<typeof setTimeout> | null = null;
+  type ClipboardAction = 'get-started' | 'setup-prompt';
+  interface ClipboardFailure {
+    action: ClipboardAction;
+    message: string;
+  }
+  let clipboardFailures = $state<Record<string, ClipboardFailure | undefined>>({});
 
   const installed = $derived(view?.packs?.installed ?? []);
-  const available = $derived(view?.packs?.available ?? []);
-  const registryAvailable = $derived(view?.registry?.available ?? []);
+  const installedIdentities = $derived(
+    new Set(
+      installed
+        .flatMap((pack) => [packIdentity(pack.name), packIdentity(pack.source)])
+        .filter(Boolean),
+    ),
+  );
+  const available = $derived(
+    (view?.packs?.available ?? []).filter((pack) => {
+      const identity = packIdentity(pack.source);
+      return identity !== '' && !installedIdentities.has(identity);
+    }),
+  );
+  const registryAvailable = $derived(
+    (view?.registry?.available ?? []).filter((pack) => {
+      const identity = packIdentity(pack.slug);
+      return identity !== '' && !installedIdentities.has(identity);
+    }),
+  );
+  const hasPackSnapshot = $derived(Boolean(view?.packs));
   const updatesCount = $derived(installed.filter((p) => p.updateAvailable).length);
+  const HQ_CLI_INSTALL_COMMAND = 'npm install -g @indigoai-us/hq-cli@latest';
+
+  function actionErrorMessage(error: unknown): string {
+    if (error instanceof Error && error.message) return error.message;
+    if (typeof error === 'string' && error.trim()) return error;
+    return 'Clipboard access was rejected.';
+  }
 
   async function refresh(): Promise<void> {
+    if (refreshing) return;
+    refreshing = true;
     try {
-      view = await invoke<PackagesView>('list_packages');
-      errorMsg = view?.error ?? null;
+      const next = await invoke<PackagesView>('list_packages');
+      if (next.packs) {
+        view = next;
+        errorMsg = null;
+      } else {
+        // Preserve a successful snapshot when a later refresh cannot start the
+        // CLI. On a cold load retain the failed payload so the empty state stays
+        // honest while the actionable error is shown.
+        if (!view) view = next;
+        errorMsg = next.error ?? 'Installed packs could not be loaded';
+        errorContext = 'read';
+      }
     } catch (e) {
       errorMsg = String(e);
+      errorContext = 'read';
+    } finally {
+      refreshing = false;
+    }
+  }
+
+  async function copyRepairCommand(): Promise<void> {
+    if (repairCommandState === 'copying') return;
+    repairCommandState = 'copying';
+    try {
+      await navigator.clipboard.writeText(HQ_CLI_INSTALL_COMMAND);
+      repairCommandState = 'copied';
+      repairCommandError = null;
+      if (repairCommandTimer) clearTimeout(repairCommandTimer);
+      repairCommandTimer = setTimeout(() => {
+        repairCommandState = 'idle';
+        repairCommandTimer = null;
+      }, 1800);
+    } catch (error) {
+      console.error('installed-packs: repair command copy failed', error);
+      repairCommandState = 'failed';
+      repairCommandError = actionErrorMessage(error);
     }
   }
 
   async function install(source: string, registry = false): Promise<void> {
-    busy = { op: 'install', name: shortSource(source) };
+    busy = { op: 'install', id: source, label: shortSource(source) };
     logLines = [];
     errorMsg = null;
     try {
       await invoke('install_package', { source, registry });
     } catch (e) {
       errorMsg = String(e);
+      errorContext = 'mutation';
       busy = null;
     }
   }
 
   async function update(name: string): Promise<void> {
-    busy = { op: 'update', name };
+    busy = { op: 'update', id: name, label: name };
     logLines = [];
     errorMsg = null;
     try {
       await invoke('update_package', { name });
     } catch (e) {
       errorMsg = String(e);
+      errorContext = 'mutation';
       busy = null;
     }
   }
 
   async function uninstall(name: string): Promise<void> {
-    confirmUninstall = null;
-    busy = { op: 'uninstall', name };
+    busy = { op: 'uninstall', id: name, label: name };
     logLines = [];
     errorMsg = null;
     try {
       await invoke('uninstall_package', { name });
       logLines = [`Uninstalled ${name}.`];
       await refresh();
+      confirmUninstall = null;
     } catch (e) {
       errorMsg = String(e);
+      errorContext = 'mutation';
     } finally {
       busy = null;
     }
@@ -120,12 +199,24 @@
       unlisteners.push(
         await listen<PackagesDone>('packages:error', (e) => {
           errorMsg = e.payload.message ?? 'Operation failed';
+          errorContext = 'mutation';
           busy = null;
         }),
       );
       unlisteners.push(
         await listen<PackagesView>('packages:updates', (e) => {
-          view = e.payload;
+          if (e.payload.error || !e.payload.packs) {
+            // A background network/update probe must never erase a valid local
+            // installed-pack snapshot.
+            updateProbeError = e.payload.error ?? 'Update check failed';
+            return;
+          }
+          view = {
+            packs: e.payload.packs,
+            registry: e.payload.registry ?? view?.registry ?? null,
+            error: null,
+          };
+          updateProbeError = null;
         }),
       );
 
@@ -137,7 +228,10 @@
       checkUpdates();
     })();
 
-    return () => unlisteners.forEach((u) => u());
+    return () => {
+      unlisteners.forEach((u) => u());
+      if (repairCommandTimer) clearTimeout(repairCommandTimer);
+    };
   });
 
   function contributeSummary(p: InstalledPack): string {
@@ -166,12 +260,50 @@
     return cmd ? `Run ${cmd} to get started` : null;
   }
 
+  function clipboardFailureKey(p: InstalledPack, action: ClipboardAction): string {
+    return `${action}:${p.name}:${p.source ?? p.transport ?? ''}`;
+  }
+
+  function clipboardFailure(
+    p: InstalledPack,
+    action: ClipboardAction,
+  ): ClipboardFailure | undefined {
+    return clipboardFailures[clipboardFailureKey(p, action)];
+  }
+
+  function clearClipboardFailure(p: InstalledPack, action: ClipboardAction): void {
+    clipboardFailures = {
+      ...clipboardFailures,
+      [clipboardFailureKey(p, action)]: undefined,
+    };
+  }
+
+  function setClipboardFailure(
+    p: InstalledPack,
+    action: ClipboardAction,
+    error: unknown,
+  ): void {
+    clipboardFailures = {
+      ...clipboardFailures,
+      [clipboardFailureKey(p, action)]: {
+        action,
+        message: actionErrorMessage(error),
+      },
+    };
+  }
+
+  function retryClipboardAction(p: InstalledPack, action: ClipboardAction): Promise<void> {
+    return action === 'get-started' ? copyGetStarted(p) : copySetupPrompt(p);
+  }
+
   async function copyGetStarted(p: InstalledPack): Promise<void> {
     const line = getStartedLine(p);
-    if (!line) return;
+    if (!line || copyingPack) return;
+    copyingPack = p.name;
     try {
       await navigator.clipboard.writeText(line);
       copiedPack = p.name;
+      clearClipboardFailure(p, 'get-started');
       if (copiedTimer) clearTimeout(copiedTimer);
       copiedTimer = setTimeout(() => {
         copiedPack = null;
@@ -179,6 +311,9 @@
       }, 1800);
     } catch (err) {
       console.error('installed-packs: clipboard write failed', err);
+      setClipboardFailure(p, 'get-started', err);
+    } finally {
+      copyingPack = null;
     }
   }
 
@@ -192,12 +327,14 @@
    * stray caller can never exfiltrate un-moderated prose to the clipboard.
    */
   async function copySetupPrompt(p: InstalledPack): Promise<void> {
-    if (!isPromptRenderable(p)) return;
+    if (!isPromptRenderable(p) || copyingPrompt) return;
     const prompt = p.initialization?.prompt;
     if (!prompt) return;
+    copyingPrompt = p.name;
     try {
       await navigator.clipboard.writeText(prompt);
       copiedPrompt = p.name;
+      clearClipboardFailure(p, 'setup-prompt');
       if (copiedPromptTimer) clearTimeout(copiedPromptTimer);
       copiedPromptTimer = setTimeout(() => {
         copiedPrompt = null;
@@ -205,11 +342,18 @@
       }, 1800);
     } catch (err) {
       console.error('installed-packs: setup-prompt clipboard write failed', err);
+      setClipboardFailure(p, 'setup-prompt', err);
+    } finally {
+      copyingPrompt = null;
     }
   }
 
   function isGatedOff(a: AvailablePack): boolean {
     return a.conditionalStatus === 'fail';
+  }
+
+  function isPackBusy(op: 'install' | 'update' | 'uninstall', id: string): boolean {
+    return busy?.op === op && busy.id === id;
   }
 </script>
 
@@ -218,6 +362,8 @@
     <p class="count" aria-live="polite">
       {#if loading}
         Loading…
+      {:else if !hasPackSnapshot}
+        Installed packs unavailable
       {:else}
         {installed.length}
         {installed.length === 1 ? 'pack' : 'packs'} installed
@@ -233,12 +379,67 @@
       class="refresh"
       data-testid="installed-refresh"
       onclick={refresh}
-      disabled={!!busy}>Refresh</button
+      disabled={!!busy || refreshing}
+      aria-busy={refreshing}>{refreshing ? 'Refreshing…' : 'Refresh'}</button
     >
   </div>
 
   {#if errorMsg}
-    <div class="state-error" role="alert" data-testid="installed-error">{errorMsg}</div>
+    <div class="state-error" role="alert" data-testid="installed-error">
+      <div class="state-error-copy">
+        <strong>{friendlyPackagesError(errorMsg)}</strong>
+        <span>
+          {errorContext === 'read'
+            ? hasPackSnapshot
+              ? 'The last successful installed-pack view is preserved.'
+              : 'No installed-pack data was available yet. Repair the HQ CLI, then refresh.'
+            : 'The operation did not finish. Review the details before retrying.'}
+        </span>
+      </div>
+      {#if !hasPackSnapshot || isMissingPackagesToolError(errorMsg)}
+        <button
+          type="button"
+          class="repair-link"
+          onclick={copyRepairCommand}
+          disabled={repairCommandState === 'copying'}
+          aria-busy={repairCommandState === 'copying'}
+          title={HQ_CLI_INSTALL_COMMAND}
+        >
+          {repairCommandState === 'copying'
+            ? 'Copying…'
+            : repairCommandState === 'copied'
+              ? 'Command copied'
+              : repairCommandState === 'failed'
+                ? 'Copy failed'
+                : hasPackSnapshot
+                  ? 'Copy repair command'
+                  : 'Copy install command'}
+        </button>
+        {#if repairCommandError}
+          <span class="pack-action-error" role="alert" title={repairCommandError}>
+            Couldn’t copy to the clipboard.
+            <button
+              type="button"
+              onclick={copyRepairCommand}
+              disabled={repairCommandState === 'copying'}
+              aria-busy={repairCommandState === 'copying'}
+            >
+              {repairCommandState === 'copying' ? 'Retrying…' : 'Retry'}
+            </button>
+          </span>
+        {/if}
+      {/if}
+      <details>
+        <summary>Technical details</summary>
+        <code>{errorMsg}</code>
+      </details>
+    </div>
+  {/if}
+
+  {#if updateProbeError}
+    <p class="probe-note" role="status" title={updateProbeError}>
+      Update availability could not be refreshed. Installed packs remain available.
+    </p>
   {/if}
 
   {#if busy}
@@ -246,7 +447,7 @@
       <div class="op-head">
         <span class="spinner" aria-hidden="true"></span>
         {busy.op === 'install' ? 'Installing' : busy.op === 'update' ? 'Updating' : 'Uninstalling'}
-        <strong>{busy.name}</strong>…
+        <strong>{busy.label}</strong>…
       </div>
       {#if logLines.length}
         <pre class="log" data-testid="installed-log">{logLines.join('\n')}</pre>
@@ -260,7 +461,7 @@
         <div class="card-skeleton"></div>
       {/each}
     </div>
-  {:else}
+  {:else if hasPackSnapshot}
     <section class="group" data-testid="installed-group">
       <h2 class="group-title">Installed</h2>
       {#if installed.length === 0}
@@ -269,7 +470,13 @@
           <span>Browse the Marketplace tab to find and install packs.</span>
         </div>
       {/if}
-      {#each installed as p (p.name)}
+      <!--
+        `hq packs list` can surface the same display name more than once while
+        legacy package and pack records coexist. Names are therefore not valid
+        Svelte identities. Include origin + position so duplicate rows remain
+        inspectable instead of crashing the entire Library surface.
+      -->
+      {#each installed as p, index (`installed:${p.name}:${p.source ?? p.transport ?? ''}:${index}`)}
         <div class="row" data-testid="installed-row">
           <div class="row-main">
             <div class="row-title">
@@ -296,12 +503,32 @@
                   class="get-started-copy"
                   data-testid="installed-get-started-copy"
                   onclick={() => copyGetStarted(p)}
+                  disabled={!!copyingPack}
+                  aria-busy={copyingPack === p.name}
                   aria-label={`Copy "Run ${cmd} to get started"`}
                   title={`Run ${cmd} to get started`}
                 >
-                  {copiedPack === p.name ? 'Copied' : 'Copy'}
+                  {copyingPack === p.name
+                    ? 'Copying…'
+                    : copiedPack === p.name
+                      ? 'Copied'
+                      : 'Copy'}
                 </button>
               </div>
+              {#if clipboardFailure(p, 'get-started')}
+                {@const failure = clipboardFailure(p, 'get-started') as ClipboardFailure}
+                <p class="pack-action-error" role="alert" title={failure.message}>
+                  <span>Couldn’t copy to the clipboard.</span>
+                  <button
+                    type="button"
+                    onclick={() => retryClipboardAction(p, failure.action)}
+                    disabled={copyingPack === p.name}
+                    aria-busy={copyingPack === p.name}
+                  >
+                    {copyingPack === p.name ? 'Retrying…' : 'Retry'}
+                  </button>
+                </p>
+              {/if}
             {/if}
             <!--
               Moderation-approved setup prose (US-009). SUPPRESSED by default:
@@ -323,35 +550,79 @@
                     class="setup-prompt-copy"
                     data-testid="installed-setup-prompt-copy"
                     onclick={() => copySetupPrompt(p)}
+                    disabled={!!copyingPrompt}
+                    aria-busy={copyingPrompt === p.name}
                     aria-label={`Copy ${p.name} setup prompt`}
                     title="Copy the pack author's setup prompt"
                   >
-                    {copiedPrompt === p.name ? 'Copied' : 'Copy setup prompt'}
+                    {copyingPrompt === p.name
+                      ? 'Copying…'
+                      : copiedPrompt === p.name
+                        ? 'Copied'
+                        : 'Copy setup prompt'}
                   </button>
                 </div>
                 <pre class="setup-prompt-text">{p.initialization?.prompt}</pre>
                 <p class="setup-prompt-note">The pack author's setup prompt.</p>
               </div>
+              {#if clipboardFailure(p, 'setup-prompt')}
+                {@const failure = clipboardFailure(p, 'setup-prompt') as ClipboardFailure}
+                <p class="pack-action-error" role="alert" title={failure.message}>
+                  <span>Couldn’t copy to the clipboard.</span>
+                  <button
+                    type="button"
+                    onclick={() => retryClipboardAction(p, failure.action)}
+                    disabled={copyingPrompt === p.name}
+                    aria-busy={copyingPrompt === p.name}
+                  >
+                    {copyingPrompt === p.name ? 'Retrying…' : 'Retry'}
+                  </button>
+                </p>
+              {/if}
             {/if}
           </div>
           <div class="row-actions">
             {#if p.updateAvailable}
-              <button class="action primary" onclick={() => update(p.name)} disabled={!!busy}
-                >Update</button
+              <button
+                class="action primary"
+                onclick={() => update(p.name)}
+                disabled={!!busy}
+                aria-busy={isPackBusy('update', p.name)}
+                aria-label={isPackBusy('update', p.name) ? `Updating ${p.name}` : `Update ${p.name}`}
               >
+                {isPackBusy('update', p.name) ? 'Updating…' : 'Update'}
+              </button>
             {/if}
             <button
               class="action danger"
               onclick={() => (confirmUninstall = p.name)}
-              disabled={!!busy}>Uninstall</button
+              disabled={!!busy}
+              aria-busy={isPackBusy('uninstall', p.name)}
+              aria-label={isPackBusy('uninstall', p.name) ? `Removing ${p.name}` : `Uninstall ${p.name}`}
             >
+              {isPackBusy('uninstall', p.name) ? 'Removing…' : 'Uninstall'}
+            </button>
           </div>
         </div>
         {#if confirmUninstall === p.name}
           <div class="confirm" data-testid="installed-confirm">
             Remove <strong>{p.name}</strong> and its host links?
-            <button class="action danger" onclick={() => uninstall(p.name)}>Remove</button>
-            <button class="action ghost" onclick={() => (confirmUninstall = null)}>Cancel</button>
+            <button
+              class="action danger"
+              onclick={() => uninstall(p.name)}
+              disabled={!!busy}
+              aria-busy={isPackBusy('uninstall', p.name)}
+              aria-label={isPackBusy('uninstall', p.name) ? `Removing ${p.name}` : `Remove ${p.name}`}
+            >
+              {isPackBusy('uninstall', p.name) ? 'Removing…' : 'Remove'}
+            </button>
+            <button
+              class="action ghost"
+              onclick={() => (confirmUninstall = null)}
+              disabled={!!busy}
+            >
+              Cancel
+            </button>
           </div>
         {/if}
       {/each}
@@ -360,7 +631,7 @@
     {#if available.length > 0 || registryAvailable.length > 0}
       <section class="group" data-testid="installed-available-group">
         <h2 class="group-title">Available from packs.yaml</h2>
-        {#each available as a (a.source)}
+        {#each available as a, index (`available:${a.source}:${index}`)}
           <div class="row">
             <div class="row-main">
               <div class="row-title">
@@ -370,13 +641,19 @@
               {#if a.description}<div class="row-sub">{a.description}</div>{/if}
             </div>
             <div class="row-actions">
-              <button class="action primary" onclick={() => install(a.source, false)} disabled={!!busy}
-                >Install</button
+              <button
+                class="action primary"
+                onclick={() => install(a.source, false)}
+                disabled={!!busy}
+                aria-busy={isPackBusy('install', a.source)}
+                aria-label={isPackBusy('install', a.source) ? `Installing ${shortSource(a.source)}` : `Install ${shortSource(a.source)}`}
               >
+                {isPackBusy('install', a.source) ? 'Installing…' : 'Install'}
+              </button>
             </div>
           </div>
         {/each}
-        {#each registryAvailable as r (r.slug)}
+        {#each registryAvailable as r, index (`registry:${r.slug}:${index}`)}
           <div class="row">
             <div class="row-main">
               <div class="row-title">
@@ -386,9 +663,15 @@
               <div class="row-sub">Registry package</div>
             </div>
             <div class="row-actions">
-              <button class="action primary" onclick={() => install(r.slug, true)} disabled={!!busy}
-                >Install</button
+              <button
+                class="action primary"
+                onclick={() => install(r.slug, true)}
+                disabled={!!busy}
+                aria-busy={isPackBusy('install', r.slug)}
+                aria-label={isPackBusy('install', r.slug) ? `Installing ${shortSource(r.slug)}` : `Install ${shortSource(r.slug)}`}
               >
+                {isPackBusy('install', r.slug) ? 'Installing…' : 'Install'}
+              </button>
             </div>
           </div>
         {/each}
@@ -634,7 +917,7 @@
       color 140ms ease;
   }
 
-  .get-started-copy:hover {
+  .get-started-copy:hover:not(:disabled) {
     border-color: var(--v4-control-border);
     background: var(--v4-control-faint);
     color: var(--v4-text-1);
@@ -643,6 +926,40 @@
   .get-started-copy:focus-visible {
     outline: 2px solid var(--v4-control-border);
     outline-offset: 2px;
+  }
+
+  .get-started-copy:disabled,
+  .setup-prompt-copy:disabled {
+    opacity: 0.58;
+    cursor: wait;
+  }
+
+  .pack-action-error {
+    display: inline-flex;
+    align-items: baseline;
+    gap: var(--v4-space-2);
+    margin: var(--v4-space-1) 0 0;
+    color: var(--v4-error);
+    font-size: var(--text-micro);
+    line-height: 15px;
+  }
+
+  .pack-action-error button {
+    flex: 0 0 auto;
+    padding: 0;
+    border: 0;
+    border-bottom: 1px solid currentcolor;
+    border-radius: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-weight: 700;
+    cursor: pointer;
+  }
+
+  .pack-action-error button:disabled {
+    opacity: 0.58;
+    cursor: wait;
   }
 
   /* ---- moderation-approved author setup prompt (US-009, gated) ----------- */
@@ -696,7 +1013,7 @@
       color 140ms ease;
   }
 
-  .setup-prompt-copy:hover {
+  .setup-prompt-copy:hover:not(:disabled) {
     border-color: var(--v4-control-border);
     background: var(--v4-control-faint);
     color: var(--v4-text-1);
@@ -839,13 +1156,73 @@
 
   /* ---- states ----------------------------------------------------------- */
   .state-error {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--v4-space-3);
     padding: var(--v4-space-3) 0;
     border: 0;
     border-top: 1px solid var(--v4-rowline);
     border-radius: 0;
     background: transparent;
-    color: var(--v4-error);
+    color: var(--v4-text-2);
     font-size: var(--text-base);
+  }
+
+  .state-error-copy {
+    display: flex;
+    flex: 1 1 320px;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .state-error-copy strong {
+    color: var(--v4-text-1);
+    font-weight: 600;
+  }
+
+  .state-error-copy span {
+    color: var(--v4-text-3);
+  }
+
+  .repair-link {
+    padding: 0;
+    border: 0;
+    border-bottom: 1px solid var(--v4-rowline);
+    border-radius: 0;
+    background: transparent;
+    color: var(--v4-text-1);
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .repair-link:hover:not(:disabled) {
+    border-bottom-color: var(--v4-text-2);
+  }
+
+  .repair-link:disabled {
+    color: var(--v4-text-3);
+    cursor: wait;
+  }
+
+  .state-error details {
+    flex: 0 0 100%;
+    color: var(--v4-text-3);
+    font-size: var(--text-micro);
+  }
+
+  .state-error summary {
+    width: fit-content;
+    cursor: pointer;
+  }
+
+  .state-error code {
+    display: block;
+    margin-top: var(--v4-space-2);
+    color: var(--v4-text-3);
+    font-family: var(--font-mono);
+    overflow-wrap: anywhere;
   }
 
   .state-empty {
@@ -868,7 +1245,8 @@
     font-size: var(--text-base);
   }
 
-  .offline-note {
+  .offline-note,
+  .probe-note {
     margin: 0;
     color: var(--v4-text-3);
     font-size: var(--text-micro);
@@ -904,6 +1282,7 @@
   @media (prefers-reduced-motion: reduce) {
     .refresh,
     .action,
+    .repair-link,
     .get-started-copy,
     .setup-prompt-copy {
       transition: none;

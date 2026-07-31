@@ -24,6 +24,9 @@ describe('DESKTOP-017: auxiliary desktop surfaces', () => {
   const permissions = readRepoFile(
     'src/components/MeetingPermissionsWindow.svelte',
   );
+  const permissionsCommand = readRepoFile(
+    'src-tauri/src/commands/permissions.rs',
+  );
   const onboarding = readRepoFile(
     'src/components/onboarding/OnboardingWizard.svelte',
   );
@@ -67,6 +70,8 @@ describe('DESKTOP-017: auxiliary desktop surfaces', () => {
   const main = readRepoFile('src/main.ts');
   const harness = readRepoFile('dev-harness/Harness.svelte');
   const mocks = readRepoFile('dev-harness/mocks/core.ts');
+  const appMock = readRepoFile('dev-harness/mocks/app.ts');
+  const previewConfig = readRepoFile('vite.preview.config.ts');
 
   it('uses open explanatory sections in the meeting-permissions window', () => {
     expectOpenSection(permissions, '.why-card', 'permissions explanation');
@@ -77,6 +82,23 @@ describe('DESKTOP-017: auxiliary desktop surfaces', () => {
     );
     expect(rule(permissions, '.quick-prompt')).toContain(
       'border-top: 1px solid var(--c-divider)',
+    );
+  });
+
+  it('gives the meeting-permissions window the same native neutral glass backing', () => {
+    expect(
+      rule(
+        permissions,
+        ":global(html[data-window='meeting-permissions'] body)",
+      ),
+    ).toContain('background: transparent');
+    expect(rule(permissions, '.window')).toContain(
+      'background: var(--compact-glass-bg)',
+    );
+    expect(permissionsCommand).toContain('.transparent(true)');
+    expect(permissionsCommand).toContain('setUnderPageBackgroundColor: clear');
+    expect(permissionsCommand).toContain(
+      'apply_compact_communications_glass_window',
     );
   });
 
@@ -125,7 +147,21 @@ describe('DESKTOP-017: auxiliary desktop surfaces', () => {
     expect(mocks).toContain(
       "harnessScenario() === 'onboarding-progress'",
     );
+    expect(mocks).toContain(
+      "params.get('view') === 'onboarding' && params.get('step') === '2'",
+    );
     expect(mocks).toContain('start_initial_cloud_sync:');
+  });
+
+  it('uses the package version as the single source of truth in every preview surface', () => {
+    expect(previewConfig).toContain(
+      "import pkg from './package.json' with { type: 'json' }",
+    );
+    expect(previewConfig).toContain(
+      '__APP_VERSION__: JSON.stringify(pkg.version)',
+    );
+    expect(appMock).toContain('return __APP_VERSION__');
+    expect(appMock).not.toMatch(/\d+\.\d+\.\d+(?:-[a-z0-9.-]+)?/i);
   });
 
   it('keeps the global recovery screen adaptive and its recovery content unboxed', () => {
@@ -158,6 +194,7 @@ describe('DESKTOP-017: auxiliary desktop surfaces', () => {
   it('exposes every standalone main-window mount to the visual harness', () => {
     const standaloneMounts = [
       ['meetings-window', 'MeetingsWindow', 'meetings'],
+      ['new-files-detail', 'NewFilesDetail', 'new-files'],
       ['drift-detail', 'DriftDetail', 'drift'],
       ['activity-log', 'ActivityLog', 'activity'],
       ['share-detail', 'ShareDetail', 'share-detail'],
@@ -202,6 +239,18 @@ describe('DESKTOP-017: auxiliary desktop surfaces', () => {
     expect(rule(permissions, '.optional-tag')).toContain(
       'background: transparent',
     );
+  });
+
+  it('keeps meeting SDK startup recovery independent from permission refresh', () => {
+    const refresh =
+      permissions.match(
+        /async function handleRefresh\(\)[\s\S]*?\n  async function handleRunNativeRegister/,
+      )?.[0] ?? '';
+    expect(permissions).toContain("let sdkStartError = $state('')");
+    expect(permissions).toContain('data-testid="sdk-start-error"');
+    expect(permissions).toContain('onclick={() => void startRecallSdk()}');
+    expect(refresh).not.toContain('sdkStartError =');
+    expect(permissions).not.toContain("failedAction = 'sdk'");
   });
 
   it('keeps meeting warnings and focused rows open and neutral', () => {
@@ -267,6 +316,34 @@ describe('DESKTOP-017: auxiliary desktop surfaces', () => {
       'border-top: 1px solid var(--border)',
     );
     expect(rule(catchUp, '.ranked-list')).toContain('gap: 0');
+    expect(catchUp).not.toContain('class="rank"');
+  });
+
+  it('uses message chrome only where it carries meaning', () => {
+    const incoming = rule(
+      conversation,
+      ":global([data-window='messages']) .dm-msg-in .dm-bubble",
+    );
+    const outgoing = rule(
+      conversation,
+      ":global([data-window='messages']) .dm-msg-out .dm-bubble",
+    );
+    const sharedFile = rule(
+      conversation,
+      ":global([data-window='messages']) .dm-bubble-share",
+    );
+    const author = rule(
+      conversation,
+      ":global([data-window='messages']) .dm-msg-author",
+    );
+
+    expect(incoming).toContain('background: transparent');
+    expect(incoming).toContain('border-radius: 0');
+    expect(outgoing).toContain('background: var(--surface-raise)');
+    expect(outgoing).toContain('border: 1px solid var(--border)');
+    expect(sharedFile).toContain('background: var(--surface-raise)');
+    expect(sharedFile).toContain('border: 1px solid var(--border)');
+    expect(author).toContain('border-radius: 999px');
   });
 
   it('marks intentionally captured messaging props as untracked initial state', () => {

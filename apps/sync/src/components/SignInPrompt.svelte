@@ -1,7 +1,6 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { open } from '@tauri-apps/plugin-shell';
-  import { getCurrentWindow } from '@tauri-apps/api/window';
   import CopyPromptButton from './CopyPromptButton.svelte';
   import { emitDesktopTelemetry } from '../lib/desktop-telemetry';
 
@@ -22,6 +21,8 @@
   let error = $state('');
   let lastProvider = $state<SignInProvider | null>(null);
   let activeState = $state<string | null>(null);
+  let cancelling = $state(false);
+  let quitting = $state(false);
   let signInRun = 0;
 
   function isCurrentSignInRun(run: number): boolean {
@@ -81,15 +82,12 @@
 
       // Step 5: Notify parent of success
       if (result.authenticated) {
-        // Pull focus back from the browser to the menubar popover so the
-        // user sees the post-sign-in UI transition immediately. `.show()`
-        // is defensive — the popover should still be open from the tray
-        // click that started this flow, but the OAuth redirect can take a
-        // while and users occasionally dismiss the window in the meantime.
+        // Pull focus back from the browser on macOS and Windows. JS setFocus
+        // is often ignored while the browser holds activation — Rust raises
+        // via AppKit / Win32. oauth_listen_for_code also raises on callback;
+        // this is the renderer-side belt-and-suspenders path.
         try {
-          const win = getCurrentWindow();
-          await win.show();
-          await win.setFocus();
+          await invoke('bring_main_window_to_front');
         } catch (focusErr) {
           // Focus-stealing isn't critical; log but don't block success.
           console.warn('[signin] failed to refocus window:', focusErr);
@@ -118,17 +116,22 @@
   }
 
   async function handleCancel() {
-    if (!loadingProvider) return;
+    if (!loadingProvider || cancelling) return;
 
     const provider = loadingProvider;
     const state = activeState;
     ++signInRun;
+    cancelling = true;
     console.info('[signin] OAuth runner cancellation requested', { provider });
-    await cancelPendingSignIn(state);
-    loadingProvider = null;
-    activeState = null;
-    error = 'Sign-in cancelled. Retry when you are ready.';
-    console.info('[signin] OAuth runner cancelled', { provider });
+    try {
+      await cancelPendingSignIn(state);
+      loadingProvider = null;
+      activeState = null;
+      error = 'Sign-in cancelled. Retry when you are ready.';
+      console.info('[signin] OAuth runner cancelled', { provider });
+    } finally {
+      cancelling = false;
+    }
   }
 
   function handleRetry() {
@@ -141,10 +144,13 @@
   // never redirects back (the loopback listener has its own 5-min timeout, but
   // the user shouldn't be trapped staring at a spinner until then).
   async function handleQuit() {
+    if (quitting) return;
+    quitting = true;
     try {
       await invoke('quit_app');
     } catch (e) {
       console.error('Failed to quit:', e);
+      quitting = false;
     }
   }
 </script>
@@ -193,7 +199,7 @@
         <button
           class="sign-in-btn"
           onclick={() => handleSignIn(provider.key)}
-          disabled={loadingProvider !== null}
+          disabled={loadingProvider !== null || quitting}
         >
           {#if loadingProvider === provider.key}
             <span class="spinner"></span>
@@ -215,10 +221,24 @@
         A browser window opened for {loadingProvider} sign-in. Complete it there and
         you'll return here automatically. You can cancel, retry, or quit if sign-in gets stuck.
       </p>
-      <button class="cancel-btn" onclick={handleCancel}>Cancel sign-in</button>
+      <button
+        class="cancel-btn"
+        onclick={handleCancel}
+        disabled={cancelling || quitting}
+        aria-busy={cancelling}
+      >
+        {cancelling ? 'Cancelling…' : 'Cancel sign-in'}
+      </button>
     {/if}
 
-    <button class="quit-btn" onclick={handleQuit}>Quit HQ Sync</button>
+    <button
+      class="quit-btn"
+      onclick={handleQuit}
+      disabled={quitting}
+      aria-busy={quitting}
+    >
+      {quitting ? 'Quitting…' : 'Quit HQ Sync'}
+    </button>
 
     {#if error}
       <div class="error-block">
@@ -291,8 +311,8 @@
     box-sizing: border-box;
     padding: 1rem;
     background: var(--pop-bg);
-    backdrop-filter: var(--glass-filter, blur(28px) saturate(0%));
-    -webkit-backdrop-filter: var(--glass-filter, blur(28px) saturate(0%));
+    backdrop-filter: var(--glass-filter, blur(36px) saturate(118%) contrast(102%));
+    -webkit-backdrop-filter: var(--glass-filter, blur(36px) saturate(118%) contrast(102%));
     color: var(--pop-text);
     font-family: var(--font-sans);
     overflow: hidden;

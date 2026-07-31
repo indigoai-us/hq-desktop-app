@@ -60,7 +60,7 @@ describe('US-006 / US-008: InboxPage surface', () => {
 
   it('renders shared NotificationFeed / NotificationRow one-line rows', () => {
     expect(inbox).toContain("import NotificationFeed from '../../components/NotificationFeed.svelte'");
-    expect(inbox).toContain('showDayLabels={true}');
+    expect(inbox).toContain('showDayLabels={false}');
     expect(inbox).toContain('onunreadchange={handleUnreadChange}');
     expect(inbox).toContain('onitemschange={handleItemsChange}');
     expect(inbox).toContain('density="comfortable"');
@@ -82,6 +82,12 @@ describe('US-006 / US-008: InboxPage surface', () => {
     expect(inbox).not.toContain('hq-icon');
     expect(inbox).not.toContain('tab-selector');
     expect(inbox).not.toContain('role="tablist"');
+  });
+
+  it('uses row timestamps without a sticky day-label slab', () => {
+    expect(inbox).toContain('showDayLabels={false}');
+    expect(inbox).toContain(':global(.nr-ts)');
+    expect(inbox).not.toContain(':global(.notif-day-label)');
   });
 });
 
@@ -106,18 +112,22 @@ describe('US-006 / US-008: NotificationRow message hover-expand', () => {
     // Quick-reply input
     expect(row).toContain('class="nr-reply"');
     expect(row).toContain('placeholder="Reply…"');
-    expect(row).toContain('onreply?: (text: string) => void');
+    expect(row).toContain('onreply?: (text: string) => void | Promise<void>');
     // Emoji react
     expect(row).toContain("const REACT_EMOJI = ['👍', '❤️', '👀'] as const");
     expect(row).toContain('class="nr-react"');
-    expect(row).toContain('onreact?: (emoji: string) => void');
-    expect(row).toContain('onclick={() => onreact?.(emoji)}');
+    expect(row).toContain('onreact?: (emoji: string) => void | Promise<void>');
+    expect(row).toContain('onclick={() => void react(emoji)}');
+    expect(row).toContain('aria-busy={reactionPending === emoji}');
+    expect(row).toContain("replyError = 'Couldn’t send. Your reply is still here.'");
+    expect(row).toContain('data-testid="notification-reply-retry"');
   });
 
   it('NotificationFeed wires reply/react into the shared row', () => {
     expect(feed).toContain('import NotificationRow from \'./NotificationRow.svelte\'');
-    expect(feed).toContain('onreply={(text) => void replyDm(it, text)}');
-    expect(feed).toContain('onreact={(emoji) => void reactDm(it, emoji)}');
+    expect(feed).toContain('onreply={(text) => replyDm(it, text)}');
+    expect(feed).toContain('onreact={(emoji) => reactDm(it, emoji)}');
+    expect(feed).toContain('throw e;');
   });
 
   it('does not nest action buttons inside a focusable role=button row', () => {

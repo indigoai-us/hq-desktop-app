@@ -459,6 +459,17 @@ describe('DESKTOP-004 portfolio Kanban columns', () => {
     );
   });
 
+  it('keeps archived projects terminal instead of contradicting their status', () => {
+    const archived = proj({
+      status: 'archived',
+      storiesComplete: 1,
+      storiesTotal: 4,
+    });
+
+    expect(portfolioColumn(archived, false)).toBe('complete');
+    expect(portfolioStateContext('complete', archived)).toBe('Archived');
+  });
+
   it('puts Active only when a live execution signal is present', () => {
     // Board status active/live/running alone is In progress without a signal.
     expect(portfolioColumn(proj({ status: 'active' }), false)).toBe('in-progress');

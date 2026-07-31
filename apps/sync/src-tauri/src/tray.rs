@@ -140,8 +140,10 @@ fn onboarding_window_requires_blur_suppression(app: &AppHandle) -> bool {
         .try_state::<crate::commands::lifecycle::LifecycleStateHandle>()
         .map(|state| crate::commands::lifecycle::lifecycle_keeps_main_window_visible(state.0))
         .unwrap_or(false);
+    // Browser OAuth steals key focus; do not dismiss the sign-in surface under it.
+    let oauth_in_flight = crate::commands::oauth::oauth_flow_keeps_window_visible();
 
-    first_run_launch || setup_lifecycle
+    first_run_launch || setup_lifecycle || oauth_in_flight
 }
 
 /// Last-known horizontal centre of the native "HQ" menu-bar icon, in Cocoa
@@ -679,21 +681,21 @@ pub fn show_window_at_tray(app: &AppHandle) {
             position_below_tray(&window, rect);
         }
     }
-    let _ = window.show();
-    let _ = window.set_focus();
+    crate::util::window_focus::bring_webview_to_front(&window);
     let _ = window.emit("popover:opened", ());
 }
 
 /// Show + focus the main window centered on screen for first-run onboarding.
+///
+/// Must not leave the window sticky-topmost — OAuth opens a normal browser
+/// afterward, and a permanently topmost installer would cover the provider UI.
 pub fn show_window_centered(app: &AppHandle) {
     let Some(window) = app.get_webview_window("main") else {
         return;
     };
     hide_desktop_alt(app);
     let _ = window.center();
-    let _ = window.unminimize();
-    let _ = window.show();
-    let _ = window.set_focus();
+    crate::util::window_focus::bring_webview_to_front(&window);
 }
 
 // `show_main_window` (the Svelte-invokable wrapper) lives in
@@ -747,6 +749,38 @@ pub fn toggle_desktop_window(app: &AppHandle) {
             // GA gate rejects signed-out users — show classic popover so they
             // still reach SignInPrompt. show_popover_window does AppKit window
             // ops and must run on the main thread.
+            let app_main = app_clone.clone();
+            let _ = app_clone.run_on_main_thread(move || {
+                show_popover_window(&app_main);
+            });
+        }
+    });
+}
+
+/// Show + focus the desktop window. Never hides it.
+///
+/// The show-only counterpart to [`toggle_desktop_window`], for activation
+/// sources where hiding would read as a no-op rather than a toggle — the macOS
+/// Dock icon click being the case this exists for. Clicking a Dock icon to make
+/// the window disappear is not behaviour any Mac app has.
+///
+/// `open_desktop_alt_window_inner` already show+focuses an existing window, so
+/// this is safe to call whether or not the window has been built yet. When the
+/// GA gate rejects a signed-out user it falls back to the classic popover, same
+/// as `toggle_desktop_window`, so the Dock icon still reaches SignInPrompt.
+///
+/// macOS-only because the Dock-click (`RunEvent::Reopen`) handler is its only
+/// caller; ungated it would be dead code on Windows/Linux. Drop the gate if a
+/// non-macOS activation source ever needs show-without-toggle.
+#[cfg(target_os = "macos")]
+pub fn show_desktop_window(app: &AppHandle) {
+    let app_clone = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(_e) =
+            crate::commands::desktop_alt::open_desktop_alt_window_inner(app_clone.clone(), None)
+                .await
+        {
+            // show_popover_window does AppKit window ops — main thread only.
             let app_main = app_clone.clone();
             let _ = app_clone.run_on_main_thread(move || {
                 show_popover_window(&app_main);
@@ -816,8 +850,7 @@ pub fn show_popover_window(app: &AppHandle) {
             let _ = window.set_position(PhysicalPosition::new(pop_x, pop_y));
         }
     }
-    let _ = window.show();
-    let _ = window.set_focus();
+    crate::util::window_focus::bring_webview_to_front(&window);
     let _ = window.emit("popover:opened", ());
 }
 
@@ -869,12 +902,22 @@ fn set_dwm_small_corner(window: &tauri::WebviewWindow) {
     }
 }
 
-/// Toggle the popover: hide it if it's already visible, otherwise show it
-/// (which also hides the desktop window). Used by tray left-click (US-004)
-/// and the Opt+Shift+H shortcut so pressing again dismisses the window.
+/// Toggle the popover: hide it if it's already visible *and focused*,
+/// otherwise show / raise it (which also hides the desktop window).
+///
+/// Used by tray left-click (US-004) and the Opt+Shift+H shortcut. After
+/// browser OAuth the installer often stays visible but buried behind the
+/// browser; a tray/menu-bar click must raise that window instead of
+/// toggle-hiding it (macOS + Windows).
 pub fn toggle_popover_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         if window.is_visible().unwrap_or(false) {
+            let focused = window.is_focused().unwrap_or(false);
+            if !focused {
+                crate::util::window_focus::bring_webview_to_front(&window);
+                let _ = window.emit("popover:opened", ());
+                return;
+            }
             let _ = window.hide();
             return;
         }

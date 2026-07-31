@@ -2,15 +2,29 @@
   import { invoke } from '@tauri-apps/api/core';
   import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
   import { onDestroy, onMount } from 'svelte';
-  import { initialStepForLifecycle } from '../lib/onboarding-wizard';
+  import { initialStepForLifecycle, CONSENT_STEP_INDEX } from '../lib/onboarding-wizard';
   import OnboardingWizard from './onboarding/OnboardingWizard.svelte';
 
   interface Props {
     state: string;
-    onfinish?: () => void;
+    onfinish?: () => void | Promise<void>;
+    /**
+     * `'onboarding'` (default) runs the full first-run wizard. `'reprompt'`
+     * (US-005) shows ONLY the consent step to re-ask a person whose recorded
+     * answer is stale — same floating-card chrome, but it must NOT mark first
+     * run complete on finish (that already happened long ago).
+     */
+    mode?: 'onboarding' | 'reprompt';
+    /** The `prs_*` the re-prompt is keyed to (reprompt mode only). */
+    repromptPersonUid?: string | null;
   }
 
-  let { state: lifecycleStateProp, onfinish }: Props = $props();
+  let {
+    state: lifecycleStateProp,
+    onfinish,
+    mode = 'onboarding',
+    repromptPersonUid = null,
+  }: Props = $props();
 
   // The window is transparent so the card floats over the real desktop. Give a
   // small margin around the 640x460 card so its 18px rounded corners render
@@ -69,21 +83,34 @@
   $effect(() => {
     if (activeLifecycleState === lifecycleStateProp) return;
     activeLifecycleState = lifecycleStateProp;
-    initialStep = initialStepForLifecycle(lifecycleStateProp);
+    // The re-prompt opens straight on the consent step — there is no sign-in,
+    // directory or setup to run.
+    initialStep =
+      mode === 'reprompt'
+        ? CONSENT_STEP_INDEX
+        : initialStepForLifecycle(lifecycleStateProp);
   });
 
   async function handleFinish() {
-    if (typeof invoke === 'function') {
-      await invoke('mark_first_run_complete').catch(() => {});
+    // The re-prompt is NOT first-run: the person has been running HQ for a while.
+    // Marking first run complete again would be a lie, and its side effects
+    // (writing realtimeSync/personalSyncEnabled defaults) are not wanted here.
+    if (mode === 'onboarding' && typeof invoke === 'function') {
+      await invoke('mark_first_run_complete');
     }
     await restorePopoverSize();
     // Hand off from the centered installer card to the compact popover anchored
     // next to the menu-bar tray icon.
     if (typeof invoke === 'function') {
-      await invoke('show_main_window_at_tray').catch(() => {});
+      await invoke('show_main_window_at_tray');
     }
-    onfinish?.();
+    await onfinish?.();
   }
 </script>
 
-<OnboardingWizard {initialStep} onfinish={handleFinish} />
+<OnboardingWizard
+  {initialStep}
+  {mode}
+  {repromptPersonUid}
+  onfinish={handleFinish}
+/>

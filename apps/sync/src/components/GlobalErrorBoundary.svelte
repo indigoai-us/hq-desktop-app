@@ -14,6 +14,7 @@
   let boundaryError = $state<unknown>(null);
   let recoveredPath = $state<string | null>(null);
   let revealError = $state<string | null>(null);
+  let revealingFolder = $state(false);
   let recoveringPath = false;
 
   function errorMessage(error: unknown): string {
@@ -69,12 +70,15 @@
   }
 
   async function handleRevealFolder(): Promise<void> {
-    if (!recoveredPath) return;
+    if (!recoveredPath || revealingFolder) return;
     revealError = null;
+    revealingFolder = true;
     try {
       await invoke('reveal_folder', { path: recoveredPath });
     } catch (error) {
       revealError = errorMessage(error);
+    } finally {
+      revealingFolder = false;
     }
   }
 </script>
@@ -110,7 +114,14 @@
       <div class="actions">
         <button type="button" class="primary" onclick={() => handleStartOver(reset)}>Start over</button>
         {#if recoveredPath}
-          <button type="button" onclick={handleRevealFolder}>Reveal HQ folder</button>
+          <button
+            type="button"
+            onclick={handleRevealFolder}
+            disabled={revealingFolder}
+            aria-busy={revealingFolder}
+          >
+            {revealingFolder ? 'Revealing…' : 'Reveal HQ folder'}
+          </button>
         {/if}
       </div>
     </section>
@@ -126,6 +137,8 @@
     place-items: center;
     padding: 24px;
     background: var(--page-bg);
+    backdrop-filter: var(--v4-canvas-filter, var(--glass-filter));
+    -webkit-backdrop-filter: var(--v4-canvas-filter, var(--glass-filter));
     color: var(--c-text);
     font-family: var(--font-sans, ui-sans-serif, system-ui, sans-serif);
   }
@@ -148,6 +161,13 @@
     box-shadow: none;
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
+  }
+
+  @media (prefers-reduced-transparency: reduce) {
+    .error-shell {
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
+    }
   }
 
   h1 {

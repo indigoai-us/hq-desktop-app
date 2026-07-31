@@ -22,6 +22,31 @@
   let { events }: Props = $props();
 
   let copyFeedback = $state<string | null>(null);
+  let pendingAction = $state<string | null>(null);
+  type ShareAction = 'copy' | 'claude' | 'message';
+  type ShareActionFailure = { action: ShareAction; message: string };
+  let actionFailures = $state(new Map<string, ShareActionFailure>());
+
+  function clearActionFailure(eventId: string): void {
+    if (!actionFailures.has(eventId)) return;
+    const next = new Map(actionFailures);
+    next.delete(eventId);
+    actionFailures = next;
+  }
+
+  function setActionFailure(
+    eventId: string,
+    action: ShareAction,
+    message: string,
+  ): void {
+    actionFailures = new Map(actionFailures).set(eventId, { action, message });
+  }
+
+  function retryAction(evt: ShareEvent, action: ShareAction): void {
+    if (action === 'copy') void copyPrompt(evt);
+    else if (action === 'claude') void openInClaude(evt);
+    else void messageSharer(evt);
+  }
 
   // Share reactions: one controller for the pane; map keyed by share eventId.
   const reactionCtl = new ShareReactionController();
@@ -48,6 +73,10 @@
   // issuer. Prefers the canonical issuerPersonUid; a legacy row (empty uid)
   // falls back to the email-addressed compose flow inside the shell.
   async function messageSharer(evt: ShareEvent): Promise<void> {
+    const key = `${evt.eventId}:message`;
+    if (pendingAction) return;
+    clearActionFailure(evt.eventId);
+    pendingAction = key;
     try {
       await invoke('open_messages_window', {
         target: {
@@ -58,10 +87,21 @@
       });
     } catch (err) {
       console.error('share-notify ShareMainPane: open_messages_window failed', err);
+      setActionFailure(
+        evt.eventId,
+        'message',
+        `Couldn’t open Messages for ${evt.issuerDisplayName}.`,
+      );
+    } finally {
+      pendingAction = null;
     }
   }
 
   async function copyPrompt(evt: ShareEvent): Promise<void> {
+    const key = `${evt.eventId}:copy`;
+    if (pendingAction) return;
+    clearActionFailure(evt.eventId);
+    pendingAction = key;
     try {
       await navigator.clipboard.writeText(buildPrompt(evt));
       copyFeedback = evt.eventId;
@@ -70,10 +110,17 @@
       }, 1800);
     } catch (err) {
       console.error('Clipboard write failed:', err);
+      setActionFailure(evt.eventId, 'copy', 'Couldn’t copy the prompt.');
+    } finally {
+      pendingAction = null;
     }
   }
 
   async function openInClaude(evt: ShareEvent): Promise<void> {
+    const key = `${evt.eventId}:claude`;
+    if (pendingAction) return;
+    clearActionFailure(evt.eventId);
+    pendingAction = key;
     // Open Claude Code with the templated prompt pre-filled and cwd at
     // the user's HQ folder. Same UX as the notification body-click in
     // App.svelte; we deep-link via the `open_claude_code_link` Tauri
@@ -101,6 +148,9 @@
       await invoke('open_claude_code_link', { url });
     } catch (err) {
       console.error('share-notify ShareMainPane: open_claude_code_link failed', err);
+      setActionFailure(evt.eventId, 'claude', 'Couldn’t open this share in Claude Code.');
+    } finally {
+      pendingAction = null;
     }
   }
 
@@ -135,6 +185,7 @@
   <div class="events-list" data-testid="share-main-pane">
     {#each events as evt (evt.eventId)}
       {@const acl = shareAclLabel(evt.permission)}
+      {@const failure = actionFailures.get(evt.eventId)}
       <article class="event-card" data-testid="share-payload" aria-label={`Shared path from ${evt.issuerDisplayName}`}>
         <header class="event-header">
           <div class="event-identity">
@@ -173,25 +224,51 @@
           <button
             class="btn btn-copy"
             onclick={() => copyPrompt(evt)}
+            disabled={pendingAction !== null}
+            aria-busy={pendingAction === `${evt.eventId}:copy`}
             aria-label="Copy prompt to clipboard"
           >
-            {copyFeedback === evt.eventId ? 'Copied!' : 'Copy prompt'}
+            {pendingAction === `${evt.eventId}:copy`
+              ? 'Copying…'
+              : copyFeedback === evt.eventId
+                ? 'Copied'
+                : 'Copy prompt'}
           </button>
           <button
             class="btn btn-console"
             onclick={() => openInClaude(evt)}
+            disabled={pendingAction !== null}
+            aria-busy={pendingAction === `${evt.eventId}:claude`}
             aria-label="Open in Claude Code with prompt"
           >
-            Open in Claude ↗
+            {pendingAction === `${evt.eventId}:claude` ? 'Opening…' : 'Open in Claude ↗'}
           </button>
           <button
             class="btn btn-console"
             onclick={() => messageSharer(evt)}
+            disabled={pendingAction !== null}
+            aria-busy={pendingAction === `${evt.eventId}:message`}
             aria-label={`Message ${evt.issuerDisplayName}`}
           >
-            Message {evt.issuerDisplayName.split(/\s+/)[0] || 'sharer'}
+            {pendingAction === `${evt.eventId}:message`
+              ? 'Opening…'
+              : `Message ${evt.issuerDisplayName.split(/\s+/)[0] || 'sharer'}`}
           </button>
         </div>
+        {#if failure}
+          <div class="event-action-error" role="alert">
+            <span>{failure.message}</span>
+            <button
+              type="button"
+              class="retry-action"
+              onclick={() => retryAction(evt, failure.action)}
+              disabled={pendingAction !== null}
+              aria-busy={pendingAction === `${evt.eventId}:${failure.action}`}
+            >
+              {pendingAction === `${evt.eventId}:${failure.action}` ? 'Retrying…' : 'Retry'}
+            </button>
+          </div>
+        {/if}
       </article>
     {/each}
   </div>
@@ -246,6 +323,32 @@
 
   .event-card:last-child {
     border-bottom: none;
+  }
+
+  .event-action-error {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    color: var(--pop-danger, #e05252);
+    font-size: var(--type-metadata, 11px);
+    line-height: 1.4;
+  }
+
+  .retry-action {
+    flex: 0 0 auto;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: currentColor;
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .retry-action:disabled {
+    cursor: default;
+    opacity: 0.6;
   }
 
   .event-header {
@@ -364,7 +467,7 @@
     color: var(--pop-text, var(--fg));
   }
 
-  .btn-copy:hover {
+  .btn-copy:hover:not(:disabled) {
     background: var(--c-field-bg, var(--surface-panel));
   }
 
@@ -374,7 +477,7 @@
     border: 1px solid var(--pop-border, var(--border));
   }
 
-  .btn-console:hover {
+  .btn-console:hover:not(:disabled) {
     background: var(--pop-hover, var(--row-hover));
     color: var(--pop-text, var(--fg));
   }
@@ -382,5 +485,10 @@
   .btn:focus-visible {
     outline: 2px solid var(--v4-focus-ring, var(--v4-text-1, var(--c-text)));
     outline-offset: 2px;
+  }
+
+  .btn:disabled {
+    opacity: 0.58;
+    cursor: wait;
   }
 </style>

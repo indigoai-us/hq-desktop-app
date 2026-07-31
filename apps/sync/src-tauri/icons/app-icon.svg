@@ -1,4 +1,28 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!--
+    ⚠ STALE — DO NOT REGENERATE THE APP ICONS FROM THIS FILE.
+
+    This SVG does not match the artwork HQ actually ships. It describes a
+    near-black tile with a gradient wordmark; the shipped icon is a pink/violet
+    gradient tile with a WHITE wordmark (verified: mean opaque RGB of the
+    shipped raster is ~(212, 141, 227), this file rasterises to ~(52, 44, 50)).
+    Running `tauri icon` against it silently rebrands the app.
+
+    The real source of truth is now:
+
+      src-tauri/icons/source/app-icon-master.png   full-bleed 1024 artwork
+      scripts/generate-app-icon.py                 puts it on Apple's icon grid
+
+    See that script's docstring for the pipeline and the grid numbers. The
+    master was recovered from the 1024x1024 `ic10` representation inside the
+    previously shipped icon.icns, which is the highest-resolution copy of the
+    real artwork in the repo.
+
+    Kept rather than deleted because it is the only vector form of the wordmark
+    path in this directory (the tray glyphs in source/ are separate). If a true
+    vector master of the shipped design turns up, replace this file wholesale
+    and point the script at a 1024px export of it.
+  -->
   <defs>
     <linearGradient id="spectrum" x1="0%" y1="0%" x2="100%" y2="0%">
       <stop offset="0%" stop-color="#7de3f4"/>

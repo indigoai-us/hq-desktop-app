@@ -4,6 +4,7 @@ import {
   BUNDLED_PACK_COVERS,
   coverFallback,
   coverForListing,
+  coverTone,
 } from './pack-covers';
 import type { MarketplaceListing } from './marketplace';
 
@@ -46,11 +47,25 @@ describe('coverForListing — pack cover resolution', () => {
     expect(coverForListing(listing({ slug: 'some-unknown-pack' }))).toBeNull();
   });
 
-  it('prefers a server-provided coverImageUrl over the bundled map', () => {
+  it('does not render a server-provided remote cover URL', () => {
     const hosted = 'https://cdn.example.com/cover.png';
-    // Even for a slug that HAS bundled art, the hosted URL wins (forward-compat).
-    const url = coverForListing(listing({ slug: 'gstack', coverImageUrl: hosted }));
-    expect(url).toBe(hosted);
+    expect(
+      coverForListing(listing({ slug: 'some-unknown-pack', coverImageUrl: hosted })),
+    ).toBeNull();
+  });
+
+  it('keeps bundled art when a listing also includes a blocked remote cover', () => {
+    const url = coverForListing(
+      listing({ slug: 'gstack', coverImageUrl: 'https://cdn.example.com/cover.png' }),
+    );
+    expect(url).toBe(BUNDLED_PACK_COVERS.gstack);
+  });
+
+  it('accepts a raster data cover once a native proxy supplies one', () => {
+    const proxied = 'data:image/jpeg;base64,/9j/4AAQSkZJRg==';
+    expect(
+      coverForListing(listing({ slug: 'some-unknown-pack', coverImageUrl: proxied })),
+    ).toBe(proxied);
   });
 
   it('ignores a blank/whitespace coverImageUrl and falls back to bundled art', () => {
@@ -91,5 +106,26 @@ describe('coverFallback — deterministic branded placeholder', () => {
     const fb = coverFallback(listing({ slug: '', name: '' }));
     expect(fb.monogram).toBe('?');
     expect(fb.gradient).toMatch(/^linear-gradient\(/);
+  });
+});
+
+describe('coverTone — stable marketplace color identity', () => {
+  it('returns one of the six supported tones and stays stable for a slug', () => {
+    const a = coverTone(listing({ slug: 'impeccable' }));
+    const b = coverTone(listing({ slug: 'impeccable', name: 'Renamed pack' }));
+
+    expect(a).toBe(b);
+    expect(a).toBeGreaterThanOrEqual(0);
+    expect(a).toBeLessThan(6);
+  });
+
+  it('does not collapse every listing onto one palette', () => {
+    const tones = new Set(
+      ['engineering', 'gstack', 'impeccable', 'magicpath-agent-skills'].map((slug) =>
+        coverTone(listing({ slug })),
+      ),
+    );
+
+    expect(tones.size).toBeGreaterThan(1);
   });
 });

@@ -26,6 +26,15 @@ html[data-window='messages'] body {
    component-scoped CSS owns the message-specific layout. */
 html[data-window='desktop-alt'],
 html[data-window='messages'] {
+  /* Several mature detail, messaging, and error components still consume the
+     shared legacy surface names directly. Bridge those names onto the desktop
+     material stack so they cannot paint opaque rectangles over AppKit glass. */
+  --page-bg: var(--v4-ground);
+  --c-bg: var(--v4-raised);
+  --pop-bg: var(--v4-popover);
+  --glass-filter: var(--v4-glass-filter);
+  --glass-filter-soft: var(--v4-glass-filter-soft);
+
   --bg: var(--v4-ground, var(--page-bg));
   --bg-gradient: var(--v4-ground, var(--page-bg));
   --bg-subtle: var(--v4-inset, var(--c-field-bg));
@@ -63,12 +72,12 @@ html[data-window='messages'] {
 
   /* Normalize legacy aliases onto the readable desktop ramp. */
   --text-micro: var(--type-metadata, 13px);
-  --text-xs: var(--type-secondary, 13px);
-  --text-sm: var(--type-secondary, 13px);
-  --text-base: var(--type-body, 14px);
-  --text-section: var(--type-section, 14px);
-  --text-lg: var(--type-detail, 14px);
-  --text-kpi: var(--type-detail, 14px);
+  --text-xs: var(--type-secondary, 14px);
+  --text-sm: var(--type-secondary, 14px);
+  --text-base: var(--type-body, 15px);
+  --text-section: var(--type-section, 17px);
+  --text-lg: var(--type-detail, 24px);
+  --text-kpi: var(--type-detail, 24px);
 
   --font-display: var(--font-sans);
   --font-mono: 'Geist Mono Variable', ui-monospace, SFMono-Regular, Menlo,
@@ -104,6 +113,13 @@ html[data-window='desktop-alt'] body {
   background: transparent;
 }
 
+/* Standalone Messages owns one material layer in `.messages-window`; keeping
+   both document roots clear prevents three alpha surfaces from compounding. */
+html[data-window='messages'],
+html[data-window='messages'] body {
+  background: transparent;
+}
+
 /* Reduced transparency promotes alpha surfaces to solid hierarchy values while
    preserving the same alias names (DESKTOP-011). */
 @media (prefers-reduced-transparency: reduce) {
@@ -123,6 +139,11 @@ html[data-window='desktop-alt'] body {
   }
 
   html[data-window='desktop-alt'] body {
+    background: var(--bg-body);
+  }
+
+  html[data-window='messages'],
+  html[data-window='messages'] body {
     background: var(--bg-body);
   }
 }
@@ -218,33 +239,42 @@ html[data-window='messages'] ::-webkit-scrollbar-thumb:hover {
   flex-direction: column;
   width: 100%;
   height: 100%;
-  /* Naked canvas: spacing + hairlines establish structure. The neutral filter
-     removes wallpaper hue while keeping the native material visible. */
+  /* Native NSGlassEffectView owns the full-window blur. The renderer adds only
+     a neutral alpha tint; a second viewport-sized backdrop filter can stall
+     WKWebView compositing and leave the canvas blank until a repaint. */
   background: var(--v4-ground, transparent);
-  backdrop-filter: var(--v4-glass-filter);
-  -webkit-backdrop-filter: var(--v4-glass-filter);
 }
 
 .desktop-main-scroll {
   flex: 1;
   min-width: 0;
   min-height: 0;
+  overflow-x: hidden;
   overflow-y: auto;
 }
 
-/* Company hard policy: every central-canvas surface uses normal-weight 14px
-   sans text. Component-local legacy sizes/weights remain source-compatible,
-   but cannot shrink or embolden rendered desktop content. */
-.desktop-main-scroll,
-.desktop-main-scroll * {
+/* The central canvas inherits one native sans family and a readable body
+   baseline. Descendants retain their semantic size and weight so headings,
+   row titles, metadata, and actions establish real visual hierarchy. */
+.desktop-main-scroll {
   font-family: var(--font-sans) !important;
-  font-size: 14px !important;
-  font-weight: 400 !important;
+  font-size: var(--type-body, 15px);
+  font-weight: 400;
 }
 
 .page {
   padding: 16px 22px;
   animation: pageEnter 260ms cubic-bezier(.2, .7, .2, 1);
+}
+
+/* The native window is supported down to 960px. At that width the persistent
+   primary rail leaves a compact (rather than phone-sized) canvas, so trim only
+   the page gutter and let each surface's container queries adapt to the space
+   it actually receives. Viewport media queries cannot see the rail subtraction. */
+@media (max-width: 1120px) {
+  .page {
+    padding: 14px 16px;
+  }
 }
 
 @keyframes pageEnter {

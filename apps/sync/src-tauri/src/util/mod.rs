@@ -22,5 +22,9 @@ pub mod mqtt_tls;
 #[cfg(target_os = "windows")]
 pub mod webview2_automation;
 
+// Raise the main / popover webview above the system browser after OAuth and
+// when tray activation would otherwise toggle-hide a buried-but-visible window.
+pub mod window_focus;
+
 #[cfg(test)]
 pub(crate) mod test_support;

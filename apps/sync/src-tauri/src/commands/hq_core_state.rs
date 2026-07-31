@@ -304,9 +304,7 @@ pub(crate) async fn persist_remote_baseline(
         .into_iter()
         .map(|(path, (sha, _))| (path, sha))
         .collect();
-    hq_desktop_core::drift_scope::persist_core_drift_baseline(
-        hq_folder, repo, &commit, blobs,
-    )?;
+    hq_desktop_core::drift_scope::persist_core_drift_baseline(hq_folder, repo, &commit, blobs)?;
     Ok(commit)
 }
 
@@ -331,7 +329,12 @@ struct LocalSourceStamp {
 fn local_source_stamp(hq_folder: &std::path::Path) -> Option<(String, String)> {
     let canonical = hq_folder.join("core").join("core.yaml");
     let legacy = hq_folder.join("core.yaml");
-    let bytes = std::fs::read(if canonical.is_file() { canonical } else { legacy }).ok()?;
+    let bytes = std::fs::read(if canonical.is_file() {
+        canonical
+    } else {
+        legacy
+    })
+    .ok()?;
     let parsed: LocalCoreYaml = serde_yaml::from_slice(&bytes).ok()?;
     let stamp = parsed
         .replaced_from_source
@@ -779,36 +782,38 @@ pub async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, String> {
             (report, 0, 0)
         };
 
-    let version_behind = drift_report.update_required || match channel {
-        Channel::Release => {
-            // Trust the rescue stamp's SHA over the in-file `hqVersion` string:
-            // upstream releases sometimes ship a stale `hqVersion` in
-            // `core.yaml` (e.g. v14.2.1 carrying `hqVersion: "14.2.0"`), which
-            // would otherwise make the pill keep offering a no-op upgrade
-            // forever. If the last rescue stamped the same commit the release
-            // tag points to, we're on the release regardless of what the
-            // string says.
-            let stamp_matches_tag = match floor_sha.as_deref() {
-                Some(floor) => match fetch_commit_sha(&client, &target_repo, &target_ref).await {
-                    Ok(tag_sha) => floor == tag_sha,
-                    Err(_) => false,
-                },
-                None => false,
-            };
-            if stamp_matches_tag {
-                false
-            } else {
-                match local_version.as_deref() {
-                    Some(v) => semver_lt(v, &target_version),
+    let version_behind = drift_report.update_required
+        || match channel {
+            Channel::Release => {
+                // Trust the rescue stamp's SHA over the in-file `hqVersion` string:
+                // upstream releases sometimes ship a stale `hqVersion` in
+                // `core.yaml` (e.g. v14.2.1 carrying `hqVersion: "14.2.0"`), which
+                // would otherwise make the pill keep offering a no-op upgrade
+                // forever. If the last rescue stamped the same commit the release
+                // tag points to, we're on the release regardless of what the
+                // string says.
+                let stamp_matches_tag = match floor_sha.as_deref() {
+                    Some(floor) => match fetch_commit_sha(&client, &target_repo, &target_ref).await
+                    {
+                        Ok(tag_sha) => floor == tag_sha,
+                        Err(_) => false,
+                    },
                     None => false,
+                };
+                if stamp_matches_tag {
+                    false
+                } else {
+                    match local_version.as_deref() {
+                        Some(v) => semver_lt(v, &target_version),
+                        None => false,
+                    }
                 }
             }
-        }
-        Channel::Staging => match floor_sha.as_deref() {
-            Some(floor) => !target_ref.starts_with(floor) && !floor.starts_with(&target_ref),
-            None => true, // no floor on staging = treat as behind
-        },
-    };
+            Channel::Staging => match floor_sha.as_deref() {
+                Some(floor) => !target_ref.starts_with(floor) && !floor.starts_with(&target_ref),
+                None => true, // no floor on staging = treat as behind
+            },
+        };
 
     let state = CoreState {
         channel,

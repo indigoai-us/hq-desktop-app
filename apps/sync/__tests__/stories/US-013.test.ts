@@ -83,7 +83,8 @@ describe('US-013: Status bar + global ⌘K command surface', () => {
     expect(palette).toContain('await command.action();');
     expect(palette).toContain('onclose();');
     expect(palette).toContain('onfocus={() => { highlightedIndex = index; }}');
-    expect(palette).toContain("if (event.key === 'Escape')");
+    expect(palette).toContain("if (event.key === 'Escape' && !executingId)");
+    expect(palette).toContain('aria-busy={executingId === command.id}');
     expect(palette).toContain('onkeydown={handleKeydown}');
     expect(palette).toContain('bind:this={inputEl}');
     expect(palette).toContain('onclick={() => void execute(command)}');

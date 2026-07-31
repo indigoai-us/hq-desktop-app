@@ -52,9 +52,19 @@ describe('US-015: Meetings in V4 remains gated and action-complete', () => {
     expect(meetingsPage).toContain('onstart={startRecording}');
     expect(meetingsPage).toContain('onstop={stopRecording}');
 
-    expect(meetingsAgenda).toContain("aria-label=\"Invite bot\"");
-    expect(meetingsAgenda).toContain("aria-label={recurring ? 'Uninvite bot from series' : 'Uninvite bot'}");
-    expect(meetingsAgenda).toContain("aria-label=\"Tell bot to join now\"");
+    expect(meetingsAgenda).toContain(
+      "aria-label={invitePending ? 'Inviting bot' : recurring ? 'Invite bot to series' : 'Invite bot'}",
+    );
+    expect(meetingsAgenda).toContain(
+      "aria-label={uninvitePending ? 'Cancelling bot invitation' : recurring ? 'Uninvite bot from series' : 'Uninvite bot'}",
+    );
+    expect(meetingsAgenda).toContain(
+      "aria-label={joinNowPending ? 'Telling bot to join now' : 'Tell bot to join now'}",
+    );
+    expect(meetingsAgenda).toContain('aria-busy={invitePending}');
+    expect(meetingsAgenda.match(/aria-busy=\{uninvitePending\}/g)).toHaveLength(3);
+    expect(meetingsAgenda).toContain('aria-busy={joinNowPending}');
+    expect(meetingsAgenda).not.toContain('aria-busy={pending}');
     expect(meetingsAgenda).toContain("<span class=\"pill\">Scheduled</span>");
     expect(liveNowCard).toContain('Start recording');
     expect(liveNowCard).toContain('Stop recording');

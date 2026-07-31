@@ -749,15 +749,66 @@ pub async fn remove_channel_member(
 /// /v1/notify/channels/{id}/read`. Called when the user opens a channel; the
 /// local unread is cleared in the UI immediately and reconciled here.
 #[tauri::command]
-pub async fn mark_channel_read(channel_id: String) -> Result<(), String> {
+pub async fn mark_channel_read(app: AppHandle, channel_id: String) -> Result<(), String> {
+    let auth = dm_notify::resolve_notification_auth_snapshot(&app)
+        .await
+        .map_err(|error| format!("Not signed in: {error}"))?;
     let id = channel_id.trim();
     if id.is_empty() {
         return Err("channelId must not be empty".to_string());
     }
-    let (base, token) = auth_and_base("MESSAGES_CHANNEL_READ").await?;
+    let base = resolve_vault_api_url()
+        .map(|url| url.trim_end_matches('/').to_string())
+        .map_err(|error| {
+            log(
+                LOG_TAG,
+                &format!("MESSAGES_CHANNEL_READ_ERROR vault url: {error}"),
+            );
+            format!("Could not resolve server URL: {error}")
+        })?;
     let url = format!("{base}/v1/notify/channels/{}/read", esc_seg(id));
     let payload = serde_json::json!({});
-    let _: serde_json::Value = post_json(&url, &token, &payload, "MESSAGES_CHANNEL_READ").await?;
+    // Do not dispatch a remote read with an old account's bearer if sign-out
+    // or an account switch won the race after this command captured `auth`.
+    // The helper releases the notification-session mutex while the POST is in
+    // flight, but retains its intentional-write lease through the response.
+    // An account transition withdraws immediately and waits for that lease
+    // before it can publish a different account.
+    let sent = dm_notify::with_current_notification_mutation(&app, &auth, || {
+        post_json::<serde_json::Value>(&url, &auth.access_token, &payload, "MESSAGES_CHANNEL_READ")
+    })
+    .await;
+    match sent {
+        None => {
+            log(
+                LOG_TAG,
+                &format!("MESSAGES_CHANNEL_READ_STALE id={id} auth session changed before send"),
+            );
+            return Ok(());
+        }
+        Some(Err(error)) => return Err(error),
+        Some(Ok(_)) => {}
+    }
+    let committed = dm_notify::with_current_notification_auth_snapshot(&app, &auth, || {
+        if let Some(state) = app.try_state::<dm_notify::SeenChannelState>() {
+            let mut channels = state
+                .0
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            channels.invalidate_snapshots();
+            channels.unread_by_id.insert(id.to_string(), 0);
+        }
+        let unread = serde_json::json!({ "channelId": id, "unread": 0u32 });
+        let _ = app.emit(dm_notify::EVENT_CHANNEL_UNREAD_CHANGED, &unread);
+    })
+    .await;
+    if committed.is_none() {
+        log(
+            LOG_TAG,
+            &format!("MESSAGES_CHANNEL_READ_STALE id={id} auth session changed"),
+        );
+        return Ok(());
+    }
     log(LOG_TAG, &format!("MESSAGES_CHANNEL_READ_OK id={id}"));
     Ok(())
 }

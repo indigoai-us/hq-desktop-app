@@ -390,8 +390,8 @@ pub fn write_workspace_sync_enabled(slug: &str, enabled: bool) -> Result<(), Str
         .ok_or_else(|| "workspaceSyncEnabled is not an object".to_string())?;
     map.insert(slug.to_string(), serde_json::Value::Bool(enabled));
 
-    let serialized = serde_json::to_string_pretty(&root)
-        .map_err(|e| format!("serialize menubar.json: {e}"))?;
+    let serialized =
+        serde_json::to_string_pretty(&root).map_err(|e| format!("serialize menubar.json: {e}"))?;
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, serialized).map_err(|e| format!("write tmp menubar.json: {e}"))?;
     replace_file(&tmp, &path).map_err(|e| format!("rename menubar.json: {e}"))?;

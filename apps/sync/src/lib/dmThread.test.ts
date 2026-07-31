@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { appendInboundBatch, shouldAppendInbound } from './dmThread';
+import {
+  appendInboundBatch,
+  mergeHydratedThread,
+  shouldAppendInbound,
+  type MergeableThreadMessage,
+} from './dmThread';
 
 const peer = 'prs_alice';
 const msg = (eventId: string) => ({ eventId });
@@ -48,5 +53,80 @@ describe('appendInboundBatch', () => {
     );
 
     expect(out).toBe(existing);
+  });
+});
+
+describe('mergeHydratedThread', () => {
+  const message = (
+    eventId: string,
+    createdAt: string,
+    body: string,
+    direction: 'in' | 'out' = 'in',
+  ) => ({
+    eventId,
+    createdAt,
+    body,
+    direction,
+    fromPersonUid: direction === 'in' ? peer : 'me',
+  });
+
+  it('preserves live and optimistic entries while restoring chronological order', () => {
+    const hydrated = [
+      message('history', '2026-07-28T12:00:00.000Z', 'History'),
+      message('opening', '2026-07-28T12:01:00.000Z', 'Opening'),
+    ];
+    const current = [
+      message('local-1', '2026-07-28T12:03:00.000Z', 'Optimistic', 'out'),
+      message('live', '2026-07-28T12:02:00.000Z', 'Live'),
+    ];
+
+    expect(mergeHydratedThread(hydrated, current).map((item) => item.eventId)).toEqual([
+      'history',
+      'opening',
+      'live',
+      'local-1',
+    ]);
+  });
+
+  it('deduplicates a live/server overlap by stable event id and keeps hydrated data', () => {
+    const live = {
+      ...message('same-event', '2026-07-28T12:02:00.000Z', 'Live copy'),
+      details: null as string | null,
+    };
+    const hydrated = {
+      ...message('same-event', '2026-07-28T12:02:00.000Z', 'Canonical copy'),
+      details: 'Server metadata' as string | null,
+    };
+
+    expect(mergeHydratedThread([hydrated], [live])).toEqual([hydrated]);
+  });
+
+  it('uses a conservative full-message fallback when an event id is absent', () => {
+    const idless = {
+      ...message('', '2026-07-28T12:02:00.000Z', 'Idless'),
+      details: 'same metadata',
+    };
+    const laterRepeat = {
+      ...idless,
+      createdAt: '2026-07-28T12:03:00.000Z',
+    };
+
+    expect(mergeHydratedThread([idless], [idless, laterRepeat])).toEqual([
+      idless,
+      laterRepeat,
+    ]);
+  });
+
+  it('keeps an incomplete idless legacy row without disturbing dated chronology', () => {
+    const incomplete: MergeableThreadMessage = { eventId: '' };
+    const dated: MergeableThreadMessage = {
+      eventId: 'dated',
+      createdAt: '2026-07-28T12:00:00.000Z',
+    };
+
+    expect(mergeHydratedThread([incomplete], [dated])).toEqual([
+      dated,
+      incomplete,
+    ]);
   });
 });

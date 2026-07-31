@@ -59,6 +59,7 @@ describe('desktop-alt status dropdown wires onStatusChange → write (US-010)', 
   // The detail view's status writes are hosted by the per-company board panel
   // (US-011) now that the top-level BoardPage is gone.
   const board = readRepoFile('src/desktop-alt/panels/CompanyBoardPanel.svelte');
+  const goals = readRepoFile('src/desktop-alt/pages/CompanyGoalsPage.svelte');
 
   it('selecting a status calls the store write through an onclick handler', () => {
     // The dropdown options now call selectStatus (was a no-op menu-close in 009).
@@ -90,6 +91,19 @@ describe('desktop-alt status dropdown wires onStatusChange → write (US-010)', 
     expect(board).toContain('function onProjectStatusChange');
     expect(board).toContain('withProjectStatus(selected, changedIdentity, status)');
   });
+
+  it('uses the same composite identity on the Goals linked-project surface', () => {
+    expect(goals).toContain(
+      'function onProjectStatusChange(changedIdentity: string, status: string)',
+    );
+    expect(goals).toContain(
+      'selected = withProjectStatus(selected, changedIdentity, status)',
+    );
+    expect(goals).toContain(
+      'withProjectStatus(project, changedIdentity, status)',
+    );
+    expect(goals).not.toContain('selected.id === projectId');
+  });
 });
 
 describe('desktop-alt status write — registration + capability (US-010)', () => {
@@ -105,21 +119,39 @@ describe('desktop-alt status write — registration + capability (US-010)', () =
     expect(cap).toContain('set_local_story_passes');
   });
 
-  it('the Rust write command guards path + GA gate + atomic write', () => {
+  it('the Rust write command guards membership + canonical path + atomic write', () => {
     const rust = readRepoFile('src-tauri/src/commands/projects_local.rs');
     const core = readRepoFile('../../crates/hq-desktop-core/src/projects_local.rs');
-    // The command wrapper enforces the signed-in GA gate and delegates the
-    // write to the core library.
+    const scopedFs = readRepoFile('../../crates/hq-desktop-core/src/desktop_alt.rs');
+    // The command wrapper enforces the signed-in gate, hydrates live workspace
+    // membership, and authorizes the canonical company target before delegating.
     expect(rust).toContain('pub async fn set_local_project_status');
     expect(rust).toContain('desktop_features_enabled().await');
+    expect(rust).toContain('hydrated_project_context().await');
+    expect(rust).toContain('authorize_project_target(');
     expect(rust).toContain('prd_path.as_deref()');
     expect(core).toContain('normalize_project_identity_path');
-    // Path-traversal guard + board.json-only target + atomic write (serialize →
-    // temp → rename) live in the core library and are unit-tested there
-    // (write_project_status_persists_and_round_trips / _rejects_*).
-    expect(core).toContain('is_within(hq_root, &abs)');
-    expect(core).toContain('Some("board.json")');
-    expect(core).toContain('fn atomic_write_json');
-    expect(core).toContain('std::fs::rename(&tmp_path, target)');
+    // Strict HQ-relative + canonical company guards, no-symlink write targets,
+    // sink-adjacent revalidation, and a linearizable atomic exchange all live
+    // in the core library with focused regressions.
+    expect(core).toContain('resolve_project_write_path');
+    expect(core).toContain('reject_project_write_symlinks');
+    expect(core).toContain('require_same_project_write_target');
+    expect(core).toContain('expected_filename');
+    expect(core).toContain('fn commit_json_mutation_with_exchange');
+    expect(core).toContain('fn prepare_atomic_json_write');
+    expect(core).toContain('fn atomic_exchange_file');
+    expect(core).toContain('.exchange_files(&self.temp_name, &target.target_name)');
+    expect(scopedFs).toContain('rustix::fs::renameat_with');
+    expect(scopedFs).toContain('RenameFlags::EXCHANGE');
+    expect(scopedFs).toContain('self.descriptor.as_ref()');
+    expect(core).toContain('ReplaceFileW(');
+    expect(core).toContain('DisplacedAtomicJsonWrite::capture');
+    expect(core).toContain('OFlags::NOFOLLOW');
+    expect(scopedFs).toContain('FILE_FLAG_OPEN_REPARSE_POINT');
+    expect(scopedFs).toContain('FILE_OPEN_REPARSE_POINT');
+    expect(scopedFs).toContain('NtCreateFile(');
+    expect(core).toContain('file.write_all(&serialized).and_then(|()| file.sync_all())');
+    expect(core).not.toContain('std::fs::rename(&tmp_path, target)');
   });
 });

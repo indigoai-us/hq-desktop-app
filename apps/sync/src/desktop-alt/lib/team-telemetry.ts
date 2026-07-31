@@ -43,6 +43,7 @@ export interface TeamTelemetryView {
 export interface TeamMemberLabel {
   email?: string | null;
   displayName?: string | null;
+  name?: string | null;
 }
 
 export function memberKindFromUid(uid: string): TeamMemberKind {
@@ -72,11 +73,61 @@ export function displayNameFromMember(raw: {
   displayName?: string;
   name?: string;
 }, resolved?: TeamMemberLabel): string {
-  const name = (raw.displayName || raw.name || resolved?.displayName || '').trim();
+  const name = (
+    raw.displayName ||
+    raw.name ||
+    resolved?.displayName ||
+    resolved?.name ||
+    ''
+  ).trim();
   if (name) return name;
   const email = (raw.email || resolved?.email || '').trim();
   if (email) return email;
-  return 'Unknown member';
+  const sourceUid = (raw.personUid ?? '').trim();
+  if (sourceUid) return sourceUid;
+  return 'Identity unavailable';
+}
+
+function trimmedString(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return trimmed || undefined;
+}
+
+/**
+ * The production telemetry response already includes display-safe identities
+ * keyed by source UID. Read that authoritative enrichment before consulting
+ * the separate contacts response.
+ */
+function telemetryMemberLabel(value: unknown, personUid: string): TeamMemberLabel | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const identities = value as Record<string, unknown>;
+  for (const groupName of ['persons', 'agents'] as const) {
+    const group = identities[groupName];
+    if (!group || typeof group !== 'object') continue;
+    const row = (group as Record<string, unknown>)[personUid];
+    if (!row || typeof row !== 'object') continue;
+    const identity = row as Record<string, unknown>;
+    return {
+      displayName: trimmedString(identity.displayName) ?? trimmedString(identity.name),
+      email: trimmedString(identity.email),
+    };
+  }
+  return undefined;
+}
+
+function mergedMemberLabel(
+  primary: TeamMemberLabel | undefined,
+  secondary: TeamMemberLabel | undefined,
+): TeamMemberLabel | undefined {
+  const displayName =
+    trimmedString(primary?.displayName) ??
+    trimmedString(primary?.name) ??
+    trimmedString(secondary?.displayName) ??
+    trimmedString(secondary?.name);
+  const email = trimmedString(primary?.email) ?? trimmedString(secondary?.email);
+  if (!displayName && !email) return undefined;
+  return { displayName, email };
 }
 
 function finiteNumber(value: unknown): number | undefined {
@@ -146,6 +197,46 @@ function sortMembers(list: TeamMember[]): TeamMember[] {
 }
 
 /**
+ * Telemetry can repeat an exact person UID when a reporting window overlaps.
+ * Collapse only that authoritative identity key — never display-name/email —
+ * so two real people who share a name remain separate. Counts use the maximum
+ * observed value rather than summing duplicate snapshots.
+ */
+function mergeDuplicateMember(existing: TeamMember, incoming: TeamMember): TeamMember {
+  const skillCounts = new Map(existing.topSkills.map((skill) => [skill.skill, skill.count]));
+  for (const skill of incoming.topSkills) {
+    skillCounts.set(skill.skill, Math.max(skillCounts.get(skill.skill) ?? 0, skill.count));
+  }
+
+  const maxDefined = (a: number | undefined, b: number | undefined): number | undefined => {
+    if (a == null) return b;
+    if (b == null) return a;
+    return Math.max(a, b);
+  };
+
+  return {
+    ...existing,
+    displayName:
+      (existing.displayName === existing.id ||
+        existing.displayName === 'Identity unavailable') &&
+      incoming.displayName !== incoming.id &&
+      incoming.displayName !== 'Identity unavailable'
+        ? incoming.displayName
+        : existing.displayName,
+    email: existing.email ?? incoming.email,
+    role: existing.role ?? incoming.role,
+    topSkills: Array.from(skillCounts, ([skill, count]) => ({ skill, count }))
+      .sort((a, b) => b.count - a.count || a.skill.localeCompare(b.skill))
+      .slice(0, 5),
+    activeProjects: Array.from(
+      new Set([...existing.activeProjects, ...incoming.activeProjects]),
+    ),
+    events: maxDefined(existing.events, incoming.events),
+    sessions: maxDefined(existing.sessions, incoming.sessions),
+  };
+}
+
+/**
  * Normalize a company telemetry JSON body into a mixed member list with kind
  * labels and top skills. Production uses `members` with top-level `skills`,
  * `events`, and `distinctSessions`; the legacy console/harness shape used
@@ -168,8 +259,7 @@ export function normalizeCompanyTeamTelemetry(
   }
 
   const projectsMap = options?.activeProjectsByMemberId ?? {};
-  const humans: TeamMember[] = [];
-  const agents: TeamMember[] = [];
+  const membersById = new Map<string, TeamMember>();
 
   for (const row of rawMembers) {
     if (!row || typeof row !== 'object') continue;
@@ -188,7 +278,10 @@ export function normalizeCompanyTeamTelemetry(
           ? r.membershipRole
           : '';
     const role = roleRaw.trim() || undefined;
-    const resolvedLabel = options?.memberLabelsById?.[personUid];
+    const resolvedLabel = mergedMemberLabel(
+      telemetryMemberLabel(o.identities, personUid),
+      options?.memberLabelsById?.[personUid],
+    );
     const emailRaw =
       typeof r.email === 'string'
         ? r.email
@@ -219,10 +312,16 @@ export function normalizeCompanyTeamTelemetry(
       events: finiteNumber(r.events ?? totals?.events),
       sessions: finiteNumber(r.distinctSessions ?? totals?.distinctSessions),
     };
-    if (kind === 'agent') agents.push(member);
-    else humans.push(member);
+    const existing = membersById.get(personUid);
+    membersById.set(
+      personUid,
+      existing ? mergeDuplicateMember(existing, member) : member,
+    );
   }
 
+  const normalizedMembers = Array.from(membersById.values());
+  const humans = normalizedMembers.filter((member) => member.kind === 'human');
+  const agents = normalizedMembers.filter((member) => member.kind === 'agent');
   const sortedHumans = sortMembers(humans);
   const sortedAgents = sortMembers(agents);
   // One ranked list — humans and agents interleaved by activity, not tabs.

@@ -25,7 +25,12 @@
    */
   import { invoke } from '@tauri-apps/api/core';
   import type { Workspace } from '../../lib/workspaces';
-  import type { DirEntry } from '../lib/file-tree';
+  import {
+    fileAccessibleCompanies,
+    filterFileEntriesForMembership,
+    isFilesRouteAllowed,
+    type DirEntry,
+  } from '../lib/file-tree';
   import CompanyFileTree from '../components/CompanyFileTree.svelte';
   import { sortV4CompaniesConnectedFirst } from './model';
   import './tokens.css';
@@ -37,6 +42,8 @@
     activeSlug: string | null;
     /** The currently-selected file's HQ-relative path; highlights the tree row. */
     selectedPath: string | null;
+    /** Workspace membership hydration completed; raw tree reads fail closed before this. */
+    accessReady?: boolean;
     /** Toggle the company filter (slug to scope, null to clear back to root). */
     onselectcompany?: (slug: string | null) => void;
     onselectfile?: (path: string) => void;
@@ -48,13 +55,23 @@
     companies,
     activeSlug,
     selectedPath,
+    accessReady = false,
     onselectcompany,
     onselectfile,
     onexit,
   }: Props = $props();
 
-  // Connected-first mini list — same ordering as the primary sidebar (US-007).
-  const companyRows = $derived(sortV4CompaniesConnectedFirst(companies, activeSlug));
+  // `companies` may briefly be a cache-backed shell list. Never render it as
+  // an access-bearing filter until DesktopApp confirms authoritative
+  // membership hydration.
+  const accessibleCompanies = $derived(
+    accessReady ? fileAccessibleCompanies(companies) : [],
+  );
+  // Connected-first mini list — same ordering as the primary sidebar (US-007),
+  // minus pending invitations, which are not content grants.
+  const companyRows = $derived(
+    sortV4CompaniesConnectedFirst(accessibleCompanies, activeSlug),
+  );
 
   // The active company's display label (for the filter chip).
   const activeLabel = $derived(
@@ -67,8 +84,15 @@
 
   // Lazy children loader — the per-directory `list_hq_dir` command. Returns one
   // directory's immediate children (noise-filtered, path-guarded in Rust).
-  function loadChildren(relPath: string): Promise<DirEntry[]> {
-    return invoke<DirEntry[]>('list_hq_dir', { relPath });
+  async function loadChildren(relPath: string): Promise<DirEntry[]> {
+    if (
+      !accessReady ||
+      !isFilesRouteAllowed({ path: relPath || null }, accessibleCompanies)
+    ) {
+      return [];
+    }
+    const entries = await invoke<DirEntry[]>('list_hq_dir', { relPath });
+    return filterFileEntriesForMembership(entries, accessibleCompanies);
   }
 
   function handleSelectFile(path: string): void {
@@ -132,13 +156,17 @@
   </div>
 
   <div class="fs-tree-area" aria-label="File tree">
-    {#key treeRootPath}
-      <CompanyFileTree
-        rootPath={treeRootPath}
-        {loadChildren}
-        onselect={handleSelectFile}
-        {selectedPath}
-      />
+    {#key `${treeRootPath}:${accessReady}`}
+      {#if accessReady}
+        <CompanyFileTree
+          rootPath={treeRootPath}
+          {loadChildren}
+          onselect={handleSelectFile}
+          {selectedPath}
+        />
+      {:else}
+        <span class="fs-loading" role="status">Loading files…</span>
+      {/if}
     {/key}
   </div>
 </aside>
@@ -396,6 +424,13 @@
     padding: 0 4px 8px;
     scrollbar-color: var(--v4-hairline) transparent;
     scrollbar-width: thin;
+  }
+
+  .fs-loading {
+    display: block;
+    padding: 6px 4px;
+    color: var(--v4-text-3);
+    font-size: var(--type-secondary);
   }
 
   .fs-tree-area::-webkit-scrollbar {

@@ -11,12 +11,18 @@
   import { invoke } from '@tauri-apps/api/core';
   import { buildClaudeCodeUrl } from '../../lib/claude-code-link';
   import {
+    applyProjectProvenance,
+    emptyProjectProvenanceIndex,
+    indexProjectProvenance,
     loadCompanyGoals,
+    loadCompanyProjectProvenance,
     loadLocalProjects,
     loadLocalProjectStories,
     projectIdentity,
+    withProjectStatus,
     type KeyResult,
     type Objective,
+    type ProjectProvenanceIndex,
   } from '../lib/local-projects';
   import {
     projectDisplayName,
@@ -24,6 +30,7 @@
     type Story,
   } from '../lib/projects-model';
   import ProjectDetailView from './ProjectDetailView.svelte';
+  import ProvenanceLine from '../components/ProvenanceLine.svelte';
 
   import '../v4/tokens.css';
 
@@ -43,6 +50,10 @@
 
   let objectives = $state<Objective[]>([]);
   let projects = $state<Project[]>([]);
+  let cloudProvenance = $state<ProjectProvenanceIndex>(
+    emptyProjectProvenanceIndex(),
+  );
+  let provenanceUnavailable = $state(false);
   let loading = $state(true);
   let error = $state<string | null>(null);
 
@@ -55,10 +66,15 @@
   let storiesLoading = $state(false);
   let storiesError = $state<string | null>(null);
   let selectedStoryId = $state<string | null>(null);
+  let storyLoadGeneration = 0;
   let actionBusy = $state<string | null>(null);
   let actionMessage = $state<string | null>(null);
 
-  const companyProjects = $derived(projects.filter((project) => project.company === slug));
+  const companyProjects = $derived(
+    projects
+      .filter((project) => project.company === slug)
+      .map((project) => applyProjectProvenance(project, cloudProvenance)),
+  );
   const linkedProjectCount = $derived.by(() => {
     const ids = new Set<string>();
     for (const objective of objectives) {
@@ -76,6 +92,57 @@
       : (stories.find((story) => story.id === selectedStoryId) ?? null),
   );
 
+  function invalidateStoryLoad(): void {
+    storyLoadGeneration += 1;
+    storiesLoading = false;
+  }
+
+  function isCurrentStoryLoad(
+    generation: number,
+    companySlug: string,
+    selectedIdentity: string,
+  ): boolean {
+    return (
+      generation === storyLoadGeneration &&
+      slug === companySlug &&
+      selected !== null &&
+      projectIdentity(selected) === selectedIdentity
+    );
+  }
+
+  async function refreshSelectedStoriesForProvenance(
+    project: Project,
+  ): Promise<void> {
+    if (!project.prdPath) return;
+    const companySlug = slug;
+    const selectedIdentity = projectIdentity(project);
+    const generation = storyLoadGeneration + 1;
+    storyLoadGeneration = generation;
+    storiesLoading = true;
+    try {
+      const nextStories = await loadLocalProjectStories(
+        project.prdPath,
+        project.provenance,
+      );
+      if (!isCurrentStoryLoad(generation, companySlug, selectedIdentity)) return;
+      stories = nextStories;
+      storiesError = null;
+      if (
+        selectedStoryId !== null &&
+        !nextStories.some((story) => story.id === selectedStoryId)
+      ) {
+        selectedStoryId = null;
+      }
+    } catch (err) {
+      if (!isCurrentStoryLoad(generation, companySlug, selectedIdentity)) return;
+      console.warn('story provenance refresh failed:', err);
+    } finally {
+      if (isCurrentStoryLoad(generation, companySlug, selectedIdentity)) {
+        storiesLoading = false;
+      }
+    }
+  }
+
   function goalKey(objective: Objective): string {
     return objective.id || objective.title || '';
   }
@@ -92,8 +159,11 @@
 
   $effect(() => {
     const activeSlug = slug;
+    invalidateStoryLoad();
     objectives = [];
     projects = [];
+    cloudProvenance = emptyProjectProvenanceIndex();
+    provenanceUnavailable = false;
     error = null;
     selectedGoalId = null;
     selected = null;
@@ -108,6 +178,22 @@
 
     loading = true;
     let cancelled = false;
+
+    void loadCompanyProjectProvenance(activeSlug)
+      .then((records) => {
+        if (cancelled) return;
+        cloudProvenance = indexProjectProvenance(records);
+        provenanceUnavailable = false;
+        if (selected) {
+          const refreshed = applyProjectProvenance(selected, cloudProvenance);
+          selected = refreshed;
+          void refreshSelectedStoriesForProvenance(refreshed);
+        }
+      })
+      .catch((err) => {
+        console.warn(`get_company_project_creators(${activeSlug}) failed:`, err);
+        if (!cancelled) provenanceUnavailable = true;
+      });
 
     void (async () => {
       try {
@@ -178,7 +264,7 @@
   }
 
   function formatValue(value: number | string | null | undefined, unit?: string): string {
-    if (value == null || value === '') return '—';
+    if (value == null || value === '') return 'Not set';
     const text = String(value);
     if (!unit) return text;
     if (unit === '$' || unit.toLowerCase() === 'usd') return `$${text}`;
@@ -239,11 +325,10 @@
     return quarter ?? raw;
   }
 
-  function ownerLabel(value: string | null | undefined): string {
+  function ownerLabel(value: string | null | undefined): string | null {
     const raw = (value ?? '').trim();
-    // An unowned objective is honestly "Unassigned" — never invent "Agent"
-    // attribution the data doesn't assert (matches Projects/Tasks).
-    if (!raw) return 'Unassigned';
+    // Missing attribution is omitted instead of repeated as row-level noise.
+    if (!raw) return null;
     if (raw.toLowerCase() === 'you' || raw.toLowerCase() === 'me') return 'You';
     if (raw.toLowerCase() === 'agent') return 'Agent';
     return raw;
@@ -264,10 +349,28 @@
   function goalListMeta(objective: Objective): string {
     const status = goalStatus(objective.status);
     const owner = ownerLabel(objective.owner);
-    const quarter = quarterLabel(objective.timeframe) ?? '—';
+    const quarter = quarterLabel(objective.timeframe);
     const linked = linkedProjects(objective).length;
     const projectsLabel = `${linked} ${linked === 1 ? 'project' : 'projects'}`;
-    return `${status.label} · ${owner} · ${quarter} · ${projectsLabel}`;
+    return [
+      status.label,
+      owner ? `Owner ${owner}` : null,
+      quarter,
+      projectsLabel,
+    ]
+      .filter((part): part is string => Boolean(part))
+      .join(' · ');
+  }
+
+  function goalDetailMeta(objective: Objective): string {
+    const owner = ownerLabel(objective.owner);
+    const quarter = quarterLabel(objective.timeframe);
+    return [
+      owner ? `Owner ${owner}` : null,
+      quarter ? `Target ${quarter}` : null,
+    ]
+      .filter((part): part is string => Boolean(part))
+      .join(' · ');
   }
 
   function selectGoal(objective: Objective): void {
@@ -382,6 +485,10 @@
   }
 
   async function openProject(project: Project): Promise<void> {
+    const companySlug = slug;
+    const selectedIdentity = projectIdentity(project);
+    const generation = storyLoadGeneration + 1;
+    storyLoadGeneration = generation;
     selected = project;
     stories = [];
     storiesError = null;
@@ -394,34 +501,52 @@
 
     storiesLoading = true;
     try {
-      stories = await loadLocalProjectStories(project.prdPath);
+      const nextStories = await loadLocalProjectStories(
+        project.prdPath,
+        project.provenance,
+      );
+      if (!isCurrentStoryLoad(generation, companySlug, selectedIdentity)) return;
+      stories = nextStories;
     } catch (err) {
+      if (!isCurrentStoryLoad(generation, companySlug, selectedIdentity)) return;
       console.error('get_local_project_prd failed:', err);
       const detail = err instanceof Error ? err.message : String(err);
       storiesError = `Could not load this project’s stories — ${detail}`;
       stories = [];
     } finally {
-      storiesLoading = false;
+      if (isCurrentStoryLoad(generation, companySlug, selectedIdentity)) {
+        storiesLoading = false;
+      }
     }
   }
 
+  function retrySelectedStories(): Promise<void> | void {
+    const project = selected;
+    if (!project) return;
+    return openProject(project);
+  }
+
   function backToGoals(): void {
+    invalidateStoryLoad();
     selected = null;
     stories = [];
     storiesError = null;
     selectedStoryId = null;
   }
 
-  function onProjectStatusChange(projectId: string, status: string): void {
-    if (selected && selected.id === projectId) {
-      selected = { ...selected, status };
+  function onProjectStatusChange(changedIdentity: string, status: string): void {
+    if (selected) {
+      selected = withProjectStatus(selected, changedIdentity, status);
     }
     projects = projects.map((project) =>
-      project.id === projectId ? { ...project, status } : project,
+      withProjectStatus(project, changedIdentity, status),
     );
   }
 
   function onStoryPassesChange(storyId: string, passes: boolean): void {
+    // Ignore any pre-mutation provenance refresh that is still in flight: its
+    // PRD snapshot predates the successful passes write.
+    invalidateStoryLoad();
     stories = stories.map((story) =>
       story.id === storyId ? { ...story, passes } : story,
     );
@@ -444,11 +569,13 @@
       {stories}
       {storiesLoading}
       {storiesError}
+      onretryStories={retrySelectedStories}
       objectives={objectives}
       onback={backToGoals}
       onselectStory={openStory}
       onStatusChange={onProjectStatusChange}
       selectedStory={selectedStory}
+      {provenanceUnavailable}
       oncloseStory={closeStory}
       onselectDependency={selectStoryById}
       {onStoryPassesChange}
@@ -472,6 +599,7 @@
           data-testid="new-goal-button"
           onclick={newGoal}
           disabled={actionBusy !== null}
+          aria-busy={actionBusy === 'new-goal'}
         >
           {actionBusy === 'new-goal' ? 'Opening…' : 'New goal'}
         </button>
@@ -564,9 +692,11 @@
                       <span>{selectedStatus.label}</span>
                     </span>
                   </div>
-                  <span class="goal-meta" data-testid="goal-detail-meta">
-                    owner: {ownerLabel(selectedGoal.owner)} · target {quarterLabel(selectedGoal.timeframe) ?? '—'}
-                  </span>
+                  {#if goalDetailMeta(selectedGoal)}
+                    <span class="goal-meta" data-testid="goal-detail-meta">
+                      {goalDetailMeta(selectedGoal)}
+                    </span>
+                  {/if}
                 </div>
               </header>
 
@@ -624,6 +754,7 @@
                     data-testid="review-proposal-button"
                     onclick={() => reviewProposal(selectedGoal)}
                     disabled={actionBusy !== null}
+                    aria-busy={actionBusy === `review-${selectedGoal.id || selectedGoal.title}`}
                   >
                     {actionBusy === `review-${selectedGoal.id || selectedGoal.title}` ? 'Opening…' : 'Review proposal'}
                   </button>
@@ -637,14 +768,23 @@
                     <span class="muted-chip">None</span>
                   {:else}
                     {#each selectedLinked.slice(0, 3) as project (projectIdentity(project))}
-                      <button
-                        type="button"
-                        class="project-chip"
-                        data-testid="linked-project-chip"
-                        onclick={() => openProject(project)}
-                      >
-                        {projectDisplayName(project)}
-                      </button>
+                      <div class="project-chip">
+                        <button
+                          type="button"
+                          class="project-chip-action"
+                          data-testid="linked-project-chip"
+                          onclick={() => openProject(project)}
+                        >
+                          {projectDisplayName(project)}
+                        </button>
+                        <ProvenanceLine
+                          provenance={project.provenance}
+                          kind="project"
+                          testid="linked-project-provenance"
+                          compact
+                          unavailable={provenanceUnavailable}
+                        />
+                      </div>
                     {/each}
                     {#if overflowCount(selectedLinked) > 0}
                       <span class="muted-chip">+{overflowCount(selectedLinked)}</span>
@@ -757,7 +897,7 @@
 
   .new-goal-button:focus-visible,
   .review-proposal-button:focus-visible,
-  .project-chip:focus-visible,
+  .project-chip-action:focus-visible,
   .goal-list-row:focus-visible,
   .goal-detail-back:focus-visible {
     outline: 2px solid var(--v4-text-1);
@@ -1147,7 +1287,6 @@
     min-width: 0;
   }
 
-  .project-chip,
   .muted-chip {
     display: inline-flex;
     max-width: 220px;
@@ -1168,10 +1307,32 @@
   }
 
   .project-chip {
+    display: grid;
+    gap: 3px;
+    min-width: 0;
+    max-width: 260px;
+    padding: 5px 8px;
+    border-radius: var(--v4-radius-button);
+    background: var(--v4-control-faint);
+  }
+
+  .project-chip-action {
+    min-width: 0;
+    overflow: hidden;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--v4-text-2);
+    font: inherit;
+    font-size: var(--type-secondary, var(--text-sm));
+    font-weight: 500;
+    text-align: left;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     cursor: pointer;
   }
 
-  .project-chip:hover {
+  .project-chip-action:hover {
     color: var(--v4-text-1);
   }
 

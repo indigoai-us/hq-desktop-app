@@ -130,7 +130,14 @@ export function companyTabForPrimarySection(id: CompanyPrimarySectionId): Compan
 }
 
 /** Settings sections — rows of the Settings secondary sidebar (US-013 fills the bodies). */
-export type SettingsTab = 'sync' | 'notifications' | 'widget' | 'updates' | 'general' | 'meetings';
+export type SettingsTab =
+  | 'sync'
+  | 'notifications'
+  | 'widget'
+  | 'updates'
+  | 'general'
+  | 'appearance'
+  | 'meetings';
 
 export const DEFAULT_SETTINGS_TAB: SettingsTab = 'sync';
 
@@ -234,6 +241,7 @@ export const SETTINGS_SECTIONS: ReadonlyArray<{
   { id: 'widget', label: 'Widget' },
   { id: 'updates', label: 'Updates' },
   { id: 'general', label: 'General' },
+  { id: 'appearance', label: 'Appearance' },
   { id: 'meetings', label: 'Meetings' },
 ];
 

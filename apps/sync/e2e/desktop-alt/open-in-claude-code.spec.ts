@@ -22,10 +22,25 @@ describe('desktop-alt open-in-Claude-Code + activity drill-ins (US-012)', () => 
   const affordance = readRepoFile(
     'src/desktop-alt/components/OpenFileInClaudeCode.svelte',
   );
+  const openButton = readRepoFile('src/components/OpenInClaudeCodeButton.svelte');
+  const appRs = readRepoFile('src-tauri/src/commands/app.rs');
   const panel = readRepoFile(
     'src/desktop-alt/components/StoryDetailPanel.svelte',
   );
   const activity = readRepoFile('src/desktop-alt/panels/ActivityPanel.svelte');
+
+  it('preflights Claude deep links against HQ root + hook health before dispatch', () => {
+    expect(appRs).toContain('preflight_claude_code_url');
+    expect(appRs).toContain('hq_desktop_core::claude_launch::preflight_claude_code_url');
+  });
+
+  it('prefixes OpenInClaudeCodeButton prompts with the bounded skill catalog', () => {
+    expect(openButton).toContain(
+      "import { buildClaudePromptWithSkillCatalog } from '../lib/skill-catalog-prompt'",
+    );
+    expect(openButton).toContain('buildClaudePromptWithSkillCatalog(basePrompt, companySlug)');
+    expect(openButton).toContain("invoke<{ companySlug?: string | null }>('get_config')");
+  });
 
   it('reuses the claude-code-link util + open_claude_code_link command (no reimplementation)', () => {
     // Builds the URL through the shared util — not a hand-rolled claude:// string.
@@ -41,8 +56,16 @@ describe('desktop-alt open-in-Claude-Code + activity drill-ins (US-012)', () => 
     // A `claude://.../?<query>` string would be reimplementation; assert none
     // exists (bare prose mentions of the scheme in comments are fine).
     expect(affordance).not.toMatch(/claude:\/\/[\w/]*\?/);
-    // Suppresses itself when the HQ folder isn't loaded yet (button contract).
-    expect(affordance).toContain('{#if folder}');
+    // Generic call sites suppress themselves until the HQ folder loads, while
+    // Files/Knowledge can render from an HQ-relative path because the native
+    // command owns folder resolution + authorization.
+    expect(affordance).toContain('{#if authorizedFile || folder}');
+    expect(affordance).toContain(
+      "invoke('open_authorized_file_in_claude', { path: file })",
+    );
+    expect(affordance).toContain(
+      'Never fall back to a renderer-built prompt for an authorization',
+    );
     expect(affordance).toContain('data-testid="open-in-claude-code"');
   });
 

@@ -109,7 +109,7 @@ describe('desktop-alt Deployments panel actions (US-011)', () => {
     expect(row).not.toMatch(/function (beginRollback|cancelRollback|confirmRollback)/);
     expect(row).not.toMatch(/>\s*Rollback\s*</);
     // No permanently-disabled action button masquerading as a control.
-    expect(row).not.toMatch(/<button[^>]*\sdisabled[^>]*>[\s\S]*?Deploy/);
+    expect(row).not.toMatch(/<button[^>]*\sdisabled(?!\s*=)[^>]*>[\s\S]*?Deploy/);
     expect(row).not.toContain('class="detail-actions"');
     expect(row).not.toContain('class="rollback-confirm"');
 

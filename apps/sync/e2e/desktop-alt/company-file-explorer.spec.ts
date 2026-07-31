@@ -63,7 +63,10 @@ describe('desktop-alt Files mode — explorer sidebar + company switcher (US-009
     expect(sidebar).toContain(
       "import { sortV4CompaniesConnectedFirst } from './model'",
     );
-    expect(sidebar).toContain('sortV4CompaniesConnectedFirst(companies, activeSlug)');
+    expect(sidebar).toContain('fileAccessibleCompanies(companies)');
+    expect(sidebar).toContain(
+      'sortV4CompaniesConnectedFirst(accessibleCompanies, activeSlug)',
+    );
     // The mini company list rows fire onselectcompany and the lazy tree renders.
     expect(sidebar).toContain('onselectcompany?.(');
     expect(sidebar).toContain('<CompanyFileTree');
@@ -84,7 +87,7 @@ describe('desktop-alt Files mode — explorer sidebar + company switcher (US-009
     expect(desktopApp).toContain('activeSlug={filesActiveSlug}');
     // Picking a company navigates to a files route scoped to that company;
     // clearing the filter (null slug) returns to the root files route.
-    expect(desktopApp).toContain("navigate({ kind: 'files', slug: slug ?? undefined })");
+    expect(desktopApp).toContain('onselectcompany={navigateFilesCompany}');
   });
 
   // -------------------------------------------------------------------------
@@ -95,13 +98,12 @@ describe('desktop-alt Files mode — explorer sidebar + company switcher (US-009
     expect(sidebar).toContain('onselectfile?: (path: string) => void');
     expect(sidebar).toContain('onselect={handleSelectFile}');
     // The shell turns a file select into a files route carrying the path.
-    expect(desktopApp).toContain('onselectfile={(path) =>');
-    expect(desktopApp).toContain("navigate({ kind: 'files', slug: filesActiveSlug ?? undefined, path })");
+    expect(desktopApp).toContain('onselectfile={navigateFilesPath}');
     // The main area renders FilePreviewPane driven by the selected path, with a
     // friendly prompt before any selection.
     expect(desktopApp).toContain("import FilePreviewPane from './components/FilePreviewPane.svelte'");
     expect(desktopApp).toContain('<FilePreviewPane path={filesSelectedPath}');
-    expect(desktopApp).toContain('{#if filesSelectedPath}');
+    expect(desktopApp).toContain('{:else if filesSelectedPath}');
     expect(desktopApp).toContain('Select a file to preview it');
   });
 
@@ -117,6 +119,22 @@ describe('desktop-alt Files mode — explorer sidebar + company switcher (US-009
   it('Files mode survives a desktop-alt window reload via persisted route state', () => {
     expect(desktopApp).toContain('hq-sync.desktop.route.v1');
     expect(desktopApp).toContain('readStoredFilesRoute');
+  });
+
+  it('treats pending invitations as identity metadata, never Files access', () => {
+    expect(sidebar).toContain('fileAccessibleCompanies');
+    expect(sidebar).toContain('filterFileEntriesForMembership');
+    expect(sidebar).toContain('!accessReady');
+    expect(sidebar).toContain('accessReady ? fileAccessibleCompanies(companies) : []');
+    expect(desktopApp).toContain('filesRouteAllowed');
+    expect(desktopApp).toContain('let filesAccessHydrated = $state(false)');
+    expect(desktopApp).toContain('let filesAccessSettled = $state(false)');
+    expect(desktopApp).toContain('accessReady={filesAccessHydrated}');
+    expect(desktopApp).toContain('result?.cloudReachable === true');
+    expect(desktopApp).toContain('filesAccessHydrated ? fileAccessibleCompanies(renderCompanies) : []');
+    expect(desktopApp).toContain("{filesAccessSettled ? 'Files unavailable' : 'Loading files…'}");
+    expect(desktopApp).toContain("route = { kind: 'files' }");
+    expect(desktopApp).toContain('isFilesRouteAllowed(');
   });
 
   // -------------------------------------------------------------------------
@@ -243,7 +261,18 @@ describe('desktop-alt Files mode — exit + root-default + company filter (US-01
     // depends on that library, so the definitions can only live there (a binary
     // crate can't be a dependency of the library that already uses these types).
     expect(rust).toContain('pub async fn list_hq_dir(');
-    expect(rust).toContain('list_dir_entries(&hq, &rel_path)');
+    expect(rust).toContain('validate_hq_relative_path(&rel_path, true)');
+    expect(rust).toContain(
+      'let needs_company_hydration = normalized == "companies" || lexical_company.is_some()',
+    );
+    expect(rust).toContain('hydrated_file_context().await?');
+    expect(rust).toContain(
+      'Ok((PathBuf::from(result.hq_folder_path), result.workspaces))',
+    );
+    expect(rust).toContain('canonical_hq_relative_path(&hq, &normalized, true)');
+    expect(rust).toContain('require_matching_company_scope(&normalized, &canonical)');
+    expect(rust).toContain('list_dir_entries(&hq, &canonical)');
+    expect(rust).toContain('workspace_grants_company_file_access(&workspaces, &entry.name)');
     // The guarded, noise-filtered lister + its DTO are defined AND unit-tested
     // in the core library (list_dir_entries_rejects_traversal_and_missing).
     expect(core).toContain('pub fn list_dir_entries(');

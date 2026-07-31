@@ -18,6 +18,77 @@ export interface InboundDmLike {
   fromPersonUid: string;
 }
 
+/** Shape needed to merge a hydrated snapshot with messages appended in-flight. */
+export interface MergeableThreadMessage extends ThreadIdLike {
+  createdAt?: string | null;
+  direction?: string | null;
+  fromPersonUid?: string | null;
+  fromEmail?: string | null;
+  fromDisplayName?: string | null;
+  body?: string | null;
+  details?: string | null;
+  prompt?: string | null;
+}
+
+/**
+ * Stable identity for thread reconciliation.
+ *
+ * Server and realtime messages share an eventId, which is always preferred.
+ * The full fallback is deliberately conservative: it is only used for malformed
+ * or legacy id-less rows and includes sender, direction, timestamp, and content
+ * so two ordinary repeated messages are not collapsed merely because their body
+ * text matches.
+ */
+function threadMessageIdentity(message: MergeableThreadMessage): string {
+  const eventId = message.eventId?.trim();
+  if (eventId) return `event:${eventId}`;
+  return `fallback:${JSON.stringify([
+    message.direction ?? null,
+    message.fromPersonUid ?? null,
+    message.fromEmail ?? null,
+    message.fromDisplayName ?? null,
+    message.createdAt ?? null,
+    message.body ?? null,
+    message.details ?? null,
+    message.prompt ?? null,
+  ])}`;
+}
+
+function chronologicalTime(message: MergeableThreadMessage): number {
+  const parsed = Date.parse(message.createdAt ?? '');
+  return Number.isFinite(parsed) ? parsed : Number.POSITIVE_INFINITY;
+}
+
+/**
+ * Reconcile an authoritative hydrated snapshot with the currently rendered
+ * thread. The latter may have gained live or optimistic messages while the
+ * request was in flight. Hydrated rows win exact identity collisions, while
+ * current-only rows survive and the combined result is rendered oldest-first.
+ */
+export function mergeHydratedThread<T extends MergeableThreadMessage>(
+  hydrated: T[],
+  current: T[],
+): T[] {
+  const merged = new Map<string, { message: T; order: number }>();
+  let order = 0;
+  for (const message of [...hydrated, ...current]) {
+    const identity = threadMessageIdentity(message);
+    if (!merged.has(identity)) {
+      merged.set(identity, { message, order });
+      order += 1;
+    }
+  }
+
+  return [...merged.values()]
+    .sort((left, right) => {
+      const leftTime = chronologicalTime(left.message);
+      const rightTime = chronologicalTime(right.message);
+      if (leftTime !== rightTime) return leftTime < rightTime ? -1 : 1;
+      return left.order - right.order;
+    })
+    .map(({ message }) => message);
+}
+
 /**
  * True when a freshly-arrived inbound DM should be appended to the open thread:
  * it must be from the peer the window is scoped to (`peerUid`) and not already

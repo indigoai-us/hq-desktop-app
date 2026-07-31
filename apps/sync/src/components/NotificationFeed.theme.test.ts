@@ -10,7 +10,7 @@ describe('NotificationFeed + NotificationRow popover theme tokens', () => {
     // Feed chrome (status / empty / day labels)
     expect(feedSource).toContain('color: var(--popover-text-muted);');
     expect(feedSource).toContain('color: var(--popover-danger);');
-    expect(feedSource).toContain('background: var(--popover-bg);');
+    expect(feedSource).toContain('color-mix(in srgb, var(--popover-bg) 82%, transparent)');
 
     // Shared one-line row (NotificationRow) — locked design tokens
     expect(rowSource).toContain('color: var(--popover-text-muted);');

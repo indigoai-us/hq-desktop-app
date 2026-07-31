@@ -57,13 +57,17 @@ describe('DESKTOP-008: company knowledge workspace', () => {
     expect(preview).toContain('data-testid="reveal-in-finder"');
     expect(preview).toContain('data-testid="copy-path"');
     expect(preview).toContain('Copy path');
-    expect(preview).toContain('navigator.clipboard.writeText(copyPathValue)');
+    expect(preview).toContain('const actedPath = copyPathValue');
+    expect(preview).toContain('navigator.clipboard.writeText(actedPath)');
+    expect(preview).toContain('generation === copyGeneration');
     expect(preview).toContain("import OpenFileInClaudeCode from './OpenFileInClaudeCode.svelte'");
     expect(preview).toContain('<OpenFileInClaudeCode');
     expect(preview).toContain('file={path}');
-    expect(preview).toContain('folder={hqFolderPath}');
-    expect(preview).toContain('await open(absolutePath)');
-    expect(preview).toContain("from '@tauri-apps/plugin-shell'");
+    expect(preview).toContain('authorizedFile');
+    expect(preview).toContain('const actedPath = path');
+    expect(preview).toContain("await invoke('reveal_authorized_file', { path: actedPath })");
+    expect(preview).not.toContain("from '@tauri-apps/plugin-shell'");
+    expect(preview).not.toContain('absolutePath');
     // Actions live in the header as primary actions (outside body conditionals).
     expect(preview).toContain('class="preview-actions detail-primary-actions primary-actions"');
     const headerIdx = preview.indexOf('<header class="preview-header">');
@@ -87,7 +91,11 @@ describe('DESKTOP-008: company knowledge workspace', () => {
     expect(preview).toContain('data-testid="file-preview-monospace"');
     expect(preview).toContain('data-testid="file-preview-unsupported"');
     expect(preview).toContain("invoke<string>('get_company_file_content', { path:");
-    expect(preview).toContain('convertFileSrc(abs)');
+    expect(preview).toContain(
+      "invoke<AuthorizedFilePreview>('get_authorized_file_preview'",
+    );
+    expect(preview).toContain('mediaUrl = `data:${mimeType};base64,${dataBase64}`');
+    expect(preview).not.toContain('convertFileSrc');
     expect(preview).toContain('unsupported = true');
     expect(preview).toContain('unsupported || mediaError');
   });
@@ -124,10 +132,10 @@ describe('DESKTOP-008: company knowledge workspace', () => {
   it('uses five semantic type roles and 3px title/meta stacks', () => {
     expect(V4_TYPE_SCALE).toEqual({
       metadata: 13,
-      secondary: 13,
-      body: 14,
-      section: 14,
-      detail: 14,
+      secondary: 14,
+      body: 15,
+      section: 17,
+      detail: 24,
     });
     expect(V4_ROW_STACK_GAP_PX).toBe(3);
     expect(tokens).toContain('--v4-row-stack-gap: 3px');
@@ -207,8 +215,8 @@ describe('DESKTOP-008: company knowledge workspace', () => {
     expect(tree).toContain('selectedPath?');
     expect(tree).toContain('class:selected={node.path === selectedPath}');
     expect(tree).toContain("aria-current={node.path === selectedPath ? 'true' : undefined}");
-    expect(panel).toContain("invoke<{ hqFolderPath?: string }>('get_config')");
-    expect(panel).toContain('hqFolderPath');
+    expect(panel).not.toContain("invoke<{ hqFolderPath?: string }>('get_config')");
+    expect(panel).not.toContain('hqFolderPath');
     // Lazy load contract unchanged.
     expect(tree).toContain('loadChildren: (relPath: string) => Promise<DirEntry[]>');
     expect(tree).toContain('function ensureLoaded(');

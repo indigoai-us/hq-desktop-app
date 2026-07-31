@@ -83,4 +83,19 @@ describe('Settings and updater visual perfection', () => {
     expect(toggleRule).toContain('height: 16px');
     expect(checkedRule).toContain('background: var(--v4-ok');
   });
+
+  it('stacks updater recovery actions before they can overflow a compact desktop', () => {
+    expect(rule(settings, '.settings-main')).toContain(
+      'container-type: inline-size',
+    );
+    expect(settings).toContain('@container settings-main (max-width: 760px)');
+    expect(settings).toMatch(
+      /#updates \.setting-row\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\)/,
+    );
+    expect(settings).toMatch(
+      /#updates \.row-actions\s*\{[\s\S]*?width:\s*100%;[\s\S]*?justify-content:\s*flex-start/,
+    );
+    expect(rule(settings, '.row-actions')).toContain('flex-wrap: wrap');
+    expect(rule(settings, '.row-actions')).toContain('min-width: 0');
+  });
 });

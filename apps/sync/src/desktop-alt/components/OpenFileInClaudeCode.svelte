@@ -3,21 +3,19 @@
    * OpenFileInClaudeCode — desktop-alt drill-in affordance that opens a single
    * file in Claude Code (US-012).
    *
-   * REUSE, do not reimplement: the Claude Code link is built by the existing
-   * `buildClaudeCodeUrl` util (src/lib/claude-code-link.ts) and dispatched
-   * through the same `open_claude_code_link` Tauri command that
-   * `src/components/OpenInClaudeCodeButton.svelte` uses for the "Fix in Claude
-   * Code" CTA. The command (src-tauri/src/commands/app.rs) rejects any non-
-   * `claude://` URL and shells out to macOS `open`, so we never widen
-   * `shell:allow-open` to arbitrary schemes.
+   * Generic story/activity call sites reuse the existing `buildClaudeCodeUrl`
+   * util and `open_claude_code_link` Tauri command. Authorized Files/Knowledge
+   * call sites do not build any URL in the renderer; Rust owns the fixed prompt,
+   * scoped folder, URL construction, validation, and OS dispatch.
    *
    * Where `OpenInClaudeCodeButton` is error-oriented (it takes an `Issue` and
    * renders a remediation prompt from `copy-prompts.ts`), this variant is
-   * file-oriented: it builds a short prompt asking the agent to open the given
-   * file, with `folder` set to the user's HQ root so the session starts with
-   * full repo context.
+   * file-oriented. Files/Knowledge selections use the `authorizedFile` mode:
+   * one atomic native command canonicalizes the HQ-relative path, checks live
+   * company membership, builds a fixed prompt, and dispatches the deep link.
+   * Other call sites retain the generic renderer-built prompt mode.
    *
-   * Limitation (noted per AC1): the desktop-alt story/activity data carries a
+   * Generic-mode limitation (noted per AC1): story/activity data carries a
    * repo-relative or display path, not a verified absolute path. We therefore
    * set the session `folder` to the HQ root (`hqFolderPath`) and pass the file
    * path in the prompt — the agent resolves it inside the HQ tree. When
@@ -33,18 +31,28 @@
     file: string;
     /** Absolute HQ root the Claude Code session should `cwd` into. Caller passes
      *  `config.hqFolderPath`. Empty → the affordance suppresses itself. */
-    folder: string;
+    folder?: string;
     /** Layout variant. `inline` shows the label; `compact` hides it until hover
      *  (visually-hidden) for dense rows. Mirrors `OpenInClaudeCodeButton`. */
     variant?: 'inline' | 'compact';
     /** Optional override label. Default: "Open in Claude Code". */
     label?: string;
+    /** Use the atomic native Files/Knowledge authorization + dispatch path.
+     *  The renderer sends only `file`; it never supplies a folder, prompt, or
+     *  deep-link URL for this mode. */
+    authorizedFile?: boolean;
   }
 
-  let { file, folder, variant = 'inline', label = 'Open in Claude Code' }: Props =
-    $props();
+  let {
+    file,
+    folder = '',
+    variant = 'inline',
+    label = 'Open in Claude Code',
+    authorizedFile = false,
+  }: Props = $props();
 
   let dispatched = $state(false);
+  let dispatching = $state(false);
   let dispatchError = $state<string | null>(null);
   let copiedFallback = $state(false);
 
@@ -58,23 +66,35 @@
   }
 
   async function dispatch() {
-    if (!folder) return;
-    const prompt = buildOpenPrompt(file);
-    const url = buildClaudeCodeUrl({ folder, prompt });
+    if ((!authorizedFile && !folder) || dispatching) return;
+    dispatching = true;
     dispatchError = null;
     copiedFallback = false;
     try {
-      // Same dispatch path as OpenInClaudeCodeButton — the dedicated Tauri
-      // command, NOT plugin-shell's open(), so the URL scheme stays locked to
-      // `claude://`.
-      await invoke('open_claude_code_link', { url });
+      if (authorizedFile) {
+        await invoke('open_authorized_file_in_claude', { path: file });
+      } else {
+        const prompt = buildOpenPrompt(file);
+        const url = buildClaudeCodeUrl({ folder, prompt });
+        // Same dispatch path as OpenInClaudeCodeButton — the dedicated Tauri
+        // command, NOT plugin-shell's open(), so the URL scheme stays locked to
+        // `claude://`.
+        await invoke('open_claude_code_link', { url });
+      }
       dispatched = true;
       setTimeout(() => (dispatched = false), 1800);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       console.error('OpenFileInClaudeCode dispatch failed:', e);
-      // Fallback: copy the prompt so the user still has it in hand and the
-      // tooltip flips to a clear hint — mirrors OpenInClaudeCodeButton.
+      // Never fall back to a renderer-built prompt for an authorization
+      // failure: that would bypass the native membership decision.
+      if (authorizedFile) {
+        dispatchError = msg;
+        setTimeout(() => (dispatchError = null), 4000);
+        return;
+      }
+      // Generic call sites retain the existing copied-prompt fallback.
+      const prompt = buildOpenPrompt(file);
       try {
         await navigator.clipboard.writeText(prompt);
         copiedFallback = true;
@@ -87,24 +107,31 @@
         dispatchError = msg;
         setTimeout(() => (dispatchError = null), 4000);
       }
+    } finally {
+      dispatching = false;
     }
   }
 </script>
 
-{#if folder}
+{#if authorizedFile || folder}
   <button
     type="button"
     class="open-claude-btn"
     class:compact={variant === 'compact'}
     class:dispatched
+    class:dispatching
     class:fallback={copiedFallback}
     class:error={!!dispatchError && !copiedFallback}
     data-testid="open-in-claude-code"
     onclick={dispatch}
+    disabled={dispatching}
+    aria-busy={dispatching}
     title={dispatchError ?? `Open ${file} in Claude Code`}
     aria-label={`${label}: ${file}`}
   >
-    {#if dispatched}
+    {#if dispatching}
+      <span class="button-spinner" aria-hidden="true"></span>
+    {:else if dispatched}
       <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
         <path d="M3.5 8.5l3 3 6-6.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
       </svg>
@@ -114,7 +141,9 @@
       </svg>
     {/if}
     <span class="open-claude-label">
-      {#if dispatched}
+      {#if dispatching}
+        Opening…
+      {:else if dispatched}
         Opened
       {:else if copiedFallback}
         Prompt copied
@@ -155,6 +184,10 @@
     color: var(--fg);
   }
 
+  .open-claude-btn:disabled {
+    cursor: wait;
+  }
+
   .open-claude-btn:focus-visible {
     outline: 2px solid var(--blue);
     outline-offset: 2px;
@@ -174,6 +207,15 @@
     line-height: 1;
   }
 
+  .button-spinner {
+    width: 11px;
+    height: 11px;
+    border: 1.5px solid currentColor;
+    border-right-color: transparent;
+    border-radius: 50%;
+    animation: button-spin 700ms linear infinite;
+  }
+
   .open-claude-btn.compact .open-claude-label {
     position: absolute;
     width: 1px;
@@ -184,5 +226,17 @@
     clip: rect(0, 0, 0, 0);
     white-space: nowrap;
     border: 0;
+  }
+
+  @keyframes button-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .button-spinner {
+      animation-duration: 1400ms;
+    }
   }
 </style>

@@ -266,7 +266,10 @@ where
                     // Pinned UID is gone or tombstoned — fall through to safe lookup/provision.
                 }
                 Err(e) => {
-                    return Err(format!("vault pinned-UID lookup for '{}': {e}", folder_name));
+                    return Err(format!(
+                        "vault pinned-UID lookup for '{}': {e}",
+                        folder_name
+                    ));
                 }
             }
         }

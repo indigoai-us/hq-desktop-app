@@ -2,6 +2,7 @@
 // Returns plausible fixture data per command so components mount and render
 // without a Tauri backend. Design-only: no real side effects.
 import type { Workspace } from '../../src/lib/workspaces';
+import { emit } from './event';
 
 const settings = {
   hqPath: '/Users/corey/Documents/HQ',
@@ -28,14 +29,32 @@ const settings = {
 };
 
 function harnessScenario(): string | null {
-  return new URLSearchParams(window.location.search).get('scenario');
+  const params = new URLSearchParams(window.location.search);
+  const explicitScenario = params.get('scenario');
+  if (explicitScenario) return explicitScenario;
+
+  // `?view=onboarding&step=2` promises a directly inspectable setup screen.
+  // Hold the long-running sync stage by default so the preview cannot race
+  // through completion and leave Computer Use looking at a transition gap.
+  if (params.get('view') === 'onboarding' && params.get('step') === '2') {
+    return 'onboarding-progress';
+  }
+
+  return null;
 }
 
 const HARNESS_UPDATE = {
-  version: '0.10.34',
+  version: '0.10.36-beta.1',
   body: 'Desktop surface repairs and updater recovery.',
   date: '2026-07-26',
 };
+
+let harnessAppUpdateInstalled = false;
+let harnessCliVersion = '0.19.4';
+let harnessCliDismissed = false;
+let harnessPacksUpdated = false;
+let harnessCoreVersion = '15.0.16';
+let harnessCoreUpdated = false;
 
 const HARNESS_DRIFT = {
   channel: 'release',
@@ -80,6 +99,42 @@ function hasSettingsUpdates(scenario = harnessScenario()): boolean {
     scenario === 'settings-errors' ||
     scenario === 'update-available'
   );
+}
+
+function currentHarnessCoreState() {
+  if (harnessScenario() !== 'drift' && !hasSettingsUpdates()) return null;
+  if (!harnessCoreUpdated) return HARNESS_DRIFT;
+  return {
+    ...HARNESS_DRIFT,
+    localVersion: harnessCoreVersion,
+    versionBehind: false,
+    driftReport: {
+      ...HARNESS_DRIFT.driftReport,
+      count: 0,
+      modified: [],
+      missing: [],
+      added: [],
+      hqVersion: harnessCoreVersion,
+    },
+  };
+}
+
+function runHarnessCoreInstall() {
+  const scenario = harnessScenario();
+  const failed = scenario === 'settings-errors';
+  if (!failed) {
+    harnessCoreVersion = HARNESS_DRIFT.targetVersion;
+    harnessCoreUpdated = true;
+  }
+  return {
+    exit_code: failed ? 1 : 0,
+    log_tail: failed
+      ? 'Preview: rescue validation failed before replacement'
+      : 'Preview: HQ Core replacement complete',
+    log_path: failed
+      ? '/tmp/hq-rescue-preview.log'
+      : '/tmp/hq-rescue-preview-success.log',
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -140,13 +195,13 @@ const COMPANY_GOALS = {
 };
 
 const COMPANY_PROJECTS = [
-  { id: 'in-proj-201', title: 'Event-driven HQ-Cloud sync', description: 'Push-based sync — drop the 60s poll for instant fan-out.', company: 'indigo', status: 'active', prdPath: 'companies/indigo/projects/event-driven-hq-cloud-sync/prd.json', createdAt: '2026-06-01T00:00:00Z', updatedAt: '2026-06-12T00:00:00Z', storyCount: 8, storiesComplete: 3 },
-  { id: 'in-proj-202', title: 'S3-versioned conflict handling', description: 'Use S3 object versions to resolve concurrent edits.', company: 'indigo', status: 'in_progress', prdPath: 'companies/indigo/projects/hq-sync-conflict-versioning/prd.json', createdAt: '2026-06-02T00:00:00Z', updatedAt: '2026-06-13T00:00:00Z', storyCount: 6, storiesComplete: 2 },
-  { id: 'in-proj-203', title: 'Browse vs Sync — role-aware sharing', description: 'Let viewers browse a vault without a full local sync.', company: 'indigo', status: 'in_progress', prdPath: 'companies/indigo/projects/hq-sync-browse-vs-sync/prd.json', createdAt: '2026-06-03T00:00:00Z', updatedAt: '2026-06-11T00:00:00Z', storyCount: 5, storiesComplete: 1 },
-  { id: 'in-proj-125', title: 'HQ Sync Desktop — Flagship Company OS', description: 'Top-level Board, Projects port, actionable surfaces.', company: 'indigo', status: 'completed', prdPath: 'companies/indigo/projects/hq-sync-desktop-flagship/prd.json', createdAt: '2026-05-30T00:00:00Z', updatedAt: '2026-06-09T00:00:00Z', storyCount: 12, storiesComplete: 12 },
-  { id: 'in-proj-204', title: 'Instant DM delivery', description: 'MQTT-over-WSS wake signal for sub-second DMs.', company: 'indigo', status: 'completed', prdPath: 'companies/indigo/projects/instant-dm-delivery/prd.json', createdAt: '2026-06-04T00:00:00Z', updatedAt: '2026-06-10T00:00:00Z', storyCount: 5, storiesComplete: 5 },
-  { id: 'in-proj-205', title: 'Meeting detect + notify', description: 'Clickable detected-meeting notifications + permissions wizard.', company: 'indigo', status: 'prd_created', prdPath: 'companies/indigo/projects/meeting-detect-notify/prd.json', createdAt: '2026-06-05T00:00:00Z', updatedAt: '2026-06-08T00:00:00Z', storyCount: 7, storiesComplete: 0 },
-  { id: 'in-proj-206', title: 'S3 → Laptop Live Sync', description: 'Continuous background sync without manual triggers.', company: 'indigo', status: 'exploring', prdPath: null, createdAt: '2026-06-06T00:00:00Z', updatedAt: '2026-06-07T00:00:00Z', storyCount: 0, storiesComplete: 0 },
+  { id: 'in-proj-201', title: 'Event-driven HQ-Cloud sync', description: 'Push-based sync — drop the 60s poll for instant fan-out.', company: 'indigo', status: 'active', prdPath: 'companies/indigo/projects/event-driven-hq-cloud-sync/prd.json', createdAt: '2026-06-01T00:00:00Z', updatedAt: '2026-06-12T00:00:00Z', storyCount: 8, storiesComplete: 3, provenance: { owner: 'Corey Epstein', creator: 'Maya Chen', origin: 'Indigo board' } },
+  { id: 'in-proj-202', title: 'S3-versioned conflict handling', description: 'Use S3 object versions to resolve concurrent edits.', company: 'indigo', status: 'in_progress', prdPath: 'companies/indigo/projects/hq-sync-conflict-versioning/prd.json', createdAt: '2026-06-02T00:00:00Z', updatedAt: '2026-06-13T00:00:00Z', storyCount: 6, storiesComplete: 2, provenance: { owner: 'Maya Chen', creator: 'Corey Epstein', origin: 'Indigo board' } },
+  { id: 'in-proj-203', title: 'Browse vs Sync — role-aware sharing', description: 'Let viewers browse a vault without a full local sync.', company: 'indigo', status: 'in_progress', prdPath: 'companies/indigo/projects/hq-sync-browse-vs-sync/prd.json', createdAt: '2026-06-03T00:00:00Z', updatedAt: '2026-06-11T00:00:00Z', storyCount: 5, storiesComplete: 1, provenance: { creator: 'Jacob Lee', origin: 'Indigo board' } },
+  { id: 'in-proj-125', title: 'HQ Sync Desktop — Flagship Company OS', description: 'Top-level Board, Projects port, actionable surfaces.', company: 'indigo', status: 'completed', prdPath: 'companies/indigo/projects/hq-sync-desktop-flagship/prd.json', createdAt: '2026-05-30T00:00:00Z', updatedAt: '2026-06-09T00:00:00Z', storyCount: 12, storiesComplete: 12, provenance: { owner: 'Corey Epstein', creator: 'Corey Epstein', origin: 'Indigo board' } },
+  { id: 'in-proj-204', title: 'Instant DM delivery', description: 'MQTT-over-WSS wake signal for sub-second DMs.', company: 'indigo', status: 'completed', prdPath: 'companies/indigo/projects/instant-dm-delivery/prd.json', createdAt: '2026-06-04T00:00:00Z', updatedAt: '2026-06-10T00:00:00Z', storyCount: 5, storiesComplete: 5, provenance: { owner: 'Izzy', creator: 'Jacob Lee', origin: 'Indigo board' } },
+  { id: 'in-proj-205', title: 'Meeting detect + notify', description: 'Clickable detected-meeting notifications + permissions wizard.', company: 'indigo', status: 'prd_created', prdPath: 'companies/indigo/projects/meeting-detect-notify/prd.json', createdAt: '2026-06-05T00:00:00Z', updatedAt: '2026-06-08T00:00:00Z', storyCount: 7, storiesComplete: 0, provenance: { creator: 'Maya Chen', origin: 'Indigo board' } },
+  { id: 'in-proj-206', title: 'S3 → Laptop Live Sync', description: 'Continuous background sync without manual triggers.', company: 'indigo', status: 'exploring', prdPath: null, createdAt: '2026-06-06T00:00:00Z', updatedAt: '2026-06-07T00:00:00Z', storyCount: 0, storiesComplete: 0, provenance: { creator: 'Corey Epstein', origin: 'Idea bank' } },
 ];
 
 const LIBRARY_ROOT = {
@@ -328,6 +383,11 @@ function prdFor(name: string, current: string, done: number, total: number) {
       priority: i < 2 ? '1' : '2',
       labels: i < done ? ['done'] : ['todo'],
       dependsOn: i > 0 ? [`US-${String(i).padStart(3, '0')}`] : [],
+      provenance: {
+        assignee: i % 2 === 0 ? 'Izzy' : 'Maya Chen',
+        creator: 'Corey Epstein',
+        origin: `${name} PRD`,
+      },
     });
   }
   return { name, description: '', branchName: null, userStories: stories, metadata: {} };
@@ -517,8 +577,7 @@ const handlers: Record<string, Handler> = {
   // set_sync_mode, which returns the resulting MembershipSyncConfig).
   set_sync_mode: (args) => ({ syncMode: args?.mode ?? 'all' }),
   get_config: () => ({ hqFolderPath: '/Users/corey/Documents/HQ', companySlug: 'indigo', configured: true }),
-  check_core_state: () =>
-    harnessScenario() === 'drift' || hasSettingsUpdates() ? HARNESS_DRIFT : null,
+  check_core_state: () => currentHarnessCoreState(),
   // Lazy HQ file tree (?view=desktop → company Knowledge tab / Files mode).
   // Serves a small knowledge subtree for any company so the inline
   // CompanyKnowledgePanel (US-014) is drivable in the browser harness.
@@ -592,10 +651,76 @@ const handlers: Record<string, Handler> = {
   },
   get_company_file_content: (args) => {
     const path = String(args?.path ?? '');
-    return `# ${path.split('/').pop()}\n\nHarness preview content for \`${path}\`.\n`;
+    return `# ${path.split('/').pop()}
+
+Harness preview content for \`${path}\`.
+
+> A quoted operating note with **strong context** and an [action link](https://hq.computer).
+
+| Owner | Status | Next review |
+| --- | --- | ---: |
+| Corey Epstein | In progress | Jul 29 |
+| Maya Chen | Waiting on input | Aug 2 |
+
+- First checklist item
+- Second item with \`inline code\`
+
+\`\`\`ts
+const surface = { neutral: true, provenance: 'visible' };
+\`\`\`
+
+---
+
+This final paragraph verifies spacing after a thematic break.
+  `;
   },
+  get_authorized_file_preview: (args) => {
+    const path = String(args?.path ?? '').toLowerCase();
+    return {
+      mimeType: path.endsWith('.pdf') ? 'application/pdf' : 'image/png',
+      // 1×1 transparent PNG. The harness needs deterministic media bytes,
+      // never a local filesystem URL.
+      dataBase64:
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAF/gL+Q3p2AAAAAElFTkSuQmCC',
+    };
+  },
+  reveal_authorized_file: () => null,
+  open_authorized_file_in_claude: () => null,
   get_library_root: () => LIBRARY_ROOT,
   get_library_company: () => LIBRARY_COMPANY,
+  list_packages: () => ({
+    packs: {
+      hqRoot: '/Users/corey/Documents/HQ',
+      hqVersion: '15.0.66-beta.1',
+      installed: [
+        {
+          name: 'hq-pack-engineering',
+          version: '2.4.1',
+          publisher: 'indigo',
+          source: 'registry:hq-pack-engineering',
+          transport: 'registry',
+          hqCoreSatisfied: true,
+          contributes: { workers: 5, skills: 12 },
+          links: { live: 17, broken: 0, missing: 0, foreign: 0 },
+          brokenLinks: [],
+          inCatalog: true,
+          updateAvailable: false,
+          initialization: { entrypoint: 'startwork' },
+        },
+      ],
+      available: [],
+      warnings: [],
+    },
+    registry: {
+      installed: [
+        { name: 'hq-pack-engineering', slug: 'engineering', version: '2.4.1' },
+      ],
+      available: [{ slug: 'impeccable', tier: 'public' }],
+      offline: false,
+    },
+    error: null,
+  }),
+  check_package_updates: () => null,
   get_library_worker_detail: (args) => {
     const path = String(args?.workerPath ?? '');
     const worker = LIBRARY_ROOT.workers.find((item) => item.path === path) ?? LIBRARY_ROOT.workers[0];
@@ -651,14 +776,24 @@ const handlers: Record<string, Handler> = {
     note: 'Already-installed users are NOT auto-removed in v1.',
   }),
   get_company_deployments: () => [
-    { sub: 'app', url: 'app.hq.computer', state: 'active', lastDeploy: '8m ago', size: '18.4 MB', ver: 'v0.10.33', pwd: false },
+    { sub: 'app', url: 'app.example.hq.computer', state: 'active', lastDeploy: '8m ago', size: '18.4 MB', ver: 'v0.10.33', pwd: false },
     { sub: 'preview', url: 'preview.hq.computer', state: 'deploying', lastDeploy: 'just now', size: '18.3 MB', ver: 'v0.10.34-rc.1', pwd: true },
     { sub: 'docs', url: 'docs.hq.computer', state: 'paused', lastDeploy: '3d ago', size: '6.8 MB', ver: 'v4.2.0', pwd: false },
   ],
   get_company_secrets: () => [
-    { env: 'production', key: 'DATABASE_URL', upd: '2d ago', rot: '21d' },
-    { env: 'production', key: 'SENTRY_AUTH_TOKEN', upd: '8d ago', rot: '90d' },
-    { env: 'staging', key: 'API_BASE_URL', upd: '1d ago', rot: '—' },
+    {
+      env: 'production',
+      count: 2,
+      items: [
+        { key: 'DATABASE_URL', upd: '2d ago', rot: '21d' },
+        { key: 'SENTRY_AUTH_TOKEN', upd: '8d ago', rot: '90d' },
+      ],
+    },
+    {
+      env: 'staging',
+      count: 1,
+      items: [{ key: 'API_BASE_URL', upd: '1d ago', rot: '—' }],
+    },
   ],
   desktop_alt_is_admin: () => true,
   get_company_summary: () => ({ board: 7, activity: { last7d: 34 }, deployments: 3, secrets: 12 }),
@@ -673,7 +808,26 @@ const handlers: Record<string, Handler> = {
   get_company_activity: () => ({
     stats: { files7: 128, edits7: 342, members: 5, vaultSize: '2.4 GB' },
     sparkline: [4, 9, 2, 14, 7, 21, 5, 12, 3, 18, 9, 11, 6, 16],
-    recent: [],
+    recent: [
+      {
+        who: 'corey@getindigo.ai',
+        what: 'Updated',
+        file: 'companies/indigo/projects/desktop-experience/README.md',
+        when: 'just now',
+      },
+      {
+        who: 'maya@getindigo.ai',
+        what: 'Created',
+        file: 'companies/indigo/knowledge/release-notes.md',
+        when: '2h ago',
+      },
+      {
+        who: 'jacob@getindigo.ai',
+        what: 'Synced from cloud',
+        file: 'companies/indigo/policies/desktop.md',
+        when: 'Yesterday',
+      },
+    ],
     top: [
       { who: 'corey@getindigo.ai', edits: 142 },
       { who: 'maya@getindigo.ai', edits: 88 },
@@ -915,7 +1069,15 @@ const handlers: Record<string, Handler> = {
     codex_cli: true,
     codex_desktop: true,
     grok_cli: false,
+    claude_last_used_ms: 1_700_000_000_000,
+    codex_last_used_ms: 1_699_000_000_000,
+    grok_last_used_ms: null,
     any: true,
+  }),
+  detect_claude_ready: () => ({
+    installed: true,
+    desktop_installed: true,
+    logged_in: true,
   }),
   set_hq_install_path: () => null,
   start_initial_cloud_sync: () =>
@@ -923,62 +1085,50 @@ const handlers: Record<string, Handler> = {
       ? new Promise<never>(() => {})
       : null,
   pick_folder: () => null,
-  check_for_updates: () => (hasSettingsUpdates() ? HARNESS_UPDATE : null),
-  get_pending_update: () => (hasSettingsUpdates() ? HARNESS_UPDATE : null),
+  check_for_updates: () =>
+    hasSettingsUpdates() && !harnessAppUpdateInstalled ? HARNESS_UPDATE : null,
+  get_pending_update: () =>
+    hasSettingsUpdates() && !harnessAppUpdateInstalled ? HARNESS_UPDATE : null,
   install_update: () => {
     if (harnessScenario() === 'settings-errors') {
       throw new Error('Preview: app update signature verification failed');
     }
+    harnessAppUpdateInstalled = true;
     return null;
   },
   check_hq_cli_update: () =>
-    hasSettingsUpdates() ? { local: '0.19.4', latest: '0.20.0' } : null,
+    hasSettingsUpdates() &&
+    harnessCliVersion !== '0.20.0' &&
+    !harnessCliDismissed
+      ? { local: harnessCliVersion, latest: '0.20.0' }
+      : null,
+  get_hq_cli_version: () => harnessCliVersion,
   install_hq_cli_update: () => {
     if (harnessScenario() === 'settings-errors') {
       throw new Error('Preview: hq CLI update failed');
     }
-    return { local: '0.20.0', latest: '0.20.0' };
+    harnessCliVersion = '0.20.0';
+    harnessCliDismissed = false;
+    return { local: harnessCliVersion, latest: '0.20.0' };
   },
-  set_hq_cli_update_dismissed: () => null,
+  set_hq_cli_update_dismissed: () => {
+    harnessCliDismissed = true;
+    return null;
+  },
   check_pack_update: () =>
-    hasSettingsUpdates()
+    hasSettingsUpdates() && !harnessPacksUpdated
       ? { count: 2, names: ['hq-pack-engineering', 'hq-pack-parker'] }
       : null,
   update_packs: () => {
     if (harnessScenario() === 'settings-errors') {
       throw new Error('Preview: pack registry unavailable');
     }
+    harnessPacksUpdated = true;
     return null;
   },
-  get_hq_version: () => '15.0.16',
-  install_hq_core_update: () => {
-    const scenario = harnessScenario();
-    return {
-      exit_code: scenario === 'settings-errors' ? 1 : 0,
-      log_tail:
-        scenario === 'settings-errors'
-          ? 'Preview: rescue validation failed before replacement'
-          : 'Preview: HQ Core replacement complete',
-      log_path:
-        scenario === 'settings-errors'
-          ? '/tmp/hq-rescue-preview.log'
-          : '/tmp/hq-rescue-preview-success.log',
-    };
-  },
-  run_replace_from_staging: () => {
-    const scenario = harnessScenario();
-    return {
-      exit_code: scenario === 'settings-errors' ? 1 : 0,
-      log_tail:
-        scenario === 'settings-errors'
-          ? 'Preview: staging rescue validation failed'
-          : 'Preview: staging replacement complete',
-      log_path:
-        scenario === 'settings-errors'
-          ? '/tmp/hq-staging-rescue-preview.log'
-          : '/tmp/hq-staging-rescue-preview-success.log',
-    };
-  },
+  get_hq_version: () => harnessCoreVersion,
+  install_hq_core_update: () => runHarnessCoreInstall(),
+  run_replace_from_staging: () => runHarnessCoreInstall(),
   list_displays: () =>
     harnessScenario() === 'widget-disconnected'
       ? [
@@ -1089,6 +1239,12 @@ const handlers: Record<string, Handler> = {
   set_watched_shares: () => null,
   send_dm_to_email: () => ({ state: 'connection_requested' }),
   respond_dm_request: () => null,
+  open_desktop_alt_window: (args) => {
+    const route = String(args?.route ?? '').trim();
+    if (!route) return null;
+    void emit('desktop:navigate', route);
+    return null;
+  },
   messages_window_ready: () => null,
   open_messages_window: () => null,
   take_pending_messages_target: () => null,

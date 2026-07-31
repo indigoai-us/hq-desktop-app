@@ -299,6 +299,8 @@ fn executable_candidate(candidate: &std::path::Path) -> Option<PathBuf> {
 fn spawn_cli_terminal_windows(path: &str, binary: &str) -> Result<(), String> {
     let escaped = powershell_single_quote_escape(path);
     let search_path = extended_search_path();
+    find_in_search_path(binary, &search_path)
+        .ok_or_else(|| format!("Could not find {binary} on PATH"))?;
     let wt = find_in_search_path("wt.exe", &search_path)
         .or_else(|| find_in_search_path("wt", &search_path));
 

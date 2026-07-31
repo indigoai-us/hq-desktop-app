@@ -1,6 +1,6 @@
 [package]
 name = "hq-sync-menubar"
-version = "0.10.35-beta.2"
+version = "0.10.40"
 edition = "2021"
 
 [build-dependencies]
@@ -11,7 +11,7 @@ tauri-build = { version = "2", features = [] }
 hq-telemetry = { path = "../../../crates/hq-telemetry" }
 hq-desktop-core = { path = "../../../crates/hq-desktop-core" }
 hq-platform = { path = "../../../crates/hq-platform" }
-tauri = { version = "2", features = ["macos-private-api", "tray-icon", "image-png", "protocol-asset"] }
+tauri = { version = "2", features = ["macos-private-api", "tray-icon", "image-png"] }
 tauri-plugin-shell = "2"
 tauri-plugin-http = "2"
 tauri-plugin-fs = "2"
@@ -127,6 +127,8 @@ windows = { version = "0.58", features = [
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_Graphics_Gdi",
     "Win32_Graphics_Dwm",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
 ] }
 winreg = "0.55"
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }

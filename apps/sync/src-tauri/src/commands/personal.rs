@@ -879,6 +879,14 @@ async fn resolve_or_provision<R: tauri::Runtime + 'static>(
         }
     };
 
+    // The person entity now exists, which is the ONLY precondition
+    // `/v1/usage/opt-in` has — and the one onboarding could not satisfy when it
+    // first posted the consent. Repair it here, BEFORE bucket provisioning,
+    // which can fail and return early: gating the consent repair on the bucket
+    // would leave the original race unfixed for exactly the users whose
+    // provisioning is having a bad day.
+    crate::commands::telemetry::reassert_consent_for_person(vault, &pick.uid).await;
+
     if pick.bucket_name.is_none() {
         let bucket_info = vault
             .provision_bucket(&pick.uid)
@@ -906,6 +914,32 @@ async fn resolve_or_provision<R: tauri::Runtime + 'static>(
 }
 
 // ── Public entry point ────────────────────────────────────────────────────────
+
+/// Guarantee the caller's `person` entity exists before the consent write.
+///
+/// AC1 of US-002: `/v1/usage/opt-in` resolves the caller's `prs_*` person
+/// entity and 404s (`no-person-entity`) when none exists — the original
+/// lost-answer defect. The consent step now sits AFTER setup, which provisions
+/// the entity, but that provisioning is kicked off in the BACKGROUND by
+/// `start_initial_cloud_sync` and may still be in flight when consent is
+/// submitted. Rather than relying on step ordering alone, the consent step
+/// awaits this command first: it resolves the entity from cache or provisions
+/// it synchronously, so the POST that follows always has somewhere to land.
+///
+/// Returns `Ok(true)` once an entity exists (resolved or freshly created), and
+/// `Ok(false)` for the benign 409 where the entity exists server-side but is
+/// not resolvable this cycle — in both cases the entity IS present, so the
+/// consent write may proceed. Only a hard error (no token, vault unreachable)
+/// surfaces as `Err`, which the caller treats like any other upload failure.
+#[tauri::command]
+pub async fn ensure_person_entity(app: tauri::AppHandle) -> Result<bool, String> {
+    let jwt = crate::commands::sync::resolve_jwt().await?;
+    let vault_url = crate::commands::sync::resolve_vault_api_url()?;
+    let vault = VaultClient::new(&vault_url, &jwt);
+    // `Some(..)` = resolved to a concrete uid; `None` = benign 409, entity
+    // already exists server-side. Either way the entity is present.
+    Ok(resolve_or_provision(&app, &vault).await?.is_some())
+}
 
 pub async fn ensure_personal_bucket_and_first_push<R: tauri::Runtime + 'static>(
     app: &tauri::AppHandle<R>,
@@ -946,6 +980,22 @@ pub(crate) async fn ensure_impl<R: tauri::Runtime + 'static>(
             return Ok(());
         }
     };
+
+    // Second consent-repair site, and NOT redundant with the one inside
+    // `resolve_or_provision`.
+    //
+    // That one runs before bucket provisioning, so a bucket failure cannot
+    // strand the repair — but it sits below the person-cache early returns, so
+    // it only fires on a cache MISS. Once `person-entity.json` is written every
+    // later sync resolves from cache and never reaches it. A first attempt that
+    // failed for any reason (provenance not yet written by onboarding, the new
+    // person not yet visible to the opt-in route, a transient network error)
+    // would then never be retried, leaving consent unset forever.
+    //
+    // This call is on the cached path, so each sync gets another chance. It is
+    // cheap: once the record names this person it returns immediately without
+    // touching the network.
+    crate::commands::telemetry::reassert_consent_for_person(vault, &person_uid).await;
 
     // ── Steady-state gate ──────────────────────────────────────────────────
     // The warm-up first-push exists ONLY to seed a brand-new personal vault

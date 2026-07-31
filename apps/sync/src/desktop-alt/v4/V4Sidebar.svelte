@@ -7,6 +7,7 @@
     loadNotificationItems,
     getLastReadTs,
     countUnread,
+    NOTIFICATION_UNREAD_COUNT_EVENT,
   } from '../../lib/notificationFeedData';
   import {
     getV4SidebarModel,
@@ -79,21 +80,30 @@
   });
 
   let notifUnread = $state(0);
+  let unreadLoadGeneration = 0;
 
   async function refreshUnread() {
+    const generation = ++unreadLoadGeneration;
     try {
       const items = await loadNotificationItems();
+      if (generation !== unreadLoadGeneration) return;
       notifUnread = countUnread(items, getLastReadTs());
     } catch {
+      if (generation !== unreadLoadGeneration) return;
       notifUnread = 0;
     }
   }
 
   $effect(() => {
-    void refreshUnread();
-
     const onread = () => void refreshUnread();
+    const oncount = (event: Event) => {
+      const count = (event as CustomEvent<unknown>).detail;
+      if (typeof count === 'number' && Number.isFinite(count)) {
+        notifUnread = Math.max(0, Math.round(count));
+      }
+    };
     window.addEventListener('hq:notifications-read', onread);
+    window.addEventListener(NOTIFICATION_UNREAD_COUNT_EVENT, oncount);
 
     let disposed = false;
     const unlisteners: Array<() => void> = [];
@@ -101,12 +111,23 @@
       if (disposed) unlisten();
       else unlisteners.push(unlisten);
     };
-    void listen('dm:unread-summary', onread).then(track);
-    void listen('sync:complete', onread).then(track);
+    // Hydrate only after every native listener has settled. An event that
+    // lands during registration is recovered by this authoritative first
+    // refresh instead of falling through a mount gap.
+    void Promise.allSettled([
+      listen('dm:unread-summary', onread).then(track),
+      listen('sync:complete', onread).then(track),
+      listen('update:available', onread).then(track),
+      listen('update:cleared', onread).then(track),
+    ]).then(() => {
+      if (!disposed) void refreshUnread();
+    });
 
     return () => {
       disposed = true;
+      unreadLoadGeneration += 1;
       window.removeEventListener('hq:notifications-read', onread);
+      window.removeEventListener(NOTIFICATION_UNREAD_COUNT_EVENT, oncount);
       for (const u of unlisteners) u();
     };
   });
@@ -539,11 +560,13 @@
 
   .v4-invite-badge {
     flex: 0 0 auto;
-    padding: 2px 6px;
-    border-radius: 999px;
-    background: color-mix(in srgb, var(--v4-warn) 18%, transparent);
-    color: var(--v4-text-2);
+    padding: 0;
+    border-radius: 0;
+    background: transparent;
+    color: var(--v4-text-3);
     font-size: var(--text-sm);
+    font-weight: 600;
+    letter-spacing: 0.04em;
   }
 
   .v4-disclosure {

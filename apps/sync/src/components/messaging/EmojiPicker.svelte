@@ -87,8 +87,8 @@
     background: var(--pop-bg);
     border: 1px solid var(--pop-border);
     box-shadow: var(--pop-shadow), inset 0 1px 0 var(--pop-highlight);
-    backdrop-filter: var(--glass-filter-soft, blur(12px) saturate(0%));
-    -webkit-backdrop-filter: var(--glass-filter-soft, blur(12px) saturate(0%));
+    backdrop-filter: var(--glass-filter-soft, blur(16px) saturate(112%) contrast(101%));
+    -webkit-backdrop-filter: var(--glass-filter-soft, blur(16px) saturate(112%) contrast(101%));
   }
 
   .emoji-picker:focus {
@@ -111,10 +111,15 @@
     transition: background-color 0.1s ease, transform 0.06s ease;
   }
 
-  .emoji-cell:hover,
   .emoji-cell:focus-visible {
     background: var(--pop-hover);
     outline: none;
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    .emoji-cell:hover {
+      background: var(--pop-hover);
+    }
   }
 
   @media (prefers-reduced-transparency: reduce) {
@@ -127,5 +132,15 @@
 
   .emoji-cell:active {
     transform: scale(0.9);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .emoji-cell {
+      transition: none;
+    }
+
+    .emoji-cell:active {
+      transform: none;
+    }
   }
 </style>

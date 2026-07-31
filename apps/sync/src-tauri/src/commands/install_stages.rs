@@ -282,10 +282,7 @@ pub fn personalize_hq() -> Result<(), String> {
     for path in [settings.join(".gitkeep"), workers.join(".gitkeep")] {
         if !path.exists() {
             if let Err(e) = fs::write(&path, "") {
-                crate::util::logfile::log(
-                    "personalize",
-                    &format!("write {}: {e}", path.display()),
-                );
+                crate::util::logfile::log("personalize", &format!("write {}: {e}", path.display()));
             }
         }
     }

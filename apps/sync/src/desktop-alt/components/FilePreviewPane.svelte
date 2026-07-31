@@ -5,19 +5,18 @@
    *
    * Self-fetching + presentational. On every `path` change it classifies the
    * file and loads a preview:
-   *   * images (png/jpg/svg/…) → local asset URL via convertFileSrc (no base64
-   *     round-trip; works for knowledge assets under the HQ folder)
-   *   * pdf → embedded object via convertFileSrc when absolute path known
+   *   * images (png/jpg/…) → size-capped bytes from an authorized native command
+   *   * pdf → the same authorized native preview path
    *   * .md / .markdown → UTF-8 text via get_company_file_content + markdown
    *   * other text → monospaced pre
    *   * binary/oversized/unknown failure → friendly placeholder
    *
-   * Open actions (Claude Code + Reveal in Finder) stay in the header regardless
-   * of preview success.
+   * Preview, Claude Code, and Finder actions all accept only the selected
+   * HQ-relative path. The native layer canonicalizes it and rechecks live
+   * company membership before reading or dispatching anything.
    */
-  import { convertFileSrc, invoke } from '@tauri-apps/api/core';
-  import { open } from '@tauri-apps/plugin-shell';
-  import { renderMarkdown } from '../lib/markdown';
+  import { invoke } from '@tauri-apps/api/core';
+  import { renderMarkdownDocument } from '../lib/markdown';
   import { filePreviewKind } from '../lib/file-preview-kind';
   import OpenFileInClaudeCode from './OpenFileInClaudeCode.svelte';
   import '../v4/tokens.css';
@@ -25,12 +24,14 @@
   interface Props {
     /** HQ-folder-relative, forward-slash path of the selected file. */
     path: string;
-    /** Absolute HQ root (`get_config().hqFolderPath`). Empty → open actions
-     *  that need an absolute path suppress themselves; media preview needs it. */
-    hqFolderPath: string;
   }
 
-  let { path, hqFolderPath }: Props = $props();
+  interface AuthorizedFilePreview {
+    mimeType: string;
+    dataBase64: string;
+  }
+
+  let { path }: Props = $props();
 
   let content = $state<string | null>(null);
   let mediaUrl = $state<string | null>(null);
@@ -38,8 +39,14 @@
   let unsupported = $state(false);
   let mediaError = $state(false);
   let revealError = $state<string | null>(null);
+  let revealing = $state(false);
   let pathCopied = $state(false);
+  let copyingPath = $state(false);
   let copyError = $state<string | null>(null);
+  // Non-reactive operation identities prevent an async completion for a
+  // previously selected file from mutating the newly selected file's pane.
+  let revealGeneration = 0;
+  let copyGeneration = 0;
 
   const fileName = $derived(path.split('/').pop() ?? path);
   const kind = $derived(filePreviewKind(path));
@@ -47,34 +54,32 @@
   const isImage = $derived(kind === 'image');
   const isPdf = $derived(kind === 'pdf');
   const kindLabel = $derived(
-    isMarkdown ? 'Markdown' : isImage ? 'Image' : isPdf ? 'PDF' : 'Text',
+    isMarkdown ? 'Markdown' : isImage ? 'Image' : isPdf ? 'PDF' : kind === 'text' ? 'Text' : 'File',
   );
 
-  // Build the absolute path by joining hqFolderPath + the relative FileNode
-  // path with `/`. Guard against a trailing slash on hqFolderPath. Empty root →
-  // no absolute path (Reveal + media preview suppress themselves).
-  const absolutePath = $derived(
-    hqFolderPath ? `${hqFolderPath.replace(/\/+$/, '')}/${path}` : '',
-  );
-  /** Preferred clipboard value: absolute when known, else HQ-relative. */
-  const copyPathValue = $derived(absolutePath || path);
+  // Do not construct absolute filesystem targets in the renderer. Native file
+  // commands accept and authorize only this HQ-relative value.
+  const copyPathValue = $derived(path);
 
   const markdownHtml = $derived(
-    isMarkdown && content !== null ? renderMarkdown(content) : '',
+    isMarkdown && content !== null ? renderMarkdownDocument(content) : '',
   );
 
-  // Fetch / resolve preview on every `path` (and hq root) change.
+  // Fetch / resolve preview on every selected path change.
   $effect(() => {
     const current = path;
-    const abs = absolutePath;
     const previewKind = filePreviewKind(current);
     content = null;
     mediaUrl = null;
     unsupported = false;
     mediaError = false;
     revealError = null;
+    revealing = false;
     pathCopied = false;
+    copyingPath = false;
     copyError = null;
+    revealGeneration += 1;
+    copyGeneration += 1;
 
     if (!current) {
       loading = false;
@@ -84,23 +89,35 @@
     loading = true;
     let cancelled = false;
 
-    // Images + PDFs: serve via asset protocol (no UTF-8 decode).
-    if (previewKind === 'image' || previewKind === 'pdf') {
-      if (!abs) {
-        // Without HQ root we can't build a local URL — honest unsupported.
-        unsupported = true;
-        loading = false;
-        return;
-      }
-      try {
-        mediaUrl = convertFileSrc(abs);
-        unsupported = false;
-      } catch (err) {
-        console.error('convertFileSrc failed:', err);
-        mediaUrl = null;
-        unsupported = true;
-      }
+    if (previewKind === 'unknown') {
+      unsupported = true;
       loading = false;
+      return;
+    }
+
+    // Images + PDFs: native layer canonicalizes, authorizes, caps, and returns
+    // bytes. SVG is intentionally unsupported rather than injecting active XML
+    // into the webview.
+    if (previewKind === 'image' || previewKind === 'pdf') {
+      void invoke<AuthorizedFilePreview>('get_authorized_file_preview', {
+        path: current,
+      })
+        .then(({ mimeType, dataBase64 }) => {
+          if (!cancelled) {
+            mediaUrl = `data:${mimeType};base64,${dataBase64}`;
+            unsupported = false;
+          }
+        })
+        .catch((err) => {
+          console.error('get_authorized_file_preview failed:', err);
+          if (!cancelled) {
+            mediaUrl = null;
+            unsupported = true;
+          }
+        })
+        .finally(() => {
+          if (!cancelled) loading = false;
+        });
       return () => {
         cancelled = true;
       };
@@ -131,27 +148,50 @@
   });
 
   async function revealInFinder(): Promise<void> {
-    if (!absolutePath) return;
+    if (!path || revealing) return;
+    const actedPath = path;
+    const generation = ++revealGeneration;
+    revealing = true;
     revealError = null;
     try {
-      await open(absolutePath);
+      await invoke('reveal_authorized_file', { path: actedPath });
     } catch (err) {
       console.error('Reveal in Finder failed:', err);
-      revealError = 'Could not reveal file';
-      setTimeout(() => (revealError = null), 4000);
+      if (generation === revealGeneration && path === actedPath) {
+        revealError = 'Could not reveal file';
+        setTimeout(() => {
+          if (generation === revealGeneration) revealError = null;
+        }, 4000);
+      }
+    } finally {
+      if (generation === revealGeneration) revealing = false;
     }
   }
 
   async function copyPath(): Promise<void> {
+    if (copyingPath) return;
+    const actedPath = copyPathValue;
+    const generation = ++copyGeneration;
+    copyingPath = true;
     copyError = null;
     try {
-      await navigator.clipboard.writeText(copyPathValue);
-      pathCopied = true;
-      setTimeout(() => (pathCopied = false), 1800);
+      await navigator.clipboard.writeText(actedPath);
+      if (generation === copyGeneration && copyPathValue === actedPath) {
+        pathCopied = true;
+        setTimeout(() => {
+          if (generation === copyGeneration) pathCopied = false;
+        }, 1800);
+      }
     } catch (err) {
       console.error('Copy path failed:', err);
-      copyError = 'Could not copy path';
-      setTimeout(() => (copyError = null), 4000);
+      if (generation === copyGeneration && copyPathValue === actedPath) {
+        copyError = 'Could not copy path';
+        setTimeout(() => {
+          if (generation === copyGeneration) copyError = null;
+        }, 4000);
+      }
+    } finally {
+      if (generation === copyGeneration) copyingPath = false;
     }
   }
 
@@ -174,7 +214,7 @@
       </span>
     </div>
     <div class="preview-actions detail-primary-actions primary-actions">
-      <OpenFileInClaudeCode file={path} folder={hqFolderPath} variant="inline" />
+      <OpenFileInClaudeCode file={path} authorizedFile variant="inline" />
       <button
         type="button"
         class="reveal-btn"
@@ -182,10 +222,14 @@
         class:copied={pathCopied}
         data-testid="copy-path"
         onclick={copyPath}
+        disabled={copyingPath}
+        aria-busy={copyingPath}
         title={copyError ?? (pathCopied ? 'Path copied' : `Copy path: ${copyPathValue}`)}
         aria-label={`Copy path: ${copyPathValue}`}
       >
-        <svg
+        {#if copyingPath}
+          <span class="action-spinner" aria-hidden="true"></span>
+        {:else}<svg
           width="12"
           height="12"
           viewBox="0 0 16 16"
@@ -200,41 +244,43 @@
             stroke-width="1.2"
             stroke-linecap="round"
           />
-        </svg>
+        </svg>{/if}
         <span class="reveal-label">
-          {copyError ? 'Failed' : pathCopied ? 'Copied' : 'Copy path'}
+          {copyingPath ? 'Copying…' : copyError ? 'Failed' : pathCopied ? 'Copied' : 'Copy path'}
         </span>
       </button>
-      {#if absolutePath}
-        <button
-          type="button"
-          class="reveal-btn"
-          class:error={!!revealError}
-          data-testid="reveal-in-finder"
-          onclick={revealInFinder}
-          title={revealError ?? `Reveal ${fileName} in Finder`}
-          aria-label={`Reveal ${fileName} in Finder`}
+      <button
+        type="button"
+        class="reveal-btn"
+        class:error={!!revealError}
+        data-testid="reveal-in-finder"
+        onclick={revealInFinder}
+        disabled={revealing}
+        aria-busy={revealing}
+        title={revealError ?? `Reveal ${fileName} in Finder`}
+        aria-label={`Reveal ${fileName} in Finder`}
+      >
+        {#if revealing}
+          <span class="action-spinner" aria-hidden="true"></span>
+        {:else}<svg
+          width="12"
+          height="12"
+          viewBox="0 0 16 16"
+          fill="none"
+          xmlns="http://www.w3.org/2000/svg"
+          aria-hidden="true"
         >
-          <svg
-            width="12"
-            height="12"
-            viewBox="0 0 16 16"
-            fill="none"
-            xmlns="http://www.w3.org/2000/svg"
-            aria-hidden="true"
-          >
-            <path
-              d="M2 4.5a1 1 0 0 1 1-1h3l1.2 1.4H13a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4.5z"
-              stroke="currentColor"
-              stroke-width="1.2"
-              stroke-linejoin="round"
-            />
-          </svg>
-          <span class="reveal-label">
-            {revealError ? 'Failed' : 'Reveal in Finder'}
-          </span>
-        </button>
-      {/if}
+          <path
+            d="M2 4.5a1 1 0 0 1 1-1h3l1.2 1.4H13a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4.5z"
+            stroke="currentColor"
+            stroke-width="1.2"
+            stroke-linejoin="round"
+          />
+        </svg>{/if}
+        <span class="reveal-label">
+          {revealing ? 'Opening…' : revealError ? 'Failed' : 'Reveal in Finder'}
+        </span>
+      </button>
     </div>
   </header>
 
@@ -392,14 +438,14 @@
       border-color 140ms ease;
   }
 
-  .reveal-btn:hover {
+  .reveal-btn:hover:not(:disabled) {
     border-color: var(--v4-control-border, var(--border-strong));
     background: var(--v4-active-row, var(--row-hover));
     color: var(--v4-text-1, var(--fg));
   }
 
   .reveal-btn:focus-visible {
-    outline: 2px solid var(--v4-unread, var(--blue));
+    outline: 2px solid var(--v4-control-border, var(--border-strong));
     outline-offset: 2px;
   }
 
@@ -411,6 +457,20 @@
   .reveal-btn.copied {
     color: var(--v4-text-1, var(--fg));
     border-color: var(--v4-control-border, var(--border-strong));
+  }
+
+  .reveal-btn:disabled {
+    opacity: 0.58;
+    cursor: wait;
+  }
+
+  .action-spinner {
+    width: 11px;
+    height: 11px;
+    border: 1.5px solid currentColor;
+    border-right-color: transparent;
+    border-radius: 50%;
+    animation: preview-action-spin 700ms linear infinite;
   }
 
   .reveal-label {
@@ -700,8 +760,38 @@
     text-align: center;
   }
 
+  .markdown-body :global(.markdown-align-center img) {
+    margin-inline: auto;
+  }
+
   .markdown-body :global(.markdown-align-right) {
     text-align: right;
+  }
+
+  .markdown-body :global(.markdown-align-right img) {
+    margin-left: auto;
+  }
+
+  .markdown-body :global(details) {
+    margin: var(--space-3, 10px) 0;
+    padding: var(--space-2, 6px) 0;
+    border-top: 1px solid var(--v4-hairline, var(--border));
+    border-bottom: 1px solid var(--v4-hairline, var(--border));
+  }
+
+  .markdown-body :global(summary) {
+    color: var(--v4-text-1, var(--fg));
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .markdown-body :global(summary:focus-visible) {
+    outline: 2px solid var(--v4-focus-ring, var(--focus));
+    outline-offset: 3px;
+  }
+
+  .markdown-body :global(details > :last-child) {
+    margin-bottom: 0;
   }
 
   @keyframes preview-skeleton {
@@ -710,6 +800,12 @@
     }
     to {
       background-position: -200% 0;
+    }
+  }
+
+  @keyframes preview-action-spin {
+    to {
+      transform: rotate(360deg);
     }
   }
 

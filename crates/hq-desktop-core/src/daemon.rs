@@ -435,10 +435,7 @@ pub fn is_daemon_alive_for_supervisor(
 /// Idempotent cancel relies on the process registry's cancelled flag; callers
 /// should invoke cancel at most once per generation. This pure helper encodes
 /// which lifecycle paths are allowed to request termination.
-pub fn should_terminate_job_on_path(
-    already_cancelled: bool,
-    path: DaemonFailureCategory,
-) -> bool {
+pub fn should_terminate_job_on_path(already_cancelled: bool, path: DaemonFailureCategory) -> bool {
     if already_cancelled {
         return false;
     }
@@ -582,10 +579,8 @@ mod tests {
     fn healthy_registered_child_without_pid_file_stays_running() {
         // The live Windows defect: registered child is alive, no .hq-sync.pid.
         let state = derive_watch_daemon_state(
-            /* app_owned_registered */ true,
-            /* registered_child_alive */ true,
-            /* pid_file_alive */ false,
-            /* within_backoff */ false,
+            /* app_owned_registered */ true, /* registered_child_alive */ true,
+            /* pid_file_alive */ false, /* within_backoff */ false,
         );
         assert_eq!(state, WatchDaemonState::Running);
         assert!(is_daemon_alive_for_supervisor(true, true, false));

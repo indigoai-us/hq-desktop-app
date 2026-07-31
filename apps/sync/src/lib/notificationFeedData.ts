@@ -15,7 +15,25 @@
  */
 
 import { invoke } from '@tauri-apps/api/core';
-import type { DmEvent, ShareEvent, Item } from './notificationGroups';
+import type {
+  DmEvent,
+  ShareEvent,
+  Item,
+  UpdateInfo,
+} from './notificationGroups';
+
+/** Same-webview signal that keeps Inbox chrome aligned with the loaded feed. */
+export const NOTIFICATION_UNREAD_COUNT_EVENT =
+  'hq:notifications-unread-count';
+
+export function broadcastNotificationUnreadCount(count: number): void {
+  if (typeof window === 'undefined') return;
+  window.dispatchEvent(
+    new CustomEvent<number>(NOTIFICATION_UNREAD_COUNT_EVENT, {
+      detail: Math.max(0, Math.round(count)),
+    }),
+  );
+}
 
 // ── Wire types (mirror the Rust structs, camelCase) ──────────────────────────
 export interface ActivityEntry {
@@ -40,6 +58,60 @@ export interface NotificationHistoryResponse {
   dms: DmEvent[];
   shares: ShareEvent[];
   files: FileHistoryItem[];
+}
+
+export interface NotificationLoadOptions {
+  /** Popover owns a separate pinned update row; other feed consumers include it. */
+  includeUpdates?: boolean;
+}
+
+export type PendingUpdateState =
+  | { status: 'unchecked' }
+  | { status: 'absent' }
+  | { status: 'pending'; update: UpdateInfo };
+
+export type UpdateLoadState =
+  | 'resolved'
+  | 'unchecked'
+  | 'failed'
+  | 'not-requested';
+export type HistoryLoadState = 'resolved' | 'failed';
+export type ActivityLoadState = 'resolved' | 'failed';
+
+export interface NotificationLoadResult {
+  items: Item[];
+  /**
+   * `resolved` means native state authoritatively returned an update or null.
+   * Widget persistence uses this distinction so an IPC failure never purges a
+   * safe display-only row.
+   */
+  updateState: UpdateLoadState;
+  /** Cloud notification history may fail while trusted local update state succeeds. */
+  historyState: HistoryLoadState;
+  /** Local activity may fail independently of cloud history and updater state. */
+  activityState: ActivityLoadState;
+}
+
+/**
+ * Decode native updater hydration. The legacy UpdateInfo/null branches keep
+ * browser fixtures and older sidecars compatible; current native builds return
+ * the explicit tri-state so cold-start "unchecked" is never mistaken for a
+ * trusted absence.
+ */
+export function resolvePendingUpdateState(
+  value: PendingUpdateState | UpdateInfo | null,
+): { state: UpdateLoadState; value: UpdateInfo | null } {
+  if (value == null) return { state: 'resolved', value: null };
+  if ('status' in value) {
+    if (value.status === 'pending') {
+      return { state: 'resolved', value: value.update };
+    }
+    if (value.status === 'absent') {
+      return { state: 'resolved', value: null };
+    }
+    return { state: 'unchecked', value: null };
+  }
+  return { state: 'resolved', value };
 }
 
 function parseTs(iso: string): number {
@@ -95,6 +167,26 @@ function serverFileItem(f: FileHistoryItem): Item {
     file: { company: co, path: f.path },
   };
 }
+
+// Compatibility fallback for an older/native test payload without detectedAt.
+// The first-seen value is stable for the process, unlike Date.now() per reload.
+const updateFirstSeen = new Map<string, number>();
+
+function updateItem(update: UpdateInfo): Item {
+  let ts = update.detectedAt ? parseTs(update.detectedAt) : 0;
+  if (!ts) {
+    ts = updateFirstSeen.get(update.version) ?? Date.now();
+    updateFirstSeen.set(update.version, ts);
+  }
+  return {
+    id: `update:${update.version}`,
+    kind: 'update',
+    actor: 'HQ',
+    summary: `Version ${update.version} is ready to install.`,
+    ts,
+    update,
+  };
+}
 /** Dedup key so a file present in BOTH the server feed and the current
  *  session's activity log isn't shown twice (server is authoritative). */
 function fileKey(company: string, path: string): string {
@@ -112,21 +204,53 @@ export const NOTIFICATION_HISTORY_LIMIT = 200;
  * Requests the full retained page (200/source) so Inbox and the menubar feed
  * show previous notifications rather than a short default slice.
  */
-export async function loadNotificationItems(
+export async function loadNotificationTimeline(
   limit: number = NOTIFICATION_HISTORY_LIMIT,
-): Promise<Item[]> {
-  const [history, activity] = await Promise.all([
-    invoke<NotificationHistoryResponse>('fetch_notification_history', {
-      limit,
-    }),
-    invoke<ActivityEntry[]>('get_activity_log').catch(() => [] as ActivityEntry[]),
+  options: NotificationLoadOptions = {},
+): Promise<NotificationLoadResult> {
+  const includeUpdates = options.includeUpdates !== false;
+  const updateRequest: Promise<{
+    state: UpdateLoadState;
+    value: UpdateInfo | null;
+  }> = includeUpdates
+    ? invoke<PendingUpdateState | UpdateInfo | null>('get_pending_update')
+        .then(resolvePendingUpdateState)
+        .catch(() => ({ state: 'failed' as const, value: null }))
+    : Promise.resolve({ state: 'not-requested' as const, value: null });
+  const historyRequest = invoke<NotificationHistoryResponse>(
+    'fetch_notification_history',
+    { limit },
+  )
+    .then((value) => ({
+      state: 'resolved' as const,
+      value,
+    }))
+    .catch(() => ({
+      state: 'failed' as const,
+      value: { dms: [], shares: [], files: [] } satisfies NotificationHistoryResponse,
+    }));
+  const activityRequest = invoke<ActivityEntry[]>('get_activity_log')
+    .then((value) => ({
+      state: 'resolved' as const,
+      value,
+    }))
+    .catch(() => ({
+      state: 'failed' as const,
+      value: [] as ActivityEntry[],
+    }));
+
+  const [historyResult, activityResult, pendingUpdate] = await Promise.all([
+    historyRequest,
+    activityRequest,
+    updateRequest,
   ]);
+  const history = historyResult.value;
 
   const serverFiles = history.files ?? [];
   const seenFiles = new Set(
     serverFiles.map((f) => fileKey(f.companySlug || f.companyUid || '', f.path)),
   );
-  const sessionNewFiles = (activity ?? [])
+  const sessionNewFiles = (activityResult.value ?? [])
     .filter((a) => a.isNew === true && a.direction === 'down')
     .filter((a) => !seenFiles.has(fileKey(a.company, a.path)));
 
@@ -135,9 +259,22 @@ export async function loadNotificationItems(
     ...(history.shares ?? []).map(shareItem),
     ...serverFiles.map(serverFileItem),
     ...sessionNewFiles.map(newFileItem),
+    ...(pendingUpdate.value ? [updateItem(pendingUpdate.value)] : []),
   ];
   merged.sort((a, b) => b.ts - a.ts);
-  return merged;
+  return {
+    items: merged,
+    updateState: pendingUpdate.state,
+    historyState: historyResult.state,
+    activityState: activityResult.state,
+  };
+}
+
+export async function loadNotificationItems(
+  limit: number = NOTIFICATION_HISTORY_LIMIT,
+  options: NotificationLoadOptions = {},
+): Promise<Item[]> {
+  return (await loadNotificationTimeline(limit, options)).items;
 }
 
 // ── Read watermark ────────────────────────────────────────────────────────────

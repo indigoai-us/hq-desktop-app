@@ -19,6 +19,10 @@
     type StatusFilter,
   } from '../lib/projects-model';
   import { projectIdentity } from '../lib/local-projects';
+  import {
+    PROJECT_RENDER_BATCH,
+    progressiveWindow,
+  } from '../lib/progressive-collection';
   import ProjectRow from './ProjectRow.svelte';
 
   interface Props {
@@ -35,6 +39,7 @@
   let statusFilter = $state<StatusFilter>('active');
   let groupMode = $state<ProjectGroupMode>('status');
   let collapsed = $state<Record<string, boolean>>({});
+  let visibleBySection = $state<Record<string, number>>({});
 
   // Debounce the search input by 200ms (matches hq-desktop) so the list isn't
   // re-filtered on every keystroke.
@@ -61,6 +66,13 @@
   );
   const noResults = $derived(hasProjects && !loading && totalFiltered === 0);
 
+  $effect(() => {
+    void debouncedQuery;
+    void statusFilter;
+    void groupMode;
+    visibleBySection = {};
+  });
+
   function setStatusFilter(value: StatusFilter) {
     statusFilter = value;
   }
@@ -71,6 +83,10 @@
 
   function toggleSection(key: string) {
     collapsed = { ...collapsed, [key]: !collapsed[key] };
+  }
+
+  function showMore(key: string, nextCount: number) {
+    visibleBySection = { ...visibleBySection, [key]: nextCount };
   }
 
   function clearFilters() {
@@ -159,6 +175,7 @@
       </div>
     {:else}
       {#each sections as section (section.key)}
+        {@const renderWindow = progressiveWindow(section.projects, visibleBySection[section.key] ?? PROJECT_RENDER_BATCH, PROJECT_RENDER_BATCH)}
         <div class="project-section">
           <button
             type="button"
@@ -173,13 +190,24 @@
 
           {#if !collapsed[section.key]}
             <div class="section-rows">
-              {#each section.projects as project (projectIdentity(project))}
+              {#each renderWindow.items as project (projectIdentity(project))}
                 <ProjectRow
                   {project}
                   showCompany={groupMode !== 'company'}
                   {onselect}
                 />
               {/each}
+              {#if renderWindow.remaining > 0}
+                <button
+                  type="button"
+                  class="section-show-more"
+                  data-testid="project-section-show-more"
+                  onclick={() => showMore(section.key, renderWindow.nextCount)}
+                >
+                  Show {renderWindow.nextCount - renderWindow.items.length} more
+                  <span>· {renderWindow.remaining} remaining</span>
+                </button>
+              {/if}
             </div>
           {/if}
         </div>
@@ -401,6 +429,34 @@
     align-items: start;
     gap: var(--space-2);
     margin-top: var(--space-2);
+  }
+
+  .section-show-more {
+    min-height: 34px;
+    padding: var(--space-2);
+    border: 0;
+    border-top: 1px solid var(--border);
+    border-radius: 0;
+    background: transparent;
+    color: var(--muted-2);
+    font: inherit;
+    font-size: var(--text-base);
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .section-show-more span {
+    color: var(--muted-3);
+  }
+
+  .section-show-more:hover {
+    background: var(--row-hover);
+    color: var(--fg);
+  }
+
+  .section-show-more:focus-visible {
+    outline: 2px solid var(--border-strong);
+    outline-offset: -2px;
   }
 
   .list-loading {

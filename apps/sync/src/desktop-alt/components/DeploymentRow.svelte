@@ -22,13 +22,30 @@
   let { deployment }: Props = $props();
 
   let expanded = $state(false);
+  let opening = $state(false);
+  let openError = $state<string | null>(null);
 
   const stateLabel = $derived(deployment.state.charAt(0).toUpperCase() + deployment.state.slice(1));
   const envLabel = $derived(environmentLabel(deployment));
   const detailId = $derived(`deploy-detail-${deployment.sub}`);
 
   async function openDeployment() {
-    await open(`https://${deployment.url}`);
+    if (opening) return;
+    opening = true;
+    try {
+      await open(`https://${deployment.url}`);
+      openError = null;
+    } catch (err) {
+      console.error('deployment: open failed', err);
+      openError =
+        err instanceof Error && err.message
+          ? err.message
+          : typeof err === 'string' && err.trim()
+            ? err
+            : 'The browser handoff was rejected.';
+    } finally {
+      opening = false;
+    }
   }
 
   function toggleDetail() {
@@ -74,12 +91,15 @@
   <div class="row-actions">
     <button
       class="icon-button"
+      class:has-error={!!openError}
       type="button"
-      title="Open in browser"
-      aria-label={`Open ${deployment.sub} in browser`}
+      title={openError ? 'Could not open — retry' : 'Open in browser'}
+      aria-label={openError ? `Retry opening ${deployment.sub} in browser` : `Open ${deployment.sub} in browser`}
       onclick={openDeployment}
+      disabled={opening}
+      aria-busy={opening}
     >
-      <span class="open-icon" aria-hidden="true"></span>
+      <span class:button-spinner={opening} class:open-icon={!opening} aria-hidden="true"></span>
     </button>
     <button
       class="icon-button more-button"
@@ -94,6 +114,19 @@
       <span class="more-icon" aria-hidden="true"></span>
     </button>
   </div>
+  {#if openError}
+    <div class="deployment-action-error" role="alert" title={openError}>
+      <span>Couldn’t open this deployment.</span>
+      <button
+        type="button"
+        onclick={openDeployment}
+        disabled={opening}
+        aria-busy={opening}
+      >
+        {opening ? 'Retrying…' : 'Retry'}
+      </button>
+    </div>
+  {/if}
 </div>
 
 {#if expanded}
@@ -121,8 +154,14 @@
       <div class="detail-field">
         <dt>URL</dt>
         <dd>
-          <button class="detail-link" type="button" onclick={openDeployment}>
-            {deployment.url}
+          <button
+            class="detail-link"
+            type="button"
+            onclick={openDeployment}
+            disabled={opening}
+            aria-busy={opening}
+          >
+            {opening ? 'Opening…' : openError ? 'Could not open — retry' : deployment.url}
           </button>
         </dd>
       </div>
@@ -337,13 +376,18 @@
   }
 
   .icon-button:focus-visible {
-    outline: 2px solid var(--blue);
+    outline: 2px solid var(--border-strong);
     outline-offset: 2px;
   }
 
   .icon-button.is-active {
     border-color: var(--border-strong);
     background: var(--row-active);
+  }
+
+  .icon-button.has-error {
+    border-color: color-mix(in srgb, var(--v4-error) 45%, transparent);
+    color: var(--v4-error);
   }
 
   .icon-button:disabled {
@@ -381,6 +425,51 @@
     content: '';
     transform: rotate(-45deg);
     transform-origin: right center;
+  }
+
+  .button-spinner {
+    width: 12px;
+    height: 12px;
+    border: 1.5px solid currentcolor;
+    border-right-color: transparent;
+    border-radius: 50%;
+    animation: deployment-spin 700ms linear infinite;
+  }
+
+  .deployment-action-error {
+    grid-column: 2 / -1;
+    display: flex;
+    align-items: baseline;
+    justify-content: flex-end;
+    gap: 8px;
+    min-width: 0;
+    color: var(--v4-error);
+    font-size: var(--text-micro);
+    line-height: 15px;
+  }
+
+  .deployment-action-error span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .deployment-action-error button {
+    flex: 0 0 auto;
+    padding: 0;
+    border: 0;
+    border-bottom: 1px solid currentcolor;
+    border-radius: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-weight: 700;
+    cursor: pointer;
+  }
+
+  .deployment-action-error button:disabled {
+    opacity: 0.58;
+    cursor: wait;
   }
 
   .more-icon,
@@ -467,7 +556,7 @@
     padding: 0;
     border: 0;
     background: transparent;
-    color: var(--blue);
+    color: var(--fg);
     font: inherit;
     font-size: var(--text-base);
     font-weight: 600;
@@ -478,6 +567,17 @@
 
   .detail-link:hover {
     text-decoration: underline;
+  }
+
+  .detail-link:disabled {
+    color: var(--muted);
+    cursor: wait;
+  }
+
+  @keyframes deployment-spin {
+    to {
+      transform: rotate(360deg);
+    }
   }
 
   .detail-note {
@@ -523,6 +623,10 @@
     .size,
     .version {
       display: none;
+    }
+
+    .deployment-action-error {
+      grid-column: 1 / -1;
     }
   }
 

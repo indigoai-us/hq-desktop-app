@@ -6,11 +6,54 @@
  * and stay out of the Svelte component lifecycle.
  */
 
-import type { Item } from './notificationGroups';
+import {
+  repeatedAutomatedMessageKey,
+  type Item,
+} from './notificationGroups';
 import { isUnread } from './notificationFeedData';
 
 /** Max rows shown in a quick-window side pane (newest-first feed is already sorted). */
 const PANE_ITEM_CAP = 30;
+
+export interface QuickWindowChannelRecency {
+  scope: string;
+  unread?: number | null;
+  lastActivityAt?: string | null;
+  lastMessageAt?: string | null;
+  createdAt?: string | null;
+  arrivedAt?: number | null;
+}
+
+/** Resolve the best available activity timestamp for a compact-window channel. */
+export function quickWindowChannelTimestamp(channel: QuickWindowChannelRecency): number {
+  for (const value of [
+    channel.lastActivityAt,
+    channel.lastMessageAt,
+    channel.createdAt,
+  ]) {
+    const parsed = Date.parse(value ?? '');
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return channel.arrivedAt ?? 0;
+}
+
+/**
+ * Order every channel visible to the caller for the compact Messages rail.
+ *
+ * This intentionally has no rendering cap. Group DMs share the channels API
+ * with named channels, so truncating that source can make an otherwise valid
+ * group conversation disappear completely. The rail scrolls and is the only
+ * compact-window path back to an older group DM.
+ */
+export function orderQuickWindowChannels<T extends QuickWindowChannelRecency>(
+  channels: T[],
+): T[] {
+  return channels.slice().sort((a, b) => {
+    const unreadDelta = (b.unread ?? 0) - (a.unread ?? 0);
+    if (unreadDelta !== 0) return unreadDelta;
+    return quickWindowChannelTimestamp(b) - quickWindowChannelTimestamp(a);
+  });
+}
 
 /**
  * Keep only kinds that have an in-window main pane (`dm` / `share`).
@@ -54,8 +97,15 @@ export function isAgentSender(item: Item): boolean {
   return u.startsWith('agt_') || u.startsWith('agent_') || u.startsWith('agent:');
 }
 
-/** Conversation identity: kind + stable sender key (person uid, else email, else display actor). DM and share threads from the same person stay distinct rows by design (type hierarchy). */
+/**
+ * Conversation identity: kind + stable sender key (person uid, else email,
+ * else display actor). Repeated server-generated agent-join notices share one
+ * synthetic conversation regardless of which provisioned agent emitted them;
+ * normal human messages never cross sender boundaries.
+ */
 export function conversationKey(item: Item): string {
+  const automatedKey = repeatedAutomatedMessageKey(item);
+  if (automatedKey) return `dm:automated:${automatedKey}`;
   const who =
     item.kind === 'dm'
       ? item.dm?.fromPersonUid || item.dm?.fromEmail || item.actor
@@ -116,4 +166,26 @@ export function conversationRows(
   }
 
   return order.slice(0, PANE_ROW_CAP).map((k) => byKey.get(k)!);
+}
+
+/**
+ * Count distinct unread conversations across the complete notification input.
+ * Unlike `conversationRows`, this intentionally has no rail rendering cap: a
+ * badge must not hide attention merely because the source list shows 30 rows.
+ */
+export function countUnreadConversations(
+  items: Item[],
+  lastReadTs: number,
+  viewedIds: ReadonlySet<string>,
+): number {
+  const unreadKeys = new Set<string>();
+  for (const item of items) {
+    if (
+      (item.kind === 'dm' || item.kind === 'share') &&
+      rowUnread(item, lastReadTs, viewedIds)
+    ) {
+      unreadKeys.add(conversationKey(item));
+    }
+  }
+  return unreadKeys.size;
 }

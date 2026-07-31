@@ -27,12 +27,10 @@
   let feedLoaded = false;
 
   function handleUnreadChange(count: number): void {
-    feedLoaded = true;
     unread = count;
   }
 
   function handleItemsChange(count: number): void {
-    feedLoaded = true;
     total = count;
   }
 
@@ -46,7 +44,10 @@
     const unreadPart =
       unread === 0 ? 'All caught up' : `${unread} unread`;
     if (total === 0) return unreadPart;
-    const noun = total === 1 ? 'notification' : 'notifications';
+    // The feed intentionally clusters related file changes into one visible
+    // row. "Events" keeps this source count honest instead of implying that
+    // every underlying event must map one-to-one to a rendered row.
+    const noun = total === 1 ? 'event' : 'events';
     return `${unreadPart} · ${total} ${noun}`;
   });
 
@@ -61,6 +62,7 @@
 <section class="inbox-page page" aria-labelledby="desktop-page-title" data-testid="desktop-alt-inbox">
   <header class="page-header inbox-header">
     <div class="inbox-titles">
+      <span class="inbox-kicker">Notification center</span>
       <h1 id="desktop-page-title">Inbox</h1>
       <p class="inbox-subtitle" data-testid="inbox-unread-count">
         {subtitle}
@@ -70,10 +72,11 @@
 
   <div class="inbox-feed notif-host">
     <NotificationFeed
-      showDayLabels={true}
+      showDayLabels={false}
       density="comfortable"
       onunreadchange={handleUnreadChange}
       onitemschange={handleItemsChange}
+      onloadstatechange={(loaded) => (feedLoaded = loaded)}
     />
   </div>
 </section>
@@ -82,9 +85,10 @@
   .inbox-page {
     display: flex;
     flex-direction: column;
-    gap: 16px;
+    gap: 24px;
+    width: 100%;
     min-height: 0;
-    max-width: 860px;
+    max-width: 1180px;
     font-family: var(--font-sans);
   }
 
@@ -99,19 +103,28 @@
   .inbox-titles {
     min-width: 0;
     display: grid;
-    grid-template-rows: auto auto;
+    grid-template-rows: auto auto auto;
     grid-template-columns: minmax(0, 1fr);
-    gap: var(--v4-row-stack-gap, 3px);
+    gap: 3px;
+  }
+
+  .inbox-kicker {
+    color: var(--v4-text-3, var(--muted));
+    font-size: var(--text-micro, 10px);
+    font-weight: 650;
+    letter-spacing: 0.075em;
+    line-height: 1.2;
+    text-transform: uppercase;
   }
 
   .inbox-titles h1 {
     margin: 0;
     color: var(--v4-text-1, var(--fg));
     font-family: var(--font-display, var(--font-sans));
-    font-size: var(--type-detail, var(--text-lg, 18px));
-    font-weight: 600;
-    line-height: 1.2;
-    letter-spacing: -0.01em;
+    font-size: clamp(24px, 3vw, 30px);
+    font-weight: 650;
+    line-height: 1.08;
+    letter-spacing: -0.025em;
   }
 
   .inbox-subtitle {
@@ -126,6 +139,8 @@
     flex: 1 1 auto;
     min-height: 0;
     overflow: auto;
+    scrollbar-gutter: stable;
+    background: transparent;
   }
 
   /* Map the feed's popover tokens onto the V4 desktop canvas tokens so the
@@ -146,35 +161,59 @@
   /* Slightly taller, more readable rows on the naked canvas — no rounded outer
      containers (DESKTOP-002). Spacing + hairlines establish structure. */
   .notif-host :global(.nr) {
-    min-height: 36px;
-    padding: 0 4px;
+    min-height: 52px;
+    padding: 8px 10px;
     border-radius: 0;
-    font-size: var(--type-body, 13px);
+    font-size: var(--type-body, 15px);
+    box-shadow: inset 0 -1px 0 var(--v4-rowline, var(--border));
   }
 
   .notif-host :global(.nr-message.nr-expanded) {
-    padding: 12px 4px 12px;
+    padding: 14px 10px;
   }
 
   .notif-host :global(.nr-ts) {
-    font-size: var(--type-secondary, 11px);
+    font-size: var(--type-metadata, 13px);
   }
 
   .notif-host :global(.nr-icon) {
-    width: 14px;
-    height: 14px;
+    width: 16px;
+    height: 16px;
+  }
+
+  .notif-host :global(.nr-actor-pill) {
+    max-width: 20ch;
+    padding: 2px 8px;
+  }
+
+  .notif-host :global(.nr-meta-type) {
+    max-width: 18ch;
+    font-size: var(--type-metadata, 13px);
   }
 
   /* Comfortable density paddings from NotificationFeed assume a card panel —
      pin labels and rows flush to the canvas edges instead. */
   .notif-host :global(.notif-comfortable .notif-day-label) {
-    padding-left: 4px;
-    padding-right: 4px;
+    padding-left: 8px;
+    padding-right: 8px;
+    font-size: var(--type-metadata, 13px);
+    backdrop-filter: blur(18px);
+    -webkit-backdrop-filter: blur(18px);
   }
 
   .notif-host :global(.notif-comfortable .notif-day-rows) {
     padding-left: 0;
     padding-right: 0;
+  }
+
+  @media (max-width: 980px) {
+    .inbox-page {
+      max-width: none;
+    }
+
+    .notif-host :global(.nr-meta-type) {
+      max-width: 12ch;
+    }
   }
 
 </style>

@@ -75,9 +75,11 @@
   let replyCount = $state(0);
   let loading = $state(false);
   let loadError = $state<string | null>(null);
+  let loadGeneration = 0;
 
   let sending = $state(false);
   let sendError = $state<string | null>(null);
+  let sendGeneration = 0;
 
   // Dedupe set so an optimistic append + the live thread:new-reply (or a reload)
   // don't double-render the same reply.
@@ -116,56 +118,101 @@
     replies = [...replies, r];
   }
 
-  async function load(): Promise<void> {
+  interface ThreadIdentity {
+    rootEventId: string;
+    scope: 'dm' | 'channel';
+    channelId: string | null;
+    withPersonUid: string | null;
+  }
+
+  function captureIdentity(): ThreadIdentity {
+    return {
+      rootEventId,
+      scope,
+      channelId,
+      withPersonUid,
+    };
+  }
+
+  function identityIsCurrent(identity: ThreadIdentity): boolean {
+    return (
+      rootEventId === identity.rootEventId &&
+      scope === identity.scope &&
+      channelId === identity.channelId &&
+      withPersonUid === identity.withPersonUid
+    );
+  }
+
+  async function load(identity: ThreadIdentity): Promise<void> {
+    const generation = ++loadGeneration;
     loading = true;
     loadError = null;
     try {
       const view = await invoke<ThreadView>('fetch_thread', {
-        scope,
-        rootEventId,
-        channelId: scope === 'channel' ? channelId : null,
-        withPersonUid: scope === 'dm' ? withPersonUid : null,
+        scope: identity.scope,
+        rootEventId: identity.rootEventId,
+        channelId: identity.scope === 'channel' ? identity.channelId : null,
+        withPersonUid: identity.scope === 'dm' ? identity.withPersonUid : null,
       });
+      if (
+        generation !== loadGeneration ||
+        !identityIsCurrent(identity)
+      ) return;
       root = view.root ?? null;
       // Server returns replies newest-first; render chronologically.
       const ordered = [...(view.replies ?? [])].reverse();
       seenIds = new Set(ordered.map((r) => r.eventId));
       replies = ordered;
       replyCount = view.replyCount ?? ordered.length;
-      onreplycount?.(rootEventId, replyCount);
+      onreplycount?.(identity.rootEventId, replyCount);
       // Register the open thread (+ already-seen reply ids) so the SINGLE poll
       // path emits thread:new-reply only for genuinely new replies.
       void invoke('set_active_thread', {
-        rootEventId,
-        scope,
-        channelId: scope === 'channel' ? channelId : null,
-        withPersonUid: scope === 'dm' ? withPersonUid : null,
+        rootEventId: identity.rootEventId,
+        scope: identity.scope,
+        channelId: identity.scope === 'channel' ? identity.channelId : null,
+        withPersonUid: identity.scope === 'dm' ? identity.withPersonUid : null,
         seenReplyIds: [...seenIds],
       });
     } catch (err) {
+      if (
+        generation !== loadGeneration ||
+        !identityIsCurrent(identity)
+      ) return;
       loadError = typeof err === 'string' ? err : 'Could not load this thread';
       console.error('thread-panel: fetch_thread failed', err);
     } finally {
-      loading = false;
+      if (
+        generation === loadGeneration &&
+        identityIsCurrent(identity)
+      ) {
+        loading = false;
+      }
     }
   }
 
   async function sendReply(text: string): Promise<void> {
     if (!text || sending) return;
+    const identity = captureIdentity();
+    const generation = ++sendGeneration;
     sending = true;
     sendError = null;
     try {
       await invoke('send_thread_reply', {
-        scope,
-        rootEventId,
+        scope: identity.scope,
+        rootEventId: identity.rootEventId,
         body: text,
-        channelId: scope === 'channel' ? channelId : null,
-        toPersonUid: scope === 'dm' ? withPersonUid : null,
+        channelId: identity.scope === 'channel' ? identity.channelId : null,
+        toPersonUid: identity.scope === 'dm' ? identity.withPersonUid : null,
       });
+      if (
+        generation !== sendGeneration ||
+        !identityIsCurrent(identity)
+      ) return;
       // Optimistic append — the durable copy lands server-side and reconciles on
       // the next thread:new-reply / reload.
       const optimistic: ThreadReplyRow = {
-        eventId: `local-${rootEventId}-${replies.length}-${text.length}`,
+        eventId: `local-${identity.rootEventId}-${replies.length}-${text.length}`,
         fromPersonUid: 'me',
         fromEmail: '',
         fromDisplayName: 'You',
@@ -177,44 +224,93 @@
       };
       appendReply(optimistic);
       replyCount += 1;
-      onreplycount?.(rootEventId, replyCount);
+      onreplycount?.(identity.rootEventId, replyCount);
     } catch (err) {
+      if (
+        generation !== sendGeneration ||
+        !identityIsCurrent(identity)
+      ) return;
       sendError = typeof err === 'string' ? err : 'Failed to send reply';
       console.error('thread-panel: send_thread_reply failed', err);
     } finally {
-      sending = false;
+      if (
+        generation === sendGeneration &&
+        identityIsCurrent(identity)
+      ) {
+        sending = false;
+      }
     }
   }
 
   $effect(() => {
+    const identity = captureIdentity();
     const unlisteners: Array<() => void> = [];
+    let disposed = false;
+
+    function retainUnlistener(unlisten: () => void): void {
+      if (disposed) {
+        unlisten();
+        return;
+      }
+      unlisteners.push(unlisten);
+    }
+
+    function registerListener<T>(
+      event: string,
+      handler: (event: { payload: T }) => void,
+    ): void {
+      void listen<T>(event, handler)
+        .then(retainUnlistener)
+        .catch((error: unknown) => {
+          if (!disposed) {
+            console.error(`thread-panel: failed to listen for ${event}`, error);
+          }
+        });
+    }
+
+    loadGeneration += 1;
+    sendGeneration += 1;
+    root = null;
+    replies = [];
+    seenIds = new Set();
+    replyCount = 0;
+    loading = false;
+    loadError = null;
+    sending = false;
+    sendError = null;
 
     // A new reply landed in THIS thread (emitted by the SINGLE DM poll path on a
     // "thread" wake). Append it and bump the live count; ignore replies for other
     // roots.
-    listen<{ rootEventId: string; reply: ThreadReplyRow; replyCount?: number }>(
+    registerListener<{ rootEventId: string; reply: ThreadReplyRow; replyCount?: number }>(
       'thread:new-reply',
       (e) => {
-        if (e.payload.rootEventId !== rootEventId) return;
+        if (
+          e.payload.rootEventId !== identity.rootEventId ||
+          !identityIsCurrent(identity)
+        ) return;
         appendReply(e.payload.reply);
         if (typeof e.payload.replyCount === 'number') {
           replyCount = e.payload.replyCount;
         } else {
           replyCount = replies.length;
         }
-        onreplycount?.(rootEventId, replyCount);
+        onreplycount?.(identity.rootEventId, replyCount);
       },
-    ).then((fn) => unlisteners.push(fn));
+    );
 
     // Reactions on a thread reply changed (US-025). The controller ignores events
     // for any scope other than this thread's parent conversation.
-    listen<ReactionEvent>('message:reaction', (e) => {
+    registerListener<ReactionEvent>('message:reaction', (e) => {
       reactionsCtl?.applyEvent(e.payload);
-    }).then((fn) => unlisteners.push(fn));
+    });
 
-    void load();
+    void load(identity);
 
     return () => {
+      disposed = true;
+      loadGeneration += 1;
+      sendGeneration += 1;
       for (const fn of unlisteners) fn();
       // Clear the active thread so the poll path stops re-fetching it.
       void invoke('set_active_thread', { rootEventId: null });
@@ -236,7 +332,7 @@
         <span class="thread-root-author">{root.fromDisplayName}</span>
       {/if}
       <div class="thread-root-bubble">
-        <p class="thread-root-body">{@html renderMessageBodyMarkdown(root.body)}</p>
+        <div class="thread-root-body selectable-text">{@html renderMessageBodyMarkdown(root.body)}</div>
         {#if root.details}
           <div class="thread-root-details">{root.details}</div>
         {/if}
@@ -319,10 +415,10 @@
     flex-shrink: 0;
     display: flex;
     flex-direction: column;
-    gap: 0.25rem;
+    gap: 0.375rem;
     padding: 0.875rem 1rem;
     border-bottom: 1px solid var(--border, var(--pop-divider));
-    background: var(--surface-raise, var(--pop-hover));
+    background: transparent;
   }
 
   .thread-root-author {
@@ -332,33 +428,261 @@
   }
 
   .thread-root-bubble {
-    padding: 0.5rem 0.75rem;
-    border-radius: 12px;
-    border-bottom-left-radius: 4px;
-    background: var(--surface-panel, var(--pop-hover));
+    padding: 0;
+    border-radius: 0;
+    background: transparent;
   }
 
   .thread-root-body {
+    --message-markdown-text: var(--fg, var(--pop-text, #e8e8e8));
+    --message-markdown-muted: var(--muted, var(--pop-muted, #a0a0a0));
+    --message-markdown-border: var(--border, var(--pop-divider, rgba(255, 255, 255, 0.14)));
+    --message-markdown-surface: var(--surface-raise, var(--c-field-bg, rgba(255, 255, 255, 0.06)));
+    min-width: 0;
+    max-width: 100%;
     margin: 0;
+    font-family: var(--font-sans, -apple-system, BlinkMacSystemFont, sans-serif);
     font-size: var(--text-base);
-    line-height: 1.45;
-    color: var(--fg, var(--pop-text));
-    white-space: pre-wrap;
-    word-break: break-word;
+    line-height: 1.55;
+    color: var(--message-markdown-text);
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: normal;
+  }
+
+  .thread-root-body > :global(:first-child) {
+    margin-top: 0;
+  }
+
+  .thread-root-body > :global(:last-child) {
+    margin-bottom: 0;
+  }
+
+  .thread-root-body :global(p) {
+    margin: 0.375rem 0;
+    color: inherit;
+  }
+
+  .thread-root-body :global(h1),
+  .thread-root-body :global(h2),
+  .thread-root-body :global(h3),
+  .thread-root-body :global(h4),
+  .thread-root-body :global(h5),
+  .thread-root-body :global(h6) {
+    margin: 1rem 0 0.4rem;
+    color: var(--message-markdown-text);
+    font-family: var(--font-display, var(--font-sans, -apple-system, BlinkMacSystemFont, sans-serif));
+    font-weight: 650;
+    line-height: 1.18;
+    letter-spacing: -0.02em;
+  }
+
+  .thread-root-body :global(h1) {
+    font-size: 1.42em;
+  }
+
+  .thread-root-body :global(h2) {
+    font-size: 1.28em;
+  }
+
+  .thread-root-body :global(h3) {
+    font-size: 1.14em;
+  }
+
+  .thread-root-body :global(h4),
+  .thread-root-body :global(h5),
+  .thread-root-body :global(h6) {
+    font-size: 1em;
+  }
+
+  .thread-root-body :global(ul),
+  .thread-root-body :global(ol) {
+    margin: 0.625rem 0;
+    padding-left: 1.4rem;
+  }
+
+  .thread-root-body :global(li) {
+    margin: 0.3rem 0;
+    padding-left: 0.2rem;
+    line-height: 1.5;
+  }
+
+  .thread-root-body :global(li > ul),
+  .thread-root-body :global(li > ol) {
+    margin: 0.1875rem 0;
+  }
+
+  .thread-root-body :global(.task-list) {
+    padding-left: 0;
+    list-style: none;
+  }
+
+  .thread-root-body :global(.task-list-item) {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+    padding-left: 0;
+  }
+
+  .thread-root-body :global(.task-list-item input) {
+    flex: 0 0 auto;
+    margin: 0.25em 0 0;
+    accent-color: var(--message-markdown-muted);
+  }
+
+  .thread-root-body :global(.task-list-content) {
+    min-width: 0;
   }
 
   .thread-root-body :global(a) {
-    color: var(--popover-text, #e8e8e8);
+    color: var(--message-markdown-text);
     text-decoration: underline;
+    text-decoration-color: color-mix(in srgb, currentColor 45%, transparent);
     text-underline-offset: 0.125rem;
+  }
+
+  .thread-root-body :global(a:hover) {
+    text-decoration-color: currentColor;
+  }
+
+  .thread-root-body :global(a:focus-visible) {
+    outline: 2px solid currentColor;
+    outline-offset: 2px;
+  }
+
+  .thread-root-body :global(strong) {
+    color: var(--message-markdown-text);
+    font-weight: 650;
+  }
+
+  .thread-root-body :global(del) {
+    color: var(--message-markdown-muted);
   }
 
   .thread-root-body :global(code) {
     padding: 0.0625rem 0.25rem;
     border-radius: 4px;
-    background: rgba(0, 0, 0, 0.24);
+    background: var(--message-markdown-surface);
+    color: var(--message-markdown-text);
     font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
     font-size: 0.92em;
+  }
+
+  .thread-root-body :global(pre) {
+    max-width: 100%;
+    margin: 0.625rem 0;
+    padding: 0.625rem 0.75rem;
+    overflow-x: auto;
+    border: 1px solid var(--message-markdown-border);
+    border-radius: 0;
+    background: var(--message-markdown-surface);
+    color: var(--message-markdown-text);
+    line-height: 1.5;
+    white-space: pre;
+    overflow-wrap: normal;
+    word-break: normal;
+    scrollbar-width: thin;
+    scrollbar-color: var(--message-markdown-muted) transparent;
+  }
+
+  .thread-root-body :global(pre code) {
+    padding: 0;
+    border-radius: 0;
+    background: transparent;
+    color: inherit;
+    font-size: 0.9em;
+    white-space: inherit;
+  }
+
+  .thread-root-body :global(blockquote) {
+    margin: 0.625rem 0;
+    padding: 0.0625rem 0 0.0625rem 0.75rem;
+    border-left: 2px solid var(--message-markdown-border);
+    background: transparent;
+    color: var(--message-markdown-muted);
+  }
+
+  .thread-root-body :global(blockquote p) {
+    color: inherit;
+  }
+
+  .thread-root-body :global(hr) {
+    margin: 0.75rem 0;
+    border: 0;
+    border-top: 1px solid var(--message-markdown-border);
+  }
+
+  .thread-root-body :global(img) {
+    display: block;
+    max-width: 100%;
+    height: auto;
+    margin: 0.625rem 0;
+    border-radius: 0;
+  }
+
+  .thread-root-body :global(.markdown-table-scroll) {
+    width: 100%;
+    max-width: 100%;
+    margin: 0.625rem 0;
+    overflow-x: auto;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    scrollbar-width: thin;
+    scrollbar-color: var(--message-markdown-muted) transparent;
+  }
+
+  .thread-root-body :global(.markdown-table-scroll:focus-visible) {
+    outline: 2px solid var(--message-markdown-text);
+    outline-offset: 2px;
+  }
+
+  .thread-root-body :global(table) {
+    width: 100%;
+    min-width: max-content;
+    border-spacing: 0;
+    border-collapse: collapse;
+    color: inherit;
+    font-size: 0.9em;
+    line-height: 1.4;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .thread-root-body :global(th),
+  .thread-root-body :global(td) {
+    padding: 0.4375rem 0.625rem;
+    border-right: 1px solid var(--message-markdown-border);
+    border-bottom: 1px solid var(--message-markdown-border);
+    text-align: left;
+    vertical-align: top;
+  }
+
+  .thread-root-body :global(th:first-child),
+  .thread-root-body :global(td:first-child) {
+    padding-left: 0;
+  }
+
+  .thread-root-body :global(th:last-child),
+  .thread-root-body :global(td:last-child) {
+    padding-right: 0;
+    border-right: 0;
+  }
+
+  .thread-root-body :global(tbody tr:last-child td) {
+    border-bottom: 0;
+  }
+
+  .thread-root-body :global(th) {
+    color: var(--message-markdown-text);
+    font-weight: 650;
+  }
+
+  .thread-root-body :global(.markdown-align-center) {
+    text-align: center;
+  }
+
+  .thread-root-body :global(.markdown-align-right) {
+    text-align: right;
   }
 
   .thread-root-details {
@@ -376,11 +700,14 @@
   }
 
   .thread-root-label {
-    font-size: var(--text-base);
-    font-weight: 600;
-    letter-spacing: 0.02em;
+    margin-top: 0.25rem;
+    padding-top: 0.375rem;
+    border-top: 1px solid var(--border, var(--pop-divider));
+    font-size: 0.6875rem;
+    font-weight: 500;
+    letter-spacing: 0;
     color: var(--muted, var(--pop-muted));
-    text-transform: uppercase;
+    text-transform: none;
   }
 
   .thread-root-status {

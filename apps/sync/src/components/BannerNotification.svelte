@@ -27,7 +27,12 @@
   let payload = $state<BannerPayload | null>(null);
   let leaving = $state(false);
   let paused = $state(false);
+  let actionPending = $state(false);
+  let actionError = $state<string | null>(null);
+  let activeActionId = $state<string | null>(null);
   let dismissTimer: ReturnType<typeof setTimeout> | undefined;
+  let leaveTimer: ReturnType<typeof setTimeout> | undefined;
+  let payloadGeneration = 0;
 
   // Card content (title + body + optional action row). Measured after each
   // payload so the window can hug the content height — see fitHeight().
@@ -48,26 +53,59 @@
 
   function armDismiss(): void {
     clearTimeout(dismissTimer);
-    if (paused) return;
+    if (paused || actionPending || actionError) return;
     dismissTimer = setTimeout(() => void dismiss(), AUTO_DISMISS_MS);
+  }
+
+  function scheduleNativeDismiss(generation: number): void {
+    clearTimeout(leaveTimer);
+    leaveTimer = setTimeout(() => {
+      leaveTimer = undefined;
+      if (generation !== payloadGeneration || !leaving) return;
+      void invoke('dismiss_banner').catch(() => {});
+    }, 180);
   }
 
   async function dismiss(): Promise<void> {
     if (leaving) return;
+    const generation = payloadGeneration;
     leaving = true; // play slide-out, then close the window in Rust.
-    setTimeout(() => void invoke('dismiss_banner').catch(() => {}), 180);
+    scheduleNativeDismiss(generation);
+  }
+
+  function createActionRequestId(): string {
+    const nativeId = globalThis.crypto?.randomUUID?.();
+    return nativeId ??
+      `banner-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
   }
 
   async function action(actionId: string | null | undefined): Promise<void> {
-    if (!payload || !actionId) return;
+    if (!payload || !actionId || actionPending) return;
+    const generation = payloadGeneration;
     clearTimeout(dismissTimer);
-    leaving = true;
+    activeActionId = actionId;
+    actionPending = true;
+    void fitHeight();
     try {
-      // banner_action re-emits notification:banner-action AND closes the window.
-      await invoke('banner_action', { action: actionId, payload });
+      // Rust resolves only after App.svelte reports the real destination
+      // operation succeeded. A failure/timeout rejects and leaves this banner
+      // mounted with the inline Retry below.
+      await invoke('banner_action', {
+        requestId: createActionRequestId(),
+        action: actionId,
+        payload,
+      });
+      if (generation !== payloadGeneration) return;
+      actionError = null;
+      leaving = true;
+      scheduleNativeDismiss(generation);
     } catch (err) {
       console.error('banner: action failed', err);
-      void invoke('dismiss_banner').catch(() => {});
+      if (generation !== payloadGeneration) return;
+      actionError = 'Couldn’t complete that action.';
+      void fitHeight();
+    } finally {
+      if (generation === payloadGeneration) actionPending = false;
     }
   }
 
@@ -83,8 +121,14 @@
   $effect(() => {
     let unlisten: (() => void) | undefined;
     listen<BannerPayload>('banner:event', (e) => {
+      payloadGeneration += 1;
+      clearTimeout(leaveTimer);
+      leaveTimer = undefined;
       payload = e.payload;
       leaving = false; // a fresh banner reusing the window must not stay faded.
+      actionPending = false;
+      actionError = null;
+      activeActionId = null;
       armDismiss(); // (re)start the countdown each time a notification arrives.
       void fitHeight(); // size the window to the new content.
     }).then((fn) => {
@@ -96,6 +140,7 @@
     return () => {
       unlisten?.();
       clearTimeout(dismissTimer);
+      clearTimeout(leaveTimer);
     };
   });
 </script>
@@ -103,18 +148,15 @@
 <svelte:options runes={true} />
 
 {#if payload}
-  <!-- Whole card is the click affordance (body click → clickActionId). Buttons
-       stopPropagation so the chip / close don't also trigger it. -->
-  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
   <div
     class="banner"
     class:leaving
     data-kind={payload.kind}
-    role="button"
-    tabindex="0"
+    role="group"
+    aria-label={`HQ notification from ${payload.title}`}
+    aria-busy={actionPending}
     onpointerenter={onPointerEnter}
     onpointerleave={onPointerLeave}
-    onclick={() => action(payload?.clickActionId)}
   >
     <div class="avatar" aria-hidden="true">
       <!-- Flat monochrome HQ wordmark (src/assets/hq-mark.svg, inlined so it
@@ -127,24 +169,59 @@
     </div>
 
     <div class="content" bind:this={contentEl}>
-      <div class="top">
-        <span class="app">HQ</span>
-        <span class="sep">·</span>
-        <span class="from">{payload.title}</span>
-        <button
-          class="close"
-          aria-label="Dismiss"
-          onclick={(e) => { e.stopPropagation(); void dismiss(); }}
-        >×</button>
-      </div>
-      <p class="body">{payload.body}</p>
+      <button
+        class="banner-primary"
+        type="button"
+        aria-label={`Open notification from ${payload.title}: ${payload.body}`}
+        aria-busy={actionPending && activeActionId === payload.clickActionId}
+        disabled={actionPending}
+        onclick={() => void action(payload?.clickActionId)}
+      >
+        <span class="top">
+          <span class="app">HQ</span>
+          <span class="sep">·</span>
+          <span class="from">{payload.title}</span>
+        </span>
+        <span class="body">{payload.body}</span>
+      </button>
+      <button
+        class="close"
+        type="button"
+        aria-label="Dismiss"
+        disabled={actionPending}
+        onclick={() => void dismiss()}
+      >×</button>
       {#if payload.actionLabel}
         <div class="actions">
           <button
             class="chip"
-            onclick={(e) => { e.stopPropagation(); void action(payload?.actionId); }}
-          >{payload.actionLabel}</button>
-          <span class="hint">click to open</span>
+            disabled={actionPending}
+            aria-busy={actionPending && activeActionId === payload.actionId}
+            onclick={() => void action(payload?.actionId)}
+          >
+            {#if actionPending && activeActionId === payload.actionId}
+              Working…
+            {:else}
+              {payload.actionLabel}
+            {/if}
+          </button>
+          <span class="hint">{actionPending ? 'Working…' : 'click to open'}</span>
+        </div>
+      {/if}
+      {#if actionPending && !payload.actionLabel}
+        <span class="pending-label" aria-live="polite">Working…</span>
+      {/if}
+      {#if actionError && activeActionId}
+        <div class="banner-action-error" role="alert" data-testid="banner-action-error">
+          <span>{actionError}</span>
+          <button
+            type="button"
+            disabled={actionPending}
+            aria-busy={actionPending}
+            onclick={() => void action(activeActionId)}
+          >
+            {actionPending ? 'Retrying…' : 'Retry'}
+          </button>
         </div>
       {/if}
     </div>
@@ -201,7 +278,7 @@
       0 14px 44px rgba(0, 0, 0, 0.5);
     color: var(--popover-text);
     font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-    cursor: pointer;
+    cursor: default;
     overflow: hidden;
     animation: slide-in 0.28s cubic-bezier(0.16, 1, 0.3, 1);
     transition: transform 0.18s ease, opacity 0.18s ease;
@@ -269,7 +346,38 @@
     display: block;
   }
 
-  .content { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.25rem; }
+  .content {
+    position: relative;
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+  .banner-primary {
+    appearance: none;
+    width: 100%;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    margin: 0;
+    padding: 0 24px 0 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .banner-primary:focus-visible {
+    outline: 2px solid var(--popover-text-muted);
+    outline-offset: 3px;
+    border-radius: 4px;
+  }
+  .banner-primary:disabled {
+    cursor: wait;
+  }
   .top { display: flex; align-items: center; gap: 0.375rem; font-size: 0.75rem; }
   /* "HQ Sync" + separator never shrink/wrap — the sender is the only part
      that truncates with an ellipsis when the title is long. */
@@ -285,7 +393,9 @@
   }
 
   .close {
-    margin-left: auto;
+    position: absolute;
+    top: 0;
+    right: 0;
     flex-shrink: 0;
     width: 18px;
     height: 18px;
@@ -302,6 +412,10 @@
     transition: background-color 0.12s ease;
   }
   .close:hover { background: var(--popover-surface-strong); }
+  .close:disabled {
+    opacity: 0.55;
+    cursor: wait;
+  }
 
   .body {
     margin: 0;
@@ -331,6 +445,10 @@
     transition: background-color 0.12s ease;
   }
   .chip:hover { background: var(--popover-primary-hover); }
+  .chip:disabled {
+    opacity: 0.7;
+    cursor: wait;
+  }
 
   /* Shared tokens keep the actual action neutral in both appearances. Retain a
      complete neutral fallback so a partially loaded auxiliary webview still
@@ -345,4 +463,39 @@
   }
 
   .hint { font-size: 0.625rem; color: var(--popover-text-muted); }
+
+  .pending-label {
+    color: var(--popover-text-muted);
+    font-size: 0.6875rem;
+  }
+
+  .banner-action-error {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    color: var(--popover-danger);
+    font-size: 0.6875rem;
+    line-height: 1.3;
+  }
+
+  .banner-action-error span {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .banner-action-error button {
+    flex: 0 0 auto;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--popover-text-heading);
+    font: inherit;
+    font-weight: 650;
+    cursor: pointer;
+  }
+
+  .banner-action-error button:disabled {
+    color: var(--popover-text-muted);
+    cursor: wait;
+  }
 </style>

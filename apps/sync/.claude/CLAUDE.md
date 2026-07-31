@@ -42,6 +42,7 @@ macOS menu bar app wrapping `hq sync` for non-technical users. Tauri 2 + Svelte 
 | `glass.rs` | Native macOS "Liquid Glass" window backing (0.8.1-beta.1, macOS 26 Tahoe). `apply_liquid_glass_window` resolves `NSGlassEffectView` at runtime and inserts it at the very back (`NSWindowBelow`) of the transparent desktop window's content view so the window reads as live glass over the desktop; on pre-Tahoe macOS it falls back to the same `NSVisualEffectView` `UnderWindowBackground` vibrancy the popover uses. Main-thread-only — callers must invoke via `run_on_main_thread`. The native material backs the *window*; in-window panels get matched translucent styling in CSS (it cannot refract the webview's own DOM) |
 | `commands/settings.rs` | Settings persistence |
 | `commands/autostart.rs` | Login-item autostart. `ensure_autostart_on_launch()` (called from `main.rs` `.setup()`, macOS-gated) idempotently reconciles the LaunchAgent plist with the effective `startAtLogin` pref on every launch — **default-on** (a fresh install autostarts without opening Settings), honouring an explicit `"startAtLogin": false` opt-out (stale plist removed). Mirrors the `daemon.rs` `realtime_sync` default-on convention |
+| `commands/dock.rs` | macOS Dock icon presence. `dock_icon_pref()` resolves `dockIcon` from menubar.json **default-on** (explicit `false` is the only opt-out); `set_activation_policy()` maps it to `ActivationPolicy::Regular` (Dock icon + Cmd-Tab + app menu bar) or `Accessory` (classic menubar-only). `apply_at_launch` (`&mut App`) runs from `main.rs` `.setup()` and `apply_at_runtime` (`AppHandle`) backs the `apply_dock_icon` command the Settings toggle calls after `save_settings`. **The two are not interchangeable** — tao re-applies its STORED policy at `applicationDidFinishLaunching`, which is after `.setup()`, so the AppHandle setter at launch is silently clobbered (and tao's stored default is `Regular`, so every user would get an unwanted Dock icon). The bundle keeps `LSUIElement=true` so the process always launches accessory and is promoted from there — an opted-out user never sees a Dock icon flash at login. A Dock click arrives as `RunEvent::Reopen` and routes through the new `ActivationSource::DockIconClick` → `ShowDesktop`, opening the full desktop window via `tray::show_desktop_window` (show-only, never toggles; signed-out users fall back to the popover's SignInPrompt). The Dock icon is an application-window affordance; the menu-bar icon remains the compact popover's. `has_visible_windows` is ignored on purpose — the always-on-top widget would otherwise make the icon inert. **Dock badge:** `set_badge()` mirrors the unread-DM count onto the Dock tile, called from the only two writers of `UnreadDmState` (`dm_notify::bump_unread` / `reset_unread_dms`) so it is an exact function of that state with no poller. `format_badge_label` maps 0 → cleared and caps at `99+`; the module formats its own label because Tauri's `set_badge_count` stringifies 0 into a literal "0" badge on macOS. Not gated on `dockIcon` — no file read on the DM poll path, and the tile keeps its badge across a policy change so opting in mid-session shows the right count immediately |
 | `tray.rs` | System tray with 4 visual states (idle/syncing/error/conflict) |
 | `updater.rs` | Auto-update checker (10s delay, then every 6h). **Channel-aware**: resolves a per-user endpoint via `util/release_channel.rs` from `MenubarPrefs.release_channel` × `util/feature_gate::is_indigo_user`. Non-`@getindigo.ai` users are coerced to Stable regardless of stored preference (defense-in-depth). Exposes `available_channels` command for the Settings picker. |
 | `events.rs` | Typed sync event structs (ndjson discriminated union) |
@@ -74,7 +75,7 @@ Important constraints:
 | File | Written By | Purpose |
 |------|-----------|---------|
 | `~/.hq/config.json` | hq-installer | Company UID, slug, person, bucket, vault URL, HQ folder path |
-| `~/.hq/menubar.json` | This app | HQ path override, syncOnLaunch, notifications, startAtLogin, autostartDaemon, realtimeSync, personalSyncEnabled, instantSync, driftStagingRepo, shareNotifications, releaseChannel, machineId, firstRunCompleted, autoSyncNoticeShown, cliAutoUpdate, cliUpdateDismissedVersion (the hq-CLI version the user dismissed the "update available" notice for — sticky until a newer version publishes) |
+| `~/.hq/menubar.json` | This app | HQ path override, syncOnLaunch, notifications, startAtLogin, autostartDaemon, realtimeSync, personalSyncEnabled, instantSync, driftStagingRepo, shareNotifications, releaseChannel, machineId, firstRunCompleted, autoSyncNoticeShown, cliAutoUpdate, cliUpdateDismissedVersion (the hq-CLI version the user dismissed the "update available" notice for — sticky until a newer version publishes), dockIcon (macOS Dock icon on/off, default ON) |
 | `~/.hq/cognito-tokens.json` | hq-installer / this app | Cognito access + refresh + id tokens |
 
 ## HQ Folder Path Resolution
@@ -203,6 +204,47 @@ Feature-flagged behind `autostartDaemon: true` in `~/.hq/menubar.json` (default:
 
 State files: `.hq-sync.pid`, `.hq-sync-daemon.json` in the HQ folder.
 
+## App Icon (Dock)
+
+`src-tauri/icons/*` are generated, not hand-edited. Pipeline:
+
+```
+src-tauri/icons/source/app-icon-master.png   full-bleed 1024 brand artwork
+  -> python3 scripts/generate-app-icon.py    puts it on Apple's icon grid
+  -> src-tauri/icons/app-icon.png            1024 canvas, grid-aligned
+  -> pnpm tauri icon src-tauri/icons/app-icon.png -o src-tauri/icons
+```
+
+**macOS does NOT mask or inset app icons.** Whatever the bundle ships is drawn
+into the Dock tile verbatim, so the rounded-rect shape and the margin around it
+must be baked into the artwork. HQ shipped a full-bleed 512x512 square with
+fully opaque corners, so the Dock rendered a hard-edged square that read
+visibly larger than the inset squircles every other Mac app ships.
+
+Apple's grid on a 1024 canvas: body **824x824 centred** (100px transparent
+margin every side), corner radius **185.4**. The mask is supersampled 4x and
+downsampled with `Image.BOX` — a coverage mask is an area-average, and `LANCZOS`
+rings, leaving faint alpha ~3px OUTSIDE the geometric edge (measured bbox
+97..927 instead of 100..924) plus a halo.
+
+⚠ **`src-tauri/icons/app-icon.svg` is STALE — never regenerate from it.** It
+describes a near-black tile with a gradient wordmark; HQ actually ships a
+pink/violet gradient tile with a white wordmark (shipped raster mean opaque RGB
+~(212,141,227); the SVG rasterises to ~(52,44,50)). Running `tauri icon` against
+it silently rebrands the app. The master PNG was recovered from the 1024x1024
+`ic10` representation inside the previously shipped `icon.icns`.
+
+`__tests__/stories/app-icon-grid.test.ts` decodes the generated PNG and asserts
+transparent corners, the exact grid inset, corner rounding, and that the mean
+colour is still the pink brand — so both a full-bleed regeneration and an
+accidental rebrand fail in CI. It also fails against the pre-fix icon (verified),
+so it is not a vacuous guard.
+
+Note the runtime `NSApp.applicationIconImage` override in `main.rs` still feeds
+the Dock `128x128@2x.png` (256px), which is exactly the Dock's max size
+(128pt @2x) — adequate, but it does replace the multi-rep `.icns` for every
+surface, so a larger source would be needed if a bigger rendering ever matters.
+
 ## Tray Icon
 
 4 embedded PNG icons (`src-tauri/icons/tray-*.png`) are generated from the official HQ mark at `src-tauri/icons/source/HQ.svg` by `scripts/generate-tray-icons.py`. The generated canvases are 38x22 at @1x and 76x44 at @2x, monochrome black on transparent so macOS can template-invert them for light/dark menu bars. Runtime icons are cached via `OnceLock` after first decode. State swaps go through the `set_state_icon()` helper, which calls `set_icon()` then re-asserts `set_icon_as_template(true)` — macOS drops `isTemplate` on every `set_icon()`, so without the re-assert the template glyph would render as raw pixels after the first state change.
@@ -215,10 +257,11 @@ Left-click toggles popover window. Right-click shows context menu (Sync Now / Op
 - **Build:** `npm run tauri build`
 - **DMG:** `scripts/create-dmg.sh`
 - **Notarize:** `scripts/notarize.sh`
-- **CI:** `.github/workflows/release.yml` (code signing + notarization)
-- **Auto-updater:** `latest.json` published to GitHub Releases, generated by `scripts/generate-latest-json.sh`
+- **CI:** `.github/workflows/release.yml` builds the complete macOS/Windows matrix, uploads all 15 assets to a hidden draft, verifies the exact remote contract, then publishes with one PATCH. Publication is serialized across tags; stable rollbacks fail closed, and an exact healthy public release is a read-only rerun success.
+- **Auto-updater:** the workflow generates a four-platform `latest.json` inline. Stable uses GitHub's `/releases/latest/` alias; beta and alpha resolve tag-pinned manifests and cannot replace stable latest.
+- **Windows prerelease packaging:** `scripts/windows-msi-version.mjs` maps `X.Y.Z-beta.N` / `X.Y.Z-alpha.N` to numeric MSI-only `X.Y.Z`; full SemVer remains on the app, NSIS, updater, tag, and artifact names.
 - **Update notification banner:** when an update is detected, a native banner with an "Update now" chip surfaces. Its action (`kind === 'update'`, `action === 'update'` in `App.svelte`) must open the popover (`show_main_window`) AND run the install through the SAME guarded path the in-app Install button uses (`handleInstallUpdate`), so the popover's in-app banner flips to "Installing…" with dedupe + error handling (fixed #248, v0.8.3). A bare `invoke('install_update')` from the notification installed invisibly — the popover never opened and `updateInstalling` never flipped — so it read as "nothing happened" until the app abruptly restarted.
-- **Release notes:** `.github/workflows/release.yml` uses `gh release create --generate-notes` (fixed #246, v0.8.2). The prior template injected a `CHANGELOG.md` link that 404'd on every release because the repo has no committed CHANGELOG.
+- **Release operations:** see `../../docs/RELEASE.md` for version stamping, signing variables, channel behavior, artifact shape, and retry semantics.
 
 ## Performance Budgets
 

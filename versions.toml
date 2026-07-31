@@ -4,7 +4,7 @@
 # Owner decisions (2026-06-24):
 #   - One product, one version. Tracks the shipping hq-sync 0.9.x line.
 #   - Supersedes hq-installer, hq-sync 0.8.x, hq-sync-win 0.6.4.
-#   - Updater manifests under https://downloads.getindigo.ai/hq-desktop-app.
+#   - Updater manifests ship with each GitHub Release.
 #   - Windows exposes the operator surfaces (library_local, marketplace, messages, projects_local).
 #   - Windows bundle identifier migrates to ai.indigo.hq at a DELIBERATE later cutover
 #     (needs a one-time bridge for existing Windows users); the macOS and Windows
@@ -15,13 +15,14 @@
 
 [product]
 name = "HQ Sync"          # OS-facing display name — open question (HQ Sync vs HQ Desktop)
-version = "0.10.35-beta.2"
+version = "0.10.40"
 base_crate = "hq-sync-menubar"
 
 [updater]
-manifest_base = "https://downloads.getindigo.ai/hq-desktop-app"
+manifest_base = "https://github.com/indigoai-us/hq-desktop-app/releases"
 channels = ["stable", "beta", "alpha"]
-# e.g. https://downloads.getindigo.ai/hq-desktop-app/stable/latest.json
+# Stable polls /releases/latest/download/latest.json. Beta and alpha resolve the
+# highest eligible public GitHub Release, then poll that tag's latest.json.
 # The installer's disabled-updater setting must NOT survive the merge; the unified app
 # enables tauri-plugin-updater + bundle.createUpdaterArtifacts = true.
 
@@ -33,7 +34,7 @@ identifier_windows = "ai.indigo.hq-sync-win"
 identifier_windows_target = "ai.indigo.hq"
 
 [platforms]
-# Honest targets until Recall packaging supports more.
-macos = "aarch64-apple-darwin"     # Recall/GStreamer is arm64-only
-windows = "x86_64-pc-windows-msvc" # Windows Recall sidecar ARM64 not yet proven
+# One universal macOS artifact and native Windows installers for both arches.
+macos = ["aarch64-apple-darwin", "x86_64-apple-darwin"]
+windows = ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"]
 windows_shows_operator_surfaces = true

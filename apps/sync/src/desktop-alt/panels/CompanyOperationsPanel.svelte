@@ -46,14 +46,26 @@
   const activeDestination = $derived<CompanyOperationsTab>(
     destinations.some((d) => d.id === destination) ? destination : 'activity',
   );
+  let settingsBusy = $state(false);
+  let settingsError = $state<string | null>(null);
 
   function selectDestination(id: CompanyOperationsTab): void {
     if (id === activeDestination) return;
     ondestinationchange?.(id);
   }
 
-  function openCompanySettings(): void {
-    void openExternal(companySettingsUrl(slug));
+  async function openCompanySettings(): Promise<void> {
+    if (settingsBusy) return;
+    settingsBusy = true;
+    settingsError = null;
+    try {
+      await openExternal(companySettingsUrl(slug));
+    } catch (err) {
+      console.error('Open company settings failed:', err);
+      settingsError = 'Could not open company settings in the HQ console.';
+    } finally {
+      settingsBusy = false;
+    }
   }
 
   /**
@@ -194,9 +206,11 @@
                 class="ops-settings-button"
                 data-testid="operations-open-console-settings"
                 aria-label="Open company settings in HQ console"
-                onclick={openCompanySettings}
+                onclick={() => void openCompanySettings()}
+                disabled={settingsBusy}
+                aria-busy={settingsBusy}
               >
-                Open console
+                {settingsBusy ? 'Opening…' : 'Open console'}
               </button>
             </div>
           </header>
@@ -211,9 +225,11 @@
                 type="button"
                 class="ops-settings-row-action"
                 data-testid="operations-settings-identity"
-                onclick={openCompanySettings}
+                onclick={() => void openCompanySettings()}
+                disabled={settingsBusy}
+                aria-busy={settingsBusy}
               >
-                Open
+                {settingsBusy ? 'Opening…' : 'Open'}
               </button>
             </div>
             <div class="ops-settings-row">
@@ -225,9 +241,11 @@
                 type="button"
                 class="ops-settings-row-action"
                 data-testid="operations-settings-sync"
-                onclick={openCompanySettings}
+                onclick={() => void openCompanySettings()}
+                disabled={settingsBusy}
+                aria-busy={settingsBusy}
               >
-                Open
+                {settingsBusy ? 'Opening…' : 'Open'}
               </button>
             </div>
             <div class="ops-settings-row">
@@ -239,12 +257,19 @@
                 type="button"
                 class="ops-settings-row-action"
                 data-testid="operations-settings-members"
-                onclick={openCompanySettings}
+                onclick={() => void openCompanySettings()}
+                disabled={settingsBusy}
+                aria-busy={settingsBusy}
               >
-                Open
+                {settingsBusy ? 'Opening…' : 'Open'}
               </button>
             </div>
           </div>
+          {#if settingsError}
+            <p class="ops-settings-error" role="alert" data-testid="operations-settings-error">
+              {settingsError}
+            </p>
+          {/if}
         </section>
       {/if}
     </div>
@@ -299,6 +324,14 @@
     line-height: 1.3;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .ops-settings-error {
+    margin: 0;
+    padding-top: var(--v4-space-2, 8px);
+    border-top: 1px solid var(--v4-hairline);
+    color: var(--v4-error, #f87171);
+    font-size: var(--type-body, 12px);
   }
 
   /* Naked canvas: hairline list/detail — no rounded outer shell. */

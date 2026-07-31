@@ -2695,6 +2695,7 @@ dependencies = [
  "fs2",
  "ignore",
  "reqwest 0.12.28",
+ "rustix",
  "semver",
  "sentry",
  "serde",
@@ -2726,7 +2727,7 @@ dependencies = [
 
 [[package]]
 name = "hq-sync-menubar"
-version = "0.10.35-beta.2"
+version = "0.10.40"
 dependencies = [
  "aws-config",
  "aws-credential-types",
@@ -2872,12 +2873,6 @@ dependencies = [
  "http-body 1.0.1",
  "pin-project-lite",
 ]
-
-[[package]]
-name = "http-range"
-version = "0.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "21dec9db110f5f872ed9699c3ecf50cf16f423502706ba5c72462e28d3157573"
 
 [[package]]
 name = "httparse"
@@ -6228,7 +6223,6 @@ dependencies = [
  "gtk",
  "heck 0.5.0",
  "http 1.4.0",
- "http-range",
  "image",
  "jni",
  "libc",

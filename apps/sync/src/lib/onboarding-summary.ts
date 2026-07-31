@@ -4,6 +4,9 @@ export interface AiTools {
   codex_cli: boolean;
   codex_desktop: boolean;
   grok_cli: boolean;
+  claude_last_used_ms: number | null;
+  codex_last_used_ms: number | null;
+  grok_last_used_ms: number | null;
   any: boolean;
 }
 
@@ -13,10 +16,15 @@ export const NO_AI_TOOLS: AiTools = {
   codex_cli: false,
   codex_desktop: false,
   grok_cli: false,
+  claude_last_used_ms: null,
+  codex_last_used_ms: null,
+  grok_last_used_ms: null,
   any: false,
 };
 
 export type CliTool = 'claude' | 'codex' | 'grok';
+export type PrimaryLaunchKind = 'claude' | 'codex' | 'grok' | 'download';
+export interface PrimaryLaunch { kind: PrimaryLaunchKind; label: string }
 
 export type SummaryLaunchState =
   | { kind: 'checking'; label: string }
@@ -62,6 +70,23 @@ export function readyCommandFor(path: string | null, tools: AiTools | null): str
   const target = shellPath(path);
   if (cli) return `cd ${target} && ${cli}`;
   return `open ${target}`;
+}
+
+export function selectPrimaryLaunch(tools: AiTools | null): PrimaryLaunch {
+  // Keep the rendered label within the four supported outcomes while detection runs.
+  if (!tools) return { kind: 'download', label: 'Download Claude' };
+  const available = [
+    { kind: 'claude' as const, label: 'Open in Claude Code', available: tools.claude_cli || tools.claude_desktop, used: tools.claude_last_used_ms },
+    { kind: 'codex' as const, label: 'Open in Codex', available: tools.codex_cli || tools.codex_desktop, used: tools.codex_last_used_ms },
+    { kind: 'grok' as const, label: 'Open in Grok', available: tools.grok_cli, used: tools.grok_last_used_ms },
+  ].filter((tool) => tool.available);
+  if (!available.length) return { kind: 'download', label: 'Download Claude' };
+  const winner = available.reduce((winner, tool) =>
+    tool.used !== null && (winner.used === null || tool.used > winner.used)
+      ? tool
+      : winner,
+  );
+  return { kind: winner.kind, label: winner.label };
 }
 
 export function summaryLaunchState(tools: AiTools | null): SummaryLaunchState {

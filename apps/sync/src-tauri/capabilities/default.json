@@ -1,10 +1,12 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Default capability set for the HQ Sync menubar webview. The popover resizes itself as its notification content changes, and the onboarding handoff switches between the onboarding card and compact popover sizes, so core:window:allow-set-size is required for the main window.",
+  "description": "Default capability set for the HQ Sync menubar webview. The popover resizes itself as its notification content changes, and the onboarding handoff switches between the onboarding card and compact popover sizes, so core:window:allow-set-size is required for the main window. Onboarding invokes detect_ai_tools and filesystem-only detect_claude_ready through core:default; custom application commands do not require per-command capability tokens.",
   "windows": ["main"],
   "permissions": [
     "core:default",
+    "core:webview:allow-set-webview-zoom",
+    "core:app:allow-set-app-theme",
     "core:window:allow-close",
     "core:window:allow-minimize",
     "core:window:allow-set-focus",

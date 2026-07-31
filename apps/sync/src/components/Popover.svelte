@@ -5,6 +5,7 @@
   import { onMount, untrack } from 'svelte';
   import ConflictModal from './ConflictModal.svelte';
   import NotificationFeed from './NotificationFeed.svelte';
+  import NotificationActionRecovery from './NotificationActionRecovery.svelte';
   import CopyPromptButton from './CopyPromptButton.svelte';
   import OpenInClaudeCodeButton from './OpenInClaudeCodeButton.svelte';
   import { joinableMemberships, type Workspace } from '../lib/workspaces';
@@ -12,6 +13,7 @@
   import { isCorePath, CORE_SETUP_LABEL } from '../lib/progressLabel';
   import { sanitizeVisibleIdentifiers } from '../lib/visible-labels';
   import { safeUnlisten } from '../lib/listener-registry';
+  import { shouldUseNativePopoverMaterial } from '../lib/nativePopoverMaterial';
   import {
     POPOVER_MIN_HEIGHT,
     POPOVER_WIDTH,
@@ -20,6 +22,7 @@
     shouldResizePopoverWindow,
   } from '../lib/popover-window-size';
   import type { ConflictFile } from '../stores/conflicts';
+  import type { NativeNotificationRecovery } from '../lib/nativeNotificationRecovery';
 
   interface Config {
     configured: boolean;
@@ -51,13 +54,18 @@
     showConflictModal?: boolean;
     conflictCount?: number;
     conflictCompany?: string;
+    messagesUnreadCount?: number;
     updateAvailable?: { version: string; body?: string; date?: string } | null;
     updateInstalling?: boolean;
+    updateInstallError?: string | null;
+    notificationActionRecovery?: NativeNotificationRecovery | null;
+    notificationActionRetrying?: boolean;
     onsync: () => void;
     onresolve?: (path: string, strategy: 'keep-local' | 'keep-remote') => void;
     onopen?: (path: string) => void;
     ondismissconflicts?: () => void;
-    oninstallupdate?: () => void;
+    oninstallupdate?: () => void | Promise<void>;
+    onretrynotificationaction?: () => void | Promise<void>;
     bindStatsRefresh?: (fn: () => void) => void;
   }
 
@@ -92,13 +100,18 @@
     showConflictModal = false,
     conflictCount = 0,
     conflictCompany = '',
+    messagesUnreadCount = 0,
     updateAvailable = null,
     updateInstalling = false,
+    updateInstallError = null,
+    notificationActionRecovery = null,
+    notificationActionRetrying = false,
     onsync,
     onresolve,
     onopen,
     ondismissconflicts,
     oninstallupdate,
+    onretrynotificationaction,
     bindStatsRefresh,
   }: Props = $props();
 
@@ -106,11 +119,23 @@
   let popoverContentEl: HTMLElement | null = $state(null);
   let popoverMainContentEl: HTMLElement | null = $state(null);
   let opening = $state(false);
+  let openingDesktop = $state(false);
+  let openingMessages = $state(false);
+  let openingUpdates = $state(false);
+  let desktopOpenError = $state('');
+  let messagesOpenError = $state('');
+  let updatesOpenError = $state('');
   let openingTimer: number | null = null;
   let syncStatus = $state<SyncStatus | null>(null);
   let syncStatusLoading = $state(true);
   let syncStatusError = $state('');
   let lastWindowHeight = $state(0);
+  // AppKit/Windows own optical material in their native menubar windows.
+  // Browser previews and Linux retain the CSS filter below.
+  const nativeGlass = shouldUseNativePopoverMaterial(
+    typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window,
+    typeof navigator === 'undefined' ? '' : navigator.userAgent,
+  );
   const visibleCloudError = $derived(
     sanitizeVisibleIdentifiers(cloudError, { companies: workspaces ?? [] }),
   );
@@ -124,11 +149,45 @@
     feedEl?.markAllRead();
   }
 
-  async function openHQ() {
+  async function openDesktop() {
+    if (openingDesktop) return;
+    desktopOpenError = '';
+    openingDesktop = true;
     try {
-      await invoke('open_desktop_alt_window', { route: 'inbox' });
+      await invoke('open_desktop_alt_window');
     } catch (e) {
       console.error('popover: open_desktop_alt_window failed', e);
+      desktopOpenError = 'Couldn’t open the desktop.';
+    } finally {
+      openingDesktop = false;
+    }
+  }
+
+  async function openMessages() {
+    if (openingMessages) return;
+    messagesOpenError = '';
+    openingMessages = true;
+    try {
+      await invoke('open_communications_window');
+    } catch (e) {
+      console.error('popover: open communications failed', e);
+      messagesOpenError = 'Couldn’t open Messages.';
+    } finally {
+      openingMessages = false;
+    }
+  }
+
+  async function openUpdates() {
+    if (openingUpdates) return;
+    updatesOpenError = '';
+    openingUpdates = true;
+    try {
+      await invoke('open_desktop_alt_window', { route: 'settings:updates' });
+    } catch (e) {
+      console.error('popover: open updates failed', e);
+      updatesOpenError = 'Couldn’t open Updates.';
+    } finally {
+      openingUpdates = false;
     }
   }
 
@@ -391,7 +450,13 @@
   });
 </script>
 
-<div class="popover mbpop show" class:opening bind:this={popoverEl} data-testid="popover-root">
+<div
+  class="popover mbpop show"
+  class:opening
+  class:native-glass={nativeGlass}
+  bind:this={popoverEl}
+  data-testid="popover-root"
+>
   <div class="mbpop-content" bind:this={popoverContentEl}>
   <div class="mbp-main">
     <div class="mbp-main-content" bind:this={popoverMainContentEl}>
@@ -416,6 +481,68 @@
       </div>
     {/if}
 
+    <button
+      class="mbp-messages-entry"
+      type="button"
+      data-testid="popover-open-messages"
+      onclick={() => void openMessages()}
+      disabled={openingMessages}
+      aria-busy={openingMessages}
+      aria-label={`Open Messages, ${messagesUnreadCount} ${
+        messagesUnreadCount === 1 ? 'item' : 'items'
+      } need attention`}
+    >
+      <span class="mbp-messages-icon" aria-hidden="true">
+        <svg width="17" height="17" viewBox="0 0 20 20" fill="none">
+          <path
+            d="M4.25 4.5h11.5A1.75 1.75 0 0 1 17.5 6.25v6.5a1.75 1.75 0 0 1-1.75 1.75H9l-3.8 2.35.7-2.35H4.25a1.75 1.75 0 0 1-1.75-1.75v-6.5A1.75 1.75 0 0 1 4.25 4.5Z"
+            stroke="currentColor"
+            stroke-width="1.35"
+            stroke-linejoin="round"
+          />
+        </svg>
+      </span>
+      <span class="mbp-messages-copy">
+        <span class="mbp-messages-title">Messages</span>
+        <span class="mbp-messages-sub">
+          {messagesUnreadCount > 0
+            ? `${messagesUnreadCount} need attention`
+            : 'DMs, channels, requests, and shares'}
+        </span>
+      </span>
+      <span
+        class="mbp-messages-count"
+        aria-label={`${messagesUnreadCount} ${
+          messagesUnreadCount === 1 ? 'item' : 'items'
+        } need attention`}
+      >
+        {messagesUnreadCount > 99 ? '99+' : messagesUnreadCount}
+      </span>
+      <span class="mbp-messages-open" aria-hidden="true">
+        {openingMessages ? 'Opening…' : 'Open'}
+      </span>
+    </button>
+    {#if messagesOpenError}
+      <div class="popover-action-error" role="alert" data-testid="popover-messages-error">
+        <span>{messagesOpenError}</span>
+        <button
+          type="button"
+          onclick={() => void openMessages()}
+          disabled={openingMessages}
+          aria-busy={openingMessages}
+        >
+          {openingMessages ? 'Retrying…' : 'Retry'}
+        </button>
+      </div>
+    {/if}
+    {#if notificationActionRecovery && onretrynotificationaction}
+      <NotificationActionRecovery
+        message={notificationActionRecovery.message}
+        pending={notificationActionRetrying}
+        onretry={onretrynotificationaction}
+      />
+    {/if}
+
     <!-- Notifications panel body — slim label + unread count + Mark all read.
          System notices (conflict / update / membership / auth / errors) pin to
          the top as one-line rows in the same locked row design, then the data
@@ -435,13 +562,28 @@
           <button
             class="mbp-sec-action mbp-sec-action-primary"
             type="button"
-            data-testid="popover-open-hq"
-            onclick={() => void openHQ()}
+            data-testid="popover-open-desktop"
+            onclick={() => void openDesktop()}
+            disabled={openingDesktop}
+            aria-busy={openingDesktop}
           >
-            Open HQ
+            {openingDesktop ? 'Opening…' : 'Open desktop'}
           </button>
         </div>
       </div>
+      {#if desktopOpenError}
+        <div class="popover-action-error" role="alert" data-testid="popover-desktop-error">
+          <span>{desktopOpenError}</span>
+          <button
+            type="button"
+            onclick={() => void openDesktop()}
+            disabled={openingDesktop}
+            aria-busy={openingDesktop}
+          >
+            {openingDesktop ? 'Retrying…' : 'Retry'}
+          </button>
+        </div>
+      {/if}
 
       {#if conflictModalActive && onresolve && onopen && ondismissconflicts}
         <!-- Detailed conflict resolver keeps its own card; the lighter conflict
@@ -493,14 +635,50 @@
           <span class="snr-actions">
             <button
               type="button"
+              class="mbp-mini"
+              onclick={() => void openUpdates()}
+              disabled={openingUpdates}
+              aria-busy={openingUpdates}
+            >
+              {openingUpdates ? 'Opening…' : 'View updates'}
+            </button>
+            <button
+              type="button"
               class="mbp-mini primary"
-              onclick={oninstallupdate}
+              onclick={() => void oninstallupdate?.()}
               disabled={updateInstalling || !oninstallupdate}
+              aria-busy={updateInstalling}
             >
               {updateInstalling ? 'Installing…' : 'Install'}
             </button>
           </span>
         </div>
+        {#if updatesOpenError}
+          <div class="popover-action-error" role="alert" data-testid="popover-updates-error">
+            <span>{updatesOpenError}</span>
+            <button
+              type="button"
+              onclick={() => void openUpdates()}
+              disabled={openingUpdates}
+              aria-busy={openingUpdates}
+            >
+              {openingUpdates ? 'Retrying…' : 'Retry'}
+            </button>
+          </div>
+        {/if}
+        {#if updateInstallError}
+          <div class="popover-action-error" role="alert" data-testid="popover-install-error">
+            <span>{updateInstallError}</span>
+            <button
+              type="button"
+              onclick={() => void oninstallupdate?.()}
+              disabled={updateInstalling || !oninstallupdate}
+              aria-busy={updateInstalling}
+            >
+              {updateInstalling ? 'Retrying…' : 'Retry'}
+            </button>
+          </div>
+        {/if}
       {/if}
 
       {#if syncState === 'conflict' && !conflictModalActive}
@@ -594,6 +772,7 @@
       <NotificationFeed
         bind:this={feedEl}
         showDayLabels={false}
+        includeUpdates={!updateAvailable}
         hideEmptyState={hasSystemNotices}
         onunreadchange={(n) => (unreadCount = n)}
       />
@@ -645,12 +824,17 @@
   .mbpop {
     color: var(--pop-text);
     background: var(--pop-bg);
-    backdrop-filter: var(--glass-filter, blur(28px) saturate(0%));
-    -webkit-backdrop-filter: var(--glass-filter, blur(28px) saturate(0%));
+    backdrop-filter: var(--glass-filter, blur(36px) saturate(118%) contrast(102%));
+    -webkit-backdrop-filter: var(--glass-filter, blur(36px) saturate(118%) contrast(102%));
     border: 0.5px solid var(--pop-border);
     border-radius: var(--radius-popover);
     box-shadow: var(--pop-shadow), inset 0 1px 0 var(--pop-highlight);
     overflow: hidden;
+  }
+
+  .mbpop.native-glass {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
   }
 
   /* Windows: Mica/Acrylic is applied natively (window_effects). Keep an
@@ -735,11 +919,11 @@
   .snr {
     display: flex;
     align-items: center;
-    gap: 10px;
-    min-height: 30px;
-    padding: 0 11px;
+    gap: 8px;
+    min-height: 38px;
+    padding: 0 8px;
     border-radius: 0;
-    font-size: 12px;
+    font-size: 12.5px;
     color: var(--pop-text);
     transition: background-color 0.15s ease;
     box-sizing: border-box;
@@ -771,9 +955,15 @@
   .snr-text {
     flex: 1;
     min-width: 0;
-    white-space: nowrap;
+    display: -webkit-box;
+    padding: 7px 0;
+    line-height: 1.32;
+    white-space: normal;
     overflow: hidden;
     text-overflow: ellipsis;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
     font-weight: 450;
     color: var(--pop-text);
   }
@@ -807,8 +997,8 @@
   .mbp-status {
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 11px 14px 12px;
+    gap: 9px;
+    padding: 12px;
   }
 
   .mbp-status .gd {
@@ -837,14 +1027,14 @@
 
   .mbp-s1 {
     color: var(--pop-text);
-    font-size: 13px;
-    font-weight: 500;
+    font-size: 13.5px;
+    font-weight: 600;
     white-space: nowrap;
   }
 
   .mbp-s2 {
     color: var(--pop-muted);
-    font-size: 11px;
+    font-size: 11.5px;
     margin-left: auto;
     min-width: 0;
     overflow: hidden;
@@ -874,8 +1064,142 @@
     transition: width 0.25s ease-out;
   }
 
+  .mbp-messages-entry {
+    width: 100%;
+    min-height: 58px;
+    display: grid;
+    grid-template-columns: 20px minmax(0, 1fr) auto auto;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border: 0;
+    border-top: 0.5px solid var(--pop-divider);
+    border-radius: 0;
+    background: transparent;
+    color: var(--pop-text);
+    font-family: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition: background-color 0.14s ease, color 0.14s ease;
+  }
+
+  .mbp-messages-entry:hover,
+  .mbp-messages-entry:focus-visible {
+    background: var(--pop-hover);
+  }
+
+  .mbp-messages-entry:focus-visible {
+    outline: 1.5px solid var(--popover-focus-ring, var(--pop-accent));
+    outline-offset: -2px;
+  }
+
+  .mbp-messages-entry:disabled {
+    cursor: wait;
+  }
+
+  .mbp-messages-icon {
+    width: 20px;
+    height: 20px;
+    display: grid;
+    place-items: center;
+    color: var(--pop-muted);
+  }
+
+  .mbp-messages-copy {
+    min-width: 0;
+    display: grid;
+    gap: 2px;
+  }
+
+  .mbp-messages-title {
+    font-size: 13.5px;
+    font-weight: 650;
+    line-height: 1.2;
+  }
+
+  .mbp-messages-sub {
+    overflow: hidden;
+    color: var(--pop-muted);
+    font-size: 11.5px;
+    line-height: 1.25;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .mbp-messages-count {
+    min-width: 22px;
+    padding: 2px 6px;
+    border-radius: 999px;
+    background: var(--pop-hover);
+    color: var(--pop-text);
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1.3;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .mbp-messages-open {
+    min-width: 29px;
+    color: var(--pop-muted);
+    font-size: 11px;
+    font-weight: 600;
+    text-align: right;
+  }
+
+  .mbp-messages-entry[aria-busy='true'] .mbp-messages-icon {
+    animation: mbp-messages-pulse 0.8s ease-in-out infinite alternate;
+  }
+
+  .popover-action-error {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 27px;
+    padding: 2px 12px 5px;
+    color: var(--popover-danger);
+    font-size: 11px;
+    line-height: 1.3;
+  }
+
+  .popover-action-error span {
+    min-width: 0;
+    flex: 1;
+  }
+
+  .popover-action-error button {
+    flex: 0 0 auto;
+    padding: 2px 0;
+    border: 0;
+    background: transparent;
+    color: var(--pop-text);
+    font: inherit;
+    font-weight: 650;
+    cursor: pointer;
+  }
+
+  .popover-action-error button:disabled {
+    color: var(--pop-muted);
+    cursor: wait;
+  }
+
+  .popover-action-error button:focus-visible {
+    outline: 1.5px solid var(--popover-focus-ring, var(--pop-accent));
+    outline-offset: 2px;
+  }
+
+  @keyframes mbp-messages-pulse {
+    from {
+      opacity: 0.42;
+    }
+
+    to {
+      opacity: 1;
+    }
+  }
+
   .mbp-sec {
-    padding: 6px;
+    padding: 6px 3px;
     border-top: 0.5px solid var(--pop-divider);
   }
 
@@ -884,11 +1208,11 @@
     align-items: center;
     gap: 6px;
     color: var(--pop-muted);
-    font-size: 10px;
-    font-weight: 600;
-    letter-spacing: 0.5px;
+    font-size: 11px;
+    font-weight: 650;
+    letter-spacing: 0.45px;
     text-transform: uppercase;
-    padding: 6px 8px 4px;
+    padding: 7px 4px 5px;
   }
 
   .mbp-unread-count {
@@ -932,8 +1256,8 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 6px;
-    padding-right: 8px;
+    gap: 5px;
+    padding: 0 4px 3px;
   }
 
   .mbp-sec-actions {
@@ -945,12 +1269,12 @@
 
   .mbp-sec-action {
     border: 0;
-    padding: 2px 6px;
+    padding: 3px 5px;
     border-radius: 6px;
     background: transparent;
     color: var(--pop-muted);
     font-family: inherit;
-    font-size: 10.5px;
+    font-size: 11px;
     font-weight: 600;
     cursor: pointer;
   }
@@ -971,5 +1295,41 @@
   .mbp-sec-action:focus-visible {
     outline: 1.5px solid var(--popover-focus-ring, var(--pop-accent));
     outline-offset: var(--popover-focus-offset, 2px);
+  }
+
+  /* The native popover is intentionally narrow. Preserve actor, message, and
+     timestamp hierarchy instead of spending the text lane on a second type
+     label that is already communicated by the row icon. */
+  .mbp-sec :global(.nr) {
+    min-height: 38px;
+    padding: 0 8px;
+    font-size: 12.5px;
+  }
+
+  .mbp-sec :global(.nr-primary-action),
+  .mbp-sec :global(.nr-primary-content) {
+    min-height: 38px;
+    gap: 8px;
+  }
+
+  .mbp-sec :global(.nr-meta-type) {
+    display: none;
+  }
+
+  .mbp-sec :global(.nr-actor-pill) {
+    max-width: min(12ch, 40%);
+    padding-inline: 5px;
+  }
+
+  .mbp-sec :global(.nr-ts) {
+    font-size: 11px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .mbp-messages-entry,
+    .mbp-messages-entry[aria-busy='true'] .mbp-messages-icon {
+      animation: none;
+      transition: none;
+    }
   }
 </style>
