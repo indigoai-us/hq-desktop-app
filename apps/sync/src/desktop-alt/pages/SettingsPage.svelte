@@ -272,6 +272,23 @@
   let hqCliCmdCopying = $state(false);
   let hqCliCmdCopyError = $state<string | null>(null);
 
+  // Marker the Rust updater puts on a "npm exited 0 but the CLI the app runs
+  // never changed" failure (`NON_CONVERGENT_ERROR_PREFIX`). It needs opposite
+  // handling from an ordinary npm failure: the install command is exactly what
+  // was just proven unable to replace the selected CLI, so re-offering it would
+  // send the user around the same loop. Show the backend's remedy instead.
+  const HQ_CLI_NON_CONVERGENT_PREFIX = 'hq-cli-update/non-convergent: ';
+  const hqCliNonConvergent = $derived(
+    hqCliUpdateErrorContext === 'install' &&
+      !!hqCliUpdateError?.includes(HQ_CLI_NON_CONVERGENT_PREFIX),
+  );
+  const hqCliNonConvergentMessage = $derived(
+    hqCliUpdateError?.slice(
+      (hqCliUpdateError?.indexOf(HQ_CLI_NON_CONVERGENT_PREFIX) ?? 0) +
+        HQ_CLI_NON_CONVERGENT_PREFIX.length,
+    ) ?? '',
+  );
+
   // Pack update notice — loaded via check_pack_update; hide when count is 0/null.
   let packUpdate = $state<{ count: number; names: string[] } | null>(null);
   let packsUpdating = $state(false);
@@ -379,6 +396,12 @@
     if (hqCliDismissing) return 'Dismissing update…';
     if (hqCliUpdateError) {
       if (hqCliUpdateErrorContext === 'install') {
+        // A non-convergent install carries its own remedy (which `hq` the app
+        // resolves, and that it must be updated with the tool that installed
+        // it). That text is the only place the user can learn why the update
+        // "succeeded" and changed nothing, so it must not be replaced by the
+        // generic copy-the-command line.
+        if (hqCliNonConvergent) return hqCliNonConvergentMessage;
         return 'Update failed. Try again or copy the install command.';
       }
       if (hqCliUpdateErrorContext === 'dismiss') {
@@ -1993,7 +2016,7 @@
                 {hqCliInstalling ? 'Installing…' : `Update to v${hqCliUpdate.latest}`}
               </button>
             {/if}
-            {#if !hqCliVersion || hqCliUpdateError}
+            {#if (!hqCliVersion || hqCliUpdateError) && !hqCliNonConvergent}
               <button
                 type="button"
                 class="row-button"
