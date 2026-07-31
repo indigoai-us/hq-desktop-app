@@ -70,6 +70,20 @@ fn install_failure_capture_is_suppressed_or_tagged_after_the_real_scrubber() {
         event.tags
     );
 
+    let unstructured_permission = "npm error syscall open\n\
+        npm error path /Users/alice/project/.cache/hq\n\
+        npm error Error: permission denied, open '/Users/alice/project/.cache/hq'";
+    let events = captured_events(|| report_install_failure(Some(1), unstructured_permission, None));
+    assert_eq!(events.len(), 1);
+    assert_eq!(
+        events[0].tags.get("eacces").map(String::as_str),
+        Some("true")
+    );
+    assert_eq!(
+        events[0].tags.get("npm_error_code").map(String::as_str),
+        Some("unknown")
+    );
+
     let network = "npm error code ECONNRESET\nnpm error network request reset";
     let events = captured_events(|| report_install_failure(Some(1), network, None));
     assert_eq!(events.len(), 1);

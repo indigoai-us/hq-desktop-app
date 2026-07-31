@@ -703,7 +703,13 @@ fn npm_path_shape(detail: &str, prefix: Option<&str>) -> NpmPathShape {
         }
     }
 
-    if path.contains("/lib/node_modules") || path.contains("/node_modules/@indigoai-us") {
+    if [
+        "/lib/node_modules/@indigoai-us",
+        "/node_modules/@indigoai-us",
+    ]
+    .iter()
+    .any(|target| path.ends_with(target) || path.contains(&format!("{target}/hq-cli")))
+    {
         NpmPathShape::GlobalLibNodeModules
     } else if path.ends_with("/bin/hq") || path.ends_with("/hq.cmd") {
         NpmPathShape::BinHq
@@ -749,17 +755,20 @@ fn npm_syscall(detail: &str) -> &'static str {
     }
 }
 
+fn has_eacces_evidence(detail: &str) -> bool {
+    let detail = detail.to_ascii_lowercase();
+    detail.contains("eacces")
+        || detail.contains("permission denied")
+        || detail.contains("errno -13")
+}
+
 /// Detect the expected local permission failure when no managed npm prefix can
 /// be derived. In that path npm falls back to its own global prefix, so we
 /// cannot compare against a selected directory. Keep the fallback narrow: it
 /// requires permission evidence plus an npm global-install target and never
 /// suppresses cache or unrelated-path failures.
-pub fn is_global_prefix_permission_failure(exit_code: Option<i32>, detail: &str) -> bool {
-    let detail_lower = detail.to_ascii_lowercase();
-    let permission_shaped = detail_lower.contains("eacces")
-        || detail_lower.contains("permission denied")
-        || exit_code == Some(243);
-    permission_shaped
+pub fn is_global_prefix_permission_failure(_exit_code: Option<i32>, detail: &str) -> bool {
+    has_eacces_evidence(detail)
         && matches!(
             npm_path_shape(detail, None),
             NpmPathShape::GlobalLibNodeModules | NpmPathShape::BinHq
@@ -929,7 +938,7 @@ pub fn report_install_failure(exit_code: Option<i32>, detail: &str, prefix: Opti
         .map(|c| c.to_string())
         .unwrap_or_else(|| "signal/none".to_string());
     let eacces =
-        npm_error_code(detail) == "EACCES" || kind == InstallFailureKind::ExpectedPrefixPermission;
+        has_eacces_evidence(detail) || kind == InstallFailureKind::ExpectedPrefixPermission;
     let npm_path_shape = npm_path_shape(detail, prefix);
     let npm_stderr_len = detail.len().to_string();
     sentry::with_scope(
@@ -1498,6 +1507,7 @@ mod tests {
         for detail in [
             "npm error code EACCES\nnpm error path /Users/me/.npm/_cacache/index-v5",
             "npm error code EACCES\nnpm error path /Users/me/project/node_modules/other-package",
+            "npm error code EACCES\nnpm error path /Users/me/project/lib/node_modules/unrelated-package",
         ] {
             assert_eq!(
                 classify_install_failure(Some(243), detail, None),
@@ -1526,6 +1536,16 @@ mod tests {
     #[test]
     fn exit_243_without_a_global_install_path_does_not_suppress() {
         let detail = "npm error code EACCES\nnpm error path /Users/me/project/.cache/hq";
+        assert!(!is_global_prefix_permission_failure(Some(243), detail));
+        assert_eq!(
+            classify_install_failure(Some(243), detail, None),
+            InstallFailureKind::Unexpected
+        );
+    }
+
+    #[test]
+    fn exit_243_without_permission_evidence_at_a_global_path_stays_loud() {
+        let detail = "npm error code 243\nnpm error path /usr/local/lib/node_modules/@indigoai-us";
         assert!(!is_global_prefix_permission_failure(Some(243), detail));
         assert_eq!(
             classify_install_failure(Some(243), detail, None),
@@ -1581,6 +1601,9 @@ mod tests {
         );
         assert_eq!(npm_error_code("npm error code EWHATEVER"), "unknown");
         assert_eq!(npm_syscall("npm error syscall chmod"), "unknown");
+        assert!(has_eacces_evidence("npm error Error: permission denied"));
+        assert!(has_eacces_evidence("npm error errno -13"));
+        assert!(!has_eacces_evidence("npm error code ECONNRESET"));
     }
 
     #[test]
