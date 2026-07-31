@@ -53,7 +53,8 @@ describe('DESKTOP-002: unified messages and notification triage', () => {
     expect(shell).toContain('function channelActivityAt');
     expect(shell).toContain('function formatChannelTime');
     expect(shell).toContain('<time class="contact-time" datetime={activityAt ?? undefined}>');
-    expect(shell).toContain("{#if isGroupDm}");
+    expect(shell).toContain("kind={isGroupDm ? 'group' : 'channel'}");
+    expect(shell).toContain('label={channelDisplayName(ch)}');
     expect(shell).toContain("selectedChannel.scope === 'group'");
     expect(shell).toContain('aria-current={isActive ? \'page\' : undefined}');
     expect(shell).toContain('aria-busy={isActive && loadingThread}');

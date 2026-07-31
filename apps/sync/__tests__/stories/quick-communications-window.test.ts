@@ -53,12 +53,14 @@ describe('quick communications window hierarchy', () => {
     expect(detail).toContain("{openingFullView ? 'Opening…' : 'Open full view'}");
   });
 
-  it('merges messages and channels into one flat activity-sorted conversation rail', () => {
+  it('merges messages and channels into an activity-sorted, searchable room rail', () => {
     expect(sidePane).toContain("invoke<ChannelsResponse | null>('list_channels')");
     expect(sidePane).toContain('onselectchannel?: (channel: Channel) => void');
     expect(sidePane).toContain('selectedChannelId?: string | null');
     expect(sidePane).toContain("channel.scope === 'group'");
-    expect(sidePane).toContain("channelAvatar(channel)");
+    expect(sidePane).toContain('kind="group"');
+    expect(sidePane).toContain('kind="channel"');
+    expect(sidePane).toContain('members={(channel.members ?? []).map');
     expect(sidePane).toContain('channel.unread');
     expect(sidePane).toContain("'other' : 'others'");
     expect(sidePane).toContain('data-testid="quick-channel-row"');
@@ -73,6 +75,8 @@ describe('quick communications window hierarchy', () => {
     expect(sidePane).not.toContain('aria-labelledby="quick-conversations-label"');
     expect(sidePane).toContain('id="quick-conversations-label">Direct messages');
     expect(sidePane).toContain('<div class="qw-side-label">Channels</div>');
+    expect(sidePane).toContain('placeholder="Find a conversation"');
+    expect(sidePane).toContain('filteredDirectEntries');
     expect(sidePane).not.toContain('sourceLabel=');
     expect(sidePane).not.toContain('text={row.latest');
     expect(sidePane).not.toMatch(/\.conversation-row\s*\{[\s\S]*?border-left:/);

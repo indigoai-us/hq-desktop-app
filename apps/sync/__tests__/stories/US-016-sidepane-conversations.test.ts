@@ -128,7 +128,8 @@ describe('US-016: side pane conversation grouping', () => {
       );
       // Selecting a row hands the whole conversation to the main pane.
       expect(paneSource).toContain('onclick={() => onselect(row.latest, row.ids, row.items)}');
-      expect(paneSource).toContain('class:agent-avatar={row.agent}');
+      expect(paneSource).toContain("kind={row.agent ? 'agent' : 'person'}");
+      expect(paneSource).toContain('IdentityMark');
       expect(paneSource).toContain('data-kind={row.kind}');
       expect(paneSource).toContain('id="quick-conversations-label">Direct messages');
       expect(paneSource).toContain('<div class="qw-side-label">Channels</div>');
