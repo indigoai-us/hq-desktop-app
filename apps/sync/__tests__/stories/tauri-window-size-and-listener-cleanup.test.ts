@@ -12,6 +12,7 @@ const mainCapability = JSON.parse(
 ) as { windows: string[]; permissions: string[] };
 const popover = readFileSync(root('src/components/Popover.svelte'), 'utf8');
 const onboarding = readFileSync(root('src/components/Onboarding.svelte'), 'utf8');
+const nativeMain = readFileSync(root('src-tauri/src/main.rs'), 'utf8');
 const app = readFileSync(root('src/App.svelte'), 'utf8');
 const listenerRegistry = readFileSync(root('src/lib/listener-registry.ts'), 'utf8');
 
@@ -23,8 +24,16 @@ describe('HQ-DESKTOP-38: main-window resize ACL', () => {
 
   it('keeps the permission paired with the legitimate resize callers', () => {
     expect(popover).toContain('getCurrentWindow().setSize');
-    expect(onboarding).toContain('win.setSize(ONBOARDING_SIZE)');
+    expect(onboarding).toContain('win.setSize(await responsiveOnboardingSize())');
     expect(onboarding).toContain('win.setSize(POPOVER_SIZE)');
+  });
+
+  it('caps first-run onboarding to the active monitor work area on every platform', () => {
+    expect(onboarding).toContain('currentMonitor()');
+    expect(onboarding).toContain('monitor.workArea.size.toLogical(monitor.scaleFactor)');
+    expect(nativeMain).toContain('current_monitor()');
+    expect(nativeMain).toContain('monitor.work_area()');
+    expect(nativeMain).toContain('.clamp(420.0, 620.0)');
   });
 });
 

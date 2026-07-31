@@ -766,7 +766,22 @@ fn main() {
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             if let Some(window) = app.get_webview_window("main") {
                 if first_run {
-                    let _ = window.set_size(tauri::LogicalSize::new(780.0_f64, 620.0_f64));
+                    let onboarding_size = window
+                        .current_monitor()
+                        .ok()
+                        .flatten()
+                        .map(|monitor| {
+                            let work_area = monitor.work_area();
+                            let scale = monitor.scale_factor();
+                            tauri::LogicalSize::new(
+                                ((work_area.size.width as f64 / scale) - 32.0)
+                                    .clamp(360.0, 780.0),
+                                ((work_area.size.height as f64 / scale) - 32.0)
+                                    .clamp(420.0, 620.0),
+                            )
+                        })
+                        .unwrap_or_else(|| tauri::LogicalSize::new(780.0, 620.0));
+                    let _ = window.set_size(onboarding_size);
                     let _ = window.set_shadow(false);
                     hq_platform::window_effects::clear_popover_vibrancy(&window);
                     let _ = window.center();

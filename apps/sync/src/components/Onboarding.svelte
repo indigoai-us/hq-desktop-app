@@ -1,6 +1,6 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
-  import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
+  import { currentMonitor, getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
   import { onDestroy, onMount } from 'svelte';
   import { initialStepForLifecycle, CONSENT_STEP_INDEX } from '../lib/onboarding-wizard';
   import OnboardingWizard from './onboarding/OnboardingWizard.svelte';
@@ -35,6 +35,20 @@
   const ONBOARDING_SIZE = new LogicalSize(780, 620);
   const POPOVER_SIZE = new LogicalSize(296, 360);
 
+  async function responsiveOnboardingSize(): Promise<LogicalSize> {
+    try {
+      const monitor = await currentMonitor();
+      if (!monitor) return ONBOARDING_SIZE;
+      const workArea = monitor.workArea.size.toLogical(monitor.scaleFactor);
+      return new LogicalSize(
+        Math.max(360, Math.min(ONBOARDING_SIZE.width, workArea.width - 32)),
+        Math.max(420, Math.min(ONBOARDING_SIZE.height, workArea.height - 32)),
+      );
+    } catch {
+      return ONBOARDING_SIZE;
+    }
+  }
+
   let initialStep = $state(0);
   let activeLifecycleState = $state<string | null>(null);
 
@@ -54,7 +68,7 @@
       // Drop the native window shadow so only the card's own CSS shadow shows —
       // otherwise the transparent window's shadow traces a rectangle on the desktop.
       await win.setShadow(false).catch(() => {});
-      await win.setSize(ONBOARDING_SIZE);
+      await win.setSize(await responsiveOnboardingSize());
       await win.center();
     } catch {
       // Non-Tauri / test environment.

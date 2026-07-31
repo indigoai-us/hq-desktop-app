@@ -110,17 +110,21 @@ describe('DESKTOP-017: auxiliary desktop surfaces', () => {
     expect(harness).toContain('<GlobalErrorBoundary');
   });
 
-  it('desaturates the onboarding hero instead of retaining the blue-pink artwork tint', () => {
+  it('keeps onboarding artwork in color and every panel reachable on short displays', () => {
     const hero = rule(onboarding, '.grad');
     expect(hero, 'onboarding hero selector should exist').not.toBe('');
-    expect(hero).toContain('filter:grayscale(1) saturate(0%)');
+    expect(hero).toContain('filter:none');
 
-    expect(rule(onboarding, '.macfolder-lg')).toContain(
-      'filter:grayscale(1) saturate(0%)',
-    );
-    expect(rule(onboarding, '.loc .mf')).toContain(
-      'filter:grayscale(1) saturate(0%)',
-    );
+    expect(rule(onboarding, '.macfolder-lg')).not.toContain('grayscale');
+    expect(rule(onboarding, '.loc .mf')).toContain('filter:none');
+
+    const page = rule(onboarding, '.onboarding-page');
+    expect(page).toContain('height:100dvh');
+    expect(page).toContain('overflow:auto');
+
+    const panel = rule(onboarding, '.panel');
+    expect(panel).toContain('overflow-y:auto');
+    expect(panel).toContain('overscroll-behavior:contain');
   });
 
   it('keeps the ready-step caution open and neutral while retaining its compact warning cue', () => {

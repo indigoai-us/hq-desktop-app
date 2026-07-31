@@ -2140,9 +2140,10 @@
     justify-content:center;
     gap:26px;
     width:100vw;
-    height:100vh;
-    min-height:100vh;
-    overflow:hidden;
+    height:100dvh;
+    min-height:0;
+    padding:24px;
+    overflow:auto;
     background: transparent;
     color:var(--c-text);
     font-family:var(--font-sans);
@@ -2156,11 +2157,11 @@
   }
 
   .sr-only { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); }
-  .scaler { transform:scale(1); transform-origin:center; }
+  .scaler { width:min(640px, calc(100vw - 48px)); height:min(520px, calc(100dvh - 48px)); flex:0 0 auto; transform:scale(1); transform-origin:center; }
   /* The onboarding card floats in a transparent window with a small margin, so
      use a shadow tuned to fit that margin (tighter than the generic
      --shadow-window-* tokens, which would clip at the window edge). */
-  .window { width:640px; height:460px; border-radius:var(--radius-card); overflow:hidden; background:var(--c-bg); box-shadow:0 18px 50px rgba(0,0,0,0.24), 0 2px 8px rgba(0,0,0,0.10); position:relative; --toph:200px; }
+  .window { width:100%; height:100%; border-radius:var(--radius-card); overflow:hidden; background:var(--c-bg); box-shadow:0 18px 50px rgba(0,0,0,0.24), 0 2px 8px rgba(0,0,0,0.10); position:relative; --toph:200px; }
 
   @media (prefers-color-scheme: dark) {
     .window { box-shadow:0 24px 60px rgba(0,0,0,0.58), 0 0 0 0.5px rgba(255,255,255,0.14); }
@@ -2169,7 +2170,7 @@
   :global(.dark) .window { box-shadow:0 24px 60px rgba(0,0,0,0.58), 0 0 0 0.5px rgba(255,255,255,0.14); }
 
   .drag-strip { position:absolute; top:0; left:0; right:0; height:28px; z-index:8; }
-  .grad { position:absolute; top:0; left:0; right:0; height:var(--toph); background:#9c9c9c var(--onboarding-bg-url) center/cover no-repeat; filter:grayscale(1) saturate(0%); transition:height .55s cubic-bezier(.65,0,.35,1); z-index:0; }
+  .grad { position:absolute; top:0; left:0; right:0; height:var(--toph); background:#9c9c9c var(--onboarding-bg-url) center/cover no-repeat; filter:none; transition:height .55s cubic-bezier(.65,0,.35,1); z-index:0; }
   .gfxwrap { position:absolute; top:0; left:0; right:0; height:var(--toph); overflow:hidden; z-index:1; transition:height .55s cubic-bezier(.65,0,.35,1); }
   .gfx { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; opacity:0; pointer-events:none; transition:opacity .3s ease, transform .45s cubic-bezier(.4,0,.2,1); color:#fff; }
   .gfx.on { opacity:1; pointer-events:auto; transform:translateX(0); }
@@ -2180,7 +2181,7 @@
   .gfx.out-left { opacity:0; transform:translateX(-70px); }
   .gfx.out-right { opacity:0; transform:translateX(70px); }
   .panelwrap { position:absolute; left:0; right:0; bottom:0; top:var(--toph); background:var(--c-bg); border-top:1px solid rgba(0,0,0,0.05); overflow:hidden; transition:top .55s cubic-bezier(.65,0,.35,1); z-index:2; }
-  .panel { position:absolute; inset:0; padding:24px; display:flex; flex-direction:column; opacity:0; pointer-events:none; transition:opacity .3s ease; }
+  .panel { position:absolute; inset:0; padding:24px; display:flex; flex-direction:column; overflow-y:auto; overscroll-behavior:contain; scrollbar-gutter:stable; opacity:0; pointer-events:none; transition:opacity .3s ease; }
   .panel.on { opacity:1; pointer-events:auto; }
 
   .h { color:var(--c-text); font-size:24px; font-weight:600; line-height:32px; margin:0; letter-spacing:-1px; }
@@ -2278,9 +2279,9 @@
   .logo svg { width:120px; height:auto; display:block; color:#fff; }
   .finder-item { display:flex; flex-direction:column; align-items:center; gap:2px; }
   .finder-item .flabel { color:#fff; font-size:15px; font-weight:500; line-height:18px; padding:1.5px 7px; letter-spacing:-0.1px; text-shadow:0 1px 3px rgba(0,0,0,0.35); }
-  .macfolder-lg { width:90px; height:90px; object-fit:contain; display:block; filter:grayscale(1) saturate(0%) drop-shadow(0 5px 11px rgba(0,0,0,0.22)); }
+  .macfolder-lg { width:90px; height:90px; object-fit:contain; display:block; filter:drop-shadow(0 5px 11px rgba(0,0,0,0.22)); }
   .loc { display:flex; align-items:center; gap:12px; background:var(--c-field-bg); border:0.5px solid var(--c-field-border); border-radius:10px; padding:12px 14px; margin-top:18px; }
-  .loc .mf { width:40px; height:40px; object-fit:contain; flex-shrink:0; display:block; filter:grayscale(1) saturate(0%); }
+  .loc .mf { width:40px; height:40px; object-fit:contain; flex-shrink:0; display:block; filter:none; }
   .loc .grow { flex:1; min-width:0; }
   .loc .lt { color:var(--c-text); font-size:14px; font-weight:600; line-height:18px; }
   .loc .lb { color:var(--c-muted); font-size:12px; line-height:16px; margin-top:1px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
