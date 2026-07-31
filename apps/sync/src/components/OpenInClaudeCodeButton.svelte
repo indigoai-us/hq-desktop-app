@@ -2,6 +2,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { buildPrompt, type Issue } from '../lib/copy-prompts';
   import { buildClaudeCodeUrl } from '../lib/claude-code-link';
+  import { buildClaudePromptWithSkillCatalog } from '../lib/skill-catalog-prompt';
 
   interface Props {
     /** Issue descriptor — the same shape `CopyPromptButton` accepts. The
@@ -36,7 +37,15 @@
   async function dispatch() {
     if (dispatching) return;
     dispatching = true;
-    const prompt = buildPrompt(issue);
+    const basePrompt = buildPrompt(issue);
+    let companySlug: string | null = null;
+    try {
+      const cfg = await invoke<{ companySlug?: string | null }>('get_config');
+      companySlug = cfg?.companySlug ?? null;
+    } catch {
+      // Non-fatal — catalog falls back to root/package skills only.
+    }
+    const prompt = await buildClaudePromptWithSkillCatalog(basePrompt, companySlug);
     const url = buildClaudeCodeUrl({ folder, prompt });
     dispatchError = null;
     copiedFallback = false;
