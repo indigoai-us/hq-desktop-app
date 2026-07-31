@@ -24,12 +24,14 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 
+use hq_desktop_core::scope_gate::enforce_read_scope;
+
 #[cfg(target_os = "macos")]
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use base64::Engine as _;
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use hq_desktop_core::desktop_alt::company_slug_for_hq_path;
 #[allow(unused_imports)]
@@ -66,6 +68,55 @@ use crate::util::client_info::build_client;
 
 const WINDOW_LABEL: &str = "desktop-alt";
 const HQ_DEPLOY_API_BASE: &str = "https://api.indigo-hq.com";
+
+/// Desktop session scope — mirrors CLI session `company_slug` binding for read gates.
+pub struct DesktopSessionScope {
+    pub active_company: Mutex<Option<String>>,
+}
+
+impl DesktopSessionScope {
+    pub fn new() -> Self {
+        Self {
+            active_company: Mutex::new(None),
+        }
+    }
+
+    fn active_company_slug(&self) -> Option<String> {
+        self.active_company.lock().ok()?.clone()
+    }
+}
+
+#[tauri::command]
+pub fn set_desktop_active_company(
+    company_slug: Option<String>,
+    scope: State<'_, DesktopSessionScope>,
+) -> Result<(), String> {
+    let normalized = company_slug
+        .map(|slug| slug.trim().to_string())
+        .filter(|slug| !slug.is_empty());
+    if let Some(slug) = &normalized {
+        if !slug.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_') {
+            return Err(format!("invalid company_slug: {slug:?}"));
+        }
+    }
+    *scope
+        .active_company
+        .lock()
+        .map_err(|_| "desktop session scope lock poisoned".to_string())? = normalized;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_desktop_active_company(scope: State<'_, DesktopSessionScope>) -> Result<Option<String>, String> {
+    Ok(scope.active_company_slug())
+}
+
+fn enforce_desktop_read_scope(
+    rel_path: &str,
+    scope: &DesktopSessionScope,
+) -> Result<(), String> {
+    enforce_read_scope(rel_path, scope.active_company_slug().as_deref())
+}
 
 #[tauri::command]
 pub async fn desktop_alt_enabled() -> Result<bool, String> {
@@ -1019,12 +1070,16 @@ pub async fn get_company_file_tree(slug: String) -> Result<FileNode, String> {
 /// oversized file never gets loaded into memory. Binary (non-UTF-8) files
 /// return a clear "cannot preview binary file" error rather than mojibake.
 #[tauri::command]
-pub async fn get_company_file_content(path: String) -> Result<String, String> {
+pub async fn get_company_file_content(
+    path: String,
+    scope: State<'_, DesktopSessionScope>,
+) -> Result<String, String> {
     if !crate::util::feature_gate::desktop_features_enabled().await {
         return Err("file explorer requires a signed-in user".to_string());
     }
     let target = resolve_authorized_file_target(&path).await?;
     let target = revalidate_authorized_file_target(&target).await?;
+    enforce_desktop_read_scope(&target.relative_path, &scope)?;
     read_file_content(&target.hq_root, &target.relative_path)
 }
 
@@ -1032,12 +1087,16 @@ pub async fn get_company_file_content(path: String) -> Result<String, String> {
 /// HQ-relative path natively. The renderer receives bytes, never a filesystem
 /// path or a wildcard asset-protocol URL.
 #[tauri::command]
-pub async fn get_authorized_file_preview(path: String) -> Result<AuthorizedFilePreview, String> {
+pub async fn get_authorized_file_preview(
+    path: String,
+    scope: State<'_, DesktopSessionScope>,
+) -> Result<AuthorizedFilePreview, String> {
     if !crate::util::feature_gate::desktop_features_enabled().await {
         return Err("file explorer requires a signed-in user".to_string());
     }
     let target = resolve_authorized_file_target(&path).await?;
     let target = revalidate_authorized_file_target(&target).await?;
+    enforce_desktop_read_scope(&target.relative_path, &scope)?;
     let mime_type = preview_mime_type(&target.relative_path)
         .ok_or_else(|| "this file type cannot be previewed safely".to_string())?;
     let bytes = read_file_bytes_capped(
@@ -1089,11 +1148,15 @@ pub async fn open_authorized_file_in_claude(path: String) -> Result<(), String> 
 /// absolute escapes. Returns only immediate children (no recursion), sorted
 /// directories-before-files then case-insensitive alphabetical.
 #[tauri::command]
-pub async fn list_hq_dir(rel_path: String) -> Result<Vec<DirEntry>, String> {
+pub async fn list_hq_dir(
+    rel_path: String,
+    scope: State<'_, DesktopSessionScope>,
+) -> Result<Vec<DirEntry>, String> {
     if !crate::util::feature_gate::desktop_features_enabled().await {
         return Err("file explorer requires a signed-in user".to_string());
     }
     let normalized = validate_hq_relative_path(&rel_path, true)?;
+    enforce_desktop_read_scope(&normalized, &scope)?;
     let lexical_company = company_slug_for_hq_path(&normalized)?;
     let needs_company_hydration = normalized == "companies" || lexical_company.is_some();
     let (hq, workspaces) = if needs_company_hydration {

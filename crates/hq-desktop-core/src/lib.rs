@@ -5,6 +5,7 @@
 pub mod activity;
 pub mod agency;
 pub mod banner;
+pub mod claude_launch;
 pub mod client_info;
 pub mod cognito;
 pub mod config;
@@ -40,8 +41,10 @@ pub mod recall_sdk;
 pub mod recordings_ledger;
 pub mod release_channel;
 pub mod run_cli_provision;
+pub mod scope_gate;
 pub mod sessions;
 pub mod settings;
+pub mod skill_catalog;
 pub mod share_notify;
 pub mod staging;
 pub mod status;

@@ -531,6 +531,8 @@ fn main() {
             commands::meetings::meetings_feature_enabled,
             commands::desktop_alt::desktop_alt_enabled,
             commands::desktop_alt::desktop_alt_is_admin,
+            commands::desktop_alt::set_desktop_active_company,
+            commands::desktop_alt::get_desktop_active_company,
             commands::desktop_alt::get_company_summary,
             commands::desktop_alt::get_company_board,
             commands::desktop_alt::get_company_project_creators,
@@ -556,6 +558,7 @@ fn main() {
             commands::library_local::get_library_company,
             commands::library_local::get_library_worker_detail,
             commands::library_local::get_library_skill_detail,
+            commands::library_local::export_skill_catalog,
             commands::marketplace::list_marketplace_listings,
             commands::marketplace::get_marketplace_listing,
             commands::marketplace::install_marketplace_pack,
@@ -690,6 +693,7 @@ fn main() {
             commands::compat::open_developer_settings,
         ])
         .setup(|app| {
+            app.manage(commands::desktop_alt::DesktopSessionScope::new());
             // Classify this launch (FirstRun / ExistingUpdate / Normal) and
             // cache it in managed state. MUST run before anything that can
             // write `machineId` to menubar.json (sync, telemetry, the

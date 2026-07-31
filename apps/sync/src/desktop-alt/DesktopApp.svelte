@@ -303,6 +303,11 @@
       activeCompanySyncEnabled ? polledCompanyResource : null,
     );
   });
+  $effect(() => {
+    void invoke('set_desktop_active_company', {
+      companySlug: activeCompanySyncEnabled ? activeCompany?.slug ?? null : null,
+    });
+  });
   // Files mode (US-009): the active company + selected file live IN THE ROUTE,
   // so they survive a reload (persisted below) and reactive updates don't
   // remount the shell (routeKey is 'files' regardless of slug/path).
