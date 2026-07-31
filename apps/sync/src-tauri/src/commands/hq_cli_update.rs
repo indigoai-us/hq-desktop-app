@@ -71,11 +71,11 @@ pub use hq_desktop_core::hq_cli_update::{
     install_failure_detail, install_failure_report, is_cli_update_dismissed,
     is_prefix_permission_failure, is_windows_locked_binary_failure, non_convergent_cli_version,
     non_convergent_detail, npm_prefix_from_hq_bin, read_installed_version, redact_home,
-    redact_home_in, report_install_failure, report_npm_cache_setup_failure,
-    report_non_convergent_install, report_unreadable_version, resolved_hq_version,
-    should_auto_install, suppress_for_dismissal,
-    version_from_hq_binary, version_if_hq_cli, HqCliUpdateInfo, InstallFailureKind, NpmLatest,
-    DISMISSED_VERSION_KEY, HQ_CLI_PACKAGE, NON_CONVERGENT_ERROR_PREFIX, NON_CONVERGENT_VERSION_KEY,
+    redact_home_in, report_install_failure, report_non_convergent_install,
+    report_npm_cache_setup_failure, report_unreadable_version, resolved_hq_version,
+    should_auto_install, suppress_for_dismissal, version_from_hq_binary, version_if_hq_cli,
+    HqCliUpdateInfo, InstallFailureKind, NpmLatest, DISMISSED_VERSION_KEY, HQ_CLI_PACKAGE,
+    NON_CONVERGENT_ERROR_PREFIX, NON_CONVERGENT_VERSION_KEY,
 };
 
 /// npm registry endpoint that returns the dist-tag `latest` manifest. Cheap,
@@ -390,8 +390,7 @@ fn npm_install_command(
 /// changes ownership of the user's existing npm cache.
 fn prepare_app_npm_cache(app_cache_dir: PathBuf) -> Result<PathBuf, String> {
     let npm_cache = app_cache_dir.join("npm");
-    std::fs::create_dir_all(&npm_cache)
-        .map_err(|e| format!("prepare app-owned npm cache: {e}"))?;
+    std::fs::create_dir_all(&npm_cache).map_err(|e| format!("prepare app-owned npm cache: {e}"))?;
     Ok(npm_cache)
 }
 
@@ -494,6 +493,10 @@ pub async fn install_hq_cli_update(app: AppHandle) -> Result<HqCliUpdateInfo, St
     let hq = paths::resolve_bin("hq");
     let prefix = npm_prefix_from_hq_bin(&hq);
     let base_args = install_argv(prefix.as_deref());
+    let npm_cache = app_npm_cache(&app).map_err(|(category, error)| {
+        report_npm_cache_setup_failure(category);
+        error
+    })?;
 
     // Pin the target BEFORE spawning npm. Reading `latest` afterwards races a
     // publish: npm can resolve `@latest` to A while a post-install fetch returns
@@ -502,10 +505,6 @@ pub async fn install_hq_cli_update(app: AppHandle) -> Result<HqCliUpdateInfo, St
     // nothing ever attempted. Resolving first keeps the comparison and the
     // recorded block bound to the version this run actually asked npm for.
     let latest = fetch_latest().await?;
-    let npm_cache = app_npm_cache(&app).map_err(|(category, error)| {
-        report_npm_cache_setup_failure(category);
-        error
-    })?;
     log(
         "hq-cli-update",
         &format!(
@@ -515,14 +514,8 @@ pub async fn install_hq_cli_update(app: AppHandle) -> Result<HqCliUpdateInfo, St
         ),
     );
 
-    let output = run_npm_install_with_retries(
-        &npm,
-        &path,
-        &npm_cache,
-        prefix.as_deref(),
-        base_args,
-    )
-    .await?;
+    let output =
+        run_npm_install_with_retries(&npm, &path, &npm_cache, prefix.as_deref(), base_args).await?;
 
     if !output.status.success() {
         let raw_detail = npm_output_detail(&output);
@@ -720,7 +713,26 @@ pub fn setup_hq_cli_update_checker(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::OsStr;
+    use std::ffi::{OsStr, OsString};
+    #[cfg(unix)]
+    use std::sync::{Mutex, OnceLock};
+
+    #[cfg(unix)]
+    static HOME_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    #[cfg(unix)]
+    struct HomeEnvRestore(Option<OsString>);
+
+    #[cfg(unix)]
+    impl Drop for HomeEnvRestore {
+        fn drop(&mut self) {
+            if let Some(value) = self.0.as_ref() {
+                std::env::set_var("HOME", value);
+            } else {
+                std::env::remove_var("HOME");
+            }
+        }
+    }
 
     #[test]
     fn prepare_app_npm_cache_is_stable_and_creates_only_the_app_cache_child() {
@@ -830,6 +842,62 @@ exit 0
                 );
             }
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn app_owned_cache_avoids_a_read_only_home_npm_cache() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let _home_lock = HOME_ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("poisoned-home");
+        let poisoned_cache = home.join(".npm/_cacache");
+        fs::create_dir_all(&poisoned_cache).unwrap();
+        let mut permissions = fs::metadata(&poisoned_cache).unwrap().permissions();
+        permissions.set_mode(0o555);
+        fs::set_permissions(&poisoned_cache, permissions).unwrap();
+
+        let _restore_home = HomeEnvRestore(std::env::var_os("HOME"));
+        std::env::set_var("HOME", &home);
+
+        let npm = temp.path().join("fake-npm");
+        let attempts = temp.path().join("attempts");
+        let script = format!(
+            r#"#!/bin/sh
+printf '%s|%s\n' "$HOME" "$NPM_CONFIG_CACHE" > "{}"
+exit 0
+"#,
+            attempts.display(),
+        );
+        fs::write(&npm, script).unwrap();
+        let mut permissions = fs::metadata(&npm).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&npm, permissions).unwrap();
+
+        let app_cache = temp.path().join("app-cache/npm");
+        fs::create_dir_all(&app_cache).unwrap();
+        let prefix = temp.path().join("npm-prefix");
+        let output = run_npm_install_with_retries(
+            npm.to_str().unwrap(),
+            &std::env::var("PATH").unwrap(),
+            &app_cache,
+            Some(prefix.to_str().unwrap()),
+            install_argv(Some(prefix.to_str().unwrap())),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            output.status.success(),
+            "the isolated-cache install must converge"
+        );
+        assert_eq!(
+            fs::read_to_string(&attempts).unwrap().trim(),
+            format!("{}|{}", home.display(), app_cache.display()),
+            "npm must receive the app-owned cache, never HOME/.npm"
+        );
     }
 
     // HQ-SYNC-B: an EEXIST bin collision (a stale `<prefix>/bin/hq` npm didn't
