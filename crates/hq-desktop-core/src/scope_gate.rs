@@ -22,10 +22,6 @@ pub fn enforce_read_scope(rel_path: &str, active_company: Option<&str>) -> Resul
         return Ok(());
     };
 
-    if target_company.starts_with('_') {
-        return Ok(());
-    }
-
     match active_company {
         None => Err(format!(
             "company scope not bound: reading companies/{target_company}/ requires an active company context"
@@ -88,6 +84,12 @@ mod tests {
         enforce_read_scope("companies/manifest.yaml", None).unwrap();
         enforce_read_scope("companies/_template/readme.md", None).unwrap();
         assert!(enforce_read_scope("companies/indigo/x.md", None).is_err());
+    }
+
+    #[test]
+    fn underscore_company_slug_is_not_blanket_exempt() {
+        assert!(enforce_read_scope("companies/_archive/readme.md", Some("indigo")).is_err());
+        assert!(enforce_read_scope("companies/_archive/readme.md", None).is_err());
     }
 
     #[test]

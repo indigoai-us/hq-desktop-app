@@ -1041,12 +1041,16 @@ fn reveal_file_in_manager(path: &Path) -> Result<(), String> {
 
 /// Files have an empty `children` vec.
 #[tauri::command]
-pub async fn get_company_file_tree(slug: String) -> Result<FileNode, String> {
+pub async fn get_company_file_tree(
+    slug: String,
+    scope: State<'_, DesktopSessionScope>,
+) -> Result<FileNode, String> {
     if !crate::util::feature_gate::desktop_features_enabled().await {
         return Err("file explorer requires a signed-in user".to_string());
     }
     let slug = slug.trim();
     let rel_path = format!("companies/{slug}");
+    enforce_desktop_read_scope(&rel_path, &scope)?;
     let normalized = validate_hq_relative_path(&rel_path, false)?;
     if normalized != rel_path
         || company_slug_for_hq_path(&normalized)?.as_deref() != Some(slug)
@@ -1113,12 +1117,16 @@ pub async fn get_authorized_file_preview(
 /// Reveal an authorized HQ-relative file in the platform file manager. The
 /// absolute target is resolved and retained entirely inside the native layer.
 #[tauri::command]
-pub async fn reveal_authorized_file(path: String) -> Result<(), String> {
+pub async fn reveal_authorized_file(
+    path: String,
+    scope: State<'_, DesktopSessionScope>,
+) -> Result<(), String> {
     if !crate::util::feature_gate::desktop_features_enabled().await {
         return Err("file explorer requires a signed-in user".to_string());
     }
     let target = resolve_authorized_file_target(&path).await?;
     let target = revalidate_authorized_file_target(&target).await?;
+    enforce_desktop_read_scope(&target.relative_path, &scope)?;
     reveal_file_in_manager(&target.absolute_path)
 }
 
@@ -1128,12 +1136,16 @@ pub async fn reveal_authorized_file(path: String) -> Result<(), String> {
 /// deep link from that validated target. No caller-controlled folder, prompt,
 /// or URL crosses this boundary.
 #[tauri::command]
-pub async fn open_authorized_file_in_claude(path: String) -> Result<(), String> {
+pub async fn open_authorized_file_in_claude(
+    path: String,
+    scope: State<'_, DesktopSessionScope>,
+) -> Result<(), String> {
     if !crate::util::feature_gate::desktop_features_enabled().await {
         return Err("file explorer requires a signed-in user".to_string());
     }
     let target = resolve_authorized_file_target(&path).await?;
     let target = revalidate_authorized_file_target(&target).await?;
+    enforce_desktop_read_scope(&target.relative_path, &scope)?;
     crate::commands::app::open_claude_code_link(authorized_claude_file_url(&target)?)
 }
 
