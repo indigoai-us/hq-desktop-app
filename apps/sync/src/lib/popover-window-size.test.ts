@@ -3,6 +3,7 @@ import {
   POPOVER_MAX_HEIGHT,
   POPOVER_MIN_HEIGHT,
   clampPopoverHeight,
+  isPopoverResizeWindow,
   measuredSurfaceContentHeight,
   shouldResizePopoverWindow,
 } from './popover-window-size';
@@ -34,5 +35,18 @@ describe('popover window sizing helpers', () => {
   it('ignores sub-pixel resize churn', () => {
     expect(shouldResizePopoverWindow(300.9, 300)).toBe(false);
     expect(shouldResizePopoverWindow(302, 300)).toBe(true);
+  });
+});
+
+describe('isPopoverResizeWindow (HQ-DESKTOP-38)', () => {
+  it('only the main menubar window may resize itself', () => {
+    expect(isPopoverResizeWindow('main')).toBe(true);
+  });
+
+  it('secondary windows that reuse the popover must not resize (no set-size ACL)', () => {
+    expect(isPopoverResizeWindow('new-files-detail')).toBe(false);
+    expect(isPopoverResizeWindow('messages')).toBe(false);
+    expect(isPopoverResizeWindow('dm-detail')).toBe(false);
+    expect(isPopoverResizeWindow('widget')).toBe(false);
   });
 });
