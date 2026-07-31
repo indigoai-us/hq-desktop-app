@@ -265,12 +265,23 @@ fn extended_search_dirs() -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = Vec::new();
 
     if let Some(toolchain) = managed_toolchain_dir() {
-        dirs.push(toolchain.join("bin"));
         dirs.push(toolchain.join("node"));
+        // Keep this order aligned with hq-installer's
+        // `extended_search_path()`. Windows npm global shims and the
+        // drive-letter-translating rsync wrapper live directly in
+        // `npm-prefix`; the Core rescue must see that wrapper before the raw
+        // rsync.exe in `bin`.
+        dirs.push(toolchain.join("npm-prefix"));
+        dirs.push(toolchain.join("bin"));
+        dirs.push(toolchain.join("git").join("cmd"));
+        dirs.push(toolchain.join("git").join("mingw64").join("bin"));
     }
     if let Some(legacy) = legacy_managed_toolchain_dir() {
-        dirs.push(legacy.join("bin"));
         dirs.push(legacy.join("node"));
+        dirs.push(legacy.join("npm-prefix"));
+        dirs.push(legacy.join("bin"));
+        dirs.push(legacy.join("git").join("cmd"));
+        dirs.push(legacy.join("git").join("mingw64").join("bin"));
     }
 
     if let Some(home) = home_dir() {
@@ -736,6 +747,34 @@ mod tests {
             extended_search_dirs().iter().any(|dir| dir == &expected),
             "Windows resolver must search the standard Node installer directory: {}",
             expected.display()
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_windows_search_dirs_match_managed_installer_tool_order() {
+        let toolchain =
+            managed_toolchain_dir().expect("Windows test environment must define LOCALAPPDATA");
+        let dirs = extended_search_dirs();
+        let node = dirs.iter().position(|dir| dir == &toolchain.join("node"));
+        let npm = dirs
+            .iter()
+            .position(|dir| dir == &toolchain.join("npm-prefix"));
+        let wrappers = dirs.iter().position(|dir| dir == &toolchain.join("bin"));
+        let git_cmd = dirs
+            .iter()
+            .position(|dir| dir == &toolchain.join("git").join("cmd"));
+        let git_mingw = dirs.iter().position(|dir| {
+            dir == &toolchain.join("git").join("mingw64").join("bin")
+        });
+
+        assert!(
+            matches!((node, npm, wrappers), (Some(n), Some(p), Some(w)) if n < p && p < w),
+            "managed node, npm shims, and wrappers must match installer precedence: {dirs:?}"
+        );
+        assert!(
+            git_cmd.is_some() && git_mingw.is_some(),
+            "Core rescue must inherit the managed MinGit command and helper directories: {dirs:?}"
         );
     }
 

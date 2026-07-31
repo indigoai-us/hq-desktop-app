@@ -36,10 +36,24 @@
 //! with the same beefed-up PATH used elsewhere for child processes
 //! (`paths::child_path`). That keeps install, detection, and execution
 //! anchored to the same prefix instead of letting npm's default prefix write
-//! a second, shadowed copy. On success it re-checks and emits a fresh
-//! `hq-cli-update:cleared` event; on failure it returns stderr so the UI can
-//! fall back to the manual copy-the-command flow (typical failure: EACCES
-//! against a system-prefix npm that needs sudo).
+//! a second, shadowed copy. A `hq` that is NOT in a `bin/` directory (pnpm's
+//! flat global dir, a hand-rolled wrapper) yields no prefix at all, so npm
+//! uses its own — see `npm_prefix_from_hq_bin` for why inventing one there
+//! wedged the updater in a permanent reinstall loop.
+//!
+//! A zero exit from npm is not accepted as success on its own. The version of
+//! the binary the app will EXECUTE (`resolved_hq_version`, never the
+//! `npm root -g` fallback) must have reached the target that was pinned before
+//! the install ran. An install that completes without moving it is recorded in
+//! `menubar.json`, skipped by the background loop until a newer version
+//! publishes, and returned as a marked error the UI shows verbatim — the
+//! copy-the-command remedy is wrong for that case, since that command is what
+//! just failed to take.
+//!
+//! On success it re-checks and emits a fresh `hq-cli-update:cleared` event; on
+//! failure it returns stderr so the UI can fall back to the manual
+//! copy-the-command flow (typical failure: EACCES against a system-prefix npm
+//! that needs sudo).
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -53,12 +67,14 @@ use crate::util::paths;
 #[allow(unused_imports)]
 pub use hq_desktop_core::hq_cli_update::{
     auto_update_enabled, classify_install_failure, cli_auto_update_enabled, cmp_semver,
-    dismissed_cli_version, get_local_version, hq_version_string, install_argv,
+    dismissed_cli_version, get_local_version, hq_version_string, install_argv, install_converged,
     install_failure_detail, install_failure_report, is_cli_update_dismissed,
-    is_prefix_permission_failure, is_windows_locked_binary_failure, npm_prefix_from_hq_bin,
-    read_installed_version, report_install_failure, report_unreadable_version,
-    suppress_for_dismissal, version_from_hq_binary, version_if_hq_cli, HqCliUpdateInfo,
-    InstallFailureKind, NpmLatest, DISMISSED_VERSION_KEY, HQ_CLI_PACKAGE,
+    is_prefix_permission_failure, is_windows_locked_binary_failure, non_convergent_cli_version,
+    non_convergent_detail, npm_prefix_from_hq_bin, read_installed_version, redact_home,
+    redact_home_in, report_install_failure, report_non_convergent_install,
+    report_unreadable_version, resolved_hq_version, should_auto_install, suppress_for_dismissal,
+    version_from_hq_binary, version_if_hq_cli, HqCliUpdateInfo, InstallFailureKind, NpmLatest,
+    DISMISSED_VERSION_KEY, HQ_CLI_PACKAGE, NON_CONVERGENT_ERROR_PREFIX, NON_CONVERGENT_VERSION_KEY,
 };
 
 /// npm registry endpoint that returns the dist-tag `latest` manifest. Cheap,
@@ -240,16 +256,23 @@ fn is_partial_install_failure(detail: &str) -> bool {
 }
 
 /// The npm global scope dir that holds the `@indigoai-us/hq-cli` package for a
-/// given prefix. npm's macOS global layout is
-/// `<prefix>/lib/node_modules/<scope>/<pkg>`, so partial-install debris — the
-/// `hq-cli` package dir and its `.hq-cli-*` temp staging dirs — lives directly
-/// under this `@indigoai-us` dir. Factored out so cleanup stays strictly scoped
-/// and the path shape is unit-testable without touching the filesystem.
+/// given prefix. Unix uses `<prefix>/lib/node_modules`; Windows uses
+/// `<prefix>\node_modules`. Partial-install debris — the `hq-cli` package dir
+/// and its `.hq-cli-*` temp staging dirs — lives directly under the resulting
+/// `@indigoai-us` dir. Factored out so cleanup stays strictly scoped and both
+/// path shapes are unit-testable without touching the filesystem.
+fn partial_install_scope_dir_for(prefix: &str, windows_layout: bool) -> PathBuf {
+    let root = Path::new(prefix);
+    let node_modules = if windows_layout {
+        root.join("node_modules")
+    } else {
+        root.join("lib").join("node_modules")
+    };
+    node_modules.join("@indigoai-us")
+}
+
 fn partial_install_scope_dir(prefix: &str) -> PathBuf {
-    Path::new(prefix)
-        .join("lib")
-        .join("node_modules")
-        .join("@indigoai-us")
+    partial_install_scope_dir_for(prefix, cfg!(target_os = "windows"))
 }
 
 /// Remove partial `@indigoai-us/hq-cli` install debris left by an interrupted
@@ -330,6 +353,20 @@ async fn run_npm_install(
     .map_err(|e| format!("spawn npm: {e}"))
 }
 
+fn verify_active_cli_version(local: Option<String>, latest: &str) -> Result<String, String> {
+    match local {
+        Some(local) if install_converged(Some(&local), latest) => Ok(local),
+        Some(local) => Err(format!(
+            "npm completed, but the active HQ CLI is still v{local} (expected v{latest}). \
+             The update was not applied to the CLI on PATH."
+        )),
+        None => Err(format!(
+            "npm completed, but the active HQ CLI version could not be verified \
+             (expected v{latest})."
+        )),
+    }
+}
+
 #[tauri::command]
 pub async fn install_hq_cli_update(app: AppHandle) -> Result<HqCliUpdateInfo, String> {
     let npm = paths::resolve_bin("npm");
@@ -337,6 +374,14 @@ pub async fn install_hq_cli_update(app: AppHandle) -> Result<HqCliUpdateInfo, St
     let hq = paths::resolve_bin("hq");
     let prefix = npm_prefix_from_hq_bin(&hq);
     let base_args = install_argv(prefix.as_deref());
+
+    // Pin the target BEFORE spawning npm. Reading `latest` afterwards races a
+    // publish: npm can resolve `@latest` to A while a post-install fetch returns
+    // a freshly-published B, and we would then judge the installed A against B,
+    // call it non-convergent, and permanently block auto-installs of a version
+    // nothing ever attempted. Resolving first keeps the comparison and the
+    // recorded block bound to the version this run actually asked npm for.
+    let latest = fetch_latest().await?;
     log(
         "hq-cli-update",
         &format!(
@@ -445,23 +490,113 @@ pub async fn install_hq_cli_update(app: AppHandle) -> Result<HqCliUpdateInfo, St
     // so the cleared event reflects the `hq` the app will actually execute.
     // `read_installed_version` asks npm's default global prefix, which may be
     // different from the explicit `--prefix` used above.
-    let latest = fetch_latest().await?;
-    let local = tauri::async_runtime::spawn_blocking(get_local_version)
-        .await
-        .ok()
-        .flatten()
-        .or_else(|| Some(latest.clone()));
+    // Convergence gate. A zero exit only proves npm wrote a package somewhere;
+    // it does NOT prove the write landed on the CLI this app runs. When the
+    // resolved `hq` is managed by something npm cannot replace — a pnpm shim, a
+    // Homebrew formula, a copy earlier on PATH — npm installs into an unrelated
+    // prefix and exits 0. Without this check the loop reinstalls 15s after every
+    // launch and every 6h forever, logging "install succeeded" each time while
+    // the user stays stale.
+    //
+    // The probe is `resolved_hq_version`, NOT `get_local_version`: the latter
+    // falls back to `npm root -g`, which in exactly this situation reports the
+    // freshly-installed copy in npm's own prefix while the executable the app
+    // resolves is untouched. Accepting that would trade a loud loop for a silent
+    // lie — "up to date" forever, while the app keeps running the old binary.
+    let resolved = {
+        let hq = hq.clone();
+        tauri::async_runtime::spawn_blocking(move || resolved_hq_version(&hq))
+            .await
+            .ok()
+            .flatten()
+    };
+    let local = match verify_active_cli_version(resolved.clone(), &latest) {
+        Ok(version) => version,
+        Err(reason) => {
+            // Re-running cannot change this, so record the version and let the
+            // background loop stop retrying it. `non_convergent_detail` carries
+            // the marker + remedy the UI shows in place of the generic
+            // copy-the-command text, which here would just repeat the failure.
+            let hq_display = if hq == "hq" { "PATH" } else { hq.as_str() };
+            log(
+                "hq-cli-update",
+                &format!(
+                    "{reason} — hq={hq_display} prefix={} — recording as non-convergent",
+                    prefix.as_deref().unwrap_or("npm default prefix"),
+                ),
+            );
+            record_non_convergent_version(&latest);
+            report_non_convergent_install(
+                &latest,
+                resolved.as_deref(),
+                hq_display,
+                prefix.as_deref(),
+            );
+            return Err(non_convergent_detail(
+                hq_display,
+                resolved.as_deref(),
+                &latest,
+            ));
+        }
+    };
+
+    // A convergent install clears any earlier block so a future version is
+    // never gated by a condition the user has since fixed.
+    clear_non_convergent_version();
     log(
         "hq-cli-update",
-        &format!("install succeeded: local={:?} latest={}", local, latest),
+        &format!("install succeeded: local={} latest={}", local, latest),
     );
     let info = HqCliUpdateInfo {
-        local,
+        local: Some(local),
         latest: latest.clone(),
     };
     // Frontend uses this to drop the banner immediately on success.
     let _ = app.emit("hq-cli-update:cleared", &info);
     Ok(info)
+}
+
+/// Persist the `latest` that installed cleanly but did not move the detected
+/// version, so `setup_hq_cli_update_checker` stops auto-retrying it. Written
+/// through the untyped-merge path for the same reason as the dismissal flag:
+/// `save_settings` only writes typed `MenubarPrefs` fields and would drop it.
+/// Failures are logged, not propagated — losing the marker only costs us a
+/// redundant retry, and must never mask the real error being returned.
+fn record_non_convergent_version(latest: &str) {
+    let write = paths::menubar_json_path().and_then(|path| {
+        hq_desktop_core::first_run::merge_menubar_flags(
+            &path,
+            &[(
+                NON_CONVERGENT_VERSION_KEY,
+                Value::String(latest.to_string()),
+            )],
+        )
+    });
+    if let Err(e) = write {
+        log(
+            "hq-cli-update",
+            &format!("could not record non-convergent version {latest}: {e}"),
+        );
+    }
+}
+
+/// Clear the non-convergent marker after an install that actually converged.
+fn clear_non_convergent_version() {
+    if non_convergent_cli_version().is_none() {
+        return;
+    }
+    let write = paths::menubar_json_path().and_then(|path| {
+        hq_desktop_core::first_run::merge_menubar_flags(
+            &path,
+            &[(NON_CONVERGENT_VERSION_KEY, Value::Null)],
+        )
+    });
+    if let Err(e) = write {
+        log(
+            "hq-cli-update",
+            &format!("could not clear non-convergent marker: {e}"),
+        );
+    }
 }
 
 /// Background loop: first check 15s after launch, then every 6h.
@@ -481,18 +616,37 @@ pub fn setup_hq_cli_update_checker(app: &AppHandle) {
         tokio::time::sleep(INITIAL_DELAY).await;
         loop {
             match check_once(&handle).await {
-                Ok(Some(_)) => {
+                Ok(Some(info)) => {
                     // Gate on the master `autoUpdate` switch (default ON). The
                     // legacy `cliAutoUpdate` key is superseded — one toggle now
                     // governs the app, CLI, and core auto-installers.
                     if auto_update_enabled() {
-                        log("hq-cli-update", "auto-update enabled — installing");
-                        match install_hq_cli_update(handle.clone()).await {
-                            Ok(_) => log("hq-cli-update", "auto-update succeeded"),
-                            Err(e) => log(
+                        if should_auto_install(
+                            &info.latest,
+                            non_convergent_cli_version().as_deref(),
+                        ) {
+                            log("hq-cli-update", "auto-update enabled — installing");
+                            match install_hq_cli_update(handle.clone()).await {
+                                Ok(_) => log("hq-cli-update", "auto-update succeeded"),
+                                Err(e) => log(
+                                    "hq-cli-update",
+                                    &format!("auto-update failed, banner remains: {e}"),
+                                ),
+                            }
+                        } else {
+                            // This exact version already installed cleanly
+                            // without moving the detected CLI, so repeating it
+                            // cannot help. Stop here instead of reinstalling on
+                            // every launch and every 6h; the banner stays up for
+                            // the manual fix.
+                            log(
                                 "hq-cli-update",
-                                &format!("auto-update failed, banner remains: {e}"),
-                            ),
+                                &format!(
+                                    "auto-update skipped for {}: an earlier install completed \
+                                     without changing the detected version",
+                                    info.latest
+                                ),
+                            );
                         }
                     }
                 }
@@ -596,13 +750,40 @@ mod tests {
     fn partial_install_scope_dir_is_the_npm_global_scope() {
         // npm's macOS global layout: <prefix>/lib/node_modules/<scope>.
         assert_eq!(
-            partial_install_scope_dir(
-                "/Users/mike/Library/Application Support/Indigo HQ/toolchain/npm-global"
+            partial_install_scope_dir_for(
+                "/Users/mike/Library/Application Support/Indigo HQ/toolchain/npm-global",
+                false,
             ),
             PathBuf::from(
                 "/Users/mike/Library/Application Support/Indigo HQ/toolchain/npm-global/lib/node_modules/@indigoai-us"
             )
         );
+    }
+
+    #[test]
+    fn partial_install_scope_dir_uses_windows_global_npm_layout() {
+        assert_eq!(
+            partial_install_scope_dir_for(
+                "C:/Users/mike/AppData/Local/IndigoHQ/toolchain/npm-prefix",
+                true,
+            ),
+            PathBuf::from(
+                "C:/Users/mike/AppData/Local/IndigoHQ/toolchain/npm-prefix/node_modules/@indigoai-us"
+            )
+        );
+    }
+
+    #[test]
+    fn active_cli_verification_rejects_the_stale_post_install_loop() {
+        assert_eq!(
+            verify_active_cli_version(Some("5.79.0".to_string()), "5.79.0"),
+            Ok("5.79.0".to_string())
+        );
+        let stale = verify_active_cli_version(Some("5.77.7".to_string()), "5.79.0").unwrap_err();
+        assert!(stale.contains("still v5.77.7"), "{stale}");
+        assert!(stale.contains("not applied to the CLI on PATH"), "{stale}");
+        let missing = verify_active_cli_version(None, "5.79.0").unwrap_err();
+        assert!(missing.contains("could not be verified"), "{missing}");
     }
 
     #[test]
