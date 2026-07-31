@@ -53,12 +53,14 @@ use crate::util::paths;
 #[allow(unused_imports)]
 pub use hq_desktop_core::hq_cli_update::{
     auto_update_enabled, classify_install_failure, cli_auto_update_enabled, cmp_semver,
-    dismissed_cli_version, get_local_version, hq_version_string, install_argv,
+    dismissed_cli_version, get_local_version, hq_version_string, install_argv, install_converged,
     install_failure_detail, install_failure_report, is_cli_update_dismissed,
-    is_prefix_permission_failure, is_windows_locked_binary_failure, npm_prefix_from_hq_bin,
-    read_installed_version, report_install_failure, report_unreadable_version,
+    is_prefix_permission_failure, is_windows_locked_binary_failure, non_convergent_cli_version,
+    non_convergent_detail, npm_prefix_from_hq_bin, read_installed_version, report_install_failure,
+    report_non_convergent_install, report_unreadable_version, should_auto_install,
     suppress_for_dismissal, version_from_hq_binary, version_if_hq_cli, HqCliUpdateInfo,
     InstallFailureKind, NpmLatest, DISMISSED_VERSION_KEY, HQ_CLI_PACKAGE,
+    NON_CONVERGENT_VERSION_KEY,
 };
 
 /// npm registry endpoint that returns the dist-tag `latest` manifest. Cheap,
@@ -449,8 +451,37 @@ pub async fn install_hq_cli_update(app: AppHandle) -> Result<HqCliUpdateInfo, St
     let local = tauri::async_runtime::spawn_blocking(get_local_version)
         .await
         .ok()
-        .flatten()
-        .or_else(|| Some(latest.clone()));
+        .flatten();
+
+    // Convergence gate. A zero exit only proves npm wrote a package somewhere;
+    // it does NOT prove the write landed where detection reads. When the
+    // resolved `hq` is managed by something npm cannot replace — a pnpm shim, a
+    // Homebrew formula, a copy earlier on PATH — npm installs into an unrelated
+    // prefix, exits 0, and the detected version never budges. Without this
+    // check the loop reinstalls 15s after every launch and every 6h forever,
+    // logging "install succeeded" each time while the user stays stale. Treat
+    // it as a failure so the banner survives and the version is recorded, which
+    // stops the background retry (a user-initiated click may still retry).
+    if !install_converged(local.as_deref(), &latest) {
+        let hq_display = if hq == "hq" { "PATH" } else { hq.as_str() };
+        let detail = non_convergent_detail(hq_display, local.as_deref(), &latest);
+        log(
+            "hq-cli-update",
+            &format!(
+                "install completed but detection still reports {:?} (wanted {latest}) \
+                 — hq={hq_display} prefix={} — recording as non-convergent",
+                local,
+                prefix.as_deref().unwrap_or("npm default prefix"),
+            ),
+        );
+        record_non_convergent_version(&latest);
+        report_non_convergent_install(&latest, local.as_deref(), hq_display, prefix.as_deref());
+        return Err(detail);
+    }
+
+    // A convergent install clears any earlier block so a future version is
+    // never gated by a condition the user has since fixed.
+    clear_non_convergent_version();
     log(
         "hq-cli-update",
         &format!("install succeeded: local={:?} latest={}", local, latest),
@@ -462,6 +493,49 @@ pub async fn install_hq_cli_update(app: AppHandle) -> Result<HqCliUpdateInfo, St
     // Frontend uses this to drop the banner immediately on success.
     let _ = app.emit("hq-cli-update:cleared", &info);
     Ok(info)
+}
+
+/// Persist the `latest` that installed cleanly but did not move the detected
+/// version, so `setup_hq_cli_update_checker` stops auto-retrying it. Written
+/// through the untyped-merge path for the same reason as the dismissal flag:
+/// `save_settings` only writes typed `MenubarPrefs` fields and would drop it.
+/// Failures are logged, not propagated — losing the marker only costs us a
+/// redundant retry, and must never mask the real error being returned.
+fn record_non_convergent_version(latest: &str) {
+    let write = paths::menubar_json_path().and_then(|path| {
+        hq_desktop_core::first_run::merge_menubar_flags(
+            &path,
+            &[(
+                NON_CONVERGENT_VERSION_KEY,
+                Value::String(latest.to_string()),
+            )],
+        )
+    });
+    if let Err(e) = write {
+        log(
+            "hq-cli-update",
+            &format!("could not record non-convergent version {latest}: {e}"),
+        );
+    }
+}
+
+/// Clear the non-convergent marker after an install that actually converged.
+fn clear_non_convergent_version() {
+    if non_convergent_cli_version().is_none() {
+        return;
+    }
+    let write = paths::menubar_json_path().and_then(|path| {
+        hq_desktop_core::first_run::merge_menubar_flags(
+            &path,
+            &[(NON_CONVERGENT_VERSION_KEY, Value::Null)],
+        )
+    });
+    if let Err(e) = write {
+        log(
+            "hq-cli-update",
+            &format!("could not clear non-convergent marker: {e}"),
+        );
+    }
 }
 
 /// Background loop: first check 15s after launch, then every 6h.
@@ -481,11 +555,29 @@ pub fn setup_hq_cli_update_checker(app: &AppHandle) {
         tokio::time::sleep(INITIAL_DELAY).await;
         loop {
             match check_once(&handle).await {
-                Ok(Some(_)) => {
+                Ok(Some(info)) => {
                     // Gate on the master `autoUpdate` switch (default ON). The
                     // legacy `cliAutoUpdate` key is superseded — one toggle now
                     // governs the app, CLI, and core auto-installers.
-                    if auto_update_enabled() {
+                    if !auto_update_enabled() {
+                        // User opted out; the banner from `check_once` stands.
+                    } else if !should_auto_install(
+                        &info.latest,
+                        non_convergent_cli_version().as_deref(),
+                    ) {
+                        // This exact version already installed cleanly without
+                        // moving the detected CLI, so repeating it cannot help.
+                        // Stop here instead of reinstalling on every launch and
+                        // every 6h; the banner stays for the manual fix.
+                        log(
+                            "hq-cli-update",
+                            &format!(
+                                "auto-update skipped for {}: an earlier install completed \
+                                 without changing the detected version",
+                                info.latest
+                            ),
+                        );
+                    } else {
                         log("hq-cli-update", "auto-update enabled — installing");
                         match install_hq_cli_update(handle.clone()).await {
                             Ok(_) => log("hq-cli-update", "auto-update succeeded"),

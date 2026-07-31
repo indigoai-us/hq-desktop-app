@@ -222,6 +222,99 @@ pub fn is_cli_update_dismissed(latest: &str) -> bool {
     suppress_for_dismissal(latest, dismissed_cli_version().as_deref())
 }
 
+/// menubar.json key recording a `latest` whose install npm reported as
+/// successful but which left the detected local version untouched. Read/written
+/// untyped through the same path as `DISMISSED_VERSION_KEY`.
+pub const NON_CONVERGENT_VERSION_KEY: &str = "cliUpdateNonConvergentVersion";
+
+/// The version an earlier install completed on without moving the detected
+/// version, if any. `None` when the key is absent, `null`, or unreadable.
+pub fn non_convergent_cli_version() -> Option<String> {
+    let dir = paths::hq_config_dir().ok()?;
+    let contents = std::fs::read_to_string(dir.join("menubar.json")).ok()?;
+    let json: Value = serde_json::from_str(&contents).ok()?;
+    json.get(NON_CONVERGENT_VERSION_KEY)
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
+
+/// Did an install npm reported as successful actually move the version the app
+/// detects?
+///
+/// A zero exit only proves npm wrote a package *somewhere*. When the resolved
+/// `hq` is managed by something npm cannot replace — a pnpm shim, a Homebrew
+/// formula, a copy shadowed earlier on PATH — npm writes a perfectly good
+/// package into a prefix nothing reads, and `get_local_version` keeps returning
+/// the old number. `after` is the post-install reading; convergence means it
+/// reached `latest`. A reading that stands still, creeps to something still
+/// short of `latest`, or goes blind entirely all mean the install did not take
+/// effect where it counts.
+pub fn install_converged(after: Option<&str>, latest: &str) -> bool {
+    match after {
+        Some(a) => cmp_semver(a, latest) != std::cmp::Ordering::Less,
+        None => false,
+    }
+}
+
+/// Should the background loop auto-install `latest`?
+///
+/// `false` once an install of that exact version has already completed without
+/// converging: repeating it cannot produce a different result, and the loop
+/// would otherwise reinstall 15s after every launch and every 6h forever. A
+/// newer `latest` clears the block on its own (the environment may have been
+/// fixed in between), and the user-initiated "Update" button never consults
+/// this — an explicit click should always be allowed to try again.
+pub fn should_auto_install(latest: &str, non_convergent: Option<&str>) -> bool {
+    non_convergent != Some(latest)
+}
+
+/// The message shown (and logged) when an install completes without
+/// converging. It has to name the specific binary that did not move: a machine
+/// in this state usually has two or three `hq` copies, and knowing *which* one
+/// the app resolves is the entire remedy.
+pub fn non_convergent_detail(hq_bin: &str, local: Option<&str>, latest: &str) -> String {
+    let current = local.unwrap_or("an unreadable version");
+    format!(
+        "hq {latest} installed successfully, but the app still resolves hq {current} at \
+         {hq_bin}. That copy is managed outside npm's global prefix (pnpm, Homebrew, or an \
+         earlier entry on PATH), so an npm install cannot replace it. Update it with the tool \
+         that installed it, or remove it so the npm-managed copy takes over."
+    )
+}
+
+/// Capture the non-convergent-install signal. This is a distinct class from
+/// `install-failed`: npm exited 0 and nothing threw, so nothing else in the
+/// pipeline would ever notice. It is exactly the silent state that ran on a
+/// prod install for weeks, reinstalling on every cycle while the detected
+/// version stayed frozen, so it stays at Warning level with its own fingerprint
+/// rather than folding into the install-failure bucket.
+pub fn report_non_convergent_install(
+    latest: &str,
+    local: Option<&str>,
+    hq_bin: &str,
+    prefix: Option<&str>,
+) {
+    sentry::with_scope(
+        |scope| {
+            scope.set_tag("hq_cli_update_kind", "install-non-convergent");
+            scope.set_tag("latest", latest);
+            scope.set_tag("local", local.unwrap_or("unreadable"));
+            scope.set_fingerprint(Some(&["hq-cli-update", "install-non-convergent"]));
+            scope.set_extra("hq_bin", hq_bin.to_string().into());
+            scope.set_extra(
+                "npm_prefix",
+                prefix.unwrap_or("npm default prefix").to_string().into(),
+            );
+        },
+        || {
+            sentry::capture_message(
+                "[hq-cli-update] install completed but the detected CLI version did not change",
+                sentry::Level::Warning,
+            );
+        },
+    );
+}
+
 /// Capture a Sentry event when `hq` is installed but every version probe
 /// failed. Scrubbed by `sentry_scrub.rs` before send. This is the
 /// "detection silently degraded" signal the team triages immediately —
@@ -462,12 +555,35 @@ pub fn report_install_failure(exit_code: Option<i32>, detail: &str, prefix: Opti
 /// same enclosing prefix or it can install a fresh CLI that the app never
 /// executes. Deliberately avoid `canonicalize`: for symlinks we want the
 /// symlink's own `<prefix>/bin/hq`, not the package-internal target path.
+///
+/// **The `bin` guard is load-bearing.** `resolve_bin` also searches package
+/// managers whose global bin directory is *flat* — pnpm's `~/Library/pnpm`
+/// (macOS) and `~/.local/share/pnpm` (Linux) both hold the shim directly. For
+/// those, walking up two levels lands on a directory npm has never managed
+/// (plain `~/Library`), and npm will cheerfully honour `--prefix` there:
+/// it creates `~/Library/bin` + `~/Library/lib/node_modules`, exits 0, and the
+/// install is invisible to every detection path. The updater then reinstalls on
+/// every launch and every 6h check, forever, logging success each time. So a
+/// parent directory literally named `bin` is what proves the grandparent is an
+/// npm prefix; without it we return `None` and let npm use its own configured
+/// global prefix, which is at least internally consistent with `npm root -g`
+/// (the fallback `get_local_version` reads).
 pub fn npm_prefix_from_hq_bin(hq_bin: &str) -> Option<String> {
     if hq_bin == "hq" {
         return None;
     }
-    Path::new(hq_bin)
-        .parent()?
+    let bin_dir = Path::new(hq_bin).parent()?;
+
+    // Windows keeps the historical grandparent walk: npm's shims there are
+    // `<prefix>\hq.cmd` and the managed-toolchain layout is validated against
+    // the existing behaviour, so a unix-shaped `bin` contract must not be
+    // imposed on it as a side effect of this fix.
+    #[cfg(not(target_os = "windows"))]
+    if !matches!(bin_dir.file_name().and_then(|n| n.to_str()), Some("bin")) {
+        return None;
+    }
+
+    bin_dir
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .map(|p| p.to_string_lossy().to_string())
@@ -601,6 +717,90 @@ mod tests {
             )
         );
         assert_eq!(npm_prefix_from_hq_bin("hq"), None);
+    }
+
+    /// The stuck-auto-update regression, reproduced from a prod HQ.app whose
+    /// `hq` resolved to pnpm's **flat** global bin directory
+    /// (`~/Library/pnpm/hq` — `user_cli_dirs`' third candidate). npm's layout
+    /// is `<prefix>/bin/hq`, so walking up two levels from a flat shim dir
+    /// invents `~/Library` as the prefix. npm accepted it, created
+    /// `~/Library/bin` + `~/Library/lib/node_modules`, and exited 0 — while
+    /// every detection path kept reading the *other* install. Result: "install
+    /// succeeded" on every cycle for weeks with the detected version frozen.
+    ///
+    /// A parent directory literally named `bin` is the only thing that proves
+    /// the grandparent is an npm prefix. Without it we must return `None` and
+    /// let npm use its own configured global prefix, which is at least
+    /// internally consistent.
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn npm_prefix_rejects_flat_shim_dirs_that_are_not_npm_prefixes() {
+        // pnpm on macOS — the exact path from the field report.
+        assert_eq!(npm_prefix_from_hq_bin("/Users/test/Library/pnpm/hq"), None);
+        // pnpm on Linux.
+        assert_eq!(
+            npm_prefix_from_hq_bin("/Users/test/.local/share/pnpm/hq"),
+            None
+        );
+        // Any other hand-rolled wrapper directory.
+        assert_eq!(npm_prefix_from_hq_bin("/Users/test/.hq/shims/hq"), None);
+    }
+
+    /// The npm layouts that *do* yield a usable prefix must keep working —
+    /// this is the half of the contract the fix must not regress.
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn npm_prefix_still_accepts_real_npm_bin_layouts() {
+        assert_eq!(
+            npm_prefix_from_hq_bin("/opt/homebrew/bin/hq"),
+            Some("/opt/homebrew".to_string())
+        );
+        assert_eq!(
+            npm_prefix_from_hq_bin("/Users/test/.npm-global/bin/hq"),
+            Some("/Users/test/.npm-global".to_string())
+        );
+    }
+
+    /// Convergence is the property the old code never checked: npm exiting 0
+    /// only proves a package was written *somewhere*, not that it landed where
+    /// detection reads. `install_converged` is what turns "npm said fine" into
+    /// "the CLI the app runs actually moved".
+    #[test]
+    fn install_converged_requires_detection_to_reach_latest() {
+        assert!(install_converged(Some("5.79.0"), "5.79.0"));
+        // Detection ahead of the registry (a beta/local build) still counts.
+        assert!(install_converged(Some("5.80.0"), "5.79.0"));
+        // The prod signature: npm exits 0, detection is unchanged.
+        assert!(!install_converged(Some("5.77.10"), "5.79.0"));
+        // Detection went blind right after an install — cannot prove anything.
+        assert!(!install_converged(None, "5.79.0"));
+    }
+
+    /// Without this gate the background loop reinstalls the same version 15s
+    /// after every launch and every 6h forever — the observable "stuck" symptom.
+    #[test]
+    fn auto_install_stops_repeating_a_non_convergent_version() {
+        // Nothing recorded → always allowed.
+        assert!(should_auto_install("5.79.0", None));
+        // Already proven not to move the needle → do not spin on it again.
+        assert!(!should_auto_install("5.79.0", Some("5.79.0")));
+        // A newly published version clears the block: the environment may have
+        // changed, and this release is exactly what a stale user needs.
+        assert!(should_auto_install("5.80.0", Some("5.79.0")));
+    }
+
+    /// The failure text is the whole remedy for a non-convergent install — it
+    /// has to name the binary that did not move, or the user has no way to know
+    /// which of several installed copies is shadowing the update.
+    #[test]
+    fn non_convergent_detail_names_the_binary_that_did_not_move() {
+        let detail = non_convergent_detail("/Users/test/Library/pnpm/hq", Some("5.38.2"), "5.79.0");
+        assert!(detail.contains("5.79.0"), "must name the target version");
+        assert!(detail.contains("5.38.2"), "must name the stuck version");
+        assert!(
+            detail.contains("/Users/test/Library/pnpm/hq"),
+            "must name the shadowing binary; got {detail}"
+        );
     }
 
     // The exact npm stderr behind HQ-SYNC-WEB-Y (exit 243, 7 users): a root-
