@@ -865,6 +865,9 @@ fn record_watcher_process_error(error: ProcessError) {
     let kind = error.error_kind().unwrap_or(std::io::ErrorKind::Other);
     let raw_os_error = error.raw_os_error();
     let policy = spawn_failure_capture_policy(kind, raw_os_error);
+    // A native spawn error is a different failure class from a child that
+    // actually ran and exited 126/127, so it breaks that class-specific streak.
+    reset_exec_not_runnable_failure_streak();
     let consecutive = note_watcher_crashed();
     set_lifecycle_state(
         if within_respawn_backoff() {
