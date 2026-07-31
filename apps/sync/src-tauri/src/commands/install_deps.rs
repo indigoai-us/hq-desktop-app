@@ -3264,36 +3264,15 @@ async fn scoop_install(app: &AppHandle, name: &str) -> Result<String, String> {
 
 #[cfg(windows)]
 async fn install_node_windows(app: AppHandle) -> Result<String, String> {
-    emit_progress(&app, "Detecting package manager...");
-    let pm = detect_package_manager();
-    match pm {
-        PackageManager::Winget => {
-            emit_progress(&app, "Installing Node.js LTS via winget...");
-            winget_install(&app, "OpenJS.NodeJS.LTS").await?;
-            append_user_path_for_node()?;
-            Ok("node installed via winget".to_string())
-        }
-        PackageManager::Scoop => {
-            emit_progress(&app, "Installing Node.js LTS via scoop...");
-            scoop_install(&app, "nodejs-lts").await?;
-            append_user_path_for_node()?;
-            Ok("node installed via scoop".to_string())
-        }
-        PackageManager::Managed => {
-            emit_progress(
-                &app,
-                "No package manager found - downloading portable Node...",
-            );
-            install_managed_node(&app).await
-        }
-    }
-}
-
-#[cfg(windows)]
-fn append_user_path_for_node() -> Result<(), String> {
-    append_user_path(&local_app_data().join("Microsoft").join("WindowsApps"))?;
-    append_user_path(&program_files().join("nodejs"))?;
-    Ok(())
+    // Node is a hard prerequisite for qmd and hq-cli, so its installer must be
+    // deterministic. Package-manager exit codes do not prove that node/npm/npx
+    // landed or are runnable in this process (and managed enterprise machines
+    // can redirect/block winget without a useful failure). The managed path is
+    // per-user and admin-free, verifies the pinned archive checksum, validates
+    // all three executables, runs `node --version`, then atomically activates
+    // the toolchain directory.
+    emit_progress(&app, "Installing HQ's verified Node.js runtime...");
+    install_managed_node(&app).await
 }
 
 #[cfg(windows)]
