@@ -11,10 +11,15 @@ use crate::paths::is_valid_hq_root;
 
 /// Returns the list of missing marker paths relative to `path`.
 pub fn missing_claude_launch_markers(path: &Path) -> Vec<String> {
-    let mut missing = Vec::new();
+    let mut missing = missing_setup_repair_markers(path);
     if !path.join(".claude/settings.json").is_file() {
         missing.push(".claude/settings.json".to_string());
     }
+    missing
+}
+
+fn missing_setup_repair_markers(path: &Path) -> Vec<String> {
+    let mut missing = Vec::new();
     if !is_valid_hq_root(path) {
         missing.push("core/core.yaml (valid hq-core schema)".to_string());
     }
@@ -28,14 +33,20 @@ pub fn has_claude_launch_hq_markers(path: &Path) -> bool {
     missing_claude_launch_markers(path).is_empty()
 }
 
-/// Walk upward from `folder` to locate the nearest directory that looks like an
-/// HQ root suitable for Claude Code Desktop project settings.
-pub fn resolve_hq_root_for_claude_launch(folder: &Path) -> Result<PathBuf, String> {
+fn has_setup_repair_markers(path: &Path) -> bool {
+    missing_setup_repair_markers(path).is_empty()
+}
+
+fn resolve_hq_root_with_markers(
+    folder: &Path,
+    has_markers: fn(&Path) -> bool,
+    expected: &str,
+) -> Result<PathBuf, String> {
     let start = std::fs::canonicalize(folder)
         .map_err(|error| format!("could not resolve Claude folder {:?}: {error}", folder))?;
     let mut current = start.as_path();
     loop {
-        if has_claude_launch_hq_markers(current) {
+        if has_markers(current) {
             return Ok(current.to_path_buf());
         }
         let Some(parent) = current.parent() else {
@@ -45,11 +56,28 @@ pub fn resolve_hq_root_for_claude_launch(folder: &Path) -> Result<PathBuf, Strin
     }
     Err(format!(
         "Claude Code must open at your HQ root, not a parent or child folder. \
-         Expected markers (.claude/settings.json, core/core.yaml, companies/manifest.yaml) \
-         under {:?}. Open Settings and re-tether your HQ folder, or run \
-         `bash core/scripts/check-hq-hooks.sh --root <hq-root>` after repair.",
+         Expected markers ({expected}) under {:?}. Open Settings and re-tether your HQ folder, \
+         or run `bash core/scripts/check-hq-hooks.sh --root <hq-root>` after repair.",
         start
     ))
+}
+
+/// Walk upward from `folder` to locate the nearest directory that looks like an
+/// HQ root suitable for Claude Code Desktop project settings.
+pub fn resolve_hq_root_for_claude_launch(folder: &Path) -> Result<PathBuf, String> {
+    resolve_hq_root_with_markers(
+        folder,
+        has_claude_launch_hq_markers,
+        ".claude/settings.json, core/core.yaml, companies/manifest.yaml",
+    )
+}
+
+fn resolve_hq_root_for_setup_repair(folder: &Path) -> Result<PathBuf, String> {
+    resolve_hq_root_with_markers(
+        folder,
+        has_setup_repair_markers,
+        "core/core.yaml, companies/manifest.yaml",
+    )
 }
 
 /// Runtime-independent hook readiness check mirroring `check-hq-hooks.sh`
@@ -117,6 +145,24 @@ pub fn bind_hq_root_for_claude_launch(folder: Option<&Path>) -> Result<PathBuf, 
     ))
 }
 
+fn bind_hq_root_for_setup_repair(folder: Option<&Path>) -> Result<PathBuf, String> {
+    if let Some(folder) = folder.filter(|p| !p.as_os_str().is_empty()) {
+        if let Ok(root) = resolve_hq_root_for_setup_repair(folder) {
+            return Ok(root);
+        }
+    }
+    let configured = resolve_hq_folder();
+    if has_setup_repair_markers(&configured) {
+        return Ok(configured);
+    }
+    let missing = missing_setup_repair_markers(&configured);
+    Err(format!(
+        "HQ folder is not ready for Claude Code Desktop setup repair ({}) — \
+         re-tether in Settings or finish onboarding",
+        missing.join(", ")
+    ))
+}
+
 /// Keep an authorized subfolder when it already lives under the resolved HQ
 /// root; otherwise bind Claude to the HQ root itself for project settings.
 fn rebound_claude_folder(original: Option<&Path>, hq_root: &Path) -> Result<PathBuf, String> {
@@ -146,8 +192,13 @@ pub fn preflight_claude_code_url(url: &str) -> Result<String, String> {
         .map(|(_, value)| value.into_owned())
         .unwrap_or_default();
 
-    let hq_root = bind_hq_root_for_claude_launch(folder.as_deref())?;
-    if !prompt.contains("/setup") {
+    let setup_repair = prompt.contains("/setup");
+    let hq_root = if setup_repair {
+        bind_hq_root_for_setup_repair(folder.as_deref())?
+    } else {
+        bind_hq_root_for_claude_launch(folder.as_deref())?
+    };
+    if !setup_repair {
         check_hq_hooks_ready(&hq_root)?;
     }
 
