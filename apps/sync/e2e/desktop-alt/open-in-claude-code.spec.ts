@@ -22,10 +22,25 @@ describe('desktop-alt open-in-Claude-Code + activity drill-ins (US-012)', () => 
   const affordance = readRepoFile(
     'src/desktop-alt/components/OpenFileInClaudeCode.svelte',
   );
+  const openButton = readRepoFile('src/components/OpenInClaudeCodeButton.svelte');
+  const appRs = readRepoFile('src-tauri/src/commands/app.rs');
   const panel = readRepoFile(
     'src/desktop-alt/components/StoryDetailPanel.svelte',
   );
   const activity = readRepoFile('src/desktop-alt/panels/ActivityPanel.svelte');
+
+  it('preflights Claude deep links against HQ root + hook health before dispatch', () => {
+    expect(appRs).toContain('preflight_claude_code_url');
+    expect(appRs).toContain('hq_desktop_core::claude_launch::preflight_claude_code_url');
+  });
+
+  it('prefixes OpenInClaudeCodeButton prompts with the bounded skill catalog', () => {
+    expect(openButton).toContain(
+      "import { buildClaudePromptWithSkillCatalog } from '../lib/skill-catalog-prompt'",
+    );
+    expect(openButton).toContain('buildClaudePromptWithSkillCatalog(basePrompt, companySlug)');
+    expect(openButton).toContain("invoke<{ companySlug?: string | null }>('get_config')");
+  });
 
   it('reuses the claude-code-link util + open_claude_code_link command (no reimplementation)', () => {
     // Builds the URL through the shared util — not a hand-rolled claude:// string.

@@ -558,6 +558,7 @@ fn main() {
             commands::library_local::get_library_company,
             commands::library_local::get_library_worker_detail,
             commands::library_local::get_library_skill_detail,
+            commands::library_local::export_skill_catalog,
             commands::marketplace::list_marketplace_listings,
             commands::marketplace::get_marketplace_listing,
             commands::marketplace::install_marketplace_pack,

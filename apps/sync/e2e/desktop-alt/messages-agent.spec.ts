@@ -10,7 +10,10 @@ describe('desktop-alt Messages agent handoff', () => {
     expect(shell).toContain('async function sendAgentPrompt(');
     expect(shell).toContain('peer: Contact');
     expect(shell).toContain('generation: number');
+    expect(shell).toContain("import { buildClaudePromptWithSkillCatalog } from '../../lib/skill-catalog-prompt'");
     expect(shell).toContain("hqSkillMarkdownLink('startwork', hqFolderPath)");
+    expect(shell).toContain('buildClaudePromptWithSkillCatalog(basePrompt, companySlug)');
+    expect(shell).toContain('companySlug = cfg?.companySlug ?? null');
     // Capture the selected peer, send generation, and workspace before the
     // async handoff so a late completion cannot mutate a newer conversation.
     expect(shell).toContain('const peer = selected');

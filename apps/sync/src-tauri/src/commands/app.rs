@@ -54,6 +54,7 @@ pub fn open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
 #[tauri::command]
 pub fn open_claude_code_link(url: String) -> Result<(), String> {
     crate::commands::launch::validate_claude_deep_link(&url)?;
+    let url = hq_desktop_core::claude_launch::preflight_claude_code_url(&url)?;
 
     #[cfg(not(windows))]
     {

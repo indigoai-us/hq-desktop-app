@@ -12,6 +12,7 @@ use hq_desktop_core::library_local::{
     resolve_skill_detail_target, resolve_worker_detail_target, scan_company_library,
     scan_root_library, validate_slug, ResolvedLibraryDetailTarget,
 };
+use hq_desktop_core::skill_catalog::SkillCatalogExport;
 #[allow(unused_imports)]
 pub use hq_desktop_core::library_local::{
     LibraryItems, LibrarySkill, LibraryWorker, SkillDetail, WorkerDetail,
@@ -126,6 +127,29 @@ pub async fn get_library_skill_detail(skill_path: String) -> Result<SkillDetail,
         return Err("Library skill target changed during authorization".to_string());
     }
     read_skill_detail_target(&refreshed)
+}
+
+/// Export a bounded markdown skill catalog for Claude Code Desktop bootstrap.
+/// When `company_slug` is set, company skills are listed first and shadow
+/// root/package names on collision — matching SessionStart catalog semantics.
+#[tauri::command]
+pub async fn export_skill_catalog(company_slug: Option<String>) -> Result<SkillCatalogExport, String> {
+    if !crate::util::feature_gate::desktop_features_enabled().await {
+        return Err("library reader requires a signed-in user".to_string());
+    }
+    let hq = resolve_hq_folder();
+    let slug = company_slug
+        .as_deref()
+        .map(validate_slug)
+        .transpose()?;
+    if let Some(company_slug) = slug.as_deref() {
+        let (_, workspaces) = hydrated_library_context().await?;
+        require_library_company_access(&workspaces, company_slug)?;
+    }
+    Ok(hq_desktop_core::skill_catalog::export_skill_catalog(
+        &hq,
+        slug.as_deref(),
+    ))
 }
 
 #[cfg(test)]
