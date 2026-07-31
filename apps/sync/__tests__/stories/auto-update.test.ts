@@ -87,8 +87,11 @@ describe('master automatic-updates switch', () => {
     // detected version never moved and `update_available` stayed true forever.
     // Three source contracts keep that from recurring.
 
-    // 1. A zero exit is not success — the detected version must reach `latest`.
-    expect(cliUpdate).toContain('if !install_converged(resolved.as_deref(), &latest) {');
+    // 1. A zero exit is not success — the version must reach `latest`, decided
+    //    by a single predicate (`install_converged`) rather than a second
+    //    hand-rolled comparison that could drift from it.
+    expect(cliUpdate).toContain('verify_active_cli_version(resolved.clone(), &latest)');
+    expect(cliUpdate).toContain('install_converged(Some(&local), latest)');
     // The old code fabricated `latest` as the local version when detection came
     // back empty, which is precisely what made a failed install read as a win.
     expect(cliUpdate).not.toContain('.or_else(|| Some(latest.clone()))');
@@ -110,7 +113,10 @@ describe('master automatic-updates switch', () => {
     //    npm just wrote while the resolved executable is untouched. That trades
     //    a loud reinstall loop for a silent "up to date" lie.
     expect(cliUpdate).toContain('resolved_hq_version(&hq)');
-    expect(cliUpdate).not.toContain('install_converged(local.as_deref()');
+    // The gate must be fed the execution-bound probe, never `get_local_version`'s
+    // `npm root -g` fallback — that reading moves to `latest` for exactly the
+    // pnpm/Homebrew layouts this guards, while the resolved binary stays stale.
+    expect(cliUpdate).not.toContain('verify_active_cli_version(detected');
 
     // 5. The target is pinned BEFORE npm runs, so a release published mid-install
     //    cannot get recorded as non-convergent without ever being attempted.

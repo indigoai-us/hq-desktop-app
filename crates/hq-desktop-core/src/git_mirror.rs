@@ -589,11 +589,7 @@ fn run_mirror(hq_folder: &str, git_dir: &Path) -> Result<(), String> {
     // `diff --cached --quiet` exits 0 when index == HEAD, 1 when staged
     // changes exist. Anything else is unexpected (signal, missing HEAD on
     // a brand-new repo, etc.) and gets logged but isn't fatal.
-    let staged = git_output(
-        hq_folder,
-        &["diff", "--cached", "--quiet"],
-        GIT_INDEX_TIMEOUT,
-    )?;
+    let staged = git_output(hq_folder, &["diff", "--cached", "--quiet"], GIT_INDEX_TIMEOUT)?;
     match staged.status.code() {
         Some(0) => {
             log(LOG_TAG, &format!("{hq_folder}: nothing to commit"));
@@ -800,13 +796,15 @@ fn git_output(cwd: &str, args: &[&str], timeout: Duration) -> Result<Output, Str
     // A stalled drain must never look like empty output: `count_staged_
     // deletions` reading an empty stdout as "zero deletions" would wave a mass
     // delete straight through the guard. Fail the run instead.
-    let stdout = stdout_rx.recv_timeout(PIPE_DRAIN_GRACE).map_err(|_| {
-        format!(
-            "git {label} exited but its output could not be read within {}s \
+    let stdout = stdout_rx
+        .recv_timeout(PIPE_DRAIN_GRACE)
+        .map_err(|_| {
+            format!(
+                "git {label} exited but its output could not be read within {}s \
                  (a helper process is still holding the pipe)",
-            PIPE_DRAIN_GRACE.as_secs()
-        )
-    })?;
+                PIPE_DRAIN_GRACE.as_secs()
+            )
+        })?;
     // stderr is diagnostic only, so a stall there must not fail a command that
     // otherwise succeeded.
     let stderr = stderr_rx.recv_timeout(PIPE_DRAIN_GRACE).unwrap_or_default();
@@ -922,14 +920,8 @@ mod tests {
     #[test]
     fn bulk_verdict_refuses_when_both_thresholds_are_met() {
         // Exactly at both thresholds.
-        assert_eq!(
-            bulk_delete_verdict(10, 100, false),
-            BulkDeleteVerdict::Refuse
-        );
-        assert_eq!(
-            bulk_delete_verdict(50, 100, false),
-            BulkDeleteVerdict::Refuse
-        );
+        assert_eq!(bulk_delete_verdict(10, 100, false), BulkDeleteVerdict::Refuse);
+        assert_eq!(bulk_delete_verdict(50, 100, false), BulkDeleteVerdict::Refuse);
         // The reported incident's shape: 1,108 of ~4,347.
         assert_eq!(
             bulk_delete_verdict(1_108, 4_347, false),
@@ -939,10 +931,7 @@ mod tests {
 
     #[test]
     fn bulk_verdict_honors_the_operator_override() {
-        assert_eq!(
-            bulk_delete_verdict(1_108, 4_347, true),
-            BulkDeleteVerdict::Allow
-        );
+        assert_eq!(bulk_delete_verdict(1_108, 4_347, true), BulkDeleteVerdict::Allow);
     }
 
     #[test]
@@ -953,19 +942,9 @@ mod tests {
     #[test]
     fn bulk_override_parses_the_same_spellings_as_the_engine() {
         for truthy in ["1", "true", "TRUE", "Yes", " yes "] {
-            assert!(
-                parse_bulk_override(Some(truthy)),
-                "{truthy} should be truthy"
-            );
+            assert!(parse_bulk_override(Some(truthy)), "{truthy} should be truthy");
         }
-        for falsy in [
-            None,
-            Some(""),
-            Some("0"),
-            Some("false"),
-            Some("no"),
-            Some("on"),
-        ] {
+        for falsy in [None, Some(""), Some("0"), Some("false"), Some("no"), Some("on")] {
             assert!(!parse_bulk_override(falsy), "{falsy:?} should be falsy");
         }
     }
@@ -993,10 +972,7 @@ mod tests {
 
     #[test]
     fn reaps_only_a_zero_byte_unheld_aged_lock() {
-        assert!(should_reap_index_lock(
-            lock_state(0, 600),
-            STALE_LOCK_MIN_AGE
-        ));
+        assert!(should_reap_index_lock(lock_state(0, 600), STALE_LOCK_MIN_AGE));
     }
 
     #[test]
@@ -1011,15 +987,9 @@ mod tests {
         };
         assert!(!should_reap_index_lock(missing, STALE_LOCK_MIN_AGE));
         // Non-empty: a real writer has begun writing the new index.
-        assert!(!should_reap_index_lock(
-            lock_state(64, 600),
-            STALE_LOCK_MIN_AGE
-        ));
+        assert!(!should_reap_index_lock(lock_state(64, 600), STALE_LOCK_MIN_AGE));
         // Too fresh.
-        assert!(!should_reap_index_lock(
-            lock_state(0, 10),
-            STALE_LOCK_MIN_AGE
-        ));
+        assert!(!should_reap_index_lock(lock_state(0, 10), STALE_LOCK_MIN_AGE));
         // Someone holds the file open.
         let held = IndexLockState {
             holder_present: true,
@@ -1449,12 +1419,11 @@ mod tests {
         let trees = TempDir::new().unwrap();
         seed_repo(main.path(), 3);
         let wt = trees.path().join("wt");
-        assert!(git(
-            main.path(),
-            &["worktree", "add", "-q", wt.to_str().unwrap()]
-        )
-        .status
-        .success());
+        assert!(
+            git(main.path(), &["worktree", "add", "-q", wt.to_str().unwrap()])
+                .status
+                .success()
+        );
         assert!(wt.join(".git").is_file(), "expected a linked worktree");
 
         // Compared by trailing components, not prefix: macOS resolves the
@@ -1515,12 +1484,8 @@ mod tests {
             .expect("git available in test env");
         let _stdin = child.stdin.take().expect("piped stdin");
 
-        let err = wait_with_timeout(
-            &mut child,
-            Duration::from_millis(200),
-            "hash-object --stdin",
-        )
-        .expect_err("a blocked child must time out");
+        let err = wait_with_timeout(&mut child, Duration::from_millis(200), "hash-object --stdin")
+            .expect_err("a blocked child must time out");
 
         assert!(err.contains("timed out"), "unexpected error: {err}");
         assert!(

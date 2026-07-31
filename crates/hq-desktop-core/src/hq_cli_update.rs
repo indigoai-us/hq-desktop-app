@@ -60,7 +60,9 @@ pub fn version_if_hq_cli(pkg: &Path) -> Option<String> {
 /// user runs*. An npm global install lays down `<prefix>/bin/hq` as a symlink
 /// into `<prefix>/lib/node_modules/@indigoai-us/hq-cli/<bin script>`, so once
 /// we `canonicalize` the resolved path we land *inside* the package tree and
-/// can walk `ancestors()` to its `package.json`.
+/// can walk `ancestors()` to its `package.json`. Windows instead lays down
+/// `<prefix>\hq.cmd` beside `<prefix>\node_modules`; that layout is read
+/// directly from the resolved shim's parent.
 ///
 /// This is the fix for the prefix-mismatch bug: it does NOT depend on which
 /// `npm` the app resolved or what `npm root -g` reports — it reads the
@@ -69,6 +71,19 @@ pub fn version_from_hq_binary(hq_bin: &Path) -> Option<String> {
     let real = std::fs::canonicalize(hq_bin).ok()?;
     for ancestor in real.ancestors() {
         if let Some(v) = version_if_hq_cli(&ancestor.join("package.json")) {
+            return Some(v);
+        }
+    }
+
+    // Windows npm does not create a symlink into the package tree. It writes
+    // `<prefix>\hq.cmd` beside `<prefix>\node_modules`, so canonicalizing the
+    // shim can never reach package.json through its ancestors. Anchor the
+    // fallback to that exact shim's prefix instead of asking npm for its
+    // unrelated default global root.
+    let hq_bin_str = hq_bin.to_string_lossy();
+    let prefix = npm_prefix_from_hq_bin(&hq_bin_str)?;
+    for package_json in hq_cli_package_json_candidates(Path::new(&prefix), hq_bin) {
+        if let Some(v) = version_if_hq_cli(&package_json) {
             return Some(v);
         }
     }
@@ -610,44 +625,76 @@ pub fn report_install_failure(exit_code: Option<i32>, detail: &str, prefix: Opti
 
 /// Derive the npm global prefix from the exact `hq` binary the app resolved.
 ///
-/// npm's global layout is `<prefix>/bin/hq` plus
-/// `<prefix>/lib/node_modules/@indigoai-us/hq-cli/package.json`. Detection is
-/// already anchored to `resolve_bin("hq")`, so the updater must write to that
-/// same enclosing prefix or it can install a fresh CLI that the app never
-/// executes. Deliberately avoid `canonicalize`: for symlinks we want the
-/// symlink's own `<prefix>/bin/hq`, not the package-internal target path.
+/// Unix npm uses `<prefix>/bin/hq`; Windows npm writes `<prefix>\hq.cmd`.
+/// Detection is already anchored to `resolve_bin("hq")`, so the updater must
+/// write to that same enclosing prefix or it can install a fresh CLI that the
+/// app never executes. Deliberately avoid `canonicalize`: for Unix symlinks we
+/// want the symlink's own prefix, not the package-internal target path.
 ///
-/// **The `bin` guard is load-bearing.** `resolve_bin` also searches package
-/// managers whose global bin directory is *flat* — pnpm's `~/Library/pnpm`
-/// (macOS) and `~/.local/share/pnpm` (Linux) both hold the shim directly. For
-/// those, walking up two levels lands on a directory npm has never managed
-/// (plain `~/Library`), and npm will cheerfully honour `--prefix` there:
-/// it creates `~/Library/bin` + `~/Library/lib/node_modules`, exits 0, and the
-/// install is invisible to every detection path. The updater then reinstalls on
-/// every launch and every 6h check, forever, logging success each time. So a
-/// parent directory literally named `bin` is what proves the grandparent is an
-/// npm prefix; without it we return `None` and let npm use its own configured
-/// global prefix, which is at least internally consistent with `npm root -g`
-/// (the fallback `get_local_version` reads).
+/// **The `bin` guard on the Unix branch is load-bearing.** `resolve_bin` also
+/// searches package managers whose global bin directory is *flat* — pnpm's
+/// `~/Library/pnpm` (macOS) and `~/.local/share/pnpm` (Linux) both hold the
+/// shim directly. For those, walking up two levels lands on a directory npm has
+/// never managed (plain `~/Library`), and npm will cheerfully honour `--prefix`
+/// there: it creates `~/Library/bin` + `~/Library/lib/node_modules`, exits 0,
+/// and the install is invisible to every detection path. The updater then
+/// reinstalls on every launch and every 6h check, forever, logging success each
+/// time. So a parent directory literally named `bin` is what proves the
+/// grandparent is an npm prefix; without it we return `None` and let npm use
+/// its own configured global prefix, which is at least internally consistent
+/// with `npm root -g` (the fallback `get_local_version` reads).
 pub fn npm_prefix_from_hq_bin(hq_bin: &str) -> Option<String> {
     if hq_bin == "hq" {
         return None;
     }
-    let bin_dir = Path::new(hq_bin).parent()?;
-
-    // Windows keeps the historical grandparent walk: npm's shims there are
-    // `<prefix>\hq.cmd` and the managed-toolchain layout is validated against
-    // the existing behaviour, so a unix-shaped `bin` contract must not be
-    // imposed on it as a side effect of this fix.
-    #[cfg(not(target_os = "windows"))]
-    if !matches!(bin_dir.file_name().and_then(|n| n.to_str()), Some("bin")) {
-        return None;
+    let path = Path::new(hq_bin);
+    let parent = path.parent()?;
+    let is_windows_npm_shim = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| matches!(ext.to_ascii_lowercase().as_str(), "cmd" | "bat"))
+        .unwrap_or(false);
+    let prefix = if is_windows_npm_shim {
+        // `<prefix>\hq.cmd` — the shim sits directly in the prefix.
+        parent
+    } else {
+        // `<prefix>/bin/hq`. A parent named `bin` is the only thing that proves
+        // the grandparent is an npm prefix; see the doc comment for the pnpm
+        // flat-dir case this rejects.
+        if !matches!(parent.file_name().and_then(|n| n.to_str()), Some("bin")) {
+            return None;
+        }
+        parent.parent()?
+    };
+    if prefix.as_os_str().is_empty() {
+        None
+    } else {
+        Some(prefix.to_string_lossy().to_string())
     }
+}
 
-    bin_dir
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .map(|p| p.to_string_lossy().to_string())
+fn hq_cli_package_json_candidates(prefix: &Path, hq_bin: &Path) -> Vec<std::path::PathBuf> {
+    let is_windows_npm_shim = hq_bin
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| matches!(ext.to_ascii_lowercase().as_str(), "cmd" | "bat"))
+        .unwrap_or(false);
+    let windows = prefix
+        .join("node_modules")
+        .join("@indigoai-us")
+        .join("hq-cli")
+        .join("package.json");
+    let unix = prefix
+        .join("lib")
+        .join("node_modules")
+        .join("@indigoai-us")
+        .join("hq-cli")
+        .join("package.json");
+    if is_windows_npm_shim {
+        vec![windows, unix]
+    } else {
+        vec![unix, windows]
+    }
 }
 
 /// Build the argv for the global install. Factored out so the unit test
@@ -794,7 +841,6 @@ mod tests {
     /// let npm use its own configured global prefix, which is at least
     /// internally consistent.
     #[test]
-    #[cfg(not(target_os = "windows"))]
     fn npm_prefix_rejects_flat_shim_dirs_that_are_not_npm_prefixes() {
         // pnpm on macOS — the exact path from the field report.
         assert_eq!(npm_prefix_from_hq_bin("/Users/test/Library/pnpm/hq"), None);
@@ -810,7 +856,6 @@ mod tests {
     /// The npm layouts that *do* yield a usable prefix must keep working —
     /// this is the half of the contract the fix must not regress.
     #[test]
-    #[cfg(not(target_os = "windows"))]
     fn npm_prefix_still_accepts_real_npm_bin_layouts() {
         assert_eq!(
             npm_prefix_from_hq_bin("/opt/homebrew/bin/hq"),
@@ -968,6 +1013,42 @@ mod tests {
         assert_eq!(
             redact_home_in("/Users/alice/x", Some("/")),
             "/Users/alice/x"
+        );
+    }
+
+    #[test]
+    fn npm_prefix_from_windows_hq_cmd_uses_its_parent_directory() {
+        assert_eq!(
+            npm_prefix_from_hq_bin(
+                "C:/Users/test/AppData/Local/IndigoHQ/toolchain/npm-prefix/hq.cmd"
+            ),
+            Some("C:/Users/test/AppData/Local/IndigoHQ/toolchain/npm-prefix".to_string()),
+            "Windows global npm shims live directly in <prefix>, not <prefix>/bin"
+        );
+    }
+
+    #[test]
+    fn version_from_windows_hq_cmd_reads_sibling_node_modules_package() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let prefix = tmp.path().join("npm-prefix");
+        let pkg_dir = prefix.join("node_modules/@indigoai-us/hq-cli");
+        std::fs::create_dir_all(&pkg_dir).unwrap();
+        std::fs::write(
+            pkg_dir.join("package.json"),
+            br#"{"name":"@indigoai-us/hq-cli","version":"5.79.0"}"#,
+        )
+        .unwrap();
+        let shim = prefix.join("hq.cmd");
+        std::fs::write(
+            &shim,
+            b"@node \"%~dp0\\node_modules\\@indigoai-us\\hq-cli\\dist\\index.js\" %*\r\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            version_from_hq_binary(&shim),
+            Some("5.79.0".to_string()),
+            "Windows npm shims are siblings of node_modules, not symlinks into the package"
         );
     }
 
