@@ -636,9 +636,12 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
                     let cancelled = is_cancelled(DAEMON_HANDLE);
                     if cancelled {
                         // Deliberate stop path already recorded lifecycle.
+                        reset_exec_not_runnable_failure_streak();
                     } else if is_unexpected_watcher_exit(success, signal, cancelled) {
                         let consecutive = note_watcher_crashed();
                         let capture_policy = watcher_exit_capture_policy(code, signal);
+                        let policy_consecutive =
+                            note_watcher_capture_policy_streak(capture_policy, consecutive);
                         set_lifecycle_state(
                             if within_respawn_backoff() {
                                 WatchDaemonState::Backoff
@@ -659,11 +662,13 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
                             code,
                             signal,
                             consecutive,
+                            policy_consecutive,
                             capture_policy,
                             &watcher_command,
                             last_stderr.as_deref(),
                         );
                     } else {
+                        reset_exec_not_runnable_failure_streak();
                         set_lifecycle_state(WatchDaemonState::Stopped, DaemonFailureCategory::None);
                     }
                 }
@@ -752,6 +757,7 @@ fn record_unexpected_watcher_exit(
     code: Option<i32>,
     signal: Option<i32>,
     consecutive: u32,
+    policy_consecutive: u32,
     capture_policy: WatcherExitCapturePolicy,
     watcher_command: &str,
     last_stderr: Option<&str>,
@@ -776,7 +782,7 @@ fn record_unexpected_watcher_exit(
         return;
     }
 
-    if !should_capture_watcher_exit(capture_policy, consecutive) {
+    if !should_capture_watcher_exit(capture_policy, policy_consecutive) {
         log(
             "daemon",
             &format!(
@@ -1004,6 +1010,10 @@ struct WatcherCrashState {
     /// Consecutive fast failures (crash-loop length). Reset once a watcher
     /// survives `FAST_FAIL_WINDOW`.
     consecutive: u32,
+    /// Consecutive exec-not-runnable (126/127) exits. This stays separate from
+    /// `consecutive`: unrelated fast exits must never turn one 126/127 blip
+    /// into an escalated capture.
+    exec_not_runnable_consecutive: u32,
     /// When the current watcher was spawned — drives the fast-failure decision
     /// and the "survived long enough to reset" check.
     spawn_at: Option<Instant>,
@@ -1066,6 +1076,27 @@ fn note_watcher_crashed() -> u32 {
     consecutive
 }
 
+/// Return the streak relevant to the selected capture policy. The global
+/// crash-loop counter still owns backoff and ordinary crash milestones; only
+/// the 126/127 escalation needs its own failure-class streak.
+fn note_watcher_capture_policy_streak(
+    policy: WatcherExitCapturePolicy,
+    global_consecutive: u32,
+) -> u32 {
+    let mut st = crash_state().lock().unwrap();
+    if policy == WatcherExitCapturePolicy::CaptureRateLimited {
+        st.exec_not_runnable_consecutive = st.exec_not_runnable_consecutive.saturating_add(1);
+        st.exec_not_runnable_consecutive
+    } else {
+        st.exec_not_runnable_consecutive = 0;
+        global_consecutive
+    }
+}
+
+fn reset_exec_not_runnable_failure_streak() {
+    crash_state().lock().unwrap().exec_not_runnable_consecutive = 0;
+}
+
 /// Apply the same exponential retry dampening when a preflight positively
 /// identifies a local npm/cache setup failure. No watcher was spawned, so it
 /// must not create a Sentry event; the backoff merely prevents the supervisor
@@ -1109,6 +1140,7 @@ fn reset_crash_state_if_recovered() {
     let mut st = crash_state().lock().unwrap();
     if should_reset_after_recovery(st.spawn_at.map(|t| t.elapsed()), FAST_FAIL_WINDOW) {
         st.consecutive = 0;
+        st.exec_not_runnable_consecutive = 0;
         st.backoff_until = None;
     }
 }
@@ -1774,6 +1806,31 @@ mod tests {
             watcher_exit_capture_policy(Some(2), Some(SIGKILL)),
             WatcherExitCapturePolicy::Capture
         );
+    }
+
+    #[test]
+    fn exec_not_runnable_escalation_counts_its_own_failure_class_only() {
+        *crash_state().lock().unwrap() = WatcherCrashState::default();
+        let exec_policy = WatcherExitCapturePolicy::CaptureRateLimited;
+
+        // A global crash-loop already at #4 (for example, three prior code-1
+        // exits) must not cause this first 127 to page immediately.
+        let first_exec = note_watcher_capture_policy_streak(exec_policy, 4);
+        assert_eq!(first_exec, 1);
+        assert!(!should_capture_watcher_exit(exec_policy, first_exec));
+
+        for expected in [2, 3, 4] {
+            let streak = note_watcher_capture_policy_streak(exec_policy, 99);
+            assert_eq!(streak, expected);
+        }
+        assert!(should_capture_watcher_exit(exec_policy, 4));
+
+        // Any non-126/127 exit ends the class-specific episode.
+        assert_eq!(
+            note_watcher_capture_policy_streak(WatcherExitCapturePolicy::LocalLogOnly, 5),
+            5
+        );
+        assert_eq!(note_watcher_capture_policy_streak(exec_policy, 6), 1);
     }
 
     #[test]
