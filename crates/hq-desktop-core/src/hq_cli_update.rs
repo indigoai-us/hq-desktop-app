@@ -238,6 +238,50 @@ pub fn non_convergent_cli_version() -> Option<String> {
         .map(|s| s.to_string())
 }
 
+/// Version of the `hq` the app will actually **execute** — the only probe valid
+/// for proving an install converged.
+///
+/// `get_local_version` deliberately falls back to `npm root -g`. That is right
+/// for the banner (it answers "is something stale installed?") but fatal as a
+/// convergence proof: when the resolved `hq` is a pnpm or Homebrew copy npm
+/// cannot replace, an `npm install -g` moves the npm-root reading to `latest`
+/// while the executable the app actually runs stays stale. Accepting that
+/// reading would let the updater declare victory over an install it never
+/// touched, mark the CLI current forever, and leave the app quietly running the
+/// old binary — a quieter version of the same bug this module is fixing.
+///
+/// So this probe stays bound to the resolved binary: anchor into its own
+/// package tree, and failing that ask the binary itself. Never `npm root -g`.
+pub fn resolved_hq_version(hq_bin: &str) -> Option<String> {
+    if hq_bin == "hq" {
+        return None;
+    }
+    let path = Path::new(hq_bin);
+    version_from_hq_binary(path).or_else(|| hq_version_string(path))
+}
+
+/// Replace every occurrence of the home directory with `~`. Sentry extras want
+/// the install *layout* (`~/Library/pnpm/hq` tells us everything we need); the
+/// account name in front of it is personal data we have no reason to ship.
+///
+/// Global replace, not a prefix strip: this also runs over npm stderr, where
+/// home paths appear mid-string (`EACCES: permission denied, mkdir
+/// '/Users/alice/…'`) rather than at the front. `/` as a home directory is
+/// ignored — replacing every slash would destroy the text it is meant to
+/// sanitise.
+pub fn redact_home_in(text: &str, home: Option<&str>) -> String {
+    match home {
+        Some(h) if !h.is_empty() && h != "/" => text.replace(h, "~"),
+        _ => text.to_string(),
+    }
+}
+
+/// `redact_home_in` against this machine's real home directory.
+pub fn redact_home(path: &str) -> String {
+    let home = paths::home_dir().map(|h| h.to_string_lossy().to_string());
+    redact_home_in(path, home.as_deref())
+}
+
 /// Did an install npm reported as successful actually move the version the app
 /// detects?
 ///
@@ -268,6 +312,14 @@ pub fn should_auto_install(latest: &str, non_convergent: Option<&str>) -> bool {
     non_convergent != Some(latest)
 }
 
+/// Stable marker on the non-convergent error string. The UI keys off it to tell
+/// this apart from an npm failure, because the two remedies are opposites: an
+/// npm failure wants "retry, or copy the install command", whereas a
+/// non-convergent install means that exact command has *already* been proven
+/// unable to replace the selected CLI, so offering it again only repeats the
+/// failure. Callers strip the marker before display.
+pub const NON_CONVERGENT_ERROR_PREFIX: &str = "hq-cli-update/non-convergent: ";
+
 /// The message shown (and logged) when an install completes without
 /// converging. It has to name the specific binary that did not move: a machine
 /// in this state usually has two or three `hq` copies, and knowing *which* one
@@ -275,10 +327,11 @@ pub fn should_auto_install(latest: &str, non_convergent: Option<&str>) -> bool {
 pub fn non_convergent_detail(hq_bin: &str, local: Option<&str>, latest: &str) -> String {
     let current = local.unwrap_or("an unreadable version");
     format!(
-        "hq {latest} installed successfully, but the app still resolves hq {current} at \
-         {hq_bin}. That copy is managed outside npm's global prefix (pnpm, Homebrew, or an \
-         earlier entry on PATH), so an npm install cannot replace it. Update it with the tool \
-         that installed it, or remove it so the npm-managed copy takes over."
+        "{NON_CONVERGENT_ERROR_PREFIX}hq {latest} installed successfully, but the app still \
+         resolves hq {current} at {hq_bin}. That copy is managed outside npm's global prefix \
+         (pnpm, Homebrew, or an earlier entry on PATH), so an npm install cannot replace it. \
+         Update it with the tool that installed it, or remove it so the npm-managed copy \
+         takes over."
     )
 }
 
@@ -300,10 +353,15 @@ pub fn report_non_convergent_install(
             scope.set_tag("latest", latest);
             scope.set_tag("local", local.unwrap_or("unreadable"));
             scope.set_fingerprint(Some(&["hq-cli-update", "install-non-convergent"]));
-            scope.set_extra("hq_bin", hq_bin.to_string().into());
+            // Home-redacted: the install LAYOUT is the diagnostic
+            // (`~/Library/pnpm/hq` says everything); the account name in front
+            // of it is personal data. The shared `before_send` scrubber only
+            // filters by key name, so ordinary string extras like these reach
+            // Sentry verbatim unless redacted here.
+            scope.set_extra("hq_bin", redact_home(hq_bin).into());
             scope.set_extra(
                 "npm_prefix",
-                prefix.unwrap_or("npm default prefix").to_string().into(),
+                redact_home(prefix.unwrap_or("npm default prefix")).into(),
             );
         },
         || {
@@ -516,8 +574,11 @@ pub fn install_failure_report(
 /// permission failure at the selected global prefix is deliberately NOT
 /// captured: it floods Sentry with an unactionable Error every auto-update
 /// cycle while the user already has the copy-the-command fallback. The npm
-/// stderr tail (scrubbed of tokens/home paths by `sentry_scrub`) rides along as
-/// the useful signal for every captured failure.
+/// stderr tail rides along as the useful signal for every captured failure,
+/// home-redacted here: npm errors quote absolute paths
+/// (`EACCES … mkdir '/Users/alice/…'`), and the shared `before_send` scrubber
+/// only filters values whose *key* looks secret-like, so an ordinary string
+/// extra reaches Sentry verbatim unless it is redacted at the call site.
 pub fn report_install_failure(exit_code: Option<i32>, detail: &str, prefix: Option<&str>) {
     let kind = classify_install_failure(exit_code, detail, prefix);
     let Some(message) = install_failure_report(exit_code, detail, prefix) else {
@@ -539,7 +600,7 @@ pub fn report_install_failure(exit_code: Option<i32>, detail: &str, prefix: Opti
                 exit_str.as_str(),
             ];
             scope.set_fingerprint(Some(&fingerprint));
-            scope.set_extra("npm_stderr", detail.to_string().into());
+            scope.set_extra("npm_stderr", redact_home(detail).into());
         },
         || {
             sentry::capture_message(&message, sentry::Level::Error);
@@ -791,15 +852,122 @@ mod tests {
 
     /// The failure text is the whole remedy for a non-convergent install — it
     /// has to name the binary that did not move, or the user has no way to know
-    /// which of several installed copies is shadowing the update.
+    /// which of several installed copies is shadowing the update. It also has
+    /// to carry the marker, since the UI keys off it to suppress the
+    /// copy-the-install-command action that would just repeat the failure.
     #[test]
     fn non_convergent_detail_names_the_binary_that_did_not_move() {
         let detail = non_convergent_detail("/Users/test/Library/pnpm/hq", Some("5.38.2"), "5.79.0");
+        assert!(
+            detail.starts_with(NON_CONVERGENT_ERROR_PREFIX),
+            "UI keys off this marker; got {detail}"
+        );
         assert!(detail.contains("5.79.0"), "must name the target version");
         assert!(detail.contains("5.38.2"), "must name the stuck version");
         assert!(
             detail.contains("/Users/test/Library/pnpm/hq"),
             "must name the shadowing binary; got {detail}"
+        );
+    }
+
+    /// Convergence must be judged on the binary the app EXECUTES. Anchoring it
+    /// to `get_local_version` would accept the `npm root -g` fallback — which,
+    /// for exactly the pnpm/Homebrew layouts this PR is about, reports the copy
+    /// npm just wrote while the resolved executable is untouched. That trades a
+    /// loud reinstall loop for a silent "up to date" lie.
+    #[test]
+    #[cfg(unix)]
+    fn resolved_hq_version_never_falls_back_to_the_npm_root_reading() {
+        use std::io::Write;
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        // A pnpm-style FLAT shim: a real script, not a symlink into any package
+        // tree, with no `@indigoai-us/hq-cli/package.json` above it.
+        let shim_dir = tmp.path().join("Library/pnpm");
+        std::fs::create_dir_all(&shim_dir).unwrap();
+        let shim = shim_dir.join("hq");
+        std::fs::File::create(&shim)
+            .unwrap()
+            .write_all(b"#!/bin/sh\nexit 1\n")
+            .unwrap();
+
+        // A newer npm-global install sitting elsewhere on the same machine —
+        // the copy `npm root -g` would report. It must NOT be picked up here.
+        let pkg_dir = tmp
+            .path()
+            .join("npm-global/lib/node_modules/@indigoai-us/hq-cli");
+        std::fs::create_dir_all(&pkg_dir).unwrap();
+        std::fs::File::create(pkg_dir.join("package.json"))
+            .unwrap()
+            .write_all(br#"{"name":"@indigoai-us/hq-cli","version":"5.79.0"}"#)
+            .unwrap();
+
+        // Binary-anchoring fails and the shim exits non-zero, so both probes
+        // come back empty rather than borrowing the unrelated 5.79.0.
+        assert_eq!(resolved_hq_version(&shim.to_string_lossy()), None);
+        // ...and an unresolved `hq` is never treated as a version.
+        assert_eq!(resolved_hq_version("hq"), None);
+    }
+
+    /// A resolvable npm-layout binary still reads correctly — the half of the
+    /// probe that must keep working for ordinary users.
+    #[test]
+    #[cfg(unix)]
+    fn resolved_hq_version_reads_an_npm_layout_symlink() {
+        use std::io::Write;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let pkg_dir = tmp.path().join("lib/node_modules/@indigoai-us/hq-cli");
+        std::fs::create_dir_all(pkg_dir.join("dist")).unwrap();
+        std::fs::File::create(pkg_dir.join("package.json"))
+            .unwrap()
+            .write_all(br#"{"name":"@indigoai-us/hq-cli","version":"5.79.0"}"#)
+            .unwrap();
+        let real = pkg_dir.join("dist/index.js");
+        std::fs::File::create(&real)
+            .unwrap()
+            .write_all(b"#!/usr/bin/env node\n")
+            .unwrap();
+        let bin_dir = tmp.path().join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let link = bin_dir.join("hq");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        assert_eq!(
+            resolved_hq_version(&link.to_string_lossy()),
+            Some("5.79.0".to_string())
+        );
+    }
+
+    /// Sentry extras carry the install layout, never the account name. The
+    /// shared `before_send` scrubber filters by KEY name only, so ordinary
+    /// string extras leak verbatim unless redacted at the call site.
+    #[test]
+    fn redact_home_strips_the_account_name_everywhere_it_appears() {
+        let home = Some("/Users/alice");
+        // A bare path value.
+        assert_eq!(
+            redact_home_in("/Users/alice/Library/pnpm/hq", home),
+            "~/Library/pnpm/hq"
+        );
+        // npm stderr embeds paths mid-string — a prefix strip would miss these,
+        // which is why this is a global replace.
+        assert_eq!(
+            redact_home_in(
+                "npm error Error: EACCES: permission denied, mkdir '/Users/alice/Library/lib'",
+                home,
+            ),
+            "npm error Error: EACCES: permission denied, mkdir '~/Library/lib'"
+        );
+        // Nothing to redact / no home known → unchanged.
+        assert_eq!(
+            redact_home_in("/opt/homebrew/bin/hq", home),
+            "/opt/homebrew/bin/hq"
+        );
+        assert_eq!(redact_home_in("/Users/alice/x", None), "/Users/alice/x");
+        // `/` as home would otherwise shred every path in the string.
+        assert_eq!(
+            redact_home_in("/Users/alice/x", Some("/")),
+            "/Users/alice/x"
         );
     }
 
