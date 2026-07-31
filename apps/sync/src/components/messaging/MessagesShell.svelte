@@ -35,6 +35,7 @@
   } from '@tauri-apps/api/event';
   import { buildClaudeCodeUrl } from '../../lib/claude-code-link';
   import { hqSkillMarkdownLink } from '../../lib/hq-skill-link';
+  import { buildClaudePromptWithSkillCatalog } from '../../lib/skill-catalog-prompt';
   import { appendInboundBatch } from '../../lib/dmThread';
   import { shareTitle } from '../../lib/share-path';
   import Conversation, { type ConversationMessage } from './Conversation.svelte';
@@ -158,6 +159,7 @@
   interface AppConfig {
     personUid?: string | null;
     hqFolderPath?: string | null;
+    companySlug?: string | null;
   }
 
   interface RequestsResponse {
@@ -214,6 +216,7 @@
   // roster degrades to server-enforced owner gating).
   let selfPersonUid = $state<string | null>(null);
   let hqFolderPath = $state('');
+  let companySlug = $state<string | null>(null);
   let previewHydrationRun = 0;
   const PREVIEW_HYDRATION_LIMIT = 40;
   const LIVE_INBOUND_BACKFILL_LIMIT = 50;
@@ -1126,6 +1129,7 @@
       const cfg = await invoke<AppConfig>('get_config');
       selfPersonUid = cfg?.personUid ?? null;
       hqFolderPath = cfg?.hqFolderPath ?? '';
+      companySlug = cfg?.companySlug ?? null;
     } catch (err) {
       // Non-fatal — the roster degrades to server-enforced owner gating, and
       // agent handoff simply omits the folder until config loads.
@@ -1350,7 +1354,8 @@
     generation: number,
   ): Promise<void> {
     const folder = hqFolderPath;
-    const prompt = buildAgentPrompt(text);
+    const basePrompt = buildAgentPrompt(text);
+    const prompt = await buildClaudePromptWithSkillCatalog(basePrompt, companySlug);
     const url = buildClaudeCodeUrl({ folder, prompt });
     await invoke('open_claude_code_link', { url });
     if (!dmSendIsCurrent(peer, generation)) return;
