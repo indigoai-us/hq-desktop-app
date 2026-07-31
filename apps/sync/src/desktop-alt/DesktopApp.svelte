@@ -323,6 +323,18 @@
   const filesSelectedPath = $derived<string | null>(
     filesRouteAllowed && route.kind === 'files' ? route.path ?? null : null,
   );
+  const sessionBoundCompanySlug = $derived<string | null>(
+    route.kind === 'files'
+      ? filesActiveSlug
+      : activeCompanySyncEnabled
+        ? activeCompany?.slug ?? null
+        : null,
+  );
+  $effect(() => {
+    void invoke('set_desktop_active_company', {
+      companySlug: sessionBoundCompanySlug,
+    });
+  });
   // A persisted or native deep link can predate the latest membership state.
   // Once hydration confirms the route targets a pending/unknown company, clear
   // its scope and selected file before any raw filesystem surface can mount.
