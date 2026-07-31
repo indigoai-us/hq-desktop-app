@@ -632,87 +632,138 @@ pub fn is_prefix_permission_failure(detail: &str, prefix: Option<&str>) -> bool 
     .any(|target| detail.contains(target))
 }
 
-/// Whether npm reported a permission failure. Keep this parsing separate from
-/// the selected-prefix classifier: npm may fail at its cache, a package script,
-/// or another filesystem location, and those locations have different
-/// remediation paths.
-fn is_npm_permission_failure(detail: &str) -> bool {
-    let detail = detail.to_ascii_lowercase();
-    detail.contains("eacces") || detail.contains("permission denied")
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NpmPathShape {
+    SelectedPrefixNodeModules,
+    GlobalLibNodeModules,
+    BinHq,
+    NpmCache,
+    Other,
+    None,
 }
 
-/// Return a scrub-safe category for a permission failure without retaining the
-/// reported filesystem path. npm's cache errors consistently name its
-/// `_cacache` directory; selected-prefix errors take precedence so the two
-/// categories remain disjoint.
-fn npm_failure_site(detail: &str, prefix: Option<&str>) -> &'static str {
-    if !is_npm_permission_failure(detail) {
-        return "other";
-    }
-    if is_prefix_permission_failure(detail, prefix) {
-        return "prefix";
-    }
-    if detail.to_ascii_lowercase().contains("_cacache") {
-        return "cache";
-    }
-    "other"
-}
-
-/// Return only an allow-listed npm error code for Sentry. npm stderr is often
-/// scrubbed before it can be inspected, but an error code tells us whether a
-/// captured failure came from npm's cache, registry, or installer without
-/// retaining a path, username, or raw output.
-fn npm_error_code(detail: &str) -> String {
-    const ALLOWED_CODES: &[&str] = &[
-        "EACCES",
-        "EAI_AGAIN",
-        "ECONNREFUSED",
-        "ECONNRESET",
-        "EEXIST",
-        "EINTEGRITY",
-        "ENOSPC",
-        "ENOTEMPTY",
-        "ENOTFOUND",
-        "EPERM",
-        "EPIPE",
-        "ERR_SOCKET_TIMEOUT",
-        "ETARGET",
-        "ETIMEDOUT",
-    ];
-    const MARKERS: &[&str] = &["npm error code ", "npm err! code "];
-
-    let code = detail.lines().find_map(|line| {
-        let line = line.trim();
-        MARKERS.iter().find_map(|marker| {
-            line.get(..marker.len())
-                .filter(|prefix| prefix.eq_ignore_ascii_case(marker))
-                .and_then(|_| line.get(marker.len()..))
-                .and_then(|remainder| remainder.split_ascii_whitespace().next())
-        })
-    });
-
-    match code {
-        Some(code)
-            if code
-                .bytes()
-                .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
-                && ALLOWED_CODES.contains(&code) =>
-        {
-            code.to_string()
+impl NpmPathShape {
+    fn tag_value(self) -> &'static str {
+        match self {
+            Self::SelectedPrefixNodeModules => "selected-prefix-node-modules",
+            Self::GlobalLibNodeModules => "global-lib-node-modules",
+            Self::BinHq => "bin-hq",
+            Self::NpmCache => "npm-cache",
+            Self::Other => "other",
+            Self::None => "none",
         }
-        _ => "unknown".to_string(),
     }
 }
 
-/// npm's registry can briefly serve an unsatisfiable graph while packages are
-/// published, or fail during an otherwise ordinary network interruption. The
-/// updater's next scheduled cycle retries after that short external condition
-/// has cleared; this is not an actionable desktop-app error.
-fn is_expected_transient_registry_failure(detail: &str) -> bool {
-    matches!(
-        npm_error_code(detail).as_str(),
-        "ETARGET" | "ECONNRESET" | "ETIMEDOUT" | "ENOTFOUND" | "EAI_AGAIN" | "ERR_SOCKET_TIMEOUT"
-    )
+fn normalized_npm_path(detail: &str) -> Option<String> {
+    detail.lines().find_map(|line| {
+        let line = line.trim();
+        let lower = line.to_ascii_lowercase();
+        let marker = if lower.starts_with("npm error path ") {
+            "npm error path "
+        } else if lower.starts_with("npm err! path ") {
+            "npm err! path "
+        } else {
+            return None;
+        };
+        Some(
+            line[marker.len()..]
+                .trim()
+                .trim_matches(['\'', '\"', '`'])
+                .to_ascii_lowercase()
+                .replace('\\', "/"),
+        )
+    })
+}
+
+fn npm_path_shape(detail: &str, prefix: Option<&str>) -> NpmPathShape {
+    let Some(path) = normalized_npm_path(detail) else {
+        return NpmPathShape::None;
+    };
+
+    if path.contains("/.npm/_cacache") || path.contains("/npm-cache/") {
+        return NpmPathShape::NpmCache;
+    }
+
+    if let Some(prefix) = prefix {
+        let prefix = prefix
+            .trim()
+            .trim_end_matches(['/', '\\'])
+            .to_ascii_lowercase()
+            .replace('\\', "/");
+        if !prefix.is_empty()
+            && [
+                format!("{prefix}/lib/node_modules"),
+                format!("{prefix}/node_modules"),
+            ]
+            .iter()
+            .any(|target| path.contains(target))
+        {
+            return NpmPathShape::SelectedPrefixNodeModules;
+        }
+    }
+
+    if path.contains("/lib/node_modules") || path.contains("/node_modules/@indigoai-us") {
+        NpmPathShape::GlobalLibNodeModules
+    } else if path.ends_with("/bin/hq") || path.ends_with("/hq.cmd") {
+        NpmPathShape::BinHq
+    } else {
+        NpmPathShape::Other
+    }
+}
+
+fn npm_error_code(detail: &str) -> &'static str {
+    let code = detail.lines().find_map(|line| {
+        let line = line.trim().to_ascii_lowercase();
+        line.strip_prefix("npm error code ")
+            .or_else(|| line.strip_prefix("npm err! code "))
+            .and_then(|value| value.split_whitespace().next())
+            .map(str::to_string)
+    });
+    match code.as_deref() {
+        Some("eacces") => "EACCES",
+        Some("eperm") => "EPERM",
+        Some("enotempty") => "ENOTEMPTY",
+        Some("econnreset") => "ECONNRESET",
+        Some("enospc") => "ENOSPC",
+        _ => "unknown",
+    }
+}
+
+fn npm_syscall(detail: &str) -> &'static str {
+    let syscall = detail.lines().find_map(|line| {
+        let line = line.trim().to_ascii_lowercase();
+        line.strip_prefix("npm error syscall ")
+            .or_else(|| line.strip_prefix("npm err! syscall "))
+            .and_then(|value| value.split_whitespace().next())
+            .map(str::to_string)
+    });
+    match syscall.as_deref() {
+        Some("mkdir") => "mkdir",
+        Some("open") => "open",
+        Some("rename") => "rename",
+        Some("unlink") => "unlink",
+        Some("rmdir") => "rmdir",
+        Some("write") => "write",
+        _ => "unknown",
+    }
+}
+
+/// Detect the expected local permission failure when no managed npm prefix can
+/// be derived. In that path npm falls back to its own global prefix, so we
+/// cannot compare against a selected directory. Keep the fallback narrow: it
+/// requires permission evidence plus an npm global-install target and never
+/// suppresses cache or unrelated-path failures.
+pub fn is_global_prefix_permission_failure(exit_code: Option<i32>, detail: &str) -> bool {
+    let detail_lower = detail.to_ascii_lowercase();
+    let permission_shaped = detail_lower.contains("eacces")
+        || detail_lower.contains("permission denied")
+        || exit_code == Some(243);
+    permission_shaped
+        && matches!(
+            npm_path_shape(detail, None),
+            NpmPathShape::GlobalLibNodeModules | NpmPathShape::BinHq
+        )
 }
 
 /// Windows reports an aborting child as an NTSTATUS in `ExitStatus::code()`.
@@ -768,7 +819,6 @@ pub enum InstallFailureKind {
     ExpectedPrefixPermission,
     ExpectedWindowsAbort,
     ExpectedWindowsLockedBinary,
-    ExpectedTransientRegistry,
     Unexpected,
 }
 
@@ -777,14 +827,14 @@ pub fn classify_install_failure(
     detail: &str,
     prefix: Option<&str>,
 ) -> InstallFailureKind {
-    if is_prefix_permission_failure(detail, prefix) {
+    if is_prefix_permission_failure(detail, prefix)
+        || (prefix.is_none() && is_global_prefix_permission_failure(exit_code, detail))
+    {
         InstallFailureKind::ExpectedPrefixPermission
     } else if matches!(exit_code, Some(WINDOWS_CONTROL_C_EXIT | WINDOWS_ABORT_EXIT)) {
         InstallFailureKind::ExpectedWindowsAbort
     } else if is_windows_locked_binary_failure(exit_code, detail) {
         InstallFailureKind::ExpectedWindowsLockedBinary
-    } else if is_expected_transient_registry_failure(detail) {
-        InstallFailureKind::ExpectedTransientRegistry
     } else {
         InstallFailureKind::Unexpected
     }
@@ -799,7 +849,6 @@ impl InstallFailureKind {
             Self::ExpectedPrefixPermission => "expected-prefix-permission",
             Self::ExpectedWindowsAbort => "expected-windows-abort",
             Self::ExpectedWindowsLockedBinary => "expected-windows-locked-binary",
-            Self::ExpectedTransientRegistry => "expected-transient-registry",
             Self::Unexpected => "unexpected",
         }
     }
@@ -814,12 +863,6 @@ pub fn install_failure_detail(
     detail: &str,
     prefix: Option<&str>,
 ) -> String {
-    if classify_install_failure(exit_code, detail, prefix)
-        == InstallFailureKind::ExpectedTransientRegistry
-    {
-        return "npm's registry was temporarily unavailable or was mid-publish. The updater will retry automatically on its next scheduled check; you can also retry the copied command shortly."
-            .to_string();
-    }
     if !detail.trim().is_empty() {
         return detail.trim().to_string();
     }
@@ -832,9 +875,6 @@ pub fn install_failure_detail(
         }
         InstallFailureKind::ExpectedWindowsLockedBinary => {
             "npm could not replace the hq program because the file is locked or in use (a running hq command or terminal, or antivirus/endpoint protection). Close any open hq processes and terminals, then retry the copied command in a fresh terminal; if it keeps happening, allow-list hq in your endpoint protection.".to_string()
-        }
-        InstallFailureKind::ExpectedTransientRegistry => {
-            "npm's registry was temporarily unavailable or was mid-publish. The updater will retry automatically on its next scheduled check; you can also retry the copied command shortly.".to_string()
         }
         InstallFailureKind::Unexpected => format!(
             "npm install exited with status {}",
@@ -874,9 +914,12 @@ pub fn install_failure_report(
 /// genuine, unexpected failure (see `install_failure_report`). The expected
 /// permission failure at the selected global prefix is deliberately NOT
 /// captured: it floods Sentry with an unactionable Error every auto-update
-/// cycle while the user already has the copy-the-command fallback. Raw npm
-/// stderr stays in the local diagnostic log and copy-the-command UI path; the
-/// Sentry event carries only allow-listed, path-free classification tags.
+/// cycle while the user already has the copy-the-command fallback. The npm
+/// stderr tail rides along as the useful signal for every captured failure,
+/// home-redacted here: npm errors quote absolute paths
+/// (`EACCES … mkdir '/Users/alice/…'`), and the shared `before_send` scrubber
+/// only filters values whose *key* looks secret-like, so an ordinary string
+/// extra reaches Sentry verbatim unless it is redacted at the call site.
 pub fn report_install_failure(exit_code: Option<i32>, detail: &str, prefix: Option<&str>) {
     let kind = classify_install_failure(exit_code, detail, prefix);
     let Some(message) = install_failure_report(exit_code, detail, prefix) else {
@@ -885,21 +928,24 @@ pub fn report_install_failure(exit_code: Option<i32>, detail: &str, prefix: Opti
     let exit_str = exit_code
         .map(|c| c.to_string())
         .unwrap_or_else(|| "signal/none".to_string());
+    let eacces =
+        npm_error_code(detail) == "EACCES" || kind == InstallFailureKind::ExpectedPrefixPermission;
+    let npm_path_shape = npm_path_shape(detail, prefix);
+    let npm_stderr_len = detail.len().to_string();
     sentry::with_scope(
         |scope| {
             scope.set_tag("hq_cli_update_kind", "install-failed");
             scope.set_tag("install_failure_kind", kind.fingerprint_component());
             scope.set_tag("exit_code", exit_str.as_str());
-            scope.set_tag(
-                "eacces",
-                if is_npm_permission_failure(detail) {
-                    "true"
-                } else {
-                    "false"
-                },
-            );
-            scope.set_tag("npm_failure_site", npm_failure_site(detail, prefix));
+            scope.set_tag("eacces", if eacces { "true" } else { "false" });
             scope.set_tag("npm_error_code", npm_error_code(detail));
+            scope.set_tag("npm_syscall", npm_syscall(detail));
+            scope.set_tag("npm_path_shape", npm_path_shape.tag_value());
+            scope.set_tag(
+                "npm_prefix_known",
+                if prefix.is_some() { "true" } else { "false" },
+            );
+            scope.set_tag("npm_stderr_len", npm_stderr_len.as_str());
             let fingerprint = [
                 "hq-cli-update",
                 "install-failed",
@@ -907,27 +953,10 @@ pub fn report_install_failure(exit_code: Option<i32>, detail: &str, prefix: Opti
                 exit_str.as_str(),
             ];
             scope.set_fingerprint(Some(&fingerprint));
+            scope.set_extra("npm_stderr", redact_home(detail).into());
         },
         || {
             sentry::capture_message(&message, sentry::Level::Error);
-        },
-    );
-}
-
-/// Report a failure to prepare the updater's app-owned npm cache without
-/// sending the local cache path or the raw filesystem error to Sentry.
-pub fn report_npm_cache_setup_failure(category: &'static str) {
-    sentry::with_scope(
-        |scope| {
-            scope.set_tag("hq_cli_update_kind", "cache-setup-failed");
-            scope.set_tag("npm_cache_setup_failure", category);
-            scope.set_fingerprint(Some(&["hq-cli-update", "cache-setup-failed", category]));
-        },
-        || {
-            sentry::capture_message(
-                "[hq-cli-update] app-owned npm cache could not be prepared",
-                sentry::Level::Error,
-            );
         },
     );
 }
@@ -1450,6 +1479,111 @@ mod tests {
     }
 
     #[test]
+    fn exit_243_eacces_with_no_derived_prefix_is_expected_and_not_reported() {
+        // HQ-DESKTOP-3Y: when `hq` cannot be resolved, npm picks its own
+        // global prefix. An EACCES at that global-install target is still an
+        // expected local-machine condition, not an updater defect.
+        assert_eq!(
+            classify_install_failure(Some(243), REAL_EACCES_STDERR, None),
+            InstallFailureKind::ExpectedPrefixPermission
+        );
+        assert_eq!(
+            install_failure_report(Some(243), REAL_EACCES_STDERR, None),
+            None
+        );
+    }
+
+    #[test]
+    fn no_prefix_permission_failure_outside_the_npm_global_target_stays_loud() {
+        for detail in [
+            "npm error code EACCES\nnpm error path /Users/me/.npm/_cacache/index-v5",
+            "npm error code EACCES\nnpm error path /Users/me/project/node_modules/other-package",
+        ] {
+            assert_eq!(
+                classify_install_failure(Some(243), detail, None),
+                InstallFailureKind::Unexpected,
+                "detail: {detail}"
+            );
+            assert!(install_failure_report(Some(243), detail, None).is_some());
+        }
+    }
+
+    #[test]
+    fn no_prefix_non_permission_failures_stay_loud() {
+        for detail in [
+            "npm error code ETIMEDOUT\nnpm error path /usr/local/lib/node_modules/@indigoai-us",
+            "npm error code ECONNRESET\nnpm error path /usr/local/lib/node_modules/@indigoai-us",
+            "npm error code ENOSPC\nnpm error path /usr/local/lib/node_modules/@indigoai-us",
+        ] {
+            assert_eq!(
+                classify_install_failure(Some(1), detail, None),
+                InstallFailureKind::Unexpected,
+                "detail: {detail}"
+            );
+        }
+    }
+
+    #[test]
+    fn exit_243_without_a_global_install_path_does_not_suppress() {
+        let detail = "npm error code EACCES\nnpm error path /Users/me/project/.cache/hq";
+        assert!(!is_global_prefix_permission_failure(Some(243), detail));
+        assert_eq!(
+            classify_install_failure(Some(243), detail, None),
+            InstallFailureKind::Unexpected
+        );
+    }
+
+    #[test]
+    fn no_prefix_permission_failure_recognizes_npm_global_bin_targets() {
+        for detail in [
+            "npm error code EACCES\nnpm error path /usr/local/bin/hq",
+            "npm error code EACCES\nnpm error path C:\\Users\\me\\AppData\\Roaming\\npm\\hq.cmd",
+        ] {
+            assert!(is_global_prefix_permission_failure(Some(243), detail));
+            assert_eq!(
+                classify_install_failure(Some(243), detail, None),
+                InstallFailureKind::ExpectedPrefixPermission
+            );
+        }
+    }
+
+    #[test]
+    fn derived_prefix_classification_is_unchanged() {
+        assert_eq!(
+            classify_install_failure(Some(243), REAL_EACCES_STDERR, Some("/usr/local")),
+            InstallFailureKind::ExpectedPrefixPermission
+        );
+        assert_eq!(
+            classify_install_failure(
+                Some(243),
+                "npm error code EACCES\nnpm error path /Users/me/.npm/_cacache/index-v5",
+                Some("/usr/local"),
+            ),
+            InstallFailureKind::Unexpected
+        );
+    }
+
+    #[test]
+    fn npm_diagnostics_derivation_is_enumerated_and_path_free() {
+        assert_eq!(npm_error_code(REAL_EACCES_STDERR), "EACCES");
+        assert_eq!(npm_syscall(REAL_EACCES_STDERR), "mkdir");
+        assert_eq!(
+            npm_path_shape(REAL_EACCES_STDERR, Some("/usr/local")),
+            NpmPathShape::SelectedPrefixNodeModules
+        );
+        assert_eq!(
+            npm_path_shape(REAL_EACCES_STDERR, None),
+            NpmPathShape::GlobalLibNodeModules
+        );
+        assert_eq!(
+            npm_path_shape("npm error path /Users/me/.npm/_cacache/index-v5", None),
+            NpmPathShape::NpmCache
+        );
+        assert_eq!(npm_error_code("npm error code EWHATEVER"), "unknown");
+        assert_eq!(npm_syscall("npm error syscall chmod"), "unknown");
+    }
+
+    #[test]
     fn exit_one_permission_failure_outside_the_selected_prefix_is_captured() {
         let detail = "npm error code EACCES\nnpm error path /Users/me/.npm/_cacache/index-v5";
         assert_eq!(
@@ -1459,115 +1593,6 @@ mod tests {
         assert_eq!(
             install_failure_report(Some(1), detail, Some("/usr/local")),
             Some("[hq-cli-update] install failed (exit 1)".to_string()),
-        );
-    }
-
-    #[test]
-    fn npm_permission_tags_classify_cache_prefix_and_other_without_paths() {
-        let cache_detail = "npm error code EACCES\nnpm error path /Users/me/.npm/_cacache/tmp";
-        let prefix_detail =
-            "npm error code EACCES\nnpm error path /usr/local/lib/node_modules/@indigoai-us";
-        let other_detail = "npm error code EACCES\nnpm error path /tmp/unrelated-file";
-
-        assert!(is_npm_permission_failure(cache_detail));
-        assert_eq!(npm_failure_site(cache_detail, Some("/usr/local")), "cache");
-        assert_eq!(
-            npm_failure_site(prefix_detail, Some("/usr/local")),
-            "prefix"
-        );
-        assert_eq!(npm_failure_site(other_detail, Some("/usr/local")), "other");
-        assert_eq!(
-            npm_failure_site("npm error network ETIMEDOUT", None),
-            "other"
-        );
-    }
-
-    #[test]
-    fn npm_error_code_tags_are_allow_listed_and_path_free() {
-        assert_eq!(
-            npm_error_code("npm error code EACCES\nnpm error path /Users/alice/.npm/_cacache"),
-            "EACCES"
-        );
-        assert_eq!(
-            npm_error_code("npm error code ETARGET\nnpm error notarget No matching version found"),
-            "ETARGET"
-        );
-        assert_eq!(npm_error_code("npm ERR! code ECONNRESET"), "ECONNRESET");
-        assert_eq!(
-            npm_error_code("application output: npm error code ETARGET"),
-            "unknown"
-        );
-        assert_eq!(
-            npm_error_code("npm error code ../../Users/alice/.npm/_cacache"),
-            "unknown"
-        );
-        assert_eq!(
-            npm_error_code("npm error path /Users/alice/.npm/_cacache"),
-            "unknown"
-        );
-    }
-
-    #[test]
-    fn transient_registry_failures_are_suppressed_but_keep_actionable_ui_text() {
-        const ETARGET_STDERR: &str = "npm error code ETARGET\n\
-            npm error notarget No matching version found for @aws-sdk/core@^3.977.4";
-        const ECONNRESET_STDERR: &str = "npm error code ECONNRESET\n\
-            npm error network request to https://registry.npmjs.org failed";
-
-        for detail in [ETARGET_STDERR, ECONNRESET_STDERR] {
-            assert_eq!(
-                classify_install_failure(Some(1), detail, Some("/usr/local")),
-                InstallFailureKind::ExpectedTransientRegistry,
-                "{detail}"
-            );
-            assert_eq!(
-                install_failure_report(Some(1), detail, Some("/usr/local")),
-                None,
-                "{detail}"
-            );
-            let fallback = install_failure_detail(Some(1), detail, Some("/usr/local"));
-            assert!(fallback.contains("temporarily unavailable or was mid-publish"));
-            assert!(fallback.contains("retry automatically"));
-        }
-    }
-
-    #[test]
-    fn lifecycle_output_with_transient_tokens_stays_unexpected_and_loud() {
-        let detail = "npm error code 1\n\
-            npm error command failed\n\
-            npm error command sh -c node postinstall.js\n\
-            application output: ETARGET ECONNRESET npm error network";
-
-        assert_eq!(
-            classify_install_failure(Some(1), detail, Some("/usr/local")),
-            InstallFailureKind::Unexpected
-        );
-        assert_eq!(
-            install_failure_report(Some(1), detail, Some("/usr/local")),
-            Some("[hq-cli-update] install failed (exit 1)".to_string())
-        );
-    }
-
-    #[test]
-    fn existing_failure_buckets_take_priority_over_transient_markers() {
-        let prefix_permission_with_network_text = "npm error code EACCES\n\
-            npm error path /usr/local/lib/node_modules/@indigoai-us\n\
-            npm error network ETIMEDOUT";
-        assert_eq!(
-            classify_install_failure(
-                Some(1),
-                prefix_permission_with_network_text,
-                Some("/usr/local")
-            ),
-            InstallFailureKind::ExpectedPrefixPermission
-        );
-
-        let windows_eperm_with_network_text = "npm error code EPERM\n\
-            npm error errno -4048\n\
-            npm error network ECONNRESET";
-        assert_eq!(
-            classify_install_failure(Some(1), windows_eperm_with_network_text, None),
-            InstallFailureKind::ExpectedWindowsLockedBinary
         );
     }
 
@@ -1650,8 +1675,7 @@ mod tests {
             classify_install_failure(Some(243), REAL_EACCES_STDERR, Some("/usr/local")),
             InstallFailureKind::ExpectedPrefixPermission
         );
-        // Unstructured network text is neither a Windows locked-binary failure
-        // nor safe evidence for transient-registry suppression.
+        // Genuine unexpected failures (network, ENOSPC) stay loud.
         assert!(!is_windows_locked_binary_failure(
             Some(1),
             "npm error network request to https://registry.npmjs.org failed: ETIMEDOUT"
@@ -1668,16 +1692,16 @@ mod tests {
         // A real, unexpected failure stays loud — `Some(message)` drives the
         // Error-level capture.
         assert_eq!(
-            install_failure_report(Some(1), "npm error code ENOSPC\nnpm error disk full", None),
+            install_failure_report(Some(1), "npm error network ETIMEDOUT", None),
             Some("[hq-cli-update] install failed (exit 1)".to_string()),
         );
         // Killed by signal (no exit code) still reports, with the signal label.
         assert_eq!(
-            install_failure_report(None, "npm error code ENOSPC\nnpm error disk full", None),
+            install_failure_report(None, "npm error network ETIMEDOUT", None),
             Some("[hq-cli-update] install failed (exit signal/none)".to_string()),
         );
         assert_eq!(
-            classify_install_failure(Some(1), "npm error code ENOSPC\nnpm error disk full", None),
+            classify_install_failure(Some(1), "npm error network ETIMEDOUT", None),
             InstallFailureKind::Unexpected
         );
         assert_eq!(
