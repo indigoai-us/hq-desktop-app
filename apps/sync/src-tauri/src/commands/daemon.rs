@@ -1088,11 +1088,21 @@ fn note_watcher_capture_policy_streak(
 ) -> u32 {
     let mut st = crash_state().lock().unwrap();
     if policy == WatcherExitCapturePolicy::CaptureRateLimited {
-        st.exec_not_runnable_consecutive = st.exec_not_runnable_consecutive.saturating_add(1);
+        st.exec_not_runnable_consecutive =
+            next_exec_not_runnable_streak(st.exec_not_runnable_consecutive, policy);
         st.exec_not_runnable_consecutive
     } else {
-        st.exec_not_runnable_consecutive = 0;
+        st.exec_not_runnable_consecutive =
+            next_exec_not_runnable_streak(st.exec_not_runnable_consecutive, policy);
         global_consecutive
+    }
+}
+
+fn next_exec_not_runnable_streak(previous: u32, policy: WatcherExitCapturePolicy) -> u32 {
+    if policy == WatcherExitCapturePolicy::CaptureRateLimited {
+        previous.saturating_add(1)
+    } else {
+        0
     }
 }
 
@@ -1813,27 +1823,27 @@ mod tests {
 
     #[test]
     fn exec_not_runnable_escalation_counts_its_own_failure_class_only() {
-        *crash_state().lock().unwrap() = WatcherCrashState::default();
         let exec_policy = WatcherExitCapturePolicy::CaptureRateLimited;
 
         // A global crash-loop already at #4 (for example, three prior code-1
         // exits) must not cause this first 127 to page immediately.
-        let first_exec = note_watcher_capture_policy_streak(exec_policy, 4);
+        let first_exec = next_exec_not_runnable_streak(0, exec_policy);
         assert_eq!(first_exec, 1);
         assert!(!should_capture_watcher_exit(exec_policy, first_exec));
 
+        let mut streak = first_exec;
         for expected in [2, 3, 4] {
-            let streak = note_watcher_capture_policy_streak(exec_policy, 99);
+            streak = next_exec_not_runnable_streak(streak, exec_policy);
             assert_eq!(streak, expected);
         }
         assert!(should_capture_watcher_exit(exec_policy, 4));
 
         // Any non-126/127 exit ends the class-specific episode.
         assert_eq!(
-            note_watcher_capture_policy_streak(WatcherExitCapturePolicy::LocalLogOnly, 5),
-            5
+            next_exec_not_runnable_streak(streak, WatcherExitCapturePolicy::LocalLogOnly),
+            0
         );
-        assert_eq!(note_watcher_capture_policy_streak(exec_policy, 6), 1);
+        assert_eq!(next_exec_not_runnable_streak(0, exec_policy), 1);
     }
 
     #[test]
