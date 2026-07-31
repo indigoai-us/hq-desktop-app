@@ -755,6 +755,29 @@ fn npm_syscall(detail: &str) -> &'static str {
     }
 }
 
+/// Build the diagnostic Sentry can safely retain for an unexpected npm
+/// install failure. Raw stderr is intentionally excluded: project default
+/// scrubbing treats it as sensitive free text and replaces the whole value.
+/// Every field here is either a closed enumeration, a boolean, or a number.
+fn npm_diagnostics_summary(
+    exit_code: &str,
+    detail: &str,
+    path_shape: NpmPathShape,
+    prefix_known: bool,
+    eacces: bool,
+) -> String {
+    format!(
+        "error_code={} syscall={} path_shape={} prefix_known={} eacces={} exit_code={} stderr_len={}",
+        npm_error_code(detail),
+        npm_syscall(detail),
+        path_shape.tag_value(),
+        prefix_known,
+        eacces,
+        exit_code,
+        detail.len(),
+    )
+}
+
 fn has_eacces_evidence(detail: &str) -> bool {
     let detail = detail.to_ascii_lowercase();
     detail.contains("eacces")
@@ -923,12 +946,9 @@ pub fn install_failure_report(
 /// genuine, unexpected failure (see `install_failure_report`). The expected
 /// permission failure at the selected global prefix is deliberately NOT
 /// captured: it floods Sentry with an unactionable Error every auto-update
-/// cycle while the user already has the copy-the-command fallback. The npm
-/// stderr tail rides along as the useful signal for every captured failure,
-/// home-redacted here: npm errors quote absolute paths
-/// (`EACCES … mkdir '/Users/alice/…'`), and the shared `before_send` scrubber
-/// only filters values whose *key* looks secret-like, so an ordinary string
-/// extra reaches Sentry verbatim unless it is redacted at the call site.
+/// cycle while the user already has the copy-the-command fallback. Captures
+/// include only a normalized, closed-enumeration diagnostic summary; the raw
+/// npm stderr remains in the local diagnostic log and never reaches Sentry.
 pub fn report_install_failure(exit_code: Option<i32>, detail: &str, prefix: Option<&str>) {
     let kind = classify_install_failure(exit_code, detail, prefix);
     let Some(message) = install_failure_report(exit_code, detail, prefix) else {
@@ -940,7 +960,15 @@ pub fn report_install_failure(exit_code: Option<i32>, detail: &str, prefix: Opti
     let eacces =
         has_eacces_evidence(detail) || kind == InstallFailureKind::ExpectedPrefixPermission;
     let npm_path_shape = npm_path_shape(detail, prefix);
+    let npm_prefix_known = prefix.is_some();
     let npm_stderr_len = detail.len().to_string();
+    let npm_diagnostics = npm_diagnostics_summary(
+        exit_str.as_str(),
+        detail,
+        npm_path_shape,
+        npm_prefix_known,
+        eacces,
+    );
     sentry::with_scope(
         |scope| {
             scope.set_tag("hq_cli_update_kind", "install-failed");
@@ -952,7 +980,7 @@ pub fn report_install_failure(exit_code: Option<i32>, detail: &str, prefix: Opti
             scope.set_tag("npm_path_shape", npm_path_shape.tag_value());
             scope.set_tag(
                 "npm_prefix_known",
-                if prefix.is_some() { "true" } else { "false" },
+                if npm_prefix_known { "true" } else { "false" },
             );
             scope.set_tag("npm_stderr_len", npm_stderr_len.as_str());
             let fingerprint = [
@@ -962,7 +990,7 @@ pub fn report_install_failure(exit_code: Option<i32>, detail: &str, prefix: Opti
                 exit_str.as_str(),
             ];
             scope.set_fingerprint(Some(&fingerprint));
-            scope.set_extra("npm_stderr", redact_home(detail).into());
+            scope.set_extra("npm_diagnostics", npm_diagnostics.into());
         },
         || {
             sentry::capture_message(&message, sentry::Level::Error);

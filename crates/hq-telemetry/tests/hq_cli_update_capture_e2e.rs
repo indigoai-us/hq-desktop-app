@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use hq_desktop_core::hq_cli_update::report_install_failure;
+use sentry::protocol::Value;
 use sentry::test::with_captured_events_options;
 
 const GLOBAL_EACCES: &str = "npm error code EACCES\n\
@@ -61,6 +62,19 @@ fn install_failure_capture_is_suppressed_or_tagged_after_the_real_scrubber() {
         event.tags.get("npm_stderr_len").map(String::as_str),
         Some(unexpected_eacces_len.as_str())
     );
+    assert_eq!(
+        event.extra.get("npm_diagnostics"),
+        Some(&Value::String(
+            format!(
+                "error_code=EACCES syscall=mkdir path_shape=other prefix_known=false eacces=true exit_code=1 stderr_len={unexpected_eacces_len}"
+            )
+            .into()
+        ))
+    );
+    assert!(
+        !event.extra.contains_key("npm_stderr"),
+        "raw npm stderr must not reach Sentry"
+    );
     assert!(
         event
             .tags
@@ -68,6 +82,14 @@ fn install_failure_capture_is_suppressed_or_tagged_after_the_real_scrubber() {
             .all(|value| !value.contains("/Users/alice")),
         "diagnostic tags must never carry raw paths: {:?}",
         event.tags
+    );
+    assert!(
+        event.extra.values().all(|value| match value {
+            Value::String(value) => !value.contains("/Users/alice"),
+            _ => true,
+        }),
+        "diagnostic extras must never carry raw paths: {:?}",
+        event.extra
     );
 
     let unstructured_permission = "npm error syscall open\n\
