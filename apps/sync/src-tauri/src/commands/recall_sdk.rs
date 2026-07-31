@@ -523,10 +523,12 @@ pub async fn start_recall_sdk(app: AppHandle) -> Result<(), String> {
         );
 
         if let Err(e) = result {
-            log(
-                LOG_TAG,
-                &format!("RECALL_SDK_UNAVAILABLE: spawn failed: {e}"),
-            );
+            let stage = if e.is_spawn() {
+                "spawn failed"
+            } else {
+                "process failed after spawn"
+            };
+            log(LOG_TAG, &format!("RECALL_SDK_UNAVAILABLE: {stage}: {e}"));
         }
     });
 

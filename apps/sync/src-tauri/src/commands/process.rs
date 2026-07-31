@@ -5,7 +5,8 @@
 //! `cancel_process` — sends SIGTERM to the process group; after 5 s, SIGKILL.
 
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader};
+use std::fmt;
+use std::io::{self, BufRead, BufReader};
 #[cfg(unix)]
 use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
 use std::process::{Command, ExitStatus, Stdio};
@@ -37,6 +38,69 @@ use windows::Win32::System::JobObjects::{
     SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
+
+/// The point in the process lifecycle that failed.
+///
+/// Callers must not infer this from the rendered message: a stream or wait
+/// failure happens after a child existed, while only `Spawn` means no watcher
+/// ever started. The spawn Display text intentionally remains byte-for-byte
+/// compatible with the previous string return value.
+#[derive(Debug)]
+pub enum ProcessError {
+    Spawn {
+        cmd: String,
+        source: io::Error,
+    },
+    Stream {
+        stream: &'static str,
+        source: io::Error,
+    },
+    Wait {
+        source: io::Error,
+    },
+}
+
+impl ProcessError {
+    pub fn is_spawn(&self) -> bool {
+        matches!(self, Self::Spawn { .. })
+    }
+
+    pub fn error_kind(&self) -> Option<io::ErrorKind> {
+        match self {
+            Self::Spawn { source, .. } => Some(source.kind()),
+            Self::Stream { source, .. } => Some(source.kind()),
+            Self::Wait { source } => Some(source.kind()),
+        }
+    }
+
+    pub fn raw_os_error(&self) -> Option<i32> {
+        match self {
+            Self::Spawn { source, .. } => source.raw_os_error(),
+            Self::Stream { source, .. } => source.raw_os_error(),
+            Self::Wait { source } => source.raw_os_error(),
+        }
+    }
+}
+
+impl fmt::Display for ProcessError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Spawn { cmd, source } => write!(f, "spawn '{cmd}': {source}"),
+            Self::Stream { stream, source } => write!(f, "{stream}: {source}"),
+            Self::Wait { source } => write!(f, "{source}"),
+        }
+    }
+}
+
+impl std::error::Error for ProcessError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Spawn { source, .. } => Some(source),
+            Self::Stream { source, .. } => Some(source),
+            Self::Wait { source } => Some(source),
+        }
+    }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Process registry
@@ -245,7 +309,7 @@ fn assign_child_to_job(_handle: &str, _child: &std::process::Child) {}
 // Pure impl
 // ─────────────────────────────────────────────────────────────────────────────
 
-pub fn run_process_impl<F>(handle: &str, spawn: &SpawnArgs, on_event: F) -> Result<(), String>
+pub fn run_process_impl<F>(handle: &str, spawn: &SpawnArgs, on_event: F) -> Result<(), ProcessError>
 where
     F: FnMut(ProcessEvent),
 {
@@ -266,7 +330,10 @@ where
         Ok(c) => c,
         Err(e) => {
             deregister_process(handle);
-            return Err(format!("spawn '{}': {}", spawn.cmd, e));
+            return Err(ProcessError::Spawn {
+                cmd: spawn.cmd.clone(),
+                source: e,
+            });
         }
     };
 
@@ -281,7 +348,7 @@ where
         Event(ProcessEvent),
         Done {
             stream: &'static str,
-            err: Option<String>,
+            err: Option<io::Error>,
         },
     }
 
@@ -289,7 +356,7 @@ where
 
     let tx_stdout = tx.clone();
     thread::spawn(move || {
-        let mut err: Option<String> = None;
+        let mut err: Option<io::Error> = None;
         for line_result in BufReader::new(stdout).lines() {
             match line_result {
                 Ok(line) => {
@@ -301,7 +368,7 @@ where
                     }
                 }
                 Err(e) => {
-                    err = Some(e.to_string());
+                    err = Some(e);
                     break;
                 }
             }
@@ -314,7 +381,7 @@ where
 
     let tx_stderr = tx.clone();
     thread::spawn(move || {
-        let mut err: Option<String> = None;
+        let mut err: Option<io::Error> = None;
         for line_result in BufReader::new(stderr).lines() {
             match line_result {
                 Ok(line) => {
@@ -326,7 +393,7 @@ where
                     }
                 }
                 Err(e) => {
-                    err = Some(e.to_string());
+                    err = Some(e);
                     break;
                 }
             }
@@ -340,7 +407,7 @@ where
     drop(tx);
 
     let mut on_event_mut = on_event;
-    let mut first_stream_err: Option<String> = None;
+    let mut first_stream_err: Option<(&'static str, io::Error)> = None;
     let mut done_count = 0;
 
     for msg in rx {
@@ -349,7 +416,7 @@ where
             ReaderMsg::Done { stream, err } => {
                 if let Some(e) = err {
                     if first_stream_err.is_none() {
-                        first_stream_err = Some(format!("{}: {}", stream, e));
+                        first_stream_err = Some((stream, e));
                     }
                 }
                 done_count += 1;
@@ -360,19 +427,31 @@ where
         }
     }
 
-    let wait_result = child.wait().map_err(|e| e.to_string());
+    let wait_result = child.wait();
     deregister_process(handle);
 
-    if let Some(err) = first_stream_err {
+    if let Some((stream, source)) = first_stream_err {
         on_event_mut(ProcessEvent::Exit {
             code: None,
             signal: None,
             success: false,
         });
-        return Err(err);
+        return Err(ProcessError::Stream { stream, source });
     }
 
-    let status = wait_result?;
+    let status = match wait_result {
+        Ok(status) => status,
+        Err(source) => {
+            // The child did start, so callers must route this through their
+            // termination path rather than mislabel it as a spawn failure.
+            on_event_mut(ProcessEvent::Exit {
+                code: None,
+                signal: None,
+                success: false,
+            });
+            return Err(ProcessError::Wait { source });
+        }
+    };
     on_event_mut(ProcessEvent::Exit {
         code: status.code(),
         signal: exit_signal(&status),
@@ -403,7 +482,7 @@ pub fn run_process_with_stdin_impl<F, S>(
     spawn: &SpawnArgs,
     on_event: F,
     on_spawn: S,
-) -> Result<(), String>
+) -> Result<(), ProcessError>
 where
     F: FnMut(ProcessEvent),
     S: FnOnce(&mut std::process::Child),
@@ -427,7 +506,10 @@ where
         Ok(c) => c,
         Err(e) => {
             deregister_process(handle);
-            return Err(format!("spawn '{}': {}", spawn.cmd, e));
+            return Err(ProcessError::Spawn {
+                cmd: spawn.cmd.clone(),
+                source: e,
+            });
         }
     };
 
@@ -447,7 +529,7 @@ where
         Event(ProcessEvent),
         Done {
             stream: &'static str,
-            err: Option<String>,
+            err: Option<io::Error>,
         },
     }
 
@@ -455,7 +537,7 @@ where
 
     let tx_stdout = tx.clone();
     thread::spawn(move || {
-        let mut err: Option<String> = None;
+        let mut err: Option<io::Error> = None;
         for line_result in BufReader::new(stdout).lines() {
             match line_result {
                 Ok(line) => {
@@ -467,7 +549,7 @@ where
                     }
                 }
                 Err(e) => {
-                    err = Some(e.to_string());
+                    err = Some(e);
                     break;
                 }
             }
@@ -480,7 +562,7 @@ where
 
     let tx_stderr = tx.clone();
     thread::spawn(move || {
-        let mut err: Option<String> = None;
+        let mut err: Option<io::Error> = None;
         for line_result in BufReader::new(stderr).lines() {
             match line_result {
                 Ok(line) => {
@@ -492,7 +574,7 @@ where
                     }
                 }
                 Err(e) => {
-                    err = Some(e.to_string());
+                    err = Some(e);
                     break;
                 }
             }
@@ -506,7 +588,7 @@ where
     drop(tx);
 
     let mut on_event_mut = on_event;
-    let mut first_stream_err: Option<String> = None;
+    let mut first_stream_err: Option<(&'static str, io::Error)> = None;
     let mut done_count = 0;
 
     for msg in rx {
@@ -515,7 +597,7 @@ where
             ReaderMsg::Done { stream, err } => {
                 if let Some(e) = err {
                     if first_stream_err.is_none() {
-                        first_stream_err = Some(format!("{}: {}", stream, e));
+                        first_stream_err = Some((stream, e));
                     }
                 }
                 done_count += 1;
@@ -526,19 +608,31 @@ where
         }
     }
 
-    let wait_result = child.wait().map_err(|e| e.to_string());
+    let wait_result = child.wait();
     deregister_process(handle);
 
-    if let Some(err) = first_stream_err {
+    if let Some((stream, source)) = first_stream_err {
         on_event_mut(ProcessEvent::Exit {
             code: None,
             signal: None,
             success: false,
         });
-        return Err(err);
+        return Err(ProcessError::Stream { stream, source });
     }
 
-    let status = wait_result?;
+    let status = match wait_result {
+        Ok(status) => status,
+        Err(source) => {
+            // Keep the post-spawn failure on the terminal-event path so a
+            // caller cannot emit a second, misleading "failed to spawn" alert.
+            on_event_mut(ProcessEvent::Exit {
+                code: None,
+                signal: None,
+                success: false,
+            });
+            return Err(ProcessError::Wait { source });
+        }
+    };
     on_event_mut(ProcessEvent::Exit {
         code: status.code(),
         signal: exit_signal(&status),
@@ -769,6 +863,92 @@ mod windows_spawn_tests {
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod process_error_tests {
+    use super::*;
+
+    #[test]
+    fn typed_spawn_error_keeps_the_legacy_display_text() {
+        let source = io::Error::from_raw_os_error(2);
+        let expected = format!("spawn '/opt/homebrew/bin/npx': {source}");
+        let error = ProcessError::Spawn {
+            cmd: "/opt/homebrew/bin/npx".to_string(),
+            source,
+        };
+
+        assert_eq!(error.to_string(), expected);
+        assert!(error.is_spawn());
+        assert_eq!(error.error_kind(), Some(io::ErrorKind::NotFound));
+        assert_eq!(error.raw_os_error(), Some(2));
+    }
+
+    #[test]
+    fn typed_stream_and_wait_errors_are_not_spawn_errors() {
+        let stream = ProcessError::Stream {
+            stream: "stdout",
+            source: io::Error::other("read failed"),
+        };
+        let wait = ProcessError::Wait {
+            source: io::Error::other("wait failed"),
+        };
+
+        assert!(!stream.is_spawn());
+        assert!(!wait.is_spawn());
+        assert_eq!(stream.to_string(), "stdout: read failed");
+        assert_eq!(wait.to_string(), "wait failed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn real_child_exit_127_reaches_the_terminal_event_path() {
+        let spawn = SpawnArgs {
+            cmd: "sh".to_string(),
+            args: vec!["-c".to_string(), "exit 127".to_string()],
+            cwd: None,
+            env: None,
+        };
+        let mut events = Vec::new();
+
+        run_process_impl("process-exit-127-test", &spawn, |event| events.push(event))
+            .expect("real shell child should run");
+
+        assert!(matches!(
+            events.as_slice(),
+            [ProcessEvent::Exit {
+                code: Some(127),
+                signal: None,
+                success: false,
+            }]
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn real_missing_command_is_typed_spawn_error_with_path_free_policy_token() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let missing = tmp.path().join("missing-runner").display().to_string();
+        let spawn = SpawnArgs {
+            cmd: missing,
+            args: Vec::new(),
+            cwd: None,
+            env: None,
+        };
+
+        let error = run_process_impl("process-missing-command-test", &spawn, |_| {})
+            .expect_err("missing executable must fail at spawn");
+
+        assert!(error.is_spawn());
+        assert_eq!(error.error_kind(), Some(io::ErrorKind::NotFound));
+        assert_eq!(error.raw_os_error(), Some(2));
+        let token = hq_desktop_core::sync_outcome::spawn_failure_fingerprint_token(
+            error.error_kind().expect("typed spawn kind"),
+            error.raw_os_error(),
+        );
+        assert_eq!(token, "not-found");
+        assert!(!token.contains(tmp.path().to_string_lossy().as_ref()));
+    }
+}
 
 #[cfg(all(test, unix))]
 mod exit_teardown_tests {

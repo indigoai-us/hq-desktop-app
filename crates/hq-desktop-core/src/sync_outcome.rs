@@ -1,3 +1,5 @@
+use std::io::ErrorKind;
+
 use crate::events::{SyncCompleteEvent, SyncErrorEvent, SyncEvent};
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -167,6 +169,141 @@ pub fn describe_exit(code: Option<i32>, signal: Option<i32>) -> String {
         Some(1) => "killed by SIGHUP".into(),
         Some(n) => format!("killed by signal {}", n),
         None => "with code unknown".into(),
+    }
+}
+
+/// Explicit Sentry policy for an auto-sync watcher termination.
+///
+/// `Capture` retains the normal crash-loop milestone limiter at the caller.
+/// `CaptureRateLimited` is reserved for failures that are initially
+/// environmental but need an escalating, milestone-limited alert if they
+/// persist. `LocalLogOnly` records a breadcrumb without creating an event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WatcherExitCapturePolicy {
+    Capture,
+    CaptureRateLimited,
+    LocalLogOnly,
+}
+
+/// Explicit Sentry policy for a failure returned by `Command::spawn`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpawnFailureCapturePolicy {
+    CaptureRateLimited,
+    RetryAndLog,
+}
+
+/// OS errno namespace used when Rust leaves a resource-exhaustion error as
+/// `ErrorKind::Other`. Keep it explicit: errno 11 means EAGAIN on Linux but a
+/// different Windows error, so raw values must never be treated as portable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SpawnFailurePlatform {
+    Linux,
+    Macos,
+    Other,
+}
+
+/// First crash-loop milestone at which a persistent exec-not-runnable watcher
+/// becomes worth an alert. A one-off 126/127 is the same environmental class as
+/// the runner-resolution preflight; repeated failures still need visibility.
+pub const EXEC_NOT_RUNNABLE_CAPTURE_AFTER_CONSECUTIVE: u32 = 4;
+
+/// Classify the watcher exit itself. The caller owns lifecycle state and the
+/// existing crash-loop counter, so this pure policy deliberately does not
+/// mutate either one.
+pub fn watcher_exit_capture_policy(
+    code: Option<i32>,
+    signal: Option<i32>,
+) -> WatcherExitCapturePolicy {
+    if signal.is_some() {
+        return WatcherExitCapturePolicy::Capture;
+    }
+
+    match code {
+        // Runner protocol/environment outcomes already handled locally.
+        Some(1 | 2) => WatcherExitCapturePolicy::LocalLogOnly,
+        // Shell/exec layer: the runner command was not runnable after the
+        // startup preflight. Do not page for a blip, but escalate a streak.
+        Some(126 | 127) => WatcherExitCapturePolicy::CaptureRateLimited,
+        // Unknown codes (including the observed 221) remain alertable until
+        // their producer is identified; never guess a benign classification.
+        _ => WatcherExitCapturePolicy::Capture,
+    }
+}
+
+/// Preserve the existing power-of-two crash-loop dampening while making the
+/// exec-not-runnable escalation explicit and table-testable.
+pub fn should_capture_watcher_exit(policy: WatcherExitCapturePolicy, consecutive: u32) -> bool {
+    match policy {
+        WatcherExitCapturePolicy::LocalLogOnly => false,
+        WatcherExitCapturePolicy::Capture => is_capture_milestone(consecutive),
+        WatcherExitCapturePolicy::CaptureRateLimited => {
+            consecutive >= EXEC_NOT_RUNNABLE_CAPTURE_AFTER_CONSECUTIVE
+                && is_capture_milestone(consecutive)
+        }
+    }
+}
+
+/// Capture the first failure and powers of two thereafter. Kept shared with
+/// the daemon so policy tests can protect the production crash-loop contract.
+pub fn is_capture_milestone(consecutive: u32) -> bool {
+    consecutive <= 1 || consecutive.is_power_of_two()
+}
+
+/// Classify a native spawn failure without looking at a formatted message or a
+/// machine-specific command path. EAGAIN/EWOULDBLOCK, ENOMEM, EMFILE and ENFILE
+/// are transient resource exhaustion; the daemon's normal respawn recovers
+/// them, so they only log locally.
+pub fn spawn_failure_capture_policy(
+    kind: ErrorKind,
+    raw_os_error: Option<i32>,
+) -> SpawnFailureCapturePolicy {
+    spawn_failure_capture_policy_for_platform(kind, raw_os_error, current_spawn_failure_platform())
+}
+
+fn spawn_failure_capture_policy_for_platform(
+    kind: ErrorKind,
+    raw_os_error: Option<i32>,
+    platform: SpawnFailurePlatform,
+) -> SpawnFailureCapturePolicy {
+    let resource_errno = match platform {
+        SpawnFailurePlatform::Linux => matches!(raw_os_error, Some(11 | 12 | 23 | 24)),
+        SpawnFailurePlatform::Macos => matches!(raw_os_error, Some(12 | 23 | 24 | 35)),
+        SpawnFailurePlatform::Other => false,
+    };
+    if matches!(kind, ErrorKind::WouldBlock | ErrorKind::OutOfMemory) || resource_errno {
+        SpawnFailureCapturePolicy::RetryAndLog
+    } else {
+        SpawnFailureCapturePolicy::CaptureRateLimited
+    }
+}
+
+fn current_spawn_failure_platform() -> SpawnFailurePlatform {
+    if cfg!(target_os = "linux") {
+        SpawnFailurePlatform::Linux
+    } else if cfg!(target_os = "macos") {
+        SpawnFailurePlatform::Macos
+    } else {
+        SpawnFailurePlatform::Other
+    }
+}
+
+/// Stable, path-free Sentry grouping component for a spawn failure.
+///
+/// ErrorKind is intentionally the entire identity for non-resource errors:
+/// it groups equivalent OS failures across `/usr/local/bin/npx`, Homebrew, and
+/// managed-runtime paths without leaking a user or machine path into Sentry.
+pub fn spawn_failure_fingerprint_token(kind: ErrorKind, raw_os_error: Option<i32>) -> &'static str {
+    match spawn_failure_capture_policy(kind, raw_os_error) {
+        SpawnFailureCapturePolicy::RetryAndLog => "resource-exhausted",
+        SpawnFailureCapturePolicy::CaptureRateLimited => match kind {
+            ErrorKind::NotFound => "not-found",
+            ErrorKind::PermissionDenied => "permission-denied",
+            ErrorKind::TimedOut => "timed-out",
+            ErrorKind::Interrupted => "interrupted",
+            ErrorKind::InvalidInput => "invalid-input",
+            ErrorKind::Unsupported => "unsupported",
+            _ => "other-io-error",
+        },
     }
 }
 
@@ -1051,5 +1188,113 @@ mod tests {
         let result = classify_error_event(&err);
         assert!(result.is_some());
         assert_eq!(result.unwrap().company, "newco");
+    }
+
+    // ── auto-sync watcher Sentry policy (HQ-DESKTOP-3Z/40/41) ────────────
+
+    #[test]
+    fn watcher_exit_capture_policy_is_explicit_for_known_and_unknown_codes() {
+        let cases = [
+            (Some(0), None, WatcherExitCapturePolicy::Capture),
+            (Some(1), None, WatcherExitCapturePolicy::LocalLogOnly),
+            (Some(2), None, WatcherExitCapturePolicy::LocalLogOnly),
+            (
+                Some(126),
+                None,
+                WatcherExitCapturePolicy::CaptureRateLimited,
+            ),
+            (
+                Some(127),
+                None,
+                WatcherExitCapturePolicy::CaptureRateLimited,
+            ),
+            // HQ-DESKTOP-41: unknown codes must stay visible, not guessed.
+            (Some(221), None, WatcherExitCapturePolicy::Capture),
+            (Some(99), None, WatcherExitCapturePolicy::Capture),
+            (Some(2), Some(9), WatcherExitCapturePolicy::Capture),
+        ];
+
+        for (code, signal, expected) in cases {
+            assert_eq!(
+                watcher_exit_capture_policy(code, signal),
+                expected,
+                "code={code:?} signal={signal:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn exec_not_runnable_exits_escalate_only_after_a_sustained_streak() {
+        let policy = watcher_exit_capture_policy(Some(127), None);
+        for consecutive in [1, 2, 3] {
+            assert!(
+                !should_capture_watcher_exit(policy, consecutive),
+                "one-off exec failure #{consecutive} must remain local"
+            );
+        }
+        assert!(should_capture_watcher_exit(policy, 4));
+        assert!(!should_capture_watcher_exit(policy, 5));
+        assert!(should_capture_watcher_exit(policy, 8));
+    }
+
+    #[test]
+    fn crash_loop_milestones_remain_first_then_powers_of_two() {
+        for consecutive in [1, 2, 4, 8, 16, 32] {
+            assert!(is_capture_milestone(consecutive));
+        }
+        for consecutive in [3, 5, 6, 7, 9, 15, 31] {
+            assert!(!is_capture_milestone(consecutive));
+        }
+    }
+
+    #[test]
+    fn transient_spawn_resource_exhaustion_retries_without_capture() {
+        let retry_cases = [
+            (ErrorKind::WouldBlock, Some(35), SpawnFailurePlatform::Macos), // macOS EAGAIN/EWOULDBLOCK
+            (ErrorKind::WouldBlock, Some(11), SpawnFailurePlatform::Linux), // Linux EAGAIN/EWOULDBLOCK
+            (
+                ErrorKind::OutOfMemory,
+                Some(12),
+                SpawnFailurePlatform::Linux,
+            ), // ENOMEM
+            (ErrorKind::Other, Some(24), SpawnFailurePlatform::Macos),      // EMFILE
+            (ErrorKind::Other, Some(23), SpawnFailurePlatform::Linux),      // ENFILE
+        ];
+        for (kind, raw, platform) in retry_cases {
+            assert_eq!(
+                spawn_failure_capture_policy_for_platform(kind, raw, platform),
+                SpawnFailureCapturePolicy::RetryAndLog,
+                "kind={kind:?} raw={raw:?} platform={platform:?}"
+            );
+        }
+
+        for (kind, raw, platform) in [
+            (ErrorKind::NotFound, Some(2), SpawnFailurePlatform::Linux), // ENOENT
+            (
+                ErrorKind::PermissionDenied,
+                Some(13),
+                SpawnFailurePlatform::Macos,
+            ), // EACCES
+            // Raw Unix errno values are not portable; 11 must not silence an
+            // unrelated Windows/other-platform spawn failure.
+            (ErrorKind::Other, Some(11), SpawnFailurePlatform::Other),
+        ] {
+            assert_eq!(
+                spawn_failure_capture_policy_for_platform(kind, raw, platform),
+                SpawnFailureCapturePolicy::CaptureRateLimited,
+                "kind={kind:?} raw={raw:?} platform={platform:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn spawn_failure_fingerprint_is_machine_path_independent() {
+        let first = spawn_failure_fingerprint_token(ErrorKind::NotFound, Some(2));
+        let second = spawn_failure_fingerprint_token(ErrorKind::NotFound, None);
+        assert_eq!(first, second);
+        assert_eq!(first, "not-found");
+        assert!(!first.contains("/Users/"));
+        assert!(!first.contains("/opt/homebrew/"));
+        assert!(!first.contains("alice"));
     }
 }

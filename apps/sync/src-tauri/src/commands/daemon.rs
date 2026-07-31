@@ -13,7 +13,7 @@ use tauri::{AppHandle, Emitter};
 
 use crate::commands::process::{
     cancel_process_impl, deregister_process, is_cancelled, is_registered, lookup_pid,
-    run_process_impl, try_register_handle, ProcessEvent,
+    run_process_impl, try_register_handle, ProcessError, ProcessEvent,
 };
 use crate::commands::status::{journal_for_daemon_sync_complete, write_journal};
 use crate::commands::sync::{PreflightFailure, RunTotals};
@@ -23,7 +23,12 @@ use crate::util::paths;
 use hq_desktop_core::daemon::{
     derive_watch_daemon_state, is_daemon_alive_for_supervisor, should_terminate_job_on_path,
 };
-use hq_desktop_core::sync_outcome::termination_fingerprint_token;
+use hq_desktop_core::hq_cloud::{HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION, RUNNER_BIN};
+use hq_desktop_core::sync_outcome::{
+    should_capture_watcher_exit, spawn_failure_capture_policy, spawn_failure_fingerprint_token,
+    termination_fingerprint_token, watcher_exit_capture_policy, SpawnFailureCapturePolicy,
+    WatcherExitCapturePolicy,
+};
 
 #[allow(unused_imports)]
 pub use hq_desktop_core::daemon::{
@@ -564,11 +569,16 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
     let hq_folder = hq_folder_path.clone();
     let last_heartbeat = Arc::new(Mutex::new(Instant::now()));
     let daemon_finished = Arc::new(AtomicBool::new(false));
+    // Kept separately from Sentry breadcrumbs so an unknown exit can carry a
+    // precise final diagnostic even when the ambient scope changes first.
+    let last_stderr = Arc::new(Mutex::new(None::<String>));
+    let watcher_command = spawn_args.cmd.clone();
     start_daemon_heartbeat_watchdog(last_heartbeat.clone(), daemon_finished.clone());
 
     thread::spawn(move || {
         let process_heartbeat = last_heartbeat.clone();
         let process_finished = daemon_finished.clone();
+        let process_last_stderr = last_stderr.clone();
         let result = run_process_impl(DAEMON_HANDLE, &spawn_args, move |event| {
             // Surface stderr and non-success exits unconditionally — they
             // are the only signals the user has when the watcher dies
@@ -587,6 +597,9 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
                 }
                 ProcessEvent::Stderr(line) => {
                     log("daemon.stderr", &line);
+                    *process_last_stderr
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(line.clone());
                     // Accumulate as a Sentry breadcrumb so a crash capture at
                     // the Exit arm below ships with the runner's last words.
                     sentry::add_breadcrumb(sentry::Breadcrumb {
@@ -625,66 +638,31 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
                         // Deliberate stop path already recorded lifecycle.
                     } else if is_unexpected_watcher_exit(success, signal, cancelled) {
                         let consecutive = note_watcher_crashed();
+                        let capture_policy = watcher_exit_capture_policy(code, signal);
                         set_lifecycle_state(
                             if within_respawn_backoff() {
                                 WatchDaemonState::Backoff
                             } else {
                                 WatchDaemonState::Stopped
                             },
-                            if is_benign_watcher_exit(code, signal) {
+                            if capture_policy == WatcherExitCapturePolicy::LocalLogOnly {
                                 DaemonFailureCategory::None
                             } else {
                                 DaemonFailureCategory::Crash
                             },
                         );
-                        if is_benign_watcher_exit(code, signal) {
-                            log(
-                                "daemon",
-                                &format!(
-                                    "benign watcher exit #{consecutive} — capture skipped \
-                                     (code={:?} signal={:?})",
-                                    code, signal
-                                ),
-                            );
-                            sentry::add_breadcrumb(sentry::Breadcrumb {
-                                category: Some("daemon.exit".into()),
-                                level: sentry::Level::Info,
-                                message: Some(format!(
-                                    "benign auto-sync watcher exit #{consecutive}: \
-                                     code={:?} signal={:?}",
-                                    code, signal
-                                )),
-                                ..Default::default()
-                            });
-                        } else if should_capture_crash(consecutive) {
-                            let (uptime, rss_kb, rss_age) = watcher_exit_diagnostics();
-                            let diag = exit_diagnostic_suffix(uptime, rss_kb, rss_age);
-                            let fingerprint_token = termination_fingerprint_token(code, signal);
-                            let fingerprint = [
-                                "sync",
-                                "auto-sync-watcher-termination",
-                                fingerprint_token.as_str(),
-                            ];
-                            crate::commands::sync::capture_sync_error_with_fingerprint(
-                                None,
-                                "(auto-sync)",
-                                &format!(
-                                    "auto-sync watcher exited unexpectedly (code={:?} signal={:?}), \
-                                     consecutive failure #{consecutive}{diag}",
-                                    code, signal
-                                ),
-                                &fingerprint,
-                            );
-                        } else {
-                            log(
-                                "daemon",
-                                &format!(
-                                    "watcher crash #{consecutive} — capture rate-limited \
-                                     (code={:?} signal={:?})",
-                                    code, signal
-                                ),
-                            );
-                        }
+                        let last_stderr = process_last_stderr
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .clone();
+                        record_unexpected_watcher_exit(
+                            code,
+                            signal,
+                            consecutive,
+                            capture_policy,
+                            &watcher_command,
+                            last_stderr.as_deref(),
+                        );
                     } else {
                         set_lifecycle_state(WatchDaemonState::Stopped, DaemonFailureCategory::None);
                     }
@@ -704,18 +682,8 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
         // deadlock for the new start if it wedged).
         clear_daemon_guard_stamp_for(guard_generation);
 
-        if let Err(e) = result {
-            log("daemon", &format!("spawn failed: {e}"));
-            set_lifecycle_state(
-                WatchDaemonState::Stopped,
-                DaemonFailureCategory::SpawnFailed,
-            );
-            // The watcher never started — Sync is silently dead until restart.
-            crate::commands::sync::capture_sync_error(
-                None,
-                "(auto-sync)",
-                &format!("auto-sync watcher failed to spawn: {e}"),
-            );
+        if let Err(error) = result {
+            record_watcher_process_error(error);
         }
     });
 
@@ -769,11 +737,171 @@ fn is_fault_signal(signal: Option<i32>) -> bool {
     )
 }
 
-/// Pure classifier for runner exits that are environmental and not actionable
-/// Sentry crashes: denied/not-provisioned/transient/ACL-scope skips surface as
-/// code 1/2 with no signal.
-fn is_benign_watcher_exit(code: Option<i32>, signal: Option<i32>) -> bool {
-    matches!(code, Some(1 | 2)) && signal.is_none() && !is_fault_signal(signal)
+/// The live 221 is intentionally not classified. These diagnostics identify
+/// the runner invocation and final stderr without letting either affect Sentry
+/// grouping, so the next occurrence can be investigated from evidence rather
+/// than guessed into a benign bucket.
+fn is_unrecognized_watcher_exit(code: Option<i32>, signal: Option<i32>) -> bool {
+    signal.is_none() && !matches!(code, Some(0 | 1 | 2 | 126 | 127))
+}
+
+/// Record one unexpected watcher exit after the lifecycle path has determined
+/// its consecutive-failure count. Pure policy stays in hq-desktop-core; this is
+/// the only app-facing Sentry seam.
+fn record_unexpected_watcher_exit(
+    code: Option<i32>,
+    signal: Option<i32>,
+    consecutive: u32,
+    capture_policy: WatcherExitCapturePolicy,
+    watcher_command: &str,
+    last_stderr: Option<&str>,
+) {
+    if capture_policy == WatcherExitCapturePolicy::LocalLogOnly {
+        log(
+            "daemon",
+            &format!(
+                "environmental watcher exit #{consecutive} — capture skipped \
+                 (code={code:?} signal={signal:?})"
+            ),
+        );
+        sentry::add_breadcrumb(sentry::Breadcrumb {
+            category: Some("daemon.exit".into()),
+            level: sentry::Level::Info,
+            message: Some(format!(
+                "environmental auto-sync watcher exit #{consecutive}: \
+                 code={code:?} signal={signal:?}"
+            )),
+            ..Default::default()
+        });
+        return;
+    }
+
+    if !should_capture_watcher_exit(capture_policy, consecutive) {
+        log(
+            "daemon",
+            &format!(
+                "watcher exit #{consecutive} — capture rate-limited \
+                 (code={code:?} signal={signal:?})"
+            ),
+        );
+        return;
+    }
+
+    let (uptime, rss_kb, rss_age) = watcher_exit_diagnostics();
+    let diag = exit_diagnostic_suffix(uptime, rss_kb, rss_age);
+    let fingerprint_token = termination_fingerprint_token(code, signal);
+    let fingerprint = [
+        "sync",
+        "auto-sync-watcher-termination",
+        fingerprint_token.as_str(),
+    ];
+    let message = format!(
+        "auto-sync watcher exited unexpectedly (code={code:?} signal={signal:?}), \
+         consecutive failure #{consecutive}{diag}"
+    );
+
+    if is_unrecognized_watcher_exit(code, signal) {
+        let extras = [
+            (
+                "watcher_runner_command",
+                sentry::protocol::Value::String(watcher_command.to_string()),
+            ),
+            (
+                "watcher_hq_cloud_package",
+                sentry::protocol::Value::String(HQ_CLOUD_PACKAGE.to_string()),
+            ),
+            (
+                "watcher_hq_cloud_version",
+                sentry::protocol::Value::String(HQ_CLOUD_VERSION.to_string()),
+            ),
+            (
+                "watcher_runner_binary",
+                sentry::protocol::Value::String(RUNNER_BIN.to_string()),
+            ),
+            (
+                "watcher_last_stderr",
+                sentry::protocol::Value::String(last_stderr.unwrap_or("<none>").to_string()),
+            ),
+        ];
+        crate::commands::sync::capture_sync_error_with_fingerprint_and_context(
+            None,
+            "(auto-sync)",
+            &message,
+            &fingerprint,
+            &[],
+            &extras,
+        );
+    } else {
+        crate::commands::sync::capture_sync_error_with_fingerprint(
+            None,
+            "(auto-sync)",
+            &message,
+            &fingerprint,
+        );
+    }
+}
+
+/// Process errors after a child has started already flow through the Exit arm.
+/// Only the typed Spawn variant is allowed to use a "failed to spawn" capture;
+/// this prevents stream/wait errors from being captured twice under a false
+/// spawn label.
+fn record_watcher_process_error(error: ProcessError) {
+    if !error.is_spawn() {
+        log(
+            "daemon",
+            &format!(
+                "watcher process failed after spawn: {error}; terminal exit handler owns capture"
+            ),
+        );
+        return;
+    }
+
+    let kind = error.error_kind().unwrap_or(std::io::ErrorKind::Other);
+    let raw_os_error = error.raw_os_error();
+    let policy = spawn_failure_capture_policy(kind, raw_os_error);
+    let consecutive = note_watcher_crashed();
+    set_lifecycle_state(
+        if within_respawn_backoff() {
+            WatchDaemonState::Backoff
+        } else {
+            WatchDaemonState::Stopped
+        },
+        DaemonFailureCategory::SpawnFailed,
+    );
+
+    if policy == SpawnFailureCapturePolicy::RetryAndLog {
+        log(
+            "daemon",
+            &format!(
+                "transient watcher spawn resource exhaustion #{consecutive} — retrying via supervisor: {error}"
+            ),
+        );
+        sentry::add_breadcrumb(sentry::Breadcrumb {
+            category: Some("daemon.spawn".into()),
+            level: sentry::Level::Info,
+            message: Some(format!(
+                "transient auto-sync watcher spawn failure #{consecutive}: kind={kind:?} raw_os_error={raw_os_error:?}"
+            )),
+            ..Default::default()
+        });
+        return;
+    }
+
+    if should_capture_crash(consecutive) {
+        let token = spawn_failure_fingerprint_token(kind, raw_os_error);
+        let fingerprint = ["sync", "auto-sync-watcher-spawn", token];
+        crate::commands::sync::capture_sync_error_with_fingerprint(
+            None,
+            "(auto-sync)",
+            &format!("auto-sync watcher failed to spawn: {error}"),
+            &fingerprint,
+        );
+    } else {
+        log(
+            "daemon",
+            &format!("watcher spawn failure #{consecutive} — capture rate-limited: {error}"),
+        );
+    }
 }
 
 /// Capture policy for a preflight that positively refused to start the watcher.
@@ -1045,6 +1173,12 @@ fn exit_diagnostic_suffix(
             format_duration_secs(age.as_secs())
         )),
         (Some(kb), None) => parts.push(format!("last_rss={}", format_rss_kb(kb))),
+        _ if uptime.is_some_and(|elapsed| {
+            elapsed < SUPERVISOR_SETTLE.saturating_add(SUPERVISOR_INTERVAL)
+        }) =>
+        {
+            parts.push("last_rss=not-yet-sampled".to_string())
+        }
         _ => parts.push("last_rss=unsampled".to_string()),
     }
     if parts.is_empty() {
@@ -1614,16 +1748,32 @@ mod tests {
     }
 
     #[test]
-    fn code_1_and_2_without_signal_are_benign_watcher_exits() {
-        assert!(is_benign_watcher_exit(Some(1), None));
-        assert!(is_benign_watcher_exit(Some(2), None));
-
-        assert!(!is_benign_watcher_exit(Some(0), None));
-        assert!(!is_benign_watcher_exit(Some(126), None));
-        assert!(!is_benign_watcher_exit(Some(127), None));
-        assert!(!is_benign_watcher_exit(None, None));
-        assert!(!is_benign_watcher_exit(Some(1), Some(SIGSEGV)));
-        assert!(!is_benign_watcher_exit(Some(2), Some(SIGKILL)));
+    fn watcher_exit_policy_keeps_exec_failures_local_then_escalates() {
+        assert_eq!(
+            watcher_exit_capture_policy(Some(1), None),
+            WatcherExitCapturePolicy::LocalLogOnly
+        );
+        assert_eq!(
+            watcher_exit_capture_policy(Some(2), None),
+            WatcherExitCapturePolicy::LocalLogOnly
+        );
+        // Exit 126/127 can race a successful start-time preflight. Treat the
+        // first occurrence as the same environmental class, but do not make a
+        // persistently unrunnable HQ command invisible forever.
+        for code in [126, 127] {
+            let policy = watcher_exit_capture_policy(Some(code), None);
+            assert_eq!(policy, WatcherExitCapturePolicy::CaptureRateLimited);
+            assert!(!should_capture_watcher_exit(policy, 1));
+            assert!(should_capture_watcher_exit(policy, 4));
+        }
+        assert_eq!(
+            watcher_exit_capture_policy(Some(221), None),
+            WatcherExitCapturePolicy::Capture
+        );
+        assert_eq!(
+            watcher_exit_capture_policy(Some(2), Some(SIGKILL)),
+            WatcherExitCapturePolicy::Capture
+        );
     }
 
     #[test]
@@ -1756,7 +1906,7 @@ mod tests {
         );
         assert_eq!(
             exit_diagnostic_suffix(Some(Duration::from_secs(5)), None, None),
-            " [uptime=5s; last_rss=unsampled]"
+            " [uptime=5s; last_rss=not-yet-sampled]"
         );
         let full = exit_diagnostic_suffix(
             Some(Duration::from_secs(90)),
