@@ -1208,7 +1208,7 @@ mod tests {
                 None,
                 WatcherExitCapturePolicy::CaptureRateLimited,
             ),
-            // HQ-DESKTOP-41: unknown codes must stay visible, not guessed.
+            // HQ-DESKTOP-3Z: unknown codes must stay visible, not guessed.
             (Some(221), None, WatcherExitCapturePolicy::Capture),
             (Some(99), None, WatcherExitCapturePolicy::Capture),
             (Some(2), Some(9), WatcherExitCapturePolicy::Capture),

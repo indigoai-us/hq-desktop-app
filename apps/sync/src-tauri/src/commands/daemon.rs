@@ -634,43 +634,18 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
                     // re-spawn), and rate-limit a crash-loop to ~log2(N) events
                     // instead of one per 30s respawn (HQ-SYNC-4 / HQ-SYNC-5).
                     let cancelled = is_cancelled(DAEMON_HANDLE);
-                    if cancelled {
-                        // Deliberate stop path already recorded lifecycle.
-                        reset_exec_not_runnable_failure_streak();
-                    } else if is_unexpected_watcher_exit(success, signal, cancelled) {
-                        let consecutive = note_watcher_crashed();
-                        let capture_policy = watcher_exit_capture_policy(code, signal);
-                        let policy_consecutive =
-                            note_watcher_capture_policy_streak(capture_policy, consecutive);
-                        set_lifecycle_state(
-                            if within_respawn_backoff() {
-                                WatchDaemonState::Backoff
-                            } else {
-                                WatchDaemonState::Stopped
-                            },
-                            if capture_policy == WatcherExitCapturePolicy::LocalLogOnly {
-                                DaemonFailureCategory::None
-                            } else {
-                                DaemonFailureCategory::Crash
-                            },
-                        );
-                        let last_stderr = process_last_stderr
-                            .lock()
-                            .unwrap_or_else(|poisoned| poisoned.into_inner())
-                            .clone();
-                        record_unexpected_watcher_exit(
-                            code,
-                            signal,
-                            consecutive,
-                            policy_consecutive,
-                            capture_policy,
-                            &watcher_command,
-                            last_stderr.as_deref(),
-                        );
-                    } else {
-                        reset_exec_not_runnable_failure_streak();
-                        set_lifecycle_state(WatchDaemonState::Stopped, DaemonFailureCategory::None);
-                    }
+                    let last_stderr = process_last_stderr
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .clone();
+                    handle_watcher_exit(
+                        code,
+                        signal,
+                        success,
+                        cancelled,
+                        &watcher_command,
+                        last_stderr.as_deref(),
+                    );
                 }
             }
         });
@@ -750,10 +725,177 @@ fn is_unrecognized_watcher_exit(code: Option<i32>, signal: Option<i32>) -> bool 
     signal.is_none() && !matches!(code, Some(0 | 1 | 2 | 126 | 127))
 }
 
+/// Effects used by the production watcher handlers.
+///
+/// Keeping crash state, lifecycle, logging, breadcrumbs and capture behind one
+/// small seam lets process-level tests drive the exact production decisions
+/// without writing real Sentry events or mutating the global supervisor state.
+trait WatcherProcessEffects {
+    fn note_watcher_crashed(&mut self) -> u32;
+    fn note_watcher_capture_policy_streak(
+        &mut self,
+        policy: WatcherExitCapturePolicy,
+        global_consecutive: u32,
+    ) -> u32;
+    fn reset_exec_not_runnable_failure_streak(&mut self);
+    fn within_respawn_backoff(&self) -> bool;
+    fn set_lifecycle_state(&mut self, next: WatchDaemonState, category: DaemonFailureCategory);
+    fn watcher_exit_diagnostics(&self) -> (Option<Duration>, Option<u64>, Option<Duration>);
+    fn log(&mut self, target: &str, message: &str);
+    fn add_breadcrumb(&mut self, category: &str, level: sentry::Level, message: String);
+    fn capture(
+        &mut self,
+        message: &str,
+        fingerprint: &[&str],
+        extras: &[(&'static str, sentry::protocol::Value)],
+    );
+}
+
+struct ProductionWatcherProcessEffects;
+
+impl WatcherProcessEffects for ProductionWatcherProcessEffects {
+    fn note_watcher_crashed(&mut self) -> u32 {
+        note_watcher_crashed()
+    }
+
+    fn note_watcher_capture_policy_streak(
+        &mut self,
+        policy: WatcherExitCapturePolicy,
+        global_consecutive: u32,
+    ) -> u32 {
+        note_watcher_capture_policy_streak(policy, global_consecutive)
+    }
+
+    fn reset_exec_not_runnable_failure_streak(&mut self) {
+        reset_exec_not_runnable_failure_streak();
+    }
+
+    fn within_respawn_backoff(&self) -> bool {
+        within_respawn_backoff()
+    }
+
+    fn set_lifecycle_state(&mut self, next: WatchDaemonState, category: DaemonFailureCategory) {
+        set_lifecycle_state(next, category);
+    }
+
+    fn watcher_exit_diagnostics(&self) -> (Option<Duration>, Option<u64>, Option<Duration>) {
+        watcher_exit_diagnostics()
+    }
+
+    fn log(&mut self, target: &str, message: &str) {
+        log(target, message);
+    }
+
+    fn add_breadcrumb(&mut self, category: &str, level: sentry::Level, message: String) {
+        sentry::add_breadcrumb(sentry::Breadcrumb {
+            category: Some(category.into()),
+            level,
+            message: Some(message),
+            ..Default::default()
+        });
+    }
+
+    fn capture(
+        &mut self,
+        message: &str,
+        fingerprint: &[&str],
+        extras: &[(&'static str, sentry::protocol::Value)],
+    ) {
+        if extras.is_empty() {
+            crate::commands::sync::capture_sync_error_with_fingerprint(
+                None,
+                "(auto-sync)",
+                message,
+                fingerprint,
+            );
+        } else {
+            crate::commands::sync::capture_sync_error_with_fingerprint_and_context(
+                None,
+                "(auto-sync)",
+                message,
+                fingerprint,
+                &[],
+                extras,
+            );
+        }
+    }
+}
+
+fn handle_watcher_exit(
+    code: Option<i32>,
+    signal: Option<i32>,
+    success: bool,
+    cancelled: bool,
+    watcher_command: &str,
+    last_stderr: Option<&str>,
+) {
+    let mut effects = ProductionWatcherProcessEffects;
+    handle_watcher_exit_with_effects(
+        &mut effects,
+        code,
+        signal,
+        success,
+        cancelled,
+        watcher_command,
+        last_stderr,
+    );
+}
+
+fn handle_watcher_exit_with_effects<E: WatcherProcessEffects>(
+    effects: &mut E,
+    code: Option<i32>,
+    signal: Option<i32>,
+    success: bool,
+    cancelled: bool,
+    watcher_command: &str,
+    last_stderr: Option<&str>,
+) {
+    if cancelled {
+        // Deliberate stop path already recorded lifecycle.
+        effects.reset_exec_not_runnable_failure_streak();
+        return;
+    }
+
+    if !is_unexpected_watcher_exit(success, signal, cancelled) {
+        effects.reset_exec_not_runnable_failure_streak();
+        effects.set_lifecycle_state(WatchDaemonState::Stopped, DaemonFailureCategory::None);
+        return;
+    }
+
+    let consecutive = effects.note_watcher_crashed();
+    let capture_policy = watcher_exit_capture_policy(code, signal);
+    let policy_consecutive =
+        effects.note_watcher_capture_policy_streak(capture_policy, consecutive);
+    let lifecycle_state = if effects.within_respawn_backoff() {
+        WatchDaemonState::Backoff
+    } else {
+        WatchDaemonState::Stopped
+    };
+    effects.set_lifecycle_state(
+        lifecycle_state,
+        if capture_policy == WatcherExitCapturePolicy::LocalLogOnly {
+            DaemonFailureCategory::None
+        } else {
+            DaemonFailureCategory::Crash
+        },
+    );
+    record_unexpected_watcher_exit(
+        effects,
+        code,
+        signal,
+        consecutive,
+        policy_consecutive,
+        capture_policy,
+        watcher_command,
+        last_stderr,
+    );
+}
+
 /// Record one unexpected watcher exit after the lifecycle path has determined
 /// its consecutive-failure count. Pure policy stays in hq-desktop-core; this is
 /// the only app-facing Sentry seam.
-fn record_unexpected_watcher_exit(
+fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
+    effects: &mut E,
     code: Option<i32>,
     signal: Option<i32>,
     consecutive: u32,
@@ -763,27 +905,26 @@ fn record_unexpected_watcher_exit(
     last_stderr: Option<&str>,
 ) {
     if capture_policy == WatcherExitCapturePolicy::LocalLogOnly {
-        log(
+        effects.log(
             "daemon",
             &format!(
                 "environmental watcher exit #{consecutive} — capture skipped \
                  (code={code:?} signal={signal:?})"
             ),
         );
-        sentry::add_breadcrumb(sentry::Breadcrumb {
-            category: Some("daemon.exit".into()),
-            level: sentry::Level::Info,
-            message: Some(format!(
+        effects.add_breadcrumb(
+            "daemon.exit",
+            sentry::Level::Info,
+            format!(
                 "environmental auto-sync watcher exit #{consecutive}: \
                  code={code:?} signal={signal:?}"
-            )),
-            ..Default::default()
-        });
+            ),
+        );
         return;
     }
 
     if !should_capture_watcher_exit(capture_policy, policy_consecutive) {
-        log(
+        effects.log(
             "daemon",
             &format!(
                 "watcher exit #{consecutive} — capture rate-limited \
@@ -791,20 +932,19 @@ fn record_unexpected_watcher_exit(
             ),
         );
         if capture_policy == WatcherExitCapturePolicy::CaptureRateLimited {
-            sentry::add_breadcrumb(sentry::Breadcrumb {
-                category: Some("daemon.exit".into()),
-                level: sentry::Level::Info,
-                message: Some(format!(
+            effects.add_breadcrumb(
+                "daemon.exit",
+                sentry::Level::Info,
+                format!(
                     "exec-not-runnable auto-sync watcher exit #{policy_consecutive}: \
                      code={code:?} signal={signal:?}"
-                )),
-                ..Default::default()
-            });
+                ),
+            );
         }
         return;
     }
 
-    let (uptime, rss_kb, rss_age) = watcher_exit_diagnostics();
+    let (uptime, rss_kb, rss_age) = effects.watcher_exit_diagnostics();
     let diag = exit_diagnostic_suffix(uptime, rss_kb, rss_age);
     let fingerprint_token = termination_fingerprint_token(code, signal);
     let fingerprint = [
@@ -819,21 +959,9 @@ fn record_unexpected_watcher_exit(
 
     if is_unrecognized_watcher_exit(code, signal) {
         let extras = unrecognized_watcher_exit_extras(watcher_command, last_stderr);
-        crate::commands::sync::capture_sync_error_with_fingerprint_and_context(
-            None,
-            "(auto-sync)",
-            &message,
-            &fingerprint,
-            &[],
-            &extras,
-        );
+        effects.capture(&message, &fingerprint, &extras);
     } else {
-        crate::commands::sync::capture_sync_error_with_fingerprint(
-            None,
-            "(auto-sync)",
-            &message,
-            &fingerprint,
-        );
+        effects.capture(&message, &fingerprint, &[]);
     }
 }
 
@@ -870,8 +998,16 @@ fn unrecognized_watcher_exit_extras(
 /// this prevents stream/wait errors from being captured twice under a false
 /// spawn label.
 fn record_watcher_process_error(error: ProcessError) {
+    let mut effects = ProductionWatcherProcessEffects;
+    record_watcher_process_error_with_effects(&mut effects, error);
+}
+
+fn record_watcher_process_error_with_effects<E: WatcherProcessEffects>(
+    effects: &mut E,
+    error: ProcessError,
+) {
     if !error.is_spawn() {
-        log(
+        effects.log(
             "daemon",
             &format!(
                 "watcher process failed after spawn: {error}; terminal exit handler owns capture"
@@ -880,51 +1016,51 @@ fn record_watcher_process_error(error: ProcessError) {
         return;
     }
 
+    // Preserve the detailed local diagnostic that existed before spawn errors
+    // gained classification and stable Sentry grouping.
+    effects.log("daemon", &format!("spawn failed: {error}"));
+
     let kind = error.error_kind().unwrap_or(std::io::ErrorKind::Other);
     let raw_os_error = error.raw_os_error();
     let policy = spawn_failure_capture_policy(kind, raw_os_error);
     // A native spawn error is a different failure class from a child that
     // actually ran and exited 126/127, so it breaks that class-specific streak.
-    reset_exec_not_runnable_failure_streak();
-    let consecutive = note_watcher_crashed();
-    set_lifecycle_state(
-        if within_respawn_backoff() {
-            WatchDaemonState::Backoff
-        } else {
-            WatchDaemonState::Stopped
-        },
-        DaemonFailureCategory::SpawnFailed,
-    );
+    effects.reset_exec_not_runnable_failure_streak();
+    let consecutive = effects.note_watcher_crashed();
+    let lifecycle_state = if effects.within_respawn_backoff() {
+        WatchDaemonState::Backoff
+    } else {
+        WatchDaemonState::Stopped
+    };
+    effects.set_lifecycle_state(lifecycle_state, DaemonFailureCategory::SpawnFailed);
 
     if policy == SpawnFailureCapturePolicy::RetryAndLog {
-        log(
+        effects.log(
             "daemon",
             &format!(
                 "transient watcher spawn resource exhaustion #{consecutive} — retrying via supervisor: {error}"
             ),
         );
-        sentry::add_breadcrumb(sentry::Breadcrumb {
-            category: Some("daemon.spawn".into()),
-            level: sentry::Level::Info,
-            message: Some(format!(
+        effects.add_breadcrumb(
+            "daemon.spawn",
+            sentry::Level::Info,
+            format!(
                 "transient auto-sync watcher spawn failure #{consecutive}: kind={kind:?} raw_os_error={raw_os_error:?}"
-            )),
-            ..Default::default()
-        });
+            ),
+        );
         return;
     }
 
     if should_capture_crash(consecutive) {
         let token = spawn_failure_fingerprint_token(kind, raw_os_error);
         let fingerprint = ["sync", "auto-sync-watcher-spawn", token];
-        crate::commands::sync::capture_sync_error_with_fingerprint(
-            None,
-            "(auto-sync)",
+        effects.capture(
             &format!("auto-sync watcher failed to spawn: {error}"),
             &fingerprint,
+            &[],
         );
     } else {
-        log(
+        effects.log(
             "daemon",
             &format!("watcher spawn failure #{consecutive} — capture rate-limited: {error}"),
         );
@@ -1866,87 +2002,342 @@ mod tests {
         terminal.expect("real child must emit one terminal event")
     }
 
+    #[derive(Debug)]
+    struct RecordedCapture {
+        message: String,
+        fingerprint: Vec<String>,
+        extras: Vec<(String, sentry::protocol::Value)>,
+    }
+
+    #[derive(Default)]
+    struct RecordingWatcherEffects {
+        consecutive: u32,
+        exec_not_runnable_consecutive: u32,
+        in_backoff: bool,
+        logs: Vec<(String, String)>,
+        breadcrumbs: Vec<(String, String, String)>,
+        captures: Vec<RecordedCapture>,
+        lifecycle: Vec<(WatchDaemonState, DaemonFailureCategory)>,
+    }
+
+    impl WatcherProcessEffects for RecordingWatcherEffects {
+        fn note_watcher_crashed(&mut self) -> u32 {
+            self.consecutive = self.consecutive.saturating_add(1);
+            self.in_backoff = true;
+            self.consecutive
+        }
+
+        fn note_watcher_capture_policy_streak(
+            &mut self,
+            policy: WatcherExitCapturePolicy,
+            global_consecutive: u32,
+        ) -> u32 {
+            self.exec_not_runnable_consecutive =
+                next_exec_not_runnable_streak(self.exec_not_runnable_consecutive, policy);
+            if policy == WatcherExitCapturePolicy::CaptureRateLimited {
+                self.exec_not_runnable_consecutive
+            } else {
+                global_consecutive
+            }
+        }
+
+        fn reset_exec_not_runnable_failure_streak(&mut self) {
+            self.exec_not_runnable_consecutive = 0;
+        }
+
+        fn within_respawn_backoff(&self) -> bool {
+            self.in_backoff
+        }
+
+        fn set_lifecycle_state(&mut self, next: WatchDaemonState, category: DaemonFailureCategory) {
+            self.lifecycle.push((next, category));
+        }
+
+        fn watcher_exit_diagnostics(&self) -> (Option<Duration>, Option<u64>, Option<Duration>) {
+            (Some(Duration::from_secs(1)), None, None)
+        }
+
+        fn log(&mut self, target: &str, message: &str) {
+            self.logs.push((target.to_string(), message.to_string()));
+        }
+
+        fn add_breadcrumb(&mut self, category: &str, level: sentry::Level, message: String) {
+            self.breadcrumbs
+                .push((category.to_string(), format!("{level:?}"), message));
+        }
+
+        fn capture(
+            &mut self,
+            message: &str,
+            fingerprint: &[&str],
+            extras: &[(&'static str, sentry::protocol::Value)],
+        ) {
+            self.captures.push(RecordedCapture {
+                message: message.to_string(),
+                fingerprint: fingerprint.iter().map(|part| (*part).to_string()).collect(),
+                extras: extras
+                    .iter()
+                    .map(|(key, value)| ((*key).to_string(), value.clone()))
+                    .collect(),
+            });
+        }
+    }
+
+    fn recorded_string_extra<'a>(capture: &'a RecordedCapture, key: &str) -> &'a str {
+        capture
+            .extras
+            .iter()
+            .find_map(|(name, value)| {
+                if name != key {
+                    return None;
+                }
+                match value {
+                    sentry::protocol::Value::String(value) => Some(value.as_str()),
+                    _ => None,
+                }
+            })
+            .unwrap_or_else(|| panic!("missing string extra {key}"))
+    }
+
     #[cfg(unix)]
     #[test]
-    fn real_child_exit_statuses_drive_the_expected_capture_decision() {
-        for (exit_code, expected_capture) in [
-            (0, false),
-            (2, false),
-            (126, false),
-            (127, false),
-            (221, true),
-        ] {
+    fn real_child_exit_statuses_drive_the_production_handler() {
+        for exit_code in [0, 2, 126, 127, 221] {
             let (code, signal, success) = run_real_watcher_exit(exit_code);
             assert_eq!(code, Some(exit_code));
             assert_eq!(signal, None);
 
-            let should_capture = is_unexpected_watcher_exit(success, signal, false)
-                && should_capture_watcher_exit(watcher_exit_capture_policy(code, signal), 1);
-            assert_eq!(
-                should_capture, expected_capture,
-                "real exit {exit_code} produced the wrong watcher capture decision"
+            let mut effects = RecordingWatcherEffects::default();
+            handle_watcher_exit_with_effects(
+                &mut effects,
+                code,
+                signal,
+                success,
+                false,
+                "/opt/homebrew/bin/npx",
+                Some("runner ended without a documented code"),
             );
+
+            assert_eq!(effects.captures.len(), usize::from(exit_code == 221));
+            match exit_code {
+                0 => assert_eq!(
+                    effects.lifecycle,
+                    vec![(WatchDaemonState::Stopped, DaemonFailureCategory::None)]
+                ),
+                2 => {
+                    assert_eq!(
+                        effects.lifecycle,
+                        vec![(WatchDaemonState::Backoff, DaemonFailureCategory::None)]
+                    );
+                    assert!(effects
+                        .breadcrumbs
+                        .iter()
+                        .any(|(category, _, _)| category == "daemon.exit"));
+                }
+                126 | 127 => {
+                    assert_eq!(
+                        effects.lifecycle,
+                        vec![(WatchDaemonState::Backoff, DaemonFailureCategory::Crash)]
+                    );
+                    assert!(effects
+                        .breadcrumbs
+                        .iter()
+                        .any(|(category, _, message)| category == "daemon.exit"
+                            && message.contains("exec-not-runnable")));
+                }
+                221 => {
+                    assert_eq!(
+                        effects.lifecycle,
+                        vec![(WatchDaemonState::Backoff, DaemonFailureCategory::Crash)]
+                    );
+                    let capture = &effects.captures[0];
+                    assert_eq!(
+                        recorded_string_extra(capture, "watcher_runner_command"),
+                        "/opt/homebrew/bin/npx"
+                    );
+                    assert_eq!(
+                        recorded_string_extra(capture, "watcher_last_stderr"),
+                        "runner ended without a documented code"
+                    );
+                    assert!(capture.message.contains("last_rss=not-yet-sampled"));
+                    assert!(!capture.fingerprint.iter().any(|part| part.contains('/')));
+                }
+                _ => unreachable!(),
+            }
         }
     }
 
     #[cfg(unix)]
     #[test]
     fn real_child_crash_flood_keeps_power_of_two_capture_bound() {
-        let mut captures = 0;
-        for consecutive in 1..=32 {
+        let mut effects = RecordingWatcherEffects::default();
+        for _ in 1..=32 {
             let (code, signal, success) = run_real_watcher_exit(221);
             assert!(!success);
-            if is_unexpected_watcher_exit(success, signal, false)
-                && should_capture_watcher_exit(
-                    watcher_exit_capture_policy(code, signal),
-                    consecutive,
-                )
-            {
-                captures += 1;
-            }
+            handle_watcher_exit_with_effects(
+                &mut effects,
+                code,
+                signal,
+                success,
+                false,
+                "npx",
+                Some("unknown runner exit"),
+            );
         }
 
-        assert_eq!(captures, 6, "only failures 1, 2, 4, 8, 16 and 32 capture");
+        assert_eq!(
+            effects.captures.len(),
+            6,
+            "only failures 1, 2, 4, 8, 16 and 32 capture"
+        );
+        assert!(effects
+            .lifecycle
+            .iter()
+            .all(|(state, category)| *state == WatchDaemonState::Backoff
+                && *category == DaemonFailureCategory::Crash));
     }
 
     #[test]
-    fn unknown_exit_context_carries_runner_version_and_last_stderr() {
-        fn string_extra<'a>(extras: &'a [(&str, sentry::protocol::Value)], key: &str) -> &'a str {
-            extras
-                .iter()
-                .find_map(|(name, value)| {
-                    if *name != key {
-                        return None;
-                    }
-                    match value {
-                        sentry::protocol::Value::String(value) => Some(value.as_str()),
-                        _ => None,
-                    }
-                })
-                .unwrap_or_else(|| panic!("missing string extra {key}"))
-        }
-
-        let extras = unrecognized_watcher_exit_extras(
+    fn unknown_exit_handler_carries_runner_version_and_last_stderr() {
+        let mut effects = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            Some(221),
+            None,
+            false,
+            false,
             "/opt/homebrew/bin/npx",
             Some("runner ended without a documented code"),
         );
+        let capture = &effects.captures[0];
         assert_eq!(
-            string_extra(&extras, "watcher_runner_command"),
+            recorded_string_extra(capture, "watcher_runner_command"),
             "/opt/homebrew/bin/npx"
         );
         assert_eq!(
-            string_extra(&extras, "watcher_hq_cloud_package"),
+            recorded_string_extra(capture, "watcher_hq_cloud_package"),
             HQ_CLOUD_PACKAGE
         );
         assert_eq!(
-            string_extra(&extras, "watcher_hq_cloud_version"),
+            recorded_string_extra(capture, "watcher_hq_cloud_version"),
             HQ_CLOUD_VERSION
         );
-        assert_eq!(string_extra(&extras, "watcher_runner_binary"), RUNNER_BIN);
         assert_eq!(
-            string_extra(&extras, "watcher_last_stderr"),
+            recorded_string_extra(capture, "watcher_runner_binary"),
+            RUNNER_BIN
+        );
+        assert_eq!(
+            recorded_string_extra(capture, "watcher_last_stderr"),
             "runner ended without a documented code"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn real_spawn_failure_drives_capture_grouping_log_and_backoff() {
+        use hq_desktop_core::process_types::SpawnArgs;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let missing = tmp.path().join("missing-runner").display().to_string();
+        let spawn = SpawnArgs {
+            cmd: missing.clone(),
+            args: Vec::new(),
+            cwd: None,
+            env: None,
+        };
+        let error = run_process_impl("watcher-policy-real-spawn-error", &spawn, |_| {})
+            .expect_err("missing executable must fail at spawn");
+        let mut effects = RecordingWatcherEffects::default();
+
+        record_watcher_process_error_with_effects(&mut effects, error);
+
+        assert_eq!(effects.captures.len(), 1);
+        assert_eq!(
+            effects.lifecycle,
+            vec![(
+                WatchDaemonState::Backoff,
+                DaemonFailureCategory::SpawnFailed
+            )]
+        );
+        assert!(effects.logs.iter().any(|(target, message)| {
+            target == "daemon" && message.starts_with("spawn failed: spawn '")
+        }));
+        let capture = &effects.captures[0];
+        assert!(capture.message.contains(&missing));
+        assert_eq!(
+            capture.fingerprint,
+            vec![
+                "sync".to_string(),
+                "auto-sync-watcher-spawn".to_string(),
+                "not-found".to_string(),
+            ]
+        );
+        assert!(!capture
+            .fingerprint
+            .iter()
+            .any(|part| part.contains(tmp.path().to_string_lossy().as_ref())));
+    }
+
+    #[test]
+    fn transient_spawn_exhaustion_retries_with_breadcrumb_log_and_backoff() {
+        let error = ProcessError::Spawn {
+            cmd: "/opt/homebrew/bin/npx".to_string(),
+            source: std::io::Error::new(std::io::ErrorKind::WouldBlock, "resource unavailable"),
+        };
+        let mut effects = RecordingWatcherEffects::default();
+
+        record_watcher_process_error_with_effects(&mut effects, error);
+
+        assert!(effects.captures.is_empty());
+        assert_eq!(
+            effects.lifecycle,
+            vec![(
+                WatchDaemonState::Backoff,
+                DaemonFailureCategory::SpawnFailed
+            )]
+        );
+        assert!(effects.logs.iter().any(|(target, message)| {
+            target == "daemon" && message.starts_with("spawn failed: spawn '")
+        }));
+        assert!(effects.breadcrumbs.iter().any(|(category, _, message)| {
+            category == "daemon.spawn" && message.contains("transient auto-sync watcher")
+        }));
+    }
+
+    #[test]
+    fn post_spawn_process_errors_cannot_capture_twice_or_claim_spawn_failure() {
+        let errors = [
+            ProcessError::Stream {
+                stream: "stdout",
+                source: std::io::Error::other("read failed"),
+            },
+            ProcessError::Wait {
+                source: std::io::Error::other("wait failed"),
+            },
+        ];
+
+        for error in errors {
+            let mut effects = RecordingWatcherEffects::default();
+            handle_watcher_exit_with_effects(&mut effects, None, None, false, false, "npx", None);
+            assert_eq!(effects.captures.len(), 1, "terminal Exit owns capture");
+
+            record_watcher_process_error_with_effects(&mut effects, error);
+
+            assert_eq!(
+                effects.captures.len(),
+                1,
+                "process error must not recapture"
+            );
+            assert!(!effects
+                .captures
+                .iter()
+                .any(|capture| capture.message.contains("failed to spawn")));
+            assert!(effects.logs.iter().any(|(target, message)| {
+                target == "daemon"
+                    && message.contains("failed after spawn")
+                    && message.contains("terminal exit handler owns capture")
+            }));
+        }
     }
 
     #[test]
