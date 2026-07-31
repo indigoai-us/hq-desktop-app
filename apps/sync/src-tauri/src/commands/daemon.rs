@@ -790,6 +790,17 @@ fn record_unexpected_watcher_exit(
                  (code={code:?} signal={signal:?})"
             ),
         );
+        if capture_policy == WatcherExitCapturePolicy::CaptureRateLimited {
+            sentry::add_breadcrumb(sentry::Breadcrumb {
+                category: Some("daemon.exit".into()),
+                level: sentry::Level::Info,
+                message: Some(format!(
+                    "exec-not-runnable auto-sync watcher exit #{policy_consecutive}: \
+                     code={code:?} signal={signal:?}"
+                )),
+                ..Default::default()
+            });
+        }
         return;
     }
 
@@ -807,28 +818,7 @@ fn record_unexpected_watcher_exit(
     );
 
     if is_unrecognized_watcher_exit(code, signal) {
-        let extras = [
-            (
-                "watcher_runner_command",
-                sentry::protocol::Value::String(watcher_command.to_string()),
-            ),
-            (
-                "watcher_hq_cloud_package",
-                sentry::protocol::Value::String(HQ_CLOUD_PACKAGE.to_string()),
-            ),
-            (
-                "watcher_hq_cloud_version",
-                sentry::protocol::Value::String(HQ_CLOUD_VERSION.to_string()),
-            ),
-            (
-                "watcher_runner_binary",
-                sentry::protocol::Value::String(RUNNER_BIN.to_string()),
-            ),
-            (
-                "watcher_last_stderr",
-                sentry::protocol::Value::String(last_stderr.unwrap_or("<none>").to_string()),
-            ),
-        ];
+        let extras = unrecognized_watcher_exit_extras(watcher_command, last_stderr);
         crate::commands::sync::capture_sync_error_with_fingerprint_and_context(
             None,
             "(auto-sync)",
@@ -845,6 +835,34 @@ fn record_unexpected_watcher_exit(
             &fingerprint,
         );
     }
+}
+
+fn unrecognized_watcher_exit_extras(
+    watcher_command: &str,
+    last_stderr: Option<&str>,
+) -> [(&'static str, sentry::protocol::Value); 5] {
+    [
+        (
+            "watcher_runner_command",
+            sentry::protocol::Value::String(watcher_command.to_string()),
+        ),
+        (
+            "watcher_hq_cloud_package",
+            sentry::protocol::Value::String(HQ_CLOUD_PACKAGE.to_string()),
+        ),
+        (
+            "watcher_hq_cloud_version",
+            sentry::protocol::Value::String(HQ_CLOUD_VERSION.to_string()),
+        ),
+        (
+            "watcher_runner_binary",
+            sentry::protocol::Value::String(RUNNER_BIN.to_string()),
+        ),
+        (
+            "watcher_last_stderr",
+            sentry::protocol::Value::String(last_stderr.unwrap_or("<none>").to_string()),
+        ),
+    ]
 }
 
 /// Process errors after a child has started already flow through the Exit arm.
@@ -1818,6 +1836,116 @@ mod tests {
         assert_eq!(
             watcher_exit_capture_policy(Some(2), Some(SIGKILL)),
             WatcherExitCapturePolicy::Capture
+        );
+    }
+
+    #[cfg(unix)]
+    fn run_real_watcher_exit(code: i32) -> (Option<i32>, Option<i32>, bool) {
+        use hq_desktop_core::process_types::SpawnArgs;
+
+        let spawn = SpawnArgs {
+            cmd: "sh".to_string(),
+            args: vec!["-c".to_string(), format!("exit {code}")],
+            cwd: None,
+            env: None,
+        };
+        let handle = format!("watcher-policy-real-exit-{code}");
+        let mut terminal = None;
+        run_process_impl(&handle, &spawn, |event| {
+            if let ProcessEvent::Exit {
+                code,
+                signal,
+                success,
+            } = event
+            {
+                terminal = Some((code, signal, success));
+            }
+        })
+        .expect("real shell child should run");
+
+        terminal.expect("real child must emit one terminal event")
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn real_child_exit_statuses_drive_the_expected_capture_decision() {
+        for (exit_code, expected_capture) in [
+            (0, false),
+            (2, false),
+            (126, false),
+            (127, false),
+            (221, true),
+        ] {
+            let (code, signal, success) = run_real_watcher_exit(exit_code);
+            assert_eq!(code, Some(exit_code));
+            assert_eq!(signal, None);
+
+            let should_capture = is_unexpected_watcher_exit(success, signal, false)
+                && should_capture_watcher_exit(watcher_exit_capture_policy(code, signal), 1);
+            assert_eq!(
+                should_capture, expected_capture,
+                "real exit {exit_code} produced the wrong watcher capture decision"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn real_child_crash_flood_keeps_power_of_two_capture_bound() {
+        let mut captures = 0;
+        for consecutive in 1..=32 {
+            let (code, signal, success) = run_real_watcher_exit(221);
+            assert!(!success);
+            if is_unexpected_watcher_exit(success, signal, false)
+                && should_capture_watcher_exit(
+                    watcher_exit_capture_policy(code, signal),
+                    consecutive,
+                )
+            {
+                captures += 1;
+            }
+        }
+
+        assert_eq!(captures, 6, "only failures 1, 2, 4, 8, 16 and 32 capture");
+    }
+
+    #[test]
+    fn unknown_exit_context_carries_runner_version_and_last_stderr() {
+        fn string_extra<'a>(extras: &'a [(&str, sentry::protocol::Value)], key: &str) -> &'a str {
+            extras
+                .iter()
+                .find_map(|(name, value)| {
+                    if *name != key {
+                        return None;
+                    }
+                    match value {
+                        sentry::protocol::Value::String(value) => Some(value.as_str()),
+                        _ => None,
+                    }
+                })
+                .unwrap_or_else(|| panic!("missing string extra {key}"))
+        }
+
+        let extras = unrecognized_watcher_exit_extras(
+            "/opt/homebrew/bin/npx",
+            Some("runner ended without a documented code"),
+        );
+        assert_eq!(
+            string_extra(&extras, "watcher_runner_command"),
+            "/opt/homebrew/bin/npx"
+        );
+        assert_eq!(
+            string_extra(&extras, "watcher_hq_cloud_package"),
+            HQ_CLOUD_PACKAGE
+        );
+        assert_eq!(
+            string_extra(&extras, "watcher_hq_cloud_version"),
+            HQ_CLOUD_VERSION
+        );
+        assert_eq!(string_extra(&extras, "watcher_runner_binary"), RUNNER_BIN);
+        assert_eq!(
+            string_extra(&extras, "watcher_last_stderr"),
+            "runner ended without a documented code"
         );
     }
 

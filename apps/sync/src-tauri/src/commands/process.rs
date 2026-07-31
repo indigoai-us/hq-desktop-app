@@ -807,15 +807,19 @@ pub fn spawn_process(app: AppHandle, args: SpawnArgs) -> Result<String, String> 
             }
         });
 
-        if let Err(_e) = result {
-            let _ = app.emit(
-                &format!("process://{}/exit", handle_bg),
-                ExitEvent {
-                    code: Some(-1),
-                    signal: None,
-                    success: false,
-                },
-            );
+        if let Err(error) = result {
+            // Stream/wait failures already emitted their single terminal event
+            // from run_process_impl. Only a spawn-stage failure has no event.
+            if error.is_spawn() {
+                let _ = app.emit(
+                    &format!("process://{}/exit", handle_bg),
+                    ExitEvent {
+                        code: Some(-1),
+                        signal: None,
+                        success: false,
+                    },
+                );
+            }
         }
     });
 
@@ -944,6 +948,13 @@ mod process_error_tests {
         let token = hq_desktop_core::sync_outcome::spawn_failure_fingerprint_token(
             error.error_kind().expect("typed spawn kind"),
             error.raw_os_error(),
+        );
+        assert_eq!(
+            hq_desktop_core::sync_outcome::spawn_failure_capture_policy(
+                error.error_kind().expect("typed spawn kind"),
+                error.raw_os_error(),
+            ),
+            hq_desktop_core::sync_outcome::SpawnFailureCapturePolicy::CaptureRateLimited
         );
         assert_eq!(token, "not-found");
         assert!(!token.contains(tmp.path().to_string_lossy().as_ref()));

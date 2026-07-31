@@ -1689,7 +1689,9 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
                 capture_sync_error(None, "(spawn)", &message);
                 ("(spawn)", message)
             } else {
-                ("(process)", format!("runner failed after spawn: {e}"))
+                // Preserve the existing user-visible error text. The typed
+                // path distinguishes the lifecycle stage without rewriting it.
+                ("(process)", e.to_string())
             };
             let _ = app_bg.emit(
                 EVENT_SYNC_ERROR,
