@@ -240,16 +240,23 @@ fn is_partial_install_failure(detail: &str) -> bool {
 }
 
 /// The npm global scope dir that holds the `@indigoai-us/hq-cli` package for a
-/// given prefix. npm's macOS global layout is
-/// `<prefix>/lib/node_modules/<scope>/<pkg>`, so partial-install debris — the
-/// `hq-cli` package dir and its `.hq-cli-*` temp staging dirs — lives directly
-/// under this `@indigoai-us` dir. Factored out so cleanup stays strictly scoped
-/// and the path shape is unit-testable without touching the filesystem.
+/// given prefix. Unix uses `<prefix>/lib/node_modules`; Windows uses
+/// `<prefix>\node_modules`. Partial-install debris — the `hq-cli` package dir
+/// and its `.hq-cli-*` temp staging dirs — lives directly under the resulting
+/// `@indigoai-us` dir. Factored out so cleanup stays strictly scoped and both
+/// path shapes are unit-testable without touching the filesystem.
+fn partial_install_scope_dir_for(prefix: &str, windows_layout: bool) -> PathBuf {
+    let root = Path::new(prefix);
+    let node_modules = if windows_layout {
+        root.join("node_modules")
+    } else {
+        root.join("lib").join("node_modules")
+    };
+    node_modules.join("@indigoai-us")
+}
+
 fn partial_install_scope_dir(prefix: &str) -> PathBuf {
-    Path::new(prefix)
-        .join("lib")
-        .join("node_modules")
-        .join("@indigoai-us")
+    partial_install_scope_dir_for(prefix, cfg!(target_os = "windows"))
 }
 
 /// Remove partial `@indigoai-us/hq-cli` install debris left by an interrupted
@@ -328,6 +335,20 @@ async fn run_npm_install(
     .await
     .map_err(|e| format!("join blocking task: {e}"))?
     .map_err(|e| format!("spawn npm: {e}"))
+}
+
+fn verify_active_cli_version(local: Option<String>, latest: &str) -> Result<String, String> {
+    match local {
+        Some(local) if cmp_semver(&local, latest) != std::cmp::Ordering::Less => Ok(local),
+        Some(local) => Err(format!(
+            "npm completed, but the active HQ CLI is still v{local} (expected v{latest}). \
+             The update was not applied to the CLI on PATH."
+        )),
+        None => Err(format!(
+            "npm completed, but the active HQ CLI version could not be verified \
+             (expected v{latest})."
+        )),
+    }
 }
 
 #[tauri::command]
@@ -446,17 +467,17 @@ pub async fn install_hq_cli_update(app: AppHandle) -> Result<HqCliUpdateInfo, St
     // `read_installed_version` asks npm's default global prefix, which may be
     // different from the explicit `--prefix` used above.
     let latest = fetch_latest().await?;
-    let local = tauri::async_runtime::spawn_blocking(get_local_version)
+    let detected = tauri::async_runtime::spawn_blocking(get_local_version)
         .await
         .ok()
-        .flatten()
-        .or_else(|| Some(latest.clone()));
+        .flatten();
+    let local = verify_active_cli_version(detected, &latest)?;
     log(
         "hq-cli-update",
-        &format!("install succeeded: local={:?} latest={}", local, latest),
+        &format!("install succeeded: local={} latest={}", local, latest),
     );
     let info = HqCliUpdateInfo {
-        local,
+        local: Some(local),
         latest: latest.clone(),
     };
     // Frontend uses this to drop the banner immediately on success.
@@ -596,13 +617,40 @@ mod tests {
     fn partial_install_scope_dir_is_the_npm_global_scope() {
         // npm's macOS global layout: <prefix>/lib/node_modules/<scope>.
         assert_eq!(
-            partial_install_scope_dir(
-                "/Users/mike/Library/Application Support/Indigo HQ/toolchain/npm-global"
+            partial_install_scope_dir_for(
+                "/Users/mike/Library/Application Support/Indigo HQ/toolchain/npm-global",
+                false,
             ),
             PathBuf::from(
                 "/Users/mike/Library/Application Support/Indigo HQ/toolchain/npm-global/lib/node_modules/@indigoai-us"
             )
         );
+    }
+
+    #[test]
+    fn partial_install_scope_dir_uses_windows_global_npm_layout() {
+        assert_eq!(
+            partial_install_scope_dir_for(
+                "C:/Users/mike/AppData/Local/IndigoHQ/toolchain/npm-prefix",
+                true,
+            ),
+            PathBuf::from(
+                "C:/Users/mike/AppData/Local/IndigoHQ/toolchain/npm-prefix/node_modules/@indigoai-us"
+            )
+        );
+    }
+
+    #[test]
+    fn active_cli_verification_rejects_the_stale_post_install_loop() {
+        assert_eq!(
+            verify_active_cli_version(Some("5.79.0".to_string()), "5.79.0"),
+            Ok("5.79.0".to_string())
+        );
+        let stale = verify_active_cli_version(Some("5.77.7".to_string()), "5.79.0").unwrap_err();
+        assert!(stale.contains("still v5.77.7"), "{stale}");
+        assert!(stale.contains("not applied to the CLI on PATH"), "{stale}");
+        let missing = verify_active_cli_version(None, "5.79.0").unwrap_err();
+        assert!(missing.contains("could not be verified"), "{missing}");
     }
 
     #[test]
