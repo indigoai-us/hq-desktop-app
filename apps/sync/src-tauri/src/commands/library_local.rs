@@ -134,11 +134,18 @@ pub async fn get_library_skill_detail(skill_path: String) -> Result<SkillDetail,
 /// root/package names on collision — matching SessionStart catalog semantics.
 #[tauri::command]
 pub async fn export_skill_catalog(company_slug: Option<String>) -> Result<SkillCatalogExport, String> {
+    if !crate::util::feature_gate::desktop_features_enabled().await {
+        return Err("library reader requires a signed-in user".to_string());
+    }
     let hq = resolve_hq_folder();
     let slug = company_slug
         .as_deref()
         .map(validate_slug)
         .transpose()?;
+    if let Some(company_slug) = slug.as_deref() {
+        let (_, workspaces) = hydrated_library_context().await?;
+        require_library_company_access(&workspaces, company_slug)?;
+    }
     Ok(hq_desktop_core::skill_catalog::export_skill_catalog(
         &hq,
         slug.as_deref(),

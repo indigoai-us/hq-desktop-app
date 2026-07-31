@@ -117,6 +117,21 @@ pub fn bind_hq_root_for_claude_launch(folder: Option<&Path>) -> Result<PathBuf, 
     ))
 }
 
+/// Keep an authorized subfolder when it already lives under the resolved HQ
+/// root; otherwise bind Claude to the HQ root itself for project settings.
+fn rebound_claude_folder(original: Option<&Path>, hq_root: &Path) -> Result<PathBuf, String> {
+    let canonical_root = std::fs::canonicalize(hq_root)
+        .map_err(|error| format!("could not resolve HQ root {:?}: {error}", hq_root))?;
+    if let Some(original) = original.filter(|path| !path.as_os_str().is_empty()) {
+        if let Ok(canonical_original) = std::fs::canonicalize(original) {
+            if canonical_original.starts_with(&canonical_root) {
+                return Ok(canonical_original);
+            }
+        }
+    }
+    Ok(canonical_root)
+}
+
 /// Parse a validated `claude://code/new?...` URL, bind the `folder` parameter
 /// to the HQ root, verify hook health, and return the rewritten URL.
 pub fn preflight_claude_code_url(url: &str) -> Result<String, String> {
@@ -132,9 +147,11 @@ pub fn preflight_claude_code_url(url: &str) -> Result<String, String> {
         .unwrap_or_default();
 
     let hq_root = bind_hq_root_for_claude_launch(folder.as_deref())?;
-    check_hq_hooks_ready(&hq_root)?;
+    if !prompt.contains("/setup") {
+        check_hq_hooks_ready(&hq_root)?;
+    }
 
-    folder = Some(hq_root);
+    folder = Some(rebound_claude_folder(folder.as_deref(), &hq_root)?);
     let mut rebound = Url::parse("claude://code/new")
         .map_err(|error| format!("failed to rebuild Claude URL: {error}"))?;
     {
@@ -217,11 +234,11 @@ mod tests {
     }
 
     #[test]
-    fn preflight_rebinds_folder_to_hq_root() {
+    fn preflight_preserves_authorized_subfolder_under_hq_root() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("HQ");
         scaffold_hq(&root);
-        let child = root.join("repos/private/demo");
+        let child = root.join("companies/indigo/projects/demo");
         fs::create_dir_all(&child).unwrap();
         let child = fs::canonicalize(&child).unwrap();
         let url = format!(
@@ -235,7 +252,22 @@ mod tests {
             .find(|(key, _)| key == "folder")
             .map(|(_, value)| value.into_owned())
             .unwrap();
-        assert_eq!(folder, fs::canonicalize(&root).unwrap().to_string_lossy());
+        assert_eq!(folder, child.to_string_lossy());
         assert!(parsed.query_pairs().any(|(key, _)| key == "q"));
+    }
+
+    #[test]
+    fn preflight_allows_setup_repair_without_hook_health() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("HQ");
+        write_core_yaml(&root);
+        fs::create_dir_all(root.join("companies")).unwrap();
+        fs::write(root.join("companies/manifest.yaml"), "companies: []\n").unwrap();
+        let root = fs::canonicalize(&root).unwrap();
+        let url = format!(
+            "claude://code/new?q=%2Fsetup&folder={}",
+            root.to_string_lossy().replace(' ', "%20")
+        );
+        assert!(preflight_claude_code_url(&url).is_ok());
     }
 }
