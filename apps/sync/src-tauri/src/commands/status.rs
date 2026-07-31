@@ -120,20 +120,31 @@ fn try_cli_status(hq_folder_path: &str) -> Result<SyncStatus, String> {
 /// not invoked: the split removed that subcommand, so calling it only
 /// produced noisy "unknown option '--json'" errors every poll.
 ///
-/// If the journal doesn't exist yet (pre-first-sync), returns a default
+/// That desktop journal only records runs *this app* completed, so it is
+/// reconciled against the sync engine's own per-company journals before being
+/// returned. Without that, a machine whose daemon can't start reports "Never
+/// synced" indefinitely — even immediately after a `hq sync` in a terminal
+/// visibly succeeded, which is exactly how a broken daemon stayed invisible.
+///
+/// If neither journal exists yet (pre-first-sync), returns a default
 /// SyncStatus with everything zeroed/null.
 #[tauri::command]
 pub async fn get_sync_status() -> Result<SyncStatus, String> {
     let hq_folder_path = resolve_hq_folder_path()?;
 
-    match hq_desktop_core::status::try_journal_status(&hq_folder_path) {
-        Ok(status) => Ok(status),
+    let status = match hq_desktop_core::status::try_journal_status(&hq_folder_path) {
+        Ok(status) => status,
         Err(_e) => {
             #[cfg(debug_assertions)]
             eprintln!("[status] Journal not available, returning default: {}", _e);
-            Ok(hq_desktop_core::status::default_status())
+            hq_desktop_core::status::default_status()
         }
-    }
+    };
+
+    Ok(hq_desktop_core::status::merge_engine_sync_at(
+        status,
+        hq_desktop_core::status::newest_engine_sync_at(),
+    ))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
