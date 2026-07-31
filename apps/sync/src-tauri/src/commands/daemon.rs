@@ -169,6 +169,13 @@ fn current_lifecycle_state() -> WatchDaemonState {
         .unwrap_or_else(|p| p.into_inner())
 }
 
+/// True while the watch daemon is in `Starting` — used by the app updater to
+/// defer automatic installs that would race process trees and file locks on
+/// Windows.
+pub fn watch_daemon_is_starting() -> bool {
+    current_lifecycle_state() == WatchDaemonState::Starting
+}
+
 /// Transition the watch-daemon lifecycle state and emit content-safe diagnostics
 /// (state names + failure category only — never argv, tokens, or file contents).
 fn set_lifecycle_state(next: WatchDaemonState, category: DaemonFailureCategory) {
