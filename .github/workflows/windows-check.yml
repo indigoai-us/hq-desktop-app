@@ -80,17 +80,35 @@ jobs:
 
       - name: Windows tests
         working-directory: apps/sync/src-tauri
-        run: |
-          cargo test --target x86_64-pc-windows-msvc --bins
-          # Both sides of the `e2e-automation` gate are covered: the default
-          # run above proves a shipped build cannot read
-          # WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS at all, and this run proves
-          # the CI build still forwards it. Testing one configuration would
-          # leave the other free to rot.
-          cargo test --target x86_64-pc-windows-msvc --bins --features e2e-automation
-          cargo test --manifest-path ../../../crates/hq-desktop-core/Cargo.toml paths::tests::test_windows
-          cargo test --manifest-path ../../../crates/hq-desktop-core/Cargo.toml hq_cli_update::tests
-          cargo test --manifest-path ../../../crates/hq-desktop-core/Cargo.toml hq_resolver::tests
+        run: cargo test --target x86_64-pc-windows-msvc --bins
+
+      # Both sides of the `e2e-automation` gate are covered: the default run
+      # above proves a shipped build cannot read
+      # WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS at all, and this run proves the CI
+      # build still forwards it. Testing one configuration would leave the
+      # other free to rot.
+      - name: Windows app tests (e2e automation)
+        working-directory: apps/sync/src-tauri
+        run: cargo test --target x86_64-pc-windows-msvc --bins --features e2e-automation
+
+      # Keep each native command in its own step. PowerShell otherwise continues
+      # after a failed native command and can falsely report success when a
+      # later focused test passes.
+      - name: Windows path tests
+        working-directory: apps/sync/src-tauri
+        run: cargo test --manifest-path ../../../crates/hq-desktop-core/Cargo.toml paths::tests::test_windows
+
+      - name: HQ CLI update tests
+        working-directory: apps/sync/src-tauri
+        run: cargo test --manifest-path ../../../crates/hq-desktop-core/Cargo.toml hq_cli_update::tests
+
+      - name: HQ resolver tests
+        working-directory: apps/sync/src-tauri
+        run: cargo test --manifest-path ../../../crates/hq-desktop-core/Cargo.toml hq_resolver::tests
+
+      - name: Sync outcome tests
+        working-directory: apps/sync/src-tauri
+        run: cargo test --manifest-path ../../../crates/hq-desktop-core/Cargo.toml sync_outcome::tests
 
       - name: Install Tauri WebDriver bridge
         run: cargo install tauri-driver --locked

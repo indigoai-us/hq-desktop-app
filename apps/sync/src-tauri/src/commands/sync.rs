@@ -40,8 +40,8 @@ use std::time::{Duration, Instant};
 
 use chrono::SecondsFormat;
 use hq_desktop_core::sync_outcome::{
-    classify_error_event, describe_exit, should_alert_on_nonzero_exit,
-    should_synthesize_all_complete, termination_fingerprint_token,
+    classify_error_event, describe_exit, is_windows_console_control_exit,
+    should_alert_on_nonzero_exit, should_synthesize_all_complete, termination_fingerprint_token,
 };
 use hq_desktop_core::toolchain::ManagedToolchain;
 use tauri::{AppHandle, Emitter};
@@ -160,6 +160,21 @@ fn capture_sync_error_impl(
             sentry::capture_message(&format!("[sync] {message}"), sentry::Level::Error);
         },
     );
+}
+
+/// A Windows console-control exit is benign telemetry-wise, but a manual sync
+/// can receive it before the runner emits any protocol event. Emit the existing
+/// terminal renderer event without capturing to Sentry so both desktop surfaces
+/// leave their active-sync state instead of remaining stuck on "syncing".
+fn terminal_sync_error_for_windows_console_control_exit(
+    code: Option<i32>,
+    signal: Option<i32>,
+) -> Option<SyncErrorEvent> {
+    is_windows_console_control_exit(code, signal).then(|| SyncErrorEvent {
+        company: None,
+        path: "(runner)".to_string(),
+        message: "Sync stopped by Windows. Please try Sync Now again.".to_string(),
+    })
 }
 
 /// Capture and surface the terminal runner error exactly once. The renderer
@@ -915,10 +930,7 @@ pub(crate) enum NodePreflight {
         found_path: Option<String>,
     },
     /// HQ never managed a Node here and the machine's own Node is too old.
-    TooOld {
-        major: u32,
-        path: Option<String>,
-    },
+    TooOld { major: u32, path: Option<String> },
 }
 
 /// Pure classification of a probe result against the managed toolchain's
@@ -1634,6 +1646,18 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
                                 ),
                             },
                         );
+                    } else if let Some(payload) =
+                        terminal_sync_error_for_windows_console_control_exit(code, signal)
+                    {
+                        log(
+                            "sync",
+                            &format!(
+                                "runner exited non-zero ({}) from a Windows console-control event \
+                                 — ending Sync Now UI state without alerting",
+                                exit_desc
+                            ),
+                        );
+                        let _ = app_bg.emit(EVENT_SYNC_ERROR, payload);
                     } else {
                         log(
                             "sync",
@@ -2245,6 +2269,29 @@ mod tests {
     #[test]
     fn test_sync_handle_constant() {
         assert_eq!(SYNC_HANDLE, "hq-sync");
+    }
+
+    #[test]
+    fn windows_console_control_exit_ends_manual_sync_without_sentry_capture() {
+        let event = terminal_sync_error_for_windows_console_control_exit(Some(-1073741510), None)
+            .expect("STATUS_CONTROL_C_EXIT needs a terminal renderer event");
+        assert_eq!(event.company, None);
+        assert_eq!(event.path, "(runner)");
+        assert_eq!(
+            event.message,
+            "Sync stopped by Windows. Please try Sync Now again."
+        );
+
+        for code in [-1073741509, -1073741819, -1073741571, 0, 1, 2, 17, 126, 127] {
+            assert!(
+                terminal_sync_error_for_windows_console_control_exit(Some(code), None).is_none(),
+                "only STATUS_CONTROL_C_EXIT may follow the terminal no-capture path: {code}"
+            );
+        }
+        assert!(
+            terminal_sync_error_for_windows_console_control_exit(Some(-1073741510), Some(15))
+                .is_none()
+        );
     }
 
     #[test]
