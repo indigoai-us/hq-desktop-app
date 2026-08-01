@@ -67,6 +67,10 @@ const prewarmSource = readFileSync(
   repoUrl('crates/hq-desktop-core/src/prewarm.rs'),
   'utf8',
 );
+const syncOutcomeSource = readFileSync(
+  repoUrl('crates/hq-desktop-core/src/sync_outcome.rs'),
+  'utf8',
+);
 
 describe('Windows Recall SDK sidecar bundle parity', () => {
   it('declares the Windows externalBin launcher in the release-only overlay', () => {
@@ -156,6 +160,21 @@ describe('Windows Recall SDK sidecar bundle parity', () => {
       );
     }
     expect(cargoLines.some(({ line }) => line.includes('sync_outcome::tests'))).toBe(true);
+  });
+
+  it('keeps session termination alertable and wired to evidence-safe Windows context', () => {
+    expect(syncOutcomeSource).toContain(
+      'pub const WINDOWS_SESSION_TERMINATE_EXIT: i32 = 0x4001_0004;',
+    );
+    expect(syncOutcomeSource).toContain('Self::SessionTerminate => "session_terminate"');
+    expect(syncOutcomeSource).toContain(
+      'WindowsTermination::SessionTerminate => "windows:session-terminate".to_string()',
+    );
+    expect(daemonCommandSource).toContain('("windows_exit_class", termination.class_name().to_string())');
+    expect(daemonCommandSource).toContain('let extras = watcher_exit_context_extras(context);');
+    expect(windowsCheckWorkflow).toMatch(
+      /- name: Sync outcome tests[\s\S]*cargo test --manifest-path .*sync_outcome::tests/,
+    );
   });
 
   it('keeps raw watcher stderr local instead of copying it into Sentry breadcrumbs', () => {

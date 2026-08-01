@@ -807,6 +807,19 @@ mod tests {
     }
 
     #[test]
+    fn session_terminate_exit_description_pins_the_sentry_wire_value() {
+        // Sentry reports this status as a positive decimal, whereas the
+        // Windows classifier reads its bit pattern. Pin both spellings so a
+        // future refactor cannot accidentally turn it back into exit:1073807364.
+        const OBSERVED_SESSION_TERMINATE_EXIT: i32 = 1_073_807_364;
+        assert_eq!(OBSERVED_SESSION_TERMINATE_EXIT as u32, 0x4001_0004);
+        assert_eq!(
+            describe_exit(Some(OBSERVED_SESSION_TERMINATE_EXIT), None),
+            "with Windows status 0x40010004 (session terminate)"
+        );
+    }
+
+    #[test]
     fn termination_fingerprint_separates_exit_codes_from_signals() {
         assert_eq!(termination_fingerprint_token(Some(2), None), "exit:2");
         assert_eq!(termination_fingerprint_token(None, Some(2)), "signal:2");
@@ -826,6 +839,20 @@ mod tests {
         assert_ne!(
             termination_fingerprint_token(Some(2), None),
             termination_fingerprint_token(Some(126), None)
+        );
+    }
+
+    #[test]
+    fn session_terminate_fingerprint_is_windows_scoped_not_a_posix_exit() {
+        const OBSERVED_SESSION_TERMINATE_EXIT: i32 = 1_073_807_364;
+        assert_eq!(OBSERVED_SESSION_TERMINATE_EXIT as u32, 0x4001_0004);
+        assert_eq!(
+            termination_fingerprint_token(Some(OBSERVED_SESSION_TERMINATE_EXIT), None),
+            "windows:session-terminate"
+        );
+        assert_ne!(
+            termination_fingerprint_token(Some(OBSERVED_SESSION_TERMINATE_EXIT), None),
+            "exit:1073807364"
         );
     }
 

@@ -2596,9 +2596,12 @@ mod tests {
     #[test]
     fn windows_console_control_exit_is_the_only_benign_windows_status() {
         const WINDOWS_CONTROL_C_EXIT: i32 = -1073741510;
+        const OBSERVED_SESSION_TERMINATE_EXIT: i32 = 1_073_807_364;
         assert!(is_benign_watcher_exit(Some(WINDOWS_CONTROL_C_EXIT), None));
+        assert_eq!(OBSERVED_SESSION_TERMINATE_EXIT as u32, 0x4001_0004);
 
         for code in [
+            OBSERVED_SESSION_TERMINATE_EXIT,
             -1073741509, // adjacent non-control NTSTATUS
             -1073741819, // 0xC0000005 access violation
             -1073741571, // 0xC00000FD stack overflow
@@ -2714,7 +2717,103 @@ mod tests {
     }
 
     #[test]
-    fn production_watcher_capture_and_before_send_remove_raw_stderr_content() {
+    fn watcher_session_terminate_captures_fixed_vocabulary_context() {
+        // The observed Sentry wire value is decimal 1073807364, which is the
+        // Windows status 0x40010004. It must stay alertable while carrying
+        // enough fixed-vocabulary context to identify the terminator next time.
+        const OBSERVED_SESSION_TERMINATE_EXIT: i32 = 1_073_807_364;
+        assert_eq!(OBSERVED_SESSION_TERMINATE_EXIT as u32, 0x4001_0004);
+        let context = WatcherExitCaptureContext {
+            lifecycle_state: "running".to_string(),
+            app_quit_in_progress: false,
+            supervisor_respawn_in_flight: true,
+            heartbeat_stall_termination_in_flight: false,
+            cancelled: false,
+            fatal_runner_signature_seen: true,
+            runner_error_rollup: Some("EPERM:1".to_string()),
+        };
+        let mut effects = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            Some(OBSERVED_SESSION_TERMINATE_EXIT),
+            None,
+            false,
+            false,
+            "npx",
+            Some("untrusted runner output stays local"),
+            &context,
+        );
+
+        assert_eq!(
+            effects.captures.len(),
+            1,
+            "session termination stays alertable"
+        );
+        let event = &effects.captures[0];
+        assert_eq!(recorded_tag(event, "windows_exit_status"), "0x40010004");
+        assert_eq!(
+            recorded_tag(event, "windows_exit_class"),
+            "session_terminate"
+        );
+        assert_eq!(recorded_tag(event, "runner_error_rollup"), "EPERM:1");
+        assert_eq!(
+            recorded_string_extra(event, "watcher_lifecycle_state"),
+            "running"
+        );
+        assert_eq!(
+            recorded_string_extra(event, "app_quit_in_progress"),
+            "false"
+        );
+        assert_eq!(
+            recorded_string_extra(event, "supervisor_respawn_in_flight"),
+            "true"
+        );
+        assert_eq!(
+            recorded_string_extra(event, "heartbeat_stall_termination_in_flight"),
+            "false"
+        );
+        assert_eq!(recorded_string_extra(event, "watcher_cancelled"), "false");
+        assert_eq!(
+            recorded_string_extra(event, "fatal_runner_signature_seen"),
+            "true"
+        );
+        assert_eq!(
+            event.fingerprint,
+            vec![
+                "sync",
+                "auto-sync-watcher-termination",
+                "windows:session-terminate"
+            ]
+        );
+        assert!(event.message.contains("0x40010004 (session terminate)"));
+        assert!(!event.message.contains("1073807364"));
+
+        let mut deliberate_stop = RecordingWatcherEffects::default();
+        let app_quit_context = WatcherExitCaptureContext {
+            app_quit_in_progress: true,
+            cancelled: true,
+            ..Default::default()
+        };
+        handle_watcher_exit_with_effects(
+            &mut deliberate_stop,
+            Some(OBSERVED_SESSION_TERMINATE_EXIT),
+            None,
+            false,
+            true,
+            "npx",
+            None,
+            &app_quit_context,
+        );
+        assert!(
+            deliberate_stop.captures.is_empty(),
+            "a cancelled app-quit path remains deliberately silent"
+        );
+    }
+
+    #[test]
+    fn production_session_terminate_capture_and_before_send_remove_raw_stderr_content() {
+        const OBSERVED_SESSION_TERMINATE_EXIT: i32 = 1_073_807_364;
+        assert_eq!(OBSERVED_SESSION_TERMINATE_EXIT as u32, 0x4001_0004);
         let private_path = r"C:\Users\Ada\hq\companies\personal\secret-plan.md";
         let raw_message = format!(
             "EPERM: operation not permitted, rename '{private_path}.hq-tmp-a1b2' -> '{private_path}'"
@@ -2737,7 +2836,7 @@ mod tests {
             let mut effects = ProductionWatcherProcessEffects;
             record_unexpected_watcher_exit(
                 &mut effects,
-                Some(-1),
+                Some(OBSERVED_SESSION_TERMINATE_EXIT),
                 None,
                 1,
                 1,
@@ -2759,7 +2858,17 @@ mod tests {
         assert!(!serialized.contains(private_path));
         assert!(!serialized.contains("hq-tmp-a1b2"));
         assert!(!serialized.contains("operation not permitted"));
+        assert_eq!(scrubbed.tags["windows_exit_status"], "0x40010004");
+        assert_eq!(scrubbed.tags["windows_exit_class"], "session_terminate");
         assert_eq!(scrubbed.tags["runner_error_rollup"], "EPERM:1");
+        assert_eq!(
+            scrubbed.fingerprint,
+            vec![
+                "sync",
+                "auto-sync-watcher-termination",
+                "windows:session-terminate"
+            ]
+        );
     }
 
     #[test]
