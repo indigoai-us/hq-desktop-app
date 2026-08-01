@@ -954,11 +954,19 @@ pub fn node_dist_arch_for(arch: &str) -> Option<&'static str> {
 }
 
 #[cfg(not(windows))]
-fn managed_node_url_for(arch: &str) -> Option<String> {
+fn managed_node_url_for_base(arch: &str, dist_base: &str) -> Option<String> {
     let node_arch = node_dist_arch_for(arch)?;
     Some(format!(
-        "https://nodejs.org/dist/{MANAGED_NODE_VERSION}/node-{MANAGED_NODE_VERSION}-darwin-{node_arch}.tar.gz"
+        "{}/{MANAGED_NODE_VERSION}/node-{MANAGED_NODE_VERSION}-darwin-{node_arch}.tar.gz",
+        dist_base.trim_end_matches('/')
     ))
+}
+
+#[cfg(not(windows))]
+fn managed_node_url_for(arch: &str) -> Option<String> {
+    let dist_base =
+        std::env::var("HQ_NODE_DIST_URL").unwrap_or_else(|_| "https://nodejs.org/dist".to_string());
+    managed_node_url_for_base(arch, &dist_base)
 }
 
 #[cfg(not(windows))]
@@ -4571,6 +4579,28 @@ mod install_deps_planner_tests {
             waves,
             vec![vec!["node", "yq", "git"], vec!["qmd", "hq-cli"]]
         );
+    }
+}
+
+#[cfg(all(test, not(windows)))]
+mod managed_node_url_tests {
+    use super::*;
+
+    #[test]
+    fn node_distribution_override_keeps_the_pinned_artifact_path() {
+        let url = managed_node_url_for_base("aarch64", "http://127.0.0.1:8123/node-dist/")
+            .expect("supported architecture");
+        assert_eq!(
+            url,
+            format!(
+                "http://127.0.0.1:8123/node-dist/{MANAGED_NODE_VERSION}/node-{MANAGED_NODE_VERSION}-darwin-arm64.tar.gz"
+            )
+        );
+    }
+
+    #[test]
+    fn node_distribution_override_does_not_make_unknown_arches_installable() {
+        assert!(managed_node_url_for_base("mips64", "http://127.0.0.1:8123").is_none());
     }
 }
 

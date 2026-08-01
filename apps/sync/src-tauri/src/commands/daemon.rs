@@ -523,6 +523,26 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
     // — leaving `env node` to find an ancient one on PATH — started a watcher
     // that could only fail later. Fail honestly up front instead.
     if let Some(bail) = crate::commands::sync::preflight_node_bail() {
+        if bail.failure == PreflightFailure::NodeUnprovisioned {
+            // This command is synchronous, so do not hold its singleton guard
+            // across a network install. The supervisor will retry on its next
+            // cadence after the shared repair slot completes.
+            release_daemon_guard();
+            set_lifecycle_state(WatchDaemonState::Backoff, DaemonFailureCategory::Preflight);
+            let provisioning_app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                let outcome =
+                    crate::commands::sync::provision_unprovisioned_node(&provisioning_app).await;
+                let message = match outcome {
+                    Ok(()) => {
+                        "HQ provisioned its managed Node runtime; auto-sync will retry".to_string()
+                    }
+                    Err(reason) => reason,
+                };
+                report_preflight_bail(PreflightFailure::NodeUnprovisioned, &message);
+            });
+            return Err(bail.message);
+        }
         report_preflight_bail(bail.failure, &bail.message);
         release_daemon_guard();
         set_lifecycle_state(WatchDaemonState::Stopped, DaemonFailureCategory::Preflight);
@@ -1088,7 +1108,9 @@ fn runner_preflight_capture_policy(failure: PreflightFailure) -> RunnerPreflight
         PreflightFailure::RunnerUnresolvable | PreflightFailure::NodeTooOld => {
             RunnerPreflightCapturePolicy::LocalLogOnly
         }
-        PreflightFailure::ManagedNodeMissing => RunnerPreflightCapturePolicy::CaptureRateLimited,
+        PreflightFailure::ManagedNodeMissing | PreflightFailure::NodeUnprovisioned => {
+            RunnerPreflightCapturePolicy::CaptureRateLimited
+        }
     }
 }
 
@@ -2430,9 +2452,9 @@ mod tests {
     // background sync for days and paged nobody.
 
     #[test]
-    fn the_users_own_environment_stays_local_log_only() {
-        // Auto-sync retries every 30s, so anything the user must fix would
-        // alert at failure 1, 2, 4, 8, … forever. Neither of these is ours.
+    fn each_preflight_failure_has_an_explicit_capture_policy() {
+        // Auto-sync retries every 30s, so user-owned configuration stays
+        // local-only. Both HQ-owned repair states are rate-limited captures.
         for failure in [
             PreflightFailure::RunnerUnresolvable,
             PreflightFailure::NodeTooOld,
@@ -2443,15 +2465,16 @@ mod tests {
                 "{failure:?} is the user's environment — it must not page anyone"
             );
         }
-    }
-
-    #[test]
-    fn a_broken_hq_runtime_alerts() {
-        assert_eq!(
-            runner_preflight_capture_policy(PreflightFailure::ManagedNodeMissing),
-            RunnerPreflightCapturePolicy::CaptureRateLimited,
-            "HQ's own Node going missing is our defect and must reach #hq-alerts"
-        );
+        for failure in [
+            PreflightFailure::ManagedNodeMissing,
+            PreflightFailure::NodeUnprovisioned,
+        ] {
+            assert_eq!(
+                runner_preflight_capture_policy(failure),
+                RunnerPreflightCapturePolicy::CaptureRateLimited,
+                "{failure:?} is repairable by HQ and must reach #hq-alerts"
+            );
+        }
     }
 
     #[test]
