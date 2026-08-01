@@ -105,7 +105,7 @@ pub use hq_desktop_core::sync_outcome::RunTotals;
 /// Shared by `report_sync_error` (manual Sync Now) and the auto-sync daemon so
 /// BOTH paths surface runner failures in #hq-alerts.
 pub(crate) fn capture_sync_error(company: Option<&str>, path: &str, message: &str) {
-    capture_sync_error_impl(company, path, message, None);
+    capture_sync_error_impl(company, path, message, None, &[], &[]);
 }
 
 pub(crate) fn capture_sync_error_with_fingerprint(
@@ -114,7 +114,22 @@ pub(crate) fn capture_sync_error_with_fingerprint(
     message: &str,
     fingerprint: &[&str],
 ) {
-    capture_sync_error_impl(company, path, message, Some(fingerprint));
+    capture_sync_error_impl(company, path, message, Some(fingerprint), &[], &[]);
+}
+
+/// Capture a sync error with content-safe context for a single diagnostic
+/// boundary. Tags and extras are deliberately passed separately from the
+/// fingerprint: caller-supplied paths or raw messages must never affect
+/// grouping.
+pub(crate) fn capture_sync_error_with_fingerprint_and_context(
+    company: Option<&str>,
+    path: &str,
+    message: &str,
+    fingerprint: &[&str],
+    tags: &[(&str, String)],
+    extras: &[(&str, sentry::protocol::Value)],
+) {
+    capture_sync_error_impl(company, path, message, Some(fingerprint), tags, extras);
 }
 
 fn capture_sync_error_impl(
@@ -122,6 +137,8 @@ fn capture_sync_error_impl(
     path: &str,
     message: &str,
     fingerprint: Option<&[&str]>,
+    tags: &[(&str, String)],
+    extras: &[(&str, sentry::protocol::Value)],
 ) {
     sentry::with_scope(
         |scope| {
@@ -131,6 +148,12 @@ fn capture_sync_error_impl(
             scope.set_tag("path", path);
             if let Some(fingerprint) = fingerprint {
                 scope.set_fingerprint(Some(fingerprint));
+            }
+            for (key, value) in tags {
+                scope.set_tag(*key, value.as_str());
+            }
+            for (key, value) in extras {
+                scope.set_extra(*key, value.clone());
             }
         },
         || {
@@ -1658,19 +1681,24 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
 
         if let Err(e) = result {
             log("sync", &format!("run_process_impl error: {e}"));
-            // Spawn failures happen before the runner produces any
-            // stderr/stdout, so there are no breadcrumbs to attach — capture an
-            // explicit event (e.g. `npx` failing to resolve
-            // `@indigoai-us/hq-cloud@<ver>`, a broken toolchain). Otherwise the
-            // user clicks Sync Now, nothing happens, and nothing reaches
-            // #hq-alerts.
-            capture_sync_error(None, "(spawn)", &e);
+            // Only a typed Spawn error means no child existed. Stream/wait
+            // errors have already sent ProcessEvent::Exit{code:None}, whose
+            // handler owns the single terminal capture.
+            let (path, message) = if e.is_spawn() {
+                let message = e.to_string();
+                capture_sync_error(None, "(spawn)", &message);
+                ("(spawn)", message)
+            } else {
+                // Preserve the existing user-visible error text. The typed
+                // path distinguishes the lifecycle stage without rewriting it.
+                ("(process)", e.to_string())
+            };
             let _ = app_bg.emit(
                 EVENT_SYNC_ERROR,
                 crate::events::SyncErrorEvent {
                     company: None,
-                    path: "(spawn)".to_string(),
-                    message: e,
+                    path: path.to_string(),
+                    message,
                 },
             );
         }
