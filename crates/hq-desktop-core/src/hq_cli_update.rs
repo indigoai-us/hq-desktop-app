@@ -785,11 +785,12 @@ fn has_eacces_evidence(detail: &str) -> bool {
         || detail.contains("errno -13")
 }
 
-/// Detect the expected local permission failure when no managed npm prefix can
-/// be derived. In that path npm falls back to its own global prefix, so we
-/// cannot compare against a selected directory. Keep the fallback narrow: it
-/// requires permission evidence plus an npm global-install target and never
-/// suppresses cache or unrelated-path failures.
+/// Detect the expected local permission failure at an npm global-install
+/// target that is not covered by the derived-prefix comparison. This covers
+/// both an unknown managed prefix and a known prefix that differs from npm's
+/// actual global target. Keep the fallback narrow: it requires permission
+/// evidence plus an npm global-install target and never suppresses cache or
+/// unrelated-path failures.
 pub fn is_global_prefix_permission_failure(_exit_code: Option<i32>, detail: &str) -> bool {
     has_eacces_evidence(detail)
         && matches!(
@@ -860,7 +861,7 @@ pub fn classify_install_failure(
     prefix: Option<&str>,
 ) -> InstallFailureKind {
     if is_prefix_permission_failure(detail, prefix)
-        || (prefix.is_none() && is_global_prefix_permission_failure(exit_code, detail))
+        || is_global_prefix_permission_failure(exit_code, detail)
     {
         InstallFailureKind::ExpectedPrefixPermission
     } else if matches!(exit_code, Some(WINDOWS_CONTROL_C_EXIT | WINDOWS_ABORT_EXIT)) {
@@ -1607,6 +1608,57 @@ mod tests {
                 "npm error code EACCES\nnpm error path /Users/me/.npm/_cacache/index-v5",
                 Some("/usr/local"),
             ),
+            InstallFailureKind::Unexpected
+        );
+    }
+
+    #[test]
+    fn derived_prefix_permission_failure_at_an_unmatched_global_target_is_expected() {
+        let detail =
+            "npm error code EACCES\nnpm error path /opt/homebrew/lib/node_modules/@indigoai-us";
+        assert_eq!(
+            classify_install_failure(Some(243), detail, Some("/usr/local")),
+            InstallFailureKind::ExpectedPrefixPermission
+        );
+        assert_eq!(
+            install_failure_report(Some(243), detail, Some("/usr/local")),
+            None
+        );
+    }
+
+    #[test]
+    fn derived_prefix_permission_failure_at_the_npm_cache_stays_loud() {
+        let detail = "npm error code EACCES\nnpm error path /Users/me/.npm/_cacache/index-v5";
+        assert_eq!(
+            classify_install_failure(Some(243), detail, Some("/usr/local")),
+            InstallFailureKind::Unexpected
+        );
+    }
+
+    #[test]
+    fn derived_prefix_permission_failure_at_an_unrelated_path_stays_loud() {
+        let detail =
+            "npm error code EACCES\nnpm error path /Users/me/project/node_modules/other-package";
+        assert_eq!(
+            classify_install_failure(Some(243), detail, Some("/usr/local")),
+            InstallFailureKind::Unexpected
+        );
+    }
+
+    #[test]
+    fn derived_prefix_permission_failure_without_a_path_stays_loud() {
+        assert_eq!(
+            classify_install_failure(Some(243), "npm error code EACCES", Some("/usr/local")),
+            InstallFailureKind::Unexpected
+        );
+    }
+
+    #[test]
+    fn derived_prefix_non_permission_failure_at_an_unmatched_global_target_stays_loud() {
+        let detail =
+            "npm error code ENOSPC\nnpm error path /opt/homebrew/lib/node_modules/@indigoai-us";
+        assert_eq!(
+            classify_install_failure(Some(1), detail, Some("/usr/local")),
             InstallFailureKind::Unexpected
         );
     }

@@ -11,6 +11,13 @@ const GLOBAL_EACCES: &str = "npm error code EACCES\n\
     npm error Error: EACCES: permission denied, mkdir \
     '/usr/local/lib/node_modules/@indigoai-us'";
 
+const UNMATCHED_GLOBAL_EACCES: &str = "npm error code EACCES\n\
+    npm error syscall mkdir\n\
+    npm error path /opt/homebrew/lib/node_modules/@indigoai-us\n\
+    npm error errno -13\n\
+    npm error Error: EACCES: permission denied, mkdir \
+    '/opt/homebrew/lib/node_modules/@indigoai-us'";
+
 fn captured_events(f: impl FnOnce()) -> Vec<sentry::protocol::Event<'static>> {
     with_captured_events_options(
         f,
@@ -27,6 +34,14 @@ fn install_failure_capture_is_suppressed_or_tagged_after_the_real_scrubber() {
     assert!(
         suppressed.is_empty(),
         "expected global no-prefix EACCES to be suppressed, got {suppressed:?}"
+    );
+
+    let suppressed = captured_events(|| {
+        report_install_failure(Some(243), UNMATCHED_GLOBAL_EACCES, Some("/usr/local"))
+    });
+    assert!(
+        suppressed.is_empty(),
+        "expected unmatched global-prefix EACCES to be suppressed, got {suppressed:?}"
     );
 
     let unexpected_eacces = "npm error code EACCES\n\
