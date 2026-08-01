@@ -50,6 +50,15 @@ pub struct RunTotals {
     /// would otherwise look like an unexplained crash. It is an environment
     /// fault the user fixes by updating Node, not a defect.
     pub saw_node_too_old: bool,
+    /// Set when stderr carries a signature that says the runner itself died
+    /// before it could report a normal protocol outcome. This is diagnostic
+    /// only: it never changes alerting, but lets the next watcher-exit event
+    /// distinguish an indeterminate termination from a fatal runner failure.
+    pub saw_fatal_runner_signature: bool,
+    /// Content-safe counts of runner error classes seen in this pass. The
+    /// watcher attaches only this fixed-vocabulary rollup to a termination
+    /// capture; paths and raw messages remain local breadcrumbs.
+    pub runner_error_rollup: RunnerErrorRollup,
 }
 
 impl RunTotals {
@@ -87,6 +96,7 @@ impl RunTotals {
     /// to the "unexplained crash" branch and alerts — the HQ-SYNC-WEB-6 flood.
     pub fn record_error(&mut self, err: &SyncErrorEvent) {
         self.saw_error = true;
+        self.runner_error_rollup.record(&err.message);
         if is_alertable_error(err) {
             self.saw_alertable_error = true;
         }
@@ -104,6 +114,110 @@ impl RunTotals {
         if is_node_too_old_signature(line) {
             self.saw_node_too_old = true;
         }
+        if is_fatal_runner_signature(line) {
+            self.saw_fatal_runner_signature = true;
+        }
+    }
+}
+
+/// Fixed, content-safe classes for runner error rollups. These values are safe
+/// for Sentry tags because they are selected from code, never copied from a
+/// runner message, path, argv, or file content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunnerErrorClass {
+    Eperm,
+    Eacces,
+    Enospc,
+    Ebusy,
+    Network,
+    Auth,
+    Other,
+}
+
+impl RunnerErrorClass {
+    fn tag_name(self) -> &'static str {
+        match self {
+            Self::Eperm => "EPERM",
+            Self::Eacces => "EACCES",
+            Self::Enospc => "ENOSPC",
+            Self::Ebusy => "EBUSY",
+            Self::Network => "NETWORK",
+            Self::Auth => "AUTH",
+            Self::Other => "OTHER",
+        }
+    }
+}
+
+/// Map an untrusted runner error message to a fixed telemetry class. This
+/// function deliberately returns no message text, so its output is safe to
+/// attach to Sentry as a tag.
+pub fn classify_runner_error_class(message: &str) -> RunnerErrorClass {
+    let msg = message.to_lowercase();
+    if msg.contains("eperm") {
+        RunnerErrorClass::Eperm
+    } else if msg.contains("eacces") {
+        RunnerErrorClass::Eacces
+    } else if msg.contains("enospc") {
+        RunnerErrorClass::Enospc
+    } else if msg.contains("ebusy") {
+        RunnerErrorClass::Ebusy
+    } else if is_transient_network_error(&msg) {
+        RunnerErrorClass::Network
+    } else if ["auth", "unauthorized", "forbidden", "cognito", "token"]
+        .iter()
+        .any(|marker| msg.contains(marker))
+    {
+        RunnerErrorClass::Auth
+    } else {
+        RunnerErrorClass::Other
+    }
+}
+
+/// Saturating per-pass counts that render as a compact, fixed-vocabulary Sentry
+/// tag such as `EPERM:412,OTHER:1`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RunnerErrorRollup {
+    eperm: u32,
+    eacces: u32,
+    enospc: u32,
+    ebusy: u32,
+    network: u32,
+    auth: u32,
+    other: u32,
+}
+
+impl RunnerErrorRollup {
+    fn record(&mut self, message: &str) {
+        let count = match classify_runner_error_class(message) {
+            RunnerErrorClass::Eperm => &mut self.eperm,
+            RunnerErrorClass::Eacces => &mut self.eacces,
+            RunnerErrorClass::Enospc => &mut self.enospc,
+            RunnerErrorClass::Ebusy => &mut self.ebusy,
+            RunnerErrorClass::Network => &mut self.network,
+            RunnerErrorClass::Auth => &mut self.auth,
+            RunnerErrorClass::Other => &mut self.other,
+        };
+        *count = count.saturating_add(1);
+    }
+
+    /// Render only fixed class names and decimal counts. `None` means this
+    /// watcher pass saw no runner error records, so no tag should be sent.
+    pub fn tag_value(&self) -> Option<String> {
+        let counts = [
+            (RunnerErrorClass::Eperm, self.eperm),
+            (RunnerErrorClass::Eacces, self.eacces),
+            (RunnerErrorClass::Enospc, self.enospc),
+            (RunnerErrorClass::Ebusy, self.ebusy),
+            (RunnerErrorClass::Network, self.network),
+            (RunnerErrorClass::Auth, self.auth),
+            (RunnerErrorClass::Other, self.other),
+        ];
+        let rendered: Vec<_> = counts
+            .into_iter()
+            .filter(|(_, count)| *count > 0)
+            .map(|(class, count)| format!("{}:{count}", class.tag_name()))
+            .collect();
+        (!rendered.is_empty()).then(|| rendered.join(","))
     }
 }
 
@@ -133,6 +247,101 @@ pub const RUNNER_OPERATION_LOCKED_EXIT: i32 = 17;
 /// 23 "killed by SIGTERM (cancelled)" events). See `should_alert_on_nonzero_exit`.
 pub const SIGTERM_SIGNAL: i32 = 15;
 
+/// Windows `STATUS_CONTROL_C_EXIT` (`0xC000013A`) represented as the signed
+/// process exit code Rust reports. Windows gives this status to a console
+/// process when its default console-control handler ends it, including a
+/// Ctrl+C/Ctrl+Break, console close, logoff, or shutdown. It is the Windows
+/// counterpart to the POSIX SIGTERM teardown carve-out, not a general NTSTATUS
+/// classifier: real Windows fault statuses must remain alertable.
+pub const WINDOWS_CONTROL_C_EXIT: i32 = -1073741510;
+
+/// Windows `DBG_TERMINATE_PROCESS` (`0x40010004`). This is a control/status
+/// result, not a conventional runner `exit(N)`, so keeping it in the Windows
+/// namespace prevents another per-decimal Sentry issue.
+pub const WINDOWS_SESSION_TERMINATE_EXIT: i32 = 0x4001_0004;
+
+/// The raw Windows status `0xFFFFFFFF` represented as Rust's signed process
+/// exit code. A process can produce this value itself, and `TerminateProcess`
+/// lets its caller choose the exit code, so the status does not establish who
+/// or what ended the process. It is intentionally *not* benign: the watcher
+/// capture must carry lifecycle and runner diagnostics before triage can infer
+/// a cause.
+pub const WINDOWS_STATUS_FFFFFFFF: i32 = -1;
+
+/// A content-safe classification of a raw Windows process status. This remains
+/// pure and deliberately has no `target_os` gate: test jobs on every platform
+/// must pin the Windows wire values even though only Windows emits them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowsTermination {
+    ConsoleControl,
+    SessionTerminate,
+    IndeterminateStatus,
+    Fault(u32),
+    Ordinary(i32),
+}
+
+impl WindowsTermination {
+    /// Stable, fixed-vocabulary name safe for a Sentry tag.
+    pub fn class_name(self) -> &'static str {
+        match self {
+            Self::ConsoleControl => "console_control",
+            Self::SessionTerminate => "session_terminate",
+            Self::IndeterminateStatus => "indeterminate_status",
+            Self::Fault(_) => "fault",
+            Self::Ordinary(_) => "ordinary",
+        }
+    }
+
+    fn description(self) -> &'static str {
+        match self {
+            Self::ConsoleControl => "console control",
+            Self::SessionTerminate => "session terminate",
+            Self::IndeterminateStatus => "origin unknown",
+            Self::Fault(_) => "fault",
+            Self::Ordinary(_) => "ordinary exit",
+        }
+    }
+
+    /// True only for an exit shape that is recognizably a Windows status. A
+    /// small conventional code (1, 2, 17, …) is portable and must retain its
+    /// existing POSIX-shaped fingerprint.
+    pub fn is_windows_status(self) -> bool {
+        !matches!(self, Self::Ordinary(_))
+    }
+}
+
+/// Classify a raw signed exit code by its Windows bit pattern. The order is
+/// intentional: `0xFFFFFFFF` has the high fault bits set, but it carries no
+/// termination provenance and must retain its own neutral diagnostic class.
+pub fn classify_windows_exit_status(code: i32) -> WindowsTermination {
+    let raw = code as u32;
+    if code == WINDOWS_CONTROL_C_EXIT {
+        WindowsTermination::ConsoleControl
+    } else if code == WINDOWS_SESSION_TERMINATE_EXIT {
+        WindowsTermination::SessionTerminate
+    } else if code == WINDOWS_STATUS_FFFFFFFF {
+        WindowsTermination::IndeterminateStatus
+    } else if raw & 0xC000_0000 == 0xC000_0000 {
+        WindowsTermination::Fault(raw)
+    } else {
+        WindowsTermination::Ordinary(code)
+    }
+}
+
+/// Canonical uppercase eight-digit status rendering for a Windows raw exit.
+/// It preserves the unsigned bit pattern instead of leaking Rust's signed
+/// representation (for example `-1` becomes `0xFFFFFFFF`).
+pub fn windows_exit_status_hex(code: i32) -> String {
+    format!("0x{:08X}", code as u32)
+}
+
+/// Returns whether a process ended with the exact Windows console-control
+/// teardown status. Requiring an ordinary exit code and no Unix signal keeps
+/// malformed dual-status events and every other Windows fault code loud.
+pub fn is_windows_console_control_exit(code: Option<i32>, signal: Option<i32>) -> bool {
+    code == Some(WINDOWS_CONTROL_C_EXIT) && signal.is_none()
+}
+
 /// Stable, structured Sentry fingerprint component for a runner termination.
 ///
 /// Process exit statuses and Unix signals occupy different namespaces: an
@@ -143,7 +352,13 @@ pub const SIGTERM_SIGNAL: i32 = 15;
 /// silently preferring one field and merging it with a valid termination.
 pub fn termination_fingerprint_token(code: Option<i32>, signal: Option<i32>) -> String {
     match (code, signal) {
-        (Some(code), None) => format!("exit:{code}"),
+        (Some(code), None) => match classify_windows_exit_status(code) {
+            WindowsTermination::ConsoleControl => "windows:console-control".to_string(),
+            WindowsTermination::SessionTerminate => "windows:session-terminate".to_string(),
+            WindowsTermination::IndeterminateStatus => "windows:status-ffffffff".to_string(),
+            WindowsTermination::Fault(raw) => format!("windows:fault:0x{raw:08X}"),
+            WindowsTermination::Ordinary(code) => format!("exit:{code}"),
+        },
         (None, Some(signal)) => format!("signal:{signal}"),
         (Some(code), Some(signal)) => format!("invalid:exit:{code}+signal:{signal}"),
         (None, None) => "unknown".to_string(),
@@ -157,6 +372,14 @@ pub fn termination_fingerprint_token(code: Option<i32>, signal: Option<i32>) -> 
 /// was OOM-killed vs crashed vs cancelled.
 pub fn describe_exit(code: Option<i32>, signal: Option<i32>) -> String {
     if let Some(c) = code {
+        let termination = classify_windows_exit_status(c);
+        if termination.is_windows_status() {
+            return format!(
+                "with Windows status {} ({})",
+                windows_exit_status_hex(c),
+                termination.description()
+            );
+        }
         return format!("with code {}", c);
     }
     match signal {
@@ -382,6 +605,22 @@ pub fn is_node_too_old_signature(line: &str) -> bool {
         || (msg.contains("ebadengine") && msg.contains("node"))
 }
 
+/// Conservative raw-stderr markers that indicate the runner itself failed
+/// before it could provide a normal protocol result. This is evidence only;
+/// it never changes the capture/suppression decision.
+pub fn is_fatal_runner_signature(line: &str) -> bool {
+    let msg = line.to_lowercase();
+    is_node_too_old_signature(&msg)
+        || [
+            "fatal error",
+            "uncaught exception",
+            "unhandledrejection",
+            "panicked at",
+        ]
+        .iter()
+        .any(|marker| msg.contains(marker))
+}
+
 /// Returns `true` when a runner error should raise a Sentry alert if it drives a
 /// non-zero runner exit. Applies to errors of ANY level — company-level
 /// (`path == "(company)"`) and per-file alike — because `hq-cloud`'s fanout
@@ -426,11 +665,13 @@ pub fn is_alertable_error(err: &SyncErrorEvent) -> bool {
 /// panicked or was OOM-killed before emitting protocol — still alerts,
 /// preserving the original "bailed before emitting a useful stream" signal.
 ///
-/// A SIGTERM kill is the one signal that is NEVER a defect: it is our own
-/// `cancel_process_impl` ending the run (Stop / timeout / quit / supersede), so
-/// it is suppressed regardless of any in-flight company errors. Other signals
-/// stay loud — SIGSEGV/SIGBUS/SIGABRT are crashes, and SIGKILL is OOM or a
-/// force-quit worth seeing; only the cooperative SIGTERM is "expected".
+/// A SIGTERM kill is never a defect: it is our own `cancel_process_impl` ending
+/// the run (Stop / timeout / quit / supersede). The exact Windows
+/// `STATUS_CONTROL_C_EXIT` is likewise an OS console-control teardown. Both
+/// are suppressed regardless of any in-flight company errors. Other signals
+/// and Windows fault statuses stay loud — SIGSEGV/SIGBUS/SIGABRT are crashes,
+/// SIGKILL is OOM or a force-quit worth seeing, and only the one documented
+/// Windows status is expected.
 pub fn should_alert_on_nonzero_exit(
     code: Option<i32>,
     signal: Option<i32>,
@@ -438,7 +679,7 @@ pub fn should_alert_on_nonzero_exit(
     saw_alertable_error: bool,
     saw_node_too_old: bool,
 ) -> bool {
-    if signal == Some(SIGTERM_SIGNAL) {
+    if signal == Some(SIGTERM_SIGNAL) || is_windows_console_control_exit(code, signal) {
         return false;
     }
     if code == Some(RUNNER_OPERATION_LOCKED_EXIT) {
@@ -527,13 +768,91 @@ mod tests {
     }
 
     #[test]
+    fn windows_exit_statuses_are_classified_from_independent_hex_literals() {
+        assert_eq!(
+            classify_windows_exit_status(0xC000_013Au32 as i32),
+            WindowsTermination::ConsoleControl
+        );
+        assert_eq!(
+            classify_windows_exit_status(0x4001_0004u32 as i32),
+            WindowsTermination::SessionTerminate
+        );
+        assert_eq!(
+            classify_windows_exit_status(0xFFFF_FFFFu32 as i32),
+            WindowsTermination::IndeterminateStatus
+        );
+        for raw in [0xC000_0005u32, 0xC000_00FD, 0xC000_0409] {
+            assert_eq!(
+                classify_windows_exit_status(raw as i32),
+                WindowsTermination::Fault(raw),
+                "0x{raw:08X} must remain an alertable Windows fault"
+            );
+        }
+        assert_eq!(
+            classify_windows_exit_status(17),
+            WindowsTermination::Ordinary(17)
+        );
+    }
+
+    #[test]
+    fn windows_exit_descriptions_keep_the_raw_hex_and_class() {
+        assert_eq!(
+            describe_exit(Some(0xFFFF_FFFFu32 as i32), None),
+            "with Windows status 0xFFFFFFFF (origin unknown)"
+        );
+        assert_eq!(
+            describe_exit(Some(0xC000_0409u32 as i32), None),
+            "with Windows status 0xC0000409 (fault)"
+        );
+    }
+
+    #[test]
+    fn session_terminate_exit_description_pins_the_sentry_wire_value() {
+        // Sentry reports this status as a positive decimal, whereas the
+        // Windows classifier reads its bit pattern. Pin both spellings so a
+        // future refactor cannot accidentally turn it back into exit:1073807364.
+        const OBSERVED_SESSION_TERMINATE_EXIT: i32 = 1_073_807_364;
+        assert_eq!(OBSERVED_SESSION_TERMINATE_EXIT as u32, 0x4001_0004);
+        assert_eq!(
+            describe_exit(Some(OBSERVED_SESSION_TERMINATE_EXIT), None),
+            "with Windows status 0x40010004 (session terminate)"
+        );
+    }
+
+    #[test]
     fn termination_fingerprint_separates_exit_codes_from_signals() {
         assert_eq!(termination_fingerprint_token(Some(2), None), "exit:2");
         assert_eq!(termination_fingerprint_token(None, Some(2)), "signal:2");
         assert_eq!(termination_fingerprint_token(Some(126), None), "exit:126");
+        assert_eq!(
+            termination_fingerprint_token(Some(WINDOWS_CONTROL_C_EXIT), None),
+            "windows:console-control"
+        );
+        assert_eq!(
+            termination_fingerprint_token(Some(0xFFFF_FFFFu32 as i32), None),
+            "windows:status-ffffffff"
+        );
+        assert_eq!(
+            termination_fingerprint_token(Some(0xC000_0409u32 as i32), None),
+            "windows:fault:0xC0000409"
+        );
         assert_ne!(
             termination_fingerprint_token(Some(2), None),
             termination_fingerprint_token(Some(126), None)
+        );
+    }
+
+    #[test]
+    fn session_terminate_fingerprint_is_windows_scoped_not_a_posix_exit() {
+        const OBSERVED_SESSION_TERMINATE_EXIT: i32 = 1_073_807_364;
+        assert_eq!(OBSERVED_SESSION_TERMINATE_EXIT as u32, 0x4001_0004);
+        assert_eq!(
+            termination_fingerprint_token(Some(OBSERVED_SESSION_TERMINATE_EXIT), None),
+            "windows:session-terminate"
+        );
+        assert_ne!(
+            termination_fingerprint_token(Some(OBSERVED_SESSION_TERMINATE_EXIT), None),
+            "exit:1073807364"
         );
     }
 
@@ -544,6 +863,29 @@ mod tests {
             "invalid:exit:2+signal:2"
         );
         assert_eq!(termination_fingerprint_token(None, None), "unknown");
+    }
+
+    #[test]
+    fn posix_termination_tokens_and_descriptions_are_byte_identical() {
+        for (code, signal, token, description) in [
+            (Some(126), None, "exit:126", "with code 126"),
+            (Some(127), None, "exit:127", "with code 127"),
+            (Some(2), None, "exit:2", "with code 2"),
+            (
+                None,
+                Some(11),
+                "signal:11",
+                "crashed with SIGSEGV (segfault)",
+            ),
+        ] {
+            assert_eq!(termination_fingerprint_token(code, signal), token);
+            assert_eq!(describe_exit(code, signal), description);
+        }
+        assert_eq!(
+            termination_fingerprint_token(Some(2), Some(11)),
+            "invalid:exit:2+signal:11"
+        );
+        assert_eq!(describe_exit(None, None), "with code unknown");
     }
 
     // ── RunTotals ────────────────────────────────────────────────────────
@@ -569,6 +911,44 @@ mod tests {
     fn test_run_totals_default_is_zero() {
         let t = RunTotals::default();
         assert_eq!(t.conflicts, 0);
+        assert_eq!(t.runner_error_rollup.tag_value(), None);
+    }
+
+    #[test]
+    fn runner_error_rollup_is_fixed_vocabulary_and_never_leaks_path_or_message() {
+        let path = r"C:\Users\Ada\hq\companies\personal\secret-plan.md";
+        let raw_message = format!("EPERM: rename '{path}.hq-tmp-a1b2' -> '{path}'");
+        let mut totals = RunTotals::default();
+        totals.record_error(&make_company_error(Some("personal"), path, &raw_message));
+        totals.record_error(&make_company_error(
+            Some("personal"),
+            "another-private-path.md",
+            "EPERM: operation not permitted",
+        ));
+        totals.record_error(&make_company_error(
+            Some("personal"),
+            "ignored-path.md",
+            "EACCES: access denied",
+        ));
+
+        let tag = totals
+            .runner_error_rollup
+            .tag_value()
+            .expect("error counts");
+        assert_eq!(tag, "EPERM:2,EACCES:1");
+        assert!(!tag.contains(path));
+        assert!(!tag.contains("hq-tmp-a1b2"));
+        assert!(!tag.contains("operation not permitted"));
+    }
+
+    #[test]
+    fn fatal_runner_signatures_are_evidence_only() {
+        let mut totals = RunTotals::default();
+        totals.record_stderr_line("fatal error: unrecoverable runtime failure");
+        assert!(totals.saw_fatal_runner_signature);
+        assert!(!totals.saw_node_too_old);
+        assert!(is_fatal_runner_signature("UnhandledRejection: boom"));
+        assert!(!is_fatal_runner_signature("EPERM: operation not permitted"));
     }
 
     #[test]
@@ -905,6 +1285,60 @@ mod tests {
             true,
             false
         ));
+    }
+
+    #[test]
+    fn windows_console_control_exit_is_exact_and_suppressed_for_manual_sync() {
+        assert!(is_windows_console_control_exit(
+            Some(WINDOWS_CONTROL_C_EXIT),
+            None
+        ));
+        for code in [
+            -1073741509, // adjacent non-control NTSTATUS
+            -1073741819, // 0xC0000005 access violation
+            -1073741571, // 0xC00000FD stack overflow
+            0,
+            1,
+            2,
+            RUNNER_OPERATION_LOCKED_EXIT,
+            126,
+            127,
+        ] {
+            assert!(
+                !is_windows_console_control_exit(Some(code), None),
+                "only STATUS_CONTROL_C_EXIT may be suppressed: {code}"
+            );
+        }
+        assert!(!is_windows_console_control_exit(None, None));
+        assert!(!is_windows_console_control_exit(
+            Some(WINDOWS_CONTROL_C_EXIT),
+            Some(SIGTERM_SIGNAL)
+        ));
+
+        for (saw_error, saw_alertable_error, saw_node_too_old) in [
+            (false, false, false),
+            (true, false, false),
+            (true, true, false),
+            (true, true, true),
+        ] {
+            assert!(!should_alert_on_nonzero_exit(
+                Some(WINDOWS_CONTROL_C_EXIT),
+                None,
+                saw_error,
+                saw_alertable_error,
+                saw_node_too_old,
+            ));
+        }
+
+        for fault in [-1073741819, -1073741571, 126, 127] {
+            assert!(should_alert_on_nonzero_exit(
+                Some(fault),
+                None,
+                false,
+                false,
+                false,
+            ));
+        }
     }
 
     #[test]

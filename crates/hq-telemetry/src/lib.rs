@@ -116,11 +116,18 @@ pub fn before_send(mut event: Event<'static>) -> Option<Event<'static>> {
         *ctx = scrub_context(taken);
     }
 
-    // event.breadcrumbs[].data is BTreeMap<String, Value> — same pattern
-    // as event.extra. This is the surface that carries Authorization
-    // headers from HTTP breadcrumbs, which is the single most common
-    // auth-leak vector on the Rust side.
+    // The watcher writes raw stderr to local logs. Older builds also copied it
+    // into Breadcrumb.message, so filter that category defensively before send
+    // while the source-side guard prevents new raw breadcrumbs.
     for breadcrumb in event.breadcrumbs.values.iter_mut() {
+        if breadcrumb.category.as_deref() == Some("daemon.stderr") {
+            breadcrumb.message = Some("[Filtered]".into());
+        }
+
+        // event.breadcrumbs[].data is BTreeMap<String, Value> — same pattern
+        // as event.extra. This is the surface that carries Authorization
+        // headers from HTTP breadcrumbs, which is the single most common
+        // auth-leak vector on the Rust side.
         for (k, v) in breadcrumb.data.iter_mut() {
             if is_sensitive_key(k) {
                 *v = Value::String("[Filtered]".into());
@@ -313,6 +320,33 @@ mod tests {
         let data = &result.breadcrumbs.values[0].data;
         assert_eq!(data["authorization"], Value::String("[Filtered]".into()));
         assert_eq!(data["url"], Value::String("/api".into()));
+    }
+
+    #[test]
+    fn test_daemon_stderr_breadcrumb_message_is_filtered() {
+        let private_path = r"C:\Users\Ada\hq\companies\personal\secret-plan.md";
+        let raw_message = format!(
+            "EPERM: operation not permitted, rename '{private_path}.hq-tmp-a1b2' -> '{private_path}'"
+        );
+        let mut event = Event::default();
+        event.breadcrumbs.values.push(Breadcrumb {
+            category: Some("daemon.stderr".into()),
+            level: sentry::Level::Warning,
+            message: Some(raw_message.clone()),
+            ..Default::default()
+        });
+
+        let result = before_send(event).expect("event remains sendable");
+        let serialized = serde_json::to_string(&result).expect("serialize scrubbed event");
+
+        assert_eq!(
+            result.breadcrumbs.values[0].message.as_deref(),
+            Some("[Filtered]")
+        );
+        assert!(!serialized.contains(private_path));
+        assert!(!serialized.contains("hq-tmp-a1b2"));
+        assert!(!serialized.contains("operation not permitted"));
+        assert!(!serialized.contains(&raw_message));
     }
 
     // 6a. Typed Context::App round-trip — non-sensitive typed fields preserved

@@ -793,7 +793,7 @@ mod tests {
         // unrelated sibling package, to prove cleanup is surgically scoped.
         let base = std::env::temp_dir().join(format!("hq-cli-clean-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&base);
-        let scope = base.join("lib").join("node_modules").join("@indigoai-us");
+        let scope = partial_install_scope_dir(base.to_str().unwrap());
         // Partial package dir + its temp staging dir (the ENOTEMPTY culprits).
         fs::create_dir_all(scope.join("hq-cli").join("dist")).unwrap();
         fs::write(scope.join("hq-cli").join("package.json"), "{}").unwrap();

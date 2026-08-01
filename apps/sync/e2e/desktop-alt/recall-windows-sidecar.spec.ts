@@ -46,6 +46,10 @@ const syncCommandSource = readFileSync(
   appUrl('src-tauri/src/commands/sync.rs'),
   'utf8',
 );
+const daemonCommandSource = readFileSync(
+  appUrl('src-tauri/src/commands/daemon.rs'),
+  'utf8',
+);
 const widgetSource = readFileSync(
   appUrl('src-tauri/src/commands/widget.rs'),
   'utf8',
@@ -61,6 +65,10 @@ const popoverSource = readFileSync(
 );
 const prewarmSource = readFileSync(
   repoUrl('crates/hq-desktop-core/src/prewarm.rs'),
+  'utf8',
+);
+const syncOutcomeSource = readFileSync(
+  repoUrl('crates/hq-desktop-core/src/sync_outcome.rs'),
   'utf8',
 );
 
@@ -135,6 +143,50 @@ describe('Windows Recall SDK sidecar bundle parity', () => {
       /- name: Windows tests[\s\S]*cargo test --target x86_64-pc-windows-msvc --bins/,
     );
     expect(releaseWorkflow).not.toContain('continue-on-error: true');
+  });
+
+  it('keeps every native Windows Cargo gate fail-fast and runs sync outcome tests', () => {
+    const workflowLines = windowsCheckWorkflow.split('\n');
+    const cargoLines = workflowLines
+      .map((line, index) => ({ line, index }))
+      .filter(({ line }) => !line.trimStart().startsWith('#'))
+      .filter(({ line }) => /^\s*(?:run:\s*)?cargo (?:check|test)\b/.test(line));
+
+    expect(cargoLines.length).toBeGreaterThanOrEqual(6);
+    for (const { line, index } of cargoLines) {
+      expect(line).toMatch(/^\s*run:\s*cargo (?:check|test)\b[^;&|]*$/);
+      expect(workflowLines.slice(Math.max(0, index - 3), index).join('\n')).toMatch(
+        /- name: /,
+      );
+    }
+    expect(cargoLines.some(({ line }) => line.includes('sync_outcome::tests'))).toBe(true);
+  });
+
+  it('keeps session termination alertable and wired to evidence-safe Windows context', () => {
+    expect(syncOutcomeSource).toContain(
+      'pub const WINDOWS_SESSION_TERMINATE_EXIT: i32 = 0x4001_0004;',
+    );
+    expect(syncOutcomeSource).toContain('Self::SessionTerminate => "session_terminate"');
+    expect(syncOutcomeSource).toContain(
+      'WindowsTermination::SessionTerminate => "windows:session-terminate".to_string()',
+    );
+    expect(daemonCommandSource).toContain('("windows_exit_class", termination.class_name().to_string())');
+    expect(daemonCommandSource).toContain('let extras = watcher_exit_context_extras(context);');
+    expect(windowsCheckWorkflow).toMatch(
+      /- name: Sync outcome tests[\s\S]*cargo test --manifest-path .*sync_outcome::tests/,
+    );
+  });
+
+  it('keeps raw watcher stderr local instead of copying it into Sentry breadcrumbs', () => {
+    const stderrStart = daemonCommandSource.indexOf('ProcessEvent::Stderr(line) => {');
+    const exitStart = daemonCommandSource.indexOf('ProcessEvent::Exit {', stderrStart);
+    const stderrArm = daemonCommandSource.slice(stderrStart, exitStart);
+
+    expect(stderrStart).toBeGreaterThan(-1);
+    expect(exitStart).toBeGreaterThan(stderrStart);
+    expect(stderrArm).toContain('log("daemon.stderr", &line)');
+    expect(stderrArm).toContain('handle_runner_stderr_line(&app, &totals, &line)');
+    expect(stderrArm).not.toContain('sentry::add_breadcrumb');
   });
 
   it('builds and launches the Windows executable through the live driver harness', () => {
