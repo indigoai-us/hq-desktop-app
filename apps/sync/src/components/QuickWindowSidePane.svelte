@@ -32,6 +32,9 @@
     onselect: (item: Item, conversationIds?: string[], conversationItems?: Item[]) => void;
     onselectchannel?: (channel: Channel) => void;
     onattentionchange?: (count: number) => void;
+    onopenfull?: () => void;
+    onopenactivity?: () => void;
+    onnewmessage?: () => void;
   }
 
   interface ChannelsResponse {
@@ -45,6 +48,9 @@
     onselect,
     onselectchannel,
     onattentionchange,
+    onopenfull,
+    onopenactivity,
+    onnewmessage,
   }: Props = $props();
 
   let items = $state<Item[]>([]);
@@ -305,6 +311,26 @@
   aria-label="Conversations"
   aria-busy={loading || loadingChannels}
 >
+  <header class="qw-rail-head">
+    <div class="qw-rail-title">
+      <strong>HQ</strong>
+      {#if attentionCount > 0}
+        <span>{attentionCount > 99 ? '99+' : attentionCount} unread</span>
+      {/if}
+    </div>
+    <button
+      type="button"
+      class="qw-compose"
+      aria-label="New message"
+      title="New message"
+      onclick={() => onnewmessage?.()}
+    >
+      <svg viewBox="0 0 16 16" aria-hidden="true">
+        <path d="M3 12.7 3.5 10l6.9-6.9a1.4 1.4 0 0 1 2 2L5.5 12l-2.5.7Z"></path>
+        <path d="m9.5 4 2.5 2.5"></path>
+      </svg>
+    </button>
+  </header>
   <section class="qw-section" aria-label="Message sources">
     <label class="qw-search">
       <span class="sr-only">Find a conversation</span>
@@ -314,6 +340,16 @@
       </svg>
       <input bind:value={query} type="search" placeholder="Find a conversation" />
     </label>
+    <nav class="qw-utility" aria-label="Message shortcuts">
+      <button type="button" onclick={() => onopenfull?.()}>
+        <span class="qw-utility-glyph" aria-hidden="true">☷</span>
+        <span>Threads</span>
+      </button>
+      <button type="button" onclick={() => onopenactivity?.()}>
+        <span class="qw-utility-glyph" aria-hidden="true">@</span>
+        <span>Mentions & activity</span>
+      </button>
+    </nav>
     {#if (loading || loadingChannels) && railEntries.length === 0}
       <div class="qw-skeleton-list" aria-label="Loading conversations" role="status">
         {#each Array(5) as _}
@@ -443,6 +479,12 @@
   {#if !loading && !loadingChannels && !loadError && !channelLoadError && railEntries.length === 0}
     <p class="qw-side-status">No conversations</p>
   {/if}
+  <footer class="qw-rail-footer">
+    <button type="button" onclick={() => onopenfull?.()}>
+      Open full desktop view
+      <span aria-hidden="true">↗</span>
+    </button>
+  </footer>
 </aside>
 
 <style>
@@ -453,12 +495,70 @@
     flex-direction: column;
     gap: 0;
     border-right: 1px solid var(--pop-divider);
-    padding: 10px 8px 18px;
-    overflow-y: auto;
+    padding: 10px 8px 8px;
+    overflow: hidden;
     box-sizing: border-box;
     scrollbar-width: thin;
     scrollbar-color: var(--pop-muted) transparent;
     background: var(--compact-glass-rail, transparent);
+  }
+
+  .qw-rail-head {
+    min-height: 40px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 0 8px 7px;
+  }
+
+  .qw-rail-title {
+    min-width: 0;
+    display: flex;
+    align-items: baseline;
+    gap: 7px;
+  }
+
+  .qw-rail-title strong {
+    color: var(--pop-text);
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: -0.015em;
+  }
+
+  .qw-rail-title span {
+    color: var(--pop-muted);
+    font-size: 10.5px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .qw-compose {
+    width: 28px;
+    height: 28px;
+    display: grid;
+    place-items: center;
+    margin-left: auto;
+    padding: 0;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--pop-muted);
+    cursor: pointer;
+  }
+
+  .qw-compose:hover,
+  .qw-compose:focus-visible {
+    background: var(--pop-hover);
+    color: var(--pop-text);
+  }
+
+  .qw-compose svg {
+    width: 15px;
+    height: 15px;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 1.4;
   }
 
   .qw-side-pane::-webkit-scrollbar {
@@ -474,6 +574,48 @@
     display: flex;
     flex-direction: column;
     min-width: 0;
+    min-height: 0;
+    flex: 1;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--pop-muted) transparent;
+  }
+
+  .qw-utility {
+    display: grid;
+    gap: 1px;
+    margin: 1px 0 5px;
+    padding: 3px 0 8px;
+    border-bottom: 1px solid var(--pop-divider);
+  }
+
+  .qw-utility button {
+    min-height: 30px;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 0 9px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--pop-muted);
+    font: inherit;
+    font-size: 12px;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .qw-utility button:hover,
+  .qw-utility button:focus-visible {
+    background: var(--pop-hover);
+    color: var(--pop-text);
+  }
+
+  .qw-utility-glyph {
+    width: 17px;
+    color: currentColor;
+    font-size: 13px;
+    text-align: center;
   }
 
   .qw-search {
@@ -540,7 +682,35 @@
     font-weight: 650;
     letter-spacing: 0.055em;
     line-height: 1.2;
-    text-transform: none;
+    text-transform: uppercase;
+  }
+
+  .qw-rail-footer {
+    flex: 0 0 auto;
+    padding: 7px 4px 0;
+    border-top: 1px solid var(--pop-divider);
+  }
+
+  .qw-rail-footer button {
+    width: 100%;
+    min-height: 30px;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 0 5px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--pop-muted);
+    font: inherit;
+    font-size: 11.5px;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .qw-rail-footer button:hover,
+  .qw-rail-footer button:focus-visible {
+    color: var(--pop-text);
   }
 
   .qw-side-status {

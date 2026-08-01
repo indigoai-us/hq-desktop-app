@@ -2,53 +2,37 @@ import { describe, expect, it } from 'vitest';
 import { readRepoFile } from './harness';
 
 /**
- * Agent-native Messages — Catch-up digest (SPEC §5 "catch-up digest instead of
- * unread walls"). The v4/CatchUp component was built but unmounted; this wires
- * it into the Messages rail using ONLY real signals already loaded:
- *
- *   - channels carrying a real `unread` count, and
- *   - DMs whose last message came IN (previewDirection/lastMessageDirection
- *     === 'in') — the conversations where the ball is in your court.
- *
- * There is no per-DM unread flag server-side, so the digest never claims a DM
- * is "unread" — those rows are framed honestly as "waiting". No fabricated data.
+ * Agent-native Messages — the approved minimal room rail replaces the old
+ * ranked catch-up digest. Activity remains reachable as an explicit shortcut,
+ * while DMs, group DMs, and channels stay compact and preview-free.
  */
 
-describe('desktop-alt Messages catch-up digest', () => {
+describe('desktop-alt Messages room rail and activity shortcut', () => {
   const shell = readRepoFile('src/components/messaging/MessagesShell.svelte');
   const catchUp = readRepoFile('src/components/messaging/v4/CatchUp.svelte');
 
-  it('mounts the CatchUp digest in the rail', () => {
-    expect(shell).toContain("import CatchUp, { type CatchUpItem } from './v4/CatchUp.svelte'");
-    expect(shell).toContain('<CatchUp');
-    // DESKTOP-002: no All/People/Requests segments — show when real items exist.
-    expect(shell).toContain('catchUpItems.length > 0 && !catchUpDismissed');
-    expect(shell).toContain('ondismiss={() => (catchUpDismissed = true)}');
+  it('keeps the rail room-focused instead of mounting a ranked digest', () => {
+    expect(shell).not.toContain("import CatchUp, { type CatchUpItem } from './v4/CatchUp.svelte'");
+    expect(shell).not.toContain('<CatchUp');
+    expect(shell).toContain('<span>Direct messages</span>');
+    expect(shell).toContain('<span>Channels</span>');
+    expect(shell).toContain('Mentions & activity');
   });
 
-  it('builds items from REAL unread channels + inbound DMs (no fabricated unread)', () => {
-    // Channels: genuine unread count.
-    expect(shell).toContain('(ch.unread ?? 0) > 0');
-    expect(shell).toContain('${ch.unread} unread');
-    // DMs: the last message came IN — never labelled "unread".
-    expect(shell).toContain("((c.previewDirection ?? c.lastMessageDirection) ?? '') === 'in'");
-    expect(shell).toContain("id: `dm:${c.personUid}`");
-    expect(shell).toContain("id: `ch:${ch.channelId}`");
-    expect(shell).toContain("ch.scope === 'group'");
-    expect(shell).toContain(': `# ${channelDisplayName(ch)}`');
-    // It's a compact prioritized digest (top slice), not the whole list.
-    expect(shell).toContain('CATCH_UP_LIMIT');
-    expect(shell).toContain('.slice(0, CATCH_UP_LIMIT)');
-    // Ordering is enough hierarchy; avoid arbitrary number furniture in the UI.
-    expect(catchUp).not.toContain('class="rank"');
+  it('derives its unread summary from authoritative DM, channel, and request state', () => {
+    expect(shell).toContain('const railUnreadCount = $derived(');
+    expect(shell).toContain('unreadSummary.unreadDms');
+    expect(shell).toContain('channel.unread ?? 0');
+    expect(shell).toContain('requests.length');
+    expect(shell).toContain('summary?.pendingRequests');
+    expect(shell).not.toContain("((c.previewDirection ?? c.lastMessageDirection) ?? '') === 'in'");
   });
 
-  it('routes an opened digest item back to its real conversation', () => {
-    expect(shell).toContain('function handleCatchUpOpen');
-    expect(shell).toContain("item.id.startsWith('ch:')");
-    expect(shell).toContain('selectChannel(channel)');
-    expect(shell).toContain("item.id.startsWith('dm:')");
-    expect(shell).toContain('void selectContact(contact)');
+  it('routes the activity shortcut to the full inbox with a loading state', () => {
+    expect(shell).toContain('async function openMentionsAndActivity');
+    expect(shell).toContain("invoke('open_desktop_alt_window', { route: 'inbox' })");
+    expect(shell).toContain('aria-busy={openingActivity}');
+    expect(shell).toContain("openingActivity ? 'Opening activity…' : 'Mentions & activity'");
   });
 
   it('frames the digest honestly (waiting, not unread) and is dismissible + token-safe', () => {

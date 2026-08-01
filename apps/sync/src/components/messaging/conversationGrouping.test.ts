@@ -84,11 +84,13 @@ describe('conversation message grouping', () => {
       rendered.map((element) =>
         element.querySelector('.dm-msg-author')?.textContent?.trim() ?? null,
       ),
-    ).toEqual(['Maya', null, 'Avery', 'Avery', 'Avery', null, null]);
+    ).toEqual(['Maya', null, 'Avery', 'Avery', 'Avery', 'You', null]);
     expect(
       rendered.map((element) => element.querySelectorAll('.dm-msg-time').length),
-    ).toEqual([0, 1, 1, 1, 1, 0, 2]);
-    expect(rendered[5]?.querySelector('.sr-only')?.textContent).toContain('Delivered');
+    ).toEqual([0, 0, 0, 0, 0, 0, 1]);
+    expect(
+      rendered.map((element) => element.querySelectorAll('.dm-msg-header-time').length),
+    ).toEqual([1, 0, 1, 1, 1, 1, 0]);
     expect(
       [...(rendered[6]?.querySelectorAll('.dm-msg-time') ?? [])].map(
         (element) => element.textContent,
