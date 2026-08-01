@@ -89,11 +89,28 @@ fn is_allowed_claude_url_byte(byte: u8) -> bool {
 /// whitespace/control byte, the shell-dangerous set (`"' \` < > \ |`), and a
 /// malformed `%XX` percent-escape.
 pub fn validate_claude_deep_link(url: &str) -> Result<(), String> {
-    if !url.starts_with("claude://") {
-        return Err(format!("refusing to open non-claude scheme: {}", url));
+    validate_agent_deep_link("claude", url)
+}
+
+/// Validate a `codex://` deep link with the SAME byte allowlist the `claude://`
+/// boundary uses. The Codex surface inside the ChatGPT desktop app registers the
+/// `codex` scheme, and the work daemon builds `codex://threads/new?path=…&prompt=…`
+/// URLs whose `prompt` carries untrusted Slack content — so it gets exactly the
+/// same pre-`open` guard rather than a weaker one.
+pub fn validate_codex_deep_link(url: &str) -> Result<(), String> {
+    validate_agent_deep_link("codex", url)
+}
+
+/// Shared scheme-parameterised deep-link validator. `scheme` must be a trusted
+/// literal (never caller data) — it only ever names the allowlisted agent
+/// schemes above.
+fn validate_agent_deep_link(scheme: &str, url: &str) -> Result<(), String> {
+    let prefix = format!("{scheme}://");
+    if !url.starts_with(&prefix) {
+        return Err(format!("refusing to open non-{scheme} scheme: {}", url));
     }
-    if url.len() == "claude://".len() {
-        return Err("refusing to open empty claude:// URL".to_string());
+    if url.len() == prefix.len() {
+        return Err(format!("refusing to open empty {prefix} URL"));
     }
 
     let bytes = url.as_bytes();
@@ -102,13 +119,13 @@ pub fn validate_claude_deep_link(url: &str) -> Result<(), String> {
         let byte = bytes[i];
         if !(0x21..=0x7e).contains(&byte) {
             return Err(format!(
-                "refusing to open claude:// URL with whitespace/control byte at offset {i}"
+                "refusing to open {prefix} URL with whitespace/control byte at offset {i}"
             ));
         }
         match byte {
             b'"' | b'\'' | b'`' | b'<' | b'>' | b'\\' | b'|' => {
                 return Err(format!(
-                    "refusing to open claude:// URL with disallowed character {:?}",
+                    "refusing to open {prefix} URL with disallowed character {:?}",
                     byte as char
                 ));
             }
@@ -117,9 +134,9 @@ pub fn validate_claude_deep_link(url: &str) -> Result<(), String> {
                     || !is_hex_digit(bytes[i + 1])
                     || !is_hex_digit(bytes[i + 2])
                 {
-                    return Err(
-                        "refusing to open claude:// URL with malformed percent escape".to_string(),
-                    );
+                    return Err(format!(
+                        "refusing to open {prefix} URL with malformed percent escape"
+                    ));
                 }
                 i += 3;
                 continue;
@@ -127,7 +144,7 @@ pub fn validate_claude_deep_link(url: &str) -> Result<(), String> {
             _ if is_allowed_claude_url_byte(byte) => {}
             _ => {
                 return Err(format!(
-                    "refusing to open claude:// URL with disallowed character {:?}",
+                    "refusing to open {prefix} URL with disallowed character {:?}",
                     byte as char
                 ));
             }
@@ -422,6 +439,35 @@ mod tests {
         assert!(validate_claude_deep_link("claude://x%2").is_err());
         assert!(validate_claude_deep_link("claude://x%zz").is_err());
         assert!(validate_claude_deep_link("claude://x%").is_err());
+    }
+
+    #[test]
+    fn codex_deep_link_accepts_a_well_formed_url_and_rejects_the_claude_scheme() {
+        // The work daemon's codex:// links go through the SAME byte allowlist.
+        assert!(validate_codex_deep_link(
+            "codex://threads/new?path=%2Ftmp%2Fhq&prompt=do+the+thing"
+        )
+        .is_ok());
+        // Each validator is scheme-pinned — neither accepts the other's scheme.
+        assert!(validate_codex_deep_link("claude://code/new?q=x").is_err());
+        assert!(validate_claude_deep_link("codex://threads/new?path=%2Ftmp").is_err());
+        assert!(validate_codex_deep_link("codex://").is_err());
+    }
+
+    #[test]
+    fn codex_deep_link_rejects_shell_metacharacters_and_bad_escapes() {
+        for evil in [
+            "codex://threads/new\"; rm -rf ~",
+            "codex://threads/new'`whoami`",
+            "codex://threads/new|pipe",
+            "codex://threads/new?prompt=a b",
+            "codex://threads/new?path=%2",
+        ] {
+            assert!(
+                validate_codex_deep_link(evil).is_err(),
+                "should reject: {evil}"
+            );
+        }
     }
 
     #[test]

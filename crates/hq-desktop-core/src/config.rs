@@ -117,6 +117,20 @@ pub struct MenubarPrefs {
     /// menubar.json files → treated as true (see `get_settings`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dm_notifications: Option<bool>,
+    /// Work Mesh local sessions: when true, HQ Sync subscribes to the person's
+    /// `hq/{personUid}/work` routing topic and, on each wake, opens a local
+    /// agent session for every Work Thread that carries a `localSession` block
+    /// (the Slack "Send to HQ Agent → Local session" path). See
+    /// `commands/work_daemon`.
+    ///
+    /// Defaults to **false** — this is an opt-in feature that opens windows and
+    /// launches agent runtimes on the user's machine, so it stays off until
+    /// explicitly enabled (same default-OFF posture as `autostart_daemon`, NOT
+    /// the default-ON posture of the notification toggles). With the flag off
+    /// there is no subscription, no feed fetch, and no behavior change at all.
+    /// The `WORK_MESH_ENABLED=1` environment variable overrides it for dev.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work_mesh_enabled: Option<bool>,
     /// Auto-update the globally-installed `hq` CLI: when true (default), the
     /// background update checker, on detecting a newer `@indigoai-us/hq-cli`
     /// on the npm registry, runs `npm install -g …@latest` directly instead of

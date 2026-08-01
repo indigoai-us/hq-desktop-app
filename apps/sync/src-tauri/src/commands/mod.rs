@@ -63,4 +63,5 @@ pub mod un_notify;
 pub mod vault_client;
 pub mod version_gate;
 pub mod widget;
+pub mod work_daemon;
 pub mod workspaces;

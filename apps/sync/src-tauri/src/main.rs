@@ -893,6 +893,17 @@ fn main() {
                 commands::sessions::outpost::setup_outpost_pollers(app.handle().clone());
             }
 
+            // Work-thread listener — "Send to HQ Agent → Local session". Subscribes
+            // to the per-person `hq/{personUid}/work` routing topic (same MQTT-over-
+            // WSS pattern as dm_mqtt/outpost above) and, on each wake, opens a local
+            // agent session per Work Thread carrying a `localSession` block.
+            // FEATURE-GATED OFF by default (`workMeshEnabled` in menubar.json,
+            // `WORK_MESH_ENABLED=1` to override): with the gate off the task parks
+            // without fetching credentials or opening a socket, so this is a true
+            // no-op for every user who has not opted in. Cross-platform — Windows
+            // degrades every provider to the existing terminal launcher.
+            commands::work_daemon::setup_work_thread_listener(app.handle().clone());
+
             // SPIKE: env-var trigger to preview the custom notification banner
             // without devtools / real inbound events. Pops one representative
             // banner per source — DM (2s), share (10s), update (18s), meeting

@@ -303,6 +303,7 @@ mod tests {
             drift_staging_repo: None,
             share_notifications: None,
             dm_notifications: None,
+            work_mesh_enabled: None,
             cli_auto_update: None,
             auto_update: None,
             staging_channel: None,

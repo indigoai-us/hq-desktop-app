@@ -42,6 +42,8 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
             drift_staging_repo: None,
             share_notifications: Some(true),
             dm_notifications: Some(true),
+            // Work Mesh local sessions default OFF — opt-in (see MenubarPrefs).
+            work_mesh_enabled: Some(false),
             cli_auto_update: Some(true),
             // Master automatic-updates switch defaults ON — a fresh install
             // keeps the app, CLI, and hq-core current silently.
@@ -103,6 +105,8 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
         // each poll cycle in dm_notify.rs so the toggle takes effect without
         // restart. Mirrors `share_notifications`.
         dm_notifications: Some(prefs.dm_notifications.unwrap_or(true)),
+        // Default OFF: an absent key must never arm local-session dispatch.
+        work_mesh_enabled: Some(prefs.work_mesh_enabled.unwrap_or(false)),
         // CLI auto-update defaults ON — re-read untyped from menubar.json by
         // hq_cli_update.rs on each background check so the toggle takes effect
         // without restart. Mirrors `dm_notifications`.
