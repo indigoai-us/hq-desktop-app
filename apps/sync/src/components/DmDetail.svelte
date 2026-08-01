@@ -91,28 +91,6 @@
     fullViewError = null;
   }
 
-  function handleTabKeydown(event: KeyboardEvent): void {
-    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
-    event.preventDefault();
-    const tabs = Array.from(
-      (event.currentTarget as HTMLElement)
-        .closest('[role="tablist"]')
-        ?.querySelectorAll<HTMLButtonElement>('[role="tab"]') ?? [],
-    );
-    if (tabs.length === 0) return;
-    const currentIndex = Math.max(0, tabs.indexOf(event.currentTarget as HTMLButtonElement));
-    const nextIndex =
-      event.key === 'Home'
-        ? 0
-        : event.key === 'End'
-          ? tabs.length - 1
-          : (currentIndex + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) %
-            tabs.length;
-    const tab = nextIndex === 0 ? 'conversations' : 'notifications';
-    selectTab(tab);
-    tabs[nextIndex]?.focus();
-  }
-
   async function openFullView(): Promise<void> {
     if (openingFullView) return;
     openingFullView = true;
@@ -121,7 +99,7 @@
       if (activeTab === 'notifications') {
         await invoke('open_desktop_alt_window', { route: 'inbox' });
       } else {
-        await invoke('open_messages_window', { target: null });
+        await invoke('open_desktop_alt_window', { route: 'messages' });
       }
     } catch (err) {
       console.error('dm-detail: open full communications view failed', err);
@@ -195,69 +173,9 @@
 </script>
 
 <div class="detail-window" class:native-glass={nativeGlass}>
-  <header class="communications-header" data-tauri-drag-region>
-    <h1>Messages</h1>
-    <div class="communications-actions">
-      {#if fullViewError}
-        <span class="full-view-error" role="alert">{fullViewError}</span>
-      {/if}
-      <button
-        type="button"
-        class="open-full-view"
-        data-testid="communications-open-full"
-        disabled={openingFullView}
-        aria-busy={openingFullView}
-        onclick={() => void openFullView()}
-      >
-        {#if openingFullView}
-          <span class="full-view-spinner" aria-hidden="true"></span>
-        {/if}
-        {openingFullView ? 'Opening…' : 'Open full view'}
-      </button>
-    </div>
-  </header>
-
-  <div class="communications-tabs" role="tablist" aria-label="Messages views">
-    <button
-      type="button"
-      role="tab"
-      class="communications-tab"
-      class:active={activeTab === 'conversations'}
-      data-testid="communications-tab-conversations"
-      aria-selected={activeTab === 'conversations'}
-      aria-controls="quick-conversations-panel"
-      tabindex={activeTab === 'conversations' ? 0 : -1}
-      onclick={() => selectTab('conversations')}
-      onkeydown={handleTabKeydown}
-    >
-      Conversations
-      {#if conversationAttentionCount > 0}
-        <span class="tab-count" aria-label={`${conversationAttentionCount} unread conversations`}>
-          {badgeLabel(conversationAttentionCount)}
-        </span>
-      {/if}
-    </button>
-    <button
-      type="button"
-      role="tab"
-      class="communications-tab"
-      class:active={activeTab === 'notifications'}
-      data-testid="communications-tab-notifications"
-      aria-selected={activeTab === 'notifications'}
-      aria-controls="quick-notifications-panel"
-      tabindex={activeTab === 'notifications' ? 0 : -1}
-      onclick={() => selectTab('notifications')}
-      onkeydown={handleTabKeydown}
-    >
-      Notifications
-      {#if notificationAttentionCount > 0}
-        <span class="tab-count" aria-label={`${notificationAttentionCount} unread notifications`}>
-          {badgeLabel(notificationAttentionCount)}
-        </span>
-      {/if}
-    </button>
-  </div>
-
+  {#if fullViewError}
+    <div class="full-view-error-banner" role="alert">{fullViewError}</div>
+  {/if}
   <div class="communications-body">
     <div
       id="quick-notifications-panel"
@@ -266,6 +184,22 @@
       aria-label="Notifications"
       hidden={activeTab !== 'notifications'}
     >
+      <header class="notifications-toolbar" data-tauri-drag-region>
+        <button type="button" onclick={() => selectTab('conversations')}>← Messages</button>
+        <div>
+          <strong>Mentions & activity</strong>
+          {#if notificationAttentionCount > 0}
+            <span>{badgeLabel(notificationAttentionCount)} unread</span>
+          {/if}
+        </div>
+        <button
+          type="button"
+          class="notifications-open-full"
+          disabled={openingFullView}
+          aria-busy={openingFullView}
+          onclick={() => void openFullView()}
+        >{openingFullView ? 'Opening…' : 'Open inbox ↗'}</button>
+      </header>
       <div class="notifications-intro">
         <h2>Recent activity</h2>
         <p>Messages, shares, workspace activity, and updates in one chronology.</p>
@@ -293,6 +227,9 @@
         {onselect}
         onselectchannel={selectChannel}
         onattentionchange={(count) => (conversationAttentionCount = count)}
+        onopenfull={() => void openFullView()}
+        onopenactivity={() => selectTab('notifications')}
+        onnewmessage={() => void openFullView()}
       />
 
       <main
@@ -388,21 +325,70 @@
     font-family: var(--font-sans);
   }
 
+  .notifications-toolbar {
+    min-height: 52px;
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    align-items: center;
+    gap: 14px;
+    padding: 0 18px;
+    border-bottom: 1px solid var(--pop-divider);
+  }
+
+  .notifications-toolbar > div {
+    display: flex;
+    align-items: baseline;
+    gap: 7px;
+  }
+
+  .notifications-toolbar strong {
+    color: var(--pop-text);
+    font-size: 14px;
+  }
+
+  .notifications-toolbar span {
+    color: var(--pop-muted);
+    font-size: 10.5px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .notifications-toolbar button {
+    width: fit-content;
+    padding: 5px 0;
+    border: 0;
+    background: transparent;
+    color: var(--pop-muted);
+    font: inherit;
+    font-size: 11.5px;
+    cursor: pointer;
+  }
+
+  .notifications-toolbar button:hover,
+  .notifications-toolbar button:focus-visible {
+    color: var(--pop-text);
+  }
+
+  .notifications-open-full {
+    justify-self: end;
+  }
+
   .detail-window.native-glass {
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
   }
 
-  .communications-header {
-    min-height: 52px;
-    flex: 0 0 auto;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 18px;
-    padding: 8px 18px 4px;
-    box-sizing: border-box;
-    background: transparent;
+  .full-view-error-banner {
+    position: absolute;
+    top: 8px;
+    left: 50%;
+    z-index: 8;
+    transform: translateX(-50%);
+    padding: 6px 10px;
+    border: 1px solid color-mix(in srgb, var(--popover-danger) 45%, transparent);
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--compact-glass-bg, var(--pop-bg)) 92%, transparent);
+    color: var(--popover-danger);
+    font-size: 11px;
   }
 
   .detail-kicker {
@@ -412,132 +398,6 @@
     letter-spacing: 0.065em;
     line-height: 1.2;
     text-transform: uppercase;
-  }
-
-  .communications-header h1 {
-    margin: 0;
-    color: var(--pop-text);
-    font-size: 18px;
-    font-weight: 680;
-    letter-spacing: -0.025em;
-    line-height: 1.08;
-  }
-
-  .communications-actions {
-    min-width: 0;
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    gap: 10px;
-  }
-
-  .open-full-view {
-    flex: 0 0 auto;
-    min-height: 30px;
-    display: inline-flex;
-    align-items: center;
-    gap: 7px;
-    padding: 3px 0;
-    border: 0;
-    border-bottom: 1px solid transparent;
-    border-radius: 0;
-    background: transparent;
-    color: var(--pop-text);
-    font: inherit;
-    font-size: 12px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: transform 120ms var(--ease-out);
-  }
-
-  .open-full-view:hover,
-  .open-full-view:focus-visible {
-    border-bottom-color: var(--pop-muted);
-    outline: none;
-  }
-
-  .open-full-view:disabled {
-    color: var(--pop-muted);
-    cursor: progress;
-  }
-
-  .open-full-view:active:not(:disabled) {
-    transform: scale(0.97);
-  }
-
-  .full-view-error {
-    max-width: 28ch;
-    overflow: hidden;
-    color: var(--popover-danger);
-    font-size: 11px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .full-view-spinner {
-    width: 10px;
-    height: 10px;
-    flex: 0 0 auto;
-    border: 1.5px solid color-mix(in srgb, currentColor 28%, transparent);
-    border-top-color: currentColor;
-    border-radius: 50%;
-    animation: full-view-spin 0.7s linear infinite;
-  }
-
-  .communications-tabs {
-    min-height: 35px;
-    flex: 0 0 auto;
-    display: flex;
-    align-items: flex-end;
-    gap: 22px;
-    padding: 0 18px;
-    border-bottom: 1px solid var(--pop-divider);
-  }
-
-  .communications-tab {
-    align-self: stretch;
-    display: inline-flex;
-    align-items: center;
-    padding: 3px 0 0;
-    border: 0;
-    border-bottom: 2px solid transparent;
-    background: transparent;
-    color: var(--pop-muted);
-    font: inherit;
-    font-size: 12.5px;
-    font-weight: 600;
-    cursor: pointer;
-    gap: 6px;
-    transition: transform 120ms var(--ease-out);
-  }
-
-  .communications-tab.active {
-    border-bottom-color: var(--pop-text);
-    color: var(--pop-text);
-  }
-
-  .communications-tab:focus-visible {
-    outline: 2px solid var(--pop-muted);
-    outline-offset: 2px;
-  }
-
-  .communications-tab:active {
-    transform: scale(0.97);
-  }
-
-  .tab-count {
-    min-width: 14px;
-    height: 14px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    padding: 0 4px;
-    border-radius: var(--radius-pill);
-    background: var(--pop-hover);
-    color: currentColor;
-    font-size: 9.5px;
-    font-variant-numeric: tabular-nums;
-    line-height: 1;
   }
 
   .communications-body,
@@ -712,43 +572,9 @@
     max-width: min(18ch, 44%);
   }
 
-  @keyframes full-view-spin {
-    to { transform: rotate(360deg); }
-  }
-
   @media (max-width: 700px) {
-    .communications-header {
-      padding-inline: 16px;
-    }
-
-    .communications-tabs {
-      padding-inline: 16px;
-    }
-
     .notifications-pane {
       padding-inline: 16px;
-    }
-  }
-
-  @media (hover: hover) and (pointer: fine) {
-    .communications-tab:hover {
-      color: var(--pop-text);
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .open-full-view,
-    .communications-tab {
-      transition: none;
-    }
-
-    .full-view-spinner {
-      animation-duration: 1.4s;
-    }
-
-    .open-full-view:active:not(:disabled),
-    .communications-tab:active {
-      transform: none;
     }
   }
 

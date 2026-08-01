@@ -15,6 +15,14 @@ export class LogicalSize {
   }
 }
 
+export async function currentMonitor() {
+  return {
+    size: { width: 1440, height: 900 },
+    scaleFactor: 1,
+    position: { x: 0, y: 0 },
+  };
+}
+
 export function getCurrentWindow() {
   return {
     label: previewLabel,

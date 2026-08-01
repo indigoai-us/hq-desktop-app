@@ -299,19 +299,18 @@ describe('DESKTOP-017: auxiliary desktop surfaces', () => {
     );
   });
 
-  it('keeps widget fixtures deterministic and message selection rail-free', () => {
+  it('keeps widget fixtures deterministic and message selection neutral', () => {
     expect(harness).toContain('WIDGET_RECENT_STORAGE_KEY');
     expect(harness).toContain(
       'localStorage.removeItem(WIDGET_RECENT_STORAGE_KEY)',
     );
     expect(messages).not.toContain('.contact-row.active::before');
     expect(rule(messages, '.contact-row')).toContain('border-radius: 0');
-    expect(rule(messages, '.contact-row.active')).toContain(
-      'background: transparent',
+    expect(rule(messages, '.compact-list .contact-row')).toContain('border-radius: 6px');
+    expect(rule(messages, '.compact-list .contact-row.active')).toContain(
+      'background: color-mix(in srgb, var(--fg) 10%, transparent)',
     );
-    expect(rule(messages, '.contact-row.active')).toContain(
-      'box-shadow: inset 0 -1px 0 var(--border)',
-    );
+    expect(rule(messages, '.compact-list .contact-row.active')).toContain('box-shadow: none');
   });
 
   it('renders catch-up entries as open rows instead of inset cards', () => {

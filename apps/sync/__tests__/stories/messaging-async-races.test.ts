@@ -293,6 +293,34 @@ describe('DmThreadPane hydration ownership', () => {
 });
 
 describe('MessagesShell async ownership', () => {
+  it('does not let an older unread summary erase a newer DM count', async () => {
+    const initialSummary = deferred<{ unreadDms: number; pendingRequests: number }>();
+    let summaryLoads = 0;
+    tauri.invoke.mockImplementation((command: string) => {
+      if (command === 'get_unread_summary') {
+        summaryLoads += 1;
+        return summaryLoads === 1
+          ? initialSummary.promise
+          : Promise.resolve({ unreadDms: 2, pendingRequests: 0 });
+      }
+      return Promise.resolve(baseFixture(command));
+    });
+
+    component = mount(MessagesShell, { target: host, props: { embedded: true } });
+    await vi.waitFor(() => expect(listeners.has('dm:new-events')).toBe(true));
+
+    emit('dm:new-events', [dmEvent('new-unread', 'New message', '2026-07-28T14:00:00.000Z')]);
+    await vi.waitFor(() => {
+      flushSync();
+      expect(host.querySelector('.rail-heading')?.textContent).toContain('2 unread');
+    });
+
+    initialSummary.resolve({ unreadDms: 0, pendingRequests: 0 });
+    await tick();
+    flushSync();
+    expect(host.querySelector('.rail-heading')?.textContent).toContain('2 unread');
+  });
+
   it('ignores an A success that resolves after B has already loaded', async () => {
     const a = deferred<{ messages: ReturnType<typeof dmMessage>[] }>();
     const b = deferred<{ messages: ReturnType<typeof dmMessage>[] }>();
@@ -514,7 +542,10 @@ describe('MessagesShell async ownership', () => {
     await vi.waitFor(() => {
       flushSync();
       expect(railButton('direct-message', 'Maya')).toBeTruthy();
-      expect(railButton('connection-request', 'Richard')).toBeTruthy();
+      const activityShortcut = [...host.querySelectorAll<HTMLButtonElement>('button')].find(
+        (button) => button.textContent?.includes('Mentions & activity'),
+      );
+      expect(activityShortcut?.textContent).toContain('1');
       expect(railButton('channel', 'launch')).toBeTruthy();
     });
   });

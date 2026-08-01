@@ -123,4 +123,43 @@ describe('QuickWindowSidePane', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]?.textContent).toContain('Alan Saura');
   });
+
+  it('renders the approved Slack-like hierarchy and wires every shortcut', async () => {
+    const onopenfull = vi.fn();
+    const onopenactivity = vi.fn();
+    const onnewmessage = vi.fn();
+    loadItemsMock.mockResolvedValue([message('maya', 'Maya Chen', 300)]);
+
+    component = mount(QuickWindowSidePane, {
+      target: host,
+      props: {
+        selectedId: 'dm:maya',
+        selectedChannelId: null,
+        viewedIds: new Set<string>(),
+        onselect: vi.fn(),
+        onopenfull,
+        onopenactivity,
+        onnewmessage,
+      },
+    });
+
+    await vi.waitFor(() => {
+      flushSync();
+      expect(host.querySelector('.qw-rail-title')?.textContent).toContain('HQ');
+      expect(host.querySelector('.qw-side-label')?.textContent).toContain('Direct messages');
+    });
+
+    host.querySelector<HTMLButtonElement>('.qw-compose')!.click();
+    Array.from(host.querySelectorAll<HTMLButtonElement>('.qw-utility button'))
+      .find((button) => button.textContent?.includes('Threads'))!
+      .click();
+    Array.from(host.querySelectorAll<HTMLButtonElement>('.qw-utility button'))
+      .find((button) => button.textContent?.includes('Mentions'))!
+      .click();
+    host.querySelector<HTMLButtonElement>('.qw-rail-footer button')!.click();
+
+    expect(onnewmessage).toHaveBeenCalledTimes(1);
+    expect(onopenactivity).toHaveBeenCalledTimes(1);
+    expect(onopenfull).toHaveBeenCalledTimes(2);
+  });
 });

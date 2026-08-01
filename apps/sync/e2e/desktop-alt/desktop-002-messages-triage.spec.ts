@@ -6,7 +6,7 @@ import { readRepoFile } from './harness';
  * DESKTOP-002 — Unified messages and notification triage.
  *
  * Source contracts for: no People/Requests tabs, compact Messages header,
- * request + share rows in the unified rail, ShareMainPane payload (sender /
+ * room-only rail plus dedicated activity shortcut, ShareMainPane payload (sender /
  * path / timestamp / ACL / actions), preserved copy + Claude actions, text-only
  * composer (no attachment affordance), naked main canvas, and shared component
  * reuse across Messages + Inbox paths.
@@ -24,8 +24,8 @@ describe('DESKTOP-002: unified messages and notification triage', () => {
 
   it('orients the rail without restoring a redundant page title or People/Requests tabs', () => {
     expect(shell).not.toContain('<h1>Messages</h1>');
-    expect(shell).toContain('<h2>Messages</h2>');
-    expect(shell).toContain("railItems.length === 1 ? 'conversation' : 'conversations'");
+    expect(shell).toContain('<h2>HQ</h2>');
+    expect(shell).toContain("railUnreadCount > 99 ? '99+' : railUnreadCount");
     expect(shell).not.toMatch(/>\s*People\s*</);
     expect(shell).not.toMatch(/>\s*Requests\s*</);
     expect(shell).not.toContain("segment = 'people'");
@@ -45,7 +45,6 @@ describe('DESKTOP-002: unified messages and notification triage', () => {
     expect(shell).toContain('data-provenance="connection-request"');
     expect(shell).toContain('data-provenance="shared-path"');
     expect(shell).toContain('data-provenance="agent"');
-    expect(shell).toContain('<span class="contact-provenance">Direct message</span>');
     expect(shell).toContain('<span class="contact-provenance">Connection request</span>');
     expect(shell).toContain('<span class="contact-provenance">Shared path</span>');
     expect(shell).toContain('function channelProvenance');
@@ -60,7 +59,7 @@ describe('DESKTOP-002: unified messages and notification triage', () => {
     expect(shell).toContain('aria-busy={isActive && loadingThread}');
   });
 
-  it('renders requests and shared paths as ordinary recency-sorted rail rows', () => {
+  it('keeps requests and shared paths functional without crowding the room rail', () => {
     expect(shell).toContain("kind: 'request'");
     expect(shell).toContain("kind: 'share'");
     expect(shell).toContain('railItems');
@@ -68,8 +67,20 @@ describe('DESKTOP-002: unified messages and notification triage', () => {
     expect(shell).toContain('data-testid="share-rail-row"');
     expect(shell).toContain('function selectRequest');
     expect(shell).toContain('function selectShare');
+    expect(shell).toContain("item.kind === 'dm' || item.kind === 'channel'");
+    expect(shell).toContain('Mentions & activity');
+    expect(shell).not.toContain('<div class="rail-section-heading"><span>Activity</span></div>');
     // Still merges channels + DMs via the existing pure helper.
     expect(shell).toContain('mergeConversations(contacts, channels)');
+  });
+
+  it('uses a shared left-aligned authored timeline instead of opposing chat bubbles', () => {
+    expect(conversation).toContain("msg.direction === 'out' ? 'You'");
+    expect(conversation).toContain('<IdentityMark kind="person" label={messageAuthor(msg)}');
+    expect(conversation).toContain('class="dm-msg-meta"');
+    expect(conversation).toContain('grid-template-columns: 28px minmax(0, 720px)');
+    expect(conversation).toMatch(/\.dm-msg-out\s*\{[\s\S]*?align-self:\s*stretch/);
+    expect(conversation).toMatch(/\.dm-msg-out \.dm-bubble[\s\S]*?background:\s*transparent/);
   });
 
   it('opens shared payload UI with sender, path, timestamp, ACL truth, and actions', () => {
@@ -134,9 +145,7 @@ describe('DESKTOP-002: unified messages and notification triage', () => {
       /\.messages-window\s*\{[\s\S]*?background:\s*var\(--v4-ground/,
     );
     expect(windowRule).not.toContain('backdrop-filter:');
-    expect(railRule).toMatch(
-      /background:\s*color-mix\(in srgb,\s*var\(--v4-text-1[\s\S]*?5%,\s*transparent\);/,
-    );
+    expect(railRule).toMatch(/background:\s*color-mix\(in srgb,[\s\S]*?4%,\s*transparent\);/);
     expect(railRule).not.toContain('backdrop-filter:');
     expect(shell).toMatch(
       /\.pane\s*\{[\s\S]*?background:\s*transparent;[\s\S]*?border-radius:\s*0;/,
@@ -152,12 +161,12 @@ describe('DESKTOP-002: unified messages and notification triage', () => {
     expect(shell).toMatch(
       /\.pane-title-stack\s*\{[\s\S]*?gap:\s*var\(--v4-row-stack-gap,\s*3px\)/,
     );
-    expect(shell).toMatch(/\.rail\s*\{[\s\S]*?width:\s*320px/);
+    expect(shell).toMatch(/\.rail\s*\{[\s\S]*?width:\s*282px/);
     expect(shell).toMatch(
-      /\.contact-row\s*\{[\s\S]*?min-height:\s*58px;[\s\S]*?border-radius:\s*0;/,
+      /\.compact-list \.contact-row\s*\{[\s\S]*?min-height:\s*34px;[\s\S]*?border-radius:\s*6px;/,
     );
     expect(shell).toMatch(
-      /\.contact-row\.active\s*\{[\s\S]*?background:\s*transparent;[\s\S]*?box-shadow:\s*inset 0 -1px 0 var\(--border\)/,
+      /\.contact-row\.active\s*\{[\s\S]*?background:\s*color-mix\(in srgb, var\(--fg\) 10%, transparent\);[\s\S]*?box-shadow:\s*none/,
     );
   });
 
