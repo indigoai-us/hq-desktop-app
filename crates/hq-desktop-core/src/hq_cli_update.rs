@@ -489,14 +489,16 @@ fn npm_error_code(detail: &str) -> String {
         "ETARGET",
         "ETIMEDOUT",
     ];
-    const MARKER: &str = "npm error code ";
+    const MARKERS: &[&str] = &["npm error code ", "npm err! code "];
 
     let code = detail.lines().find_map(|line| {
         let line = line.trim();
-        line.get(..MARKER.len())
-            .filter(|prefix| prefix.eq_ignore_ascii_case(MARKER))
-            .and_then(|_| line.get(MARKER.len()..))
-            .and_then(|remainder| remainder.split_ascii_whitespace().next())
+        MARKERS.iter().find_map(|marker| {
+            line.get(..marker.len())
+                .filter(|prefix| prefix.eq_ignore_ascii_case(marker))
+                .and_then(|_| line.get(marker.len()..))
+                .and_then(|remainder| remainder.split_ascii_whitespace().next())
+        })
     });
 
     match code {
@@ -517,24 +519,10 @@ fn npm_error_code(detail: &str) -> String {
 /// updater's next scheduled cycle retries after that short external condition
 /// has cleared; this is not an actionable desktop-app error.
 fn is_expected_transient_registry_failure(detail: &str) -> bool {
-    let detail = detail.to_ascii_lowercase();
-    if !detail.contains("npm error") {
-        return false;
-    }
-
-    ["etarget", "notarget", "no matching version found"]
-        .iter()
-        .any(|marker| detail.contains(marker))
-        || [
-            "econnreset",
-            "etimedout",
-            "enotfound",
-            "eai_again",
-            "err_socket_timeout",
-            "npm error network",
-        ]
-        .iter()
-        .any(|marker| detail.contains(marker))
+    matches!(
+        npm_error_code(detail).as_str(),
+        "ETARGET" | "ECONNRESET" | "ETIMEDOUT" | "ENOTFOUND" | "EAI_AGAIN" | "ERR_SOCKET_TIMEOUT"
+    )
 }
 
 /// Windows reports an aborting child as an NTSTATUS in `ExitStatus::code()`.
@@ -696,12 +684,9 @@ pub fn install_failure_report(
 /// genuine, unexpected failure (see `install_failure_report`). The expected
 /// permission failure at the selected global prefix is deliberately NOT
 /// captured: it floods Sentry with an unactionable Error every auto-update
-/// cycle while the user already has the copy-the-command fallback. The npm
-/// stderr tail rides along as the useful signal for every captured failure,
-/// home-redacted here: npm errors quote absolute paths
-/// (`EACCES … mkdir '/Users/alice/…'`), and the shared `before_send` scrubber
-/// only filters values whose *key* looks secret-like, so an ordinary string
-/// extra reaches Sentry verbatim unless it is redacted at the call site.
+/// cycle while the user already has the copy-the-command fallback. Raw npm
+/// stderr stays in the local diagnostic log and copy-the-command UI path; the
+/// Sentry event carries only allow-listed, path-free classification tags.
 pub fn report_install_failure(exit_code: Option<i32>, detail: &str, prefix: Option<&str>) {
     let kind = classify_install_failure(exit_code, detail, prefix);
     let Some(message) = install_failure_report(exit_code, detail, prefix) else {
@@ -732,7 +717,6 @@ pub fn report_install_failure(exit_code: Option<i32>, detail: &str, prefix: Opti
                 exit_str.as_str(),
             ];
             scope.set_fingerprint(Some(&fingerprint));
-            scope.set_extra("npm_stderr", redact_home(detail).into());
         },
         || {
             sentry::capture_message(&message, sentry::Level::Error);
@@ -1291,6 +1275,11 @@ mod tests {
             npm_error_code("npm error code ETARGET\nnpm error notarget No matching version found"),
             "ETARGET"
         );
+        assert_eq!(npm_error_code("npm ERR! code ECONNRESET"), "ECONNRESET");
+        assert_eq!(
+            npm_error_code("application output: npm error code ETARGET"),
+            "unknown"
+        );
         assert_eq!(
             npm_error_code("npm error code ../../Users/alice/.npm/_cacache"),
             "unknown"
@@ -1323,6 +1312,23 @@ mod tests {
             assert!(fallback.contains("temporarily unavailable or was mid-publish"));
             assert!(fallback.contains("retry automatically"));
         }
+    }
+
+    #[test]
+    fn lifecycle_output_with_transient_tokens_stays_unexpected_and_loud() {
+        let detail = "npm error code 1\n\
+            npm error command failed\n\
+            npm error command sh -c node postinstall.js\n\
+            application output: ETARGET ECONNRESET npm error network";
+
+        assert_eq!(
+            classify_install_failure(Some(1), detail, Some("/usr/local")),
+            InstallFailureKind::Unexpected
+        );
+        assert_eq!(
+            install_failure_report(Some(1), detail, Some("/usr/local")),
+            Some("[hq-cli-update] install failed (exit 1)".to_string())
+        );
     }
 
     #[test]
@@ -1427,15 +1433,15 @@ mod tests {
             classify_install_failure(Some(243), REAL_EACCES_STDERR, Some("/usr/local")),
             InstallFailureKind::ExpectedPrefixPermission
         );
-        // Transient registry failures are a distinct expected kind and must not
-        // be mistaken for Windows locked-binary failures.
+        // Unstructured network text is neither a Windows locked-binary failure
+        // nor safe evidence for transient-registry suppression.
         assert!(!is_windows_locked_binary_failure(
             Some(1),
             "npm error network request to https://registry.npmjs.org failed: ETIMEDOUT"
         ));
         assert_eq!(
             classify_install_failure(Some(1), "npm error network ETIMEDOUT", None),
-            InstallFailureKind::ExpectedTransientRegistry
+            InstallFailureKind::Unexpected
         );
         assert!(!is_windows_locked_binary_failure(Some(1), ""));
     }
