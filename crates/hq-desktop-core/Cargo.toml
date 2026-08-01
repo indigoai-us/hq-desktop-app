@@ -54,6 +54,7 @@ windows = { version = "0.58", features = [
 winreg = "0.55"
 
 [dev-dependencies]
+sentry = { version = "^0.35", features = ["test"] }
 tempfile = "3"
 # client_info's build_client timeout regression test stands up a mock server.
 wiremock = "0.6"
