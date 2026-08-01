@@ -36,15 +36,17 @@
 //! below make the existing behaviour safe; whether the push itself should
 //! exist is an owner decision tracked separately.
 
+use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{ErrorKind, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::sync::{mpsc, Mutex};
+use std::sync::{mpsc, LazyLock, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use chrono::SecondsFormat;
 use fs2::FileExt;
+use sha2::{Digest, Sha256};
 
 use crate::logfile::log;
 use crate::paths;
@@ -71,6 +73,34 @@ const MIN_MIRROR_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Timestamp of the last mirror attempt, for the throttle above.
 static LAST_MIRROR_AT: Mutex<Option<Instant>> = Mutex::new(None);
+
+/// A still-broken working tree must remain visible to triage, but reporting it
+/// every mirror pass turns one actionable condition into an event flood. This
+/// keeps a repeated refusal to one banner every six hours per deleted-path set.
+const REFUSAL_COOLDOWN: Duration = Duration::from_secs(6 * 60 * 60);
+
+/// A changing deletion set is a new condition, but it can churn while a tree
+/// is failing. Limit those new keys too so Sentry never receives one event per
+/// mirror pass.
+const REFUSAL_MIN_SPACING: Duration = Duration::from_secs(5 * 60);
+
+/// Mutable state for outbound bulk-delete-refusal reporting. It is intentionally
+/// in-memory: an app restart should re-arm the first banner without adding file
+/// I/O or another failure mode to the detached mirror thread.
+#[derive(Default)]
+struct RefusalReportState {
+    last_report_at: Option<Instant>,
+    reported_at_by_key: HashMap<String, Instant>,
+    refusals_since_last_report: usize,
+}
+
+/// Timestamps for each recently-reported condition plus the latest report,
+/// which imposes the cross-key spacing floor. Entries expire with the cooldown
+/// so a long-running app cannot grow this in-memory state without bound.
+/// Recover a poisoned lock so this observability path can never wedge the
+/// detached mirror thread.
+static LAST_REFUSAL_REPORT: LazyLock<Mutex<RefusalReportState>> =
+    LazyLock::new(|| Mutex::new(RefusalReportState::default()));
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Bulk-delete circuit breaker (ported from hq-cloud `share.ts`)
@@ -135,6 +165,52 @@ fn parse_bulk_override(raw: Option<&str>) -> bool {
 
 fn is_bulk_override_set() -> bool {
     parse_bulk_override(std::env::var(BULK_OVERRIDE_ENV).ok().as_deref())
+}
+
+/// Staged deletions and a stable identity for their path set. The digest is
+/// deliberately independent of the tracked-file denominator: that value can
+/// drift when another writer commits, even when the missing paths are unchanged.
+#[derive(Debug, PartialEq, Eq)]
+struct StagedDeletions {
+    count: usize,
+    digest: String,
+}
+
+/// Hash NUL-terminated Git path records after sorting their raw bytes. Git
+/// permits non-UTF-8 paths, so hashing bytes rather than strings preserves the
+/// exact deletion-set identity; the NUL separator keeps adjacent paths distinct.
+fn deletion_set_digest(records: &[u8]) -> String {
+    let mut paths: Vec<&[u8]> = records
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+        .collect();
+    paths.sort_unstable();
+
+    let mut hasher = Sha256::new();
+    for path in paths {
+        hasher.update(path);
+        hasher.update([0]);
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+/// Pure refusal-report decision. A first condition is always reported, an
+/// unchanged condition re-arms after [`REFUSAL_COOLDOWN`], and a never-before-
+/// reported path set re-arms after the shorter [`REFUSAL_MIN_SPACING`] floor.
+fn should_report_refusal(
+    last_for_key: Option<Instant>,
+    last_report_at: Option<Instant>,
+    now: Instant,
+    cooldown: Duration,
+    min_spacing: Duration,
+) -> bool {
+    match last_for_key {
+        Some(last_at) => now.duration_since(last_at) >= cooldown,
+        None => match last_report_at {
+            None => true,
+            Some(last_at) => now.duration_since(last_at) >= min_spacing,
+        },
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -589,7 +665,11 @@ fn run_mirror(hq_folder: &str, git_dir: &Path) -> Result<(), String> {
     // `diff --cached --quiet` exits 0 when index == HEAD, 1 when staged
     // changes exist. Anything else is unexpected (signal, missing HEAD on
     // a brand-new repo, etc.) and gets logged but isn't fatal.
-    let staged = git_output(hq_folder, &["diff", "--cached", "--quiet"], GIT_INDEX_TIMEOUT)?;
+    let staged = git_output(
+        hq_folder,
+        &["diff", "--cached", "--quiet"],
+        GIT_INDEX_TIMEOUT,
+    )?;
     match staged.status.code() {
         Some(0) => {
             log(LOG_TAG, &format!("{hq_folder}: nothing to commit"));
@@ -638,39 +718,41 @@ fn run_mirror(hq_folder: &str, git_dir: &Path) -> Result<(), String> {
 /// that refuses silently only moves the mystery.
 fn guard_bulk_deletions(hq_folder: &str) -> Result<BulkDeleteVerdict, String> {
     let deletions = count_staged_deletions(hq_folder)?;
-    if deletions == 0 {
+    if deletions.count == 0 {
         return Ok(BulkDeleteVerdict::Allow);
     }
     let tracked = count_tracked_at_head(hq_folder)?;
     let override_on = is_bulk_override_set();
-    let verdict = bulk_delete_verdict(deletions, tracked, override_on);
+    let verdict = bulk_delete_verdict(deletions.count, tracked, override_on);
 
     if verdict == BulkDeleteVerdict::Allow {
-        if override_on && deletions >= BULK_ASYMMETRY_MIN_ABS {
+        if override_on && deletions.count >= BULK_ASYMMETRY_MIN_ABS {
             log(
                 LOG_TAG,
                 &format!(
-                    "{hq_folder}: {BULK_OVERRIDE_ENV} is set — committing {deletions} \
-                     deletions of {tracked} tracked files without the volume check"
+                    "{hq_folder}: {BULK_OVERRIDE_ENV} is set — committing {} \
+                     deletions of {tracked} tracked files without the volume check",
+                    deletions.count
                 ),
             );
         }
         return Ok(verdict);
     }
 
-    let percent = (deletions as f64 / tracked as f64 * 100.0).round() as u64;
+    let percent = (deletions.count as f64 / tracked as f64 * 100.0).round() as u64;
     let reason = format!(
-        "{hq_folder}: REFUSING to mirror — {deletions} of {tracked} tracked files \
+        "{hq_folder}: REFUSING to mirror — {} of {tracked} tracked files \
          ({percent}%) are staged as deletions, at or over the {}% / {} bulk-delete \
          threshold. This is what a partial restore, an interrupted pull, a moved HQ \
          folder or an unmounted volume looks like — not a cleanup. Nothing was \
          committed or pushed. If the deletions are real, re-run with \
          {BULK_OVERRIDE_ENV}=1.",
+        deletions.count,
         (BULK_ASYMMETRY_RATIO * 100.0) as u64,
         BULK_ASYMMETRY_MIN_ABS,
     );
     log(LOG_TAG, &reason);
-    report_bulk_refusal(deletions, tracked);
+    report_bulk_refusal(hq_folder, &deletions.digest, deletions.count, tracked);
 
     // Unstage everything so the refused deletions aren't left sitting in the
     // index for the next writer (ours or the autocommit hook) to commit. This
@@ -684,14 +766,81 @@ fn guard_bulk_deletions(hq_folder: &str) -> Result<BulkDeleteVerdict, String> {
     Ok(BulkDeleteVerdict::Refuse)
 }
 
-/// One banner-grade signal per refusal. B1 was found by reading `git log`
-/// after the fact; a refusal nobody hears about repeats that.
-fn report_bulk_refusal(deletions: usize, tracked: usize) {
+/// One banner-grade signal per distinct refusal. B1 was found by reading `git
+/// log` after the fact; a refusal nobody hears about repeats that, but an
+/// unchanged refusal must not capture a new Sentry event once per mirror pass.
+fn report_bulk_refusal(hq_folder: &str, deletion_digest: &str, deletions: usize, tracked: usize) {
+    report_bulk_refusal_at(
+        hq_folder,
+        deletion_digest,
+        deletions,
+        tracked,
+        Instant::now(),
+    );
+}
+
+fn report_bulk_refusal_at(
+    hq_folder: &str,
+    deletion_digest: &str,
+    deletions: usize,
+    tracked: usize,
+    now: Instant,
+) {
+    // The separator cannot occur in a filesystem path. Including the folder
+    // means two independent HQ roots with the same missing paths each retain
+    // their own first-warning signal.
+    let key = format!("{hq_folder}\0{deletion_digest}");
+    let (should_report, refusals_since_last_report, last_report_age) = {
+        let mut state = LAST_REFUSAL_REPORT
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        state
+            .reported_at_by_key
+            .retain(|_, reported_at| now.duration_since(*reported_at) < REFUSAL_COOLDOWN);
+        let last_for_key = state.reported_at_by_key.get(&key).copied();
+        if should_report_refusal(
+            last_for_key,
+            state.last_report_at,
+            now,
+            REFUSAL_COOLDOWN,
+            REFUSAL_MIN_SPACING,
+        ) {
+            let suppressed = state.refusals_since_last_report;
+            state.reported_at_by_key.insert(key, now);
+            state.last_report_at = Some(now);
+            state.refusals_since_last_report = 0;
+            (true, suppressed, None)
+        } else {
+            state.refusals_since_last_report += 1;
+            let age = state
+                .last_report_at
+                .map(|last_at| now.duration_since(last_at).as_secs())
+                .unwrap_or(0);
+            (false, state.refusals_since_last_report, Some(age))
+        }
+    };
+
+    if !should_report {
+        log(
+            LOG_TAG,
+            &format!(
+                "{hq_folder}: refusal already reported {}s ago; suppressing duplicate \
+                 Sentry event ({refusals_since_last_report} refusals since last report)",
+                last_report_age.unwrap_or(0)
+            ),
+        );
+        return;
+    }
+
     sentry::with_scope(
         |scope| {
             scope.set_tag("git_mirror_kind", "bulk-delete-refused");
             scope.set_tag("deletions", deletions.to_string());
             scope.set_tag("tracked", tracked.to_string());
+            scope.set_tag(
+                "refusals_since_last_report",
+                refusals_since_last_report.to_string(),
+            );
         },
         || {
             sentry::capture_message(
@@ -704,7 +853,7 @@ fn report_bulk_refusal(deletions: usize, tracked: usize) {
 
 /// Staged deletions, rename-aware. `-M` matters: a large directory move is
 /// content-preserving and must not read as a mass delete.
-fn count_staged_deletions(hq_folder: &str) -> Result<usize, String> {
+fn count_staged_deletions(hq_folder: &str) -> Result<StagedDeletions, String> {
     let out = git_output(
         hq_folder,
         &[
@@ -723,7 +872,10 @@ fn count_staged_deletions(hq_folder: &str) -> Result<usize, String> {
             String::from_utf8_lossy(&out.stderr).trim()
         ));
     }
-    Ok(count_nul_terminated(&out.stdout))
+    Ok(StagedDeletions {
+        count: count_nul_terminated(&out.stdout),
+        digest: deletion_set_digest(&out.stdout),
+    })
 }
 
 /// Size of the tree at HEAD — the denominator. An unborn HEAD (brand-new repo,
@@ -796,15 +948,13 @@ fn git_output(cwd: &str, args: &[&str], timeout: Duration) -> Result<Output, Str
     // A stalled drain must never look like empty output: `count_staged_
     // deletions` reading an empty stdout as "zero deletions" would wave a mass
     // delete straight through the guard. Fail the run instead.
-    let stdout = stdout_rx
-        .recv_timeout(PIPE_DRAIN_GRACE)
-        .map_err(|_| {
-            format!(
-                "git {label} exited but its output could not be read within {}s \
+    let stdout = stdout_rx.recv_timeout(PIPE_DRAIN_GRACE).map_err(|_| {
+        format!(
+            "git {label} exited but its output could not be read within {}s \
                  (a helper process is still holding the pipe)",
-                PIPE_DRAIN_GRACE.as_secs()
-            )
-        })?;
+            PIPE_DRAIN_GRACE.as_secs()
+        )
+    })?;
     // stderr is diagnostic only, so a stall there must not fail a command that
     // otherwise succeeded.
     let stderr = stderr_rx.recv_timeout(PIPE_DRAIN_GRACE).unwrap_or_default();
@@ -881,6 +1031,12 @@ mod tests {
         *PROBE_OVERRIDE.lock().unwrap_or_else(|e| e.into_inner()) = value;
     }
 
+    fn reset_refusal_report_state() {
+        *LAST_REFUSAL_REPORT
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = RefusalReportState::default();
+    }
+
     #[test]
     fn throttle_skips_within_interval_and_allows_after() {
         let now = Instant::now();
@@ -898,6 +1054,46 @@ mod tests {
         if let Some(old) = old {
             assert!(!should_skip_for_throttle(Some(old), now));
         }
+    }
+
+    #[test]
+    fn refusal_report_predicate_preserves_first_and_new_conditions() {
+        let now = Instant::now();
+        assert!(should_report_refusal(
+            None,
+            None,
+            now,
+            REFUSAL_COOLDOWN,
+            REFUSAL_MIN_SPACING,
+        ));
+        assert!(!should_report_refusal(
+            Some(now),
+            Some(now),
+            now + Duration::from_secs(1),
+            REFUSAL_COOLDOWN,
+            REFUSAL_MIN_SPACING,
+        ));
+        assert!(should_report_refusal(
+            Some(now),
+            Some(now),
+            now + REFUSAL_COOLDOWN,
+            REFUSAL_COOLDOWN,
+            REFUSAL_MIN_SPACING,
+        ));
+        assert!(!should_report_refusal(
+            None,
+            Some(now),
+            now + Duration::from_secs(1),
+            REFUSAL_COOLDOWN,
+            REFUSAL_MIN_SPACING,
+        ));
+        assert!(should_report_refusal(
+            None,
+            Some(now),
+            now + REFUSAL_MIN_SPACING,
+            REFUSAL_COOLDOWN,
+            REFUSAL_MIN_SPACING,
+        ));
     }
 
     // ── B1: bulk-delete breaker ──────────────────────────────────────────
@@ -920,8 +1116,14 @@ mod tests {
     #[test]
     fn bulk_verdict_refuses_when_both_thresholds_are_met() {
         // Exactly at both thresholds.
-        assert_eq!(bulk_delete_verdict(10, 100, false), BulkDeleteVerdict::Refuse);
-        assert_eq!(bulk_delete_verdict(50, 100, false), BulkDeleteVerdict::Refuse);
+        assert_eq!(
+            bulk_delete_verdict(10, 100, false),
+            BulkDeleteVerdict::Refuse
+        );
+        assert_eq!(
+            bulk_delete_verdict(50, 100, false),
+            BulkDeleteVerdict::Refuse
+        );
         // The reported incident's shape: 1,108 of ~4,347.
         assert_eq!(
             bulk_delete_verdict(1_108, 4_347, false),
@@ -931,7 +1133,10 @@ mod tests {
 
     #[test]
     fn bulk_verdict_honors_the_operator_override() {
-        assert_eq!(bulk_delete_verdict(1_108, 4_347, true), BulkDeleteVerdict::Allow);
+        assert_eq!(
+            bulk_delete_verdict(1_108, 4_347, true),
+            BulkDeleteVerdict::Allow
+        );
     }
 
     #[test]
@@ -942,9 +1147,19 @@ mod tests {
     #[test]
     fn bulk_override_parses_the_same_spellings_as_the_engine() {
         for truthy in ["1", "true", "TRUE", "Yes", " yes "] {
-            assert!(parse_bulk_override(Some(truthy)), "{truthy} should be truthy");
+            assert!(
+                parse_bulk_override(Some(truthy)),
+                "{truthy} should be truthy"
+            );
         }
-        for falsy in [None, Some(""), Some("0"), Some("false"), Some("no"), Some("on")] {
+        for falsy in [
+            None,
+            Some(""),
+            Some("0"),
+            Some("false"),
+            Some("no"),
+            Some("on"),
+        ] {
             assert!(!parse_bulk_override(falsy), "{falsy:?} should be falsy");
         }
     }
@@ -956,6 +1171,84 @@ mod tests {
         assert_eq!(count_nul_terminated(b"a\0b/c\0"), 2);
         // A path containing a newline is still one record.
         assert_eq!(count_nul_terminated(b"we\nird\0"), 1);
+    }
+
+    #[test]
+    fn deletion_set_digest_is_order_independent_but_path_sensitive() {
+        let first = deletion_set_digest(b"alpha.md\0nested/beta.md\0");
+        let reordered = deletion_set_digest(b"nested/beta.md\0alpha.md\0");
+        let changed = deletion_set_digest(b"alpha.md\0nested/gamma.md\0");
+
+        assert_eq!(
+            first, reordered,
+            "git output ordering must not re-arm Sentry"
+        );
+        assert_ne!(
+            first, changed,
+            "a changed deleted-path set must re-arm Sentry"
+        );
+    }
+
+    #[test]
+    fn reported_refusal_carries_the_suppressed_occurrence_count() {
+        let _serial = serial();
+        reset_refusal_report_state();
+        let start = Instant::now();
+
+        let events = sentry::test::with_captured_events(|| {
+            report_bulk_refusal_at("/hq", "set-a", 50, 100, start);
+            for seconds in 1..=4 {
+                report_bulk_refusal_at(
+                    "/hq",
+                    "set-a",
+                    50,
+                    100,
+                    start + Duration::from_secs(seconds),
+                );
+            }
+            report_bulk_refusal_at("/hq", "set-a", 50, 100, start + REFUSAL_COOLDOWN);
+        });
+        reset_refusal_report_state();
+
+        assert_eq!(
+            events.len(),
+            2,
+            "first refusal and cooled-down repeat report"
+        );
+        assert_eq!(
+            events[0]
+                .tags
+                .get("refusals_since_last_report")
+                .map(String::as_str),
+            Some("0")
+        );
+        assert_eq!(
+            events[1]
+                .tags
+                .get("refusals_since_last_report")
+                .map(String::as_str),
+            Some("4")
+        );
+    }
+
+    #[test]
+    fn alternating_deletion_sets_keep_each_key_in_its_own_cooldown() {
+        let _serial = serial();
+        reset_refusal_report_state();
+        let start = Instant::now();
+
+        let events = sentry::test::with_captured_events(|| {
+            report_bulk_refusal_at("/hq", "set-a", 50, 100, start);
+            report_bulk_refusal_at("/hq", "set-b", 51, 100, start + REFUSAL_MIN_SPACING);
+            report_bulk_refusal_at("/hq", "set-a", 50, 100, start + REFUSAL_MIN_SPACING * 2);
+        });
+        reset_refusal_report_state();
+
+        assert_eq!(
+            events.len(),
+            2,
+            "returning to an earlier path set must honor that set's six-hour cooldown"
+        );
     }
 
     // ── B2: stale index.lock predicate ───────────────────────────────────
@@ -972,7 +1265,10 @@ mod tests {
 
     #[test]
     fn reaps_only_a_zero_byte_unheld_aged_lock() {
-        assert!(should_reap_index_lock(lock_state(0, 600), STALE_LOCK_MIN_AGE));
+        assert!(should_reap_index_lock(
+            lock_state(0, 600),
+            STALE_LOCK_MIN_AGE
+        ));
     }
 
     #[test]
@@ -987,9 +1283,15 @@ mod tests {
         };
         assert!(!should_reap_index_lock(missing, STALE_LOCK_MIN_AGE));
         // Non-empty: a real writer has begun writing the new index.
-        assert!(!should_reap_index_lock(lock_state(64, 600), STALE_LOCK_MIN_AGE));
+        assert!(!should_reap_index_lock(
+            lock_state(64, 600),
+            STALE_LOCK_MIN_AGE
+        ));
         // Too fresh.
-        assert!(!should_reap_index_lock(lock_state(0, 10), STALE_LOCK_MIN_AGE));
+        assert!(!should_reap_index_lock(
+            lock_state(0, 10),
+            STALE_LOCK_MIN_AGE
+        ));
         // Someone holds the file open.
         let held = IndexLockState {
             holder_present: true,
@@ -1238,6 +1540,7 @@ mod tests {
     fn mass_deletion_is_refused_and_the_index_is_left_clean() {
         let _serial = serial();
         std::env::remove_var(BULK_OVERRIDE_ENV);
+        reset_refusal_report_state();
 
         let tmp = TempDir::new().unwrap();
         seed_repo(tmp.path(), 100);
@@ -1257,6 +1560,80 @@ mod tests {
         );
         // The working tree is the user's; refusing must not restore files.
         assert!(!tmp.path().join("file-0000.md").exists());
+        reset_refusal_report_state();
+    }
+
+    #[test]
+    fn repeated_unchanged_bulk_deletion_emits_one_sentry_event() {
+        let _serial = serial();
+        std::env::remove_var(BULK_OVERRIDE_ENV);
+        reset_refusal_report_state();
+
+        let tmp = TempDir::new().unwrap();
+        seed_repo(tmp.path(), 100);
+        delete_files(tmp.path(), 0..50);
+
+        let events = sentry::test::with_captured_events(|| {
+            for _ in 0..5 {
+                run_mirror_at(tmp.path()).expect("mirror reports a refused deletion safely");
+            }
+        });
+        reset_refusal_report_state();
+
+        assert_eq!(
+            events.len(),
+            1,
+            "an unchanged deletion set must capture one Sentry event across five mirror cycles"
+        );
+        let event = &events[0];
+        assert_eq!(
+            event.message.as_deref(),
+            Some("[git-mirror] refused to commit a bulk deletion of the HQ folder")
+        );
+        assert_eq!(event.level, sentry::Level::Warning);
+        assert_eq!(
+            event.tags.get("git_mirror_kind").map(String::as_str),
+            Some("bulk-delete-refused")
+        );
+        assert_eq!(event.tags.get("deletions").map(String::as_str), Some("50"));
+        assert_eq!(event.tags.get("tracked").map(String::as_str), Some("100"));
+        assert_eq!(
+            event
+                .tags
+                .get("refusals_since_last_report")
+                .map(String::as_str),
+            Some("0"),
+            "the first captured event precedes the four later suppressions"
+        );
+    }
+
+    #[test]
+    fn staged_deletion_count_and_digest_follow_the_actual_path_set() {
+        let _serial = serial();
+        let tmp = TempDir::new().unwrap();
+        seed_repo(tmp.path(), 100);
+        delete_files(tmp.path(), 0..50);
+        assert!(git(tmp.path(), &["add", "-A"]).status.success());
+
+        let staged = count_staged_deletions(tmp.path().to_str().unwrap()).unwrap();
+        assert_eq!(staged.count, 50, "the breaker numerator is unchanged");
+        assert_eq!(
+            staged.digest,
+            deletion_set_digest(
+                &git(
+                    tmp.path(),
+                    &[
+                        "diff",
+                        "--cached",
+                        "--name-only",
+                        "--diff-filter=D",
+                        "-M",
+                        "-z",
+                    ],
+                )
+                .stdout
+            )
+        );
     }
 
     #[test]
@@ -1419,11 +1796,12 @@ mod tests {
         let trees = TempDir::new().unwrap();
         seed_repo(main.path(), 3);
         let wt = trees.path().join("wt");
-        assert!(
-            git(main.path(), &["worktree", "add", "-q", wt.to_str().unwrap()])
-                .status
-                .success()
-        );
+        assert!(git(
+            main.path(),
+            &["worktree", "add", "-q", wt.to_str().unwrap()]
+        )
+        .status
+        .success());
         assert!(wt.join(".git").is_file(), "expected a linked worktree");
 
         // Compared by trailing components, not prefix: macOS resolves the
@@ -1484,8 +1862,12 @@ mod tests {
             .expect("git available in test env");
         let _stdin = child.stdin.take().expect("piped stdin");
 
-        let err = wait_with_timeout(&mut child, Duration::from_millis(200), "hash-object --stdin")
-            .expect_err("a blocked child must time out");
+        let err = wait_with_timeout(
+            &mut child,
+            Duration::from_millis(200),
+            "hash-object --stdin",
+        )
+        .expect_err("a blocked child must time out");
 
         assert!(err.contains("timed out"), "unexpected error: {err}");
         assert!(
