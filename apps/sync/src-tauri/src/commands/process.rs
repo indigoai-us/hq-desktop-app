@@ -104,6 +104,9 @@ static NEXT_PROCESS_REGISTRATION: AtomicU64 = AtomicU64::new(0);
 #[cfg(unix)]
 static PENDING_ESCALATIONS: OnceLock<Arc<Mutex<HashMap<(String, ProcessRegistration), u32>>>> =
     OnceLock::new();
+#[cfg(all(test, unix))]
+static PENDING_ESCALATION_TEST_BARRIERS: OnceLock<Mutex<HashMap<String, Arc<std::sync::Barrier>>>> =
+    OnceLock::new();
 
 fn process_registry() -> &'static Arc<Mutex<HashMap<String, ProcessEntry>>> {
     PROCESS_REGISTRY.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
@@ -112,6 +115,11 @@ fn process_registry() -> &'static Arc<Mutex<HashMap<String, ProcessEntry>>> {
 #[cfg(unix)]
 fn pending_escalations() -> &'static Arc<Mutex<HashMap<(String, ProcessRegistration), u32>>> {
     PENDING_ESCALATIONS.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
+}
+
+#[cfg(all(test, unix))]
+fn pending_escalation_test_barriers() -> &'static Mutex<HashMap<String, Arc<std::sync::Barrier>>> {
+    PENDING_ESCALATION_TEST_BARRIERS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 fn next_process_registration() -> ProcessRegistration {
@@ -902,6 +910,17 @@ where
 /// losing the old generation's escalation authority.
 #[cfg(unix)]
 fn arm_pending_escalation(handle: &str, registration: ProcessRegistration, pid: u32) {
+    #[cfg(test)]
+    {
+        let barrier = pending_escalation_test_barriers()
+            .lock()
+            .unwrap()
+            .get(handle)
+            .cloned();
+        if let Some(barrier) = barrier {
+            barrier.wait();
+        }
+    }
     pending_escalations()
         .lock()
         .unwrap()
@@ -966,12 +985,17 @@ fn cancel_process_matching(
             };
         }
         entry.cancelled = true;
+        let pid = entry.pid;
+        #[cfg(unix)]
+        if let Some(pid) = pid {
+            arm_pending_escalation(handle, entry.registration, pid);
+        }
         (
             CancellationAttempt {
                 executed: true,
                 current: Some(current),
             },
-            entry.pid,
+            pid,
         )
     };
 
@@ -1010,7 +1034,6 @@ fn cancel_process_matching(
             return attempt;
         };
 
-        arm_pending_escalation(handle, registration, pid);
         let _ = signal::kill(Pid::from_raw(-(pid as i32)), Signal::SIGTERM);
         let handle_owned = handle.to_string();
         thread::spawn(move || {
@@ -1501,6 +1524,70 @@ mod registry_tests {
         assert!(
             !should_escalate_cancellation(handle, registration, 41),
             "a completed wait owner must remove its delayed SIGKILL authority"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cancellation_arms_escalation_before_exit_cleanup_and_pid_reuse() {
+        let handle = "test-process-cancel-arm-before-exit-cleanup";
+        let registration = pre_register_handle(handle);
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "sleep 30"]);
+        put_in_own_process_group(&mut command);
+        let mut child = command.spawn().expect("spawn cancellation fixture");
+        let pid = child.id();
+        assert_eq!(register_process(handle, registration, pid), Some(false));
+
+        // Pause cancellation exactly as it starts arming the escalation. The
+        // registry must still be locked here so a wait owner cannot clear an
+        // absent tombstone, deregister, and expose this PID/process group to
+        // reuse before cancellation records its authority.
+        let arm_barrier = Arc::new(std::sync::Barrier::new(2));
+        pending_escalation_test_barriers()
+            .lock()
+            .unwrap()
+            .insert(handle.to_string(), Arc::clone(&arm_barrier));
+        let pending_guard = pending_escalations().lock().unwrap();
+        let cancel_thread =
+            thread::spawn(move || cancel_process_for(handle, registration, Duration::ZERO));
+        arm_barrier.wait();
+        let registry_stayed_locked = matches!(
+            process_registry().try_lock(),
+            Err(std::sync::TryLockError::WouldBlock)
+        );
+        drop(pending_guard);
+
+        let attempt = cancel_thread.join().expect("cancellation thread joins");
+        assert!(attempt.executed);
+        let status = child.wait().expect("cancelled fixture exits");
+        emit_exit_then_deregister(
+            handle,
+            registration,
+            ProcessEvent::Exit {
+                code: status.code(),
+                signal: exit_signal(&status),
+                success: status.success(),
+            },
+            &mut |_| {},
+        );
+        pending_escalation_test_barriers()
+            .lock()
+            .unwrap()
+            .remove(handle);
+
+        // Model immediate PID/PGID reuse after the wait owner releases A.
+        // Neither A's cleared tombstone nor B's fresh registration authorizes
+        // another signal against the reused numeric identity.
+        let replacement = pre_register_handle(handle);
+        assert_eq!(register_process(handle, replacement, pid), Some(false));
+        assert!(!should_escalate_cancellation(handle, registration, pid));
+        assert!(!should_escalate_cancellation(handle, replacement, pid));
+        assert!(deregister_process_for(handle, replacement));
+
+        assert!(
+            registry_stayed_locked,
+            "cancellation must arm its escalation before releasing the registry lock"
         );
     }
 
