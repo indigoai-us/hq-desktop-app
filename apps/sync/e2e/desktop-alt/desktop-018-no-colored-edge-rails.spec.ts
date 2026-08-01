@@ -148,12 +148,6 @@ describe('DESKTOP-018: no colored edge rails', () => {
         'company file tree',
       ],
       [
-        'components/messaging/MessagesShell.svelte',
-        '.contact-row',
-        '.contact-row.active',
-        'message conversation',
-      ],
-      [
         'components/NotificationRow.svelte',
         '.nr',
         '.nr-selected',
@@ -197,6 +191,17 @@ describe('DESKTOP-018: no colored edge rails', () => {
         label,
       );
     }
+
+    const messages = readFileSync(
+      join(SOURCE_ROOT, 'components/messaging/MessagesShell.svelte'),
+      'utf8',
+    );
+    expect(rule(messages, '.contact-row')).toContain('border-radius: 0');
+    expect(rule(messages, '.compact-list .contact-row')).toContain('border-radius: 6px');
+    expect(rule(messages, '.compact-list .contact-row.active')).toContain(
+      'background: color-mix(in srgb, var(--fg) 10%, transparent)',
+    );
+    expect(rule(messages, '.compact-list .contact-row.active')).toContain('box-shadow: none');
 
     const secondarySidebar = readFileSync(
       join(SOURCE_ROOT, 'desktop-alt/v4/V4SecondarySidebar.svelte'),

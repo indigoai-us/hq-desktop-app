@@ -11,6 +11,10 @@ const installerHarness = readFileSync(
   appUrl('scripts/windows-installer-e2e.ps1'),
   'utf8',
 );
+const dependencyInstaller = readFileSync(
+  appUrl('src-tauri/src/commands/install_deps.rs'),
+  'utf8',
+);
 const ciOverlay = JSON.parse(
   readFileSync(appUrl('src-tauri/tauri.windows.ci.conf.json'), 'utf8'),
 );
@@ -38,5 +42,16 @@ describe('Windows production installer E2E', () => {
     expect(installerHarness).toContain('-Filter "hq-sync-menubar.exe"');
     expect(installerHarness).toContain('if ($machine -ne 0x8664)');
     expect(installerHarness).toContain('NSIS uninstaller exited with code');
+  });
+
+  it('provisions Node from HQ\'s verified per-user toolchain on Windows', () => {
+    const installNodeWindows = dependencyInstaller.slice(
+      dependencyInstaller.indexOf('async fn install_node_windows'),
+      dependencyInstaller.indexOf('fn windows_managed_node_sha256_for'),
+    );
+
+    expect(installNodeWindows).toContain('install_managed_node(&app).await');
+    expect(installNodeWindows).not.toContain('winget_install');
+    expect(installNodeWindows).not.toContain('scoop_install');
   });
 });

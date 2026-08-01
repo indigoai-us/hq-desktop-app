@@ -3,20 +3,19 @@
   // shell:
   //
   //   ┌──────────────┬─────────────────────────────┐
-  //   │ source-list  │   naked conversation /      │
-  //   │ rail         │   notification canvas       │
-  //   │ (DMs +       │   (Conversation /           │
-  //   │  channels +  │    ShareMainPane /           │
-  //   │  requests +  │    DmRequestCard)            │
-  //   │  shares)     │                             │
+  //   │ room rail    │   naked conversation /      │
+  //   │ (DMs +       │   deep-linked object pane   │
+  //   │ group DMs +  │   (Conversation /           │
+  //   │ channels)    │    ShareMainPane /           │
+  //   │              │    DmRequestCard)            │
   //   └──────────────┴─────────────────────────────┘
   //
   // Direct Messages, connection requests, shared HQ paths, channels, threads,
   // reactions, and the "Your agent" handoff are wired through Tauri commands.
   // This shell owns the data loading and hands shared primitives presentation
-  // state plus callbacks. DESKTOP-002: no People/Requests tabs — requests and
-  // share notifications are ordinary recency-sorted rail rows; no redundant
-  // "Messages" page title; glass only on the navigation rail.
+  // state plus callbacks. DESKTOP-002: no People/Requests tabs or noisy activity
+  // previews — those live behind Mentions & activity; no redundant "Messages"
+  // page title; glass only on the navigation rail.
   //
   // Visuals adopt the desktop "Company OS" design language: the standalone
   // Messages window consumes the SAME token layer as the desktop window via
@@ -44,7 +43,7 @@
   import ChannelView from './ChannelView.svelte';
   import CreateChannel from './CreateChannel.svelte';
   import ThreadPanel from './ThreadPanel.svelte';
-  import CatchUp, { type CatchUpItem } from './v4/CatchUp.svelte';
+  import IdentityMark from './IdentityMark.svelte';
   import ShareMainPane from '../ShareMainPane.svelte';
   import {
     contactPreviewAt,
@@ -65,7 +64,6 @@
     removeRequest,
     requestHasHumanLabel,
     requestDisplayName,
-    requestInitials,
   } from '../../lib/dmRequests';
   import { humanPersonLabel } from '../../lib/visible-labels';
   import {
@@ -155,6 +153,8 @@
     unreadDms: number;
     pendingRequests: number;
   }
+  let unreadSummary = $state<UnreadSummary>({ unreadDms: 0, pendingRequests: 0 });
+  let unreadSummaryLoadGeneration = 0;
 
   interface AppConfig {
     personUid?: string | null;
@@ -174,9 +174,9 @@
   let contactMutationRevision = 0;
   const contactMutationRevisions = new Map<string, number>();
 
-  // Pending incoming connection requests (US-011 / DESKTOP-002). Rendered as
-  // ordinary recency-sorted rail rows (not a Requests tab). Selecting a row
-  // opens the shared <DmRequestCard/> in the main pane. `list_dm_requests` is
+  // Pending incoming connection requests (US-011 / DESKTOP-002). They feed the
+  // unread/activity shortcut and can open the shared <DmRequestCard/> through a
+  // deep link. `list_dm_requests` is
   // the source of truth; `dm:request-new` / `dm:request-update` keep it live.
   let requests = $state<DmRequest[]>([]);
   let loadingRequests = $state(false);
@@ -235,6 +235,7 @@
 
   // Selected peer + its loaded thread.
   let selected = $state<Contact | null>(null);
+  let didAutoSelectConversation = $state(false);
   let messages = $state<ThreadMessage[]>([]);
   let loadingThread = $state(false);
   let threadError = $state<string | null>(null);
@@ -403,6 +404,23 @@
     openThread = null;
   }
 
+  const firstThreadRoot = $derived(
+    displayMessages.find(
+      (message) =>
+        Boolean(message.eventId) &&
+        !message.pending &&
+        ((message.replyCount ?? 0) > 0 || Boolean(message.rootEventId)),
+    ) ?? null,
+  );
+  const canOpenThreadShortcut = $derived(
+    Boolean(selected && selected.source !== 'agent' && !openThread && firstThreadRoot),
+  );
+
+  function openFirstAvailableThread(): void {
+    if (!canOpenThreadShortcut || !firstThreadRoot) return;
+    handleOpenDmThread(firstThreadRoot.rootEventId ?? firstThreadRoot.eventId);
+  }
+
   // A reply landed (or the thread loaded) — bump the matching root message's
   // live reply-count in the DM message list so its affordance stays current.
   function handleThreadReplyCount(rootEventId: string, replyCount: number): void {
@@ -489,55 +507,13 @@
     return humanPersonLabel(c);
   }
 
-  function initials(c: Contact): string {
-    const name = displayLabel(c);
-    const parts = name.split(/\s+/).filter(Boolean);
-    if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
-    return name.slice(0, 2).toUpperCase();
-  }
-
   function contactSubline(c: Contact): string | null {
     return contactPreviewText(c) ?? c.email?.trim() ?? null;
   }
 
-  // ── Catch-up digest (real data only) ───────────────────────────────────────
-  // "While you were away" — conversations waiting for you, built ONLY from
-  // signals already loaded: channels carrying a real unread count, and DMs whose
-  // last message came IN (the ball is in your court). There is no per-DM unread
-  // flag server-side, so we never claim a DM is "unread" — those are framed as
-  // waiting. Ranked: unread channels first (by count), then inbound DMs in the
-  // existing recency order. It's a digest (top slice), not the whole list.
-  let catchUpDismissed = $state(false);
-
-  const CATCH_UP_LIMIT = 6;
-
-  const catchUpItems = $derived.by((): CatchUpItem[] => {
-    const channelItems = channels
-      .filter((ch) => (ch.unread ?? 0) > 0)
-      .slice()
-      .sort((a, b) => (b.unread ?? 0) - (a.unread ?? 0))
-      .map((ch) => ({
-        id: `ch:${ch.channelId}`,
-        title:
-          ch.scope === 'group'
-            ? channelDisplayName(ch)
-            : `# ${channelDisplayName(ch)}`,
-        detail: `${ch.unread} unread`,
-      }));
-
-    const dmItems = contacts
-      .filter((c) => ((c.previewDirection ?? c.lastMessageDirection) ?? '') === 'in')
-      .map((c) => ({
-        id: `dm:${c.personUid}`,
-        title: displayLabel(c),
-        detail: contactSubline(c) ?? 'Sent you a message',
-      }));
-
-    return [...channelItems, ...dmItems].slice(0, CATCH_UP_LIMIT);
-  });
-
-  // DESKTOP-002 unified rail: channels + DMs + connection requests + shared HQ
-  // path notifications in ONE recency-sorted list. No People/Requests tabs.
+  // The conversation rail is intentionally room-focused: DMs, group DMs, and
+  // channels. Requests and shares still hydrate the activity surface and main
+  // pane, but do not crowd this Slack-like navigation list with previews.
   type RailItem =
     | { kind: 'dm'; key: string; time: number; contact: Contact }
     | { kind: 'channel'; key: string; time: number; channel: Channel; unread: number }
@@ -594,9 +570,78 @@
     );
   });
   const RAIL_RENDER_BATCH = 60;
+  let railQuery = $state('');
   let railVisibleCount = $state(RAIL_RENDER_BATCH);
-  const visibleRailItems = $derived(railItems.slice(0, railVisibleCount));
-  const remainingRailItems = $derived(Math.max(0, railItems.length - visibleRailItems.length));
+
+  function railSearchText(item: RailItem): string {
+    if (item.kind === 'dm') return `${displayLabel(item.contact)} ${contactSubline(item.contact) ?? ''}`;
+    if (item.kind === 'channel') {
+      return `${channelDisplayName(item.channel)} ${channelProvenance(item.channel, companyNameFor(item.channel, companyLabels))}`;
+    }
+    if (item.kind === 'request') return `${requestDisplayName(item.request)} connection request`;
+    return `${shareRowLabel(item.share)} shared path ${item.share.paths.join(' ')}`;
+  }
+
+  const filteredRailItems = $derived.by(() => {
+    const query = railQuery.trim().toLocaleLowerCase();
+    const conversations = railItems.filter(
+      (item) => item.kind === 'dm' || item.kind === 'channel',
+    );
+    if (!query) return conversations;
+    return conversations.filter((item) => railSearchText(item).toLocaleLowerCase().includes(query));
+  });
+  const visibleRailItems = $derived(filteredRailItems.slice(0, railVisibleCount));
+  const visibleDirectItems = $derived(
+    visibleRailItems.filter(
+      (item) => item.kind === 'dm' || (item.kind === 'channel' && item.channel.scope === 'group'),
+    ),
+  );
+  const visibleChannelItems = $derived(
+    visibleRailItems.filter((item) => item.kind === 'channel' && item.channel.scope !== 'group'),
+  );
+  const remainingRailItems = $derived(
+    Math.max(0, filteredRailItems.length - visibleRailItems.length),
+  );
+  const railUnreadCount = $derived(
+    Math.max(0, unreadSummary.unreadDms) +
+      channels.reduce((total, channel) => total + Math.max(0, channel.unread ?? 0), 0) +
+      Math.max(requests.length, Math.max(0, unreadSummary.pendingRequests)),
+  );
+  const activityUnreadCount = $derived(
+    Math.max(0, unreadSummary.unreadDms) +
+      Math.max(requests.length, Math.max(0, unreadSummary.pendingRequests)),
+  );
+  let openingActivity = $state(false);
+
+  async function openMentionsAndActivity(): Promise<void> {
+    if (openingActivity) return;
+    openingActivity = true;
+    try {
+      await invoke('open_desktop_alt_window', { route: 'inbox' });
+    } catch (err) {
+      console.error('messages: open mentions and activity failed', err);
+    } finally {
+      openingActivity = false;
+    }
+  }
+
+  $effect(() => {
+    if (
+      didAutoSelectConversation || loadingContacts || loadingChannels || selected ||
+      selectedChannel || selectedRequest || selectedShareEvents.length > 0
+    ) return;
+    const unreadChannel = channels.find((channel) => (channel.unread ?? 0) > 0);
+    const firstConversation = railItems.find(
+      (item) => item.kind === 'dm' || item.kind === 'channel',
+    );
+    const target = unreadChannel
+      ? ({ kind: 'channel', channel: unreadChannel } as const)
+      : firstConversation;
+    if (!target) return;
+    didAutoSelectConversation = true;
+    if (target.kind === 'channel') selectChannel(target.channel);
+    else if (target.kind === 'dm') void selectContact(target.contact);
+  });
 
   $effect(() => {
     // A completely reloaded source list should return to the bounded first
@@ -606,22 +651,9 @@
     channels.length;
     requests.length;
     shareHistory.length;
+    railQuery;
     railVisibleCount = RAIL_RENDER_BATCH;
   });
-
-  function handleCatchUpOpen(item: CatchUpItem): void {
-    if (item.id.startsWith('ch:')) {
-      const channelId = item.id.slice(3);
-      const channel = channels.find((ch) => ch.channelId === channelId);
-      if (channel) selectChannel(channel);
-      return;
-    }
-    if (item.id.startsWith('dm:')) {
-      const personUid = item.id.slice(3);
-      const contact = contacts.find((c) => c.personUid === personUid);
-      if (contact) void selectContact(contact);
-    }
-  }
 
   function selectRequest(req: DmRequest): void {
     invalidateDmWork();
@@ -995,11 +1027,14 @@
   }
 
   async function loadUnreadSummary(): Promise<void> {
+    const generation = ++unreadSummaryLoadGeneration;
     try {
-      // Kept for parity with the popover summary; the authoritative request
-      // count now comes from `loadRequests` (the rendered list). We still read
-      // the summary so any future unread surface stays wired.
-      await invoke<UnreadSummary>('get_unread_summary');
+      const summary = await invoke<UnreadSummary>('get_unread_summary');
+      if (generation !== unreadSummaryLoadGeneration) return;
+      unreadSummary = {
+        unreadDms: Math.max(0, summary?.unreadDms ?? 0),
+        pendingRequests: Math.max(0, summary?.pendingRequests ?? 0),
+      };
     } catch (err) {
       // Non-fatal — the rail still renders.
       console.error('messages: get_unread_summary failed', err);
@@ -1190,7 +1225,7 @@
   }
 
   // A request card resolved (Accept / Decline / Block succeeded). Prune it from
-  // the unified rail. On Accept, the held first message becomes a live thread —
+  // activity state. On Accept, the held first message becomes a live thread —
   // open the standard <Conversation> with the requester so the card is replaced
   // by the thread.
   function handleRequestResolved(req: DmRequest, action: RequestAction): void {
@@ -1510,7 +1545,7 @@
     });
 
     // A brand-new incoming connection request landed (US-011) — append it to the
-    // Requests list (rail rows follow via railItems). Dedupe by
+    // activity state and unread count. Dedupe by
     // pairKey so a re-emit doesn't double-add.
     registerListener<DmRequest>('dm:request-new', (e) => {
       requests = addRequest(requests, e.payload);
@@ -1518,7 +1553,7 @@
     });
 
     // A pending request resolved elsewhere (accepted/declined/blocked, or pruned
-    // by the poll diff). Drop it from the unified rail; clear the detail pane
+    // by the poll diff). Drop it from activity state; clear the detail pane
     // when the open request is the one that left the set.
     registerListener<{ pairKey: string; state?: string }>(
       'dm:request-update',
@@ -1611,15 +1646,15 @@
 </script>
 
 <div class="messages-window" class:embedded data-window="messages">
-  <!-- DESKTOP-002: source-list rail (glass) + naked main canvas. The rail owns
+  <!-- DESKTOP-002: room rail (glass) + naked main canvas. The rail owns
        orientation and compose; no People/Requests tabs or redundant page chrome. -->
   <aside class="rail" aria-label="Conversations">
     <header class="rail-header" data-tauri-drag-region>
       <div class="rail-heading">
-        <h2>Messages</h2>
-        <span>
-          {railItems.length} {railItems.length === 1 ? 'conversation' : 'conversations'}
-        </span>
+        <h2>HQ</h2>
+        {#if railUnreadCount > 0}
+          <span>{railUnreadCount > 99 ? '99+' : railUnreadCount} unread</span>
+        {/if}
       </div>
       <div class="primary-actions">
         <button
@@ -1630,7 +1665,10 @@
           aria-label="New message"
           aria-haspopup="dialog"
         >
-          + New message
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M3 12.7 3.5 10l6.9-6.9a1.4 1.4 0 0 1 2 2L5.5 12l-2.5.7Z"></path>
+            <path d="m9.5 4 2.5 2.5"></path>
+          </svg>
         </button>
       </div>
     </header>
@@ -1652,7 +1690,7 @@
             aria-busy={isActive && loadingThread}
             data-provenance="direct-message"
           >
-            <span class="contact-avatar" aria-hidden="true">{initials(c)}</span>
+            <IdentityMark kind="person" label={displayLabel(c)} size="small" />
             <span class="contact-meta">
               <span class="contact-top">
                 <span class="contact-name">{displayLabel(c)}</span>
@@ -1660,13 +1698,6 @@
                   <time class="contact-time" datetime={contactPreviewAt(c) ?? undefined}>
                     {formatContactTime(c)}
                   </time>
-                {/if}
-              </span>
-              <span class="contact-sub">
-                <span class="contact-provenance">Direct message</span>
-                {#if contactSubline(c)}
-                  <span class="contact-separator" aria-hidden="true"> · </span>
-                  {contactSubline(c)}
                 {/if}
               </span>
             </span>
@@ -1691,21 +1722,13 @@
             aria-current={isActive ? 'page' : undefined}
             data-provenance={isGroupDm ? 'group-dm' : 'channel'}
           >
-            <span
-              class="contact-avatar channel-avatar"
-              class:group-avatar={isGroupDm}
-              aria-hidden="true"
-            >
-              {#if isGroupDm}
-                <svg width="15" height="15" viewBox="0 0 18 18" fill="none">
-                  <circle cx="6.25" cy="6.25" r="2.25" stroke="currentColor" stroke-width="1.35" />
-                  <circle cx="12.25" cy="7" r="1.75" stroke="currentColor" stroke-width="1.25" />
-                  <path d="M2.75 14c.35-2.15 1.55-3.3 3.5-3.3s3.15 1.15 3.5 3.3M10 13.55c.3-1.65 1.2-2.55 2.7-2.55 1.45 0 2.35.85 2.65 2.55" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
-                </svg>
-              {:else}
-                #
-              {/if}
-            </span>
+            <IdentityMark
+              kind={isGroupDm ? 'group' : 'channel'}
+              label={channelDisplayName(ch)}
+              members={(ch.members ?? []).map((member) => member.displayName)}
+              privateChannel={ch.visibility === 'private'}
+              size="small"
+            />
             <span class="contact-meta">
               <span class="contact-top">
                 <span class="contact-name">{channelDisplayName(ch)}</span>
@@ -1717,9 +1740,6 @@
                     {formatChannelTime(ch)}
                   </time>
                 {/if}
-              </span>
-              <span class="contact-sub">
-                <span class="contact-provenance">{channelProvenance(ch, company)}</span>
               </span>
             </span>
           </button>
@@ -1739,7 +1759,7 @@
             data-provenance="connection-request"
             aria-current={isActive ? 'page' : undefined}
           >
-            <span class="contact-avatar request-avatar" aria-hidden="true">{requestInitials(req)}</span>
+            <IdentityMark kind="person" label={requestDisplayName(req)} size="small" />
             <span class="contact-meta">
               <span class="contact-top">
                 <span class="contact-name">{requestDisplayName(req)}</span>
@@ -1771,12 +1791,7 @@
             data-provenance="shared-path"
             aria-current={isActive ? 'page' : undefined}
           >
-            <span class="contact-avatar share-avatar" aria-hidden="true">
-              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M9 1.5H4.5A1.5 1.5 0 0 0 3 3v10a1.5 1.5 0 0 0 1.5 1.5h7A1.5 1.5 0 0 0 13 13V5.5L9 1.5Z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" />
-                <path d="M9 1.5V5.5H13" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" />
-              </svg>
-            </span>
+            <IdentityMark kind="file" size="small" />
             <span class="contact-meta">
               <span class="contact-top">
                 <span class="contact-name">{shareRowLabel(share)}</span>
@@ -1794,15 +1809,30 @@
         </li>
       {/snippet}
 
-      {#if catchUpItems.length > 0 && !catchUpDismissed}
-        <div class="catch-up-host">
-          <CatchUp
-            items={catchUpItems}
-            onopen={handleCatchUpOpen}
-            ondismiss={() => (catchUpDismissed = true)}
-          />
-        </div>
-      {/if}
+      <label class="rail-search">
+        <span aria-hidden="true">⌕</span>
+        <input bind:value={railQuery} type="search" placeholder="Find a conversation" aria-label="Find a conversation" />
+      </label>
+      <nav class="rail-utility" aria-label="Message shortcuts">
+        <button
+          type="button"
+          disabled={!canOpenThreadShortcut}
+          onclick={openFirstAvailableThread}
+        >
+          <span class="utility-glyph" aria-hidden="true">☷</span>
+          <span>Threads</span>
+        </button>
+        <button
+          type="button"
+          disabled={openingActivity}
+          aria-busy={openingActivity}
+          onclick={() => void openMentionsAndActivity()}
+        >
+          <span class="utility-glyph" aria-hidden="true">@</span>
+          <span>{openingActivity ? 'Opening activity…' : 'Mentions & activity'}</span>
+          {#if activityUnreadCount > 0}<b>{activityUnreadCount > 99 ? '99+' : activityUnreadCount}</b>{/if}
+        </button>
+      </nav>
 
       {#if (loadingContacts || loadingChannels) && !retryingChannels}
         <p class="rail-status">Loading conversations…</p>
@@ -1841,25 +1871,12 @@
             >{loadingRequests ? 'Retrying…' : 'Retry'}</button>
           </div>
         {/if}
-        <div class="rail-actions">
-          <button
-            type="button"
-            class="rail-action"
-            onclick={() => openCreateChannel(null)}
-            aria-haspopup="dialog"
-          >
-            + New channel
-          </button>
-          <button
-            type="button"
-            class="rail-action"
-            onclick={openCreateGroupDm}
-            aria-haspopup="dialog"
-          >
-            + New group DM
-          </button>
+        <div class="rail-section-heading">
+          <span>Direct messages</span>
+          <button type="button" onclick={openCreateGroupDm} aria-label="New group DM" aria-haspopup="dialog">+</button>
         </div>
-        <ul class="contact-list">
+        <ul class="contact-list compact-list">
+          {#if !railQuery.trim() || 'your agent'.includes(railQuery.trim().toLocaleLowerCase())}
           <li>
             <button
               class="contact-row agent-row"
@@ -1869,7 +1886,7 @@
               aria-current={selected?.source === 'agent' ? 'page' : undefined}
               data-provenance="agent"
             >
-              <span class="contact-avatar bolt-avatar" aria-hidden="true">⚡</span>
+              <IdentityMark kind="agent" size="small" />
               <span class="contact-meta">
                 <span class="contact-name">Your agent</span>
                 <span class="contact-sub">
@@ -1880,33 +1897,45 @@
               </span>
             </button>
           </li>
-          {#each visibleRailItems as item (item.key)}
+          {/if}
+          {#each visibleDirectItems as item (item.key)}
             {#if item.kind === 'dm'}
               {@render dmRow(item.contact)}
             {:else if item.kind === 'channel'}
               {@render channelRow(item.channel)}
-            {:else if item.kind === 'request'}
-              {@render requestRow(item.request)}
-            {:else if item.kind === 'share'}
-              {@render shareRow(item.share)}
             {/if}
           {/each}
         </ul>
+
+        {#if visibleChannelItems.length > 0 || !railQuery.trim()}
+          <div class="rail-section-heading">
+            <span>Channels</span>
+            <button type="button" onclick={() => openCreateChannel(null)} aria-label="New channel" aria-haspopup="dialog">+</button>
+          </div>
+          <ul class="contact-list compact-list">
+            {#each visibleChannelItems as item (item.key)}
+              {#if item.kind === 'channel'}{@render channelRow(item.channel)}{/if}
+            {/each}
+          </ul>
+        {/if}
+
         {#if remainingRailItems > 0}
           <button
             type="button"
             class="rail-show-more"
             onclick={() =>
               (railVisibleCount = Math.min(
-                railItems.length,
+                filteredRailItems.length,
                 railVisibleCount + RAIL_RENDER_BATCH,
               ))}
           >
             Show {Math.min(RAIL_RENDER_BATCH, remainingRailItems)} more
-            <span>{visibleRailItems.length} of {railItems.length}</span>
+            <span>{visibleRailItems.length} of {filteredRailItems.length}</span>
           </button>
         {/if}
-        {#if railItems.length === 0}
+        {#if filteredRailItems.length === 0 && railQuery.trim()}
+          <p class="rail-status">No conversations match “{railQuery.trim()}”.</p>
+        {:else if railItems.length === 0}
           <p class="rail-status">No conversations yet.</p>
         {/if}
       {/if}
@@ -2013,7 +2042,7 @@
 <style>
   /* DESKTOP-002 / DESKTOP-011: monochrome surfaces, five-size type ramp,
      hierarchy by weight + surface split, hairline borders. Liquid glass /
-     source-list treatment ONLY on the navigation rail; the main thread and
+     room-list treatment ONLY on the navigation rail; the main thread and
      notification canvas stay naked (spacing + hairlines, no rounded outer
      chrome). Tokens from desktop-alt.css (data-window='messages'). */
 
@@ -2039,14 +2068,14 @@
   /* ── Left rail ────────────────────────────────────────────────────────── */
 
   .rail {
-    width: 320px;
+    width: 282px;
     flex-shrink: 0;
     display: flex;
     flex-direction: column;
     border-right: 1px solid var(--border);
     /* Local separation only: the window/desktop canvas already owns the live
        material, so this rail must not stack another glass sheet over it. */
-    background: color-mix(in srgb, var(--v4-text-1, var(--fg)) 5%, transparent);
+    background: color-mix(in srgb, var(--v4-text-1, var(--fg)) 4%, transparent);
     min-height: 0;
   }
 
@@ -2056,22 +2085,25 @@
     align-items: center;
     justify-content: space-between;
     gap: var(--space-3);
-    padding: var(--space-4) var(--space-4) var(--space-3);
+    min-height: 52px;
+    box-sizing: border-box;
+    padding: 8px 16px 6px;
     flex-shrink: 0;
   }
 
   .rail-heading {
     min-width: 0;
-    display: grid;
-    gap: 2px;
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
   }
 
   .rail-heading h2 {
     margin: 0;
     color: var(--fg);
     font-family: var(--font-display);
-    font-size: var(--type-section, var(--text-section));
-    font-weight: 650;
+    font-size: 16px;
+    font-weight: 700;
     letter-spacing: -0.015em;
     line-height: 1.15;
   }
@@ -2099,19 +2131,32 @@
   .new-message-btn {
     flex-shrink: 0;
     border: 0;
-    border-radius: 0;
+    width: 30px;
+    height: 30px;
+    display: grid;
+    place-items: center;
+    border-radius: 6px;
     background: transparent;
     color: var(--fg);
     font-family: var(--font-sans);
-    font-size: var(--type-secondary, var(--text-sm));
-    font-weight: 600;
-    padding: var(--space-1) 0;
+    padding: 0;
     cursor: pointer;
     transition: color 0.12s ease, opacity 0.12s ease;
   }
 
   .new-message-btn:hover {
-    color: var(--muted-2);
+    background: var(--row-hover);
+    color: var(--fg);
+  }
+
+  .new-message-btn svg {
+    width: 16px;
+    height: 16px;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 1.4;
   }
 
   .new-message-btn:focus-visible {
@@ -2123,7 +2168,7 @@
     flex: 1;
     overflow-y: auto;
     min-height: 0;
-    padding: var(--space-1) var(--space-3) var(--space-4);
+    padding: 0 10px 16px;
   }
 
   .rail-status {
@@ -2171,57 +2216,121 @@
     outline-offset: 1px;
   }
 
-  .catch-up-host {
-    padding: 0 0 var(--space-2);
+  .rail-search {
+    height: 34px;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    margin: 0 2px 5px;
+    padding: 0 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--v4-radius-button, 6px);
+    background: color-mix(in srgb, var(--fg) 4%, transparent);
+    color: var(--muted);
   }
 
-  /* Create affordances — moved out of the old Channels tab into the unified rail
-     so channels can still be started without a separate view. Quiet ghost
-     buttons matching the desktop language. */
-  .rail-actions {
-    display: flex;
-    gap: var(--space-3);
-    padding: var(--space-2) var(--space-2) var(--space-3);
+  .rail-utility {
+    display: grid;
+    gap: 1px;
+    padding: 3px 0 9px;
     border-bottom: 1px solid var(--border);
   }
 
-  .rail-action {
-    flex: 0 1 auto;
+  .rail-utility button {
+    min-height: 31px;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 0 9px;
     border: 0;
-    border-radius: 0;
+    border-radius: 6px;
     background: transparent;
     color: var(--muted-2);
-    font-family: var(--font-sans);
-    font-size: var(--text-micro);
-    font-weight: 500;
-    padding: var(--space-1) 0;
+    font: inherit;
+    font-size: var(--type-body, var(--text-base));
+    text-align: left;
     cursor: pointer;
-    white-space: nowrap;
-    transition: color 0.12s ease;
   }
 
-  .rail-action:hover {
+  .rail-utility button:hover,
+  .rail-utility button:focus-visible {
+    background: var(--row-hover);
     color: var(--fg);
   }
 
-  .rail-action:focus-visible {
-    outline: 2px solid var(--border-strong);
-    outline-offset: 1px;
+  .rail-utility button:disabled {
+    color: var(--muted);
+    cursor: default;
+    opacity: 0.7;
   }
 
-  /* Channel rows reuse the contact-row vocabulary so #channels and DMs read as
-     one list. The avatar carries a '#' glyph instead of initials. */
-  .channel-avatar {
-    color: var(--fg);
-    font-family: var(--font-display);
-    font-size: var(--text-base);
-    font-weight: 600;
+  .utility-glyph {
+    width: 18px;
+    color: currentColor;
+    text-align: center;
   }
 
-  .channel-avatar.group-avatar {
+  .rail-utility b {
+    min-width: 18px;
+    height: 17px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    margin-left: auto;
+    padding: 0 4px;
+    border-radius: 999px;
+    background: var(--fg);
+    color: var(--v4-ground, #111);
+    font-family: var(--font-mono);
+    font-size: var(--text-micro);
+  }
+
+  .rail-search:focus-within {
+    border-color: var(--border-strong);
     color: var(--muted-2);
-    font-family: var(--font-sans);
   }
+
+  .rail-search input {
+    min-width: 0;
+    flex: 1;
+    border: 0;
+    outline: 0;
+    background: transparent;
+    color: var(--fg);
+    font: inherit;
+    font-size: var(--type-body, var(--text-base));
+  }
+
+  .rail-search input::placeholder { color: var(--muted); }
+
+  .rail-section-heading {
+    min-height: 28px;
+    display: flex;
+    align-items: center;
+    padding: 13px 8px 5px;
+    color: var(--muted);
+    font-size: var(--type-metadata, var(--text-micro));
+    font-weight: 650;
+    letter-spacing: .065em;
+    line-height: 1;
+    text-transform: uppercase;
+  }
+
+  .rail-section-heading button {
+    width: 24px;
+    height: 24px;
+    margin-left: auto;
+    border: 0;
+    border-radius: var(--v4-radius-button, 6px);
+    background: transparent;
+    color: var(--muted-2);
+    font: inherit;
+    font-size: 17px;
+    line-height: 1;
+    cursor: pointer;
+  }
+
+  .rail-section-heading button:hover { background: var(--row-hover); color: var(--fg); }
 
   /* Unread count on a channel row — neutral, tabular, no decoration color. */
   .unread-badge {
@@ -2303,17 +2412,24 @@
 
   /* Selected conversation stays open and uses a neutral baseline. */
   .contact-row.active {
-    background: transparent;
-    box-shadow: inset 0 -1px 0 var(--border);
+    background: color-mix(in srgb, var(--fg) 10%, transparent);
+    box-shadow: none;
+  }
+
+  .compact-list .contact-row {
+    min-height: 34px;
+    gap: 8px;
+    padding: 4px 8px;
+    border-radius: 6px;
+  }
+
+  .compact-list .contact-row.active {
+    background: color-mix(in srgb, var(--fg) 10%, transparent);
+    box-shadow: none;
   }
 
   .contact-row.active .contact-name {
     font-weight: 700;
-  }
-
-  .contact-row.active .contact-avatar {
-    border-color: var(--border-strong);
-    color: var(--fg);
   }
 
   .contact-row:focus-visible {
@@ -2321,38 +2437,16 @@
     outline-offset: -2px;
   }
 
-  .contact-avatar {
-    flex-shrink: 0;
-    width: 30px;
-    height: 30px;
-    border-radius: 50%;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    background: var(--surface-raise);
-    border: 1px solid var(--border);
-    color: var(--muted-2);
-    font-family: var(--font-mono);
-    font-size: var(--text-micro);
-    font-weight: 600;
-    letter-spacing: 0.02em;
-  }
-
   .agent-row {
     margin-bottom: var(--space-2);
     border-bottom: 1px solid var(--border);
-  }
-
-  .bolt-avatar {
-    background: var(--surface-raise);
-    color: var(--fg);
   }
 
   /* DESKTOP-011: primary title row + secondary metadata in separate grid slots
      with an explicit 3px gap (never stacked via margin alone). */
   .contact-meta {
     display: grid;
-    grid-template-rows: auto auto;
+    grid-template-rows: auto;
     grid-template-columns: minmax(0, 1fr);
     gap: var(--v4-row-stack-gap, 3px);
     min-width: 0;
@@ -2370,7 +2464,7 @@
     flex: 1;
     min-width: 0;
     font-size: var(--type-body, var(--text-base));
-    font-weight: 600;
+    font-weight: 500;
     color: var(--fg);
     overflow: hidden;
     text-overflow: ellipsis;
@@ -2400,17 +2494,6 @@
 
   .contact-separator {
     color: var(--muted);
-  }
-
-  .request-avatar,
-  .share-avatar {
-    color: var(--muted-2);
-  }
-
-  .share-avatar {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
   }
 
   /* ── Right conversation / notification canvas (naked) ───────────────── */
@@ -2446,7 +2529,9 @@
     flex: 0 0 auto;
     align-items: flex-start;
     gap: var(--space-3);
-    padding: var(--space-4) var(--space-5) var(--space-3);
+    min-height: 56px;
+    box-sizing: border-box;
+    padding: 10px 22px;
     border-bottom: 1px solid var(--border);
     background: transparent;
     flex-shrink: 0;
@@ -2529,7 +2614,6 @@
   @media (prefers-reduced-motion: reduce) {
     .contact-row,
     .new-message-btn,
-    .rail-action,
     .rail-retry {
       transition: none;
     }

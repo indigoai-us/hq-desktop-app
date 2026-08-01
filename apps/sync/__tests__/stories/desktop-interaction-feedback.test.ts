@@ -111,7 +111,8 @@ describe('desktop interaction feedback and render budgets', () => {
   it('bounds the Messages rail while preserving explicit access to older conversations', () => {
     const messages = read('src/components/messaging/MessagesShell.svelte');
     expect(messages).toContain('const RAIL_RENDER_BATCH = 60');
-    expect(messages).toContain('railItems.slice(0, railVisibleCount)');
+    expect(messages).toContain('filteredRailItems.slice(0, railVisibleCount)');
+    expect(messages).toContain('placeholder="Find a conversation"');
     expect(messages).toContain('Show {Math.min(RAIL_RENDER_BATCH, remainingRailItems)} more');
     expect(messages).toContain('aria-busy={isActive && loadingThread}');
     expect(messages).toContain('aria-current={isActive ? \'page\' : undefined}');

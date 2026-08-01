@@ -1174,6 +1174,70 @@ This final paragraph verifies spacing after a thematic break.
       { personUid: 'prs_katherine', email: 'katherine@getindigo.ai', displayName: 'Katherine Johnson', companyUid: 'cmp_indigo', source: 'company', lastMessageAt: '2026-06-08T19:43:10.000Z' },
     ],
   }),
+  list_channels: () => ({
+    channels: [
+      {
+        channelId: 'ch_release',
+        name: '',
+        scope: 'group',
+        visibility: 'private',
+        membership: 'joined',
+        unread: 2,
+        memberCount: 3,
+        lastActivityAt: new Date(Date.now() - 12 * 60 * 1000).toISOString(),
+        members: [
+          { personUid: 'prs_jacob', displayName: 'Jacob Patel' },
+          { personUid: 'prs_alan', displayName: 'Alan Turing' },
+        ],
+      },
+      {
+        channelId: 'ch_core',
+        name: 'hq-core',
+        scope: 'company',
+        companyUid: 'cmp_indigo',
+        companyName: 'Indigo',
+        visibility: 'company',
+        membership: 'joined',
+        unread: 4,
+        memberCount: 18,
+        lastActivityAt: new Date(Date.now() - 32 * 60 * 1000).toISOString(),
+      },
+      {
+        channelId: 'ch_exec',
+        name: 'corey-exec',
+        scope: 'company',
+        companyUid: 'cmp_indigo',
+        companyName: 'Indigo',
+        visibility: 'private',
+        membership: 'joined',
+        unread: 0,
+        memberCount: 5,
+        lastActivityAt: new Date(Date.now() - 90 * 60 * 1000).toISOString(),
+      },
+    ],
+  }),
+  fetch_channel: (args) => {
+    const channelId = String(args?.channelId ?? 'ch_core');
+    const names = channelId === 'ch_release'
+      ? ['Jacob Patel', 'Alan Turing']
+      : ['Grace Hopper', 'Ada Lovelace'];
+    return {
+      messages: names.map((name, index) => ({
+        eventId: `${channelId}-${index + 1}`,
+        fromPersonUid: `prs_${index + 1}`,
+        fromDisplayName: name,
+        fromEmail: `${name.split(' ')[0]?.toLocaleLowerCase()}@getindigo.ai`,
+        body: index === 0
+          ? 'The release checklist is clean. I am ready for the final smoke.'
+          : 'Confirmed — updater artifacts and the public channel both look good.',
+        createdAt: new Date(Date.now() - (8 - index * 3) * 60 * 1000).toISOString(),
+        direction: 'in',
+      })),
+      nextCursor: null,
+    };
+  },
+  mark_channel_read: () => null,
+  send_channel_message: () => ({ eventId: 'channel-sent-1', createdAt: new Date().toISOString() }),
   list_company_members: () => ({
     members: [
       { personUid: 'prs_grace', email: 'grace@getindigo.ai', displayName: 'Grace Hopper', companyUid: 'cmp_indigo', companyName: 'Indigo' },

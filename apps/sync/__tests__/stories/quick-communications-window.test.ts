@@ -10,23 +10,19 @@ const sidePane = read('src/components/QuickWindowSidePane.svelte');
 const channelView = read('src/components/messaging/ChannelView.svelte');
 
 describe('quick communications window hierarchy', () => {
-  it('orients the window around Messages with flat Conversations and Notifications tabs', () => {
-    expect(detail).toContain('<h1>Messages</h1>');
+  it('orients the window around a Slack-like room rail with activity behind a shortcut', () => {
     expect(detail).toContain("let activeTab = $state<'conversations' | 'notifications'>");
-    expect(detail).toContain('data-testid="communications-tab-conversations"');
-    expect(detail).toContain('data-testid="communications-tab-notifications"');
-    expect(detail).toContain('class:active={activeTab ===');
     expect(detail).toContain("hidden={activeTab !== 'notifications'}");
     expect(detail).toContain("hidden={activeTab !== 'conversations'}");
-    expect(detail).toContain('onkeydown={handleTabKeydown}');
-    expect(detail).toContain("event.key === 'Home'");
-    expect(detail).toContain("event.key === 'End'");
+    expect(detail).toContain('onopenactivity={() => selectTab(\'notifications\')}');
+    expect(detail).toContain('class="notifications-toolbar"');
     expect(detail).toContain('<NotificationFeed');
     expect(detail).toContain('density="comfortable"');
     expect(detail).toContain('showDayLabels={false}');
-    expect(detail).toMatch(/\.communications-tab\.active[\s\S]*?border-bottom-color:/);
-    const tabRule = detail.match(/\.communications-tab\s*\{([^}]*)\}/)?.[1] ?? '';
-    expect(tabRule).not.toContain('border-radius');
+    expect(sidePane).toContain('class="qw-rail-head"');
+    expect(sidePane).toContain('class="qw-utility"');
+    expect(sidePane).toContain('Mentions & activity');
+    expect(sidePane).toContain('Open full desktop view');
   });
 
   it('keeps the conversation view two-pane and can select a channel', () => {
@@ -46,19 +42,21 @@ describe('quick communications window hierarchy', () => {
 
   it('provides an honest asynchronous jump to the full Messages or Inbox view', () => {
     expect(detail).toContain('async function openFullView()');
-    expect(detail).toContain("invoke('open_messages_window'");
+    expect(detail).toContain("invoke('open_desktop_alt_window', { route: 'messages' })");
     expect(detail).toContain("invoke('open_desktop_alt_window', { route: 'inbox' })");
-    expect(detail).toContain('data-testid="communications-open-full"');
     expect(detail).toContain('aria-busy={openingFullView}');
-    expect(detail).toContain("{openingFullView ? 'Opening…' : 'Open full view'}");
+    expect(detail).toContain("{openingFullView ? 'Opening…' : 'Open inbox ↗'}");
+    expect(sidePane).toContain('onopenfull?: () => void');
   });
 
-  it('merges messages and channels into one flat activity-sorted conversation rail', () => {
+  it('merges messages and channels into an activity-sorted, searchable room rail', () => {
     expect(sidePane).toContain("invoke<ChannelsResponse | null>('list_channels')");
     expect(sidePane).toContain('onselectchannel?: (channel: Channel) => void');
     expect(sidePane).toContain('selectedChannelId?: string | null');
     expect(sidePane).toContain("channel.scope === 'group'");
-    expect(sidePane).toContain("channelAvatar(channel)");
+    expect(sidePane).toContain('kind="group"');
+    expect(sidePane).toContain('kind="channel"');
+    expect(sidePane).toContain('members={(channel.members ?? []).map');
     expect(sidePane).toContain('channel.unread');
     expect(sidePane).toContain("'other' : 'others'");
     expect(sidePane).toContain('data-testid="quick-channel-row"');
@@ -73,6 +71,8 @@ describe('quick communications window hierarchy', () => {
     expect(sidePane).not.toContain('aria-labelledby="quick-conversations-label"');
     expect(sidePane).toContain('id="quick-conversations-label">Direct messages');
     expect(sidePane).toContain('<div class="qw-side-label">Channels</div>');
+    expect(sidePane).toContain('placeholder="Find a conversation"');
+    expect(sidePane).toContain('filteredDirectEntries');
     expect(sidePane).not.toContain('sourceLabel=');
     expect(sidePane).not.toContain('text={row.latest');
     expect(sidePane).not.toMatch(/\.conversation-row\s*\{[\s\S]*?border-left:/);
@@ -97,7 +97,7 @@ describe('quick communications window hierarchy', () => {
     expect(detail).toMatch(/\.detail-window\s*\{[\s\S]*?backdrop-filter:/);
     expect(detail).toMatch(/\.detail-window\.native-glass\s*\{[\s\S]*?backdrop-filter:\s*none/);
     expect(detail).toContain('--compact-glass-bg');
-    expect(detail).toMatch(/\.communications-header\s*\{[\s\S]*?background:\s*transparent/);
+    expect(detail).toMatch(/\.conversations-layout\s*\{[\s\S]*?background:\s*transparent/);
     expect(detail).toMatch(/\.detail-main\s*\{[\s\S]*?background:\s*transparent/);
     expect(detail).toMatch(/\.notifications-pane\s*\{[\s\S]*?background:\s*transparent/);
   });

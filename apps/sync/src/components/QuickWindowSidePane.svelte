@@ -18,6 +18,7 @@
     companyNameFor,
     type Channel,
   } from '../lib/channels';
+  import IdentityMark from './messaging/IdentityMark.svelte';
 
   // Source list for the quick communications window. DM/share conversations
   // retain the existing grouped history semantics; channels are an optional
@@ -31,6 +32,9 @@
     onselect: (item: Item, conversationIds?: string[], conversationItems?: Item[]) => void;
     onselectchannel?: (channel: Channel) => void;
     onattentionchange?: (count: number) => void;
+    onopenfull?: () => void;
+    onopenactivity?: () => void;
+    onnewmessage?: () => void;
   }
 
   interface ChannelsResponse {
@@ -44,6 +48,9 @@
     onselect,
     onselectchannel,
     onattentionchange,
+    onopenfull,
+    onopenactivity,
+    onnewmessage,
   }: Props = $props();
 
   let items = $state<Item[]>([]);
@@ -53,6 +60,8 @@
   let loadError = $state<string | null>(null);
   let channelLoadError = $state<string | null>(null);
   let retrying = $state(false);
+  let query = $state('');
+  let didAutoSelect = $state(false);
   // Snapshot once per mount — matches NotificationFeed (session-stable).
   const lastReadTs = getLastReadTs();
   let loadGeneration = 0;
@@ -87,6 +96,26 @@
   const channelEntries = $derived(
     orderedChannels.filter((channel) => channel.scope !== 'group'),
   );
+  const normalizedQuery = $derived(query.trim().toLocaleLowerCase());
+  const filteredDirectEntries = $derived(
+    directEntries.filter((entry) => {
+      if (!normalizedQuery) return true;
+      return entry.kind === 'conversation'
+        ? `${entry.row.actor} ${entry.row.kind}`.toLocaleLowerCase().includes(normalizedQuery)
+        : `${channelTitle(entry.channel)} ${channelContext(entry.channel)}`
+            .toLocaleLowerCase()
+            .includes(normalizedQuery);
+    }),
+  );
+  const filteredChannelEntries = $derived(
+    channelEntries.filter((channel) =>
+      normalizedQuery
+        ? `${channelTitle(channel)} ${channelContext(channel)}`
+            .toLocaleLowerCase()
+            .includes(normalizedQuery)
+        : true,
+    ),
+  );
   const attentionCount = $derived(
     countUnreadConversations(items, lastReadTs, viewedIds) +
       channels.filter((channel) => (channel.unread ?? 0) > 0).length,
@@ -117,29 +146,6 @@
     }
     if (channel.scope === 'personal') return 'Personal channel';
     return `${companyNameFor(channel) ?? 'Company'} channel`;
-  }
-
-  function channelAvatar(channel: Channel): string {
-    if (channel.scope !== 'group') return '#';
-    const initials = (channel.members ?? [])
-      .map((member) => member.displayName.trim())
-      .filter(Boolean)
-      .slice(0, 2)
-      .map((name) => name[0]?.toUpperCase() ?? '')
-      .join('');
-    return initials || 'DM';
-  }
-
-  function senderIdentity(actor: string, agent: boolean): string {
-    if (agent) return 'AI';
-    const initials = actor
-      .trim()
-      .split(/\s+/)
-      .filter(Boolean)
-      .slice(0, 2)
-      .map((part) => part[0]?.toUpperCase() ?? '')
-      .join('');
-    return initials || 'DM';
   }
 
   function selectChannel(channel: Channel): void {
@@ -219,6 +225,40 @@
     onattentionchange?.(attentionCount);
   });
 
+  // Opening the compact window should land on useful content instead of an
+  // empty detail pane. Preserve explicit/deep-linked selections; otherwise
+  // prefer the first unread conversation, then the most recent source.
+  $effect(() => {
+    if (didAutoSelect || loading || loadingChannels) return;
+    if (selectedId || selectedChannelId) {
+      didAutoSelect = true;
+      return;
+    }
+
+    const firstUnread = directEntries.find((entry) =>
+      entry.kind === 'conversation'
+        ? entry.row.unreadCount > 0
+        : (entry.channel.unread ?? 0) > 0,
+    );
+    const candidate = firstUnread ?? directEntries[0];
+    if (candidate?.kind === 'conversation') {
+      didAutoSelect = true;
+      onselect(candidate.row.latest, candidate.row.ids, candidate.row.items);
+      return;
+    }
+    if (candidate?.kind === 'channel') {
+      didAutoSelect = true;
+      selectChannel(candidate.channel);
+      return;
+    }
+    if (channelEntries[0]) {
+      didAutoSelect = true;
+      selectChannel(channelEntries[0]);
+      return;
+    }
+    didAutoSelect = true;
+  });
+
   // Load on mount; debounce reloads on the same signals NotificationFeed and
   // the full Messages rail use.
   $effect(() => {
@@ -271,7 +311,45 @@
   aria-label="Conversations"
   aria-busy={loading || loadingChannels}
 >
+  <header class="qw-rail-head">
+    <div class="qw-rail-title">
+      <strong>HQ</strong>
+      {#if attentionCount > 0}
+        <span>{attentionCount > 99 ? '99+' : attentionCount} unread</span>
+      {/if}
+    </div>
+    <button
+      type="button"
+      class="qw-compose"
+      aria-label="New message"
+      title="New message"
+      onclick={() => onnewmessage?.()}
+    >
+      <svg viewBox="0 0 16 16" aria-hidden="true">
+        <path d="M3 12.7 3.5 10l6.9-6.9a1.4 1.4 0 0 1 2 2L5.5 12l-2.5.7Z"></path>
+        <path d="m9.5 4 2.5 2.5"></path>
+      </svg>
+    </button>
+  </header>
   <section class="qw-section" aria-label="Message sources">
+    <label class="qw-search">
+      <span class="sr-only">Find a conversation</span>
+      <svg viewBox="0 0 16 16" aria-hidden="true">
+        <circle cx="7" cy="7" r="4.25"></circle>
+        <path d="m10.25 10.25 3 3"></path>
+      </svg>
+      <input bind:value={query} type="search" placeholder="Find a conversation" />
+    </label>
+    <nav class="qw-utility" aria-label="Message shortcuts">
+      <button type="button" onclick={() => onopenfull?.()}>
+        <span class="qw-utility-glyph" aria-hidden="true">☷</span>
+        <span>Threads</span>
+      </button>
+      <button type="button" onclick={() => onopenactivity?.()}>
+        <span class="qw-utility-glyph" aria-hidden="true">@</span>
+        <span>Mentions & activity</span>
+      </button>
+    </nav>
     {#if (loading || loadingChannels) && railEntries.length === 0}
       <div class="qw-skeleton-list" aria-label="Loading conversations" role="status">
         {#each Array(5) as _}
@@ -286,10 +364,10 @@
       </div>
     {:else if railEntries.length > 0}
       <div class="qw-side-list">
-        {#if directEntries.length > 0}
+        {#if filteredDirectEntries.length > 0}
           <div class="qw-side-label" id="quick-conversations-label">Direct messages</div>
         {/if}
-        {#each directEntries as entry (entry.key)}
+        {#each filteredDirectEntries as entry (entry.key)}
           {#if entry.kind === 'conversation'}
             {@const row = entry.row}
             {@const isSelected = selectedId != null && row.ids.includes(selectedId)}
@@ -304,9 +382,7 @@
               aria-label={`${row.actor}${row.kind === 'share' ? ', shared files' : ''}${!isSelected && row.unreadCount > 0 ? `, ${row.unreadCount} unread` : ''}`}
               onclick={() => onselect(row.latest, row.ids, row.items)}
             >
-              <span class="conversation-avatar" class:agent-avatar={row.agent} aria-hidden="true">
-                {senderIdentity(row.actor, row.agent)}
-              </span>
+              <IdentityMark kind={row.agent ? 'agent' : 'person'} label={row.actor} size="small" />
               <strong>{row.actor}</strong>
               {#if row.kind === 'share'}
                 <span class="row-kind" title="Shared files" aria-hidden="true">↗</span>
@@ -331,9 +407,12 @@
               aria-label={`${channelTitle(channel)}, ${channelContext(channel)}${channel.unread ? `, ${channel.unread} unread` : ''}`}
               onclick={() => selectChannel(channel)}
             >
-              <span class="conversation-avatar group-avatar" aria-hidden="true">
-                {channelAvatar(channel)}
-              </span>
+              <IdentityMark
+                kind="group"
+                label={channelTitle(channel)}
+                members={(channel.members ?? []).map((member) => member.displayName)}
+                size="small"
+              />
               <strong>{channelTitle(channel)}</strong>
               {#if !isSelected && (channel.unread ?? 0) > 0}
                 <span class="row-unread-count" data-testid="quick-unread-count">
@@ -344,10 +423,10 @@
           {/if}
         {/each}
 
-        {#if channelEntries.length > 0}
+        {#if filteredChannelEntries.length > 0}
           <div class="qw-side-label">Channels</div>
         {/if}
-        {#each channelEntries as channel (`channel:${channel.channelId}`)}
+        {#each filteredChannelEntries as channel (`channel:${channel.channelId}`)}
           {@const isSelected = selectedChannelId === channel.channelId}
           <button
             type="button"
@@ -360,9 +439,11 @@
             aria-label={`${channelTitle(channel)}, ${channelContext(channel)}${channel.unread ? `, ${channel.unread} unread` : ''}`}
             onclick={() => selectChannel(channel)}
           >
-            <span class="channel-symbol" aria-hidden="true">
-              {channel.visibility === 'private' ? '⌑' : '#'}
-            </span>
+            <IdentityMark
+              kind="channel"
+              privateChannel={channel.visibility === 'private'}
+              size="small"
+            />
             <strong>{channelDisplayName(channel)}</strong>
             {#if !isSelected && (channel.unread ?? 0) > 0}
               <span class="row-unread-count" data-testid="quick-unread-count">
@@ -371,6 +452,9 @@
             {/if}
           </button>
         {/each}
+        {#if normalizedQuery && filteredDirectEntries.length === 0 && filteredChannelEntries.length === 0}
+          <p class="qw-side-status">No conversations match “{query.trim()}”.</p>
+        {/if}
       </div>
     {/if}
 
@@ -395,6 +479,12 @@
   {#if !loading && !loadingChannels && !loadError && !channelLoadError && railEntries.length === 0}
     <p class="qw-side-status">No conversations</p>
   {/if}
+  <footer class="qw-rail-footer">
+    <button type="button" onclick={() => onopenfull?.()}>
+      Open full desktop view
+      <span aria-hidden="true">↗</span>
+    </button>
+  </footer>
 </aside>
 
 <style>
@@ -405,12 +495,70 @@
     flex-direction: column;
     gap: 0;
     border-right: 1px solid var(--pop-divider);
-    padding: 10px 8px 18px;
-    overflow-y: auto;
+    padding: 10px 8px 8px;
+    overflow: hidden;
     box-sizing: border-box;
     scrollbar-width: thin;
     scrollbar-color: var(--pop-muted) transparent;
     background: var(--compact-glass-rail, transparent);
+  }
+
+  .qw-rail-head {
+    min-height: 40px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 0 8px 7px;
+  }
+
+  .qw-rail-title {
+    min-width: 0;
+    display: flex;
+    align-items: baseline;
+    gap: 7px;
+  }
+
+  .qw-rail-title strong {
+    color: var(--pop-text);
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: -0.015em;
+  }
+
+  .qw-rail-title span {
+    color: var(--pop-muted);
+    font-size: 10.5px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .qw-compose {
+    width: 28px;
+    height: 28px;
+    display: grid;
+    place-items: center;
+    margin-left: auto;
+    padding: 0;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--pop-muted);
+    cursor: pointer;
+  }
+
+  .qw-compose:hover,
+  .qw-compose:focus-visible {
+    background: var(--pop-hover);
+    color: var(--pop-text);
+  }
+
+  .qw-compose svg {
+    width: 15px;
+    height: 15px;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 1.4;
   }
 
   .qw-side-pane::-webkit-scrollbar {
@@ -426,6 +574,104 @@
     display: flex;
     flex-direction: column;
     min-width: 0;
+    min-height: 0;
+    flex: 1;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--pop-muted) transparent;
+  }
+
+  .qw-utility {
+    display: grid;
+    gap: 1px;
+    margin: 1px 0 5px;
+    padding: 3px 0 8px;
+    border-bottom: 1px solid var(--pop-divider);
+  }
+
+  .qw-utility button {
+    min-height: 30px;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 0 9px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--pop-muted);
+    font: inherit;
+    font-size: 12px;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .qw-utility button:hover,
+  .qw-utility button:focus-visible {
+    background: var(--pop-hover);
+    color: var(--pop-text);
+  }
+
+  .qw-utility-glyph {
+    width: 17px;
+    color: currentColor;
+    font-size: 13px;
+    text-align: center;
+  }
+
+  .qw-search {
+    height: 32px;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    margin: 0 4px 4px;
+    padding: 0 9px;
+    border: 1px solid var(--pop-divider);
+    border-radius: 7px;
+    background: color-mix(in srgb, var(--pop-hover) 55%, transparent);
+    color: var(--pop-muted);
+  }
+
+  .qw-search:focus-within {
+    border-color: color-mix(in srgb, var(--pop-text) 42%, var(--pop-divider));
+    color: var(--pop-text);
+  }
+
+  .qw-search svg {
+    width: 13px;
+    height: 13px;
+    flex: 0 0 13px;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-width: 1.5;
+  }
+
+  .qw-search input {
+    min-width: 0;
+    flex: 1;
+    padding: 0;
+    border: 0;
+    outline: 0;
+    background: transparent;
+    color: var(--pop-text);
+    font: inherit;
+    font-size: 12px;
+  }
+
+  .qw-search input::placeholder {
+    color: var(--pop-muted);
+  }
+
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
   }
 
   .qw-side-label {
@@ -436,7 +682,35 @@
     font-weight: 650;
     letter-spacing: 0.055em;
     line-height: 1.2;
-    text-transform: none;
+    text-transform: uppercase;
+  }
+
+  .qw-rail-footer {
+    flex: 0 0 auto;
+    padding: 7px 4px 0;
+    border-top: 1px solid var(--pop-divider);
+  }
+
+  .qw-rail-footer button {
+    width: 100%;
+    min-height: 30px;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 0 5px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--pop-muted);
+    font: inherit;
+    font-size: 11.5px;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .qw-rail-footer button:hover,
+  .qw-rail-footer button:focus-visible {
+    color: var(--pop-text);
   }
 
   .qw-side-status {
@@ -501,40 +775,6 @@
 
   .conversation-row.unread > strong {
     font-weight: 700;
-  }
-
-  .conversation-avatar {
-    width: 22px;
-    height: 22px;
-    flex: 0 0 22px;
-    display: grid;
-    place-items: center;
-    border-radius: 6px;
-    background: var(--pop-hover);
-    color: var(--pop-text);
-    font-size: 9.5px;
-    font-weight: 650;
-  }
-
-  .agent-avatar {
-    color: var(--pop-muted);
-  }
-
-  .group-avatar {
-    border: 1px solid var(--pop-divider);
-    background: transparent;
-    font-size: 9px;
-    letter-spacing: 0.025em;
-  }
-
-  .channel-symbol {
-    width: 22px;
-    flex: 0 0 22px;
-    color: currentColor;
-    font-size: 19px;
-    font-weight: 400;
-    line-height: 1;
-    text-align: center;
   }
 
   .row-kind {

@@ -110,17 +110,21 @@ describe('DESKTOP-017: auxiliary desktop surfaces', () => {
     expect(harness).toContain('<GlobalErrorBoundary');
   });
 
-  it('desaturates the onboarding hero instead of retaining the blue-pink artwork tint', () => {
+  it('keeps onboarding artwork in color and every panel reachable on short displays', () => {
     const hero = rule(onboarding, '.grad');
     expect(hero, 'onboarding hero selector should exist').not.toBe('');
-    expect(hero).toContain('filter:grayscale(1) saturate(0%)');
+    expect(hero).toContain('filter:none');
 
-    expect(rule(onboarding, '.macfolder-lg')).toContain(
-      'filter:grayscale(1) saturate(0%)',
-    );
-    expect(rule(onboarding, '.loc .mf')).toContain(
-      'filter:grayscale(1) saturate(0%)',
-    );
+    expect(rule(onboarding, '.macfolder-lg')).not.toContain('grayscale');
+    expect(rule(onboarding, '.loc .mf')).toContain('filter:none');
+
+    const page = rule(onboarding, '.onboarding-page');
+    expect(page).toContain('height:100dvh');
+    expect(page).toContain('overflow:auto');
+
+    const panel = rule(onboarding, '.panel');
+    expect(panel).toContain('overflow-y:auto');
+    expect(panel).toContain('overscroll-behavior:contain');
   });
 
   it('keeps the ready-step caution open and neutral while retaining its compact warning cue', () => {
@@ -295,19 +299,18 @@ describe('DESKTOP-017: auxiliary desktop surfaces', () => {
     );
   });
 
-  it('keeps widget fixtures deterministic and message selection rail-free', () => {
+  it('keeps widget fixtures deterministic and message selection neutral', () => {
     expect(harness).toContain('WIDGET_RECENT_STORAGE_KEY');
     expect(harness).toContain(
       'localStorage.removeItem(WIDGET_RECENT_STORAGE_KEY)',
     );
     expect(messages).not.toContain('.contact-row.active::before');
     expect(rule(messages, '.contact-row')).toContain('border-radius: 0');
-    expect(rule(messages, '.contact-row.active')).toContain(
-      'background: transparent',
+    expect(rule(messages, '.compact-list .contact-row')).toContain('border-radius: 6px');
+    expect(rule(messages, '.compact-list .contact-row.active')).toContain(
+      'background: color-mix(in srgb, var(--fg) 10%, transparent)',
     );
-    expect(rule(messages, '.contact-row.active')).toContain(
-      'box-shadow: inset 0 -1px 0 var(--border)',
-    );
+    expect(rule(messages, '.compact-list .contact-row.active')).toContain('box-shadow: none');
   });
 
   it('renders catch-up entries as open rows instead of inset cards', () => {

@@ -1,13 +1,14 @@
 <script lang="ts">
-  // Shared conversation primitive: a scrollable thread of in/out bubbles plus a
+  // Shared conversation primitive: a scrollable, Slack-like message timeline plus a
   // reply composer. Extracted from DmDetail.svelte (US-008) so DMs, channels,
   // and threads can all render the same thread + composer surface. Pure
   // presentation — the parent owns the message list, the send call, and the
   // optimistic append; this component just renders `messages` and invokes the
-  // `onsend` callback. Visuals (bubble + composer CSS) live here so they travel
+  // `onsend` callback. Visuals (message row + composer CSS) live here so they travel
   // with the component.
   import { tick } from 'svelte';
   import ReactionBar from './ReactionBar.svelte';
+  import IdentityMark from './IdentityMark.svelte';
   import { type ReactionMap } from '../../lib/reactions';
   import { copyableText, type CopyKind } from '../../lib/conversation-copy';
   import { renderMessageBodyMarkdown } from '../../lib/messageMarkdown';
@@ -51,8 +52,8 @@
 
   interface Props {
     messages: ConversationMessage[];
-    // When true, render the author's display name above incoming bubbles
-    // (channels/threads). DMs pass false — there's only one peer.
+    // Retained for API compatibility. The timeline now identifies every sender,
+    // including DMs, so authorship never depends on bubble alignment alone.
     showAuthors?: boolean;
     loading?: boolean;
     error?: string | null;
@@ -96,7 +97,6 @@
   // unused-binding noise — it still type-checks as an accepted prop.
   let {
     messages,
-    showAuthors = false,
     loading = false,
     error = null,
     onretryload,
@@ -111,6 +111,9 @@
     onopenshareinclaude,
     readonly = false,
   }: Props = $props();
+
+  const messageAuthor = (msg: ConversationMessage) =>
+    msg.direction === 'out' ? 'You' : (msg.fromDisplayName?.trim() || 'Unknown sender');
 
   let replyText = $state('');
   // Tracks the last successful copy so the "Copied!" feedback stays scoped to
@@ -415,10 +418,21 @@
         class:dm-msg-group-start={groupStart}
         class:dm-msg-group-end={groupEnd}
       >
-      {#if showAuthors && msg.direction === 'in' && groupStart}
-        <span class="dm-msg-author">{msg.fromDisplayName}</span>
-      {:else if showAuthors && msg.direction === 'in'}
-        <span class="sr-only">From {msg.fromDisplayName}</span>
+      {#if groupStart}
+        <span class="dm-msg-avatar">
+          <IdentityMark kind="person" label={messageAuthor(msg)} size="regular" />
+        </span>
+      {:else}
+        <span class="dm-msg-avatar-spacer" aria-hidden="true"></span>
+      {/if}
+      <div class="dm-msg-column">
+      {#if groupStart}
+        <div class="dm-msg-meta">
+          <span class="dm-msg-author">{messageAuthor(msg)}</span>
+          <span class="dm-msg-header-time">{formatTime(msg.createdAt)}</span>
+        </div>
+      {:else}
+        <span class="sr-only">From {messageAuthor(msg)} at {formatTime(msg.createdAt)}</span>
       {/if}
       <div
         class="dm-bubble"
@@ -578,16 +592,14 @@
         <span class="dm-msg-pending">
           {sanitizeVisibleIdentifiers(msg.pendingLabel || 'Pending')}
         </span>
-      {:else if groupEnd}
-        <span class="dm-msg-time">{formatTime(msg.createdAt)}</span>
-        {#if msg.direction === 'out'}
-          <span class="dm-msg-time">Delivered</span>
-        {/if}
-      {:else}
+      {:else if msg.direction === 'out' && groupEnd}
+        <span class="dm-msg-time">Delivered</span>
+      {:else if !groupEnd}
         <span class="sr-only">
           Sent at {formatTime(msg.createdAt)}{msg.direction === 'out' ? ' · Delivered' : ''}
         </span>
       {/if}
+      </div>
       </div>
     {/each}
   </div>
@@ -1836,5 +1848,133 @@
   :global([data-window='messages']) .btn-send:hover:not(:disabled) {
     background: var(--accent);
     filter: brightness(0.94);
+  }
+
+  /* ── Shared message timeline ────────────────────────────────────────────
+   * Messages read as authored rows, not opposing chat bubbles. Direction is
+   * explicit in the author label (the signed-in sender is "You"), which keeps
+   * DMs, group DMs, channels, threads, and the compact window consistent.
+   * Only real objects such as shared files retain card treatment.
+   */
+  .dm-msg,
+  :global([data-window='messages']) .dm-msg,
+  :global(html[data-window='dm-detail']) .dm-msg {
+    display: grid;
+    grid-template-columns: 28px minmax(0, 720px);
+    align-self: stretch;
+    align-items: start;
+    gap: 0.625rem;
+    width: 100%;
+    max-width: none;
+    margin-top: 0.1875rem;
+  }
+
+  .dm-msg-group-start,
+  :global([data-window='messages']) .dm-msg-group-start,
+  :global(html[data-window='dm-detail']) .dm-msg-group-start {
+    margin-top: 0.875rem;
+  }
+
+  .date-separator + .dm-msg,
+  :global([data-window='messages']) .date-separator + .dm-msg,
+  :global(html[data-window='dm-detail']) .date-separator + .dm-msg {
+    margin-top: 0.25rem;
+  }
+
+  .dm-msg-in,
+  .dm-msg-out {
+    align-self: stretch;
+    align-items: start;
+  }
+
+  .dm-msg-avatar,
+  .dm-msg-avatar-spacer {
+    display: block;
+    width: 28px;
+    min-height: 1px;
+  }
+
+  .dm-msg-column {
+    min-width: 0;
+    max-width: 720px;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .dm-msg-meta {
+    min-width: 0;
+    display: flex;
+    align-items: baseline;
+    gap: 0.4375rem;
+    margin: 0 0 0.125rem;
+  }
+
+  .dm-msg-author,
+  :global([data-window='messages']) .dm-msg-author {
+    display: block;
+    min-width: 0;
+    max-width: 42ch;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: var(--fg, var(--pop-text));
+    font-family: var(--font-sans, -apple-system, BlinkMacSystemFont, sans-serif);
+    font-size: var(--text-base);
+    font-weight: 650;
+    line-height: 1.3;
+    letter-spacing: 0;
+    text-overflow: ellipsis;
+    text-transform: none;
+    white-space: nowrap;
+  }
+
+  .dm-msg-header-time {
+    flex: 0 0 auto;
+    color: var(--muted-3, var(--pop-muted));
+    font-family: var(--font-sans, -apple-system, BlinkMacSystemFont, sans-serif);
+    font-size: var(--text-xs, 0.75rem);
+    font-weight: 450;
+    line-height: 1.3;
+  }
+
+  .dm-bubble,
+  .dm-msg-in .dm-bubble,
+  .dm-msg-out .dm-bubble,
+  :global([data-window='messages']) .dm-bubble,
+  :global([data-window='messages']) .dm-msg-in .dm-bubble,
+  :global([data-window='messages']) .dm-msg-out .dm-bubble,
+  :global(html[data-window='dm-detail']) .dm-msg-in .dm-bubble:not(.dm-bubble-share),
+  :global(html[data-window='dm-detail']) .dm-msg-out .dm-bubble:not(.dm-bubble-share) {
+    width: 100%;
+    max-width: 100%;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+  }
+
+  .dm-bubble-share,
+  :global([data-window='messages']) .dm-bubble-share,
+  :global(html[data-window='dm-detail']) .dm-bubble.dm-bubble-share {
+    width: min(100%, 560px);
+    padding: 0.75rem;
+    border: 1px solid var(--border, var(--pop-border));
+    border-radius: 10px;
+    background: var(--surface-raise, color-mix(in srgb, var(--pop-text) 5%, transparent));
+  }
+
+  .dm-msg-time,
+  :global([data-window='messages']) .dm-msg-time,
+  :global(html[data-window='dm-detail']) .dm-msg-time {
+    margin: 0.1875rem 0 0;
+    font-size: var(--text-micro, 0.65625rem);
+  }
+
+  .date-separator {
+    margin-left: 38px;
   }
 </style>
