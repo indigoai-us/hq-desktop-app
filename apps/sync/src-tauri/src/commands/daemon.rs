@@ -754,10 +754,9 @@ fn is_benign_watcher_exit(code: Option<i32>, signal: Option<i32>) -> bool {
         || (matches!(code, Some(1 | 2)) && signal.is_none() && !is_fault_signal(signal))
 }
 
-/// The live 221 is intentionally not classified. These diagnostics identify
-/// the runner invocation and final stderr without letting either affect Sentry
-/// grouping, so the next occurrence can be investigated from evidence rather
-/// than guessed into a benign bucket.
+/// The live 221 is intentionally not classified. Its capture carries only
+/// fixed-vocabulary runner identity, never the machine-specific invocation or
+/// raw stderr, so the next occurrence is useful without exposing local data.
 fn is_unrecognized_watcher_exit(code: Option<i32>, signal: Option<i32>) -> bool {
     signal.is_none()
         && !matches!(code, Some(0 | 1 | 2 | 126 | 127))
@@ -983,8 +982,8 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
     consecutive: u32,
     policy_consecutive: u32,
     capture_policy: WatcherExitCapturePolicy,
-    watcher_command: &str,
-    last_stderr: Option<&str>,
+    _watcher_command: &str,
+    _last_stderr: Option<&str>,
     context: &WatcherExitCaptureContext,
 ) {
     if capture_policy == WatcherExitCapturePolicy::LocalLogOnly {
@@ -1062,7 +1061,7 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
         let extras = watcher_exit_context_extras(context);
         effects.capture(&message, &fingerprint, &tags, &extras);
     } else if is_unrecognized_watcher_exit(code, signal) {
-        let extras = unrecognized_watcher_exit_extras(watcher_command, last_stderr);
+        let extras = unrecognized_watcher_exit_extras();
         effects.capture(&message, &fingerprint, &[], &extras);
     } else {
         effects.capture(&message, &fingerprint, &[], &[]);
@@ -1102,15 +1101,8 @@ fn watcher_exit_context_extras(
     ]
 }
 
-fn unrecognized_watcher_exit_extras(
-    watcher_command: &str,
-    last_stderr: Option<&str>,
-) -> [(&'static str, sentry::protocol::Value); 5] {
+fn unrecognized_watcher_exit_extras() -> [(&'static str, sentry::protocol::Value); 3] {
     [
-        (
-            "watcher_runner_command",
-            sentry::protocol::Value::String(watcher_command.to_string()),
-        ),
         (
             "watcher_hq_cloud_package",
             sentry::protocol::Value::String(HQ_CLOUD_PACKAGE.to_string()),
@@ -1122,10 +1114,6 @@ fn unrecognized_watcher_exit_extras(
         (
             "watcher_runner_binary",
             sentry::protocol::Value::String(RUNNER_BIN.to_string()),
-        ),
-        (
-            "watcher_last_stderr",
-            sentry::protocol::Value::String(last_stderr.unwrap_or("<none>").to_string()),
         ),
     ]
 }
@@ -2130,6 +2118,45 @@ mod tests {
     }
 
     #[test]
+    fn signal_exit_policy_suppresses_only_sigterm_across_capture_seams() {
+        for (signal, should_capture) in [(SIGTERM, false), (SIGSEGV, true)] {
+            assert_eq!(
+                is_unexpected_watcher_exit(false, Some(signal), false),
+                should_capture,
+                "watcher classifier disagreed for signal {signal}"
+            );
+            assert_eq!(
+                hq_desktop_core::sync_outcome::should_alert_on_nonzero_exit(
+                    None,
+                    Some(signal),
+                    false,
+                    false,
+                    false,
+                ),
+                should_capture,
+                "manual-sync classifier disagreed for signal {signal}"
+            );
+
+            let mut effects = RecordingWatcherEffects::default();
+            handle_watcher_exit_with_effects(
+                &mut effects,
+                None,
+                Some(signal),
+                false,
+                false,
+                "npx",
+                None,
+                &WatcherExitCaptureContext::default(),
+            );
+            assert_eq!(
+                effects.captures.len(),
+                usize::from(should_capture),
+                "production watcher capture seam disagreed for signal {signal}"
+            );
+        }
+    }
+
+    #[test]
     fn fault_signal_classifier_covers_crash_signals_only() {
         for signal in [
             SIGABRT,
@@ -2368,14 +2395,11 @@ mod tests {
                         vec![(WatchDaemonState::Backoff, DaemonFailureCategory::Crash)]
                     );
                     let capture = &effects.captures[0];
-                    assert_eq!(
-                        recorded_string_extra(capture, "watcher_runner_command"),
-                        "/opt/homebrew/bin/npx"
-                    );
-                    assert_eq!(
-                        recorded_string_extra(capture, "watcher_last_stderr"),
-                        "runner ended without a documented code"
-                    );
+                    assert!(!capture
+                        .extras
+                        .iter()
+                        .any(|(key, _)| *key == "watcher_runner_command"
+                            || *key == "watcher_last_stderr"));
                     assert!(capture.message.contains("last_rss=not-yet-sampled"));
                     assert!(!capture.fingerprint.iter().any(|part| part.contains('/')));
                 }
@@ -2416,7 +2440,11 @@ mod tests {
     }
 
     #[test]
-    fn unknown_exit_handler_carries_runner_version_and_last_stderr() {
+    fn unknown_exit_handler_exposes_only_fixed_vocabulary_diagnostics() {
+        let private_path = r"C:\Users\Ada\hq\companies\personal\secret-plan.md";
+        let raw_stderr = format!(
+            "EPERM: operation not permitted, rename '{private_path}.hq-tmp-a1b2' -> '{private_path}'"
+        );
         let mut effects = RecordingWatcherEffects::default();
         handle_watcher_exit_with_effects(
             &mut effects,
@@ -2424,15 +2452,11 @@ mod tests {
             None,
             false,
             false,
-            "/opt/homebrew/bin/npx",
-            Some("runner ended without a documented code"),
+            r"C:\Users\Ada\AppData\Roaming\npm\npx.cmd --private-flag",
+            Some(&raw_stderr),
             &WatcherExitCaptureContext::default(),
         );
         let capture = &effects.captures[0];
-        assert_eq!(
-            recorded_string_extra(capture, "watcher_runner_command"),
-            "/opt/homebrew/bin/npx"
-        );
         assert_eq!(
             recorded_string_extra(capture, "watcher_hq_cloud_package"),
             HQ_CLOUD_PACKAGE
@@ -2445,10 +2469,18 @@ mod tests {
             recorded_string_extra(capture, "watcher_runner_binary"),
             RUNNER_BIN
         );
-        assert_eq!(
-            recorded_string_extra(capture, "watcher_last_stderr"),
-            "runner ended without a documented code"
+        assert!(
+            !capture
+                .extras
+                .iter()
+                .any(|(key, _)| *key == "watcher_runner_command" || *key == "watcher_last_stderr"),
+            "raw command and stderr extras must not reach Sentry"
         );
+        let serialized = serde_json::to_string(&capture.extras).expect("serialize extras");
+        assert!(!serialized.contains(private_path));
+        assert!(!serialized.contains("private-flag"));
+        assert!(!serialized.contains("hq-tmp-a1b2"));
+        assert!(!serialized.contains("operation not permitted"));
     }
 
     #[cfg(unix)]
@@ -2868,6 +2900,50 @@ mod tests {
                 "auto-sync-watcher-termination",
                 "windows:session-terminate"
             ]
+        );
+    }
+
+    #[test]
+    fn production_unrecognized_exit_capture_omits_raw_runner_content_before_send() {
+        let private_path = r"C:\Users\Ada\hq\companies\personal\secret-plan.md";
+        let watcher_command = r"C:\Users\Ada\AppData\Roaming\npm\npx.cmd --private-flag";
+        let raw_stderr = format!(
+            "EPERM: operation not permitted, rename '{private_path}.hq-tmp-a1b2' -> '{private_path}'"
+        );
+
+        let captures = sentry::test::with_captured_events(|| {
+            let mut effects = ProductionWatcherProcessEffects;
+            record_unexpected_watcher_exit(
+                &mut effects,
+                Some(221),
+                None,
+                1,
+                1,
+                WatcherExitCapturePolicy::Capture,
+                watcher_command,
+                Some(&raw_stderr),
+                &WatcherExitCaptureContext::default(),
+            );
+        });
+
+        assert_eq!(captures.len(), 1);
+        let scrubbed = hq_telemetry::before_send(captures.into_iter().next().unwrap())
+            .expect("unrecognized watcher event remains sendable");
+        let serialized = serde_json::to_string(&scrubbed).expect("serialize final event");
+
+        assert!(!scrubbed.extra.contains_key("watcher_runner_command"));
+        assert!(!scrubbed.extra.contains_key("watcher_last_stderr"));
+        assert!(!serialized.contains(private_path));
+        assert!(!serialized.contains("private-flag"));
+        assert!(!serialized.contains("hq-tmp-a1b2"));
+        assert!(!serialized.contains("operation not permitted"));
+        assert_eq!(
+            scrubbed.extra["watcher_hq_cloud_package"],
+            sentry::protocol::Value::String(HQ_CLOUD_PACKAGE.to_string())
+        );
+        assert_eq!(
+            scrubbed.extra["watcher_runner_binary"],
+            sentry::protocol::Value::String(RUNNER_BIN.to_string())
         );
     }
 
