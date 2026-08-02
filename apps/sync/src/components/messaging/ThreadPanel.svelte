@@ -21,6 +21,7 @@
   // on a "thread" wake and emits thread:new-reply.
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
+  import { safeUnlisten } from '../../lib/listener-registry';
   import Conversation, { type ConversationMessage } from './Conversation.svelte';
   import { renderMessageBodyMarkdown } from '../../lib/messageMarkdown';
   import { type ReactionEvent, dmScope, channelScope } from '../../lib/reactions';
@@ -248,11 +249,12 @@
     let disposed = false;
 
     function retainUnlistener(unlisten: () => void): void {
+      const safe = safeUnlisten(unlisten);
       if (disposed) {
-        unlisten();
+        safe();
         return;
       }
-      unlisteners.push(unlisten);
+      unlisteners.push(safe);
     }
 
     function registerListener<T>(

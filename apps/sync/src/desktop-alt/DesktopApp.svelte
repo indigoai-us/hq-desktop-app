@@ -1266,7 +1266,7 @@
       requestConversation(mapMessagesTarget(event.payload ?? {}));
     }).then((unlisten) => {
       if (!mounted) {
-        unlisten();
+        safeUnlisten(unlisten)();
         return;
       }
       unlisteners.push(safeUnlisten(unlisten));
@@ -1595,16 +1595,16 @@
       }),
     ]).then((offs) => {
       if (mounted) {
-        unlisteners.push(...offs);
+        unlisteners.push(...offs.map(safeUnlisten));
       } else {
-        offs.forEach((off) => off());
+        offs.forEach((off) => safeUnlisten(off)());
       }
     });
 
     return () => {
       mounted = false;
-      unlistenFocus?.();
-      unlisteners.forEach((unlisten) => unlisten());
+      safeUnlisten(unlistenFocus)();
+      unlisteners.forEach((unlisten) => safeUnlisten(unlisten)());
       window.clearInterval(meetingStatusInterval);
       window.removeEventListener('keydown', handleKeydown);
       window.removeEventListener('focus', hydrateMeetingStatus);

@@ -460,13 +460,13 @@
     let cancelled = false;
     (async () => {
       try {
-        unlisten = await listen<{ meetingId?: string }>(
+        unlisten = safeUnlisten(await listen<{ meetingId?: string }>(
           'meetings:focus-meeting',
           (event) => {
             const id = event.payload?.meetingId;
             if (id) focusMeetingRow(id);
           },
-        );
+        ));
         if (cancelled) {
           unlisten?.();
           return;
@@ -498,7 +498,7 @@
     let cancelled = false;
     (async () => {
       try {
-        unlisten = await listen<{
+        unlisten = safeUnlisten(await listen<{
           activeMeetings?: ActiveMeeting[];
           memberships?: ActiveMembership[];
           defaultRecordingCompanyUid?: string | null;
@@ -510,7 +510,7 @@
           recordingMemberships = Array.isArray(next.memberships)
             ? next.memberships
             : [];
-        });
+        }));
         if (cancelled) {
           unlisten?.();
           return;

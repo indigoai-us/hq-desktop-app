@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { safeUnlisten } from '../../lib/listener-registry';
 import {
   SESSIONS_UPDATED_EVENT,
   type AgentSession,
@@ -92,7 +93,7 @@ export function startSessionsStore(): void {
   void listen<MissionControlSnapshot>(SESSIONS_UPDATED_EVENT, (event) => {
     applySnapshot(event.payload);
   }).then((fn) => {
-    unlisten = fn;
+    unlisten = safeUnlisten(fn);
   });
 
   void refresh();
@@ -104,7 +105,7 @@ export function startSessionsStore(): void {
  */
 export function stopSessionsStore(): void {
   if (unlisten) {
-    unlisten();
+    safeUnlisten(unlisten)();
     unlisten = null;
   }
   started = false;

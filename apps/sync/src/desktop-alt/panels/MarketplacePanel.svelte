@@ -17,6 +17,7 @@
    */
   import { invoke } from '@tauri-apps/api/core';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+  import { safeUnlisten } from '../../lib/listener-registry';
   import { onMount } from 'svelte';
   import {
     companyInstallTargets,
@@ -86,21 +87,21 @@
     // Stream install progress + terminal result from the Rust command. Hook-
     // consent prompts the CLI prints flow through as progress lines.
     void (async () => {
-      unlistenProgress = await listen<{ line: string }>('marketplace:install-progress', (e) => {
+      unlistenProgress = safeUnlisten(await listen<{ line: string }>('marketplace:install-progress', (e) => {
         if (e.payload?.line) installLog = [...installLog, e.payload.line];
-      });
-      unlistenComplete = await listen('marketplace:install-complete', () => {
+      }));
+      unlistenComplete = safeUnlisten(await listen('marketplace:install-complete', () => {
         installResult = { ok: true, message: 'Installed.' };
-      });
-      unlistenError = await listen<{ message: string }>('marketplace:install-error', (e) => {
+      }));
+      unlistenError = safeUnlisten(await listen<{ message: string }>('marketplace:install-error', (e) => {
         installResult = { ok: false, message: e.payload?.message ?? 'Install failed.' };
-      });
+      }));
     })();
 
     return () => {
-      unlistenProgress?.();
-      unlistenComplete?.();
-      unlistenError?.();
+      safeUnlisten(unlistenProgress)();
+      safeUnlisten(unlistenComplete)();
+      safeUnlisten(unlistenError)();
     };
   });
 

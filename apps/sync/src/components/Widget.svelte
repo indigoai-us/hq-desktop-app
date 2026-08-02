@@ -45,6 +45,7 @@
     loadNotificationTimeline,
   } from '../lib/notificationFeedData';
   import type { Channel } from '../lib/channels';
+  import { safeUnlisten } from '../lib/listener-registry';
   import {
     DESKTOP_ZOOM_CHANGE_EVENT,
     normalizeDesktopZoom,
@@ -974,15 +975,15 @@
         DESKTOP_ZOOM_CHANGE_EVENT,
         handleDesktopZoomChange,
       );
-      unlistenNotif?.();
-      unlistenOcc?.();
-      unlistenClickAway?.();
-      unlistenDm?.();
-      unlistenSync?.();
-      unlistenUpdate?.();
-      unlistenUpdateCleared?.();
-      unlistenChannelMessage?.();
-      unlistenChannelUpdated?.();
+      safeUnlisten(unlistenNotif)();
+      safeUnlisten(unlistenOcc)();
+      safeUnlisten(unlistenClickAway)();
+      safeUnlisten(unlistenDm)();
+      safeUnlisten(unlistenSync)();
+      safeUnlisten(unlistenUpdate)();
+      safeUnlisten(unlistenUpdateCleared)();
+      safeUnlisten(unlistenChannelMessage)();
+      safeUnlisten(unlistenChannelUpdated)();
       if (historyReloadTimer !== undefined) {
         clearTimeout(historyReloadTimer);
         historyReloadTimer = undefined;

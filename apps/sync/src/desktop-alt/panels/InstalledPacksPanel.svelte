@@ -22,6 +22,7 @@
   import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+  import { safeUnlisten } from '../../lib/listener-registry';
   import {
     shortSource,
     packIdentity,
@@ -229,7 +230,7 @@
     })();
 
     return () => {
-      unlisteners.forEach((u) => u());
+      unlisteners.forEach((u) => safeUnlisten(u)());
       if (repairCommandTimer) clearTimeout(repairCommandTimer);
     };
   });

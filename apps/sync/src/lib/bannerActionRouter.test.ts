@@ -10,6 +10,41 @@ function deferred<T>() {
 }
 
 describe('BannerActionRouter', () => {
+  it('contains an async Tauri unlisten rejection during disposal', async () => {
+    const staleError = new TypeError(
+      "undefined is not an object (evaluating 'listeners[eventId].handlerId')",
+    );
+    const unlisten = vi.fn(async () => {
+      throw staleError;
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const unhandled: unknown[] = [];
+    const onUnhandledRejection = (reason: unknown) => unhandled.push(reason);
+    process.on('unhandledRejection', onUnhandledRejection);
+    const router = new BannerActionRouter({
+      listen: async () => unlisten,
+      invoke: vi.fn().mockResolvedValue(undefined),
+      execute: vi.fn(),
+      retryDelay: async () => {},
+    });
+
+    try {
+      await router.start();
+      await router.dispose();
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+      expect(unlisten).toHaveBeenCalledOnce();
+      expect(unhandled).toEqual([]);
+      expect(warn).toHaveBeenCalledWith(
+        'safeUnlisten: ignoring listener teardown error',
+        staleError,
+      );
+    } finally {
+      process.off('unhandledRejection', onUnhandledRejection);
+      warn.mockRestore();
+    }
+  });
+
   it('registers the listener before readiness and retries setup failures', async () => {
     const order: string[] = [];
     const unlistenAfterFailedReady = vi.fn();

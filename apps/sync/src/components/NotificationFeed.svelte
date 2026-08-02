@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
+  import { safeUnlisten } from '../lib/listener-registry';
   import {
     buildNotificationGroups,
     type DayGroup,
@@ -308,8 +309,9 @@
     let disposed = false;
     const unlisteners: Array<() => void> = [];
     const track = (unlisten: () => void) => {
-      if (disposed) unlisten();
-      else unlisteners.push(unlisten);
+      const safe = safeUnlisten(unlisten);
+      if (disposed) safe();
+      else unlisteners.push(safe);
     };
     const registrations = [
       listen('dm:unread-summary', scheduleReload).then(track),

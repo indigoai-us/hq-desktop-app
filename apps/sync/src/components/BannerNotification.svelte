@@ -10,6 +10,7 @@
   import { tick } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
+  import { safeUnlisten } from '../lib/listener-registry';
 
   interface BannerPayload {
     kind: string;
@@ -132,13 +133,13 @@
       armDismiss(); // (re)start the countdown each time a notification arrives.
       void fitHeight(); // size the window to the new content.
     }).then((fn) => {
-      unlisten = fn;
+      unlisten = safeUnlisten(fn);
       // Ready-handshake: tell Rust the listener is mounted so it emits the
       // pending payload + shows the window (mirrors DmDetail / ShareDetail).
       invoke('banner_window_ready');
     });
     return () => {
-      unlisten?.();
+      safeUnlisten(unlisten)();
       clearTimeout(dismissTimer);
       clearTimeout(leaveTimer);
     };

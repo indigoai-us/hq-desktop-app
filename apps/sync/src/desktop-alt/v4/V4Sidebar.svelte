@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
+  import { safeUnlisten } from '../../lib/listener-registry';
   import { onMount } from 'svelte';
   import type { Workspace, WorkspacesResult } from '../../lib/workspaces';
   import {
@@ -108,8 +109,9 @@
     let disposed = false;
     const unlisteners: Array<() => void> = [];
     const track = (unlisten: () => void) => {
-      if (disposed) unlisten();
-      else unlisteners.push(unlisten);
+      const safe = safeUnlisten(unlisten);
+      if (disposed) safe();
+      else unlisteners.push(safe);
     };
     // Hydrate only after every native listener has settled. An event that
     // lands during registration is recovered by this authoritative first

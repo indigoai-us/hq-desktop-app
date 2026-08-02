@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { safeUnlisten } from './listener-registry';
 import { get, writable } from 'svelte/store';
 import {
   activeMemberships,
@@ -211,7 +212,7 @@ export function ensureActiveMeetingListeners(): Promise<() => void> {
 }
 
 export function stopActiveMeetingListeners(): void {
-  unlisteners?.forEach((unlisten) => unlisten());
+  unlisteners?.forEach((unlisten) => safeUnlisten(unlisten)());
   unlisteners = null;
   listenerPromise = null;
 }

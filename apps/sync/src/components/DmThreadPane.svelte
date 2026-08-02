@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
+  import { safeUnlisten } from '../lib/listener-registry';
   import Conversation, { type ConversationMessage } from './messaging/Conversation.svelte';
   import { type ReactionEvent, dmScope } from '../lib/reactions';
   import { ReactionController } from '../lib/reactionController.svelte';
@@ -241,8 +242,9 @@
     let disposed = false;
     const unlisteners: Array<() => void> = [];
     const track = (fn: () => void) => {
-      if (disposed) fn();
-      else unlisteners.push(fn);
+      const safe = safeUnlisten(fn);
+      if (disposed) safe();
+      else unlisteners.push(safe);
     };
 
     // Live inbound: a new DM from the peer being viewed lands in the thread

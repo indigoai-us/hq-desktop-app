@@ -8,6 +8,7 @@
   import '../styles/popover.css';
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
+  import { safeUnlisten } from '../lib/listener-registry';
   import type { ShareEvent, Item } from '../lib/notificationGroups';
   import { defaultSelectedId } from '../lib/quickWindowPane';
   import QuickWindowSidePane from './QuickWindowSidePane.svelte';
@@ -57,7 +58,7 @@
         ]);
       }
     }).then((fn) => {
-      unlisten = fn;
+      unlisten = safeUnlisten(fn);
       // Signal to Rust that our listener is registered — Rust emits the
       // pending events + shows the window. Mirrors the new-files-detail
       // ready-handshake (races with WebviewWindowBuilder otherwise).
@@ -65,7 +66,7 @@
     });
 
     return () => {
-      unlisten?.();
+      safeUnlisten(unlisten)();
     };
   });
 </script>

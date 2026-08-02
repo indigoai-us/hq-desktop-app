@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
+  import { safeUnlisten } from '../lib/listener-registry';
 
   interface ActivityEntry {
     company: string;
@@ -117,17 +118,17 @@
     listen<ActivityEntry>('activity:append', (event) => {
       entries = [...entries, event.payload];
     }).then((off) => {
-      offAppend = off;
+      offAppend = safeUnlisten(off);
     });
     listen<ActivityEntry[]>('activity:list', (event) => {
       entries = event.payload;
     }).then((off) => {
-      offList = off;
+      offList = safeUnlisten(off);
     });
 
     return () => {
-      offAppend?.();
-      offList?.();
+      safeUnlisten(offAppend)();
+      safeUnlisten(offList)();
     };
   });
 </script>
