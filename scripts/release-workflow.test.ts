@@ -10,14 +10,16 @@ let clientClassifier = "";
 let windowsConfig = "";
 let windowsCheckWorkflow = "";
 let versionsToml = "";
+let syncCargoToml = "";
 
 beforeAll(async () => {
-  [workflow, clientClassifier, windowsConfig, windowsCheckWorkflow, versionsToml] = await Promise.all([
+  [workflow, clientClassifier, windowsConfig, windowsCheckWorkflow, versionsToml, syncCargoToml] = await Promise.all([
     readFile(resolve(rootDir, ".github/workflows/release.yml"), "utf8"),
     readFile(resolve(rootDir, "crates/hq-desktop-core/src/release_channel.rs"), "utf8"),
     readFile(resolve(rootDir, "apps/sync/src-tauri/tauri.windows.conf.json"), "utf8"),
     readFile(resolve(rootDir, ".github/workflows/windows-check.yml"), "utf8"),
     readFile(resolve(rootDir, "versions.toml"), "utf8"),
+    readFile(resolve(rootDir, "apps/sync/src-tauri/Cargo.toml"), "utf8"),
   ]);
 });
 
@@ -366,9 +368,20 @@ describe("release workflow channel contract", () => {
     expect(windows).toContain("$exeMetadata.variants");
     expect(windows).toContain("$pdbMetadata.variants");
     expect(macos).toContain('data.get("variants", [])');
+    expect(syncCargoToml).toMatch(/\[profile\.release\][\s\S]*?debug = "line-tables-only"/);
 
-    expect(windows).toMatch(/Copy-Item \$pdb \(Join-Path \$stage "hq_sync_menubar\.pdb"\)/);
+    expect(windows).toContain("Upload Windows debug files");
+    expect(windows).toContain("hq-debug-windows-${{ matrix.target }}");
+    expect(windows).toContain("debug-artifacts-${{ matrix.target }}");
+    expect(macos).toContain("hq-debug-macos-universal");
     expect(macos).toMatch(/target\/universal-apple-darwin\/release\/bundle\/macos\/HQ\.app\.dSYM/);
     expect(`${macos}\n${windows}`).not.toContain("--include-sources");
+
+    const publish = jobBody("publish");
+    expect(publish).not.toContain("Download all artifacts");
+    expect(publish).toContain("Download macOS release artifacts");
+    expect(publish).toContain("Download Windows x64 release artifacts");
+    expect(publish).toContain("Download Windows ARM64 release artifacts");
+    expect(publish).not.toContain("hq-debug-");
   });
 });

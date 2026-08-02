@@ -124,16 +124,12 @@ fn native_panic_seams(
     seams
 }
 
-fn append_native_panic_context(event: &mut Event<'static>) {
-    event.tags.insert(
-        NATIVE_PANIC_PHASE_TAG.into(),
-        current_native_panic_phase().as_tag().into(),
-    );
+fn append_native_panic_context(event: &mut Event<'static>, phase: NativePanicPhase, history: u64) {
+    event
+        .tags
+        .insert(NATIVE_PANIC_PHASE_TAG.into(), phase.as_tag().into());
 
-    for seam in native_panic_seams(NATIVE_PANIC_SEAMS.load(Ordering::Relaxed))
-        .into_iter()
-        .flatten()
-    {
+    for seam in native_panic_seams(history).into_iter().flatten() {
         event.breadcrumbs.values.push(sentry::protocol::Breadcrumb {
             category: Some(UI_SEAM_CATEGORY.into()),
             message: Some(seam.message().into()),
@@ -280,7 +276,11 @@ pub fn before_send(mut event: Event<'static>) -> Option<Event<'static>> {
     // Native event-loop call sites only update atomics. Materialize their
     // bounded, static diagnostic context here so Sentry scope mutation never
     // runs on a tray/window callback.
-    append_native_panic_context(&mut event);
+    append_native_panic_context(
+        &mut event,
+        current_native_panic_phase(),
+        NATIVE_PANIC_SEAMS.load(Ordering::Relaxed),
+    );
 
     // protocol::Request.headers is a Map<String, String>; wipe sensitive
     // header values in-place. (Rust SDK's header map holds owned strings,
@@ -706,8 +706,6 @@ mod tests {
 
     #[test]
     fn test_native_panic_seam_is_scrubbed_safely_and_marks_exit_phase() {
-        NATIVE_PANIC_SEAMS.store(0, Ordering::Relaxed);
-        set_native_panic_phase(NativePanicPhase::Running);
         let seams = [
             NativePanicSeam::TrayLeftClick,
             NativePanicSeam::TrayBlurHide,
@@ -719,15 +717,15 @@ mod tests {
             NativePanicSeam::SingleInstanceSurfaceExisting,
             NativePanicSeam::AppExitRequested,
         ];
-        for seam in seams {
-            record_native_panic_seam(seam);
-        }
-        set_native_panic_phase(NativePanicPhase::Exiting);
-        assert_eq!(current_native_panic_phase(), NativePanicPhase::Exiting);
+        let history = seams
+            .into_iter()
+            .fold(0_u64, |history, seam| (history << u8::BITS) | seam as u64);
 
-        let event = before_send(Event::default()).expect("native panic event remains sendable");
-        NATIVE_PANIC_SEAMS.store(0, Ordering::Relaxed);
-        set_native_panic_phase(NativePanicPhase::Running);
+        // Use injected values rather than process-global atomics: Rust test
+        // execution is concurrent, while production snapshots both atomics
+        // before calling this same helper from `before_send`.
+        let mut event = Event::default();
+        append_native_panic_context(&mut event, NativePanicPhase::Exiting, history);
 
         let breadcrumbs: Vec<_> = event
             .breadcrumbs

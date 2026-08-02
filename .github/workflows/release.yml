@@ -476,6 +476,15 @@ jobs:
             apps/sync/src-tauri/target/release-artifacts/*.dmg
             apps/sync/src-tauri/target/release-artifacts/*.app.tar.gz
             apps/sync/src-tauri/target/release-artifacts/*.app.tar.gz.sig
+
+      - name: Upload macOS debug files
+        uses: actions/upload-artifact@v4
+        with:
+          # Publish downloads only hq-macos-universal, so this private symbol
+          # artifact can never become a public GitHub Release asset.
+          name: hq-debug-macos-universal
+          if-no-files-found: error
+          path: apps/sync/src-tauri/target/universal-apple-darwin/release/bundle/macos/HQ.app.dSYM
             apps/sync/src-tauri/target/universal-apple-darwin/release/bundle/macos/HQ.app.dSYM
 
   windows:
@@ -740,12 +749,6 @@ jobs:
             Copy-Item $sig (Join-Path $stage $destName)
           }
 
-          $pdb = Join-Path "src-tauri\target\${{ matrix.target }}\release" "hq_sync_menubar.pdb"
-          if (-not (Test-Path $pdb)) {
-            throw "Required release PDB is missing: $pdb"
-          }
-          Copy-Item $pdb (Join-Path $stage "hq_sync_menubar.pdb")
-
           Get-ChildItem -Path $stage | ForEach-Object { Write-Host "Staged: $($_.Name)" }
 
       - name: Upload Windows artifacts
@@ -754,6 +757,26 @@ jobs:
           name: hq-windows-${{ matrix.target }}
           if-no-files-found: error
           path: release-artifacts-${{ matrix.target }}/
+
+      - name: Stage Windows debug files
+        shell: pwsh
+        run: |
+          $debugStage = Join-Path $env:GITHUB_WORKSPACE "debug-artifacts-${{ matrix.target }}"
+          $pdb = Join-Path "src-tauri\target\${{ matrix.target }}\release" "hq_sync_menubar.pdb"
+          if (-not (Test-Path $pdb)) {
+            throw "Required release PDB is missing: $pdb"
+          }
+          New-Item -ItemType Directory -Path $debugStage -Force | Out-Null
+          Copy-Item $pdb (Join-Path $debugStage "hq_sync_menubar.pdb")
+
+      - name: Upload Windows debug files
+        uses: actions/upload-artifact@v4
+        with:
+          # Publish downloads only hq-windows-*, so this private symbol
+          # artifact can never become a public GitHub Release asset.
+          name: hq-debug-windows-${{ matrix.target }}
+          if-no-files-found: error
+          path: debug-artifacts-${{ matrix.target }}/
 
   publish:
     name: Publish GitHub release
@@ -791,10 +814,23 @@ jobs:
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
-      - name: Download all artifacts
+      - name: Download macOS release artifacts
         uses: actions/download-artifact@v4
         with:
-          path: artifacts
+          name: hq-macos-universal
+          path: artifacts/hq-macos-universal
+
+      - name: Download Windows x64 release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: hq-windows-x86_64-pc-windows-msvc
+          path: artifacts/hq-windows-x86_64-pc-windows-msvc
+
+      - name: Download Windows ARM64 release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: hq-windows-aarch64-pc-windows-msvc
+          path: artifacts/hq-windows-aarch64-pc-windows-msvc
 
       - name: Flatten artifacts
         run: |

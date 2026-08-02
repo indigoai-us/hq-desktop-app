@@ -105,6 +105,9 @@ semver = "1"
 url = "2"
 
 [profile.release]
+# Emit file/line data for private dSYM/PDB upload. This deliberately avoids
+# full debug info so public bundle size remains within the release budget.
+debug = "line-tables-only"
 # macOS/dSYM-specific. On Windows MSVC the pdb is already a separate sidecar.
 split-debuginfo = "packed"
 
