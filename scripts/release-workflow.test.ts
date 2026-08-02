@@ -36,6 +36,19 @@ function jobBody(name: string): string {
   return match[1];
 }
 
+function stepBody(job: string, name: string): string {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = new RegExp(
+    `\\n      - name: ${escaped}\\n([\\s\\S]*?)(?=\\n      - name: |$)`,
+  ).exec(job);
+
+  if (!match) {
+    throw new Error(`release workflow is missing the ${name} step`);
+  }
+
+  return match[1];
+}
+
 function classifierPatterns(): RegExp[] {
   const validate = jobBody("validate");
   return [...validate.matchAll(/\[\[ "\$TAG" =~ (\^\S+\$) \]\]/g)]
@@ -355,6 +368,13 @@ describe("release workflow channel contract", () => {
     expect(macos).toContain("SENTRY_AUTH_TOKEN");
     expect(macos).toContain("SENTRY_AUTH_TOKEN is not configured");
     expect(macos).toContain("HQ.app.dSYM");
+    expect(macos).toContain("HQ.app/Contents/MacOS/hq-sync-menubar");
+    expect(macos).toContain(
+      'DSYM_BINARY="$DSYM_BUNDLE/Contents/Resources/DWARF/hq-sync-menubar"',
+    );
+    expect(macos).toContain("xcrun dsymutil");
+    expect(macos).toContain("BUNDLE_BUDGET_KB=$((15 * 1024))");
+    expect(macos).toContain("macOS app bundle exceeds 15 MB budget");
 
     expect(windows).toContain("Install Sentry CLI");
     expect(windows).toContain("Verify Windows debug file contract");
@@ -365,16 +385,28 @@ describe("release workflow channel contract", () => {
     expect(windows).toContain("sentry-cli debug-files upload");
     expect(windows).toContain("SENTRY_AUTH_TOKEN is not configured");
     expect(windows).toContain("SENTRY_AUTH_TOKEN is invalid or upload failed");
+    expect(stepBody(windows, "Upload Windows debug files to Sentry")).toContain(
+      'Write-Host "::warning::SENTRY_AUTH_TOKEN is not configured',
+    );
     expect(windows).toContain("$exeMetadata.variants");
     expect(windows).toContain("$pdbMetadata.variants");
     expect(macos).toContain('data.get("variants", [])');
     expect(syncCargoToml).toMatch(/\[profile\.release\][\s\S]*?debug = "line-tables-only"/);
+
+    expect(windowsCheckWorkflow).toContain("Verify installer debug file contract");
+    expect(windowsCheckWorkflow).toContain("hq-sync-menubar.exe");
+    expect(windowsCheckWorkflow).toContain("hq_sync_menubar.pdb");
+    expect(windowsCheckWorkflow).toContain("sentry-cli difutil check --json");
+    expect(windowsCheckWorkflow).toContain("Installer executable/PDB debug id");
 
     expect(windows).toContain("Upload Windows debug files");
     expect(windows).toContain("hq-debug-windows-${{ matrix.target }}");
     expect(windows).toContain("debug-artifacts-${{ matrix.target }}");
     expect(macos).toContain("hq-debug-macos-universal");
     expect(macos).toMatch(/target\/universal-apple-darwin\/release\/bundle\/macos\/HQ\.app\.dSYM/);
+    expect(stepBody(macos, "Upload macOS debug files")).toContain(
+      "path: |\n            apps/sync/src-tauri/target/universal-apple-darwin/release/bundle/macos/HQ.app.dSYM",
+    );
     expect(`${macos}\n${windows}`).not.toContain("--include-sources");
 
     const publish = jobBody("publish");

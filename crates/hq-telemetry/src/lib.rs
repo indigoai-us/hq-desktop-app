@@ -272,15 +272,23 @@ fn scrub_error_marker() -> Context {
     Context::Other(marker)
 }
 
-pub fn before_send(mut event: Event<'static>) -> Option<Event<'static>> {
+pub fn before_send(event: Event<'static>) -> Option<Event<'static>> {
+    before_send_with_native_context(
+        event,
+        current_native_panic_phase(),
+        NATIVE_PANIC_SEAMS.load(Ordering::Relaxed),
+    )
+}
+
+fn before_send_with_native_context(
+    mut event: Event<'static>,
+    phase: NativePanicPhase,
+    history: u64,
+) -> Option<Event<'static>> {
     // Native event-loop call sites only update atomics. Materialize their
     // bounded, static diagnostic context here so Sentry scope mutation never
     // runs on a tray/window callback.
-    append_native_panic_context(
-        &mut event,
-        current_native_panic_phase(),
-        NATIVE_PANIC_SEAMS.load(Ordering::Relaxed),
-    );
+    append_native_panic_context(&mut event, phase, history);
 
     // protocol::Request.headers is a Map<String, String>; wipe sensitive
     // header values in-place. (Rust SDK's header map holds owned strings,
@@ -724,8 +732,9 @@ mod tests {
         // Use injected values rather than process-global atomics: Rust test
         // execution is concurrent, while production snapshots both atomics
         // before calling this same helper from `before_send`.
-        let mut event = Event::default();
-        append_native_panic_context(&mut event, NativePanicPhase::Exiting, history);
+        let event =
+            before_send_with_native_context(Event::default(), NativePanicPhase::Exiting, history)
+                .expect("native panic event remains sendable");
 
         let breadcrumbs: Vec<_> = event
             .breadcrumbs

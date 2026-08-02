@@ -254,6 +254,34 @@ jobs:
           --config $env:TAURI_MSI_VERSION_CONFIG
           --features e2e-automation
 
+      - name: Install Sentry CLI
+        shell: pwsh
+        run: npm install --global @sentry/cli@3.6.2
+
+      # Exercise the release-profile symbol contract on every PR that changes
+      # the release workflow. The e2e feature changes the binary's debug id,
+      # but the executable and its PDB must still carry the same id.
+      - name: Verify installer debug file contract
+        shell: pwsh
+        run: |
+          $releaseDir = "src-tauri\target\x86_64-pc-windows-msvc\release"
+          $exe = Join-Path $releaseDir "hq-sync-menubar.exe"
+          $pdb = Join-Path $releaseDir "hq_sync_menubar.pdb"
+          if (-not (Test-Path $exe)) {
+            throw "Required installer executable is missing: $exe"
+          }
+          if (-not (Test-Path $pdb)) {
+            throw "Required installer PDB is missing: $pdb"
+          }
+          $exeMetadata = (& sentry-cli difutil check --json $exe | ConvertFrom-Json)
+          $pdbMetadata = (& sentry-cli difutil check --json $pdb | ConvertFrom-Json)
+          $exeDebugId = @($exeMetadata.variants | ForEach-Object { $_.debug_id } | Where-Object { $_ } | Sort-Object -Unique) -join ","
+          $pdbDebugId = @($pdbMetadata.variants | ForEach-Object { $_.debug_id } | Where-Object { $_ } | Sort-Object -Unique) -join ","
+          if (-not $exeDebugId -or -not $pdbDebugId -or $exeDebugId -ne $pdbDebugId) {
+            throw "Installer executable and PDB debug ids differ: exe=$exeDebugId pdb=$pdbDebugId"
+          }
+          Write-Host "Installer executable/PDB debug id: $exeDebugId"
+
       - name: Verify prerelease MSI package
         shell: pwsh
         run: |

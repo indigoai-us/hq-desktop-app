@@ -333,11 +333,23 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          APP="src-tauri/target/universal-apple-darwin/release/bundle/macos/HQ.app"
-          DSYM="${APP}.dSYM"
-          test -d "$DSYM"
-          APP_DEBUG_ID="$(sentry-cli difutil check --json "$APP" | python3 -c 'import json,sys; data=json.load(sys.stdin); ids=sorted({variant.get("debug_id") for variant in data.get("variants", []) if variant.get("debug_id")}); assert ids; print(",".join(ids))')"
-          DSYM_DEBUG_ID="$(sentry-cli difutil check --json "$DSYM" | python3 -c 'import json,sys; data=json.load(sys.stdin); ids=sorted({variant.get("debug_id") for variant in data.get("variants", []) if variant.get("debug_id")}); assert ids; print(",".join(ids))')"
+          APP_BUNDLE="src-tauri/target/universal-apple-darwin/release/bundle/macos/HQ.app"
+          APP_BINARY="$APP_BUNDLE/Contents/MacOS/hq-sync-menubar"
+          DSYM_BUNDLE="${APP_BUNDLE}.dSYM"
+          DSYM_BINARY="$DSYM_BUNDLE/Contents/Resources/DWARF/hq-sync-menubar"
+          test -f "$APP_BINARY"
+          BUNDLE_KB="$(du -sk "$APP_BUNDLE" | awk '{print $1}')"
+          BUNDLE_BUDGET_KB=$((15 * 1024))
+          if [ "$BUNDLE_KB" -ge "$BUNDLE_BUDGET_KB" ]; then
+            echo "::error::macOS app bundle exceeds 15 MB budget: ${BUNDLE_KB} KB"
+            exit 1
+          fi
+          echo "macOS app bundle size: ${BUNDLE_KB} KB (< ${BUNDLE_BUDGET_KB} KB)"
+          rm -rf "$DSYM_BUNDLE"
+          xcrun dsymutil "$APP_BINARY" -o "$DSYM_BUNDLE"
+          test -f "$DSYM_BINARY"
+          APP_DEBUG_ID="$(sentry-cli difutil check --json "$APP_BINARY" | python3 -c 'import json,sys; data=json.load(sys.stdin); ids=sorted({variant.get("debug_id") for variant in data.get("variants", []) if variant.get("debug_id")}); assert ids; print(",".join(ids))')"
+          DSYM_DEBUG_ID="$(sentry-cli difutil check --json "$DSYM_BINARY" | python3 -c 'import json,sys; data=json.load(sys.stdin); ids=sorted({variant.get("debug_id") for variant in data.get("variants", []) if variant.get("debug_id")}); assert ids; print(",".join(ids))')"
           test -n "$APP_DEBUG_ID"
           test "$APP_DEBUG_ID" = "$DSYM_DEBUG_ID"
           echo "macOS app/dSYM debug id: $APP_DEBUG_ID"
@@ -349,8 +361,8 @@ jobs:
         run: |
           set -euo pipefail
           DEBUG_DIR="src-tauri/target/universal-apple-darwin/release/bundle/macos"
-          APP="$DEBUG_DIR/HQ.app"
-          DEBUG_ID="$(sentry-cli difutil check --json "$APP" | python3 -c 'import json,sys; data=json.load(sys.stdin); ids=sorted({variant.get("debug_id") for variant in data.get("variants", []) if variant.get("debug_id")}); print(",".join(ids) or "unknown")')"
+          APP_BINARY="$DEBUG_DIR/HQ.app/Contents/MacOS/hq-sync-menubar"
+          DEBUG_ID="$(sentry-cli difutil check --json "$APP_BINARY" | python3 -c 'import json,sys; data=json.load(sys.stdin); ids=sorted({variant.get("debug_id") for variant in data.get("variants", []) if variant.get("debug_id")}); print(",".join(ids) or "unknown")')"
           if [ -z "${SENTRY_AUTH_TOKEN:-}" ]; then
             echo "::warning::SENTRY_AUTH_TOKEN is not configured; debug id $DEBUG_ID was not uploaded."
             exit 0
@@ -484,7 +496,7 @@ jobs:
           # artifact can never become a public GitHub Release asset.
           name: hq-debug-macos-universal
           if-no-files-found: error
-          path: apps/sync/src-tauri/target/universal-apple-darwin/release/bundle/macos/HQ.app.dSYM
+          path: |
             apps/sync/src-tauri/target/universal-apple-darwin/release/bundle/macos/HQ.app.dSYM
 
   windows:
@@ -656,12 +668,12 @@ jobs:
           $metadata = (& sentry-cli difutil check --json $exe | ConvertFrom-Json)
           $debugId = @($metadata.variants | ForEach-Object { $_.debug_id } | Where-Object { $_ } | Sort-Object -Unique) -join ","
           if ([string]::IsNullOrWhiteSpace($env:SENTRY_AUTH_TOKEN)) {
-            Write-Warning "SENTRY_AUTH_TOKEN is not configured; debug id $debugId was not uploaded."
+            Write-Host "::warning::SENTRY_AUTH_TOKEN is not configured; debug id $debugId was not uploaded."
             exit 0
           }
           & sentry-cli debug-files upload --org indigo-d0 --project hq-desktop --no-sources $releaseDir
           if ($LASTEXITCODE -ne 0) {
-            Write-Warning "SENTRY_AUTH_TOKEN is invalid or upload failed; debug id $debugId is retained in the private CI artifact."
+            Write-Host "::warning::SENTRY_AUTH_TOKEN is invalid or upload failed; debug id $debugId is retained in the private CI artifact."
             exit 0
           }
 
