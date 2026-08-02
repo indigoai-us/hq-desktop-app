@@ -555,6 +555,38 @@ pub fn install_converged(after: Option<&str>, latest: &str) -> bool {
     }
 }
 
+/// Result of comparing the binary resolved before an npm install with the one
+/// resolved after it. A successful install can legitimately move resolution to
+/// a newly-installed binary, so the post-install probe is authoritative.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConvergenceVerdict {
+    Converged,
+    RelocatedAndConverged,
+    NonConvergent,
+}
+
+/// Decide whether an npm install reached the CLI the desktop app resolves
+/// afterwards. `before` is diagnostic context only: it distinguishes the
+/// expected shim-to-npm relocation from an ordinary in-place update, while the
+/// decision to block remains bound exclusively to the post-install binary.
+pub fn convergence_verdict(
+    before: Option<&str>,
+    after: Option<&str>,
+    before_bin: &str,
+    after_bin: &str,
+    latest: &str,
+) -> ConvergenceVerdict {
+    if !install_converged(after, latest) {
+        return ConvergenceVerdict::NonConvergent;
+    }
+
+    if before_bin != after_bin && !install_converged(before, latest) {
+        ConvergenceVerdict::RelocatedAndConverged
+    } else {
+        ConvergenceVerdict::Converged
+    }
+}
+
 /// Should the background loop auto-install `latest`?
 ///
 /// `false` once an install of that exact version has already completed without
@@ -601,12 +633,24 @@ pub fn report_non_convergent_install(
     local: Option<&str>,
     hq_bin: &str,
     prefix: Option<&str>,
+    npm_bin: &str,
+    hq_bin_changed: bool,
 ) {
     sentry::with_scope(
         |scope| {
             scope.set_tag("hq_cli_update_kind", "install-non-convergent");
             scope.set_tag("latest", latest);
             scope.set_tag("local", local.unwrap_or("unreadable"));
+            scope.set_tag("hq_bin_source", bin_resolution_source(hq_bin));
+            scope.set_tag("npm_bin_source", bin_resolution_source(npm_bin));
+            scope.set_tag(
+                "hq_bin_changed",
+                if hq_bin_changed { "true" } else { "false" },
+            );
+            scope.set_tag(
+                "prefix_known",
+                if prefix.is_some() { "true" } else { "false" },
+            );
             scope.set_fingerprint(Some(&["hq-cli-update", "install-non-convergent"]));
             // Home-redacted: the install LAYOUT is the diagnostic
             // (`~/Library/pnpm/hq` says everything); the account name in front
@@ -626,6 +670,49 @@ pub fn report_non_convergent_install(
             );
         },
     );
+}
+
+/// Reduce a resolved executable to a closed, path-free source category for
+/// telemetry. On Unix, an absolute path outside the deterministic directories
+/// can only have come from the login-shell fallback; Windows `where.exe`
+/// results remain deliberately `unknown` rather than inferring a source.
+pub fn bin_resolution_source(bin: &str) -> &'static str {
+    if bin.is_empty() || bin == "hq" || bin == "npm" {
+        return "unknown";
+    }
+
+    let path = Path::new(bin);
+    if paths::managed_toolchain_roots()
+        .iter()
+        .any(|root| path.starts_with(root))
+    {
+        return "managed-toolchain";
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        if let Some(home) = paths::home_dir() {
+            if path.starts_with(home.join(".npm-global").join("bin")) {
+                return "npm-global";
+            }
+            if path.starts_with(home.join("Library").join("pnpm"))
+                || path.starts_with(home.join(".local").join("share").join("pnpm"))
+            {
+                return "pnpm";
+            }
+        }
+        if path.starts_with("/opt/homebrew/bin") {
+            return "homebrew";
+        }
+        if path.starts_with("/usr/local/bin") {
+            return "usr-local";
+        }
+        if path.is_absolute() {
+            return "login-shell";
+        }
+    }
+
+    "unknown"
 }
 
 /// Capture a Sentry event when `hq` is installed but every version probe
@@ -804,6 +891,23 @@ fn npm_path_shape(detail: &str, prefix: Option<&str>) -> NpmPathShape {
     }
 }
 
+/// Return the named npm code without retaining any other stderr text. The raw
+/// token lets errno classification reject a contradicting npm code even when
+/// that code is not in the telemetry allow list.
+fn npm_error_code_token(detail: &str) -> Option<&str> {
+    const MARKERS: &[&str] = &["npm error code ", "npm err! code "];
+
+    detail.lines().find_map(|line| {
+        let line = line.trim();
+        MARKERS.iter().find_map(|marker| {
+            line.get(..marker.len())
+                .filter(|prefix| prefix.eq_ignore_ascii_case(marker))
+                .and_then(|_| line.get(marker.len()..))
+                .and_then(|remainder| remainder.split_ascii_whitespace().next())
+        })
+    })
+}
+
 fn npm_error_code(detail: &str) -> &'static str {
     let code = detail.lines().find_map(|line| {
         let line = line.trim().to_ascii_lowercase();
@@ -904,6 +1008,86 @@ pub fn is_global_prefix_permission_failure(_exit_code: Option<i32>, detail: &str
         )
 }
 
+/// npm forwards negative libuv errnos through `process.exit`, and POSIX keeps
+/// only the low eight bits of that status. Decode only the statuses that can
+/// represent a negative errno and return an allow-listed name, never a raw
+/// number. Windows preserves its native process codes and intentionally has no
+/// POSIX errno interpretation here.
+pub fn npm_errno_from_exit_status(exit_code: Option<i32>) -> &'static str {
+    let Some(status) = exit_code else {
+        return "unknown";
+    };
+    if !(129..=255).contains(&status) {
+        return "unknown";
+    }
+    let errno = 256 - status;
+
+    #[cfg(target_os = "macos")]
+    match errno {
+        libc::EACCES => "EACCES",
+        libc::EPIPE => "EPIPE",
+        libc::ENETDOWN => "ENETDOWN",
+        libc::ENETRESET => "ENETRESET",
+        libc::ECONNRESET => "ECONNRESET",
+        libc::ETIMEDOUT => "ETIMEDOUT",
+        libc::ECONNREFUSED => "ECONNREFUSED",
+        libc::EHOSTUNREACH => "EHOSTUNREACH",
+        _ => "unknown",
+    }
+
+    #[cfg(target_os = "linux")]
+    match errno {
+        libc::EACCES => "EACCES",
+        libc::EPIPE => "EPIPE",
+        libc::ENETDOWN => "ENETDOWN",
+        libc::ENETRESET => "ENETRESET",
+        libc::ECONNRESET => "ECONNRESET",
+        libc::ETIMEDOUT => "ETIMEDOUT",
+        libc::ECONNREFUSED => "ECONNREFUSED",
+        libc::EHOSTUNREACH => "EHOSTUNREACH",
+        _ => "unknown",
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        let _ = errno;
+        "unknown"
+    }
+}
+
+fn has_npm_lifecycle_failure_marker(detail: &str) -> bool {
+    let detail = detail.to_ascii_lowercase();
+    detail.contains("npm error command failed")
+        || detail.contains("elifecycle")
+        || detail.contains("npm error command sh -c")
+}
+
+/// Treat an errno-backed network failure as transient only if npm did not also
+/// report lifecycle failure evidence or a disagreeing named npm error. A
+/// lifecycle script can independently exit 202, so that collision must remain
+/// loud rather than being mistaken for Darwin ECONNRESET.
+fn is_expected_transient_errno_failure(exit_code: Option<i32>, detail: &str) -> bool {
+    let errno = npm_errno_from_exit_status(exit_code);
+    if !matches!(
+        errno,
+        "ECONNRESET"
+            | "ETIMEDOUT"
+            | "ECONNREFUSED"
+            | "ENETRESET"
+            | "ENETDOWN"
+            | "EHOSTUNREACH"
+            | "EPIPE"
+    ) || has_npm_lifecycle_failure_marker(detail)
+    {
+        return false;
+    }
+
+    match npm_error_code_token(detail) {
+        Some(reported) => reported.eq_ignore_ascii_case(errno),
+        None => true,
+    }
+}
+
 /// Windows reports an aborting child as an NTSTATUS in `ExitStatus::code()`.
 /// Rust exposes the DWORD as a signed `i32`, hence these otherwise-surprising
 /// negative values. They are both normal user-machine interruptions for an
@@ -974,7 +1158,9 @@ pub fn classify_install_failure(
         InstallFailureKind::ExpectedWindowsAbort
     } else if is_windows_locked_binary_failure(exit_code, detail) {
         InstallFailureKind::ExpectedWindowsLockedBinary
-    } else if is_expected_transient_registry_failure(detail) {
+    } else if is_expected_transient_registry_failure(detail)
+        || is_expected_transient_errno_failure(exit_code, detail)
+    {
         InstallFailureKind::ExpectedTransientRegistry
     } else {
         InstallFailureKind::Unexpected
@@ -1103,6 +1289,7 @@ pub fn report_install_failure(exit_code: Option<i32>, detail: &str, prefix: Opti
                 if npm_prefix_known { "true" } else { "false" },
             );
             scope.set_tag("npm_stderr_len", npm_stderr_len.as_str());
+            scope.set_tag("npm_errno", npm_errno_from_exit_status(exit_code));
             let fingerprint = [
                 "hq-cli-update",
                 "install-failed",
@@ -1427,6 +1614,58 @@ mod tests {
         assert!(!install_converged(Some("5.77.10"), "5.79.0"));
         // Detection went blind right after an install — cannot prove anything.
         assert!(!install_converged(None, "5.79.0"));
+    }
+
+    #[test]
+    fn post_install_relocation_counts_as_converged() {
+        assert_eq!(
+            convergence_verdict(
+                Some("5.77.14"),
+                Some("5.83.0"),
+                "/Users/test/.asdf/shims/hq",
+                "/opt/homebrew/bin/hq",
+                "5.83.0",
+            ),
+            ConvergenceVerdict::RelocatedAndConverged
+        );
+    }
+
+    #[test]
+    fn genuinely_stale_post_install_resolution_still_blocks() {
+        assert_eq!(
+            convergence_verdict(
+                Some("5.77.14"),
+                Some("5.77.14"),
+                "/Users/test/.asdf/shims/hq",
+                "/Users/test/.asdf/shims/hq",
+                "5.83.0",
+            ),
+            ConvergenceVerdict::NonConvergent
+        );
+        assert!(!should_auto_install("5.83.0", Some("5.83.0")));
+    }
+
+    #[test]
+    fn bin_resolution_source_is_closed_and_path_free() {
+        #[cfg(not(target_os = "windows"))]
+        {
+            assert_eq!(bin_resolution_source("/opt/homebrew/bin/hq"), "homebrew");
+            assert_eq!(bin_resolution_source("/usr/local/bin/npm"), "usr-local");
+            assert_eq!(
+                bin_resolution_source("/Users/test/.asdf/shims/hq"),
+                "login-shell"
+            );
+        }
+        #[cfg(target_os = "windows")]
+        {
+            assert_eq!(bin_resolution_source("/opt/homebrew/bin/hq"), "unknown");
+            assert_eq!(bin_resolution_source("/usr/local/bin/npm"), "unknown");
+            assert_eq!(
+                bin_resolution_source("/Users/test/.asdf/shims/hq"),
+                "unknown"
+            );
+        }
+        assert_eq!(bin_resolution_source("hq"), "unknown");
     }
 
     /// Without this gate the background loop reinstalls the same version 15s
@@ -1854,6 +2093,179 @@ mod tests {
         assert_eq!(
             install_failure_report(Some(1), detail, Some("/usr/local")),
             Some("[hq-cli-update] install failed (exit 1)".to_string()),
+        );
+    }
+
+    #[test]
+    fn npm_permission_tags_classify_cache_prefix_and_other_without_paths() {
+        let cache_detail = "npm error code EACCES\nnpm error path /Users/me/.npm/_cacache/tmp";
+        let prefix_detail =
+            "npm error code EACCES\nnpm error path /usr/local/lib/node_modules/@indigoai-us";
+        let other_detail = "npm error code EACCES\nnpm error path /tmp/unrelated-file";
+
+        assert!(is_npm_permission_failure(cache_detail));
+        assert_eq!(npm_failure_site(cache_detail, Some("/usr/local")), "cache");
+        assert_eq!(
+            npm_failure_site(prefix_detail, Some("/usr/local")),
+            "prefix"
+        );
+        assert_eq!(npm_failure_site(other_detail, Some("/usr/local")), "other");
+        assert_eq!(
+            npm_failure_site("npm error network ETIMEDOUT", None),
+            "other"
+        );
+    }
+
+    #[test]
+    fn npm_error_code_tags_are_allow_listed_and_path_free() {
+        assert_eq!(
+            npm_error_code("npm error code EACCES\nnpm error path /Users/alice/.npm/_cacache"),
+            "EACCES"
+        );
+        assert_eq!(
+            npm_error_code("npm error code ETARGET\nnpm error notarget No matching version found"),
+            "ETARGET"
+        );
+        assert_eq!(npm_error_code("npm ERR! code ECONNRESET"), "ECONNRESET");
+        assert_eq!(
+            npm_error_code("application output: npm error code ETARGET"),
+            "unknown"
+        );
+        assert_eq!(
+            npm_error_code("npm error code ../../Users/alice/.npm/_cacache"),
+            "unknown"
+        );
+        assert_eq!(
+            npm_error_code("npm error path /Users/alice/.npm/_cacache"),
+            "unknown"
+        );
+    }
+
+    #[test]
+    fn unix_exit_status_decodes_libuv_errno() {
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        assert_eq!(npm_errno_from_exit_status(Some(243)), "EACCES");
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        assert_eq!(npm_errno_from_exit_status(Some(243)), "unknown");
+        assert_eq!(npm_errno_from_exit_status(Some(128)), "unknown");
+        assert_eq!(npm_errno_from_exit_status(Some(1)), "unknown");
+
+        #[cfg(target_os = "macos")]
+        assert_eq!(npm_errno_from_exit_status(Some(202)), "ECONNRESET");
+
+        #[cfg(target_os = "linux")]
+        assert_eq!(npm_errno_from_exit_status(Some(152)), "ECONNRESET");
+    }
+
+    #[test]
+    fn transient_errno_exit_without_stderr_is_expected() {
+        #[cfg(target_os = "macos")]
+        let econnreset_exit = 202;
+        #[cfg(target_os = "linux")]
+        let econnreset_exit = 152;
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        let econnreset_exit = 202;
+
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        {
+            assert_eq!(
+                classify_install_failure(Some(econnreset_exit), "", None),
+                InstallFailureKind::ExpectedTransientRegistry
+            );
+            assert_eq!(
+                install_failure_report(Some(econnreset_exit), "", None),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn lifecycle_exit_colliding_with_errno_stays_loud() {
+        #[cfg(target_os = "macos")]
+        let econnreset_exit = 202;
+        #[cfg(target_os = "linux")]
+        let econnreset_exit = 152;
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        let econnreset_exit = 202;
+
+        let detail = "npm error command failed\nnpm error command sh -c node postinstall.js";
+        assert_eq!(
+            classify_install_failure(Some(econnreset_exit), detail, None),
+            InstallFailureKind::Unexpected
+        );
+        assert!(install_failure_report(Some(econnreset_exit), detail, None).is_some());
+    }
+
+    #[test]
+    fn bare_eacces_exit_is_not_suppressed_by_the_errno_route() {
+        assert_eq!(
+            classify_install_failure(Some(243), "", None),
+            InstallFailureKind::Unexpected
+        );
+        assert!(install_failure_report(Some(243), "", None).is_some());
+    }
+
+    #[test]
+    fn transient_registry_failures_are_suppressed_but_keep_actionable_ui_text() {
+        const ETARGET_STDERR: &str = "npm error code ETARGET\n\
+            npm error notarget No matching version found for @aws-sdk/core@^3.977.4";
+        const ECONNRESET_STDERR: &str = "npm error code ECONNRESET\n\
+            npm error network request to https://registry.npmjs.org failed";
+
+        for detail in [ETARGET_STDERR, ECONNRESET_STDERR] {
+            assert_eq!(
+                classify_install_failure(Some(1), detail, Some("/usr/local")),
+                InstallFailureKind::ExpectedTransientRegistry,
+                "{detail}"
+            );
+            assert_eq!(
+                install_failure_report(Some(1), detail, Some("/usr/local")),
+                None,
+                "{detail}"
+            );
+            let fallback = install_failure_detail(Some(1), detail, Some("/usr/local"));
+            assert!(fallback.contains("temporarily unavailable or was mid-publish"));
+            assert!(fallback.contains("retry automatically"));
+        }
+    }
+
+    #[test]
+    fn lifecycle_output_with_transient_tokens_stays_unexpected_and_loud() {
+        let detail = "npm error code 1\n\
+            npm error command failed\n\
+            npm error command sh -c node postinstall.js\n\
+            application output: ETARGET ECONNRESET npm error network";
+
+        assert_eq!(
+            classify_install_failure(Some(1), detail, Some("/usr/local")),
+            InstallFailureKind::Unexpected
+        );
+        assert_eq!(
+            install_failure_report(Some(1), detail, Some("/usr/local")),
+            Some("[hq-cli-update] install failed (exit 1)".to_string())
+        );
+    }
+
+    #[test]
+    fn existing_failure_buckets_take_priority_over_transient_markers() {
+        let prefix_permission_with_network_text = "npm error code EACCES\n\
+            npm error path /usr/local/lib/node_modules/@indigoai-us\n\
+            npm error network ETIMEDOUT";
+        assert_eq!(
+            classify_install_failure(
+                Some(1),
+                prefix_permission_with_network_text,
+                Some("/usr/local")
+            ),
+            InstallFailureKind::ExpectedPrefixPermission
+        );
+
+        let windows_eperm_with_network_text = "npm error code EPERM\n\
+            npm error errno -4048\n\
+            npm error network ECONNRESET";
+        assert_eq!(
+            classify_install_failure(Some(1), windows_eperm_with_network_text, None),
+            InstallFailureKind::ExpectedWindowsLockedBinary
         );
     }
 

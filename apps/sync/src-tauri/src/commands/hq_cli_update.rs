@@ -67,17 +67,17 @@ use crate::util::paths;
 #[allow(unused_imports)]
 pub use hq_desktop_core::hq_cli_update::{
     auto_update_enabled, classify_install_failure, cli_auto_update_enabled, cmp_semver,
-    dismissed_cli_version, get_local_version, get_local_version_diagnostics, hq_version_string,
-    install_argv, install_converged, install_failure_detail, install_failure_report,
-    is_cli_update_dismissed, is_prefix_permission_failure, is_windows_locked_binary_failure,
-    non_convergent_cli_version, non_convergent_detail, npm_prefix_from_hq_bin,
-    read_installed_version, redact_home, redact_home_in, report_install_failure,
-    report_non_convergent_install, report_npm_cache_setup_failure, report_unreadable_version,
-    resolved_hq_version, should_auto_install, should_report_unreadable_version,
-    suppress_for_dismissal, version_from_hq_binary, version_if_hq_cli, HqCliUpdateInfo,
-    InstallFailureKind, LocalVersionProbeDiagnostics, LocalVersionProbeResult, NpmLatest,
-    VersionProbeOutcome, DISMISSED_VERSION_KEY, HQ_CLI_PACKAGE, NON_CONVERGENT_ERROR_PREFIX,
-    NON_CONVERGENT_VERSION_KEY,
+    convergence_verdict, dismissed_cli_version, get_local_version, get_local_version_diagnostics,
+    hq_version_string, install_argv, install_converged, install_failure_detail,
+    install_failure_report, is_cli_update_dismissed, is_prefix_permission_failure,
+    is_windows_locked_binary_failure, non_convergent_cli_version, non_convergent_detail,
+    npm_prefix_from_hq_bin, read_installed_version, redact_home, redact_home_in,
+    report_install_failure, report_non_convergent_install, report_npm_cache_setup_failure,
+    report_unreadable_version, resolved_hq_version, should_auto_install,
+    should_report_unreadable_version, suppress_for_dismissal, version_from_hq_binary,
+    version_if_hq_cli, ConvergenceVerdict, HqCliUpdateInfo, InstallFailureKind,
+    LocalVersionProbeDiagnostics, LocalVersionProbeResult, NpmLatest, VersionProbeOutcome,
+    DISMISSED_VERSION_KEY, HQ_CLI_PACKAGE, NON_CONVERGENT_ERROR_PREFIX, NON_CONVERGENT_VERSION_KEY,
 };
 
 /// npm registry endpoint that returns the dist-tag `latest` manifest. Cheap,
@@ -358,20 +358,6 @@ async fn run_npm_install(
     .map_err(|e| format!("spawn npm: {e}"))
 }
 
-fn verify_active_cli_version(local: Option<String>, latest: &str) -> Result<String, String> {
-    match local {
-        Some(local) if install_converged(Some(&local), latest) => Ok(local),
-        Some(local) => Err(format!(
-            "npm completed, but the active HQ CLI is still v{local} (expected v{latest}). \
-             The update was not applied to the CLI on PATH."
-        )),
-        None => Err(format!(
-            "npm completed, but the active HQ CLI version could not be verified \
-             (expected v{latest})."
-        )),
-    }
-}
-
 /// Build the npm child with the exact PATH and app-owned cache the updater
 /// needs. Keeping this at the process boundary means every retry inherits the
 /// same cache instead of falling back to a potentially root-owned `~/.npm`.
@@ -558,21 +544,43 @@ pub async fn install_hq_cli_update(app: AppHandle) -> Result<HqCliUpdateInfo, St
     // freshly-installed copy in npm's own prefix while the executable the app
     // resolves is untouched. Accepting that would trade a loud loop for a silent
     // lie — "up to date" forever, while the app keeps running the old binary.
+    // Resolve again only after npm has exited. A shim may have been the
+    // pre-install answer while npm's default prefix now supplies the binary the
+    // app actually executes; judging this run against the stale shim would
+    // permanently block an update that did converge.
+    let post_install_hq = paths::resolve_bin("hq");
     let resolved = {
-        let hq = hq.clone();
+        let hq = post_install_hq.clone();
         tauri::async_runtime::spawn_blocking(move || resolved_hq_version(&hq))
             .await
             .ok()
             .flatten()
     };
-    let local = match verify_active_cli_version(resolved.clone(), &latest) {
-        Ok(version) => version,
-        Err(reason) => {
+    let local = match convergence_verdict(None, resolved.as_deref(), &hq, &post_install_hq, &latest)
+    {
+        ConvergenceVerdict::Converged | ConvergenceVerdict::RelocatedAndConverged => {
+            resolved.expect("convergent verdict requires a resolved CLI version")
+        }
+        ConvergenceVerdict::NonConvergent => {
             // Re-running cannot change this, so record the version and let the
             // background loop stop retrying it. `non_convergent_detail` carries
             // the marker + remedy the UI shows in place of the generic
             // copy-the-command text, which here would just repeat the failure.
-            let hq_display = if hq == "hq" { "PATH" } else { hq.as_str() };
+            let hq_display = if post_install_hq == "hq" {
+                "PATH"
+            } else {
+                post_install_hq.as_str()
+            };
+            let reason = match resolved.as_deref() {
+                Some(local) => format!(
+                    "npm completed, but the active HQ CLI is still v{local} (expected v{latest}). \
+                     The update was not applied to the CLI on PATH."
+                ),
+                None => format!(
+                    "npm completed, but the active HQ CLI version could not be verified \
+                     (expected v{latest})."
+                ),
+            };
             log(
                 "hq-cli-update",
                 &format!(
@@ -586,6 +594,8 @@ pub async fn install_hq_cli_update(app: AppHandle) -> Result<HqCliUpdateInfo, St
                 resolved.as_deref(),
                 hq_display,
                 prefix.as_deref(),
+                &npm,
+                hq != post_install_hq,
             );
             return Err(non_convergent_detail(
                 hq_display,
@@ -1057,19 +1067,6 @@ exit 0
                 "C:/Users/mike/AppData/Local/IndigoHQ/toolchain/npm-prefix/node_modules/@indigoai-us"
             )
         );
-    }
-
-    #[test]
-    fn active_cli_verification_rejects_the_stale_post_install_loop() {
-        assert_eq!(
-            verify_active_cli_version(Some("5.79.0".to_string()), "5.79.0"),
-            Ok("5.79.0".to_string())
-        );
-        let stale = verify_active_cli_version(Some("5.77.7".to_string()), "5.79.0").unwrap_err();
-        assert!(stale.contains("still v5.77.7"), "{stale}");
-        assert!(stale.contains("not applied to the CLI on PATH"), "{stale}");
-        let missing = verify_active_cli_version(None, "5.79.0").unwrap_err();
-        assert!(missing.contains("could not be verified"), "{missing}");
     }
 
     #[test]

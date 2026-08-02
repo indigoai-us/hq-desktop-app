@@ -113,8 +113,8 @@ describe('master automatic-updates switch', () => {
     // 1. A zero exit is not success — the version must reach `latest`, decided
     //    by a single predicate (`install_converged`) rather than a second
     //    hand-rolled comparison that could drift from it.
-    expect(cliUpdate).toContain('verify_active_cli_version(resolved.clone(), &latest)');
-    expect(cliUpdate).toContain('install_converged(Some(&local), latest)');
+    expect(cliUpdate).toContain('convergence_verdict(');
+    expect(cliUpdate).toContain('ConvergenceVerdict::NonConvergent');
     // The old code fabricated `latest` as the local version when detection came
     // back empty, which is precisely what made a failed install read as a win.
     expect(cliUpdate).not.toContain('.or_else(|| Some(latest.clone()))');
@@ -135,7 +135,10 @@ describe('master automatic-updates switch', () => {
     //    which, for the very pnpm/Homebrew layouts this guards, reports the copy
     //    npm just wrote while the resolved executable is untouched. That trades
     //    a loud reinstall loop for a silent "up to date" lie.
-    expect(cliUpdate).toContain('resolved_hq_version(&hq)');
+    const installCall = 'run_npm_install_with_retries(&npm';
+    const afterInstall = cliUpdate.slice(cliUpdate.indexOf(installCall));
+    expect(afterInstall).toContain('let post_install_hq = paths::resolve_bin("hq");');
+    expect(afterInstall).toContain('resolved_hq_version(&hq)');
     // The gate must be fed the execution-bound probe, never `get_local_version`'s
     // `npm root -g` fallback — that reading moves to `latest` for exactly the
     // pnpm/Homebrew layouts this guards, while the resolved binary stays stale.
@@ -143,7 +146,7 @@ describe('master automatic-updates switch', () => {
 
     // 5. The target is pinned BEFORE npm runs, so a release published mid-install
     //    cannot get recorded as non-convergent without ever being attempted.
-    const beforeInstall = cliUpdate.slice(0, cliUpdate.indexOf('run_npm_install(&npm, &path, base_args.clone())'));
+    const beforeInstall = cliUpdate.slice(0, cliUpdate.indexOf(installCall));
     expect(beforeInstall).toContain('let latest = fetch_latest().await?;');
   });
 
@@ -175,5 +178,8 @@ describe('master automatic-updates switch', () => {
     expect(cliUpdateCore).toContain('fn npm_diagnostics_summary(');
     expect(cliUpdateCore).toContain('scope.set_extra("npm_diagnostics", npm_diagnostics.into());');
     expect(cliUpdateCore).not.toContain('scope.set_extra("npm_stderr"');
+    expect(cliUpdateCore).toContain('scope.set_tag("npm_errno"');
+    expect(cliUpdateCore).toContain('scope.set_tag("hq_bin_source"');
+    expect(cliUpdateCore).toContain('scope.set_tag("npm_bin_source"');
   });
 });

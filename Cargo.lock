@@ -830,6 +830,7 @@ dependencies = [
  "dirs",
  "fs2",
  "ignore",
+ "libc",
  "reqwest",
  "rustix",
  "semver",
