@@ -23,6 +23,17 @@ fn is_sensitive_key(k: &str) -> bool {
         .any(|name| k.eq_ignore_ascii_case(name))
 }
 
+/// Raw process-output stream breadcrumbs must never retain their message at
+/// telemetry egress. Match by stream shape instead of producer name so a new
+/// sidecar fails closed without requiring another category allowlist entry.
+fn is_raw_process_stream_category(category: Option<&str>) -> bool {
+    category.is_some_and(|category| {
+        matches!(category, "stderr" | "stdout")
+            || category.ends_with(".stderr")
+            || category.ends_with(".stdout")
+    })
+}
+
 fn scrub_sensitive_in_value(v: &mut Value) {
     match v {
         Value::Object(map) => {
@@ -111,16 +122,17 @@ pub fn before_send(mut event: Event<'static>) -> Option<Event<'static>> {
     // (`Device`, `Os`, `Runtime`, `App`, `Browser`, `Gpu`, `Trace`, `Other`).
     // Delegate each variant to `scrub_context` above so production and the
     // tests in this file share one code path (see the doc-comment there).
-    for (_name, ctx) in event.contexts.iter_mut() {
+    for ctx in event.contexts.values_mut() {
         let taken = std::mem::replace(ctx, Context::Other(BTreeMap::new()));
         *ctx = scrub_context(taken);
     }
 
-    // The watcher writes raw stderr to local logs. Older builds also copied it
-    // into Breadcrumb.message, so filter that category defensively before send
-    // while the source-side guard prevents new raw breadcrumbs.
+    // Process output stays in local logs. Filter any raw stdout/stderr stream
+    // category defensively before send, including future producers that have
+    // not yet been named here; source-side guards still prevent new raw
+    // breadcrumbs from being created in the first place.
     for breadcrumb in event.breadcrumbs.values.iter_mut() {
-        if breadcrumb.category.as_deref() == Some("daemon.stderr") {
+        if is_raw_process_stream_category(breadcrumb.category.as_deref()) {
             breadcrumb.message = Some("[Filtered]".into());
         }
 
@@ -343,10 +355,68 @@ mod tests {
             result.breadcrumbs.values[0].message.as_deref(),
             Some("[Filtered]")
         );
-        assert!(!serialized.contains(private_path));
+        assert!(!serialized.contains("secret-plan.md"));
         assert!(!serialized.contains("hq-tmp-a1b2"));
         assert!(!serialized.contains("operation not permitted"));
         assert!(!serialized.contains(&raw_message));
+    }
+
+    #[test]
+    fn test_runner_stderr_breadcrumb_message_is_filtered() {
+        let raw_message = "EPERM: operation not permitted, rename 'C:\\Users\\Ada\\secret-plan.md.hq-tmp-a1b2' -> 'C:\\Users\\Ada\\secret-plan.md'";
+        let mut event = Event::default();
+        event.breadcrumbs.values.push(Breadcrumb {
+            category: Some("runner.stderr".into()),
+            level: sentry::Level::Warning,
+            message: Some(raw_message.into()),
+            ..Default::default()
+        });
+
+        let result = before_send(event).expect("event remains sendable");
+        let serialized = serde_json::to_string(&result).expect("serialize scrubbed event");
+
+        assert_eq!(
+            result.breadcrumbs.values[0].message.as_deref(),
+            Some("[Filtered]")
+        );
+        assert!(!serialized.contains("secret-plan.md"));
+        assert!(!serialized.contains("operation not permitted"));
+        assert!(!serialized.contains("hq-tmp"));
+    }
+
+    #[test]
+    fn test_unenumerated_stderr_stream_breadcrumb_message_is_filtered() {
+        let mut event = Event::default();
+        for category in ["stderr", "stdout", "sidecar.stderr", "sidecar.stdout"] {
+            event.breadcrumbs.values.push(Breadcrumb {
+                category: Some(category.into()),
+                message: Some(format!("future producer raw output from {category}")),
+                ..Default::default()
+            });
+        }
+
+        let result = before_send(event).expect("event remains sendable");
+        assert!(result
+            .breadcrumbs
+            .values
+            .iter()
+            .all(|breadcrumb| breadcrumb.message.as_deref() == Some("[Filtered]")));
+    }
+
+    #[test]
+    fn test_non_stream_breadcrumb_message_is_preserved() {
+        let mut event = Event::default();
+        event.breadcrumbs.values.push(Breadcrumb {
+            category: Some("daemon.lifecycle".into()),
+            message: Some("watcher started".into()),
+            ..Default::default()
+        });
+
+        let result = before_send(event).expect("event remains sendable");
+        assert_eq!(
+            result.breadcrumbs.values[0].message.as_deref(),
+            Some("watcher started")
+        );
     }
 
     // 6a. Typed Context::App round-trip — non-sensitive typed fields preserved

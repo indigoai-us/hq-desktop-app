@@ -71,6 +71,10 @@ const syncOutcomeSource = readFileSync(
   repoUrl('crates/hq-desktop-core/src/sync_outcome.rs'),
   'utf8',
 );
+const telemetrySource = readFileSync(
+  repoUrl('crates/hq-telemetry/src/lib.rs'),
+  'utf8',
+);
 
 describe('Windows Recall SDK sidecar bundle parity', () => {
   it('declares the Windows externalBin launcher in the release-only overlay', () => {
@@ -187,6 +191,23 @@ describe('Windows Recall SDK sidecar bundle parity', () => {
     expect(stderrArm).toContain('log("daemon.stderr", &line)');
     expect(stderrArm).toContain('handle_runner_stderr_line(&app, &totals, &line)');
     expect(stderrArm).not.toContain('sentry::add_breadcrumb');
+  });
+
+  it('keeps manual runner stderr content-safe at the source and at telemetry egress', () => {
+    const stderrStart = syncCommandSource.indexOf('ProcessEvent::Stderr(line) => {');
+    const exitStart = syncCommandSource.indexOf('ProcessEvent::Exit {', stderrStart);
+    const stderrArm = syncCommandSource.slice(stderrStart, exitStart);
+
+    expect(stderrStart).toBeGreaterThan(-1);
+    expect(exitStart).toBeGreaterThan(stderrStart);
+    expect(stderrArm).toContain('log("runner.stderr", &line)');
+    expect(stderrArm).toContain('handle_runner_stderr_line(&app_bg, &totals, &line)');
+    expect(stderrArm).toContain('runner_stderr_breadcrumb');
+    expect(stderrArm).not.toContain('message: Some(line.clone())');
+    expect(telemetrySource).toContain('is_raw_process_stream_category');
+    expect(telemetrySource).not.toContain(
+      'breadcrumb.category.as_deref() == Some("daemon.stderr")',
+    );
   });
 
   it('builds and launches the Windows executable through the live driver harness', () => {
