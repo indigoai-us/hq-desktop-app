@@ -2423,6 +2423,15 @@ mod tests {
 
         let scrubbed = hq_telemetry::before_send(captured).expect("event remains sendable");
         let serialized = serde_json::to_string(&scrubbed).expect("serialize final event");
+        assert_eq!(
+            scrubbed
+                .breadcrumbs
+                .values
+                .iter()
+                .filter_map(|breadcrumb| breadcrumb.message.as_deref())
+                .collect::<Vec<_>>(),
+            vec!["runner stderr #1 (eperm)", "runner stderr #2 (eperm)"]
+        );
         assert_eq!(scrubbed.tags["runner_error_rollup"], "EPERM:2");
         assert_eq!(
             scrubbed.extra["saw_alertable_error"],

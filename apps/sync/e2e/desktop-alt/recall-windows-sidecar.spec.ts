@@ -205,6 +205,7 @@ describe('Windows Recall SDK sidecar bundle parity', () => {
     expect(stderrArm).toContain('runner_stderr_breadcrumb');
     expect(stderrArm).not.toContain('message: Some(line.clone())');
     expect(telemetrySource).toContain('is_raw_process_stream_category');
+    expect(telemetrySource).toContain('is_content_safe_runner_stderr_message');
     expect(telemetrySource).not.toContain(
       'breadcrumb.category.as_deref() == Some("daemon.stderr")',
     );

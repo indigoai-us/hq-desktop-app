@@ -34,6 +34,32 @@ fn is_raw_process_stream_category(category: Option<&str>) -> bool {
     })
 }
 
+/// The manual runner replaces raw stderr with this exact fixed-vocabulary
+/// grammar before adding a breadcrumb. Preserve only messages that fully match
+/// that grammar; a raw process line that merely resembles the prefix still
+/// fails closed at egress.
+fn is_content_safe_runner_stderr_message(category: Option<&str>, message: Option<&str>) -> bool {
+    if category != Some("runner.stderr") {
+        return false;
+    }
+    let Some(body) = message.and_then(|message| message.strip_prefix("runner stderr #")) else {
+        return false;
+    };
+    let Some((sequence, class_with_suffix)) = body.split_once(" (") else {
+        return false;
+    };
+    if sequence.is_empty() || !sequence.bytes().all(|byte| byte.is_ascii_digit()) {
+        return false;
+    }
+    let Some(class) = class_with_suffix.strip_suffix(')') else {
+        return false;
+    };
+    matches!(
+        class,
+        "eperm" | "eacces" | "enospc" | "ebusy" | "network" | "auth" | "other"
+    )
+}
+
 fn scrub_sensitive_in_value(v: &mut Value) {
     match v {
         Value::Object(map) => {
@@ -132,7 +158,12 @@ pub fn before_send(mut event: Event<'static>) -> Option<Event<'static>> {
     // not yet been named here; source-side guards still prevent new raw
     // breadcrumbs from being created in the first place.
     for breadcrumb in event.breadcrumbs.values.iter_mut() {
-        if is_raw_process_stream_category(breadcrumb.category.as_deref()) {
+        if is_raw_process_stream_category(breadcrumb.category.as_deref())
+            && !is_content_safe_runner_stderr_message(
+                breadcrumb.category.as_deref(),
+                breadcrumb.message.as_deref(),
+            )
+        {
             breadcrumb.message = Some("[Filtered]".into());
         }
 
@@ -382,6 +413,58 @@ mod tests {
         assert!(!serialized.contains("secret-plan.md"));
         assert!(!serialized.contains("operation not permitted"));
         assert!(!serialized.contains("hq-tmp"));
+    }
+
+    #[test]
+    fn test_classified_runner_stderr_breadcrumb_message_is_preserved() {
+        let mut event = Event::default();
+        for (sequence, class) in [
+            "eperm", "eacces", "enospc", "ebusy", "network", "auth", "other",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            event.breadcrumbs.values.push(Breadcrumb {
+                category: Some("runner.stderr".into()),
+                message: Some(format!("runner stderr #{} ({class})", sequence + 1)),
+                ..Default::default()
+            });
+        }
+
+        let result = before_send(event).expect("event remains sendable");
+        assert!(result
+            .breadcrumbs
+            .values
+            .iter()
+            .all(|breadcrumb| breadcrumb.message.as_deref() != Some("[Filtered]")));
+        assert_eq!(
+            result.breadcrumbs.values.last().unwrap().message.as_deref(),
+            Some("runner stderr #7 (other)")
+        );
+    }
+
+    #[test]
+    fn test_runner_stderr_fixed_vocabulary_lookalikes_are_filtered() {
+        let mut event = Event::default();
+        for message in [
+            "runner stderr #x (eperm)",
+            "runner stderr #1 (EPERM)",
+            "runner stderr #1 (unknown)",
+            "runner stderr #1 (eperm) secret-plan.md",
+        ] {
+            event.breadcrumbs.values.push(Breadcrumb {
+                category: Some("runner.stderr".into()),
+                message: Some(message.into()),
+                ..Default::default()
+            });
+        }
+
+        let result = before_send(event).expect("event remains sendable");
+        assert!(result
+            .breadcrumbs
+            .values
+            .iter()
+            .all(|breadcrumb| breadcrumb.message.as_deref() == Some("[Filtered]")));
     }
 
     #[test]
