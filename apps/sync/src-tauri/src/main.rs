@@ -387,10 +387,12 @@ fn main() {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 // Only hide the main popover window — let other windows
                 // (e.g. new-files-detail) close normally.
-                handle_window_close_requested_hide(window.label() == "main", || {
-                    api.prevent_close();
-                    let _ = window.hide();
-                });
+                if window.label() == "main" {
+                    handle_window_close_requested_hide(true, || {
+                        api.prevent_close();
+                        let _ = window.hide();
+                    });
+                }
             }
             // Windows: reapply Mica/Acrylic when the OS theme flips so light
             // mode never keeps a forced-dark backdrop (US-003). Theme is left
