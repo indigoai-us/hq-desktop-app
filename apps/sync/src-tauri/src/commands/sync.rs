@@ -40,8 +40,9 @@ use std::time::{Duration, Instant};
 
 use chrono::SecondsFormat;
 use hq_desktop_core::sync_outcome::{
-    classify_error_event, describe_exit, is_windows_console_control_exit,
-    should_alert_on_nonzero_exit, should_synthesize_all_complete, termination_fingerprint_token,
+    classify_error_event, classify_runner_error_class, describe_exit,
+    is_windows_console_control_exit, should_alert_on_nonzero_exit, should_synthesize_all_complete,
+    termination_fingerprint_token, RunnerErrorClass,
 };
 use hq_desktop_core::toolchain::ManagedToolchain;
 use tauri::{AppHandle, Emitter};
@@ -84,9 +85,9 @@ pub use hq_desktop_core::sync_outcome::RunTotals;
 ///
 /// Used at exactly one call site today: the runner non-zero exit handler
 /// in `start_sync`'s background task. By the time we reach that site, the
-/// runner's stderr breadcrumbs have already accumulated on the Sentry
-/// scope (see `ProcessEvent::Stderr` arm), so the captured event ships
-/// with a trail of "what the runner was doing right before it died".
+/// runner's content-safe stderr breadcrumbs have already accumulated on the
+/// Sentry scope (see `ProcessEvent::Stderr` arm), so the captured event ships
+/// with a classified, counted trail and no raw process output.
 ///
 /// Other emit sites (`personal first-push`, runner-emitted ndjson `error`
 /// events on stdout, `run_process_impl` spawn failures) intentionally
@@ -162,6 +163,52 @@ fn capture_sync_error_impl(
     );
 }
 
+fn runner_exit_telemetry_context(
+    totals: &RunTotals,
+) -> (
+    Vec<(&'static str, String)>,
+    Vec<(&'static str, sentry::protocol::Value)>,
+) {
+    let mut tags = Vec::new();
+    if let Some(rollup) = totals.runner_error_rollup.tag_value() {
+        tags.push(("runner_error_rollup", rollup));
+    }
+    let extras = vec![
+        (
+            "saw_alertable_error",
+            sentry::protocol::Value::Bool(totals.saw_alertable_error),
+        ),
+        (
+            "saw_node_too_old",
+            sentry::protocol::Value::Bool(totals.saw_node_too_old),
+        ),
+        (
+            "saw_fatal_runner_signature",
+            sentry::protocol::Value::Bool(totals.saw_fatal_runner_signature),
+        ),
+    ];
+    (tags, extras)
+}
+
+fn capture_runner_exit_error(
+    code: Option<i32>,
+    signal: Option<i32>,
+    totals: &RunTotals,
+    payload: &SyncErrorEvent,
+) {
+    let termination = termination_fingerprint_token(code, signal);
+    let fingerprint = ["sync", "runner-termination", termination.as_str()];
+    let (tags, extras) = runner_exit_telemetry_context(totals);
+    capture_sync_error_with_fingerprint_and_context(
+        payload.company.as_deref(),
+        &payload.path,
+        &payload.message,
+        &fingerprint,
+        &tags,
+        &extras,
+    );
+}
+
 /// A Windows console-control exit is benign telemetry-wise, but a manual sync
 /// can receive it before the runner emits any protocol event. Emit the existing
 /// terminal renderer event without capturing to Sentry so both desktop surfaces
@@ -184,16 +231,10 @@ fn report_runner_exit_error(
     app: &AppHandle,
     code: Option<i32>,
     signal: Option<i32>,
+    totals: &RunTotals,
     payload: SyncErrorEvent,
 ) -> tauri::Result<()> {
-    let termination = termination_fingerprint_token(code, signal);
-    let fingerprint = ["sync", "runner-termination", termination.as_str()];
-    capture_sync_error_with_fingerprint(
-        payload.company.as_deref(),
-        &payload.path,
-        &payload.message,
-        &fingerprint,
-    );
+    capture_runner_exit_error(code, signal, totals, &payload);
     app.emit(EVENT_SYNC_ERROR, payload)
 }
 
@@ -696,24 +737,58 @@ pub(crate) fn runner_stderr_needs_reauth(line: &str) -> Option<SyncAuthErrorEven
     })
 }
 
+fn runner_stderr_breadcrumb(sequence: u32, line: &str) -> sentry::Breadcrumb {
+    let error_class = match classify_runner_error_class(line) {
+        RunnerErrorClass::Eperm => "eperm",
+        RunnerErrorClass::Eacces => "eacces",
+        RunnerErrorClass::Enospc => "enospc",
+        RunnerErrorClass::Ebusy => "ebusy",
+        RunnerErrorClass::Network => "network",
+        RunnerErrorClass::Auth => "auth",
+        RunnerErrorClass::Other => "other",
+    };
+    sentry::Breadcrumb {
+        category: Some("runner.stderr".into()),
+        level: sentry::Level::Warning,
+        message: Some(format!("runner stderr #{sequence} ({error_class})")),
+        ..Default::default()
+    }
+}
+
+fn update_runner_stderr_totals(
+    totals: &Mutex<RunTotals>,
+    line: &str,
+) -> Option<SyncAuthErrorEvent> {
+    let reauth = runner_stderr_needs_reauth(line);
+    let runner_error = if reauth.is_none() {
+        serde_json::from_str::<SyncEvent>(line.trim())
+            .ok()
+            .and_then(|event| match event {
+                SyncEvent::Error(payload) => Some(payload),
+                _ => None,
+            })
+    } else {
+        None
+    };
+
+    let mut totals = totals.lock().unwrap_or_else(|e| e.into_inner());
+    if reauth.is_some() {
+        totals.record_auth_error();
+    } else if let Some(payload) = runner_error.as_ref() {
+        totals.record_error(payload);
+    }
+    totals.record_stderr_line(line);
+    reauth
+}
+
 /// Forward runner stderr protocol records that affect sync state.
 ///
 /// Error records still feed the exit-alert classifier; auth failures are
 /// emitted immediately because the runner deliberately exits 0 after them.
 pub(crate) fn handle_runner_stderr_line(app: &AppHandle, totals: &Mutex<RunTotals>, line: &str) {
-    if let Some(payload) = runner_stderr_needs_reauth(line) {
-        {
-            let mut t = totals.lock().unwrap_or_else(|e| e.into_inner());
-            t.record_auth_error();
-        }
+    if let Some(payload) = update_runner_stderr_totals(totals, line) {
         let _ = app.emit(EVENT_SYNC_AUTH_ERROR, payload);
-    } else if let Ok(SyncEvent::Error(payload)) = serde_json::from_str(line.trim()) {
-        let mut t = totals.lock().unwrap_or_else(|e| e.into_inner());
-        t.record_error(&payload);
     }
-
-    let mut t = totals.lock().unwrap_or_else(|e| e.into_inner());
-    t.record_stderr_line(line);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1524,6 +1599,7 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
     let jwt_for_handler = jwt.clone();
     // Fresh totals per run — no reset needed between runs.
     let totals: Arc<Mutex<RunTotals>> = Arc::new(Mutex::new(RunTotals::default()));
+    let mut runner_stderr_sequence = 0_u32;
     tauri::async_runtime::spawn_blocking(move || {
         log("sync", "bg task: entering run_process_impl");
         #[cfg(debug_assertions)]
@@ -1549,26 +1625,11 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
                 // most likely place the cause shows up (npx download retry,
                 // node uncaught exception, runner panic, etc.).
                 log("runner.stderr", &line);
-                // Catch-all error pipeline: every runner stderr line becomes
-                // a Sentry breadcrumb attached to the current scope. If the
-                // runner exits non-zero, the `report_sync_error` capture at
-                // the exit site below will publish a single Sentry event with
-                // these breadcrumbs as the trail of "what the runner was
-                // doing right before it died". This is the design intent —
-                // breadcrumbs accumulate noise for free, exit-time capture
-                // converts that into a single alertable issue with context.
-                //
-                // PROTOCOL NOTE (2026-04-25): the runner originally emitted
-                // structured per-file error events on STDOUT as ndjson; the
-                // planned protocol change (@indigoai-us/hq-cloud PR #34) moved
-                // all error-class events to STDERR so each becomes a breadcrumb
-                // here automatically.
-                sentry::add_breadcrumb(sentry::Breadcrumb {
-                    category: Some("runner.stderr".into()),
-                    level: sentry::Level::Warning,
-                    message: Some(line.clone()),
-                    ..Default::default()
-                });
+                // Preserve temporal shape in Sentry without copying untrusted
+                // process output. Raw lines stay local in hq-sync.log; Sentry
+                // receives only a monotonic sequence and fixed error class.
+                runner_stderr_sequence = runner_stderr_sequence.saturating_add(1);
+                sentry::add_breadcrumb(runner_stderr_breadcrumb(runner_stderr_sequence, &line));
                 // Re-ingest stderr protocol records. Error events feed the
                 // benign-vs-alertable exit classification, while auth-error
                 // emits the re-authentication signal even though the runner
@@ -1606,28 +1667,26 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
                     // event + stderr breadcrumb was already surfaced to the UI
                     // and the local sync log, so suppression loses no
                     // diagnostics — only the Sentry alert.
-                    let (saw_error, saw_alertable, saw_node_too_old) = totals
-                        .lock()
-                        .map(|t| (t.saw_error, t.saw_alertable_error, t.saw_node_too_old))
-                        .unwrap_or((false, false, false));
+                    let totals_snapshot = totals.lock().unwrap_or_else(|e| e.into_inner()).clone();
                     if should_alert_on_nonzero_exit(
                         code,
                         signal,
-                        saw_error,
-                        saw_alertable,
-                        saw_node_too_old,
+                        totals_snapshot.saw_error,
+                        totals_snapshot.saw_alertable_error,
+                        totals_snapshot.saw_node_too_old,
                     ) {
                         let _ = report_runner_exit_error(
                             &app_bg,
                             code,
                             signal,
+                            &totals_snapshot,
                             crate::events::SyncErrorEvent {
                                 company: None,
                                 path: "(runner)".to_string(),
                                 message: format!("hq-sync-runner exited {}", exit_desc),
                             },
                         );
-                    } else if saw_node_too_old {
+                    } else if totals_snapshot.saw_node_too_old {
                         log(
                             "sync",
                             &format!(
@@ -2292,6 +2351,107 @@ mod tests {
             terminal_sync_error_for_windows_console_control_exit(Some(-1073741510), Some(15))
                 .is_none()
         );
+    }
+
+    #[test]
+    fn manual_runner_exit_capture_is_content_safe_and_keeps_context_and_grouping() {
+        let private_path = r"C:\Users\Ada\hq\companies\personal\secret-plan.md";
+        let raw_messages = [
+            format!(
+                "EPERM: operation not permitted, rename '{private_path}.hq-tmp-a1b2' -> '{private_path}'"
+            ),
+            format!(
+                "EPERM: operation not permitted, rename '{private_path}.hq-tmp-c3d4' -> '{private_path}'"
+            ),
+        ];
+        let stderr_lines: Vec<String> = raw_messages
+            .iter()
+            .map(|message| {
+                serde_json::json!({
+                    "type": "error",
+                    "company": "personal",
+                    "path": private_path,
+                    "message": message,
+                })
+                .to_string()
+            })
+            .collect();
+        let totals = Mutex::new(RunTotals::default());
+
+        let captures = sentry::test::with_captured_events(|| {
+            for (index, line) in stderr_lines.iter().enumerate() {
+                sentry::add_breadcrumb(runner_stderr_breadcrumb((index + 1) as u32, line));
+                assert!(update_runner_stderr_totals(&totals, line).is_none());
+            }
+
+            let totals = totals.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            assert!(should_alert_on_nonzero_exit(
+                Some(2),
+                None,
+                totals.saw_error,
+                totals.saw_alertable_error,
+                totals.saw_node_too_old,
+            ));
+            capture_runner_exit_error(
+                Some(2),
+                None,
+                &totals,
+                &SyncErrorEvent {
+                    company: None,
+                    path: "(runner)".to_string(),
+                    message: "hq-sync-runner exited with code 2".to_string(),
+                },
+            );
+        });
+
+        assert_eq!(captures.len(), 1);
+        let captured = captures.into_iter().next().unwrap();
+        assert_eq!(
+            captured
+                .breadcrumbs
+                .values
+                .iter()
+                .filter_map(|breadcrumb| breadcrumb.message.as_deref())
+                .collect::<Vec<_>>(),
+            vec!["runner stderr #1 (eperm)", "runner stderr #2 (eperm)"]
+        );
+        let captured_serialized =
+            serde_json::to_string(&captured).expect("serialize captured event");
+        for forbidden in ["secret-plan.md", "operation not permitted", "hq-tmp"] {
+            assert!(!captured_serialized.contains(forbidden));
+        }
+
+        let scrubbed = hq_telemetry::before_send(captured).expect("event remains sendable");
+        let serialized = serde_json::to_string(&scrubbed).expect("serialize final event");
+        assert_eq!(
+            scrubbed
+                .breadcrumbs
+                .values
+                .iter()
+                .filter_map(|breadcrumb| breadcrumb.message.as_deref())
+                .collect::<Vec<_>>(),
+            vec!["runner stderr #1 (eperm)", "runner stderr #2 (eperm)"]
+        );
+        assert_eq!(scrubbed.tags["runner_error_rollup"], "EPERM:2");
+        assert_eq!(
+            scrubbed.extra["saw_alertable_error"],
+            sentry::protocol::Value::Bool(true)
+        );
+        assert_eq!(
+            scrubbed.extra["saw_node_too_old"],
+            sentry::protocol::Value::Bool(false)
+        );
+        assert_eq!(
+            scrubbed.extra["saw_fatal_runner_signature"],
+            sentry::protocol::Value::Bool(false)
+        );
+        assert_eq!(
+            scrubbed.fingerprint,
+            vec!["sync", "runner-termination", "exit:2"]
+        );
+        for forbidden in ["secret-plan.md", "operation not permitted", "hq-tmp"] {
+            assert!(!serialized.contains(forbidden));
+        }
     }
 
     #[test]

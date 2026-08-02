@@ -23,6 +23,43 @@ fn is_sensitive_key(k: &str) -> bool {
         .any(|name| k.eq_ignore_ascii_case(name))
 }
 
+/// Raw process-output stream breadcrumbs must never retain their message at
+/// telemetry egress. Match by stream shape instead of producer name so a new
+/// sidecar fails closed without requiring another category allowlist entry.
+fn is_raw_process_stream_category(category: Option<&str>) -> bool {
+    category.is_some_and(|category| {
+        matches!(category, "stderr" | "stdout")
+            || category.ends_with(".stderr")
+            || category.ends_with(".stdout")
+    })
+}
+
+/// The manual runner replaces raw stderr with this exact fixed-vocabulary
+/// grammar before adding a breadcrumb. Preserve only messages that fully match
+/// that grammar; a raw process line that merely resembles the prefix still
+/// fails closed at egress.
+fn is_content_safe_runner_stderr_message(category: Option<&str>, message: Option<&str>) -> bool {
+    if category != Some("runner.stderr") {
+        return false;
+    }
+    let Some(body) = message.and_then(|message| message.strip_prefix("runner stderr #")) else {
+        return false;
+    };
+    let Some((sequence, class_with_suffix)) = body.split_once(" (") else {
+        return false;
+    };
+    if sequence.is_empty() || !sequence.bytes().all(|byte| byte.is_ascii_digit()) {
+        return false;
+    }
+    let Some(class) = class_with_suffix.strip_suffix(')') else {
+        return false;
+    };
+    matches!(
+        class,
+        "eperm" | "eacces" | "enospc" | "ebusy" | "network" | "auth" | "other"
+    )
+}
+
 fn scrub_sensitive_in_value(v: &mut Value) {
     match v {
         Value::Object(map) => {
@@ -111,16 +148,22 @@ pub fn before_send(mut event: Event<'static>) -> Option<Event<'static>> {
     // (`Device`, `Os`, `Runtime`, `App`, `Browser`, `Gpu`, `Trace`, `Other`).
     // Delegate each variant to `scrub_context` above so production and the
     // tests in this file share one code path (see the doc-comment there).
-    for (_name, ctx) in event.contexts.iter_mut() {
+    for ctx in event.contexts.values_mut() {
         let taken = std::mem::replace(ctx, Context::Other(BTreeMap::new()));
         *ctx = scrub_context(taken);
     }
 
-    // The watcher writes raw stderr to local logs. Older builds also copied it
-    // into Breadcrumb.message, so filter that category defensively before send
-    // while the source-side guard prevents new raw breadcrumbs.
+    // Process output stays in local logs. Filter any raw stdout/stderr stream
+    // category defensively before send, including future producers that have
+    // not yet been named here; source-side guards still prevent new raw
+    // breadcrumbs from being created in the first place.
     for breadcrumb in event.breadcrumbs.values.iter_mut() {
-        if breadcrumb.category.as_deref() == Some("daemon.stderr") {
+        if is_raw_process_stream_category(breadcrumb.category.as_deref())
+            && !is_content_safe_runner_stderr_message(
+                breadcrumb.category.as_deref(),
+                breadcrumb.message.as_deref(),
+            )
+        {
             breadcrumb.message = Some("[Filtered]".into());
         }
 
@@ -343,10 +386,120 @@ mod tests {
             result.breadcrumbs.values[0].message.as_deref(),
             Some("[Filtered]")
         );
-        assert!(!serialized.contains(private_path));
+        assert!(!serialized.contains("secret-plan.md"));
         assert!(!serialized.contains("hq-tmp-a1b2"));
         assert!(!serialized.contains("operation not permitted"));
         assert!(!serialized.contains(&raw_message));
+    }
+
+    #[test]
+    fn test_runner_stderr_breadcrumb_message_is_filtered() {
+        let raw_message = "EPERM: operation not permitted, rename 'C:\\Users\\Ada\\secret-plan.md.hq-tmp-a1b2' -> 'C:\\Users\\Ada\\secret-plan.md'";
+        let mut event = Event::default();
+        event.breadcrumbs.values.push(Breadcrumb {
+            category: Some("runner.stderr".into()),
+            level: sentry::Level::Warning,
+            message: Some(raw_message.into()),
+            ..Default::default()
+        });
+
+        let result = before_send(event).expect("event remains sendable");
+        let serialized = serde_json::to_string(&result).expect("serialize scrubbed event");
+
+        assert_eq!(
+            result.breadcrumbs.values[0].message.as_deref(),
+            Some("[Filtered]")
+        );
+        assert!(!serialized.contains("secret-plan.md"));
+        assert!(!serialized.contains("operation not permitted"));
+        assert!(!serialized.contains("hq-tmp"));
+    }
+
+    #[test]
+    fn test_classified_runner_stderr_breadcrumb_message_is_preserved() {
+        let mut event = Event::default();
+        for (sequence, class) in [
+            "eperm", "eacces", "enospc", "ebusy", "network", "auth", "other",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            event.breadcrumbs.values.push(Breadcrumb {
+                category: Some("runner.stderr".into()),
+                message: Some(format!("runner stderr #{} ({class})", sequence + 1)),
+                ..Default::default()
+            });
+        }
+
+        let result = before_send(event).expect("event remains sendable");
+        assert!(result
+            .breadcrumbs
+            .values
+            .iter()
+            .all(|breadcrumb| breadcrumb.message.as_deref() != Some("[Filtered]")));
+        assert_eq!(
+            result.breadcrumbs.values.last().unwrap().message.as_deref(),
+            Some("runner stderr #7 (other)")
+        );
+    }
+
+    #[test]
+    fn test_runner_stderr_fixed_vocabulary_lookalikes_are_filtered() {
+        let mut event = Event::default();
+        for message in [
+            "runner stderr #x (eperm)",
+            "runner stderr #1 (EPERM)",
+            "runner stderr #1 (unknown)",
+            "runner stderr #1 (eperm) secret-plan.md",
+        ] {
+            event.breadcrumbs.values.push(Breadcrumb {
+                category: Some("runner.stderr".into()),
+                message: Some(message.into()),
+                ..Default::default()
+            });
+        }
+
+        let result = before_send(event).expect("event remains sendable");
+        assert!(result
+            .breadcrumbs
+            .values
+            .iter()
+            .all(|breadcrumb| breadcrumb.message.as_deref() == Some("[Filtered]")));
+    }
+
+    #[test]
+    fn test_unenumerated_stderr_stream_breadcrumb_message_is_filtered() {
+        let mut event = Event::default();
+        for category in ["stderr", "stdout", "sidecar.stderr", "sidecar.stdout"] {
+            event.breadcrumbs.values.push(Breadcrumb {
+                category: Some(category.into()),
+                message: Some(format!("future producer raw output from {category}")),
+                ..Default::default()
+            });
+        }
+
+        let result = before_send(event).expect("event remains sendable");
+        assert!(result
+            .breadcrumbs
+            .values
+            .iter()
+            .all(|breadcrumb| breadcrumb.message.as_deref() == Some("[Filtered]")));
+    }
+
+    #[test]
+    fn test_non_stream_breadcrumb_message_is_preserved() {
+        let mut event = Event::default();
+        event.breadcrumbs.values.push(Breadcrumb {
+            category: Some("daemon.lifecycle".into()),
+            message: Some("watcher started".into()),
+            ..Default::default()
+        });
+
+        let result = before_send(event).expect("event remains sendable");
+        assert_eq!(
+            result.breadcrumbs.values[0].message.as_deref(),
+            Some("watcher started")
+        );
     }
 
     // 6a. Typed Context::App round-trip — non-sensitive typed fields preserved
