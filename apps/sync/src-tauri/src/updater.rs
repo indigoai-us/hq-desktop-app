@@ -24,8 +24,8 @@
 //! the newest stable, regardless of channel preference.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
-use std::time::Duration;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use chrono::{SecondsFormat, Utc};
 use serde::Serialize;
@@ -115,8 +115,12 @@ struct PendingUpdateTransition {
 
 static UPDATE_INSTALL_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 static UPDATE_CHECK_SERIALIZER: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+static LAST_AUTO_INSTALL_FAILURE: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
 const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(21_600);
 const UPDATE_SYNC_RETRY_INTERVAL: Duration = Duration::from_secs(30);
+/// After a background `download_and_install` failure, wait before trying again.
+/// Manual `install_update` is never gated by this backoff.
+const UPDATE_INSTALL_FAILURE_BACKOFF: Duration = Duration::from_secs(15 * 60);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BackgroundUpdateAction {
@@ -141,9 +145,9 @@ fn should_raise_transient_update_surface(announcement: UpdateAnnouncement) -> bo
 
 fn background_update_action(
     automatic_updates: bool,
-    sync_in_progress: bool,
+    defer_install: bool,
 ) -> BackgroundUpdateAction {
-    match (automatic_updates, sync_in_progress) {
+    match (automatic_updates, defer_install) {
         (true, false) => BackgroundUpdateAction::Install,
         (true, true) => BackgroundUpdateAction::DeferForSync,
         (false, _) => BackgroundUpdateAction::Announce,
@@ -153,6 +157,45 @@ fn background_update_action(
 fn sync_in_progress() -> bool {
     hq_desktop_core::sync_progress::read_fresh_snapshot()
         .is_some_and(|snapshot| snapshot.status == "syncing")
+}
+
+/// Pure deferral matrix for automatic app installs.
+///
+/// Sync activity, a Windows watch-daemon `Starting` transition, and a recent
+/// background install failure all defer auto-install. Manual Install stays
+/// ungated by this helper.
+fn should_defer_automatic_install(
+    syncing: bool,
+    windows_daemon_starting: bool,
+    failure_backoff_active: bool,
+) -> bool {
+    syncing || windows_daemon_starting || failure_backoff_active
+}
+
+fn last_auto_install_failure_lock() -> &'static Mutex<Option<Instant>> {
+    LAST_AUTO_INSTALL_FAILURE.get_or_init(|| Mutex::new(None))
+}
+
+fn record_auto_install_failure() {
+    let mut slot = last_auto_install_failure_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    *slot = Some(Instant::now());
+}
+
+fn auto_install_failure_backoff_active() -> bool {
+    let slot = last_auto_install_failure_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    slot.is_some_and(|at| at.elapsed() < UPDATE_INSTALL_FAILURE_BACKOFF)
+}
+
+fn automatic_install_should_defer() -> bool {
+    should_defer_automatic_install(
+        sync_in_progress(),
+        cfg!(target_os = "windows") && crate::commands::daemon::watch_daemon_is_starting(),
+        auto_install_failure_backoff_active(),
+    )
 }
 
 /// Process-wide lease preventing separate app surfaces from starting the same
@@ -614,7 +657,7 @@ pub fn setup_update_checker(app: &AppHandle) {
                                     );
                                     match background_update_action(
                                         hq_desktop_core::hq_cli_update::auto_update_enabled(),
-                                        sync_in_progress(),
+                                        automatic_install_should_defer(),
                                     ) {
                                         BackgroundUpdateAction::Install => {
                                             match UpdateInstallGuard::acquire(
@@ -640,6 +683,7 @@ pub fn setup_update_checker(app: &AppHandle) {
                                                             handle.restart();
                                                         }
                                                         Err(error) => {
+                                                            record_auto_install_failure();
                                                             log(
                                                                 "updater",
                                                                 &format!(
@@ -660,6 +704,8 @@ pub fn setup_update_checker(app: &AppHandle) {
                                                                     "[updater] failed to store background update: {record_error}"
                                                                 );
                                                             }
+                                                            next_check =
+                                                                UPDATE_INSTALL_FAILURE_BACKOFF;
                                                         }
                                                     }
                                                 }
@@ -673,11 +719,19 @@ pub fn setup_update_checker(app: &AppHandle) {
                                             }
                                         }
                                         BackgroundUpdateAction::DeferForSync => {
-                                            log(
-                                                "updater",
-                                                "automatic update deferred while sync is active",
-                                            );
-                                            next_check = UPDATE_SYNC_RETRY_INTERVAL;
+                                            if auto_install_failure_backoff_active() {
+                                                log(
+                                                    "updater",
+                                                    "automatic update deferred after recent install failure",
+                                                );
+                                                next_check = UPDATE_INSTALL_FAILURE_BACKOFF;
+                                            } else {
+                                                log(
+                                                    "updater",
+                                                    "automatic update deferred while sync is active",
+                                                );
+                                                next_check = UPDATE_SYNC_RETRY_INTERVAL;
+                                            }
                                         }
                                         BackgroundUpdateAction::Announce => {
                                             if let Err(e) = record_and_announce_update(
@@ -846,6 +900,34 @@ mod tests {
             BackgroundUpdateAction::DeferForSync
         );
         assert_eq!(UPDATE_SYNC_RETRY_INTERVAL, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn automatic_install_defers_for_sync_daemon_start_or_failure_backoff() {
+        assert!(!should_defer_automatic_install(false, false, false));
+        assert!(should_defer_automatic_install(true, false, false));
+        assert!(should_defer_automatic_install(false, true, false));
+        assert!(should_defer_automatic_install(false, false, true));
+        assert_eq!(UPDATE_INSTALL_FAILURE_BACKOFF, Duration::from_secs(15 * 60));
+    }
+
+    #[test]
+    fn recording_auto_install_failure_arms_backoff() {
+        {
+            let mut slot = last_auto_install_failure_lock()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            *slot = None;
+        }
+        assert!(!auto_install_failure_backoff_active());
+        record_auto_install_failure();
+        assert!(auto_install_failure_backoff_active());
+        {
+            let mut slot = last_auto_install_failure_lock()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            *slot = None;
+        }
     }
 
     #[test]

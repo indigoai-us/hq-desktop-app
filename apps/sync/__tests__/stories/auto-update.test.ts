@@ -55,6 +55,12 @@ describe('master automatic-updates switch', () => {
     expect(appUpdater).toContain('UpdateAnnouncement::PersistentOnly');
     expect(appUpdater).toContain('UpdateAnnouncement::TransientBanner');
     expect(appUpdater).toContain('should_raise_transient_update_surface');
+    // Windows reliability: defer for sync / daemon Starting / post-failure backoff.
+    expect(appUpdater).toContain('should_defer_automatic_install');
+    expect(appUpdater).toContain('automatic_install_should_defer');
+    expect(appUpdater).toContain('record_auto_install_failure');
+    expect(appUpdater).toContain('UPDATE_INSTALL_FAILURE_BACKOFF');
+    expect(appUpdater).toContain('watch_daemon_is_starting');
   });
 
   it('App keeps the shared preference hydrated for Core updates', () => {

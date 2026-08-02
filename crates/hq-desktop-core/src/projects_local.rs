@@ -1003,7 +1003,7 @@ fn apply_modified_rename_commit(
     if commit.is_empty() {
         return;
     }
-    let mut command = Command::new("git");
+    let mut command = crate::paths::git_command();
     command
         .arg("-C")
         .arg(hq_root)
@@ -1017,8 +1017,7 @@ fn apply_modified_rename_commit(
             commit,
             "--",
         ])
-        .args(scopes)
-        .env("GIT_OPTIONAL_LOCKS", "0");
+        .args(scopes);
     let Ok(output) = command.output() else {
         return;
     };
@@ -1066,11 +1065,10 @@ fn project_history_scopes(paths: &[String]) -> Vec<String> {
 }
 
 fn git_head(hq_root: &Path) -> Option<String> {
-    let output = Command::new("git")
+    let output = crate::paths::git_command()
         .arg("-C")
         .arg(hq_root)
         .args(["rev-parse", "--verify", "HEAD"])
-        .env("GIT_OPTIONAL_LOCKS", "0")
         .output()
         .ok()?;
     if !output.status.success() {
@@ -1084,7 +1082,7 @@ fn load_git_first_add_creators(hq_root: &Path, scopes: &[String]) -> HashMap<Str
     if scopes.is_empty() {
         return HashMap::new();
     }
-    let mut command = Command::new("git");
+    let mut command = crate::paths::git_command();
     command
         .arg("-C")
         .arg(hq_root)
@@ -1097,8 +1095,7 @@ fn load_git_first_add_creators(hq_root: &Path, scopes: &[String]) -> HashMap<Str
             "--name-status",
             "--",
         ])
-        .args(scopes)
-        .env("GIT_OPTIONAL_LOCKS", "0");
+        .args(scopes);
     let Ok(output) = command.output() else {
         return HashMap::new();
     };
