@@ -107,6 +107,7 @@ fn handle_watch_stdout_line(
     app: &AppHandle,
     hq_folder: &str,
     totals: &Mutex<RunTotals>,
+    phase_context: &Mutex<WatcherPhaseContext>,
     line: &str,
 ) -> bool {
     let trimmed = line.trim();
@@ -117,6 +118,7 @@ fn handle_watch_stdout_line(
         Ok(e) => e,
         Err(_) => return false,
     };
+    observe_watcher_phase_from_event(phase_context, &event);
     {
         let mut t = totals.lock().unwrap_or_else(|e| e.into_inner());
         t.accumulate(&event);
@@ -622,8 +624,13 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
             // the timestamp of the last manual `Sync Now` click.
             match event {
                 ProcessEvent::Stdout(line) => {
-                    if handle_watch_stdout_line(&app, &hq_folder, &totals, &line) {
-                        observe_watcher_phase_from_snapshot(&process_watcher_phase);
+                    if handle_watch_stdout_line(
+                        &app,
+                        &hq_folder,
+                        &totals,
+                        &process_watcher_phase,
+                        &line,
+                    ) {
                         *process_heartbeat
                             .lock()
                             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Instant::now();
@@ -788,7 +795,6 @@ struct WatcherExitCaptureContext {
 struct WatcherPhaseContext {
     phase: &'static str,
     observed_at: Instant,
-    last_snapshot_read_at: Option<Instant>,
 }
 
 impl Default for WatcherPhaseContext {
@@ -796,21 +802,7 @@ impl Default for WatcherPhaseContext {
         Self {
             phase: "unknown",
             observed_at: Instant::now(),
-            last_snapshot_read_at: None,
         }
-    }
-}
-
-/// Keep only the documented sync-progress phase vocabulary. The snapshot can
-/// contain forward-compatible or malformed text, none of which may cross the
-/// telemetry boundary.
-fn content_safe_runner_phase(phase: Option<&str>) -> &'static str {
-    match phase.map(str::to_ascii_lowercase).as_deref() {
-        Some("scan") => "scan",
-        Some("pull") => "pull",
-        Some("push") => "push",
-        Some("idle") => "idle",
-        _ => "unknown",
     }
 }
 
@@ -825,30 +817,27 @@ fn runner_phase_elapsed_bucket(elapsed: Duration) -> &'static str {
     }
 }
 
-/// The hq-cloud progress snapshot is the existing source of the runner's work
-/// phase. Observe only its enum value and the local time when that enum last
-/// changed; neither the file path, company, current file, nor timestamps leave
-/// this process.
-fn observe_watcher_phase_from_snapshot(phase_context: &Mutex<WatcherPhaseContext>) {
-    // A busy pass can emit one stdout event per file. Reading the small
-    // progress file at most once per second is enough for a coarse exit
-    // diagnostic without putting filesystem I/O on every transfer.
-    let now = Instant::now();
-    {
-        let mut context = phase_context
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if context
-            .last_snapshot_read_at
-            .is_some_and(|last_read| now.duration_since(last_read) < Duration::from_secs(1))
-        {
-            return;
-        }
-        context.last_snapshot_read_at = Some(now);
+/// Derive the coarse phase only from events emitted by this watcher. The
+/// on-disk progress snapshot is shared with Sync Now and CLI syncs, so it
+/// cannot safely attribute work to this process.
+fn watcher_phase_from_event(event: &SyncEvent) -> Option<&'static str> {
+    match event {
+        SyncEvent::FanoutPlan(_) | SyncEvent::Plan(_) => Some("scan"),
+        SyncEvent::Progress(progress) => Some(match progress.direction.as_deref() {
+            Some("up") => "push",
+            Some("down") => "pull",
+            _ => "unknown",
+        }),
+        SyncEvent::AllComplete(_) => Some("idle"),
+        _ => None,
     }
-    let phase = hq_desktop_core::sync_progress::read_fresh_snapshot()
-        .map(|snapshot| content_safe_runner_phase(Some(&snapshot.phase)))
-        .unwrap_or("unknown");
+}
+
+fn observe_watcher_phase_from_event(phase_context: &Mutex<WatcherPhaseContext>, event: &SyncEvent) {
+    let Some(phase) = watcher_phase_from_event(event) else {
+        return;
+    };
+    let now = Instant::now();
     let mut context = phase_context
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1074,7 +1063,7 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
     consecutive: u32,
     policy_consecutive: u32,
     capture_policy: WatcherExitCapturePolicy,
-    _watcher_command: &str,
+    watcher_command: &str,
     last_stderr: Option<&str>,
     context: &WatcherExitCaptureContext,
 ) {
@@ -1165,7 +1154,7 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
     }
 
     let mut extras = watcher_exit_context_extras(context, runner_fatal_class_seen);
-    if let Some(exec_extras) = runner_exec_provenance_extras(code) {
+    if let Some(exec_extras) = runner_exec_provenance_extras(code, watcher_command) {
         extras.extend(exec_extras);
     }
     if is_unrecognized_watcher_exit(code, signal) {
@@ -1220,31 +1209,46 @@ fn watcher_exit_context_extras(
     ]
 }
 
-/// The app always invokes `npx --package … hq-sync-runner`, so 126/127 is
-/// content-safe provenance about npx's cached shim, not an excuse to send the
-/// dynamic target path or command line to Sentry.
+/// The selected spawn command determines the fixed-vocabulary resolution
+/// token. Exit status alone cannot tell whether a local-runner override or an
+/// npx cache target existed or was executable, so those facts are explicitly
+/// recorded as unknown rather than inferred from 126/127.
 fn runner_exec_provenance_extras(
     code: Option<i32>,
+    watcher_command: &str,
 ) -> Option<Vec<(&'static str, sentry::protocol::Value)>> {
-    let (exists, executable) = match code {
-        Some(126) => (true, false),
-        Some(127) => (false, false),
-        _ => return None,
-    };
+    if !matches!(code, Some(126 | 127)) {
+        return None;
+    }
     Some(vec![
         (
             "runner_exec_resolution",
-            sentry::protocol::Value::String("npx_cache".to_string()),
+            sentry::protocol::Value::String(runner_exec_resolution(watcher_command).to_string()),
         ),
         (
             "runner_exec_target_exists",
-            sentry::protocol::Value::Bool(exists),
+            sentry::protocol::Value::String("unknown".to_string()),
         ),
         (
             "runner_exec_target_executable",
-            sentry::protocol::Value::Bool(executable),
+            sentry::protocol::Value::String("unknown".to_string()),
         ),
     ])
+}
+
+fn runner_exec_resolution(watcher_command: &str) -> &'static str {
+    let command = watcher_command
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if command == "npx" || command == "npx.cmd" {
+        "npx_cache"
+    } else if command == "node" || command == "node.exe" {
+        "local_runner"
+    } else {
+        "unknown"
+    }
 }
 
 fn unrecognized_watcher_exit_extras() -> Vec<(&'static str, sentry::protocol::Value)> {
@@ -3132,17 +3136,14 @@ mod tests {
             "npx_cache"
         );
         assert_eq!(
-            event
-                .extras
-                .iter()
-                .find_map(|(key, value)| (*key == "runner_exec_target_exists").then_some(value)),
-            Some(&sentry::protocol::Value::Bool(true))
+            recorded_string_extra(event, "runner_exec_target_exists"),
+            "unknown",
+            "exit 126 does not prove target existence"
         );
         assert_eq!(
-            event.extras
-                .iter()
-                .find_map(|(key, value)| (*key == "runner_exec_target_executable").then_some(value)),
-            Some(&sentry::protocol::Value::Bool(false))
+            recorded_string_extra(event, "runner_exec_target_executable"),
+            "unknown",
+            "exit 126 does not prove target executability"
         );
         let serialized = serde_json::to_string(&event.extras).expect("serialize extras");
         assert!(!serialized.contains(private_path));
@@ -3153,14 +3154,26 @@ mod tests {
     }
 
     #[test]
-    fn watcher_phase_context_uses_only_schema_vocabulary_and_buckets_time() {
-        assert_eq!(content_safe_runner_phase(Some("pull")), "pull");
-        assert_eq!(content_safe_runner_phase(Some("PUSH")), "push");
-        assert_eq!(
-            content_safe_runner_phase(Some("reconcile-private-path")),
-            "unknown"
-        );
-        assert_eq!(content_safe_runner_phase(None), "unknown");
+    fn watcher_phase_context_uses_only_its_own_events_and_buckets_time() {
+        let push: SyncEvent = serde_json::from_str(
+            r#"{"type":"progress","company":"indigo","path":"private.md","bytes":1,"direction":"up"}"#,
+        )
+        .expect("progress event");
+        let pull: SyncEvent = serde_json::from_str(
+            r#"{"type":"progress","company":"indigo","path":"private.md","bytes":1,"direction":"down"}"#,
+        )
+        .expect("progress event");
+        let unknown: SyncEvent = serde_json::from_str(
+            r#"{"type":"progress","company":"indigo","path":"private.md","bytes":1,"direction":"sideways"}"#,
+        )
+        .expect("progress event");
+        assert_eq!(watcher_phase_from_event(&push), Some("push"));
+        assert_eq!(watcher_phase_from_event(&pull), Some("pull"));
+        assert_eq!(watcher_phase_from_event(&unknown), Some("unknown"));
+
+        let context = Mutex::new(WatcherPhaseContext::default());
+        observe_watcher_phase_from_event(&context, &pull);
+        assert_eq!(context.lock().expect("phase context").phase, "pull");
         assert_eq!(
             runner_phase_elapsed_bucket(Duration::from_secs(59)),
             "under_1m"
@@ -3181,6 +3194,34 @@ mod tests {
             runner_phase_elapsed_bucket(Duration::from_secs(2 * 60 * 60)),
             "over_2h"
         );
+    }
+
+    #[test]
+    fn exec_provenance_uses_the_actual_spawn_mode_and_never_infers_file_state() {
+        let npx = runner_exec_provenance_extras(
+            Some(126),
+            r"C:\\Users\\Ada\\AppData\\Roaming\\npm\\npx.cmd",
+        )
+        .expect("exec exit gets provenance");
+        assert!(npx.iter().any(|(key, value)| {
+            *key == "runner_exec_resolution"
+                && value == &sentry::protocol::Value::String("npx_cache".to_string())
+        }));
+        assert!(npx.iter().all(|(key, value)| {
+            !((*key == "runner_exec_target_exists" || *key == "runner_exec_target_executable")
+                && matches!(value, sentry::protocol::Value::Bool(_)))
+        }));
+        assert!(npx.iter().any(|(key, value)| {
+            *key == "runner_exec_target_exists"
+                && value == &sentry::protocol::Value::String("unknown".to_string())
+        }));
+
+        let local = runner_exec_provenance_extras(Some(127), "/opt/dev/node")
+            .expect("exec exit gets provenance");
+        assert!(local.iter().any(|(key, value)| {
+            *key == "runner_exec_resolution"
+                && value == &sentry::protocol::Value::String("local_runner".to_string())
+        }));
     }
 
     #[test]

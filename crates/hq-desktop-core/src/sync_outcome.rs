@@ -241,13 +241,29 @@ pub fn classify_runner_fatal_class(line: &str) -> RunnerFatalClass {
         .any(|marker| msg.contains(marker))
     {
         RunnerFatalClass::NodeFatal
-    } else if msg.contains("permission denied") {
+    } else if is_runner_exec_shell_failure(&msg, "permission denied") {
         RunnerFatalClass::ExecPermissionDenied
-    } else if msg.contains("no such file or directory") || msg.contains("command not found") {
+    } else if is_runner_exec_shell_failure(&msg, "no such file or directory")
+        || is_runner_exec_shell_failure(&msg, "command not found")
+    {
         RunnerFatalClass::ExecNotFound
     } else {
         RunnerFatalClass::None
     }
+}
+
+/// Shell launch diagnostics have a small, stable shape. Requiring that shape
+/// keeps ordinary runner file errors (which also contain EACCES or ENOENT) out
+/// of the executable-launch classes. The source line remains local; this only
+/// decides which fixed token, if any, may be reported.
+fn is_runner_exec_shell_failure(message: &str, marker: &str) -> bool {
+    let shell_prefix = ["sh: ", "bash: ", "zsh: ", "fish: "]
+        .iter()
+        .any(|prefix| message.starts_with(prefix));
+    let npx_runner_target = message.contains("/.npm/_npx/")
+        || message.contains("node_modules/.bin/hq-sync-runner")
+        || message.contains("hq-sync-runner:");
+    message.contains(marker) && (shell_prefix || npx_runner_target)
 }
 
 /// Saturating per-pass counts that render as a compact, fixed-vocabulary Sentry
@@ -1083,6 +1099,18 @@ mod tests {
         assert_eq!(
             classify_runner_fatal_class("EPERM: operation not permitted"),
             RunnerFatalClass::None
+        );
+        assert_eq!(
+            classify_runner_fatal_class("EACCES: permission denied, open /private/user-file"),
+            RunnerFatalClass::None,
+            "ordinary runner file errors are not launch failures"
+        );
+        assert_eq!(
+            classify_runner_fatal_class(
+                "ENOENT: no such file or directory, open /private/user-file"
+            ),
+            RunnerFatalClass::None,
+            "ordinary runner file errors are not launch failures"
         );
         assert_eq!(classify_runner_fatal_class(""), RunnerFatalClass::None);
 
