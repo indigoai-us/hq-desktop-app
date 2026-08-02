@@ -632,6 +632,32 @@ pub fn is_prefix_permission_failure(detail: &str, prefix: Option<&str>) -> bool 
     .any(|target| detail.contains(target))
 }
 
+/// Keep the cache-specific diagnostic distinct from an expected selected-prefix
+/// failure. It intentionally does not treat an exit code alone as permission
+/// evidence: unrelated exit-243 failures must remain reportable.
+fn is_npm_permission_failure(detail: &str) -> bool {
+    let detail = detail.to_ascii_lowercase();
+    detail.contains("eacces")
+        || detail.contains("permission denied")
+        || detail.contains("errno -13")
+}
+
+/// A path-free summary retained for the existing npm-cache telemetry contract.
+/// Selected-prefix failures take precedence, so the two categories do not
+/// overlap; all other shapes remain reportable as `other`.
+fn npm_failure_site(detail: &str, prefix: Option<&str>) -> &'static str {
+    if !is_npm_permission_failure(detail) {
+        return "other";
+    }
+    if is_prefix_permission_failure(detail, prefix) {
+        return "prefix";
+    }
+    if detail.to_ascii_lowercase().contains("_cacache") {
+        return "cache";
+    }
+    "other"
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NpmPathShape {
     SelectedPrefixNodeModules,
@@ -728,12 +754,31 @@ fn npm_error_code(detail: &str) -> &'static str {
     });
     match code.as_deref() {
         Some("eacces") => "EACCES",
-        Some("eperm") => "EPERM",
-        Some("enotempty") => "ENOTEMPTY",
+        Some("eai_again") => "EAI_AGAIN",
+        Some("econnrefused") => "ECONNREFUSED",
         Some("econnreset") => "ECONNRESET",
+        Some("eexist") => "EEXIST",
+        Some("eintegrity") => "EINTEGRITY",
+        Some("eperm") => "EPERM",
+        Some("epipe") => "EPIPE",
+        Some("enotempty") => "ENOTEMPTY",
         Some("enospc") => "ENOSPC",
+        Some("enotfound") => "ENOTFOUND",
+        Some("err_socket_timeout") => "ERR_SOCKET_TIMEOUT",
+        Some("etarget") => "ETARGET",
+        Some("etimedout") => "ETIMEDOUT",
         _ => "unknown",
     }
+}
+
+/// Temporary npm registry and resolution failures already retry on the next
+/// scheduled update. Preserve this current-main classification while rebasing
+/// the permission diagnostics so a telemetry fix cannot make them noisy again.
+fn is_expected_transient_registry_failure(detail: &str) -> bool {
+    matches!(
+        npm_error_code(detail),
+        "ETARGET" | "ECONNRESET" | "ETIMEDOUT" | "ENOTFOUND" | "EAI_AGAIN" | "ERR_SOCKET_TIMEOUT"
+    )
 }
 
 fn npm_syscall(detail: &str) -> &'static str {
@@ -852,6 +897,7 @@ pub enum InstallFailureKind {
     ExpectedPrefixPermission,
     ExpectedWindowsAbort,
     ExpectedWindowsLockedBinary,
+    ExpectedTransientRegistry,
     Unexpected,
 }
 
@@ -868,6 +914,8 @@ pub fn classify_install_failure(
         InstallFailureKind::ExpectedWindowsAbort
     } else if is_windows_locked_binary_failure(exit_code, detail) {
         InstallFailureKind::ExpectedWindowsLockedBinary
+    } else if is_expected_transient_registry_failure(detail) {
+        InstallFailureKind::ExpectedTransientRegistry
     } else {
         InstallFailureKind::Unexpected
     }
@@ -882,6 +930,7 @@ impl InstallFailureKind {
             Self::ExpectedPrefixPermission => "expected-prefix-permission",
             Self::ExpectedWindowsAbort => "expected-windows-abort",
             Self::ExpectedWindowsLockedBinary => "expected-windows-locked-binary",
+            Self::ExpectedTransientRegistry => "expected-transient-registry",
             Self::Unexpected => "unexpected",
         }
     }
@@ -896,6 +945,12 @@ pub fn install_failure_detail(
     detail: &str,
     prefix: Option<&str>,
 ) -> String {
+    if classify_install_failure(exit_code, detail, prefix)
+        == InstallFailureKind::ExpectedTransientRegistry
+    {
+        return "npm's registry was temporarily unavailable or was mid-publish. The updater will retry automatically on its next scheduled check; you can also retry the copied command shortly."
+            .to_string();
+    }
     if !detail.trim().is_empty() {
         return detail.trim().to_string();
     }
@@ -908,6 +963,9 @@ pub fn install_failure_detail(
         }
         InstallFailureKind::ExpectedWindowsLockedBinary => {
             "npm could not replace the hq program because the file is locked or in use (a running hq command or terminal, or antivirus/endpoint protection). Close any open hq processes and terminals, then retry the copied command in a fresh terminal; if it keeps happening, allow-list hq in your endpoint protection.".to_string()
+        }
+        InstallFailureKind::ExpectedTransientRegistry => {
+            "npm's registry was temporarily unavailable or was mid-publish. The updater will retry automatically on its next scheduled check; you can also retry the copied command shortly.".to_string()
         }
         InstallFailureKind::Unexpected => format!(
             "npm install exited with status {}",
@@ -976,6 +1034,7 @@ pub fn report_install_failure(exit_code: Option<i32>, detail: &str, prefix: Opti
             scope.set_tag("install_failure_kind", kind.fingerprint_component());
             scope.set_tag("exit_code", exit_str.as_str());
             scope.set_tag("eacces", if eacces { "true" } else { "false" });
+            scope.set_tag("npm_failure_site", npm_failure_site(detail, prefix));
             scope.set_tag("npm_error_code", npm_error_code(detail));
             scope.set_tag("npm_syscall", npm_syscall(detail));
             scope.set_tag("npm_path_shape", npm_path_shape.tag_value());
@@ -995,6 +1054,24 @@ pub fn report_install_failure(exit_code: Option<i32>, detail: &str, prefix: Opti
         },
         || {
             sentry::capture_message(&message, sentry::Level::Error);
+        },
+    );
+}
+
+/// Report a failure to prepare the updater's app-owned npm cache without
+/// sending the local cache path or the raw filesystem error to Sentry.
+pub fn report_npm_cache_setup_failure(category: &'static str) {
+    sentry::with_scope(
+        |scope| {
+            scope.set_tag("hq_cli_update_kind", "cache-setup-failed");
+            scope.set_tag("npm_cache_setup_failure", category);
+            scope.set_fingerprint(Some(&["hq-cli-update", "cache-setup-failed", category]));
+        },
+        || {
+            sentry::capture_message(
+                "[hq-cli-update] app-owned npm cache could not be prepared",
+                sentry::Level::Error,
+            );
         },
     );
 }
@@ -1548,15 +1625,29 @@ mod tests {
     }
 
     #[test]
-    fn no_prefix_non_permission_failures_stay_loud() {
+    fn no_prefix_non_permission_nontransient_failures_stay_loud() {
         for detail in [
-            "npm error code ETIMEDOUT\nnpm error path /usr/local/lib/node_modules/@indigoai-us",
-            "npm error code ECONNRESET\nnpm error path /usr/local/lib/node_modules/@indigoai-us",
             "npm error code ENOSPC\nnpm error path /usr/local/lib/node_modules/@indigoai-us",
+            "npm error code EINTEGRITY\nnpm error path /usr/local/lib/node_modules/@indigoai-us",
+            "npm error code EEXIST\nnpm error path /usr/local/lib/node_modules/@indigoai-us",
         ] {
             assert_eq!(
                 classify_install_failure(Some(1), detail, None),
                 InstallFailureKind::Unexpected,
+                "detail: {detail}"
+            );
+        }
+    }
+
+    #[test]
+    fn transient_registry_failures_keep_the_current_expected_classification() {
+        for detail in [
+            "npm error code ETIMEDOUT\nnpm error path /usr/local/lib/node_modules/@indigoai-us",
+            "npm error code ECONNRESET\nnpm error path /usr/local/lib/node_modules/@indigoai-us",
+        ] {
+            assert_eq!(
+                classify_install_failure(Some(1), detail, None),
+                InstallFailureKind::ExpectedTransientRegistry,
                 "detail: {detail}"
             );
         }

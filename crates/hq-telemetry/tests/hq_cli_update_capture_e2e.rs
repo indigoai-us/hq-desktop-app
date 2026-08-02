@@ -121,8 +121,15 @@ fn install_failure_capture_is_suppressed_or_tagged_after_the_real_scrubber() {
         Some("unknown")
     );
 
-    let network = "npm error code ECONNRESET\nnpm error network request reset";
-    let events = captured_events(|| report_install_failure(Some(1), network, None));
+    let transient_network = "npm error code ECONNRESET\nnpm error network request reset";
+    let events = captured_events(|| report_install_failure(Some(1), transient_network, None));
+    assert!(
+        events.is_empty(),
+        "the current transient-registry classifier must stay suppressed"
+    );
+
+    let storage = "npm error code ENOSPC\nnpm error path /usr/local/lib/node_modules/@indigoai-us";
+    let events = captured_events(|| report_install_failure(Some(1), storage, None));
     assert_eq!(events.len(), 1);
     assert_eq!(
         events[0].tags.get("eacces").map(String::as_str),
@@ -130,10 +137,10 @@ fn install_failure_capture_is_suppressed_or_tagged_after_the_real_scrubber() {
     );
     assert_eq!(
         events[0].tags.get("npm_error_code").map(String::as_str),
-        Some("ECONNRESET")
+        Some("ENOSPC")
     );
     assert_eq!(
         events[0].tags.get("npm_path_shape").map(String::as_str),
-        Some("none")
+        Some("global-lib-node-modules")
     );
 }
