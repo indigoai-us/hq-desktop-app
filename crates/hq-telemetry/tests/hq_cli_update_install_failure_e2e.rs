@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use hq_desktop_core::hq_cli_update::{report_install_failure, report_npm_cache_setup_failure};
+use sentry::protocol::Value;
 use sentry::test::with_captured_events_options;
 
 fn captured_events(f: impl FnOnce()) -> Vec<sentry::protocol::Event<'static>> {
@@ -49,6 +50,8 @@ fn assert_unexpected_install_event(
     expected_error_code: &str,
     expected_eacces: &str,
     expected_failure_site: &str,
+    expected_path_shape: &str,
+    expected_stderr_len: &str,
 ) {
     assert_eq!(event.level, sentry::Level::Error);
     assert_eq!(
@@ -80,10 +83,31 @@ fn assert_unexpected_install_event(
         event.tags.get("npm_error_code").map(String::as_str),
         Some(expected_error_code)
     );
+    assert!(event.tags.get("npm_syscall").map(String::as_str) == Some("unknown"));
+    assert_eq!(
+        event.tags.get("npm_path_shape").map(String::as_str),
+        Some(expected_path_shape)
+    );
+    assert_eq!(
+        event.tags.get("npm_prefix_known").map(String::as_str),
+        Some("true")
+    );
+    assert_eq!(
+        event.tags.get("npm_stderr_len").map(String::as_str),
+        Some(expected_stderr_len)
+    );
+    assert_eq!(
+        event.extra.get("npm_diagnostics"),
+        Some(&Value::String(
+            format!(
+                "error_code={expected_error_code} syscall=unknown path_shape={expected_path_shape} prefix_known=true eacces={expected_eacces} exit_code=1 stderr_len={expected_stderr_len}"
+            )
+            .into()
+        ))
+    );
     assert!(
-        event.extra.is_empty(),
-        "unexpected extras: {:?}",
-        event.extra
+        !event.extra.contains_key("npm_stderr"),
+        "raw npm stderr must never reach Sentry"
     );
 }
 
@@ -108,18 +132,34 @@ fn transient_registry_failures_do_not_capture() {
 fn unexpected_install_failures_keep_stable_envelopes_and_path_safe_diagnostics() {
     let cache_eacces = "npm error code EACCES\n\
         npm error path /Users/alice/.npm/_cacache/content-v2/sha512";
+    let cache_eacces_len = cache_eacces.len().to_string();
     let events =
         captured_events(|| report_install_failure(Some(1), cache_eacces, Some("/usr/local")));
     assert_eq!(events.len(), 1);
-    assert_unexpected_install_event(&events[0], "EACCES", "true", "cache");
+    assert_unexpected_install_event(
+        &events[0],
+        "EACCES",
+        "true",
+        "cache",
+        "npm-cache",
+        cache_eacces_len.as_str(),
+    );
     assert_path_safe(&events[0], &["/Users/", "alice", "_cacache", "npm error"]);
 
     let unknown = "npm error code ELIFECYCLE\n\
         npm error command failed\n\
         npm error path /Users/carol/project/package.json";
+    let unknown_len = unknown.len().to_string();
     let events = captured_events(|| report_install_failure(Some(1), unknown, Some("/usr/local")));
     assert_eq!(events.len(), 1);
-    assert_unexpected_install_event(&events[0], "unknown", "false", "other");
+    assert_unexpected_install_event(
+        &events[0],
+        "unknown",
+        "false",
+        "other",
+        "other",
+        unknown_len.as_str(),
+    );
     assert_path_safe(&events[0], &["/Users/", "carol", "npm error"]);
 }
 
@@ -130,6 +170,7 @@ fn lifecycle_output_with_transient_tokens_remains_captured() {
         npm error command sh -c node postinstall.js\n\
         application output: ETARGET ECONNRESET npm error network\n\
         application path: /Users/reviewer/project";
+    let lifecycle_len = lifecycle.len().to_string();
     let events = captured_events(|| report_install_failure(Some(1), lifecycle, Some("/usr/local")));
 
     assert_eq!(
@@ -137,7 +178,14 @@ fn lifecycle_output_with_transient_tokens_remains_captured() {
         1,
         "lifecycle failure was incorrectly suppressed"
     );
-    assert_unexpected_install_event(&events[0], "unknown", "false", "other");
+    assert_unexpected_install_event(
+        &events[0],
+        "unknown",
+        "false",
+        "other",
+        "none",
+        lifecycle_len.as_str(),
+    );
     assert_path_safe(
         &events[0],
         &["/Users/", "reviewer", "ETARGET", "ECONNRESET", "npm error"],

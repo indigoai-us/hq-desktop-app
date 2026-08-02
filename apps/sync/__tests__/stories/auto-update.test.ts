@@ -147,5 +147,10 @@ describe('master automatic-updates switch', () => {
     expect(cliUpdateCore).not.toContain('scope.set_extra("npm_stderr"');
     expect(cliUpdateCore).toContain('scope.set_tag("npm_failure_site"');
     expect(cliUpdateCore).toContain('scope.set_tag("npm_error_code"');
+    // npm stderr is arbitrary free text. Sentry's default scrubber can erase
+    // it wholesale, so captures carry only the fixed, path-free summary.
+    expect(cliUpdateCore).toContain('fn npm_diagnostics_summary(');
+    expect(cliUpdateCore).toContain('scope.set_extra("npm_diagnostics", npm_diagnostics.into());');
+    expect(cliUpdateCore).not.toContain('scope.set_extra("npm_stderr"');
   });
 });
