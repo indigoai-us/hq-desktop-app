@@ -2014,6 +2014,111 @@ mod tests {
         );
     }
 
+    /// `get_local_version` is the compatibility wrapper over
+    /// `get_local_version_diagnostics().local`. Exercise the old ordered
+    /// algorithm independently so the diagnostic refactor cannot change its
+    /// return value while preserving only the new result's internal shape.
+    #[test]
+    #[cfg(unix)]
+    fn local_version_diagnostics_preserve_legacy_result_across_ordered_scenarios() {
+        let absent = probe_local_version(None, None, "");
+        assert_eq!(
+            legacy_local_version(None, None, ""),
+            absent.local,
+            "absent hq"
+        );
+
+        let binary_tmp = tempfile::TempDir::new().unwrap();
+        let package = binary_tmp
+            .path()
+            .join("lib/node_modules/@indigoai-us/hq-cli");
+        std::fs::create_dir_all(package.join("bin")).unwrap();
+        std::fs::write(
+            package.join("package.json"),
+            br#"{"name":"@indigoai-us/hq-cli","version":"5.80.1"}"#,
+        )
+        .unwrap();
+        let real_hq = package.join("bin/hq.js");
+        write_executable(&real_hq, "#!/bin/sh\nexit 91\n");
+        let binary_hq = binary_tmp.path().join("bin/hq");
+        std::fs::create_dir_all(binary_hq.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&real_hq, &binary_hq).unwrap();
+        let binary = probe_local_version(Some(&binary_hq), None, "");
+        assert_eq!(
+            legacy_local_version(Some(&binary_hq), None, ""),
+            binary.local,
+            "binary-anchor hit"
+        );
+
+        let npm_tmp = tempfile::TempDir::new().unwrap();
+        let npm_hq = npm_tmp.path().join("bin/hq");
+        let npm = npm_tmp.path().join("bin/npm");
+        let npm_root = npm_tmp.path().join("npm-root");
+        let npm_package = npm_root.join("@indigoai-us/hq-cli/package.json");
+        std::fs::create_dir_all(npm_hq.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(npm_package.parent().unwrap()).unwrap();
+        write_executable(&npm_hq, "#!/bin/sh\nexit 92\n");
+        std::fs::write(
+            &npm_package,
+            br#"{"name":"@indigoai-us/hq-cli","version":"5.80.2"}"#,
+        )
+        .unwrap();
+        write_executable(
+            &npm,
+            &format!("#!/bin/sh\nprintf '%s\\n' '{}'\n", npm_root.display()),
+        );
+        let npm_bin = npm.to_str().unwrap();
+        let npm_result = probe_local_version(Some(&npm_hq), Some(npm_bin), "");
+        assert_eq!(
+            legacy_local_version(Some(&npm_hq), Some(npm_bin), ""),
+            npm_result.local,
+            "npm-root hit"
+        );
+
+        let version_tmp = tempfile::TempDir::new().unwrap();
+        let version_hq = version_tmp.path().join("bin/hq");
+        let failing_npm = version_tmp.path().join("bin/npm");
+        std::fs::create_dir_all(version_hq.parent().unwrap()).unwrap();
+        write_executable(&version_hq, "#!/bin/sh\nprintf 'v5.80.3\\n'\n");
+        write_executable(&failing_npm, "#!/bin/sh\nexit 93\n");
+        let failing_npm_bin = failing_npm.to_str().unwrap();
+        let hq_version = probe_local_version(Some(&version_hq), Some(failing_npm_bin), "");
+        assert_eq!(
+            legacy_local_version(Some(&version_hq), Some(failing_npm_bin), ""),
+            hq_version.local,
+            "hq --version hit"
+        );
+
+        let failure_tmp = tempfile::TempDir::new().unwrap();
+        let failing_hq = failure_tmp.path().join("bin/hq");
+        let failing_npm = failure_tmp.path().join("bin/npm");
+        std::fs::create_dir_all(failing_hq.parent().unwrap()).unwrap();
+        write_executable(&failing_hq, "#!/bin/sh\nexit 94\n");
+        write_executable(&failing_npm, "#!/bin/sh\nexit 95\n");
+        let failing_npm_bin = failing_npm.to_str().unwrap();
+        let all_fail = probe_local_version(Some(&failing_hq), Some(failing_npm_bin), "");
+        assert_eq!(
+            legacy_local_version(Some(&failing_hq), Some(failing_npm_bin), ""),
+            all_fail.local,
+            "all probes fail"
+        );
+    }
+
+    #[cfg(unix)]
+    fn legacy_local_version(hq: Option<&Path>, npm: Option<&str>, path: &str) -> Option<String> {
+        if let Some(hq) = hq {
+            if let Some(version) = version_from_hq_binary(hq) {
+                return Some(version);
+            }
+        }
+        if let Some(npm) = npm {
+            if let Some(version) = read_installed_version(npm, path) {
+                return Some(version);
+            }
+        }
+        hq.and_then(hq_version_string)
+    }
+
     #[cfg(unix)]
     fn write_executable(path: &Path, contents: &str) {
         use std::os::unix::fs::PermissionsExt;
