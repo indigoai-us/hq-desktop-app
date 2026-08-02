@@ -342,4 +342,33 @@ describe("release workflow channel contract", () => {
       expect(windowsCheckWorkflow).toContain(path);
     }
   });
+
+  it("keeps native debug files private, recoverable, and uploadable to Sentry", () => {
+    const macos = jobBody("macos");
+    const windows = jobBody("windows");
+
+    expect(macos).toContain("Install Sentry CLI");
+    expect(macos).toContain("Upload macOS debug files to Sentry");
+    expect(macos).toContain("sentry-cli debug-files upload");
+    expect(macos).toContain("SENTRY_AUTH_TOKEN");
+    expect(macos).toContain("SENTRY_AUTH_TOKEN is not configured");
+    expect(macos).toContain("HQ.app.dSYM");
+
+    expect(windows).toContain("Install Sentry CLI");
+    expect(windows).toContain("Verify Windows debug file contract");
+    expect(windows).toContain("hq_sync_menubar.pdb");
+    expect(windows).toContain("hq-sync-menubar.exe");
+    expect(windows).toContain("sentry-cli difutil check");
+    expect(windows).toContain("Upload Windows debug files to Sentry");
+    expect(windows).toContain("sentry-cli debug-files upload");
+    expect(windows).toContain("SENTRY_AUTH_TOKEN is not configured");
+    expect(windows).toContain("SENTRY_AUTH_TOKEN is invalid or upload failed");
+    expect(windows).toContain("$exeMetadata.variants");
+    expect(windows).toContain("$pdbMetadata.variants");
+    expect(macos).toContain('data.get("variants", [])');
+
+    expect(windows).toMatch(/Copy-Item \$pdb \(Join-Path \$stage "hq_sync_menubar\.pdb"\)/);
+    expect(macos).toMatch(/target\/universal-apple-darwin\/release\/bundle\/macos\/HQ\.app\.dSYM/);
+    expect(`${macos}\n${windows}`).not.toContain("--include-sources");
+  });
 });

@@ -91,8 +91,34 @@ Alongside the version-stamped assets, each release also publishes versionless co
 
 - `VITE_SENTRY_DSN`: Svelte/Vite Sentry DSN inlined into the web bundle.
 - `HQ_SYNC_SENTRY_DSN`: Rust Sentry DSN read by `apps/sync/src-tauri/build.rs`.
+- `SENTRY_AUTH_TOKEN`: an org-scoped Sentry token with `project:write` access
+  to `indigo-d0/hq-desktop`. The release workflow uses it only to upload
+  private native debug files. This is required for server-side symbolication;
+  without it, the release still builds but emits a visible warning naming the
+  debug id that could not be uploaded.
 
 No Cognito `VITE_*` secrets are required by the current unified app. Grepping the app shows only `VITE_SENTRY_DSN` is read by frontend release code.
+
+### Native debug-file contract
+
+Each release build keeps the native files that Sentry needs to resolve a crash:
+
+- macOS: the universal `HQ.app` and its adjacent `HQ.app.dSYM`.
+- Windows: `hq-sync-menubar.exe` and the adjacent
+  `hq_sync_menubar.pdb`, for both x64 and ARM64.
+
+The workflow verifies each executable/debug-file pair with `sentry-cli difutil
+check` before it stages artifacts. The dSYM and PDB are included only in the
+private GitHub Actions build artifacts; they are never copied into the public
+GitHub Release asset set. When `SENTRY_AUTH_TOKEN` is configured, the workflow
+uploads those files to the private `indigo-d0/hq-desktop` Sentry project with
+source collection disabled. A missing or invalid token warns but does not turn a
+release build red, so the private CI artifact remains the recovery path.
+
+After a release, verify symbolication by listing the project debug files in
+Sentry and confirming that the record's debug id equals the id printed by the
+build's native debug-file contract step. Do not include sources in native debug
+uploads, and do not publish `.pdb` or `.dSYM` files as release assets.
 
 ## Required GitHub Repository Variables
 

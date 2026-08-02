@@ -7,6 +7,141 @@
 // minimal so `cargo clippy -- -D warnings` stays clean.
 use sentry::protocol::{Context, Event, Value};
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+
+const UI_SEAM_CATEGORY: &str = "ui.seam";
+const NATIVE_PANIC_PHASE_TAG: &str = "native_panic_phase";
+
+/// Lifecycle state recorded with native-panic reports. The state is deliberately
+/// small and static because it is updated from the native event-loop thread.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativePanicPhase {
+    Running = 0,
+    Exiting = 1,
+    Destroyed = 2,
+}
+
+impl NativePanicPhase {
+    fn as_tag(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Exiting => "exiting",
+            Self::Destroyed => "destroyed",
+        }
+    }
+}
+
+static NATIVE_PANIC_PHASE: AtomicU8 = AtomicU8::new(NativePanicPhase::Running as u8);
+
+/// Static seam identifiers are intentionally closed over. They cannot carry
+/// runtime text, so no native event-loop call site can expose a path, token, or
+/// user identifier through a breadcrumb.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum NativePanicSeam {
+    TrayLeftClick = 1,
+    TrayBlurHide = 2,
+    GlobalShortcutTogglePopover = 3,
+    GlobalShortcutToggleDesktop = 4,
+    WindowCloseRequestedHide = 5,
+    WindowThemeChanged = 6,
+    WindowForceForeground = 7,
+    SingleInstanceSurfaceExisting = 8,
+    AppExitRequested = 9,
+}
+
+impl NativePanicSeam {
+    fn from_id(id: u8) -> Option<Self> {
+        match id {
+            1 => Some(Self::TrayLeftClick),
+            2 => Some(Self::TrayBlurHide),
+            3 => Some(Self::GlobalShortcutTogglePopover),
+            4 => Some(Self::GlobalShortcutToggleDesktop),
+            5 => Some(Self::WindowCloseRequestedHide),
+            6 => Some(Self::WindowThemeChanged),
+            7 => Some(Self::WindowForceForeground),
+            8 => Some(Self::SingleInstanceSurfaceExisting),
+            9 => Some(Self::AppExitRequested),
+            _ => None,
+        }
+    }
+
+    fn message(self) -> &'static str {
+        match self {
+            Self::TrayLeftClick => "tray.left-click",
+            Self::TrayBlurHide => "tray.blur-hide",
+            Self::GlobalShortcutTogglePopover => "global-shortcut.toggle-popover",
+            Self::GlobalShortcutToggleDesktop => "global-shortcut.toggle-desktop",
+            Self::WindowCloseRequestedHide => "window.close-requested-hide",
+            Self::WindowThemeChanged => "window.theme-changed",
+            Self::WindowForceForeground => "window-focus.force-foreground",
+            Self::SingleInstanceSurfaceExisting => "single-instance.surface-existing",
+            Self::AppExitRequested => "app.exit-requested",
+        }
+    }
+}
+
+const NATIVE_PANIC_SEAM_HISTORY_CAPACITY: usize = 8;
+static NATIVE_PANIC_SEAMS: AtomicU64 = AtomicU64::new(0);
+
+/// Record a static UI seam immediately before native window/event-loop work.
+///
+/// This is an atomic, bounded eight-entry history. It intentionally does no
+/// allocation, locking, file I/O, or network I/O on the native event-loop
+/// path. `before_send` materializes the static entries as breadcrumbs only if
+/// an event is captured.
+pub fn record_native_panic_seam(seam: NativePanicSeam) {
+    NATIVE_PANIC_SEAMS
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |history| {
+            Some((history << u8::BITS) | seam as u64)
+        })
+        .expect("native seam history update is infallible");
+}
+
+/// Set the lifecycle tag that distinguishes normal operation from exit and
+/// post-exit event-loop activity in a future native-panic report.
+pub fn set_native_panic_phase(phase: NativePanicPhase) {
+    NATIVE_PANIC_PHASE.store(phase as u8, Ordering::Relaxed);
+}
+
+fn current_native_panic_phase() -> NativePanicPhase {
+    match NATIVE_PANIC_PHASE.load(Ordering::Relaxed) {
+        0 => NativePanicPhase::Running,
+        1 => NativePanicPhase::Exiting,
+        2 => NativePanicPhase::Destroyed,
+        value => panic!("unexpected native panic phase: {value}"),
+    }
+}
+
+fn native_panic_seams(
+    mut history: u64,
+) -> [Option<NativePanicSeam>; NATIVE_PANIC_SEAM_HISTORY_CAPACITY] {
+    let mut seams = [None; NATIVE_PANIC_SEAM_HISTORY_CAPACITY];
+    for slot in seams.iter_mut().rev() {
+        *slot = NativePanicSeam::from_id((history & u64::from(u8::MAX)) as u8);
+        history >>= u8::BITS;
+    }
+    seams
+}
+
+fn append_native_panic_context(event: &mut Event<'static>) {
+    event.tags.insert(
+        NATIVE_PANIC_PHASE_TAG.into(),
+        current_native_panic_phase().as_tag().into(),
+    );
+
+    for seam in native_panic_seams(NATIVE_PANIC_SEAMS.load(Ordering::Relaxed))
+        .into_iter()
+        .flatten()
+    {
+        event.breadcrumbs.values.push(sentry::protocol::Breadcrumb {
+            category: Some(UI_SEAM_CATEGORY.into()),
+            message: Some(seam.message().into()),
+            level: sentry::Level::Info,
+            ..Default::default()
+        });
+    }
+}
 
 const SENSITIVE_FIELD_NAMES: &[&str] = &[
     "authorization",
@@ -142,6 +277,11 @@ fn scrub_error_marker() -> Context {
 }
 
 pub fn before_send(mut event: Event<'static>) -> Option<Event<'static>> {
+    // Native event-loop call sites only update atomics. Materialize their
+    // bounded, static diagnostic context here so Sentry scope mutation never
+    // runs on a tray/window callback.
+    append_native_panic_context(&mut event);
+
     // protocol::Request.headers is a Map<String, String>; wipe sensitive
     // header values in-place. (Rust SDK's header map holds owned strings,
     // unlike JS where request.headers is a generic Record<string, unknown>.)
@@ -561,6 +701,53 @@ mod tests {
         assert_eq!(
             result.breadcrumbs.values[0].message.as_deref(),
             Some("watcher started")
+        );
+    }
+
+    #[test]
+    fn test_native_panic_seam_is_scrubbed_safely_and_marks_exit_phase() {
+        NATIVE_PANIC_SEAMS.store(0, Ordering::Relaxed);
+        set_native_panic_phase(NativePanicPhase::Running);
+        let seams = [
+            NativePanicSeam::TrayLeftClick,
+            NativePanicSeam::TrayBlurHide,
+            NativePanicSeam::GlobalShortcutTogglePopover,
+            NativePanicSeam::GlobalShortcutToggleDesktop,
+            NativePanicSeam::WindowCloseRequestedHide,
+            NativePanicSeam::WindowThemeChanged,
+            NativePanicSeam::WindowForceForeground,
+            NativePanicSeam::SingleInstanceSurfaceExisting,
+            NativePanicSeam::AppExitRequested,
+        ];
+        for seam in seams {
+            record_native_panic_seam(seam);
+        }
+        set_native_panic_phase(NativePanicPhase::Exiting);
+        assert_eq!(current_native_panic_phase(), NativePanicPhase::Exiting);
+
+        let event = before_send(Event::default()).expect("native panic event remains sendable");
+        NATIVE_PANIC_SEAMS.store(0, Ordering::Relaxed);
+        set_native_panic_phase(NativePanicPhase::Running);
+
+        let breadcrumbs: Vec<_> = event
+            .breadcrumbs
+            .values
+            .iter()
+            .filter(|breadcrumb| breadcrumb.category.as_deref() == Some(UI_SEAM_CATEGORY))
+            .collect();
+
+        // The nine static seams prove both the fixed vocabulary and bounded
+        // history: the oldest entry drops, leaving the most recent eight.
+        assert_eq!(breadcrumbs.len(), NATIVE_PANIC_SEAM_HISTORY_CAPACITY);
+        assert_eq!(breadcrumbs[0].message.as_deref(), Some("tray.blur-hide"));
+        assert_eq!(
+            breadcrumbs.last().unwrap().message.as_deref(),
+            Some("app.exit-requested")
+        );
+        assert!(breadcrumbs.iter().all(|seam| seam.data.is_empty()));
+        assert_eq!(
+            event.tags.get(NATIVE_PANIC_PHASE_TAG).map(String::as_str),
+            Some("exiting")
         );
     }
 

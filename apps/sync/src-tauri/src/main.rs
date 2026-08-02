@@ -164,6 +164,10 @@ fn setup_startup_surfaces(
 }
 
 fn surface_existing_instance(app: &tauri::AppHandle) {
+    hq_telemetry::record_native_panic_seam(
+        hq_telemetry::NativePanicSeam::SingleInstanceSurfaceExisting,
+    );
+
     #[cfg(target_os = "windows")]
     {
         tray::show_window_at_tray(app);
@@ -202,6 +206,7 @@ fn main() {
         option_env!("SENTRY_ENVIRONMENT"),
         SENTRY_IDENTITY,
     );
+    hq_telemetry::set_native_panic_phase(hq_telemetry::NativePanicPhase::Running);
 
     // Wire the foundation crate's injected dependencies before anything reads them:
     //  - the user-facing client version (from build-time APP_VERSION), and
@@ -294,8 +299,12 @@ fn main() {
                         // Window ops (incl. the is_visible toggle query) must run
                         // on the main thread, so marshal off the shortcut callback.
                         let app_main = app.clone();
-                        let _ = app
-                            .run_on_main_thread(move || tray::toggle_popover_window(&app_main));
+                        let _ = app.run_on_main_thread(move || {
+                            hq_telemetry::record_native_panic_seam(
+                                hq_telemetry::NativePanicSeam::GlobalShortcutTogglePopover,
+                            );
+                            tray::toggle_popover_window(&app_main);
+                        });
                     } else if shortcut == &desktop_shortcut
                         && event.state() == ShortcutState::Pressed
                     {
@@ -304,6 +313,9 @@ fn main() {
                         // Marshal to the main thread for the same reason.
                         let app_main = app.clone();
                         let _ = app.run_on_main_thread(move || {
+                            hq_telemetry::record_native_panic_seam(
+                                hq_telemetry::NativePanicSeam::GlobalShortcutToggleDesktop,
+                            );
                             let desktop_visible = app_main
                                 .get_webview_window("desktop-alt")
                                 .and_then(|w| w.is_visible().ok())
@@ -364,6 +376,9 @@ fn main() {
                 // Only hide the main popover window — let other windows
                 // (e.g. new-files-detail) close normally.
                 if window.label() == "main" {
+                    hq_telemetry::record_native_panic_seam(
+                        hq_telemetry::NativePanicSeam::WindowCloseRequestedHide,
+                    );
                     api.prevent_close();
                     let _ = window.hide();
                 }
@@ -373,6 +388,9 @@ fn main() {
             // unset on window builders so ThemeChanged keeps firing.
             #[cfg(target_os = "windows")]
             if let tauri::WindowEvent::ThemeChanged(theme) = event {
+                hq_telemetry::record_native_panic_seam(
+                    hq_telemetry::NativePanicSeam::WindowThemeChanged,
+                );
                 let appearance = hq_platform::window_effects::WindowAppearance::from_dark(
                     matches!(theme, tauri::Theme::Dark),
                 );
@@ -1067,6 +1085,10 @@ fn main() {
             // ExitRequested is the single chokepoint for every quit path (tray
             // Quit, `quit_app`, Cmd-Q), all of which call `app.exit(0)`.
             if let tauri::RunEvent::ExitRequested { .. } = event {
+                hq_telemetry::set_native_panic_phase(hq_telemetry::NativePanicPhase::Exiting);
+                hq_telemetry::record_native_panic_seam(
+                    hq_telemetry::NativePanicSeam::AppExitRequested,
+                );
                 #[cfg(target_os = "windows")]
                 if let Some(observer) = _app_handle
                     .try_state::<commands::session_end_observer::SessionEndObserverHandle>()
@@ -1074,6 +1096,10 @@ fn main() {
                     observer.shutdown(std::time::Duration::from_millis(500));
                 }
                 commands::process::terminate_all_for_exit(std::time::Duration::from_millis(500));
+            }
+
+            if matches!(&event, tauri::RunEvent::Exit) {
+                hq_telemetry::set_native_panic_phase(hq_telemetry::NativePanicPhase::Destroyed);
             }
 
             // Dock-icon click on the already-running app. Without this the

@@ -417,6 +417,9 @@ fn build_tray_icon(app: &AppHandle) -> Result<tauri::tray::TrayIcon, Box<dyn std
                     let _ = crate::commands::desktop_alt::activation_policy(
                         crate::commands::desktop_alt::ActivationSource::TrayLeftClick,
                     );
+                    hq_telemetry::record_native_panic_seam(
+                        hq_telemetry::NativePanicSeam::TrayLeftClick,
+                    );
                     toggle_popover_window(&app_handle);
                 }
             }
@@ -490,6 +493,9 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                     && !blur_hide_suppressed()
                     && !onboarding_window_requires_blur_suppression(win_clone.app_handle())
                 {
+                    hq_telemetry::record_native_panic_seam(
+                        hq_telemetry::NativePanicSeam::TrayBlurHide,
+                    );
                     let _ = win_clone.hide();
                 }
             }

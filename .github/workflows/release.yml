@@ -325,6 +325,40 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: pnpm tauri build --target universal-apple-darwin --config src-tauri/tauri.macos.conf.json
 
+      - name: Install Sentry CLI
+        shell: bash
+        run: npm install --global @sentry/cli@3.6.2
+
+      - name: Verify macOS debug file contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP="src-tauri/target/universal-apple-darwin/release/bundle/macos/HQ.app"
+          DSYM="${APP}.dSYM"
+          test -d "$DSYM"
+          APP_DEBUG_ID="$(sentry-cli difutil check --json "$APP" | python3 -c 'import json,sys; data=json.load(sys.stdin); ids=sorted({variant.get("debug_id") for variant in data.get("variants", []) if variant.get("debug_id")}); assert ids; print(",".join(ids))')"
+          DSYM_DEBUG_ID="$(sentry-cli difutil check --json "$DSYM" | python3 -c 'import json,sys; data=json.load(sys.stdin); ids=sorted({variant.get("debug_id") for variant in data.get("variants", []) if variant.get("debug_id")}); assert ids; print(",".join(ids))')"
+          test -n "$APP_DEBUG_ID"
+          test "$APP_DEBUG_ID" = "$DSYM_DEBUG_ID"
+          echo "macOS app/dSYM debug id: $APP_DEBUG_ID"
+
+      - name: Upload macOS debug files to Sentry
+        shell: bash
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          DEBUG_DIR="src-tauri/target/universal-apple-darwin/release/bundle/macos"
+          APP="$DEBUG_DIR/HQ.app"
+          DEBUG_ID="$(sentry-cli difutil check --json "$APP" | python3 -c 'import json,sys; data=json.load(sys.stdin); ids=sorted({variant.get("debug_id") for variant in data.get("variants", []) if variant.get("debug_id")}); print(",".join(ids) or "unknown")')"
+          if [ -z "${SENTRY_AUTH_TOKEN:-}" ]; then
+            echo "::warning::SENTRY_AUTH_TOKEN is not configured; debug id $DEBUG_ID was not uploaded."
+            exit 0
+          fi
+          if ! sentry-cli debug-files upload --org indigo-d0 --project hq-desktop --no-sources "$DEBUG_DIR"; then
+            echo "::warning::SENTRY_AUTH_TOKEN is invalid or upload failed; debug id $DEBUG_ID is retained in the private CI artifact."
+          fi
+
       - name: Fix Recall framework symlinks
         shell: bash
         run: bash scripts/fix-recall-framework-symlinks.sh "src-tauri/target/universal-apple-darwin/release/bundle/macos/HQ.app"
@@ -442,6 +476,7 @@ jobs:
             apps/sync/src-tauri/target/release-artifacts/*.dmg
             apps/sync/src-tauri/target/release-artifacts/*.app.tar.gz
             apps/sync/src-tauri/target/release-artifacts/*.app.tar.gz.sig
+            apps/sync/src-tauri/target/universal-apple-darwin/release/bundle/macos/HQ.app.dSYM
 
   windows:
     name: Build Windows ${{ matrix.target }}
@@ -575,6 +610,52 @@ jobs:
           RECALL_SIDECAR_TARGET: ${{ matrix.target }}
         run: pnpm tauri build --target ${{ matrix.target }} --bundles msi nsis updater --config src-tauri/tauri.windows.conf.json --config src-tauri/tauri.windows.release.conf.json --config $env:TAURI_MSI_VERSION_CONFIG
 
+      - name: Install Sentry CLI
+        shell: pwsh
+        run: npm install --global @sentry/cli@3.6.2
+
+      - name: Verify Windows debug file contract
+        shell: pwsh
+        run: |
+          $releaseDir = "src-tauri\target\${{ matrix.target }}\release"
+          $exe = Join-Path $releaseDir "hq-sync-menubar.exe"
+          $pdb = Join-Path $releaseDir "hq_sync_menubar.pdb"
+          if (-not (Test-Path $exe)) {
+            throw "Required release executable is missing: $exe"
+          }
+          if (-not (Test-Path $pdb)) {
+            throw "Required release PDB is missing: $pdb"
+          }
+          $exeMetadata = (& sentry-cli difutil check --json $exe | ConvertFrom-Json)
+          $pdbMetadata = (& sentry-cli difutil check --json $pdb | ConvertFrom-Json)
+          $exeDebugIds = @($exeMetadata.variants | ForEach-Object { $_.debug_id } | Where-Object { $_ } | Sort-Object -Unique)
+          $pdbDebugIds = @($pdbMetadata.variants | ForEach-Object { $_.debug_id } | Where-Object { $_ } | Sort-Object -Unique)
+          $exeDebugId = $exeDebugIds -join ","
+          $pdbDebugId = $pdbDebugIds -join ","
+          if (-not $exeDebugId -or -not $pdbDebugId -or $exeDebugId -ne $pdbDebugId) {
+            throw "Release executable and PDB debug ids differ: exe=$exeDebugId pdb=$pdbDebugId"
+          }
+          Write-Host "Windows executable/PDB debug id: $exeDebugId"
+
+      - name: Upload Windows debug files to Sentry
+        shell: pwsh
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+        run: |
+          $releaseDir = "src-tauri\target\${{ matrix.target }}\release"
+          $exe = Join-Path $releaseDir "hq-sync-menubar.exe"
+          $metadata = (& sentry-cli difutil check --json $exe | ConvertFrom-Json)
+          $debugId = @($metadata.variants | ForEach-Object { $_.debug_id } | Where-Object { $_ } | Sort-Object -Unique) -join ","
+          if ([string]::IsNullOrWhiteSpace($env:SENTRY_AUTH_TOKEN)) {
+            Write-Warning "SENTRY_AUTH_TOKEN is not configured; debug id $debugId was not uploaded."
+            exit 0
+          }
+          & sentry-cli debug-files upload --org indigo-d0 --project hq-desktop --no-sources $releaseDir
+          if ($LASTEXITCODE -ne 0) {
+            Write-Warning "SENTRY_AUTH_TOKEN is invalid or upload failed; debug id $debugId is retained in the private CI artifact."
+            exit 0
+          }
+
       - name: Azure login (OIDC)
         if: ${{ vars.AZURE_CLIENT_ID != '' && env.UNVERIFIED_RELEASE != 'true' }}
         uses: azure/login@v3
@@ -658,6 +739,12 @@ jobs:
             $destName = if ($source.Extension -eq ".msi") { "$msiName.sig" } else { "$nsisName.sig" }
             Copy-Item $sig (Join-Path $stage $destName)
           }
+
+          $pdb = Join-Path "src-tauri\target\${{ matrix.target }}\release" "hq_sync_menubar.pdb"
+          if (-not (Test-Path $pdb)) {
+            throw "Required release PDB is missing: $pdb"
+          }
+          Copy-Item $pdb (Join-Path $stage "hq_sync_menubar.pdb")
 
           Get-ChildItem -Path $stage | ForEach-Object { Write-Host "Staged: $($_.Name)" }
 
