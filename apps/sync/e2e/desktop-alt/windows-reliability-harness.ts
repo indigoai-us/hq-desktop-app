@@ -97,6 +97,21 @@ export interface LaunchResult {
   fallbackReason?: string;
 }
 
+/**
+ * Scripted representation of a sync-runner fatal termination. It deliberately
+ * contains only the same fixed vocabulary a production Sentry event may use:
+ * never stderr, source locations, cache paths, command lines, or usernames.
+ */
+export interface RunnerFatalAbortDiagnostic {
+  fatalClass: 'libuv_assert';
+  windowsFaultSymbol: 'STATUS_STACK_BUFFER_OVERRUN';
+  execProvenance: 'npx_cache';
+  targetExists: boolean;
+  targetExecutable: boolean;
+  phase: 'unknown';
+  elapsedPhaseBucket: 'under_1m';
+}
+
 // Keys / string patterns that must never appear in diagnostics payloads.
 const SENSITIVE_KEY_PATTERN =
   /^(value|secret|token|accessToken|refreshToken|password|authorization|cookie|argv|args|commandLine|command_line|vaultContent|fileContents?|plaintext)$/i;
@@ -590,6 +605,29 @@ export class WindowsReliabilityHarness {
       states,
       restarted: child.state === 'running' && jobTerminateCount === 1,
       diagnostic: { state: child.state, category },
+    };
+  }
+
+  /**
+   * Script the observed Windows libuv fast-fail without copying its assertion
+   * text. This fixture pins the artifact diagnostic contract on every CI host.
+   */
+  simulateRunnerFatalAbort(): RunnerFatalAbortDiagnostic {
+    this.ensureLaunched();
+    const runner = this.fixtures.childProcesses.find((c) => c.role === 'sync-runner');
+    if (!runner) {
+      throw new Error('sync-runner fixture missing');
+    }
+    runner.state = 'backoff';
+    runner.visibleConsole = false;
+    return {
+      fatalClass: 'libuv_assert',
+      windowsFaultSymbol: 'STATUS_STACK_BUFFER_OVERRUN',
+      execProvenance: 'npx_cache',
+      targetExists: true,
+      targetExecutable: false,
+      phase: 'unknown',
+      elapsedPhaseBucket: 'under_1m',
     };
   }
 

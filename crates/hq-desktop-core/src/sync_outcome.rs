@@ -59,6 +59,10 @@ pub struct RunTotals {
     /// watcher attaches only this fixed-vocabulary rollup to a termination
     /// capture; paths and raw messages remain local breadcrumbs.
     pub runner_error_rollup: RunnerErrorRollup,
+    /// The last recognised runner-fatal signature in this pass. This is a
+    /// content-safe enum token used only as evidence on a termination event;
+    /// it must never affect the capture or suppression decision.
+    pub runner_fatal_class: RunnerFatalClass,
 }
 
 impl RunTotals {
@@ -117,6 +121,10 @@ impl RunTotals {
         if is_fatal_runner_signature(line) {
             self.saw_fatal_runner_signature = true;
         }
+        let class = classify_runner_fatal_class(line);
+        if class != RunnerFatalClass::None {
+            self.runner_fatal_class = class;
+        }
     }
 }
 
@@ -170,6 +178,75 @@ pub fn classify_runner_error_class(message: &str) -> RunnerErrorClass {
         RunnerErrorClass::Auth
     } else {
         RunnerErrorClass::Other
+    }
+}
+
+/// Stable, content-safe cause tokens for a runner that terminates before it
+/// can emit a normal protocol result. They are intentionally more specific
+/// than [`is_fatal_runner_signature`], but reporting-only: no caller may use
+/// them to alter capture, suppression, restart, or fingerprint behavior.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum RunnerFatalClass {
+    LibuvAssert,
+    NodeFatal,
+    HeapOom,
+    RustPanic,
+    ExecPermissionDenied,
+    ExecNotFound,
+    NodeTooOld,
+    #[default]
+    None,
+}
+
+impl RunnerFatalClass {
+    /// Fixed vocabulary safe for Sentry tags and breadcrumbs.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::LibuvAssert => "libuv_assert",
+            Self::NodeFatal => "node_fatal",
+            Self::HeapOom => "heap_oom",
+            Self::RustPanic => "rust_panic",
+            Self::ExecPermissionDenied => "exec_permission_denied",
+            Self::ExecNotFound => "exec_not_found",
+            Self::NodeTooOld => "node_too_old",
+            Self::None => "none",
+        }
+    }
+
+    pub fn seen(self) -> bool {
+        self != Self::None
+    }
+}
+
+/// Classify untrusted runner stderr without retaining any of it. The libuv
+/// match deliberately requires both an assertion marker and a libuv-specific
+/// source/handle marker so ordinary application assertions remain `none`.
+pub fn classify_runner_fatal_class(line: &str) -> RunnerFatalClass {
+    let msg = line.to_ascii_lowercase();
+    if is_node_too_old_signature(&msg) {
+        RunnerFatalClass::NodeTooOld
+    } else if msg.contains("assertion failed")
+        && (msg.contains("libuv")
+            || msg.contains("uv_handle")
+            || msg.contains("src\\win\\async.c")
+            || msg.contains("src/win/async.c"))
+    {
+        RunnerFatalClass::LibuvAssert
+    } else if msg.contains("javascript heap out of memory") {
+        RunnerFatalClass::HeapOom
+    } else if msg.contains("panicked at") {
+        RunnerFatalClass::RustPanic
+    } else if ["fatal error", "uncaught exception", "unhandledrejection"]
+        .iter()
+        .any(|marker| msg.contains(marker))
+    {
+        RunnerFatalClass::NodeFatal
+    } else if msg.contains("permission denied") {
+        RunnerFatalClass::ExecPermissionDenied
+    } else if msg.contains("no such file or directory") || msg.contains("command not found") {
+        RunnerFatalClass::ExecNotFound
+    } else {
+        RunnerFatalClass::None
     }
 }
 
@@ -333,6 +410,19 @@ pub fn classify_windows_exit_status(code: i32) -> WindowsTermination {
 /// representation (for example `-1` becomes `0xFFFFFFFF`).
 pub fn windows_exit_status_hex(code: i32) -> String {
     format!("0x{:08X}", code as u32)
+}
+
+/// Name the small, well-known set of Windows status values observed or likely
+/// for sync-runner crashes. This is separate from WindowsTermination so adding
+/// a label cannot change its established grouping or capture semantics.
+pub fn windows_fault_symbol(code: i32) -> Option<&'static str> {
+    match code as u32 {
+        0xC000_0409 => Some("STATUS_STACK_BUFFER_OVERRUN"),
+        0xC000_0005 => Some("ACCESS_VIOLATION"),
+        0xC000_013A => Some("CONTROL_C_EXIT"),
+        0x8000_0003 => Some("BREAKPOINT"),
+        _ => None,
+    }
 }
 
 /// Returns whether a process ended with the exact Windows console-control
@@ -949,6 +1039,101 @@ mod tests {
         assert!(!totals.saw_node_too_old);
         assert!(is_fatal_runner_signature("UnhandledRejection: boom"));
         assert!(!is_fatal_runner_signature("EPERM: operation not permitted"));
+    }
+
+    #[test]
+    fn runner_fatal_class_is_fixed_vocabulary_and_never_copies_stderr() {
+        let private_path = r"C:\\Users\\Ada\\hq\\companies\\personal\\secret-plan.md";
+        let libuv_assertion = format!(
+            "Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), file src\\\\win\\\\async.c, line 76: {private_path}"
+        );
+        let permission_denied =
+            format!("sh: {private_path}/node_modules/.bin/hq-sync-runner: Permission denied");
+
+        assert_eq!(
+            classify_runner_fatal_class(&libuv_assertion),
+            RunnerFatalClass::LibuvAssert
+        );
+        assert_eq!(
+            classify_runner_fatal_class(&permission_denied),
+            RunnerFatalClass::ExecPermissionDenied
+        );
+        assert_eq!(
+            classify_runner_fatal_class("FATAL ERROR: JavaScript heap out of memory"),
+            RunnerFatalClass::HeapOom
+        );
+        assert_eq!(
+            classify_runner_fatal_class("thread 'main' panicked at 'boom'"),
+            RunnerFatalClass::RustPanic
+        );
+        assert_eq!(
+            classify_runner_fatal_class("UnhandledRejection: boom"),
+            RunnerFatalClass::NodeFatal
+        );
+        assert_eq!(
+            classify_runner_fatal_class("sh: hq-sync-runner: command not found"),
+            RunnerFatalClass::ExecNotFound
+        );
+        assert_eq!(
+            classify_runner_fatal_class(
+                "TypeError: diagnostics_channel.tracingChannel is not a function"
+            ),
+            RunnerFatalClass::NodeTooOld
+        );
+        assert_eq!(
+            classify_runner_fatal_class("EPERM: operation not permitted"),
+            RunnerFatalClass::None
+        );
+        assert_eq!(classify_runner_fatal_class(""), RunnerFatalClass::None);
+
+        let token = classify_runner_fatal_class(&libuv_assertion).as_str();
+        assert_eq!(token, "libuv_assert");
+        assert!(!token.contains("Ada"));
+        assert!(!token.contains("secret-plan"));
+    }
+
+    #[test]
+    fn fatal_diagnostics_do_not_change_termination_fingerprints() {
+        for (code, signal, expected) in [
+            (Some(-1_073_740_791), None, "windows:fault:0xC0000409"),
+            (Some(126), None, "exit:126"),
+            (Some(2), None, "exit:2"),
+            (Some(17), None, "exit:17"),
+            (
+                Some(0xC000_0005u32 as i32),
+                None,
+                "windows:fault:0xC0000005",
+            ),
+            (Some(0xC000_013Au32 as i32), None, "windows:console-control"),
+            (
+                Some(0x4001_0004u32 as i32),
+                None,
+                "windows:session-terminate",
+            ),
+        ] {
+            assert_eq!(termination_fingerprint_token(code, signal), expected);
+        }
+    }
+
+    #[test]
+    fn well_known_windows_fault_symbols_are_fixed_vocabulary() {
+        assert_eq!(
+            windows_fault_symbol(0xC000_0409u32 as i32),
+            Some("STATUS_STACK_BUFFER_OVERRUN")
+        );
+        assert_eq!(
+            windows_fault_symbol(0xC000_0005u32 as i32),
+            Some("ACCESS_VIOLATION")
+        );
+        assert_eq!(
+            windows_fault_symbol(0xC000_013Au32 as i32),
+            Some("CONTROL_C_EXIT")
+        );
+        assert_eq!(
+            windows_fault_symbol(0x8000_0003u32 as i32),
+            Some("BREAKPOINT")
+        );
+        assert_eq!(windows_fault_symbol(17), None);
     }
 
     #[test]

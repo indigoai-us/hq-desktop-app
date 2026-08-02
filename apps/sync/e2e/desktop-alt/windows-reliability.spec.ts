@@ -185,4 +185,19 @@ describe('desktop-alt Windows reliability — daemon lifecycle (US-002)', () => 
     expect(diagnostics.visibleConsoleProcessCount).toBe(0);
     expect(diagnostics.childProcessStates.every((c) => !c.visibleConsole)).toBe(true);
   });
+
+  it('exposes a fatal runner abort through fixed-vocabulary diagnostics only', async () => {
+    const harness = track(new WindowsReliabilityHarness({ forceScripted: true }));
+    await harness.launch();
+
+    const abort = harness.simulateRunnerFatalAbort();
+    expect(abort.fatalClass).toBe('libuv_assert');
+    expect(abort.windowsFaultSymbol).toBe('STATUS_STACK_BUFFER_OVERRUN');
+    expect(abort.execProvenance).toBe('npx_cache');
+    expect(abort.targetExists).toBe(true);
+    expect(abort.targetExecutable).toBe(false);
+    assertContentSafeDiagnostics(abort);
+    expect(JSON.stringify(abort)).not.toContain('async.c');
+    expect(JSON.stringify(abort)).not.toContain('hq-sync-runner');
+  });
 });
