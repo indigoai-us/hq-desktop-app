@@ -194,6 +194,18 @@ fn surface_existing_instance(app: &tauri::AppHandle) {
     }
 }
 
+fn handle_window_close_requested_hide<F>(should_hide: bool, hide_action: F)
+where
+    F: FnOnce(),
+{
+    if should_hide {
+        hq_telemetry::record_native_panic_seam(
+            hq_telemetry::NativePanicSeam::WindowCloseRequestedHide,
+        );
+        hide_action();
+    }
+}
+
 fn main() {
     // Sentry init + the PII/secret scrubber live in the hq-telemetry crate. The
     // build-time values (DSN/version/environment, emitted by build.rs) are read
@@ -375,13 +387,10 @@ fn main() {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 // Only hide the main popover window — let other windows
                 // (e.g. new-files-detail) close normally.
-                if window.label() == "main" {
-                    hq_telemetry::record_native_panic_seam(
-                        hq_telemetry::NativePanicSeam::WindowCloseRequestedHide,
-                    );
+                handle_window_close_requested_hide(window.label() == "main", || {
                     api.prevent_close();
                     let _ = window.hide();
-                }
+                });
             }
             // Windows: reapply Mica/Acrylic when the OS theme flips so light
             // mode never keeps a forced-dark backdrop (US-003). Theme is left
@@ -1128,4 +1137,57 @@ fn main() {
                 util::logfile::log("dock", "dock icon clicked: showing desktop window");
             }
         });
+}
+
+#[cfg(test)]
+mod native_panic_tests {
+    use super::*;
+    use sentry::protocol::Event;
+    use std::cell::Cell;
+
+    fn recorded_native_seams() -> Vec<String> {
+        hq_telemetry::before_send(Event::default())
+            .expect("event remains sendable")
+            .breadcrumbs
+            .values
+            .into_iter()
+            .filter(|breadcrumb| breadcrumb.category.as_deref() == Some("ui.seam"))
+            .filter_map(|breadcrumb| breadcrumb.message)
+            .collect()
+    }
+
+    fn with_appended_seam(mut before: Vec<String>, message: &str) -> Vec<String> {
+        before.push(message.to_string());
+        if before.len() > 8 {
+            before.remove(0);
+        }
+        before
+    }
+
+    #[test]
+    fn guarded_hide_wrappers_record_and_run_only_when_taken() {
+        let baseline = recorded_native_seams();
+        let close_calls = Cell::new(0);
+
+        handle_window_close_requested_hide(false, || close_calls.set(close_calls.get() + 1));
+        assert_eq!(close_calls.get(), 0);
+        assert_eq!(recorded_native_seams(), baseline);
+
+        handle_window_close_requested_hide(true, || close_calls.set(close_calls.get() + 1));
+        assert_eq!(close_calls.get(), 1);
+        let after_close = with_appended_seam(baseline, "window.close-requested-hide");
+        assert_eq!(recorded_native_seams(), after_close);
+
+        let blur_calls = Cell::new(0);
+        tray::handle_tray_blur_hide(false, || blur_calls.set(blur_calls.get() + 1));
+        assert_eq!(blur_calls.get(), 0);
+        assert_eq!(recorded_native_seams(), after_close);
+
+        tray::handle_tray_blur_hide(true, || blur_calls.set(blur_calls.get() + 1));
+        assert_eq!(blur_calls.get(), 1);
+        assert_eq!(
+            recorded_native_seams(),
+            with_appended_seam(after_close, "tray.blur-hide")
+        );
+    }
 }

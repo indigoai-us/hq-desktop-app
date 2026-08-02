@@ -364,12 +364,43 @@ jobs:
           APP_BINARY="$DEBUG_DIR/HQ.app/Contents/MacOS/hq-sync-menubar"
           DEBUG_ID="$(sentry-cli difutil check --json "$APP_BINARY" | python3 -c 'import json,sys; data=json.load(sys.stdin); ids=sorted({variant.get("debug_id") for variant in data.get("variants", []) if variant.get("debug_id")}); print(",".join(ids) or "unknown")')"
           if [ -z "${SENTRY_AUTH_TOKEN:-}" ]; then
-            echo "::warning::SENTRY_AUTH_TOKEN is not configured; debug id $DEBUG_ID was not uploaded."
+            MESSAGE="SENTRY_AUTH_TOKEN is not configured; debug id $DEBUG_ID was not uploaded and no recoverable debug file was retained."
+            echo "::warning::$MESSAGE"
+            printf '%s\n' "$MESSAGE" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          if ! sentry-cli debug-files upload --org indigo-d0 --project hq-desktop --no-sources "$DEBUG_DIR"; then
-            echo "::warning::SENTRY_AUTH_TOKEN is invalid or upload failed; debug id $DEBUG_ID is retained in the private CI artifact."
+          if ! sentry-cli debug-files upload --org indigo-d0 --project hq-desktop --no-sources --wait-for 60 "$DEBUG_DIR"; then
+            MESSAGE="SENTRY_AUTH_TOKEN is invalid or upload failed; debug id $DEBUG_ID was not uploaded and no recoverable debug file was retained."
+            echo "::warning::$MESSAGE"
+            printf '%s\n' "$MESSAGE" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
           fi
+
+          export DEBUG_IDS="$DEBUG_ID"
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.parse
+          import urllib.request
+
+          endpoint = "https://sentry.io/api/0/projects/indigo-d0/hq-desktop/files/dsyms/"
+          token = os.environ["SENTRY_AUTH_TOKEN"]
+          debug_ids = [debug_id for debug_id in os.environ["DEBUG_IDS"].split(",") if debug_id]
+          if not debug_ids:
+              raise SystemExit("debug-file upload verification has no debug ids")
+
+          for debug_id in debug_ids:
+              url = f"{endpoint}?{urllib.parse.urlencode({'debug_id': debug_id})}"
+              request = urllib.request.Request(
+                  url,
+                  headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+              )
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  records = json.load(response)
+              if not any((record.get("debugId") or "").casefold() == debug_id.casefold() for record in records):
+                  raise SystemExit(f"Sentry debug-file listing is missing uploaded debug id {debug_id}")
+              print(f"Verified Sentry debug-file record for {debug_id}")
+          PY
 
       - name: Fix Recall framework symlinks
         shell: bash
@@ -488,16 +519,6 @@ jobs:
             apps/sync/src-tauri/target/release-artifacts/*.dmg
             apps/sync/src-tauri/target/release-artifacts/*.app.tar.gz
             apps/sync/src-tauri/target/release-artifacts/*.app.tar.gz.sig
-
-      - name: Upload macOS debug files
-        uses: actions/upload-artifact@v4
-        with:
-          # Publish downloads only hq-macos-universal, so this private symbol
-          # artifact can never become a public GitHub Release asset.
-          name: hq-debug-macos-universal
-          if-no-files-found: error
-          path: |
-            apps/sync/src-tauri/target/universal-apple-darwin/release/bundle/macos/HQ.app.dSYM
 
   windows:
     name: Build Windows ${{ matrix.target }}
@@ -666,15 +687,35 @@ jobs:
           $releaseDir = "src-tauri\target\${{ matrix.target }}\release"
           $exe = Join-Path $releaseDir "hq-sync-menubar.exe"
           $metadata = (& sentry-cli difutil check --json $exe | ConvertFrom-Json)
-          $debugId = @($metadata.variants | ForEach-Object { $_.debug_id } | Where-Object { $_ } | Sort-Object -Unique) -join ","
+          $debugIds = @($metadata.variants | ForEach-Object { $_.debug_id } | Where-Object { $_ } | Sort-Object -Unique)
+          $debugId = $debugIds -join ","
           if ([string]::IsNullOrWhiteSpace($env:SENTRY_AUTH_TOKEN)) {
-            Write-Host "::warning::SENTRY_AUTH_TOKEN is not configured; debug id $debugId was not uploaded."
+            $message = "SENTRY_AUTH_TOKEN is not configured; debug id $debugId was not uploaded and no recoverable debug file was retained."
+            Write-Host "::warning::$message"
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $message
             exit 0
           }
-          & sentry-cli debug-files upload --org indigo-d0 --project hq-desktop --no-sources $releaseDir
+          & sentry-cli debug-files upload --org indigo-d0 --project hq-desktop --no-sources --wait-for 60 $releaseDir
           if ($LASTEXITCODE -ne 0) {
-            Write-Host "::warning::SENTRY_AUTH_TOKEN is invalid or upload failed; debug id $debugId is retained in the private CI artifact."
+            $message = "SENTRY_AUTH_TOKEN is invalid or upload failed; debug id $debugId was not uploaded and no recoverable debug file was retained."
+            Write-Host "::warning::$message"
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $message
             exit 0
+          }
+
+          $headers = @{
+            Authorization = "Bearer $env:SENTRY_AUTH_TOKEN"
+            Accept = "application/json"
+          }
+          $endpoint = "https://sentry.io/api/0/projects/indigo-d0/hq-desktop/files/dsyms/"
+          foreach ($expectedDebugId in $debugIds) {
+            $encodedDebugId = [uri]::EscapeDataString($expectedDebugId)
+            $records = @(Invoke-RestMethod -Uri "$endpoint?debug_id=$encodedDebugId" -Headers $headers -Method Get -TimeoutSec 30)
+            $matchingRecords = @($records | Where-Object { $_.debugId -ieq $expectedDebugId })
+            if ($matchingRecords.Count -eq 0) {
+              throw "Sentry debug-file listing is missing uploaded debug id $expectedDebugId"
+            }
+            Write-Host "Verified Sentry debug-file record for $expectedDebugId"
           }
 
       - name: Azure login (OIDC)
@@ -769,26 +810,6 @@ jobs:
           name: hq-windows-${{ matrix.target }}
           if-no-files-found: error
           path: release-artifacts-${{ matrix.target }}/
-
-      - name: Stage Windows debug files
-        shell: pwsh
-        run: |
-          $debugStage = Join-Path $env:GITHUB_WORKSPACE "debug-artifacts-${{ matrix.target }}"
-          $pdb = Join-Path "src-tauri\target\${{ matrix.target }}\release" "hq_sync_menubar.pdb"
-          if (-not (Test-Path $pdb)) {
-            throw "Required release PDB is missing: $pdb"
-          }
-          New-Item -ItemType Directory -Path $debugStage -Force | Out-Null
-          Copy-Item $pdb (Join-Path $debugStage "hq_sync_menubar.pdb")
-
-      - name: Upload Windows debug files
-        uses: actions/upload-artifact@v4
-        with:
-          # Publish downloads only hq-windows-*, so this private symbol
-          # artifact can never become a public GitHub Release asset.
-          name: hq-debug-windows-${{ matrix.target }}
-          if-no-files-found: error
-          path: debug-artifacts-${{ matrix.target }}/
 
   publish:
     name: Publish GitHub release

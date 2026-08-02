@@ -84,6 +84,15 @@ impl NativePanicSeam {
 const NATIVE_PANIC_SEAM_HISTORY_CAPACITY: usize = 8;
 static NATIVE_PANIC_SEAMS: AtomicU64 = AtomicU64::new(0);
 
+#[cfg(test)]
+static NATIVE_PANIC_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
+fn reset_native_panic_context_for_test() {
+    NATIVE_PANIC_SEAMS.store(0, Ordering::Relaxed);
+    NATIVE_PANIC_PHASE.store(NativePanicPhase::Running as u8, Ordering::Relaxed);
+}
+
 /// Record a static UI seam immediately before native window/event-loop work.
 ///
 /// This is an atomic, bounded eight-entry history. It intentionally does no
@@ -436,6 +445,13 @@ mod tests {
     use super::*;
     use sentry::protocol::{AppContext, Breadcrumb, Request, RuntimeContext};
 
+    // Most scrubber tests are intentionally independent of the process-global
+    // native diagnostics. Keep their existing assertions deterministic while
+    // the dedicated entry-point tests below exercise `super::before_send`.
+    fn before_send(event: Event<'static>) -> Option<Event<'static>> {
+        before_send_with_native_context(event, NativePanicPhase::Running, 0)
+    }
+
     // 1. Case-insensitive is_sensitive_key
     #[test]
     fn test_is_sensitive_key_case_insensitive() {
@@ -710,6 +726,99 @@ mod tests {
             result.breadcrumbs.values[0].message.as_deref(),
             Some("watcher started")
         );
+    }
+
+    #[test]
+    fn test_public_native_panic_entry_points_materialize_one_static_seam() {
+        let _guard = NATIVE_PANIC_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reset_native_panic_context_for_test();
+
+        record_native_panic_seam(NativePanicSeam::TrayLeftClick);
+        let event = super::before_send(Event::default()).expect("event remains sendable");
+        let breadcrumbs: Vec<_> = event
+            .breadcrumbs
+            .values
+            .iter()
+            .filter(|breadcrumb| breadcrumb.category.as_deref() == Some(UI_SEAM_CATEGORY))
+            .collect();
+
+        assert_eq!(breadcrumbs.len(), 1);
+        assert_eq!(breadcrumbs[0].message.as_deref(), Some("tray.left-click"));
+        assert!(breadcrumbs[0].data.is_empty());
+
+        reset_native_panic_context_for_test();
+    }
+
+    #[test]
+    fn test_public_native_panic_entry_points_bound_history_to_latest_eight() {
+        let _guard = NATIVE_PANIC_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reset_native_panic_context_for_test();
+
+        for seam in [
+            NativePanicSeam::TrayLeftClick,
+            NativePanicSeam::TrayBlurHide,
+            NativePanicSeam::GlobalShortcutTogglePopover,
+            NativePanicSeam::GlobalShortcutToggleDesktop,
+            NativePanicSeam::WindowCloseRequestedHide,
+            NativePanicSeam::WindowThemeChanged,
+            NativePanicSeam::WindowForceForeground,
+            NativePanicSeam::SingleInstanceSurfaceExisting,
+            NativePanicSeam::AppExitRequested,
+        ] {
+            record_native_panic_seam(seam);
+        }
+
+        let event = super::before_send(Event::default()).expect("event remains sendable");
+        let messages: Vec<_> = event
+            .breadcrumbs
+            .values
+            .iter()
+            .filter(|breadcrumb| breadcrumb.category.as_deref() == Some(UI_SEAM_CATEGORY))
+            .map(|breadcrumb| breadcrumb.message.as_deref())
+            .collect();
+
+        assert_eq!(
+            messages,
+            vec![
+                Some("tray.blur-hide"),
+                Some("global-shortcut.toggle-popover"),
+                Some("global-shortcut.toggle-desktop"),
+                Some("window.close-requested-hide"),
+                Some("window.theme-changed"),
+                Some("window-focus.force-foreground"),
+                Some("single-instance.surface-existing"),
+                Some("app.exit-requested"),
+            ]
+        );
+
+        reset_native_panic_context_for_test();
+    }
+
+    #[test]
+    fn test_public_native_panic_phase_follows_lifecycle_setter() {
+        let _guard = NATIVE_PANIC_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reset_native_panic_context_for_test();
+
+        for (phase, expected) in [
+            (NativePanicPhase::Running, "running"),
+            (NativePanicPhase::Exiting, "exiting"),
+            (NativePanicPhase::Destroyed, "destroyed"),
+        ] {
+            set_native_panic_phase(phase);
+            let event = super::before_send(Event::default()).expect("event remains sendable");
+            assert_eq!(
+                event.tags.get(NATIVE_PANIC_PHASE_TAG).map(String::as_str),
+                Some(expected)
+            );
+        }
+
+        reset_native_panic_context_for_test();
     }
 
     #[test]

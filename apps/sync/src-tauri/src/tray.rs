@@ -429,6 +429,16 @@ fn build_tray_icon(app: &AppHandle) -> Result<tauri::tray::TrayIcon, Box<dyn std
     Ok(tray)
 }
 
+pub(crate) fn handle_tray_blur_hide<F>(should_hide: bool, hide_action: F)
+where
+    F: FnOnce(),
+{
+    if should_hide {
+        hq_telemetry::record_native_panic_seam(hq_telemetry::NativePanicSeam::TrayBlurHide);
+        hide_action();
+    }
+}
+
 /// Create the system tray icon with its context menu and event handlers.
 ///
 /// Call this from `tauri::Builder::default().setup(...)`.
@@ -487,17 +497,14 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                     .webview_windows()
                     .iter()
                     .any(|(label, w)| label != "main" && w.is_visible().unwrap_or(false));
-                if !is_modal_open()
+                let should_hide = !is_modal_open()
                     && !secondary_open
                     && !disable_blur_hide
                     && !blur_hide_suppressed()
-                    && !onboarding_window_requires_blur_suppression(win_clone.app_handle())
-                {
-                    hq_telemetry::record_native_panic_seam(
-                        hq_telemetry::NativePanicSeam::TrayBlurHide,
-                    );
+                    && !onboarding_window_requires_blur_suppression(win_clone.app_handle());
+                handle_tray_blur_hide(should_hide, || {
                     let _ = win_clone.hide();
-                }
+                });
             }
         });
     }
