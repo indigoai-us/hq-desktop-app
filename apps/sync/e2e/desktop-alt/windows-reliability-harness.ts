@@ -105,9 +105,15 @@ export interface LaunchResult {
 export interface RunnerFatalAbortDiagnostic {
   fatalClass: 'libuv_assert';
   windowsFaultSymbol: 'STATUS_STACK_BUFFER_OVERRUN';
-  execProvenance: 'npx_cache';
-  targetExists: boolean;
-  targetExecutable: boolean;
+  phase: 'unknown';
+  elapsedPhaseBucket: 'under_1m';
+}
+
+export interface RunnerExecPermissionDiagnostic {
+  fatalClass: 'exec_permission_denied';
+  execResolution: 'npx_cache';
+  targetExists: 'unknown';
+  targetExecutable: 'unknown';
   phase: 'unknown';
   elapsedPhaseBucket: 'under_1m';
 }
@@ -623,9 +629,28 @@ export class WindowsReliabilityHarness {
     return {
       fatalClass: 'libuv_assert',
       windowsFaultSymbol: 'STATUS_STACK_BUFFER_OVERRUN',
-      execProvenance: 'npx_cache',
-      targetExists: true,
-      targetExecutable: false,
+      phase: 'unknown',
+      elapsedPhaseBucket: 'under_1m',
+    };
+  }
+
+  /**
+   * Script an npx runner launch refusal without inferring filesystem facts
+   * that exit status 126 cannot establish.
+   */
+  simulateRunnerExecPermissionFailure(): RunnerExecPermissionDiagnostic {
+    this.ensureLaunched();
+    const runner = this.fixtures.childProcesses.find((c) => c.role === 'sync-runner');
+    if (!runner) {
+      throw new Error('sync-runner fixture missing');
+    }
+    runner.state = 'backoff';
+    runner.visibleConsole = false;
+    return {
+      fatalClass: 'exec_permission_denied',
+      execResolution: 'npx_cache',
+      targetExists: 'unknown',
+      targetExecutable: 'unknown',
       phase: 'unknown',
       elapsedPhaseBucket: 'under_1m',
     };
