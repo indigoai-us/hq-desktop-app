@@ -2253,16 +2253,21 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let flat_bin = tmp.path().join("Library/pnpm");
         let interpreter_dir = tmp.path().join("fixture-interpreters");
+        let npm_root = tmp.path().join("unrelated-npm-root");
         let hq = flat_bin.join("hq");
         let npm = flat_bin.join("npm");
         std::fs::create_dir_all(&flat_bin).unwrap();
         std::fs::create_dir_all(&interpreter_dir).unwrap();
+        std::fs::create_dir_all(&npm_root).unwrap();
         write_executable(&hq, "#!/usr/bin/env hq-fixture-node\n");
         write_executable(
             &interpreter_dir.join("hq-fixture-node"),
             "#!/bin/sh\nprintf 'v5.88.2\\n'\n",
         );
-        write_executable(&npm, "#!/bin/sh\nexit 8\n");
+        write_executable(
+            &npm,
+            &format!("#!/bin/sh\nprintf '{}\\n'\n", npm_root.display()),
+        );
 
         let without_child_path = probe_local_version(Some(&hq), Some(npm.to_str().unwrap()), "");
         assert_eq!(without_child_path.local, None);
@@ -2272,7 +2277,7 @@ mod tests {
         );
         assert_eq!(
             without_child_path.probes.npm_root,
-            VersionProbeOutcome::NonzeroExit
+            VersionProbeOutcome::PackageNotFound
         );
         assert_eq!(
             without_child_path.probes.hq_version,
