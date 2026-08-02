@@ -212,7 +212,8 @@ fn errno_backed_transient_failures_are_suppressed_but_lifecycle_collisions_are_c
         );
     }
 
-    let lifecycle = "npm error command failed\n\
+    let lifecycle = "npm error code ECONNRESET\n\
+        npm error command failed\n\
         npm error command sh -c node postinstall.js\n\
         application path: /Users/reviewer/project";
     let events = captured_events(|| report_install_failure(Some(econnreset_exit), lifecycle, None));

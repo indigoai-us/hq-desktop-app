@@ -1158,8 +1158,9 @@ pub fn classify_install_failure(
         InstallFailureKind::ExpectedWindowsAbort
     } else if is_windows_locked_binary_failure(exit_code, detail) {
         InstallFailureKind::ExpectedWindowsLockedBinary
-    } else if is_expected_transient_registry_failure(detail)
-        || is_expected_transient_errno_failure(exit_code, detail)
+    } else if !has_npm_lifecycle_failure_marker(detail)
+        && (is_expected_transient_registry_failure(detail)
+            || is_expected_transient_errno_failure(exit_code, detail))
     {
         InstallFailureKind::ExpectedTransientRegistry
     } else {
@@ -2189,6 +2190,25 @@ mod tests {
         let econnreset_exit = 202;
 
         let detail = "npm error command failed\nnpm error command sh -c node postinstall.js";
+        assert_eq!(
+            classify_install_failure(Some(econnreset_exit), detail, None),
+            InstallFailureKind::Unexpected
+        );
+        assert!(install_failure_report(Some(econnreset_exit), detail, None).is_some());
+    }
+
+    #[test]
+    fn lifecycle_failure_with_named_transient_code_stays_loud() {
+        #[cfg(target_os = "macos")]
+        let econnreset_exit = 202;
+        #[cfg(target_os = "linux")]
+        let econnreset_exit = 152;
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        let econnreset_exit = 202;
+
+        let detail = "npm error code ECONNRESET\n\
+            npm error command failed\n\
+            npm error command sh -c node postinstall.js";
         assert_eq!(
             classify_install_failure(Some(econnreset_exit), detail, None),
             InstallFailureKind::Unexpected
