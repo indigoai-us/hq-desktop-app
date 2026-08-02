@@ -137,12 +137,15 @@ describe('master automatic-updates switch', () => {
     expect(cliUpdate).toContain('NON_CONVERGENT_ERROR_PREFIX');
   });
 
-  it('CLI updater telemetry carries the install layout, never the account name', () => {
+  it('CLI updater telemetry carries only path-free install diagnostics', () => {
     // `before_send` scrubs by KEY name only, so these ordinary string extras
     // would otherwise ship `/Users/<name>/…` to Sentry verbatim.
     expect(cliUpdateCore).toContain('scope.set_extra("hq_bin", redact_home(hq_bin).into());');
     expect(cliUpdateCore).toContain('redact_home(prefix.unwrap_or("npm default prefix"))');
-    // npm stderr quotes absolute paths in its EACCES/ENOTEMPTY messages too.
-    expect(cliUpdateCore).toContain('scope.set_extra("npm_stderr", redact_home(detail).into());');
+    // npm stderr can contain paths, usernames, and lifecycle output. Keep it in
+    // the local log and send only the allow-listed classifications to Sentry.
+    expect(cliUpdateCore).not.toContain('scope.set_extra("npm_stderr"');
+    expect(cliUpdateCore).toContain('scope.set_tag("npm_failure_site"');
+    expect(cliUpdateCore).toContain('scope.set_tag("npm_error_code"');
   });
 });

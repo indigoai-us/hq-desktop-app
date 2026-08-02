@@ -868,6 +868,7 @@ dependencies = [
 name = "hq-telemetry"
 version = "0.1.0"
 dependencies = [
+ "hq-desktop-core",
  "sentry",
  "serde",
  "serde_json",
