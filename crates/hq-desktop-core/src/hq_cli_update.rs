@@ -37,9 +37,24 @@ pub enum VersionProbeOutcome {
     PackageNotFound,
     ManifestReadOrParseFailed,
     ProcessSpawnFailed,
+    InterpreterNotFound,
     NonzeroExit,
     InvalidUtf8,
     EmptyOutput,
+}
+
+/// A closed classification of the resolved hq binary's parent layout. This is
+/// deliberately separate from the binary-anchor read outcome: a flat bin
+/// directory is a normal reason the manifest lookup can miss, while an npm
+/// prefix-shaped layout may still have an unreadable manifest for another
+/// reason. No path is retained or sent to telemetry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BinaryAnchorShape {
+    NotAttempted,
+    NpmPrefix,
+    FlatGlobalBin,
+    UnresolvableParent,
 }
 
 /// The three ordered probes used to discover an installed hq CLI version.
@@ -50,6 +65,7 @@ pub struct LocalVersionProbeDiagnostics {
     pub binary_anchor: VersionProbeOutcome,
     pub npm_root: VersionProbeOutcome,
     pub hq_version: VersionProbeOutcome,
+    pub binary_anchor_shape: BinaryAnchorShape,
 }
 
 impl LocalVersionProbeDiagnostics {
@@ -58,7 +74,32 @@ impl LocalVersionProbeDiagnostics {
             binary_anchor: VersionProbeOutcome::NotAttempted,
             npm_root: VersionProbeOutcome::NotAttempted,
             hq_version: VersionProbeOutcome::NotAttempted,
+            binary_anchor_shape: BinaryAnchorShape::NotAttempted,
         }
+    }
+}
+
+fn binary_anchor_shape(hq_bin: &Path) -> BinaryAnchorShape {
+    let Some(parent) = hq_bin
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    else {
+        return BinaryAnchorShape::UnresolvableParent;
+    };
+    let is_windows_npm_shim = hq_bin
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| matches!(ext.to_ascii_lowercase().as_str(), "cmd" | "bat"))
+        .unwrap_or(false);
+    if is_windows_npm_shim
+        || matches!(
+            parent.file_name().and_then(|name| name.to_str()),
+            Some("bin")
+        )
+    {
+        BinaryAnchorShape::NpmPrefix
+    } else {
+        BinaryAnchorShape::FlatGlobalBin
     }
 }
 
@@ -183,18 +224,25 @@ fn version_from_hq_binary_probe(hq_bin: &Path) -> (Option<String>, VersionProbeO
 /// `util::hq_resolver`), so this may be stale. We still prefer a possibly-
 /// stale number over returning None and silently disabling the nag.
 pub fn hq_version_string(bin: &Path) -> Option<String> {
-    hq_version_string_probe(bin).0
+    hq_version_string_probe(bin, &paths::child_path()).0
 }
 
-fn hq_version_string_probe(bin: &Path) -> (Option<String>, VersionProbeOutcome) {
+fn hq_version_string_probe(bin: &Path, path: &str) -> (Option<String>, VersionProbeOutcome) {
     let bin = bin.to_string_lossy();
     let mut cmd = paths::spawn_command(&bin, &[]);
-    let out = match cmd.arg("--version").output() {
+    let out = match cmd.arg("--version").env("PATH", path).output() {
         Ok(output) => output,
         Err(_) => return (None, VersionProbeOutcome::ProcessSpawnFailed),
     };
     if !out.status.success() {
-        return (None, VersionProbeOutcome::NonzeroExit);
+        return (
+            None,
+            if out.status.code() == Some(127) {
+                VersionProbeOutcome::InterpreterNotFound
+            } else {
+                VersionProbeOutcome::NonzeroExit
+            },
+        );
     }
     let s = match String::from_utf8(out.stdout) {
         Ok(stdout) => stdout,
@@ -233,6 +281,7 @@ pub fn get_local_version_diagnostics() -> LocalVersionProbeResult {
     let hq = paths::resolve_bin("hq");
     if hq != "hq" {
         let hq_path = Path::new(&hq);
+        let binary_anchor_shape = binary_anchor_shape(hq_path);
         let (local, binary_anchor) = version_from_hq_binary_probe(hq_path);
         if let Some(local) = local {
             return LocalVersionProbeResult {
@@ -240,6 +289,7 @@ pub fn get_local_version_diagnostics() -> LocalVersionProbeResult {
                 hq_installed: true,
                 probes: LocalVersionProbeDiagnostics {
                     binary_anchor,
+                    binary_anchor_shape,
                     ..LocalVersionProbeDiagnostics::not_attempted()
                 },
             };
@@ -249,6 +299,7 @@ pub fn get_local_version_diagnostics() -> LocalVersionProbeResult {
         return probe_local_version_after_binary(
             Some(hq_path),
             binary_anchor,
+            binary_anchor_shape,
             npm,
             &paths::child_path(),
         );
@@ -262,6 +313,7 @@ pub fn get_local_version_diagnostics() -> LocalVersionProbeResult {
     probe_local_version_after_binary(
         None,
         VersionProbeOutcome::NotAttempted,
+        BinaryAnchorShape::NotAttempted,
         npm,
         &paths::child_path(),
     )
@@ -277,22 +329,27 @@ fn probe_local_version(
         Some(hq) => version_from_hq_binary_probe(hq),
         None => (None, VersionProbeOutcome::NotAttempted),
     };
+    let binary_anchor_shape = hq
+        .map(binary_anchor_shape)
+        .unwrap_or(BinaryAnchorShape::NotAttempted);
     if let Some(local) = local {
         return LocalVersionProbeResult {
             local: Some(local),
             hq_installed: hq.is_some(),
             probes: LocalVersionProbeDiagnostics {
                 binary_anchor,
+                binary_anchor_shape,
                 ..LocalVersionProbeDiagnostics::not_attempted()
             },
         };
     }
-    probe_local_version_after_binary(hq, binary_anchor, npm, path)
+    probe_local_version_after_binary(hq, binary_anchor, binary_anchor_shape, npm, path)
 }
 
 fn probe_local_version_after_binary(
     hq: Option<&Path>,
     binary_anchor: VersionProbeOutcome,
+    binary_anchor_shape: BinaryAnchorShape,
     npm: Option<&str>,
     path: &str,
 ) -> LocalVersionProbeResult {
@@ -309,12 +366,13 @@ fn probe_local_version_after_binary(
                 binary_anchor,
                 npm_root,
                 hq_version: VersionProbeOutcome::NotAttempted,
+                binary_anchor_shape,
             },
         };
     }
 
     let (local, hq_version) = match hq {
-        Some(hq) => hq_version_string_probe(hq),
+        Some(hq) => hq_version_string_probe(hq, path),
         None => (None, VersionProbeOutcome::NotAttempted),
     };
     LocalVersionProbeResult {
@@ -324,6 +382,7 @@ fn probe_local_version_after_binary(
             binary_anchor,
             npm_root,
             hq_version,
+            binary_anchor_shape,
         },
     }
 }
@@ -584,6 +643,7 @@ pub fn report_unreadable_version(latest: &str, probes: &LocalVersionProbeDiagnos
                     "binary_anchor": probes.binary_anchor,
                     "npm_root": probes.npm_root,
                     "hq_version": probes.hq_version,
+                    "binary_anchor_shape": probes.binary_anchor_shape,
                 })
                 .into(),
             );
@@ -1189,7 +1249,14 @@ fn read_installed_version_probe(
         Err(_) => return (None, VersionProbeOutcome::ProcessSpawnFailed),
     };
     if !out.status.success() {
-        return (None, VersionProbeOutcome::NonzeroExit);
+        return (
+            None,
+            if out.status.code() == Some(127) {
+                VersionProbeOutcome::InterpreterNotFound
+            } else {
+                VersionProbeOutcome::NonzeroExit
+            },
+        );
     }
     let root = match String::from_utf8(out.stdout) {
         Ok(stdout) => stdout.trim().to_string(),
@@ -2016,11 +2083,15 @@ mod tests {
         );
         assert_eq!(result.probes.npm_root, VersionProbeOutcome::NonzeroExit);
         assert_eq!(result.probes.hq_version, VersionProbeOutcome::NonzeroExit);
+        assert_eq!(
+            result.probes.binary_anchor_shape,
+            BinaryAnchorShape::NpmPrefix,
+        );
         assert!(should_report_unreadable_version(&result));
     }
 
     #[test]
-    fn absent_hq_remains_quiet_even_when_no_probes_can_run() {
+    fn absent_hq_stays_quiet_even_when_every_probe_fails() {
         let result = probe_local_version(None, None, "");
 
         assert_eq!(result.local, None);
@@ -2031,7 +2102,7 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    fn binary_anchor_success_short_circuits_later_probes() {
+    fn successful_binary_anchor_still_short_circuits_npm_root_and_hq_version() {
         let tmp = tempfile::TempDir::new().unwrap();
         let pkg_dir = tmp.path().join("lib/node_modules/@indigoai-us/hq-cli");
         std::fs::create_dir_all(pkg_dir.join("bin")).unwrap();
@@ -2112,6 +2183,139 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
+    fn hq_version_probe_uses_the_injected_child_path_for_node_shebang_resolution() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let flat_bin = tmp.path().join("Library/pnpm");
+        let interpreter_dir = tmp.path().join("fixture-interpreters");
+        let hq = flat_bin.join("hq");
+        let npm = flat_bin.join("npm");
+        std::fs::create_dir_all(&flat_bin).unwrap();
+        std::fs::create_dir_all(&interpreter_dir).unwrap();
+        write_executable(&hq, "#!/usr/bin/env hq-fixture-node\n");
+        write_executable(
+            &interpreter_dir.join("hq-fixture-node"),
+            "#!/bin/sh\nprintf 'v5.88.1\\n'\n",
+        );
+        write_executable(&npm, "#!/bin/sh\nexit 8\n");
+
+        let result = probe_local_version(
+            Some(&hq),
+            Some(npm.to_str().unwrap()),
+            interpreter_dir.to_str().unwrap(),
+        );
+
+        assert_eq!(result.local.as_deref(), Some("5.88.1"));
+        assert_eq!(result.probes.hq_version, VersionProbeOutcome::Succeeded);
+        assert!(!should_report_unreadable_version(&result));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn hq_version_probe_reports_interpreter_not_found_when_the_shebang_interpreter_is_absent() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let flat_bin = tmp.path().join("Library/pnpm");
+        let hq = flat_bin.join("hq");
+        let npm = flat_bin.join("npm");
+        std::fs::create_dir_all(&flat_bin).unwrap();
+        write_executable(&hq, "#!/usr/bin/env hq-fixture-node\n");
+        write_executable(&npm, "#!/bin/sh\nexit 8\n");
+
+        let result = probe_local_version(Some(&hq), Some(npm.to_str().unwrap()), "");
+
+        assert_eq!(result.local, None);
+        assert_eq!(
+            result.probes.hq_version,
+            VersionProbeOutcome::InterpreterNotFound
+        );
+        assert!(should_report_unreadable_version(&result));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn hq_version_probe_still_reports_nonzero_exit_for_a_genuine_failing_cli() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let flat_bin = tmp.path().join("Library/pnpm");
+        let hq = flat_bin.join("hq");
+        let npm = flat_bin.join("npm");
+        std::fs::create_dir_all(&flat_bin).unwrap();
+        write_executable(&hq, "#!/bin/sh\nexit 5\n");
+        write_executable(&npm, "#!/bin/sh\nexit 8\n");
+
+        let result = probe_local_version(Some(&hq), Some(npm.to_str().unwrap()), "");
+
+        assert_eq!(result.local, None);
+        assert_eq!(result.probes.hq_version, VersionProbeOutcome::NonzeroExit);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn field_triple_from_production_events_reproduces_on_base_and_resolves_on_candidate() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let flat_bin = tmp.path().join("Library/pnpm");
+        let interpreter_dir = tmp.path().join("fixture-interpreters");
+        let npm_root = tmp.path().join("unrelated-npm-root");
+        let hq = flat_bin.join("hq");
+        let npm = flat_bin.join("npm");
+        std::fs::create_dir_all(&flat_bin).unwrap();
+        std::fs::create_dir_all(&interpreter_dir).unwrap();
+        std::fs::create_dir_all(&npm_root).unwrap();
+        write_executable(&hq, "#!/usr/bin/env hq-fixture-node\n");
+        write_executable(
+            &interpreter_dir.join("hq-fixture-node"),
+            "#!/bin/sh\nprintf 'v5.88.2\\n'\n",
+        );
+        write_executable(
+            &npm,
+            &format!("#!/bin/sh\nprintf '{}\\n'\n", npm_root.display()),
+        );
+
+        let without_child_path = probe_local_version(Some(&hq), Some(npm.to_str().unwrap()), "");
+        assert_eq!(without_child_path.local, None);
+        assert_eq!(
+            without_child_path.probes.binary_anchor,
+            VersionProbeOutcome::PackageNotFound
+        );
+        assert_eq!(
+            without_child_path.probes.npm_root,
+            VersionProbeOutcome::PackageNotFound
+        );
+        assert_eq!(
+            without_child_path.probes.hq_version,
+            VersionProbeOutcome::InterpreterNotFound
+        );
+        assert!(should_report_unreadable_version(&without_child_path));
+
+        let with_child_path = probe_local_version(
+            Some(&hq),
+            Some(npm.to_str().unwrap()),
+            interpreter_dir.to_str().unwrap(),
+        );
+        assert_eq!(with_child_path.local.as_deref(), Some("5.88.2"));
+        assert_eq!(
+            with_child_path.probes.hq_version,
+            VersionProbeOutcome::Succeeded
+        );
+        assert!(!should_report_unreadable_version(&with_child_path));
+    }
+
+    #[test]
+    fn binary_anchor_shape_distinguishes_npm_prefix_flat_global_bin_and_unresolvable_parent() {
+        assert_eq!(
+            binary_anchor_shape(Path::new("/opt/homebrew/bin/hq")),
+            BinaryAnchorShape::NpmPrefix,
+        );
+        assert_eq!(
+            binary_anchor_shape(Path::new("/Users/fixture/Library/pnpm/hq")),
+            BinaryAnchorShape::FlatGlobalBin,
+        );
+        assert_eq!(
+            binary_anchor_shape(Path::new("")),
+            BinaryAnchorShape::UnresolvableParent,
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
     fn binary_anchor_diagnostics_classify_canonicalize_package_and_manifest_failures() {
         let tmp = tempfile::TempDir::new().unwrap();
         let missing = tmp.path().join("missing/hq");
@@ -2141,7 +2345,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let missing = tmp.path().join("missing-hq");
         assert_eq!(
-            hq_version_string_probe(&missing).1,
+            hq_version_string_probe(&missing, "").1,
             VersionProbeOutcome::ProcessSpawnFailed
         );
 
@@ -2152,15 +2356,15 @@ mod tests {
         write_executable(&invalid_utf8, "#!/bin/sh\nprintf '\\377'\n");
         write_executable(&empty, "#!/bin/sh\nprintf '\\n'\n");
         assert_eq!(
-            hq_version_string_probe(&nonzero).1,
+            hq_version_string_probe(&nonzero, "").1,
             VersionProbeOutcome::NonzeroExit
         );
         assert_eq!(
-            hq_version_string_probe(&invalid_utf8).1,
+            hq_version_string_probe(&invalid_utf8, "").1,
             VersionProbeOutcome::InvalidUtf8
         );
         assert_eq!(
-            hq_version_string_probe(&empty).1,
+            hq_version_string_probe(&empty, "").1,
             VersionProbeOutcome::EmptyOutput
         );
     }
@@ -2176,6 +2380,7 @@ mod tests {
         );
 
         let nonzero = tmp.path().join("nonzero-npm");
+        let missing_interpreter = tmp.path().join("missing-interpreter-npm");
         let invalid_utf8 = tmp.path().join("invalid-utf8-npm");
         let empty = tmp.path().join("empty-npm");
         let absent_package = tmp.path().join("absent-package-npm");
@@ -2183,6 +2388,7 @@ mod tests {
         let non_directory_package = tmp.path().join("non-directory-package-npm");
         let malformed_package = tmp.path().join("malformed-package-npm");
         write_executable(&nonzero, "#!/bin/sh\nexit 5\n");
+        write_executable(&missing_interpreter, "#!/bin/sh\nexit 127\n");
         write_executable(&invalid_utf8, "#!/bin/sh\nprintf '\\377'\n");
         write_executable(&empty, "#!/bin/sh\nprintf '\\n'\n");
         write_executable(
@@ -2209,6 +2415,10 @@ mod tests {
         assert_eq!(
             read_installed_version_probe(nonzero.to_str().unwrap(), "").1,
             VersionProbeOutcome::NonzeroExit
+        );
+        assert_eq!(
+            read_installed_version_probe(missing_interpreter.to_str().unwrap(), "").1,
+            VersionProbeOutcome::InterpreterNotFound
         );
         assert_eq!(
             read_installed_version_probe(invalid_utf8.to_str().unwrap(), "").1,
@@ -2238,7 +2448,7 @@ mod tests {
     /// return value while preserving only the new result's internal shape.
     #[test]
     #[cfg(unix)]
-    fn local_version_diagnostics_preserve_legacy_result_across_ordered_scenarios() {
+    fn get_local_version_return_shape_is_unchanged_across_the_ordered_scenarios() {
         let absent = probe_local_version(None, None, "");
         assert_eq!(
             legacy_local_version(None, None, ""),

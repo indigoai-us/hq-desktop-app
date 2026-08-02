@@ -1,6 +1,9 @@
 use std::sync::Arc;
 
-use hq_desktop_core::hq_cli_update::report_install_failure;
+use hq_desktop_core::hq_cli_update::{
+    report_install_failure, report_unreadable_version, BinaryAnchorShape,
+    LocalVersionProbeDiagnostics, VersionProbeOutcome,
+};
 use sentry::protocol::Value;
 use sentry::test::with_captured_events_options;
 
@@ -26,6 +29,68 @@ fn captured_events(f: impl FnOnce()) -> Vec<sentry::protocol::Event<'static>> {
             ..Default::default()
         },
     )
+}
+
+#[test]
+fn unreadable_version_capture_keeps_only_closed_diagnostics_and_stable_grouping_after_scrubbing() {
+    let probes = LocalVersionProbeDiagnostics {
+        binary_anchor: VersionProbeOutcome::PackageNotFound,
+        npm_root: VersionProbeOutcome::NonzeroExit,
+        hq_version: VersionProbeOutcome::InterpreterNotFound,
+        binary_anchor_shape: BinaryAnchorShape::FlatGlobalBin,
+    };
+
+    let events = captured_events(|| report_unreadable_version("5.88.3", &probes));
+    assert_eq!(events.len(), 1);
+    let event = &events[0];
+    assert_eq!(event.level, sentry::Level::Warning);
+    assert_eq!(
+        event.message.as_deref(),
+        Some(
+            "[hq-cli-update] hq is installed but its version could not be read \
+             (binary-anchor, npm root, and hq --version all failed)"
+        )
+    );
+    assert_eq!(
+        event
+            .fingerprint
+            .iter()
+            .map(|value| value.to_string())
+            .collect::<Vec<_>>(),
+        ["{{ default }}"],
+        "the event must retain Sentry's default message grouping"
+    );
+    assert_eq!(
+        event.tags.get("hq_cli_update_kind").map(String::as_str),
+        Some("version-unreadable")
+    );
+    assert_eq!(event.tags.get("latest").map(String::as_str), Some("5.88.3"));
+    assert_eq!(
+        event.extra.get("hq_cli_version_probes"),
+        Some(&Value::Object(
+            serde_json::json!({
+                "binary_anchor": "package_not_found",
+                "npm_root": "nonzero_exit",
+                "hq_version": "interpreter_not_found",
+                "binary_anchor_shape": "flat_global_bin",
+            })
+            .as_object()
+            .unwrap()
+            .clone()
+        ))
+    );
+    assert!(
+        event.extra.values().all(|value| match value {
+            Value::String(value) => !value.contains("/Users/") && !value.contains("fixture"),
+            Value::Object(value) => value.values().all(|value| match value {
+                Value::String(value) => !value.contains("/Users/") && !value.contains("fixture"),
+                _ => true,
+            }),
+            _ => true,
+        }),
+        "unreadable-version diagnostics must remain closed enum values: {:?}",
+        event.extra
+    );
 }
 
 #[test]

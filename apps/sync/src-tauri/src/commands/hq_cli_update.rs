@@ -73,11 +73,10 @@ pub use hq_desktop_core::hq_cli_update::{
     non_convergent_cli_version, non_convergent_detail, npm_prefix_from_hq_bin,
     read_installed_version, redact_home, redact_home_in, report_install_failure,
     report_non_convergent_install, report_npm_cache_setup_failure, report_unreadable_version,
-    resolved_hq_version,
-    should_auto_install, should_report_unreadable_version, suppress_for_dismissal,
-    version_from_hq_binary, version_if_hq_cli, HqCliUpdateInfo, InstallFailureKind,
-    LocalVersionProbeDiagnostics, LocalVersionProbeResult, NpmLatest, VersionProbeOutcome,
-    DISMISSED_VERSION_KEY, HQ_CLI_PACKAGE, NON_CONVERGENT_ERROR_PREFIX,
+    resolved_hq_version, should_auto_install, should_report_unreadable_version,
+    suppress_for_dismissal, version_from_hq_binary, version_if_hq_cli, HqCliUpdateInfo,
+    InstallFailureKind, LocalVersionProbeDiagnostics, LocalVersionProbeResult, NpmLatest,
+    VersionProbeOutcome, DISMISSED_VERSION_KEY, HQ_CLI_PACKAGE, NON_CONVERGENT_ERROR_PREFIX,
     NON_CONVERGENT_VERSION_KEY,
 };
 
@@ -910,6 +909,7 @@ exit 0
             binary_anchor: hq_desktop_core::hq_cli_update::VersionProbeOutcome::PackageNotFound,
             npm_root: hq_desktop_core::hq_cli_update::VersionProbeOutcome::NonzeroExit,
             hq_version: hq_desktop_core::hq_cli_update::VersionProbeOutcome::InvalidUtf8,
+            binary_anchor_shape: hq_desktop_core::hq_cli_update::BinaryAnchorShape::FlatGlobalBin,
         };
         let events = sentry::test::with_captured_events(|| {
             sentry::configure_scope(|scope| {
@@ -936,6 +936,7 @@ exit 0
                 "binary_anchor": "package_not_found",
                 "npm_root": "nonzero_exit",
                 "hq_version": "invalid_utf8",
+                "binary_anchor_shape": "flat_global_bin",
             })
         );
         assert_eq!(event.extra["token"], serde_json::json!("[Filtered]"));
