@@ -185,4 +185,30 @@ describe('desktop-alt Windows reliability — daemon lifecycle (US-002)', () => 
     expect(diagnostics.visibleConsoleProcessCount).toBe(0);
     expect(diagnostics.childProcessStates.every((c) => !c.visibleConsole)).toBe(true);
   });
+
+  it('exposes a fatal runner abort through fixed-vocabulary diagnostics only', async () => {
+    const harness = track(new WindowsReliabilityHarness({ forceScripted: true }));
+    await harness.launch();
+
+    const abort = harness.simulateRunnerFatalAbort();
+    expect(abort.fatalClass).toBe('libuv_assert');
+    expect(abort.windowsFaultSymbol).toBe('STATUS_STACK_BUFFER_OVERRUN');
+    assertContentSafeDiagnostics(abort);
+    expect(JSON.stringify(abort)).not.toContain('async.c');
+    expect(JSON.stringify(abort)).not.toContain('hq-sync-runner');
+  });
+
+  it('reports exec-permission target state as unknown instead of inferring it', async () => {
+    const harness = track(new WindowsReliabilityHarness({ forceScripted: true }));
+    await harness.launch();
+
+    const denied = harness.simulateRunnerExecPermissionFailure();
+    expect(denied.fatalClass).toBe('exec_permission_denied');
+    expect(denied.execResolution).toBe('npx_cache');
+    expect(denied.targetExists).toBe('unknown');
+    expect(denied.targetExecutable).toBe('unknown');
+    assertContentSafeDiagnostics(denied);
+    expect(JSON.stringify(denied)).not.toContain('hq-sync-runner');
+    expect(JSON.stringify(denied)).not.toContain('/.npm/_npx/');
+  });
 });

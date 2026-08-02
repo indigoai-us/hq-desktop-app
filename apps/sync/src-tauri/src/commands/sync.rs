@@ -40,7 +40,7 @@ use std::time::{Duration, Instant};
 
 use chrono::SecondsFormat;
 use hq_desktop_core::sync_outcome::{
-    classify_error_event, classify_runner_error_class, describe_exit,
+    classify_error_event, classify_runner_error_class, classify_runner_fatal_class, describe_exit,
     is_windows_console_control_exit, should_alert_on_nonzero_exit, should_synthesize_all_complete,
     termination_fingerprint_token, RunnerErrorClass,
 };
@@ -173,6 +173,10 @@ fn runner_exit_telemetry_context(
     if let Some(rollup) = totals.runner_error_rollup.tag_value() {
         tags.push(("runner_error_rollup", rollup));
     }
+    tags.push((
+        "runner_fatal_class",
+        totals.runner_fatal_class.as_str().to_string(),
+    ));
     let extras = vec![
         (
             "saw_alertable_error",
@@ -747,10 +751,13 @@ fn runner_stderr_breadcrumb(sequence: u32, line: &str) -> sentry::Breadcrumb {
         RunnerErrorClass::Auth => "auth",
         RunnerErrorClass::Other => "other",
     };
+    let fatal_class = classify_runner_fatal_class(line).as_str();
     sentry::Breadcrumb {
         category: Some("runner.stderr".into()),
         level: sentry::Level::Warning,
-        message: Some(format!("runner stderr #{sequence} ({error_class})")),
+        message: Some(format!(
+            "runner stderr #{sequence} ({error_class};{fatal_class})"
+        )),
         ..Default::default()
     }
 }
@@ -2413,7 +2420,10 @@ mod tests {
                 .iter()
                 .filter_map(|breadcrumb| breadcrumb.message.as_deref())
                 .collect::<Vec<_>>(),
-            vec!["runner stderr #1 (eperm)", "runner stderr #2 (eperm)"]
+            vec![
+                "runner stderr #1 (eperm;none)",
+                "runner stderr #2 (eperm;none)"
+            ]
         );
         let captured_serialized =
             serde_json::to_string(&captured).expect("serialize captured event");
@@ -2430,7 +2440,10 @@ mod tests {
                 .iter()
                 .filter_map(|breadcrumb| breadcrumb.message.as_deref())
                 .collect::<Vec<_>>(),
-            vec!["runner stderr #1 (eperm)", "runner stderr #2 (eperm)"]
+            vec![
+                "runner stderr #1 (eperm;none)",
+                "runner stderr #2 (eperm;none)"
+            ]
         );
         assert_eq!(scrubbed.tags["runner_error_rollup"], "EPERM:2");
         assert_eq!(
@@ -2452,6 +2465,47 @@ mod tests {
         for forbidden in ["secret-plan.md", "operation not permitted", "hq-tmp"] {
             assert!(!serialized.contains(forbidden));
         }
+    }
+
+    #[test]
+    fn manual_runner_abort_capture_keeps_only_the_fatal_class() {
+        const WINDOWS_STACK_BUFFER_OVERRUN: i32 = 0xC000_0409u32 as i32;
+        let private_path = r"C:\\Users\\Ada\\hq\\companies\\personal\\secret-plan.md";
+        let raw_stderr = format!(
+            "Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), file src\\\\win\\\\async.c, line 76: {private_path}"
+        );
+        let totals = Mutex::new(RunTotals::default());
+
+        let captures = sentry::test::with_captured_events(|| {
+            sentry::add_breadcrumb(runner_stderr_breadcrumb(1, &raw_stderr));
+            assert!(update_runner_stderr_totals(&totals, &raw_stderr).is_none());
+            let totals = totals.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            capture_runner_exit_error(
+                Some(WINDOWS_STACK_BUFFER_OVERRUN),
+                None,
+                &totals,
+                &SyncErrorEvent {
+                    company: None,
+                    path: "(runner)".to_string(),
+                    message: "hq-sync-runner exited abnormally".to_string(),
+                },
+            );
+        });
+
+        let event = hq_telemetry::before_send(captures.into_iter().next().expect("capture"))
+            .expect("manual runner event remains sendable");
+        let serialized = serde_json::to_string(&event).expect("serialize event");
+        assert_eq!(
+            event.breadcrumbs.values[0].message.as_deref(),
+            Some("runner stderr #1 (other;libuv_assert)")
+        );
+        assert_eq!(event.tags["runner_fatal_class"], "libuv_assert");
+        assert_eq!(
+            event.fingerprint,
+            vec!["sync", "runner-termination", "windows:fault:0xC0000409"]
+        );
+        assert!(!serialized.contains(private_path));
+        assert!(!serialized.contains("UV_HANDLE_CLOSING"));
     }
 
     #[test]

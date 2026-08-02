@@ -54,10 +54,33 @@ fn is_content_safe_runner_stderr_message(category: Option<&str>, message: Option
     let Some(class) = class_with_suffix.strip_suffix(')') else {
         return false;
     };
-    matches!(
-        class,
-        "eperm" | "eacces" | "enospc" | "ebusy" | "network" | "auth" | "other"
-    )
+    let is_error_class = |value: &str| {
+        matches!(
+            value,
+            "eperm" | "eacces" | "enospc" | "ebusy" | "network" | "auth" | "other"
+        )
+    };
+    let is_fatal_class = |value: &str| {
+        matches!(
+            value,
+            "libuv_assert"
+                | "node_fatal"
+                | "heap_oom"
+                | "rust_panic"
+                | "exec_permission_denied"
+                | "exec_not_found"
+                | "node_too_old"
+                | "none"
+        )
+    };
+
+    if let Some((error_class, fatal_class)) = class.split_once(';') {
+        is_error_class(error_class) && is_fatal_class(fatal_class) && !fatal_class.contains(';')
+    } else {
+        // Keep the previously shipped exact grammar sendable while clients
+        // update. New producers always include the second fatal-class token.
+        is_error_class(class)
+    }
 }
 
 fn scrub_sensitive_in_value(v: &mut Value) {
@@ -444,6 +467,44 @@ mod tests {
     }
 
     #[test]
+    fn test_fatal_classified_runner_stderr_breadcrumb_message_is_preserved() {
+        let mut event = Event::default();
+        for (sequence, fatal_class) in [
+            "libuv_assert",
+            "node_fatal",
+            "heap_oom",
+            "rust_panic",
+            "exec_permission_denied",
+            "exec_not_found",
+            "node_too_old",
+            "none",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            event.breadcrumbs.values.push(Breadcrumb {
+                category: Some("runner.stderr".into()),
+                message: Some(format!(
+                    "runner stderr #{} (other;{fatal_class})",
+                    sequence + 1
+                )),
+                ..Default::default()
+            });
+        }
+
+        let result = before_send(event).expect("event remains sendable");
+        assert!(result
+            .breadcrumbs
+            .values
+            .iter()
+            .all(|breadcrumb| breadcrumb.message.as_deref() != Some("[Filtered]")));
+        assert_eq!(
+            result.breadcrumbs.values[0].message.as_deref(),
+            Some("runner stderr #1 (other;libuv_assert)")
+        );
+    }
+
+    #[test]
     fn test_runner_stderr_fixed_vocabulary_lookalikes_are_filtered() {
         let mut event = Event::default();
         for message in [
@@ -451,6 +512,7 @@ mod tests {
             "runner stderr #1 (EPERM)",
             "runner stderr #1 (unknown)",
             "runner stderr #1 (eperm) secret-plan.md",
+            "runner stderr #1 (other;libuv_assert) secret-plan.md",
         ] {
             event.breadcrumbs.values.push(Breadcrumb {
                 category: Some("runner.stderr".into()),
