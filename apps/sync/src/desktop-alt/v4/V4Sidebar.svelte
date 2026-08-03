@@ -738,8 +738,9 @@
     flex: 0 0 auto;
   }
 
+  /* Grows to pin the profile footer to the bottom of the sidebar. */
   .v4-spacer {
-    flex: 0 0 auto;
+    flex: 1 1 auto;
   }
 
   /* Profile footer — avatar circle + name + email; opens Settings. */
