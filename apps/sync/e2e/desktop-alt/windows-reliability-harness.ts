@@ -20,6 +20,7 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 // ---------------------------------------------------------------------------
@@ -116,6 +117,91 @@ export interface RunnerExecPermissionDiagnostic {
   targetExecutable: 'unknown';
   phase: 'unknown';
   elapsedPhaseBucket: 'under_1m';
+}
+
+export type RunnerRoute = 'manual' | 'watcher';
+export type RunnerLaunchOrigin = 'renderer' | 'app_launch' | 'supervisor_respawn';
+export type RunnerPhase = 'scan' | 'push' | 'pull' | 'idle' | 'unknown';
+
+export interface RunnerTerminationDiagnostic {
+  route: RunnerRoute;
+  launchOrigin?: RunnerLaunchOrigin;
+  phase: RunnerPhase;
+  elapsedPhaseBucket: 'under_1m';
+  fatalClass: 'libuv_assert' | 'exec_permission_denied' | 'none';
+  stackShape: string;
+  stackSignature: string;
+  stackDepth: number;
+  redactedFrames: number;
+  windowsExitStatus?: '0xC0000409';
+  windowsFaultSymbol?: 'STATUS_STACK_BUFFER_OVERRUN';
+}
+
+const RUNNER_FRAME_TABLE = new Map<string, string>([
+  ['uv_handle', 'libuv_handle'],
+  ['src\\win\\async.c', 'libuv_win_async'],
+  ['src/win/async.c', 'libuv_win_async'],
+  ['src/unix/core.c', 'libuv_unix_core'],
+  ['node:internal/process/task_queues', 'node_task_queues'],
+  ['node:internal/modules/cjs/loader', 'node_cjs_loader'],
+  ['node:internal/modules/esm/loader', 'node_esm_loader'],
+  ['node:internal/timers', 'node_timers'],
+  ['node:internal/child_process', 'node_child_process'],
+  ['node:events', 'node_events'],
+  ['node:fs', 'node_fs'],
+  ['node:stream', 'node_stream'],
+  ['core::panicking', 'rust_core_panicking'],
+  ['std::panicking', 'rust_std_panicking'],
+]);
+
+function fixtureRunnerStackShape(stderr: string[]): {
+  shape: string;
+  signature: string;
+  depth: number;
+  redactedFrames: number;
+} {
+  const frames: string[] = [];
+  let redactedFrames = 0;
+  let recognized = false;
+  for (const line of stderr.slice(0, 8)) {
+    const candidates = line.split(/[\s(),]+/).filter(Boolean);
+    const tokens = candidates
+      .map((candidate, index) => {
+        const previous = candidates[index - 1]?.toLowerCase();
+        const beforePrevious = candidates[index - 2]?.toLowerCase();
+        const isFramePosition =
+          index === 0 ||
+          previous === 'at' ||
+          previous === 'file' ||
+          (beforePrevious === 'at' && previous === 'async');
+        if (!isFramePosition) return undefined;
+        return RUNNER_FRAME_TABLE.get(candidate.replace(/:\d+:\d+$/, '').toLowerCase());
+      })
+      .filter((token): token is string => Boolean(token));
+    if (tokens.length === 0) {
+      frames.push('app');
+      redactedFrames += 1;
+    } else {
+      recognized = true;
+      frames.push(...tokens.slice(0, 8 - frames.length));
+    }
+    if (frames.length === 8) break;
+  }
+  if (!recognized) {
+    return {
+      shape: 'all_redacted',
+      signature: 'unknown',
+      depth: frames.length,
+      redactedFrames: frames.length,
+    };
+  }
+  const shape = frames.join('>');
+  return {
+    shape,
+    signature: createHash('sha256').update(shape).digest('hex').slice(0, 16),
+    depth: frames.length,
+    redactedFrames,
+  };
 }
 
 // Keys / string patterns that must never appear in diagnostics payloads.
@@ -654,6 +740,49 @@ export class WindowsReliabilityHarness {
       phase: 'unknown',
       elapsedPhaseBucket: 'under_1m',
     };
+  }
+
+  /**
+   * Fixture-backed artifact contract for the fixed-vocabulary native runner
+   * diagnostic. This does not observe a native Sentry event; Rust production
+   * seam tests and PR CI own that proof.
+   */
+  simulateRunnerTerminationDiagnostics(options: {
+    route: RunnerRoute;
+    origin?: RunnerLaunchOrigin;
+    phase: RunnerPhase;
+    exitCode: number;
+    stderr: string[];
+  }): RunnerTerminationDiagnostic {
+    this.ensureLaunched();
+    if (options.route === 'watcher' && !options.origin) {
+      throw new Error('watcher diagnostics require a fixed launch origin');
+    }
+    const stack = fixtureRunnerStackShape(options.stderr);
+    const windowsFault = options.exitCode === 0xc0000409;
+    const serializedStderr = options.stderr.join('\n').toLowerCase();
+    const fatalClass = windowsFault && serializedStderr.includes('uv_handle_closing')
+      ? 'libuv_assert'
+      : options.exitCode === 126
+        ? 'exec_permission_denied'
+        : 'none';
+    const diagnostic: RunnerTerminationDiagnostic = {
+      route: options.route,
+      phase: options.phase,
+      elapsedPhaseBucket: 'under_1m',
+      fatalClass,
+      stackShape: stack.shape,
+      stackSignature: stack.signature,
+      stackDepth: stack.depth,
+      redactedFrames: stack.redactedFrames,
+    };
+    if (options.origin) diagnostic.launchOrigin = options.origin;
+    if (windowsFault) {
+      diagnostic.windowsExitStatus = '0xC0000409';
+      diagnostic.windowsFaultSymbol = 'STATUS_STACK_BUFFER_OVERRUN';
+    }
+    assertContentSafeDiagnostics(diagnostic);
+    return diagnostic;
   }
 
   /** Record a backend request by logical resource name (no URLs or bodies). */

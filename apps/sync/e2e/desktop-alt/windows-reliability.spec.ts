@@ -211,4 +211,78 @@ describe('desktop-alt Windows reliability — daemon lifecycle (US-002)', () => 
     expect(JSON.stringify(denied)).not.toContain('hq-sync-runner');
     expect(JSON.stringify(denied)).not.toContain('/.npm/_npx/');
   });
+
+  it('pins watcher and manual termination context as a fixture-backed artifact contract', async () => {
+    const harness = track(new WindowsReliabilityHarness({ forceScripted: true }));
+    await harness.launch();
+
+    const watcherExec = harness.simulateRunnerTerminationDiagnostics({
+      route: 'watcher',
+      origin: 'supervisor_respawn',
+      phase: 'unknown',
+      exitCode: 126,
+      stderr: [],
+    });
+    expect(watcherExec.route).toBe('watcher');
+    expect(watcherExec.launchOrigin).toBe('supervisor_respawn');
+    expect(watcherExec.stackShape).toBe('all_redacted');
+    expect(watcherExec.stackSignature).toBe('unknown');
+
+    const watcherFault = harness.simulateRunnerTerminationDiagnostics({
+      route: 'watcher',
+      origin: 'app_launch',
+      phase: 'pull',
+      exitCode: 0xc0000409,
+      stderr: ['at node:internal/modules/cjs/loader:1218:14', 'at node:fs:242:9'],
+    });
+    expect(watcherFault.windowsExitStatus).toBe('0xC0000409');
+    expect(watcherFault.windowsFaultSymbol).toBe('STATUS_STACK_BUFFER_OVERRUN');
+    expect(watcherFault.stackShape).toBe('node_cjs_loader>node_fs');
+
+    const manualFault = harness.simulateRunnerTerminationDiagnostics({
+      route: 'manual',
+      phase: 'push',
+      exitCode: 0xc0000409,
+      stderr: ['at node:internal/process/task_queues:95:5'],
+    });
+    expect(manualFault.route).toBe('manual');
+    expect(manualFault.phase).toBe('push');
+    expect(manualFault.windowsExitStatus).toBe(watcherFault.windowsExitStatus);
+    expect(manualFault.windowsFaultSymbol).toBe(watcherFault.windowsFaultSymbol);
+
+    for (const diagnostic of [watcherExec, watcherFault, manualFault]) {
+      assertContentSafeDiagnostics(diagnostic);
+      const serialized = JSON.stringify(diagnostic);
+      for (const forbidden of [
+        'async.c',
+        'hq-sync-runner',
+        '/.npm/_npx/',
+        'private-company',
+        'UV_HANDLE_CLOSING',
+      ]) {
+        expect(serialized).not.toContain(forbidden);
+      }
+    }
+  });
+
+  it('keeps native route, origin, phase, and stack vocabularies wired to production callers', () => {
+    const core = readRepoFile('../../crates/hq-desktop-core/src/sync_outcome.rs');
+    const daemon = readRepoFile('src-tauri/src/commands/daemon.rs');
+    const main = readRepoFile('src-tauri/src/main.rs');
+
+    for (const token of [
+      'node_task_queues',
+      'node_cjs_loader',
+      'node_fs',
+      'libuv_win_async',
+      'all_redacted',
+    ]) {
+      expect(core).toContain(`"${token}"`);
+    }
+    for (const origin of ['renderer', 'app_launch', 'supervisor_respawn']) {
+      expect(daemon).toContain(`"${origin}"`);
+    }
+    expect(main).toContain('start_daemon_for_app_launch(handle)');
+    expect(daemon).toContain('start_daemon_for_supervisor_respawn(handle.clone())');
+  });
 });

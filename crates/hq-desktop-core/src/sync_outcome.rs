@@ -1,7 +1,9 @@
 use std::collections::HashSet;
 use std::io::ErrorKind;
+use std::time::Duration;
 
 use crate::events::{SyncCompleteEvent, SyncErrorEvent, SyncEvent};
+use sha2::{Digest, Sha256};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Per-run aggregated counters
@@ -142,6 +144,178 @@ impl RunTotals {
         if class != RunnerFatalClass::None {
             self.runner_fatal_class = class;
         }
+    }
+}
+
+/// Coarse runner work phase shared by manual and watcher telemetry.
+///
+/// The value is derived only from protocol events emitted by the process being
+/// observed. Callers must not consult the shared on-disk progress snapshot,
+/// because another route may have written it.
+pub fn runner_phase_from_event(event: &SyncEvent) -> Option<&'static str> {
+    match event {
+        SyncEvent::FanoutPlan(_) | SyncEvent::Plan(_) => Some("scan"),
+        SyncEvent::Progress(progress) => Some(match progress.direction.as_deref() {
+            Some("up") => "push",
+            Some("down") => "pull",
+            _ => "unknown",
+        }),
+        SyncEvent::AllComplete(_) => Some("idle"),
+        _ => None,
+    }
+}
+
+/// Fixed elapsed-time vocabulary shared by both runner routes.
+pub fn runner_phase_elapsed_bucket(elapsed: Duration) -> &'static str {
+    match elapsed.as_secs() {
+        0..=59 => "under_1m",
+        60..=299 => "1m_to_5m",
+        300..=1799 => "5m_to_30m",
+        1800..=7199 => "30m_to_2h",
+        _ => "over_2h",
+    }
+}
+
+/// Fixed stack-shape tokens that are safe to leave the process boundary.
+pub const RUNNER_STACK_TOKENS: &[&str] = &[
+    "app",
+    "libuv_handle",
+    "libuv_win_async",
+    "libuv_unix_core",
+    "node_task_queues",
+    "node_cjs_loader",
+    "node_esm_loader",
+    "node_timers",
+    "node_child_process",
+    "node_events",
+    "node_fs",
+    "node_stream",
+    "rust_core_panicking",
+    "rust_std_panicking",
+];
+
+const RUNTIME_FRAME_TABLE: &[(&str, &str)] = &[
+    ("uv_handle", "libuv_handle"),
+    (r"src\win\async.c", "libuv_win_async"),
+    ("src/win/async.c", "libuv_win_async"),
+    ("src/unix/core.c", "libuv_unix_core"),
+    ("node:internal/process/task_queues", "node_task_queues"),
+    ("node:internal/modules/cjs/loader", "node_cjs_loader"),
+    ("node:internal/modules/esm/loader", "node_esm_loader"),
+    ("node:internal/timers", "node_timers"),
+    ("node:internal/child_process", "node_child_process"),
+    ("node:events", "node_events"),
+    ("node:fs", "node_fs"),
+    ("node:stream", "node_stream"),
+    ("core::panicking", "rust_core_panicking"),
+    ("std::panicking", "rust_std_panicking"),
+];
+
+const RUNNER_STACK_FRAME_CAP: usize = 8;
+
+/// Lossy, fixed-vocabulary runtime-frame shape.
+///
+/// This is deliberately not a stack identity: distinct application stacks
+/// whose recognised runtime frames match collide by design. Exact whole-token
+/// equality here is a new, stricter discipline; `classify_runner_fatal_class`
+/// is not precedent because it intentionally uses substring containment. The
+/// only inherited safety property is that outputs are fixed tokens and never
+/// copy input bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunnerStackShape {
+    pub shape: String,
+    pub depth: u8,
+    pub redacted_frames: u8,
+    pub signature: String,
+}
+
+fn strip_frame_location(candidate: &str) -> &str {
+    let Some((before_column, column)) = candidate.rsplit_once(':') else {
+        return candidate;
+    };
+    if column.is_empty() || !column.bytes().all(|byte| byte.is_ascii_digit()) {
+        return candidate;
+    }
+    let Some((frame, line)) = before_column.rsplit_once(':') else {
+        return candidate;
+    };
+    if line.is_empty() || !line.bytes().all(|byte| byte.is_ascii_digit()) {
+        return candidate;
+    }
+    frame
+}
+
+fn runtime_frame_token(candidate: &str) -> Option<&'static str> {
+    let candidate = strip_frame_location(candidate);
+    RUNTIME_FRAME_TABLE
+        .iter()
+        .find(|(marker, _)| candidate.eq_ignore_ascii_case(marker))
+        .map(|(_, token)| *token)
+}
+
+/// Normalize the dying process's ordered, bounded stderr tail without letting
+/// any raw line, path, symbol, or line number escape.
+pub fn runner_stack_shape(tail: &[String]) -> RunnerStackShape {
+    let mut frames = Vec::with_capacity(tail.len().min(RUNNER_STACK_FRAME_CAP));
+    let mut redacted_frames = 0_u8;
+    let mut recognised = false;
+
+    for line in tail.iter().take(RUNNER_STACK_FRAME_CAP) {
+        let candidates = line
+            .split(|character: char| {
+                character.is_ascii_whitespace() || matches!(character, '(' | ')' | ',')
+            })
+            .filter(|candidate| !candidate.is_empty())
+            .collect::<Vec<_>>();
+        let tokens = candidates
+            .iter()
+            .enumerate()
+            .filter_map(|(index, candidate)| {
+                let is_frame_position = index == 0
+                    || candidates[index - 1].eq_ignore_ascii_case("at")
+                    || candidates[index - 1].eq_ignore_ascii_case("file")
+                    || (index >= 2
+                        && candidates[index - 2].eq_ignore_ascii_case("at")
+                        && candidates[index - 1].eq_ignore_ascii_case("async"));
+                is_frame_position
+                    .then(|| runtime_frame_token(candidate))
+                    .flatten()
+            })
+            .collect::<Vec<_>>();
+        if tokens.is_empty() {
+            frames.push("app");
+            redacted_frames = redacted_frames.saturating_add(1);
+        } else {
+            recognised = true;
+            for token in tokens {
+                if frames.len() == RUNNER_STACK_FRAME_CAP {
+                    break;
+                }
+                frames.push(token);
+            }
+        }
+        if frames.len() == RUNNER_STACK_FRAME_CAP {
+            break;
+        }
+    }
+
+    let depth = frames.len() as u8;
+    if !recognised {
+        return RunnerStackShape {
+            shape: "all_redacted".to_string(),
+            depth,
+            redacted_frames: depth,
+            signature: "unknown".to_string(),
+        };
+    }
+
+    let shape = frames.join(">");
+    let digest = format!("{:x}", Sha256::digest(shape.as_bytes()));
+    RunnerStackShape {
+        shape,
+        depth,
+        redacted_frames,
+        signature: digest[..16].to_string(),
     }
 }
 
@@ -2448,5 +2622,109 @@ mod tests {
         assert!(!first.contains("/Users/"));
         assert!(!first.contains("/opt/homebrew/"));
         assert!(!first.contains("alice"));
+    }
+
+    #[test]
+    fn runner_stack_shape_recognises_both_libuv_windows_spellings() {
+        let backslash = vec![
+            r"Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), file src\win\async.c, line 76: C:\Users\Ada\secret-plan.md"
+                .to_string(),
+        ];
+        let slash = vec![backslash[0].replace(r"src\win\async.c", "src/win/async.c")];
+
+        let first = runner_stack_shape(&backslash);
+        let second = runner_stack_shape(&slash);
+        assert_ne!(first.shape, "all_redacted");
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn runner_stack_shape_preserves_multi_line_frame_order_and_distinguishes_shapes() {
+        let first = runner_stack_shape(&[
+            "at node:internal/process/task_queues:95:5".to_string(),
+            "private application frame C:\\Users\\Ada\\secret-plan.md:10:2".to_string(),
+            "at node:events:517:28".to_string(),
+        ]);
+        let second = runner_stack_shape(&[
+            "at node:events:517:28".to_string(),
+            "private application frame C:\\Users\\Grace\\other.md:90:4".to_string(),
+            "at node:internal/process/task_queues:95:5".to_string(),
+        ]);
+
+        assert_eq!(first.shape, "node_task_queues>app>node_events");
+        assert_eq!(first.signature, "90c372213834ca17");
+        assert_eq!(first.depth, 3);
+        assert_eq!(first.redacted_frames, 1);
+        assert_ne!(first.shape, second.shape);
+        assert_ne!(first.signature, second.signature);
+    }
+
+    #[test]
+    fn runner_stack_shape_has_an_honest_all_redacted_contract_and_eight_frame_cap() {
+        let private_a = runner_stack_shape(&[
+            "at C:\\Users\\Ada\\secret-plan.md:10:2".to_string(),
+            "at company_private_symbol:20:4".to_string(),
+        ]);
+        let private_b = runner_stack_shape(&[
+            "at /Users/grace/another-secret.md:99:8".to_string(),
+            "at different_private_symbol:1:1".to_string(),
+        ]);
+        assert_eq!(private_a.shape, "all_redacted");
+        assert_eq!(private_a.signature, "unknown");
+        assert_eq!(private_a.redacted_frames, private_a.depth);
+        assert_eq!(private_b.shape, "all_redacted");
+        assert_eq!(private_b.signature, "unknown");
+
+        let many = (0..12)
+            .map(|_| "at node:fs:1:1".to_string())
+            .collect::<Vec<_>>();
+        let capped = runner_stack_shape(&many);
+        assert_eq!(capped.depth, 8);
+        assert_eq!(capped.shape.split('>').count(), 8);
+        assert!(capped
+            .shape
+            .split('>')
+            .all(|token| RUNNER_STACK_TOKENS.contains(&token)));
+    }
+
+    #[test]
+    fn runner_stack_shape_rejects_marker_spoofing_outside_frame_positions() {
+        for line in [
+            "message embedding node:fs for a user",
+            "home path /Users/Ada/node:internal/process/task_queues",
+            "symbol core::panicking_helper",
+            "file src/win/async.c.bak",
+        ] {
+            let shape = runner_stack_shape(&[line.to_string()]);
+            assert_eq!(shape.shape, "all_redacted", "line={line}");
+            assert_eq!(shape.signature, "unknown", "line={line}");
+        }
+    }
+
+    #[test]
+    fn shared_runner_phase_vocabulary_matches_the_watcher_contract() {
+        let push: SyncEvent = serde_json::from_str(
+            r#"{"type":"progress","company":"indigo","path":"private.md","bytes":1,"direction":"up"}"#,
+        )
+        .expect("progress event");
+        let pull: SyncEvent = serde_json::from_str(
+            r#"{"type":"progress","company":"indigo","path":"private.md","bytes":1,"direction":"down"}"#,
+        )
+        .expect("progress event");
+
+        assert_eq!(runner_phase_from_event(&push), Some("push"));
+        assert_eq!(runner_phase_from_event(&pull), Some("pull"));
+        assert_eq!(
+            runner_phase_elapsed_bucket(Duration::from_secs(59)),
+            "under_1m"
+        );
+        assert_eq!(
+            runner_phase_elapsed_bucket(Duration::from_secs(60)),
+            "1m_to_5m"
+        );
+        assert_eq!(
+            runner_phase_elapsed_bucket(Duration::from_secs(2 * 60 * 60)),
+            "over_2h"
+        );
     }
 }
