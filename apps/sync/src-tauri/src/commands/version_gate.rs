@@ -200,6 +200,17 @@ async fn react_to_decision(app: &AppHandle, decision: &VersionCheckResponse) {
                 decision.current_version, decision.min_version, decision.latest_version
             ),
         );
+        // Windows cannot install silently: NSIS dies on files held open by
+        // the running app/sidecar and leaves a half-removed install (the
+        // 2026-08-02 field failure). Leave the blocking modal up — its
+        // manual install path runs through the guarded in-app flow instead.
+        if !crate::updater::silent_install_supported() {
+            log(
+                "version-gate",
+                "silent install unsupported on this platform — blocking modal stays up for manual install",
+            );
+            return;
+        }
         if let Err(e) = force_install(app).await {
             log("version-gate", &format!("force_install failed: {e}"));
         }
