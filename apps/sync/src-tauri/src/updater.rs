@@ -142,12 +142,25 @@ fn should_raise_transient_update_surface(announcement: UpdateAnnouncement) -> bo
 fn background_update_action(
     automatic_updates: bool,
     sync_in_progress: bool,
+    silent_install_supported: bool,
 ) -> BackgroundUpdateAction {
-    match (automatic_updates, sync_in_progress) {
+    match (automatic_updates && silent_install_supported, sync_in_progress) {
         (true, false) => BackgroundUpdateAction::Install,
         (true, true) => BackgroundUpdateAction::DeferForSync,
         (false, _) => BackgroundUpdateAction::Announce,
     }
+}
+
+/// Windows must never install silently in the background: the NSIS installer
+/// cannot overwrite files still held open by the running app, its sidecar, or
+/// watcher processes, and a mid-install failure leaves the machine with a
+/// half-removed install (missing Start-menu entry, broken uninstaller — the
+/// 2026-08-02 field failure, "Error opening file for writing" on
+/// hq-sync-menubar.exe). Until the update path quiesces every HQ process
+/// first, Windows background discovery announces the update instead and the
+/// user installs through the guarded in-app path.
+fn silent_install_supported() -> bool {
+    !cfg!(target_os = "windows")
 }
 
 fn sync_in_progress() -> bool {
@@ -615,6 +628,7 @@ pub fn setup_update_checker(app: &AppHandle) {
                                     match background_update_action(
                                         hq_desktop_core::hq_cli_update::auto_update_enabled(),
                                         sync_in_progress(),
+                                        silent_install_supported(),
                                     ) {
                                         BackgroundUpdateAction::Install => {
                                             match UpdateInstallGuard::acquire(
@@ -834,7 +848,7 @@ mod tests {
     #[test]
     fn automatic_background_updates_install_without_announcing() {
         assert_eq!(
-            background_update_action(true, false),
+            background_update_action(true, false, true),
             BackgroundUpdateAction::Install
         );
     }
@@ -842,7 +856,7 @@ mod tests {
     #[test]
     fn automatic_background_updates_defer_during_sync() {
         assert_eq!(
-            background_update_action(true, true),
+            background_update_action(true, true, true),
             BackgroundUpdateAction::DeferForSync
         );
         assert_eq!(UPDATE_SYNC_RETRY_INTERVAL, Duration::from_secs(30));
@@ -851,13 +865,41 @@ mod tests {
     #[test]
     fn opted_out_background_updates_keep_the_manual_notification() {
         assert_eq!(
-            background_update_action(false, false),
+            background_update_action(false, false, true),
             BackgroundUpdateAction::Announce
         );
         assert_eq!(
-            background_update_action(false, true),
+            background_update_action(false, true, true),
             BackgroundUpdateAction::Announce
         );
+    }
+
+    /// Regression: 2026-08-02 Windows field failure. Silent background installs
+    /// on a platform that cannot swap locked files must announce instead —
+    /// even mid-sync, the announce path wins over a deferred install.
+    #[test]
+    fn platforms_without_silent_install_always_announce() {
+        assert_eq!(
+            background_update_action(true, false, false),
+            BackgroundUpdateAction::Announce
+        );
+        assert_eq!(
+            background_update_action(true, true, false),
+            BackgroundUpdateAction::Announce
+        );
+        assert_eq!(
+            background_update_action(false, false, false),
+            BackgroundUpdateAction::Announce
+        );
+    }
+
+    #[test]
+    fn windows_never_supports_silent_background_install() {
+        if cfg!(target_os = "windows") {
+            assert!(!silent_install_supported());
+        } else {
+            assert!(silent_install_supported());
+        }
     }
 
     #[test]
