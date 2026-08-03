@@ -30,7 +30,7 @@
     overflow: hidden;
     padding: 1px 7px;
     border: 1px solid var(--chip-border);
-    border-radius: var(--radius-sm);
+    border-radius: var(--v4-radius-button);
     background: var(--chip-bg);
     color: var(--chip-fg);
     font-size: var(--text-base);

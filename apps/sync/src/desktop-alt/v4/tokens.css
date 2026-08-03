@@ -28,13 +28,16 @@
   --v4-glass-highlight: rgba(255, 255, 255, 0.58);
   --v4-glass-border: var(--v4-hairline);
 
-  /* shared shape + elevation — native macOS control metrics */
-  --v4-radius-structure: var(--radius-structure, 0);
-  --v4-radius-button: var(--radius-button, 6px);
-  --v4-radius-field: var(--radius-field, 6px);
-  --v4-radius-card: var(--radius-card, 8px);
-  --v4-radius-popover: var(--radius-popover, 10px);
-  --v4-radius-pill: var(--radius-pill, 980px);
+  /* shared shape + elevation — ONE radius system for the desktop window:
+     controls (buttons, fields, rows, tiles) 8px · containers (cards, menus,
+     popovers) 10px · pills round. Self-contained values so the legacy
+     design-system scale can't drift these. */
+  --v4-radius-structure: 0;
+  --v4-radius-button: 8px;
+  --v4-radius-field: 8px;
+  --v4-radius-card: 10px;
+  --v4-radius-popover: 10px;
+  --v4-radius-pill: 980px;
   --v4-shadow-card-light: var(--c-choose-shadow, 0 1px 1.5px rgba(0, 0, 0, 0.1));
   --v4-shadow-card-dark: 0 12px 32px rgba(0, 0, 0, 0.34), inset 0 1px 0 rgba(255, 255, 255, 0.08);
   --v4-shadow-card: var(--v4-shadow-card-light);

@@ -123,7 +123,7 @@
     min-width: 0;
     padding: var(--v4-space-2) var(--v4-space-3);
     border: 1px solid var(--v4-hairline);
-    border-radius: 6px;
+    border-radius: var(--v4-radius-button);
     background: var(--v4-raised);
     color: var(--v4-text-1);
     font: inherit;

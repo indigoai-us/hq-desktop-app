@@ -693,7 +693,7 @@
     min-height: 34px;
     padding: 6px 12px;
     border: 1px solid var(--border-strong);
-    border-radius: 6px;
+    border-radius: var(--v4-radius-button);
     background: var(--row-active);
     color: var(--fg);
     font: inherit;
@@ -780,7 +780,7 @@
     width: 26px;
     height: 16px;
     border: 0;
-    border-radius: var(--v4-radius-pill, 999px);
+    border-radius: var(--v4-radius-pill);
     background: var(--v4-control-bg, var(--row-active));
     cursor: pointer;
   }
@@ -792,7 +792,7 @@
     left: 2px;
     width: 12px;
     height: 12px;
-    border-radius: var(--v4-radius-pill, 999px);
+    border-radius: var(--v4-radius-pill);
     background: var(--c-bg, var(--surface-panel));
     box-shadow: var(--v4-shadow-card, 0 1px 2px rgba(0, 0, 0, 0.2));
     transition: transform 0.15s ease;

@@ -328,7 +328,7 @@
     height: 7px;
     border: 1.5px solid var(--muted);
     border-bottom: 0;
-    border-radius: 7px 7px 0 0;
+    border-radius: var(--v4-radius-button) var(--v4-radius-button) 0 0;
     content: '';
   }
 
@@ -360,7 +360,7 @@
     overflow: hidden;
     padding: 0;
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: var(--v4-radius-button);
     background: transparent;
     color: var(--fg);
     font: inherit;
@@ -589,7 +589,7 @@
 
   .detail-note code {
     padding: 1px 4px;
-    border-radius: 4px;
+    border-radius: var(--v4-radius-button);
     background: var(--row-hover);
     color: var(--muted-2);
     font-family: var(--font-mono);

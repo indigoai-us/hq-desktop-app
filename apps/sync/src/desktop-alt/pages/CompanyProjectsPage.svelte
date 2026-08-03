@@ -939,7 +939,7 @@
     height: 28px;
     padding: 0 12px;
     border: none;
-    border-radius: 8px;
+    border-radius: var(--v4-radius-button);
     background: var(--v4-primary-bg);
     color: var(--v4-primary-fg);
     font: inherit;
@@ -1420,7 +1420,7 @@
   .skeleton-card {
     height: 96px;
     border: 1px solid var(--v4-hairline);
-    border-radius: 6px;
+    border-radius: var(--v4-radius-button);
     background: var(--v4-control-faint);
     opacity: 0.48;
   }

@@ -39,7 +39,7 @@
     min-height: 92px;
     padding: 12px;
     border: 1px solid var(--border);
-    border-radius: var(--v4-radius-card, 6px);
+    border-radius: var(--v4-radius-card);
     background: var(--bg);
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
   }

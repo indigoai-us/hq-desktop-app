@@ -424,7 +424,7 @@
     gap: var(--space-1, 4px);
     padding: 2px 8px;
     border: 1px solid var(--v4-control-border, var(--border));
-    border-radius: var(--v4-radius-button, var(--radius-sm, 6px));
+    border-radius: var(--v4-radius-button);
     background: var(--v4-control-faint, var(--row-active));
     color: var(--v4-text-2, var(--muted-2));
     font: inherit;
@@ -529,7 +529,7 @@
 
   .preview-skeleton span {
     height: 16px;
-    border-radius: 5px;
+    border-radius: var(--v4-radius-button);
     background: linear-gradient(
       90deg,
       var(--v4-control-faint),
@@ -657,7 +657,7 @@
 
   .markdown-body :global(code) {
     padding: 1px var(--space-1, 4px);
-    border-radius: var(--v4-radius-button, var(--radius-sm, 6px));
+    border-radius: var(--v4-radius-button);
     background: var(--v4-control-faint, var(--row-active));
     color: var(--v4-text-1, var(--fg));
     font-family: var(--font-mono);

@@ -1957,7 +1957,7 @@
     max-width: min(420px, calc(100vw - 32px));
     padding: 9px 10px 9px 12px;
     border: 1px solid var(--v4-hairline);
-    border-radius: 8px;
+    border-radius: var(--v4-radius-button);
     background: var(--v4-popover);
     backdrop-filter: var(--v4-glass-filter-popover, var(--v4-glass-filter));
     -webkit-backdrop-filter: var(--v4-glass-filter-popover, var(--v4-glass-filter));
@@ -2005,7 +2005,7 @@
     height: 20px;
     padding: 0;
     border: 0;
-    border-radius: 5px;
+    border-radius: var(--v4-radius-button);
     background: transparent;
     color: var(--v4-text-3);
     font-size: var(--type-section, 14px);

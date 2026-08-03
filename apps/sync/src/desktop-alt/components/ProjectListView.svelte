@@ -242,7 +242,7 @@
     min-width: 0;
     padding: 0 var(--space-3);
     border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
+    border-radius: var(--v4-radius-button);
     background: var(--row-active);
     color: var(--fg);
     font: inherit;

@@ -616,7 +616,7 @@
     color: var(--v4-text-3);
     padding: 2px 8px;
     border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-pill, 999px);
+    border-radius: var(--v4-radius-pill);
     line-height: 1.25;
   }
 

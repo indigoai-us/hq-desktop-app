@@ -431,7 +431,7 @@
     padding: 0 8px;
     border: none;
     /* Native macOS sidebar row: rounded rect selection, not underlines. */
-    border-radius: 6px;
+    border-radius: var(--v4-radius-button);
     background: transparent;
     color: var(--v4-text-2);
     font: inherit;
@@ -505,7 +505,7 @@
     margin: 0 0 14px;
     padding: 6px 8px;
     border: none;
-    border-radius: 8px;
+    border-radius: var(--v4-radius-button);
     background: transparent;
     color: var(--v4-text-1);
     font: inherit;
@@ -529,7 +529,7 @@
     place-items: center;
     width: 28px;
     height: 28px;
-    border-radius: 8px;
+    border-radius: var(--v4-radius-button);
     box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.18);
     color: #fff;
     font-size: 12px;
@@ -541,7 +541,7 @@
   .ws-tile.menu {
     width: 36px;
     height: 36px;
-    border-radius: 9px;
+    border-radius: var(--v4-radius-button);
     font-size: 14px;
   }
 
@@ -614,7 +614,7 @@
     box-sizing: border-box;
     padding: 6px;
     border: 1px solid var(--border-strong, var(--pop-border, rgba(120, 120, 120, 0.3)));
-    border-radius: var(--v4-radius-popover, 12px);
+    border-radius: var(--v4-radius-popover);
     background: var(
       --v4-popover-strong,
       var(--v4-popover, var(--pop-bg, rgba(42, 42, 42, 0.82)))
@@ -636,7 +636,7 @@
     width: 100%;
     padding: 8px;
     border: none;
-    border-radius: 8px;
+    border-radius: var(--v4-radius-button);
     background: transparent;
     color: var(--v4-text-1);
     font: inherit;
@@ -753,7 +753,7 @@
     margin: 0 0 12px;
     padding: 6px 8px;
     border: none;
-    border-radius: 8px;
+    border-radius: var(--v4-radius-button);
     background: transparent;
     color: var(--v4-text-1);
     cursor: pointer;

@@ -388,7 +388,7 @@
   .skeleton-card {
     height: 84px;
     border: 1px solid var(--v4-hairline);
-    border-radius: 6px;
+    border-radius: var(--v4-radius-button);
     background: var(--v4-control-faint);
   }
 

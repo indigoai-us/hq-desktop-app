@@ -223,7 +223,7 @@
     overflow: hidden;
     border: 1px solid var(--border, var(--v4-hairline));
     /* Movable work objects may be rounded; columns stay naked. */
-    border-radius: 6px;
+    border-radius: var(--v4-radius-button);
     background: var(--row-active, var(--v4-raised));
     color: inherit;
     font: inherit;

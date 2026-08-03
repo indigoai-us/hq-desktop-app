@@ -318,7 +318,7 @@
   .command-glyph,
   .command-palette kbd {
     border: 1px solid var(--pop-border);
-    border-radius: 5px;
+    border-radius: var(--v4-radius-button);
     background: var(--pop-hover);
     color: var(--pop-muted);
     font-family: var(--font-mono);

@@ -377,7 +377,7 @@
     overflow: hidden;
     padding: 0 12px;
     border: none;
-    border-radius: 8px;
+    border-radius: var(--v4-radius-button);
     background: var(--v4-secondary-bg);
     color: var(--v4-secondary-fg);
     font: inherit;

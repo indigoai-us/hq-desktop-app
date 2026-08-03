@@ -183,7 +183,7 @@
     padding: var(--v4-space-3);
     border: 1px solid var(--v4-hairline);
     /* Movable work objects may be rounded; board columns stay naked. */
-    border-radius: 6px;
+    border-radius: var(--v4-radius-button);
     background: var(--v4-raised);
     box-shadow: var(--v4-shadow-card);
     color: var(--v4-text-1);

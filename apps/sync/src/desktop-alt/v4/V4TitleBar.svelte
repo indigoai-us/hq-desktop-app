@@ -518,7 +518,7 @@
     height: 28px;
     padding: 0 9px;
     border: none;
-    border-radius: 8px;
+    border-radius: var(--v4-radius-button);
     background: var(--v4-control-faint);
     color: var(--v4-text-3);
     font-family: var(--font-mono);
@@ -604,7 +604,7 @@
     height: 28px;
     padding: 0 12px;
     border: none;
-    border-radius: 8px;
+    border-radius: var(--v4-radius-button);
     background: var(--v4-control-faint);
     color: var(--v4-text-1);
     font: inherit;

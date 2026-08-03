@@ -198,7 +198,7 @@
     min-height: 28px;
     padding: 4px 8px;
     border: 1px solid var(--v4-control-border, var(--v4-hairline));
-    border-radius: 6px;
+    border-radius: var(--v4-radius-button);
     background: var(--v4-control-faint);
     color: var(--v4-text-1);
     font: inherit;
@@ -261,7 +261,7 @@
     margin: 8px 10px 0;
     padding: 0 8px;
     border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-button, 6px);
+    border-radius: var(--v4-radius-button);
     background: var(--v4-control-faint);
     color: var(--v4-text-2);
     font: inherit;
