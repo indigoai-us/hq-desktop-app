@@ -482,11 +482,11 @@ async fn run_npm_install_with_retries(
 /// keeps capture behind a successful durable marker write for foreign-managed
 /// CLI layouts.
 struct PostInstallEffects<'a> {
-    record: &'a dyn Fn(&str) -> Result<(), String>,
+    record: &'a dyn Fn(String) -> Result<(), String>,
     clear: &'a dyn Fn(),
-    capture: &'a dyn Fn(&NonConvergentReport),
+    capture: &'a dyn Fn(NonConvergentReport),
     record_failure: &'a dyn Fn(),
-    emit_cleared: &'a dyn Fn(&HqCliUpdateInfo),
+    emit_cleared: &'a dyn Fn(HqCliUpdateInfo),
 }
 
 fn apply_post_install(
@@ -494,7 +494,7 @@ fn apply_post_install(
     effects: &PostInstallEffects<'_>,
 ) -> Result<HqCliUpdateInfo, String> {
     let marker_persisted = match outcome.record_non_convergent.as_deref() {
-        Some(version) => match (effects.record)(version) {
+        Some(version) => match (effects.record)(version.to_string()) {
             Ok(()) => true,
             Err(error) => {
                 log(
@@ -514,7 +514,7 @@ fn apply_post_install(
 
     if let Some(report) = outcome.capture.as_ref() {
         if !outcome.capture_requires_durable_record || marker_persisted {
-            (effects.capture)(report);
+            (effects.capture)(report.clone());
         }
     }
 
@@ -524,7 +524,7 @@ fn apply_post_install(
                 local: Some(success.local.clone()),
                 latest: success.latest.clone(),
             };
-            (effects.emit_cleared)(&info);
+            (effects.emit_cleared)(info.clone());
             Ok(info)
         }
         Err(detail) => Err(detail.clone()),
@@ -638,9 +638,9 @@ pub async fn install_hq_cli_update(app: AppHandle) -> Result<HqCliUpdateInfo, St
     );
     log("hq-cli-update", &outcome.log_line);
 
-    let record = |version: &str| record_non_convergent_version(version);
+    let record = |version: String| record_non_convergent_version(&version);
     let clear = || clear_non_convergent_version();
-    let capture = |report: &NonConvergentReport| {
+    let capture = |report: NonConvergentReport| {
         report_non_convergent_install(
             &report.latest,
             report.local.as_deref(),
@@ -652,9 +652,9 @@ pub async fn install_hq_cli_update(app: AppHandle) -> Result<HqCliUpdateInfo, St
         );
     };
     let record_failure = || report_non_convergent_marker_unpersisted();
-    let emit_cleared = |info: &HqCliUpdateInfo| {
+    let emit_cleared = |info: HqCliUpdateInfo| {
         // Frontend uses this to drop the banner immediately on success.
-        let _ = app.emit("hq-cli-update:cleared", info);
+        let _ = app.emit("hq-cli-update:cleared", &info);
     };
     let effects = PostInstallEffects {
         record: &record,
@@ -1172,7 +1172,7 @@ exit 0
                 "/opt/homebrew/bin/npm",
                 false,
             );
-            let record = |version: &str| {
+            let record = |version: String| {
                 records.set(records.get() + 1);
                 assert_eq!(version, "5.84.0");
                 Err("config directory is unwritable".to_string())
@@ -1216,7 +1216,7 @@ exit 0
         let clear = || clears.set(clears.get() + 1);
         let capture = |_| panic!("a converged install must not capture non-convergence");
         let record_failure = || panic!("a converged install has no marker failure");
-        let emit = |info: &HqCliUpdateInfo| {
+        let emit = |info: HqCliUpdateInfo| {
             emits.set(emits.get() + 1);
             assert_eq!(info.local.as_deref(), Some("5.84.0"));
             assert_eq!(info.latest, "5.84.0");
